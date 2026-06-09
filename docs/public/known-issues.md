@@ -10,7 +10,6 @@ local use.
 | # | Issue | Impact | Status |
 |---|---|---|---|
 | 1 | **`budgetFloor` calibration is a cross-run approximation** — the semantics are implemented and tested, and a mechanism ships to ground the number in real runs, but the runtime exposes no per-agent token primitive, so tokens-per-agent stays a statistical estimate. | Floors may cut too early or too late until enough real runs accrue. | `pnpm dwt:calibrate record` captures a real run's agent count + `rt.budget.spent()` + the notification token `usage`; `derive` segregates the two signals (never blends them) and prints `floor ≈ tokens-per-agent × (claims × votes + synthesis) × margin`, or an honest "no signal" rather than a fabricated number. The figure is a lower bound — refine it once ~10 real runs accrue. |
-| 2 | **`@workflow-toolbox/*` is not published to npm** — the toolkit packages are workspace-local. | Consume the toolkit by cloning this repo, not via `npm install`. | Intentional for now; revisit if there is demand for standalone npm distribution. |
 
 ## External limitations — mitigated, not fixable here
 

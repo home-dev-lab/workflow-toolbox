@@ -109,6 +109,16 @@ Save it, then tell Claude Code to run it: *"Run the workflow at
 `./hello.workflow.js`."* The Workflow tool executes the script, runs the single
 agent in its own fresh context, and hands back the returned object.
 
+**Author off-repo** — the three authoring packages are published to npm, so you
+can compose workflows from any project without cloning this repo:
+
+```bash
+pnpm add -D @workflow-toolbox/runtime @workflow-toolbox/patterns @workflow-toolbox/build
+```
+
+Write a `*.workflow.ts` against `@workflow-toolbox/patterns`, then run `dwt build`
+to emit the sandbox-compliant `.js` the Workflow tool runs.
+
 **When a run misbehaves** — an agent that finished with nothing, a schema that
 kept retrying — point the `workflow-debugger` skill at the run's journal to see
 what happened and whether resuming is safe.
