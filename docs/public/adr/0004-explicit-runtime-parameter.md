@@ -22,7 +22,7 @@ exactly once, in the glue epilogue that `dwt build` emits around the bundle.
 
 Two supporting choices:
 
-- `@dwt/runtime` is the **only** package that names the sandbox surface
+- `@workflow-toolbox/runtime` is the **only** package that names the sandbox surface
   (typings + `FakeRuntime`). If a Claude Code update changes the surface,
   exactly one package changes.
 - The ambient declarations (`globals.d.ts`) live at the package root,

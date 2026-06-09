@@ -4,8 +4,8 @@
 // workflow-composer skill). Then build and check:
 //   pnpm dwt:build <this-file>   &&   pnpm dwt:check workflows/<name>.js
 
-import { defineWorkflow } from '@dwt/build/define'
-import { classifyAndAct, fanOutAndSynthesize, adversarialVerification, generateAndFilter, tournament, loopUntilDone, planAndExecute } from '@dwt/patterns'
+import { defineWorkflow } from '@workflow-toolbox/build/define'
+import { classifyAndAct, fanOutAndSynthesize, adversarialVerification, generateAndFilter, tournament, loopUntilDone, planAndExecute } from '@workflow-toolbox/patterns'
 
 export default defineWorkflow({
   meta: {

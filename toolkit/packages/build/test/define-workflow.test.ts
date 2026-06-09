@@ -5,7 +5,7 @@
 //   normalizeArgs(rawArgs) → parseInput (default: identity) → def.run(rt, input)
 
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@dwt/runtime'
+import { FakeRuntime } from '@workflow-toolbox/runtime'
 import { defineWorkflow } from '../src/define-workflow.js'
 
 // ---------------------------------------------------------------------------

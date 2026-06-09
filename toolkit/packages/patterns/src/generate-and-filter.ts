@@ -13,7 +13,7 @@
 // - opts.phase per-call, never rt.phase() (avoids global-state races).
 // - Labels: generateAndFilter:<stage>:<index>.
 
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@dwt/runtime'
+import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
 import { warn, makeRecord } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 

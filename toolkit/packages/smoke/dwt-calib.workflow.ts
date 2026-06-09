@@ -17,9 +17,9 @@
 // (run.ts tier-2). The agents are CHEAP — so the derived tokens/agent is a lower
 // bound for real verifier/reviewer agents; the calibration docs say so.
 
-import { defineWorkflow } from '@dwt/build/define'
-import type { WorkflowRuntime, JsonSchema } from '@dwt/runtime'
-import { generateAndFilter } from '@dwt/patterns'
+import { defineWorkflow } from '@workflow-toolbox/build/define'
+import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
+import { generateAndFilter } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
 
 const TOKEN_SCHEMA = {

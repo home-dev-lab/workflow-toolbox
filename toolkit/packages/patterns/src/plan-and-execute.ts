@@ -18,7 +18,7 @@
 // - Agent failures degrade, never throw out.
 // - Labels: planAndExecute:plan, planAndExecute:work:<i>, planAndExecute:synthesize.
 
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@dwt/runtime'
+import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
 import { warn, applyCap, makeRecord } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 

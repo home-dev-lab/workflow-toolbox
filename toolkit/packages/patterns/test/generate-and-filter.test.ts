@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@dwt/runtime'
+import { FakeRuntime } from '@workflow-toolbox/runtime'
 import { generateAndFilter } from '../src/generate-and-filter.js'
 import type { GenerateAndFilterOptions } from '../src/generate-and-filter.js'
 

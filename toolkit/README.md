@@ -45,11 +45,11 @@ documents when **not** to use it.
 ```text
 toolkit/
 ├── packages/
-│   ├── runtime/    # @dwt/runtime  — sandbox typings + FakeRuntime (the ONLY
+│   ├── runtime/    # @workflow-toolbox/runtime  — sandbox typings + FakeRuntime (the ONLY
 │   │               #   coupling point to Claude Code; unstable-surface firewall)
-│   ├── patterns/   # @dwt/patterns — the 7 patterns + result envelope
-│   └── build/      # @dwt/build    — defineWorkflow + the `dwt` CLI (build/check)
-├── examples/       # @dwt/examples — 4 teaching workflows (*.workflow.ts; the
+│   ├── patterns/   # @workflow-toolbox/patterns — the 7 patterns + result envelope
+│   └── build/      # @workflow-toolbox/build    — defineWorkflow + the `dwt` CLI (build/check)
+├── examples/       # @workflow-toolbox/examples — 4 teaching workflows (*.workflow.ts; the
 │                   #   monorepo-refactor plan/execute pair is one L3 composition)
 └── workflows/      # committed build artifacts (.js) — the runnable deliverable
 ```
@@ -71,9 +71,9 @@ A workflow definition is one TypeScript file, default-exporting
 
 ```ts
 // my-workflow.workflow.ts  (filename = meta.name, by convention)
-import { defineWorkflow } from '@dwt/build/define'   // ⚠ NOT '@dwt/build' — see below
-import type { WorkflowRuntime } from '@dwt/runtime'
-import { fanOutAndSynthesize } from '@dwt/patterns'
+import { defineWorkflow } from '@workflow-toolbox/build/define'   // ⚠ NOT '@workflow-toolbox/build' — see below
+import type { WorkflowRuntime } from '@workflow-toolbox/runtime'
+import { fanOutAndSynthesize } from '@workflow-toolbox/patterns'
 
 export default defineWorkflow({
   meta: {
@@ -111,7 +111,7 @@ validation, and binding the ambient sandbox globals into the typed `rt`
 parameter ([ADR 0004](../docs/public/adr/0004-explicit-runtime-parameter.md)).
 No lifecycle hooks, no middleware.
 
-> **⚠ Import `defineWorkflow` from `@dwt/build/define`, never `@dwt/build`.**
+> **⚠ Import `defineWorkflow` from `@workflow-toolbox/build/define`, never `@workflow-toolbox/build`.**
 > The package root re-exports the bundler (node:vm, esbuild) and breaks the
 > platform-neutral bundle. `dwt build` pre-flights this mistake with an
 > actionable error.
@@ -349,7 +349,7 @@ of any run (success or failure).
 ## Testing
 
 Patterns and compositions are tested end-to-end against `FakeRuntime`
-(`@dwt/runtime`): scripted deterministic agents via an `onAgent` handler,
+(`@workflow-toolbox/runtime`): scripted deterministic agents via an `onAgent` handler,
 with assertions on spawned-agent calls (`calls`, including per-call `opts`),
 `phases`, `logs`, and envelope stats. The bundler is golden-file tested;
 emitted artifacts are linted by `dwt check`.
@@ -359,7 +359,7 @@ emitted artifacts are linted by `dwt check`.
 The Workflow tool is a research preview, and part of its surface
 (`agent()` options, `log`, `budget`, determinism bans, the 512 KB cap) is
 binary-verified rather than documented. All of it is firewalled behind
-`@dwt/runtime` — if a Claude Code update changes the surface, exactly one
+`@workflow-toolbox/runtime` — if a Claude Code update changes the surface, exactly one
 package changes. Re-verify on upgrades with the smoke canary below.
 
 ## Smoke test (upgrade canary)
@@ -384,10 +384,10 @@ which is where the Workflow tool ships):
 - **Tier 2 — round trip.** Launches the dedicated `packages/smoke/dwt-smoke.js`
   to completion and asserts its `PatternResult` envelope arrived intact.
 
-The message-parsing and verdict logic lives in `@dwt/smoke` and is unit-tested
+The message-parsing and verdict logic lives in `@workflow-toolbox/smoke` and is unit-tested
 in `pnpm test` against real captured SDK messages; only the live runner is held
 out (it spends real agent runs). A non-zero exit means an upgrade moved the
-surface — start firewalling in `@dwt/runtime`.
+surface — start firewalling in `@workflow-toolbox/runtime`.
 
 `pnpm smoke` covers the *positive* path against the bundled runtime. The upgrade
 canary builds on it:
@@ -402,7 +402,7 @@ pnpm canary:version  # read-only gate: exit 0 = unchanged since last pass (skip)
                      # 3 = a signal changed / forced (run), 2 = error.
 ```
 
-Two runtimes drive `@dwt` workflows and drift independently: the **system**
+Two runtimes drive `@workflow-toolbox` workflows and drift independently: the **system**
 `claude` CLI (auto-updates) and the **bundled** binary inside the Agent SDK
 (moves on `pnpm update`). `pnpm canary` runs the checks against each, reads the
 measured Claude Code version from each run's init message, and diffs the outcome
@@ -424,7 +424,7 @@ Architecture decision records live in [`docs/public/adr/`](../docs/public/adr/):
 - [0002 — Commit built workflow artifacts](../docs/public/adr/0002-commit-built-artifacts.md)
 - [0003 — JSON Schema + json-schema-to-ts, not zod](../docs/public/adr/0003-json-schema-over-zod.md)
 - [0004 — Explicit runtime parameter, not ambient globals](../docs/public/adr/0004-explicit-runtime-parameter.md)
-- [0005 — Sandbox-pure entry subpath `@dwt/build/define`](../docs/public/adr/0005-sandbox-pure-entry-subpath.md)
+- [0005 — Sandbox-pure entry subpath `@workflow-toolbox/build/define`](../docs/public/adr/0005-sandbox-pure-entry-subpath.md)
 
 ## License
 

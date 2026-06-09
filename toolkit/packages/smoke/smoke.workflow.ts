@@ -3,7 +3,7 @@
 //
 // Intentionally tiny: generateAndFilter(count=1) spawns one generator + one
 // filter agent and returns a real PatternResult envelope. Launching its built
-// artifact through the live Workflow runtime proves an end-to-end @dwt
+// artifact through the live Workflow runtime proves an end-to-end @workflow-toolbox
 // round-trip survives unchanged after a Claude Code upgrade:
 //   agent() → pattern → envelope (value / stats / warnings / trail) → result.
 //
@@ -12,9 +12,9 @@
 // to the plugin-twin / artifact-count assertions), and is launched only by the
 // smoke harness (src/run.ts).
 
-import { defineWorkflow } from '@dwt/build/define'
-import type { WorkflowRuntime, JsonSchema } from '@dwt/runtime'
-import { generateAndFilter } from '@dwt/patterns'
+import { defineWorkflow } from '@workflow-toolbox/build/define'
+import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
+import { generateAndFilter } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
 
 const TOKEN_SCHEMA = {

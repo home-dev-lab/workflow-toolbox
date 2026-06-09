@@ -98,7 +98,7 @@ confirm against the agent's transcript.
 
 The logic is a tested package in the toolkit; the plugin ships only the bundled artifact.
 
-- `@dwt/debugger` `journal.ts` — tolerant journal types + `parseJournal` (never throws) +
+- `@workflow-toolbox/debugger` `journal.ts` — tolerant journal types + `parseJournal` (never throws) +
   agent accessors (`doneAgents`/`incompleteAgents`/`retriedAgents`). Unit-tested.
 - `diagnose.ts` — the pure decision table `diagnoseRun` + `recommendResume`. Unit-tested.
 - `format.ts` — the pure text report. Unit-tested.

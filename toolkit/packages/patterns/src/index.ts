@@ -1,4 +1,4 @@
-// @dwt/patterns — public API (envelope + 7 patterns)
+// @workflow-toolbox/patterns — public API (envelope + 7 patterns)
 //
 // Naming convention (deliberate, do not "unify"): each pattern speaks its
 // DOMAIN language — `claims` (adversarialVerification), `tasks`

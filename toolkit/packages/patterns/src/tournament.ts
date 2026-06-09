@@ -19,7 +19,7 @@
 // - Labels: tournament:attempt:<i>, tournament:judge:<attemptIdx>:<judgeIdx>,
 //           tournament:synthesize.
 
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@dwt/runtime'
+import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
 import { warn, makeRecord } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 

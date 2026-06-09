@@ -5,7 +5,7 @@
 //
 // applyCap() implements the mandatory truncation reporting required by §8.
 
-import type { WorkflowRuntime } from '@dwt/runtime'
+import type { WorkflowRuntime } from '@workflow-toolbox/runtime'
 
 // ---------------------------------------------------------------------------
 // PatternStats — five counters, one source of truth across all patterns

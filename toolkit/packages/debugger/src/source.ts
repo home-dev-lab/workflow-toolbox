@@ -1,5 +1,5 @@
 // IMPURE journal resolution (filesystem). Held out of `pnpm test` (no .test.ts suffix),
-// exactly like the @dwt/smoke live runners. Normal Node — fs/mtime are fine here (this
+// exactly like the @workflow-toolbox/smoke live runners. Normal Node — fs/mtime are fine here (this
 // is NOT a workflow-sandbox module, so the Date/Math sandbox bans do not apply).
 //
 // Journals live at ~/.claude/projects/<project-slug>/<sessionId>/workflows/wf_<runId>.json.

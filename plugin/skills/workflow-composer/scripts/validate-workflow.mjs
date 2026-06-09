@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // validate-workflow.mjs — standalone workflow linter CLI
 //
-// Derived from @dwt/build's lint.ts and kept in sync with it.
+// Derived from @workflow-toolbox/build's lint.ts and kept in sync with it.
 // The plugin-integration test suite enforces parity between this script and
 // lintWorkflowSource() from the toolkit — if you update the rules in lint.ts
 // you MUST update this file to match.

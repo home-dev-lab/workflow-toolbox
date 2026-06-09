@@ -1,9 +1,14 @@
 {
-  "name": "@dwt/build",
-  "private": true,
+  "name": "@workflow-toolbox/build",
   "version": "0.1.0",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/home-dev-lab/workflow-toolbox.git",
+    "directory": "toolkit/packages/build"
+  },
+  "files": ["dist"],
   "exports": {
     ".": {
       "import": "./src/index.ts",
@@ -14,17 +19,36 @@
       "types": "./src/define-workflow.ts"
     }
   },
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "bin": {
+      "dwt": "./dist/cli.js"
+    },
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./define": {
+        "types": "./dist/define-workflow.d.ts",
+        "import": "./dist/define-workflow.js"
+      }
+    }
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "dwt": "tsx src/cli.ts"
+    "dwt": "tsx src/cli.ts",
+    "build": "tsup"
   },
   "dependencies": {
-    "@dwt/runtime": "workspace:*",
+    "@workflow-toolbox/runtime": "workspace:*",
     "esbuild": "~0.25.12"
   },
   "devDependencies": {
-    "@dwt/patterns": "workspace:*",
+    "@workflow-toolbox/patterns": "workspace:*",
     "@types/node": "^24.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.5.0"

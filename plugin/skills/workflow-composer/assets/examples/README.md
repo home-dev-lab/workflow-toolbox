@@ -17,7 +17,7 @@ sources you read rather than run.
 
 ## The `toolkit/` subdir
 
-Four TypeScript composition **sources** from the `@dwt` toolkit, kept here as
+Four TypeScript composition **sources** from the `@workflow-toolbox` toolkit, kept here as
 reading material that shows the library form of a workflow:
 
 - `pr-review.workflow.ts` — classify the change → per-lens reviewers →

@@ -1,4 +1,4 @@
-// Tiny shared runtime type-narrowers, used across @dwt packages (debugger, smoke) to parse
+// Tiny shared runtime type-narrowers, used across @workflow-toolbox packages (debugger, smoke) to parse
 // untrusted JSON (journals, SDK messages, marker files). `isRecord` EXCLUDES arrays so
 // callers can safely index string keys without an array slipping through as a "record".
 

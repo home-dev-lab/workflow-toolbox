@@ -12,7 +12,7 @@ description: >-
   diagnosing a workflow that launched with an error or produced wrong output.
   Fire it too when a request merely DESCRIBES a repeatable multi-stage or
   fan-out job that deserves packaging as a workflow, with or without the word.
-  Teaches the bundled @dwt TypeScript pattern toolkit as the standard library
+  Teaches the bundled @workflow-toolbox TypeScript pattern toolkit as the standard library
   for workflows that will be kept and maintained. Out of scope: simply
   launching an already-written workflow, and one-shot jobs a single subagent
   handles.
@@ -29,7 +29,7 @@ tokens; the loops, conditionals, and fan-out are plain deterministic JavaScript.
 
 There are **two ways to author one**, and choosing correctly is the first decision:
 
-- **Toolkit path (`@dwt`)** — for workflows that will be **kept, re-run, and
+- **Toolkit path (`@workflow-toolbox`)** — for workflows that will be **kept, re-run, and
   maintained**. You write a typed TypeScript file against a tested pattern library
   and compile it to a self-contained `.js` artifact. This is the default for
   anything repeatable. See [the toolkit path](#the-toolkit-path-repeatable-workflows).
@@ -68,7 +68,7 @@ determinism, or scale; absent all three, skip it.
 
 If the workflow will be **kept, re-run, and maintained** — not a one-off — do not
 hand-write the orchestration. This repository ships a compile-time TypeScript pattern
-library, the **`@dwt` toolkit**, at `toolkit/` (a sibling of this plugin's directory
+library, the **`@workflow-toolbox` toolkit**, at `toolkit/` (a sibling of this plugin's directory
 in the repo / marketplace clone). It packages the seven orchestration patterns as
 typed, tested functions and compiles each workflow into a self-contained `.js`
 artifact:
@@ -86,9 +86,9 @@ A workflow definition is one TypeScript file that default-exports `defineWorkflo
 
 ```ts
 // my-workflow.workflow.ts  (filename = meta.name, by convention)
-import { defineWorkflow } from '@dwt/build/define'   // ⚠ NOT '@dwt/build' — see below
-import type { WorkflowRuntime, JsonSchema } from '@dwt/runtime'
-import { classifyAndAct, adversarialVerification } from '@dwt/patterns'
+import { defineWorkflow } from '@workflow-toolbox/build/define'   // ⚠ NOT '@workflow-toolbox/build' — see below
+import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
+import { classifyAndAct, adversarialVerification } from '@workflow-toolbox/patterns'
 
 export default defineWorkflow({
   meta: {
@@ -110,10 +110,10 @@ normalization (string args arrive JSON-encoded) plus fail-fast input validation,
 binding the ambient sandbox globals into the typed `rt` parameter. No lifecycle
 hooks, no middleware.
 
-> **⚠ Import `defineWorkflow` from `@dwt/build/define`, never `@dwt/build`.** The
+> **⚠ Import `defineWorkflow` from `@workflow-toolbox/build/define`, never `@workflow-toolbox/build`.** The
 > package root re-exports the bundler (node:vm, esbuild) and drags Node-only code into
 > the sandbox bundle. `dwt build` pre-flights this mistake with an actionable error.
-> Patterns come from `@dwt/patterns`; types from `@dwt/runtime`.
+> Patterns come from `@workflow-toolbox/patterns`; types from `@workflow-toolbox/runtime`.
 
 ### Composition rules
 

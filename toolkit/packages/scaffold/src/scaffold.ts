@@ -1,4 +1,4 @@
-// @dwt/scaffold — PURE workflow scaffolder.
+// @workflow-toolbox/scaffold — PURE workflow scaffolder.
 //
 // Turns a structured spec into a build-clean `.workflow.ts` SKELETON so authors never
 // hand-roll the `defineWorkflow` boilerplate (the failure mode the toolkit exists to kill).
@@ -7,7 +7,7 @@
 // SKILL.md guides it from the L1 use/don't-use table), NOT code.
 //
 // Emission invariants that keep the output build-clean AS-IS:
-//   - imports `defineWorkflow` from the sandbox-pure '@dwt/build/define' subpath (NOT '@dwt/build');
+//   - imports `defineWorkflow` from the sandbox-pure '@workflow-toolbox/build/define' subpath (NOT '@workflow-toolbox/build');
 //   - every emitted pattern call uses the MINIMAL valid options for that pattern (typechecks);
 //   - `run: async (rt) => …` omits the unused `input` param (no-unused-vars clean);
 //   - every `stepN` is referenced in the return (no unused locals);
@@ -50,7 +50,7 @@ export interface ScaffoldSpec {
   steps: ScaffoldStep[]
 }
 
-// Mirrors KEBAB_RE in @dwt/build define-workflow.ts so a scaffolded name never gets rejected by build.
+// Mirrors KEBAB_RE in @workflow-toolbox/build define-workflow.ts so a scaffolded name never gets rejected by build.
 const KEBAB_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/
 
 /** Emits the `run`-body lines (indent 4) for one step, given its binding name and phase title. */
@@ -179,8 +179,8 @@ export function scaffoldWorkflow(spec: ScaffoldSpec): string {
   const lines = [
     ...HEADER,
     '',
-    "import { defineWorkflow } from '@dwt/build/define'",
-    `import { ${usedPatterns.join(', ')} } from '@dwt/patterns'`,
+    "import { defineWorkflow } from '@workflow-toolbox/build/define'",
+    `import { ${usedPatterns.join(', ')} } from '@workflow-toolbox/patterns'`,
     '',
     'export default defineWorkflow({',
     '  meta: {',

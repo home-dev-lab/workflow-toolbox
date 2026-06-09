@@ -9,7 +9,7 @@
 // either DISAPPEARS from the array on the next Stop, or (when it launched + finished
 // within one turn) first appears already carrying a terminal status.
 
-import { isRecord, strOrNull } from '@dwt/std'
+import { isRecord, strOrNull } from '@workflow-toolbox/std'
 
 export interface WorkflowTask {
   id: string

@@ -1,14 +1,14 @@
-// with-pattern.workflow.ts — fixture that imports from @dwt/patterns.
+// with-pattern.workflow.ts — fixture that imports from @workflow-toolbox/patterns.
 //
 // Proves esbuild inlines the pattern correctly (pattern code appears in the
 // emitted artifact; no import/require statements remain).
 import { defineWorkflow } from '../../src/define-workflow.js'
-import { fanOutAndSynthesize } from '@dwt/patterns'
+import { fanOutAndSynthesize } from '@workflow-toolbox/patterns'
 
 export default defineWorkflow({
   meta: {
     name: 'dwt-fixture-with-pattern',
-    description: 'Fixture that uses fanOutAndSynthesize from @dwt/patterns to prove pattern inlining',
+    description: 'Fixture that uses fanOutAndSynthesize from @workflow-toolbox/patterns to prove pattern inlining',
     phases: [{ title: 'Fan Out' }],
   },
   parseInput: (raw: unknown): string[] => {

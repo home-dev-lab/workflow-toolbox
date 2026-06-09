@@ -1,6 +1,6 @@
 # Commercial License
 
-Workflow Toolbox — the Claude Code plugin under `plugin/` and the `@dwt`
+Workflow Toolbox — the Claude Code plugin under `plugin/` and the `@workflow-toolbox`
 toolkit under `toolkit/`, including the committed workflow artifacts — is
 licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
 

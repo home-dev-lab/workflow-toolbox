@@ -26,7 +26,7 @@
 // `patterns` as descriptive metadata only.
 
 // Tiny defensive narrowing — shared with the rest of the toolkit (every reader takes `unknown`).
-import { isRecord, numOrNull } from '@dwt/std'
+import { isRecord, numOrNull } from '@workflow-toolbox/std'
 
 // ---------------------------------------------------------------------------
 // Schema version — bump if RunStatsRecord changes shape (the JSONL log is

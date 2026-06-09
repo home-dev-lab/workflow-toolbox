@@ -1,6 +1,6 @@
 <h1 align="center">
   <img src="docs/assets/banner.png"
-       alt="Workflow Toolbox — build, run, and trust multi-agent workflows in Claude Code. The Lego metaphor: molded bricks (seven tested @dwt orchestration patterns), instruction sheets (Claude Code skills to author, scaffold, and debug), and finished models (runnable workflows).">
+       alt="Workflow Toolbox — build, run, and trust multi-agent workflows in Claude Code. The Lego metaphor: molded bricks (seven tested @workflow-toolbox orchestration patterns), instruction sheets (Claude Code skills to author, scaffold, and debug), and finished models (runnable workflows).">
 </h1>
 
 ## The problem
@@ -23,7 +23,7 @@ finished.
 Think of it as Lego. The Workflow tool is the **baseplate** — solid, but it
 comes with no bricks. This repository adds:
 
-- **Molded bricks** — `@dwt` (`toolkit/`), a compile-time TypeScript library
+- **Molded bricks** — `@workflow-toolbox` (`toolkit/`), a compile-time TypeScript library
   of seven tested orchestration patterns that snap together with ordinary
   `await` / `if` / `for`.
 - **Instruction sheets** — Claude Code skills (`plugin/`) that teach Claude
@@ -117,8 +117,8 @@ what happened and whether resuming is safe.
 
 | Component | What it does | How it's invoked |
 |-----------|--------------|------------------|
-| `skills/workflow-composer` | **Author** runnable workflow scripts: the file format, the `pipeline` vs `parallel` judgment call, schemas, determinism rules, a standalone linter, 3 starter templates, worked examples — with the `@dwt` toolkit as its standard library for repeatable workflows. | Automatically when a request matches, or `/workflow-toolbox:workflow-composer` |
-| `skills/toolkit-scaffold` | **Start** a new composition: generates a build-clean `.workflow.ts` skeleton wired to the chosen `@dwt` pattern, so you fill in prompts instead of boilerplate. | Automatically, or `/workflow-toolbox:toolkit-scaffold` |
+| `skills/workflow-composer` | **Author** runnable workflow scripts: the file format, the `pipeline` vs `parallel` judgment call, schemas, determinism rules, a standalone linter, 3 starter templates, worked examples — with the `@workflow-toolbox` toolkit as its standard library for repeatable workflows. | Automatically when a request matches, or `/workflow-toolbox:workflow-composer` |
+| `skills/toolkit-scaffold` | **Start** a new composition: generates a build-clean `.workflow.ts` skeleton wired to the chosen `@workflow-toolbox` pattern, so you fill in prompts instead of boilerplate. | Automatically, or `/workflow-toolbox:toolkit-scaffold` |
 | `skills/workflow-debugger` | **Diagnose** a finished or failed run from its journal: why an agent died, whether schema retries fired, whether resuming is safe. | Automatically, or `/workflow-toolbox:workflow-debugger` |
 | `skills/upgrade-canary` | **Re-verify** the Workflow runtime still behaves the way the toolkit depends on after a Claude Code (or SDK) upgrade, and report what changed. | Automatically, or `/workflow-toolbox:upgrade-canary` |
 
@@ -126,14 +126,14 @@ what happened and whether resuming is safe.
 
 `toolkit/` is a pnpm workspace of three core packages:
 
-- **`@dwt/runtime`** — typed declarations of the workflow sandbox surface,
+- **`@workflow-toolbox/runtime`** — typed declarations of the workflow sandbox surface,
   plus a `FakeRuntime` for deterministic tests. The only coupling point to
   Claude Code.
-- **`@dwt/patterns`** — the seven patterns (`classifyAndAct`,
+- **`@workflow-toolbox/patterns`** — the seven patterns (`classifyAndAct`,
   `fanOutAndSynthesize`, `adversarialVerification`, `generateAndFilter`,
   `tournament`, `loopUntilDone`, `planAndExecute`), each returning a result
   envelope with stats, warnings, and a replayable audit trail.
-- **`@dwt/build`** — `defineWorkflow` plus the `dwt` CLI, which compiles a
+- **`@workflow-toolbox/build`** — `defineWorkflow` plus the `dwt` CLI, which compiles a
   TypeScript composition into one self-contained `.js` the Workflow tool runs
   directly.
 
@@ -318,11 +318,11 @@ workflow-toolbox/
 │       ├── toolkit-scaffold/
 │       ├── workflow-debugger/
 │       └── upgrade-canary/
-├── toolkit/                    # ← @dwt, the compile-time pattern library
+├── toolkit/                    # ← @workflow-toolbox, the compile-time pattern library
 │   ├── packages/
-│   │   ├── runtime/            # @dwt/runtime  — sandbox typings + FakeRuntime
-│   │   ├── patterns/           # @dwt/patterns — the 7 patterns + envelope
-│   │   └── build/              # @dwt/build    — defineWorkflow + dwt CLI
+│   │   ├── runtime/            # @workflow-toolbox/runtime  — sandbox typings + FakeRuntime
+│   │   ├── patterns/           # @workflow-toolbox/patterns — the 7 patterns + envelope
+│   │   └── build/              # @workflow-toolbox/build    — defineWorkflow + dwt CLI
 │   ├── examples/               # 4 teaching compositions (*.workflow.ts)
 │   └── workflows/              # committed build artifacts — runnable as-is
 ├── docs/
@@ -353,12 +353,12 @@ A few terms recur across these docs:
   agents to finish before the next step runs.
 - **Schema** — a JSON Schema attached to an `agent()` call; the runtime forces
   the agent to return matching structured data and retries on mismatch.
-- **Envelope** — the result object every `@dwt` pattern returns: the data plus
+- **Envelope** — the result object every `@workflow-toolbox` pattern returns: the data plus
   `stats`, `warnings`, and a replayable audit **trail** of what each agent did.
 - **Journal** — the runtime's per-run record (`.claude/workflows/wf_<id>.json`)
   used for resume and post-hoc debugging.
 - **Runtime** — the Workflow-tool sandbox surface (`agent`, `parallel`,
-  `pipeline`, `budget`, …) that the script runs against; `@dwt/runtime` is the
+  `pipeline`, `budget`, …) that the script runs against; `@workflow-toolbox/runtime` is the
   toolkit's typed declaration of it.
 
 ## Learn more

@@ -1,4 +1,4 @@
-// lint.ts — workflow source linter for @dwt/build
+// lint.ts — workflow source linter for @workflow-toolbox/build
 //
 // Pure string analysis: no fs, no process, no network, no side effects.
 // The caller is responsible for reading the file; this module only inspects

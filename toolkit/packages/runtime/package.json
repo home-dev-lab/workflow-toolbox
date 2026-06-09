@@ -1,17 +1,34 @@
 {
-  "name": "@dwt/runtime",
-  "private": true,
+  "name": "@workflow-toolbox/runtime",
   "version": "0.1.0",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/home-dev-lab/workflow-toolbox.git",
+    "directory": "toolkit/packages/runtime"
+  },
+  "files": ["dist"],
   "exports": {
     ".": {
       "import": "./src/index.ts",
       "types": "./src/index.ts"
     }
   },
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build": "tsup"
   }
 }

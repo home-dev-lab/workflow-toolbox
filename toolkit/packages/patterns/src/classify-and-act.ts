@@ -10,7 +10,7 @@
 // - Labels: <patternName>:<stage>:<index> for high-signal /workflows UI (§6.2).
 // - exactOptionalPropertyTypes: only include optional keys when defined (§bootstrap).
 
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@dwt/runtime'
+import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
 import { warn, applyCap, makeRecord } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 

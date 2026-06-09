@@ -31,16 +31,16 @@
 //   Phase 'Verify'    — adversarialVerification: refute weak proposals; exclude refuted ones.
 //   Phase 'Synthesize'— final plan artifact agent from kept (non-refuted) changes.
 
-import { defineWorkflow } from '@dwt/build/define'
-import type { WorkflowRuntime, JsonSchema } from '@dwt/runtime'
+import { defineWorkflow } from '@workflow-toolbox/build/define'
+import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
 import {
   classifyAndAct,
   fanOutAndSynthesize,
   planAndExecute,
   adversarialVerification,
   warn,
-} from '@dwt/patterns'
-import type { VerifiedClaim, PatternStats } from '@dwt/patterns'
+} from '@workflow-toolbox/patterns'
+import type { VerifiedClaim, PatternStats } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
 
 // ---------------------------------------------------------------------------

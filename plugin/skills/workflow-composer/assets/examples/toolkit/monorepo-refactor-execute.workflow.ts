@@ -44,11 +44,11 @@
 //   with resumeFromRunId after fixing the root cause — completed steps replay
 //   from cache and only failed/dropped steps re-run.
 
-import { defineWorkflow } from '@dwt/build/define'
+import { defineWorkflow } from '@workflow-toolbox/build/define'
 // warn() is envelope infrastructure (record + live rt.log), not a pattern —
 // using it does not change this example's deliberate L0-only composition.
-import { warn } from '@dwt/patterns'
-import type { WorkflowRuntime, JsonSchema } from '@dwt/runtime'
+import { warn } from '@workflow-toolbox/patterns'
+import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
 import type { FromSchema } from 'json-schema-to-ts'
 
 // ---------------------------------------------------------------------------

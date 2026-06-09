@@ -2,7 +2,7 @@
 name: upgrade-canary
 description: >-
   Re-verify that Claude Code's Workflow-tool runtime still behaves the way the
-  @dwt toolkit depends on, after a Claude Code upgrade — and report what changed.
+  @workflow-toolbox toolkit depends on, after a Claude Code upgrade — and report what changed.
   Invoke when the user upgraded (or might have upgraded) Claude Code and asks
   whether the workflow toolkit / committed artifacts still work, when they say
   "run the upgrade canary", "did the update break the workflows", "re-check the
@@ -22,7 +22,7 @@ argument-hint: "[--force] [--target system|bundled|both]"
 # Upgrade canary — re-verify the runtime after a Claude Code upgrade
 
 Claude Code's Workflow tool is a **research preview**: parts of the surface the
-`@dwt` toolkit relies on (the 512 KB script cap, the "`meta` must be the first
+`@workflow-toolbox` toolkit relies on (the 512 KB script cap, the "`meta` must be the first
 statement" rule, the bundled-artifact launch path) are locally-verified, not
 publicly contracted, and can drift on an upgrade. This canary re-checks that
 surface, on **both runtimes you actually use**, so a breakage — or a behavior
@@ -40,7 +40,7 @@ expensive work when the answer is yes (or you pass `--force`).
 
 ## The two runtimes
 
-`@dwt` workflows run in **two** Claude Code binaries that drift independently:
+`@workflow-toolbox` workflows run in **two** Claude Code binaries that drift independently:
 
 | Target | Binary | Version source | Track |
 | --- | --- | --- | --- |
@@ -54,7 +54,7 @@ Code version, so you see exactly which runtime any breakage or change belongs to
 ## What it verifies, per runtime
 
 - **smoke** (positive): launches every committed `toolkit/workflows/*.js` and
-  round-trips a real `@dwt`-built artifact — proves a VALID artifact still bundles,
+  round-trips a real `@workflow-toolbox`-built artifact — proves a VALID artifact still bundles,
   launches, runs, and returns its envelope (the bundling chain, `meta` serialization,
   sandbox globals).
 - **edge** (negative): launches deliberately-invalid scripts and asserts the
@@ -111,7 +111,7 @@ the run and may drive work:
   flip means a valid artifact no longer runs; an **edge** flip means the runtime
   stopped rejecting something it must (a contract change). Capture the reason; this
   is the input for the workflow-composer / **workflow-debugger** skill, and
-  for a `@dwt/runtime` review against the toolkit's architecture doc
+  for a `@workflow-toolbox/runtime` review against the toolkit's architecture doc
   (`docs/public/architecture.md`).
 - **Rejection-wording drift** (`"..." → "..."`) → the error text changed; a
   `judgeRejection` pattern or a doc may need updating (a fix), or a new guard may be

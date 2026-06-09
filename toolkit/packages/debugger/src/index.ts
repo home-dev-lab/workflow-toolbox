@@ -1,4 +1,4 @@
-// @dwt/debugger — diagnose a Claude Code Workflow run from its on-disk journal and
+// @workflow-toolbox/debugger — diagnose a Claude Code Workflow run from its on-disk journal and
 // recommend a resumeFromRunId fix. Pure, journal-first analysis core.
 export {
   parseJournal,

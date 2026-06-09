@@ -10,7 +10,7 @@ which is written for Claude, not for you.
 
 There are two authoring paths, and the skill picks the right one for the job:
 
-- **`@dwt` toolkit** — for workflows you intend to keep, re-run, and maintain.
+- **`@workflow-toolbox` toolkit** — for workflows you intend to keep, re-run, and maintain.
   You write a typed TypeScript file against a tested pattern library and compile
   it to a self-contained `.js` artifact.
 - **Raw `.js`** — for one-offs, or shapes that fit none of the patterns. You
@@ -24,7 +24,7 @@ There are two authoring paths, and the skill picks the right one for the job:
 | `references/api-reference.md` | The evidence-tiered runtime reference — every global, option, cap, and failure mode. |
 | `references/patterns.md` | The seven orchestration patterns as copy-paste recipes. |
 | `assets/templates/` | Three starter skeletons: `fan-out`, `pipeline`, `loop`. |
-| `assets/examples/` | Two runnable raw examples, plus a `toolkit/` subdir with four `@dwt` composition sources to read. See its own README. |
+| `assets/examples/` | Two runnable raw examples, plus a `toolkit/` subdir with four `@workflow-toolbox` composition sources to read. See its own README. |
 | `scripts/validate-workflow.mjs` | The linter — checks a workflow file against the parser's hard rules before you spend a run. |
 
 ## Availability

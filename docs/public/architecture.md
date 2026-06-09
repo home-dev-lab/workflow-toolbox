@@ -1,6 +1,6 @@
 # Architecture — workflow-toolbox
 
-**Scope:** this document describes the system as shipped — a Claude Code plugin plus the `@dwt` compile-time pattern toolkit, both built on top of Claude Code Dynamic Workflows (the `Workflow` tool). The toolkit sits **on** the runtime; it never replaces it.
+**Scope:** this document describes the system as shipped — a Claude Code plugin plus the `@workflow-toolbox` compile-time pattern toolkit, both built on top of Claude Code Dynamic Workflows (the `Workflow` tool). The toolkit sits **on** the runtime; it never replaces it.
 
 **Evidence tiers** (used throughout, same convention as the workflow-composer skill's [api-reference](../../plugin/skills/workflow-composer/references/api-reference.md)):
 
@@ -30,7 +30,7 @@ Each principle cites its source. `[BEA]` = [Building Effective Agents](https://w
 
 - **P8 — Human-in-the-loop happens *between* workflows, not within.** Official docs: no mid-run user input; "run each stage as its own workflow for sign-off between stages" [DOCS]. Cloudflare needed a durable-execution product (`waitForApproval`, days-long pauses) to do in-flight HITL [CF] — Dynamic Workflows has no equivalent, and the toolkit doesn't build one. Checkpoints = workflow boundaries + artifacts passed via `args`.
 
-- **P9 — Verification is adversarial and refute-first.** The Dynamic Workflows announcement's headline use case is "adversarial agents working to break the result before you see it"; the pr-review example uses 3 votes per claim, ≥2 refutations kill, default-refute-when-uncertain `[observed]`. The `@dwt` pattern envelope adds the keep-unverified-rather-than-drop rule and deterministic tallying in code.
+- **P9 — Verification is adversarial and refute-first.** The Dynamic Workflows announcement's headline use case is "adversarial agents working to break the result before you see it"; the pr-review example uses 3 votes per claim, ≥2 refutations kill, default-refute-when-uncertain `[observed]`. The `@workflow-toolbox` pattern envelope adds the keep-unverified-rather-than-drop rule and deterministic tallying in code.
 
 ---
 
@@ -51,7 +51,7 @@ Each principle cites its source. `[BEA]` = [Building Effective Agents](https://w
 | Input/output contracts (schemas + envelopes) | **Toolkit** |
 | Composition idioms + example compositions | **Toolkit** |
 | Guardrails that are *policy* (stop conditions, coverage reporting, refute thresholds) | **Toolkit** |
-| Build: TS → self-contained workflow `.js` artifact | **Toolkit** (`@dwt/build`) |
+| Build: TS → self-contained workflow `.js` artifact | **Toolkit** (`@workflow-toolbox/build`) |
 | Static validation (linter, banned APIs, size, meta shape) | **Toolkit** (`lintWorkflowSource`); the plugin ships a standalone CLI derivation (`validate-workflow.mjs`), parity-tested against it |
 | Authoring guidance for Claude | **Plugin skills** (workflow-composer, toolkit-scaffold) |
 
@@ -67,7 +67,7 @@ Explicitly **NOT built**: retry layers, caching layers, a scheduler, a state sto
 | `agent()` options `label/model/agentType/isolation/stallMs`, `log()`, `budget`, `workflow()` nesting (1 level), determinism bans (`Date.now`/`Math.random`/argless `new Date()`), journal cache keys, 512 KB script cap, stall timeout | `[verified]` (2026-06) — treat as **unstable surface** |
 | Plugins registering a `workflows/` dir (namespaced `plugin:name` invocation) | `[verified]` (2026-06), undocumented |
 
-**Engineering consequence:** everything `[verified]`-only is isolated behind a single typings package (`@dwt/runtime`). If a Claude Code update changes the surface, exactly one package changes. This is the **stability firewall** ([ADR 0004](adr/0004-explicit-runtime-parameter.md)).
+**Engineering consequence:** everything `[verified]`-only is isolated behind a single typings package (`@workflow-toolbox/runtime`). If a Claude Code update changes the surface, exactly one package changes. This is the **stability firewall** ([ADR 0004](adr/0004-explicit-runtime-parameter.md)).
 
 ### 2.3 Facts verified by running real workflows (2026-06)
 
@@ -90,7 +90,7 @@ The sandbox bans `import`/`require`/Node APIs; `meta` must be the first statemen
 TS sources (patterns + workflow definitions)
    │  typecheck (tsc strict) — contracts enforced here
    ▼
-@dwt/build (esbuild: bundle, treeshake, inline pattern fns, no imports in output)
+@workflow-toolbox/build (esbuild: bundle, treeshake, inline pattern fns, no imports in output)
    │  emit: `export const meta = {…literal…}` + bundled async body
    ▼
 self-contained workflows/<meta.name>.js  (committed — ADR 0002)
@@ -110,9 +110,9 @@ runnable by Workflow({ name }) or { scriptPath } — runtime untouched
 ## 4. Repository structure
 
 pnpm workspace, three core packages plus examples (and three further packages: the
-private `@dwt/smoke` upgrade-canary harness, the private `@dwt/debugger` run diagnoser,
-and the author-facing `@dwt/scaffold` workflow scaffolder; plus the zero-dependency
-`@dwt/std` shared-narrowing leaf consumed by smoke + debugger) — deliberately few:
+private `@workflow-toolbox/smoke` upgrade-canary harness, the private `@workflow-toolbox/debugger` run diagnoser,
+and the author-facing `@workflow-toolbox/scaffold` workflow scaffolder; plus the zero-dependency
+`@workflow-toolbox/std` shared-narrowing leaf consumed by smoke + debugger) — deliberately few:
 
 ```text
 workflow-toolbox/
@@ -126,20 +126,20 @@ workflow-toolbox/
 ├── docs/public/                         # this doc + ADRs
 └── toolkit/                             # pnpm workspace
     ├── packages/
-    │   ├── runtime/                     # @dwt/runtime — the ONLY coupling point to Claude Code
+    │   ├── runtime/                     # @workflow-toolbox/runtime — the ONLY coupling point to Claude Code
     │   │   ├── src/types.ts             #   WorkflowRuntime, AgentOptions, Budget, schema typing
     │   │   ├── src/fake.ts              #   FakeRuntime test double (FIFO/handler modes)
     │   │   └── globals.d.ts             #   opt-in ambient decls of the sandbox globals
-    │   ├── patterns/                    # @dwt/patterns — the 7 patterns + envelope.ts
-    │   ├── build/                       # @dwt/build — defineWorkflow, esbuild pipeline, linter, CLI
-    │   ├── std/                         # @dwt/std — zero-dep narrowing leaf (isRecord/numOrNull/strOrNull)
-    │   ├── smoke/                       # @dwt/smoke (private) — headless upgrade-canary harness
+    │   ├── patterns/                    # @workflow-toolbox/patterns — the 7 patterns + envelope.ts
+    │   ├── build/                       # @workflow-toolbox/build — defineWorkflow, esbuild pipeline, linter, CLI
+    │   ├── std/                         # @workflow-toolbox/std — zero-dep narrowing leaf (isRecord/numOrNull/strOrNull)
+    │   ├── smoke/                       # @workflow-toolbox/smoke (private) — headless upgrade-canary harness
     │   │   ├── src/                     #   pure lib (unit-tested) + the live SDK runner
     │   │   └── dwt-smoke.js             #   dedicated round-trip artifact (built, committed)
-    │   ├── debugger/                    # @dwt/debugger — diagnose a run + audit-report it + Stop hook (#19, #24)
+    │   ├── debugger/                    # @workflow-toolbox/debugger — diagnose a run + audit-report it + Stop hook (#19, #24)
     │   │   ├── src/                     #   pure journal/diagnose/format/report/stop-detect/stop-surface (unit-tested) + impure resolver/writer/CLIs/stop-hook
     │   │   └── build.ts                 #   esbuild → plugin/bin/{dwt-debug,dwt-stop-hook}.mjs (byte-identical to toolkit/bin)
-    │   └── scaffold/                    # @dwt/scaffold — spec → build-clean .workflow.ts skeleton
+    │   └── scaffold/                    # @workflow-toolbox/scaffold — spec → build-clean .workflow.ts skeleton
     │       ├── src/scaffold.ts          #   pure scaffoldWorkflow emitter (unit-tested) + impure CLI
     │       └── test/fixtures/           #   committed all-patterns golden (typechecked + linted by the gates)
     ├── examples/                        # 4 compositions (.workflow.ts) + their tests
@@ -147,10 +147,10 @@ workflow-toolbox/
     └── workflows/                       # committed build artifacts (12–36 KB each)
 ```
 
-- **`@dwt/runtime`** is types + a test fake only — near-zero runtime code. It is the unstable-surface firewall (§2.2).
-- **`@dwt/patterns`** depends only on `runtime` types. Pure functions; no I/O of their own.
-- **`@dwt/build`** is the only package with Node dependencies (esbuild). Workflow entry files import the sandbox-pure subpath **`@dwt/build/define`**, never the package root — the root drags Node-only modules into the bundle ([ADR 0005](adr/0005-sandbox-pure-entry-subpath.md)). `bundleWorkflow` pre-flights this with an actionable error.
-- **`@dwt/std`** is a zero-dependency leaf — the canonical `isRecord`/`numOrNull`/`strOrNull` narrowers shared by `debugger` and `smoke`. Its `isRecord` excludes arrays so callers can index string keys safely; it gets inlined into the bundled bins by esbuild.
+- **`@workflow-toolbox/runtime`** is types + a test fake only — near-zero runtime code. It is the unstable-surface firewall (§2.2).
+- **`@workflow-toolbox/patterns`** depends only on `runtime` types. Pure functions; no I/O of their own.
+- **`@workflow-toolbox/build`** is the only package with Node dependencies (esbuild). Workflow entry files import the sandbox-pure subpath **`@workflow-toolbox/build/define`**, never the package root — the root drags Node-only modules into the bundle ([ADR 0005](adr/0005-sandbox-pure-entry-subpath.md)). `bundleWorkflow` pre-flights this with an actionable error.
+- **`@workflow-toolbox/std`** is a zero-dependency leaf — the canonical `isRecord`/`numOrNull`/`strOrNull` narrowers shared by `debugger` and `smoke`. Its `isRecord` excludes arrays so callers can index string keys safely; it gets inlined into the bundled bins by esbuild.
 - Schemas are authored as `as const` JSON Schema literals with types derived via `json-schema-to-ts` (`FromSchema`) — a **types-only** dependency, erased at compile time, zero bundle weight. JSON Schema over zod because the runtime consumes JSON Schema natively ([ADR 0003](adr/0003-json-schema-over-zod.md)).
 - Built artifacts are **committed** ([ADR 0002](adr/0002-commit-built-artifacts.md)): they are reviewable, diffable, and usable without building — they are the deliverable users actually run. The build is deterministic across invocation forms (module-path comments are pinned to the entry's directory), so rebuilds don't churn the diff.
 
@@ -220,7 +220,7 @@ A multi-stage job with human gates = **several workflow files**, each ending by 
 
 ```ts
 // pr-review.workflow.ts — entry shape
-import { defineWorkflow } from '@dwt/build/define'   // sandbox-pure subpath (ADR 0005)
+import { defineWorkflow } from '@workflow-toolbox/build/define'   // sandbox-pure subpath (ADR 0005)
 
 export default defineWorkflow({
   meta: { name: 'pr-review', description: '…', phases: [{ title: 'Route' }, { title: 'Review' }, { title: 'Verify' }, { title: 'Synthesize' }] },
@@ -283,7 +283,7 @@ The envelope implements the "no silent caps" rule and [WTA]'s actionable-error p
 **Resource/budget** *(framed as token-budget and latency control)*
 
 - Loop patterns require a stop condition **by type** (§6.1 rule 7); `budgetFloor` guards always check `rt.budget.total` first — with no budget set, `remaining()` is Infinity and a floor-only loop would never stop. If `budgetFloor` is the *only* stop condition and `rt.budget.total` is null, the pattern fails fast at start (an inert floor = an unbounded loop).
-- `budgetFloor` semantics: budgets are **opt-in** (no user target → no constraint at all); when one exists, the floor decides *where the cut falls* — breadth (fewer rounds) rather than integrity (dying mid-verification) — and reports it (`stoppedBy`, coverage warning). Honesty note: the floor is a heuristic, not a reservation — the pool is global and shared with sibling workflows in the same turn, and the runtime has no per-stage reserve primitive. Picking a floor number is data-driven via `pnpm dwt:calibrate` (maintenance tooling in `@dwt/smoke`): `record` captures a real run's agent count + `rt.budget.spent()` + the completion notification's token `usage` into a gitignored log, and `derive` prints `floor ≈ tokens-per-agent × (claims × votes + synthesis) × margin`. Since the runtime has no per-agent token primitive, tokens-per-agent is a cross-run approximation, and the two token signals are kept segregated: `budget.spent()` is OUTPUT tokens (what the floor compares against via `remaining()`), the notification `total_tokens` is the in+out total — both were live-verified to scale with sub-agent count. The number stays a lower bound from cheap probe agents until real workflow runs accrue, which the safety margin covers.
+- `budgetFloor` semantics: budgets are **opt-in** (no user target → no constraint at all); when one exists, the floor decides *where the cut falls* — breadth (fewer rounds) rather than integrity (dying mid-verification) — and reports it (`stoppedBy`, coverage warning). Honesty note: the floor is a heuristic, not a reservation — the pool is global and shared with sibling workflows in the same turn, and the runtime has no per-stage reserve primitive. Picking a floor number is data-driven via `pnpm dwt:calibrate` (maintenance tooling in `@workflow-toolbox/smoke`): `record` captures a real run's agent count + `rt.budget.spent()` + the completion notification's token `usage` into a gitignored log, and `derive` prints `floor ≈ tokens-per-agent × (claims × votes + synthesis) × margin`. Since the runtime has no per-agent token primitive, tokens-per-agent is a cross-run approximation, and the two token signals are kept segregated: `budget.spent()` is OUTPUT tokens (what the floor compares against via `remaining()`), the notification `total_tokens` is the in+out total — both were live-verified to scale with sub-agent count. The number stays a lower bound from cheap probe agents until real workflow runs accrue, which the safety margin covers.
 - **Budget exhaustion is a checkpoint, not a loss**: a floor-stopped run returns its partial result; relaunching with `resumeFromRunId` replays completed `agent()` calls from cache — only the missing work runs again [SDK]. This is the standard "ran out → review partial → resume" pattern, and a de-facto HITL point. (Proven live: a run that lost agents to transient API errors was resumed and only the dead agents re-ran.) The **workflow-debugger** skill reads this off disk and tells you whether a resume would actually replay cached work — gated on the **same-session-only** rule, since the cache is gone once you debug from a different session.
 - Model tiering: every pattern exposes per-stage `model` options; mechanical/high-volume leaf work → `'haiku'`, judgment work → inherit. Verification quality is model-sensitive: verifiers default to `'opus'`, and downgrades log a warning.
 - Per-pattern caps (`maxItems`, `maxCandidates`, …) with mandatory truncation reporting.
@@ -338,9 +338,9 @@ The load-bearing decisions are recorded as ADRs in [docs/public/adr/](adr/):
 | [0002](adr/0002-commit-built-artifacts.md) | Commit built workflow artifacts |
 | [0003](adr/0003-json-schema-over-zod.md) | JSON Schema + `json-schema-to-ts`, not zod |
 | [0004](adr/0004-explicit-runtime-parameter.md) | Explicit runtime parameter (`rt`), not ambient globals |
-| [0005](adr/0005-sandbox-pure-entry-subpath.md) | Sandbox-pure entry subpath `@dwt/build/define` |
+| [0005](adr/0005-sandbox-pure-entry-subpath.md) | Sandbox-pure entry subpath `@workflow-toolbox/build/define` |
 
 Two further standing decisions, not ADR-sized:
 
 - **Same repo, plugin + toolkit co-evolving.** The plugin teaches what the toolkit builds; the parity and anti-drift test suites only work because both live together.
-- **Runtime instability is accepted and firewalled** (§2.2). The canary on each Claude Code upgrade: run the linter on the committed artifacts, smoke-run one workflow, and re-check the `[verified]`-tier facts. This is implemented as `pnpm smoke` (the `@dwt/smoke` package): it drives the Workflow tool through the TS Agent SDK (≥ v0.3.149) [SDK] to launch every committed artifact (asserting the runtime still accepts each) and to round-trip a dedicated minimal workflow to completion (asserting the result envelope survives) — headless and CI-runnable. `pnpm smoke` covers the *positive* path; a companion `pnpm canary` covers the *negative* surface — it launches deliberately-invalid scripts and asserts the runtime still rejects them (the 512 KB cap and the "`meta` must be the first statement" rule), the regression to catch if an upgrade silently accepts one. A version gate (`pnpm canary:version`) re-runs the set only when the `claude` CLI or SDK version changed since the last pass. The full canary (`pnpm canary`) is a **matrix**: it runs smoke + edge against BOTH runtimes that drive `@dwt` workflows — the user's interactive `claude` binary and the one bundled inside the Agent SDK (they drift independently) — reads each run's Claude Code version from its init message, and diffs the outcome against the last run to report **what changed** (version moves, check flips, rejection-wording drift) as drivers for fixes/features. Alongside that, it inspects the official Claude Code changelog for the `(last-verified, current]` version range and prints the documented entries — highlighting lines that touch the workflow/agent/tool/sdk surface — so a flip can be cross-read against what the release notes actually changed (informational only; a missing changelog never affects the verdict). The `upgrade-canary` plugin skill is the operator playbook over this. Its post-hoc complement is the **workflow-debugger** skill: where the canary asks "did the runtime move?", the debugger asks "why did *this run* fail?" — it reads a run's on-disk journal (`workflows/wf_<runId>.json`) through one pure decision table (`completed-ok` / `script-throw` / `agent-died` / `schema-retries` / `in-progress`) and recommends `resumeFromRunId` only when agents actually cached AND you are still in the originating session. It ships to end users as a self-contained `plugin/bin/dwt-debug.mjs` (esbuild platform:node, zero deps, frozen byte-identically into `toolkit/bin/` + `plugin/bin/`). The third skill is the authoring complement: **toolkit-scaffold** turns a structured `{ meta, steps: [{ pattern, phase }] }` spec into a complete, **build-clean** `.workflow.ts` skeleton (`@dwt/scaffold`'s pure `scaffoldWorkflow`), so an author never hand-rolls the `defineWorkflow` boilerplate — the scaffolder assembles the wiring, while choosing *which* patterns stays the author's judgment (the skill encodes the L1 use/don't-use table). The skeleton ships placeholder prompts/data and no active schemas so it compiles and builds as-is; that guarantee is gate-enforced by a committed all-seven-patterns golden fixture (typechecked by `pnpm typecheck`, linted by `pnpm lint`). It stays a `toolkit/`-resident CLI (no bundled artifact — a scaffold output is only usable inside the toolkit that builds it).
+- **Runtime instability is accepted and firewalled** (§2.2). The canary on each Claude Code upgrade: run the linter on the committed artifacts, smoke-run one workflow, and re-check the `[verified]`-tier facts. This is implemented as `pnpm smoke` (the `@workflow-toolbox/smoke` package): it drives the Workflow tool through the TS Agent SDK (≥ v0.3.149) [SDK] to launch every committed artifact (asserting the runtime still accepts each) and to round-trip a dedicated minimal workflow to completion (asserting the result envelope survives) — headless and CI-runnable. `pnpm smoke` covers the *positive* path; a companion `pnpm canary` covers the *negative* surface — it launches deliberately-invalid scripts and asserts the runtime still rejects them (the 512 KB cap and the "`meta` must be the first statement" rule), the regression to catch if an upgrade silently accepts one. A version gate (`pnpm canary:version`) re-runs the set only when the `claude` CLI or SDK version changed since the last pass. The full canary (`pnpm canary`) is a **matrix**: it runs smoke + edge against BOTH runtimes that drive `@workflow-toolbox` workflows — the user's interactive `claude` binary and the one bundled inside the Agent SDK (they drift independently) — reads each run's Claude Code version from its init message, and diffs the outcome against the last run to report **what changed** (version moves, check flips, rejection-wording drift) as drivers for fixes/features. Alongside that, it inspects the official Claude Code changelog for the `(last-verified, current]` version range and prints the documented entries — highlighting lines that touch the workflow/agent/tool/sdk surface — so a flip can be cross-read against what the release notes actually changed (informational only; a missing changelog never affects the verdict). The `upgrade-canary` plugin skill is the operator playbook over this. Its post-hoc complement is the **workflow-debugger** skill: where the canary asks "did the runtime move?", the debugger asks "why did *this run* fail?" — it reads a run's on-disk journal (`workflows/wf_<runId>.json`) through one pure decision table (`completed-ok` / `script-throw` / `agent-died` / `schema-retries` / `in-progress`) and recommends `resumeFromRunId` only when agents actually cached AND you are still in the originating session. It ships to end users as a self-contained `plugin/bin/dwt-debug.mjs` (esbuild platform:node, zero deps, frozen byte-identically into `toolkit/bin/` + `plugin/bin/`). The third skill is the authoring complement: **toolkit-scaffold** turns a structured `{ meta, steps: [{ pattern, phase }] }` spec into a complete, **build-clean** `.workflow.ts` skeleton (`@workflow-toolbox/scaffold`'s pure `scaffoldWorkflow`), so an author never hand-rolls the `defineWorkflow` boilerplate — the scaffolder assembles the wiring, while choosing *which* patterns stays the author's judgment (the skill encodes the L1 use/don't-use table). The skeleton ships placeholder prompts/data and no active schemas so it compiles and builds as-is; that guarantee is gate-enforced by a committed all-seven-patterns golden fixture (typechecked by `pnpm typecheck`, linted by `pnpm lint`). It stays a `toolkit/`-resident CLI (no bundled artifact — a scaffold output is only usable inside the toolkit that builds it).

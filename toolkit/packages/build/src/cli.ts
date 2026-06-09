@@ -1,12 +1,15 @@
-// cli.ts — `dwt` command-line interface for @dwt/build.
+#!/usr/bin/env node
+// cli.ts — `dwt` command-line interface for @workflow-toolbox/build.
 //
-// Commands (invoked through pnpm scripts — there is deliberately no `bin`
-// entry: the source is TS and runs via tsx; a global `dwt` binary would need
-// a build step). Primary form, from the workspace root (toolkit/), where the
-// default out-dir `workflows/` resolves correctly:
+// In-repo this runs as TS via tsx (the pnpm scripts below). For npm consumers
+// the published package exposes it as the `dwt` bin (compiled to dist/cli.js by
+// tsup, which preserves this shebang and chmods the output) — see
+// `publishConfig.bin`. The shebang is an inert comment under tsx, so the dev
+// scripts keep working unchanged. Primary form, from the workspace root
+// (toolkit/), where the default out-dir `workflows/` resolves correctly:
 //   pnpm dwt:build <entry.ts> [--out-dir <dir>] [--minify]
 //   pnpm dwt:check <file.js>
-// Also supported: `pnpm dwt …` from this package, or `pnpm -F @dwt/build
+// Also supported: `pnpm dwt …` from this package, or `pnpm -F @workflow-toolbox/build
 // dwt …` from the root (cwd is packages/build/ — paths need ../../).
 //
 // Structured as a thin exported main(argv) for testability plus an

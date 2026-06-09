@@ -57,9 +57,9 @@ describe('scaffoldWorkflow — per-pattern emission', () => {
     'loopUntilDone',
     'planAndExecute',
   ] as const) {
-    it(`${pattern}: imports it from @dwt/patterns, calls it, and binds the result`, () => {
+    it(`${pattern}: imports it from @workflow-toolbox/patterns, calls it, and binds the result`, () => {
       const src = scaffoldWorkflow(single(pattern))
-      expect(src).toMatch(new RegExp(`import \\{[^}]*\\b${pattern}\\b[^}]*\\} from '@dwt/patterns'`))
+      expect(src).toMatch(new RegExp(`import \\{[^}]*\\b${pattern}\\b[^}]*\\} from '@workflow-toolbox/patterns'`))
       expect(src).toContain(`await ${pattern}(rt, {`)
       expect(src).toContain('const step1 =')
       expect(src).toContain('return { step1: step1.value }')
@@ -94,7 +94,7 @@ describe('scaffoldWorkflow — structure', () => {
   })
 
   it('imports defineWorkflow from the sandbox-pure subpath', () => {
-    expect(src).toContain("import { defineWorkflow } from '@dwt/build/define'")
+    expect(src).toContain("import { defineWorkflow } from '@workflow-toolbox/build/define'")
   })
 
   it('emits `export default defineWorkflow(`', () => {
@@ -106,7 +106,7 @@ describe('scaffoldWorkflow — structure', () => {
   })
 
   it('dedups pattern imports', () => {
-    const importLine = src.split('\n').find((l) => l.includes("from '@dwt/patterns'"))!
+    const importLine = src.split('\n').find((l) => l.includes("from '@workflow-toolbox/patterns'"))!
     expect(importLine.match(/classifyAndAct/g)).toHaveLength(1)
   })
 
@@ -172,9 +172,9 @@ describe('scaffoldWorkflow — actionable validation', () => {
 
 // Golden: the all-seven-patterns emission is committed as test/fixtures/all-patterns.workflow.ts.
 // That committed file is typechecked by `pnpm typecheck` (proves the emitted code compiles against
-// the REAL @dwt types) and eslint-checked by `pnpm lint` (proves it is lint-clean) — so this golden
+// the REAL @workflow-toolbox types) and eslint-checked by `pnpm lint` (proves it is lint-clean) — so this golden
 // is the regression guard that keeps the emitter producing that proven-good output.
-// Regenerate after an intentional emitter change: UPDATE_GOLDEN=1 pnpm -F @dwt/scaffold test
+// Regenerate after an intentional emitter change: UPDATE_GOLDEN=1 pnpm -F @workflow-toolbox/scaffold test
 const ALL_PATTERNS_SPEC: ScaffoldSpec = {
   meta: {
     name: 'all-patterns-demo',
@@ -201,7 +201,7 @@ describe('golden — all-patterns fixture (typechecked + linted by the workspace
     }
     expect(
       fs.existsSync(GOLDEN_FILE),
-      `Golden not found: ${GOLDEN_FILE}\nRun: UPDATE_GOLDEN=1 pnpm -F @dwt/scaffold test`,
+      `Golden not found: ${GOLDEN_FILE}\nRun: UPDATE_GOLDEN=1 pnpm -F @workflow-toolbox/scaffold test`,
     ).toBe(true)
     expect(src).toBe(fs.readFileSync(GOLDEN_FILE, 'utf8'))
   })

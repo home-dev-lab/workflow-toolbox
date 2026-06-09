@@ -1,4 +1,4 @@
-// bundle.ts — esbuild bundler for @dwt/build (Node-side; node: imports allowed).
+// bundle.ts — esbuild bundler for @workflow-toolbox/build (Node-side; node: imports allowed).
 //
 // Pipeline:
 //   1. esbuild: bundle the entry file to an IIFE with globalName '__dwt'.
@@ -224,19 +224,19 @@ export async function bundleWorkflow(opts: {
   const warnings: string[] = []
 
   // -------------------------------------------------------------------------
-  // Step 0: pre-flight — catch the '@dwt/build' foot-gun with an actionable
+  // Step 0: pre-flight — catch the '@workflow-toolbox/build' foot-gun with an actionable
   // error. Workflow entries must import defineWorkflow from the sandbox-pure
-  // '@dwt/build/define' subpath; importing the package root drags the Node
+  // '@workflow-toolbox/build/define' subpath; importing the package root drags the Node
   // bundler (node:vm, esbuild) into the platform-neutral bundle and esbuild
   // fails with a cryptic "Could not resolve node:vm".
   // -------------------------------------------------------------------------
 
   const entrySource = await readFile(opts.entry, 'utf8')
-  if (/from\s+['"]@dwt\/build['"]/.test(entrySource)) {
+  if (/from\s+['"]@workflow-toolbox\/build['"]/.test(entrySource)) {
     throw new Error(
-      `bundleWorkflow: ${opts.entry} imports from '@dwt/build' (the Node-side bundler). ` +
-        `Workflow entries must import from '@dwt/build/define' (sandbox-pure) instead — ` +
-        `change the import to: import { defineWorkflow } from '@dwt/build/define'`,
+      `bundleWorkflow: ${opts.entry} imports from '@workflow-toolbox/build' (the Node-side bundler). ` +
+        `Workflow entries must import from '@workflow-toolbox/build/define' (sandbox-pure) instead — ` +
+        `change the import to: import { defineWorkflow } from '@workflow-toolbox/build/define'`,
     )
   }
 

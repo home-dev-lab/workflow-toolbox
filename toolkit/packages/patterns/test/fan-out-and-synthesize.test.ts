@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@dwt/runtime'
+import { FakeRuntime } from '@workflow-toolbox/runtime'
 import { fanOutAndSynthesize } from '../src/fan-out-and-synthesize.js'
 import type { FanOutAndSynthesizeOptions } from '../src/fan-out-and-synthesize.js'
 

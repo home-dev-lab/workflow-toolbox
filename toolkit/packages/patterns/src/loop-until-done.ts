@@ -32,7 +32,7 @@
 // - Body throws propagate (programmer errors must not be swallowed).
 // - No phase option — the body's agents own their own phase context.
 
-import type { WorkflowRuntime } from '@dwt/runtime'
+import type { WorkflowRuntime } from '@workflow-toolbox/runtime'
 import { warn, makeRecord } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 

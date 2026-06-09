@@ -11,7 +11,7 @@ There are two ways to use a pattern:
 - **Raw JavaScript idiom** — write the shape inline. Best for one-off
   workflows. You control the prompts, the schemas, and the control flow
   directly; nothing is hidden. The snippets below show each shape in this form.
-- **The `@dwt` toolkit** — the same shapes as a typed library, one function per
+- **The `@workflow-toolbox` toolkit** — the same shapes as a typed library, one function per
   pattern, each returning a uniform result envelope (`value` + `stats` +
   `warnings` + `trail`). Best for repeatable, maintained workflows where you
   want the counting, the trail, and the guardrails for free. See

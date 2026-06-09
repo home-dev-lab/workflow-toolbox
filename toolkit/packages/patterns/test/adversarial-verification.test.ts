@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@dwt/runtime'
+import { FakeRuntime } from '@workflow-toolbox/runtime'
 import { adversarialVerification } from '../src/adversarial-verification.js'
 import type { AdversarialVerificationOptions, VerifierVote } from '../src/adversarial-verification.js'
 

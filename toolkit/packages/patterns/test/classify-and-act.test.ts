@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@dwt/runtime'
+import { FakeRuntime } from '@workflow-toolbox/runtime'
 import { classifyAndAct } from '../src/classify-and-act.js'
 import type { ClassifyAndActOptions } from '../src/classify-and-act.js'
 

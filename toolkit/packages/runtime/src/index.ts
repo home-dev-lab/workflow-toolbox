@@ -1,4 +1,4 @@
-// @dwt/runtime — public API
+// @workflow-toolbox/runtime — public API
 // globals.d.ts is intentionally NOT re-exported here. It is an ambient opt-in:
 // consumers include it in their own tsconfig to type-check raw workflow scripts.
 export type {

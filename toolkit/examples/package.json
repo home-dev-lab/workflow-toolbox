@@ -1,5 +1,5 @@
 {
-  "name": "@dwt/examples",
+  "name": "@workflow-toolbox/examples",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -8,11 +8,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@dwt/patterns": "workspace:*",
-    "@dwt/build": "workspace:*"
+    "@workflow-toolbox/patterns": "workspace:*",
+    "@workflow-toolbox/build": "workspace:*"
   },
   "devDependencies": {
-    "@dwt/runtime": "workspace:*",
+    "@workflow-toolbox/runtime": "workspace:*",
     "json-schema-to-ts": "^3.1.1"
   }
 }

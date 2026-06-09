@@ -1,5 +1,5 @@
 {
-  "name": "@dwt/debugger",
+  "name": "@workflow-toolbox/debugger",
   "private": true,
   "version": "0.1.0",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -15,7 +15,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@dwt/std": "workspace:*",
+    "@workflow-toolbox/std": "workspace:*",
     "@types/node": "^24.0.0",
     "esbuild": "~0.25.12",
     "tsx": "^4.0.0",

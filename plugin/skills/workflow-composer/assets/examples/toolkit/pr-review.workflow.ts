@@ -28,13 +28,13 @@
 //  - Synthesize IS a barrier: synthesis needs ALL verified findings from ALL
 //    reviewers to produce a coherent overall verdict.
 
-import { defineWorkflow } from '@dwt/build/define'
-import type { WorkflowRuntime, JsonSchema } from '@dwt/runtime'
+import { defineWorkflow } from '@workflow-toolbox/build/define'
+import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
 import {
   classifyAndAct,
   adversarialVerification,
-} from '@dwt/patterns'
-import type { VerifiedClaim } from '@dwt/patterns'
+} from '@workflow-toolbox/patterns'
+import type { VerifiedClaim } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
 
 // ---------------------------------------------------------------------------

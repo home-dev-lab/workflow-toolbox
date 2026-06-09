@@ -7,9 +7,9 @@ This repo has two halves that stand alone but work together:
   `workflow-debugger` (diagnose a run), `upgrade-canary` (re-verify the runtime
   after an upgrade), plus a `Stop` hook that auto-surfaces a finished run's audit
   report.
-- **`toolkit/`** — `@dwt`, a compile-time TypeScript pattern library for Workflow
-  scripts: `@dwt/runtime` (sandbox typings + `FakeRuntime`), `@dwt/patterns` (the
-  seven patterns + result envelope), `@dwt/build` (`defineWorkflow` + the `dwt`
+- **`toolkit/`** — `@workflow-toolbox`, a compile-time TypeScript pattern library for Workflow
+  scripts: `@workflow-toolbox/runtime` (sandbox typings + `FakeRuntime`), `@workflow-toolbox/patterns` (the
+  seven patterns + result envelope), `@workflow-toolbox/build` (`defineWorkflow` + the `dwt`
   CLI), plus support packages (`std`, `smoke`, `debugger`, `scaffold`). Example
   compositions live in `toolkit/examples/`; their committed `.js` artifacts in
   `toolkit/workflows/` run as-is via the Workflow tool's `scriptPath`.
@@ -59,5 +59,5 @@ artifact:
   (`Date.now()`, `Math.random()`, argless `new Date()`).
 - Scripts are capped at **512 KB**.
 
-Author in TypeScript against `@dwt` and let `dwt build` emit the compliant
+Author in TypeScript against `@workflow-toolbox` and let `dwt build` emit the compliant
 artifact — don't hand-write the bundled `.js`.

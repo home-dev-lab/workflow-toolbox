@@ -1,23 +1,23 @@
-// define-workflow.ts — workflow declaration helper for @dwt/build.
+// define-workflow.ts — workflow declaration helper for @workflow-toolbox/build.
 //
 // SANDBOX-PURE CONSTRAINT: this file is bundled into workflow artifacts that
 // run inside the Claude Code workflow sandbox. The sandbox has no Node.js
 // APIs, no filesystem, no require(), no dynamic imports. Therefore:
-//   • No imports except type-only imports from @dwt/runtime (erased at emit).
+//   • No imports except type-only imports from @workflow-toolbox/runtime (erased at emit).
 //   • No `node:` imports, no `process`, no `Buffer`, no esbuild.
 //   • All validation is synchronous and uses only primitive JS operations.
 //
 // Design:
 //   defineWorkflow() validates meta at CALL TIME (before the workflow is ever
 //   run) so configuration errors surface immediately at load/bundle time rather
-//   than inside a live run. This follows the @dwt/patterns convention: "config
+//   than inside a live run. This follows the @workflow-toolbox/patterns convention: "config
 //   errors throw at entry" (see envelope.ts applyCap, e.g.).
 //
 //   The run pipeline is: normalizeArgs(rawArgs) → parseInput (default: identity
 //   cast) → def.run(rt, input). parseInput errors propagate untouched — the
 //   caller-supplied validator owns its error messages (fail-fast input guard).
 
-import type { WorkflowRuntime } from '@dwt/runtime'
+import type { WorkflowRuntime } from '@workflow-toolbox/runtime'
 
 // ---------------------------------------------------------------------------
 // WorkflowMeta — the static descriptor every workflow must declare

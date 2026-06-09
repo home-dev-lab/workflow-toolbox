@@ -13,7 +13,7 @@
 import { describe, it, expect } from 'vitest'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { FakeRuntime } from '@dwt/runtime'
+import { FakeRuntime } from '@workflow-toolbox/runtime'
 import { bundleWorkflow, SANDBOX_GLOBAL_NAMES } from '../src/bundle.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))

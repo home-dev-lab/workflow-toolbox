@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@dwt/runtime'
+import { FakeRuntime } from '@workflow-toolbox/runtime'
 import { tournament } from '../src/tournament.js'
 import type { TournamentOptions } from '../src/tournament.js'
 

@@ -16,6 +16,7 @@
     "dwt:scaffold": "tsx packages/scaffold/src/cli.ts",
     "dwt:calibrate": "tsx packages/smoke/src/calibrate.ts",
     "debugger:build": "tsx packages/debugger/build.ts",
+    "build:dist": "pnpm --filter @workflow-toolbox/runtime --filter @workflow-toolbox/patterns --filter @workflow-toolbox/build run build",
     "smoke": "tsx packages/smoke/src/run.ts",
     "canary": "tsx packages/smoke/src/canary-all.ts",
     "canary:edge": "tsx packages/smoke/src/edge-canaries.ts",
@@ -25,6 +26,7 @@
     "typescript-eslint": "^8.0.0",
     "eslint": "^9.0.0",
     "tsx": "^4.0.0",
+    "tsup": "^8.0.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }

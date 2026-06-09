@@ -1,6 +1,6 @@
 export const meta = {
   "name": "dwt-fixture-hello",
-  "description": "Minimal fixture workflow for @dwt/build Batch B tests",
+  "description": "Minimal fixture workflow for @workflow-toolbox/build Batch B tests",
   "phases": [
     {
       "title": "Run"
@@ -82,7 +82,7 @@ var __dwt = (() => {
   var hello_workflow_default = defineWorkflow({
     meta: {
       name: "dwt-fixture-hello",
-      description: "Minimal fixture workflow for @dwt/build Batch B tests",
+      description: "Minimal fixture workflow for @workflow-toolbox/build Batch B tests",
       phases: [{ title: "Run" }]
     },
     parseInput: (raw) => {

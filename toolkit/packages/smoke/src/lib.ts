@@ -10,7 +10,7 @@
 // shape, these must degrade to "unrecognized" (→ a loud, explained failure in
 // run.ts), never throw an opaque TypeError.
 
-import { isRecord, strOrNull } from '@dwt/std'
+import { isRecord, strOrNull } from '@workflow-toolbox/std'
 
 // ---------------------------------------------------------------------------
 // Tiny narrowing helpers

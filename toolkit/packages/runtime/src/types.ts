@@ -1,4 +1,4 @@
-// Runtime surface types for @dwt/runtime.
+// Runtime surface types for @workflow-toolbox/runtime.
 // These are the ONLY coupling point to the Claude Code sandbox API.
 // If the sandbox surface changes, update here and nowhere else.
 

@@ -39,7 +39,7 @@ path — and the model's judgment is only needed at the leaves (inside each
 spawned agent). [documented]
 
 > For repeatable, maintained workflows there is a companion TypeScript pattern
-> toolkit (`@dwt`) that compiles typed patterns to workflow artifacts. See
+> toolkit (`@workflow-toolbox`) that compiles typed patterns to workflow artifacts. See
 > `toolkit/README.md`. The rest of this reference describes the raw runtime
 > surface every workflow ultimately targets.
 
@@ -140,7 +140,7 @@ happen *inside an `agent()`*, where the subagent has the normal tools.
 
 ## The script API
 
-These globals are available in the sandbox. (The `@dwt` toolkit binds the same
+These globals are available in the sandbox. (The `@workflow-toolbox` toolkit binds the same
 surface into an explicit `rt` parameter, but the raw names below are what the
 runtime exposes.)
 

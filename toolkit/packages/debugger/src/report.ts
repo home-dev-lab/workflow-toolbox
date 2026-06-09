@@ -15,7 +15,7 @@
 
 import { agentEvents, type WorkflowJournal } from './journal.js'
 import { addUsage, emptyUsage, type AgentUsage } from './transcript-usage.js'
-import { isRecord, numOrNull, strOrNull } from '@dwt/std'
+import { isRecord, numOrNull, strOrNull } from '@workflow-toolbox/std'
 
 /** One agent's cost line, projected from a workflow_agent row. */
 export interface AgentCostRow {

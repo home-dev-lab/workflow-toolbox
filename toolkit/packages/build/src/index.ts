@@ -1,7 +1,7 @@
-// @dwt/build — public API
+// @workflow-toolbox/build — public API
 //
 // IMPORTANT for WORKFLOW ENTRY FILES (*.workflow.ts): import defineWorkflow
-// from '@dwt/build/define' (sandbox-pure subpath), NOT from '@dwt/build'.
+// from '@workflow-toolbox/build/define' (sandbox-pure subpath), NOT from '@workflow-toolbox/build'.
 // This index re-exports the Node-side bundler (node:vm, esbuild); importing
 // it from a workflow entry drags those into the platform-neutral bundle and
 // `dwt build` fails with "Could not resolve node:vm".

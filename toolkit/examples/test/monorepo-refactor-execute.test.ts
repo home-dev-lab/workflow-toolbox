@@ -4,7 +4,7 @@
 // TDD: written before the implementation (RED step).
 
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@dwt/runtime'
+import { FakeRuntime } from '@workflow-toolbox/runtime'
 import wf from '../monorepo-refactor-execute.workflow.js'
 
 // ---------------------------------------------------------------------------

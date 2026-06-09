@@ -2,7 +2,7 @@
 name: toolkit-scaffold
 description: >-
   Scaffold a new Claude Code Workflow as a build-clean `.workflow.ts` skeleton from the
-  @dwt pattern toolkit, so you never hand-roll the `defineWorkflow` boilerplate. Invoke
+  @workflow-toolbox pattern toolkit, so you never hand-roll the `defineWorkflow` boilerplate. Invoke
   when the user describes a workflow they want and asks to "scaffold a workflow", "start
   a new workflow", "generate a workflow skeleton", "set up a .workflow.ts", "wire these
   patterns together", or "use the toolkit to build a workflow". Given a plain job
@@ -66,8 +66,8 @@ Steps run in spec order. Repeating a `phase` across steps groups them under one 
 cd toolkit
 
 # 1) scaffold the skeleton. Write it into a workspace package that depends on
-#    @dwt/build and @dwt/patterns — `examples/` is the natural home (your own
-#    package works too). esbuild resolves the @dwt imports from the file's location,
+#    @workflow-toolbox/build and @workflow-toolbox/patterns — `examples/` is the natural home (your own
+#    package works too). esbuild resolves the @workflow-toolbox imports from the file's location,
 #    so a loose file outside such a package will NOT build.
 pnpm dwt:scaffold path/to/spec.json --out-dir examples
 #    (or --stdout to preview without writing)
@@ -99,17 +99,17 @@ compiles and builds immediately. It is not yet useful — you must:
 The logic is a tested package in the toolkit; there is no bundled plugin artifact (a
 scaffold output is only usable inside the toolkit that builds it, so the tool lives there).
 
-- `@dwt/scaffold` `scaffold.ts` — the pure `scaffoldWorkflow(spec)` emitter + `PATTERN_NAMES`
+- `@workflow-toolbox/scaffold` `scaffold.ts` — the pure `scaffoldWorkflow(spec)` emitter + `PATTERN_NAMES`
   and the `ScaffoldSpec`/`ScaffoldStep` types. Deterministic (same spec → byte-identical
   output); throws an actionable error on an invalid spec. Unit-tested.
 - `cli.ts` — impure: reads the JSON spec, narrows its shape, writes `<name>.workflow.ts`.
-  Held out of `pnpm test` (the @dwt/smoke + @dwt/debugger convention); still typechecked.
+  Held out of `pnpm test` (the @workflow-toolbox/smoke + @workflow-toolbox/debugger convention); still typechecked.
 - The committed **all-patterns golden fixture** is typechecked by `pnpm typecheck` and
   linted by `pnpm lint`, so the guarantee "every emitted skeleton compiles and is lint-clean"
   is enforced by the normal gates, not just asserted.
 
 Emission invariants that keep the output build-clean: `defineWorkflow` is imported from the
-sandbox-pure `@dwt/build/define` subpath; `meta` strings are emitted via `JSON.stringify`
+sandbox-pure `@workflow-toolbox/build/define` subpath; `meta` strings are emitted via `JSON.stringify`
 (no template literal / no call inside the meta object, which the linter forbids there);
 `loopUntilDone` (which has no `phase` option) gets `rt.phase(...)` before the call; every
 bound `stepN` is referenced in the return.

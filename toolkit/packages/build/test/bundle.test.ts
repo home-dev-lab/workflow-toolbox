@@ -132,18 +132,18 @@ describe('bundleWorkflow — no-default-export fixture', () => {
 })
 
 // ---------------------------------------------------------------------------
-// '@dwt/build' root-import pre-flight — negative case
+// '@workflow-toolbox/build' root-import pre-flight — negative case
 //
 // Importing the package root from a workflow entry drags node:vm/esbuild into
 // the platform-neutral bundle; the pre-flight converts esbuild's cryptic
-// "Could not resolve node:vm" into an actionable pointer at '@dwt/build/define'.
+// "Could not resolve node:vm" into an actionable pointer at '@workflow-toolbox/build/define'.
 // ---------------------------------------------------------------------------
 
-describe('bundleWorkflow — @dwt/build root-import pre-flight', () => {
-  it('rejects an entry importing from the package root, pointing at @dwt/build/define', async () => {
+describe('bundleWorkflow — @workflow-toolbox/build root-import pre-flight', () => {
+  it('rejects an entry importing from the package root, pointing at @workflow-toolbox/build/define', async () => {
     await expect(
       bundleWorkflow({ entry: fixturePath('imports-build-root.workflow.ts') }),
-    ).rejects.toThrow(/@dwt\/build\/define/)
+    ).rejects.toThrow(/@workflow-toolbox\/build\/define/)
   })
 })
 
@@ -273,7 +273,7 @@ describe('sizeWarnings — size policy boundary tests', () => {
 // ADR 0002 (committed artifacts must be deterministic and diffable) and the
 // plugin-twin byte-identity guarantee. Discovered in P3.4 when the root-level
 // `pnpm dwt:build` script (cwd toolkit/) emitted a different artifact than the
-// legacy `pnpm -F @dwt/build dwt` form (cwd packages/build/).
+// legacy `pnpm -F @workflow-toolbox/build dwt` form (cwd packages/build/).
 
 // NOTE: a chdir-based "build twice from two cwds" test would be VACUOUS here:
 // esbuild's JS API spawns a long-lived service process whose working directory

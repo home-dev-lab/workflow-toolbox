@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@dwt/runtime'
+import { FakeRuntime } from '@workflow-toolbox/runtime'
 import { warn, applyCap, makeRecord } from '../src/envelope.js'
 import type { TrailRecord, PatternResult } from '../src/envelope.js'
 

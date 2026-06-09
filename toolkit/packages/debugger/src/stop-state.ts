@@ -10,7 +10,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { isRecord, numOrNull } from '@dwt/std'
+import { isRecord, numOrNull } from '@workflow-toolbox/std'
 
 export interface StopState {
   /** Workflow task ids seen in-flight, awaiting a completion verdict. */

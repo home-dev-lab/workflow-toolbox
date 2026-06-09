@@ -1,5 +1,5 @@
 // CLI entry — IMPURE (reads a JSON spec, writes the .workflow.ts). Held out of `pnpm test`
-// (no .test.ts peer — the @dwt/smoke + @dwt/debugger convention); still typechecked by `tsc`.
+// (no .test.ts peer — the @workflow-toolbox/smoke + @workflow-toolbox/debugger convention); still typechecked by `tsc`.
 // Maintainer/author: `pnpm dwt:scaffold <spec.json> [--out-dir <dir>] [--stdout]`.
 
 import * as fs from 'node:fs'

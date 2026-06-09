@@ -17,7 +17,7 @@
 // - opts.phase per-call, never rt.phase() (avoids global-state races).
 // - Labels: adversarialVerification:verify:<claimIndex>:<voteIndex>.
 
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@dwt/runtime'
+import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
 import { warn, applyCap, makeRecord } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 

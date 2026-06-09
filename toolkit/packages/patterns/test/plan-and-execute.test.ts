@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@dwt/runtime'
+import { FakeRuntime } from '@workflow-toolbox/runtime'
 import { planAndExecute } from '../src/plan-and-execute.js'
 import type { PlanAndExecuteOptions, PlannedSubtask, PlanAndExecuteResult } from '../src/plan-and-execute.js'
 

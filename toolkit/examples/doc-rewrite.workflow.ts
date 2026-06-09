@@ -30,11 +30,11 @@
 //  with resumeFromRunId — completed agent() calls replay from cache, only
 //  missing work re-runs. This is the correct recovery path, not a full restart.
 
-import { defineWorkflow } from '@dwt/build/define'
-import type { WorkflowRuntime, JsonSchema } from '@dwt/runtime'
-import { generateAndFilter, loopUntilDone } from '@dwt/patterns'
-import type { LoopStoppedBy } from '@dwt/patterns'
-import { warn } from '@dwt/patterns'
+import { defineWorkflow } from '@workflow-toolbox/build/define'
+import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
+import { generateAndFilter, loopUntilDone } from '@workflow-toolbox/patterns'
+import type { LoopStoppedBy } from '@workflow-toolbox/patterns'
+import { warn } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
 
 // ---------------------------------------------------------------------------

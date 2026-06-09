@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@dwt/runtime'
-import type { WorkflowRuntime } from '@dwt/runtime'
+import { FakeRuntime } from '@workflow-toolbox/runtime'
+import type { WorkflowRuntime } from '@workflow-toolbox/runtime'
 import { loopUntilDone } from '../src/loop-until-done.js'
 import type { LoopUntilDoneOptions } from '../src/loop-until-done.js'
 
