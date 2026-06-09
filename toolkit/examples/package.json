@@ -1,0 +1,18 @@
+{
+  "name": "@dwt/examples",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@dwt/patterns": "workspace:*",
+    "@dwt/build": "workspace:*"
+  },
+  "devDependencies": {
+    "@dwt/runtime": "workspace:*",
+    "json-schema-to-ts": "^3.1.1"
+  }
+}

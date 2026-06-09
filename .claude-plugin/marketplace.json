@@ -1,0 +1,15 @@
+{
+  "name": "workflow-toolbox",
+  "description": "Marketplace for the Workflow Toolbox plugin — deterministic multi-agent workflow authoring, scaffolding, and run-auditing for Claude Code.",
+  "owner": {
+    "name": "Frederic Thomas",
+    "email": "fthomas@apache.org"
+  },
+  "plugins": [
+    {
+      "name": "workflow-toolbox",
+      "source": "./plugin",
+      "description": "Toolbox for Claude Code's Workflow tool — author, scaffold, and debug deterministic multi-agent workflow scripts (workflow-composer, with the @dwt compile-time pattern toolkit as its standard library)."
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "runId": "wf_synth-launchfail",
+  "timestamp": "2026-06-08T10:00:00.000Z",
+  "taskId": "synthAL",
+  "script": "const meta = { name: 'x' }\nconsole.log('statement before meta')",
+  "scriptPath": "/tmp/elided.js",
+  "result": null,
+  "agentCount": 0,
+  "logs": [],
+  "durationMs": 0,
+  "error": "SyntaxError: meta must be the first statement in the workflow script",
+  "summary": "SYNTHETIC fixture: async_launched — a pre-run syntax/meta check failure that never executed (documented in workflow-composer SKILL.md; unobserved on disk)",
+  "workflowName": "synth-async-launched",
+  "status": "async_launched",
+  "startTime": 1780740000000,
+  "phases": [],
+  "defaultModel": "claude-opus-4-8",
+  "workflowProgress": [],
+  "totalTokens": 0,
+  "totalToolCalls": 0
+}

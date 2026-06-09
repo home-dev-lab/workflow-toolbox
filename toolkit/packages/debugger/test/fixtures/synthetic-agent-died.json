@@ -1,0 +1,24 @@
+{
+  "runId": "wf_synth-agentdied",
+  "timestamp": "2026-06-08T10:00:00.000Z",
+  "taskId": "synthAD",
+  "script": "// (elided)\nreturn { done: true }",
+  "scriptPath": "/tmp/elided.js",
+  "result": { "partial": true },
+  "agentCount": 2,
+  "logs": [],
+  "durationMs": 4200,
+  "summary": "SYNTHETIC fixture: one agent ended state!=done (dead-agent inferred from SDK contract; never observed on disk)",
+  "workflowName": "synth-agent-died",
+  "status": "completed",
+  "startTime": 1780740000000,
+  "phases": [{ "title": "Work" }],
+  "defaultModel": "claude-opus-4-8",
+  "workflowProgress": [
+    { "type": "workflow_phase", "index": 1, "title": "Work" },
+    { "type": "workflow_agent", "index": 1, "label": "work:0", "phaseIndex": 1, "phaseTitle": "Work", "agentId": "a-ok", "model": "claude-opus-4-8", "state": "done", "attempt": 1, "tokens": 1000, "toolCalls": 1, "durationMs": 2000, "resultPreview": "{\"ok\":true}" },
+    { "type": "workflow_agent", "index": 2, "label": "work:1", "phaseIndex": 1, "phaseTitle": "Work", "agentId": "a-dead", "model": "claude-opus-4-8", "state": "error", "attempt": 1, "tokens": 200, "toolCalls": 0, "durationMs": 1500, "lastToolName": "StructuredOutput" }
+  ],
+  "totalTokens": 1200,
+  "totalToolCalls": 1
+}

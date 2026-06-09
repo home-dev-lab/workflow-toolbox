@@ -1,0 +1,25 @@
+{
+  "runId": "wf_synth-budget",
+  "timestamp": "2026-06-08T10:00:00.000Z",
+  "taskId": "synthBG",
+  "script": "// (elided)\nwhile (budget.remaining() > 0) await agent('...')",
+  "scriptPath": "/tmp/elided.js",
+  "result": null,
+  "agentCount": 2,
+  "logs": [],
+  "durationMs": 30000,
+  "error": "Error: workflow budget exhausted — token target reached, no remaining budget for further agent() calls\n    at agent (workflow.js:42:11)",
+  "summary": "SYNTHETIC fixture: budget-floor throw with 2 agents already done (budget wording + the script-throw doneAgents>0 resume path; budget stops never observed on disk)",
+  "workflowName": "synth-budget",
+  "status": "failed",
+  "startTime": 1780740000000,
+  "phases": [{ "title": "Mine" }],
+  "defaultModel": "claude-opus-4-8",
+  "workflowProgress": [
+    { "type": "workflow_phase", "index": 1, "title": "Mine" },
+    { "type": "workflow_agent", "index": 1, "label": "mine:0", "phaseIndex": 1, "phaseTitle": "Mine", "agentId": "a-1", "model": "claude-opus-4-8", "state": "done", "attempt": 1, "tokens": 500000, "toolCalls": 2, "durationMs": 14000, "resultPreview": "{\"found\":3}" },
+    { "type": "workflow_agent", "index": 2, "label": "mine:1", "phaseIndex": 1, "phaseTitle": "Mine", "agentId": "a-2", "model": "claude-opus-4-8", "state": "done", "attempt": 1, "tokens": 500000, "toolCalls": 2, "durationMs": 15000, "resultPreview": "{\"found\":1}" }
+  ],
+  "totalTokens": 1000000,
+  "totalToolCalls": 4
+}

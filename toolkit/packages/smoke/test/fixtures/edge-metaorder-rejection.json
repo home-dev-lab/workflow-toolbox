@@ -1,0 +1,19 @@
+{
+  "type": "user",
+  "message": {
+    "role": "user",
+    "content": [
+      {
+        "type": "tool_result",
+        "content": "<tool_use_error>Invalid workflow script: `export const meta = { name, description, phases }` must be the FIRST statement in the script</tool_use_error>",
+        "is_error": true,
+        "tool_use_id": "toolu_01P9rum7GJCjfTRi9nofqtDv"
+      }
+    ]
+  },
+  "parent_tool_use_id": null,
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "uuid": "00000000-0000-0000-0000-000000000000",
+  "timestamp": "2026-06-07T20:49:05.747Z",
+  "tool_use_result": "Error: Invalid workflow script: `export const meta = { name, description, phases }` must be the FIRST statement in the script"
+}
