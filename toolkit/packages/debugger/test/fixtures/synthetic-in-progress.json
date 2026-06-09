@@ -1,0 +1,22 @@
+{
+  "runId": "wf_synth-inprogress",
+  "timestamp": "2026-06-08T10:00:00.000Z",
+  "taskId": "synthIP",
+  "script": "// (elided)",
+  "scriptPath": "/tmp/elided.js",
+  "result": null,
+  "agentCount": 2,
+  "logs": [],
+  "durationMs": 0,
+  "summary": "SYNTHETIC fixture: no terminal status key — run still active or a zombie (status key deliberately ABSENT, not null)",
+  "workflowName": "synth-in-progress",
+  "startTime": 1780740000000,
+  "phases": [{ "title": "Work" }],
+  "defaultModel": "claude-opus-4-8",
+  "workflowProgress": [
+    { "type": "workflow_phase", "index": 1, "title": "Work" },
+    { "type": "workflow_agent", "index": 1, "label": "work:0", "phaseIndex": 1, "phaseTitle": "Work", "agentId": "a-run", "model": "claude-opus-4-8", "state": "running", "attempt": 1 }
+  ],
+  "totalTokens": 0,
+  "totalToolCalls": 0
+}

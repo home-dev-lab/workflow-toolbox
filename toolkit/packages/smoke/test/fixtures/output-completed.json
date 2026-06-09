@@ -1,0 +1,34 @@
+{
+  "summary": "Minimal round-trip smoke: generateAndFilter(count=1) returns a PatternResult envelope.",
+  "agentCount": 2,
+  "logs": [],
+  "result": {
+    "marker": "dwt-smoke-ok",
+    "envelope": {
+      "value": [
+        {
+          "token": "dwt-smoke-ok"
+        }
+      ],
+      "stats": {
+        "itemsIn": 1,
+        "itemsOut": 1,
+        "agentsSpawned": 2,
+        "dropped": 0,
+        "truncated": 0
+      },
+      "warnings": [],
+      "trail": [
+        {
+          "stage": "generateAndFilter:generate:0",
+          "outcome": "ok"
+        },
+        {
+          "stage": "generateAndFilter:filter:0",
+          "outcome": "ok",
+          "decision": "pass"
+        }
+      ]
+    }
+  }
+}

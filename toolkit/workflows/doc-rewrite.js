@@ -1,0 +1,592 @@
+export const meta = {
+  "name": "doc-rewrite",
+  "description": "Rewrites a document against a set of quality criteria using an evaluator-optimizer loop: generates diverse candidate rewrites, filters them, then iteratively refines the best candidate until all criteria are met or the iteration budget is exhausted.",
+  "whenToUse": "Use when you need to rewrite a document to meet specific quality criteria, with iterative refinement until the evaluator approves the result.",
+  "phases": [
+    {
+      "title": "Generate",
+      "detail": "Generate diverse candidate rewrites and filter against criteria"
+    },
+    {
+      "title": "Refine",
+      "detail": "Evaluator-optimizer loop: evaluate the draft, improve until criteria met"
+    },
+    {
+      "title": "Finalize",
+      "detail": "Surface the final document with honest approval status"
+    }
+  ]
+}
+var __dwt = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // doc-rewrite.workflow.ts
+  var doc_rewrite_workflow_exports = {};
+  __export(doc_rewrite_workflow_exports, {
+    default: () => doc_rewrite_workflow_default
+  });
+
+  // ../packages/build/src/define-workflow.ts
+  function normalizeArgs(raw) {
+    if (raw === void 0) return void 0;
+    if (typeof raw !== "string") return raw;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
+  var KEBAB_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+  function validateMeta(meta) {
+    if (!KEBAB_RE.test(meta.name)) {
+      throw new Error(
+        `defineWorkflow: invalid name "${meta.name}" \u2014 name must be non-empty kebab-case (e.g. "my-workflow", "plan-and-execute-v2"); only lowercase letters, digits, and hyphens are allowed, starting and ending with a letter or digit`
+      );
+    }
+    if (meta.description.trim().length === 0) {
+      throw new Error(
+        `defineWorkflow: description must be a non-empty string \u2014 provide a short summary of what this workflow does`
+      );
+    }
+    if (meta.phases !== void 0) {
+      for (let i = 0; i < meta.phases.length; i++) {
+        const phase = meta.phases[i];
+        if (phase === void 0) continue;
+        if (phase.title.trim().length === 0) {
+          throw new Error(
+            `defineWorkflow: phase at index ${i} has an empty title \u2014 every phase must have a non-empty title string`
+          );
+        }
+      }
+    }
+  }
+  function defineWorkflow(def) {
+    validateMeta(def.meta);
+    return {
+      meta: def.meta,
+      async run(rt, rawArgs) {
+        const normalized = normalizeArgs(rawArgs);
+        const input = def.parseInput !== void 0 ? def.parseInput(normalized) : normalized;
+        return def.run(rt, input);
+      }
+    };
+  }
+
+  // ../packages/patterns/src/envelope.ts
+  function makeRecord(stage, ok, extra) {
+    return {
+      stage,
+      outcome: ok ? "ok" : "null",
+      ...extra?.model !== void 0 ? { model: extra.model } : {},
+      ...extra?.decision !== void 0 ? { decision: extra.decision } : {}
+    };
+  }
+  function warn(rt, warnings, message) {
+    warnings.push(message);
+    rt.log(message);
+  }
+
+  // ../packages/patterns/src/generate-and-filter.ts
+  var REJECTED = Symbol("generate-and-filter:REJECTED");
+  async function generateAndFilter(rt, options) {
+    const { count, generatePrompt, generateSchema, generateModel, filterPrompt, filterModel, phase } = options;
+    if (count < 1) {
+      throw new Error(
+        `generateAndFilter: count must be >= 1, got ${count} \u2014 set count to a positive integer`
+      );
+    }
+    let agentsSpawned = 0;
+    let generateFailures = 0;
+    let filterFailures = 0;
+    const warnings = [];
+    const pendingTrail = [];
+    const filterSchema = {
+      type: "object",
+      properties: {
+        pass: { type: "boolean" },
+        reason: { type: "string" }
+      },
+      required: ["pass", "reason"],
+      additionalProperties: false
+    };
+    const generateStage = async (_prev, _originalItem, index) => {
+      const genOpts = {
+        label: `generateAndFilter:generate:${index}`,
+        ...phase !== void 0 ? { phase } : {},
+        ...generateSchema !== void 0 ? { schema: generateSchema } : {},
+        ...generateModel !== void 0 ? { model: generateModel } : {}
+      };
+      agentsSpawned++;
+      const candidate = await rt.agent(generatePrompt(index), genOpts);
+      if (candidate === null) {
+        generateFailures++;
+        pendingTrail.push({
+          itemIndex: index,
+          stageOrder: 0,
+          record: makeRecord(`generateAndFilter:generate:${index}`, false, generateModel !== void 0 ? { model: generateModel } : void 0)
+        });
+        throw new Error("generate returned null");
+      }
+      pendingTrail.push({
+        itemIndex: index,
+        stageOrder: 0,
+        record: makeRecord(`generateAndFilter:generate:${index}`, true, generateModel !== void 0 ? { model: generateModel } : void 0)
+      });
+      return candidate;
+    };
+    const filterStage = async (prev, _originalItem, index) => {
+      const candidate = prev;
+      const filterOpts = {
+        schema: filterSchema,
+        label: `generateAndFilter:filter:${index}`,
+        ...phase !== void 0 ? { phase } : {},
+        ...filterModel !== void 0 ? { model: filterModel } : {}
+      };
+      agentsSpawned++;
+      const verdict = await rt.agent(
+        filterPrompt(candidate),
+        filterOpts
+      );
+      if (verdict === null) {
+        filterFailures++;
+        pendingTrail.push({
+          itemIndex: index,
+          stageOrder: 1,
+          record: makeRecord(`generateAndFilter:filter:${index}`, false, filterModel !== void 0 ? { model: filterModel } : void 0)
+        });
+        throw new Error("filter returned null");
+      }
+      pendingTrail.push({
+        itemIndex: index,
+        stageOrder: 1,
+        record: makeRecord(`generateAndFilter:filter:${index}`, true, {
+          ...filterModel !== void 0 ? { model: filterModel } : {},
+          decision: verdict.pass ? "pass" : "fail"
+        })
+      });
+      if (!verdict.pass) {
+        return REJECTED;
+      }
+      return candidate;
+    };
+    const indices = Array.from({ length: count }, (_, i) => i);
+    const rawResults = await rt.pipeline(indices, generateStage, filterStage);
+    const value = [];
+    for (const r of rawResults) {
+      if (r !== null && r !== REJECTED) {
+        value.push(r);
+      }
+    }
+    if (generateFailures > 0) {
+      warn(
+        rt,
+        warnings,
+        `generateAndFilter: ${generateFailures} of ${count} candidates failed generation`
+      );
+    }
+    if (filterFailures > 0) {
+      warn(
+        rt,
+        warnings,
+        `generateAndFilter: ${filterFailures} candidates failed filtering (excluded \u2014 fail-closed)`
+      );
+    }
+    const rejected = count - value.length - (generateFailures + filterFailures);
+    if (rejected > 0) {
+      rt.log(`generateAndFilter: ${rejected} of ${count} candidates rejected by filter`);
+    }
+    const stats = {
+      itemsIn: count,
+      itemsOut: value.length,
+      agentsSpawned,
+      dropped: generateFailures + filterFailures,
+      truncated: 0
+    };
+    pendingTrail.sort(
+      (a, b) => a.itemIndex !== b.itemIndex ? a.itemIndex - b.itemIndex : a.stageOrder - b.stageOrder
+    );
+    const trail = pendingTrail.map((e) => e.record);
+    return { value, stats, warnings, trail };
+  }
+
+  // ../packages/patterns/src/loop-until-done.ts
+  async function loopUntilDone(rt, options) {
+    const { initial, body, maxIterations, dryRounds, budgetFloor } = options;
+    if (maxIterations !== void 0 && maxIterations < 1) {
+      throw new Error(
+        `loopUntilDone: maxIterations must be >= 1, got ${maxIterations}`
+      );
+    }
+    if (dryRounds !== void 0 && dryRounds < 1) {
+      throw new Error(
+        `loopUntilDone: dryRounds must be >= 1, got ${dryRounds}`
+      );
+    }
+    if (budgetFloor !== void 0 && budgetFloor < 0) {
+      throw new Error(
+        `loopUntilDone: budgetFloor must be >= 0, got ${budgetFloor}`
+      );
+    }
+    if (budgetFloor !== void 0 && maxIterations === void 0 && dryRounds === void 0 && rt.budget.total === null) {
+      throw new Error(
+        `loopUntilDone: budgetFloor is the only stop condition but no budget target is set (rt.budget.total is null) \u2014 an inert floor means an unbounded loop; add maxIterations or dryRounds, or run with a token target`
+      );
+    }
+    const warnings = [];
+    const trail = [];
+    let state = initial;
+    let iterationsDone = 0;
+    let consecutiveDry = 0;
+    if (budgetFloor !== void 0 && rt.budget.total === null) {
+      warn(
+        rt,
+        warnings,
+        `loopUntilDone: budgetFloor=${budgetFloor} is inert (no budget target set)`
+      );
+    }
+    const runLoop = async () => {
+      while (true) {
+        if (budgetFloor !== void 0 && rt.budget.total !== null) {
+          const remaining = rt.budget.remaining();
+          if (remaining <= budgetFloor) {
+            warn(
+              rt,
+              warnings,
+              `loopUntilDone: stopped by budgetFloor (remaining=${remaining} <= floor=${budgetFloor}) after ${iterationsDone} iterations`
+            );
+            return "budgetFloor";
+          }
+        }
+        if (maxIterations !== void 0 && iterationsDone >= maxIterations) {
+          warn(
+            rt,
+            warnings,
+            `loopUntilDone: stopped by maxIterations=${maxIterations} after ${iterationsDone} iterations`
+          );
+          if (trail.length > 0) {
+            trail[trail.length - 1].decision = "maxIterations";
+          }
+          return "maxIterations";
+        }
+        const tick = await body(rt, state, iterationsDone + 1);
+        const tickIndex = iterationsDone;
+        state = tick.state;
+        iterationsDone++;
+        trail.push(makeRecord(`loopUntilDone:tick:${tickIndex}`, tick.state !== null));
+        if (tick.done === true) {
+          trail[trail.length - 1].decision = "done";
+          return "done";
+        }
+        if (dryRounds !== void 0) {
+          if (tick.progressed === false) {
+            consecutiveDry++;
+          } else {
+            consecutiveDry = 0;
+          }
+          if (consecutiveDry >= dryRounds) {
+            warn(
+              rt,
+              warnings,
+              `loopUntilDone: stopped by dryRounds=${dryRounds} after ${iterationsDone} iterations`
+            );
+            trail[trail.length - 1].decision = "dryRounds";
+            return "dryRounds";
+          }
+        }
+      }
+    };
+    const stoppedBy = await runLoop();
+    return buildResult(state, iterationsDone, stoppedBy, warnings, trail);
+  }
+  function buildResult(state, iterations, stoppedBy, warnings, trail) {
+    const stats = {
+      itemsIn: iterations,
+      itemsOut: iterations,
+      agentsSpawned: 0,
+      dropped: 0,
+      truncated: 0
+    };
+    return {
+      value: { state, iterations, stoppedBy },
+      stats,
+      warnings,
+      trail
+    };
+  }
+
+  // doc-rewrite.workflow.ts
+  var CANDIDATE_SCHEMA = {
+    type: "object",
+    properties: {
+      rewrite: { type: "string" },
+      angle: { type: "string" }
+    },
+    required: ["rewrite", "angle"],
+    additionalProperties: false
+  };
+  var EVALUATOR_SCHEMA = {
+    type: "object",
+    properties: {
+      pass: { type: "boolean" },
+      feedback: { type: "string" }
+    },
+    required: ["pass", "feedback"],
+    additionalProperties: false
+  };
+  var OPTIMIZER_SCHEMA = {
+    type: "object",
+    properties: {
+      rewrite: { type: "string" }
+    },
+    required: ["rewrite"],
+    additionalProperties: false
+  };
+  var ANGLES = [
+    "concision-first",
+    // index 0: minimize words, maximize signal
+    "examples-first",
+    // index 1: lead with concrete usage examples
+    "structure-first"
+    // index 2: organize with clear headers and hierarchy
+  ];
+  function angleForIndex(index) {
+    return ANGLES[index % ANGLES.length] ?? "concision-first";
+  }
+  function parseInput(raw) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(
+        'doc-rewrite: input must be an object with "docPath" and "criteria" fields \u2014 received: ' + (raw === null ? "null" : typeof raw)
+      );
+    }
+    const obj = raw;
+    if (obj["docPath"] === void 0) {
+      throw new Error(
+        'doc-rewrite: missing required field "docPath" \u2014 provide the path to the document to rewrite'
+      );
+    }
+    if (typeof obj["docPath"] !== "string" || obj["docPath"].trim().length === 0) {
+      throw new Error(
+        'doc-rewrite: "docPath" must be a non-empty string \u2014 provide the path to the document to rewrite'
+      );
+    }
+    if (obj["criteria"] === void 0) {
+      throw new Error(
+        'doc-rewrite: missing required field "criteria" \u2014 provide an array of non-empty evaluation criteria strings'
+      );
+    }
+    if (!Array.isArray(obj["criteria"])) {
+      throw new Error(
+        'doc-rewrite: "criteria" must be an array of non-empty strings'
+      );
+    }
+    const rawCriteria = obj["criteria"];
+    if (rawCriteria.length === 0) {
+      throw new Error(
+        'doc-rewrite: "criteria" must be a non-empty array \u2014 provide at least one evaluation criterion'
+      );
+    }
+    for (let i = 0; i < rawCriteria.length; i++) {
+      const c = rawCriteria[i];
+      if (typeof c !== "string" || c.trim().length === 0) {
+        throw new Error(
+          `doc-rewrite: criteria[${i}] must be a non-empty string \u2014 all criteria must be non-empty`
+        );
+      }
+    }
+    const criteria = rawCriteria;
+    let candidates = 3;
+    if (obj["candidates"] !== void 0) {
+      if (typeof obj["candidates"] !== "number" || !Number.isInteger(obj["candidates"])) {
+        throw new Error(
+          'doc-rewrite: "candidates" must be an integer between 1 and 5'
+        );
+      }
+      candidates = obj["candidates"];
+      if (candidates < 1 || candidates > 5) {
+        throw new Error(
+          `doc-rewrite: "candidates" must be between 1 and 5, got ${candidates}`
+        );
+      }
+    }
+    let maxIterations = 4;
+    if (obj["maxIterations"] !== void 0) {
+      if (typeof obj["maxIterations"] !== "number" || !Number.isInteger(obj["maxIterations"])) {
+        throw new Error(
+          'doc-rewrite: "maxIterations" must be an integer >= 1'
+        );
+      }
+      maxIterations = obj["maxIterations"];
+      if (maxIterations < 1) {
+        throw new Error(
+          `doc-rewrite: "maxIterations" must be >= 1, got ${maxIterations}`
+        );
+      }
+    }
+    return {
+      docPath: obj["docPath"],
+      criteria,
+      candidates,
+      maxIterations
+    };
+  }
+  async function run(rt, input) {
+    const warnings = [];
+    rt.phase("Generate");
+    const generateResult = await generateAndFilter(rt, {
+      count: input.candidates,
+      generateSchema: CANDIDATE_SCHEMA,
+      generatePrompt: (index) => {
+        const angle = angleForIndex(index);
+        return `Generate a rewrite of the document at path: ${input.docPath}
+Rewrite angle: ${angle}
+You must READ the document at ${input.docPath} directly \u2014 you have filesystem access.
+Evaluation criteria (your rewrite must satisfy all of them):
+` + input.criteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n") + `
+Return { "rewrite": "<full rewritten document>", "angle": "${angle}" }`;
+      },
+      filterPrompt: (candidate) => `Evaluate this candidate rewrite against EACH criterion STRICTLY.
+Original document is at: ${input.docPath} \u2014 read it to compare.
+Criteria:
+` + input.criteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n") + `
+Candidate rewrite (angle: ${candidate.angle}):
+${candidate.rewrite}
+
+Pass ONLY if ALL criteria are met. Return { "pass": true|false, "reason": "<explanation>" }`,
+      phase: "Generate"
+    });
+    for (const w of generateResult.warnings) warnings.push(w);
+    let seedDraft;
+    const survivors = generateResult.value;
+    if (survivors.length > 0) {
+      const firstSurvivor = survivors[0];
+      seedDraft = firstSurvivor !== void 0 ? firstSurvivor.rewrite : "";
+    } else {
+      warn(
+        rt,
+        warnings,
+        "doc-rewrite [Generate]: all candidates were rejected by the filter \u2014 this is typically a CRITERIA problem: criteria that are too strict will reject every candidate. Review your criteria for feasibility. Seeding the refinement loop with a fresh rewrite."
+      );
+      const freshSeed = await rt.agent(
+        `Generate a single rewrite of the document at path: ${input.docPath}
+You must READ the document at ${input.docPath} directly.
+Criteria:
+` + input.criteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n") + `
+Do your best to satisfy as many criteria as possible.
+Return { "rewrite": "<full rewritten document>", "angle": "balanced" }`,
+        {
+          schema: CANDIDATE_SCHEMA,
+          label: "doc-rewrite:seed-fallback",
+          phase: "Generate"
+        }
+      );
+      if (freshSeed === null) {
+        throw new Error(
+          "doc-rewrite: all filter candidates were rejected AND the fallback seed agent failed. Use resumeFromRunId to retry \u2014 completed generate calls are cached."
+        );
+      }
+      seedDraft = freshSeed.rewrite;
+    }
+    rt.phase("Refine");
+    const loopResult = await loopUntilDone(rt, {
+      maxIterations: input.maxIterations,
+      initial: { draft: seedDraft, feedback: null },
+      body: async (loopRt, state) => {
+        const evaluatorPrompt = `Evaluator: does this draft meet ALL criteria? Read the original at ${input.docPath}.
+Criteria:
+` + input.criteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n") + `
+
+Current draft:
+${state.draft}
+
+Evaluate STRICTLY against the original document's intent (read ${input.docPath}).
+Return { "pass": true|false, "feedback": "<what passes or what needs improvement>" }`;
+        const evaluation = await loopRt.agent(evaluatorPrompt, {
+          schema: EVALUATOR_SCHEMA,
+          label: "doc-rewrite:evaluator",
+          phase: "Refine"
+        });
+        if (evaluation === null) {
+          return { state, done: false, progressed: false };
+        }
+        if (evaluation.pass) {
+          return { state: { draft: state.draft, feedback: evaluation.feedback }, done: true };
+        }
+        const optimizerPrompt = `Optimizer: improve this draft based on the evaluator feedback.
+Original document is at: ${input.docPath} \u2014 read it for context.
+Criteria:
+` + input.criteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n") + `
+
+Current draft:
+${state.draft}
+
+Evaluator feedback: ${evaluation.feedback}
+
+Produce an improved version that addresses all feedback points.
+Return { "rewrite": "<full improved document>" }`;
+        const optimized = await loopRt.agent(optimizerPrompt, {
+          schema: OPTIMIZER_SCHEMA,
+          label: "doc-rewrite:optimizer",
+          phase: "Refine"
+        });
+        if (optimized === null) {
+          return {
+            state: { draft: state.draft, feedback: evaluation.feedback },
+            done: false,
+            progressed: false
+          };
+        }
+        return {
+          state: { draft: optimized.rewrite, feedback: evaluation.feedback },
+          done: false,
+          progressed: true
+        };
+      }
+    });
+    for (const w of loopResult.warnings) warnings.push(w);
+    rt.phase("Finalize");
+    const { state: finalState, iterations, stoppedBy } = loopResult.value;
+    return {
+      finalDoc: finalState.draft,
+      // HONEST: approved only when the evaluator explicitly said "done"
+      approved: stoppedBy === "done",
+      iterations,
+      stoppedBy,
+      warnings
+    };
+  }
+  var doc_rewrite_workflow_default = defineWorkflow({
+    meta: {
+      name: "doc-rewrite",
+      description: "Rewrites a document against a set of quality criteria using an evaluator-optimizer loop: generates diverse candidate rewrites, filters them, then iteratively refines the best candidate until all criteria are met or the iteration budget is exhausted.",
+      whenToUse: "Use when you need to rewrite a document to meet specific quality criteria, with iterative refinement until the evaluator approves the result.",
+      phases: [
+        { title: "Generate", detail: "Generate diverse candidate rewrites and filter against criteria" },
+        { title: "Refine", detail: "Evaluator-optimizer loop: evaluate the draft, improve until criteria met" },
+        { title: "Finalize", detail: "Surface the final document with honest approval status" }
+      ]
+    },
+    parseInput,
+    run
+  });
+  return __toCommonJS(doc_rewrite_workflow_exports);
+})();
+
+// --- dwt glue: bind sandbox globals into rt, run the workflow, return ---
+const __rt = { agent, parallel, pipeline, phase, log, budget, workflow };
+return await __dwt.default.run(__rt, typeof args !== "undefined" ? args : undefined);

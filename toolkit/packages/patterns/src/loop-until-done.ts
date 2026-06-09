@@ -1,0 +1,260 @@
+// loop-until-done.ts — evaluator-optimizer loop (§6.1 rule 7 + §8 budgetFloor).
+//
+// Flow: loop body (caller-provided) runs until one of four conditions stops it:
+//   - 'done'          — body returns done=true (normal completion, no warning)
+//   - 'maxIterations' — iteration ceiling reached (warning)
+//   - 'dryRounds'     — consecutive non-progressing rounds reached (warning)
+//   - 'budgetFloor'   — remaining budget <= floor (warning; §8 breadth-over-integrity)
+//
+// §6.1 rule 7: at least one stop condition MUST be present — enforced at the
+//   type level (LoopStopConditions union). Missing all three is a compile error.
+//
+// §8 budgetFloor: when budgetFloor is the ONLY stop condition and total is null,
+//   throw at entry — an inert floor means an unbounded loop (the Infinity trap).
+//   When budgetFloor accompanies other conditions and total is null, the floor
+//   is inert: emit a warning and proceed on the other conditions.
+//
+// Stop-condition PRECEDENCE (behavioral contract, pinned by tests):
+//   budgetFloor > maxIterations > body's done > dryRounds — the floor and the
+//   iteration ceiling are checked BEFORE each body run. Once the floor is
+//   crossed, a body that *would have* returned done=true never runs: we cannot
+//   know it would complete without running it, and running it is exactly the
+//   spend the floor exists to prevent (§8: the floor decides where the cut
+//   falls — breadth over integrity). 'done' from an iteration that DID run
+//   always wins over dryRounds.
+//
+// agentsSpawned = 0 ALWAYS — this pattern spawns no agents itself. The body
+//   function is caller code; any agents it calls belong to the caller's budget
+//   and are not counted here. This is intentional and honest.
+//
+// Conventions:
+// - Config errors throw synchronously at entry with actionable messages.
+// - Body throws propagate (programmer errors must not be swallowed).
+// - No phase option — the body's agents own their own phase context.
+
+import type { WorkflowRuntime } from '@dwt/runtime'
+import { warn, makeRecord } from './envelope.js'
+import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export type LoopStoppedBy = 'done' | 'maxIterations' | 'dryRounds' | 'budgetFloor'
+
+export interface LoopTick<TState> {
+  state: TState
+  done?: boolean
+  progressed?: boolean
+}
+
+interface LoopStopFields {
+  maxIterations?: number
+  dryRounds?: number
+  budgetFloor?: number
+}
+
+/** §6.1 rule 7: omission of ALL stop conditions is a COMPILE error.
+ *  The union type enforces that at least one stop condition key is present. */
+export type LoopStopConditions =
+  | (LoopStopFields & { maxIterations: number })
+  | (LoopStopFields & { dryRounds: number })
+  | (LoopStopFields & { budgetFloor: number })
+
+export type LoopUntilDoneOptions<TState> = LoopStopConditions & {
+  initial: TState
+  /** The loop body — caller code (often calls rt.agent or other patterns).
+   *  A throw here is a programmer error and PROPAGATES (not swallowed). */
+  body: (rt: WorkflowRuntime, state: TState, iteration: number) => Promise<LoopTick<TState>>
+}
+
+export interface LoopOutcome<TState> {
+  state: TState
+  iterations: number
+  stoppedBy: LoopStoppedBy
+}
+
+// ---------------------------------------------------------------------------
+// Implementation
+// ---------------------------------------------------------------------------
+
+export async function loopUntilDone<TState>(
+  rt: WorkflowRuntime,
+  options: LoopUntilDoneOptions<TState>,
+): Promise<PatternResult<LoopOutcome<TState>>> {
+  const { initial, body, maxIterations, dryRounds, budgetFloor } = options as LoopStopConditions & {
+    initial: TState
+    body: LoopUntilDoneOptions<TState>['body']
+    maxIterations?: number
+    dryRounds?: number
+    budgetFloor?: number
+  }
+
+  // -------------------------------------------------------------------------
+  // Synchronous validation — throw with actionable messages
+  // -------------------------------------------------------------------------
+
+  if (maxIterations !== undefined && maxIterations < 1) {
+    throw new Error(
+      `loopUntilDone: maxIterations must be >= 1, got ${maxIterations}`,
+    )
+  }
+
+  if (dryRounds !== undefined && dryRounds < 1) {
+    throw new Error(
+      `loopUntilDone: dryRounds must be >= 1, got ${dryRounds}`,
+    )
+  }
+
+  if (budgetFloor !== undefined && budgetFloor < 0) {
+    throw new Error(
+      `loopUntilDone: budgetFloor must be >= 0, got ${budgetFloor}`,
+    )
+  }
+
+  // §8 fail-fast: budgetFloor as the ONLY stop condition with null total = Infinity trap
+  if (
+    budgetFloor !== undefined &&
+    maxIterations === undefined &&
+    dryRounds === undefined &&
+    rt.budget.total === null
+  ) {
+    throw new Error(
+      `loopUntilDone: budgetFloor is the only stop condition but no budget target is set ` +
+      `(rt.budget.total is null) — an inert floor means an unbounded loop; ` +
+      `add maxIterations or dryRounds, or run with a token target`,
+    )
+  }
+
+  // -------------------------------------------------------------------------
+  // Mutable state
+  // -------------------------------------------------------------------------
+
+  const warnings: string[] = []
+  const trail: TrailRecord[] = []
+  let state: TState = initial
+  let iterationsDone = 0
+  let consecutiveDry = 0
+
+  // Inert-floor warning: budgetFloor set alongside other conditions but total is null
+  if (budgetFloor !== undefined && rt.budget.total === null) {
+    warn(
+      rt, warnings,
+      `loopUntilDone: budgetFloor=${budgetFloor} is inert (no budget target set)`,
+    )
+  }
+
+  // -------------------------------------------------------------------------
+  // Loop — an inner closure that RETURNS the stop cause at each exit point.
+  // The compiler enforces exhaustiveness; the cause is never re-derived from
+  // side state (a previous version string-sniffed warnings — fragile, removed).
+  // -------------------------------------------------------------------------
+
+  const runLoop = async (): Promise<LoopStoppedBy> => {
+    while (true) {
+      // ---- 1. Budget floor check BEFORE each iteration (only when total !== null).
+      //      Precedence over a body that might have returned done — see header.
+      if (budgetFloor !== undefined && rt.budget.total !== null) {
+        const remaining = rt.budget.remaining()
+        if (remaining <= budgetFloor) {
+          warn(
+            rt, warnings,
+            `loopUntilDone: stopped by budgetFloor (remaining=${remaining} <= floor=${budgetFloor}) after ${iterationsDone} iterations`,
+          )
+          return 'budgetFloor'
+        }
+      }
+
+      // ---- 2. maxIterations check: would the next iteration exceed the ceiling?
+      if (maxIterations !== undefined && iterationsDone >= maxIterations) {
+        warn(
+          rt, warnings,
+          `loopUntilDone: stopped by maxIterations=${maxIterations} after ${iterationsDone} iterations`,
+        )
+        // Stamp the stop decision onto the last trail record (the tick that was the
+        // final executed iteration), if any. Stops BEFORE body run have no tick record.
+        if (trail.length > 0) {
+          trail[trail.length - 1]!.decision = 'maxIterations'
+        }
+        return 'maxIterations'
+      }
+
+      // ---- 3. Run body — throws propagate (programmer errors, not swallowed)
+      const tick = await body(rt, state, iterationsDone + 1)
+      const tickIndex = iterationsDone  // 0-based index for this tick
+      state = tick.state
+      iterationsDone++
+
+      // Push a trail record for this tick. outcome='null' when body returned
+      // a null state (unusable), 'ok' otherwise. No label — no agent spawned.
+      trail.push(makeRecord(`loopUntilDone:tick:${tickIndex}`, tick.state !== null))
+
+      // ---- done=true → normal completion, no warning; stamp decision on last tick
+      if (tick.done === true) {
+        trail[trail.length - 1]!.decision = 'done'
+        return 'done'
+      }
+
+      // ---- 4. dryRounds tracking
+      if (dryRounds !== undefined) {
+        if (tick.progressed === false) {
+          consecutiveDry++
+        } else {
+          // Any non-false progressed value (true, undefined) resets the dry counter
+          consecutiveDry = 0
+        }
+
+        if (consecutiveDry >= dryRounds) {
+          warn(
+            rt, warnings,
+            `loopUntilDone: stopped by dryRounds=${dryRounds} after ${iterationsDone} iterations`,
+          )
+          trail[trail.length - 1]!.decision = 'dryRounds'
+          return 'dryRounds'
+        }
+      }
+    }
+  }
+
+  const stoppedBy = await runLoop()
+  // budgetFloor fires BEFORE the body runs — no tick record was pushed for that
+  // stop, so there is nothing to stamp. The trail already reflects only the
+  // iterations that actually executed (correct by construction).
+  return buildResult(state, iterationsDone, stoppedBy, warnings, trail)
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function buildResult<TState>(
+  state: TState,
+  iterations: number,
+  stoppedBy: LoopStoppedBy,
+  warnings: string[],
+  trail: TrailRecord[],
+): PatternResult<LoopOutcome<TState>> {
+  // Stats semantics (documented):
+  // - itemsIn = itemsOut = completed iterations (the "work units" are loop ticks)
+  // - dropped = truncated = 0 (no agent calls, no cap)
+  // - agentsSpawned = 0 ALWAYS — the body's agents belong to the caller
+  //
+  // Trail semantics (loopUntilDone deviation from direct-spawn patterns):
+  // - agentsSpawned = 0 always; the per-agent invariant (trail.length === agentsSpawned)
+  //   does NOT apply here. Instead: one TrailRecord per executed iteration
+  //   (stage = 'loopUntilDone:tick:<i>', 0-based). trail.length === iterations.
+  const stats: PatternStats = {
+    itemsIn: iterations,
+    itemsOut: iterations,
+    agentsSpawned: 0,
+    dropped: 0,
+    truncated: 0,
+  }
+
+  return {
+    value: { state, iterations, stoppedBy },
+    stats,
+    warnings,
+    trail,
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "runId": "wf_e683ff44-fbe",
+  "timestamp": "2026-06-05T19:14:17.869Z",
+  "taskId": "wmrvl0iyl",
+  "script": "// (script elided for fixture)\nfunction parseInput(x){ if(!x) throw new Error(\"input must be an object\") }\nparseInput(args)",
+  "scriptPath": "/tmp/elided.js",
+  "result": null,
+  "agentCount": 0,
+  "logs": [],
+  "durationMs": 9,
+  "error": "Error: demo-pipeline requires args = { items: [ ... ] } with at least one item. Pass an object: { items }.\n    at <anonymous> (workflow.js:77:9)\n    at workflow.js:160:1275\n    at runInContext (native)\n    at SM4 (/$bunfs/root/src/entrypoints/cli.js:3944:6022)\n    at processTicksAndRejections (native)",
+  "summary": "Demo pipeline — a minimal two-phase workflow used as a script-throw fixture",
+  "workflowName": "demo-pipeline",
+  "status": "failed",
+  "startTime": 1780686857858,
+  "phases": [
+    {
+      "title": "Gather",
+      "detail": "collect the input items"
+    },
+    {
+      "title": "Process",
+      "detail": "process each gathered item"
+    }
+  ],
+  "defaultModel": "claude-opus-4-8",
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Gather"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "Process"
+    }
+  ],
+  "totalTokens": 0,
+  "totalToolCalls": 0
+}

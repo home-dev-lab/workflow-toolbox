@@ -1,0 +1,31 @@
+# Local Claude Code project config + personal skills (not part of the plugin)
+/.claude/
+
+# magic-claude craft runner state — local tooling, not part of the plugin
+/.craft/
+
+# Internal working docs (architecture drafts, notes) — docs/public/ is the versioned doc tree
+/docs/internal/
+
+# IDE
+/.idea/
+*.iml
+
+# Node dependencies (toolkit workspace)
+node_modules/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Node/tsx scratch caches (generated when running tooling from the repo root)
+/node-compile-cache/
+/tsx-*/
+
+# Upgrade-canary state marker — per-machine (records which runtime the canary
+# last verified); not source, must not travel between clones.
+/.upgrade-canary-state.json
+
+# budgetFloor-calibration run log — per-machine real-run statistics captured by
+# `pnpm dwt:calibrate record`; accrues across runs, never source. The committed
+# demo lives at packages/smoke/test/fixtures/sample-runs.jsonl instead.
+/toolkit/run-stats/

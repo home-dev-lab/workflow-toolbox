@@ -1,0 +1,23 @@
+{
+  "runId": "wf_synth-retries",
+  "timestamp": "2026-06-08T10:00:00.000Z",
+  "taskId": "synthSR",
+  "script": "// (elided)\nreturn { ok: true }",
+  "scriptPath": "/tmp/elided.js",
+  "result": { "ok": true },
+  "agentCount": 1,
+  "logs": [],
+  "durationMs": 9000,
+  "summary": "SYNTHETIC fixture: agent took 2 attempts (schema retries inferred from SDK contract; attempt>1 never observed on disk)",
+  "workflowName": "synth-schema-retries",
+  "status": "completed",
+  "startTime": 1780740000000,
+  "phases": [{ "title": "Classify" }],
+  "defaultModel": "claude-opus-4-8",
+  "workflowProgress": [
+    { "type": "workflow_phase", "index": 1, "title": "Classify" },
+    { "type": "workflow_agent", "index": 1, "label": "classify:0", "phaseIndex": 1, "phaseTitle": "Classify", "agentId": "a-retry", "model": "claude-opus-4-8", "state": "done", "attempt": 2, "tokens": 5000, "toolCalls": 3, "durationMs": 8000, "lastToolName": "StructuredOutput", "resultPreview": "{\"category\":\"feature\"}" }
+  ],
+  "totalTokens": 5000,
+  "totalToolCalls": 3
+}

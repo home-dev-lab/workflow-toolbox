@@ -1,0 +1,433 @@
+# dwt — Dynamic Workflow Toolkit
+
+## In plain words
+
+Claude Code's Workflow tool lets a plain JavaScript script orchestrate dozens
+of AI agents: the loops and the fan-out are deterministic code, and only the
+leaf `agent()` calls think, each in a fresh context window. Powerful — but
+every raw workflow re-invents the same machinery by hand: fan-out with
+verification, loops with stop conditions, honest accounting of what got
+dropped along the way.
+
+This toolkit is the box of molded bricks for that baseplate: seven tested
+orchestration patterns (classify-and-act, fan-out, adversarial verification,
+tournament, loop-until-done, plan-and-execute…) that snap together with
+ordinary `await` / `if` / `for` in TypeScript. You get type-checked contracts
+at every agent boundary, compositions you can unit-test offline against a
+fake runtime, and a one-command build that compiles a workflow into a single
+self-contained `.js` the Workflow tool runs directly. The committed artifacts
+under `workflows/` need no toolchain at all — point the Workflow tool at one
+and it runs.
+
+The rest of this README is the technical reference.
+
+## What it is
+
+A **compile-time** TypeScript pattern library for Claude Code Dynamic
+Workflows (the `Workflow` tool, currently a research preview). It sits on top
+of the runtime; it never replaces it.
+
+The sandbox bans `import`/`require` and all Node APIs, so the library can only
+reach the runtime as a **build artifact**: each workflow definition compiles
+(esbuild) to one self-contained `.js` with the pattern functions inlined and
+`meta` serialized as the literal first statement. Type safety, tests, and
+contracts all live at compile time. See
+[ADR 0001](../docs/public/adr/0001-compile-time-library.md).
+
+Design principles (sourced in `docs/` ADRs and the Anthropic agent-building
+guidance): simple composable patterns, not a framework; composition is plain
+async TypeScript, never a DSL; the runtime owns durability/concurrency/state,
+pattern code stays pure; schemas at every consumed boundary; every pattern
+documents when **not** to use it.
+
+## Layout
+
+```text
+toolkit/
+├── packages/
+│   ├── runtime/    # @dwt/runtime  — sandbox typings + FakeRuntime (the ONLY
+│   │               #   coupling point to Claude Code; unstable-surface firewall)
+│   ├── patterns/   # @dwt/patterns — the 7 patterns + result envelope
+│   └── build/      # @dwt/build    — defineWorkflow + the `dwt` CLI (build/check)
+├── examples/       # @dwt/examples — 4 teaching workflows (*.workflow.ts; the
+│                   #   monorepo-refactor plan/execute pair is one L3 composition)
+└── workflows/      # committed build artifacts (.js) — the runnable deliverable
+```
+
+Packages export TypeScript source directly (no build step); vitest and esbuild
+consume it natively. Node ≥ 20, pnpm workspace.
+
+```bash
+pnpm install
+pnpm typecheck   # tsc strict, all packages (src AND test)
+pnpm test        # vitest, FakeRuntime-based
+pnpm lint
+```
+
+## Authoring a workflow
+
+A workflow definition is one TypeScript file, default-exporting
+`defineWorkflow`:
+
+```ts
+// my-workflow.workflow.ts  (filename = meta.name, by convention)
+import { defineWorkflow } from '@dwt/build/define'   // ⚠ NOT '@dwt/build' — see below
+import type { WorkflowRuntime } from '@dwt/runtime'
+import { fanOutAndSynthesize } from '@dwt/patterns'
+
+export default defineWorkflow({
+  meta: {
+    name: 'my-workflow',                  // kebab-case, validated at call time
+    description: 'One line, shown in the permission dialog',
+    phases: [{ title: 'Review' }],
+  },
+  // Optional: validate/normalize the (already JSON-decoded) args into typed input.
+  // Throw with an actionable message on bad input — fail fast, before any agent runs.
+  parseInput: (raw): { target: string } => {
+    if (typeof raw?.target !== 'string') {
+      throw new Error('Pass { "target": "<git ref range or change description>" }')
+    }
+    return { target: raw.target }
+  },
+  run: async (rt: WorkflowRuntime, input) => {
+    // Fan independent reviewers out over the input, then synthesize once all
+    // return. (A fuller body — classify → reviewers → adversarial verify →
+    // synthesis — is in examples/pr-review.workflow.ts.)
+    const review = await fanOutAndSynthesize<string>(rt, {
+      tasks: ['correctness', 'security', 'readability'],
+      taskPrompt: (lens) => `Review ${input.target} for ${lens}. List concrete issues.`,
+      synthesisPrompt: (parts) => `Merge these into one verdict:\n${parts.join('\n\n')}`,
+      phase: 'Review',
+    })
+    return { verdict: review.value, warnings: review.warnings, stats: review.stats }
+  },
+})
+```
+
+`defineWorkflow` does exactly three things: build-time `meta`
+extraction/serialization, `args` normalization (string args arrive
+JSON-encoded — the normalizer is a proven necessity) + fail-fast input
+validation, and binding the ambient sandbox globals into the typed `rt`
+parameter ([ADR 0004](../docs/public/adr/0004-explicit-runtime-parameter.md)).
+No lifecycle hooks, no middleware.
+
+> **⚠ Import `defineWorkflow` from `@dwt/build/define`, never `@dwt/build`.**
+> The package root re-exports the bundler (node:vm, esbuild) and breaks the
+> platform-neutral bundle. `dwt build` pre-flights this mistake with an
+> actionable error.
+> [ADR 0005](../docs/public/adr/0005-sandbox-pure-entry-subpath.md).
+
+## Build → check → launch loop
+
+```bash
+# From toolkit/ — paths are relative to the toolkit root.
+
+# Build: TS entry → self-contained .js (default out-dir: workflows/)
+pnpm dwt:build examples/my-workflow.workflow.ts
+
+# Check: standalone sandbox lint of any artifact (meta-first, banned APIs, size)
+pnpm dwt:check workflows/my-workflow.js
+```
+
+Flags pass straight through (`pnpm dwt:build entry.ts --minify`, `-o <dir>`).
+The emitted artifact is byte-deterministic regardless of the invocation cwd —
+module-path comments are anchored to the entry's directory, so rebuilds stay
+diffable against the committed artifacts
+([ADR 0002](../docs/public/adr/0002-commit-built-artifacts.md)).
+
+The build emits readable (unminified) output by default — the artifact is what
+users review in permission dialogs and edit for re-invocation. `--minify` is
+an explicit escape hatch. `dwt build` warns from 400 KB (the cap is 512 KB);
+an oversized
+workflow is usually two workflows with a checkpoint between them.
+
+Launch via the Workflow tool, then **two non-negotiable habits**:
+
+1. **Always check `WorkflowOutput.error`.** A script that fails its syntax
+   check still returns `status: "async_launched"` with `error` set — and never
+   runs. Silence is not success.
+2. **On partial failure, relaunch with `resumeFromRunId`.** Completed
+   `agent()` calls replay from the journal cache (same session); only the
+   missing or failed work re-runs — no redoing finished analysis.
+
+Invocation paths, in order of reliability right after a build:
+
+- `scriptPath: "toolkit/workflows/my-workflow.js"` — always works, no install.
+- `name: "my-workflow"` after copying into `.claude/workflows/` — the registry
+  is keyed by `meta.name` (not the filename — keep them equal), refreshes
+  lazily mid-session, and **silently excludes** files over 512 KB.
+- Plugin-shipped workflows resolve as `plugin-name:workflow-name`.
+
+## The pattern library (L1)
+
+Every pattern takes `rt` plus a typed options object, assigns its agents to a
+caller-provided `phase`, and returns the standard envelope (below). Each
+speaks its own domain language (claims, tasks, angles…) — deliberately not a
+uniform `items` API.
+
+| Pattern | Anthropic mapping | Use when | Do NOT use when |
+|---|---|---|---|
+| `classifyAndAct` | Routing | Distinct input categories handled better separately; classification is reliably accurate | Categories blur, or one prompt handles all inputs — a single agent is simpler |
+| `fanOutAndSynthesize` | Parallelization + synthesis barrier | Independent subtasks; synthesis genuinely needs **all** results | Stages flow per-item — use `rt.pipeline`; or N=1 |
+| `adversarialVerification` | Voting, refute-first | Findings will be acted on and a plausible-but-wrong one is costly | Low-stakes output; or no independent verification method exists |
+| `generateAndFilter` | Generation + evaluator (single pass) | Wide candidate space, cheap generation, clear filter criteria | Criteria can't be articulated — the filter becomes noise |
+| `tournament` | Judge panel + synthesis | Wide solution space; angles genuinely differ | Convergent tasks where attempts would be near-identical |
+| `loopUntilDone` | Evaluator-optimizer / loop-until-dry | Clear evaluation criteria + iteration adds measurable value; unknown-size discovery | No articulable feedback; or a fixed list is known up front (just map it) |
+| `planAndExecute` | Orchestrator-workers | Subtasks can't be predicted up front; a planner decomposes dynamically (its `PlanAndExecuteResult` also exposes the surviving `workerResults`, not just the synthesis) | Subtasks are known — `fanOutAndSynthesize` or `rt.pipeline` is cheaper and more predictable |
+
+The other layers:
+
+- **L0 — runtime primitives** (`rt.agent`, `rt.parallel`, `rt.pipeline`,
+  `rt.phase`, `rt.log`, `rt.budget`, `rt.workflow`): used directly, never
+  wrapped. Prompt chaining is deliberately not a pattern — it's two sequential
+  `await rt.agent(...)` lines.
+- **L2 — compositions** (`examples/`): plain async functions calling several
+  patterns. They are **templates, not library API** — copying and editing one
+  is the intended usage.
+- **L3 — checkpointed compositions (HITL)**: there is no mid-run user input in
+  Dynamic Workflows, so a human gate = a **workflow boundary**. Stage 1
+  returns an artifact; the human approves/prunes it; stage 2 takes it via
+  `args` and **re-validates it** (that re-validation is the point of the
+  checkpoint). See the `monorepo-refactor-plan` / `monorepo-refactor-execute`
+  pair.
+
+## Composition rules
+
+1. In-file composition is the default — patterns compose with plain `await`,
+   `if`, `for`.
+2. **`pipeline` by default between stages; `parallel` only for genuine
+   cross-item needs** (dedup, merge, count-based early-exit). A barrier wastes
+   the fast items' idle time.
+3. **Schema at every consumed boundary** — any agent result a later line reads
+   a field off must carry a `schema`. Free text only when passed whole into
+   another prompt.
+4. Data crosses agent boundaries as prompt text (`JSON.stringify` into the
+   next prompt) — the orchestrator shares no memory with subagents.
+5. `rt.workflow()` nesting is reserved for frozen, independently-owned
+   workflows (one level only); the library never builds compositions that
+   nest.
+6. Every loop has a typed stop condition — `maxIterations`, `dryRounds`, or
+   `budgetFloor`; omission is a compile error.
+7. Parallel **mutating** agents require `isolation: 'worktree'` (expensive —
+   per-agent setup; never for read-only analysis), and mutating compositions
+   sit behind an L3 human checkpoint.
+
+## The result envelope
+
+Every pattern returns:
+
+```ts
+interface PatternResult<T> {
+  value: T            // the pattern's product (see each pattern for its T)
+  stats: {
+    itemsIn: number   // work units received
+    itemsOut: number  // work units surviving
+    agentsSpawned: number
+    dropped: number   // null results (skip/error/budget) — counted, never silent
+    truncated: number // cap-induced omissions — counted, never silent
+  }
+  warnings: string[]  // human-readable coverage caveats (also log()-ed live)
+  trail: TrailRecord[] // audit trail: which agent did what, deterministic order
+}
+
+interface TrailRecord {
+  stage: string            // pattern-qualified step id, e.g. 'planAndExecute:work:3'
+  outcome: 'ok' | 'null'   // 'null' = the agent returned null (skip / error / budget)
+  model?: string           // only set when the pattern passed an explicit model override
+  decision?: string        // typed control value taken at this step (e.g. 'subtasks=5', a
+                           //   verdict enum, a stoppedBy value) — never free prose or payloads
+}
+```
+
+For synthesis-bearing patterns (`planAndExecute`, `fanOutAndSynthesize`,
+`tournament`), `value === null` while `stats.itemsOut > 0` signals a failed
+synthesis stage — the per-item work survived (and `planAndExecute` additionally
+exposes it via `workerResults`).
+
+The `trail` is the **traceability artifact**: a structured, replayable record of
+which agent did what and what was decided — the enterprise audit trail of a run.
+It is **metadata only** — no agent payloads, no timestamps; the array order *is*
+the chronology, built deterministically so a `resumeFromRunId` replay reconstructs
+it identically. `trail` is **required** on every pattern (tsc enforces no
+construction site can omit it). Trail semantics are per-pattern, like `dropped`:
+direct-spawn patterns emit one record per agent (`trail.length === stats.agentsSpawned`),
+whereas `loopUntilDone` spawns no agents itself and instead records loop
+**iterations** (stage `loopUntilDone:tick:<i>`).
+
+No silent caps, ever: every `max*` option reports what it cut. In
+compositions, use the `warn(rt, warnings, msg)` helper only for
+composition-originated warnings (it records **and** live-logs); warnings
+propagated from a pattern's envelope are pushed plain — re-warning would
+double-log.
+
+## Trust no agent's self-report
+
+Agents can die mid-reasoning at their context limit — and their last
+mid-thought text arrives as a normal-looking completion. The examples encode
+four defence layers (see `examples/pr-review.workflow.ts`):
+
+1. **Schema at every consumed boundary** — catches truncation and shape drift.
+2. **Fresh-evidence checker stage** — verifiers re-derive from the actual
+   source (diff, files, commands), never from the worker's summary;
+   refute-first framing kills plausible-but-wrong findings.
+3. **Decomposed agent scopes** — small focused contexts; oversized scopes are
+   the root cause of mid-reasoning death.
+4. **Launch hygiene** — check `WorkflowOutput.error`; resume with
+   `resumeFromRunId` instead of re-running finished work.
+
+## Budgets and model tiering
+
+Budgets are opt-in (the user's `+500k`-style directive); with no target,
+`rt.budget.total` is null and `remaining()` is `Infinity` — guard on
+`budget.total` before any budget-driven loop. `budgetFloor` decides where a
+cut falls: breadth (fewer rounds) rather than integrity (dying
+mid-verification), reported via `stoppedBy` and a coverage warning. A
+floor-stopped run is a **checkpoint, not a loss**: review the partial result,
+relaunch with `resumeFromRunId`.
+
+**Calibrating a floor (`pnpm dwt:calibrate`).** Picking a `budgetFloor` number
+is data-driven, not guesswork. `pnpm dwt:calibrate record` drives a small probe
+workflow through the real runtime and appends one run record (the runtime agent
+count + `rt.budget.spent()` + the completion notification's `usage`) to the
+gitignored `run-stats/runs.jsonl`; `pnpm dwt:calibrate derive` reads the log and
+prints `floor ≈ tokens-per-agent × (expected claims × votes + synthesis) ×
+margin`. The maintainer loop: run real workflows against real codebases, `record`
+after each, and once ~10 have accrued, `derive` and fold the number into the
+guidance here. **Honesty:** the runtime exposes no per-agent token primitive, so
+tokens-per-agent is a cross-run approximation, and the two token signals are kept
+**segregated** — `budget.spent()` is OUTPUT tokens (the metric the floor compares
+against via `remaining()`; it scales with agent count plus a small fixed launch
+overhead) while the notification `total_tokens` is the in+out total (it scales
+linearly with sub-agents — verified 2×agents → 2×tokens). The probe's echo agents
+are cheap, so its tokens-per-agent is a **lower bound**; real opus verifiers cost
+far more, which is exactly why the floor carries a safety margin.
+
+Model tiering: mechanical high-volume leaf work → `'haiku'`; judgment work →
+inherit the session model. Verification quality is model-sensitive — verifier
+downgrades log a warning.
+
+## Auditing a run (`pnpm dwt:report`)
+
+Every Workflow run leaves a structured journal on disk
+(`~/.claude/projects/<project>/<session>/workflows/wf_<runId>.json`).
+`pnpm dwt:report [runId|latest] [--project <slug>] [--out <dir>] [--quiet]`
+turns one journal into a **cost + traceability audit report**: run identity
+(incl. `taskId`), a per-agent cost rollup (model / tokens / tool calls / phase)
+**reconciled** against the run's total token count, the decision trail, and
+best-effort links to each agent's transcript.
+
+The report **always prints to stdout** — the data is never withheld, so the
+session always has it. Setting `$DWT_WORKFLOW_LOG_DIR` (or passing `--out <dir>`)
+**additionally** writes a persistent audit folder
+`<dir>/<runId>/{ report.md, journal.json, transcripts/agent-<id>.jsonl }`
+for enterprise audit trails — off by default, so individuals get zero disk
+side effects.
+
+**Honesty:** transcripts are best-effort — the journal persists, but the
+per-agent `.jsonl` files are pruned by Claude Code's >30-day cleanup, rendered
+as "not captured" rather than implied. The decision trail is sourced from the
+always-present per-agent journal rows, enriched by the result envelope's trail
+when present. And there is **no per-workflow completion hook**: `TaskCompleted`
+fires for the teammate/todo system, not for Workflow background tasks (verified
+empirically), so the report is journal-driven.
+
+**Automatic surfacing at run end** ships as a plugin `Stop` hook
+(`plugin/bin/dwt-stop-hook.mjs`). It detects a finished background workflow by
+diffing the `Stop` payload's `background_tasks[]` across firings, maps the task
+to its journal by `taskId`, and surfaces the report **hybrid-style**: always a
+one-line notice to you, plus — only when the run looks like trouble (failed /
+agent-died / schema-retries) — it grabs the session with a compact report so you
+act on it. Healthy runs stay quiet. The audit folder is still written only when
+`$DWT_WORKFLOW_LOG_DIR` is set, and the hook never breaks the session.
+
+Sibling tool: **`pnpm dwt:debug [runId|latest]`** reads the same journal for the
+other question — not "what did it cost?" but "why did it fail, and will a
+`resumeFromRunId` actually save work?". Reach for `dwt:debug` when a run errored
+or stalled; reach for `dwt:report` when you need the cost + traceability picture
+of any run (success or failure).
+
+## Testing
+
+Patterns and compositions are tested end-to-end against `FakeRuntime`
+(`@dwt/runtime`): scripted deterministic agents via an `onAgent` handler,
+with assertions on spawned-agent calls (`calls`, including per-call `opts`),
+`phases`, `logs`, and envelope stats. The bundler is golden-file tested;
+emitted artifacts are linted by `dwt check`.
+
+## Stability
+
+The Workflow tool is a research preview, and part of its surface
+(`agent()` options, `log`, `budget`, determinism bans, the 512 KB cap) is
+binary-verified rather than documented. All of it is firewalled behind
+`@dwt/runtime` — if a Claude Code update changes the surface, exactly one
+package changes. Re-verify on upgrades with the smoke canary below.
+
+## Smoke test (upgrade canary)
+
+`pnpm smoke` exercises the committed artifacts against the **real** Workflow
+runtime — the check to run before a release and after every Claude Code
+upgrade:
+
+```bash
+# From toolkit/. Runs under your local Claude Code subscription (the TS Agent
+# SDK reuses ~/.claude credentials — no API key in env). NOT part of `pnpm test`.
+pnpm smoke
+```
+
+It has two tiers, both driving the Workflow tool through the
+[TS Agent SDK](https://docs.claude.com/en/api/agent-sdk/typescript) (≥ 0.3.149,
+which is where the Workflow tool ships):
+
+- **Tier 1 — launch canary.** Launches every `workflows/*.js` and asserts the
+  runtime still accepts it (no syntax-check error). Arg-less launches are safe:
+  each workflow's `parseInput` throws before any agent runs.
+- **Tier 2 — round trip.** Launches the dedicated `packages/smoke/dwt-smoke.js`
+  to completion and asserts its `PatternResult` envelope arrived intact.
+
+The message-parsing and verdict logic lives in `@dwt/smoke` and is unit-tested
+in `pnpm test` against real captured SDK messages; only the live runner is held
+out (it spends real agent runs). A non-zero exit means an upgrade moved the
+surface — start firewalling in `@dwt/runtime`.
+
+`pnpm smoke` covers the *positive* path against the bundled runtime. The upgrade
+canary builds on it:
+
+```bash
+pnpm canary          # the matrix: smoke + edge (negative) against BOTH runtimes
+                     # (system + bundled), prints a SUMMARY (per-runtime CC version,
+                     # SDK⇒bundled-CC mapping, latest SDK on npm) and a WHAT CHANGED
+                     # section, then records the per-machine marker. --target narrows.
+pnpm canary:edge     # just the negative checks (cap + meta-order) on the bundled runtime.
+pnpm canary:version  # read-only gate: exit 0 = unchanged since last pass (skip),
+                     # 3 = a signal changed / forced (run), 2 = error.
+```
+
+Two runtimes drive `@dwt` workflows and drift independently: the **system**
+`claude` CLI (auto-updates) and the **bundled** binary inside the Agent SDK
+(moves on `pnpm update`). `pnpm canary` runs the checks against each, reads the
+measured Claude Code version from each run's init message, and diffs the outcome
+against the last run — so a version move, a check flip, or rejection-wording drift
+shows up in **WHAT CHANGED** (which can drive a fix or feature). The negative
+checks catch the regression where an upgrade silently *accepts* an oversized or
+`meta`-disordered script. It does NOT check the `name`-registry-keyed-by-`meta.name`
+behavior (side-effectful, not headlessly checkable, least load-bearing since
+`dwt build` keeps filename == `meta.name`). The **`upgrade-canary` plugin skill**
+is the operator playbook: gate on a version change, run the matrix + `dwt:check`,
+interpret the report. `canary` is the sole writer of the marker; `canary:version`
+only reads it. All live canaries are out of `pnpm test`.
+
+## Decisions
+
+Architecture decision records live in [`docs/public/adr/`](../docs/public/adr/):
+
+- [0001 — Compile-time pattern library, not a runtime framework](../docs/public/adr/0001-compile-time-library.md)
+- [0002 — Commit built workflow artifacts](../docs/public/adr/0002-commit-built-artifacts.md)
+- [0003 — JSON Schema + json-schema-to-ts, not zod](../docs/public/adr/0003-json-schema-over-zod.md)
+- [0004 — Explicit runtime parameter, not ambient globals](../docs/public/adr/0004-explicit-runtime-parameter.md)
+- [0005 — Sandbox-pure entry subpath `@dwt/build/define`](../docs/public/adr/0005-sandbox-pure-entry-subpath.md)
+
+## License
+
+[PolyForm Noncommercial 1.0.0](../LICENSE) — free for any noncommercial
+purpose; commercial use requires a separate license, see
+[COMMERCIAL-LICENSE.md](../COMMERCIAL-LICENSE.md).
