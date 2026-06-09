@@ -23,7 +23,7 @@
 import { parseArgs } from 'node:util'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { bundleWorkflow } from './bundle.js'
 import { lintWorkflowSource } from './lint.js'
 
@@ -177,10 +177,16 @@ Options:
 // Entry point guard — run main() when invoked directly via tsx/node
 // ---------------------------------------------------------------------------
 
-// Normalise: both file: URL and raw path comparisons work across platforms.
+// process.argv[1] can be a bin symlink (e.g. node_modules/.bin/dwt) while
+// import.meta.url resolves to the module's realpath — so compare REALPATHS. A
+// naive URL/path compare silently no-ops when invoked through the installed
+// `dwt` bin symlink (argv[1] = the symlink, import.meta.url = its target). This
+// guard must fire for `tsx src/cli.ts`, `node dist/cli.js`, AND the bin symlink.
 const isMain = (() => {
   try {
-    return import.meta.url === pathToFileURL(process.argv[1] ?? '').href
+    const argvPath = process.argv[1]
+    if (!argvPath) return false
+    return fs.realpathSync(fileURLToPath(import.meta.url)) === fs.realpathSync(argvPath)
   } catch {
     return false
   }

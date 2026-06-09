@@ -163,4 +163,40 @@ describe('cli — spawn test via tsx', () => {
     })
     expect(fs.existsSync(path.join(outDir, 'dwt-fixture-hello.js'))).toBe(true)
   }, 90_000) // generous timeout for cold pnpm+tsx start
+
+  // Regression: the published package exposes cli.ts as the `dwt` bin, which npm
+  // installs as a SYMLINK (node_modules/.bin/dwt → dist/cli.js). Node sets
+  // process.argv[1] to the symlink path but resolves import.meta.url to the
+  // target's realpath, so a naive URL-equality entry guard silently no-ops and
+  // `dwt build` produces nothing (caught by the consumer smoke test, never by the
+  // in-repo `tsx src/cli.ts` path which is invoked directly). This invokes the CLI
+  // through a symlink to reproduce that argv[1]≠import.meta.url condition.
+  it('runs main() when invoked through a symlink (bin-symlink entry-guard regression)', async () => {
+    const outDir = makeTmpDir()
+    const linkDir = makeTmpDir()
+    const link = path.join(linkDir, 'dwt-link.ts')
+    fs.symlinkSync(path.join(PACKAGE_ROOT, 'src', 'cli.ts'), link)
+    await new Promise<void>((resolve, reject) => {
+      const proc = cp.execFile(
+        'pnpm',
+        [
+          'exec', 'tsx', link,
+          'build', path.join(FIXTURES, 'hello.workflow.ts'),
+          '--out-dir', outDir,
+        ],
+        { cwd: PACKAGE_ROOT, timeout: 60_000 },
+        (err, stdout, stderr) => {
+          if (err) {
+            reject(new Error(`spawn failed (exit ${err.code ?? '?'}):\nSTDOUT: ${stdout}\nSTDERR: ${stderr}`))
+          } else {
+            resolve()
+          }
+        },
+      )
+      proc.stdout?.on('data', () => { /* captured above */ })
+      proc.stderr?.on('data', () => { /* captured above */ })
+    })
+    // With the old URL-equality guard, the symlink invocation no-ops → file absent.
+    expect(fs.existsSync(path.join(outDir, 'dwt-fixture-hello.js'))).toBe(true)
+  }, 90_000)
 })
