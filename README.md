@@ -383,6 +383,15 @@ A few terms recur across these docs:
 - [docs/public/adr/](docs/public/adr/) — the five architecture decision
   records.
 
+## Privacy & security
+
+This plugin collects no user data, has no telemetry, and transmits nothing about
+you or your conversations. Everything runs locally against files Claude Code
+already writes; the only outbound connection is the `upgrade-canary`'s
+best-effort fetch of the public Claude Code changelog. See [PRIVACY.md](PRIVACY.md)
+for the per-component breakdown and [SECURITY.md](SECURITY.md) to report a
+vulnerability.
+
 ## License
 
 [PolyForm Noncommercial 1.0.0](LICENSE): free to use, modify, and share for
