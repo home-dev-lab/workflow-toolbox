@@ -198,7 +198,7 @@ Four layers. Lower layers are never wrapped, only used.
 | `loopUntilDone` | Evaluator-optimizer / loop-until-dry | Clear evaluation criteria + iterative refinement adds measurable value [BEA]; or unknown-size discovery | No articulable feedback; or a fixed list is known up front (just map it) |
 | `planAndExecute` | Orchestrator-workers | Subtasks can't be predicted up front; a planner agent decomposes dynamically [BEA] | Subtasks are known — use `fanOutAndSynthesize` or `rt.pipeline` directly (cheaper, more predictable) |
 
-Every pattern: takes `rt` + a typed options object (prompts as data, items, schemas, caps, model tiering) and returns the standard envelope (§7). All but one assign their agents to a caller-provided `phase` — the exception is `loopUntilDone`, which spawns no agents of its own and has no `phase` option (call `rt.phase()` before it; its trail records loop iterations).
+Every pattern: takes `rt` + a typed options object (prompts as data, items, schemas, caps, model tiering) and returns the standard envelope (§7). All but one assign their agents to a caller-provided `phase` — the exception is `loopUntilDone`, which has no `phase` option (call `rt.phase()` before it); it spawns no agents itself but counts the body's `agent()` calls, made through the `rt` the body receives (including via `rt.parallel`/`rt.pipeline` thunks), into `stats.agentsSpawned`, while its trail stays per-iteration (`trail.length === iterations`, so `trail.length !== agentsSpawned` for this pattern).
 
 ### L2 — Compositions
 

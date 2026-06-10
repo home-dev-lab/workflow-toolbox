@@ -266,9 +266,11 @@ the type system can't fully prevent and the pattern guards at runtime: if
 `budgetFloor` is the *only* stop condition **and no budget target is set**
 (`budget.total` is effectively `Infinity`), the floor is inert and the loop is
 unbounded — the pattern throws with an actionable message. Set a budget target,
-or add `maxIterations`/`dryRounds`. This pattern spawns no agents of its own;
-its trail records loop **iterations**, and any agents the body calls belong to
-the caller's budget.
+or add `maxIterations`/`dryRounds`. This pattern spawns no agents directly, but
+it counts the body's `agent()` calls — made through the `rt` the body receives,
+including via `rt.parallel`/`rt.pipeline` thunks — into `stats.agentsSpawned`;
+its trail stays per-**iteration** (`trail.length === iterations`, not
+`agentsSpawned`), and the body's agents still draw on the caller's budget.
 
 ---
 
