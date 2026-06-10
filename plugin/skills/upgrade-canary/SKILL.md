@@ -32,11 +32,14 @@ It is **version-triggered, not scheduled**. Claude Code updates almost daily; th
 canary first asks "did the runtime change since it last passed?" and only does the
 expensive work when the answer is yes (or you pass `--force`).
 
-> **Maintainer scope.** Every command below runs from this repo's `toolkit/`
+> **Maintainer tool.** Every command below runs from this repo's `toolkit/`
 > directory and drives the real runtime via the Agent SDK under your local Claude
-> Code subscription (the SDK reuses `~/.claude` credentials — no API key). It is
-> not runnable from an end-user plugin install, which ships only the built
-> artifacts, not `toolkit/`. If `toolkit/` is absent, say so and stop.
+> Code subscription (the SDK reuses `~/.claude` credentials — no API key). The
+> canary harness lives in `@workflow-toolbox/smoke`, a **private** workspace
+> package that is not published to npm — so unlike `workflow-toolbox scaffold/build/check/
+> debug/report`, this skill is **not expected to run from a consumer project**.
+> It is not runnable from an end-user plugin install either, which ships only the
+> built artifacts, not `toolkit/`. If `toolkit/` is absent, say so and stop.
 
 ## The two runtimes
 
@@ -60,10 +63,10 @@ Code version, so you see exactly which runtime any breakage or change belongs to
 - **edge** (negative): launches deliberately-invalid scripts and asserts the
   runtime still **rejects** them — (a) over the 512 KB cap, (b) a statement before
   `meta`. If an upgrade silently ACCEPTS one, that is the regression this catches.
-- **dwt:check** (static): lints the committed artifacts (integrity, not runtime).
+- **wt:check** (static): lints the committed artifacts (integrity, not runtime).
 
 **Known gap (state it):** the `name`-registry-keyed-by-`meta.name` behavior is NOT
-canaried (side-effectful, not headlessly checkable, and least load-bearing — `dwt
+canaried (side-effectful, not headlessly checkable, and least load-bearing — `workflow-toolbox
 build` keeps filename == `meta.name`). Check it by hand if needed.
 
 ## Steps
@@ -87,7 +90,7 @@ when both signals are unchanged AND the last run passed.
 
 ```bash
 pnpm canary                              # both runtimes; --target system|bundled to narrow
-for f in workflows/*.js; do pnpm dwt:check "$f" || echo "FAIL $f"; done
+for f in workflows/*.js; do pnpm wt:check "$f" || echo "FAIL $f"; done
 ```
 
 `pnpm canary` runs smoke + edge against each target, prints a SUMMARY (per-target
@@ -118,8 +121,8 @@ the run and may drive work:
   worth adding (a feature).
 - **`newer SDK available`** in the SUMMARY → `pnpm update @anthropic-ai/claude-agent-sdk`
   to pull the newer SDK + its bundled runtime, then re-run `pnpm canary` to test it.
-- A **`dwt:check`** failure → a committed artifact drifted from source; rebuild with
-  `pnpm dwt:build` and re-check byte-determinism.
+- A **`wt:check`** failure → a committed artifact drifted from source; rebuild with
+  `pnpm wt:build` and re-check byte-determinism.
 
 Cross-read the **WHAT THE CHANGELOG DOCUMENTS** section against the deltas above: it
 lists what Anthropic's official changelog records for the `(last-verified, current]`

@@ -7,18 +7,18 @@ description: >-
   a new workflow", "generate a workflow skeleton", "set up a .workflow.ts", "wire these
   patterns together", or "use the toolkit to build a workflow". Given a plain job
   description, pick the patterns (from the L1 use/don't-use table), write a small JSON
-  spec, run `dwt:scaffold`, then fill in the placeholder prompts/data and build + check.
+  spec, run `workflow-toolbox scaffold`, then fill in the placeholder prompts/data and build + check.
   Out of scope: deep one-off authoring guidance (that is the broader workflow-composer
   skill), diagnosing a failed RUN (workflow-debugger), and re-verifying the runtime after
   a Claude Code upgrade (upgrade-canary).
-argument-hint: "<spec.json> [--out-dir <dir>] [--stdout] [--force]"
+argument-hint: "<spec.json> [--out-dir <dir>] [--stdout] [--force] [--no-tsconfig]"
 ---
 
 # Toolkit scaffold — a job description → a build-clean `.workflow.ts`
 
 The toolkit exists to kill one failure mode: hand-rolling the `defineWorkflow` wrapper,
 the imports, the `meta`, and each pattern call from scratch every time — re-deriving the
-boilerplate by hand. `dwt:scaffold` turns a small structured spec into a **complete,
+boilerplate by hand. `workflow-toolbox scaffold` turns a small structured spec into a **complete,
 build-clean** workflow skeleton that compiles, builds, and passes the linter **as-is** —
 a working starting point you then customize.
 
@@ -62,24 +62,50 @@ Steps run in spec order. Repeating a `phase` across steps groups them under one 
 
 ## Run it
 
-```bash
-cd toolkit
+Works in **any** project — make sure the published toolkit trio is installed, then
+drive the `workflow-toolbox` CLI:
 
-# 1) scaffold the skeleton. Write it into a workspace package that depends on
-#    @workflow-toolbox/build and @workflow-toolbox/patterns — `examples/` is the natural home (your own
-#    package works too). esbuild resolves the @workflow-toolbox imports from the file's location,
-#    so a loose file outside such a package will NOT build.
-pnpm dwt:scaffold path/to/spec.json --out-dir examples
+```bash
+# 0) one-time setup: the toolkit packages, from npm
+pnpm add -D @workflow-toolbox/runtime @workflow-toolbox/patterns @workflow-toolbox/build
+
+# 1) scaffold the skeleton into the current directory
+npx workflow-toolbox scaffold path/to/spec.json --out-dir .
 #    (or --stdout to preview without writing)
 
-# 2) build it to a self-contained .js artifact, then lint that artifact:
-pnpm dwt:build examples/<name>.workflow.ts
-pnpm dwt:check workflows/<name>.js
+# 2) build it — typechecked — to a self-contained .js artifact, then lint that artifact:
+npx workflow-toolbox build <name>.workflow.ts --typecheck
+npx workflow-toolbox check workflows/<name>.js
 ```
+
+In a pnpm-managed project, `pnpm exec workflow-toolbox …` is the equivalent of `npx workflow-toolbox …`.
+
+Scaffold into a directory where the `@workflow-toolbox` imports resolve — normally the
+project root where you just installed the trio. esbuild resolves the imports from the
+scaffolded file's location, so a loose file outside such a project will NOT build.
+
+What `workflow-toolbox scaffold` writes:
+
+- **`<name>.workflow.ts`** — the skeleton (refuses to overwrite an existing file
+  unless `--force`).
+- **`tsconfig.json`** — a minimal config (`moduleResolution: "bundler"`), written
+  **only when the target dir has none**; it never overwrites an existing one. Pass
+  `--no-tsconfig` to opt out. It exists so the `--typecheck` step (and your editor)
+  work out of the box; the CLI prints the `npx workflow-toolbox build <file> --typecheck` next step.
+
+Prefer `--typecheck` over a bare build: esbuild strips types without checking them, so
+a plausible-but-wrong option name would otherwise ship silently and only fail at
+runtime, inside the sandbox. `--typecheck` uses your project's **own** `typescript`
+install (it warns and continues if typescript isn't installed).
 
 The freshly scaffolded skeleton builds + checks green **before** you edit it — proof the
 wiring is sound. A representative all-seven-patterns skeleton bundles to ~40 KB (well under
 the 512 KB sandbox cap).
+
+> **Maintainer note (this repo).** Inside the toolkit workspace the same loop runs as
+> `cd toolkit && pnpm wt:scaffold path/to/spec.json --out-dir examples`, then
+> `pnpm wt:build examples/<name>.workflow.ts` and `pnpm wt:check workflows/<name>.js`
+> — `examples/` is the natural home because it already depends on the workspace packages.
 
 ## It is a STARTING POINT, not a finished workflow
 
@@ -96,14 +122,17 @@ compiles and builds immediately. It is not yet useful — you must:
 
 ## How it works (for maintenance)
 
-The logic is a tested package in the toolkit; there is no bundled plugin artifact (a
-scaffold output is only usable inside the toolkit that builds it, so the tool lives there).
+The logic is a tested private package in the toolkit; there is no bundled plugin
+artifact — instead the published `@workflow-toolbox/build` package inlines it into the
+`workflow-toolbox` CLI, which is how `workflow-toolbox scaffold` works off-repo with no extra install.
 
 - `@workflow-toolbox/scaffold` `scaffold.ts` — the pure `scaffoldWorkflow(spec)` emitter + `PATTERN_NAMES`
   and the `ScaffoldSpec`/`ScaffoldStep` types. Deterministic (same spec → byte-identical
   output); throws an actionable error on an invalid spec. Unit-tested.
 - `cli.ts` — impure: reads the JSON spec, narrows its shape, writes `<name>.workflow.ts`.
   Held out of `pnpm test` (the @workflow-toolbox/smoke + @workflow-toolbox/debugger convention); still typechecked.
+  The published `workflow-toolbox scaffold` subcommand (in `@workflow-toolbox/build`) wraps the same
+  pure emitter and adds the tsconfig emission.
 - The committed **all-patterns golden fixture** is typechecked by `pnpm typecheck` and
   linted by `pnpm lint`, so the guarantee "every emitted skeleton compiles and is lint-clean"
   is enforced by the normal gates, not just asserted.

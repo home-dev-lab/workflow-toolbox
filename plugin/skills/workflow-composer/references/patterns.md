@@ -62,7 +62,7 @@ const results = await pipeline(
 The classify agent's schema must `enum`-constrain `category` to the known set,
 so the router can never branch on a category that has no handler.
 
-**Toolkit:** `classifyAndAct({ items, categories, classifyPrompt, actions })` —
+**Toolkit:** `classifyAndAct(rt, { items, categories, classifyPrompt, actions })` —
 the `categories` enum is built into the classifier's schema, and a missing
 handler is a config error caught before any agent runs.
 
@@ -90,7 +90,7 @@ const summary = await agent(
 The barrier is the whole point: synthesis cannot start until every section is
 in hand. If it could start early, you wanted a pipeline.
 
-**Toolkit:** `fanOutAndSynthesize({ tasks, synthesisPrompt, ... })`. When every
+**Toolkit:** `fanOutAndSynthesize(rt, { tasks, synthesisPrompt, ... })`. When every
 section fails, synthesis is not spawned and `value` is `null`; when synthesis
 itself fails, `value` is `null` while `stats.itemsOut > 0` records that the
 per-section work survived.
@@ -118,6 +118,7 @@ const votes = (await parallel(
       `re-derive from the source, not from any prior summary. Claim: ${claim}`,
       { schema: VERDICT_SCHEMA },
     ),
+  ),
 )).filter(Boolean)
 
 let verdict
@@ -132,9 +133,10 @@ failed) is **kept and flagged**, never silently dropped — failure is distinct
 from refutation; and verifiers re-derive from fresh evidence, not from the
 claim's author.
 
-**Toolkit:** `adversarialVerification({ claims, renderClaim, votes, refuteThreshold, lenses })`.
-The default model is `opus` (verification quality is model-sensitive; a
-downgrade warns), and optional `lenses` give one distinct angle per vote
+**Toolkit:** `adversarialVerification(rt, { claims, renderClaim, votes, refuteThreshold, lenses })`.
+The default model is `BEST_MODEL` (`'fable'`, exported by
+`@workflow-toolbox/runtime`) — verification quality is model-sensitive, and
+explicitly passing a weaker model warns. Optional `lenses` give one distinct angle per vote
 (e.g. `['correctness', 'security', 'does-it-reproduce']`) so a claim that fails
 in more than one way is caught.
 
@@ -150,6 +152,7 @@ articulate a clear filter criterion.
 const candidates = (await parallel(
   Array.from({ length: n }, (_, i) => () =>
     agent(`Produce candidate #${i} for: ${goal}`, { schema: CANDIDATE_SCHEMA }),
+  ),
 )).filter(Boolean)
 
 const kept = []
@@ -166,7 +169,7 @@ Vary the candidates by an **index-derived** angle (the sandbox bans
 `Math.random()` and `Date.now()`); determinism comes from the loop index, not a
 random seed.
 
-**Toolkit:** `generateAndFilter({ ... })` — one evaluator pass, dropped
+**Toolkit:** `generateAndFilter(rt, { ... })` — one evaluator pass, dropped
 candidates counted.
 
 ---
@@ -203,7 +206,7 @@ const winner = await agent(
 The ranked list reaches synthesis winner-first, so it can build on the winner
 while runners-up stay available for comparison.
 
-**Toolkit:** `tournament({ angles, attemptPrompt, judgePrompt, synthesisPrompt, judgeCount })`.
+**Toolkit:** `tournament(rt, { angles, attemptPrompt, judgePrompt, synthesisPrompt, judgeCount })`.
 
 ---
 
@@ -232,7 +235,7 @@ for (let i = 0; i < maxIterations; i++) {        // hard ceiling
 }
 ```
 
-**Toolkit:** `loopUntilDone({ initial, body, maxIterations?, dryRounds?, budgetFloor? })`
+**Toolkit:** `loopUntilDone(rt, { initial, body, maxIterations?, dryRounds?, budgetFloor? })`
 with **typed** stop conditions — at least one of the three is required.
 `budgetFloor` stops when remaining budget drops to the floor. There is one trap
 the type system can't fully prevent and the pattern guards at runtime: if
@@ -269,7 +272,7 @@ const synthesis = await agent(
 )
 ```
 
-**Toolkit:** `planAndExecute({ planPrompt, workerPrompt, synthesisPrompt, maxSubtasks? })`.
+**Toolkit:** `planAndExecute(rt, { planPrompt, workerPrompt, synthesisPrompt, maxSubtasks? })`.
 Its result exposes the surviving `workerResults` alongside the synthesis — so a
 failed synthesis (`value === null` with `itemsOut > 0`) does not lose the
 per-worker work.

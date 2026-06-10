@@ -164,7 +164,7 @@ Spawns one fresh-context subagent.
 | Option | Marker | Meaning |
 |---|---|---|
 | `schema` | [observed] | JSON Schema. Forces structured output; see below. |
-| `model` | [verified] | Per-agent model alias (`'haiku'`/`'sonnet'`/`'opus'`/`'inherit'`) or a full model ID. Omit to inherit the session model. No validation — a typo is passed through and fails later. |
+| `model` | [verified] | Per-agent model alias (`'haiku'`/`'sonnet'`/`'opus'`/`'fable'`/`'inherit'`) or a full model ID. Omit to inherit the session model. No validation — a typo is passed through and fails later. |
 | `label` | [verified] | Display name shown in `/workflows`. Not part of the resume cache key. |
 | `phase` | [verified] | Assign this call to a named progress group, overriding the current `phase()` for this call only — useful inside `pipeline()`/`parallel()` stages, where the global phase state would race. |
 | `agentType` | [verified] | Run as a registered subagent type instead of the default workflow subagent. |
@@ -330,3 +330,7 @@ node scripts/validate-workflow.mjs <path-to-workflow.js>
 It checks the 512 KB size limit, the `meta`-first / pure-literal rule, and the
 banned non-deterministic calls. Exit 0 = clean (warnings allowed); exit 1 =
 errors found. [verified]
+
+In a project with the `@workflow-toolbox` packages installed, `npx workflow-toolbox check
+<artifact.js>` runs the same rules (maintainers in the toolbox repo use the
+`pnpm wt:check` script equivalent).

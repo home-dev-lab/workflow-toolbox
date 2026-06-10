@@ -29,8 +29,10 @@ reading material that shows the library form of a workflow:
 - `doc-rewrite.workflow.ts` — generate-and-filter doc rewrites.
 
 These `.ts` files are **not directly runnable** as raw workflows. They are
-built into `.js` artifacts with `pnpm dwt:build` from the toolkit workspace —
-see `toolkit/README.md` at the repo root.
+built into `.js` artifacts with `npx workflow-toolbox build <entry>.workflow.ts --typecheck`
+(the `workflow-toolbox` CLI ships in `@workflow-toolbox/build`; in the toolkit workspace the
+maintainer equivalent is `pnpm wt:build`) — see `toolkit/README.md` at the
+repo root.
 
 ## Techniques worth copying from the raw examples
 

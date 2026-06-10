@@ -67,9 +67,10 @@ determinism, or scale; absent all three, skip it.
 ## The toolkit path (repeatable workflows)
 
 If the workflow will be **kept, re-run, and maintained** — not a one-off — do not
-hand-write the orchestration. This repository ships a compile-time TypeScript pattern
-library, the **`@workflow-toolbox` toolkit**, at `toolkit/` (a sibling of this plugin's directory
-in the repo / marketplace clone). It packages the seven orchestration patterns as
+hand-write the orchestration. The **`@workflow-toolbox` toolkit** is a compile-time
+TypeScript pattern library, published to npm as `@workflow-toolbox/{runtime,patterns,build}`
+(its source lives at `toolkit/` in this plugin's repo / marketplace clone). It packages
+the seven orchestration patterns as
 typed, tested functions and compiles each workflow into a self-contained `.js`
 artifact:
 
@@ -112,7 +113,7 @@ hooks, no middleware.
 
 > **⚠ Import `defineWorkflow` from `@workflow-toolbox/build/define`, never `@workflow-toolbox/build`.** The
 > package root re-exports the bundler (node:vm, esbuild) and drags Node-only code into
-> the sandbox bundle. `dwt build` pre-flights this mistake with an actionable error.
+> the sandbox bundle. `workflow-toolbox build` pre-flights this mistake with an actionable error.
 > Patterns come from `@workflow-toolbox/patterns`; types from `@workflow-toolbox/runtime`.
 
 ### Composition rules
@@ -134,17 +135,30 @@ These are the rules the library follows; follow them in your own `run` body:
 
 ### Build → check → launch
 
-Run from `toolkit/`; paths are toolkit-relative, default out-dir is `workflows/`:
+Run from your project root, with the toolkit trio installed
+(`pnpm add -D @workflow-toolbox/runtime @workflow-toolbox/patterns @workflow-toolbox/build`);
+the default out-dir is `workflows/`:
 
 ```bash
-pnpm dwt:build examples/my-workflow.workflow.ts   # TS entry → self-contained .js
-pnpm dwt:check workflows/my-workflow.js           # sandbox lint of the artifact
+npx workflow-toolbox build my-workflow.workflow.ts --typecheck   # typecheck, then TS entry → self-contained .js
+npx workflow-toolbox check workflows/my-workflow.js              # sandbox lint of the artifact
 ```
+
+(`pnpm exec workflow-toolbox …` is the equivalent of `npx workflow-toolbox …` in pnpm-managed projects.)
+
+Always pass **`--typecheck`**: esbuild strips types without checking them, so a
+plausible-but-wrong option name would otherwise ship silently and only fail at runtime,
+inside the sandbox. `--typecheck` runs your project's **own** `typescript` first (it
+warns and continues if typescript isn't installed).
+
+> **Maintainer note (this repo):** from `toolkit/`, the same loop is
+> `pnpm wt:build examples/my-workflow.workflow.ts` +
+> `pnpm wt:check workflows/my-workflow.js`.
 
 The artifact is named **`<meta.name>.js`** — after the workflow's `meta.name`, not
 the entry filename. Keep the two identical to avoid surprises. The build emits
 readable (unminified) output by default — the artifact is what users review in the
-permission dialog and edit for re-invocation. `dwt build` warns from 400 KB (cap is
+permission dialog and edit for re-invocation. `workflow-toolbox build` warns from 400 KB (cap is
 512 KB); an oversized workflow is usually two workflows with a checkpoint between
 them.
 
@@ -160,7 +174,7 @@ sources committed for study at `assets/examples/toolkit/`:
   behind isolation.
 - `doc-rewrite.workflow.ts` — generate-and-filter doc rewrites.
 
-These `.ts` sources are **reading material** — they are built with `pnpm dwt:build`,
+These `.ts` sources are **reading material** — they are built with `npx workflow-toolbox build`,
 not run directly as raw workflows. Their committed artifacts live under
 `toolkit/workflows/` (e.g. `toolkit/workflows/pr-review.js`) and run via
 `Workflow({ scriptPath: '…/pr-review.js' })`.

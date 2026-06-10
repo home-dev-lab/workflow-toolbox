@@ -13,7 +13,7 @@ description: >-
   scope: AUTHORING or restructuring a workflow script (that is the workflow-composer
   skill) and checking whether a Claude Code upgrade changed the runtime surface (that
   is the upgrade-canary skill).
-argument-hint: "[runId|latest] [--json]"
+argument-hint: "[runId|latest|<journal-path>] [--json] [--project <slug>]"
 ---
 
 # Workflow debugger — diagnose a Workflow run from its journal
@@ -37,18 +37,39 @@ skill reads it, says **what went wrong**, and decides **whether `resumeFromRunId
 ## Run it
 
 ```bash
-# maintainer (this repo's dev tree):
-cd toolkit && pnpm dwt:debug <runId|latest> [--json]
+# primary (plugin install — the bundled, zero-dependency CLI; nothing to install):
+node "${CLAUDE_PLUGIN_ROOT}/bin/wt-debug.mjs" [runId|latest|<journal-path>] [--json] [--project <slug>]
 
-# end user (plugin install — the bundled, zero-dependency CLI):
-node "${CLAUDE_PLUGIN_ROOT}/bin/dwt-debug.mjs" <runId|latest> [--json]
+# npm alternative (any project with @workflow-toolbox/build installed) — and the
+# only path for the audit REPORT, which the bundled bin does not do:
+npx workflow-toolbox debug  [runId|latest|<journal-path>] [--json] [--project <slug>]
+npx workflow-toolbox report [runId|latest|<journal-path>] [--project <slug>] [--out <dir>] [--quiet]
 ```
+
+(`pnpm exec workflow-toolbox …` is the equivalent of `npx workflow-toolbox …` in pnpm-managed projects.)
 
 - `<runId>` is the `wf_<id>` from the launch result (the `wf_` prefix is optional).
 - `latest` (or no argument) diagnoses the newest run in the current project.
+- A literal **journal path** (`…/workflows/wf_<runId>.json` — exactly what error
+  messages print) is also accepted as the positional, bypassing project discovery.
 - `--json` emits the raw `Diagnosis` for scripting; default is a readable report.
 - Run it **from the directory the workflow ran in** (the journal is keyed by that cwd),
-  or pass `--project <slug>` to point at a different `~/.claude/projects/<slug>`.
+  or pass `--project <slug>` to point at a different `~/.claude/projects/<slug>`. Both
+  `--project <slug>` and `--project=<slug>` work, **including the leading-dash slugs**
+  Claude project dirs always use (e.g. `--project -home-me-my-repo`). The CLIs print a
+  `[project dir: …]` line saying which project directory was actually scanned — check
+  it whenever `latest` finds a surprising run.
+
+> **⚠ Post-mortem only (current Claude Code).** The `wf_<runId>.json` journal only
+> materializes when the run **completes** — observed live on CC 2.1.170: mid-run the
+> session's `workflows/` dir has no journal yet, only an incremental `journal.jsonl`
+> plus the per-agent transcripts. A **live or hung run therefore cannot be diagnosed
+> here** — wait for it to finish (or abort it via the web UI / `/workflows`), then
+> diagnose. The `in-progress` verdict below only appears for a journal written without
+> a terminal status, not for a healthy still-running run.
+
+> **Maintainer note (this repo):** from `toolkit/`, the same commands run as
+> `pnpm wt:debug …` and `pnpm wt:report …`.
 
 ## The failure modes (one primary per run, total + mutually exclusive)
 
@@ -104,17 +125,17 @@ The logic is a tested package in the toolkit; the plugin ships only the bundled 
 - `format.ts` — the pure text report. Unit-tested.
 - `source.ts` — impure journal resolution (filters `wf_*` before the mtime sort so a sibling
   `agent-*.meta.json` never wins "latest"). Held out of `pnpm test`.
-- `cli.ts` — the entry esbuild bundles into `plugin/bin/dwt-debug.mjs` (node ESM, zero npm
+- `cli.ts` — the entry esbuild bundles into `plugin/bin/wt-debug.mjs` (node ESM, zero npm
   deps). `pnpm debugger:build` re-freezes it byte-identically into both `toolkit/bin/` and
   `plugin/bin/`; a byte-identity test guards against drift.
 
 Related: **workflow-composer** authors/repairs the script itself; **upgrade-canary** checks
-whether a Claude Code upgrade moved the runtime surface this debugger reads. **`pnpm dwt:report
-[runId|latest]`** is the sibling read of the same journal for a different question — not "why
+whether a Claude Code upgrade moved the runtime surface this debugger reads. **`npx workflow-toolbox report
+[runId|latest|<journal-path>]`** is the sibling read of the same journal for a different question — not "why
 did it fail?" but "what did it cost, what did it decide, where are the transcripts?": a per-agent
 token rollup (reconciled to the run total), a per-agent **token breakdown** (input / output /
 cache-read / cache-write, read from each agent's transcript), the decision trail, and best-effort
-transcript links. When a run *has* agents (e.g. an `agent-died` you are diagnosing), `dwt:report`
+transcript links. When a run *has* agents (e.g. an `agent-died` you are diagnosing), `workflow-toolbox report`
 is where you drill into that agent's cost and open its transcript. The breakdown is a separate
 section from the journal cost rollup — the transcript sum (per-turn billed tokens) and the journal
 `tokens` aggregate are different measures and are not reconciled.
