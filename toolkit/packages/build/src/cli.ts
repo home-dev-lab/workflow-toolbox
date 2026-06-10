@@ -312,7 +312,6 @@ async function runDebug(argv: string[]): Promise<void> {
       formatDiagnosis(diagnosis, {
         journalPath: resolved.path,
         sessionId: resolved.sessionId,
-        reportCommand: 'npx workflow-toolbox report',
         ...(project !== undefined && { project }),
       }) + '\n',
     )

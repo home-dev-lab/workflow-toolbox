@@ -27,6 +27,7 @@ export type DiagnosisMode =
 export type FindingKind =
   | 'dead-agent'
   | 'schema-retry'
+  | 'schema-hint'
   | 'budget-hint'
   | 'launch-failure'
   | 'zombie-hint'
@@ -65,9 +66,15 @@ export interface Diagnosis {
   stats: DiagnosisStats
 }
 
-// Unobserved free-text signal — used ONLY to attach an advisory Finding, never to pick
-// a primary mode. Broad on purpose (informational); a miss degrades to plain script-throw.
+// Free-text signals — used ONLY to attach an advisory Finding, never to pick a primary
+// mode; a miss degrades to plain script-throw. BUDGET_HINT is broad on purpose
+// (unobserved wording). SCHEMA_THROW_HINT matches the OBSERVED CC 2.1.170 signature:
+// an unsatisfiable schema never yields attempt>1 — the runtime nudges the SAME agent
+// conversation, then agent() throws "agent({schema}): subagent completed without
+// calling StructuredOutput (after N in-conversation nudges)" while the journal records
+// the failing agent as done/attempt:1 (so the schema-retries verdict cannot fire).
 const BUDGET_HINT = /budget|token target|\bfloor\b|remaining|exhaust/i
+const SCHEMA_THROW_HINT = /without calling StructuredOutput/i
 
 export function diagnoseRun(j: WorkflowJournal): Diagnosis {
   const done = doneAgents(j)
@@ -119,6 +126,15 @@ export function diagnoseRun(j: WorkflowJournal): Diagnosis {
         kind: 'budget-hint',
         detail:
           'error text may indicate budget-floor exhaustion; if so, resume with a higher (or no) token target.',
+      })
+    }
+    if (j.error && SCHEMA_THROW_HINT.test(j.error)) {
+      findings.push({
+        kind: 'schema-hint',
+        detail:
+          'an agent({schema}) call threw because the subagent never produced a valid StructuredOutput — ' +
+          'usually an unsatisfiable or over-strict schema. The journal records that agent as done/attempt:1, ' +
+          'so its cache holds no usable result: fix the schema and re-run rather than resuming.',
       })
     }
     // A dead agent is the actionable cause; the script throw is its symptom (precedence).

@@ -155,6 +155,7 @@ function findJournal(runId, opts = {}) {
 
 // packages/debugger/src/diagnose.ts
 var BUDGET_HINT = /budget|token target|\bfloor\b|remaining|exhaust/i;
+var SCHEMA_THROW_HINT = /without calling StructuredOutput/i;
 function diagnoseRun(j) {
   const done = doneAgents(j);
   const incomplete = incompleteAgents(j);
@@ -200,6 +201,12 @@ function diagnoseRun(j) {
       findings.push({
         kind: "budget-hint",
         detail: "error text may indicate budget-floor exhaustion; if so, resume with a higher (or no) token target."
+      });
+    }
+    if (j.error && SCHEMA_THROW_HINT.test(j.error)) {
+      findings.push({
+        kind: "schema-hint",
+        detail: "an agent({schema}) call threw because the subagent never produced a valid StructuredOutput \u2014 usually an unsatisfiable or over-strict schema. The journal records that agent as done/attempt:1, so its cache holds no usable result: fix the schema and re-run rather than resuming."
       });
     }
     if (incomplete.length > 0) {
@@ -309,7 +316,7 @@ function formatDiagnosis(d, ctx = {}) {
     lines.push(`  ${d.resume.rationale}`);
   }
   if (s.doneAgents + s.incompleteAgents > 0) {
-    const reportCommand = ctx.reportCommand ?? "pnpm wt:report";
+    const reportCommand = ctx.reportCommand ?? "npx workflow-toolbox report";
     const projectArg = ctx.project ? ` --project=${ctx.project}` : "";
     lines.push("");
     lines.push(`for per-agent cost + transcripts: ${reportCommand} ${s.runId}${projectArg}`);

@@ -140,6 +140,14 @@ explicitly passing a weaker model warns. Optional `lenses` give one distinct ang
 (e.g. `['correctness', 'security', 'does-it-reproduce']`) so a claim that fails
 in more than one way is caught.
 
+> **Concurrency gotcha (observed live):** verifiers run in parallel. If
+> `renderClaim` tells them to *drive a CLI or write files*, do NOT point them all
+> at the same working directory — two verifiers racing on a shared scratch file
+> (e.g. both writing a `spec.json`) contaminate each other's evidence. Give each
+> prompt its own scratch dir, keyed by something unique carried IN the claim
+> (an id, a file path — add one when you build the claims array):
+> `renderClaim: (c) => \`Work in /tmp/verify-\${c.id}: …\``.
+
 ---
 
 ## 4. Generation + single-pass filter — `generateAndFilter`

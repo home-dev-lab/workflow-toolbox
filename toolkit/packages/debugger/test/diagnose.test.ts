@@ -67,6 +67,22 @@ describe('diagnoseRun — findings collected regardless of primary mode', () => 
     expect(diagnose('real-completed.json').findings).toEqual([])
   })
 
+  it('real schema failure (CC 2.1.170: StructuredOutput never called) → schema-hint finding, primary stays script-throw', () => {
+    // Real journal from run wf_30a87310-f5b: an unsatisfiable schema produces NO attempt>1 —
+    // the runtime nudges the SAME conversation then agent() throws; the failing agent is
+    // recorded done/attempt:1, so only the run-level error text carries the schema signal.
+    const d = diagnose('real-schema-throw.json')
+    expect(d.mode).toBe('script-throw')
+    expect(d.findings.some((f) => f.kind === 'schema-hint')).toBe(true)
+    expect(d.stats.doneAgents).toBe(1)
+    expect(d.stats.retriedAgents).toBe(0)
+  })
+
+  it('a generic script throw has no schema-hint', () => {
+    expect(diagnose('real-script-throw.json').findings.some((f) => f.kind === 'schema-hint')).toBe(false)
+    expect(diagnose('synthetic-budget.json').findings.some((f) => f.kind === 'schema-hint')).toBe(false)
+  })
+
   it('a completed run with BOTH a dead and a retried agent → agent-died primary, retry still a Finding', () => {
     const j = parseJournal(
       JSON.stringify({

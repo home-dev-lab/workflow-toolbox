@@ -78,12 +78,14 @@ npx workflow-toolbox report [runId|latest|<journal-path>] [--project <slug>] [--
 | `completed-ok` | status `completed`, every agent `done`, no retries | healthy — nothing to fix |
 | `script-throw` | status `failed` (or `async_launched`), no incomplete agents | the script threw — bad args, a syntax/`meta` error (`async_launched` = never even ran), or a runtime error in deterministic code |
 | `agent-died` | an `agent()` event ended in a state other than `done` | a subagent died (`agent()` returned `null`); the run may show a partial result or a downstream throw on the hole |
-| `schema-retries` | an agent took `attempt > 1` | StructuredOutput rejected outputs and forced retries — wasted latency/tokens; tighten the schema |
+| `schema-retries` | an agent took `attempt > 1` | StructuredOutput rejected outputs and forced retries — wasted latency/tokens; tighten the schema. **Caveat:** on current CC this signal may never materialize — see the honesty section |
 | `in-progress` | no terminal status recorded | still running, aborted, or a **zombie** (a dead agent the web UI still lists as running) |
 
 The report also lists **secondary findings** regardless of the primary mode — e.g. a
-`completed-ok` run still flags any schema retries, and a `script-throw` whose error text
-mentions budget is flagged as a possible budget-floor exhaustion.
+`completed-ok` run still flags any schema retries; a `script-throw` whose error text
+mentions budget is flagged as a possible budget-floor exhaustion; and a `script-throw`
+whose error reads `subagent completed without calling StructuredOutput` gets a
+**schema-hint** finding (a schema failure wearing a script-throw costume — see below).
 
 ## Reading the resume recommendation (the part that matters)
 
@@ -107,13 +109,21 @@ live run** for `in-progress` (check the web UI for a zombie first).
 
 ## Honesty about what is observed vs inferred
 
-Across every real journal on disk, agents only ever end `done`, `attempt` is always `1`,
-and failures are arg-validation throws. So `agent-died`, `schema-retries`, and
-budget-exhaustion detection are **inferred from the SDK contract, not observed** — they
-key off robust structural signals (a non-`done` state, `attempt > 1`) and, for budget,
-only an advisory text Finding (never a primary verdict, so a wording miss costs nothing).
-If a run exhibits one of these for real, treat the classification as a strong hint and
-confirm against the agent's transcript.
+Across every real journal on disk, agents only ever end `done` and `attempt` is always
+`1`. So `agent-died` and journal-visible `schema-retries` are **inferred from the SDK
+contract, not observed** — they key off robust structural signals (a non-`done` state,
+`attempt > 1`); budget exhaustion stays an advisory text Finding (never a primary
+verdict, so a wording miss costs nothing). If a run exhibits one of these for real,
+treat the classification as a strong hint and confirm against the agent's transcript.
+
+**One schema failure mode IS observed** (live probe, CC 2.1.170): give an agent an
+unsatisfiable schema and `attempt` still never goes above 1 — the runtime nudges the
+SAME agent conversation to call StructuredOutput, and after 2 in-conversation nudges
+the `agent()` call **throws** `agent({schema}): subagent completed without calling
+StructuredOutput`, while the journal records the failing agent as `done`/`attempt: 1`.
+The run therefore lands as a `script-throw`; the debugger matches that error signature
+and attaches a **schema-hint** finding telling you to fix the schema and re-run — the
+"done" agent's cache holds no usable result, so resuming buys nothing for that call.
 
 ## How it works (for maintenance)
 

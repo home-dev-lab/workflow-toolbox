@@ -44,14 +44,20 @@ describe('formatDiagnosis', () => {
     expect(report('real-completed.json')).toMatch(/completed-ok/i)
   })
 
-  it('appends a wt:report pointer when the run has agents', () => {
+  it('appends a report pointer when the run has agents — consumer-first npx form by default', () => {
     const out = report('synthetic-agent-died.json')
     expect(out).toMatch(/per-agent cost \+ transcripts/i)
+    expect(out).toContain('npx workflow-toolbox report wf_synth-agentdied')
+  })
+
+  it('an explicit reportCommand context overrides the default (maintainer form)', () => {
+    const d = diagnoseRun(parseJournal(readFileSync(join(FIXTURES, 'synthetic-agent-died.json'), 'utf8'))!)
+    const out = formatDiagnosis(d, { reportCommand: 'pnpm wt:report' })
     expect(out).toContain('pnpm wt:report wf_synth-agentdied')
   })
 
-  it('omits the wt:report pointer for a 0-agent run', () => {
+  it('omits the report pointer for a 0-agent run', () => {
     const out = report('real-completed.json')
-    expect(out).not.toMatch(/wt:report/i)
+    expect(out).not.toMatch(/workflow-toolbox report|wt:report/i)
   })
 })
