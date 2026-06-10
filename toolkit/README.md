@@ -256,7 +256,21 @@ direct-spawn patterns emit one record per agent (`trail.length === stats.agentsS
 whereas `loopUntilDone` spawns no agents itself and instead records loop
 **iterations** (stage `loopUntilDone:tick:<i>`).
 
-No silent caps, ever: every `max*` option reports what it cut. In
+No silent caps, ever: every `max*` option reports what it cut. For
+`adversarialVerification`, a cap never destroys evidence: claims cut by
+`maxVerifyClaims` stay in the output (`itemsIn === itemsOut`) and carry the
+distinct claim verdict `'unverified-by-cap'` (`votes: []`, no trail records —
+`trail.length === stats.agentsSpawned` still holds), counted in
+`stats.truncated` and reported via a warning. That is different from
+`'unverifiable'` (verifiers ran and **all** failed: `votes` is a non-empty
+array of nulls, counted in `stats.dropped`). The full claim-level vocabulary is
+the exported `ClaimVerdict` type — `'confirmed' | 'partially-confirmed' |
+'refuted' | 'unverifiable' | 'unverified-by-cap'`; the 4-value agent-vote
+schema is unchanged (agents never emit the cap verdict). Backward
+compatibility: callers keying on `'refuted'` are unaffected — treat
+`'unverified-by-cap'` with the same kept-and-flagged handling as
+`'unverifiable'` (additive, semver-minor; ships in
+`@workflow-toolbox/patterns` 0.3.0). In
 compositions, use the `warn(rt, warnings, msg)` helper only for
 composition-originated warnings (it records **and** live-logs); warnings
 propagated from a pattern's envelope are pushed plain — re-warning would
