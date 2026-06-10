@@ -1,7 +1,7 @@
 {
   "name": "workflow-toolbox",
   "displayName": "Workflow Toolbox",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Toolbox for Claude Code's Workflow tool — author deterministic multi-agent workflow scripts (workflow-composer, with the @workflow-toolbox compile-time pattern toolkit as its standard library), scaffold a build-clean workflow skeleton from a spec (toolkit-scaffold), diagnose a failed run from its journal and decide whether resumeFromRunId helps (workflow-debugger), re-verify the runtime surface after a Claude Code upgrade (upgrade-canary). Ships a Stop hook that auto-surfaces a finished Workflow run's cost + traceability audit report (always a notice; grabs the session only when the run looks like trouble).",
   "author": {
     "name": "Frederic Thomas",

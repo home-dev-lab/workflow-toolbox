@@ -128,10 +128,11 @@ else if (votes.every((v) => v.verdict === 'confirmed')) verdict = 'confirmed'
 else                                                     verdict = 'partially-confirmed'
 ```
 
-Two rules carry the integrity guarantee: an unverifiable claim (all verifiers
-failed) is **kept and flagged**, never silently dropped — failure is distinct
-from refutation; and verifiers re-derive from fresh evidence, not from the
-claim's author.
+Two rules carry the integrity guarantee: a claim that could not be verified is
+**kept and flagged**, never silently dropped — failure is distinct from
+refutation; and verifiers re-derive from fresh evidence, not from the claim's
+author. A cap never destroys evidence either: claims a cap cuts are kept too,
+just flagged differently (see the toolkit vocabulary below).
 
 **Toolkit:** `adversarialVerification(rt, { claims, renderClaim, votes, refuteThreshold, lenses })`.
 The default model is `BEST_MODEL` (`'fable'`, exported by
@@ -139,6 +140,21 @@ The default model is `BEST_MODEL` (`'fable'`, exported by
 explicitly passing a weaker model warns. Optional `lenses` give one distinct angle per vote
 (e.g. `['correctness', 'security', 'does-it-reproduce']`) so a claim that fails
 in more than one way is caught.
+
+The toolkit's claim-level vocabulary (the exported `ClaimVerdict` type) has
+five values: `'confirmed' | 'partially-confirmed' | 'refuted' | 'unverifiable'
+| 'unverified-by-cap'`. The two non-refuted "could not verify" verdicts are
+distinct: `'unverifiable'` means verifiers were spawned and **all failed**
+(`votes` is a non-empty array of nulls, counted in `stats.dropped`);
+`'unverified-by-cap'` means the claim was cut by `maxVerifyClaims` and **never
+tested** (`votes: []`, no trail records, counted in `stats.truncated`).
+Truncated claims stay in the output — `itemsIn === itemsOut` always holds —
+and truncation is also reported via a warning. The 4-value agent-vote schema
+above is unchanged: agents never emit `'unverified-by-cap'`; only the
+deterministic tally assigns it. Backward compatibility: callers keying on
+`'refuted'` are unaffected — treat `'unverified-by-cap'` with the same
+kept-and-flagged handling as `'unverifiable'` (additive, semver-minor change,
+ships in `@workflow-toolbox/patterns` 0.3.0).
 
 > **Concurrency gotcha (observed live):** verifiers run in parallel. If
 > `renderClaim` tells them to *drive a CLI or write files*, do NOT point them all

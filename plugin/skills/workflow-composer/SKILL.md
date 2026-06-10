@@ -359,7 +359,9 @@ const verifyStage = (prev, lens) => {
 **4. Synthesize — a genuine barrier.** Synthesis needs *all* verified findings from
 *all* lenses, so this is the one place a barrier is correct. Only non-`refuted`
 findings flow in: `unverifiable` means a verifier failed, not that the finding is
-wrong, so those are **kept and flagged** rather than dropped. Synthesis is the final
+wrong, and `unverified-by-cap` means the verification cap cut the claim before any
+verifier ran (`votes: []`) — both are **kept and flagged** rather than dropped, and
+neither is a refutation. Synthesis is the final
 gate — if it fails, throw with a resume hint:
 
 ```ts
