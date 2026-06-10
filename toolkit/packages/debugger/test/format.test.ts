@@ -44,14 +44,14 @@ describe('formatDiagnosis', () => {
     expect(report('real-completed.json')).toMatch(/completed-ok/i)
   })
 
-  it('appends a dwt:report pointer when the run has agents', () => {
+  it('appends a wt:report pointer when the run has agents', () => {
     const out = report('synthetic-agent-died.json')
     expect(out).toMatch(/per-agent cost \+ transcripts/i)
-    expect(out).toContain('pnpm dwt:report wf_synth-agentdied')
+    expect(out).toContain('pnpm wt:report wf_synth-agentdied')
   })
 
-  it('omits the dwt:report pointer for a 0-agent run', () => {
+  it('omits the wt:report pointer for a 0-agent run', () => {
     const out = report('real-completed.json')
-    expect(out).not.toMatch(/dwt:report/i)
+    expect(out).not.toMatch(/wt:report/i)
   })
 })

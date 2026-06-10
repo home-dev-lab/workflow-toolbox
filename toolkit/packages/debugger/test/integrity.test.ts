@@ -10,7 +10,7 @@ const toolkitRoot = join(here, '..', '..', '..') // toolkit
 const repoRoot = join(toolkitRoot, '..')
 
 // Every shipped node CLI bundled by `pnpm debugger:build`.
-const BINS = ['dwt-debug.mjs', 'dwt-stop-hook.mjs']
+const BINS = ['wt-debug.mjs', 'wt-stop-hook.mjs']
 
 describe.each(BINS)('bundled artifact integrity — %s', (bin) => {
   const toolkitBin = join(toolkitRoot, 'bin', bin)

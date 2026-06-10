@@ -87,7 +87,7 @@ describe('buildFullSurface', () => {
     expect(s.systemMessage).toContain('2 agents')
     expect(s.systemMessage).toContain('18,815 tok')
     expect(s.systemMessage).toContain('2 decisions')
-    expect(s.systemMessage).toContain('pnpm dwt:report wf_abc')
+    expect(s.systemMessage).toContain('pnpm wt:report wf_abc')
     expect(s.systemMessage).not.toContain('written to')
   })
 
@@ -106,7 +106,7 @@ describe('buildFullSurface', () => {
     expect(s.block).toBe(true)
     expect(s.reason).toContain('a subagent died')
     expect(s.reason).toContain('agent X never finished')
-    expect(s.reason).toContain('pnpm dwt:report wf_abc')
+    expect(s.reason).toContain('pnpm wt:report wf_abc')
     expect(s.reason.toLowerCase()).toContain('unreconciled')
   })
 })
@@ -117,7 +117,7 @@ describe('buildProvisionalSurface', () => {
     expect(s.block).toBe(false)
     expect(s.reason).toBe('')
     expect(s.systemMessage).toContain('tk1')
-    expect(s.systemMessage.toLowerCase()).toContain('dwt:report')
+    expect(s.systemMessage.toLowerCase()).toContain('wt:report')
   })
 })
 

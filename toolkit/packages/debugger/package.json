@@ -8,6 +8,18 @@
     ".": {
       "import": "./src/index.ts",
       "types": "./src/index.ts"
+    },
+    "./source": {
+      "import": "./src/source.ts",
+      "types": "./src/source.ts"
+    },
+    "./audit-folder": {
+      "import": "./src/audit-folder.ts",
+      "types": "./src/audit-folder.ts"
+    },
+    "./cli-args": {
+      "import": "./src/cli-args.ts",
+      "types": "./src/cli-args.ts"
     }
   },
   "scripts": {

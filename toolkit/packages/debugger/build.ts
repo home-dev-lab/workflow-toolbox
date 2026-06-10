@@ -4,10 +4,10 @@
 // byte-identity between the two locations is enforced by a test.
 //
 // Two entries:
-//   cli.ts       → dwt-debug.mjs       — the `dwt:debug` diagnose CLI.
-//   stop-hook.ts → dwt-stop-hook.mjs   — the plugin's Stop hook (auto-surfaces the audit report).
+//   cli.ts       → wt-debug.mjs       — the `wt:debug` diagnose CLI.
+//   stop-hook.ts → wt-stop-hook.mjs   — the plugin's Stop hook (auto-surfaces the audit report).
 //
-// Unlike `dwt:build` (which emits an IIFE for the Workflow SANDBOX), this targets a plain
+// Unlike `wt:build` (which emits an IIFE for the Workflow SANDBOX), this targets a plain
 // node CLI: platform:node, format:esm, a cosmetic shebang. Both use only node builtins
 // (fs/os/path/process), so each bundle pulls in zero npm deps and is deterministic.
 
@@ -21,8 +21,8 @@ const toolkitRoot = join(here, '..', '..') // toolkit
 const repoRoot = join(toolkitRoot, '..') // repo root
 
 const entries = [
-  { entry: 'cli.ts', out: 'dwt-debug.mjs' },
-  { entry: 'stop-hook.ts', out: 'dwt-stop-hook.mjs' },
+  { entry: 'cli.ts', out: 'wt-debug.mjs' },
+  { entry: 'stop-hook.ts', out: 'wt-stop-hook.mjs' },
 ]
 
 for (const { entry, out } of entries) {

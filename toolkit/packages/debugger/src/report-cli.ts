@@ -1,7 +1,7 @@
 // CLI entry for the workflow audit report. IMPURE (resolves + reads the disk, stats
 // transcripts, optionally writes the audit folder); held out of `pnpm test`.
 //
-//   pnpm dwt:report [runId|latest] [--project <slug>] [--out <dir>] [--quiet]
+//   pnpm wt:report [runId|latest] [--project <slug>] [--out <dir>] [--quiet]
 //
 // Behaviour (mirrors the D3 gating): the markdown report is ALWAYS printed to stdout
 // (so the invoking session always has the real cost/decision data), UNLESS --quiet.
@@ -9,58 +9,26 @@
 // persistence is off by default. A one-line "wrote <dir>" note goes to stderr so it
 // never pollutes the stdout report.
 
-import { findJournal, transcriptDirFor } from './source.js'
+import { findJournal, journalLookupErrorMessage, projectDirFor, transcriptDirFor } from './source.js'
 import { parseJournal, agentEvents } from './journal.js'
 import { buildAuditReport } from './report.js'
 import { formatAuditReportMarkdown } from './report-format.js'
 import { resolveLogDir, writeAuditFolder, scanTranscripts } from './audit-folder.js'
-
-interface CliArgs {
-  runId: string | null
-  project: string | undefined
-  out: string | undefined
-  quiet: boolean
-}
-
-/** Read the value token after a flag, rejecting a missing value or another flag
- *  (so `--project --quiet` errors instead of silently swallowing `--quiet`). */
-function nextValue(argv: string[], i: number, flag: string): string {
-  const v = argv[i]
-  if (v === undefined || v.startsWith('-')) {
-    process.stderr.write(`dwt-report: ${flag} requires a value.\n`)
-    process.exit(2)
-  }
-  return v
-}
-
-function parseArgs(argv: string[]): CliArgs {
-  let runId: string | null = null
-  let project: string | undefined
-  let out: string | undefined
-  let quiet = false
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!
-    if (a === '--project') project = nextValue(argv, ++i, '--project')
-    else if (a === '--out') out = nextValue(argv, ++i, '--out')
-    else if (a === '--quiet') quiet = true
-    else if (a === '--help' || a === '-h') {
-      printHelp()
-      process.exit(0)
-    } else if (!a.startsWith('-')) runId = a
-  }
-  return { runId, project, out, quiet }
-}
+import { parseReportArgs } from './cli-args.js'
 
 function printHelp(): void {
   process.stdout.write(
     [
-      'dwt-report — produce a cost + traceability audit report for a Workflow run',
+      'wt-report — produce a cost + traceability audit report for a Workflow run',
       '',
-      'Usage: dwt:report [runId|latest] [--project <slug>] [--out <dir>] [--quiet]',
+      'Usage: wt:report [runId|latest|<journal-path>] [--project <slug>] [--out <dir>] [--quiet]',
       '',
       '  runId        wf_<id> of the run (with or without the wf_ prefix). Omit or',
       '               pass "latest" for the newest run in the current project.',
-      '  --project    search a specific ~/.claude/projects/<slug> instead of the cwd.',
+      '               A literal ~/.claude/.../workflows/wf_<id>.json path also works.',
+      '  --project    search a specific ~/.claude/projects/<slug> instead of the cwd',
+      '               (slugs start with "-"; both `--project <slug>` and',
+      '               `--project=<slug>` forms are accepted).',
       '  --out <dir>  also write an audit folder <dir>/<runId>/ (report.md + journal.json',
       '               + transcripts/). Overrides $DWT_WORKFLOW_LOG_DIR.',
       '  --quiet      suppress the stdout report (use with --out / the env var).',
@@ -73,22 +41,29 @@ function printHelp(): void {
 }
 
 function main(): number {
-  const { runId, project, out, quiet } = parseArgs(process.argv.slice(2))
+  const { runId, project, out, quiet, help, error } = parseReportArgs(process.argv.slice(2))
+  if (help) {
+    printHelp()
+    return 0
+  }
+  if (error) {
+    process.stderr.write(`wt-report: ${error}\n`)
+    return 2
+  }
 
-  const resolved = findJournal(runId, project !== undefined ? { project } : {})
+  const opts = project !== undefined ? { project } : {}
+  const resolved = findJournal(runId, opts)
   if (!resolved) {
-    const which = runId && runId !== 'latest' ? `run "${runId}"` : 'any run in this project'
-    process.stderr.write(
-      `dwt-report: no journal found for ${which}.\n` +
-        '  Journals live at ~/.claude/projects/<project>/<session>/workflows/wf_<runId>.json.\n' +
-        '  Run from the project that produced the run, or pass --project <slug>.\n',
-    )
+    process.stderr.write(journalLookupErrorMessage('wt-report', runId, opts) + '\n')
     return 1
   }
+  // The dir the journal actually came from (may differ from the scanned dir when
+  // the by-runId search fell back across projects, or a literal path was given).
+  process.stderr.write(`[project dir: ${projectDirFor(resolved.path)}]\n`)
 
   const journal = parseJournal(resolved.text)
   if (!journal) {
-    process.stderr.write(`dwt-report: ${resolved.path} is not a readable workflow journal.\n`)
+    process.stderr.write(`wt-report: ${resolved.path} is not a readable workflow journal.\n`)
     return 1
   }
 

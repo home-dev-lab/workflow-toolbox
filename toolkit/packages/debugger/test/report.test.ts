@@ -20,7 +20,7 @@ function smokeJournal(overrides: Partial<WorkflowJournal> = {}): WorkflowJournal
   return {
     runId: 'wf_975e3d74-552',
     taskId: 'wwugnfjzt',
-    workflowName: 'dwt-smoke',
+    workflowName: 'wt-smoke',
     status: 'completed',
     durationMs: 6976,
     defaultModel: 'claude-opus-4-8[1m]',
@@ -28,7 +28,7 @@ function smokeJournal(overrides: Partial<WorkflowJournal> = {}): WorkflowJournal
     totalTokens: 18815,
     totalToolCalls: 2,
     result: {
-      marker: 'dwt-smoke-ok',
+      marker: 'wt-smoke-ok',
       envelope: {
         value: [],
         stats: {},
@@ -75,7 +75,7 @@ describe('buildAuditReport — identity + cost rollup', () => {
     const r = buildAuditReport(smokeJournal())
     expect(r.runId).toBe('wf_975e3d74-552')
     expect(r.taskId).toBe('wwugnfjzt')
-    expect(r.workflowName).toBe('dwt-smoke')
+    expect(r.workflowName).toBe('wt-smoke')
     expect(r.status).toBe('completed')
     expect(r.defaultModel).toBe('claude-opus-4-8[1m]')
     expect(r.durationMs).toBe(6976)

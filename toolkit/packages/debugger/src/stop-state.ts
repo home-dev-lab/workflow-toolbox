@@ -3,7 +3,7 @@
 // Held out of `pnpm test` (no .test.ts peer). Never throws — the hook must never break
 // the session, so any read/write failure degrades to empty state / a no-op.
 //
-// State lives at $TMPDIR/dwt-stop-hook/<sessionId>.json. `reported` is FIFO-capped so a
+// State lives at $TMPDIR/wt-stop-hook/<sessionId>.json. `reported` is FIFO-capped so a
 // long-lived session can't grow it unbounded; the worst case of an evicted id is a single
 // duplicate (idempotent) notice, never a block-loop (guarded separately by stop_hook_active).
 
@@ -27,7 +27,7 @@ const REPORTED_CAP = 200
 const PROTO_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
 function stateDir(): string {
-  return join(tmpdir(), 'dwt-stop-hook')
+  return join(tmpdir(), 'wt-stop-hook')
 }
 
 function statePath(sessionId: string): string {

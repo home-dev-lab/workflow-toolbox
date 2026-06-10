@@ -67,7 +67,7 @@ export function buildFullSurface(input: FullSurfaceInput): StopSurface {
   const notice =
     `DWT audit · ${runId} (${cell(report.workflowName)}) ${cell(report.status)} · ` +
     `${report.agentCount} agents · ${tok(report.totalTokens)} tok · ${report.decisions.length} decisions ` +
-    `→ pnpm dwt:report ${runId}` +
+    `→ pnpm wt:report ${runId}` +
     (diskDir !== null ? ` · written to ${diskDir}` : '')
 
   if (!block) return { systemMessage: notice, block: false, reason: '' }
@@ -85,7 +85,7 @@ export function buildFullSurface(input: FullSurfaceInput): StopSurface {
     lines.push('findings:')
     for (const f of diagnosis.findings) lines.push(`  - [${f.kind}] ${f.detail}`)
   }
-  lines.push(`Full audit: pnpm dwt:report ${runId}${diskDir !== null ? ` (written to ${diskDir})` : ''}`)
+  lines.push(`Full audit: pnpm wt:report ${runId}${diskDir !== null ? ` (written to ${diskDir})` : ''}`)
 
   return { systemMessage: notice, block: true, reason: lines.join('\n') }
 }
@@ -95,7 +95,7 @@ export function buildProvisionalSurface(task: { id: string; name: string | null 
   return {
     systemMessage:
       `DWT audit · workflow "${cell(task.name)}" (task ${task.id}) finished — journal not yet readable; ` +
-      `run pnpm dwt:report latest shortly for cost + traceability.`,
+      `run pnpm wt:report latest shortly for cost + traceability.`,
     block: false,
     reason: '',
   }

@@ -2,8 +2,8 @@
   "runId": "wf_9d4ee73f-61b",
   "timestamp": "2026-06-06T07:40:40.927Z",
   "taskId": "wsmktx6hv",
-  "script": "export const meta = { name: \"dwt-canary-c1\", description: \"...\", phases: [{ title: \"Check\" }] }\n// (bundled body elided for fixture)\nreturn { ok: true }",
-  "scriptPath": "/tmp/dwt-canaries/c1-bundled-shape.js",
+  "script": "export const meta = { name: \"wt-canary-c1\", description: \"...\", phases: [{ title: \"Check\" }] }\n// (bundled body elided for fixture)\nreturn { ok: true }",
+  "scriptPath": "/tmp/wt-canaries/c1-bundled-shape.js",
   "result": {
     "ok": true,
     "classified": "long",
@@ -21,7 +21,7 @@
   ],
   "durationMs": 6,
   "summary": "M0 canary C1: serialized meta (quoted keys) + esbuild-style inlined helpers + 0-agent run",
-  "workflowName": "dwt-canary-c1",
+  "workflowName": "wt-canary-c1",
   "status": "completed",
   "startTime": 1780731640919,
   "phases": [

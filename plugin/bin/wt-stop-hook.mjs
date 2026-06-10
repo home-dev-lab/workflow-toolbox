@@ -610,7 +610,7 @@ function cell2(s) {
 function buildFullSurface(input) {
   const { runId, report, diagnosis, diskDir } = input;
   const block = isTrouble(diagnosis.mode);
-  const notice = `DWT audit \xB7 ${runId} (${cell2(report.workflowName)}) ${cell2(report.status)} \xB7 ${report.agentCount} agents \xB7 ${tok(report.totalTokens)} tok \xB7 ${report.decisions.length} decisions \u2192 pnpm dwt:report ${runId}` + (diskDir !== null ? ` \xB7 written to ${diskDir}` : "");
+  const notice = `DWT audit \xB7 ${runId} (${cell2(report.workflowName)}) ${cell2(report.status)} \xB7 ${report.agentCount} agents \xB7 ${tok(report.totalTokens)} tok \xB7 ${report.decisions.length} decisions \u2192 pnpm wt:report ${runId}` + (diskDir !== null ? ` \xB7 written to ${diskDir}` : "");
   if (!block) return { systemMessage: notice, block: false, reason: "" };
   const recon = report.reconciliation;
   const reconNote = recon.reconciles ? "reconciled" : `UNRECONCILED (\u0394 ${recon.delta === null ? "\u2014" : recon.delta.toLocaleString("en-US")}, ${recon.missingTokenAgents} agent(s) missing tokens)`;
@@ -622,12 +622,12 @@ function buildFullSurface(input) {
     lines.push("findings:");
     for (const f of diagnosis.findings) lines.push(`  - [${f.kind}] ${f.detail}`);
   }
-  lines.push(`Full audit: pnpm dwt:report ${runId}${diskDir !== null ? ` (written to ${diskDir})` : ""}`);
+  lines.push(`Full audit: pnpm wt:report ${runId}${diskDir !== null ? ` (written to ${diskDir})` : ""}`);
   return { systemMessage: notice, block: true, reason: lines.join("\n") };
 }
 function buildProvisionalSurface(task) {
   return {
-    systemMessage: `DWT audit \xB7 workflow "${cell2(task.name)}" (task ${task.id}) finished \u2014 journal not yet readable; run pnpm dwt:report latest shortly for cost + traceability.`,
+    systemMessage: `DWT audit \xB7 workflow "${cell2(task.name)}" (task ${task.id}) finished \u2014 journal not yet readable; run pnpm wt:report latest shortly for cost + traceability.`,
     block: false,
     reason: ""
   };
@@ -654,7 +654,7 @@ import { join as join3 } from "node:path";
 var REPORTED_CAP = 200;
 var PROTO_KEYS = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
 function stateDir() {
-  return join3(tmpdir(), "dwt-stop-hook");
+  return join3(tmpdir(), "wt-stop-hook");
 }
 function statePath(sessionId) {
   const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_") || "unknown";

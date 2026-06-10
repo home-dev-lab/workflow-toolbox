@@ -21,7 +21,7 @@ function report(overrides: Partial<AuditReport> = {}): AuditReport {
   return {
     runId: 'wf_975e3d74-552',
     taskId: 'wwugnfjzt',
-    workflowName: 'dwt-smoke',
+    workflowName: 'wt-smoke',
     status: 'completed',
     durationMs: 6976,
     defaultModel: 'claude-opus-4-8[1m]',

@@ -49,6 +49,58 @@ function projectsBase(home: string): string {
   return join(home, '.claude', 'projects')
 }
 
+/** The single project dir a "latest"/by-runId resolution scans FIRST — printed
+ *  by the CLIs so a wrong-cwd resolution is visible instead of silently
+ *  plausible (a `pnpm wt:report` from toolkit/ scans the -toolkit slug, not
+ *  the repo root's). */
+export function scannedProjectDir(opts: ResolveOptions = {}): string {
+  const home = opts.home ?? homedir()
+  const cwd = opts.cwd ?? process.cwd()
+  return join(projectsBase(home), opts.project ?? projectSlug(cwd))
+}
+
+/** A positional that is a journal PATH (contains a separator or ends in .json)
+ *  rather than a runId. Both CLIs print the journal path in their own error
+ *  messages, so accepting it back is the obvious escape hatch. Exported so the
+ *  CLIs can tell "path didn't read" apart from "project scan found nothing". */
+export function looksLikeJournalPath(arg: string): boolean {
+  return arg.includes('/') || arg.includes('\\') || arg.endsWith('.json')
+}
+
+/** Resolve a literal wf_*.json path: read it directly, deriving runId from the
+ *  filename and sessionId from the <session>/workflows/<file> layout. */
+function resolveJournalPath(path: string): ResolvedJournal | null {
+  const name = basename(path)
+  if (!isJournalFile(name)) return null
+  const sessionDir = join(path, '..', '..')
+  return readResolved({ path, sessionId: basename(sessionDir) })
+}
+
+/** The project dir a journal lives under (<projectDir>/<session>/workflows/<file> —
+ *  three levels up). Single home for that layout knowledge, like transcriptDirFor. */
+export function projectDirFor(journalPath: string): string {
+  return join(journalPath, '..', '..', '..')
+}
+
+/** The one failed-lookup message every CLI surface prints — path-vs-runId aware,
+ *  shared so the wording cannot drift across the four front-ends. */
+export function journalLookupErrorMessage(
+  tool: string,
+  runId: string | null,
+  opts: ResolveOptions = {},
+): string {
+  if (runId && looksLikeJournalPath(runId)) {
+    return `${tool}: cannot read journal path ${JSON.stringify(runId)} — not an existing wf_*.json file.`
+  }
+  const which = runId && runId !== 'latest' ? `run "${runId}"` : 'any run in this project'
+  return (
+    `${tool}: no journal found for ${which}.\n` +
+    `  [scanned ${scannedProjectDir(opts)}]\n` +
+    '  Journals live at ~/.claude/projects/<project>/<session>/workflows/wf_<runId>.json.\n' +
+    '  Run from the project that produced the run, pass --project=<slug>, or pass the journal path directly.'
+  )
+}
+
 function listDirs(dir: string): string[] {
   try {
     return readdirSync(dir, { withFileTypes: true })
@@ -115,6 +167,11 @@ export function findJournal(runId: string | null, opts: ResolveOptions = {}): Re
   const home = opts.home ?? homedir()
   const base = projectsBase(home)
   const cwd = opts.cwd ?? process.cwd()
+
+  // Literal journal path — bypass project discovery entirely.
+  if (runId && looksLikeJournalPath(runId)) {
+    return resolveJournalPath(runId)
+  }
 
   if (runId && runId !== 'latest') {
     const wanted = normalizeRunId(runId)

@@ -1,5 +1,5 @@
 // IMPURE entry for the Stop-hook auto-surfacing of the workflow audit report. Bundled by
-// `pnpm debugger:build` into plugin/bin/dwt-stop-hook.mjs and registered as the plugin's
+// `pnpm debugger:build` into plugin/bin/wt-stop-hook.mjs and registered as the plugin's
 // `Stop` hook. Held out of `pnpm test` (no .test.ts peer); every decision it makes is in
 // the pure, unit-tested stop-detect.ts / stop-surface.ts.
 //
@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   }
 
   // No session id → we can't persist the diff state; surface nothing rather than risk a
-  // stateless block-loop. (The launching session's `dwt:report` still covers this run.)
+  // stateless block-loop. (The launching session's `wt:report` still covers this run.)
   if (payload.sessionId === null) {
     emit('{}')
     return
@@ -102,7 +102,7 @@ async function main(): Promise<void> {
 
       let diskDir: string | null = null
       if (logDir) {
-        // Same report.md body dwt:report writes — only built when a disk folder is configured.
+        // Same report.md body wt:report writes — only built when a disk folder is configured.
         const markdown = formatAuditReportMarkdown(report, { journalPath: resolved.path })
         const result = writeAuditFolder({
           baseDir: logDir.baseDir,

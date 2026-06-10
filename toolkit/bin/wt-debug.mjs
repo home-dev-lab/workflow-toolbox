@@ -42,6 +42,33 @@ function projectSlug(cwd) {
 function projectsBase(home) {
   return join(home, ".claude", "projects");
 }
+function scannedProjectDir(opts = {}) {
+  const home = opts.home ?? homedir();
+  const cwd = opts.cwd ?? process.cwd();
+  return join(projectsBase(home), opts.project ?? projectSlug(cwd));
+}
+function looksLikeJournalPath(arg) {
+  return arg.includes("/") || arg.includes("\\") || arg.endsWith(".json");
+}
+function resolveJournalPath(path) {
+  const name = basename(path);
+  if (!isJournalFile(name)) return null;
+  const sessionDir = join(path, "..", "..");
+  return readResolved({ path, sessionId: basename(sessionDir) });
+}
+function projectDirFor(journalPath) {
+  return join(journalPath, "..", "..", "..");
+}
+function journalLookupErrorMessage(tool, runId, opts = {}) {
+  if (runId && looksLikeJournalPath(runId)) {
+    return `${tool}: cannot read journal path ${JSON.stringify(runId)} \u2014 not an existing wf_*.json file.`;
+  }
+  const which = runId && runId !== "latest" ? `run "${runId}"` : "any run in this project";
+  return `${tool}: no journal found for ${which}.
+  [scanned ${scannedProjectDir(opts)}]
+  Journals live at ~/.claude/projects/<project>/<session>/workflows/wf_<runId>.json.
+  Run from the project that produced the run, pass --project=<slug>, or pass the journal path directly.`;
+}
 function listDirs(dir) {
   try {
     return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
@@ -95,6 +122,9 @@ function findJournal(runId, opts = {}) {
   const home = opts.home ?? homedir();
   const base = projectsBase(home);
   const cwd = opts.cwd ?? process.cwd();
+  if (runId && looksLikeJournalPath(runId)) {
+    return resolveJournalPath(runId);
+  }
   if (runId && runId !== "latest") {
     const wanted = normalizeRunId(runId);
     const projectDirs = opts.project ? [join(base, opts.project)] : [join(base, projectSlug(cwd)), ...listDirs(base).map((d) => join(base, d))];
@@ -279,59 +309,88 @@ function formatDiagnosis(d, ctx = {}) {
     lines.push(`  ${d.resume.rationale}`);
   }
   if (s.doneAgents + s.incompleteAgents > 0) {
+    const reportCommand = ctx.reportCommand ?? "pnpm wt:report";
+    const projectArg = ctx.project ? ` --project=${ctx.project}` : "";
     lines.push("");
-    lines.push(`for per-agent cost + transcripts: pnpm dwt:report ${s.runId}`);
+    lines.push(`for per-agent cost + transcripts: ${reportCommand} ${s.runId}${projectArg}`);
   }
   return lines.join("\n");
 }
 
-// packages/debugger/src/cli.ts
-function parseArgs(argv) {
-  let runId = null;
-  let json = false;
-  let project;
+// packages/debugger/src/cli-args.ts
+var KNOWN_FLAGS = /* @__PURE__ */ new Set(["--json", "--project", "--out", "--quiet", "--help", "-h"]);
+function takeValue(argv, i, flag) {
+  const v = argv[i];
+  if (v === void 0 || KNOWN_FLAGS.has(v)) {
+    return { error: `${flag} requires a value.` };
+  }
+  return { value: v };
+}
+function equalsValue(arg, flag) {
+  const v = arg.slice(flag.length + 1);
+  if (v === "") return { error: `${flag} requires a value.` };
+  return { value: v };
+}
+function parseDebugArgs(argv) {
+  const r = { runId: null, json: false, project: void 0, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--json") json = true;
-    else if (a === "--project") project = argv[++i];
-    else if (a === "--help" || a === "-h") {
-      printHelp();
-      process.exit(0);
-    } else if (!a.startsWith("-")) runId = a;
+    if (a === "--json") r.json = true;
+    else if (a === "--project") {
+      const t = takeValue(argv, ++i, "--project");
+      if (t.error) return { ...r, error: t.error };
+      r.project = t.value;
+    } else if (a.startsWith("--project=")) {
+      const t = equalsValue(a, "--project");
+      if (t.error) return { ...r, error: t.error };
+      r.project = t.value;
+    } else if (a === "--help" || a === "-h") r.help = true;
+    else if (!a.startsWith("-")) r.runId = a;
   }
-  return { runId, json, project };
+  return r;
 }
+
+// packages/debugger/src/cli.ts
 function printHelp() {
   process.stdout.write(
     [
-      "dwt-debug \u2014 diagnose a Claude Code Workflow run from its journal",
+      "wt-debug \u2014 diagnose a Claude Code Workflow run from its journal",
       "",
-      "Usage: dwt-debug [runId|latest] [--json] [--project <slug>]",
+      "Usage: wt-debug [runId|latest|<journal-path>] [--json] [--project <slug>]",
       "",
       "  runId        wf_<id> of the run (with or without the wf_ prefix). Omit or",
       '               pass "latest" to diagnose the newest run in the current project.',
+      "               A literal ~/.claude/.../workflows/wf_<id>.json path also works.",
       "  --json       emit the raw diagnosis as JSON instead of the text report.",
-      "  --project    search a specific ~/.claude/projects/<slug> instead of the cwd.",
+      "  --project    search a specific ~/.claude/projects/<slug> instead of the cwd",
+      '               (slugs start with "-"; both `--project <slug>` and',
+      "               `--project=<slug>` forms are accepted).",
       ""
     ].join("\n") + "\n"
   );
 }
 function main() {
-  const { runId, json, project } = parseArgs(process.argv.slice(2));
-  const resolved = findJournal(runId, project ? { project } : {});
+  const { runId, json, project, help, error } = parseDebugArgs(process.argv.slice(2));
+  if (help) {
+    printHelp();
+    return 0;
+  }
+  if (error) {
+    process.stderr.write(`wt-debug: ${error}
+`);
+    return 2;
+  }
+  const opts = project ? { project } : {};
+  const resolved = findJournal(runId, opts);
   if (!resolved) {
-    const which = runId && runId !== "latest" ? `run "${runId}"` : "any run in this project";
-    process.stderr.write(
-      `dwt-debug: no journal found for ${which}.
-  Journals live at ~/.claude/projects/<project>/<session>/workflows/wf_<runId>.json.
-  Run dwt-debug from the project that produced the run, or pass --project <slug>.
-`
-    );
+    process.stderr.write(journalLookupErrorMessage("wt-debug", runId, opts) + "\n");
     return 1;
   }
+  process.stderr.write(`[project dir: ${projectDirFor(resolved.path)}]
+`);
   const journal = parseJournal(resolved.text);
   if (!journal) {
-    process.stderr.write(`dwt-debug: ${resolved.path} is not a readable workflow journal.
+    process.stderr.write(`wt-debug: ${resolved.path} is not a readable workflow journal.
 `);
     return 1;
   }
@@ -346,7 +405,11 @@ function main() {
     );
   } else {
     process.stdout.write(
-      formatDiagnosis(diagnosis, { journalPath: resolved.path, sessionId: resolved.sessionId }) + "\n"
+      formatDiagnosis(diagnosis, {
+        journalPath: resolved.path,
+        sessionId: resolved.sessionId,
+        ...project !== void 0 && { project }
+      }) + "\n"
     );
   }
   return 0;
