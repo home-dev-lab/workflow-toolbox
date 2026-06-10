@@ -451,6 +451,9 @@ async function run(rt: WorkflowRuntime, input: DevImplementInput): Promise<DevIm
             taskBlock +
             `Create/extend the test files per the test plan, run ${ctx.testCommand} to confirm ` +
             `the new tests FAIL for the right reason, and report.\n` +
+            `If the test plan says there is nothing to write (a docs-only or no-test task), that ` +
+            `is a SUCCESS, not a failure: return written: true with an empty testFiles list and ` +
+            `say so in the note — the done criteria will still be verified by the checker.\n` +
             `Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was written>" }`,
             {
               schema: RED_RESULT_SCHEMA,

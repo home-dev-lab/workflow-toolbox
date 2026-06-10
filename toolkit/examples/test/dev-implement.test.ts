@@ -235,6 +235,21 @@ describe('dev-implement happy path', () => {
     }
   })
 
+  it('red prompt carries the no-tests escape hatch (docs-only tasks must not stall)', async () => {
+    // Live-run lesson (run wf_673b1f49-5b6): a docs-only task whose testPlan
+    // says "no unit tests to write" made the test-writer honestly return
+    // written: false every iteration — the loop burned maxIterations on red
+    // and NEVER reached green/check. The prompt must tell the agent that
+    // "nothing to write" is a SUCCESS (written: true, empty testFiles), so
+    // the loop proceeds to implement + check the done criteria.
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const red = rt.calls.find((c) => c.opts?.label === 'dev-implement:red:T1')!
+    expect(red.prompt).toMatch(/nothing to write|no tests are needed/i)
+    expect(red.prompt).toMatch(/written.*true.*empty|empty.*testFiles/i)
+  })
+
   it('records the Implement, Check and Report phases', async () => {
     const rt = makeRuntime()
     await wf.run(rt, JSON.stringify(VALID_INPUT))

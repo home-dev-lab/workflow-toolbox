@@ -449,6 +449,7 @@ Done criteria: ${JSON.stringify(task.doneCriteria)}
             const red = await rtBody.agent(
               `You are the TDD test-writer for one task. Write the failing tests first \u2014 do NOT implement any production code.
 ` + taskBlock + `Create/extend the test files per the test plan, run ${ctx.testCommand} to confirm the new tests FAIL for the right reason, and report.
+If the test plan says there is nothing to write (a docs-only or no-test task), that is a SUCCESS, not a failure: return written: true with an empty testFiles list and say so in the note \u2014 the done criteria will still be verified by the checker.
 Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was written>" }`,
               {
                 schema: RED_RESULT_SCHEMA,
