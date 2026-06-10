@@ -25,7 +25,7 @@ export const meta = {
     }
   ]
 }
-var __dwt = (() => {
+var __wt = (() => {
   var __defProp = Object.defineProperty;
   var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -361,6 +361,9 @@ var __dwt = (() => {
     return { value, stats, warnings, trail };
   }
 
+  // ../packages/runtime/src/constants.ts
+  var BEST_MODEL = "fable";
+
   // ../packages/patterns/src/adversarial-verification.ts
   var VERIFIER_SCHEMA = {
     type: "object",
@@ -419,8 +422,8 @@ var __dwt = (() => {
     let agentsSpawned = 0;
     const warnings = [];
     const trail = [];
-    const effectiveModel = model ?? "opus";
-    if (model !== void 0 && model !== "opus") {
+    const effectiveModel = model ?? BEST_MODEL;
+    if (model !== void 0 && model !== BEST_MODEL) {
       warn(
         rt,
         warnings,
@@ -988,6 +991,6 @@ Return { "planTitle": "<descriptive title>", "steps": [{ "order": <n>, "file": "
   return __toCommonJS(monorepo_refactor_plan_workflow_exports);
 })();
 
-// --- dwt glue: bind sandbox globals into rt, run the workflow, return ---
+// --- wt glue: bind sandbox globals into rt, run the workflow, return ---
 const __rt = { agent, parallel, pipeline, phase, log, budget, workflow };
-return await __dwt.default.run(__rt, typeof args !== "undefined" ? args : undefined);
+return await __wt.default.run(__rt, typeof args !== "undefined" ? args : undefined);

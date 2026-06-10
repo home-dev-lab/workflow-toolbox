@@ -6,7 +6,7 @@ import { defineWorkflow } from '../../src/define-workflow.js'
 
 export default defineWorkflow({
   meta: {
-    name: 'dwt-fixture-hello',
+    name: 'wt-fixture-hello',
     description: 'Minimal fixture workflow for @workflow-toolbox/build Batch B tests',
     phases: [{ title: 'Run' }],
   },

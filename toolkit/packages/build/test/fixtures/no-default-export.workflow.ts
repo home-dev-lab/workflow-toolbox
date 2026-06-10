@@ -7,7 +7,7 @@ import { defineWorkflow } from '../../src/define-workflow.js'
 // Named export only — intentionally missing `export default`
 export const myWorkflow = defineWorkflow({
   meta: {
-    name: 'dwt-fixture-no-default',
+    name: 'wt-fixture-no-default',
     description: 'Negative fixture — named export only, no default export',
   },
   run: async () => ({ ok: true }),

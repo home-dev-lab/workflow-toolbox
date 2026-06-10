@@ -11,7 +11,7 @@
         "id": "toolu_01XZVAQzPtAbPa8XzYVp5bNi",
         "name": "Workflow",
         "input": {
-          "scriptPath": "/home/user/projects/dynamic-workflow-toolbox/toolkit/packages/smoke/dwt-smoke.js"
+          "scriptPath": "/home/user/projects/dynamic-workflow-toolbox/toolkit/packages/smoke/wt-smoke.js"
         },
         "caller": {
           "type": "direct"

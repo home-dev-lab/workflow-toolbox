@@ -8,6 +8,6 @@
     "src/**/*.ts",
     "test/**/*.ts",
     "smoke.workflow.ts",
-    "dwt-calib.workflow.ts"
+    "wt-calib.workflow.ts"
   ]
 }

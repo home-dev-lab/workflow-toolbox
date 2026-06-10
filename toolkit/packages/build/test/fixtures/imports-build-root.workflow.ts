@@ -6,7 +6,7 @@ import { defineWorkflow } from '@workflow-toolbox/build'
 
 export default defineWorkflow({
   meta: {
-    name: 'dwt-fixture-imports-build-root',
+    name: 'wt-fixture-imports-build-root',
     description: 'Negative fixture proving the @workflow-toolbox/build root-import pre-flight check',
   },
   run: async () => ({ ok: true }),

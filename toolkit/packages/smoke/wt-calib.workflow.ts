@@ -1,7 +1,7 @@
-// dwt-calib.workflow.ts — the dedicated budgetFloor-calibration probe.
+// wt-calib.workflow.ts — the dedicated budgetFloor-calibration probe.
 //
 // Like smoke.workflow.ts this is NOT a teaching example: it lives under
-// packages/smoke/, builds to packages/smoke/dwt-calib.js (NEVER toolkit/workflows/,
+// packages/smoke/, builds to packages/smoke/wt-calib.js (NEVER toolkit/workflows/,
 // so it stays invisible to the plugin-twin / tier-1 smoke scan), and is launched
 // only by the calibration runner (src/calibrate.ts).
 //
@@ -12,7 +12,7 @@
 // rt.budget.spent() alongside the envelope. Driving it at two `count` values (the
 // B1 scaling gate) reveals whether the token signals actually scale with sub-agents.
 //
-// It deliberately mirrors dwt-smoke's generateAndFilter shape (trivial echo agents)
+// It deliberately mirrors wt-smoke's generateAndFilter shape (trivial echo agents)
 // because that is the workflow proven to complete inside the headless SDK window
 // (run.ts tier-2). The agents are CHEAP — so the derived tokens/agent is a lower
 // bound for real verifier/reviewer agents; the calibration docs say so.
@@ -53,7 +53,7 @@ function parseCalibInput(raw: unknown): CalibInput {
 
 export default defineWorkflow<CalibInput, unknown>({
   meta: {
-    name: 'dwt-calib',
+    name: 'wt-calib',
     description:
       'budgetFloor calibration probe: generateAndFilter(count, single tier) + budget.spent().',
     phases: [{ title: 'Calibrate' }],

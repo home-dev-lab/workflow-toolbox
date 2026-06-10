@@ -7,7 +7,7 @@ import { fanOutAndSynthesize } from '@workflow-toolbox/patterns'
 
 export default defineWorkflow({
   meta: {
-    name: 'dwt-fixture-with-pattern',
+    name: 'wt-fixture-with-pattern',
     description: 'Fixture that uses fanOutAndSynthesize from @workflow-toolbox/patterns to prove pattern inlining',
     phases: [{ title: 'Fan Out' }],
   },

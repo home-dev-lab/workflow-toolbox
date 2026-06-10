@@ -1,9 +1,9 @@
 // bundle.ts — esbuild bundler for @workflow-toolbox/build (Node-side; node: imports allowed).
 //
 // Pipeline:
-//   1. esbuild: bundle the entry file to an IIFE with globalName '__dwt'.
+//   1. esbuild: bundle the entry file to an IIFE with globalName '__wt'.
 //   2. Meta extraction via node:vm: evaluate the IIFE in a fresh context and
-//      read __dwt.default.meta. Safe-by-construction: the IIFE only DEFINES
+//      read __wt.default.meta. Safe-by-construction: the IIFE only DEFINES
 //      functions (defineWorkflow validates meta synchronously, no agents run).
 //   3. serializeMeta: walk the meta value and reject non-JSON-pure content
 //      with path-qualified actionable errors.
@@ -198,8 +198,8 @@ function walkForPurity(value: unknown, path: string): void {
 // ---------------------------------------------------------------------------
 // buildGlue — generate the glue block from SANDBOX_GLOBAL_NAMES.
 //
-// The glue binds sandbox globals into __rt and invokes __dwt.default.run.
-// We standardize on `__dwt.default.run` because bundleWorkflow requires the
+// The glue binds sandbox globals into __rt and invokes __wt.default.run.
+// We standardize on `__wt.default.run` because bundleWorkflow requires the
 // entry to `export default defineWorkflow({...})`.
 // ---------------------------------------------------------------------------
 
@@ -207,9 +207,9 @@ function buildGlue(): string {
   const rtFields = SANDBOX_GLOBAL_NAMES.join(', ')
   return (
     '\n'
-    + '// --- dwt glue: bind sandbox globals into rt, run the workflow, return ---\n'
+    + '// --- wt glue: bind sandbox globals into rt, run the workflow, return ---\n'
     + `const __rt = { ${rtFields} };\n`
-    + `return await __dwt.default.run(__rt, typeof args !== "undefined" ? args : undefined);\n`
+    + `return await __wt.default.run(__rt, typeof args !== "undefined" ? args : undefined);\n`
   )
 }
 
@@ -243,8 +243,8 @@ export async function bundleWorkflow(opts: {
   // -------------------------------------------------------------------------
   // Step 1: esbuild
   //
-  // format: 'iife' + globalName: '__dwt' → the output is:
-  //   var __dwt = (() => { … return __toCommonJS(entry_exports); })();
+  // format: 'iife' + globalName: '__wt' → the output is:
+  //   var __wt = (() => { … return __toCommonJS(entry_exports); })();
   //
   // platform: 'neutral' → no Node/browser specific shimming; the artifact
   // runs in the Claude Code sandbox which is neither.
@@ -264,7 +264,7 @@ export async function bundleWorkflow(opts: {
     absWorkingDir: path.dirname(path.resolve(opts.entry)),
     bundle: true,
     format: 'iife',
-    globalName: '__dwt',
+    globalName: '__wt',
     platform: 'neutral',
     target: 'es2022',
     write: false,
@@ -308,7 +308,7 @@ export async function bundleWorkflow(opts: {
   // -------------------------------------------------------------------------
   // Step 2: meta extraction via node:vm
   //
-  // We evaluate the IIFE in a fresh V8 context to read __dwt.default.meta.
+  // We evaluate the IIFE in a fresh V8 context to read __wt.default.meta.
   // This is safe-by-construction: the IIFE only DEFINES functions and calls
   // defineWorkflow() synchronously to validate meta. No agents run, no I/O
   // occurs. We never eval user-supplied data — only our own build-time output.
@@ -329,22 +329,22 @@ export async function bundleWorkflow(opts: {
     )
   }
 
-  const dwtExport = (context as Record<string, unknown>)['__dwt']
-  if (dwtExport === undefined) {
+  const wtExport = (context as Record<string, unknown>)['__wt']
+  if (wtExport === undefined) {
     throw new Error(
-      `bundleWorkflow: evaluated IIFE did not set __dwt — `
+      `bundleWorkflow: evaluated IIFE did not set __wt — `
       + `the entry file must \`export default defineWorkflow({...})\``,
     )
   }
 
-  const defaultExport = (dwtExport as Record<string, unknown>)['default']
+  const defaultExport = (wtExport as Record<string, unknown>)['default']
   if (
     defaultExport === undefined
     || typeof (defaultExport as Record<string, unknown>)['meta'] !== 'object'
     || typeof (defaultExport as Record<string, unknown>)['run'] !== 'function'
   ) {
     throw new Error(
-      `bundleWorkflow: __dwt.default is missing meta or run — `
+      `bundleWorkflow: __wt.default is missing meta or run — `
       + `the entry file must \`export default defineWorkflow({...})\``,
     )
   }

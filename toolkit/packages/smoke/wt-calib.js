@@ -1,13 +1,13 @@
 export const meta = {
-  "name": "dwt-smoke",
-  "description": "Minimal round-trip smoke: generateAndFilter(count=1) returns a PatternResult envelope.",
+  "name": "wt-calib",
+  "description": "budgetFloor calibration probe: generateAndFilter(count, single tier) + budget.spent().",
   "phases": [
     {
-      "title": "Smoke"
+      "title": "Calibrate"
     }
   ]
 }
-var __dwt = (() => {
+var __wt = (() => {
   var __defProp = Object.defineProperty;
   var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -26,10 +26,10 @@ var __dwt = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // smoke.workflow.ts
-  var smoke_workflow_exports = {};
-  __export(smoke_workflow_exports, {
-    default: () => smoke_workflow_default
+  // wt-calib.workflow.ts
+  var wt_calib_workflow_exports = {};
+  __export(wt_calib_workflow_exports, {
+    default: () => wt_calib_workflow_default
   });
 
   // ../build/src/define-workflow.ts
@@ -215,34 +215,42 @@ var __dwt = (() => {
     return { value, stats, warnings, trail };
   }
 
-  // smoke.workflow.ts
+  // wt-calib.workflow.ts
   var TOKEN_SCHEMA = {
     type: "object",
     properties: { token: { type: "string" } },
     required: ["token"],
     additionalProperties: false
   };
-  var MARKER = "dwt-smoke-ok";
-  var smoke_workflow_default = defineWorkflow({
+  function parseCalibInput(raw) {
+    const obj = raw !== null && typeof raw === "object" ? raw : null;
+    const candidate = typeof raw === "number" ? raw : obj !== null && typeof obj["count"] === "number" ? obj["count"] : obj !== null && typeof obj["claims"] === "number" ? obj["claims"] : 2;
+    const count = Number.isFinite(candidate) && candidate >= 1 ? Math.floor(candidate) : 2;
+    return { count };
+  }
+  var wt_calib_workflow_default = defineWorkflow({
     meta: {
-      name: "dwt-smoke",
-      description: "Minimal round-trip smoke: generateAndFilter(count=1) returns a PatternResult envelope.",
-      phases: [{ title: "Smoke" }]
+      name: "wt-calib",
+      description: "budgetFloor calibration probe: generateAndFilter(count, single tier) + budget.spent().",
+      phases: [{ title: "Calibrate" }]
     },
-    run: async (rt) => {
+    parseInput: parseCalibInput,
+    run: async (rt, input) => {
       const envelope = await generateAndFilter(rt, {
-        count: 1,
-        phase: "Smoke",
-        generatePrompt: () => `Return exactly this JSON object and nothing else: {"token":"${MARKER}"}`,
+        count: input.count,
+        phase: "Calibrate",
+        generateModel: "haiku",
+        filterModel: "haiku",
+        generatePrompt: (index) => `Return exactly this JSON object and nothing else: {"token":"calib-${index}"}`,
         generateSchema: TOKEN_SCHEMA,
-        filterPrompt: (candidate) => `Reply pass=true if this object's token equals the non-empty string "${MARKER}", otherwise pass=false. Object: ${JSON.stringify(candidate)}`
+        filterPrompt: (candidate) => `Reply pass=true if this object has a non-empty "token" string, else pass=false. Object: ${JSON.stringify(candidate)}`
       });
-      return { marker: MARKER, envelope };
+      return { envelope, budgetSpent: rt.budget.spent(), count: input.count, model: "haiku" };
     }
   });
-  return __toCommonJS(smoke_workflow_exports);
+  return __toCommonJS(wt_calib_workflow_exports);
 })();
 
-// --- dwt glue: bind sandbox globals into rt, run the workflow, return ---
+// --- wt glue: bind sandbox globals into rt, run the workflow, return ---
 const __rt = { agent, parallel, pipeline, phase, log, budget, workflow };
-return await __dwt.default.run(__rt, typeof args !== "undefined" ? args : undefined);
+return await __wt.default.run(__rt, typeof args !== "undefined" ? args : undefined);

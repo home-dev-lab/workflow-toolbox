@@ -1,6 +1,6 @@
 // run.ts — the live headless smoke harness ("upgrade canary").
 //
-// Launches committed dwt workflow artifacts through the REAL Claude Code
+// Launches committed toolkit workflow artifacts through the REAL Claude Code
 // Workflow runtime via the TS Agent SDK and asserts on the results. Run it
 // manually before a release and after every Claude Code upgrade:
 //
@@ -18,7 +18,7 @@
 //     false), then stop the run. Arg-less launches are safe: every committed
 //     workflow's parseInput throws before def.run, so no agent (let alone a
 //     worktree-mutating one) spawns.
-//   TIER 2 — round trip: launch the dedicated packages/smoke/dwt-smoke.js to
+//   TIER 2 — round trip: launch the dedicated packages/smoke/wt-smoke.js to
 //     completion and assert its PatternResult envelope arrived intact.
 
 import { readFileSync, readdirSync } from 'node:fs'
@@ -44,8 +44,8 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const WORKFLOWS_DIR = join(HERE, '../../../workflows')
-const SMOKE_ARTIFACT = join(HERE, '../dwt-smoke.js')
-const SMOKE_MARKER = 'dwt-smoke-ok'
+const SMOKE_ARTIFACT = join(HERE, '../wt-smoke.js')
+const SMOKE_MARKER = 'wt-smoke-ok'
 
 const LAUNCH_TIMEOUT_MS = 90_000
 const ROUNDTRIP_TIMEOUT_MS = 240_000
@@ -208,26 +208,26 @@ export async function runSmokeChecks(opts: RunnerOptions): Promise<RuntimeRunRes
     }
   }
 
-  console.log(`  [smoke] Tier 2 — round trip through dwt-smoke.js`)
+  console.log(`  [smoke] Tier 2 — round trip through wt-smoke.js`)
   try {
     const o = await launchWorkflow(SMOKE_ARTIFACT, true, opts)
     if (o.ccVersion !== null) ccVersion = o.ccVersion
     if (!o.launchOk) {
-      checks.push({ name: 'tier2 launch: dwt-smoke.js', ok: false, detail: o.launchReason })
+      checks.push({ name: 'tier2 launch: wt-smoke.js', ok: false, detail: o.launchReason })
     } else if (o.completionStatus !== 'completed') {
-      checks.push({ name: 'tier2 completion: dwt-smoke.js', ok: false, detail: `status ${o.completionStatus ?? 'none (timed out)'}` })
+      checks.push({ name: 'tier2 completion: wt-smoke.js', ok: false, detail: `status ${o.completionStatus ?? 'none (timed out)'}` })
     } else {
       const problems = checkSmokeResult(o.result, SMOKE_MARKER)
       checks.push({
-        name: 'tier2 round trip: dwt-smoke.js',
+        name: 'tier2 round trip: wt-smoke.js',
         ok: problems.length === 0,
         detail: problems.length === 0 ? 'envelope intact, marker echoed' : problems.join('; '),
       })
     }
-    console.log(`    ${checks[checks.length - 1]?.ok ? 'ok' : 'FAIL'}  dwt-smoke.js`)
+    console.log(`    ${checks[checks.length - 1]?.ok ? 'ok' : 'FAIL'}  wt-smoke.js`)
   } catch (err) {
-    checks.push({ name: 'tier2 round trip: dwt-smoke.js', ok: false, detail: annotateAuth(err).message })
-    console.log(`    FAIL  dwt-smoke.js`)
+    checks.push({ name: 'tier2 round trip: wt-smoke.js', ok: false, detail: annotateAuth(err).message })
+    console.log(`    FAIL  wt-smoke.js`)
   }
 
   return { ccVersion, checks }

@@ -29,16 +29,16 @@ describe('bundleWorkflow — hello fixture', () => {
     expect(result.code.trimStart()).toMatch(/^export const meta = \{/)
   })
 
-  it('emitted code contains `var __dwt` (esbuild IIFE)', async () => {
+  it('emitted code contains `var __wt` (esbuild IIFE)', async () => {
     const result = await bundleWorkflow({ entry: fixturePath('hello.workflow.ts') })
-    expect(result.code).toContain('var __dwt')
+    expect(result.code).toContain('var __wt')
   })
 
   it('emitted code ends with the glue block', async () => {
     const result = await bundleWorkflow({ entry: fixturePath('hello.workflow.ts') })
     const trimmed = result.code.trimEnd()
     // Must end with the return statement from the glue
-    expect(trimmed).toMatch(/return await __dwt\.default\.run\(__rt,/)
+    expect(trimmed).toMatch(/return await __wt\.default\.run\(__rt,/)
   })
 
   it('lintWorkflowSource reports zero errors on emitted code', async () => {
@@ -61,7 +61,7 @@ describe('bundleWorkflow — hello fixture', () => {
 
   it('extracted meta equals the fixture meta', async () => {
     const result = await bundleWorkflow({ entry: fixturePath('hello.workflow.ts') })
-    expect(result.meta.name).toBe('dwt-fixture-hello')
+    expect(result.meta.name).toBe('wt-fixture-hello')
     expect(result.meta.description).toContain('Minimal fixture')
     expect(result.meta.phases).toHaveLength(1)
     expect(result.meta.phases?.[0]?.title).toBe('Run')
@@ -83,9 +83,9 @@ describe('bundleWorkflow — hello fixture', () => {
     expect(result.parts.metaStatement.trimStart()).toMatch(/^export const meta = \{/)
   })
 
-  it('parts.iife contains var __dwt', async () => {
+  it('parts.iife contains var __wt', async () => {
     const result = await bundleWorkflow({ entry: fixturePath('hello.workflow.ts') })
-    expect(result.parts.iife).toContain('var __dwt')
+    expect(result.parts.iife).toContain('var __wt')
   })
 
   it('parts.glue contains all SANDBOX_GLOBAL_NAMES names', async () => {
@@ -272,8 +272,8 @@ describe('sizeWarnings — size policy boundary tests', () => {
 // entry built from two different cwds produces different bytes — breaking
 // ADR 0002 (committed artifacts must be deterministic and diffable) and the
 // plugin-twin byte-identity guarantee. Discovered in P3.4 when the root-level
-// `pnpm dwt:build` script (cwd toolkit/) emitted a different artifact than the
-// legacy `pnpm -F @workflow-toolbox/build dwt` form (cwd packages/build/).
+// `pnpm wt:build` script (cwd toolkit/) emitted a different artifact than the
+// legacy `pnpm -F @workflow-toolbox/build workflow-toolbox` form (cwd packages/build/).
 
 // NOTE: a chdir-based "build twice from two cwds" test would be VACUOUS here:
 // esbuild's JS API spawns a long-lived service process whose working directory

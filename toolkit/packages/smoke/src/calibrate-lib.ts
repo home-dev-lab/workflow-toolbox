@@ -324,7 +324,7 @@ export function recommendFloor(
       recommendedFloor: null,
       rationale:
         'No usable token signal across the recorded runs (insufficient data) — ' +
-        'budgetFloor sizing stays heuristic. Capture more runs with `pnpm dwt:calibrate record`.',
+        'budgetFloor sizing stays heuristic. Capture more runs with `pnpm wt:calibrate record`.',
     }
   }
 

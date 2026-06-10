@@ -2,7 +2,7 @@
 //
 // lint.ts started life as a port of the plugin's validate-workflow.mjs, then
 // gained the quoted-key extension for serialized meta (M3) — and the .mjs
-// silently drifted: it false-positived on every dwt-built artifact until M6
+// silently drifted: it false-positived on every toolkit-built artifact until M6
 // backported the extension. These tests pin the alignment so drift in either
 // direction goes red instead of unnoticed:
 //
@@ -47,7 +47,7 @@ const SKILL_TOOLKIT_EXAMPLES_DIR = join(
 // Helpers
 // ---------------------------------------------------------------------------
 
-const TMP_DIR = mkdtempSync(join(tmpdir(), 'dwt-plugin-lint-'))
+const TMP_DIR = mkdtempSync(join(tmpdir(), 'wt-plugin-lint-'))
 let fixtureCounter = 0
 
 afterAll(() => {
@@ -90,13 +90,13 @@ return r
 `,
   ],
   [
-    'clean serialized meta (JSON-quoted keys, dwt shape)',
+    'clean serialized meta (JSON-quoted keys, bundler shape)',
     `export const meta = {
   "name": "wf",
-  "description": "a dwt-built workflow"
+  "description": "a toolkit-built workflow"
 };
-var __dwt = (() => { var x = {}; return x; })();
-return await __dwt.default.run({ agent, parallel, pipeline, phase, log, budget, workflow }, args)
+var __wt = (() => { var x = {}; return x; })();
+return await __wt.default.run({ agent, parallel, pipeline, phase, log, budget, workflow }, args)
 `,
   ],
   [
@@ -222,7 +222,7 @@ describe('plugin linter ↔ lintWorkflowSource verdict parity', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 2. Every committed dwt artifact passes the plugin's linter
+// 2. Every committed toolkit artifact passes the plugin's linter
 // ---------------------------------------------------------------------------
 
 describe('plugin linter accepts committed toolkit artifacts', () => {

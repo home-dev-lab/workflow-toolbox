@@ -37,14 +37,14 @@ describe('script generators', () => {
 
   it('declares exactly the two negative cases', () => {
     const cases = edgeCases()
-    expect(cases.map((c) => c.filename)).toEqual(['dwt-edge-oversize.js', 'dwt-edge-metaorder.js'])
+    expect(cases.map((c) => c.filename)).toEqual(['wt-edge-oversize.js', 'wt-edge-metaorder.js'])
   })
 })
 
 describe('canonicalizeReason', () => {
   it('strips the volatile temp path so two runs of the same rejection match', () => {
-    const a = canonicalizeReason('Workflow script file /tmp/dwt-canary-AAA111/dwt-edge-oversize.js exceeds 524288 bytes')
-    const b = canonicalizeReason('Workflow script file /tmp/dwt-canary-ZZZ999/dwt-edge-oversize.js exceeds 524288 bytes')
+    const a = canonicalizeReason('Workflow script file /tmp/wt-canary-AAA111/wt-edge-oversize.js exceeds 524288 bytes')
+    const b = canonicalizeReason('Workflow script file /tmp/wt-canary-ZZZ999/wt-edge-oversize.js exceeds 524288 bytes')
     expect(a).toBe(b)
     expect(a).toContain('<path>')
     expect(a).toContain('524288') // semantic number kept on purpose

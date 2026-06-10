@@ -58,9 +58,18 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.1
+      '@workflow-toolbox/debugger':
+        specifier: workspace:*
+        version: link:../debugger
       '@workflow-toolbox/patterns':
         specifier: workspace:*
         version: link:../patterns
+      '@workflow-toolbox/scaffold':
+        specifier: workspace:*
+        version: link:../scaffold
+      '@workflow-toolbox/std':
+        specifier: workspace:*
+        version: link:../std
       tsx:
         specifier: ^4.0.0
         version: 4.22.4

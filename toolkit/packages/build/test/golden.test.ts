@@ -1,6 +1,6 @@
-// golden.test.ts — golden file test for dwt-fixture-hello.js artifact.
+// golden.test.ts — golden file test for wt-fixture-hello.js artifact.
 //
-// Commits the expected emitted hello artifact to test/golden/dwt-fixture-hello.js.
+// Commits the expected emitted hello artifact to test/golden/wt-fixture-hello.js.
 // On each run, bundleWorkflow output is compared EXACTLY to the golden file.
 //
 // Guard: set UPDATE_GOLDEN=1 to regenerate the golden file instead of asserting.
@@ -10,7 +10,7 @@
 // helper names or IIFE wrapper format). When that happens:
 //   1. Run UPDATE_GOLDEN=1 pnpm test to regenerate.
 //   2. Review the diff carefully before committing — the meta statement must
-//      still be first, var __dwt must still appear, glue must still be last.
+//      still be first, var __wt must still appear, glue must still be last.
 
 import { describe, it, expect } from 'vitest'
 import * as fs from 'node:fs'
@@ -20,11 +20,11 @@ import { bundleWorkflow } from '../src/bundle.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURES = path.join(__dirname, 'fixtures')
-const GOLDEN_FILE = path.join(__dirname, 'golden', 'dwt-fixture-hello.js')
+const GOLDEN_FILE = path.join(__dirname, 'golden', 'wt-fixture-hello.js')
 
 const UPDATE_GOLDEN = process.env['UPDATE_GOLDEN'] === '1'
 
-describe('golden file — dwt-fixture-hello', () => {
+describe('golden file — wt-fixture-hello', () => {
   it('bundled hello fixture matches golden file exactly', async () => {
     const result = await bundleWorkflow({
       entry: path.join(FIXTURES, 'hello.workflow.ts'),

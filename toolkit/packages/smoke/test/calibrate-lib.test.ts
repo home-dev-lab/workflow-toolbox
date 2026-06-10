@@ -96,14 +96,14 @@ const TS = '2026-06-08T00:00:00.000Z'
 describe('summarizeRun', () => {
   it('captures the authoritative budgetSpent + runtime agentCount + notification usage', () => {
     const rec = summarizeRun({
-      label: 'dwt-calib',
+      label: 'wt-calib',
       timestamp: TS,
       runId: 'wabc123',
       output: SYNTHETIC_OUTPUT,
       usage: { totalTokens: 30000, toolUses: 4, durationMs: 5000 },
     })
     expect(rec.schemaVersion).toBe(CALIBRATION_SCHEMA_VERSION)
-    expect(rec.workflow).toBe('dwt-calib')
+    expect(rec.workflow).toBe('wt-calib')
     expect(rec.timestamp).toBe(TS)
     expect(rec.runId).toBe('wabc123')
     expect(rec.runtimeAgentCount).toBe(4)
@@ -116,7 +116,7 @@ describe('summarizeRun', () => {
   })
 
   it('is deterministic — same input + injected timestamp → identical record', () => {
-    const base = { label: 'dwt-calib', timestamp: TS, output: SYNTHETIC_OUTPUT, usage: null }
+    const base = { label: 'wt-calib', timestamp: TS, output: SYNTHETIC_OUTPUT, usage: null }
     expect(summarizeRun(base)).toEqual(summarizeRun(base))
   })
 

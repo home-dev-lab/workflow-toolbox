@@ -108,7 +108,7 @@ export async function runEdgeChecks(opts: RunnerOptions): Promise<RuntimeRunResu
   const cases: EdgeCase[] = edgeCases()
   const checks: CheckResult[] = []
   let ccVersion: string | null = null
-  const dir = mkdtempSync(join(tmpdir(), 'dwt-canary-'))
+  const dir = mkdtempSync(join(tmpdir(), 'wt-canary-'))
 
   console.log(`  [canary] negative-case canary over ${cases.length} case(s)`)
   try {

@@ -17,7 +17,7 @@ export const meta = {
     }
   ]
 }
-var __dwt = (() => {
+var __wt = (() => {
   var __defProp = Object.defineProperty;
   var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -316,6 +316,6 @@ Return { "verified": true|false, "evidence": "<what you found in the diff/tests>
   return __toCommonJS(monorepo_refactor_execute_workflow_exports);
 })();
 
-// --- dwt glue: bind sandbox globals into rt, run the workflow, return ---
+// --- wt glue: bind sandbox globals into rt, run the workflow, return ---
 const __rt = { agent, parallel, pipeline, phase, log, budget, workflow };
-return await __dwt.default.run(__rt, typeof args !== "undefined" ? args : undefined);
+return await __wt.default.run(__rt, typeof args !== "undefined" ? args : undefined);

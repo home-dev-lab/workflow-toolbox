@@ -1,12 +1,12 @@
 // calibrate.ts — IMPURE budgetFloor-calibration runner (held out of `pnpm test`,
 // like run.ts / canary-all.ts; still typechecked). Two modes:
 //
-//   pnpm dwt:calibrate record [--workflow <path>] [--claims N] [--label L]
-//       Drive a workflow through the REAL runtime (the dwt-calib probe by default),
+//   pnpm wt:calibrate record [--workflow <path>] [--claims N] [--label L]
+//       Drive a workflow through the REAL runtime (the wt-calib probe by default),
 //       capture the task_notification usage + the output file, and APPEND one
 //       RunStatsRecord to run-stats/runs.jsonl (gitignored, per-machine real data).
 //
-//   pnpm dwt:calibrate derive [--claims N] [--votes N] [--synthesis N] [--margin M]
+//   pnpm wt:calibrate derive [--claims N] [--votes N] [--synthesis N] [--margin M]
 //       Read the log, segregate the authoritative vs observed token signals, and
 //       print a recommended budgetFloor for the scenario (or an honest "no signal").
 //
@@ -39,13 +39,13 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TOOLKIT_ROOT = join(HERE, '../../..')
-const DEFAULT_PROBE = join(HERE, '../dwt-calib.js')
+const DEFAULT_PROBE = join(HERE, '../wt-calib.js')
 const DEFAULT_LOG = join(TOOLKIT_ROOT, 'run-stats', 'runs.jsonl')
 
 const ROUNDTRIP_TIMEOUT_MS = 240_000
 
 // ---------------------------------------------------------------------------
-// arg parsing (minimal, mirrors the other dwt CLIs)
+// arg parsing (minimal, mirrors the other toolkit CLIs)
 // ---------------------------------------------------------------------------
 
 interface Args {
@@ -98,13 +98,13 @@ function parseArgs(argv: string[]): Args {
 function printHelp(): void {
   console.log(
     [
-      'dwt:calibrate — derive a budgetFloor from real run statistics',
+      'wt:calibrate — derive a budgetFloor from real run statistics',
       '',
       'Usage:',
-      '  pnpm dwt:calibrate record [--workflow <path>] [--claims N] [--label L]',
-      '  pnpm dwt:calibrate derive [--claims N] [--votes N] [--synthesis N] [--margin M]',
+      '  pnpm wt:calibrate record [--workflow <path>] [--claims N] [--label L]',
+      '  pnpm wt:calibrate derive [--claims N] [--votes N] [--synthesis N] [--margin M]',
       '',
-      'record  drive a workflow live (the dwt-calib probe by default) and append one',
+      'record  drive a workflow live (the wt-calib probe by default) and append one',
       '        RunStatsRecord to run-stats/runs.jsonl. Spends real agent runs.',
       'derive  read the log and print a recommended budgetFloor (or an honest no-signal).',
     ].join('\n'),
@@ -117,7 +117,7 @@ function printHelp(): void {
 
 // Drive the same way the proven smoke round-trip does (run.ts): a single string
 // prompt + maxTurns, looping until the background task_notification arrives. The
-// probe workflow is kept small + fast (like dwt-smoke's generateAndFilter) so it
+// probe workflow is kept small + fast (like wt-smoke's generateAndFilter) so it
 // completes inside the window the SDK keeps the stream open for.
 const LAUNCH_MAX_TURNS = 4
 
@@ -271,7 +271,7 @@ function runDerive(a: Args): number {
   const records = readLog(a.log)
   if (records.length === 0) {
     console.error(
-      `[calibrate] no records at ${a.log} — run \`pnpm dwt:calibrate record\` first ` +
+      `[calibrate] no records at ${a.log} — run \`pnpm wt:calibrate record\` first ` +
         `(or pass --log <path> to a seeded log).`,
     )
     return 1

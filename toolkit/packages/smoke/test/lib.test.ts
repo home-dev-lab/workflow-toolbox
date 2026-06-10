@@ -1,5 +1,5 @@
 // lib.test.ts — unit tests for the pure smoke-harness logic, run against REAL
-// SDK messages captured from live `query()` runs against dwt-smoke.js
+// SDK messages captured from live `query()` runs against wt-smoke.js
 // (test/fixtures/). The only edits to the captured JSON: the local home-dir
 // username was neutralized to `user` (these ship in a public repo) and one
 // fixture's `is_error`/content was flipped to model a syntax-rejected launch.
@@ -38,7 +38,7 @@ describe('readWorkflowToolUse', () => {
     const tu = readWorkflowToolUse(TOOL_USE)
     expect(tu).not.toBeNull()
     expect(tu?.id).toMatch(/^toolu_/)
-    expect(tu?.scriptPath).toMatch(/dwt-smoke\.js$/)
+    expect(tu?.scriptPath).toMatch(/wt-smoke\.js$/)
   })
 
   it('returns null for a non-assistant message', () => {
@@ -126,7 +126,7 @@ describe('launchVerdict', () => {
 
 describe('checkSmokeResult', () => {
   it('accepts a real completed envelope (no problems)', () => {
-    expect(checkSmokeResult(OUTPUT.result, 'dwt-smoke-ok')).toEqual([])
+    expect(checkSmokeResult(OUTPUT.result, 'wt-smoke-ok')).toEqual([])
   })
 
   it('flags a wrong marker', () => {
@@ -135,24 +135,24 @@ describe('checkSmokeResult', () => {
   })
 
   it('flags a missing envelope', () => {
-    expect(checkSmokeResult({ marker: 'dwt-smoke-ok' }, 'dwt-smoke-ok')).toContain(
+    expect(checkSmokeResult({ marker: 'wt-smoke-ok' }, 'wt-smoke-ok')).toContain(
       'result.envelope is missing or not an object',
     )
   })
 
   it('flags missing stats counters', () => {
-    const broken = { marker: 'dwt-smoke-ok', envelope: { value: [], warnings: [], trail: [{ stage: 's', outcome: 'ok' }], stats: { itemsIn: 1 } } }
-    const problems = checkSmokeResult(broken, 'dwt-smoke-ok')
+    const broken = { marker: 'wt-smoke-ok', envelope: { value: [], warnings: [], trail: [{ stage: 's', outcome: 'ok' }], stats: { itemsIn: 1 } } }
+    const problems = checkSmokeResult(broken, 'wt-smoke-ok')
     expect(problems.some((p) => p.includes('agentsSpawned'))).toBe(true)
   })
 
   it('flags an empty trail', () => {
-    const broken = { marker: 'dwt-smoke-ok', envelope: { value: [], warnings: [], trail: [], stats: { itemsIn: 0, itemsOut: 0, agentsSpawned: 0, dropped: 0, truncated: 0 } } }
-    expect(checkSmokeResult(broken, 'dwt-smoke-ok')).toContain('envelope.trail is missing, not an array, or empty')
+    const broken = { marker: 'wt-smoke-ok', envelope: { value: [], warnings: [], trail: [], stats: { itemsIn: 0, itemsOut: 0, agentsSpawned: 0, dropped: 0, truncated: 0 } } }
+    expect(checkSmokeResult(broken, 'wt-smoke-ok')).toContain('envelope.trail is missing, not an array, or empty')
   })
 
   it('rejects a non-object result', () => {
-    expect(checkSmokeResult('nope', 'dwt-smoke-ok')[0]).toContain('not an object')
+    expect(checkSmokeResult('nope', 'wt-smoke-ok')[0]).toContain('not an object')
   })
 })
 

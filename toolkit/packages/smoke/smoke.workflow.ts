@@ -8,7 +8,7 @@
 //   agent() → pattern → envelope (value / stats / warnings / trail) → result.
 //
 // This is NOT a teaching example. It lives under packages/smoke/, is built to
-// packages/smoke/dwt-smoke.js (NEVER toolkit/workflows/, so it stays invisible
+// packages/smoke/wt-smoke.js (NEVER toolkit/workflows/, so it stays invisible
 // to the plugin-twin / artifact-count assertions), and is launched only by the
 // smoke harness (src/run.ts).
 
@@ -27,11 +27,11 @@ const TOKEN_SCHEMA = {
 type Token = FromSchema<typeof TOKEN_SCHEMA>
 
 // The marker the harness asserts on. Kept in sync with src/run.ts SMOKE_MARKER.
-const MARKER = 'dwt-smoke-ok'
+const MARKER = 'wt-smoke-ok'
 
 export default defineWorkflow({
   meta: {
-    name: 'dwt-smoke',
+    name: 'wt-smoke',
     description: 'Minimal round-trip smoke: generateAndFilter(count=1) returns a PatternResult envelope.',
     phases: [{ title: 'Smoke' }],
   },

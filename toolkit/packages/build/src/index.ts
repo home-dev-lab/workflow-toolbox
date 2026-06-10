@@ -4,7 +4,7 @@
 // from '@workflow-toolbox/build/define' (sandbox-pure subpath), NOT from '@workflow-toolbox/build'.
 // This index re-exports the Node-side bundler (node:vm, esbuild); importing
 // it from a workflow entry drags those into the platform-neutral bundle and
-// `dwt build` fails with "Could not resolve node:vm".
+// `workflow-toolbox build` fails with "Could not resolve node:vm".
 //
 // Batch A exports:
 //   • defineWorkflow + normalizeArgs (sandbox-pure, bundled into workflow artifacts)

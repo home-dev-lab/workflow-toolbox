@@ -5,7 +5,7 @@
 // rejected with the actionable export-default message.
 export default {
   meta: {
-    name: 'dwt-fixture-missing-run',
+    name: 'wt-fixture-missing-run',
     description: 'Negative fixture — default export has meta but no run',
   },
 }

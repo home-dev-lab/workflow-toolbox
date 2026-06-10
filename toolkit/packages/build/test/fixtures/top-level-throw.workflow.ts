@@ -10,7 +10,7 @@ throw new Error('boom — deliberate top-level side effect')
 // Unreachable, but keeps the file a structurally plausible workflow entry.
 export default defineWorkflow({
   meta: {
-    name: 'dwt-fixture-top-level-throw',
+    name: 'wt-fixture-top-level-throw',
     description: 'Negative fixture — module top level throws',
   },
   run: async () => ({ ok: true }),

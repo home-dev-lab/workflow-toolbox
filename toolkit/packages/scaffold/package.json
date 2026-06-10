@@ -8,6 +8,10 @@
     ".": {
       "import": "./src/index.ts",
       "types": "./src/index.ts"
+    },
+    "./spec-io": {
+      "import": "./src/spec-io.ts",
+      "types": "./src/spec-io.ts"
     }
   },
   "scripts": {

@@ -161,7 +161,7 @@ function stripToolError(text: string): string {
 
 const STAT_KEYS = ['itemsIn', 'itemsOut', 'agentsSpawned', 'dropped', 'truncated'] as const
 
-/** Validate the `result` field of a completed dwt-smoke run. Returns a list of
+/** Validate the `result` field of a completed wt-smoke run. Returns a list of
  *  problems — empty means the round-trip envelope arrived intact. Asserts the
  *  PatternResult shape structurally (deterministic) plus the marker. */
 export function checkSmokeResult(result: unknown, marker: string): string[] {
@@ -260,7 +260,7 @@ export function annotateAuth(err: unknown): Error {
   const message = err instanceof Error ? err.message : String(err)
   if (/auth|credential|login|not found|ENOENT|binary/i.test(message)) {
     return new Error(
-      `${message}\n\n[dwt] This harness runs under your local Claude Code subscription — the SDK ` +
+      `${message}\n\n[wt] This harness runs under your local Claude Code subscription — the SDK ` +
         `reuses ~/.claude credentials (no API key in env). Make sure you are logged in (run \`claude\` ` +
         `once interactively). For CI, set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN.`,
     )

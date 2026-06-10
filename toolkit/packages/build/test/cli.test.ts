@@ -20,7 +20,7 @@ const PACKAGE_ROOT = path.resolve(__dirname, '..')
 const tmpDirs: string[] = []
 
 function makeTmpDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dwt-cli-test-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-cli-test-'))
   tmpDirs.push(dir)
   return dir
 }
@@ -32,21 +32,21 @@ afterEach(() => {
 })
 
 // ---------------------------------------------------------------------------
-// dwt build <entry> --out-dir <dir>
+// workflow-toolbox build <entry> --out-dir <dir>
 // ---------------------------------------------------------------------------
 
-describe('cli main() — dwt build', () => {
-  it('builds hello fixture and writes dwt-fixture-hello.js to outDir', async () => {
+describe('cli main() — workflow-toolbox build', () => {
+  it('builds hello fixture and writes wt-fixture-hello.js to outDir', async () => {
     const outDir = makeTmpDir()
     await main(['build', path.join(FIXTURES, 'hello.workflow.ts'), '--out-dir', outDir])
-    const outFile = path.join(outDir, 'dwt-fixture-hello.js')
+    const outFile = path.join(outDir, 'wt-fixture-hello.js')
     expect(fs.existsSync(outFile)).toBe(true)
   })
 
   it('output file passes lintWorkflowSource with zero errors', async () => {
     const outDir = makeTmpDir()
     await main(['build', path.join(FIXTURES, 'hello.workflow.ts'), '--out-dir', outDir])
-    const outFile = path.join(outDir, 'dwt-fixture-hello.js')
+    const outFile = path.join(outDir, 'wt-fixture-hello.js')
     const content = fs.readFileSync(outFile, 'utf8')
     const lint = lintWorkflowSource(content)
     expect(lint.errors).toHaveLength(0)
@@ -54,17 +54,17 @@ describe('cli main() — dwt build', () => {
 
   it('output filename is meta.name (not entry filename)', async () => {
     const outDir = makeTmpDir()
-    // The fixture has meta.name = 'dwt-fixture-hello', entry file is 'hello.workflow.ts'
+    // The fixture has meta.name = 'wt-fixture-hello', entry file is 'hello.workflow.ts'
     await main(['build', path.join(FIXTURES, 'hello.workflow.ts'), '--out-dir', outDir])
     // Output should be keyed by meta.name
-    expect(fs.existsSync(path.join(outDir, 'dwt-fixture-hello.js'))).toBe(true)
+    expect(fs.existsSync(path.join(outDir, 'wt-fixture-hello.js'))).toBe(true)
     // Should NOT exist under the source filename
     expect(fs.existsSync(path.join(outDir, 'hello.workflow.js'))).toBe(false)
   })
 
   it('overwrites an existing artifact with the same name (rebuild-in-place)', async () => {
     const outDir = makeTmpDir()
-    const outFile = path.join(outDir, 'dwt-fixture-hello.js')
+    const outFile = path.join(outDir, 'wt-fixture-hello.js')
     // Pre-populate the target with stale content — a rebuild must replace it
     // silently (built artifacts are derived files, never the source of truth).
     fs.writeFileSync(outFile, '// stale artifact from a previous build\n', 'utf8')
@@ -90,14 +90,14 @@ describe('cli main() — dwt build', () => {
 })
 
 // ---------------------------------------------------------------------------
-// dwt check <file.js>
+// workflow-toolbox check <file.js>
 // ---------------------------------------------------------------------------
 
-describe('cli main() — dwt check', () => {
+describe('cli main() — workflow-toolbox check', () => {
   it('exits 0 behavior for a clean built artifact', async () => {
     const outDir = makeTmpDir()
     await main(['build', path.join(FIXTURES, 'hello.workflow.ts'), '--out-dir', outDir])
-    const outFile = path.join(outDir, 'dwt-fixture-hello.js')
+    const outFile = path.join(outDir, 'wt-fixture-hello.js')
     // Should not throw / reject for a clean file
     await expect(main(['check', outFile])).resolves.toBeUndefined()
   })
@@ -161,20 +161,20 @@ describe('cli — spawn test via tsx', () => {
       proc.stdout?.on('data', () => { /* captured above */ })
       proc.stderr?.on('data', () => { /* captured above */ })
     })
-    expect(fs.existsSync(path.join(outDir, 'dwt-fixture-hello.js'))).toBe(true)
+    expect(fs.existsSync(path.join(outDir, 'wt-fixture-hello.js'))).toBe(true)
   }, 90_000) // generous timeout for cold pnpm+tsx start
 
-  // Regression: the published package exposes cli.ts as the `dwt` bin, which npm
-  // installs as a SYMLINK (node_modules/.bin/dwt → dist/cli.js). Node sets
+  // Regression: the published package exposes cli.ts as the `workflow-toolbox` bin, which npm
+  // installs as a SYMLINK (node_modules/.bin/workflow-toolbox → dist/cli.js). Node sets
   // process.argv[1] to the symlink path but resolves import.meta.url to the
   // target's realpath, so a naive URL-equality entry guard silently no-ops and
-  // `dwt build` produces nothing (caught by the consumer smoke test, never by the
+  // `workflow-toolbox build` produces nothing (caught by the consumer smoke test, never by the
   // in-repo `tsx src/cli.ts` path which is invoked directly). This invokes the CLI
   // through a symlink to reproduce that argv[1]≠import.meta.url condition.
   it('runs main() when invoked through a symlink (bin-symlink entry-guard regression)', async () => {
     const outDir = makeTmpDir()
     const linkDir = makeTmpDir()
-    const link = path.join(linkDir, 'dwt-link.ts')
+    const link = path.join(linkDir, 'wt-link.ts')
     fs.symlinkSync(path.join(PACKAGE_ROOT, 'src', 'cli.ts'), link)
     await new Promise<void>((resolve, reject) => {
       const proc = cp.execFile(
@@ -197,6 +197,6 @@ describe('cli — spawn test via tsx', () => {
       proc.stderr?.on('data', () => { /* captured above */ })
     })
     // With the old URL-equality guard, the symlink invocation no-ops → file absent.
-    expect(fs.existsSync(path.join(outDir, 'dwt-fixture-hello.js'))).toBe(true)
+    expect(fs.existsSync(path.join(outDir, 'wt-fixture-hello.js'))).toBe(true)
   }, 90_000)
 })

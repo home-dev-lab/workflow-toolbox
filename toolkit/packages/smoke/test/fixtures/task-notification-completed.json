@@ -4,7 +4,7 @@
   "task_id": "w089b10m7",
   "tool_use_id": "toolu_01XZVAQzPtAbPa8XzYVp5bNi",
   "status": "completed",
-  "output_file": "/tmp/claude-1000/-tmp-dwt-sdk-spike/b895fe3b-36dd-4db1-b403-d277679cbdef/tasks/w089b10m7.output",
+  "output_file": "/tmp/claude-1000/-tmp-wt-sdk-spike/b895fe3b-36dd-4db1-b403-d277679cbdef/tasks/w089b10m7.output",
   "summary": "Dynamic workflow \"Minimal round-trip smoke: generateAndFilter(count=1) returns a PatternResult envelope.\" completed",
   "usage": {
     "total_tokens": 14854,

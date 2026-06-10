@@ -19,10 +19,10 @@
     "status": "async_launched",
     "taskId": "w089b10m7",
     "taskType": "local_workflow",
-    "workflowName": "dwt-smoke",
+    "workflowName": "wt-smoke",
     "runId": "wf_5423a868-b6c",
     "summary": "Minimal round-trip smoke: generateAndFilter(count=1) returns a PatternResult envelope.",
-    "transcriptDir": "/home/user/.claude/projects/-tmp-dwt-sdk-spike/b895fe3b-36dd-4db1-b403-d277679cbdef/subagents/workflows/wf_5423a868-b6c",
-    "scriptPath": "/home/user/projects/dynamic-workflow-toolbox/toolkit/packages/smoke/dwt-smoke.js"
+    "transcriptDir": "/home/user/.claude/projects/-tmp-wt-sdk-spike/b895fe3b-36dd-4db1-b403-d277679cbdef/subagents/workflows/wf_5423a868-b6c",
+    "scriptPath": "/home/user/projects/dynamic-workflow-toolbox/toolkit/packages/smoke/wt-smoke.js"
   }
 }

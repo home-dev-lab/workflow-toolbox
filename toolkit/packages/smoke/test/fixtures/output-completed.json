@@ -3,11 +3,11 @@
   "agentCount": 2,
   "logs": [],
   "result": {
-    "marker": "dwt-smoke-ok",
+    "marker": "wt-smoke-ok",
     "envelope": {
       "value": [
         {
-          "token": "dwt-smoke-ok"
+          "token": "wt-smoke-ok"
         }
       ],
       "stats": {

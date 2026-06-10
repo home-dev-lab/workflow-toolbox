@@ -428,12 +428,12 @@ describe('lintWorkflowSource — clean source', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Serialized meta (JSON-quoted keys) — the shape dwt emits
+// Serialized meta (JSON-quoted keys) — the shape the bundler emits
 //
 // The stripper blanks string contents, so quoted keys vanish from the stripped
 // copy; the linter must match them on the raw meta span instead. Regression
 // guard for the M3 false positive ("meta is missing a `name` field" on every
-// dwt-emitted artifact).
+// bundler-emitted artifact).
 // ---------------------------------------------------------------------------
 
 describe('lintWorkflowSource — serialized meta with JSON-quoted keys', () => {
@@ -447,7 +447,7 @@ describe('lintWorkflowSource — serialized meta with JSON-quoted keys', () => {
     '    }',
     '  ]',
     '}',
-    'return await __dwt.default.run({ log, phase }, args)',
+    'return await __wt.default.run({ log, phase }, args)',
   ].join('\n')
 
   it('does not report missing name/description for quoted keys', () => {

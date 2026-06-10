@@ -1,6 +1,6 @@
 {
   "name": "@workflow-toolbox/build",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "repository": {
@@ -8,7 +8,9 @@
     "url": "git+https://github.com/home-dev-lab/workflow-toolbox.git",
     "directory": "toolkit/packages/build"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "import": "./src/index.ts",
@@ -24,7 +26,7 @@
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
     "bin": {
-      "dwt": "./dist/cli.js"
+      "workflow-toolbox": "./dist/cli.js"
     },
     "exports": {
       ".": {
@@ -40,8 +42,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "dwt": "tsx src/cli.ts",
-    "build": "tsup"
+    "build": "tsup",
+    "wt": "tsx src/cli.ts"
   },
   "dependencies": {
     "@workflow-toolbox/runtime": "workspace:*",
@@ -51,6 +53,9 @@
     "@workflow-toolbox/patterns": "workspace:*",
     "@types/node": "^24.0.0",
     "tsx": "^4.0.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "@workflow-toolbox/scaffold": "workspace:*",
+    "@workflow-toolbox/debugger": "workspace:*",
+    "@workflow-toolbox/std": "workspace:*"
   }
 }

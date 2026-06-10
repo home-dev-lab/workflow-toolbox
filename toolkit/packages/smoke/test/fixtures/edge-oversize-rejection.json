@@ -5,7 +5,7 @@
     "content": [
       {
         "type": "tool_result",
-        "content": "<tool_use_error>Workflow script file /tmp/dwt-canary-XXXXXX/dwt-edge-oversize.js exceeds 524288 bytes</tool_use_error>",
+        "content": "<tool_use_error>Workflow script file /tmp/wt-canary-XXXXXX/wt-edge-oversize.js exceeds 524288 bytes</tool_use_error>",
         "is_error": true,
         "tool_use_id": "toolu_01PWoJP1DxsfbLrYUCsjtWHL"
       }
@@ -15,5 +15,5 @@
   "session_id": "00000000-0000-0000-0000-000000000000",
   "uuid": "00000000-0000-0000-0000-000000000000",
   "timestamp": "2026-06-07T20:48:59.528Z",
-  "tool_use_result": "Error: Workflow script file /tmp/dwt-canary-XXXXXX/dwt-edge-oversize.js exceeds 524288 bytes"
+  "tool_use_result": "Error: Workflow script file /tmp/wt-canary-XXXXXX/wt-edge-oversize.js exceeds 524288 bytes"
 }

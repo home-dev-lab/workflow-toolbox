@@ -34,7 +34,7 @@ const tmpFiles: string[] = []
 
 function writeTmp(content: string, suffix = '.ts'): string {
   const tmpDir = os.tmpdir()
-  const file = path.join(tmpDir, `dwt-typecheck-${Date.now()}-${Math.random().toString(36).slice(2)}${suffix}`)
+  const file = path.join(tmpDir, `wt-typecheck-${Date.now()}-${Math.random().toString(36).slice(2)}${suffix}`)
   fs.writeFileSync(file, content, 'utf8')
   tmpFiles.push(file)
   return file

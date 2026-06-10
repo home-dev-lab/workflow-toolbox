@@ -28,7 +28,7 @@ export interface EdgeCase {
   reasonPattern: RegExp
 }
 
-// A minimal, VALID dwt-shaped artifact: `meta` literal first, then a top-level
+// A minimal, VALID toolkit-shaped artifact: `meta` literal first, then a top-level
 // `return`. Used as the base for the oversized case so SIZE is the only defect.
 const VALID_META = (name: string): string =>
   `export const meta = { "name": "${name}", "description": "edge canary", "phases": [{ "title": "x" }] }`
@@ -37,7 +37,7 @@ const VALID_TAIL = `return await (async () => ({ ok: true }))()`
 /** An otherwise-VALID workflow padded with a giant string literal so the ONLY
  *  reason it can be rejected is the 512 KB cap (not a parse/meta error). */
 export function oversizeScript(): string {
-  const head = `${VALID_META('dwt-edge-oversize')}\n`
+  const head = `${VALID_META('wt-edge-oversize')}\n`
   const tail = `\n${VALID_TAIL}\n`
   const prefix = 'const _pad = '
   // Pad comfortably past the cap; JSON.stringify keeps it a valid JS string literal.
@@ -49,7 +49,7 @@ export function oversizeScript(): string {
 /** A workflow with a statement BEFORE the `meta` literal — must be rejected
  *  synchronously at the tool layer (meta must be the first statement). */
 export function metaOrderScript(): string {
-  return `const before = 1\n${VALID_META('dwt-edge-metaorder')}\nvoid before\n${VALID_TAIL}\n`
+  return `const before = 1\n${VALID_META('wt-edge-metaorder')}\nvoid before\n${VALID_TAIL}\n`
 }
 
 /** Build the two edge cases. reasonPattern for the meta-order case is broad
@@ -59,13 +59,13 @@ export function edgeCases(): EdgeCase[] {
   return [
     {
       name: 'edge: 512 KB cap rejects an oversized scriptPath',
-      filename: 'dwt-edge-oversize.js',
+      filename: 'wt-edge-oversize.js',
       script: oversizeScript(),
       reasonPattern: /524288|exceeds|too large|size/i,
     },
     {
       name: 'edge: a statement before meta is rejected',
-      filename: 'dwt-edge-metaorder.js',
+      filename: 'wt-edge-metaorder.js',
       script: metaOrderScript(),
       // Tight enough to avoid a generic parse error false-passing, loose enough
       // to survive minor wording drift: the real message cites both "meta" and
