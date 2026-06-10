@@ -324,6 +324,19 @@ ${renderClaim(claim)}`;
     let state = initial;
     let iterationsDone = 0;
     let consecutiveDry = 0;
+    let agentsSpawned = 0;
+    const countingRt = {
+      agent: (...args) => {
+        agentsSpawned++;
+        return rt.agent(...args);
+      },
+      parallel: (thunks) => rt.parallel(thunks),
+      pipeline: (...args) => rt.pipeline(...args),
+      phase: (title) => rt.phase(title),
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
     if (budgetFloor !== void 0 && rt.budget.total === null) {
       warn(
         rt,
@@ -355,7 +368,7 @@ ${renderClaim(claim)}`;
           }
           return "maxIterations";
         }
-        const tick = await body(rt, state, iterationsDone + 1);
+        const tick = await body(countingRt, state, iterationsDone + 1);
         const tickIndex = iterationsDone;
         state = tick.state;
         iterationsDone++;
@@ -383,13 +396,13 @@ ${renderClaim(claim)}`;
       }
     };
     const stoppedBy = await runLoop();
-    return buildResult(state, iterationsDone, stoppedBy, warnings, trail);
+    return buildResult(state, iterationsDone, stoppedBy, warnings, trail, agentsSpawned);
   }
-  function buildResult(state, iterations, stoppedBy, warnings, trail) {
+  function buildResult(state, iterations, stoppedBy, warnings, trail, agentsSpawned) {
     const stats = {
       itemsIn: iterations,
       itemsOut: iterations,
-      agentsSpawned: 0,
+      agentsSpawned,
       dropped: 0,
       truncated: 0
     };

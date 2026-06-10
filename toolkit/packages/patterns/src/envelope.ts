@@ -37,8 +37,9 @@ export interface PatternStats {
 // Trail semantics are per-pattern (like `dropped`):
 // - Direct-spawn patterns: one record per agent spawned
 //   (invariant: trail.length === stats.agentsSpawned).
-// - loopUntilDone spawns no agents itself (agentsSpawned is always 0);
-//   its trail records loop ITERATIONS instead (stage `loopUntilDone:tick:<i>`).
+// - loopUntilDone's trail records loop ITERATIONS (stage `loopUntilDone:tick:<i>`,
+//   trail.length === iterations) while agentsSpawned counts the BODY's agent()
+//   calls through the rt it received — so trail.length !== agentsSpawned there.
 // ---------------------------------------------------------------------------
 
 export interface TrailRecord {

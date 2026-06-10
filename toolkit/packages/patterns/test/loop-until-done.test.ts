@@ -112,6 +112,7 @@ describe('loopUntilDone — stops by done', () => {
     // stats: itemsIn = itemsOut = completed iterations
     expect(result.stats.itemsIn).toBe(3)
     expect(result.stats.itemsOut).toBe(3)
+    // counterBody never calls rt.agent — the REAL count is 0 (meaningful, not hard-coded)
     expect(result.stats.agentsSpawned).toBe(0)
   })
 })
@@ -285,7 +286,7 @@ describe('loopUntilDone — body throw propagates', () => {
 // ---------------------------------------------------------------------------
 
 describe('loopUntilDone — stats', () => {
-  it('has agentsSpawned=0 always (body agents are callers responsibility)', async () => {
+  it('counts agent() calls the body makes through the received rt (0 when the body spawns none)', async () => {
     const rt = new FakeRuntime()
 
     const result = await loopUntilDone(rt, {
@@ -294,6 +295,8 @@ describe('loopUntilDone — stats', () => {
       body: counterBody(100),
     })
 
+    // counterBody never touches rt.agent, so the real count is 0 — but this is
+    // now an OBSERVED count, not a hard-coded one (positive cases below).
     expect(result.stats.agentsSpawned).toBe(0)
   })
 
@@ -542,5 +545,159 @@ describe('loopUntilDone — trail: determinism', () => {
     const r2 = await loopUntilDone(makeRt(), opts())
 
     expect(r1.trail).toEqual(r2.trail)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Agent counting — stats.agentsSpawned reports the REAL number of agent()
+// calls the body makes through the rt it receives (was hard-coded 0; the
+// envelope used to lie by omission and per-task counts had to come from the
+// run journal). trail stays per-ITERATION, so for this pattern
+// trail.length === iterations, NOT trail.length === agentsSpawned.
+// ---------------------------------------------------------------------------
+
+describe('loopUntilDone — agent counting', () => {
+  it('counts 0 when the body spawns no agents', async () => {
+    const rt = new FakeRuntime()
+
+    const result = await loopUntilDone(rt, {
+      initial: 0,
+      maxIterations: 3,
+      body: counterBody(100),
+    })
+
+    expect(result.stats.agentsSpawned).toBe(0)
+    expect(rt.agentsSpawned).toBe(0)
+  })
+
+  it('counts one agent per iteration: k iterations → agentsSpawned === k', async () => {
+    const rt = new FakeRuntime()
+
+    const result = await loopUntilDone(rt, {
+      initial: 0,
+      maxIterations: 4,
+      body: async (bodyRt, state) => {
+        await bodyRt.agent('one call per tick')
+        return { state: state + 1, progressed: true }
+      },
+    })
+
+    expect(result.value.iterations).toBe(4)
+    expect(result.stats.agentsSpawned).toBe(4)
+  })
+
+  it('accumulates across iterations: 2 agents per iteration × 3 iterations → 6', async () => {
+    const rt = new FakeRuntime()
+
+    const result = await loopUntilDone(rt, {
+      initial: 0,
+      maxIterations: 3,
+      body: async (bodyRt, state) => {
+        await bodyRt.agent('first of two')
+        await bodyRt.agent('second of two')
+        return { state: state + 1, progressed: true }
+      },
+    })
+
+    expect(result.value.iterations).toBe(3)
+    expect(result.stats.agentsSpawned).toBe(6)
+    // itemsIn/itemsOut keep their iteration semantics — unchanged by counting
+    expect(result.stats.itemsIn).toBe(3)
+    expect(result.stats.itemsOut).toBe(3)
+  })
+
+  it('counts agents routed through rt.parallel thunks and rt.pipeline stages on the received rt', async () => {
+    // parallel takes thunks and pipeline takes stage callbacks — neither calls
+    // agent internally, so every agent() inside them goes through the SAME
+    // rt.agent the body received. All of them must be counted.
+    const rt = new FakeRuntime()
+
+    const result = await loopUntilDone(rt, {
+      initial: 0,
+      maxIterations: 1,
+      body: async (bodyRt, state) => {
+        await bodyRt.parallel([
+          () => bodyRt.agent('parallel-a'),
+          () => bodyRt.agent('parallel-b'),
+        ])
+        await bodyRt.pipeline(
+          ['x', 'y'],
+          (item) => bodyRt.agent(`pipeline-${String(item)}`),
+        )
+        return { state: state + 1, progressed: true }
+      },
+    })
+
+    // 2 via parallel thunks + 2 via pipeline stages (one per item) = 4
+    expect(result.stats.agentsSpawned).toBe(4)
+  })
+
+  it('cross-checks against FakeRuntime tally and proves delegation to the underlying rt', async () => {
+    const rt = new FakeRuntime({ responses: ['r1', 'r2', 'r3'] })
+
+    const result = await loopUntilDone(rt, {
+      initial: 0,
+      maxIterations: 3,
+      body: async (bodyRt, state) => {
+        await bodyRt.agent(`tick-${state}`)
+        return { state: state + 1, progressed: true }
+      },
+    })
+
+    // Only the loop body called agents in this test, so the envelope count and
+    // the FakeRuntime's own getter must agree.
+    expect(result.stats.agentsSpawned).toBe(rt.agentsSpawned)
+    expect(result.stats.agentsSpawned).toBe(3)
+    // Delegation proof: the wrapper forwards to the REAL rt.agent, so the
+    // underlying FakeRuntime still records every call in rt.calls.
+    expect(rt.calls.map(c => c.prompt)).toEqual(['tick-0', 'tick-1', 'tick-2'])
+  })
+
+  it('keeps rt.phase and rt.log working on the rt handed to the body (prototype-method regression)', async () => {
+    // REGRESSION GUARD: FakeRuntime defines agent/parallel/pipeline/workflow/budget
+    // as OWN instance fields but phase/log as PROTOTYPE methods. A naive
+    // `{ ...rt, agent: counting }` spread copies only own enumerable props and
+    // would silently DROP phase and log (undefined → TypeError on call). The
+    // counting wrapper must be an explicit object literal that delegates all
+    // seven WorkflowRuntime members.
+    const rt = new FakeRuntime()
+
+    const result = await loopUntilDone(rt, {
+      initial: 0,
+      maxIterations: 1,
+      body: async (bodyRt, state) => {
+        bodyRt.phase('x')
+        bodyRt.log('y')
+        await bodyRt.agent('with phase context')
+        return { state: state + 1, progressed: true }
+      },
+    })
+
+    expect(rt.phases).toContain('x')
+    expect(rt.logs).toContain('y')
+    expect(result.stats.agentsSpawned).toBe(1)
+  })
+
+  it('keeps the body budget reference coherent with the outer rt (budgetFloor still fires)', async () => {
+    // budget must be passed BY REFERENCE through the wrapper: the loop's own
+    // budgetFloor checks read rt.budget on the OUTER rt while the body spends
+    // through the wrapped agent — both must see one object. total=100, cost=30,
+    // floor=25 → 3 iterations then stop (same math as the budgetFloor suite),
+    // and now the envelope also reports the 3 agents the body spawned.
+    const rt = new FakeRuntime({ budgetTotal: 100, agentTokenCost: 30 })
+
+    const result = await loopUntilDone(rt, {
+      initial: 0,
+      budgetFloor: 25,
+      maxIterations: 20,
+      body: async (bodyRt, state) => {
+        await bodyRt.agent('spend')
+        return { state: state + 1, progressed: true }
+      },
+    })
+
+    expect(result.value.stoppedBy).toBe('budgetFloor')
+    expect(result.stats.agentsSpawned).toBe(result.value.iterations)
+    expect(result.stats.agentsSpawned).toBe(3)
   })
 })
