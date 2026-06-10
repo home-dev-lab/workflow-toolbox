@@ -132,6 +132,7 @@ type ReportFinding = {
   severity: string
   verdict: string
   status: string
+  evidence: string
   note?: string
 }
 
@@ -208,6 +209,19 @@ describe('dev-review-fix parseInput', () => {
     ).rejects.toThrow(/maxFixIterations/i)
   })
 
+  it('accepts an explicit null for the unused diff source (the documented parsed shape)', async () => {
+    // JSON has no undefined — the interface documents 'the other is null', so
+    // { diffCommand: null, changedFiles: [...] } is ONE diff source, not two.
+    const rt = makeRuntime()
+    const result = await wf.run(
+      rt,
+      JSON.stringify({ ...VALID_INPUT, diffCommand: null, changedFiles: ['src/a.ts'] }),
+    )
+    expect(Array.isArray(result.findings)).toBe(true)
+    const reviewer = rt.calls.find((c) => c.opts?.label === 'dev-review-fix:review:correctness')!
+    expect(reviewer.prompt).toContain('src/a.ts')
+  })
+
   it('defaults dimensions to the standard four when omitted', async () => {
     const rt = makeRuntime()
     await wf.run(rt, JSON.stringify({ ...VALID_INPUT, dimensions: undefined }))
@@ -235,6 +249,12 @@ describe('dev-review-fix happy path', () => {
       fixed: 2,
       unfixed: 0,
     })
+    // The final check's suite verdict is structured output, not prose.
+    expect(result.suiteGreen).toBe(true)
+    // The checker's actual-output evidence is threaded into each fixed finding.
+    for (const f of result.findings as ReportFinding[]) {
+      expect(f.evidence).toBe('suite green: 12/12')
+    }
     expect(Array.isArray(result.warnings)).toBe(true)
   })
 
@@ -426,6 +446,39 @@ describe('dev-review-fix degradation', () => {
     expect(result.warnings.some((w: string) => /consolidat/i.test(w))).toBe(true)
   })
 
+  it('refuses a dedup agent that RETURNS but drops every finding (silent suppression guard)', async () => {
+    // The consolidator sees text partly derived from the reviewed code — a
+    // returning-but-suppressing consolidator must not zero out the review.
+    const rt = makeRuntime({ dedup: () => ({ findings: [] }) })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    // Concat fallback: one default finding per dimension survives.
+    expect(result.findings.length).toBe(2)
+    expect(result.warnings.some((w: string) => /zero findings/i.test(w))).toBe(true)
+  })
+
+  it('warns when the dedup agent returns fewer findings than one dimension reported', async () => {
+    // An honest dedup only merges ACROSS dimensions: it can never go below
+    // the largest single-dimension count. 2 findings per dimension in, 1 out
+    // → a partial drop, loudly warned.
+    const rt = makeRuntime({
+      review: () => ({
+        findings: [
+          { file: 'src/a.ts', location: 'line 1', summary: 'issue one', detail: 'd1', severity: 'high' },
+          { file: 'src/b.ts', location: 'line 2', summary: 'issue two', detail: 'd2', severity: 'low' },
+        ],
+      }),
+      dedup: () => ({
+        findings: [
+          { file: 'src/a.ts', location: 'line 1', summary: 'issue one', detail: 'd1', severity: 'high', dimensions: ['correctness', 'tests'] },
+        ],
+      }),
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    expect(result.warnings.some((w: string) => /largest single-dimension|dropped/i.test(w))).toBe(true)
+  })
+
   it('still runs the checker when the fixer dies — the tree may already be fixed', async () => {
     const rt = makeRuntime({ fix: () => null })
     const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
@@ -465,6 +518,8 @@ describe('dev-review-fix degradation', () => {
     for (const f of findings) {
       expect(f.status).toBe('unfixed')
       expect(f.note).toMatch(/validate\(null\)/)
+      // The checker's actual-output evidence is threaded into unfixed findings too.
+      expect(f.evidence).toBe('suite red')
     }
   })
 
@@ -497,11 +552,143 @@ describe('dev-review-fix degradation', () => {
     expect(result.tallies.unfixed).toBe(0)
   })
 
+  it('REPLACES the fixed-set with each check — a re-broken finding ends unfixed, not merged away', async () => {
+    // iter 0: F1 fixed, F2 not. iter 1: the F2 fix RE-BREAKS F1 while the
+    // suite goes green. The checker verdict must REPLACE (not merge into) the
+    // fixed-set: F1 ends unfixed even though an earlier check called it fixed.
+    const rt = makeRuntime({
+      check: (_p, i) =>
+        i === 0
+          ? {
+              green: false,
+              findings: [
+                { id: 'F1', fixed: true },
+                { id: 'F2', fixed: false },
+              ],
+              evidence: 'suite red',
+              failureSummary: 'F2 not addressed yet',
+            }
+          : {
+              green: true,
+              findings: [
+                { id: 'F1', fixed: false },
+                { id: 'F2', fixed: true },
+              ],
+              evidence: 'suite green but F1 regressed',
+              failureSummary: 'F1 re-broken by the F2 fix',
+            },
+    })
+    const result = await wf.run(rt, JSON.stringify({ ...VALID_INPUT, maxFixIterations: 2 }))
+
+    const findings = result.findings as ReportFinding[]
+    expect(result.tallies.fixed).toBe(1)
+    expect(result.tallies.unfixed).toBe(1)
+    expect(findings.find((f) => f.id === 'F1')!.status).toBe('unfixed')
+    expect(findings.find((f) => f.id === 'F1')!.note).toMatch(/re-broken/)
+    expect(findings.find((f) => f.id === 'F2')!.status).toBe('fixed')
+  })
+
+  it('keeps looping while green if findings remain unfixed (green alone is not done)', async () => {
+    // The loop's raison d'etre: a review finding can stay broken WHILE the
+    // suite is green (review findings are the issues tests do not cover).
+    const rt = makeRuntime({
+      check: () => ({
+        green: true,
+        findings: [
+          { id: 'F1', fixed: true },
+          { id: 'F2', fixed: false },
+        ],
+        evidence: 'suite green — F2 is exactly what the tests do not cover',
+        failureSummary: 'F2 still unaddressed',
+      }),
+    })
+    const result = await wf.run(rt, JSON.stringify({ ...VALID_INPUT, maxFixIterations: 3 }))
+
+    // green:true must NOT terminate the loop while a finding is unfixed —
+    // every allowed iteration runs.
+    const checks = rt.calls.filter((c) => c.opts?.label?.startsWith('dev-review-fix:check:'))
+    expect(checks.length).toBe(3)
+    expect(result.tallies.fixed).toBe(1)
+    expect(result.tallies.unfixed).toBe(1)
+    expect(result.warnings.some((w: string) => /resume/i.test(w))).toBe(true)
+  })
+
+  it('exposes a RED final suite even when every finding is individually fixed', async () => {
+    // A fix can break an UNRELATED test or the build: all findings fixed but
+    // green:false. The loop exhausts — the report must carry the red verdict
+    // structurally (suiteGreen) and warn, not read as a full success.
+    const rt = makeRuntime({
+      check: () => ({
+        green: false,
+        findings: [
+          { id: 'F1', fixed: true },
+          { id: 'F2', fixed: true },
+        ],
+        evidence: 'findings addressed but an unrelated test broke',
+        failureSummary: 'utils.spec.ts: formatDate test now fails',
+      }),
+    })
+    const result = await wf.run(rt, JSON.stringify({ ...VALID_INPUT, maxFixIterations: 2 }))
+
+    expect(result.tallies.fixed).toBe(2)
+    expect(result.tallies.unfixed).toBe(0)
+    expect(result.suiteGreen).toBe(false)
+    expect(
+      result.warnings.some((w: string) => /not green/i.test(w) && /formatDate/.test(w)),
+    ).toBe(true)
+  })
+
+  it('flags fixed statuses when the checker died after the last fix iteration', async () => {
+    // iter 0: F1 checked fixed. iter 1: the fixer mutates the tree again but
+    // the checker DIES — F1's fixed status now predates an unchecked mutation
+    // and must say so instead of presenting as confirmed-fixed.
+    const rt = makeRuntime({
+      check: (_p, i) =>
+        i === 0
+          ? {
+              green: false,
+              findings: [
+                { id: 'F1', fixed: true },
+                { id: 'F2', fixed: false },
+              ],
+              evidence: 'F1 done, F2 remains',
+              failureSummary: 'F2 remains',
+            }
+          : null,
+    })
+    const result = await wf.run(rt, JSON.stringify({ ...VALID_INPUT, maxFixIterations: 2 }))
+
+    const f1 = (result.findings as ReportFinding[]).find((f) => f.id === 'F1')!
+    expect(f1.status).toBe('fixed')
+    expect(f1.note).toMatch(/without a checker read|re-verify/i)
+    expect(result.warnings.some((w: string) => /checker/i.test(w))).toBe(true)
+  })
+
+  it('threads maxFixIterations into the loop bound (exactly N fix/check rounds)', async () => {
+    const rt = makeRuntime({
+      check: () => ({
+        green: false,
+        findings: [
+          { id: 'F1', fixed: false },
+          { id: 'F2', fixed: false },
+        ],
+        evidence: 'suite red',
+        failureSummary: 'still red',
+      }),
+    })
+    await wf.run(rt, JSON.stringify({ ...VALID_INPUT, maxFixIterations: 1 }))
+
+    expect(rt.calls.filter((c) => c.opts?.label?.startsWith('dev-review-fix:fix:')).length).toBe(1)
+    expect(rt.calls.filter((c) => c.opts?.label?.startsWith('dev-review-fix:check:')).length).toBe(1)
+  })
+
   it('reports clean and spawns NO verify/fix agents when the review finds nothing', async () => {
     const rt = makeRuntime({ review: () => ({ findings: [] }) })
     const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
 
     expect(result.findings.length).toBe(0)
+    // No checker ever ran — the suite verdict is honestly unknown, not green.
+    expect(result.suiteGreen).toBeNull()
     expect(result.tallies).toEqual({
       findings: 0,
       confirmed: 0,

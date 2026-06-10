@@ -1,6 +1,6 @@
 // dev-review-fix.workflow.ts — Review-and-fix third of the dev-workflow family (L3 HITL).
 //
-// PEDAGOGY: the dev-workflow family (design: docs/internal/dev-workflow-design.md)
+// PEDAGOGY: the dev-workflow family
 //
 //   dev-plan → [human reviews/edits the PlanArtifact] → dev-implement → dev-review-fix
 //
@@ -48,6 +48,17 @@
 //   If findings end unfixed, fix the root cause and relaunch with
 //   resumeFromRunId: review/verify agents replay from cache; the fix loop
 //   re-runs from the first changed prompt — exactly the work to redo.
+//
+// TRUST BOUNDARY (accepted residual risk — there is NO human gate between
+// Review and Fix):
+//   Unlike dev-implement, whose tree mutations are bounded by a human-approved
+//   PlanArtifact, the Fix phase mutates the tree from agent-derived finding
+//   text — reviewers quote the reviewed code, so a hostile change set carries
+//   a prompt-injection path into the fixer. Adversarial verification, the
+//   fixer's instruction bounds and the checker's id filter mitigate but do
+//   not remove this. Only point dev-review-fix at change sets you are willing
+//   to let agents modify autonomously — NOT at an untrusted third-party PR
+//   checked out locally.
 
 import { defineWorkflow } from '@workflow-toolbox/build/define'
 import { adversarialVerification, loopUntilDone, warn } from '@workflow-toolbox/patterns'
@@ -209,6 +220,11 @@ interface ReportFinding {
 
 interface DevReviewFixOutput {
   goal: string
+  /** The FINAL check's suite verdict: false = the last completed checker read
+   *  saw a red suite/build EVEN IF every finding is individually fixed; null =
+   *  no checker read completed (clean review, empty fix queue, or every
+   *  checker died). Read this BEFORE trusting tallies.fixed. */
+  suiteGreen: boolean | null
   findings: ReportFinding[]
   tallies: {
     findings: number
@@ -263,9 +279,13 @@ function parseInput(raw: unknown): DevReviewFixInput {
   const goal = optionalString(obj, 'goal')
   const changeSummary = optionalString(obj, 'changeSummary')
 
-  // Diff source: exactly one of diffCommand / changedFiles.
-  const hasDiffCommand = obj['diffCommand'] !== undefined
-  const hasChangedFiles = obj['changedFiles'] !== undefined
+  // Diff source: exactly one of diffCommand / changedFiles. An explicit null
+  // counts as ABSENT: the parsed shape itself carries null for the unused
+  // source (JSON has no undefined), so parseInput must accept its own
+  // documented output shape — { diffCommand: null, changedFiles: [...] } is
+  // ONE source, not two.
+  const hasDiffCommand = obj['diffCommand'] !== undefined && obj['diffCommand'] !== null
+  const hasChangedFiles = obj['changedFiles'] !== undefined && obj['changedFiles'] !== null
   if (hasDiffCommand && hasChangedFiles) {
     throw new Error(
       'dev-review-fix: pass exactly one of "diffCommand" or "changedFiles", not both — ' +
@@ -359,6 +379,13 @@ interface FixLoopState {
   fixedIds: string[]
   lastFailure: string
   evidence: string
+  /** Suite verdict of the last COMPLETED checker read (null = none completed).
+   *  Carried into the output: "every finding fixed" on a RED suite must stay
+   *  visible — a fix can break an UNRELATED test or the build. */
+  green: boolean | null
+  /** False when the checker died AFTER the fixer mutated the tree: fixed
+   *  statuses then rest on evidence predating an UNCHECKED mutation. */
+  checkedAfterLastFix: boolean
 }
 
 // Locations were captured against the pre-fix tree — fixes shift lines.
@@ -448,6 +475,7 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
     rt.phase('Report')
     return {
       goal: input.goal,
+      suiteGreen: null,
       findings: [],
       tallies: { findings: 0, confirmed: 0, rejected: 0, unverified: 0, fixed: 0, unfixed: 0 },
       stats,
@@ -474,17 +502,31 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
   )
   reviewStats.agentsSpawned += 1
 
+  const concatFallback = (): ConsolidatedFinding[] =>
+    parts.flatMap((p) => p.findings.map((f) => ({ ...f, dimensions: [p.dimension] })))
+
   let findingList: ConsolidatedFinding[]
   if (consolidated === null) {
     warn(rt, warnings, 'dev-review-fix: consolidation agent died — falling back to an in-code concat; duplicate findings across dimensions are possible')
     // Mixed semantics on purpose: 'dropped' counts lost work units — dead
     // reviewers (lost dimensions) AND a dead consolidator (lost dedup pass).
     reviewStats.dropped += 1
-    findingList = parts.flatMap((p) =>
-      p.findings.map((f) => ({ ...f, dimensions: [p.dimension] })),
-    )
+    findingList = concatFallback()
+  } else if (consolidated.findings.length === 0) {
+    // Integrity guard — the consolidator is a single chokepoint over text that
+    // partly derives from the reviewed code (reviewers quote it), so a
+    // returning-but-suppressing consolidator must not silently zero out the
+    // review. Same fallback as a dead consolidator.
+    warn(rt, warnings, `dev-review-fix: consolidation agent returned ZERO findings while reviewers reported ${rawFindingCount} — refusing the silent drop; falling back to an in-code concat (duplicates possible)`)
+    findingList = concatFallback()
   } else {
     findingList = [...consolidated.findings]
+    // An honest dedup can only merge ACROSS dimensions, so the consolidated
+    // count can never drop below the largest single-dimension count.
+    const minPlausible = Math.max(...parts.map((p) => p.findings.length))
+    if (findingList.length < minPlausible) {
+      warn(rt, warnings, `dev-review-fix: consolidation returned ${findingList.length} finding(s), below the largest single-dimension count (${minPlausible}) — findings were likely dropped; treat this consolidation with suspicion`)
+    }
   }
 
   const findings = sortAndAssignIds(findingList)
@@ -569,7 +611,13 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
 
   rt.phase('Fix')
 
-  let fixState: FixLoopState = { fixedIds: [], lastFailure: '', evidence: '' }
+  let fixState: FixLoopState = {
+    fixedIds: [],
+    lastFailure: '',
+    evidence: '',
+    green: null,
+    checkedAfterLastFix: true,
+  }
 
   if (fixQueue.length > 0) {
     const queueIds = new Set(fixQueue.map((vc) => vc.claim.id))
@@ -639,8 +687,9 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
           `${LOCATION_CAVEAT}\n` +
           `Return { "green": true|false (the test suite), "findings": [{ "id": "<F-id>", ` +
           `"fixed": true|false }] (one entry per finding above), "evidence": "<what the run ` +
-          `actually showed>", "failureSummary": "<empty string if nothing is left to fix, ` +
-          `else what remains>" }`,
+          `actually showed>", "failureSummary": "<empty string ONLY when green with nothing ` +
+          `left to fix; else what remains or what broke — including breaks UNRELATED to the ` +
+          `findings>" }`,
           {
             schema: CHECK_RESULT_SCHEMA,
             label: `dev-review-fix:check:${iteration}`,
@@ -654,6 +703,9 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
           if (next.lastFailure === '') {
             next.lastFailure = 'checker agent died — no fresh evidence for this iteration'
           }
+          // The fixer DID run this iteration: whatever fixed-statuses survive
+          // from earlier reads now predate an UNCHECKED tree mutation.
+          next.checkedAfterLastFix = false
           return { state: next, done: false }
         }
 
@@ -664,6 +716,8 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
           .map((f) => f.id)
         next.evidence = check.evidence
         next.lastFailure = check.failureSummary
+        next.green = check.green
+        next.checkedAfterLastFix = true
 
         const allFixed = fixQueue.every((vc) => next.fixedIds.includes(vc.claim.id))
         return { state: next, done: check.green && allFixed }
@@ -693,6 +747,13 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
       if (fixedIds.has(f.id)) {
         status = 'fixed'
         evidence = fixState.evidence
+        if (!fixState.checkedAfterLastFix) {
+          // The checker died AFTER a later fixer mutated the tree: this status
+          // rests on evidence that predates an unchecked mutation.
+          note =
+            'fixed per the last completed check, but a LATER fix iteration mutated the tree ' +
+            'without a checker read (checker died) — re-verify before trusting this status'
+        }
       } else {
         status = 'unfixed'
         evidence = fixState.evidence
@@ -738,7 +799,22 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
     )
   }
 
-  return { goal: input.goal, findings: reportFindings, tallies, stats, warnings }
+  // All-fixed-but-RED guard: when every queue finding is individually fixed
+  // but the final check saw a red suite/build (a fix broke something the
+  // findings do not cover), the resume hint above never fires — this must
+  // not read as a full success.
+  if (fixQueue.length > 0 && tallies.unfixed === 0 && fixState.green === false) {
+    warn(
+      rt,
+      warnings,
+      `dev-review-fix: every fix-queue finding is reported fixed but the FINAL check was ` +
+      `NOT green — a fix likely broke something outside the findings (an unrelated test or ` +
+      `the build); do not merge on these tallies` +
+      (fixState.lastFailure === '' ? '' : ` — last check: ${fixState.lastFailure}`),
+    )
+  }
+
+  return { goal: input.goal, suiteGreen: fixState.green, findings: reportFindings, tallies, stats, warnings }
 }
 
 // ---------------------------------------------------------------------------

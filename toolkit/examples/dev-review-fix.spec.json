@@ -1,0 +1,10 @@
+{
+  "meta": {
+    "name": "dev-review-fix",
+    "description": "Review-and-fix third of the dev-workflow family: reviews the whole change set across parallel dimensions, adversarially verifies every finding against the actual code, fixes the confirmed ones through a batched loop whose independent checker re-validates all findings each iteration, and reports a deterministic tally."
+  },
+  "steps": [
+    { "pattern": "adversarialVerification", "phase": "Verify" },
+    { "pattern": "loopUntilDone", "phase": "Fix" }
+  ]
+}

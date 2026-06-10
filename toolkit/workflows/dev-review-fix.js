@@ -508,8 +508,8 @@ ${renderClaim(claim)}`;
     const conventions = optionalString(obj, "conventions");
     const goal = optionalString(obj, "goal");
     const changeSummary = optionalString(obj, "changeSummary");
-    const hasDiffCommand = obj["diffCommand"] !== void 0;
-    const hasChangedFiles = obj["changedFiles"] !== void 0;
+    const hasDiffCommand = obj["diffCommand"] !== void 0 && obj["diffCommand"] !== null;
+    const hasChangedFiles = obj["changedFiles"] !== void 0 && obj["changedFiles"] !== null;
     if (hasDiffCommand && hasChangedFiles) {
       throw new Error(
         'dev-review-fix: pass exactly one of "diffCommand" or "changedFiles", not both \u2014 diffCommand for git projects (a verbatim command printing the diff), changedFiles for no-git projects (an explicit changed-file list)'
@@ -625,6 +625,7 @@ Return { "findings": [{ "file": "<path>", "location": "<line/symbol>", "summary"
       rt.phase("Report");
       return {
         goal: input.goal,
+        suiteGreen: null,
         findings: [],
         tallies: { findings: 0, confirmed: 0, rejected: 0, unverified: 0, fixed: 0, unfixed: 0 },
         stats,
@@ -643,15 +644,21 @@ Return { "findings": [{ "file", "location", "summary", "detail", "severity": "lo
       }
     );
     reviewStats.agentsSpawned += 1;
+    const concatFallback = () => parts.flatMap((p) => p.findings.map((f) => ({ ...f, dimensions: [p.dimension] })));
     let findingList;
     if (consolidated === null) {
       warn(rt, warnings, "dev-review-fix: consolidation agent died \u2014 falling back to an in-code concat; duplicate findings across dimensions are possible");
       reviewStats.dropped += 1;
-      findingList = parts.flatMap(
-        (p) => p.findings.map((f) => ({ ...f, dimensions: [p.dimension] }))
-      );
+      findingList = concatFallback();
+    } else if (consolidated.findings.length === 0) {
+      warn(rt, warnings, `dev-review-fix: consolidation agent returned ZERO findings while reviewers reported ${rawFindingCount} \u2014 refusing the silent drop; falling back to an in-code concat (duplicates possible)`);
+      findingList = concatFallback();
     } else {
       findingList = [...consolidated.findings];
+      const minPlausible = Math.max(...parts.map((p) => p.findings.length));
+      if (findingList.length < minPlausible) {
+        warn(rt, warnings, `dev-review-fix: consolidation returned ${findingList.length} finding(s), below the largest single-dimension count (${minPlausible}) \u2014 findings were likely dropped; treat this consolidation with suspicion`);
+      }
     }
     const findings = sortAndAssignIds(findingList);
     rt.phase("Verify");
@@ -706,7 +713,13 @@ IMPORTANT: Do NOT trust this finding. Open the actual code (work from ${input.pr
       );
     }
     rt.phase("Fix");
-    let fixState = { fixedIds: [], lastFailure: "", evidence: "" };
+    let fixState = {
+      fixedIds: [],
+      lastFailure: "",
+      evidence: "",
+      green: null,
+      checkedAfterLastFix: true
+    };
     if (fixQueue.length > 0) {
       const queueIds = new Set(fixQueue.map((vc) => vc.claim.id));
       const queueBlock = JSON.stringify(
@@ -750,7 +763,7 @@ Run ${input.testCommand} from ${input.projectDir} and read the ACTUAL output.
 `) + `Then check EVERY finding below against the current tree \u2014 including ones previously reported fixed (a later fix can re-break an earlier one):
 ${queueBlock}
 ${LOCATION_CAVEAT}
-Return { "green": true|false (the test suite), "findings": [{ "id": "<F-id>", "fixed": true|false }] (one entry per finding above), "evidence": "<what the run actually showed>", "failureSummary": "<empty string if nothing is left to fix, else what remains>" }`,
+Return { "green": true|false (the test suite), "findings": [{ "id": "<F-id>", "fixed": true|false }] (one entry per finding above), "evidence": "<what the run actually showed>", "failureSummary": "<empty string ONLY when green with nothing left to fix; else what remains or what broke \u2014 including breaks UNRELATED to the findings>" }`,
             {
               schema: CHECK_RESULT_SCHEMA,
               label: `dev-review-fix:check:${iteration}`,
@@ -762,11 +775,14 @@ Return { "green": true|false (the test suite), "findings": [{ "id": "<F-id>", "f
             if (next.lastFailure === "") {
               next.lastFailure = "checker agent died \u2014 no fresh evidence for this iteration";
             }
+            next.checkedAfterLastFix = false;
             return { state: next, done: false };
           }
           next.fixedIds = check.findings.filter((f) => f.fixed && queueIds.has(f.id)).map((f) => f.id);
           next.evidence = check.evidence;
           next.lastFailure = check.failureSummary;
+          next.green = check.green;
+          next.checkedAfterLastFix = true;
           const allFixed = fixQueue.every((vc) => next.fixedIds.includes(vc.claim.id));
           return { state: next, done: check.green && allFixed };
         }
@@ -785,6 +801,9 @@ Return { "green": true|false (the test suite), "findings": [{ "id": "<F-id>", "f
         if (fixedIds.has(f.id)) {
           status = "fixed";
           evidence = fixState.evidence;
+          if (!fixState.checkedAfterLastFix) {
+            note = "fixed per the last completed check, but a LATER fix iteration mutated the tree without a checker read (checker died) \u2014 re-verify before trusting this status";
+          }
         } else {
           status = "unfixed";
           evidence = fixState.evidence;
@@ -822,7 +841,14 @@ Return { "green": true|false (the test suite), "findings": [{ "id": "<F-id>", "f
         `dev-review-fix: ${tallies.unfixed} finding(s) left unfixed \u2014 fix the root cause and relaunch with resumeFromRunId (review/verify agents replay from cache), or feed the failure notes into a corrective dev-plan run`
       );
     }
-    return { goal: input.goal, findings: reportFindings, tallies, stats, warnings };
+    if (fixQueue.length > 0 && tallies.unfixed === 0 && fixState.green === false) {
+      warn(
+        rt,
+        warnings,
+        `dev-review-fix: every fix-queue finding is reported fixed but the FINAL check was NOT green \u2014 a fix likely broke something outside the findings (an unrelated test or the build); do not merge on these tallies` + (fixState.lastFailure === "" ? "" : ` \u2014 last check: ${fixState.lastFailure}`)
+      );
+    }
+    return { goal: input.goal, suiteGreen: fixState.green, findings: reportFindings, tallies, stats, warnings };
   }
   var dev_review_fix_workflow_default = defineWorkflow({
     meta: {
