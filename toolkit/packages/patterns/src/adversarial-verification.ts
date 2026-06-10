@@ -4,7 +4,7 @@
 //       Tally in code (deterministic, never trust model to count votes).
 //
 // §8 Risk guardrail: default model is BEST_MODEL. Anything weaker degrades quality; warn.
-// §8 Cap policy: truncated claims are KEPT as 'unverifiable' — a cap never
+// §8 Cap policy: truncated claims are KEPT as 'unverified-by-cap' — a cap never
 //   destroys evidence. itemsIn === itemsOut always.
 //
 // Why refute-first: the verifier prompt IS the pattern's core value.
@@ -28,6 +28,13 @@ import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 
 export type Verdict = 'confirmed' | 'partially-confirmed' | 'refuted' | 'unverifiable'
 
+/** Pattern-level verdict on a claim. Widens the agent-facing `Verdict` with
+ *  'unverified-by-cap': claims cut by `maxVerifyClaims` were never tested,
+ *  which is honestly distinct from 'unverifiable' (tested, all verifiers
+ *  failed to decide). Agents NEVER emit 'unverified-by-cap' — only the
+ *  pattern's cap-truncation append does. */
+export type ClaimVerdict = Verdict | 'unverified-by-cap'
+
 export interface VerifierVote {
   verdict: Verdict
   reason: string
@@ -35,9 +42,9 @@ export interface VerifierVote {
 
 export interface VerifiedClaim<TClaim> {
   claim: TClaim
-  verdict: Verdict
+  verdict: ClaimVerdict
   /** Raw votes in verifier order; null = verifier failed/skipped.
-   *  Empty array for cap-truncated claims. */
+   *  Empty array for cap-truncated claims ('unverified-by-cap'). */
   votes: ReadonlyArray<VerifierVote | null>
 }
 
@@ -54,7 +61,7 @@ export interface AdversarialVerificationOptions<TClaim> {
   lenses?: readonly string[]
   model?: ModelAlias       // default BEST_MODEL ('fable')
   phase?: string
-  maxVerifyClaims?: number // cap; truncated claims kept as 'unverifiable'
+  maxVerifyClaims?: number // cap; truncated claims kept as 'unverified-by-cap'
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +167,7 @@ export async function adversarialVerification<TClaim>(
   }
 
   // -------------------------------------------------------------------------
-  // Apply cap. Truncated claims are appended to output as 'unverifiable'
+  // Apply cap. Truncated claims are appended to output as 'unverified-by-cap'
   // (keep-unverified-rather-than-drop, §8 — a cap never destroys evidence).
   // -------------------------------------------------------------------------
 
@@ -169,7 +176,7 @@ export async function adversarialVerification<TClaim>(
   if (truncated > 0) {
     warn(
       rt, warnings,
-      `adversarialVerification: ${truncated} of ${claims.length} claims truncated by maxVerifyClaims=${maxVerifyClaims ?? '?'} — kept as unverifiable`,
+      `adversarialVerification: ${truncated} of ${claims.length} claims truncated by maxVerifyClaims=${maxVerifyClaims ?? '?'} — kept as unverified-by-cap`,
     )
   }
 
@@ -292,13 +299,16 @@ export async function adversarialVerification<TClaim>(
   trail.push(...trailByClaim.flat())
 
   // -------------------------------------------------------------------------
-  // Append truncated claims as unverifiable with empty votes (§8).
+  // Append truncated claims as 'unverified-by-cap' with empty votes (§8).
   // They are present in the output so callers know evidence was withheld.
+  // 'unverified-by-cap' (never tested — cap cut it, votes: []) is nominally
+  // distinct from the tally path's 'unverifiable' (tested, all verifiers
+  // failed — votes: non-empty array of nulls).
   // -------------------------------------------------------------------------
 
   const truncatedClaims: Array<VerifiedClaim<TClaim>> = (
     claims.slice(keptClaims.length) as TClaim[]
-  ).map(claim => ({ claim, verdict: 'unverifiable' as Verdict, votes: [] as ReadonlyArray<VerifierVote | null> }))
+  ).map(claim => ({ claim, verdict: 'unverified-by-cap' as ClaimVerdict, votes: [] as ReadonlyArray<VerifierVote | null> }))
 
   const value: Array<VerifiedClaim<TClaim>> = [...verifiedKept, ...truncatedClaims]
 
@@ -335,8 +345,11 @@ export async function adversarialVerification<TClaim>(
   // Stats semantics (documented):
   // - itemsIn = claims.length (always = itemsOut — claims NEVER dropped)
   // - itemsOut = claims.length (always — truncated claims are kept, just unverified)
-  // - dropped = null verifier votes (lost WORK UNITS, not lost claims)
-  // - truncated = cap-cut claims (kept but not actively verified)
+  // - dropped = null verifier votes (lost WORK UNITS, not lost claims);
+  //   an all-null claim stays in the output as 'unverifiable'
+  // - truncated = cap-cut claims (kept but never verified — they carry the
+  //   'unverified-by-cap' verdict, votes: [], and get NO trail records, so
+  //   trail.length === agentsSpawned still holds)
   // - agentsSpawned = verifier calls actually made (on kept claims only).
   //   BY DESIGN it excludes the `truncated * votes` calls withheld by the cap —
   //   reconciling agentsSpawned against itemsIn * votes will show the gap; the

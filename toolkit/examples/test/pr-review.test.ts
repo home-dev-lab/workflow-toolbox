@@ -174,10 +174,18 @@ describe('pr-review happy path', () => {
     const rt = makeHappyPathRuntime()
     const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
 
-    // Each finding in the output carries a verdict (from adversarialVerification)
+    // Each finding in the output carries a verdict (from adversarialVerification).
+    // 'unverified-by-cap' is the pattern-level claim verdict for findings the
+    // maxVerifyClaims cap withheld from verification (patterns 0.3.0, additive).
     for (const f of result.findings) {
       expect(f).toHaveProperty('verdict')
-      expect(['confirmed', 'partially-confirmed', 'refuted', 'unverifiable']).toContain(f.verdict)
+      expect([
+        'confirmed',
+        'partially-confirmed',
+        'refuted',
+        'unverifiable',
+        'unverified-by-cap',
+      ]).toContain(f.verdict)
     }
   })
 })
@@ -293,6 +301,111 @@ describe('pr-review finding refutation', () => {
     // but synthesis should not include them as actionable items
     const refutedFindings = result.findings.filter((f: { verdict: string }) => f.verdict === 'refuted')
     expect(refutedFindings.length).toBeGreaterThan(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: cap-truncated findings carry 'unverified-by-cap' and survive synthesis
+//
+// Regression for the patterns-0.3.0 verdict-vocabulary change: the workflow
+// passes maxVerifyClaims: 5 to adversarialVerification, so any reviewer that
+// yields more than 5 findings makes the cap reachable. Cap-cut findings must
+// surface with the distinct 'unverified-by-cap' verdict (NOT 'unverifiable',
+// which means verifiers genuinely could not decide), must spawn NO verifier
+// agents, and must NOT be excluded from synthesis — only 'refuted' ever is
+// (keep-unverified-rather-than-drop).
+// ---------------------------------------------------------------------------
+
+describe('pr-review cap-truncated findings (unverified-by-cap)', () => {
+  it('labels cap-cut findings unverified-by-cap and keeps them in synthesis input', async () => {
+    let reviewerCallCount = 0
+    let verifierCallCount = 0
+    let synthesisPrompt = ''
+
+    // 7 findings from ONE reviewer → with maxVerifyClaims: 5 the first 5 are
+    // verified and the last 2 come back as 'unverified-by-cap' with votes: [].
+    const sevenFindings = Array.from({ length: 7 }, (_, i) => ({
+      title: `cap-finding-${i + 1}`,
+      file: `src/file-${i + 1}.ts`,
+      severity: 'medium',
+      detail: `Detail for finding ${i + 1}`,
+    }))
+
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+
+        // (1) Adversarial verifier — count calls to pin that cap-cut claims
+        //     spawn NO verifier agents (5 kept claims x 3 votes = 15 calls).
+        if (p.includes('adversarially verify')) {
+          verifierCallCount++
+          return { verdict: 'confirmed', reason: 'Re-derived from the diff' }
+        }
+
+        // (2) Synthesis — capture the prompt to assert cap-cut findings
+        //     survive into the synthesis input (only 'refuted' is excluded).
+        if (p.includes('synthesizing a code review')) {
+          synthesisPrompt = prompt
+          return { verdict: 'request-changes', summary: 'Several findings to address' }
+        }
+
+        // (3) Reviewers — first lens yields 7 findings, the others none, so
+        //     exactly ONE verification call sees more claims than the cap.
+        if (p.includes('you are a specialized code reviewer')) {
+          reviewerCallCount++
+          if (reviewerCallCount === 1) return { findings: sevenFindings }
+          return { findings: [] }
+        }
+
+        // (4) Act stage (change summary)
+        if (p.includes('you are reviewing a')) {
+          return { summary: 'Wide-reaching bugfix', riskAreas: ['core'] }
+        }
+
+        // (5) Classifier
+        if (p.includes('classify it into exactly one category')) {
+          return { category: 'bugfix' }
+        }
+
+        return { summary: 'Default summary', riskAreas: [] }
+      },
+    })
+
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~2..HEAD' }))
+
+    // All 7 findings surface — claims are never dropped by the cap.
+    expect(result.stats.findingsRaw).toBe(7)
+    expect(result.stats.findingsRefuted).toBe(0)
+    expect(result.stats.findingsVerified).toBe(7)
+
+    // The 2 cap-cut findings (input order is preserved: the cap keeps the
+    // first 5, truncated claims are appended) carry the DISTINCT verdict.
+    const capped = result.findings.filter(
+      (f: { verdict: string }) => f.verdict === 'unverified-by-cap',
+    )
+    expect(capped.length).toBe(2)
+    const cappedTitles = capped.map((f: { title: string }) => f.title).sort()
+    expect(cappedTitles).toEqual(['cap-finding-6', 'cap-finding-7'])
+
+    // Distinction is explicit: cap-cut findings are NOT mislabeled as
+    // 'unverifiable' (that value stays reserved for verifier failure).
+    const unverifiable = result.findings.filter(
+      (f: { verdict: string }) => f.verdict === 'unverifiable',
+    )
+    expect(unverifiable.length).toBe(0)
+    const confirmed = result.findings.filter(
+      (f: { verdict: string }) => f.verdict === 'confirmed',
+    )
+    expect(confirmed.length).toBe(5)
+
+    // Cap-cut claims spawned NO verifier agents: 5 kept claims x 3 votes.
+    expect(verifierCallCount).toBe(15)
+
+    // Survival into synthesis: the synthesis prompt embeds the non-refuted
+    // findings as JSON — the cap-cut findings (and their verdict) must be in.
+    expect(synthesisPrompt).toContain('cap-finding-6')
+    expect(synthesisPrompt).toContain('cap-finding-7')
+    expect(synthesisPrompt).toContain('unverified-by-cap')
   })
 })
 

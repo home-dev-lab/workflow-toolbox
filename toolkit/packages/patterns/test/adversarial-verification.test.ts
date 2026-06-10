@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { BEST_MODEL, FakeRuntime } from '@workflow-toolbox/runtime'
 import { adversarialVerification } from '../src/adversarial-verification.js'
-import type { AdversarialVerificationOptions, VerifierVote } from '../src/adversarial-verification.js'
+import type { AdversarialVerificationOptions, VerifierVote, Verdict, ClaimVerdict } from '../src/adversarial-verification.js'
+// Convention: new public types must also be re-exported from the package index.
+import type { ClaimVerdict as IndexClaimVerdict } from '../src/index.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -209,11 +211,11 @@ describe('adversarialVerification — partial null votes', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Cap — truncated claims kept as unverifiable
+// Cap — truncated claims kept as unverified-by-cap
 // ---------------------------------------------------------------------------
 
 describe('adversarialVerification — cap truncation', () => {
-  it('truncated claims appear in output as unverifiable with empty votes', async () => {
+  it('truncated claims appear in output as unverified-by-cap with empty votes', async () => {
     const rt = new FakeRuntime({
       onAgent: () => confirmedVote,
     })
@@ -233,13 +235,115 @@ describe('adversarialVerification — cap truncation', () => {
     expect(result.value[0]!.verdict).toBe('confirmed')
     expect(result.value[1]!.verdict).toBe('confirmed')
 
-    // Last 3: unverifiable with empty votes
+    // Last 3: unverified-by-cap with empty votes — cap-truncated claims are
+    // nominally distinct from 'unverifiable' (all-verifiers-failed) claims.
     for (const v of result.value.slice(2)) {
-      expect(v.verdict).toBe('unverifiable')
+      expect(v.verdict).toBe('unverified-by-cap')
       expect(v.votes).toHaveLength(0)
     }
 
     expect(result.warnings.some(w => w.includes('truncated') && w.includes('maxVerifyClaims'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Regression: 'unverified-by-cap' vs 'unverifiable' in ONE run.
+//
+// Before ClaimVerdict, the cap-truncation append reused the agent-facing
+// 'unverifiable' verdict, conflating "we never tested this claim" (cap cut it,
+// votes: []) with "we tested it and could not decide" (all verifiers failed,
+// votes: non-empty array of nulls). The distinction was already STRUCTURAL
+// (empty vs non-empty votes); ClaimVerdict makes it NOMINAL so summary tallies
+// keyed on the verdict string stop merging the two states.
+// ---------------------------------------------------------------------------
+
+describe('adversarialVerification — cap-truncated vs all-verifiers-failed distinction', () => {
+  it('reports unverified-by-cap for cap-cut claims and unverifiable for all-null claims in the same run', async () => {
+    // 4 claims, cap = 2: c0 and c1 are verified, c2 and c3 are cap-cut.
+    // c0's verifiers succeed (confirmed); c1's verifiers ALL return null.
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        // claim index 1 → every verifier fails
+        if (label.startsWith('adversarialVerification:verify:1:')) return null
+        return confirmedVote
+      },
+    })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0', 'c1', 'c2', 'c3'],
+      votes: 2,
+      maxVerifyClaims: 2,
+    }))
+
+    // itemsIn === itemsOut — claims are never dropped (§8)
+    expect(result.stats.itemsIn).toBe(4)
+    expect(result.stats.itemsOut).toBe(4)
+    expect(result.value).toHaveLength(4)
+
+    // c0: verified normally
+    expect(result.value[0]!.verdict).toBe('confirmed')
+    expect(result.value[0]!.votes).toHaveLength(2)
+
+    // c1: kept-but-failed — tested, could not decide → 'unverifiable',
+    // votes is a NON-EMPTY array of nulls (the structural marker).
+    expect(result.value[1]!.verdict).toBe('unverifiable')
+    expect(result.value[1]!.votes).toEqual([null, null])
+
+    // c2/c3: cap-cut — never tested → 'unverified-by-cap', votes: [] (empty).
+    for (const v of result.value.slice(2)) {
+      expect(v.verdict).toBe('unverified-by-cap')
+      expect(v.votes).toHaveLength(0)
+    }
+
+    // stats: truncated counts cap-cut CLAIMS; dropped counts null VOTES
+    expect(result.stats.truncated).toBe(2)
+    expect(result.stats.dropped).toBe(2)
+
+    // Truncated claims get NO trail records: trail.length === agentsSpawned
+    // (2 kept claims × 2 votes = 4) and no stage references claim 2 or 3.
+    expect(result.trail).toHaveLength(result.stats.agentsSpawned)
+    expect(result.trail).toHaveLength(4)
+    expect(result.trail!.some(r => r.stage.startsWith('adversarialVerification:verify:2:'))).toBe(false)
+    expect(result.trail!.some(r => r.stage.startsWith('adversarialVerification:verify:3:'))).toBe(false)
+
+    // Both warning vocabularies surface in the same run:
+    // - the truncation warning keeps its 'truncated' + 'maxVerifyClaims' substrings
+    // - the all-verifiers-failed warning keeps its 'unverifiable' substring
+    expect(result.warnings.some(w => w.includes('truncated') && w.includes('maxVerifyClaims'))).toBe(true)
+    expect(result.warnings.some(w => w.includes('unverifiable'))).toBe(true)
+
+    // Backward compat: callers keying on 'refuted' see zero behavior change.
+    expect(result.value.filter(v => v.verdict === 'refuted')).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// ClaimVerdict type contract — pinned at typecheck time (pnpm typecheck).
+// Verdict stays the agent-facing 4-value union; ClaimVerdict widens it with
+// the pattern-only 'unverified-by-cap'. Both the pattern module and the
+// package index must export ClaimVerdict (new-public-type convention).
+// ---------------------------------------------------------------------------
+
+describe('adversarialVerification — ClaimVerdict type export', () => {
+  it('ClaimVerdict accepts the 4 agent verdicts plus unverified-by-cap, and VerifiedClaim.verdict is a ClaimVerdict', async () => {
+    // Type-level pins (compile errors = RED at pnpm typecheck):
+    const fromPattern: ClaimVerdict = 'unverified-by-cap'
+    const fromIndex: IndexClaimVerdict = 'unverified-by-cap'
+    const widened: ClaimVerdict = 'refuted' as Verdict // Verdict assignable to ClaimVerdict
+    expect([fromPattern, fromIndex, widened]).toBeDefined()
+
+    // VerifiedClaim.verdict must be typed as ClaimVerdict (not the narrower
+    // Verdict) so cap-truncated rows are representable without casts.
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0', 'c1'],
+      votes: 1,
+      refuteThreshold: 1,
+      maxVerifyClaims: 1,
+    }))
+    const verdict: ClaimVerdict = result.value[1]!.verdict
+    expect(verdict).toBe('unverified-by-cap')
   })
 })
 

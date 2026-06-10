@@ -26,6 +26,7 @@ export type {
   VerifierVote,
   VerifiedClaim,
   Verdict,
+  ClaimVerdict,
 } from './adversarial-verification.js'
 
 export { tournament } from './tournament.js'

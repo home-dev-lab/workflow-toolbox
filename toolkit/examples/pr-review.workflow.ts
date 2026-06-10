@@ -34,7 +34,7 @@ import {
   classifyAndAct,
   adversarialVerification,
 } from '@workflow-toolbox/patterns'
-import type { VerifiedClaim } from '@workflow-toolbox/patterns'
+import type { ClaimVerdict, VerifiedClaim } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
 
 // ---------------------------------------------------------------------------
@@ -126,7 +126,9 @@ interface VerifiedFinding {
   file: string
   severity: 'high' | 'medium' | 'low'
   detail: string
-  verdict: 'confirmed' | 'partially-confirmed' | 'refuted' | 'unverifiable'
+  // ClaimVerdict = the four agent verdicts + 'unverified-by-cap' (the
+  // maxVerifyClaims cap withheld verification — pattern-level, patterns 0.3.0)
+  verdict: ClaimVerdict
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +394,9 @@ async function run(rt: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewO
 
   // Findings to pass to synthesis: keep all non-refuted findings.
   // Defence: keep-unverified-rather-than-drop — 'unverifiable' means a verifier
-  // failed, NOT that the finding is wrong. Only 'refuted' is excluded.
+  // failed and 'unverified-by-cap' means the maxVerifyClaims cap withheld
+  // verification; neither means the finding is wrong, so both stay included
+  // in synthesis. Only 'refuted' is excluded.
   const synthesisFindings = allVerifiedFindings
     .filter(vc => vc.verdict !== 'refuted')
     .map(vc => ({

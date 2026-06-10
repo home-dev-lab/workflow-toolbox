@@ -288,7 +288,7 @@ var __wt = (() => {
       warn(
         rt,
         warnings,
-        `adversarialVerification: ${truncated} of ${claims.length} claims truncated by maxVerifyClaims=${maxVerifyClaims ?? "?"} \u2014 kept as unverifiable`
+        `adversarialVerification: ${truncated} of ${claims.length} claims truncated by maxVerifyClaims=${maxVerifyClaims ?? "?"} \u2014 kept as unverified-by-cap`
       );
     }
     function buildVerifierPrompt(claim, lens) {
@@ -347,7 +347,7 @@ ${renderClaim(claim)}`;
       })
     );
     trail.push(...trailByClaim.flat());
-    const truncatedClaims = claims.slice(keptClaims.length).map((claim) => ({ claim, verdict: "unverifiable", votes: [] }));
+    const truncatedClaims = claims.slice(keptClaims.length).map((claim) => ({ claim, verdict: "unverified-by-cap", votes: [] }));
     const value = [...verifiedKept, ...truncatedClaims];
     let nullVoteCount = 0;
     let allNullClaimsCount = 0;
