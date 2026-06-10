@@ -743,12 +743,13 @@ Goal: ${input.goal}
 Project root: ${input.projectDir}
 Area: ${area}
 Read the actual files. Report: observations relevant to the goal (entry points, existing helpers, test layout), the test command, the build command (empty string if none), and the coding conventions you can verify (style, test framework, idioms).
+testCommand and buildCommand MUST be a single shell command executable VERBATIM from the project root \u2014 no prose, no parenthetical commentary, no alternatives. Anything that is advice (gates, caveats, related commands) belongs in conventions instead.
 Return { "observations": [{ "file": "<path>", "detail": "<relevant fact>" }], "testCommand": "<cmd or empty>", "buildCommand": "<cmd or empty>", "conventions": "<digest>" }`,
       taskSchema: DISCOVERY_SCHEMA,
       synthesisPrompt: (parts) => `Consolidate the per-area discoveries into one project context for a development plan.
 Goal: ${input.goal}
 Discoveries: ${JSON.stringify(parts)}
-Resolve disagreements conservatively (prefer the command actually present in the area closest to the project root). The conventions digest must be self-sufficient: a reader with NO other context must be able to write idiomatic code from it.
+Resolve disagreements conservatively (prefer the command actually present in the area closest to the project root). testCommand and buildCommand MUST each be a single shell command executable VERBATIM from the project root \u2014 no prose, no parenthetical commentary; move any advice into conventions. The conventions digest must be self-sufficient: a reader with NO other context must be able to write idiomatic code from it.
 Return { "testCommand": "<cmd or empty>", "buildCommand": "<cmd or empty>", "conventions": "<digest>", "repoBrief": "<one-paragraph project summary>" }`,
       synthesisSchema: CONTEXT_SCHEMA,
       phase: "Discover"
@@ -830,7 +831,8 @@ Refute the task if any claim is wrong.`,
         rejected.push({
           title: vt.claim.title,
           files: vt.claim.files.map((f) => f.path),
-          verdict: vt.verdict
+          verdict: vt.verdict,
+          reason: vt.votes.flatMap((v) => v !== null && v.verdict === "refuted" ? [v.reason] : []).join("; ")
         });
       } else {
         keptTasks.push(vt.claim);

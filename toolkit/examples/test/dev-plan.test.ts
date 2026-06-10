@@ -298,6 +298,8 @@ describe('dev-plan refuted task claims', () => {
     for (const r of result.rejected) {
       expect(typeof r.title).toBe('string')
       expect(typeof r.verdict).toBe('string')
+      // The human arbitrates rejections — the verifier's reason must survive.
+      expect(r.reason).toMatch(/already exists/)
     }
   })
 })
