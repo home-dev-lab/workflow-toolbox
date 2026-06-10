@@ -18,7 +18,7 @@ largely undocumented surface.
 
 Every pattern and composition takes the runtime as an explicit first
 parameter: `rt: WorkflowRuntime`. The ambient globals are bound into `rt`
-exactly once, in the glue epilogue that `dwt build` emits around the bundle.
+exactly once, in the glue epilogue that `workflow-toolbox build` emits around the bundle.
 
 Two supporting choices:
 

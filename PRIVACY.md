@@ -17,7 +17,7 @@ already writes for the Workflow tool.
   metadata, and token counts** — not the text of your conversations — and never
   transmits them.
 
-- **Stop hook** (`bin/dwt-stop-hook.mjs`) — fires when a turn ends, reads the
+- **Stop hook** (`bin/wt-stop-hook.mjs`) — fires when a turn ends, reads the
   background-task list from the hook payload plus the run journal, and surfaces a
   short notice (and, on request, a cost/traceability audit report). It writes a
   small deduplication state file under your system temp directory so the same run

@@ -116,8 +116,22 @@ can compose workflows from any project without cloning this repo:
 pnpm add -D @workflow-toolbox/runtime @workflow-toolbox/patterns @workflow-toolbox/build
 ```
 
-Write a `*.workflow.ts` against `@workflow-toolbox/patterns`, then run `dwt build`
-to emit the sandbox-compliant `.js` the Workflow tool runs.
+Write a `*.workflow.ts` against `@workflow-toolbox/patterns` — and note the
+`/define` subpath for `defineWorkflow` (the package-root re-export typechecks,
+but `workflow-toolbox build` then fails with a `node:vm` resolve error):
+
+```ts
+import { defineWorkflow } from '@workflow-toolbox/build/define'
+import { fanOutAndSynthesize } from '@workflow-toolbox/patterns'
+```
+
+The full loop runs off-repo through the published `workflow-toolbox` CLI: `npx workflow-toolbox scaffold
+spec.json` for a build-clean skeleton, `npx workflow-toolbox build my-flow.workflow.ts
+--typecheck` to emit the sandbox-compliant artifact, `npx workflow-toolbox check` to lint it,
+then — after a run — `npx workflow-toolbox debug` / `npx workflow-toolbox report` to diagnose or audit it.
+One convention to know: `workflow-toolbox build` names the artifact from the workflow's
+`meta.name`, **not** the entry filename — it writes `workflows/<meta.name>.js`,
+so the follow-up is `npx workflow-toolbox check workflows/<name>.js`.
 
 **When a run misbehaves** — an agent that finished with nothing, a schema that
 kept retrying — point the `workflow-debugger` skill at the run's journal to see
@@ -143,7 +157,10 @@ what happened and whether resuming is safe.
   `fanOutAndSynthesize`, `adversarialVerification`, `generateAndFilter`,
   `tournament`, `loopUntilDone`, `planAndExecute`), each returning a result
   envelope with stats, warnings, and a replayable audit trail.
-- **`@workflow-toolbox/build`** — `defineWorkflow` plus the `dwt` CLI, which compiles a
+- **`@workflow-toolbox/build`** — the `workflow-toolbox` CLI plus `defineWorkflow`, which workflow
+  entries import from the **`@workflow-toolbox/build/define`** subpath (the package
+  root re-exports it too, but that import — while it typechecks — makes
+  `workflow-toolbox build` fail with a `node:vm` resolve error). The CLI compiles a
   TypeScript composition into one self-contained `.js` the Workflow tool runs
   directly.
 
@@ -330,9 +347,13 @@ workflow-toolbox/
 │       └── upgrade-canary/
 ├── toolkit/                    # ← @workflow-toolbox, the compile-time pattern library
 │   ├── packages/
-│   │   ├── runtime/            # @workflow-toolbox/runtime  — sandbox typings + FakeRuntime
+│   │   ├── build/              # @workflow-toolbox/build    — defineWorkflow (./define) + the workflow-toolbox CLI
+│   │   ├── debugger/           # @workflow-toolbox/debugger — run diagnosis + audit report (private; bundled into the CLI)
 │   │   ├── patterns/           # @workflow-toolbox/patterns — the 7 patterns + envelope
-│   │   └── build/              # @workflow-toolbox/build    — defineWorkflow + dwt CLI
+│   │   ├── runtime/            # @workflow-toolbox/runtime  — sandbox typings + FakeRuntime
+│   │   ├── scaffold/           # @workflow-toolbox/scaffold — .workflow.ts skeleton emitter (private; bundled into the CLI)
+│   │   ├── smoke/              # @workflow-toolbox/smoke    — headless upgrade-canary harness (private; maintainer-only)
+│   │   └── std/                # @workflow-toolbox/std      — zero-dep narrowing helpers (private; bundled)
 │   ├── examples/               # 4 teaching compositions (*.workflow.ts)
 │   └── workflows/              # committed build artifacts — runnable as-is
 ├── docs/

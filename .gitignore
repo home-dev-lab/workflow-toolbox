@@ -31,6 +31,6 @@ node_modules/
 /.upgrade-canary-state.json
 
 # budgetFloor-calibration run log — per-machine real-run statistics captured by
-# `pnpm dwt:calibrate record`; accrues across runs, never source. The committed
+# `pnpm wt:calibrate record`; accrues across runs, never source. The committed
 # demo lives at packages/smoke/test/fixtures/sample-runs.jsonl instead.
 /toolkit/run-stats/

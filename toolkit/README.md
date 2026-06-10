@@ -1,4 +1,4 @@
-# dwt — Dynamic Workflow Toolkit
+# @workflow-toolbox — Dynamic Workflow Toolkit
 
 ## In plain words
 
@@ -48,7 +48,7 @@ toolkit/
 │   ├── runtime/    # @workflow-toolbox/runtime  — sandbox typings + FakeRuntime (the ONLY
 │   │               #   coupling point to Claude Code; unstable-surface firewall)
 │   ├── patterns/   # @workflow-toolbox/patterns — the 7 patterns + result envelope
-│   └── build/      # @workflow-toolbox/build    — defineWorkflow + the `dwt` CLI (build/check)
+│   └── build/      # @workflow-toolbox/build    — defineWorkflow + the `workflow-toolbox` CLI (build/check)
 ├── examples/       # @workflow-toolbox/examples — 4 teaching workflows (*.workflow.ts; the
 │                   #   monorepo-refactor plan/execute pair is one L3 composition)
 └── workflows/      # committed build artifacts (.js) — the runnable deliverable
@@ -113,7 +113,7 @@ No lifecycle hooks, no middleware.
 
 > **⚠ Import `defineWorkflow` from `@workflow-toolbox/build/define`, never `@workflow-toolbox/build`.**
 > The package root re-exports the bundler (node:vm, esbuild) and breaks the
-> platform-neutral bundle. `dwt build` pre-flights this mistake with an
+> platform-neutral bundle. `workflow-toolbox build` pre-flights this mistake with an
 > actionable error.
 > [ADR 0005](../docs/public/adr/0005-sandbox-pure-entry-subpath.md).
 
@@ -123,13 +123,13 @@ No lifecycle hooks, no middleware.
 # From toolkit/ — paths are relative to the toolkit root.
 
 # Build: TS entry → self-contained .js (default out-dir: workflows/)
-pnpm dwt:build examples/my-workflow.workflow.ts
+pnpm wt:build examples/my-workflow.workflow.ts
 
 # Check: standalone sandbox lint of any artifact (meta-first, banned APIs, size)
-pnpm dwt:check workflows/my-workflow.js
+pnpm wt:check workflows/my-workflow.js
 ```
 
-Flags pass straight through (`pnpm dwt:build entry.ts --minify`, `-o <dir>`).
+Flags pass straight through (`pnpm wt:build entry.ts --minify`, `-o <dir>`).
 The emitted artifact is byte-deterministic regardless of the invocation cwd —
 module-path comments are anchored to the entry's directory, so rebuilds stay
 diffable against the committed artifacts
@@ -137,7 +137,7 @@ diffable against the committed artifacts
 
 The build emits readable (unminified) output by default — the artifact is what
 users review in permission dialogs and edit for re-invocation. `--minify` is
-an explicit escape hatch. `dwt build` warns from 400 KB (the cap is 512 KB);
+an explicit escape hatch. `workflow-toolbox build` warns from 400 KB (the cap is 512 KB);
 an oversized
 workflow is usually two workflows with a checkpoint between them.
 
@@ -160,9 +160,11 @@ Invocation paths, in order of reliability right after a build:
 
 ## The pattern library (L1)
 
-Every pattern takes `rt` plus a typed options object, assigns its agents to a
-caller-provided `phase`, and returns the standard envelope (below). Each
-speaks its own domain language (claims, tasks, angles…) — deliberately not a
+Every pattern takes `rt` plus a typed options object and returns the standard
+envelope (below). All but one assign their agents to a caller-provided
+`phase` — the exception is `loopUntilDone`, which spawns no agents of its own
+and has no `phase` option (call `rt.phase()` before it; its trail records loop
+iterations). Each speaks its own domain language (claims, tasks, angles…) — deliberately not a
 uniform `items` API.
 
 | Pattern | Anthropic mapping | Use when | Do NOT use when |
@@ -285,11 +287,11 @@ mid-verification), reported via `stoppedBy` and a coverage warning. A
 floor-stopped run is a **checkpoint, not a loss**: review the partial result,
 relaunch with `resumeFromRunId`.
 
-**Calibrating a floor (`pnpm dwt:calibrate`).** Picking a `budgetFloor` number
-is data-driven, not guesswork. `pnpm dwt:calibrate record` drives a small probe
+**Calibrating a floor (`pnpm wt:calibrate`).** Picking a `budgetFloor` number
+is data-driven, not guesswork. `pnpm wt:calibrate record` drives a small probe
 workflow through the real runtime and appends one run record (the runtime agent
 count + `rt.budget.spent()` + the completion notification's `usage`) to the
-gitignored `run-stats/runs.jsonl`; `pnpm dwt:calibrate derive` reads the log and
+gitignored `run-stats/runs.jsonl`; `pnpm wt:calibrate derive` reads the log and
 prints `floor ≈ tokens-per-agent × (expected claims × votes + synthesis) ×
 margin`. The maintainer loop: run real workflows against real codebases, `record`
 after each, and once ~10 have accrued, `derive` and fold the number into the
@@ -299,18 +301,19 @@ tokens-per-agent is a cross-run approximation, and the two token signals are kep
 against via `remaining()`; it scales with agent count plus a small fixed launch
 overhead) while the notification `total_tokens` is the in+out total (it scales
 linearly with sub-agents — verified 2×agents → 2×tokens). The probe's echo agents
-are cheap, so its tokens-per-agent is a **lower bound**; real opus verifiers cost
-far more, which is exactly why the floor carries a safety margin.
+are cheap, so its tokens-per-agent is a **lower bound**; real best-model
+verifiers cost far more, which is exactly why the floor carries a safety margin.
 
 Model tiering: mechanical high-volume leaf work → `'haiku'`; judgment work →
-inherit the session model. Verification quality is model-sensitive — verifier
-downgrades log a warning.
+inherit the session model. Verification quality is model-sensitive — verifiers
+default to `BEST_MODEL` (a constant exported by `@workflow-toolbox/runtime`,
+currently `'fable'`), and explicitly passing anything weaker logs a warning.
 
-## Auditing a run (`pnpm dwt:report`)
+## Auditing a run (`pnpm wt:report`)
 
 Every Workflow run leaves a structured journal on disk
 (`~/.claude/projects/<project>/<session>/workflows/wf_<runId>.json`).
-`pnpm dwt:report [runId|latest] [--project <slug>] [--out <dir>] [--quiet]`
+`pnpm wt:report [runId|latest] [--project <slug>] [--out <dir>] [--quiet]`
 turns one journal into a **cost + traceability audit report**: run identity
 (incl. `taskId`), a per-agent cost rollup (model / tokens / tool calls / phase)
 **reconciled** against the run's total token count, the decision trail, and
@@ -332,7 +335,7 @@ fires for the teammate/todo system, not for Workflow background tasks (verified
 empirically), so the report is journal-driven.
 
 **Automatic surfacing at run end** ships as a plugin `Stop` hook
-(`plugin/bin/dwt-stop-hook.mjs`). It detects a finished background workflow by
+(`plugin/bin/wt-stop-hook.mjs`). It detects a finished background workflow by
 diffing the `Stop` payload's `background_tasks[]` across firings, maps the task
 to its journal by `taskId`, and surfaces the report **hybrid-style**: always a
 one-line notice to you, plus — only when the run looks like trouble (failed /
@@ -340,10 +343,10 @@ agent-died / schema-retries) — it grabs the session with a compact report so y
 act on it. Healthy runs stay quiet. The audit folder is still written only when
 `$DWT_WORKFLOW_LOG_DIR` is set, and the hook never breaks the session.
 
-Sibling tool: **`pnpm dwt:debug [runId|latest]`** reads the same journal for the
+Sibling tool: **`pnpm wt:debug [runId|latest]`** reads the same journal for the
 other question — not "what did it cost?" but "why did it fail, and will a
-`resumeFromRunId` actually save work?". Reach for `dwt:debug` when a run errored
-or stalled; reach for `dwt:report` when you need the cost + traceability picture
+`resumeFromRunId` actually save work?". Reach for `wt:debug` when a run errored
+or stalled; reach for `wt:report` when you need the cost + traceability picture
 of any run (success or failure).
 
 ## Testing
@@ -352,7 +355,7 @@ Patterns and compositions are tested end-to-end against `FakeRuntime`
 (`@workflow-toolbox/runtime`): scripted deterministic agents via an `onAgent` handler,
 with assertions on spawned-agent calls (`calls`, including per-call `opts`),
 `phases`, `logs`, and envelope stats. The bundler is golden-file tested;
-emitted artifacts are linted by `dwt check`.
+emitted artifacts are linted by `workflow-toolbox check`.
 
 ## Stability
 
@@ -381,7 +384,7 @@ which is where the Workflow tool ships):
 - **Tier 1 — launch canary.** Launches every `workflows/*.js` and asserts the
   runtime still accepts it (no syntax-check error). Arg-less launches are safe:
   each workflow's `parseInput` throws before any agent runs.
-- **Tier 2 — round trip.** Launches the dedicated `packages/smoke/dwt-smoke.js`
+- **Tier 2 — round trip.** Launches the dedicated `packages/smoke/wt-smoke.js`
   to completion and asserts its `PatternResult` envelope arrived intact.
 
 The message-parsing and verdict logic lives in `@workflow-toolbox/smoke` and is unit-tested
@@ -411,8 +414,8 @@ shows up in **WHAT CHANGED** (which can drive a fix or feature). The negative
 checks catch the regression where an upgrade silently *accepts* an oversized or
 `meta`-disordered script. It does NOT check the `name`-registry-keyed-by-`meta.name`
 behavior (side-effectful, not headlessly checkable, least load-bearing since
-`dwt build` keeps filename == `meta.name`). The **`upgrade-canary` plugin skill**
-is the operator playbook: gate on a version change, run the matrix + `dwt:check`,
+`workflow-toolbox build` keeps filename == `meta.name`). The **`upgrade-canary` plugin skill**
+is the operator playbook: gate on a version change, run the matrix + `wt:check`,
 interpret the report. `canary` is the sole writer of the marker; `canary:version`
 only reads it. All live canaries are out of `pnpm test`.
 

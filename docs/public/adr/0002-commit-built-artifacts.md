@@ -8,7 +8,7 @@ Accepted
 
 ## Context
 
-`dwt build` emits self-contained `.js` workflows under `toolkit/workflows/`.
+`workflow-toolbox build` emits self-contained `.js` workflows under `toolkit/workflows/`.
 Building requires the workspace toolchain (pnpm, tsx, esbuild). The artifacts —
 not the TypeScript sources — are what users actually run via the Workflow tool.
 
@@ -26,7 +26,7 @@ Commit `toolkit/workflows/*.js` to the repository.
 - Usable without building — clone and launch via `scriptPath`, or copy into
   `.claude/workflows/`, with no toolchain installed.
 - Drift risk: sources can change without a rebuild. Mitigations: the build is
-  deterministic (pinned esbuild), `dwt check` validates any artifact
+  deterministic (pinned esbuild), `workflow-toolbox check` validates any artifact
   standalone, and the milestone ritual rebuilds before committing.
 - Artifact size is visible in diffs, which keeps the 512 KB cap (and its
   silent-exclusion failure mode on the `name` path) on the radar.

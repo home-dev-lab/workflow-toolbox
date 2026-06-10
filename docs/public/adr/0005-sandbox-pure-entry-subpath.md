@@ -47,6 +47,6 @@ Workflow entries MUST import from `@workflow-toolbox/build/define`, never from
 - The foot-gun is fenced at two layers; the failure message states the fix
   instead of surfacing esbuild internals.
 - The package root remains the natural surface for Node-side tooling (the
-  `dwt` CLI, tests, future SDK smoke runners).
+  `workflow-toolbox` CLI, tests, future SDK smoke runners).
 - Anything exported from `./define` must stay transitively free of Node
   imports — it can only depend on `@workflow-toolbox/runtime` types.

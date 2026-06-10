@@ -22,7 +22,7 @@ This is a local developer tool. It has a deliberately small attack surface:
   Claude Code `CHANGELOG.md` (see [PRIVACY.md](PRIVACY.md)).
 - **No data exfiltration.** It collects and transmits no user data, source, or
   conversation content. See [PRIVACY.md](PRIVACY.md).
-- **Bundled hook binaries** (`bin/dwt-stop-hook.mjs`, `bin/dwt-debug.mjs`) are
+- **Bundled hook binaries** (`bin/wt-stop-hook.mjs`, `bin/wt-debug.mjs`) are
   built from this repository's own source with esbuild, contain no third-party
   network calls, and are designed never to throw (the Stop hook exits cleanly and
   silently on any malformed input rather than blocking your session).

@@ -9,7 +9,7 @@ This repo has two halves that stand alone but work together:
   report.
 - **`toolkit/`** — `@workflow-toolbox`, a compile-time TypeScript pattern library for Workflow
   scripts: `@workflow-toolbox/runtime` (sandbox typings + `FakeRuntime`), `@workflow-toolbox/patterns` (the
-  seven patterns + result envelope), `@workflow-toolbox/build` (`defineWorkflow` + the `dwt`
+  seven patterns + result envelope), `@workflow-toolbox/build` (`defineWorkflow` + the `workflow-toolbox`
   CLI), plus support packages (`std`, `smoke`, `debugger`, `scaffold`). Example
   compositions live in `toolkit/examples/`; their committed `.js` artifacts in
   `toolkit/workflows/` run as-is via the Workflow tool's `scriptPath`.
@@ -41,7 +41,7 @@ pnpm test && pnpm typecheck && pnpm lint
   `tsx`/`vitest`. `pnpm lint` is eslint flat config (`.mjs` is linted; `.js` is
   ignored).
 - **Committed artifacts are generated, not hand-edited.** Rebuild a workflow with
-  `pnpm dwt:build <entry.workflow.ts>`; the artifacts in `toolkit/workflows/` are
+  `pnpm wt:build <entry.workflow.ts>`; the artifacts in `toolkit/workflows/` are
   byte-identity-checked. Rebuild the debugger CLIs with `pnpm debugger:build`.
 - **Validate the plugin** before shipping a plugin change:
   `claude plugin validate . --strict` and `claude plugin validate ./plugin --strict`.
@@ -50,7 +50,7 @@ pnpm test && pnpm typecheck && pnpm lint
 ## Editing workflow scripts (the sandbox contract)
 
 The Workflow tool runs a single `.js` in a sandbox with hard rules — the linter
-(`pnpm dwt:check`, also `validate-workflow.mjs`) enforces them on the emitted
+(`pnpm wt:check`, also `validate-workflow.mjs`) enforces them on the emitted
 artifact:
 
 - `export const meta = { name, description, ... }` must be the **first statement**
@@ -59,5 +59,5 @@ artifact:
   (`Date.now()`, `Math.random()`, argless `new Date()`).
 - Scripts are capped at **512 KB**.
 
-Author in TypeScript against `@workflow-toolbox` and let `dwt build` emit the compliant
+Author in TypeScript against `@workflow-toolbox` and let `workflow-toolbox build` emit the compliant
 artifact — don't hand-write the bundled `.js`.
