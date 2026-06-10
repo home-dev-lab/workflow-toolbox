@@ -1,0 +1,9 @@
+{
+  "meta": {
+    "name": "dev-implement",
+    "description": "Execution half of the dev-workflow family: re-validates the approved PlanArtifact, runs each task sequentially in dependency order through a TDD loop (failing tests first, implement, independent check), and reports a deterministic tally."
+  },
+  "steps": [
+    { "pattern": "loopUntilDone", "phase": "Implement" }
+  ]
+}
