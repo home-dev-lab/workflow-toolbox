@@ -3,7 +3,7 @@
 // Flow: for each claim, rt.parallel over `votes` verifier agents.
 //       Tally in code (deterministic, never trust model to count votes).
 //
-// §8 Risk guardrail: default model is 'opus'. Non-opus degrades quality; warn.
+// §8 Risk guardrail: default model is BEST_MODEL. Anything weaker degrades quality; warn.
 // §8 Cap policy: truncated claims are KEPT as 'unverifiable' — a cap never
 //   destroys evidence. itemsIn === itemsOut always.
 //
@@ -17,6 +17,7 @@
 // - opts.phase per-call, never rt.phase() (avoids global-state races).
 // - Labels: adversarialVerification:verify:<claimIndex>:<voteIndex>.
 
+import { BEST_MODEL } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
 import { warn, applyCap, makeRecord } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
@@ -51,7 +52,7 @@ export interface AdversarialVerificationOptions<TClaim> {
    *  `['correctness', 'security', 'does-it-reproduce']`. Omit for N identical
    *  refute-first verifiers. */
   lenses?: readonly string[]
-  model?: ModelAlias       // default 'opus'
+  model?: ModelAlias       // default BEST_MODEL ('fable')
   phase?: string
   maxVerifyClaims?: number // cap; truncated claims kept as 'unverifiable'
 }
@@ -145,13 +146,13 @@ export async function adversarialVerification<TClaim>(
   const trail: TrailRecord[] = []
 
   // -------------------------------------------------------------------------
-  // §8 Model-sensitivity guardrail: default 'opus'. Non-opus → warning.
-  // Verification quality is model-sensitive: weaker models are less reliably
-  // adversarial and more likely to confirm by default.
+  // §8 Model-sensitivity guardrail: default BEST_MODEL; explicitly choosing
+  // anything else → warning. Verification quality is model-sensitive: weaker
+  // models are less reliably adversarial and more likely to confirm by default.
   // -------------------------------------------------------------------------
 
-  const effectiveModel: ModelAlias = model ?? 'opus'
-  if (model !== undefined && model !== 'opus') {
+  const effectiveModel: ModelAlias = model ?? BEST_MODEL
+  if (model !== undefined && model !== BEST_MODEL) {
     warn(
       rt, warnings,
       `adversarialVerification: verifier model downgraded to "${model}" — verification quality is model-sensitive`,

@@ -14,5 +14,7 @@ export type {
   WorkflowRuntime,
 } from './types.js'
 
+export { BEST_MODEL } from './constants.js'
+
 export { FakeRuntime } from './fake.js'
 export type { AgentCall, FakeRuntimeOptions } from './fake.js'

@@ -1,6 +1,6 @@
 {
   "name": "@workflow-toolbox/runtime",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "repository": {
@@ -8,7 +8,9 @@
     "url": "git+https://github.com/home-dev-lab/workflow-toolbox.git",
     "directory": "toolkit/packages/runtime"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "import": "./src/index.ts",

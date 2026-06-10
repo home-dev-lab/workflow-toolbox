@@ -3,7 +3,7 @@
 // If the sandbox surface changes, update here and nowhere else.
 
 /** Model aliases understood by Claude Code's resolver, plus pass-through for full model IDs. */
-export type ModelAlias = 'haiku' | 'sonnet' | 'opus' | 'inherit' | (string & {})
+export type ModelAlias = 'haiku' | 'sonnet' | 'opus' | 'fable' | 'inherit' | (string & {})
 
 /** Minimal structural type for JSON Schema objects. Consumers derive TS types
  *  via json-schema-to-ts (FromSchema) on their side — this package does not

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { BEST_MODEL, FakeRuntime } from '@workflow-toolbox/runtime'
 import { adversarialVerification } from '../src/adversarial-verification.js'
 import type { AdversarialVerificationOptions, VerifierVote } from '../src/adversarial-verification.js'
 
@@ -276,21 +276,55 @@ describe('adversarialVerification — lenses', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Model sensitivity — default is opus
+// Model sensitivity — default is BEST_MODEL
 // ---------------------------------------------------------------------------
 
 describe('adversarialVerification — model', () => {
-  it('defaults to opus model on verifier calls', async () => {
+  it('defaults to BEST_MODEL (fable) on verifier calls', async () => {
     const rt = new FakeRuntime({
       onAgent: () => confirmedVote,
     })
 
     await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1 }))
 
+    expect(BEST_MODEL).toBe('fable')
+    expect(rt.calls[0]!.opts?.model).toBe(BEST_MODEL)
+  })
+
+  it('does not warn when BEST_MODEL is passed explicitly', async () => {
+    const rt = new FakeRuntime({
+      onAgent: () => confirmedVote,
+    })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'],
+      votes: 1,
+      refuteThreshold: 1,
+      model: BEST_MODEL,
+    }))
+
+    expect(result.warnings).toHaveLength(0)
+    expect(rt.calls[0]!.opts?.model).toBe(BEST_MODEL)
+  })
+
+  it('warns when opus (no longer best) is specified explicitly', async () => {
+    const rt = new FakeRuntime({
+      onAgent: () => confirmedVote,
+    })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'],
+      votes: 1,
+      refuteThreshold: 1,
+      model: 'opus',
+    }))
+
+    expect(result.warnings.some(w => w.includes('downgraded') && w.includes('opus'))).toBe(true)
+    // model still forwarded as specified
     expect(rt.calls[0]!.opts?.model).toBe('opus')
   })
 
-  it('emits downgrade warning when non-opus model specified', async () => {
+  it('emits downgrade warning when non-best model specified', async () => {
     const rt = new FakeRuntime({
       onAgent: () => confirmedVote,
     })
@@ -508,9 +542,10 @@ describe('adversarialVerification — trail: happy path', () => {
 })
 
 describe('adversarialVerification — trail: model field', () => {
-  it('records model on every verifier record even without explicit override (opus default is explicitly passed)', async () => {
-    // adversarialVerification always passes effectiveModel ('opus' when no override),
-    // so model is always present in the trail — this is intentional and documented.
+  it('records model on every verifier record even without explicit override (BEST_MODEL default is explicitly passed)', async () => {
+    // adversarialVerification always passes effectiveModel (BEST_MODEL when no
+    // override), so model is always present in the trail — this is intentional
+    // and documented.
     const rt = new FakeRuntime({
       onAgent: () => confirmedVote,
     })
@@ -522,7 +557,7 @@ describe('adversarialVerification — trail: model field', () => {
     }))
 
     const trail = result.trail!
-    expect(trail[0]!.model).toBe('opus')
+    expect(trail[0]!.model).toBe(BEST_MODEL)
   })
 
   it('records explicit model override on verifier records', async () => {
