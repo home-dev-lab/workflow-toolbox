@@ -257,6 +257,24 @@ describe('dev-implement happy path', () => {
     expect(rt.phases).toContain('Check')
     expect(rt.phases).toContain('Report')
   })
+
+  it('surfaces REAL per-task agent counts in stats (not the old hard-coded 0)', async () => {
+    // Regression guard for the loopUntilDone counting change: each task's
+    // envelope stats must report the agents its TDD body spawned through the
+    // rt it received (red + green + check per iteration), instead of the
+    // pre-change agentsSpawned: 0 — the live-run lesson was that per-task
+    // agent counts otherwise only exist in the run journal, not the output.
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    for (const id of ['T1', 'T2']) {
+      expect(result.stats[id]!.agentsSpawned).toBeGreaterThan(0)
+    }
+    // Every agent the run spawned belongs to exactly one task's loop body,
+    // so the per-task counts must add up to the runtime's total.
+    const counted = result.stats['T1']!.agentsSpawned + result.stats['T2']!.agentsSpawned
+    expect(counted).toBe(rt.agentsSpawned)
+  })
 })
 
 // ---------------------------------------------------------------------------
