@@ -162,9 +162,12 @@ Invocation paths, in order of reliability right after a build:
 
 Every pattern takes `rt` plus a typed options object and returns the standard
 envelope (below). All but one assign their agents to a caller-provided
-`phase` — the exception is `loopUntilDone`, which spawns no agents of its own
-and has no `phase` option (call `rt.phase()` before it; its trail records loop
-iterations). Each speaks its own domain language (claims, tasks, angles…) — deliberately not a
+`phase` — the exception is `loopUntilDone`, which has no `phase` option (call
+`rt.phase()` before it); it spawns no agents itself but counts the body's
+`agent()` calls, made through the `rt` the body receives (including via
+`rt.parallel`/`rt.pipeline` thunks), into `stats.agentsSpawned`, while its
+trail stays per-iteration (`trail.length === iterations`). Each speaks its own
+domain language (claims, tasks, angles…) — deliberately not a
 uniform `items` API.
 
 | Pattern | Anthropic mapping | Use when | Do NOT use when |
@@ -253,8 +256,11 @@ the chronology, built deterministically so a `resumeFromRunId` replay reconstruc
 it identically. `trail` is **required** on every pattern (tsc enforces no
 construction site can omit it). Trail semantics are per-pattern, like `dropped`:
 direct-spawn patterns emit one record per agent (`trail.length === stats.agentsSpawned`),
-whereas `loopUntilDone` spawns no agents itself and instead records loop
-**iterations** (stage `loopUntilDone:tick:<i>`).
+whereas `loopUntilDone` records loop **iterations** (stage
+`loopUntilDone:tick:<i>`) while `stats.agentsSpawned` counts the body's
+`agent()` calls through the `rt` it receives (including via
+`rt.parallel`/`rt.pipeline` thunks) — so `trail.length === iterations` and
+`trail.length !== agentsSpawned` for that pattern.
 
 No silent caps, ever: every `max*` option reports what it cut. For
 `adversarialVerification`, a cap never destroys evidence: claims cut by
