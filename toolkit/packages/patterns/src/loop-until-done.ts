@@ -23,9 +23,13 @@
 //   falls — breadth over integrity). 'done' from an iteration that DID run
 //   always wins over dryRounds.
 //
-// agentsSpawned = 0 ALWAYS — this pattern spawns no agents itself. The body
-//   function is caller code; any agents it calls belong to the caller's budget
-//   and are not counted here. This is intentional and honest.
+// agentsSpawned counts the BODY's agent() calls — this pattern spawns no
+//   agents itself, but the body receives a counting wrapper rt whose .agent
+//   tallies before delegating to the real rt.agent. Calls routed through
+//   rt.parallel thunks / rt.pipeline stages on that same rt are counted too
+//   (neither primitive calls agent internally). Live-run lesson: the old
+//   hard-coded 0 forced per-task agent counts to be dug out of the run
+//   journal — the envelope lied by omission.
 //
 // Conventions:
 // - Config errors throw synchronously at entry with actionable messages.
@@ -135,6 +139,26 @@ export async function loopUntilDone<TState>(
   let state: TState = initial
   let iterationsDone = 0
   let consecutiveDry = 0
+  let agentsSpawned = 0
+
+  // ---- Counting wrapper handed to the body (the OUTER rt keeps driving the
+  //      loop's own budgetFloor/warn/log machinery). Explicit 7-member literal,
+  //      NOT a `{ ...rt }` spread: FakeRuntime defines phase/log on the
+  //      PROTOTYPE (non-own), so a spread would silently drop them. budget and
+  //      workflow pass BY REFERENCE — the floor checks above read rt.budget on
+  //      the outer rt and must see the same object the body spends against.
+  const countingRt: WorkflowRuntime = {
+    agent: <T = string>(...args: Parameters<WorkflowRuntime['agent']>) => {
+      agentsSpawned++
+      return rt.agent<T>(...args)
+    },
+    parallel: <T>(thunks: ReadonlyArray<() => Promise<T>>) => rt.parallel<T>(thunks),
+    pipeline: (...args: Parameters<WorkflowRuntime['pipeline']>) => rt.pipeline(...args),
+    phase: (title) => rt.phase(title),
+    log: (message) => rt.log(message),
+    budget: rt.budget,
+    workflow: rt.workflow,
+  }
 
   // Inert-floor warning: budgetFloor set alongside other conditions but total is null
   if (budgetFloor !== undefined && rt.budget.total === null) {
@@ -179,14 +203,17 @@ export async function loopUntilDone<TState>(
         return 'maxIterations'
       }
 
-      // ---- 3. Run body — throws propagate (programmer errors, not swallowed)
-      const tick = await body(rt, state, iterationsDone + 1)
+      // ---- 3. Run body — throws propagate (programmer errors, not swallowed).
+      //      The body gets the COUNTING rt so its agent() calls land in stats.
+      const tick = await body(countingRt, state, iterationsDone + 1)
       const tickIndex = iterationsDone  // 0-based index for this tick
       state = tick.state
       iterationsDone++
 
       // Push a trail record for this tick. outcome='null' when body returned
-      // a null state (unusable), 'ok' otherwise. No label — no agent spawned.
+      // a null state (unusable), 'ok' otherwise. No label/model — the record is
+      // per-TICK, not per-agent (the body's agent calls are counted in stats,
+      // not individually trailed).
       trail.push(makeRecord(`loopUntilDone:tick:${tickIndex}`, tick.state !== null))
 
       // ---- done=true → normal completion, no warning; stamp decision on last tick
@@ -220,7 +247,7 @@ export async function loopUntilDone<TState>(
   // budgetFloor fires BEFORE the body runs — no tick record was pushed for that
   // stop, so there is nothing to stamp. The trail already reflects only the
   // iterations that actually executed (correct by construction).
-  return buildResult(state, iterationsDone, stoppedBy, warnings, trail)
+  return buildResult(state, iterationsDone, stoppedBy, warnings, trail, agentsSpawned)
 }
 
 // ---------------------------------------------------------------------------
@@ -233,20 +260,25 @@ function buildResult<TState>(
   stoppedBy: LoopStoppedBy,
   warnings: string[],
   trail: TrailRecord[],
+  agentsSpawned: number,
 ): PatternResult<LoopOutcome<TState>> {
   // Stats semantics (documented):
   // - itemsIn = itemsOut = completed iterations (the "work units" are loop ticks)
-  // - dropped = truncated = 0 (no agent calls, no cap)
-  // - agentsSpawned = 0 ALWAYS — the body's agents belong to the caller
+  // - dropped = truncated = 0 (no cap, no per-tick drop accounting)
+  // - agentsSpawned = the number of agent() calls the BODY made through the
+  //   counting rt it received (including calls inside rt.parallel thunks and
+  //   rt.pipeline stages routed through that same rt)
   //
   // Trail semantics (loopUntilDone deviation from direct-spawn patterns):
-  // - agentsSpawned = 0 always; the per-agent invariant (trail.length === agentsSpawned)
-  //   does NOT apply here. Instead: one TrailRecord per executed iteration
-  //   (stage = 'loopUntilDone:tick:<i>', 0-based). trail.length === iterations.
+  // - the trail stays per-ITERATION: one TrailRecord per executed tick
+  //   (stage = 'loopUntilDone:tick:<i>', 0-based), so trail.length === iterations.
+  // - agentsSpawned counts the body's agent() calls, NOT trail records — so
+  //   trail.length !== agentsSpawned for this pattern (the direct-spawn
+  //   invariant trail.length === agentsSpawned does NOT apply here).
   const stats: PatternStats = {
     itemsIn: iterations,
     itemsOut: iterations,
-    agentsSpawned: 0,
+    agentsSpawned,
     dropped: 0,
     truncated: 0,
   }
