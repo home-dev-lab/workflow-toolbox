@@ -1,0 +1,11 @@
+{
+  "meta": {
+    "name": "dev-plan",
+    "description": "Planning half of the dev-workflow family: discovers the repo, decomposes the goal into self-sufficient tasks, adversarially critiques the plan claims, and synthesizes the PlanArtifact for human review."
+  },
+  "steps": [
+    { "pattern": "fanOutAndSynthesize", "phase": "Discover" },
+    { "pattern": "planAndExecute", "phase": "Plan" },
+    { "pattern": "adversarialVerification", "phase": "Critique" }
+  ]
+}
