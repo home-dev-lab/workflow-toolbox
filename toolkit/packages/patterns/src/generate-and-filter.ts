@@ -43,6 +43,40 @@ const REJECTED: unique symbol = Symbol('generate-and-filter:REJECTED')
 // Implementation
 // ---------------------------------------------------------------------------
 
+/**
+ * Generates `count` candidates via index-varied prompts, then filters each
+ * with a pass/reason verdict agent. The filter is fail-closed: a degraded
+ * (null) filter agent drops its candidate, counted in `stats.dropped`;
+ * pass=false rejections are the filter working and are NOT dropped.
+ *
+ * @example
+ * ```ts
+ * import { generateAndFilter } from '@workflow-toolbox/patterns'
+ * import { FakeRuntime } from '@workflow-toolbox/runtime'
+ *
+ * // Filter agents answer the pattern-owned { pass, reason } control schema;
+ * // generate agents return the candidate itself. Discriminate by label.
+ * const rt = new FakeRuntime({
+ *   onAgent: ({ opts }) =>
+ *     opts?.label?.startsWith('generateAndFilter:filter')
+ *       ? { pass: true, reason: 'ok' }
+ *       : 'a-candidate',
+ * })
+ *
+ * const result = await generateAndFilter(rt, {
+ *   count: 3,
+ *   // The index is the ONLY diversity lever — the sandbox bans randomness.
+ *   generatePrompt: (index) => `Generate candidate slogan #${index}`,
+ *   filterPrompt: (candidate) => `Does this slogan fit the brief? ${candidate}`,
+ * })
+ *
+ * const survivors = result.value // TCand[] — candidates that passed
+ * const { itemsIn, itemsOut, agentsSpawned, dropped, truncated } = result.stats
+ * // pass=false rejections are not in stats — derive them:
+ * const rejected = itemsIn - itemsOut - dropped
+ * if (result.warnings.length > 0) rt.log(result.warnings.join('; '))
+ * ```
+ */
 export async function generateAndFilter<TCand = string>(
   rt: WorkflowRuntime,
   options: GenerateAndFilterOptions<TCand>,

@@ -93,6 +93,36 @@ function median(scores: number[]): number | null {
 // Implementation
 // ---------------------------------------------------------------------------
 
+/**
+ * Generate attempts from >= 2 unique angles in parallel, score each surviving
+ * attempt with a judge panel (median computed in code, never by the model),
+ * then synthesize over the winner-first ranked list.
+ *
+ * Throws synchronously on config errors (< 2 angles, duplicate angles,
+ * judgeCount < 1). Agent failures degrade: null attempts and unjudgeable
+ * attempts are dropped, never thrown. `value` is null when all attempts fail,
+ * the ranking is empty, or the synthesis agent returns null — always check it.
+ *
+ * Stats: itemsIn = angles.length; itemsOut = ranked attempts (NOT the
+ * synthesis product); dropped = null attempts + attempts with zero judge votes.
+ *
+ * @example
+ * ```ts
+ * const result = await tournament(rt, {
+ *   angles: ['angle-0', 'angle-1', 'angle-2'],
+ *   attemptPrompt: (angle, i) => `attempt ${i}: ${angle}`,
+ *   judgePrompt: (attempt) => `judge: ${attempt}`,
+ *   synthesisPrompt: (ranked) => `synthesize: ${ranked.map(r => r.attempt).join(', ')}`,
+ * })
+ *
+ * if (result.value === null) {
+ *   // All attempts failed, ranking was empty, or synthesis returned null.
+ *   rt.log(`tournament produced no value: ${result.warnings.join('; ')}`)
+ * } else {
+ *   rt.log(`winner-synthesis from ${result.stats.itemsOut} ranked attempts: ${result.value}`)
+ * }
+ * ```
+ */
 export async function tournament<TAttempt = string, TOut = string>(
   rt: WorkflowRuntime,
   options: TournamentOptions<TAttempt>,

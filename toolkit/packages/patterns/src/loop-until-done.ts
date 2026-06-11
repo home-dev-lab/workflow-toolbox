@@ -82,6 +82,40 @@ export interface LoopOutcome<TState> {
 // Implementation
 // ---------------------------------------------------------------------------
 
+/**
+ * Evaluator-optimizer loop: runs the caller-provided `body` until one of four
+ * conditions stops it, with precedence budgetFloor > maxIterations > done >
+ * dryRounds. At least one of maxIterations/dryRounds/budgetFloor is REQUIRED
+ * at the type level; body throws propagate. `value` is the loop outcome
+ * ({ state, iterations, stoppedBy }); `stats.agentsSpawned` tallies the
+ * body's agent() calls.
+ *
+ * @example
+ * ```ts
+ * import { loopUntilDone } from '@workflow-toolbox/patterns'
+ * import { FakeRuntime } from '@workflow-toolbox/runtime'
+ *
+ * const rt = new FakeRuntime({ responses: ['draft v1', 'draft v2'] })
+ *
+ * const result = await loopUntilDone(rt, {
+ *   initial: { draft: '', revisions: 0 },
+ *   maxIterations: 5,
+ *   body: async (rt, state, iteration) => {
+ *     // iteration is 1-based; agent() calls here count into stats.agentsSpawned
+ *     const draft = await rt.agent(
+ *       `Revise this draft (round ${iteration}): ${state.draft || '(empty)'}`,
+ *     )
+ *     const next = { draft: draft ?? state.draft, revisions: state.revisions + 1 }
+ *     return { state: next, done: next.revisions >= 2, progressed: draft !== null }
+ *   },
+ * })
+ *
+ * const { state, iterations, stoppedBy } = result.value
+ * rt.log(`stopped by ${stoppedBy} after ${iterations} iterations`)
+ * rt.log(`final draft: ${state.draft} (${result.stats.agentsSpawned} agents)`)
+ * if (result.warnings.length > 0) rt.log(result.warnings.join('; '))
+ * ```
+ */
 export async function loopUntilDone<TState>(
   rt: WorkflowRuntime,
   options: LoopUntilDoneOptions<TState>,
