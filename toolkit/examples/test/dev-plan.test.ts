@@ -537,4 +537,55 @@ describe('dev-plan risk-aware votes', () => {
     expect(result.rejected).toHaveLength(1)
     expect(result.rejected[0]).toMatchObject({ title: 'Wire validate() into the CLI entry' })
   })
+
+  it('floors a multi-file task off the single-vote path even when self-rated "low", and warns', async () => {
+    // risk is SELF-assessed by the worker whose task it gates — a structural
+    // floor (multi-file ≠ isolated) must keep the full quorum regardless of
+    // the label.
+    const rt = makeRuntime({
+      worker: (prompt) =>
+        prompt.includes('Create the validation helper module')
+          ? {
+              tasks: [{
+                ...helperTask,
+                files: [
+                  { path: 'src/validate.ts', status: 'new', role: 'implementation' },
+                  { path: 'src/cli.ts', status: 'existing', role: 'integration point' },
+                ],
+                risk: 'low',
+              }],
+            }
+          : { tasks: [{ ...wireTask, risk: 'high' }] },
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const verifyLabels = rt.calls
+      .map((c) => c.opts?.label ?? '')
+      .filter((l) => l.startsWith('adversarialVerification:verify:'))
+    // The self-rated "low" multi-file task keeps the full 3-vote quorum.
+    expect(verifyLabels.filter((l) => l.startsWith('adversarialVerification:verify:0:'))).toHaveLength(3)
+    expect(verifyLabels).toHaveLength(6)
+    expect(result.warnings.some((w: string) => /not an isolated change/i.test(w))).toBe(true)
+  })
+
+  it('warns when an implausibly high fraction of tasks self-rate risk "low"', async () => {
+    // 2 subtasks × 2 tasks = 4 candidate tasks, all "low" → >80% on 4+ tasks.
+    const rt = makeRuntime({
+      worker: () => ({
+        tasks: [
+          { ...helperTask, risk: 'low' },
+          { ...helperTask, title: 'Add parse() helper', risk: 'low' },
+        ],
+      }),
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+    expect(result.warnings.some((w: string) => /implausibly high/i.test(w))).toBe(true)
+  })
+
+  it('does NOT warn about the low-risk fraction on a small or mixed-risk plan', async () => {
+    // The default happy path produces 2 medium-risk tasks — neither guard fires.
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+    expect(result.warnings.some((w: string) => /implausibly high|not an isolated change/i.test(w))).toBe(false)
+  })
 })

@@ -466,6 +466,25 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
 
   const workerChanges: ChangeProposal[] = planResult.workerResults.flatMap((r) => r.changes)
 
+  // The impact label is SELF-assessed by the very worker whose proposal it
+  // gates (it decides the verification vote budget below), so the prompt's
+  // "when unsure pick the higher value" cannot be the only guard. A proposal
+  // carries no structural signal to floor on (each names exactly ONE file),
+  // so the deterministic hardening here is the implausibility warning: when
+  // >80% of a real plan's proposals self-rate "low" (4+ proposals, so one
+  // proposal cannot trip it), the cheap single-vote path is probably being
+  // gamed and the human should re-read the plan.
+  const selfRatedLow = workerChanges.filter((c) => c.impact === 'low').length
+  if (workerChanges.length >= 4 && selfRatedLow / workerChanges.length > 0.8) {
+    warn(
+      rt,
+      warnings,
+      `${selfRatedLow} of ${workerChanges.length} change proposals self-rate impact "low" — ` +
+        'an implausibly high fraction; the self-assessed impact gates verification scrutiny, ' +
+        'so treat this plan with suspicion',
+    )
+  }
+
   if (workerChanges.length > 0) {
     const verifyResult = await adversarialVerification<ChangeProposal>(rt, {
       claims: workerChanges,
