@@ -398,3 +398,32 @@ last mid-thought arrives looking like a normal completion. Four defence layers:
 Counting is a **code** responsibility, never a model one: tally
 succeeded/failed/dropped in JavaScript. Spawning an agent to count is slower,
 non-deterministic, and adds a failure point for no gain.
+
+## Cost engineering
+
+Agent cost follows **tool-call count**, not prompt size — each turn re-reads
+the context so far, so anything that makes an agent's first read *targeted*
+instead of exploratory pays for itself. Five levers, all measured on this
+toolkit's own dev-workflow family (full numbers and the code in the repo's
+`docs/public/cost-engineering.md`):
+
+1. **Gate scrutiny on stakes** — `votesPerClaim: (claim) => claim.severity
+   === 'low' ? 1 : 3` cut a verification phase −47%. But harden the gating
+   signal: a self-assessed label needs a deterministic structural floor, and
+   a label crossing an agent boundary needs in-code enforcement.
+2. **Tier models only behind a safety net** — route a stage to a cheaper
+   `model:` only when its errors are catchable downstream (fallbacks +
+   integrity guards + adversarial verification). Never tier a stage whose
+   output becomes unverified ground truth for everything after it.
+3. **Never gate COVERAGE on an unverified classification** — skipping a
+   reviewer/dimension is unrecoverable (verification only checks what WAS
+   reported). Adapt coverage only on deterministic, conservative, loudly
+   warned in-code rules, always overridable by explicit input.
+4. **Quote the code to the verifier** — have upstream agents return a
+   verbatim snippet per claim and embed it in `renderClaim` (−19% per
+   verifier, exploratory tail gone). Contracts: untrusted-delimited at EVERY
+   embedding site, capped in code, never a substitute for on-disk
+   re-derivation, and required-with-empty rather than optional (models omit
+   optional fields under output pressure).
+5. **Caps never destroy evidence** — sort by stakes in code before any
+   positional cap, and keep-unverified-rather-than-drop.

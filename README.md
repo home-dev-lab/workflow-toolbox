@@ -403,6 +403,9 @@ A few terms recur across these docs:
 - [docs/public/dev-workflow.md](docs/public/dev-workflow.md) — the dev-workflow
   family: a full development cycle as Workflow runs, proven on this repository
   with the real run numbers.
+- [docs/public/cost-engineering.md](docs/public/cost-engineering.md) — the
+  token-optimization principles for workflow authors, with the measured
+  results from this repository's own runs.
 - [docs/public/architecture.md](docs/public/architecture.md) — the full
   architecture: principles, the evidence-tiered runtime facts, guardrails,
   what was deliberately not built.
