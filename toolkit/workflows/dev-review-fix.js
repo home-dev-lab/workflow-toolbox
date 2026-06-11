@@ -433,6 +433,7 @@ ${renderClaim(claim)}`;
   }
 
   // dev-review-fix.workflow.ts
+  var MERGE_MODEL = "sonnet";
   var SEVERITIES = ["low", "medium", "high"];
   var DIMENSION_FINDINGS_SCHEMA = {
     type: "object",
@@ -671,7 +672,8 @@ Return { "findings": [{ "file", "location", "summary", "detail", "severity": "lo
       {
         schema: CONSOLIDATED_SCHEMA,
         label: "dev-review-fix:consolidate",
-        phase: "Review"
+        phase: "Review",
+        model: MERGE_MODEL
       }
     );
     reviewStats.agentsSpawned += 1;

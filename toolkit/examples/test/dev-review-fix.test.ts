@@ -459,6 +459,38 @@ describe('dev-review-fix severity-aware votes', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Test: model tiering — the consolidator runs on a cheaper model; every
+// quality-critical agent stays on the session model
+// ---------------------------------------------------------------------------
+
+describe('dev-review-fix model tiering', () => {
+  it('routes the consolidation agent to the cheaper merge model', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const consolidate = rt.calls.find((c) => c.opts?.label === 'dev-review-fix:consolidate')
+    expect(consolidate?.opts?.model).toBe('sonnet')
+  })
+
+  it('keeps verifiers on BEST_MODEL and everything else on the session model', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const others = rt.calls.filter((c) => c.opts?.label !== 'dev-review-fix:consolidate')
+    expect(others.length).toBeGreaterThan(0)
+    for (const call of others) {
+      const label = call.opts?.label ?? ''
+      if (label.startsWith('adversarialVerification:verify:')) {
+        // §8 guardrail in the pattern — verification quality is model-sensitive.
+        expect(call.opts?.model, `verifier ${label} must stay on BEST_MODEL`).toBe('fable')
+      } else {
+        expect(call.opts?.model, `unexpected model override on ${label}`).toBeUndefined()
+      }
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Test: degradation — agents die, the workflow never throws
 // ---------------------------------------------------------------------------
 
