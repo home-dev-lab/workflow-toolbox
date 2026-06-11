@@ -1,7 +1,7 @@
 export const meta = {
   "name": "dev-implement",
   "description": "Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. Two mutation modes: \"sequential\" (default — one task at a time in dependency order, no git required) and \"worktree\" (git required — independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).",
-  "whenToUse": "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true.",
+  "whenToUse": "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.",
   "phases": [
     {
       "title": "Setup",
@@ -400,6 +400,30 @@ var __wt = (() => {
     });
     return { id, title, intent, files, contracts, testPlan, doneCriteria, dependsOn };
   }
+  function normalizeTaskFiles(tasks, projectDir) {
+    const root = projectDir.replace(/\/+$/, "");
+    const mappable = root.startsWith("/");
+    const warnings = [];
+    const normalized = tasks.map((task) => {
+      let changed = false;
+      const files = task.files.map((file) => {
+        if (!file.path.startsWith("/")) return file;
+        const rel = mappable && file.path.startsWith(root + "/") ? file.path.slice(root.length + 1) : "";
+        if (rel === "") {
+          throw new Error(
+            `dev-implement: task ${task.id} file path "${file.path}" is absolute and cannot be made relative to projectDir "${projectDir}" \u2014 task files must be relative to projectDir (worktree mode maps them into per-task worktrees; an absolute path would mutate that location verbatim). Edit the artifact.`
+          );
+        }
+        changed = true;
+        warnings.push(
+          `dev-implement: task ${task.id} file path relativized: ${file.path} -> ${rel} \u2014 absolute paths are unsafe (worktree mode would mutate the main tree); prefer paths relative to projectDir in the artifact`
+        );
+        return { ...file, path: rel };
+      });
+      return changed ? { ...task, files } : task;
+    });
+    return { tasks: normalized, warnings };
+  }
   function validateGraph(tasks) {
     const ids = /* @__PURE__ */ new Set();
     for (const task of tasks) {
@@ -479,8 +503,9 @@ var __wt = (() => {
         "dev-implement: artifact.tasks must be a non-empty array \u2014 if every task was pruned during review, there is nothing to implement"
       );
     }
-    const tasks = a["tasks"].map(parseTask);
-    validateGraph(tasks);
+    const parsedTasks = a["tasks"].map(parseTask);
+    validateGraph(parsedTasks);
+    const { tasks, warnings: pathWarnings } = normalizeTaskFiles(parsedTasks, context.projectDir);
     const risks = Array.isArray(a["risks"]) ? a["risks"].filter((r) => typeof r === "string") : [];
     const outOfScope = Array.isArray(a["outOfScope"]) ? a["outOfScope"].filter((r) => typeof r === "string") : [];
     if (obj["mutation"] !== void 0 && obj["mutation"] !== "sequential" && obj["mutation"] !== "worktree") {
@@ -532,7 +557,8 @@ var __wt = (() => {
       maxIterationsPerTask,
       worktreeSetupCommand,
       worktreeRoot,
-      signCommits
+      signCommits,
+      pathWarnings
     };
   }
   function topologicalOrder(tasks) {
@@ -676,6 +702,7 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
   async function run(rt, input) {
     if (input.mutation === "worktree") return runWorktree(rt, input);
     const warnings = [];
+    for (const w of input.pathWarnings) warn(rt, warnings, w);
     const stats = {};
     const { artifact, maxIterationsPerTask } = input;
     rt.phase("Implement");
@@ -739,6 +766,7 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
   }
   async function runWorktree(rt, input) {
     const warnings = [];
+    for (const w of input.pathWarnings) warn(rt, warnings, w);
     const stats = {};
     const { artifact, maxIterationsPerTask, worktreeSetupCommand, worktreeRoot, signCommits } = input;
     const ctx = artifact.context;
@@ -768,7 +796,7 @@ Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<abso
       return { goal: artifact.goal, tasks: reportTasks2, ...tally(reportTasks2), stats, warnings };
     }
     const gitRoot = setup.gitRoot.trim() === "" ? ctx.projectDir : setup.gitRoot;
-    const projectSub = ctx.projectDir.startsWith(gitRoot) ? ctx.projectDir.slice(gitRoot.length) : "";
+    const projectSub = ctx.projectDir === gitRoot ? "" : ctx.projectDir.startsWith(gitRoot + "/") ? ctx.projectDir.slice(gitRoot.length) : "";
     const wtRoot = worktreeRoot ?? `${gitRoot}-worktrees`;
     const wtPath = (id) => `${wtRoot}/${id}`;
     const taskWorkdir = (id) => `${wtPath(id)}${projectSub}`;
@@ -1025,7 +1053,7 @@ Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
     meta: {
       name: "dev-implement",
       description: 'Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. Two mutation modes: "sequential" (default \u2014 one task at a time in dependency order, no git required) and "worktree" (git required \u2014 independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).',
-      whenToUse: "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true.",
+      whenToUse: "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.",
       phases: [
         { title: "Setup", detail: "Worktree mode: git check, per-wave worktree provisioning, setup command" },
         { title: "Implement", detail: "Per task: write failing tests, implement (TDD loop) \u2014 parallel within a wave in worktree mode" },

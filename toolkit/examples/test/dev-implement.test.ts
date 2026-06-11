@@ -765,3 +765,146 @@ describe('dev-implement worktree failure policies', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Test: task file path normalization — defense against ABSOLUTE paths, the
+// defect class the human gate caught live in the worktree dogfood (absolute
+// paths pointing at the MAIN repo would make obedient agents mutate the main
+// tree instead of their isolated worktrees). Contract:
+//   - relative file paths always pass through untouched;
+//   - an absolute path under an ABSOLUTE projectDir is relativized + warned;
+//   - any absolute path that CANNOT be mapped (relative projectDir, projectDir
+//     "/", or outside projectDir) is rejected in parseInput — BOTH modes.
+// ---------------------------------------------------------------------------
+
+type FileEntry = { path: string; status: string; role: string }
+
+function seqArtifact(projectDir: string, files: FileEntry[]) {
+  return {
+    ...ARTIFACT,
+    context: { ...ARTIFACT.context, projectDir },
+    tasks: [{ ...ARTIFACT.tasks[1], files }], // tasks[1] is T1 (no dependsOn)
+  }
+}
+
+describe('dev-implement task file path normalization', () => {
+  it('relativizes an absolute path under an absolute projectDir (sequential) and warns', async () => {
+    const rt = makeRuntime()
+    const input = { artifact: seqArtifact('/repo', [{ path: '/repo/src/a.ts', status: 'new', role: 'impl' }]) }
+    const result = await wf.run(rt, JSON.stringify(input))
+    const red = rt.calls.find((c) => c.prompt.toLowerCase().includes('write the failing tests first'))
+    expect(red).toBeDefined()
+    expect(red!.prompt).toContain('"src/a.ts"')
+    expect(red!.prompt).not.toContain('/repo/src/a.ts')
+    expect(result.warnings.some((w: string) => w.includes('/repo/src/a.ts') && w.includes('src/a.ts') && /relativiz/i.test(w))).toBe(true)
+  })
+
+  it('relativizes in worktree mode — TDD prompts carry the relative path', async () => {
+    const rt = makeWtRuntime()
+    const artifact = {
+      ...WT_ARTIFACT,
+      tasks: WT_ARTIFACT.tasks.map((t) =>
+        t.id === 'T1' ? { ...t, files: [{ path: '/repo/src/validate.ts', status: 'new', role: 'impl' }] } : t,
+      ),
+    }
+    const result = await wf.run(rt, JSON.stringify({ artifact, mutation: 'worktree' }))
+    const red = rt.calls.find((c) => c.prompt.toLowerCase().includes('write the failing tests first') && c.prompt.includes('Task T1'))
+    expect(red).toBeDefined()
+    expect(red!.prompt).toContain('"src/validate.ts"')
+    expect(red!.prompt).not.toContain('/repo/src/validate.ts')
+    expect(result.warnings.some((w: string) => /relativiz/i.test(w))).toBe(true)
+  })
+
+  it('rejects an absolute path OUTSIDE projectDir (both modes — mutation safety)', async () => {
+    const rt = makeRuntime()
+    const input = { artifact: seqArtifact('/repo', [{ path: '/elsewhere/b.ts', status: 'new', role: 'impl' }]) }
+    await expect(wf.run(rt, JSON.stringify(input))).rejects.toThrow(/\/elsewhere\/b\.ts.*relative|relative.*\/elsewhere\/b\.ts/is)
+  })
+
+  it('does not false-match a projectDir prefix without a path boundary', async () => {
+    const rt = makeRuntime()
+    const input = { artifact: seqArtifact('/a/b', [{ path: '/a/bc/x.ts', status: 'new', role: 'impl' }]) }
+    await expect(wf.run(rt, JSON.stringify(input))).rejects.toThrow(/\/a\/bc\/x\.ts/)
+  })
+
+  it('relativizes under a trailing-slash projectDir', async () => {
+    const rt = makeRuntime()
+    const input = { artifact: seqArtifact('/repo/', [{ path: '/repo/src/a.ts', status: 'new', role: 'impl' }]) }
+    const result = await wf.run(rt, JSON.stringify(input))
+    const red = rt.calls.find((c) => c.prompt.toLowerCase().includes('write the failing tests first'))
+    expect(red!.prompt).toContain('"src/a.ts"')
+    expect(result.warnings.some((w: string) => /relativiz/i.test(w))).toBe(true)
+  })
+
+  it('rejects an absolute path when projectDir is RELATIVE (cannot be mapped)', async () => {
+    const rt = makeRuntime()
+    const input = { artifact: seqArtifact('.', [{ path: '/repo/src/a.ts', status: 'new', role: 'impl' }]) }
+    await expect(wf.run(rt, JSON.stringify(input))).rejects.toThrow(/absolute/i)
+  })
+
+  it('rejects absolute paths when projectDir is "/" (degenerate root)', async () => {
+    const rt = makeRuntime()
+    const input = { artifact: seqArtifact('/', [{ path: '/etc/passwd', status: 'existing', role: 'config' }]) }
+    await expect(wf.run(rt, JSON.stringify(input))).rejects.toThrow(/absolute/i)
+  })
+
+  it('leaves relative paths untouched with zero path warnings (regression)', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+    expect(result.warnings.some((w: string) => /relativiz/i.test(w))).toBe(false)
+  })
+
+  it('rewrites only the absolute entries of a mixed files array, with one warning', async () => {
+    const rt = makeRuntime()
+    const input = {
+      artifact: seqArtifact('/repo', [
+        { path: 'src/r.ts', status: 'existing', role: 'impl' },
+        { path: '/repo/src/abs.ts', status: 'new', role: 'impl' },
+      ]),
+    }
+    const result = await wf.run(rt, JSON.stringify(input))
+    const red = rt.calls.find((c) => c.prompt.toLowerCase().includes('write the failing tests first'))
+    expect(red!.prompt).toContain('"src/r.ts"')
+    expect(red!.prompt).toContain('"src/abs.ts"')
+    expect(red!.prompt).not.toContain('/repo/src/abs.ts')
+    expect(result.warnings.filter((w: string) => /relativiz/i.test(w)).length).toBe(1)
+  })
+
+  it('unifies same-wave overlap detection across absolute and relative spellings (worktree)', async () => {
+    const rt = makeWtRuntime()
+    const artifact = {
+      ...WT_ARTIFACT,
+      tasks: [
+        { ...WT_ARTIFACT.tasks[0], files: [{ path: '/repo/src/shared.ts', status: 'existing', role: 'impl' }] },
+        { ...WT_ARTIFACT.tasks[1], files: [{ path: 'src/shared.ts', status: 'existing', role: 'impl' }] },
+      ],
+    }
+    const result = await wf.run(rt, JSON.stringify({ artifact, mutation: 'worktree' }))
+    expect(result.warnings.some((w: string) => w.includes('src/shared.ts') && w.includes('T1') && w.includes('T2'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: worktree geometry — the projectSub mapping must use a path-boundary
+// check (same class as the file-path normalization above): gitRoot "/a/b"
+// must NOT be treated as a prefix of projectDir "/a/bc".
+// ---------------------------------------------------------------------------
+
+describe('dev-implement worktree projectSub boundary', () => {
+  it('does not slice a false gitRoot prefix into the task workdir', async () => {
+    const rt = makeWtRuntime({
+      setup: () => ({ isGitRepo: true, headSha: 'base000', gitRoot: '/a/b', note: 'git repo confirmed' }),
+    })
+    const artifact = {
+      ...WT_ARTIFACT,
+      context: { ...WT_ARTIFACT.context, projectDir: '/a/bc' },
+      tasks: [WT_ARTIFACT.tasks[0]],
+    }
+    await wf.run(rt, JSON.stringify({ artifact, mutation: 'worktree' }))
+    const red = rt.calls.find((c) => c.prompt.toLowerCase().includes('write the failing tests first'))
+    expect(red).toBeDefined()
+    // Buggy startsWith/slice would compute projectSub "c" -> ".../T1c".
+    expect(red!.prompt).not.toContain('/a/b-worktrees/T1c')
+    expect(red!.prompt).toContain('Work from directory: /a/b-worktrees/T1\n')
+  })
+})

@@ -447,7 +447,8 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
       `Open the actual files to verify your claims. Produce SELF-SUFFICIENT task records: ` +
       `a fresh-context implementer will see ONLY this record plus the project context.\n` +
       `- intent: WHAT + WHY, readable with zero other context\n` +
-      `- files: every file touched, status "existing" (verify it exists!) or "new"\n` +
+      `- files: every file touched, status "existing" (verify it exists!) or "new"; "path" ` +
+      `RELATIVE to the project root, never absolute\n` +
       `- contracts: signatures/shapes/invariants the implementation must honor\n` +
       `- testPlan: which failing test(s) to write FIRST\n` +
       `- doneCriteria: each independently checkable\n` +
@@ -544,6 +545,8 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
     `Assign sequential ids ("T1", "T2", …) and a dependsOn graph (ids only, no cycles — ` +
     `a task lists ONLY tasks whose output it genuinely needs). Order tasks so dependencies ` +
     `come first. Derive risks and outOfScope (explicit NON-goals — the anti-drift fence).\n` +
+    `File paths must be RELATIVE to projectDir, never absolute (dev-implement maps them ` +
+    `into per-task worktrees and rejects absolute paths).\n` +
     `Return { "goal", "context": { "projectDir", "testCommand", "buildCommand", "conventions" }, ` +
     `"tasks": [{ "id", "title", "intent", "files": [{ "path", "status", "role" }], "contracts", ` +
     `"testPlan", "doneCriteria": [], "dependsOn": [] }], "risks": [], "outOfScope": [] }`
@@ -563,11 +566,41 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
 
   validateArtifact(synthesized)
 
+  // Path hygiene (POSIX): artifacts must be born with RELATIVE file paths —
+  // dev-implement REJECTS unmappable absolutes at its parse boundary. Under an
+  // absolute projectDir, absolute paths are relativized here (boundary-safe
+  // prefix match: "/a/b" never matches "/a/bc/..."); an absolute path that
+  // cannot be mapped is KEPT but warned: this output goes to a human gate, and
+  // discarding a full planning run over a path a human can edit would be worse
+  // than surfacing it.
+  const root = input.projectDir.replace(/\/+$/, '')
+  const mappable = root.startsWith('/')
+  const normalizedTasks = synthesized.tasks.map((task) => {
+    let changed = false
+    const files = task.files.map((file) => {
+      if (!file.path.startsWith('/')) return file
+      if (mappable && file.path.startsWith(root + '/') && file.path.length > root.length + 1) {
+        const rel = file.path.slice(root.length + 1)
+        warnings.push(`dev-plan: task ${task.id} file path relativized: ${file.path} -> ${rel}`)
+        changed = true
+        return { ...file, path: rel }
+      }
+      warnings.push(
+        `dev-plan: task ${task.id} file path "${file.path}" is absolute and cannot be relativized ` +
+        `under projectDir "${input.projectDir}" — fix it at the human gate or dev-implement will ` +
+        `reject the artifact`,
+      )
+      return file
+    })
+    return changed ? { ...task, files } : task
+  })
+
   // Deterministic override: exact echo of goal/projectDir is code's job.
   const artifact: PlanArtifact = {
     ...synthesized,
     goal: input.goal,
     context: { ...synthesized.context, projectDir: input.projectDir },
+    tasks: normalizedTasks,
   }
 
   return { artifact, rejected, stats, warnings }

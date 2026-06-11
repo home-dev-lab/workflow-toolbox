@@ -369,14 +369,17 @@ var __wt = (() => {
     const ranIds = new Set(
       implement.tasks.filter((t) => t.status === "succeeded" || t.status === "failed").map((t) => t.id)
     );
+    const root = input.projectDir.replace(/\/+$/, "");
+    const relativize = (p) => root.startsWith("/") && p.startsWith(root + "/") && p.length > root.length + 1 ? p.slice(root.length + 1) : p;
     const seenPaths = /* @__PURE__ */ new Set();
     const derivedFiles = [];
     for (const task of plan.artifact.tasks) {
       if (!ranIds.has(task.id)) continue;
       for (const file of task.files) {
-        if (!seenPaths.has(file.path)) {
-          seenPaths.add(file.path);
-          derivedFiles.push(file.path);
+        const path = relativize(file.path);
+        if (!seenPaths.has(path)) {
+          seenPaths.add(path);
+          derivedFiles.push(path);
         }
       }
     }

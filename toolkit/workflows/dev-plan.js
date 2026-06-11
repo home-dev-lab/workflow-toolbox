@@ -783,7 +783,7 @@ Project brief: ${context.repoBrief}
 Conventions: ${context.conventions}
 Open the actual files to verify your claims. Produce SELF-SUFFICIENT task records: a fresh-context implementer will see ONLY this record plus the project context.
 - intent: WHAT + WHY, readable with zero other context
-- files: every file touched, status "existing" (verify it exists!) or "new"
+- files: every file touched, status "existing" (verify it exists!) or "new"; "path" RELATIVE to the project root, never absolute
 - contracts: signatures/shapes/invariants the implementation must honor
 - testPlan: which failing test(s) to write FIRST
 - doneCriteria: each independently checkable
@@ -845,6 +845,7 @@ Project context: ${JSON.stringify({ projectDir: input.projectDir, ...context })}
 Kept tasks (critique survivors): ${JSON.stringify(keptTasks)}
 Draft narrative: ${planResult.value ?? "(none)"}
 Assign sequential ids ("T1", "T2", \u2026) and a dependsOn graph (ids only, no cycles \u2014 a task lists ONLY tasks whose output it genuinely needs). Order tasks so dependencies come first. Derive risks and outOfScope (explicit NON-goals \u2014 the anti-drift fence).
+File paths must be RELATIVE to projectDir, never absolute (dev-implement maps them into per-task worktrees and rejects absolute paths).
 Return { "goal", "context": { "projectDir", "testCommand", "buildCommand", "conventions" }, "tasks": [{ "id", "title", "intent", "files": [{ "path", "status", "role" }], "contracts", "testPlan", "doneCriteria": [], "dependsOn": [] }], "risks": [], "outOfScope": [] }`;
     const synthesized = await rt.agent(synthesizePrompt, {
       schema: PLAN_ARTIFACT_SCHEMA,
@@ -857,10 +858,30 @@ Return { "goal", "context": { "projectDir", "testCommand", "buildCommand", "conv
       );
     }
     validateArtifact(synthesized);
+    const root = input.projectDir.replace(/\/+$/, "");
+    const mappable = root.startsWith("/");
+    const normalizedTasks = synthesized.tasks.map((task) => {
+      let changed = false;
+      const files = task.files.map((file) => {
+        if (!file.path.startsWith("/")) return file;
+        if (mappable && file.path.startsWith(root + "/") && file.path.length > root.length + 1) {
+          const rel = file.path.slice(root.length + 1);
+          warnings.push(`dev-plan: task ${task.id} file path relativized: ${file.path} -> ${rel}`);
+          changed = true;
+          return { ...file, path: rel };
+        }
+        warnings.push(
+          `dev-plan: task ${task.id} file path "${file.path}" is absolute and cannot be relativized under projectDir "${input.projectDir}" \u2014 fix it at the human gate or dev-implement will reject the artifact`
+        );
+        return file;
+      });
+      return changed ? { ...task, files } : task;
+    });
     const artifact = {
       ...synthesized,
       goal: input.goal,
-      context: { ...synthesized.context, projectDir: input.projectDir }
+      context: { ...synthesized.context, projectDir: input.projectDir },
+      tasks: normalizedTasks
     };
     return { artifact, rejected, stats, warnings };
   }
