@@ -293,6 +293,19 @@ fixed count). `dev-review-fix` uses it to spend 1 vote on `low` findings and
 keep the 2-of-3 quorum on `medium`/`high` (additive, semver-minor; ships in
 `@workflow-toolbox/patterns` 0.5.0 together with `relativizeUnder`).
 
+Path mapping: `relativizeUnder(root, path)` is the boundary-safe POSIX
+relativization kernel promoted from the dev-workflow family. It answers ONE
+question — "can `path` be expressed relative to `root`?" — returning the
+relative remainder (`relativizeUnder('/repo', '/repo/src/x.ts')` → `'src/x.ts'`,
+trailing slashes on the root tolerated) and `null` in every case it cannot
+prove containment: a relative or `/` root, a path outside the root, an
+adjacent-prefix lookalike (`/a/b` never matches `/a/bc/file` — segment
+boundaries, not string prefixes), or `path === root` (no relative form). The
+null policy IS the contract: the helper never warns, throws or falls back —
+what to do with an unmappable path (warn-and-keep, throw, pass through) stays
+a caller decision, which is exactly why three call sites with three different
+terminal policies share it.
+
 ## Trust no agent's self-report
 
 Agents can die mid-reasoning at their context limit — and their last
@@ -324,8 +337,10 @@ workflow through the real runtime and appends one run record (the runtime agent
 count + `rt.budget.spent()` + the completion notification's `usage`) to the
 gitignored `run-stats/runs.jsonl`; `pnpm wt:calibrate derive` reads the log and
 prints `floor ≈ tokens-per-agent × (expected claims × votes + synthesis) ×
-margin` (with `votesPerClaim`, `claims × votes` is an upper bound — low-vote
-claims spend less). The maintainer loop: run real workflows against real codebases, `record`
+margin` (with `votesPerClaim`, `claims × votes` is an upper bound only when
+the mapping never exceeds `votes` — low-vote claims spend less; a mapping that
+returns more than `votes` makes it an under-estimate, so size the formula with
+the max over claims instead). The maintainer loop: run real workflows against real codebases, `record`
 after each, and once ~10 have accrued, `derive` and fold the number into the
 guidance here. **Honesty:** the runtime exposes no per-agent token primitive, so
 tokens-per-agent is a cross-run approximation, and the two token signals are kept

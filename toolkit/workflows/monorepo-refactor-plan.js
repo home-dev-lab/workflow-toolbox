@@ -384,6 +384,7 @@ var __wt = (() => {
       votes: votesOpt = 3,
       refuteThreshold: refuteThresholdOpt,
       lenses,
+      votesPerClaim,
       model,
       phase,
       maxVerifyClaims
@@ -404,7 +405,7 @@ var __wt = (() => {
         `adversarialVerification: refuteThreshold must be >= 1, got ${refuteThreshold}`
       );
     }
-    if (refuteThreshold > votesOpt) {
+    if (votesPerClaim === void 0 && refuteThreshold > votesOpt) {
       throw new Error(
         `adversarialVerification: refuteThreshold (${refuteThreshold}) must not be > votes (${votesOpt})`
       );
@@ -414,6 +415,21 @@ var __wt = (() => {
         `adversarialVerification: lenses.length (${lenses.length}) must equal votes (${votesOpt}) \u2014 each lens corresponds to one vote`
       );
     }
+    if (lenses !== void 0 && votesPerClaim !== void 0) {
+      throw new Error(
+        "adversarialVerification: lenses cannot be combined with votesPerClaim \u2014 lenses require a fixed votes count (one lens per vote); use one or the other"
+      );
+    }
+    const perClaimVotes = claims.map((claim, i) => {
+      if (votesPerClaim === void 0) return votesOpt;
+      const n = votesPerClaim(claim);
+      if (!Number.isInteger(n) || n < 1) {
+        throw new Error(
+          `adversarialVerification: votesPerClaim(claims[${i}]) returned ${String(n)} \u2014 must be an integer >= 1`
+        );
+      }
+      return n;
+    });
     if (maxVerifyClaims !== void 0 && maxVerifyClaims < 1) {
       throw new Error(
         `adversarialVerification: maxVerifyClaims must be >= 1, got ${maxVerifyClaims}`
@@ -448,7 +464,8 @@ ${renderClaim(claim)}`;
     const trailByClaim = [];
     const verifiedKept = await Promise.all(
       keptClaims.map(async (claim, claimIndex) => {
-        const voteThunks = Array.from({ length: votesOpt }, (_, voteIndex) => {
+        const claimVotes = perClaimVotes[claimIndex] ?? votesOpt;
+        const voteThunks = Array.from({ length: claimVotes }, (_, voteIndex) => {
           return async () => {
             const lens = lenses !== void 0 ? lenses[voteIndex] : void 0;
             const prompt = buildVerifierPrompt(claim, lens);
@@ -480,10 +497,11 @@ ${renderClaim(claim)}`;
         }
         trailByClaim[claimIndex] = claimRecords;
         const nonNull = votes.filter((v) => v !== null);
+        const effectiveThreshold = Math.min(refuteThreshold, claimVotes);
         let verdict;
         if (nonNull.length === 0) {
           verdict = "unverifiable";
-        } else if (nonNull.filter((v) => v.verdict === "refuted").length >= refuteThreshold) {
+        } else if (nonNull.filter((v) => v.verdict === "refuted").length >= effectiveThreshold) {
           verdict = "refuted";
         } else if (nonNull.every((v) => v.verdict === "confirmed")) {
           verdict = "confirmed";
@@ -501,7 +519,7 @@ ${renderClaim(claim)}`;
     for (const verified of verifiedKept) {
       const nullsInClaim = verified.votes.filter((v) => v === null).length;
       nullVoteCount += nullsInClaim;
-      if (nullsInClaim === votesOpt) {
+      if (nullsInClaim === verified.votes.length) {
         allNullClaimsCount++;
       }
     }
