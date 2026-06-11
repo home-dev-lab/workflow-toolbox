@@ -276,6 +276,60 @@ describe('dev-implement happy path', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Test: scoped iteration runs — implementer iterates on the task's own test
+// files, full suite once before reporting; the checker stays on the FULL
+// verbatim command (source of truth).
+// ---------------------------------------------------------------------------
+
+describe('dev-implement scoped iteration runs', () => {
+  it('tells the test-writer and implementer to iterate on the task test files, full run once before reporting', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const red = rt.calls.find((c) => c.opts?.label?.startsWith('dev-implement:red:'))
+    const green = rt.calls.find((c) => c.opts?.label?.startsWith('dev-implement:green:'))
+    expect(red).toBeDefined()
+    expect(green).toBeDefined()
+    for (const call of [red, green]) {
+      // Scoped ITERATION runs (generic phrasing — no runner syntax)…
+      expect(call?.prompt).toContain('running a subset')
+      // …but one FULL run self-screens before reporting.
+      expect(call?.prompt).toContain('once before reporting')
+    }
+  })
+
+  it('keeps the checker on the FULL verbatim test command with no scoping instruction', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const checkers = rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:check:'))
+    expect(checkers.length).toBeGreaterThan(0)
+    for (const c of checkers) {
+      expect(c.prompt).toContain('pnpm test')
+      // The checker is the source of truth — it never gets the scoped-run hint.
+      expect(c.prompt).not.toContain('running a subset')
+      expect(c.prompt).not.toContain('once before reporting')
+    }
+  })
+
+  it('keeps the worktree integration checker unscoped too (the other source-of-truth prompt)', async () => {
+    // makeWtRuntime/WT_INPUT are defined later in the module — module consts
+    // initialize at collection time, before any it() body runs.
+    const rt = makeWtRuntime()
+    await wf.run(rt, JSON.stringify(WT_INPUT))
+
+    const integration = rt.calls.filter((c) =>
+      c.opts?.label?.startsWith('dev-implement:integration:'),
+    )
+    expect(integration.length).toBeGreaterThan(0)
+    for (const c of integration) {
+      expect(c.prompt).not.toContain('running a subset')
+      expect(c.prompt).not.toContain('once before reporting')
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Test: failure handling — exhausted loop fails the task, dependents skip
 // ---------------------------------------------------------------------------
 

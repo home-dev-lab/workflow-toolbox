@@ -731,8 +731,10 @@ async function runTaskTddLoop(
           `You are the TDD test-writer for one task. Write the failing tests first — ` +
           `do NOT implement any production code.\n` +
           taskBlock +
-          `Create/extend the test files per the test plan, run ${ctx.testCommand} to confirm ` +
-          `the new tests FAIL for the right reason, and report.\n` +
+          `Create/extend the test files per the test plan and confirm the new tests FAIL for ` +
+          `the right reason — when your test runner supports running a subset, confirm on just ` +
+          `the new test files (cheaper feedback), then run ${ctx.testCommand} in full once ` +
+          `before reporting (the rest of the suite must still collect and pass).\n` +
           `If the test plan says there is nothing to write (a docs-only or no-test task), that ` +
           `is a SUCCESS, not a failure: return written: true with an empty testFiles list and ` +
           `say so in the note — the done criteria will still be verified by the checker.\n` +
@@ -760,7 +762,10 @@ async function runTaskTddLoop(
         taskBlock +
         `Previous check failure (fix THIS first): ${next.lastFailure === '' ? '(first attempt)' : next.lastFailure}\n` +
         `Implement per the contracts. Do NOT weaken, skip, or delete tests to get green. ` +
-        `Run ${ctx.testCommand} yourself and iterate locally before reporting.\n` +
+        `Iterate locally: when your test runner supports running a subset, iterate on the ` +
+        `task's own test files, then run ${ctx.testCommand} in full once before reporting — ` +
+        `reporting done on scoped tests alone wastes a checker round-trip if the wider ` +
+        `suite broke.\n` +
         `Return { "done": true|false, "filesTouched": ["<path>"], "note": "<what changed>" }`,
         {
           schema: GREEN_RESULT_SCHEMA,
