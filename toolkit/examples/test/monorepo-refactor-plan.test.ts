@@ -49,7 +49,7 @@ function makeHappyPathRuntime(): FakeRuntime {
       if (p.includes('detail the change proposal') || p.includes('changes:')) {
         return {
           changes: [
-            { file: 'packages/core/src/index.ts', action: 'Extract utilities', rationale: 'Reduce duplication across packages' },
+            { file: 'packages/core/src/index.ts', action: 'Extract utilities', rationale: 'Reduce duplication across packages', impact: 'medium' },
           ],
         }
       }
@@ -566,5 +566,123 @@ describe('monorepo-refactor-plan null analysis agent', () => {
 
     // warnings must reflect the dropped agent
     expect(result.warnings.length).toBeGreaterThan(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: impact-aware verification votes — low:1, medium/high:3
+// ---------------------------------------------------------------------------
+
+describe('monorepo-refactor-plan impact-aware votes', () => {
+  /** Happy-path routing with worker/verifier overrides for the votes tests. */
+  function makeVotesRuntime(overrides?: {
+    worker?: (prompt: string) => unknown
+    verifier?: (prompt: string) => unknown
+  }): FakeRuntime {
+    return new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+
+        if (p.includes('adversarially verify')) {
+          if (overrides?.verifier) return overrides.verifier(prompt)
+          return { verdict: 'confirmed', reason: 'Change proposal verified against actual code' }
+        }
+        if (p.includes('final plan artifact') || p.includes('plantitle')) {
+          return {
+            planTitle: 'Monorepo Refactor Plan v1',
+            steps: [
+              { order: 1, file: 'packages/core/src/index.ts', action: 'Extract shared utilities', rationale: 'Reduce duplication' },
+            ],
+          }
+        }
+        if (p.includes('detail the change proposal')) {
+          if (overrides?.worker) return overrides.worker(prompt)
+          return {
+            changes: [
+              { file: 'packages/core/src/index.ts', action: 'Extract utilities', rationale: 'Reduce duplication', impact: 'medium' },
+            ],
+          }
+        }
+        if (p.includes('decompose into independent change proposals') || p.includes('change proposals')) {
+          return {
+            subtasks: [
+              { description: 'Proposal 1: Extract shared utilities from packages/core' },
+              { description: 'Proposal 2: Move Button component to shared package' },
+            ],
+          }
+        }
+        if (p.includes('consolidate into a single analysis brief') || p.includes('analysis brief')) {
+          return {
+            brief: 'Duplication in core utilities and UI components.',
+            hotspots: ['packages/core/src/utils.ts'],
+          }
+        }
+        if (p.includes('deep analysis') || p.includes('problems:')) {
+          return { problems: [{ file: 'packages/core/src/utils.ts', problem: 'Duplicated helpers', impact: 'high' }] }
+        }
+        if (p.includes('focused observation') || p.includes('observations:')) {
+          return { observations: [{ file: 'packages/core/src/index.ts', detail: 'Duplicated code' }] }
+        }
+        if (p.includes('inspect') && (p.includes('goal') || p.includes('area') || p.includes('category'))) {
+          return { category: 'duplication' }
+        }
+        return { observations: [] }
+      },
+    })
+  }
+
+  const INPUT = JSON.stringify({ goal: 'Improve structure', areas: ['packages/core', 'packages/ui'] })
+
+  it('spends 1 verifier vote on a low-impact proposal and 3 on a high-impact one', async () => {
+    const rt = makeVotesRuntime({
+      worker: (prompt) =>
+        prompt.includes('Extract shared utilities')
+          ? { changes: [{ file: 'packages/core/src/utils.ts', action: 'Inline a duplicated helper', rationale: 'Local cleanup', impact: 'low' }] }
+          : { changes: [{ file: 'packages/ui/src/Button.tsx', action: 'Move to the shared package', rationale: 'Public API move', impact: 'high' }] },
+    })
+    await wf.run(rt, INPUT)
+
+    const verifyLabels = rt.calls
+      .map((c) => c.opts?.label ?? '')
+      .filter((l) => l.startsWith('adversarialVerification:verify:'))
+
+    // claim 0 = the low-impact cleanup → 1 vote; claim 1 = the high-impact API move → 3
+    expect(verifyLabels.filter((l) => l.startsWith('adversarialVerification:verify:0:'))).toHaveLength(1)
+    expect(verifyLabels.filter((l) => l.startsWith('adversarialVerification:verify:1:'))).toHaveLength(3)
+    expect(verifyLabels).toHaveLength(4)
+
+    // The single-vote claim really is the low-impact proposal (renderClaim prints its action).
+    const soloPrompt = rt.calls.find(
+      (c) => c.opts?.label === 'adversarialVerification:verify:0:0',
+    )?.prompt
+    expect(soloPrompt).toContain('Inline a duplicated helper')
+  })
+
+  it('a medium-impact proposal keeps 3 votes and a 2-of-3 refutation still rejects (regression)', async () => {
+    let buttonVotes = 0
+    const rt = makeVotesRuntime({
+      worker: (prompt) =>
+        prompt.includes('Extract shared utilities')
+          ? { changes: [{ file: 'packages/core/src/utils.ts', action: 'Extract utilities', rationale: 'Reduce duplication', impact: 'medium' }] }
+          : { changes: [{ file: 'packages/ui/src/Button.tsx', action: 'Move Button', rationale: 'Sharing', impact: 'medium' }] },
+      verifier: (prompt) => {
+        if (prompt.includes('packages/ui/src/Button.tsx')) {
+          buttonVotes += 1
+          return buttonVotes <= 2
+            ? { verdict: 'refuted', reason: 'the component is app-specific; moving it breaks theming' }
+            : { verdict: 'confirmed', reason: 'fine to move' }
+        }
+        return { verdict: 'confirmed', reason: 'verified' }
+      },
+    })
+    const result = await wf.run(rt, INPUT)
+
+    const verifyLabels = rt.calls
+      .map((c) => c.opts?.label ?? '')
+      .filter((l) => l.startsWith('adversarialVerification:verify:'))
+    expect(verifyLabels).toHaveLength(6)
+
+    expect(result.rejected).toHaveLength(1)
+    expect(result.rejected[0]).toMatchObject({ file: 'packages/ui/src/Button.tsx' })
   })
 })

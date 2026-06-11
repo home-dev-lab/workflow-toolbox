@@ -92,6 +92,7 @@ function makeRuntime(overrides?: {
               contracts: 'export function validate(raw: unknown): { ok: boolean; error?: string }',
               testPlan: 'Failing test for validate(null) first.',
               doneCriteria: ['validate() unit tests pass'],
+              risk: 'medium',
             },
           ],
         }
@@ -459,5 +460,81 @@ describe('dev-plan task file path hygiene', () => {
     const t1 = result.artifact.tasks.find((t: { id: string }) => t.id === 'T1')
     expect(t1!.files[0]!.path).toBe('/abs/x.ts')
     expect(result.warnings.some((w: string) => /absolute/i.test(w) && w.includes('/abs/x.ts'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: risk-aware verification votes — low:1, medium/high:3
+// ---------------------------------------------------------------------------
+
+describe('dev-plan risk-aware votes', () => {
+  const helperTask = {
+    title: 'Add validate() helper',
+    intent: 'Create a pure validation helper for CLI args.',
+    files: [{ path: 'src/validate.ts', status: 'new', role: 'implementation' }],
+    contracts: 'export function validate(raw: unknown): { ok: boolean; error?: string }',
+    testPlan: 'Failing test for validate(null) first.',
+    doneCriteria: ['validate() unit tests pass'],
+  }
+  const wireTask = {
+    title: 'Wire validate() into the CLI entry',
+    intent: 'Call validate() before dispatch so bad input fails fast.',
+    files: [{ path: 'src/cli.ts', status: 'existing', role: 'integration point' }],
+    contracts: 'cli main() exits non-zero and prints the validation error on bad input',
+    testPlan: 'Failing CLI bad-input test first.',
+    doneCriteria: ['CLI bad-input test passes'],
+  }
+
+  it('spends 1 verifier vote on a low-risk task and 3 on a high-risk task', async () => {
+    const rt = makeRuntime({
+      worker: (prompt) =>
+        prompt.includes('Create the validation helper module')
+          ? { tasks: [{ ...helperTask, risk: 'low' }] }
+          : { tasks: [{ ...wireTask, risk: 'high' }] },
+    })
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const verifyLabels = rt.calls
+      .map((c) => c.opts?.label ?? '')
+      .filter((l) => l.startsWith('adversarialVerification:verify:'))
+
+    // claim 0 = the low-risk helper task → 1 vote; claim 1 = the high-risk wiring task → 3
+    expect(verifyLabels.filter((l) => l.startsWith('adversarialVerification:verify:0:'))).toHaveLength(1)
+    expect(verifyLabels.filter((l) => l.startsWith('adversarialVerification:verify:1:'))).toHaveLength(3)
+    expect(verifyLabels).toHaveLength(4)
+
+    // The single-vote claim really is the low-risk task (renderClaim prints its title).
+    const soloPrompt = rt.calls.find(
+      (c) => c.opts?.label === 'adversarialVerification:verify:0:0',
+    )?.prompt
+    expect(soloPrompt).toContain('Add validate() helper')
+  })
+
+  it('a medium-risk task keeps 3 votes and a 2-of-3 refutation still rejects (regression)', async () => {
+    let wireVotes = 0
+    const rt = makeRuntime({
+      worker: (prompt) =>
+        prompt.includes('Create the validation helper module')
+          ? { tasks: [{ ...helperTask, risk: 'medium' }] }
+          : { tasks: [{ ...wireTask, risk: 'medium' }] },
+      verifier: (prompt) => {
+        if (prompt.includes('Wire validate() into the CLI entry')) {
+          wireVotes += 1
+          return wireVotes <= 2
+            ? { verdict: 'refuted', reason: 'the CLI entry already validates its input' }
+            : { verdict: 'confirmed', reason: 'wiring is genuinely missing' }
+        }
+        return { verdict: 'confirmed', reason: 'Task claim verified against actual code' }
+      },
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const verifyLabels = rt.calls
+      .map((c) => c.opts?.label ?? '')
+      .filter((l) => l.startsWith('adversarialVerification:verify:'))
+    expect(verifyLabels).toHaveLength(6)
+
+    expect(result.rejected).toHaveLength(1)
+    expect(result.rejected[0]).toMatchObject({ title: 'Wire validate() into the CLI entry' })
   })
 })

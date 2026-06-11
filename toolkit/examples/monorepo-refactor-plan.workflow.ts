@@ -128,8 +128,9 @@ const CHANGES_SCHEMA = {
           file: { type: 'string' },
           action: { type: 'string' },
           rationale: { type: 'string' },
+          impact: { type: 'string', enum: ['low', 'medium', 'high'] },
         },
-        required: ['file', 'action', 'rationale'],
+        required: ['file', 'action', 'rationale', 'impact'],
         additionalProperties: false,
       },
     },
@@ -428,7 +429,13 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
       `Detail the change proposal: ${subtask.description}\n` +
       `Goal: ${input.goal}\n` +
       `Expand this into concrete file changes with rationale.\n` +
-      `Return { "changes": [{ "file": "<path>", "action": "<what to do>", "rationale": "<why>" }] }`,
+      `Set "impact" to "low" ONLY for a package-internal cleanup with no exported-API ` +
+      `change; "medium" or "high" otherwise (cross-package moves, public API changes). ` +
+      `Impact decides how much independent scrutiny the proposal gets in the Verify ` +
+      `phase — understating it ships unverified changes into the plan, so when unsure ` +
+      `pick the higher value.\n` +
+      `Return { "changes": [{ "file": "<path>", "action": "<what to do>", "rationale": "<why>", ` +
+      `"impact": "<low|medium|high>" }] }`,
     workerSchema: CHANGES_SCHEMA,
     synthesisPrompt: (results) =>
       `Compose a draft refactoring plan from these detailed change proposals.\n` +
@@ -467,6 +474,9 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
         `Rationale: ${change.rationale}\n\n` +
         `IMPORTANT: Do NOT trust the rationale above. Open the actual file at ${change.file} ` +
         `and re-derive from the code whether this change is necessary and correct.`,
+      // Impact-aware votes: a low-impact proposal gets 1 refute-first vote;
+      // medium/high keep the full 2-of-3 quorum (effectiveThreshold = min(2, claimVotes)).
+      votesPerClaim: (change) => (change.impact === 'low' ? 1 : 3),
       maxVerifyClaims: 10,
       phase: 'Verify',
     })
