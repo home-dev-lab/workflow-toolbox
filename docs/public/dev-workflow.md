@@ -35,7 +35,7 @@ appended to the goal.
 | Workflow | Phases | What the gates guarantee |
 |---|---|---|
 | `dev-plan` | Discover → Plan → Critique → Synthesize | Every task claim is **adversarially verified against the actual code** (files exist, contracts match real signatures, criteria checkable); refuted tasks are dropped with the refuting *reasons*; the dependency graph is validated deterministically in code (unique ids, resolvable `dependsOn`, no cycles). |
-| `dev-implement` | Implement+Check (per task) → Report | Tasks run sequentially in dependency order (stable topological sort in code, **no git required**); each task is a bounded TDD loop — failing tests first, implement against the contracts, then an **independent checker** runs the real test command and is the only source of truth; dependents of failed tasks are skipped. |
+| `dev-implement` | [Setup →] Implement+Check (per task) [→ Merge] → Report | Each task is a bounded TDD loop — failing tests first, implement against the contracts, then an **independent checker** runs the real test command and is the only source of truth; dependents of failed tasks are skipped. Two mutation modes: **sequential** (default — one task at a time in dependency order, **no git required**) and **worktree** (see below — parallel waves, git required). |
 | `dev-review-fix` | Review → Verify → Fix → Report | Parallel per-dimension reviewers read the whole change set (catches cross-task drift); every finding is adversarially re-derived from the current tree — plausible-but-wrong findings get **refuted**, not fixed; one batched fix loop whose checker re-validates *all* findings each iteration (a later fix can re-break an earlier one while the suite stays green); `suiteGreen` is reported honestly. |
 | `dev-full` | Plan → Implement → Review & Fix → Report | Gate A: abort on a refuted-task ratio above `maxRefutedRatio` or a degraded discovery context; Gate B: continue iff ≥ 1 task succeeded; the change-set handoff is derived in code (an operator `diffCommand` wins over the planned-files approximation); **every abort returns** a structured report preserving the completed stages' output — `parseInput` is the only throwing surface. |
 
@@ -67,6 +67,43 @@ Two details worth pausing on:
 - **The pipeline catches its own omissions.** The `dev-full` run's docs task
   updated two documentation surfaces but missed a third (the toolkit README);
   the review stage of the *same run* flagged it and the fix loop repaired it.
+
+## Worktree mode (`dev-implement`, parallel waves)
+
+`mutation: "worktree"` trades the no-git guarantee for parallelism: **git is
+required**. Independent tasks (per `dependsOn`) run their TDD loops in
+parallel **waves**, each task in an isolated git worktree on its own
+`wt-task/<id>` branch, then merge back sequentially:
+
+- **Waves branch late.** A wave's worktrees are created only *after* the
+  previous wave's merges, so dependent tasks branch from a HEAD that already
+  contains their dependencies. Worktree creation within a wave is serialized
+  (concurrent `git worktree add` race on git's locks); the TDD loops then run
+  in parallel.
+- **Per-merge integration check.** After *each* merge an independent checker
+  runs the real test command on the main tree; red → the merge is reverted to
+  its captured pre-merge sha and the task is reported `integration-failed`.
+  A merge **conflict** aborts conservatively (`merge-failed`) — agents never
+  resolve conflicts.
+- **Failure worktrees are kept** (path and branch in the report) for forensics
+  and manual resume; merged worktrees are cleaned up. In every failure mode
+  the MAIN tree stays unmutated by that task — only merged work lands.
+- **Machine commits are unsigned by default** (`signCommits: false`): the task
+  branches and merge commits are intermediate machine commits the operator
+  owns and typically squashes. Opt in to signing only when the signing agent
+  is guaranteed available for the whole run.
+- **Fresh worktrees lack installed dependencies** in most ecosystems — pass
+  `worktreeSetupCommand` (verbatim, e.g. `"pnpm install"`) so the test command
+  is runnable inside each worktree. `worktreeRoot` overrides the default
+  sibling location `<projectDir>-worktrees`.
+
+```text
+args: {
+  "artifact": <the approved PlanArtifact>,
+  "mutation": "worktree",
+  "worktreeSetupCommand": "pnpm install"
+}
+```
 
 ## Running it
 
