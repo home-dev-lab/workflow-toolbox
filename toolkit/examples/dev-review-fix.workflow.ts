@@ -674,7 +674,7 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
   const inputSeverity = new Map<string, ConsolidatedFinding['severity']>()
   for (const p of parts) {
     for (const f of p.findings) {
-      const key = `${f.file} ${f.location}`
+      const key = `${f.file}\0${f.location}`
       const prev = inputSeverity.get(key)
       if (prev === undefined || (SEVERITY_RANK[f.severity] ?? 3) < (SEVERITY_RANK[prev] ?? 3)) {
         inputSeverity.set(key, f.severity)
@@ -682,7 +682,7 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
     }
   }
   findingList = findingList.map((f) => {
-    const max = inputSeverity.get(`${f.file} ${f.location}`)
+    const max = inputSeverity.get(`${f.file}\0${f.location}`)
     if (max !== undefined && (SEVERITY_RANK[f.severity] ?? 3) > (SEVERITY_RANK[max] ?? 3)) {
       warn(rt, warnings, `dev-review-fix: consolidation downgraded "${f.summary}" (${f.file} — ${f.location}) from ${max} to ${f.severity} — restoring the reviewer severity (it gates verification votes)`)
       return { ...f, severity: max }

@@ -399,9 +399,12 @@ const WT_INPUT = { artifact: WT_ARTIFACT, mutation: 'worktree' }
 
 /**
  * Worktree-mode runtime: routes the SIX new agent kinds plus the three TDD
- * stages. Unique phrases, most-specific-first. The wave-create default parses
- * the task branches out of its own prompt so any wave shape gets all its
- * worktrees "created".
+ * stages on the call's LABEL (unique by construction: `dev-implement:setup`,
+ * `dev-implement:worktrees:wave*`, `dev-implement:<stage>:<taskId>`, …) rather
+ * than on prompt content — worker-produced text (titles, notes, checker
+ * failure summaries) flows into later prompts, so substring routing could be
+ * fooled by it. The wave-create default parses the task branches out of its
+ * own prompt so any wave shape gets all its worktrees "created".
  */
 function makeWtRuntime(overrides?: {
   setup?: (prompt: string) => unknown
@@ -419,58 +422,63 @@ function makeWtRuntime(overrides?: {
   let createCalls = 0
   let mergeCalls = 0
   let integrationCalls = 0
+  let revertCalls = 0
   return new FakeRuntime({
-    onAgent: ({ prompt }: { prompt: string; index: number }) => {
-      const p = prompt.toLowerCase()
-      if (p.includes('create the isolated git worktrees')) {
+    onAgent: ({ prompt, opts }: { prompt: string; opts?: { label?: string }; index: number }) => {
+      const label = opts?.label ?? ''
+      if (label.startsWith('dev-implement:worktrees:')) {
         const i = createCalls++
         if (overrides?.create) return overrides.create(prompt, i)
         const ids = [...prompt.matchAll(/wt-task\/(T\d+)/g)].map((m) => m[1])
         return { created: [...new Set(ids)], failures: [], note: 'worktrees added' }
       }
-      if (p.includes('prepare the task worktree')) {
+      if (label.startsWith('dev-implement:prepare:')) {
         if (overrides?.prepare) return overrides.prepare(prompt)
         return { ok: true, note: 'setup command ran' }
       }
-      if (p.includes('verify this is a git repository')) {
+      if (label === 'dev-implement:setup') {
         if (overrides?.setup) return overrides.setup(prompt)
         return { isGitRepo: true, headSha: 'base000', gitRoot: '/repo', note: 'git repo confirmed' }
       }
-      if (p.includes('commit the task changes on its task branch')) {
+      if (label.startsWith('dev-implement:finalize:')) {
         if (overrides?.finalize) return overrides.finalize(prompt)
         return { committed: true, sha: 'c0ffee1', note: 'committed' }
       }
-      if (p.includes('merge the task branch')) {
+      if (label.startsWith('dev-implement:merge:')) {
         const i = mergeCalls++
         if (overrides?.merge) return overrides.merge(prompt, i)
         return { merged: true, conflict: false, preMergeSha: `pre${i}`, mergeSha: `mrg${i}`, note: 'merged clean' }
       }
-      if (p.includes('verify the integrated main tree')) {
+      if (label.startsWith('dev-implement:integration:')) {
         const i = integrationCalls++
         if (overrides?.integration) return overrides.integration(prompt, i)
         return { green: true, evidence: 'suite green on main', failureSummary: '' }
       }
-      if (p.includes('revert the failed merge')) {
+      if (label.startsWith('dev-implement:revert:')) {
+        revertCalls++
         if (overrides?.revert) return overrides.revert(prompt)
-        return { reverted: true, headSha: 'pre0', note: 'reset done' }
+        // Default revert echoes the preMergeSha from its OWN prompt (the revert
+        // command interpolates it), satisfying the headSha === preMergeSha check.
+        const sha = /git reset --hard (\S+)/.exec(prompt)?.[1] ?? `pre${revertCalls - 1}`
+        return { reverted: true, headSha: sha, note: 'reset done' }
       }
-      if (p.includes('remove the merged worktrees')) {
+      if (label === 'dev-implement:cleanup') {
         if (overrides?.cleanup) return overrides.cleanup(prompt)
         return { removed: ['all'], failures: [], note: 'cleaned' }
       }
-      if (p.includes('independently verify by running')) {
+      if (label.startsWith('dev-implement:check:')) {
         if (overrides?.check) return overrides.check(prompt)
         return { green: true, evidence: 'Test suite passed: 12/12', failureSummary: '' }
       }
-      if (p.includes('write the failing tests first')) {
+      if (label.startsWith('dev-implement:red:')) {
         if (overrides?.red) return overrides.red(prompt)
         return { written: true, testFiles: ['test/x.test.ts'], note: 'failing tests written' }
       }
-      if (p.includes('make the failing tests pass')) {
+      if (label.startsWith('dev-implement:green:')) {
         if (overrides?.green) return overrides.green(prompt)
         return { done: true, filesTouched: ['src/x.ts'], note: 'implemented' }
       }
-      throw new Error(`makeWtRuntime: unrouted prompt: ${prompt.slice(0, 100)}`)
+      throw new Error(`makeWtRuntime: unrouted label "${label}" — prompt: ${prompt.slice(0, 100)}`)
     },
   })
 }
@@ -672,6 +680,100 @@ describe('dev-implement worktree failure policies', () => {
     expect(result.tasks.find((t: { id: string }) => t.id === 'T1')!.status).toBe('integration-failed')
     expect(result.warnings.some((w: string) => /integration checker died/i.test(w))).toBe(true)
     expect(rt.calls.some((c) => c.prompt.includes('revert the failed merge'))).toBe(true)
+  })
+
+  it('merge agent died → merge-failed (branch not merged), worktree kept, dependents skip', async () => {
+    const rt = makeWtRuntime({
+      merge: (prompt, i) =>
+        prompt.includes('wt-task/T1')
+          ? null
+          : { merged: true, conflict: false, preMergeSha: `pre${i}`, mergeSha: `mrg${i}`, note: 'merged' },
+    })
+    const result = await wf.run(rt, JSON.stringify(WT_INPUT))
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('merge-failed')
+    expect(t1.note).toMatch(/merge agent died/i)
+    expect(t1.worktreePath).toBe('/repo-worktrees/T1')
+    expect(result.tasks.find((t: { id: string }) => t.id === 'T3')!.status).toBe('skipped')
+    // A dead merge agent must never trigger an integration check or a revert.
+    expect(rt.calls.some((c) => c.opts?.label === 'dev-implement:integration:T1')).toBe(false)
+    expect(rt.calls.some((c) => c.opts?.label === 'dev-implement:revert:T1')).toBe(false)
+  })
+
+  it('merged: true with an EMPTY preMergeSha → merge-failed BEFORE integration, loud warning, no bare reset', async () => {
+    // An empty revert target would render the revert as a bare `git reset
+    // --hard` (= reset to HEAD, KEEPING the bad merge) — the guard refuses it
+    // deterministically instead of trusting the self-report.
+    const rt = makeWtRuntime({
+      merge: (prompt, i) =>
+        prompt.includes('wt-task/T1')
+          ? { merged: true, conflict: false, preMergeSha: '', mergeSha: 'mrg0', note: 'merged (sha lost)' }
+          : { merged: true, conflict: false, preMergeSha: `pre${i}`, mergeSha: `mrg${i}`, note: 'merged' },
+    })
+    const result = await wf.run(rt, JSON.stringify(WT_INPUT))
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('merge-failed')
+    expect(t1.note).toMatch(/preMergeSha|revert target/i)
+    expect(result.warnings.some((w: string) => /empty\s+preMergeSha/i.test(w))).toBe(true)
+    // No integration spend and no revert prompt for the refused merge.
+    const t1Integration = rt.calls.find((c) => c.opts?.label === 'dev-implement:integration:T1')
+    expect(t1Integration).toBeUndefined()
+    const t1Revert = rt.calls.find((c) => c.opts?.label === 'dev-implement:revert:T1')
+    expect(t1Revert).toBeUndefined()
+  })
+
+  it('revert agent died → loudest warning with the manual-recovery command (main may hold the bad merge)', async () => {
+    const rt = makeWtRuntime({
+      integration: (_prompt, i) =>
+        i === 0
+          ? { green: false, evidence: 'red on main', failureSummary: 'cross-task breakage' }
+          : { green: true, evidence: 'ok', failureSummary: '' },
+      revert: () => null,
+    })
+    const result = await wf.run(rt, JSON.stringify(WT_INPUT))
+    expect(result.tasks.find((t: { id: string }) => t.id === 'T1')!.status).toBe('integration-failed')
+    expect(result.warnings.some((w: string) =>
+      /revert agent died/i.test(w) && w.includes('MAIN tree may') && w.includes('git reset --hard pre0'),
+    )).toBe(true)
+  })
+
+  it('revert reported NOT reverted → same manual-recovery warning', async () => {
+    const rt = makeWtRuntime({
+      integration: (_prompt, i) =>
+        i === 0
+          ? { green: false, evidence: 'red on main', failureSummary: 'cross-task breakage' }
+          : { green: true, evidence: 'ok', failureSummary: '' },
+      revert: () => ({ reverted: false, headSha: 'mrg0', note: 'reset refused' }),
+    })
+    const result = await wf.run(rt, JSON.stringify(WT_INPUT))
+    expect(result.warnings.some((w: string) =>
+      /revert failed/i.test(w) && w.includes('git reset --hard pre0'),
+    )).toBe(true)
+  })
+
+  it('revert reported reverted: true with a MISMATCHING headSha → not trusted, manual-recovery warning', async () => {
+    // The headSha the agent confirmed with `git rev-parse HEAD` is the one
+    // deterministic check available — a mismatch means the self-report lies.
+    const rt = makeWtRuntime({
+      integration: (_prompt, i) =>
+        i === 0
+          ? { green: false, evidence: 'red on main', failureSummary: 'cross-task breakage' }
+          : { green: true, evidence: 'ok', failureSummary: '' },
+      revert: () => ({ reverted: true, headSha: 'mrg0', note: 'claims success' }),
+    })
+    const result = await wf.run(rt, JSON.stringify(WT_INPUT))
+    expect(result.warnings.some((w: string) =>
+      w.includes('reported HEAD mrg0') && w.includes('git reset --hard pre0'),
+    )).toBe(true)
+  })
+
+  it('cleanup agent died → merged worktrees left on disk warning', async () => {
+    const rt = makeWtRuntime({ cleanup: () => null })
+    const result = await wf.run(rt, JSON.stringify(WT_INPUT))
+    expect(result.succeeded).toBe(3)
+    expect(result.warnings.some((w: string) =>
+      /cleanup agent died/i.test(w) && w.includes('/repo-worktrees'),
+    )).toBe(true)
   })
 
   it('not a git repository → honest degraded report, every task skipped, no further agents', async () => {
@@ -906,5 +1008,36 @@ describe('dev-implement worktree projectSub boundary', () => {
     // Buggy startsWith/slice would compute projectSub "c" -> ".../T1c".
     expect(red!.prompt).not.toContain('/a/b-worktrees/T1c')
     expect(red!.prompt).toContain('Work from directory: /a/b-worktrees/T1\n')
+  })
+
+  it('normalizes an agent-copied gitRoot with trailing newline/slash (free-form shell output)', async () => {
+    // "/repo/\n" used verbatim would defeat the projectSub prefix match (TDD
+    // agents from the worktree ROOT) and yield a "/repo/-worktrees" wtRoot
+    // INSIDE the repository.
+    const rt = makeWtRuntime({
+      setup: () => ({ isGitRepo: true, headSha: 'base000', gitRoot: '/repo/\n', note: 'copied raw output' }),
+    })
+    const artifact = { ...WT_ARTIFACT, context: { ...WT_ARTIFACT.context, projectDir: '/repo/toolkit' } }
+    const result = await wf.run(rt, JSON.stringify({ artifact, mutation: 'worktree' }))
+    expect(result.succeeded).toBe(3)
+    const create = rt.calls.find((c) => c.opts?.label === 'dev-implement:worktrees:wave0')
+    expect(create?.prompt).toContain('git worktree add /repo-worktrees/T1')
+    const t1Red = rt.calls.find((c) => c.opts?.label === 'dev-implement:red:T1')
+    expect(t1Red?.prompt).toContain('Work from directory: /repo-worktrees/T1/toolkit')
+  })
+
+  it('warns (instead of silently degrading) when projectDir is not under the reported gitRoot', async () => {
+    const rt = makeWtRuntime({
+      setup: () => ({ isGitRepo: true, headSha: 'base000', gitRoot: '/somewhere/else', note: 'garbage self-report' }),
+    })
+    const artifact = {
+      ...WT_ARTIFACT,
+      context: { ...WT_ARTIFACT.context, projectDir: '/repo/toolkit' },
+      tasks: [WT_ARTIFACT.tasks[0]],
+    }
+    const result = await wf.run(rt, JSON.stringify({ artifact, mutation: 'worktree' }))
+    expect(result.warnings.some((w: string) =>
+      w.includes('/repo/toolkit') && w.includes('/somewhere/else') && /not under/i.test(w),
+    )).toBe(true)
   })
 })

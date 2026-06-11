@@ -627,11 +627,16 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
       if (!file.path.startsWith('/')) return file
       const rel = relativizeUnder(input.projectDir, file.path)
       if (rel !== null) {
-        warnings.push(`dev-plan: task ${task.id} file path relativized: ${file.path} -> ${rel}`)
+        // warn() (not a bare push): these must reach the live journal too — the
+        // unmappable-path message below is exactly what the operator needs to
+        // see BEFORE approving the artifact at the human gate.
+        warn(rt, warnings, `dev-plan: task ${task.id} file path relativized: ${file.path} -> ${rel}`)
         changed = true
         return { ...file, path: rel }
       }
-      warnings.push(
+      warn(
+        rt,
+        warnings,
         `dev-plan: task ${task.id} file path "${file.path}" is absolute and cannot be relativized ` +
         `under projectDir "${input.projectDir}" — fix it at the human gate or dev-implement will ` +
         `reject the artifact`,

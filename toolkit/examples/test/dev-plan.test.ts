@@ -588,4 +588,46 @@ describe('dev-plan risk-aware votes', () => {
     const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
     expect(result.warnings.some((w: string) => /implausibly high|not an isolated change/i.test(w))).toBe(false)
   })
+
+  it('does NOT warn when ALL tasks self-rate "low" but the plan is under the 4-task floor', async () => {
+    // 3/3 = 100% low, yet 3 < 4 tasks: the count floor (toy plans legitimately
+    // skew low) must hold even at a maximal fraction.
+    const rt = makeRuntime({
+      worker: (prompt) =>
+        prompt.includes('Create the validation helper module')
+          ? {
+              tasks: [
+                { ...helperTask, risk: 'low' },
+                { ...helperTask, title: 'Add parse() helper', risk: 'low' },
+              ],
+            }
+          : { tasks: [{ ...wireTask, risk: 'low' }] },
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+    expect(result.warnings.some((w: string) => /implausibly high/i.test(w))).toBe(false)
+  })
+
+  it('does NOT warn at EXACTLY the 0.8 low fraction (4 of 5) — the threshold is strict', async () => {
+    // Pins the strict `> 0.8` comparison: flipping it to `>= 0.8` would make
+    // this legitimate 4-of-5 plan warn.
+    const rt = makeRuntime({
+      worker: (prompt) =>
+        prompt.includes('Create the validation helper module')
+          ? {
+              tasks: [
+                { ...helperTask, risk: 'low' },
+                { ...helperTask, title: 'Add parse() helper', risk: 'low' },
+                { ...helperTask, title: 'Add format() helper', risk: 'low' },
+              ],
+            }
+          : {
+              tasks: [
+                { ...wireTask, risk: 'low' },
+                { ...wireTask, title: 'Wire parse() into the CLI entry', risk: 'medium' },
+              ],
+            },
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+    expect(result.warnings.some((w: string) => /implausibly high/i.test(w))).toBe(false)
+  })
 })

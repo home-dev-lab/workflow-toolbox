@@ -104,7 +104,10 @@ var __wt = (() => {
     if (!stripped.startsWith("/")) return null;
     if (!path.startsWith(stripped + "/")) return null;
     const rel = path.slice(stripped.length + 1);
-    return rel === "" ? null : rel;
+    if (rel === "") return null;
+    if (rel.startsWith("/")) return null;
+    if (rel.split("/").includes("..")) return null;
+    return rel;
   }
 
   // ../packages/patterns/src/generate-and-filter.ts

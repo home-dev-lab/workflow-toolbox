@@ -43,10 +43,21 @@ describe('relativizeUnder', () => {
     expect(relativizeUnder('/repo', '/elsewhere/x.ts')).toBeNull()
   })
 
-  // Pins the slice semantics shared by all three dev-workflow call sites:
-  // a doubled separator survives into the remainder (POSIX callers should
-  // not produce "//", but the helper must not silently normalize either).
-  it('preserves a doubled separator in the remainder', () => {
-    expect(relativizeUnder('/repo', '/repo//x.ts')).toBe('/x.ts')
+  // Lexical containment is not semantic containment — both of these would
+  // defeat the caller's "relative ⇒ inside the root" assumption, so the
+  // helper rejects them rather than silently normalizing.
+  it('returns null for a doubled separator (the remainder would look absolute)', () => {
+    expect(relativizeUnder('/repo', '/repo//x.ts')).toBeNull()
+  })
+
+  it('returns null for a ".." segment (resolves outside the root)', () => {
+    expect(relativizeUnder('/repo', '/repo/../etc/passwd')).toBeNull()
+    expect(relativizeUnder('/repo', '/repo/a/../../etc/x')).toBeNull()
+    expect(relativizeUnder('/repo', '/repo/..')).toBeNull()
+  })
+
+  it('does not reject dotted names that merely CONTAIN dots', () => {
+    expect(relativizeUnder('/repo', '/repo/a..b/x..ts')).toBe('a..b/x..ts')
+    expect(relativizeUnder('/repo', '/repo/.hidden/x.ts')).toBe('.hidden/x.ts')
   })
 })

@@ -97,7 +97,7 @@ Three contracts make this safe:
   mangle embedded copies of your own delimiter lines, and apply these at
   EVERY site that embeds it (verifier, consolidator, fixer) — a cap or a
   caveat that guards only one path is a hole, not a control.
-- **Bound it in code** (3 000 chars, line-snapped) — a reviewer that dumps a
+- **Bound it in code** (3000 chars, line-snapped) — a reviewer that dumps a
   whole file must not blow up every downstream prompt.
 - Make the field **required-with-empty** rather than optional: models
   routinely omit prompted-but-optional fields under output pressure, which

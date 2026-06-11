@@ -116,7 +116,10 @@ var __wt = (() => {
     if (!stripped.startsWith("/")) return null;
     if (!path.startsWith(stripped + "/")) return null;
     const rel = path.slice(stripped.length + 1);
-    return rel === "" ? null : rel;
+    if (rel === "") return null;
+    if (rel.startsWith("/")) return null;
+    if (rel.split("/").includes("..")) return null;
+    return rel;
   }
 
   // ../packages/patterns/src/generate-and-filter.ts
@@ -380,9 +383,9 @@ var __wt = (() => {
     const t = raw;
     const where = `artifact.tasks[${index}]`;
     const id = requireString(t, "id", where);
-    if (!/^[A-Za-z0-9._-]+$/.test(id)) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) || id.includes("..")) {
       throw new Error(
-        `dev-implement: ${where}.id "${id}" must match [A-Za-z0-9._-]+ \u2014 ids become worktree paths and branch names`
+        `dev-implement: ${where}.id "${id}" must start alphanumeric, contain only [A-Za-z0-9._-] and never ".." \u2014 ids become worktree paths and branch names`
       );
     }
     const title = requireString(t, "title", where);
@@ -602,6 +605,7 @@ Files: ${JSON.stringify(task.files)}
 Contracts: ${task.contracts}
 Test plan: ${task.testPlan}
 Done criteria: ${JSON.stringify(task.doneCriteria)}
+Do NOT run git commit (or any other history-mutating git command) \u2014 committing is another agent's job, not yours.
 `;
   }
   async function runTaskTddLoop(rt, artifact, task, workdir, maxIterationsPerTask, warnings, stats) {
@@ -802,8 +806,20 @@ Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<abso
       }));
       return { goal: artifact.goal, tasks: reportTasks2, ...tally(reportTasks2), stats, warnings };
     }
-    const gitRoot = setup.gitRoot.trim() === "" ? ctx.projectDir : setup.gitRoot;
-    const projectSub = ctx.projectDir === gitRoot ? "" : ctx.projectDir.startsWith(gitRoot + "/") ? ctx.projectDir.slice(gitRoot.length) : "";
+    const reportedGitRoot = setup.gitRoot.trim().replace(/\/+$/, "");
+    const gitRoot = reportedGitRoot === "" ? ctx.projectDir : reportedGitRoot;
+    let projectSub = "";
+    if (ctx.projectDir !== gitRoot) {
+      if (ctx.projectDir.startsWith(gitRoot + "/")) {
+        projectSub = ctx.projectDir.slice(gitRoot.length);
+      } else {
+        warn(
+          rt,
+          warnings,
+          `dev-implement: projectDir ${ctx.projectDir} is not under the reported git root ${gitRoot} \u2014 TDD agents will work from the worktree root (check the setup agent's gitRoot self-report if that is wrong)`
+        );
+      }
+    }
     const wtRoot = worktreeRoot ?? `${gitRoot}-worktrees`;
     const wtPath = (id) => `${wtRoot}/${id}`;
     const taskWorkdir = (id) => `${wtPath(id)}${projectSub}`;
@@ -890,11 +906,12 @@ Return { "ok": true|false, "note": "<what happened>" }`,
             stats
           );
           if (!outcome.green) return { kind: "tdd-failed", outcome };
+          const safeTitle = task.title.replace(/<<<MESSAGE/g, "<-<MESSAGE").replace(/MESSAGE>>>/g, "MESSAGE>->");
           const fin = await rt.agent(
             `You are the task-branch committer \u2014 commit the task changes on its task branch: with ${wtPath(task.id)} as the working directory run \`git add -A\`, then commit with \`git ${signFlag}commit\` and capture the sha (\`git rev-parse HEAD\`).
 The commit message is the LITERAL line between the markers below \u2014 quote/escape it yourself when invoking git (titles may contain quotes or backticks; never let them reach the shell unquoted):
 <<<MESSAGE
-${wtBranch(task.id)}: ${task.title}
+${wtBranch(task.id)}: ${safeTitle}
 MESSAGE>>>
 Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happened>" }`,
             { schema: FINALIZE_RESULT_SCHEMA, label: `dev-implement:finalize:${task.id}`, phase: "Implement" }
@@ -980,6 +997,24 @@ Return { "merged": true|false, "conflict": true|false, "preMergeSha": "<sha>", "
           });
           continue;
         }
+        if (merge.preMergeSha.trim() === "") {
+          statusById.set(task.id, "merge-failed");
+          reportTasks.push({
+            id: task.id,
+            title: task.title,
+            status: "merge-failed",
+            iterations: outcome.iterations,
+            evidence: outcome.evidence,
+            note: `merge-failed \u2014 merge agent reported merged without a preMergeSha (no revert target)`,
+            ...kept
+          });
+          warn(
+            rt,
+            warnings,
+            `dev-implement: merge agent for ${task.id} reported merged: true with an empty preMergeSha \u2014 no revert target exists, so the merge is treated as failed; the MAIN tree may hold an unverified merge of ${wtBranch(task.id)} (inspect git log manually)`
+          );
+          continue;
+        }
         const integ = await rt.agent(
           `You are the independent integration checker \u2014 verify the integrated main tree: run ${ctx.testCommand} from ${ctx.projectDir} and read the ACTUAL output (the per-task checker saw an isolated worktree; you are checking that the MERGED whole still passes).
 Return { "green": true|false, "evidence": "<what the run actually showed>", "failureSummary": "<empty string if green, else the failures>" }`,
@@ -994,11 +1029,12 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
 Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }`,
             { schema: REVERT_RESULT_SCHEMA, label: `dev-implement:revert:${task.id}`, phase: "Merge" }
           );
-          if (revert === null || !revert.reverted) {
+          if (revert === null || !revert.reverted || revert.headSha !== merge.preMergeSha) {
+            const how = revert === null ? "agent died" : !revert.reverted ? "failed" : `reported HEAD ${revert.headSha} instead of the pre-merge sha`;
             warn(
               rt,
               warnings,
-              `dev-implement: revert ${revert === null ? "agent died" : "failed"} for ${task.id} \u2014 the MAIN tree may still hold the bad merge; manual recovery: git reset --hard ${merge.preMergeSha}`
+              `dev-implement: revert ${how} for ${task.id} \u2014 the MAIN tree may still hold the bad merge; manual recovery: git reset --hard ${merge.preMergeSha}`
             );
           }
           statusById.set(task.id, "integration-failed");
