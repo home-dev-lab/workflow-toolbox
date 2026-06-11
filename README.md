@@ -164,10 +164,14 @@ what happened and whether resuming is safe.
   TypeScript composition into one self-contained `.js` the Workflow tool runs
   directly.
 
-Four example compositions live in `toolkit/examples/`; their built artifacts
-(12–36 KB each) are committed under `toolkit/workflows/` and run as-is via
+Eight example compositions live in `toolkit/examples/`; their built artifacts
+(12–37 KB each) are committed under `toolkit/workflows/` and run as-is via
 `scriptPath` — no install, no build. Start with
-[toolkit/README.md](toolkit/README.md).
+[toolkit/README.md](toolkit/README.md). The flagship set is the
+**dev-workflow family** (`dev-plan` → `dev-implement` → `dev-review-fix`, plus
+the autonomous `dev-full` chaining them) — a full development cycle the toolbox
+used to build itself, with the real run numbers:
+[docs/public/dev-workflow.md](docs/public/dev-workflow.md).
 
 ### The seven patterns at a glance
 
@@ -354,7 +358,7 @@ workflow-toolbox/
 │   │   ├── scaffold/           # @workflow-toolbox/scaffold — .workflow.ts skeleton emitter (private; bundled into the CLI)
 │   │   ├── smoke/              # @workflow-toolbox/smoke    — headless upgrade-canary harness (private; maintainer-only)
 │   │   └── std/                # @workflow-toolbox/std      — zero-dep narrowing helpers (private; bundled)
-│   ├── examples/               # 4 teaching compositions (*.workflow.ts)
+│   ├── examples/               # 8 teaching compositions (*.workflow.ts)
 │   └── workflows/              # committed build artifacts — runnable as-is
 ├── docs/
 │   └── public/                 # architecture, known issues, ADRs
@@ -396,6 +400,9 @@ A few terms recur across these docs:
 
 - [toolkit/README.md](toolkit/README.md) — the authoring contract, the
   pattern table, composition rules, the result envelope.
+- [docs/public/dev-workflow.md](docs/public/dev-workflow.md) — the dev-workflow
+  family: a full development cycle as Workflow runs, proven on this repository
+  with the real run numbers.
 - [docs/public/architecture.md](docs/public/architecture.md) — the full
   architecture: principles, the evidence-tiered runtime facts, guardrails,
   what was deliberately not built.

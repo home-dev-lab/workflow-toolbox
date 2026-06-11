@@ -1,0 +1,144 @@
+# The dev-workflow family — a full development cycle as Workflow runs
+
+The flagship composition of this toolkit: four workflows that together take a
+feature request from **goal → validated plan → TDD implementation → reviewed,
+fixed, green tree** — built entirely on `@workflow-toolbox` patterns, runnable
+as-is from the committed artifacts in `toolkit/workflows/`.
+
+It is not a demo. **The toolbox used this pipeline to build itself** — every
+workflow below shipped real changes to this repository, and the numbers in
+[§ Proven on itself](#proven-on-itself--the-numbers) come from those runs'
+audit journals (`npx workflow-toolbox report <runId>`).
+
+## Two run modes
+
+```text
+SPLIT (human-gated):
+  dev-plan ──▶ [human reviews/edits the PlanArtifact]
+           ──▶ dev-implement ──▶ [human reads the report]
+           ──▶ dev-review-fix
+
+FULL (autonomous):
+  dev-full ──▶ dev-plan ──[code gate A]──▶ dev-implement ──[code gate B]──▶ dev-review-fix
+```
+
+Split mode puts a **human gate at each artifact boundary** — you read and edit
+the JSON the previous stage produced before feeding the next. Full mode
+(`dev-full`) chains the same three workflows in one run via `workflow()`
+composition over their committed artifacts and converts the human gates into
+**code gates**. There is no mid-run human input in either mode (the sandbox has
+no interactive prompt); drift is mitigated by re-running with corrections
+appended to the goal.
+
+## The four workflows
+
+| Workflow | Phases | What the gates guarantee |
+|---|---|---|
+| `dev-plan` | Discover → Plan → Critique → Synthesize | Every task claim is **adversarially verified against the actual code** (files exist, contracts match real signatures, criteria checkable); refuted tasks are dropped with the refuting *reasons*; the dependency graph is validated deterministically in code (unique ids, resolvable `dependsOn`, no cycles). |
+| `dev-implement` | Implement+Check (per task) → Report | Tasks run sequentially in dependency order (stable topological sort in code, **no git required**); each task is a bounded TDD loop — failing tests first, implement against the contracts, then an **independent checker** runs the real test command and is the only source of truth; dependents of failed tasks are skipped. |
+| `dev-review-fix` | Review → Verify → Fix → Report | Parallel per-dimension reviewers read the whole change set (catches cross-task drift); every finding is adversarially re-derived from the current tree — plausible-but-wrong findings get **refuted**, not fixed; one batched fix loop whose checker re-validates *all* findings each iteration (a later fix can re-break an earlier one while the suite stays green); `suiteGreen` is reported honestly. |
+| `dev-full` | Plan → Implement → Review & Fix → Report | Gate A: abort on a refuted-task ratio above `maxRefutedRatio` or a degraded discovery context; Gate B: continue iff ≥ 1 task succeeded; the change-set handoff is derived in code (an operator `diffCommand` wins over the planned-files approximation); **every abort returns** a structured report preserving the completed stages' output — `parseInput` is the only throwing surface. |
+
+## Proven on itself — the numbers
+
+Five production runs, June 2026, all journaled (run IDs are local audit
+anchors; replay the reports with `npx workflow-toolbox report <runId>` on the
+machine that ran them):
+
+| Run | Workflow | What it shipped | Agents | Tokens | Duration |
+|---|---|---|---|---|---|
+| `wf_fc2b2751-b33` | `dev-plan` | Planned a real patterns feature (the `ClaimVerdict` verdict vocabulary): a 3-task PlanArtifact citing real line numbers and test substrings; 1 duplicate candidate task **refuted by the critique** | 18 | 1 072 822 | 15 min |
+| `wf_673b1f49-5b6` | `dev-implement` | Implemented tasks 1–2 of that artifact → `@workflow-toolbox/patterns` 0.3.0, TDD red→green→check per task | 10 | 542 437 | 16 min |
+| `wf_0f95b14d-9e9` | `dev-implement` | The remaining docs task, re-run after a human gate edit | 3 | 159 957 | 6 min |
+| `wf_e77b638d-e77` | `dev-review-fix` | Reviewed the diff of **its own shipping commit** and fixed 11/11 confirmed findings on itself — including adding its own `suiteGreen` honesty field | 40 | 2 016 310 | 26 min |
+| `wf_dcff9070-ee0` | `dev-full` | End-to-end, zero human gates: made `loopUntilDone` count body-spawned agents — plan 3 tasks/0 refuted → implement 3/3 → review suite green, 2 findings confirmed-and-fixed + **1 refuted** by adversarial verification | 42 | 2 353 928 | 44 min |
+
+Totals: **113 agents, ≈ 6.1 M tokens, ≈ 1 h 47 min** of wall-clock automation —
+for one published minor feature, one behavior change, and two self-review
+passes whose fixes all landed. Every run ended with the full gate suite green
+(tests, typecheck, lint) verified outside the workflow before committing.
+
+Two details worth pausing on:
+
+- **Refutations are real.** The verify stages do not rubber-stamp: the critique
+  dropped a duplicate planned task, and the final `dev-full` review refuted one
+  of three findings after re-deriving it from the tree. A finding that survives
+  has been attacked first.
+- **The pipeline catches its own omissions.** The `dev-full` run's docs task
+  updated two documentation surfaces but missed a third (the toolkit README);
+  the review stage of the *same run* flagged it and the fix loop repaired it.
+
+## Running it
+
+Both modes run from the committed artifacts — no install, no build. Inputs are
+plain JSON passed as the workflow `args` (the only input channel).
+
+Split mode, first stage:
+
+```text
+Workflow tool → scriptPath: <repo>/toolkit/workflows/dev-plan.js
+args: {
+  "goal": "Add input validation to the CLI",
+  "areas": ["src", "test"],
+  "projectDir": "/abs/path/to/project"
+}
+```
+
+Review/edit the returned PlanArtifact, then feed it to
+`dev-implement.js` (`{"artifact": <the edited artifact>}`), then point
+`dev-review-fix.js` at the change set (`diffCommand` on git projects,
+`changedFiles` elsewhere — exactly one of the two).
+
+Full mode:
+
+```text
+Workflow tool → scriptPath: <repo>/toolkit/workflows/dev-full.js
+args: {
+  "goal": "…the feature, self-sufficiently described…",
+  "areas": ["packages/foo"],
+  "projectDir": "/abs/path/to/project",
+  "scriptPaths": {
+    "plan":      "<repo>/toolkit/workflows/dev-plan.js",
+    "implement": "<repo>/toolkit/workflows/dev-implement.js",
+    "reviewFix": "<repo>/toolkit/workflows/dev-review-fix.js"
+  },
+  "diffCommand": "git status --short; git diff HEAD"
+}
+```
+
+Optional `dev-full` knobs: `maxRefutedRatio` (default 0.5),
+`maxIterationsPerTask`, `maxFixIterations`, `dimensions` — unset knobs are
+omitted so each child workflow's own default stays canonical.
+
+## Operational lessons (learned the honest way)
+
+- **Trust boundary.** `dev-full` has *no human gate between the goal and
+  autonomous tree mutations*. Only point it at goals and repositories you are
+  willing to let agents modify end-to-end. The same applies to
+  `dev-review-fix` alone: never aim it at an untrusted third-party change set —
+  reviewers quote the reviewed code, which is a prompt-injection path into the
+  fixer.
+- **Agents follow the conventions they discover — including committing.** In
+  the `dev-full` run above, the discovery phase picked up the repository's
+  signed-conventional-commits convention, so the implement stage **created the
+  commits itself** (clean, signed, well-messaged — but unreviewed at commit
+  time). If you want a commit-after-human-inspection gate, say so in the goal:
+  *"do NOT commit; leave changes in the working tree."*
+- **Commands must be executable verbatim.** `testCommand`/`buildCommand` flow
+  into agent prompts and real shells unchanged — prose like
+  `pnpm test (from the toolkit dir)` breaks the loop. Give the runnable string.
+- **Prefer `diffCommand` on git projects.** The no-git fallback approximates
+  the change set from the *planned* task files; files an implementer creates
+  beyond the plan are invisible to it. The real diff sees everything.
+- **Aborts are reports, not crashes.** When a `dev-full` gate fires you get
+  `outcome: "aborted-at-…"` with every completed stage's output preserved —
+  arbitration material for falling back to split mode, not a stack trace.
+
+## Where the pieces live
+
+- Sources (authoring reference): `toolkit/examples/dev-{plan,implement,review-fix,full}.workflow.ts`
+- Runnable artifacts: `toolkit/workflows/dev-{plan,implement,review-fix,full}.js`
+- Patterns they compose: [toolkit/README.md](../../toolkit/README.md) (the
+  seven patterns and the result envelope)
+- Post-run forensics: `npx workflow-toolbox debug <runId>` (what went wrong) and
+  `npx workflow-toolbox report <runId>` (cost rollup, decision trail, transcripts)
