@@ -619,7 +619,7 @@ Do NOT run git commit (or any other history-mutating git command) \u2014 committ
         if (!next.testsWritten) {
           const red = await rtBody.agent(
             `You are the TDD test-writer for one task. Write the failing tests first \u2014 do NOT implement any production code.
-` + taskBlock + `Create/extend the test files per the test plan, run ${ctx.testCommand} to confirm the new tests FAIL for the right reason, and report.
+` + taskBlock + `Create/extend the test files per the test plan and confirm the new tests FAIL for the right reason \u2014 when your test runner supports running a subset, confirm on just the new test files (cheaper feedback), then run ${ctx.testCommand} in full once before reporting (the rest of the suite must still collect and pass).
 If the test plan says there is nothing to write (a docs-only or no-test task), that is a SUCCESS, not a failure: return written: true with an empty testFiles list and say so in the note \u2014 the done criteria will still be verified by the checker.
 Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was written>" }`,
             {
@@ -641,7 +641,7 @@ Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was writ
         const green = await rtBody.agent(
           `You are the TDD implementer for one task. Make the failing tests pass.
 ` + taskBlock + `Previous check failure (fix THIS first): ${next.lastFailure === "" ? "(first attempt)" : next.lastFailure}
-Implement per the contracts. Do NOT weaken, skip, or delete tests to get green. Run ${ctx.testCommand} yourself and iterate locally before reporting.
+Implement per the contracts. Do NOT weaken, skip, or delete tests to get green. Iterate locally: when your test runner supports running a subset, iterate on the task's own test files, then run ${ctx.testCommand} in full once before reporting \u2014 reporting done on scoped tests alone wastes a checker round-trip if the wider suite broke.
 Return { "done": true|false, "filesTouched": ["<path>"], "note": "<what changed>" }`,
           {
             schema: GREEN_RESULT_SCHEMA,
