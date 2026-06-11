@@ -123,6 +123,15 @@ var __wt = (() => {
     };
   }
 
+  // ../packages/patterns/src/paths.ts
+  function relativizeUnder(root, path) {
+    const stripped = root.replace(/\/+$/, "");
+    if (!stripped.startsWith("/")) return null;
+    if (!path.startsWith(stripped + "/")) return null;
+    const rel = path.slice(stripped.length + 1);
+    return rel === "" ? null : rel;
+  }
+
   // ../packages/patterns/src/generate-and-filter.ts
   var REJECTED = Symbol("generate-and-filter:REJECTED");
 
@@ -858,14 +867,12 @@ Return { "goal", "context": { "projectDir", "testCommand", "buildCommand", "conv
       );
     }
     validateArtifact(synthesized);
-    const root = input.projectDir.replace(/\/+$/, "");
-    const mappable = root.startsWith("/");
     const normalizedTasks = synthesized.tasks.map((task) => {
       let changed = false;
       const files = task.files.map((file) => {
         if (!file.path.startsWith("/")) return file;
-        if (mappable && file.path.startsWith(root + "/") && file.path.length > root.length + 1) {
-          const rel = file.path.slice(root.length + 1);
+        const rel = relativizeUnder(input.projectDir, file.path);
+        if (rel !== null) {
           warnings.push(`dev-plan: task ${task.id} file path relativized: ${file.path} -> ${rel}`);
           changed = true;
           return { ...file, path: rel };

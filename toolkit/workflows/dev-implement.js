@@ -110,6 +110,15 @@ var __wt = (() => {
     rt.log(message);
   }
 
+  // ../packages/patterns/src/paths.ts
+  function relativizeUnder(root, path) {
+    const stripped = root.replace(/\/+$/, "");
+    if (!stripped.startsWith("/")) return null;
+    if (!path.startsWith(stripped + "/")) return null;
+    const rel = path.slice(stripped.length + 1);
+    return rel === "" ? null : rel;
+  }
+
   // ../packages/patterns/src/generate-and-filter.ts
   var REJECTED = Symbol("generate-and-filter:REJECTED");
 
@@ -401,15 +410,13 @@ var __wt = (() => {
     return { id, title, intent, files, contracts, testPlan, doneCriteria, dependsOn };
   }
   function normalizeTaskFiles(tasks, projectDir) {
-    const root = projectDir.replace(/\/+$/, "");
-    const mappable = root.startsWith("/");
     const warnings = [];
     const normalized = tasks.map((task) => {
       let changed = false;
       const files = task.files.map((file) => {
         if (!file.path.startsWith("/")) return file;
-        const rel = mappable && file.path.startsWith(root + "/") ? file.path.slice(root.length + 1) : "";
-        if (rel === "") {
+        const rel = relativizeUnder(projectDir, file.path);
+        if (rel === null) {
           throw new Error(
             `dev-implement: task ${task.id} file path "${file.path}" is absolute and cannot be made relative to projectDir "${projectDir}" \u2014 task files must be relative to projectDir (worktree mode maps them into per-task worktrees; an absolute path would mutate that location verbatim). Edit the artifact.`
           );

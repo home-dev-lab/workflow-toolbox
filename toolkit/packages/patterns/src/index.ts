@@ -10,6 +10,7 @@
 
 export type { PatternStats, PatternResult } from './envelope.js'
 export { warn, applyCap } from './envelope.js'
+export { relativizeUnder } from './paths.js'
 
 export { classifyAndAct } from './classify-and-act.js'
 export type { ClassifyAndActOptions, ActionSpec } from './classify-and-act.js'

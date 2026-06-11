@@ -45,7 +45,7 @@
 //   that is exactly the work that must be redone.)
 
 import { defineWorkflow } from '@workflow-toolbox/build/define'
-import { loopUntilDone, warn } from '@workflow-toolbox/patterns'
+import { loopUntilDone, relativizeUnder, warn } from '@workflow-toolbox/patterns'
 import type { PatternStats } from '@workflow-toolbox/patterns'
 import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
 import type { FromSchema } from 'json-schema-to-ts'
@@ -408,16 +408,14 @@ function normalizeTaskFiles(
   tasks: PlanTask[],
   projectDir: string,
 ): { tasks: PlanTask[]; warnings: string[] } {
-  const root = projectDir.replace(/\/+$/, '') // '' when projectDir is '/'
-  const mappable = root.startsWith('/')
   const warnings: string[] = []
 
   const normalized = tasks.map((task) => {
     let changed = false
     const files = task.files.map((file) => {
       if (!file.path.startsWith('/')) return file
-      const rel = mappable && file.path.startsWith(root + '/') ? file.path.slice(root.length + 1) : ''
-      if (rel === '') {
+      const rel = relativizeUnder(projectDir, file.path)
+      if (rel === null) {
         throw new Error(
           `dev-implement: task ${task.id} file path "${file.path}" is absolute and cannot be made ` +
           `relative to projectDir "${projectDir}" — task files must be relative to projectDir ` +

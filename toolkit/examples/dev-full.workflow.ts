@@ -64,7 +64,7 @@
 //   for the failed step, feeding it the preserved section from this output.
 
 import { defineWorkflow } from '@workflow-toolbox/build/define'
-import { warn } from '@workflow-toolbox/patterns'
+import { relativizeUnder, warn } from '@workflow-toolbox/patterns'
 import type { WorkflowRuntime } from '@workflow-toolbox/runtime'
 
 // ---------------------------------------------------------------------------
@@ -540,18 +540,14 @@ async function run(rt: WorkflowRuntime, input: DevFullInput): Promise<DevFullOut
   const ranIds = new Set(
     implement.tasks.filter((t) => t.status === 'succeeded' || t.status === 'failed').map((t) => t.id),
   )
-  // Same path normalization as dev-implement's parse boundary (duplicated on
-  // purpose — workflows are self-contained artifacts): an operator-supplied
-  // scriptPath may point at an older dev-plan whose artifact still carries
-  // under-root ABSOLUTE paths; relativizing keeps changedFiles consistent
-  // with relative diff-style paths and dedupes across both spellings.
-  // Idempotent on relative paths; unmappable absolutes never reach this point
-  // (the implement child rejects them at its parse boundary → gate B aborts).
-  const root = input.projectDir.replace(/\/+$/, '')
-  const relativize = (p: string): string =>
-    root.startsWith('/') && p.startsWith(root + '/') && p.length > root.length + 1
-      ? p.slice(root.length + 1)
-      : p
+  // Same path normalization as dev-implement's parse boundary: an
+  // operator-supplied scriptPath may point at an older dev-plan whose artifact
+  // still carries under-root ABSOLUTE paths; relativizing keeps changedFiles
+  // consistent with relative diff-style paths and dedupes across both
+  // spellings. Idempotent on relative paths (null → keep); unmappable
+  // absolutes never reach this point (the implement child rejects them at its
+  // parse boundary → gate B aborts).
+  const relativize = (p: string): string => relativizeUnder(input.projectDir, p) ?? p
   const seenPaths = new Set<string>()
   const derivedFiles: string[] = []
   for (const task of plan.artifact.tasks) {

@@ -98,6 +98,15 @@ var __wt = (() => {
     rt.log(message);
   }
 
+  // ../packages/patterns/src/paths.ts
+  function relativizeUnder(root, path) {
+    const stripped = root.replace(/\/+$/, "");
+    if (!stripped.startsWith("/")) return null;
+    if (!path.startsWith(stripped + "/")) return null;
+    const rel = path.slice(stripped.length + 1);
+    return rel === "" ? null : rel;
+  }
+
   // ../packages/patterns/src/generate-and-filter.ts
   var REJECTED = Symbol("generate-and-filter:REJECTED");
 
@@ -369,8 +378,7 @@ var __wt = (() => {
     const ranIds = new Set(
       implement.tasks.filter((t) => t.status === "succeeded" || t.status === "failed").map((t) => t.id)
     );
-    const root = input.projectDir.replace(/\/+$/, "");
-    const relativize = (p) => root.startsWith("/") && p.startsWith(root + "/") && p.length > root.length + 1 ? p.slice(root.length + 1) : p;
+    const relativize = (p) => relativizeUnder(input.projectDir, p) ?? p;
     const seenPaths = /* @__PURE__ */ new Set();
     const derivedFiles = [];
     for (const task of plan.artifact.tasks) {
