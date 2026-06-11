@@ -63,8 +63,18 @@
 import { defineWorkflow } from '@workflow-toolbox/build/define'
 import { adversarialVerification, loopUntilDone, warn } from '@workflow-toolbox/patterns'
 import type { PatternStats, VerifiedClaim } from '@workflow-toolbox/patterns'
-import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
+import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
 import type { FromSchema } from 'json-schema-to-ts'
+
+// Model tier for the consolidation agent. The merge is mechanical (dedup +
+// keep-highest-severity over reviewer-provided text) and triple-netted: the
+// in-code concat fallback, the zero/below-minimum integrity guards, and the
+// downstream adversarial verification of every finding all catch a bad merge
+// before anything ships. 'sonnet' rather than 'haiku' because the agent
+// rewrites large finding text — lossy merges are only partially guarded.
+// Reviewers, verifiers (BEST_MODEL via the pattern), fixer and checker are
+// quality-critical and deliberately NOT tiered.
+const MERGE_MODEL: ModelAlias = 'sonnet'
 
 // ---------------------------------------------------------------------------
 // Input contract
@@ -498,6 +508,7 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
       schema: CONSOLIDATED_SCHEMA,
       label: 'dev-review-fix:consolidate',
       phase: 'Review',
+      model: MERGE_MODEL,
     },
   )
   reviewStats.agentsSpawned += 1

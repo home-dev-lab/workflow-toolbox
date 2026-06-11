@@ -357,6 +357,11 @@ Model tiering: mechanical high-volume leaf work → `'haiku'`; judgment work →
 inherit the session model. Verification quality is model-sensitive — verifiers
 default to `BEST_MODEL` (a constant exported by `@workflow-toolbox/runtime`,
 currently `'fable'`), and explicitly passing anything weaker logs a warning.
+In-repo adopter: dev-review-fix routes its consolidation agent (a mechanical
+dedup/merge, ~44k tokens measured) to `'sonnet'` — safe because the merge is
+triple-netted (in-code concat fallback, integrity guards, downstream
+adversarial verification of every finding); reviewers, verifiers, fixer and
+checker stay untiered.
 
 ## Auditing a run (`pnpm wt:report`)
 
