@@ -129,7 +129,10 @@ var __wt = (() => {
     if (!stripped.startsWith("/")) return null;
     if (!path.startsWith(stripped + "/")) return null;
     const rel = path.slice(stripped.length + 1);
-    return rel === "" ? null : rel;
+    if (rel === "") return null;
+    if (rel.startsWith("/")) return null;
+    if (rel.split("/").includes("..")) return null;
+    return rel;
   }
 
   // ../packages/patterns/src/generate-and-filter.ts
@@ -917,11 +920,13 @@ Return { "goal", "context": { "projectDir", "testCommand", "buildCommand", "conv
         if (!file.path.startsWith("/")) return file;
         const rel = relativizeUnder(input.projectDir, file.path);
         if (rel !== null) {
-          warnings.push(`dev-plan: task ${task.id} file path relativized: ${file.path} -> ${rel}`);
+          warn(rt, warnings, `dev-plan: task ${task.id} file path relativized: ${file.path} -> ${rel}`);
           changed = true;
           return { ...file, path: rel };
         }
-        warnings.push(
+        warn(
+          rt,
+          warnings,
           `dev-plan: task ${task.id} file path "${file.path}" is absolute and cannot be relativized under projectDir "${input.projectDir}" \u2014 fix it at the human gate or dev-implement will reject the artifact`
         );
         return file;

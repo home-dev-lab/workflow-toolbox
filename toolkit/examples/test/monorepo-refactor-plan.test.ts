@@ -667,4 +667,50 @@ describe('monorepo-refactor-plan impact-aware votes', () => {
     const result = await wf.run(rt, INPUT)
     expect(result.warnings.some((w: string) => /implausibly high/i.test(w))).toBe(false)
   })
+
+  it('does NOT warn when ALL proposals self-rate "low" but the plan is under the 4-proposal floor', async () => {
+    // 3/3 = 100% low, yet 3 < 4 proposals: the count floor (small plans
+    // legitimately skew low) must hold even at a maximal fraction.
+    const rt = makeHappyPathRuntime({
+      worker: (prompt) =>
+        prompt.includes('Extract shared utilities')
+          ? {
+              changes: [
+                { file: 'packages/core/src/a.ts', action: 'Tidy helper a', rationale: 'internal cleanup', impact: 'low' },
+                { file: 'packages/core/src/b.ts', action: 'Tidy helper b', rationale: 'internal cleanup', impact: 'low' },
+              ],
+            }
+          : {
+              changes: [
+                { file: 'packages/ui/src/c.ts', action: 'Tidy helper c', rationale: 'internal cleanup', impact: 'low' },
+              ],
+            },
+    })
+    const result = await wf.run(rt, INPUT)
+    expect(result.warnings.some((w: string) => /implausibly high/i.test(w))).toBe(false)
+  })
+
+  it('does NOT warn at EXACTLY the 0.8 low fraction (4 of 5) — the threshold is strict', async () => {
+    // Pins the strict `> 0.8` comparison: flipping it to `>= 0.8` would make
+    // this legitimate 4-of-5 plan warn.
+    const rt = makeHappyPathRuntime({
+      worker: (prompt) =>
+        prompt.includes('Extract shared utilities')
+          ? {
+              changes: [
+                { file: 'packages/core/src/a.ts', action: 'Tidy helper a', rationale: 'internal cleanup', impact: 'low' },
+                { file: 'packages/core/src/b.ts', action: 'Tidy helper b', rationale: 'internal cleanup', impact: 'low' },
+                { file: 'packages/core/src/c.ts', action: 'Tidy helper c', rationale: 'internal cleanup', impact: 'low' },
+              ],
+            }
+          : {
+              changes: [
+                { file: 'packages/ui/src/d.ts', action: 'Tidy helper d', rationale: 'internal cleanup', impact: 'low' },
+                { file: 'packages/ui/src/Button.tsx', action: 'Move Button to the shared package', rationale: 'public API move', impact: 'medium' },
+              ],
+            },
+    })
+    const result = await wf.run(rt, INPUT)
+    expect(result.warnings.some((w: string) => /implausibly high/i.test(w))).toBe(false)
+  })
 })

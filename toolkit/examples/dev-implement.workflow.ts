@@ -357,10 +357,15 @@ function parseTask(raw: unknown, index: number): PlanTask {
   // names) — restrict to a shell- and git-safe charset instead of trusting
   // quoting downstream. Enforced in BOTH modes on purpose: the same approved
   // artifact must stay valid if the operator re-runs it in worktree mode.
-  if (!/^[A-Za-z0-9._-]+$/.test(id)) {
+  // The first char must be alphanumeric (a leading "-" reads as a flag, a
+  // leading "." is an invalid ref component) and ".." is banned outright: an
+  // id of ".." would make `${wtRoot}/${id}` traverse OUT of the worktree
+  // root — the regex itself must hold that invariant, not git's implicit
+  // refname rules on the sibling branch name.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) || id.includes('..')) {
     throw new Error(
-      `dev-implement: ${where}.id "${id}" must match [A-Za-z0-9._-]+ — ids become worktree ` +
-      `paths and branch names`,
+      `dev-implement: ${where}.id "${id}" must start alphanumeric, contain only ` +
+      `[A-Za-z0-9._-] and never ".." — ids become worktree paths and branch names`,
     )
   }
   const title = requireString(t, 'title', where)
@@ -689,7 +694,13 @@ function buildTaskBlock(artifact: PlanArtifact, task: PlanTask, workdir: string)
     `Files: ${JSON.stringify(task.files)}\n` +
     `Contracts: ${task.contracts}\n` +
     `Test plan: ${task.testPlan}\n` +
-    `Done criteria: ${JSON.stringify(task.doneCriteria)}\n`
+    `Done criteria: ${JSON.stringify(task.doneCriteria)}\n` +
+    // Single-committer invariant, BOTH modes: in worktree mode a dedicated
+    // finalize agent is the only committer on the task branch (a self-commit
+    // leaves it "nothing to commit" and fails a genuinely green task); in
+    // sequential mode a commit would mutate the operator's history.
+    `Do NOT run git commit (or any other history-mutating git command) — committing is ` +
+    `another agent's job, not yours.\n`
   )
 }
 
@@ -990,15 +1001,31 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
   // projectDir-relative suffix, and the default worktree root must be a
   // sibling of the git root (a <projectDir>-worktrees sibling would land
   // INSIDE the repository and pollute git status).
-  const gitRoot = setup.gitRoot.trim() === '' ? ctx.projectDir : setup.gitRoot
+  // The agent copies free-form `git rev-parse --show-toplevel` output into the
+  // field, so normalize before use: a trailing newline/space or trailing slash
+  // would silently defeat BOTH the projectSub prefix match below (TDD agents
+  // would run from the worktree root) and the sibling wtRoot default
+  // ("/repo/-worktrees" lands INSIDE the repository) — same normalization
+  // class as relativizeUnder's root handling.
+  const reportedGitRoot = setup.gitRoot.trim().replace(/\/+$/, '')
+  const gitRoot = reportedGitRoot === '' ? ctx.projectDir : reportedGitRoot
   // Boundary-safe mapping (same class as normalizeTaskFiles): gitRoot "/a/b"
   // must not be sliced out of an adjacent-prefix projectDir like "/a/bc".
-  const projectSub =
-    ctx.projectDir === gitRoot
-      ? ''
-      : ctx.projectDir.startsWith(gitRoot + '/')
-        ? ctx.projectDir.slice(gitRoot.length)
-        : ''
+  let projectSub = ''
+  if (ctx.projectDir !== gitRoot) {
+    if (ctx.projectDir.startsWith(gitRoot + '/')) {
+      projectSub = ctx.projectDir.slice(gitRoot.length)
+    } else {
+      // A garbage gitRoot self-report must not degrade the run silently.
+      warn(
+        rt,
+        warnings,
+        `dev-implement: projectDir ${ctx.projectDir} is not under the reported git root ` +
+        `${gitRoot} — TDD agents will work from the worktree root (check the setup ` +
+        `agent's gitRoot self-report if that is wrong)`,
+      )
+    }
+  }
   const wtRoot = worktreeRoot ?? `${gitRoot}-worktrees`
   const wtPath = (id: string): string => `${wtRoot}/${id}`
   const taskWorkdir = (id: string): string => `${wtPath(id)}${projectSub}`
@@ -1110,6 +1137,14 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
         )
         if (!outcome.green) return { kind: 'tdd-failed', outcome }
 
+        // Delimiter anti-spoofing (same class as dev-review-fix's renderSnippet):
+        // the artifact-controlled title is embedded between OUR markers, so an
+        // embedded copy of either marker would close the block early and let the
+        // remainder read as orchestrator instructions to a git-mutating agent.
+        // Same-length mangle, so nothing else about the prompt shifts.
+        const safeTitle = task.title
+          .replace(/<<<MESSAGE/g, '<-<MESSAGE')
+          .replace(/MESSAGE>>>/g, 'MESSAGE>->')
         const fin = await rt.agent<FinalizeResult>(
           `You are the task-branch committer — commit the task changes on its task branch: with ` +
           `${wtPath(task.id)} as the working directory run \`git add -A\`, then commit with ` +
@@ -1117,7 +1152,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
           `The commit message is the LITERAL line between the markers below — quote/escape it ` +
           `yourself when invoking git (titles may contain quotes or backticks; never let them ` +
           `reach the shell unquoted):\n` +
-          `<<<MESSAGE\n${wtBranch(task.id)}: ${task.title}\nMESSAGE>>>\n` +
+          `<<<MESSAGE\n${wtBranch(task.id)}: ${safeTitle}\nMESSAGE>>>\n` +
           `Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happened>" }`,
           { schema: FINALIZE_RESULT_SCHEMA, label: `dev-implement:finalize:${task.id}`, phase: 'Implement' },
         )
@@ -1190,6 +1225,27 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
         })
         continue
       }
+      // The self-reported preMergeSha is the SOLE revert target if integration
+      // goes red — an empty one would render the revert as a bare
+      // `git reset --hard` (= reset to HEAD, KEEPING the bad merge), so refuse
+      // it deterministically before any integration spend.
+      if (merge.preMergeSha.trim() === '') {
+        statusById.set(task.id, 'merge-failed')
+        reportTasks.push({
+          id: task.id, title: task.title, status: 'merge-failed',
+          iterations: outcome.iterations, evidence: outcome.evidence,
+          note: `merge-failed — merge agent reported merged without a preMergeSha (no revert target)`,
+          ...kept,
+        })
+        warn(
+          rt,
+          warnings,
+          `dev-implement: merge agent for ${task.id} reported merged: true with an empty ` +
+          `preMergeSha — no revert target exists, so the merge is treated as failed; the MAIN ` +
+          `tree may hold an unverified merge of ${wtBranch(task.id)} (inspect git log manually)`,
+        )
+        continue
+      }
 
       const integ = await rt.agent<CheckResult>(
         `You are the independent integration checker — verify the integrated main tree: run ` +
@@ -1209,11 +1265,19 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
           `Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }`,
           { schema: REVERT_RESULT_SCHEMA, label: `dev-implement:revert:${task.id}`, phase: 'Merge' },
         )
-        if (revert === null || !revert.reverted) {
+        // The revert agent's self-report is NOT trusted on its own: the schema's
+        // contract is that the resulting HEAD equals the preMergeSha, and the
+        // headSha it confirmed with `git rev-parse HEAD` is the one deterministic
+        // check available — reverted: true with a mismatching HEAD is a failure.
+        if (revert === null || !revert.reverted || revert.headSha !== merge.preMergeSha) {
+          const how =
+            revert === null ? 'agent died'
+            : !revert.reverted ? 'failed'
+            : `reported HEAD ${revert.headSha} instead of the pre-merge sha`
           warn(
             rt,
             warnings,
-            `dev-implement: revert ${revert === null ? 'agent died' : 'failed'} for ${task.id} — the MAIN tree may ` +
+            `dev-implement: revert ${how} for ${task.id} — the MAIN tree may ` +
             `still hold the bad merge; manual recovery: git reset --hard ${merge.preMergeSha}`,
           )
         }
