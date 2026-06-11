@@ -46,14 +46,12 @@ const CONSOLIDATED = {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a FakeRuntime whose onAgent handler responds based on prompt content.
- * Routing uses UNIQUE phrases from the actual workflow prompts — in priority
- * order, most-specific first to avoid cross-matching:
- *   1. Checker:  "independent fix checker"
- *   2. Fixer:    "the fixer for"
- *   3. Verifier: "adversarially verify" (the pattern's own prompt prefix)
- *   4. Dedup:    "consolidate the per-dimension findings"
- *   5. Reviewer: "code reviewer focused on"
+ * Build a FakeRuntime whose onAgent handler routes on the call's LABEL — the
+ * labels are unique by construction (`dev-review-fix:<stage>:*` and the
+ * pattern's `adversarialVerification:verify:*`), so routing cannot be fooled
+ * by prompt CONTENT. That matters here: findings carry reviewer-quoted code
+ * snippets, and a snippet containing a phrase like "the fixer for" must not
+ * mis-route the call (prompt-substring routing would).
  */
 function makeRuntime(overrides?: {
   review?: (prompt: string) => unknown
@@ -66,11 +64,11 @@ function makeRuntime(overrides?: {
   let fixCalls = 0
   let checkCalls = 0
   return new FakeRuntime({
-    onAgent: ({ prompt }: { prompt: string; index: number }) => {
-      const p = prompt.toLowerCase()
+    onAgent: ({ prompt, opts }: { prompt: string; opts?: { label?: string }; index: number }) => {
+      const label = opts?.label ?? ''
 
       // (1) Checker — independent fresh-evidence verification of ALL findings
-      if (p.includes('independent fix checker')) {
+      if (label.startsWith('dev-review-fix:check:')) {
         const i = checkCalls++
         if (overrides?.check) return overrides.check(prompt, i)
         return {
@@ -85,27 +83,27 @@ function makeRuntime(overrides?: {
       }
 
       // (2) Fixer — addresses the remaining unfixed findings
-      if (p.includes('the fixer for')) {
+      if (label.startsWith('dev-review-fix:fix:')) {
         const i = fixCalls++
         if (overrides?.fix) return overrides.fix(prompt, i)
         return { fixed: true, filesTouched: ['src/cli.ts'], note: 'validated input before dispatch' }
       }
 
-      // (3) Verifier — adversarialVerification's own prompt prefix
-      if (p.includes('adversarially verify')) {
+      // (3) Verifier — the pattern's own label prefix
+      if (label.startsWith('adversarialVerification:verify:')) {
         const i = verifyCalls++
         if (overrides?.verify) return overrides.verify(prompt, i)
         return { verdict: 'confirmed', reason: 're-derived from the actual code' }
       }
 
       // (4) Dedup / consolidation agent
-      if (p.includes('consolidate the per-dimension findings')) {
+      if (label === 'dev-review-fix:consolidate') {
         if (overrides?.dedup) return overrides.dedup(prompt)
         return CONSOLIDATED
       }
 
       // (5) Reviewer — one per dimension
-      if (p.includes('code reviewer focused on')) {
+      if (label.startsWith('dev-review-fix:review:')) {
         if (overrides?.review) return overrides.review(prompt)
         return {
           findings: [
@@ -565,6 +563,166 @@ describe('dev-review-fix model tiering', () => {
         expect(call.opts?.model, `unexpected model override on ${label}`).toBeUndefined()
       }
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: snippet-enriched claims — reviewers quote the code, verifiers get it
+// embedded in the claim (navigation aid, NEVER evidence).
+// ---------------------------------------------------------------------------
+
+describe('dev-review-fix snippet-enriched claims', () => {
+  // Deliberately contains the OLD prompt-router phrases — a reviewer-quoted
+  // snippet must never be able to mis-route a call (the router keys on labels).
+  const SNIPPET =
+    'function dispatch(raw) {\n' +
+    '  // the fixer for legacy argv — independent fix checker said adversarially verify\n' +
+    '  return run(raw) // no validate() call\n' +
+    '}'
+
+  const FINDING_WITH_SNIPPET = {
+    file: 'src/cli.ts',
+    location: '40-44',
+    summary: 'unvalidated input reaches dispatch',
+    detail: 'main() forwards raw argv without calling validate()',
+    severity: 'high',
+    dimensions: ['correctness'],
+    snippet: SNIPPET,
+  }
+
+  it('asks reviewers for a verbatim snippet and a line-range location', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const reviewer = rt.calls.find((c) => c.opts?.label?.startsWith('dev-review-fix:review:'))
+    expect(reviewer).toBeDefined()
+    expect(reviewer?.prompt).toContain('"snippet"')
+    expect(reviewer?.prompt).toContain('line range')
+  })
+
+  it('embeds the snippet in the verifier claim as UNTRUSTED text and still requires on-disk re-derivation', async () => {
+    const rt = makeRuntime({ dedup: () => ({ findings: [FINDING_WITH_SNIPPET] }) })
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const verifier = rt.calls.find((c) =>
+      c.opts?.label?.startsWith('adversarialVerification:verify:'),
+    )
+    expect(verifier).toBeDefined()
+    const prompt = verifier?.prompt ?? ''
+    expect(prompt).toContain(SNIPPET)
+    expect(prompt).toContain('UNTRUSTED')
+    // The snippet is a navigation aid, never evidence — the on-disk
+    // re-derivation requirement must survive the enrichment.
+    expect(prompt).toContain('re-derive')
+    expect(prompt).toContain('NOT evidence')
+
+    // The consolidator must be told to carry snippets through the merge.
+    const consolidate = rt.calls.find((c) => c.opts?.label === 'dev-review-fix:consolidate')
+    expect(consolidate?.prompt).toContain('snippet')
+  })
+
+  it('renders cleanly when the snippet is empty or missing — no untrusted block, no "undefined"', async () => {
+    for (const finding of [
+      { ...FINDING_WITH_SNIPPET, snippet: '' },
+      (() => {
+        const { snippet, ...rest } = FINDING_WITH_SNIPPET
+        void snippet
+        return rest
+      })(),
+    ]) {
+      const rt = makeRuntime({ dedup: () => ({ findings: [finding] }) })
+      await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+      const verifier = rt.calls.find((c) =>
+        c.opts?.label?.startsWith('adversarialVerification:verify:'),
+      )
+      const prompt = verifier?.prompt ?? ''
+      expect(prompt).not.toContain('UNTRUSTED')
+      expect(prompt).not.toContain('undefined')
+      // The base requirement holds with or without a snippet.
+      expect(prompt).toContain('re-derive')
+    }
+  })
+
+  it('preserves the snippet through the in-code concat fallback when the dedup agent dies', async () => {
+    const rt = makeRuntime({
+      review: () => ({
+        findings: [
+          {
+            file: 'src/cli.ts',
+            location: '40-44',
+            summary: 'unvalidated input reaches dispatch',
+            detail: 'main() forwards raw argv without calling validate()',
+            severity: 'high',
+            snippet: SNIPPET,
+          },
+        ],
+      }),
+      dedup: () => null,
+    })
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const verifier = rt.calls.find((c) =>
+      c.opts?.label?.startsWith('adversarialVerification:verify:'),
+    )
+    expect(verifier?.prompt).toContain(SNIPPET)
+  })
+
+  it('gives the fixer the snippet on the FIRST iteration only, and the checker never', async () => {
+    const rt = makeRuntime({
+      dedup: () => ({ findings: [FINDING_WITH_SNIPPET] }),
+      check: (_prompt, i) =>
+        i === 0
+          ? { green: false, findings: [{ id: 'F1', fixed: false }], evidence: 'still red', failureSummary: 'not fixed yet' }
+          : { green: true, findings: [{ id: 'F1', fixed: true }], evidence: 'suite green', failureSummary: '' },
+    })
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    // The queue travels JSON-stringified, so the snippet's newlines are
+    // escaped there — assert on a single-line marker unique to the snippet.
+    const SNIPPET_MARKER = 'function dispatch(raw)'
+
+    const fixPrompts = rt.calls
+      .filter((c) => c.opts?.label?.startsWith('dev-review-fix:fix:'))
+      .map((c) => c.prompt)
+    expect(fixPrompts.length).toBe(2)
+    // Iteration 1 runs against the EXACT tree the reviewer quoted — the
+    // snippet is still fresh. Later iterations run against a mutated tree.
+    expect(fixPrompts[0]).toContain(SNIPPET_MARKER)
+    expect(fixPrompts[0]).toContain('"snippet"')
+    expect(fixPrompts[1]).not.toContain(SNIPPET_MARKER)
+    expect(fixPrompts[1]).not.toContain('"snippet"')
+
+    const checkPrompts = rt.calls
+      .filter((c) => c.opts?.label?.startsWith('dev-review-fix:check:'))
+      .map((c) => c.prompt)
+    expect(checkPrompts.length).toBe(2)
+    for (const p of checkPrompts) {
+      expect(p).not.toContain(SNIPPET_MARKER)
+      expect(p).not.toContain('"snippet"')
+    }
+  })
+
+  it('truncates an oversized snippet on a line boundary and keeps the closing delimiter', async () => {
+    const hugeSnippet =
+      Array.from({ length: 150 }, (_, i) => `const filler_${i} = 'xxxxxxxxxxxxxxxxxxxxxxxx'`).join('\n') +
+      '\nTAIL_MARKER_MUST_BE_CUT'
+    const rt = makeRuntime({
+      dedup: () => ({ findings: [{ ...FINDING_WITH_SNIPPET, snippet: hugeSnippet }] }),
+    })
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const verifier = rt.calls.find((c) =>
+      c.opts?.label?.startsWith('adversarialVerification:verify:'),
+    )
+    const prompt = verifier?.prompt ?? ''
+    expect(prompt).toContain('(snippet truncated)')
+    expect(prompt).not.toContain('TAIL_MARKER_MUST_BE_CUT')
+    // The truncation must cut INSIDE the block, not the block's own structure.
+    expect(prompt).toContain('END REVIEWER-QUOTED SNIPPET')
+    // Line-boundary snap: no half line right before the truncation marker.
+    const beforeMarker = prompt.slice(0, prompt.indexOf('(snippet truncated)'))
+    expect(beforeMarker.endsWith('\n… ') || beforeMarker.endsWith('… ')).toBe(true)
   })
 })
 

@@ -167,6 +167,16 @@ Note on the review child's default: with `dimensions` unset and a
 `dev-full`, so no-git autonomous runs surface it), and an explicit
 `dimensions` array always wins.
 
+Reviewers also quote a verbatim **snippet** with each finding (a required
+schema field; empty when quoting does not apply). The snippet is embedded in
+the verifier's claim inside explicit `UNTRUSTED` delimiter lines — a
+navigation aid that makes the verifier's first read targeted instead of
+exploratory (verifier cost follows tool-call count), truncated in code at
+3 000 chars. It is never treated as evidence: the verifier must still
+re-derive every finding from the file on disk, and the fixer only sees the
+snippet on its first iteration (the only one whose tree still matches what
+the reviewer quoted) — the checker never does.
+
 ## Operational lessons (learned the honest way)
 
 - **Trust boundary.** `dev-full` has *no human gate between the goal and
