@@ -135,8 +135,9 @@ const CANDIDATE_TASKS_SCHEMA = {
           contracts: { type: 'string' },
           testPlan: { type: 'string' },
           doneCriteria: { type: 'array', items: { type: 'string' } },
+          risk: { type: 'string', enum: ['low', 'medium', 'high'] },
         },
-        required: ['title', 'intent', 'files', 'contracts', 'testPlan', 'doneCriteria'],
+        required: ['title', 'intent', 'files', 'contracts', 'testPlan', 'doneCriteria', 'risk'],
         additionalProperties: false,
       },
     },
@@ -453,8 +454,12 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
       `- contracts: signatures/shapes/invariants the implementation must honor\n` +
       `- testPlan: which failing test(s) to write FIRST\n` +
       `- doneCriteria: each independently checkable\n` +
+      `- risk: "low" ONLY for an isolated change (a new file or a single-file edit with ` +
+      `no public API or cross-module contract); "medium" or "high" otherwise. Risk decides ` +
+      `how much independent scrutiny the task gets in the Critique phase — understating it ` +
+      `ships unverified mistakes into the plan, so when unsure pick the higher value.\n` +
       `Return { "tasks": [{ "title", "intent", "files": [{ "path", "status", "role" }], ` +
-      `"contracts", "testPlan", "doneCriteria": ["<criterion>"] }] }`,
+      `"contracts", "testPlan", "doneCriteria": ["<criterion>"], "risk": "<low|medium|high>" }] }`,
     workerSchema: CANDIDATE_TASKS_SCHEMA,
     synthesisPrompt: (results) =>
       `Compose a short draft plan narrative from these candidate implementation tasks.\n` +
@@ -499,6 +504,9 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
         `(2) the contracts match the real code (signatures, types, exports);\n` +
         `(3) each done criterion is concretely checkable (a test or an inspectable fact).\n` +
         `Refute the task if any claim is wrong.`,
+      // Risk-aware votes: a low-risk task gets 1 refute-first vote; medium/high
+      // keep the full 2-of-3 quorum (effectiveThreshold = min(2, claimVotes)).
+      votesPerClaim: (task) => (task.risk === 'low' ? 1 : 3),
       maxVerifyClaims: 12,
       phase: 'Critique',
     })

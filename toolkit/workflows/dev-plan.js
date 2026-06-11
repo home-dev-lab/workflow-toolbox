@@ -614,9 +614,10 @@ ${renderClaim(claim)}`;
             files: { type: "array", items: TASK_FILE_SCHEMA },
             contracts: { type: "string" },
             testPlan: { type: "string" },
-            doneCriteria: { type: "array", items: { type: "string" } }
+            doneCriteria: { type: "array", items: { type: "string" } },
+            risk: { type: "string", enum: ["low", "medium", "high"] }
           },
-          required: ["title", "intent", "files", "contracts", "testPlan", "doneCriteria"],
+          required: ["title", "intent", "files", "contracts", "testPlan", "doneCriteria", "risk"],
           additionalProperties: false
         }
       }
@@ -814,7 +815,8 @@ Open the actual files to verify your claims. Produce SELF-SUFFICIENT task record
 - contracts: signatures/shapes/invariants the implementation must honor
 - testPlan: which failing test(s) to write FIRST
 - doneCriteria: each independently checkable
-Return { "tasks": [{ "title", "intent", "files": [{ "path", "status", "role" }], "contracts", "testPlan", "doneCriteria": ["<criterion>"] }] }`,
+- risk: "low" ONLY for an isolated change (a new file or a single-file edit with no public API or cross-module contract); "medium" or "high" otherwise. Risk decides how much independent scrutiny the task gets in the Critique phase \u2014 understating it ships unverified mistakes into the plan, so when unsure pick the higher value.
+Return { "tasks": [{ "title", "intent", "files": [{ "path", "status", "role" }], "contracts", "testPlan", "doneCriteria": ["<criterion>"], "risk": "<low|medium|high>" }] }`,
       workerSchema: CANDIDATE_TASKS_SCHEMA,
       synthesisPrompt: (results) => `Compose a short draft plan narrative from these candidate implementation tasks.
 Goal: ${input.goal}
@@ -843,6 +845,9 @@ IMPORTANT: Do NOT trust this task record. Open the actual files and re-derive:
 (2) the contracts match the real code (signatures, types, exports);
 (3) each done criterion is concretely checkable (a test or an inspectable fact).
 Refute the task if any claim is wrong.`,
+        // Risk-aware votes: a low-risk task gets 1 refute-first vote; medium/high
+        // keep the full 2-of-3 quorum (effectiveThreshold = min(2, claimVotes)).
+        votesPerClaim: (task) => task.risk === "low" ? 1 : 3,
         maxVerifyClaims: 12,
         phase: "Critique"
       });

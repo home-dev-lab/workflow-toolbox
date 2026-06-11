@@ -754,9 +754,10 @@ ${renderClaim(claim)}`;
           properties: {
             file: { type: "string" },
             action: { type: "string" },
-            rationale: { type: "string" }
+            rationale: { type: "string" },
+            impact: { type: "string", enum: ["low", "medium", "high"] }
           },
-          required: ["file", "action", "rationale"],
+          required: ["file", "action", "rationale", "impact"],
           additionalProperties: false
         }
       }
@@ -922,7 +923,8 @@ Return { "subtasks": [{ "description": "<proposal description>" }] }`,
       workerPrompt: (subtask) => `Detail the change proposal: ${subtask.description}
 Goal: ${input.goal}
 Expand this into concrete file changes with rationale.
-Return { "changes": [{ "file": "<path>", "action": "<what to do>", "rationale": "<why>" }] }`,
+Set "impact" to "low" ONLY for a package-internal cleanup with no exported-API change; "medium" or "high" otherwise (cross-package moves, public API changes). Impact decides how much independent scrutiny the proposal gets in the Verify phase \u2014 understating it ships unverified changes into the plan, so when unsure pick the higher value.
+Return { "changes": [{ "file": "<path>", "action": "<what to do>", "rationale": "<why>", "impact": "<low|medium|high>" }] }`,
       workerSchema: CHANGES_SCHEMA,
       synthesisPrompt: (results) => `Compose a draft refactoring plan from these detailed change proposals.
 Goal: ${input.goal}
@@ -944,6 +946,9 @@ Produce a coherent draft plan narrative (plain text) that will feed the final pl
 Rationale: ${change.rationale}
 
 IMPORTANT: Do NOT trust the rationale above. Open the actual file at ${change.file} and re-derive from the code whether this change is necessary and correct.`,
+        // Impact-aware votes: a low-impact proposal gets 1 refute-first vote;
+        // medium/high keep the full 2-of-3 quorum (effectiveThreshold = min(2, claimVotes)).
+        votesPerClaim: (change) => change.impact === "low" ? 1 : 3,
         maxVerifyClaims: 10,
         phase: "Verify"
       });
