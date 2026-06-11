@@ -144,9 +144,9 @@ workflow-toolbox/
     │   └── scaffold/                    # @workflow-toolbox/scaffold — spec → build-clean .workflow.ts skeleton
     │       ├── src/scaffold.ts          #   pure scaffoldWorkflow emitter (unit-tested) + impure CLI
     │       └── test/fixtures/           #   committed all-patterns golden (typechecked + linted by the gates)
-    ├── examples/                        # 4 compositions (.workflow.ts) + their tests
+    ├── examples/                        # 8 compositions (.workflow.ts) + their tests
     ├── bin/                             # wt-debug.mjs + wt-stop-hook.mjs — source-of-truth twins of plugin/bin
-    └── workflows/                       # committed build artifacts (12–36 KB each)
+    └── workflows/                       # committed build artifacts (12–48 KB each)
 ```
 
 - **`@workflow-toolbox/runtime`** is types + a test fake only — near-zero runtime code. It is the unstable-surface firewall (§2.2).
@@ -202,7 +202,7 @@ Every pattern: takes `rt` + a typed options object (prompts as data, items, sche
 
 ### L2 — Compositions
 
-Plain async functions in workflow definition files that call several patterns in sequence/parallel. The four shipped examples live here (§6.3). Compositions are **examples and templates, not library API** — copying and editing one is the intended usage.
+Plain async functions in workflow definition files that call several patterns in sequence/parallel. The eight shipped examples live here (§6.3). Compositions are **examples and templates, not library API** — copying and editing one is the intended usage.
 
 ### L3 — Checkpointed compositions (HITL)
 
@@ -243,6 +243,7 @@ export default defineWorkflow({
 2. **`monorepo-refactor-plan`** — `planAndExecute` (a planner decomposes the refactor) + `adversarialVerification` (refute-first review of the proposed plan) → returns an execution-plan artifact for human approval (the L3 boundary).
 3. **`monorepo-refactor-execute`** — takes the approved plan via `args`, re-validates it, then runs the *known* steps with `rt.pipeline` directly (planAndExecute would be waste — the subtasks are no longer unknown). Mutating agents run with `isolation: 'worktree'`; fresh-evidence checker agents verify each step's claim.
 4. **`doc-rewrite`** — `generateAndFilter` (N candidate rewrites, index-diverse prompts → evaluate against criteria) → `loopUntilDone` (evaluator-optimizer until PASS or a typed stop) → final version with an honest `stoppedBy`.
+5. **The dev-workflow family** — `dev-plan`, `dev-implement`, `dev-review-fix`, plus the `dev-full` orchestrator: a TDD feature pipeline with human gates between phases. Documented in depth in [dev-workflow.md](dev-workflow.md).
 
 ---
 
