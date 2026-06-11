@@ -948,6 +948,40 @@ describe('adversarialVerification — votesPerClaim validation', () => {
     }))).rejects.toThrow(/lenses cannot be combined with votesPerClaim/)
     expect(rt.agentsSpawned).toBe(0)
   })
+
+  it('accepts refuteThreshold above the scalar votes when votesPerClaim overrides it (per-claim clamp applies)', async () => {
+    // `votes` stays at its default of 3, but every claim actually receives 5
+    // votes — the scalar comparison must not spuriously reject the config;
+    // the threshold applies per claim as min(refuteThreshold, claimVotes) = 4.
+    const byLabel: Record<string, VerifierVote> = {
+      'adversarialVerification:verify:0:0': refutedVote,
+      'adversarialVerification:verify:0:1': refutedVote,
+      'adversarialVerification:verify:0:2': refutedVote,
+      'adversarialVerification:verify:0:3': refutedVote,
+      'adversarialVerification:verify:0:4': confirmedVote,
+    }
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => byLabel[opts?.label ?? ''] ?? confirmedVote,
+    })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['only'],
+      refuteThreshold: 4,
+      votesPerClaim: () => 5,
+    }))
+
+    expect(result.stats.agentsSpawned).toBe(5)
+    // 4 refutes >= effectiveThreshold min(4, 5) = 4 → refuted.
+    expect(result.value[0]?.verdict).toBe('refuted')
+  })
+
+  it('still rejects refuteThreshold > votes when votesPerClaim is absent (scalar check unchanged)', async () => {
+    const rt = new FakeRuntime()
+    await expect(
+      adversarialVerification(rt, makeOptions({ votes: 3, refuteThreshold: 4 })),
+    ).rejects.toThrow(/refuteThreshold.*>.*votes/)
+    expect(rt.agentsSpawned).toBe(0)
+  })
 })
 
 describe('adversarialVerification — 1-vote tally semantics', () => {
@@ -1042,6 +1076,32 @@ describe('adversarialVerification — votesPerClaim mixed-count tallies', () => 
 
     expect(result.stats.agentsSpawned).toBe(7)
     expect(result.value.map((v) => v.verdict)).toEqual(['refuted', 'confirmed', 'confirmed'])
+  })
+
+  it('clamps an explicit refuteThreshold to an intermediate per-claim count (general min, not a 1-vote special case)', async () => {
+    // votes: 3, refuteThreshold: 3. Claim 'short' is mapped to 2 votes → its
+    // effective threshold is min(3, 2) = 2, so 2 refutes decide it; the
+    // 3-vote sibling 'full' also gets 2 refutes but still needs all 3.
+    const byLabel: Record<string, VerifierVote> = {
+      'adversarialVerification:verify:0:0': refutedVote,
+      'adversarialVerification:verify:0:1': refutedVote,
+      'adversarialVerification:verify:1:0': refutedVote,
+      'adversarialVerification:verify:1:1': refutedVote,
+      'adversarialVerification:verify:1:2': confirmedVote,
+    }
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => byLabel[opts?.label ?? ''] ?? confirmedVote,
+    })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['short', 'full'],
+      votes: 3,
+      refuteThreshold: 3,
+      votesPerClaim: (c) => (c === 'short' ? 2 : 3),
+    }))
+
+    expect(result.stats.agentsSpawned).toBe(5)
+    expect(result.value.map((v) => v.verdict)).toEqual(['refuted', 'partially-confirmed'])
   })
 
   it('default path is unchanged when votesPerClaim is absent (drift guard)', async () => {

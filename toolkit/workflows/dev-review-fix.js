@@ -170,7 +170,7 @@ var __wt = (() => {
         `adversarialVerification: refuteThreshold must be >= 1, got ${refuteThreshold}`
       );
     }
-    if (refuteThreshold > votesOpt) {
+    if (votesPerClaim === void 0 && refuteThreshold > votesOpt) {
       throw new Error(
         `adversarialVerification: refuteThreshold (${refuteThreshold}) must not be > votes (${votesOpt})`
       );

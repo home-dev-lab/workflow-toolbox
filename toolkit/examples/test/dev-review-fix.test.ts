@@ -374,6 +374,32 @@ describe('dev-review-fix verdict partition', () => {
     // Findings existed but none reached the fix queue — that must be LOUD.
     expect(result.warnings.some((w: string) => /fix queue/i.test(w))).toBe(true)
   })
+
+  it('marks cap-truncated findings unverified-by-cap and never fixes them', async () => {
+    // 13 findings, maxVerifyClaims is 12 → the 13th (lowest severity after the
+    // in-code sort) is cap-truncated. All verifier votes die so nothing is
+    // fixable — the cap-truncated finding must carry the DISTINCT verdict.
+    const many = Array.from({ length: 13 }, (_, i) => ({
+      file: `src/f${i}.ts`,
+      location: `line ${i + 1}`,
+      summary: `finding number ${i}`,
+      detail: 'detail',
+      severity: i === 12 ? 'low' : 'high',
+      dimensions: ['correctness'],
+    }))
+    const rt = makeRuntime({
+      dedup: () => ({ findings: many }),
+      verify: () => null,
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const findings = result.findings as ReportFinding[]
+    const capped = findings.filter((f) => f.verdict === 'unverified-by-cap')
+    expect(capped.length).toBe(1)
+    expect(capped[0]!.severity).toBe('low')
+    expect(result.tallies.unverified).toBe(13)
+    expect(rt.calls.some((c) => c.opts?.label?.startsWith('dev-review-fix:fix:'))).toBe(false)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -429,32 +455,6 @@ describe('dev-review-fix severity-aware votes', () => {
     ).length
     expect(verifyCount).toBe(3)
     expect(result.tallies).toMatchObject({ rejected: 1, fixed: 0 })
-  })
-
-  it('marks cap-truncated findings unverified-by-cap and never fixes them', async () => {
-    // 13 findings, maxVerifyClaims is 12 → the 13th (lowest severity after the
-    // in-code sort) is cap-truncated. All verifier votes die so nothing is
-    // fixable — the cap-truncated finding must carry the DISTINCT verdict.
-    const many = Array.from({ length: 13 }, (_, i) => ({
-      file: `src/f${i}.ts`,
-      location: `line ${i + 1}`,
-      summary: `finding number ${i}`,
-      detail: 'detail',
-      severity: i === 12 ? 'low' : 'high',
-      dimensions: ['correctness'],
-    }))
-    const rt = makeRuntime({
-      dedup: () => ({ findings: many }),
-      verify: () => null,
-    })
-    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
-
-    const findings = result.findings as ReportFinding[]
-    const capped = findings.filter((f) => f.verdict === 'unverified-by-cap')
-    expect(capped.length).toBe(1)
-    expect(capped[0]!.severity).toBe('low')
-    expect(result.tallies.unverified).toBe(13)
-    expect(rt.calls.some((c) => c.opts?.label?.startsWith('dev-review-fix:fix:'))).toBe(false)
   })
 })
 

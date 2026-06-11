@@ -134,12 +134,20 @@ refutation; and verifiers re-derive from fresh evidence, not from the claim's
 author. A cap never destroys evidence either: claims a cap cuts are kept too,
 just flagged differently (see the toolkit vocabulary below).
 
-**Toolkit:** `adversarialVerification(rt, { claims, renderClaim, votes, refuteThreshold, lenses })`.
+**Toolkit:** `adversarialVerification(rt, { claims, renderClaim, votes, refuteThreshold, lenses, votesPerClaim })`.
 The default model is `BEST_MODEL` (`'fable'`, exported by
 `@workflow-toolbox/runtime`) — verification quality is model-sensitive, and
 explicitly passing a weaker model warns. Optional `lenses` give one distinct angle per vote
 (e.g. `['correctness', 'security', 'does-it-reproduce']`) so a claim that fails
-in more than one way is caught.
+in more than one way is caught. Optional `votesPerClaim` (`(claim) => number`,
+integer ≥ 1, validated for every claim before anything spawns) scales the vote
+count per claim so low-stakes claims spend fewer verifiers — e.g.
+severity-aware review: `(f) => f.severity === 'low' ? 1 : 3`. It overrides
+`votes` per claim, and the refute threshold is clamped per claim to
+`min(refuteThreshold, claimVotes)`, so a 1-vote claim is decided by its single
+refute-first vote. `lenses` and `votesPerClaim` are mutually exclusive —
+lenses need one fixed vote count (one lens per vote); pick one or the other
+(additive, semver-minor change, ships in `@workflow-toolbox/patterns` 0.5.0).
 
 The toolkit's claim-level vocabulary (the exported `ClaimVerdict` type) has
 five values: `'confirmed' | 'partially-confirmed' | 'refuted' | 'unverifiable'

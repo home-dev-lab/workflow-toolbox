@@ -52,7 +52,7 @@ export interface AdversarialVerificationOptions<TClaim> {
   claims: readonly TClaim[]
   renderClaim: (claim: TClaim) => string
   votes?: number           // default 3, must be >= 1
-  refuteThreshold?: number // default 2, must be >= 1 and <= votes
+  refuteThreshold?: number // default 2, must be >= 1; must be <= votes unless votesPerClaim is set (then it is clamped per claim instead)
   /** Optional perspective diversity: one lens per vote (length MUST === votes).
    *  A claim can fail in more than one way — distinct lenses catch failure
    *  modes plain redundancy can't, e.g. for a code-review finding:
@@ -66,8 +66,11 @@ export interface AdversarialVerificationOptions<TClaim> {
    *  claim, validated for ALL claims synchronously at entry (nothing spawns
    *  on a bad mapping). Overrides `votes` per claim; the refute threshold is
    *  clamped per claim to `min(refuteThreshold, claimVotes)`, so a 1-vote
-   *  claim is decided by its single vote. Cannot be combined with `lenses`
-   *  (lenses require one fixed vote count). */
+   *  claim is decided by its single vote. Because the scalar `votes` is fully
+   *  overridden, `refuteThreshold` is NOT validated against it when this
+   *  option is set — a mapping may exceed `votes` (e.g. `() => 5` with the
+   *  default of 3). Cannot be combined with `lenses` (lenses require one
+   *  fixed vote count). */
   votesPerClaim?: (claim: TClaim) => number
   model?: ModelAlias       // default BEST_MODEL ('fable')
   phase?: string
@@ -171,7 +174,11 @@ export async function adversarialVerification<TClaim>(
     )
   }
 
-  if (refuteThreshold > votesOpt) {
+  // With votesPerClaim the scalar `votes` is fully overridden per claim and
+  // the threshold is clamped per claim (min(refuteThreshold, claimVotes)), so
+  // comparing against the scalar would spuriously reject valid configs (e.g.
+  // votesPerClaim: () => 5 with refuteThreshold: 4 and the default votes of 3).
+  if (votesPerClaim === undefined && refuteThreshold > votesOpt) {
     throw new Error(
       `adversarialVerification: refuteThreshold (${refuteThreshold}) must not be > votes (${votesOpt})`,
     )
