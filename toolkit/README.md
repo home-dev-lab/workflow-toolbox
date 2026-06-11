@@ -290,7 +290,8 @@ spawns on a bad mapping). The refute threshold is clamped per claim to
 `min(refuteThreshold, claimVotes)`, so a 1-vote claim is decided by its single
 refute-first vote. Cannot be combined with `lenses` (one lens per vote needs a
 fixed count). `dev-review-fix` uses it to spend 1 vote on `low` findings and
-keep the 2-of-3 quorum on `medium`/`high`.
+keep the 2-of-3 quorum on `medium`/`high` (additive, semver-minor; ships in
+`@workflow-toolbox/patterns` 0.5.0 together with `relativizeUnder`).
 
 ## Trust no agent's self-report
 
