@@ -434,7 +434,7 @@ function makeWtRuntime(overrides?: {
       }
       if (p.includes('verify this is a git repository')) {
         if (overrides?.setup) return overrides.setup(prompt)
-        return { isGitRepo: true, headSha: 'base000', note: 'git repo confirmed' }
+        return { isGitRepo: true, headSha: 'base000', gitRoot: '/repo', note: 'git repo confirmed' }
       }
       if (p.includes('commit the task changes on its task branch')) {
         if (overrides?.finalize) return overrides.finalize(prompt)
@@ -581,6 +581,27 @@ describe('dev-implement worktree happy path (two waves)', () => {
     expect(t2Red).toBeUndefined()
     // T3 depends on T2 → skipped.
     expect(result.tasks.find((t: { id: string }) => t.id === 'T3')!.status).toBe('skipped')
+  })
+
+  it('maps a sub-directory projectDir into the worktree (gitRoot-relative)', async () => {
+    // projectDir is a SUBDIRECTORY of the git root (monorepo layout): the
+    // worktree checks out the WHOLE repo, so the TDD workdir must be the
+    // worktree path PLUS the projectDir-relative suffix — and the default
+    // worktree root must be a sibling of the GIT ROOT (a <projectDir>-worktrees
+    // sibling would land INSIDE the repo and pollute git status).
+    const artifact = { ...WT_ARTIFACT, context: { ...WT_ARTIFACT.context, projectDir: '/repo/toolkit' } }
+    const rt = makeWtRuntime()
+    const result = await wf.run(rt, JSON.stringify({ artifact, mutation: 'worktree' }))
+    expect(result.succeeded).toBe(3)
+    // Worktrees still live as a sibling of the GIT ROOT...
+    const create = rt.calls.find((c) => c.prompt.includes('create the isolated git worktrees'))
+    expect(create?.prompt).toContain('git worktree add /repo-worktrees/T1')
+    // ...but the TDD stages work from the mapped subdirectory inside it.
+    const t1Red = rt.calls.find((c) => c.prompt.includes('Write the failing tests first') && c.prompt.includes('T1'))
+    expect(t1Red?.prompt).toContain('Work from directory: /repo-worktrees/T1/toolkit')
+    // Merge/integration still run from the MAIN projectDir.
+    const integ = rt.calls.find((c) => c.prompt.includes('verify the integrated main tree'))
+    expect(integ?.prompt).toContain('from /repo/toolkit')
   })
 
   it('honors a worktreeRoot override', async () => {
