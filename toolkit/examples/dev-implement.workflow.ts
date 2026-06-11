@@ -155,16 +155,20 @@ type CheckResult = FromSchema<typeof CHECK_RESULT_SCHEMA>
 
 // ---- Worktree-mode schemas (all evidence-bearing — never bare booleans) ----
 
-// Setup agent: git availability + the base sha (display/forensics only; the
-// revert target is each merge's OWN preMergeSha, never this base sha).
+// Setup agent: git availability, the base sha (display/forensics only; the
+// revert target is each merge's OWN preMergeSha, never this base sha) and the
+// git ROOT — projectDir may be a subdirectory of the repository (monorepo),
+// and both the default worktree location and the in-worktree workdir mapping
+// derive from the root, not from projectDir.
 const SETUP_RESULT_SCHEMA = {
   type: 'object',
   properties: {
     isGitRepo: { type: 'boolean' },
     headSha: { type: 'string' },
+    gitRoot: { type: 'string' },
     note: { type: 'string' },
   },
-  required: ['isGitRepo', 'headSha', 'note'],
+  required: ['isGitRepo', 'headSha', 'gitRoot', 'note'],
   additionalProperties: false,
 } as const satisfies JsonSchema
 
@@ -887,8 +891,6 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
   const { artifact, maxIterationsPerTask, worktreeSetupCommand, worktreeRoot, signCommits } = input
   const ctx = artifact.context
 
-  const wtRoot = worktreeRoot ?? `${ctx.projectDir}-worktrees`
-  const wtPath = (id: string): string => `${wtRoot}/${id}`
   const wtBranch = (id: string): string => `wt-task/${id}`
   // Machine commits are unsigned by default: a locked signing agent mid-run
   // would kill merges opaquely; the operator owns/squashes the final history.
@@ -903,8 +905,8 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
     `You are the environment setup agent for a worktree-mode dev-implement run. ` +
     `First verify this is a git repository: from ${ctx.projectDir} run ` +
     `\`git rev-parse --is-inside-work-tree\`, then capture the current HEAD with ` +
-    `\`git rev-parse HEAD\`.\n` +
-    `Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "note": "<what you saw>" }`,
+    `\`git rev-parse HEAD\` and the repository root with \`git rev-parse --show-toplevel\`.\n` +
+    `Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<absolute path or empty>", "note": "<what you saw>" }`,
     { schema: SETUP_RESULT_SCHEMA, label: 'dev-implement:setup', phase: 'Setup' },
   )
   if (setup === null || !setup.isGitRepo) {
@@ -926,6 +928,18 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
     }))
     return { goal: artifact.goal, tasks: reportTasks, ...tally(reportTasks), stats, warnings }
   }
+
+  // Worktree geometry — derived from the GIT ROOT, not projectDir: a worktree
+  // checks out the WHOLE repository, so when projectDir is a subdirectory
+  // (monorepo layout) the TDD workdir is the worktree path PLUS the
+  // projectDir-relative suffix, and the default worktree root must be a
+  // sibling of the git root (a <projectDir>-worktrees sibling would land
+  // INSIDE the repository and pollute git status).
+  const gitRoot = setup.gitRoot.trim() === '' ? ctx.projectDir : setup.gitRoot
+  const projectSub = ctx.projectDir.startsWith(gitRoot) ? ctx.projectDir.slice(gitRoot.length) : ''
+  const wtRoot = worktreeRoot ?? `${gitRoot}-worktrees`
+  const wtPath = (id: string): string => `${wtRoot}/${id}`
+  const taskWorkdir = (id: string): string => `${wtPath(id)}${projectSub}`
 
   const statusById = new Map<string, TaskStatus>()
   const reportTasks: ReportTask[] = []
@@ -1019,7 +1033,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
         if (worktreeSetupCommand !== null) {
           const prep = await rt.agent<PrepareResult>(
             `You are the worktree preparation agent — prepare the task worktree for ${task.id}: run this ` +
-            `VERBATIM setup command with ${wtPath(task.id)} as the working directory (fresh worktrees ` +
+            `VERBATIM setup command with ${taskWorkdir(task.id)} as the working directory (fresh worktrees ` +
             `lack installed dependencies; this makes the test command runnable):\n${worktreeSetupCommand}\n` +
             `Return { "ok": true|false, "note": "<what happened>" }`,
             { schema: PREPARE_RESULT_SCHEMA, label: `dev-implement:prepare:${task.id}`, phase: 'Setup' },
@@ -1030,7 +1044,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
         }
 
         const outcome = await runTaskTddLoop(
-          rt, artifact, task, wtPath(task.id), maxIterationsPerTask, warnings, stats,
+          rt, artifact, task, taskWorkdir(task.id), maxIterationsPerTask, warnings, stats,
         )
         if (!outcome.green) return { kind: 'tdd-failed', outcome }
 

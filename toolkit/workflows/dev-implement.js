@@ -267,9 +267,10 @@ var __wt = (() => {
     properties: {
       isGitRepo: { type: "boolean" },
       headSha: { type: "string" },
+      gitRoot: { type: "string" },
       note: { type: "string" }
     },
-    required: ["isGitRepo", "headSha", "note"],
+    required: ["isGitRepo", "headSha", "gitRoot", "note"],
     additionalProperties: false
   };
   var WT_CREATE_SCHEMA = {
@@ -741,14 +742,12 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
     const stats = {};
     const { artifact, maxIterationsPerTask, worktreeSetupCommand, worktreeRoot, signCommits } = input;
     const ctx = artifact.context;
-    const wtRoot = worktreeRoot ?? `${ctx.projectDir}-worktrees`;
-    const wtPath = (id) => `${wtRoot}/${id}`;
     const wtBranch = (id) => `wt-task/${id}`;
     const signFlag = signCommits ? "" : "-c commit.gpgsign=false ";
     rt.phase("Setup");
     const setup = await rt.agent(
-      `You are the environment setup agent for a worktree-mode dev-implement run. First verify this is a git repository: from ${ctx.projectDir} run \`git rev-parse --is-inside-work-tree\`, then capture the current HEAD with \`git rev-parse HEAD\`.
-Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "note": "<what you saw>" }`,
+      `You are the environment setup agent for a worktree-mode dev-implement run. First verify this is a git repository: from ${ctx.projectDir} run \`git rev-parse --is-inside-work-tree\`, then capture the current HEAD with \`git rev-parse HEAD\` and the repository root with \`git rev-parse --show-toplevel\`.
+Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<absolute path or empty>", "note": "<what you saw>" }`,
       { schema: SETUP_RESULT_SCHEMA, label: "dev-implement:setup", phase: "Setup" }
     );
     if (setup === null || !setup.isGitRepo) {
@@ -768,6 +767,11 @@ Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "note": "<what yo
       }));
       return { goal: artifact.goal, tasks: reportTasks2, ...tally(reportTasks2), stats, warnings };
     }
+    const gitRoot = setup.gitRoot.trim() === "" ? ctx.projectDir : setup.gitRoot;
+    const projectSub = ctx.projectDir.startsWith(gitRoot) ? ctx.projectDir.slice(gitRoot.length) : "";
+    const wtRoot = worktreeRoot ?? `${gitRoot}-worktrees`;
+    const wtPath = (id) => `${wtRoot}/${id}`;
+    const taskWorkdir = (id) => `${wtPath(id)}${projectSub}`;
     const statusById = /* @__PURE__ */ new Map();
     const reportTasks = [];
     const merged = [];
@@ -832,7 +836,7 @@ Return { "created": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
         ready.map((task) => async () => {
           if (worktreeSetupCommand !== null) {
             const prep = await rt.agent(
-              `You are the worktree preparation agent \u2014 prepare the task worktree for ${task.id}: run this VERBATIM setup command with ${wtPath(task.id)} as the working directory (fresh worktrees lack installed dependencies; this makes the test command runnable):
+              `You are the worktree preparation agent \u2014 prepare the task worktree for ${task.id}: run this VERBATIM setup command with ${taskWorkdir(task.id)} as the working directory (fresh worktrees lack installed dependencies; this makes the test command runnable):
 ${worktreeSetupCommand}
 Return { "ok": true|false, "note": "<what happened>" }`,
               { schema: PREPARE_RESULT_SCHEMA, label: `dev-implement:prepare:${task.id}`, phase: "Setup" }
@@ -845,7 +849,7 @@ Return { "ok": true|false, "note": "<what happened>" }`,
             rt,
             artifact,
             task,
-            wtPath(task.id),
+            taskWorkdir(task.id),
             maxIterationsPerTask,
             warnings,
             stats
