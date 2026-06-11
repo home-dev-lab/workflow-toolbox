@@ -361,7 +361,10 @@ In-repo adopter: dev-review-fix routes its consolidation agent (a mechanical
 dedup/merge, ~44k tokens measured) to `'sonnet'` — safe because the merge is
 triple-netted (in-code concat fallback, integrity guards, downstream
 adversarial verification of every finding); reviewers, verifiers, fixer and
-checker stay untiered.
+checker stay untiered. Its other cost lever is adaptive dimensions: a
+docs-only `changedFiles` set defaults to two reviewers instead of four
+(deterministic extension allowlist, loudly warned, explicit `dimensions`
+always wins).
 
 ## Auditing a run (`pnpm wt:report`)
 

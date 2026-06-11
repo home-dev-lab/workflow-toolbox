@@ -158,6 +158,15 @@ Optional `dev-full` knobs: `maxRefutedRatio` (default 0.5),
 `maxIterationsPerTask`, `maxFixIterations`, `dimensions` — unset knobs are
 omitted so each child workflow's own default stays canonical.
 
+Note on the review child's default: with `dimensions` unset and a
+`changedFiles` diff source, `dev-review-fix` adapts a **docs-only** change set
+(every file has a documentation extension) down to two reviewers
+(`correctness`, `conventions`) — there is no executable surface for the
+`security` and `tests` reviewers on pure docs. The adaptation is deterministic
+(extension allowlist, in code), loudly warned in the report (and relayed by
+`dev-full`, so no-git autonomous runs surface it), and an explicit
+`dimensions` array always wins.
+
 ## Operational lessons (learned the honest way)
 
 - **Trust boundary.** `dev-full` has *no human gate between the goal and

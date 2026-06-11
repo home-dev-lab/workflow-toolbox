@@ -231,6 +231,84 @@ describe('dev-review-fix parseInput', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Test: adaptive dimensions — a docs-only changedFiles set spends 2 reviewers
+// (correctness + conventions) instead of the default four; the adaptation is
+// deterministic (extension allowlist, in code) and loudly warned. It NEVER
+// fires on an explicit dimensions array or in diffCommand mode.
+// ---------------------------------------------------------------------------
+
+const DOCS_ONLY_INPUT = {
+  projectDir: '.',
+  testCommand: 'pnpm test',
+  changedFiles: ['README.md', 'docs/guide.MDX'],
+}
+
+describe('dev-review-fix adaptive dimensions', () => {
+  it('spends 2 reviewers (correctness, conventions) on a docs-only change set and warns', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify(DOCS_ONLY_INPUT))
+
+    const reviewerLabels = rt.calls
+      .map((c) => c.opts?.label ?? '')
+      .filter((l) => l.startsWith('dev-review-fix:review:'))
+    expect(reviewerLabels).toEqual([
+      'dev-review-fix:review:correctness',
+      'dev-review-fix:review:conventions',
+    ])
+    expect(result.warnings.some((w: string) => w.includes('docs-only'))).toBe(true)
+  })
+
+  it('does NOT adapt a mixed change set (one code file is enough)', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(
+      rt,
+      JSON.stringify({ ...DOCS_ONLY_INPUT, changedFiles: ['README.md', 'src/a.ts'] }),
+    )
+    const reviewers = rt.calls.filter((c) => c.opts?.label?.startsWith('dev-review-fix:review:'))
+    expect(reviewers.length).toBe(4)
+    expect(result.warnings.some((w: string) => w.includes('docs-only'))).toBe(false)
+  })
+
+  it('respects an explicit dimensions array verbatim even when the set is docs-only', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(
+      rt,
+      JSON.stringify({ ...DOCS_ONLY_INPUT, dimensions: ['security'] }),
+    )
+    const reviewerLabels = rt.calls
+      .map((c) => c.opts?.label ?? '')
+      .filter((l) => l.startsWith('dev-review-fix:review:'))
+    expect(reviewerLabels).toEqual(['dev-review-fix:review:security'])
+    expect(result.warnings.some((w: string) => w.includes('docs-only'))).toBe(false)
+  })
+
+  it('never treats extension-less or dotfile-only names as documentation', async () => {
+    // Makefile (no dotted extension) and a leading-dot name must NOT count as
+    // docs — the extension lives after a non-initial dot in the basename.
+    const rt = makeRuntime()
+    await wf.run(
+      rt,
+      JSON.stringify({ ...DOCS_ONLY_INPUT, changedFiles: ['Makefile', '.md', 'docs/conf.py'] }),
+    )
+    const reviewers = rt.calls.filter((c) => c.opts?.label?.startsWith('dev-review-fix:review:'))
+    expect(reviewers.length).toBe(4)
+  })
+
+  it('matches documentation extensions case-insensitively across the allowlist', async () => {
+    const rt = makeRuntime()
+    await wf.run(
+      rt,
+      JSON.stringify({
+        ...DOCS_ONLY_INPUT,
+        changedFiles: ['NOTES.TXT', 'spec.rst', 'guide.adoc', 'intro.markdown'],
+      }),
+    )
+    const reviewers = rt.calls.filter((c) => c.opts?.label?.startsWith('dev-review-fix:review:'))
+    expect(reviewers.length).toBe(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Test: happy path — review, verify, fix, report
 // ---------------------------------------------------------------------------
 
