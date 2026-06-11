@@ -81,6 +81,51 @@ const PLAN_SCHEMA: JsonSchema = {
 // Implementation
 // ---------------------------------------------------------------------------
 
+/**
+ * Orchestrator-workers: a planner agent decomposes the task into subtasks,
+ * workers run them via rt.parallel, a required synthesis agent merges the
+ * non-null worker results.
+ *
+ * Config errors (empty planPrompt, maxSubtasks < 1) throw synchronously at
+ * entry; agent failures degrade — they warn, never throw out. Unlike the
+ * other six patterns, planPrompt is a plain string (the subtasks are not
+ * known yet, so there is nothing to template over). The envelope is the only
+ * extended one: workerResults carries the surviving per-worker outputs in
+ * subtask order, on top of the nullable synthesized value (null when the
+ * planner failed, every worker failed, or synthesis returned null).
+ *
+ * @example
+ * ```ts
+ * import { planAndExecute } from '@workflow-toolbox/patterns'
+ * import { FakeRuntime } from '@workflow-toolbox/runtime'
+ *
+ * // FIFO: plan object first, then one entry per worker, then the synthesis.
+ * const rt = new FakeRuntime({
+ *   responses: [
+ *     { subtasks: [{ description: 'audit src/' }, { description: 'audit docs/' }] },
+ *     'src/ is consistent',
+ *     'docs/ is consistent',
+ *     'no inconsistencies found',
+ *   ],
+ * })
+ *
+ * const result = await planAndExecute(rt, {
+ *   planPrompt: 'Create a plan for the task',
+ *   workerPrompt: (subtask, i) => `execute subtask ${i}: ${subtask.description}`,
+ *   synthesisPrompt: (results) => `synthesize: ${results.join(', ')}`,
+ * })
+ *
+ * if (result.value === null) {
+ *   rt.log('planner, all workers, or synthesis failed — see warnings')
+ * } else {
+ *   rt.log(`synthesis: ${result.value}`) // 'no inconsistencies found'
+ * }
+ * rt.log(`workers: ${result.workerResults.join(' | ')}`) // non-null results, subtask order
+ * const { itemsIn, itemsOut, agentsSpawned, dropped, truncated } = result.stats
+ * rt.log(`planned ${itemsIn}, completed ${itemsOut}, spawned ${agentsSpawned}, dropped ${dropped}, truncated ${truncated}`)
+ * for (const w of result.warnings) rt.log(w)
+ * ```
+ */
 export async function planAndExecute<TWork = string, TOut = string>(
   rt: WorkflowRuntime,
   options: PlanAndExecuteOptions<TWork>,

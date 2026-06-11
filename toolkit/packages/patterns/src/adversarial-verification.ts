@@ -86,6 +86,41 @@ const VERIFIER_SCHEMA: JsonSchema = {
 // Implementation
 // ---------------------------------------------------------------------------
 
+/** Refute-first claim verification: each claim gets `votes` parallel verifier
+ *  agents instructed to actively disprove it; the verdict is tallied in code
+ *  (deterministic — never trust the model to count votes). Claims are NEVER
+ *  dropped: itemsIn === itemsOut always; cap-truncated claims come back as
+ *  'unverified-by-cap' with empty votes.
+ *
+ *  @example
+ *  ```ts
+ *  import { FakeRuntime } from '@workflow-toolbox/runtime'
+ *  import { adversarialVerification } from '@workflow-toolbox/patterns'
+ *
+ *  // 1 claim × 3 votes = 3 verifier agents (responses consumed in call order)
+ *  const rt = new FakeRuntime({
+ *    responses: [
+ *      { verdict: 'confirmed', reason: 'ok' },
+ *      { verdict: 'confirmed', reason: 'ok' },
+ *      { verdict: 'refuted', reason: 'counterexample' },
+ *    ],
+ *  })
+ *
+ *  const result = await adversarialVerification(rt, {
+ *    claims: ['the cache is invalidated on write'],
+ *    renderClaim: (claim) => claim,
+ *    votes: 3,
+ *    refuteThreshold: 2,
+ *  })
+ *
+ *  // 1 refutation < threshold 2, not unanimous → 'partially-confirmed'
+ *  for (const { claim, verdict, votes } of result.value) {
+ *    rt.log(`${verdict}: ${claim} (${votes.filter((v) => v !== null).length} votes in)`)
+ *  }
+ *  rt.log(`verifiers spawned: ${result.stats.agentsSpawned}`) // claims × votes = 3
+ *  for (const warning of result.warnings) rt.log(warning)
+ *  ```
+ */
 export async function adversarialVerification<TClaim>(
   rt: WorkflowRuntime,
   options: AdversarialVerificationOptions<TClaim>,

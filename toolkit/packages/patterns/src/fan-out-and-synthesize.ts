@@ -39,6 +39,41 @@ export interface FanOutAndSynthesizeOptions<TTask, TPart> {
 // Implementation
 // ---------------------------------------------------------------------------
 
+/**
+ * Fan tasks out to parallel agents, barrier on all parts, then run one
+ * synthesis agent over the surviving parts.
+ *
+ * Config errors throw synchronously at entry (empty `tasks`, `maxItems` < 1).
+ * Agent failures degrade, never throw: null parts are dropped (counted in
+ * `stats.dropped` + warned). `value` is NULLABLE — null when every part
+ * dropped (synthesis skipped) or when the synthesis agent itself returns
+ * null; consumers must branch on it.
+ *
+ * @example
+ * ```ts
+ * import { fanOutAndSynthesize } from '@workflow-toolbox/patterns'
+ * import { FakeRuntime } from '@workflow-toolbox/runtime'
+ *
+ * const rt = new FakeRuntime({ responses: ['part-a', 'part-b', 'part-c', 'summary'] })
+ *
+ * const options = {
+ *   tasks: ['task-0', 'task-1', 'task-2'],
+ *   taskPrompt: (task: string, i: number) => `process task ${i}: ${task}`,
+ *   synthesisPrompt: (parts: ReadonlyArray<string>) => `synthesize: ${parts.join(', ')}`,
+ * }
+ *
+ * const result = await fanOutAndSynthesize(rt, options)
+ *
+ * if (result.value === null) {
+ *   // every part dropped (synthesis skipped) or synthesis returned null
+ *   rt.log(`no synthesis: ${result.warnings.join('; ')}`)
+ * } else {
+ *   const { itemsIn, itemsOut, agentsSpawned, dropped, truncated } = result.stats
+ *   rt.log(`synthesized ${itemsOut}/${itemsIn} parts (${agentsSpawned} agents, ${dropped} dropped, ${truncated} truncated)`)
+ *   rt.log(result.value)
+ * }
+ * ```
+ */
 export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
   rt: WorkflowRuntime,
   options: FanOutAndSynthesizeOptions<TTask, TPart>,

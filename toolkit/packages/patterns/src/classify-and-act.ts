@@ -38,6 +38,37 @@ export interface ClassifyAndActOptions<TIn> {
 // Implementation
 // ---------------------------------------------------------------------------
 
+/**
+ * Anthropic "routing" pattern: classify each item into one of `categories`
+ * (enum-constrained control schema), then run the matching `actions[category]`
+ * agent on it.
+ *
+ * Config errors throw synchronously at entry (empty/duplicate categories,
+ * category without an action, maxItems < 1). Agent failures never throw —
+ * failed items are dropped, counted in `stats.dropped`, and surfaced as
+ * warnings.
+ *
+ * @example
+ * ```ts
+ * import { classifyAndAct } from '@workflow-toolbox/patterns'
+ *
+ * const result = await classifyAndAct(rt, {
+ *   items: ['item-0', 'item-1'],
+ *   categories: ['docs', 'bug', 'feature'],
+ *   classifyPrompt: (item) => `classify this change: ${item}`,
+ *   actions: {
+ *     docs: { prompt: (item) => `update the docs for: ${item}` },
+ *     bug: { prompt: (item) => `write a bug report for: ${item}` },
+ *     feature: { prompt: (item) => `draft a feature spec for: ${item}` },
+ *   },
+ * })
+ *
+ * for (const { item, category, result: out } of result.value) {
+ *   rt.log(`${item} → ${category}: ${out}`)
+ * }
+ * rt.log(`dropped ${result.stats.dropped} of ${result.stats.itemsIn}; warnings: ${result.warnings.length}`)
+ * ```
+ */
 export async function classifyAndAct<TIn, TOut = string>(
   rt: WorkflowRuntime,
   options: ClassifyAndActOptions<TIn>,
