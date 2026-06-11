@@ -52,13 +52,16 @@ machine that ran them):
 | `wf_0f95b14d-9e9` | `dev-implement` | The remaining docs task, re-run after a human gate edit | 3 | 159 957 | 6 min |
 | `wf_e77b638d-e77` | `dev-review-fix` | Reviewed the diff of **its own shipping commit** and fixed 11/11 confirmed findings on itself — including adding its own `suiteGreen` honesty field | 40 | 2 016 310 | 26 min |
 | `wf_dcff9070-ee0` | `dev-full` | End-to-end, zero human gates: made `loopUntilDone` count body-spawned agents — plan 3 tasks/0 refuted → implement 3/3 → review suite green, 2 findings confirmed-and-fixed + **1 refuted** by adversarial verification | 42 | 2 353 928 | 44 min |
+| `wf_ecbadacb-ba3` | `dev-plan` | Planned the TSDoc `@example` documentation of all seven patterns: 7 **independent** tasks (one file each, empty `dependsOn` — explicitly shaped for parallel worktrees), 0 refuted | 33 | 1 853 922 | 14 min |
+| `wf_29f82471-b7d` | `dev-implement` (worktree) | The worktree-mode proof: ONE parallel wave of 7 worktrees (`wt-task/T1..T7`, `pnpm install` each) → 7 sequential merges, integration check after every merge — **7/7 succeeded first-iteration, 0 conflicts, 0 integration failures**, all worktrees and task branches cleaned | 52 | 2 250 150 | 20 min |
 
-Totals: **113 agents, ≈ 6.1 M tokens, ≈ 1 h 47 min** of wall-clock automation —
-for one published minor feature, one behavior change, and two self-review
-passes whose fixes all landed. Every run ended with the full gate suite green
-(tests, typecheck, lint) verified outside the workflow before committing.
+Totals: **198 agents, ≈ 10.2 M tokens, ≈ 2 h 20 min** of wall-clock automation —
+for one published minor feature, one behavior change, two self-review passes
+whose fixes all landed, and the TSDoc documentation of all seven patterns.
+Every run ended with the full gate suite green (tests, typecheck, lint)
+verified outside the workflow before committing.
 
-Two details worth pausing on:
+Three details worth pausing on:
 
 - **Refutations are real.** The verify stages do not rubber-stamp: the critique
   dropped a duplicate planned task, and the final `dev-full` review refuted one
@@ -67,6 +70,13 @@ Two details worth pausing on:
 - **The pipeline catches its own omissions.** The `dev-full` run's docs task
   updated two documentation surfaces but missed a third (the toolkit README);
   the review stage of the *same run* flagged it and the fix loop repaired it.
+- **The human gate earns its place.** In the worktree dogfood, the (excellent)
+  PlanArtifact still carried two real defects the split-mode gate caught before
+  any mutation: a non-verbatim `testCommand` (`cd toolkit && …` from a
+  directory already inside `toolkit/`) and **absolute file paths pointing at
+  the main repository** — obedient agents would have edited the main tree
+  instead of their isolated worktrees. Edit the artifact; that is what the
+  gate is for.
 
 ## Worktree mode (`dev-implement`, parallel waves)
 
