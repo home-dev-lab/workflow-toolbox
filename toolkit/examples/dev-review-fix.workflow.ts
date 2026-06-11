@@ -98,6 +98,10 @@ export interface DevReviewFixInput {
   changedFiles: string[] | null
   /** Review dimensions, one reviewer each. */
   dimensions: string[]
+  /** Non-null when the default dimensions were adapted in code (docs-only
+   *  change set) — the message is warned at run start so the reduced review
+   *  coverage is visible in the journal and the report. */
+  adaptationNote: string | null
   /** Fix loop bound. */
   maxFixIterations: number
 }
@@ -271,6 +275,34 @@ function optionalString(obj: Record<string, unknown>, key: string): string {
   return v
 }
 
+// Adaptive dimensions — docs-only detection.
+//
+// A pure-documentation change set has no executable surface (nothing for a
+// 'security' reviewer) and no behavior to test (nothing for a 'tests'
+// reviewer), so the default four dimensions waste two reviewer agents. The
+// classification is deliberately DETERMINISTIC and CONSERVATIVE because a
+// misclassification silently skips review coverage that nothing downstream
+// can recover (verification only checks findings that WERE reported):
+//   - extension allowlist only — a file counts as documentation iff its
+//     basename has a non-initial dot and the part after the last dot is in
+//     DOC_EXTENSIONS. Makefile, README, dotfiles, docs/conf.py never match.
+//   - changedFiles mode only — diffCommand is an opaque string the sandbox
+//     cannot run, and classifying it via an agent would put an unverified
+//     gate in front of review coverage. Do NOT add agent classification.
+//   - default path only — an explicit "dimensions" array always wins.
+//   - no size-based rule — file COUNT says nothing about risk (one small
+//     file can be auth code), so "small diff" never reduces coverage.
+const DOC_EXTENSIONS = new Set(['md', 'mdx', 'markdown', 'rst', 'adoc', 'txt'])
+
+function isDocsOnly(files: string[]): boolean {
+  return files.every((f) => {
+    const basename = f.slice(f.lastIndexOf('/') + 1)
+    const dot = basename.lastIndexOf('.')
+    if (dot <= 0) return false
+    return DOC_EXTENSIONS.has(basename.slice(dot + 1).toLowerCase())
+  })
+}
+
 function parseInput(raw: unknown): DevReviewFixInput {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error(
@@ -327,6 +359,7 @@ function parseInput(raw: unknown): DevReviewFixInput {
   }
 
   let dimensions = ['correctness', 'security', 'conventions', 'tests']
+  let adaptationNote: string | null = null
   if (obj['dimensions'] !== undefined) {
     const d = obj['dimensions']
     if (!Array.isArray(d) || d.length === 0 || d.some((s) => typeof s !== 'string' || s.trim().length === 0)) {
@@ -336,6 +369,13 @@ function parseInput(raw: unknown): DevReviewFixInput {
       )
     }
     dimensions = d as string[]
+  } else if (changedFiles !== null && isDocsOnly(changedFiles)) {
+    dimensions = ['correctness', 'conventions']
+    adaptationNote =
+      `dev-review-fix: docs-only change set (${changedFiles.length} file(s), all documentation ` +
+      'extensions) — adapted the default dimensions to ["correctness", "conventions"]; the ' +
+      'security and tests reviewers are skipped (no executable surface). Pass an explicit ' +
+      '"dimensions" array to override.'
   }
 
   let maxFixIterations = 4
@@ -356,6 +396,7 @@ function parseInput(raw: unknown): DevReviewFixInput {
     diffCommand,
     changedFiles,
     dimensions,
+    adaptationNote,
     maxFixIterations,
   }
 }
@@ -406,6 +447,10 @@ const LOCATION_CAVEAT =
 async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevReviewFixOutput> {
   const warnings: string[] = []
   const stats: Record<string, PatternStats> = {}
+
+  // Reduced review coverage must be loud: in the narrator, the journal AND the
+  // report (dev-full relays child warnings, so autonomous runs surface it too).
+  if (input.adaptationNote !== null) warn(rt, warnings, input.adaptationNote)
 
   // -------------------------------------------------------------------------
   // Phase 'Review' — hand-rolled fan-out + consolidation with in-code fallback

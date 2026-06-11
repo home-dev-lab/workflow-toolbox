@@ -527,6 +527,15 @@ ${renderClaim(claim)}`;
     }
     return v;
   }
+  var DOC_EXTENSIONS = /* @__PURE__ */ new Set(["md", "mdx", "markdown", "rst", "adoc", "txt"]);
+  function isDocsOnly(files) {
+    return files.every((f) => {
+      const basename = f.slice(f.lastIndexOf("/") + 1);
+      const dot = basename.lastIndexOf(".");
+      if (dot <= 0) return false;
+      return DOC_EXTENSIONS.has(basename.slice(dot + 1).toLowerCase());
+    });
+  }
   function parseInput(raw) {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
       throw new Error(
@@ -566,6 +575,7 @@ ${renderClaim(claim)}`;
       changedFiles = cf;
     }
     let dimensions = ["correctness", "security", "conventions", "tests"];
+    let adaptationNote = null;
     if (obj["dimensions"] !== void 0) {
       const d = obj["dimensions"];
       if (!Array.isArray(d) || d.length === 0 || d.some((s) => typeof s !== "string" || s.trim().length === 0)) {
@@ -574,6 +584,9 @@ ${renderClaim(claim)}`;
         );
       }
       dimensions = d;
+    } else if (changedFiles !== null && isDocsOnly(changedFiles)) {
+      dimensions = ["correctness", "conventions"];
+      adaptationNote = `dev-review-fix: docs-only change set (${changedFiles.length} file(s), all documentation extensions) \u2014 adapted the default dimensions to ["correctness", "conventions"]; the security and tests reviewers are skipped (no executable surface). Pass an explicit "dimensions" array to override.`;
     }
     let maxFixIterations = 4;
     if (obj["maxFixIterations"] !== void 0) {
@@ -592,6 +605,7 @@ ${renderClaim(claim)}`;
       diffCommand,
       changedFiles,
       dimensions,
+      adaptationNote,
       maxFixIterations
     };
   }
@@ -606,6 +620,7 @@ ${renderClaim(claim)}`;
   async function run(rt, input) {
     const warnings = [];
     const stats = {};
+    if (input.adaptationNote !== null) warn(rt, warnings, input.adaptationNote);
     rt.phase("Review");
     const diffBlock = input.diffCommand !== null ? `Change set: run this command VERBATIM from ${input.projectDir} and read its output \u2014 it prints the diff under review:
 ${input.diffCommand}
