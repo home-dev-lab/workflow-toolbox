@@ -172,7 +172,7 @@ schema field; empty when quoting does not apply). The snippet is embedded in
 the verifier's claim inside explicit `UNTRUSTED` delimiter lines — a
 navigation aid that makes the verifier's first read targeted instead of
 exploratory (verifier cost follows tool-call count), truncated in code at
-3 000 chars. It is never treated as evidence: the verifier must still
+3000 chars. It is never treated as evidence: the verifier must still
 re-derive every finding from the file on disk, and the fixer only sees the
 snippet on its first iteration (the only one whose tree still matches what
 the reviewer quoted) — the checker never does.

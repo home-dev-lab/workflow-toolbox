@@ -831,6 +831,25 @@ Plain text. This is a working note for the final synthesis, not the artifact.`,
     rt.phase("Critique");
     let verifiedTasks = [];
     const rejected = [];
+    const isIsolatedLowRisk = (task) => task.risk === "low" && task.files.length <= 1;
+    const flooredCount = candidateTasks.filter(
+      (t) => t.risk === "low" && !isIsolatedLowRisk(t)
+    ).length;
+    if (flooredCount > 0) {
+      warn(
+        rt,
+        warnings,
+        `${flooredCount} task(s) self-rated risk "low" while touching multiple files \u2014 structurally not an isolated change; keeping the full verification quorum for them`
+      );
+    }
+    const selfRatedLow = candidateTasks.filter((t) => t.risk === "low").length;
+    if (candidateTasks.length >= 4 && selfRatedLow / candidateTasks.length > 0.8) {
+      warn(
+        rt,
+        warnings,
+        `${selfRatedLow} of ${candidateTasks.length} candidate tasks self-rate risk "low" \u2014 an implausibly high fraction; the self-assessed risk gates verification scrutiny, so treat this plan with suspicion`
+      );
+    }
     if (candidateTasks.length > 0) {
       const critiqueResult = await adversarialVerification(rt, {
         claims: candidateTasks,
@@ -847,7 +866,9 @@ IMPORTANT: Do NOT trust this task record. Open the actual files and re-derive:
 Refute the task if any claim is wrong.`,
         // Risk-aware votes: a low-risk task gets 1 refute-first vote; medium/high
         // keep the full 2-of-3 quorum (effectiveThreshold = min(2, claimVotes)).
-        votesPerClaim: (task) => task.risk === "low" ? 1 : 3,
+        // The single-vote path additionally requires the STRUCTURAL isolation
+        // the "low" label claims (single file) — see the floor above.
+        votesPerClaim: (task) => isIsolatedLowRisk(task) ? 1 : 3,
         maxVerifyClaims: 12,
         phase: "Critique"
       });

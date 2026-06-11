@@ -490,6 +490,43 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
   let verifiedTasks: Array<VerifiedClaim<CandidateTask>> = []
   const rejected: RejectedTask[] = []
 
+  // The risk label is SELF-assessed by the very worker whose task it gates
+  // (it decides the verification vote budget below), so the prompt's
+  // "when unsure pick the higher value" cannot be the only guard — a worker
+  // that systematically under-rates (output-length pressure, a weaker session
+  // model, steered by repo content) would quietly halve scrutiny across the
+  // plan. Two deterministic hardenings, mirroring the conservative-classifier
+  // philosophy dev-review-fix applies to docs-only detection:
+  //  - structural floor — a task touching MORE than one file is by definition
+  //    not "an isolated change", whatever the label says; it keeps the full
+  //    quorum (votesPerClaim below).
+  //  - implausibility warning — when >80% of a real plan's tasks self-rate
+  //    "low" (4+ tasks, so one task cannot trip it), the cheap single-vote
+  //    path is probably being gamed; the human should re-read the plan.
+  const isIsolatedLowRisk = (task: CandidateTask): boolean =>
+    task.risk === 'low' && task.files.length <= 1
+  const flooredCount = candidateTasks.filter(
+    (t) => t.risk === 'low' && !isIsolatedLowRisk(t),
+  ).length
+  if (flooredCount > 0) {
+    warn(
+      rt,
+      warnings,
+      `${flooredCount} task(s) self-rated risk "low" while touching multiple files — ` +
+        'structurally not an isolated change; keeping the full verification quorum for them',
+    )
+  }
+  const selfRatedLow = candidateTasks.filter((t) => t.risk === 'low').length
+  if (candidateTasks.length >= 4 && selfRatedLow / candidateTasks.length > 0.8) {
+    warn(
+      rt,
+      warnings,
+      `${selfRatedLow} of ${candidateTasks.length} candidate tasks self-rate risk "low" — ` +
+        'an implausibly high fraction; the self-assessed risk gates verification scrutiny, ' +
+        'so treat this plan with suspicion',
+    )
+  }
+
   if (candidateTasks.length > 0) {
     const critiqueResult = await adversarialVerification<CandidateTask>(rt, {
       claims: candidateTasks,
@@ -506,7 +543,9 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
         `Refute the task if any claim is wrong.`,
       // Risk-aware votes: a low-risk task gets 1 refute-first vote; medium/high
       // keep the full 2-of-3 quorum (effectiveThreshold = min(2, claimVotes)).
-      votesPerClaim: (task) => (task.risk === 'low' ? 1 : 3),
+      // The single-vote path additionally requires the STRUCTURAL isolation
+      // the "low" label claims (single file) — see the floor above.
+      votesPerClaim: (task) => (isIsolatedLowRisk(task) ? 1 : 3),
       maxVerifyClaims: 12,
       phase: 'Critique',
     })

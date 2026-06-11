@@ -939,6 +939,14 @@ Produce a coherent draft plan narrative (plain text) that will feed the final pl
     let verifiedChanges = [];
     const rejectedChanges = [];
     const workerChanges = planResult.workerResults.flatMap((r) => r.changes);
+    const selfRatedLow = workerChanges.filter((c) => c.impact === "low").length;
+    if (workerChanges.length >= 4 && selfRatedLow / workerChanges.length > 0.8) {
+      warn(
+        rt,
+        warnings,
+        `${selfRatedLow} of ${workerChanges.length} change proposals self-rate impact "low" \u2014 an implausibly high fraction; the self-assessed impact gates verification scrutiny, so treat this plan with suspicion`
+      );
+    }
     if (workerChanges.length > 0) {
       const verifyResult = await adversarialVerification(rt, {
         claims: workerChanges,
