@@ -824,3 +824,262 @@ describe('adversarialVerification — refuteThreshold === votes boundary', () =>
     expect(result.value[0]?.verdict).toBe('partially-confirmed')
   })
 })
+
+// ---------------------------------------------------------------------------
+// votesPerClaim — per-claim vote counts (severity-aware votes, F7)
+// ---------------------------------------------------------------------------
+
+describe('adversarialVerification — votesPerClaim mechanics', () => {
+  it('varies the agent count per claim', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['a', 'b'],
+      votesPerClaim: (c) => (c === 'a' ? 1 : 3),
+    }))
+
+    expect(result.stats.agentsSpawned).toBe(4)
+    expect(result.value[0]?.votes).toHaveLength(1)
+    expect(result.value[1]?.votes).toHaveLength(3)
+    const labels = rt.calls.map((c) => c.opts?.label ?? '')
+    expect(labels).toHaveLength(4)
+    expect(labels).toEqual(expect.arrayContaining([
+      'adversarialVerification:verify:0:0',
+      'adversarialVerification:verify:1:0',
+      'adversarialVerification:verify:1:1',
+      'adversarialVerification:verify:1:2',
+    ]))
+  })
+
+  it('falls back to the scalar votes when votesPerClaim is absent', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['a', 'b'],
+      votes: 2,
+    }))
+
+    expect(result.stats.agentsSpawned).toBe(4)
+    for (const verified of result.value) expect(verified.votes).toHaveLength(2)
+  })
+
+  it('is evaluated exactly once per claim', async () => {
+    let evaluations = 0
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    await adversarialVerification(rt, makeOptions({
+      claims: ['a', 'b', 'c'],
+      votesPerClaim: () => {
+        evaluations++
+        return 1
+      },
+    }))
+
+    expect(evaluations).toBe(3)
+  })
+
+  it('keeps trail.length === agentsSpawned with variable votes', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['a', 'b'],
+      votesPerClaim: (c) => (c === 'a' ? 1 : 2),
+    }))
+
+    expect(result.stats.agentsSpawned).toBe(3)
+    expect(result.trail).toHaveLength(3)
+    expect(result.trail.map((r) => r.stage)).toEqual([
+      'adversarialVerification:verify:0:0',
+      'adversarialVerification:verify:1:0',
+      'adversarialVerification:verify:1:1',
+    ])
+  })
+})
+
+describe('adversarialVerification — votesPerClaim validation', () => {
+  it('throws on a non-integer count', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    await expect(adversarialVerification(rt, makeOptions({
+      claims: ['a'],
+      votesPerClaim: () => 1.5,
+    }))).rejects.toThrow(/votesPerClaim.*claims\[0\].*integer >= 1/)
+    expect(rt.agentsSpawned).toBe(0)
+  })
+
+  it('throws on a count < 1', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    await expect(adversarialVerification(rt, makeOptions({
+      claims: ['a'],
+      votesPerClaim: () => 0,
+    }))).rejects.toThrow(/votesPerClaim.*integer >= 1/)
+    expect(rt.agentsSpawned).toBe(0)
+  })
+
+  it('names the offending claim index', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    await expect(adversarialVerification(rt, makeOptions({
+      claims: ['ok', 'bad'],
+      votesPerClaim: (c) => (c === 'ok' ? 3 : 0),
+    }))).rejects.toThrow(/claims\[1\]/)
+    expect(rt.agentsSpawned).toBe(0)
+  })
+
+  it('validates ALL claims before any agent spawns', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    // claims[0] and [1] are valid; only claims[2] is bad — still zero spawns.
+    await expect(adversarialVerification(rt, makeOptions({
+      claims: ['a', 'b', 'bad'],
+      votesPerClaim: (c) => (c === 'bad' ? -1 : 2),
+    }))).rejects.toThrow(/claims\[2\]/)
+    expect(rt.agentsSpawned).toBe(0)
+  })
+
+  it('throws when combined with lenses', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    await expect(adversarialVerification(rt, makeOptions({
+      claims: ['a'],
+      lenses: ['x', 'y', 'z'],
+      votesPerClaim: () => 1,
+    }))).rejects.toThrow(/lenses cannot be combined with votesPerClaim/)
+    expect(rt.agentsSpawned).toBe(0)
+  })
+})
+
+describe('adversarialVerification — 1-vote tally semantics', () => {
+  // effectiveThreshold = min(refuteThreshold=2 default, claimVotes=1) = 1:
+  // the single vote decides; the raw scalar threshold must NOT be used.
+
+  it('single refuted vote → refuted (threshold clamped to the claim votes)', async () => {
+    const rt = new FakeRuntime({ responses: [refutedVote] })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c'],
+      votesPerClaim: () => 1,
+    }))
+
+    expect(result.stats.agentsSpawned).toBe(1)
+    expect(result.value[0]?.verdict).toBe('refuted')
+  })
+
+  it('single confirmed vote → confirmed', async () => {
+    const rt = new FakeRuntime({ responses: [confirmedVote] })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c'],
+      votesPerClaim: () => 1,
+    }))
+
+    expect(result.value[0]?.verdict).toBe('confirmed')
+  })
+
+  it('single partially-confirmed vote → partially-confirmed', async () => {
+    const rt = new FakeRuntime({ responses: [partialVote] })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c'],
+      votesPerClaim: () => 1,
+    }))
+
+    expect(result.value[0]?.verdict).toBe('partially-confirmed')
+  })
+
+  it('single unverifiable vote (non-null) → partially-confirmed', async () => {
+    const rt = new FakeRuntime({ responses: [unverifiableVote] })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c'],
+      votesPerClaim: () => 1,
+    }))
+
+    // Tested but undecided: non-null, not refuted, not all-confirmed.
+    expect(result.value[0]?.verdict).toBe('partially-confirmed')
+  })
+
+  it('single null vote → unverifiable, counted in the all-null warning', async () => {
+    const rt = new FakeRuntime({ onAgent: () => null })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c'],
+      votesPerClaim: () => 1,
+    }))
+
+    expect(result.value[0]?.verdict).toBe('unverifiable')
+    expect(result.stats.dropped).toBe(1)
+    // The all-null detection must compare against the CLAIM's own vote count
+    // (1), not the scalar votes default (3).
+    expect(result.warnings.some((w) => w.includes('left unverifiable'))).toBe(true)
+  })
+})
+
+describe('adversarialVerification — votesPerClaim mixed-count tallies', () => {
+  it('claims with different vote counts tally independently', async () => {
+    // Route votes by label so the assertion is independent of claim
+    // completion order: claim0 (3 votes) gets 2 refuted → refuted;
+    // claim1 (1 vote) gets confirmed → confirmed; claim2 (3 votes) all
+    // confirmed → confirmed.
+    const byLabel: Record<string, VerifierVote> = {
+      'adversarialVerification:verify:0:0': refutedVote,
+      'adversarialVerification:verify:0:1': refutedVote,
+      'adversarialVerification:verify:0:2': confirmedVote,
+      'adversarialVerification:verify:1:0': confirmedVote,
+      'adversarialVerification:verify:2:0': confirmedVote,
+      'adversarialVerification:verify:2:1': confirmedVote,
+      'adversarialVerification:verify:2:2': confirmedVote,
+    }
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => byLabel[opts?.label ?? ''] ?? confirmedVote,
+    })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['kill-me', 'solo', 'fine'],
+      votesPerClaim: (c) => (c === 'solo' ? 1 : 3),
+    }))
+
+    expect(result.stats.agentsSpawned).toBe(7)
+    expect(result.value.map((v) => v.verdict)).toEqual(['refuted', 'confirmed', 'confirmed'])
+  })
+
+  it('default path is unchanged when votesPerClaim is absent (drift guard)', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0', 'c1'],
+    }))
+
+    // Exactly today's defaults: 2 claims × 3 votes, all confirmed.
+    expect(result.stats.agentsSpawned).toBe(6)
+    expect(result.value.map((v) => v.verdict)).toEqual(['confirmed', 'confirmed'])
+    expect(result.warnings).toHaveLength(0)
+    expect(result.trail).toHaveLength(6)
+  })
+})
+
+describe('adversarialVerification — votesPerClaim × maxVerifyClaims', () => {
+  it('is invoked for ALL input claims (incl. cap-cut); counts are used only for kept claims', async () => {
+    const seen: string[] = []
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['k0', 'k1', 't0', 't1'],
+      maxVerifyClaims: 2,
+      votesPerClaim: (c) => {
+        seen.push(c)
+        return c === 'k0' ? 1 : 2
+      },
+    }))
+
+    // Validation is pre-cap: the mapping is checked for every input claim.
+    expect(seen).toEqual(['k0', 'k1', 't0', 't1'])
+    // Spawns only for the kept prefix: k0 (1 vote) + k1 (2 votes).
+    expect(result.stats.agentsSpawned).toBe(3)
+    expect(result.stats.truncated).toBe(2)
+    expect(result.value[2]?.verdict).toBe('unverified-by-cap')
+    expect(result.value[3]?.verdict).toBe('unverified-by-cap')
+    expect(result.value[2]?.votes).toHaveLength(0)
+  })
+})
