@@ -374,6 +374,62 @@ describe('dev-review-fix verdict partition', () => {
     // Findings existed but none reached the fix queue — that must be LOUD.
     expect(result.warnings.some((w: string) => /fix queue/i.test(w))).toBe(true)
   })
+})
+
+// ---------------------------------------------------------------------------
+// Test: severity-aware verification votes (F7) — low:1, medium/high:3
+// ---------------------------------------------------------------------------
+
+describe('dev-review-fix severity-aware votes', () => {
+  it('spends 1 verifier vote on low findings and 3 on high', async () => {
+    // Default CONSOLIDATED = 1 high + 1 low; after the severity sort the high
+    // finding is claim 0 and the low finding is claim 1.
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const verifyLabels = rt.calls
+      .map((c) => c.opts?.label ?? '')
+      .filter((l) => l.startsWith('adversarialVerification:verify:'))
+
+    // high → 3 votes, low → 1 vote (was 3+3 before severity-aware votes)
+    expect(verifyLabels.filter((l) => l.startsWith('adversarialVerification:verify:0:'))).toHaveLength(3)
+    expect(verifyLabels.filter((l) => l.startsWith('adversarialVerification:verify:1:'))).toHaveLength(1)
+    expect(verifyLabels).toHaveLength(4)
+
+    // The single-vote claim really is the low finding (renderClaim prints it).
+    const soloPrompt = rt.calls.find(
+      (c) => c.opts?.label === 'adversarialVerification:verify:1:0',
+    )?.prompt
+    expect(soloPrompt).toContain('severity low')
+  })
+
+  it('medium findings keep 3 votes and a 2-of-3 refutation still rejects (regression)', async () => {
+    const rt = makeRuntime({
+      dedup: () => ({
+        findings: [
+          {
+            file: 'src/api.ts',
+            location: 'line 7',
+            summary: 'missing error mapping on the fetch path',
+            detail: 'errors bubble as raw exceptions instead of ApiError',
+            severity: 'medium',
+            dimensions: ['correctness'],
+          },
+        ],
+      }),
+      verify: (_prompt, i) =>
+        i < 2
+          ? { verdict: 'refuted', reason: 'the mapping exists in the wrapper' }
+          : { verdict: 'confirmed', reason: 'looks missing' },
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const verifyCount = rt.calls.filter((c) =>
+      (c.opts?.label ?? '').startsWith('adversarialVerification:verify:'),
+    ).length
+    expect(verifyCount).toBe(3)
+    expect(result.tallies).toMatchObject({ rejected: 1, fixed: 0 })
+  })
 
   it('marks cap-truncated findings unverified-by-cap and never fixes them', async () => {
     // 13 findings, maxVerifyClaims is 12 → the 13th (lowest severity after the

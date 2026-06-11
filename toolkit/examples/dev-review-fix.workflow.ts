@@ -547,6 +547,9 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
       `IMPORTANT: Do NOT trust this finding. Open the actual code (work from ` +
       `${input.projectDir}) and re-derive whether the issue is real in the CURRENT tree. ` +
       `Refute plausible-but-wrong findings — a wrong "fix" is worse than no fix.`,
+    // Severity-aware votes (F7): a low finding gets 1 refute-first vote, the
+    // verdict-deciding medium/high keep the full 2-of-3 quorum.
+    votesPerClaim: (f) => (f.severity === 'low' ? 1 : 3),
     maxVerifyClaims: 12,
     phase: 'Verify',
   })

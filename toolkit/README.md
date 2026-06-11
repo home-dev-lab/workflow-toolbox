@@ -283,6 +283,15 @@ composition-originated warnings (it records **and** live-logs); warnings
 propagated from a pattern's envelope are pushed plain — re-warning would
 double-log.
 
+Severity-aware votes: `adversarialVerification` also takes
+`votesPerClaim?: (claim) => number` to scale the verifier-vote count per claim
+(integer ≥ 1, validated for every claim synchronously at entry — nothing
+spawns on a bad mapping). The refute threshold is clamped per claim to
+`min(refuteThreshold, claimVotes)`, so a 1-vote claim is decided by its single
+refute-first vote. Cannot be combined with `lenses` (one lens per vote needs a
+fixed count). `dev-review-fix` uses it to spend 1 vote on `low` findings and
+keep the 2-of-3 quorum on `medium`/`high`.
+
 ## Trust no agent's self-report
 
 Agents can die mid-reasoning at their context limit — and their last
@@ -314,7 +323,8 @@ workflow through the real runtime and appends one run record (the runtime agent
 count + `rt.budget.spent()` + the completion notification's `usage`) to the
 gitignored `run-stats/runs.jsonl`; `pnpm wt:calibrate derive` reads the log and
 prints `floor ≈ tokens-per-agent × (expected claims × votes + synthesis) ×
-margin`. The maintainer loop: run real workflows against real codebases, `record`
+margin` (with `votesPerClaim`, `claims × votes` is an upper bound — low-vote
+claims spend less). The maintainer loop: run real workflows against real codebases, `record`
 after each, and once ~10 have accrued, `derive` and fold the number into the
 guidance here. **Honesty:** the runtime exposes no per-agent token primitive, so
 tokens-per-agent is a cross-run approximation, and the two token signals are kept

@@ -57,8 +57,18 @@ export interface AdversarialVerificationOptions<TClaim> {
    *  A claim can fail in more than one way — distinct lenses catch failure
    *  modes plain redundancy can't, e.g. for a code-review finding:
    *  `['correctness', 'security', 'does-it-reproduce']`. Omit for N identical
-   *  refute-first verifiers. */
+   *  refute-first verifiers. Cannot be combined with `votesPerClaim`. */
   lenses?: readonly string[]
+  /** Optional per-claim vote count — spend fewer verifiers on low-stakes
+   *  claims (e.g. severity-aware: `(f) => f.severity === 'low' ? 1 : 3`).
+   *  The pattern never parses claim contents; the caller closes over its own
+   *  fields. Must return an integer >= 1; evaluated exactly once per input
+   *  claim, validated for ALL claims synchronously at entry (nothing spawns
+   *  on a bad mapping). Overrides `votes` per claim; the refute threshold is
+   *  clamped per claim to `min(refuteThreshold, claimVotes)`, so a 1-vote
+   *  claim is decided by its single vote. Cannot be combined with `lenses`
+   *  (lenses require one fixed vote count). */
+  votesPerClaim?: (claim: TClaim) => number
   model?: ModelAlias       // default BEST_MODEL ('fable')
   phase?: string
   maxVerifyClaims?: number // cap; truncated claims kept as 'unverified-by-cap'
@@ -131,6 +141,7 @@ export async function adversarialVerification<TClaim>(
     votes: votesOpt = 3,
     refuteThreshold: refuteThresholdOpt,
     lenses,
+    votesPerClaim,
     model,
     phase,
     maxVerifyClaims,
@@ -171,6 +182,26 @@ export async function adversarialVerification<TClaim>(
       `adversarialVerification: lenses.length (${lenses.length}) must equal votes (${votesOpt}) — each lens corresponds to one vote`,
     )
   }
+
+  if (lenses !== undefined && votesPerClaim !== undefined) {
+    throw new Error(
+      'adversarialVerification: lenses cannot be combined with votesPerClaim — lenses require a fixed votes count (one lens per vote); use one or the other',
+    )
+  }
+
+  // Per-claim vote counts, evaluated EXACTLY ONCE per input claim (pre-cap)
+  // and validated for ALL claims before any agent spawns — a bad mapping
+  // anywhere fails fast regardless of maxVerifyClaims.
+  const perClaimVotes: number[] = claims.map((claim, i) => {
+    if (votesPerClaim === undefined) return votesOpt
+    const n = votesPerClaim(claim)
+    if (!Number.isInteger(n) || n < 1) {
+      throw new Error(
+        `adversarialVerification: votesPerClaim(claims[${i}]) returned ${String(n)} — must be an integer >= 1`,
+      )
+    }
+    return n
+  })
 
   // applyCap throws synchronously when maxVerifyClaims < 1
   if (maxVerifyClaims !== undefined && maxVerifyClaims < 1) {
@@ -244,7 +275,9 @@ export async function adversarialVerification<TClaim>(
 
   const verifiedKept: Array<VerifiedClaim<TClaim>> = await Promise.all(
     (keptClaims as readonly TClaim[]).map(async (claim, claimIndex) => {
-      const voteThunks = Array.from({ length: votesOpt }, (_: unknown, voteIndex: number) => {
+      // keptClaims is a prefix of claims, so indices align with perClaimVotes.
+      const claimVotes = perClaimVotes[claimIndex] ?? votesOpt
+      const voteThunks = Array.from({ length: claimVotes }, (_: unknown, voteIndex: number) => {
         return async (): Promise<VerifierVote | null> => {
           const lens = lenses !== undefined ? lenses[voteIndex] : undefined
           const prompt = buildVerifierPrompt(claim, lens)
@@ -309,12 +342,16 @@ export async function adversarialVerification<TClaim>(
       // -------------------------------------------------------------------
 
       const nonNull = votes.filter((v): v is VerifierVote => v !== null)
+      // The scalar threshold can exceed a low-vote claim's count — clamp per
+      // claim so a 1-vote claim is decided by its single vote. min(2,3)=2:
+      // identical to the scalar behavior at the defaults.
+      const effectiveThreshold = Math.min(refuteThreshold, claimVotes)
       let verdict: Verdict
 
       if (nonNull.length === 0) {
         // All verifiers failed — claim is unverifiable (not refuted)
         verdict = 'unverifiable'
-      } else if (nonNull.filter(v => v.verdict === 'refuted').length >= refuteThreshold) {
+      } else if (nonNull.filter(v => v.verdict === 'refuted').length >= effectiveThreshold) {
         // Adversarial kill: refutation threshold reached
         verdict = 'refuted'
       } else if (nonNull.every(v => v.verdict === 'confirmed')) {
@@ -357,7 +394,9 @@ export async function adversarialVerification<TClaim>(
   for (const verified of verifiedKept) {
     const nullsInClaim = verified.votes.filter(v => v === null).length
     nullVoteCount += nullsInClaim
-    if (nullsInClaim === votesOpt) {
+    // Compare against the CLAIM's own vote count (votes.length), not the
+    // scalar default — vote counts vary per claim under votesPerClaim.
+    if (nullsInClaim === verified.votes.length) {
       allNullClaimsCount++
     }
   }
