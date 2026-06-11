@@ -111,6 +111,31 @@ loud warning and a keep-unverified-rather-than-drop policy so truncation
 never destroys evidence silently. Sort findings by severity IN CODE before
 a positional cap so the cap can only truncate the lowest-stakes tail.
 
+## Environment-side levers (unmeasured here — directional, not benchmarks)
+
+Everything above is **script-side**: knobs the workflow author controls and
+ships. Two further levers live in the *running session's* environment — they
+apply only when the consumer has the plugin installed, so a published
+workflow must never depend on them, but they attack the same §1 economics:
+
+- **Sandbox-side output retention** (e.g. the `context-mode` plugin):
+  agents route bulky command output through a sandboxed executor
+  (`ctx_batch_execute`) and pull back only a summary — the raw 200-line log
+  never enters the context that every subsequent turn re-reads. Workflow
+  subagents reach such session MCP tools through ToolSearch and we observe
+  them doing so spontaneously when the tools are present.
+- **Semantic code navigation** (e.g. Serena, an LSP-based MCP server, or a
+  JetBrains-backed equivalent): `find_symbol` / `find_referencing_symbols`
+  replaces a grep-read-grep-read exploration chain with one targeted call —
+  the dynamic counterpart of §5's static snippet, for the questions a
+  snippet cannot pre-answer.
+
+Honesty note: unlike every number above, these are **not** isolated in our
+measurements — our baseline and post-lever runs both had the same
+environment active, so its contribution is uncontrolled. Treat them as
+mechanism-sound and directionally consistent with §1, not as benchmarked
+gains of this toolkit.
+
 ## What we deliberately did NOT do
 
 - **No agent-driven classification in front of coverage** (§4) — an agent
