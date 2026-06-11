@@ -578,3 +578,30 @@ describe('dev-full gates', () => {
     expect(calls.plan).toHaveLength(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Test: the changedFiles derivation normalizes under-root absolute planned
+// paths (same defense as dev-implement — an operator-supplied older dev-plan
+// artifact may still carry absolutes; relativizing keeps the review child's
+// changedFiles consistent with relative diff-style paths). Idempotent on
+// relative paths.
+// ---------------------------------------------------------------------------
+
+describe('dev-full changedFiles path normalization', () => {
+  it('relativizes under-root absolute planned paths and dedupes across spellings', async () => {
+    const artifact = {
+      ...ARTIFACT,
+      tasks: [
+        { ...ARTIFACT.tasks[0], files: [{ path: '/repo/src/validate.ts', status: 'new', role: 'impl' }] },
+        ARTIFACT.tasks[1], // declares src/cli.ts + src/validate.ts (relative)
+      ],
+    }
+    const { rt, calls } = makeRuntime({
+      plan: () => ({ ...PLAN_OUTPUT, artifact }),
+    })
+    const out = await run(rt, VALID_INPUT)
+    expect(out.outcome).toBe('completed')
+    const sent = calls.review[0] as Record<string, unknown>
+    expect(sent.changedFiles).toEqual(['src/validate.ts', 'src/cli.ts'])
+  })
+})

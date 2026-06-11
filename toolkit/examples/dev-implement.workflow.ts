@@ -105,6 +105,10 @@ export interface DevImplementInput {
    *  Default false: a locked signing agent mid-run would kill merges opaquely;
    *  the operator owns/squashes the final history. */
   signCommits: boolean
+  /** Warnings produced by task-file path normalization in parseInput (which is
+   *  pure and has no rt to log to) — surfaced via warn() at run start so they
+   *  land in both rt.log and the report's warnings[]. */
+  pathWarnings: string[]
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +390,55 @@ function parseTask(raw: unknown, index: number): PlanTask {
   return { id, title, intent, files, contracts, testPlan, doneCriteria, dependsOn }
 }
 
+// ---------------------------------------------------------------------------
+// Task-file path normalization (POSIX). Defense against the defect class a
+// live worktree dogfood exposed: ABSOLUTE task.files paths pointing at the
+// main repo make obedient agents mutate the MAIN tree instead of their
+// isolated worktrees. Rules:
+//   - a relative path always passes through untouched;
+//   - an absolute path under an ABSOLUTE projectDir is relativized (+ warning)
+//     using a boundary-safe prefix match ("/a/b" never matches "/a/bc/...");
+//   - any other absolute path (relative projectDir, projectDir "/", or a path
+//     outside projectDir) cannot be mapped and is REJECTED here in parseInput.
+// Rejection applies in BOTH mutation modes because mutation safety is the
+// point: a sequential agent told to edit an absolute path mutates that
+// location verbatim too, outOfScope fence or not.
+// ---------------------------------------------------------------------------
+function normalizeTaskFiles(
+  tasks: PlanTask[],
+  projectDir: string,
+): { tasks: PlanTask[]; warnings: string[] } {
+  const root = projectDir.replace(/\/+$/, '') // '' when projectDir is '/'
+  const mappable = root.startsWith('/')
+  const warnings: string[] = []
+
+  const normalized = tasks.map((task) => {
+    let changed = false
+    const files = task.files.map((file) => {
+      if (!file.path.startsWith('/')) return file
+      const rel = mappable && file.path.startsWith(root + '/') ? file.path.slice(root.length + 1) : ''
+      if (rel === '') {
+        throw new Error(
+          `dev-implement: task ${task.id} file path "${file.path}" is absolute and cannot be made ` +
+          `relative to projectDir "${projectDir}" — task files must be relative to projectDir ` +
+          `(worktree mode maps them into per-task worktrees; an absolute path would mutate that ` +
+          `location verbatim). Edit the artifact.`,
+        )
+      }
+      changed = true
+      warnings.push(
+        `dev-implement: task ${task.id} file path relativized: ${file.path} -> ${rel} — ` +
+        `absolute paths are unsafe (worktree mode would mutate the main tree); ` +
+        `prefer paths relative to projectDir in the artifact`,
+      )
+      return { ...file, path: rel }
+    })
+    return changed ? { ...task, files } : task
+  })
+
+  return { tasks: normalized, warnings }
+}
+
 // Same graph rules dev-plan validated at Synthesize — re-checked because the
 // artifact crossed a human-edit boundary since.
 function validateGraph(tasks: PlanTask[]): void {
@@ -481,8 +534,9 @@ function parseInput(raw: unknown): DevImplementInput {
       'during review, there is nothing to implement',
     )
   }
-  const tasks = (a['tasks'] as unknown[]).map(parseTask)
-  validateGraph(tasks)
+  const parsedTasks = (a['tasks'] as unknown[]).map(parseTask)
+  validateGraph(parsedTasks)
+  const { tasks, warnings: pathWarnings } = normalizeTaskFiles(parsedTasks, context.projectDir)
 
   const risks = Array.isArray(a['risks']) ? (a['risks'] as unknown[]).filter((r): r is string => typeof r === 'string') : []
   const outOfScope = Array.isArray(a['outOfScope'])
@@ -551,6 +605,7 @@ function parseInput(raw: unknown): DevImplementInput {
     worktreeSetupCommand,
     worktreeRoot,
     signCommits,
+    pathWarnings,
   }
 }
 
@@ -793,6 +848,7 @@ async function run(rt: WorkflowRuntime, input: DevImplementInput): Promise<DevIm
   if (input.mutation === 'worktree') return runWorktree(rt, input)
 
   const warnings: string[] = []
+  for (const w of input.pathWarnings) warn(rt, warnings, w)
   const stats: Record<string, PatternStats> = {}
   const { artifact, maxIterationsPerTask } = input
 
@@ -887,6 +943,7 @@ async function run(rt: WorkflowRuntime, input: DevImplementInput): Promise<DevIm
 
 async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promise<DevImplementOutput> {
   const warnings: string[] = []
+  for (const w of input.pathWarnings) warn(rt, warnings, w)
   const stats: Record<string, PatternStats> = {}
   const { artifact, maxIterationsPerTask, worktreeSetupCommand, worktreeRoot, signCommits } = input
   const ctx = artifact.context
@@ -936,7 +993,14 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
   // sibling of the git root (a <projectDir>-worktrees sibling would land
   // INSIDE the repository and pollute git status).
   const gitRoot = setup.gitRoot.trim() === '' ? ctx.projectDir : setup.gitRoot
-  const projectSub = ctx.projectDir.startsWith(gitRoot) ? ctx.projectDir.slice(gitRoot.length) : ''
+  // Boundary-safe mapping (same class as normalizeTaskFiles): gitRoot "/a/b"
+  // must not be sliced out of an adjacent-prefix projectDir like "/a/bc".
+  const projectSub =
+    ctx.projectDir === gitRoot
+      ? ''
+      : ctx.projectDir.startsWith(gitRoot + '/')
+        ? ctx.projectDir.slice(gitRoot.length)
+        : ''
   const wtRoot = worktreeRoot ?? `${gitRoot}-worktrees`
   const wtPath = (id: string): string => `${wtRoot}/${id}`
   const taskWorkdir = (id: string): string => `${wtPath(id)}${projectSub}`
@@ -1245,7 +1309,9 @@ export default defineWorkflow({
       '{ artifact } (plus optional mutation/maxIterationsPerTask, and for worktree mode optional ' +
       'worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. Sequential mode works ' +
       'without git; worktree mode requires a git repository and machine commits are unsigned ' +
-      'unless signCommits is true.',
+      'unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute ' +
+      'paths under an absolute projectDir are auto-relativized (with a warning); any other ' +
+      'absolute path is rejected at parse time in both modes.',
     phases: [
       { title: 'Setup', detail: 'Worktree mode: git check, per-wave worktree provisioning, setup command' },
       { title: 'Implement', detail: 'Per task: write failing tests, implement (TDD loop) — parallel within a wave in worktree mode' },

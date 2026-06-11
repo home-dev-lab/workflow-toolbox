@@ -76,7 +76,8 @@ Three details worth pausing on:
   directory already inside `toolkit/`) and **absolute file paths pointing at
   the main repository** — obedient agents would have edited the main tree
   instead of their isolated worktrees. Edit the artifact; that is what the
-  gate is for.
+  gate is for. (The second defect class is now also defended in code: see the
+  path contract below.)
 
 ## Worktree mode (`dev-implement`, parallel waves)
 
@@ -174,6 +175,13 @@ omitted so each child workflow's own default stays canonical.
 - **Commands must be executable verbatim.** `testCommand`/`buildCommand` flow
   into agent prompts and real shells unchanged — prose like
   `pnpm test (from the toolkit dir)` breaks the loop. Give the runnable string.
+- **Task file paths must be relative to `projectDir`.** `dev-plan` instructs
+  its planners accordingly and normalizes its output in code; `dev-implement`
+  auto-relativizes an absolute path under an *absolute* `projectDir` (with a
+  warning) and **rejects** any absolute path it cannot map — in both mutation
+  modes, because an agent told to edit an absolute path mutates that location
+  verbatim (in worktree mode that would be the main tree, the exact defect the
+  human gate once caught live).
 - **Prefer `diffCommand` on git projects.** The no-git fallback approximates
   the change set from the *planned* task files; files an implementer creates
   beyond the plan are invisible to it. The real diff sees everything.

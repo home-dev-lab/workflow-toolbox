@@ -382,3 +382,82 @@ describe('dev-plan with no candidate tasks', () => {
     expect(result.artifact.tasks.length).toBeGreaterThan(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Test: task file path hygiene — artifacts must be born with RELATIVE paths
+// (the worktree dogfood's human gate caught absolute paths pointing at the
+// main repo). dev-plan instructs planners, then normalizes the synthesized
+// artifact in code: under an absolute projectDir, absolute paths are
+// relativized + warned; unmappable absolutes are KEPT but warned (the output
+// goes to a human gate — dev-implement will reject them if not fixed).
+// ---------------------------------------------------------------------------
+
+describe('dev-plan task file path hygiene', () => {
+  it('instructs the plan workers and the synthesizer to use relative paths', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify({ goal: 'Add validation', areas: ['src'] }))
+    const worker = rt.calls.find((c) => c.prompt.toLowerCase().includes('detail the implementation task'))
+    const synth = rt.calls.find((c) => c.prompt.toLowerCase().includes('final planartifact'))
+    expect(worker).toBeDefined()
+    expect(synth).toBeDefined()
+    expect(worker!.prompt.toLowerCase()).toContain('relative')
+    expect(synth!.prompt.toLowerCase()).toContain('relative')
+  })
+
+  it('relativizes under-root absolute paths in the synthesized artifact and warns', async () => {
+    const rt = makeRuntime({
+      synthesize: () => ({
+        ...HAPPY_ARTIFACT,
+        tasks: [
+          {
+            ...HAPPY_ARTIFACT.tasks[0],
+            files: [{ path: '/repo/src/validate.ts', status: 'new', role: 'implementation' }],
+          },
+          HAPPY_ARTIFACT.tasks[1],
+        ],
+      }),
+    })
+    const result = await wf.run(rt, JSON.stringify({ goal: 'Add validation', areas: ['src'], projectDir: '/repo' }))
+    const t1 = result.artifact.tasks.find((t: { id: string }) => t.id === 'T1')
+    expect(t1!.files[0]!.path).toBe('src/validate.ts')
+    expect(result.warnings.some((w: string) => /relativiz/i.test(w) && w.includes('/repo/src/validate.ts'))).toBe(true)
+  })
+
+  it('keeps an unmappable absolute path but warns (the human gate must fix it)', async () => {
+    const rt = makeRuntime({
+      synthesize: () => ({
+        ...HAPPY_ARTIFACT,
+        tasks: [
+          {
+            ...HAPPY_ARTIFACT.tasks[0],
+            files: [{ path: '/elsewhere/x.ts', status: 'existing', role: 'integration' }],
+          },
+          HAPPY_ARTIFACT.tasks[1],
+        ],
+      }),
+    })
+    const result = await wf.run(rt, JSON.stringify({ goal: 'Add validation', areas: ['src'], projectDir: '/repo' }))
+    const t1 = result.artifact.tasks.find((t: { id: string }) => t.id === 'T1')
+    expect(t1!.files[0]!.path).toBe('/elsewhere/x.ts')
+    expect(result.warnings.some((w: string) => /absolute/i.test(w) && w.includes('/elsewhere/x.ts'))).toBe(true)
+  })
+
+  it('warns without rewriting when projectDir is relative', async () => {
+    const rt = makeRuntime({
+      synthesize: () => ({
+        ...HAPPY_ARTIFACT,
+        tasks: [
+          {
+            ...HAPPY_ARTIFACT.tasks[0],
+            files: [{ path: '/abs/x.ts', status: 'new', role: 'implementation' }],
+          },
+          HAPPY_ARTIFACT.tasks[1],
+        ],
+      }),
+    })
+    const result = await wf.run(rt, JSON.stringify({ goal: 'Add validation', areas: ['src'] }))
+    const t1 = result.artifact.tasks.find((t: { id: string }) => t.id === 'T1')
+    expect(t1!.files[0]!.path).toBe('/abs/x.ts')
+    expect(result.warnings.some((w: string) => /absolute/i.test(w) && w.includes('/abs/x.ts'))).toBe(true)
+  })
+})
