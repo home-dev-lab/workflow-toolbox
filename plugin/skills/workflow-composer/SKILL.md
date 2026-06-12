@@ -162,10 +162,11 @@ permission dialog and edit for re-invocation. `workflow-toolbox build` warns fro
 512 KB); an oversized workflow is usually two workflows with a checkpoint between
 them.
 
-### Four shipped compositions to read as models
+### Eight shipped compositions to read as models
 
-Built example compositions live under `toolkit/workflows/`, with their TypeScript
-sources committed for study at `assets/examples/toolkit/`:
+The repository ships eight built example compositions under `toolkit/workflows/`.
+Five have their TypeScript sources bundled with this skill for study at
+`assets/examples/toolkit/`:
 
 - `pr-review.workflow.ts` — route the diff → per-lens reviewers → adversarial verify
   → synthesis.
@@ -173,11 +174,50 @@ sources committed for study at `assets/examples/toolkit/`:
 - `monorepo-refactor-execute.workflow.ts` — execute the plan with mutating agents
   behind isolation.
 - `doc-rewrite.workflow.ts` — generate-and-filter doc rewrites.
+- `dev-review-fix.workflow.ts` — review → consolidate → adversarially verify → fix →
+  check loop over a change set. **The reference implementation of the cost-engineering
+  levers**: severity-gated verification votes, a tiered consolidator behind a triple
+  safety net, snippet-enriched claims under the untrusted-delimiter contract, and
+  deterministic docs-only coverage adaptation.
+
+Three more form the **dev-workflow family** around it — the most advanced
+compositions (multi-artifact `rt.workflow()` composition, code gates replacing human
+gates, dual mutation modes). Their sources are too large to bundle; read them in the
+public repository:
+
+- [`dev-plan.workflow.ts`](https://github.com/home-dev-lab/workflow-toolbox/blob/main/toolkit/examples/dev-plan.workflow.ts)
+  — discovery → planner fan-out → adversarial plan critique (snippet-enriched task
+  claims) → plan artifact.
+- [`dev-implement.workflow.ts`](https://github.com/home-dev-lab/workflow-toolbox/blob/main/toolkit/examples/dev-implement.workflow.ts)
+  — per-task red → green → check TDD loops over a plan artifact, sequential or
+  worktree-parallel.
+- [`dev-full.workflow.ts`](https://github.com/home-dev-lab/workflow-toolbox/blob/main/toolkit/examples/dev-full.workflow.ts)
+  — chains the three children via `rt.workflow()` over their committed artifacts,
+  converting human gates into code gates.
 
 These `.ts` sources are **reading material** — they are built with `npx workflow-toolbox build`,
 not run directly as raw workflows. Their committed artifacts live under
 `toolkit/workflows/` (e.g. `toolkit/workflows/pr-review.js`) and run via
 `Workflow({ scriptPath: '…/pr-review.js' })`.
+
+### Operational lessons (from production runs of the dev-workflow family)
+
+- **Agents follow the conventions they discover — including committing.** A
+  discovery stage that surfaces a repo's commit conventions will lead implement
+  agents to create commits themselves. When a human-inspection gate is wanted,
+  the goal must say so explicitly: *"do NOT commit; leave changes in the working
+  tree."* Goal text is the drift-mitigation channel — constraints live there.
+- **Commands must be executable verbatim.** Any `testCommand`/`buildCommand`-style
+  input flows into agent prompts and real shells unchanged — prose like
+  `pnpm test (from the toolkit dir)` breaks the loop. Pass the runnable string.
+- **Any repo text quoted into a prompt is a prompt-injection surface.** Reviewer
+  quotes, file excerpts, error output: delimit them explicitly as untrusted,
+  instruct agents to ignore instructions inside them, mangle embedded copies of
+  your own delimiter lines, and apply the guard at EVERY embedding site — a
+  guard on one path is a hole, not a control.
+- **Embeddings consumed downstream need a staleness caveat.** A snippet quoted at
+  plan time may be wrong by execution time (earlier tasks changed the code).
+  Downstream prompts must say so and require a fresh read of the file.
 
 ## The raw authoring path (one-offs)
 

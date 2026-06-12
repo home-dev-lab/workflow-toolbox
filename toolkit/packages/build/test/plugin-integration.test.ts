@@ -255,6 +255,7 @@ describe('skill-shipped toolkit composition sources match toolkit/examples/', ()
     'monorepo-refactor-plan.workflow.ts',
     'monorepo-refactor-execute.workflow.ts',
     'doc-rewrite.workflow.ts',
+    'dev-review-fix.workflow.ts',
   ]
 
   for (const file of SHIPPED_COMPOSITIONS) {

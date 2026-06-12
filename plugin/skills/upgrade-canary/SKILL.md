@@ -114,8 +114,9 @@ the run and may drive work:
   flip means a valid artifact no longer runs; an **edge** flip means the runtime
   stopped rejecting something it must (a contract change). Capture the reason; this
   is the input for the workflow-composer / **workflow-debugger** skill, and
-  for a `@workflow-toolbox/runtime` review against the toolkit's architecture doc
-  (`docs/public/architecture.md`).
+  for a `@workflow-toolbox/runtime` review against the toolkit's
+  [architecture doc](https://github.com/home-dev-lab/workflow-toolbox/blob/main/docs/public/architecture.md)
+  (`docs/public/architecture.md` in the repo).
 - **Rejection-wording drift** (`"..." → "..."`) → the error text changed; a
   `judgeRejection` pattern or a doc may need updating (a fix), or a new guard may be
   worth adding (a feature).
