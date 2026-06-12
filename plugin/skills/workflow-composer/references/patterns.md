@@ -404,8 +404,8 @@ non-deterministic, and adds a failure point for no gain.
 Agent cost follows **tool-call count**, not prompt size — each turn re-reads
 the context so far, so anything that makes an agent's first read *targeted*
 instead of exploratory pays for itself. Five levers, all measured on this
-toolkit's own dev-workflow family (full numbers and the code in the repo's
-`docs/public/cost-engineering.md`):
+toolkit's own dev-workflow family (full numbers and the code in the public
+[cost-engineering guide](https://github.com/home-dev-lab/workflow-toolbox/blob/main/docs/public/cost-engineering.md)):
 
 1. **Gate scrutiny on stakes** — `votesPerClaim: (claim) => claim.severity
    === 'low' ? 1 : 3` cut a verification phase −47%. But harden the gating
