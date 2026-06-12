@@ -36,6 +36,12 @@ The two halves work together, but each stands alone: install the plugin and
 never touch TypeScript, or use the toolkit from your own repo and never
 install the plugin.
 
+![A dev-review-fix run in Claude Code's /workflows view: the Review phase complete with four reviewer agents and a consolidator routed to a cheaper model, live per-agent token and tool-call counts](docs/assets/outreach/run-review-tiered-consolidator.png)
+*One of the shipped pipelines (`dev-review-fix`) mid-run: parallel review
+dimensions, a model-tiered consolidator, and live per-agent cost — every
+count is journaled and auditable after the run
+([measured results](docs/public/cost-engineering.md)).*
+
 ## When should I use a workflow?
 
 Reach for a workflow when one long conversation is the wrong tool: the work
