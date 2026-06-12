@@ -3,6 +3,46 @@
        alt="Workflow Toolbox — build, run, and trust multi-agent workflows in Claude Code. The Lego metaphor: molded bricks (seven tested @workflow-toolbox orchestration patterns), instruction sheets (Claude Code skills to author, scaffold, and debug), and finished models (runnable workflows).">
 </h1>
 
+**Measured, not promised.** Every claim in this section traces to a journaled
+production run on this repository or to a public commit — per-agent token and
+tool-call counts, dropped-item tallies — auditable after the fact on the
+machine that ran them with `npx workflow-toolbox report <runId>`.
+
+**Workflow Toolbox** is a free Claude Code plugin plus the `@workflow-toolbox`
+npm packages: seven tested orchestration patterns for Claude Code's **Workflow
+tool** (research preview), skills to author, scaffold, and debug workflows, and
+eight runnable example compositions — including a full dev pipeline
+(plan → implement → review-fix).
+
+What the journals show:
+
+- **Quality** — adversarial review sweeps caught **22 verified findings**
+  ([sweep 1](https://github.com/home-dev-lab/workflow-toolbox/commit/68be3b1),
+  [sweep 2](https://github.com/home-dev-lab/workflow-toolbox/commit/8b14eba)) on
+  code whose quality gates (tests + typecheck + lint) were already green.
+  Among them: a literal NUL byte written into a file by a previous run's fixer
+  agent, and a revert path that, fed an empty SHA by an agent self-report,
+  would degrade to a bare `git reset --hard` and silently keep the bad merge.
+  Fresh-context reviewers see what the author's context cannot.
+- **Cost** — the verification stage of the shipped dev workflows dropped
+  **−50.1% tokens run-over-run** while reviewing a *larger* diff (−25.1% per
+  verification vote × one-third fewer votes; severity-gated voting alone cut
+  the Verify phase −47%, run `wf_bc8dd6fd-167`). The measured principle behind
+  every lever: agent cost follows **tool calls**, not prompt size —
+  [full methodology](docs/public/cost-engineering.md).
+- **Honesty** — negative results are published too: a token-compression proxy
+  experiment *increased* weighted cost **+51%** and was rejected — see
+  [what we deliberately did NOT do](docs/public/cost-engineering.md#what-we-deliberately-did-not-do).
+
+**This is not for every task.** A thorough `dev-review-fix` run spawns 20+
+agents — multi-agent quality is worth its tokens only when the work is
+genuinely ambiguous, fans out, or the cost of being wrong dwarfs the cost of
+checking.
+[For everything else, a plain agent is simpler.](#when-should-i-use-a-workflow)
+
+Every pattern returns an audit envelope — value, stats, warnings, a
+deterministic trail. Silent truncation is treated as a bug.
+
 ## The problem
 
 Claude Code ships a **Workflow tool** (research preview): instead of one long
@@ -50,6 +90,28 @@ before you trust it, or is too big for a single context window. The script
 makes the loops and fan-out **deterministic code**; only the leaf `agent()`
 calls think. For a quick one-off question, a plain agent is still simpler —
 a workflow earns its keep when structure or scale does.
+
+It must also earn its keep in **tokens**: a thorough `dev-review-fix` run
+spawns 20+ agents. That spend buys one specific thing — independent,
+fresh-context verification with an auditable per-claim trail — and it pays off
+when the work is ambiguous enough that a single context gets it wrong, and the
+cost of being wrong dwarfs the cost of checking. The measured results on this
+page come from the software-engineering pipelines this repository ships, but
+the *shape* is industry-agnostic:
+
+- **Software engineering** — pre-release security and correctness sweeps over a
+  change set; large migrations where every site must be found, transformed, and
+  re-verified.
+- **Finance & compliance** — screening hundreds of contracts or filings against
+  a new regulation, every flagged clause adversarially verified before it
+  reaches the audit report — which then carries a per-claim trail of who
+  checked what.
+- **Legal** — due diligence over a data room: documents fanned out by the
+  hundred, each red flag re-derived from the source document by a verifier
+  whose mandate is to refute it.
+- **Research & pharma** — multi-source literature reviews where every extracted
+  claim is checked against the paper that allegedly supports it before it
+  enters the synthesis.
 
 ## Prerequisites
 
