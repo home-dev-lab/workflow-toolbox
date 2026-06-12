@@ -9,7 +9,12 @@ every principle shipped as code you can read in `toolkit/examples/`.
 
 The levers stack: applied together they took the verification stage from
 ~47.9k tokens per verifier vote (flat 3-vote baseline) to ~38.9k per vote on
-~40% fewer votes.
+~40% fewer votes. A later run-over-run comparison of two full `dev-full`
+pipelines (same 3-task / 3-claim structure, before vs after the levers
+landed) measured the stacked effect end-to-end: the review verification
+stage dropped **−50.1%** (−25.1% per vote × one-third fewer votes), and the
+tiered consolidator −43.8% — while the run was reviewing a substantially
+larger diff.
 
 ## 1. Cost follows the agent's TOOL CALLS, not its prompt size
 
@@ -86,7 +91,17 @@ reviewers quote a verbatim snippet with each finding and embed it in the
 rendered claim — N reviewers pay an output-token surcharge so M verifiers
 (M > N) skip the exploration. Measured (run `wf_54c607b5-5af` vs baseline):
 **−18.8% per verifier, and the exploratory tail vanished** (max 10 tool
-calls vs 18; the most expensive verifier dropped from 57k to 44.6k).
+calls vs 18; the most expensive verifier dropped from 57k to 44.6k). A
+second, independent full-pipeline measurement confirmed it: **−25.1% per
+vote** (51.9k → 38.8k), with low-stakes single-vote verifiers down to 4–6
+tool calls.
+
+The same lever now also runs at the *planning* stage: each planned task
+carries a required planner-quoted snippet of the most load-bearing code it
+will modify, the plan-critique verifiers receive it under the identical
+untrusted-delimiter contract, and the task hands it through to the
+implementer's task block with an explicit **staleness caveat** (earlier
+tasks may have changed that code — re-read the file before trusting it).
 
 Three contracts make this safe:
 

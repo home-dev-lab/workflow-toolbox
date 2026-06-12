@@ -177,6 +177,16 @@ re-derive every finding from the file on disk, and the fixer only sees the
 snippet on its first iteration (the only one whose tree still matches what
 the reviewer quoted) — the checker never does.
 
+The same snippet contract runs at the planning stage: every planned task
+carries a required planner-quoted snippet of the most load-bearing code it
+will modify (empty only when the task creates new code), with a file +
+line-range location. The plan-critique verifiers receive it under the same
+untrusted-delimiter rendering — navigation, never evidence — and the task
+hands it through to `dev-implement`'s task block with an explicit staleness
+caveat (earlier tasks may have changed that code, so the implementer must
+re-read the file) — making the implementer's first read targeted too. Task
+checkers never receive it.
+
 ## Operational lessons (learned the honest way)
 
 - **Trust boundary.** `dev-full` has *no human gate between the goal and

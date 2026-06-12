@@ -420,8 +420,10 @@ toolkit's own dev-workflow family (full numbers and the code in the repo's
    reported). Adapt coverage only on deterministic, conservative, loudly
    warned in-code rules, always overridable by explicit input.
 4. **Quote the code to the verifier** — have upstream agents return a
-   verbatim snippet per claim and embed it in `renderClaim` (−19% per
-   verifier, exploratory tail gone). Contracts: untrusted-delimited at EVERY
+   verbatim snippet per claim and embed it in `renderClaim` (−19% to −25%
+   per verifier across two measured runs, exploratory tail gone; stacked
+   with severity-gated votes the verification stage halved). Contracts:
+   untrusted-delimited at EVERY
    embedding site, capped in code, never a substitute for on-disk
    re-derivation, and required-with-empty rather than optional (models omit
    optional fields under output pressure).
