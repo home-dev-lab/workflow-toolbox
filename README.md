@@ -482,6 +482,35 @@ A few terms recur across these docs:
 - [docs/public/adr/](docs/public/adr/) — the five architecture decision
   records.
 
+## Related work
+
+The patterns this toolkit ships were derived from production use on this
+repository, but they land on shapes the research community has named — if you
+come from that literature, here is the mapping, and what is different here.
+
+- [Building Effective Agents](https://www.anthropic.com/engineering/building-effective-agents)
+  (Anthropic, 2024) — the practitioner essay this toolkit is closest to:
+  `fanOutAndSynthesize` is its *orchestrator–workers*, and
+  `adversarialVerification` / `generateAndFilter` are *evaluator–optimizer*
+  loops, implemented and measured on the same vendor's runtime.
+- [AFlow](https://arxiv.org/abs/2410.10762) (Zhang et al., ICLR 2025 oral)
+  represents workflows as code and *searches* for their structure with Monte
+  Carlo tree search. Same representation, opposite bet: here the structure is
+  hand-composed from typed patterns, and the optimization target is the
+  measured token cost of each run.
+- [DAAO](https://arxiv.org/abs/2509.11079) (Su et al., 2025) routes queries
+  across heterogeneous models by estimated difficulty — the research-side
+  counterpart of the difficulty-aware model tiering measured in
+  [cost-engineering.md](docs/public/cost-engineering.md).
+- [Flow](https://arxiv.org/abs/2501.07834) (Niu et al., ICLR 2025) models
+  agentic workflows as graphs refined at runtime for parallelism and error
+  tolerance — the dynamic counterpart of the deterministic
+  `pipeline`/`parallel` topologies used here.
+
+None of these projects share code or authors with this one; the convergence is
+independent. What this repository adds to that conversation is measurement:
+journaled per-run token costs for each pattern, on a commercial runtime.
+
 ## Privacy & security
 
 This plugin collects no user data, has no telemetry, and transmits nothing about
