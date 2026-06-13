@@ -171,15 +171,17 @@ trail stays per-iteration (`trail.length === iterations`). Each speaks its own
 domain language (claims, tasks, angles…) — deliberately not a
 uniform `items` API.
 
-| Pattern | Anthropic mapping | Use when | Do NOT use when |
+| Pattern | Also known as | Use when | Do NOT use when |
 |---|---|---|---|
-| `classifyAndAct` | Routing | Distinct input categories handled better separately; classification is reliably accurate | Categories blur, or one prompt handles all inputs — a single agent is simpler |
-| `fanOutAndSynthesize` | Parallelization + synthesis barrier | Independent subtasks; synthesis genuinely needs **all** results | Stages flow per-item — use `rt.pipeline`; or N=1 |
-| `adversarialVerification` | Voting, refute-first | Findings will be acted on and a plausible-but-wrong one is costly | Low-stakes output; or no independent verification method exists |
-| `generateAndFilter` | Generation + evaluator (single pass) | Wide candidate space, cheap generation, clear filter criteria | Criteria can't be articulated — the filter becomes noise |
-| `tournament` | Judge panel + synthesis | Wide solution space; angles genuinely differ | Convergent tasks where attempts would be near-identical |
-| `loopUntilDone` | Evaluator-optimizer / loop-until-dry | Clear evaluation criteria + iteration adds measurable value; unknown-size discovery | No articulable feedback; or a fixed list is known up front (just map it) |
-| `planAndExecute` | Orchestrator-workers | Subtasks can't be predicted up front; a planner decomposes dynamically (its `PlanAndExecuteResult` also exposes the surviving `workerResults`, not just the synthesis) | Subtasks are known — `fanOutAndSynthesize` or `rt.pipeline` is cheaper and more predictable |
+| `classifyAndAct` | Routing · intent classification · dispatcher | Distinct input categories handled better separately; classification is reliably accurate | Categories blur, or one prompt handles all inputs — a single agent is simpler |
+| `fanOutAndSynthesize` | Parallelization (sectioning) · map-reduce · scatter-gather · fan-out/fan-in | Independent subtasks; synthesis genuinely needs **all** results | Stages flow per-item — use `rt.pipeline`; or N=1 |
+| `adversarialVerification` | Parallelization-voting · LLM-as-judge (ensemble) · self-consistency · critic/verifier | Findings will be acted on and a plausible-but-wrong one is costly | Low-stakes output; or no independent verification method exists |
+| `generateAndFilter` | Generation + evaluator (single pass) · best-of-N · rejection sampling · generate-and-rank | Wide candidate space, cheap generation, clear filter criteria | Criteria can't be articulated — the filter becomes noise |
+| `tournament` | Judge panel + synthesis · best-of-N selection · LLM-as-judge tournament | Wide solution space; angles genuinely differ | Convergent tasks where attempts would be near-identical |
+| `loopUntilDone` | Evaluator-optimizer · iterative refinement · self-refine / Reflexion · loop-until-dry | Clear evaluation criteria + iteration adds measurable value; unknown-size discovery | No articulable feedback; or a fixed list is known up front (just map it) |
+| `planAndExecute` | Orchestrator-workers · plan-and-execute (LangChain) · planner-executor | Subtasks can't be predicted up front; a planner decomposes dynamically (its `PlanAndExecuteResult` also exposes the surviving `workerResults`, not just the synthesis) | Subtasks are known — `fanOutAndSynthesize` or `rt.pipeline` is cheaper and more predictable |
+
+> In each row the first term is Anthropic's [*Building Effective Agents*](https://www.anthropic.com/engineering/building-effective-agents) vocabulary; the rest are common cross-ecosystem names for the same shape (different frameworks, same orchestration).
 
 The other layers:
 
