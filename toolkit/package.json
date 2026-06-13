@@ -11,6 +11,7 @@
     "test": "vitest run",
     "wt:build": "tsx packages/build/src/cli.ts build",
     "wt:check": "tsx packages/build/src/cli.ts check",
+    "mirror:plugin-workflow": "tsx packages/build/src/cli.ts build examples/independent-analysis.workflow.ts && node -e \"require('fs').copyFileSync('workflows/independent-analysis.js','../plugin/workflows/independent-analysis.js')\"",
     "wt:debug": "tsx packages/debugger/src/cli.ts",
     "wt:report": "tsx packages/debugger/src/report-cli.ts",
     "wt:scaffold": "tsx packages/scaffold/src/cli.ts",

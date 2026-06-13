@@ -60,6 +60,12 @@ that is the judgment the L1 table below encodes.
 
 Steps run in spec order. Repeating a `phase` across steps groups them under one phase entry.
 
+> **⚠ Verifier model (`adversarialVerification`).** Its verifier defaults to `BEST_MODEL`
+> (the strongest *callable* tier — currently `'opus'`). **Fable 5 is suspended by export
+> control since 2026-06-12**: never set a verifier `model` to `'fable'` until the
+> suspension lifts — it errors at runtime. The default is already safe; the trap is only a
+> hand-override.
+
 ## Run it
 
 Works in **any** project — make sure the published toolkit trio is installed, then

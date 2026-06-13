@@ -72,7 +72,7 @@ export interface AdversarialVerificationOptions<TClaim> {
    *  default of 3). Cannot be combined with `lenses` (lenses require one
    *  fixed vote count). */
   votesPerClaim?: (claim: TClaim) => number
-  model?: ModelAlias       // default BEST_MODEL ('fable')
+  model?: ModelAlias       // default BEST_MODEL ('opus')
   phase?: string
   maxVerifyClaims?: number // cap; truncated claims kept as 'unverified-by-cap'
 }

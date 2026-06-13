@@ -270,7 +270,7 @@ var __wt = (() => {
   var REJECTED = Symbol("generate-and-filter:REJECTED");
 
   // ../packages/runtime/src/constants.ts
-  var BEST_MODEL = "fable";
+  var BEST_MODEL = "opus";
 
   // ../packages/patterns/src/adversarial-verification.ts
   var VERIFIER_SCHEMA = {

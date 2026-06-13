@@ -135,9 +135,12 @@ author. A cap never destroys evidence either: claims a cap cuts are kept too,
 just flagged differently (see the toolkit vocabulary below).
 
 **Toolkit:** `adversarialVerification(rt, { claims, renderClaim, votes, refuteThreshold, lenses, votesPerClaim })`.
-The default model is `BEST_MODEL` (`'fable'`, exported by
+The default model is `BEST_MODEL` (currently `'opus'`, exported by
 `@workflow-toolbox/runtime`) — verification quality is model-sensitive, and
-explicitly passing a weaker model warns. Optional `lenses` give one distinct angle per vote
+explicitly passing a weaker model warns. (`BEST_MODEL` was `'fable'` until Fable 5
+was suspended by export control on 2026-06-12; it now names the strongest *callable*
+tier. Do not hand-override a verifier to `'fable'` while suspended — it errors at
+runtime.) Optional `lenses` give one distinct angle per vote
 (e.g. `['correctness', 'security', 'does-it-reproduce']`) so a claim that fails
 in more than one way is caught. Optional `votesPerClaim` (`(claim) => number`,
 integer ≥ 1, validated for every claim before anything spawns) scales the vote

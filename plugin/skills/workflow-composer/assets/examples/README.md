@@ -17,8 +17,9 @@ sources you read rather than run.
 
 ## The `toolkit/` subdir
 
-Five TypeScript composition **sources** from the `@workflow-toolbox` toolkit, kept here as
-reading material that shows the library form of a workflow:
+All nine TypeScript composition **sources** from the `@workflow-toolbox` toolkit, kept here
+as reading material that shows the library form of a workflow (progressive disclosure
+means each one costs no context until you actually read it):
 
 - `pr-review.workflow.ts` — classify the change → per-lens reviewers →
   adversarial verify → synthesis.
@@ -30,6 +31,16 @@ reading material that shows the library form of a workflow:
 - `dev-review-fix.workflow.ts` — review → consolidate → adversarially verify →
   fix → check loop over a change set (the cost-engineering reference: severity-
   gated votes, tiered consolidator, snippet-enriched claims).
+- `dev-plan.workflow.ts` — discovery → planner fan-out → adversarial plan
+  critique → plan artifact.
+- `dev-implement.workflow.ts` — per-task red → green → check TDD loops over a
+  plan artifact, sequential or worktree-parallel.
+- `dev-full.workflow.ts` — chains the three dev-workflow children via
+  `rt.workflow()`, converting human gates into code gates.
+- `independent-analysis.workflow.ts` — (optional) lens proposal →
+  `fanOutAndSynthesize` one analyst per lens → `adversarialVerification` of the
+  survivors. Bias-free multi-lens review of any subject; also shipped as the
+  bundled `workflow-toolbox:independent-analysis` plugin workflow.
 
 These `.ts` files are **not directly runnable** as raw workflows. They are
 built into `.js` artifacts with `npx workflow-toolbox build <entry>.workflow.ts --typecheck`

@@ -164,9 +164,13 @@ them.
 
 ### Nine shipped compositions to read as models
 
-The repository ships nine built example compositions under `toolkit/workflows/`.
-Five have their TypeScript sources bundled with this skill for study at
-`assets/examples/toolkit/`:
+The repository ships nine built example compositions under `toolkit/workflows/`, and
+**all nine have their TypeScript sources bundled with this skill** for study at
+`assets/examples/toolkit/`. (Progressive disclosure means a bundled source costs no
+context until you actually Read it — so the skill ships the complete set, not a
+hand-picked subset, and an offline plugin install can study every one.)
+
+The five core-pattern compositions:
 
 - `pr-review.workflow.ts` — route the diff → per-lens reviewers → adversarial verify
   → synthesis.
@@ -180,29 +184,25 @@ Five have their TypeScript sources bundled with this skill for study at
   safety net, snippet-enriched claims under the untrusted-delimiter contract, and
   deterministic docs-only coverage adaptation.
 
-Three more form the **dev-workflow family** around it — the most advanced
-compositions (multi-artifact `rt.workflow()` composition, code gates replacing human
-gates, dual mutation modes). Their sources are too large to bundle; read them in the
-public repository:
+The **dev-workflow family** — the most advanced compositions (multi-artifact
+`rt.workflow()` composition, code gates replacing human gates, dual mutation modes):
 
-- [`dev-plan.workflow.ts`](https://github.com/home-dev-lab/workflow-toolbox/blob/main/toolkit/examples/dev-plan.workflow.ts)
-  — discovery → planner fan-out → adversarial plan critique (snippet-enriched task
-  claims) → plan artifact.
-- [`dev-implement.workflow.ts`](https://github.com/home-dev-lab/workflow-toolbox/blob/main/toolkit/examples/dev-implement.workflow.ts)
-  — per-task red → green → check TDD loops over a plan artifact, sequential or
-  worktree-parallel.
-- [`dev-full.workflow.ts`](https://github.com/home-dev-lab/workflow-toolbox/blob/main/toolkit/examples/dev-full.workflow.ts)
-  — chains the three children via `rt.workflow()` over their committed artifacts,
-  converting human gates into code gates.
+- `dev-plan.workflow.ts` — discovery → planner fan-out → adversarial plan critique
+  (snippet-enriched task claims) → plan artifact.
+- `dev-implement.workflow.ts` — per-task red → green → check TDD loops over a plan
+  artifact, sequential or worktree-parallel.
+- `dev-full.workflow.ts` — chains the three children via `rt.workflow()` over their
+  committed artifacts, converting human gates into code gates.
 
 And one standalone analysis composition:
 
-- [`independent-analysis.workflow.ts`](https://github.com/home-dev-lab/workflow-toolbox/blob/main/toolkit/examples/independent-analysis.workflow.ts)
-  — (optionally) auto-propose diverse lenses → `fanOutAndSynthesize` one analyst per
-  lens, dedup against the caller's stated assumptions → `adversarialVerification`
-  (refute-first) of the survivors. Bias-free multi-lens review of any subject (a
-  design, plan, claim, decision, or code); the `verifierModel` input overrides
-  `adversarialVerification`'s BEST_MODEL default.
+- `independent-analysis.workflow.ts` — (optionally) auto-propose diverse lenses →
+  `fanOutAndSynthesize` one analyst per lens, dedup against the caller's stated
+  assumptions → `adversarialVerification` (refute-first) of the survivors. Bias-free
+  multi-lens review of any subject (a design, plan, claim, decision, or code); the
+  `verifierModel` input overrides `adversarialVerification`'s BEST_MODEL default. It is
+  also promoted to a bundled plugin workflow at `plugin/workflows/independent-analysis.js`,
+  discoverable as `workflow-toolbox:independent-analysis`.
 
 These `.ts` sources are **reading material** — they are built with `npx workflow-toolbox build`,
 not run directly as raw workflows. Their committed artifacts live under
@@ -283,8 +283,14 @@ counter (`while (found < 10)`) or a budget guard (`while (budget.total && budget
   the structured-output contract.
 - **Model tiering.** Mechanical, high-volume leaf work → `model: 'haiku'`. Judgment
   work → inherit the session model (omit `model`). **Verifiers default to the strong
-  model** — verification quality is model-sensitive, and a downgraded verifier is the
-  one place a cheap model costs you correctness.
+  model** (`BEST_MODEL`) — verification quality is model-sensitive, and a downgraded
+  verifier is the one place a cheap model costs you correctness.
+  - **⚠ Fable 5 is suspended (since 2026-06-12, US export-control directive) — do NOT
+    select `'fable'` and do NOT trust any "newest model" hint that names it.** A
+    verifier pinned to `'fable'` errors at runtime. The toolkit's `BEST_MODEL` already
+    points to `'opus'` for this reason, so the default is safe; the trap is only if you
+    *override* a verifier model to `'fable'` by hand. Revert to `'fable'` only once the
+    suspension lifts.
 
 ### Starting points
 

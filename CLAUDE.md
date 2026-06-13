@@ -2,11 +2,16 @@
 
 This repo has two halves that stand alone but work together:
 
-- **`plugin/`** — the Claude Code plugin. Ships **skills only** (no bundled
-  workflow): `workflow-composer` (author), `toolkit-scaffold` (start),
-  `workflow-debugger` (diagnose a run), `upgrade-canary` (re-verify the runtime
-  after an upgrade), plus a `Stop` hook that auto-surfaces a finished run's audit
-  report.
+- **`plugin/`** — the Claude Code plugin. Ships **five skills** — `workflow-composer`
+  (author), `toolkit-scaffold` (start), `workflow-debugger` (diagnose a run),
+  `upgrade-canary` (re-verify the runtime after an upgrade), `independent-analysis`
+  (trigger the bias-free analysis workflow when relevant) — plus a `Stop` hook that
+  auto-surfaces a finished run's audit report, and **one bundled workflow**:
+  `independent-analysis` (domain-agnostic bias-free multi-lens analysis,
+  invocable as `workflow-toolbox:independent-analysis`; a byte-identity mirror of the
+  canonical `toolkit/workflows/` artifact — the workflow its same-named skill triggers).
+  The dev-workflow family stays out of the plugin (dev-only); independent-analysis
+  ships because it helps any analysis task.
 - **`toolkit/`** — `@workflow-toolbox`, a compile-time TypeScript pattern library for Workflow
   scripts: `@workflow-toolbox/runtime` (sandbox typings + `FakeRuntime`), `@workflow-toolbox/patterns` (the
   seven patterns + result envelope), `@workflow-toolbox/build` (`defineWorkflow` + the `workflow-toolbox`
@@ -43,6 +48,12 @@ pnpm test && pnpm typecheck && pnpm lint
 - **Committed artifacts are generated, not hand-edited.** Rebuild a workflow with
   `pnpm wt:build <entry.workflow.ts>`; the artifacts in `toolkit/workflows/` are
   byte-identity-checked. Rebuild the debugger CLIs with `pnpm debugger:build`.
+  The bundled plugin workflow `plugin/workflows/independent-analysis.js` is a
+  byte-identity **mirror** of its canonical `toolkit/workflows/` artifact — after
+  rebuilding that composition, refresh the mirror with `pnpm mirror:plugin-workflow`
+  (the `plugin-bundle-identity` gate fails if it drifts). The bundled study sources
+  under `plugin/skills/workflow-composer/assets/examples/toolkit/` are likewise
+  byte-identity copies of `toolkit/examples/` (same gate).
 - **Validate the plugin** before shipping a plugin change:
   `claude plugin validate . --strict` and `claude plugin validate ./plugin --strict`.
   Bump `plugin/.claude-plugin/plugin.json` `version` on any release-worthy change.

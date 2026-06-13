@@ -164,7 +164,7 @@ Spawns one fresh-context subagent.
 | Option | Marker | Meaning |
 |---|---|---|
 | `schema` | [observed] | JSON Schema. Forces structured output; see below. |
-| `model` | [verified] | Per-agent model alias (`'haiku'`/`'sonnet'`/`'opus'`/`'fable'`/`'inherit'`) or a full model ID. Omit to inherit the session model. No validation — a typo is passed through and fails later. |
+| `model` | [verified] | Per-agent model alias (`'haiku'`/`'sonnet'`/`'opus'`/`'fable'`/`'inherit'`) or a full model ID. Omit to inherit the session model. No validation — a typo is passed through and fails later. **`'fable'` is suspended (export control, since 2026-06-12) and errors at runtime — do not select it until the suspension lifts.** |
 | `label` | [verified] | Display name shown in `/workflows`. Not part of the resume cache key. |
 | `phase` | [verified] | Assign this call to a named progress group, overriding the current `phase()` for this call only — useful inside `pipeline()`/`parallel()` stages, where the global phase state would race. |
 | `agentType` | [verified] | Run as a registered subagent type instead of the default workflow subagent. |

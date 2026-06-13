@@ -358,7 +358,9 @@ verifiers cost far more, which is exactly why the floor carries a safety margin.
 Model tiering: mechanical high-volume leaf work → `'haiku'`; judgment work →
 inherit the session model. Verification quality is model-sensitive — verifiers
 default to `BEST_MODEL` (a constant exported by `@workflow-toolbox/runtime`,
-currently `'fable'`), and explicitly passing anything weaker logs a warning.
+currently `'opus'` — it was `'fable'` until Fable 5's export-control suspension on
+2026-06-12; the constant names the strongest *callable* tier), and explicitly
+passing anything weaker logs a warning.
 In-repo adopter: dev-review-fix routes its consolidation agent (a mechanical
 dedup/merge, ~44k tokens measured) to `'sonnet'` — safe because the merge is
 triple-netted (in-code concat fallback, integrity guards, downstream

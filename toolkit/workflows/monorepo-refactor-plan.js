@@ -362,7 +362,7 @@ var __wt = (() => {
   }
 
   // ../packages/runtime/src/constants.ts
-  var BEST_MODEL = "fable";
+  var BEST_MODEL = "opus";
 
   // ../packages/patterns/src/adversarial-verification.ts
   var VERIFIER_SCHEMA = {

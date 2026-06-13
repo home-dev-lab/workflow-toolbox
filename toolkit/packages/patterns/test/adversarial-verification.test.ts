@@ -384,14 +384,14 @@ describe('adversarialVerification — lenses', () => {
 // ---------------------------------------------------------------------------
 
 describe('adversarialVerification — model', () => {
-  it('defaults to BEST_MODEL (fable) on verifier calls', async () => {
+  it('defaults to BEST_MODEL (opus) on verifier calls', async () => {
     const rt = new FakeRuntime({
       onAgent: () => confirmedVote,
     })
 
     await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1 }))
 
-    expect(BEST_MODEL).toBe('fable')
+    expect(BEST_MODEL).toBe('opus')
     expect(rt.calls[0]!.opts?.model).toBe(BEST_MODEL)
   })
 
@@ -411,7 +411,7 @@ describe('adversarialVerification — model', () => {
     expect(rt.calls[0]!.opts?.model).toBe(BEST_MODEL)
   })
 
-  it('warns when opus (no longer best) is specified explicitly', async () => {
+  it('warns when fable (suspended, no longer best) is specified explicitly', async () => {
     const rt = new FakeRuntime({
       onAgent: () => confirmedVote,
     })
@@ -420,12 +420,12 @@ describe('adversarialVerification — model', () => {
       claims: ['c0'],
       votes: 1,
       refuteThreshold: 1,
-      model: 'opus',
+      model: 'fable',
     }))
 
-    expect(result.warnings.some(w => w.includes('downgraded') && w.includes('opus'))).toBe(true)
+    expect(result.warnings.some(w => w.includes('downgraded') && w.includes('fable'))).toBe(true)
     // model still forwarded as specified
-    expect(rt.calls[0]!.opts?.model).toBe('opus')
+    expect(rt.calls[0]!.opts?.model).toBe('fable')
   })
 
   it('emits downgrade warning when non-best model specified', async () => {
