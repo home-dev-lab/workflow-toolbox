@@ -11,7 +11,7 @@ machine that ran them with `npx workflow-toolbox report <runId>`.
 **Workflow Toolbox** is a free Claude Code plugin plus the `@workflow-toolbox`
 npm packages: seven tested orchestration patterns for Claude Code's **Workflow
 tool** (research preview), skills to author, scaffold, and debug workflows, and
-eight runnable example compositions — including a full dev pipeline
+nine runnable example compositions — including a full dev pipeline
 (plan → implement → review-fix).
 
 What the journals show:
@@ -232,8 +232,8 @@ what happened and whether resuming is safe.
   TypeScript composition into one self-contained `.js` the Workflow tool runs
   directly.
 
-Eight example compositions live in `toolkit/examples/`; their built artifacts
-(12–37 KB each) are committed under `toolkit/workflows/` and run as-is via
+Nine example compositions live in `toolkit/examples/`; their built artifacts
+(12–52 KB each) are committed under `toolkit/workflows/` and run as-is via
 `scriptPath` — no install, no build. Start with
 [toolkit/README.md](toolkit/README.md). The flagship set is the
 **dev-workflow family** (`dev-plan` → `dev-implement` → `dev-review-fix`, plus
@@ -426,7 +426,7 @@ workflow-toolbox/
 │   │   ├── scaffold/           # @workflow-toolbox/scaffold — .workflow.ts skeleton emitter (private; bundled into the CLI)
 │   │   ├── smoke/              # @workflow-toolbox/smoke    — headless upgrade-canary harness (private; maintainer-only)
 │   │   └── std/                # @workflow-toolbox/std      — zero-dep narrowing helpers (private; bundled)
-│   ├── examples/               # 8 teaching compositions (*.workflow.ts)
+│   ├── examples/               # 9 teaching compositions (*.workflow.ts)
 │   └── workflows/              # committed build artifacts — runnable as-is
 ├── docs/
 │   └── public/                 # architecture, known issues, ADRs

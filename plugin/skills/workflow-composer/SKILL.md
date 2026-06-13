@@ -162,9 +162,9 @@ permission dialog and edit for re-invocation. `workflow-toolbox build` warns fro
 512 KB); an oversized workflow is usually two workflows with a checkpoint between
 them.
 
-### Eight shipped compositions to read as models
+### Nine shipped compositions to read as models
 
-The repository ships eight built example compositions under `toolkit/workflows/`.
+The repository ships nine built example compositions under `toolkit/workflows/`.
 Five have their TypeScript sources bundled with this skill for study at
 `assets/examples/toolkit/`:
 
@@ -194,6 +194,15 @@ public repository:
 - [`dev-full.workflow.ts`](https://github.com/home-dev-lab/workflow-toolbox/blob/main/toolkit/examples/dev-full.workflow.ts)
   — chains the three children via `rt.workflow()` over their committed artifacts,
   converting human gates into code gates.
+
+And one standalone analysis composition:
+
+- [`independent-analysis.workflow.ts`](https://github.com/home-dev-lab/workflow-toolbox/blob/main/toolkit/examples/independent-analysis.workflow.ts)
+  — (optionally) auto-propose diverse lenses → `fanOutAndSynthesize` one analyst per
+  lens, dedup against the caller's stated assumptions → `adversarialVerification`
+  (refute-first) of the survivors. Bias-free multi-lens review of any subject (a
+  design, plan, claim, decision, or code); the `verifierModel` input overrides
+  `adversarialVerification`'s BEST_MODEL default.
 
 These `.ts` sources are **reading material** — they are built with `npx workflow-toolbox build`,
 not run directly as raw workflows. Their committed artifacts live under

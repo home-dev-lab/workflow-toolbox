@@ -17,7 +17,7 @@ sources you read rather than run.
 
 ## The `toolkit/` subdir
 
-Four TypeScript composition **sources** from the `@workflow-toolbox` toolkit, kept here as
+Five TypeScript composition **sources** from the `@workflow-toolbox` toolkit, kept here as
 reading material that shows the library form of a workflow:
 
 - `pr-review.workflow.ts` — classify the change → per-lens reviewers →
@@ -27,6 +27,9 @@ reading material that shows the library form of a workflow:
 - `monorepo-refactor-execute.workflow.ts` — execute the plan with mutating
   agents behind isolation.
 - `doc-rewrite.workflow.ts` — generate-and-filter doc rewrites.
+- `dev-review-fix.workflow.ts` — review → consolidate → adversarially verify →
+  fix → check loop over a change set (the cost-engineering reference: severity-
+  gated votes, tiered consolidator, snippet-enriched claims).
 
 These `.ts` files are **not directly runnable** as raw workflows. They are
 built into `.js` artifacts with `npx workflow-toolbox build <entry>.workflow.ts --typecheck`

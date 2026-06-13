@@ -144,9 +144,9 @@ workflow-toolbox/
     │   └── scaffold/                    # @workflow-toolbox/scaffold — spec → build-clean .workflow.ts skeleton
     │       ├── src/scaffold.ts          #   pure scaffoldWorkflow emitter (unit-tested) + impure CLI
     │       └── test/fixtures/           #   committed all-patterns golden (typechecked + linted by the gates)
-    ├── examples/                        # 8 compositions (.workflow.ts) + their tests
+    ├── examples/                        # 9 compositions (.workflow.ts) + their tests
     ├── bin/                             # wt-debug.mjs + wt-stop-hook.mjs — source-of-truth twins of plugin/bin
-    └── workflows/                       # committed build artifacts (12–48 KB each)
+    └── workflows/                       # committed build artifacts (12–52 KB each)
 ```
 
 - **`@workflow-toolbox/runtime`** is types + a test fake only — near-zero runtime code. It is the unstable-surface firewall (§2.2).
@@ -202,7 +202,7 @@ Every pattern: takes `rt` + a typed options object (prompts as data, items, sche
 
 ### L2 — Compositions
 
-Plain async functions in workflow definition files that call several patterns in sequence/parallel. The eight shipped examples live here (§6.3). Compositions are **examples and templates, not library API** — copying and editing one is the intended usage.
+Plain async functions in workflow definition files that call several patterns in sequence/parallel. The nine shipped examples live here (§6.3). Compositions are **examples and templates, not library API** — copying and editing one is the intended usage.
 
 ### L3 — Checkpointed compositions (HITL)
 
@@ -244,6 +244,7 @@ export default defineWorkflow({
 3. **`monorepo-refactor-execute`** — takes the approved plan via `args`, re-validates it, then runs the *known* steps with `rt.pipeline` directly (planAndExecute would be waste — the subtasks are no longer unknown). Mutating agents run with `isolation: 'worktree'`; fresh-evidence checker agents verify each step's claim.
 4. **`doc-rewrite`** — `generateAndFilter` (N candidate rewrites, index-diverse prompts → evaluate against criteria) → `loopUntilDone` (evaluator-optimizer until PASS or a typed stop) → final version with an honest `stoppedBy`.
 5. **The dev-workflow family** — `dev-plan`, `dev-implement`, `dev-review-fix`, plus the `dev-full` orchestrator: a TDD feature pipeline with human gates between phases. Documented in depth in [dev-workflow.md](dev-workflow.md).
+6. **`independent-analysis`** — (optional) lens auto-proposal → `fanOutAndSynthesize` (one analyst per lens, dedup against the caller's stated assumptions) → `adversarialVerification` (refute-first) of the survivors. A bias-free multi-lens review of an arbitrary subject (design, plan, claim, decision, or code); the `verifierModel` input overrides `adversarialVerification`'s BEST_MODEL default. Built to counter the driving model's go-fast / confirm-prior-assumption bias.
 
 ---
 
