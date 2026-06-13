@@ -40,6 +40,48 @@ inherit its blind spots — that is the whole point.
 "could this be wrong?" surface — the fan-out isn't worth it. It **finds issues, it
 does not fix them**: apply confirmed findings yourself.
 
+## Honest scope & limits — read before you trust a verdict
+
+This workflow is powerful for the right failure modes and near-worthless for others.
+Knowing the difference is the difference between a real safety net and theatre.
+
+1. **Same-model fan-out is CORRELATED, not independent.** Every analyst, the
+   synthesizer, and the verifiers are the *same model* with the *same training priors*.
+   Pinning agents to distinct lenses diversifies *framing*, not *priors*. So it
+   genuinely helps **coverage / attention / thoroughness** gaps and **claims checkable
+   against external ground truth** (the code, the diff, the actual file, CI) — but on a
+   reasoning error rooted in the model's training, all N agents miss it in lockstep, and
+   a clean "no issues" panel just measures shared agreement, not correctness. **The only
+   real decorrelation is external evidence** (agents that READ real sources) **or a
+   genuinely different model** as verifier (a different family for *diversity*, not a
+   stronger tier for strength). Reasoning harder does not escape the shared priors;
+   evidence does.
+
+2. **Premise quality caps the result — garbage in, garbage out.** A closed lens-set or
+   a missing source transfers *your* blind spot to every agent at once. The workflow
+   cannot rescue an impoverished prompt. So: pass the **real evidence** for any factual
+   sub-question via `sourceRefs` (or tell agents to look it up), and give **open**
+   lens-sets (`lenses: []` to auto-propose, or genuinely diverse angles) rather than a
+   menu that already encodes your assumptions.
+
+3. **It fires on the wrong distribution if you trigger on a feeling.** You reach for it
+   loudest when you *already* doubt — and it stays silent exactly when you are
+   *confidently* wrong. Trigger on **observable proxies** instead: irreversible or
+   outward-facing work, anything touching money / security / data-loss, wide fan-out or
+   untested callers, or "about to claim done".
+
+4. **Authority-of-process can manufacture false confidence.** An "N agents verified
+   this" badge can turn a low-confidence-correct call into a high-confidence-*wrong* one.
+   **The caller stays the arbiter:** a verdict that contradicts your richer, in-context
+   understanding does not auto-win — the agents have *less* context than you do.
+
+5. **Lens-set bias / false closure.** A blind spot that no lens points at returns as
+   "we checked N angles". Absence of a finding is **not** evidence of soundness — it is
+   evidence about the lenses you chose.
+
+For evidence-grounded corroboration of *claims against an external corpus* (rather than
+multi-lens critique of one subject), reach for its sibling `source-triangulator` instead.
+
 ## How to invoke
 
 It is a Workflow-tool workflow (main-loop only). `scriptPath` always resolves;
