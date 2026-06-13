@@ -506,6 +506,12 @@ come from that literature, here is the mapping, and what is different here.
   agentic workflows as graphs refined at runtime for parallelism and error
   tolerance — the dynamic counterpart of the deterministic
   `pipeline`/`parallel` topologies used here.
+- [From Static Templates to Dynamic Runtime Graphs](https://arxiv.org/abs/2603.22386)
+  (Yue et al., 2026) — a survey that organizes the field by *when* a workflow's
+  structure is determined: fixed in advance, or searched/generated at runtime.
+  It names the axis this repository sits on — deliberately static,
+  deterministic scaffolds, with per-run measurement as the payoff for giving up
+  runtime adaptation.
 
 None of these projects share code or authors with this one; the convergence is
 independent. What this repository adds to that conversation is measurement:
