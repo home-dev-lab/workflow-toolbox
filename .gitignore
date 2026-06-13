@@ -1,6 +1,9 @@
 # Local Claude Code project config + personal skills (not part of the plugin)
 /.claude/
 
+# Private per-developer Claude memory (auto-loaded standalone, must not be committed)
+/CLAUDE.local.md
+
 # magic-claude craft runner state — local tooling, not part of the plugin
 /.craft/
 
