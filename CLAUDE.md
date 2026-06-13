@@ -2,10 +2,12 @@
 
 This repo has two halves that stand alone but work together:
 
-- **`plugin/`** — the Claude Code plugin. Ships **five skills** — `workflow-composer`
+- **`plugin/`** — the Claude Code plugin. Ships **six skills** — `workflow-composer`
   (author), `toolkit-scaffold` (start), `workflow-debugger` (diagnose a run),
   `upgrade-canary` (re-verify the runtime after an upgrade), `independent-analysis`
-  (trigger the bias-free analysis workflow when relevant) — plus a `Stop` hook that
+  (trigger the bias-free analysis workflow when relevant), `deep-grounding`
+  (collect + verify evidence against the real sources before asserting/analyzing) —
+  plus a `Stop` hook that
   auto-surfaces a finished run's audit report, and **one bundled workflow**:
   `independent-analysis` (domain-agnostic bias-free multi-lens analysis,
   invocable as `workflow-toolbox:independent-analysis`; a byte-identity mirror of the
