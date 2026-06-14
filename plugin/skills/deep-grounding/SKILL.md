@@ -114,12 +114,50 @@ everything.
 - **It grounds; you still judge.** It improves *what your conclusion is built on*; it does
   not make the conclusion correct by itself. You remain the arbiter.
 
-## Scaling up (the engine)
+## Scaling up: inline → parallel background subagents → (rarely) teams
 
-For a handful of sources, run this reflex **inline** — just do it. When breadth is large
-(many files/areas/sources to read, sources that must be read in isolation so one can't
-contaminate another's extraction, or contradictions worth tabulating deterministically),
-escalate to the **`deep-grounding` workflow** — the same recursive crawl fanned out across
-fresh per-source agents, keeping the source bodies out of your context and deduping /
-triangulating in deterministic code. *(Workflow engine: build pending — see
-`docs/internal/source-triangulator-design.md`.)*
+For a handful of sources, run the reflex **inline** — just do it. You have the full
+toolset, so *acquire* each source by whatever it takes: read a file, fetch a URL, call an
+MCP server (Jira / Confluence / Loki / Gmail / …), or **run a shell / node script** to
+produce it. Don't restrict yourself to "read" — get the evidence by any means.
+
+When breadth grows — many sources, or sources that must be read **in isolation** so one
+can't contaminate another's extraction — escalate by **fanning out parallel subagents**:
+one reader per source, each blind to the others, each returning a distilled
+`{ answer, quote, locator, tier }`; you (the lead) reconcile and synthesize. This keeps
+source bodies out of your context and is the pattern the Claude Code docs themselves cite
+("a reviewer subagent that dispatches a verifier per finding"). **Tier the models** — a
+cheap model (`haiku`) for the mechanical per-source extraction, the strong model
+(inherit / `opus`) for conflict-detection and final synthesis — set `model` per subagent
+(per-invocation `model`, or the subagent definition's `model:` frontmatter). A subagent
+can itself fan out further; background spawning is capped at 5 levels deep.
+
+**Run them in parallel, in the background — the mechanic (do not get this wrong).** To
+actually run N readers concurrently, emit **all N `Agent` (Task) tool calls in ONE
+message** — a single assistant turn carrying N tool-use blocks. They launch together in the
+background and you collect each result as it notifies. The recurring failure is to *say*
+"in parallel" but emit one call, await its result, then emit the next — that is **sequential**,
+not parallel. The rule: if the calls are independent (and blind per-source extraction always
+is — one source's read never depends on another's output), they belong in the **same**
+message; never emit-await-emit. Only chain across messages when a later read genuinely needs
+an earlier one's result.
+
+**Subagents vs. agent teams — decide on one axis: do the workers need to talk to each
+other?**
+
+- **Independent reads, reconcile-at-the-end → parallel subagents.** The grounding default.
+  Extraction is embarrassingly parallel, isolation is a *feature* (blind readers can't
+  contaminate each other), and everything reports to one reconciler. Cheaper, simpler.
+- **Workers must challenge / hand off findings mid-investigation → agent teams.** Only when
+  direct teammate-to-teammate dialogue genuinely converges faster (e.g. competing-hypothesis
+  diagnosis). Teams cost significantly more tokens, add coordination overhead, are
+  experimental / opt-in — and their direct-communication model **undermines the
+  blind-extraction isolation grounding relies on**. So for pure evidence-gathering, prefer
+  subagents; reach for teams only when the investigation is a genuine multi-party debate.
+
+A compiled **workflow** engine for this (deterministic dedup / triangulation across a large
+source set, with a machine-readable audit trail) was prototyped and **deliberately dropped**:
+for the interactive grounding this skill serves, parallel background subagents cover the same
+fan-out with the full toolset and per-agent model tiering, at lower token cost and without the
+build-and-maintain overhead. Background subagents are the ceiling here — there is no engine to
+reach for.
