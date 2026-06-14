@@ -122,9 +122,6 @@ var __wt = (() => {
     return rel;
   }
 
-  // ../packages/patterns/src/generate-and-filter.ts
-  var REJECTED = Symbol("generate-and-filter:REJECTED");
-
   // ../packages/patterns/src/loop-until-done.ts
   async function loopUntilDone(rt, options) {
     const { initial, body, maxIterations, dryRounds, budgetFloor } = options;

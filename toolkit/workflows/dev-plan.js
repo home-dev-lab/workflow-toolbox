@@ -135,9 +135,6 @@ var __wt = (() => {
     return rel;
   }
 
-  // ../packages/patterns/src/generate-and-filter.ts
-  var REJECTED = Symbol("generate-and-filter:REJECTED");
-
   // ../packages/patterns/src/fan-out-and-synthesize.ts
   async function fanOutAndSynthesize(rt, options) {
     const {

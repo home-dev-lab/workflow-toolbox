@@ -270,9 +270,6 @@ var __wt = (() => {
     return { value, stats, warnings, trail };
   }
 
-  // ../packages/patterns/src/generate-and-filter.ts
-  var REJECTED = Symbol("generate-and-filter:REJECTED");
-
   // ../packages/patterns/src/fan-out-and-synthesize.ts
   async function fanOutAndSynthesize(rt, options) {
     const {

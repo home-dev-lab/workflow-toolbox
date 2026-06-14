@@ -94,9 +94,6 @@ var __wt = (() => {
     rt.log(message);
   }
 
-  // ../packages/patterns/src/generate-and-filter.ts
-  var REJECTED = Symbol("generate-and-filter:REJECTED");
-
   // monorepo-refactor-execute.workflow.ts
   var EXECUTE_RESULT_SCHEMA = {
     type: "object",

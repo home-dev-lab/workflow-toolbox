@@ -123,9 +123,6 @@ var __wt = (() => {
     };
   }
 
-  // ../packages/patterns/src/generate-and-filter.ts
-  var REJECTED = Symbol("generate-and-filter:REJECTED");
-
   // ../packages/runtime/src/constants.ts
   var BEST_MODEL = "opus";
 

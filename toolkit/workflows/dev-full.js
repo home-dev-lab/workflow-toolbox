@@ -110,9 +110,6 @@ var __wt = (() => {
     return rel;
   }
 
-  // ../packages/patterns/src/generate-and-filter.ts
-  var REJECTED = Symbol("generate-and-filter:REJECTED");
-
   // dev-full.workflow.ts
   function isRecord(v) {
     return typeof v === "object" && v !== null && !Array.isArray(v);
