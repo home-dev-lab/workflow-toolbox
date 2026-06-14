@@ -13,7 +13,7 @@
     "@workflow-toolbox/std": "workspace:*"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.170",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.177",
     "@workflow-toolbox/runtime": "workspace:*",
     "json-schema-to-ts": "^3.1.1"
   }
