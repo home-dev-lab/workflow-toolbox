@@ -75,6 +75,21 @@ export interface AdversarialVerificationOptions<TClaim> {
   model?: ModelAlias       // default BEST_MODEL ('opus')
   phase?: string
   maxVerifyClaims?: number // cap; truncated claims kept as 'unverified-by-cap'
+  /** Optional specialist subagent type to route EVERY verifier agent to (via the
+   *  Agent tool's `agentType`); omit (undefined) for the standard subagent. The
+   *  routing is surfaced on the agent call only — the trail is intentionally NOT
+   *  extended (kept minimal; the `model` field already covers model-sensitivity
+   *  auditing, the pattern's load-bearing audit concern).
+   *
+   *  v2.2 flexibility knob — NOT a proven quality win. The A/B that motivated the
+   *  family's agentType knobs measured a ~50% false-positive rate on a specialist
+   *  REVIEWER, and a refute-first verifier benefits LESS from domain specialization
+   *  than a producer does ("specialize the producer, not the skeptic"). Provided
+   *  for callers who want it; NEVER hard-code a private (e.g. `magic-claude:*`) type
+   *  as a default in a published artifact — the runtime THROWS on an unknown
+   *  agentType (with the available-agents list), and a private type breaks every
+   *  other consumer. Validate shape only; the runtime owns registry membership. */
+  verifierType?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +163,7 @@ export async function adversarialVerification<TClaim>(
     model,
     phase,
     maxVerifyClaims,
+    verifierType,
   } = options
 
   const refuteThreshold = refuteThresholdOpt ?? 2
@@ -209,6 +225,12 @@ export async function adversarialVerification<TClaim>(
     }
     return n
   })
+
+  if (verifierType !== undefined && verifierType.trim().length === 0) {
+    throw new Error(
+      'adversarialVerification: verifierType must be a non-empty subagent-type string (e.g. "magic-claude:ts-reviewer") — omit it for the standard subagent',
+    )
+  }
 
   // applyCap throws synchronously when maxVerifyClaims < 1
   if (maxVerifyClaims !== undefined && maxVerifyClaims < 1) {
@@ -294,11 +316,13 @@ export async function adversarialVerification<TClaim>(
             label: string
             phase?: string
             model?: ModelAlias
+            agentType?: string
           } = {
             schema: VERIFIER_SCHEMA,
             label: `adversarialVerification:verify:${claimIndex}:${voteIndex}`,
             ...(phase !== undefined ? { phase } : {}),
             model: effectiveModel,
+            ...(verifierType !== undefined ? { agentType: verifierType } : {}),
           }
 
           agentsSpawned++

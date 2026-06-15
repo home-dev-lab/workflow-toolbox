@@ -292,7 +292,8 @@ var __wt = (() => {
       votesPerClaim,
       model,
       phase,
-      maxVerifyClaims
+      maxVerifyClaims,
+      verifierType
     } = options;
     const refuteThreshold = refuteThresholdOpt ?? 2;
     if (claims.length === 0) {
@@ -335,6 +336,11 @@ var __wt = (() => {
       }
       return n;
     });
+    if (verifierType !== void 0 && verifierType.trim().length === 0) {
+      throw new Error(
+        'adversarialVerification: verifierType must be a non-empty subagent-type string (e.g. "magic-claude:ts-reviewer") \u2014 omit it for the standard subagent'
+      );
+    }
     if (maxVerifyClaims !== void 0 && maxVerifyClaims < 1) {
       throw new Error(
         `adversarialVerification: maxVerifyClaims must be >= 1, got ${maxVerifyClaims}`
@@ -378,7 +384,8 @@ ${renderClaim(claim)}`;
               schema: VERIFIER_SCHEMA,
               label: `adversarialVerification:verify:${claimIndex}:${voteIndex}`,
               ...phase !== void 0 ? { phase } : {},
-              model: effectiveModel
+              model: effectiveModel,
+              ...verifierType !== void 0 ? { agentType: verifierType } : {}
             };
             agentsSpawned++;
             return rt.agent(prompt, opts);

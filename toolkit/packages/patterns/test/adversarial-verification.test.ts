@@ -448,6 +448,54 @@ describe('adversarialVerification — model', () => {
 })
 
 // ---------------------------------------------------------------------------
+// verifierType — specialist subagent routing for the verifier agents.
+// v2.2 flexibility knob, NOT a proven quality win: the A/B that motivated the
+// family's agentType knobs measured a ~50% false-positive rate on a specialist
+// REVIEWER, and a refute-first verifier benefits LESS from domain specialization
+// than a producer does ("specialize the producer, not the skeptic"). Routing is
+// surfaced via the agent call (opts.agentType); the trail is intentionally not
+// extended (kept minimal — see the option's doc comment).
+// ---------------------------------------------------------------------------
+
+describe('adversarialVerification — verifierType', () => {
+  it('omits agentType on verifier calls when verifierType is not set (standard subagent)', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    await adversarialVerification(rt, makeOptions({ claims: ['c0', 'c1'], votes: 2 }))
+
+    expect(rt.calls.length).toBeGreaterThan(0)
+    expect(rt.calls.every(c => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('routes every verifier call to the specialist subagent type when set', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    await adversarialVerification(rt, makeOptions({
+      claims: ['c0', 'c1'],
+      votes: 2,
+      verifierType: 'magic-claude:ts-reviewer',
+    }))
+
+    expect(rt.calls.length).toBe(4)
+    expect(rt.calls.every(c => c.opts?.agentType === 'magic-claude:ts-reviewer')).toBe(true)
+  })
+
+  it('rejects an empty verifierType string', async () => {
+    const rt = new FakeRuntime()
+    await expect(
+      adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1, verifierType: '' })),
+    ).rejects.toThrow(/verifierType/)
+  })
+
+  it('rejects a whitespace-only verifierType string', async () => {
+    const rt = new FakeRuntime()
+    await expect(
+      adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1, verifierType: '   ' })),
+    ).rejects.toThrow(/verifierType/)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Control schema shape
 // ---------------------------------------------------------------------------
 
