@@ -6,11 +6,17 @@ read and predict; only the work *inside* each agent is non-deterministic. A
 "pattern" is a recurring **code shape** around those agent calls: a way to
 route, fan out, vote, loop, or decompose.
 
-There are two ways to use a pattern:
+There are **three** ways to use a pattern:
 
-- **Raw JavaScript idiom** — write the shape inline. Best for one-off
-  workflows. You control the prompts, the schemas, and the control flow
-  directly; nothing is hidden. The snippets below show each shape in this form.
+- **Inline in the main conversation loop** — run the shape *by hand*, with **no
+  workflow script at all**: the main loop emits the `Agent` (Task) tool calls itself
+  and reconciles the results. Best for a one-off where you want the pattern's value
+  (refute-first verify, fan-out, tournament, loop-until-dry) without a build step.
+  This is what `deep-grounding` reaches for; see the translation table below.
+- **Raw JavaScript idiom** — write the shape inline **as a workflow script** run by
+  the Workflow tool. Best for a one-off whose orchestration is worth scripting but not
+  maintaining. You control the prompts, schemas, and control flow directly; nothing is
+  hidden. The snippets below show each shape in this form.
 - **The `@workflow-toolbox` toolkit** — the same shapes as a typed library, one function per
   pattern, each returning a uniform result envelope (`value` + `stats` +
   `warnings` + `trail`). Best for repeatable, maintained workflows where you
@@ -18,8 +24,26 @@ There are two ways to use a pattern:
   `toolkit/README.md` for the authoring contract; each pattern below names its
   toolkit function.
 
-The raw idiom teaches you the shape. The toolkit hardens it. Reach for the
-toolkit once a workflow is worth maintaining.
+The inline-main-loop mode runs the shape; the raw idiom scripts it; the toolkit
+hardens it. Climb only as far as reuse, scale, or determinism forces you (see the
+orchestration ladder in `SKILL.md`).
+
+### Translating a shape to the main-loop (inline) mode
+
+The snippets below use the sandbox globals (`agent`, `parallel`, `pipeline`) because
+they are written as workflow scripts. To run the *same shape* inline in the main
+conversation loop, with no script, map each global to its hand-run equivalent:
+
+| Sandbox global (in a workflow) | Main-loop (inline) equivalent |
+|---|---|
+| `parallel(thunks)` | Emit **all** the `Agent` calls in **one** assistant message — they run concurrently. (Saying "in parallel" then emitting one call and awaiting it is *sequential* — the recurring mistake.) |
+| `pipeline(items, a, b)` | Sequence across messages: run stage `a`, read results, then emit stage `b`. No per-item barrier-free streaming — you reconcile each stage yourself. |
+| `agent(prompt, { schema })` | One `Agent` call; the `schema` becomes an explicit output-shape instruction in the prompt (or a structured-output subagent). You read fields off the returned text. |
+| `.filter(Boolean)` + counting | Do it yourself in the reply: a dead/dropped agent returns nothing usable — drop it and **say how many** you dropped. |
+| `budget` / `resumeFromRunId` / `trail` | **Not available inline** — these are exactly what graduate you to a compiled workflow (rung 4). |
+
+The reconciliation (tally, dedup, verdict) stays your job either way — never ask a
+model to count.
 
 ## Conventions used in every snippet
 
