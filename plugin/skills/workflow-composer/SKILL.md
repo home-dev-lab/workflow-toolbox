@@ -84,8 +84,12 @@ just run by hand instead of compiled. Route to the lowest rung that fits:
 4. **Compiled workflow** (the rest of this guide) — graduate here the moment **any**
    of three holds, and not before: **reuse** (kept, re-run, version-pinned), **scale**
    (enough fan-out that intermediate results would flood the main loop's context — the
-   one thing inline cannot give you), or **determinism/resume** (the journal +
-   `resumeFromRunId`). Absent all three, stay on rung 3.
+   one thing inline cannot give you; the test is context-flood, not a fixed file count),
+   or **determinism/resume** (the journal + `resumeFromRunId`). Note these last two are
+   distinct: *resume* recovers a **single partially-failed run within the same session**;
+   re-running the workflow on each new PR (across sessions) is just a fresh launch every
+   time — that's **reuse**, not resume, and resume's journal cache does not carry across
+   sessions. Absent all three, stay on rung 3.
 5. **Agent teams** — only when the workers must *talk to each other* mid-run
    (competing-hypothesis debate, hand-offs), and only when the feature is enabled.
    See [deep-grounding](../deep-grounding/SKILL.md) (*"Subagents vs. agent teams"*) for

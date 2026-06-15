@@ -45,6 +45,13 @@ conversation loop, with no script, map each global to its hand-run equivalent:
 The reconciliation (tally, dedup, verdict) stays your job either way — never ask a
 model to count.
 
+**Tuning scrutiny inline.** The toolkit's per-item knobs (e.g. `votesPerClaim` for
+severity-gated verifier counts) have no inline helper — you tune by hand: emit fewer
+`Agent` calls for low-stakes items and more for high-stakes ones (the same intent,
+done by choosing how many calls go into the message). Likewise model tiering is just
+the `model` on each `Agent` call. The shapes carry over; only the bookkeeping is
+manual.
+
 ## Conventions used in every snippet
 
 - An agent call returns `null` when the agent fails, skips, or runs out of

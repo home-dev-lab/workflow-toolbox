@@ -155,16 +155,21 @@ other?**
   blind-extraction isolation grounding relies on**. So for pure evidence-gathering, prefer
   subagents; reach for teams only when the investigation is a genuine multi-party debate.
 
-**Is agent teams even available? — tool presence is the reliable signal.** Teams is an
+**Is agent teams even available? — you observe it, you don't compute it.** Teams is an
 opt-in experiment gated by `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in `settings.json`
-(`env`), Claude Code ≥ 2.1.32. You can't read that setting from here, but you don't need
-to: the team tools (`TeamCreate`, `TeamDelete`, `SendMessage`) appear in your tool set
-**only when the feature is enabled**, so *"are the team tools available to me?"* is a
-reliable proxy for *"is teams on?"*. If they're absent, do not propose the teams rung at
-all — it isn't available. (Advanced: a *dedicated* subagent can carry the team tools via
-its `tools:` allowlist and preload a skill via the `skills:` frontmatter field — the full
-skill content is injected at startup — but that builds a teams orchestrator; it is not how
-this skill, running in the main loop, decides between subagents and teams.)
+(`env`), Claude Code ≥ 2.1.32. A skill cannot *execute* anything to detect this — but no
+execution is needed, because detection here is an **observation, not a computation**: the
+team tools (`TeamCreate`, `TeamDelete`, `SendMessage`) are present in your tool set **only
+when the feature is enabled**, and you (the model running this skill in the main loop)
+already see your own available tools. So this skill simply instructs you to *notice*
+whether those tools are in your set — *"are the team tools available to me?"* is a reliable
+proxy for *"is teams on?"*. If they're absent, do not propose the teams rung — it isn't
+available. (This is exactly why no extra machinery — a code-running step, or a dedicated
+agent just to detect — is required: the check is reading context you already hold.
+Separately, a *dedicated* subagent **can** carry the team tools via its `tools:` allowlist
+and preload a skill via the `skills:` frontmatter field — the full skill content is
+injected at startup — but that *builds a teams orchestrator* to run teams; it is not needed
+to *decide* between subagents and teams, which this main-loop skill does by observation.)
 
 A compiled **workflow** engine for this (deterministic dedup / triangulation across a large
 source set, with a machine-readable audit trail) was prototyped and **deliberately dropped**:
