@@ -100,6 +100,9 @@ export interface DevFullInput {
   /** Implementer (green) model tier for the dev-implement child. null = OMIT,
    *  so the child's default ('sonnet') rules. */
   implementerModel: string | null
+  /** Fixer model tier for the dev-review-fix child. null = OMIT, so the child's
+   *  default ('sonnet') rules. */
+  fixerModel: string | null
   /** Optional VERBATIM diff command (git projects). When set it WINS over the
    *  planned-files derivation — the real diff also catches unplanned files. */
   diffCommand: string | null
@@ -410,6 +413,17 @@ function parseInput(raw: unknown): DevFullInput {
     implementerModel = raw['implementerModel']
   }
 
+  let fixerModel: string | null = null
+  if (raw['fixerModel'] !== undefined && raw['fixerModel'] !== null) {
+    if (typeof raw['fixerModel'] !== 'string' || raw['fixerModel'].trim().length === 0) {
+      throw new Error(
+        'dev-full: "fixerModel" must be a non-empty model alias (e.g. "sonnet", "opus", "haiku", ' +
+        '"inherit") — omit to use the dev-review-fix default ("sonnet")',
+      )
+    }
+    fixerModel = raw['fixerModel']
+  }
+
   return {
     goal,
     areas,
@@ -421,6 +435,7 @@ function parseInput(raw: unknown): DevFullInput {
     dimensions,
     diffCommand,
     implementerModel,
+    fixerModel,
   }
 }
 
@@ -615,6 +630,7 @@ async function run(rt: WorkflowRuntime, input: DevFullInput): Promise<DevFullOut
   }
   if (input.dimensions !== null) reviewArgs['dimensions'] = input.dimensions
   if (input.maxFixIterations !== null) reviewArgs['maxFixIterations'] = input.maxFixIterations
+  if (input.fixerModel !== null) reviewArgs['fixerModel'] = input.fixerModel
 
   // -------------------------------------------------------------------------
   // Phase 'Review & Fix' — dev-review-fix child (narrow-only: the review

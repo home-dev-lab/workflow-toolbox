@@ -63,6 +63,7 @@
 import { defineWorkflow } from '@workflow-toolbox/build/define'
 import { adversarialVerification, loopUntilDone, warn } from '@workflow-toolbox/patterns'
 import type { PatternStats, VerifiedClaim } from '@workflow-toolbox/patterns'
+import { BEST_MODEL } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
 import type { FromSchema } from 'json-schema-to-ts'
 
@@ -72,8 +73,12 @@ import type { FromSchema } from 'json-schema-to-ts'
 // downstream adversarial verification of every finding all catch a bad merge
 // before anything ships. 'sonnet' rather than 'haiku' because the agent
 // rewrites large finding text — lossy merges are only partially guarded.
-// Reviewers, verifiers (BEST_MODEL via the pattern), fixer and checker are
-// quality-critical and deliberately NOT tiered.
+// Reviewers and verifiers (BEST_MODEL via the pattern) are quality-critical and
+// deliberately NOT tiered. The FIXER — the per-iteration execution agent — is
+// tiered by the `fixerModel` knob (default 'sonnet', mirroring dev-implement's
+// implementer), and the fix CHECKER is pinned to BEST_MODEL at its call site so
+// the sole source of truth for green stays strong precisely BECAUSE the fixer
+// may be tiered down.
 const MERGE_MODEL: ModelAlias = 'sonnet'
 
 // ---------------------------------------------------------------------------
@@ -104,6 +109,13 @@ export interface DevReviewFixInput {
   adaptationNote: string | null
   /** Fix loop bound. */
   maxFixIterations: number
+  /** Model for the per-iteration FIXER (execution) agent. Default 'sonnet' —
+   *  the fixer is the high-volume execution stage (runs every iteration); the
+   *  fix checker (sole source of truth for green) is pinned to BEST_MODEL
+   *  regardless. Override to 'opus'/BEST_MODEL on hard fixes where a stronger
+   *  fixer converges in fewer iterations, or 'inherit' to track the session
+   *  model. Mirrors dev-implement's implementerModel. */
+  fixerModel: ModelAlias
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +411,20 @@ function parseInput(raw: unknown): DevReviewFixInput {
     maxFixIterations = Math.floor(obj['maxFixIterations'])
   }
 
+  // The fixer (execution) model tier. Default 'sonnet'; the checker stays
+  // BEST_MODEL (set at the call site). ModelAlias is an open string union, so
+  // any non-empty string is a valid alias; only empty/non-string is rejected.
+  let fixerModel: ModelAlias = 'sonnet'
+  if (obj['fixerModel'] !== undefined) {
+    if (typeof obj['fixerModel'] !== 'string' || obj['fixerModel'].trim().length === 0) {
+      throw new Error(
+        'dev-review-fix: "fixerModel" must be a non-empty model alias (e.g. "sonnet", "opus", ' +
+        '"haiku", "inherit") — omit for the default "sonnet"',
+      )
+    }
+    fixerModel = obj['fixerModel']
+  }
+
   return {
     projectDir,
     testCommand,
@@ -411,6 +437,7 @@ function parseInput(raw: unknown): DevReviewFixInput {
     dimensions,
     adaptationNote,
     maxFixIterations,
+    fixerModel,
   }
 }
 
@@ -851,6 +878,10 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
             schema: FIX_RESULT_SCHEMA,
             label: `dev-review-fix:fix:${iteration}`,
             phase: 'Fix',
+            // High-volume per-iteration execution stage — tiered by the
+            // fixerModel knob (default 'sonnet'). The checker below is pinned
+            // to BEST_MODEL.
+            model: input.fixerModel,
           },
         )
         if (fix === null) {
@@ -883,6 +914,11 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
             schema: CHECK_RESULT_SCHEMA,
             label: `dev-review-fix:check:${iteration}`,
             phase: 'Fix',
+            // The fix checker is the ONLY source of truth for green — pinned to
+            // the strongest tier explicitly (NOT merely inherit), so the
+            // verifier stays strong independent of the session model precisely
+            // because the fixer above may be tiered down.
+            model: BEST_MODEL,
           },
         )
         if (check === null) {

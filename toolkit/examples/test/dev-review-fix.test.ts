@@ -606,7 +606,7 @@ describe('dev-review-fix model tiering', () => {
     expect(consolidate?.opts?.model).toBe('sonnet')
   })
 
-  it('keeps verifiers on BEST_MODEL and everything else on the session model', async () => {
+  it('routes every agent to its intended tier (verifiers + fix checker on BEST_MODEL, fixer on sonnet, reviewers inherit)', async () => {
     const rt = makeRuntime()
     await wf.run(rt, JSON.stringify(VALID_INPUT))
 
@@ -620,7 +620,16 @@ describe('dev-review-fix model tiering', () => {
         // "verifiers use the pattern default, untiered", not the default's
         // literal value (the pattern suite pins that once, deliberately).
         expect(call.opts?.model, `verifier ${label} must stay on BEST_MODEL`).toBe(BEST_MODEL)
+      } else if (label.startsWith('dev-review-fix:check:')) {
+        // The fix checker is the sole source of truth for green — pinned to
+        // BEST_MODEL precisely because the fixer is tiered down (see fixerModel).
+        expect(call.opts?.model, `fix checker ${label} must stay on BEST_MODEL`).toBe(BEST_MODEL)
+      } else if (label.startsWith('dev-review-fix:fix:')) {
+        // The fixer is the high-volume execution stage — tiered to the
+        // fixerModel default ('sonnet').
+        expect(call.opts?.model, `fixer ${label} must default to sonnet`).toBe('sonnet')
       } else {
+        // Reviewers (and any other agent) inherit the session model.
         expect(call.opts?.model, `unexpected model override on ${label}`).toBeUndefined()
       }
     }
@@ -1135,5 +1144,64 @@ describe('dev-review-fix degradation', () => {
     })
     // Only the 2 reviewers ran — no dedup, no verifiers, no fix loop.
     expect(rt.calls.length).toBe(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: fixerModel knob — cost/quota tiering of the per-iteration fixer agent,
+// while the fix checker (the only source of truth for green) stays pinned to
+// BEST_MODEL regardless of the session model. Mirrors dev-implement's
+// implementerModel. Routed via the recorded opts.model on each call's label.
+// ---------------------------------------------------------------------------
+describe('dev-review-fix fixerModel knob', () => {
+  const fixCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('dev-review-fix:fix:'))
+  const checkCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('dev-review-fix:check:'))
+
+  it('defaults the fixer to sonnet when fixerModel is omitted', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+    const fixes = fixCalls(rt)
+    expect(fixes.length).toBeGreaterThan(0)
+    for (const c of fixes) expect(c.opts?.model).toBe('sonnet')
+  })
+
+  it('pins the fix checker to BEST_MODEL', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+    const checks = checkCalls(rt)
+    expect(checks.length).toBeGreaterThan(0)
+    for (const c of checks) expect(c.opts?.model).toBe(BEST_MODEL)
+  })
+
+  it('honours an explicit fixerModel override on the fixer only', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify({ ...VALID_INPUT, fixerModel: 'opus' }))
+    for (const c of fixCalls(rt)) expect(c.opts?.model).toBe('opus')
+    // The checker pin is independent of the fixer knob.
+    for (const c of checkCalls(rt)) expect(c.opts?.model).toBe(BEST_MODEL)
+  })
+
+  it('accepts "inherit" as a fixerModel', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify({ ...VALID_INPUT, fixerModel: 'inherit' }))
+    const fixes = fixCalls(rt)
+    expect(fixes.length).toBeGreaterThan(0)
+    for (const c of fixes) expect(c.opts?.model).toBe('inherit')
+  })
+
+  it('rejects an empty-string fixerModel', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...VALID_INPUT, fixerModel: '' })),
+    ).rejects.toThrow(/fixerModel/i)
+  })
+
+  it('rejects a non-string fixerModel', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...VALID_INPUT, fixerModel: 123 })),
+    ).rejects.toThrow(/fixerModel/i)
   })
 })

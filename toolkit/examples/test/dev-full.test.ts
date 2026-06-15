@@ -225,6 +225,11 @@ describe('dev-full parseInput', () => {
     await expect(run(rt, { ...VALID_INPUT, implementerModel: '' })).rejects.toThrow(/implementerModel/i)
   })
 
+  it('throws for an empty-string fixerModel', async () => {
+    const { rt } = makeRuntime()
+    await expect(run(rt, { ...VALID_INPUT, fixerModel: '' })).rejects.toThrow(/fixerModel/i)
+  })
+
   it('throws for an empty areas array', async () => {
     const { rt } = makeRuntime()
     await expect(run(rt, { ...VALID_INPUT, areas: [] })).rejects.toThrow(/areas/i)
@@ -300,6 +305,7 @@ describe('dev-full happy chain', () => {
     const sent = calls.review[0] as Record<string, unknown>
     expect('dimensions' in sent).toBe(false)
     expect('maxFixIterations' in sent).toBe(false)
+    expect('fixerModel' in sent).toBe(false)
   })
 
   it('forwards dimensions and maxFixIterations to the review child when set', async () => {
@@ -308,6 +314,12 @@ describe('dev-full happy chain', () => {
     const sent = calls.review[0] as Record<string, unknown>
     expect(sent.dimensions).toEqual(['correctness'])
     expect(sent.maxFixIterations).toBe(2)
+  })
+
+  it('forwards fixerModel to the review child when the operator set it', async () => {
+    const { rt, calls } = makeRuntime()
+    await run(rt, { ...VALID_INPUT, fixerModel: 'opus' })
+    expect((calls.review[0] as Record<string, unknown>).fixerModel).toBe('opus')
   })
 
   it('derives changedFiles (deduped) from succeeded AND failed tasks, never skipped ones', async () => {

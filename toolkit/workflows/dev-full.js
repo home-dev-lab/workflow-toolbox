@@ -294,6 +294,15 @@ var __wt = (() => {
       }
       implementerModel = raw["implementerModel"];
     }
+    let fixerModel = null;
+    if (raw["fixerModel"] !== void 0 && raw["fixerModel"] !== null) {
+      if (typeof raw["fixerModel"] !== "string" || raw["fixerModel"].trim().length === 0) {
+        throw new Error(
+          'dev-full: "fixerModel" must be a non-empty model alias (e.g. "sonnet", "opus", "haiku", "inherit") \u2014 omit to use the dev-review-fix default ("sonnet")'
+        );
+      }
+      fixerModel = raw["fixerModel"];
+    }
     return {
       goal,
       areas,
@@ -304,7 +313,8 @@ var __wt = (() => {
       maxFixIterations,
       dimensions,
       diffCommand,
-      implementerModel
+      implementerModel,
+      fixerModel
     };
   }
   async function callChild(rt, scriptPath, args) {
@@ -432,6 +442,7 @@ ${statusLines.join("\n")}` + (changedFiles !== null ? "\n\nNote: the changed-fil
     };
     if (input.dimensions !== null) reviewArgs["dimensions"] = input.dimensions;
     if (input.maxFixIterations !== null) reviewArgs["maxFixIterations"] = input.maxFixIterations;
+    if (input.fixerModel !== null) reviewArgs["fixerModel"] = input.fixerModel;
     rt.phase("Review & Fix");
     const reviewCall = await callChild(rt, input.scriptPaths.reviewFix, reviewArgs);
     if (!reviewCall.ok) return finish("aborted-at-review", reviewCall.reason);

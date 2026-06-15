@@ -598,6 +598,15 @@ ${renderClaim(claim)}`;
       }
       maxFixIterations = Math.floor(obj["maxFixIterations"]);
     }
+    let fixerModel = "sonnet";
+    if (obj["fixerModel"] !== void 0) {
+      if (typeof obj["fixerModel"] !== "string" || obj["fixerModel"].trim().length === 0) {
+        throw new Error(
+          'dev-review-fix: "fixerModel" must be a non-empty model alias (e.g. "sonnet", "opus", "haiku", "inherit") \u2014 omit for the default "sonnet"'
+        );
+      }
+      fixerModel = obj["fixerModel"];
+    }
     return {
       projectDir,
       testCommand,
@@ -609,7 +618,8 @@ ${renderClaim(claim)}`;
       changedFiles,
       dimensions,
       adaptationNote,
-      maxFixIterations
+      maxFixIterations,
+      fixerModel
     };
   }
   var SEVERITY_RANK = { high: 0, medium: 1, low: 2 };
@@ -852,7 +862,11 @@ Return { "fixed": true|false, "filesTouched": ["<path>"], "note": "<what changed
             {
               schema: FIX_RESULT_SCHEMA,
               label: `dev-review-fix:fix:${iteration}`,
-              phase: "Fix"
+              phase: "Fix",
+              // High-volume per-iteration execution stage — tiered by the
+              // fixerModel knob (default 'sonnet'). The checker below is pinned
+              // to BEST_MODEL.
+              model: input.fixerModel
             }
           );
           if (fix === null) {
@@ -870,7 +884,12 @@ Return { "green": true|false (the test suite), "findings": [{ "id": "<F-id>", "f
             {
               schema: CHECK_RESULT_SCHEMA,
               label: `dev-review-fix:check:${iteration}`,
-              phase: "Fix"
+              phase: "Fix",
+              // The fix checker is the ONLY source of truth for green — pinned to
+              // the strongest tier explicitly (NOT merely inherit), so the
+              // verifier stays strong independent of the session model precisely
+              // because the fixer above may be tiered down.
+              model: BEST_MODEL
             }
           );
           if (check === null) {
