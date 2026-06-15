@@ -116,6 +116,16 @@ export interface DevReviewFixInput {
    *  fixer converges in fewer iterations, or 'inherit' to track the session
    *  model. Mirrors dev-implement's implementerModel. */
   fixerModel: ModelAlias
+  /** Optional SPECIALIST subagent type for the per-iteration FIXER (execution)
+   *  agent — e.g. a build-resolver whose system prompt carries discipline the
+   *  generic subagent lacks. null = the standard subagent (the default;
+   *  unchanged behavior). Routes the fixer ONLY: reviewers, verifiers, and the
+   *  fix checker are never specialized. The type must exist in the CONSUMER's
+   *  session agent registry — the runtime throws (with the available list) on an
+   *  unknown type, and the registry is session-specific, so this is NOT
+   *  validated here beyond shape. Never hard-code a private (e.g. magic-claude:*)
+   *  type as a default. Mirrors dev-implement's implementerType. */
+  fixerType: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +435,21 @@ function parseInput(raw: unknown): DevReviewFixInput {
     fixerModel = obj['fixerModel']
   }
 
+  // Optional specialist subagent type for the fixer. Default null = standard
+  // subagent. Shape-only validation: the runtime throws on an unknown type and
+  // the registry is session-specific, so a published workflow cannot validate
+  // membership.
+  let fixerType: string | null = null
+  if (obj['fixerType'] !== undefined && obj['fixerType'] !== null) {
+    if (typeof obj['fixerType'] !== 'string' || obj['fixerType'].trim().length === 0) {
+      throw new Error(
+        'dev-review-fix: "fixerType" must be a non-empty subagent-type string ' +
+        '(e.g. "magic-claude:ts-build-resolver") — omit it for the standard subagent',
+      )
+    }
+    fixerType = obj['fixerType']
+  }
+
   return {
     projectDir,
     testCommand,
@@ -438,6 +463,7 @@ function parseInput(raw: unknown): DevReviewFixInput {
     adaptationNote,
     maxFixIterations,
     fixerModel,
+    fixerType,
   }
 }
 
@@ -882,6 +908,10 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
             // fixerModel knob (default 'sonnet'). The checker below is pinned
             // to BEST_MODEL.
             model: input.fixerModel,
+            // Optional specialist subagent type (fixerType knob). Omitted when
+            // null → standard subagent (default). Routes the fixer ONLY; the
+            // runtime fails fast on an unknown type.
+            ...(input.fixerType !== null ? { agentType: input.fixerType } : {}),
           },
         )
         if (fix === null) {

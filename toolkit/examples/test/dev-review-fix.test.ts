@@ -1205,3 +1205,57 @@ describe('dev-review-fix fixerModel knob', () => {
     ).rejects.toThrow(/fixerModel/i)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Test: fixerType knob — optional SPECIALIST subagent type for the per-iteration
+// fixer (execution) agent (e.g. a build-resolver). Default: omitted → standard
+// subagent (no agentType). Routes the fixer ONLY; reviewers, verifiers, and the
+// fix checker are never specialized. Shape-only validation (the runtime throws
+// on an unknown agentType; the registry is session-specific). Orthogonal to the
+// fixerModel tier. Mirrors dev-implement's implementerType.
+// ---------------------------------------------------------------------------
+describe('dev-review-fix fixerType knob', () => {
+  const fixCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('dev-review-fix:fix:'))
+  const checkCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('dev-review-fix:check:'))
+
+  it('omits agentType on the fixer when fixerType is not provided', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+    const fixes = fixCalls(rt)
+    expect(fixes.length).toBeGreaterThan(0)
+    for (const c of fixes) expect(c.opts?.agentType).toBeUndefined()
+  })
+
+  it('routes the fixer to the specialist agentType, fixer only', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify({ ...VALID_INPUT, fixerType: 'magic-claude:ts-build-resolver' }))
+    const fixes = fixCalls(rt)
+    expect(fixes.length).toBeGreaterThan(0)
+    for (const c of fixes) expect(c.opts?.agentType).toBe('magic-claude:ts-build-resolver')
+    // The fix checker is NEVER specialized by the fixer knob.
+    for (const c of checkCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+  })
+
+  it('leaves the fixerModel tier intact when fixerType is set', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify({ ...VALID_INPUT, fixerType: 'magic-claude:ts-build-resolver' }))
+    for (const c of fixCalls(rt)) expect(c.opts?.model).toBe('sonnet')
+    for (const c of checkCalls(rt)) expect(c.opts?.model).toBe(BEST_MODEL)
+  })
+
+  it('rejects an empty-string fixerType', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...VALID_INPUT, fixerType: '' })),
+    ).rejects.toThrow(/fixerType/i)
+  })
+
+  it('rejects a non-string fixerType', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...VALID_INPUT, fixerType: 123 })),
+    ).rejects.toThrow(/fixerType/i)
+  })
+})

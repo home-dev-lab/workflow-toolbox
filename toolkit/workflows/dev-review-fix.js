@@ -607,6 +607,15 @@ ${renderClaim(claim)}`;
       }
       fixerModel = obj["fixerModel"];
     }
+    let fixerType = null;
+    if (obj["fixerType"] !== void 0 && obj["fixerType"] !== null) {
+      if (typeof obj["fixerType"] !== "string" || obj["fixerType"].trim().length === 0) {
+        throw new Error(
+          'dev-review-fix: "fixerType" must be a non-empty subagent-type string (e.g. "magic-claude:ts-build-resolver") \u2014 omit it for the standard subagent'
+        );
+      }
+      fixerType = obj["fixerType"];
+    }
     return {
       projectDir,
       testCommand,
@@ -619,7 +628,8 @@ ${renderClaim(claim)}`;
       dimensions,
       adaptationNote,
       maxFixIterations,
-      fixerModel
+      fixerModel,
+      fixerType
     };
   }
   var SEVERITY_RANK = { high: 0, medium: 1, low: 2 };
@@ -866,7 +876,11 @@ Return { "fixed": true|false, "filesTouched": ["<path>"], "note": "<what changed
               // High-volume per-iteration execution stage — tiered by the
               // fixerModel knob (default 'sonnet'). The checker below is pinned
               // to BEST_MODEL.
-              model: input.fixerModel
+              model: input.fixerModel,
+              // Optional specialist subagent type (fixerType knob). Omitted when
+              // null → standard subagent (default). Routes the fixer ONLY; the
+              // runtime fails fast on an unknown type.
+              ...input.fixerType !== null ? { agentType: input.fixerType } : {}
             }
           );
           if (fix === null) {
