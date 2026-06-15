@@ -100,9 +100,19 @@ export interface DevFullInput {
   /** Implementer (green) model tier for the dev-implement child. null = OMIT,
    *  so the child's default ('sonnet') rules. */
   implementerModel: string | null
+  /** Optional specialist subagent type for the dev-implement implementer. null =
+   *  OMIT, so the child's default (standard subagent) rules. Must exist in the
+   *  consumer's session registry (the child's runtime throws on an unknown
+   *  type). */
+  implementerType: string | null
   /** Fixer model tier for the dev-review-fix child. null = OMIT, so the child's
    *  default ('sonnet') rules. */
   fixerModel: string | null
+  /** Optional specialist subagent type for the dev-review-fix fixer. null = OMIT,
+   *  so the child's default (standard subagent) rules. Must exist in the
+   *  consumer's session registry (the child's runtime throws on an unknown
+   *  type). */
+  fixerType: string | null
   /** Optional VERBATIM diff command (git projects). When set it WINS over the
    *  planned-files derivation — the real diff also catches unplanned files. */
   diffCommand: string | null
@@ -413,6 +423,17 @@ function parseInput(raw: unknown): DevFullInput {
     implementerModel = raw['implementerModel']
   }
 
+  let implementerType: string | null = null
+  if (raw['implementerType'] !== undefined && raw['implementerType'] !== null) {
+    if (typeof raw['implementerType'] !== 'string' || raw['implementerType'].trim().length === 0) {
+      throw new Error(
+        'dev-full: "implementerType" must be a non-empty subagent-type string ' +
+        '(e.g. "magic-claude:ts-tdd-guide") — omit to use the dev-implement default (standard subagent)',
+      )
+    }
+    implementerType = raw['implementerType']
+  }
+
   let fixerModel: string | null = null
   if (raw['fixerModel'] !== undefined && raw['fixerModel'] !== null) {
     if (typeof raw['fixerModel'] !== 'string' || raw['fixerModel'].trim().length === 0) {
@@ -422,6 +443,17 @@ function parseInput(raw: unknown): DevFullInput {
       )
     }
     fixerModel = raw['fixerModel']
+  }
+
+  let fixerType: string | null = null
+  if (raw['fixerType'] !== undefined && raw['fixerType'] !== null) {
+    if (typeof raw['fixerType'] !== 'string' || raw['fixerType'].trim().length === 0) {
+      throw new Error(
+        'dev-full: "fixerType" must be a non-empty subagent-type string ' +
+        '(e.g. "magic-claude:ts-build-resolver") — omit to use the dev-review-fix default (standard subagent)',
+      )
+    }
+    fixerType = raw['fixerType']
   }
 
   return {
@@ -435,7 +467,9 @@ function parseInput(raw: unknown): DevFullInput {
     dimensions,
     diffCommand,
     implementerModel,
+    implementerType,
     fixerModel,
+    fixerType,
   }
 }
 
@@ -540,6 +574,7 @@ async function run(rt: WorkflowRuntime, input: DevFullInput): Promise<DevFullOut
   const implementArgs: Record<string, unknown> = { artifact: plan.artifact }
   if (input.maxIterationsPerTask !== null) implementArgs['maxIterationsPerTask'] = input.maxIterationsPerTask
   if (input.implementerModel !== null) implementArgs['implementerModel'] = input.implementerModel
+  if (input.implementerType !== null) implementArgs['implementerType'] = input.implementerType
 
   const implementCall = await callChild(rt, input.scriptPaths.implement, implementArgs)
   if (!implementCall.ok) return finish('aborted-at-implement', implementCall.reason)
@@ -631,6 +666,7 @@ async function run(rt: WorkflowRuntime, input: DevFullInput): Promise<DevFullOut
   if (input.dimensions !== null) reviewArgs['dimensions'] = input.dimensions
   if (input.maxFixIterations !== null) reviewArgs['maxFixIterations'] = input.maxFixIterations
   if (input.fixerModel !== null) reviewArgs['fixerModel'] = input.fixerModel
+  if (input.fixerType !== null) reviewArgs['fixerType'] = input.fixerType
 
   // -------------------------------------------------------------------------
   // Phase 'Review & Fix' — dev-review-fix child (narrow-only: the review

@@ -294,6 +294,15 @@ var __wt = (() => {
       }
       implementerModel = raw["implementerModel"];
     }
+    let implementerType = null;
+    if (raw["implementerType"] !== void 0 && raw["implementerType"] !== null) {
+      if (typeof raw["implementerType"] !== "string" || raw["implementerType"].trim().length === 0) {
+        throw new Error(
+          'dev-full: "implementerType" must be a non-empty subagent-type string (e.g. "magic-claude:ts-tdd-guide") \u2014 omit to use the dev-implement default (standard subagent)'
+        );
+      }
+      implementerType = raw["implementerType"];
+    }
     let fixerModel = null;
     if (raw["fixerModel"] !== void 0 && raw["fixerModel"] !== null) {
       if (typeof raw["fixerModel"] !== "string" || raw["fixerModel"].trim().length === 0) {
@@ -302,6 +311,15 @@ var __wt = (() => {
         );
       }
       fixerModel = raw["fixerModel"];
+    }
+    let fixerType = null;
+    if (raw["fixerType"] !== void 0 && raw["fixerType"] !== null) {
+      if (typeof raw["fixerType"] !== "string" || raw["fixerType"].trim().length === 0) {
+        throw new Error(
+          'dev-full: "fixerType" must be a non-empty subagent-type string (e.g. "magic-claude:ts-build-resolver") \u2014 omit to use the dev-review-fix default (standard subagent)'
+        );
+      }
+      fixerType = raw["fixerType"];
     }
     return {
       goal,
@@ -314,7 +332,9 @@ var __wt = (() => {
       dimensions,
       diffCommand,
       implementerModel,
-      fixerModel
+      implementerType,
+      fixerModel,
+      fixerType
     };
   }
   async function callChild(rt, scriptPath, args) {
@@ -379,6 +399,7 @@ var __wt = (() => {
     const implementArgs = { artifact: plan.artifact };
     if (input.maxIterationsPerTask !== null) implementArgs["maxIterationsPerTask"] = input.maxIterationsPerTask;
     if (input.implementerModel !== null) implementArgs["implementerModel"] = input.implementerModel;
+    if (input.implementerType !== null) implementArgs["implementerType"] = input.implementerType;
     const implementCall = await callChild(rt, input.scriptPaths.implement, implementArgs);
     if (!implementCall.ok) return finish("aborted-at-implement", implementCall.reason);
     const implementNarrow = narrowImplementResult(implementCall.value);
@@ -443,6 +464,7 @@ ${statusLines.join("\n")}` + (changedFiles !== null ? "\n\nNote: the changed-fil
     if (input.dimensions !== null) reviewArgs["dimensions"] = input.dimensions;
     if (input.maxFixIterations !== null) reviewArgs["maxFixIterations"] = input.maxFixIterations;
     if (input.fixerModel !== null) reviewArgs["fixerModel"] = input.fixerModel;
+    if (input.fixerType !== null) reviewArgs["fixerType"] = input.fixerType;
     rt.phase("Review & Fix");
     const reviewCall = await callChild(rt, input.scriptPaths.reviewFix, reviewArgs);
     if (!reviewCall.ok) return finish("aborted-at-review", reviewCall.reason);

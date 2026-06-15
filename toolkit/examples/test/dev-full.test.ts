@@ -230,6 +230,16 @@ describe('dev-full parseInput', () => {
     await expect(run(rt, { ...VALID_INPUT, fixerModel: '' })).rejects.toThrow(/fixerModel/i)
   })
 
+  it('throws for an empty-string implementerType', async () => {
+    const { rt } = makeRuntime()
+    await expect(run(rt, { ...VALID_INPUT, implementerType: '' })).rejects.toThrow(/implementerType/i)
+  })
+
+  it('throws for an empty-string fixerType', async () => {
+    const { rt } = makeRuntime()
+    await expect(run(rt, { ...VALID_INPUT, fixerType: '' })).rejects.toThrow(/fixerType/i)
+  })
+
   it('throws for an empty areas array', async () => {
     const { rt } = makeRuntime()
     await expect(run(rt, { ...VALID_INPUT, areas: [] })).rejects.toThrow(/areas/i)
@@ -274,6 +284,7 @@ describe('dev-full happy chain', () => {
     expect('mutation' in sent).toBe(false)
     expect('maxIterationsPerTask' in sent).toBe(false)
     expect('implementerModel' in sent).toBe(false)
+    expect('implementerType' in sent).toBe(false)
   })
 
   it('forwards maxIterationsPerTask to the implement child when the operator set it', async () => {
@@ -286,6 +297,12 @@ describe('dev-full happy chain', () => {
     const { rt, calls } = makeRuntime()
     await run(rt, { ...VALID_INPUT, implementerModel: 'opus' })
     expect((calls.implement[0] as Record<string, unknown>).implementerModel).toBe('opus')
+  })
+
+  it('forwards implementerType to the implement child when the operator set it', async () => {
+    const { rt, calls } = makeRuntime()
+    await run(rt, { ...VALID_INPUT, implementerType: 'magic-claude:ts-tdd-guide' })
+    expect((calls.implement[0] as Record<string, unknown>).implementerType).toBe('magic-claude:ts-tdd-guide')
   })
 
   it('derives the review child input from the artifact context VERBATIM', async () => {
@@ -306,6 +323,7 @@ describe('dev-full happy chain', () => {
     expect('dimensions' in sent).toBe(false)
     expect('maxFixIterations' in sent).toBe(false)
     expect('fixerModel' in sent).toBe(false)
+    expect('fixerType' in sent).toBe(false)
   })
 
   it('forwards dimensions and maxFixIterations to the review child when set', async () => {
@@ -320,6 +338,12 @@ describe('dev-full happy chain', () => {
     const { rt, calls } = makeRuntime()
     await run(rt, { ...VALID_INPUT, fixerModel: 'opus' })
     expect((calls.review[0] as Record<string, unknown>).fixerModel).toBe('opus')
+  })
+
+  it('forwards fixerType to the review child when the operator set it', async () => {
+    const { rt, calls } = makeRuntime()
+    await run(rt, { ...VALID_INPUT, fixerType: 'magic-claude:ts-build-resolver' })
+    expect((calls.review[0] as Record<string, unknown>).fixerType).toBe('magic-claude:ts-build-resolver')
   })
 
   it('derives changedFiles (deduped) from succeeded AND failed tasks, never skipped ones', async () => {
