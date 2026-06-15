@@ -1,7 +1,7 @@
 export const meta = {
   "name": "dev-implement",
   "description": "Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. Two mutation modes: \"sequential\" (default — one task at a time in dependency order, no git required) and \"worktree\" (git required — independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).",
-  "whenToUse": "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.",
+  "whenToUse": "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask/implementerModel, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. implementerModel tiers the per-iteration implementer (default \"sonnet\"); the independent checker stays on the strongest tier regardless. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.",
   "phases": [
     {
       "title": "Setup",
@@ -121,6 +121,9 @@ var __wt = (() => {
     if (rel.split("/").includes("..")) return null;
     return rel;
   }
+
+  // ../packages/runtime/src/constants.ts
+  var BEST_MODEL = "opus";
 
   // ../packages/patterns/src/loop-until-done.ts
   async function loopUntilDone(rt, options) {
@@ -564,10 +567,20 @@ var __wt = (() => {
       }
       maxIterationsPerTask = Math.floor(obj["maxIterationsPerTask"]);
     }
+    let implementerModel = "sonnet";
+    if (obj["implementerModel"] !== void 0) {
+      if (typeof obj["implementerModel"] !== "string" || obj["implementerModel"].trim().length === 0) {
+        throw new Error(
+          'dev-implement: "implementerModel" must be a non-empty model alias (e.g. "sonnet", "opus", "haiku", "inherit") \u2014 omit for the default "sonnet"'
+        );
+      }
+      implementerModel = obj["implementerModel"];
+    }
     return {
       artifact: { goal, context, tasks, risks, outOfScope },
       mutation,
       maxIterationsPerTask,
+      implementerModel,
       worktreeSetupCommand,
       worktreeRoot,
       signCommits,
@@ -631,7 +644,7 @@ Done criteria: ${JSON.stringify(task.doneCriteria)}
     `Do NOT run git commit (or any other history-mutating git command) \u2014 committing is another agent's job, not yours.
 `;
   }
-  async function runTaskTddLoop(rt, artifact, task, workdir, maxIterationsPerTask, warnings, stats) {
+  async function runTaskTddLoop(rt, artifact, task, workdir, maxIterationsPerTask, implementerModel, warnings, stats) {
     const ctx = artifact.context;
     const taskBlock = buildTaskBlock(artifact, task, workdir, true);
     const checkTaskBlock = buildTaskBlock(artifact, task, workdir, false);
@@ -670,7 +683,10 @@ Return { "done": true|false, "filesTouched": ["<path>"], "note": "<what changed>
           {
             schema: GREEN_RESULT_SCHEMA,
             label: `dev-implement:green:${task.id}:${iteration}`,
-            phase: "Implement"
+            phase: "Implement",
+            // High-volume implementer stage — tiered by the implementerModel knob
+            // (default 'sonnet'). The checker below is pinned to BEST_MODEL.
+            model: implementerModel
           }
         );
         if (green === null) {
@@ -684,7 +700,12 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
           {
             schema: CHECK_RESULT_SCHEMA,
             label: `dev-implement:check:${task.id}:${iteration}`,
-            phase: "Check"
+            phase: "Check",
+            // The checker is the ONLY source of truth for green — pin it to the
+            // strongest tier explicitly (NOT merely inherit), so the verifier
+            // stays strong independent of the session model precisely because
+            // the implementer above may be tiered down.
+            model: BEST_MODEL
           }
         );
         if (check === null) {
@@ -758,6 +779,7 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
         task,
         artifact.context.projectDir,
         maxIterationsPerTask,
+        input.implementerModel,
         warnings,
         stats
       );
@@ -926,6 +948,7 @@ Return { "ok": true|false, "note": "<what happened>" }`,
             task,
             taskWorkdir(task.id),
             maxIterationsPerTask,
+            input.implementerModel,
             warnings,
             stats
           );
@@ -1120,7 +1143,7 @@ Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
     meta: {
       name: "dev-implement",
       description: 'Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. Two mutation modes: "sequential" (default \u2014 one task at a time in dependency order, no git required) and "worktree" (git required \u2014 independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).',
-      whenToUse: "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.",
+      whenToUse: 'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask/implementerModel, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. implementerModel tiers the per-iteration implementer (default "sonnet"); the independent checker stays on the strongest tier regardless. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.',
       phases: [
         { title: "Setup", detail: "Worktree mode: git check, per-wave worktree provisioning, setup command" },
         { title: "Implement", detail: "Per task: write failing tests, implement (TDD loop) \u2014 parallel within a wave in worktree mode" },

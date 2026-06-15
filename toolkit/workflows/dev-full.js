@@ -285,6 +285,15 @@ var __wt = (() => {
       }
       diffCommand = raw["diffCommand"];
     }
+    let implementerModel = null;
+    if (raw["implementerModel"] !== void 0 && raw["implementerModel"] !== null) {
+      if (typeof raw["implementerModel"] !== "string" || raw["implementerModel"].trim().length === 0) {
+        throw new Error(
+          'dev-full: "implementerModel" must be a non-empty model alias (e.g. "sonnet", "opus", "haiku", "inherit") \u2014 omit to use the dev-implement default ("sonnet")'
+        );
+      }
+      implementerModel = raw["implementerModel"];
+    }
     return {
       goal,
       areas,
@@ -294,7 +303,8 @@ var __wt = (() => {
       maxIterationsPerTask,
       maxFixIterations,
       dimensions,
-      diffCommand
+      diffCommand,
+      implementerModel
     };
   }
   async function callChild(rt, scriptPath, args) {
@@ -358,6 +368,7 @@ var __wt = (() => {
     rt.phase("Implement");
     const implementArgs = { artifact: plan.artifact };
     if (input.maxIterationsPerTask !== null) implementArgs["maxIterationsPerTask"] = input.maxIterationsPerTask;
+    if (input.implementerModel !== null) implementArgs["implementerModel"] = input.implementerModel;
     const implementCall = await callChild(rt, input.scriptPaths.implement, implementArgs);
     if (!implementCall.ok) return finish("aborted-at-implement", implementCall.reason);
     const implementNarrow = narrowImplementResult(implementCall.value);

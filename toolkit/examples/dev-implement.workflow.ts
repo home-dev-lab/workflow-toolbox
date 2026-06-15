@@ -47,7 +47,8 @@
 import { defineWorkflow } from '@workflow-toolbox/build/define'
 import { loopUntilDone, relativizeUnder, warn } from '@workflow-toolbox/patterns'
 import type { PatternStats } from '@workflow-toolbox/patterns'
-import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
+import { BEST_MODEL } from '@workflow-toolbox/runtime'
+import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
 import type { FromSchema } from 'json-schema-to-ts'
 
 // ---------------------------------------------------------------------------
@@ -100,6 +101,17 @@ export interface DevImplementInput {
   mutation: 'sequential' | 'worktree'
   /** TDD loop bound per task. */
   maxIterationsPerTask: number
+  /** Model for the per-iteration GREEN (implementer) agent. Default 'sonnet':
+   *  implementation is the high-volume stage (runs every iteration) and an A/B
+   *  showed quality parity with the strong model on a representative task, so
+   *  tiering it down conserves the scarce/expensive top-tier budget. The RED
+   *  (test-writer, once per task) keeps inheriting the session model and the
+   *  CHECK (sole source of truth for green) is pinned to BEST_MODEL — the
+   *  verifier must stay strong precisely BECAUSE the implementer was weakened.
+   *  Override to 'opus'/BEST_MODEL on hard tasks where a stronger implementer
+   *  converges in fewer iterations (each extra iteration also costs a checker
+   *  round), or to 'inherit' to track the session model. */
+  implementerModel: ModelAlias
   /** Worktree mode only — VERBATIM command run inside each fresh worktree
    *  before its TDD loop (fresh worktrees lack installed dependencies for most
    *  ecosystems, e.g. "pnpm install"); null = none. */
@@ -621,10 +633,26 @@ function parseInput(raw: unknown): DevImplementInput {
     maxIterationsPerTask = Math.floor(obj['maxIterationsPerTask'])
   }
 
+  // The implementer (green) model tier. Default 'sonnet' — the high-volume
+  // stage is tiered down by default; checker stays BEST_MODEL (set at the call
+  // site). ModelAlias is an open string union, so any non-empty string is a
+  // valid alias; only empty/non-string is a hard error.
+  let implementerModel: ModelAlias = 'sonnet'
+  if (obj['implementerModel'] !== undefined) {
+    if (typeof obj['implementerModel'] !== 'string' || obj['implementerModel'].trim().length === 0) {
+      throw new Error(
+        'dev-implement: "implementerModel" must be a non-empty model alias (e.g. "sonnet", "opus", ' +
+        '"haiku", "inherit") — omit for the default "sonnet"',
+      )
+    }
+    implementerModel = obj['implementerModel']
+  }
+
   return {
     artifact: { goal, context, tasks, risks, outOfScope },
     mutation,
     maxIterationsPerTask,
+    implementerModel,
     worktreeSetupCommand,
     worktreeRoot,
     signCommits,
@@ -798,6 +826,7 @@ async function runTaskTddLoop(
   task: PlanTask,
   workdir: string,
   maxIterationsPerTask: number,
+  implementerModel: ModelAlias,
   warnings: string[],
   stats: Record<string, PatternStats>,
 ): Promise<TddOutcome> {
@@ -863,6 +892,9 @@ async function runTaskTddLoop(
           schema: GREEN_RESULT_SCHEMA,
           label: `dev-implement:green:${task.id}:${iteration}`,
           phase: 'Implement',
+          // High-volume implementer stage — tiered by the implementerModel knob
+          // (default 'sonnet'). The checker below is pinned to BEST_MODEL.
+          model: implementerModel,
         },
       )
       if (green === null) {
@@ -886,6 +918,11 @@ async function runTaskTddLoop(
           schema: CHECK_RESULT_SCHEMA,
           label: `dev-implement:check:${task.id}:${iteration}`,
           phase: 'Check',
+          // The checker is the ONLY source of truth for green — pin it to the
+          // strongest tier explicitly (NOT merely inherit), so the verifier
+          // stays strong independent of the session model precisely because
+          // the implementer above may be tiered down.
+          model: BEST_MODEL,
         },
       )
       if (check === null) {
@@ -980,7 +1017,7 @@ async function run(rt: WorkflowRuntime, input: DevImplementInput): Promise<DevIm
     }
 
     const outcome = await runTaskTddLoop(
-      rt, artifact, task, artifact.context.projectDir, maxIterationsPerTask, warnings, stats,
+      rt, artifact, task, artifact.context.projectDir, maxIterationsPerTask, input.implementerModel, warnings, stats,
     )
     if (outcome.green) {
       statusById.set(task.id, 'succeeded')
@@ -1230,7 +1267,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
         }
 
         const outcome = await runTaskTddLoop(
-          rt, artifact, task, taskWorkdir(task.id), maxIterationsPerTask, warnings, stats,
+          rt, artifact, task, taskWorkdir(task.id), maxIterationsPerTask, input.implementerModel, warnings, stats,
         )
         if (!outcome.green) return { kind: 'tdd-failed', outcome }
 
@@ -1465,8 +1502,10 @@ export default defineWorkflow({
       'merge; conflicts abort conservatively and failure worktrees are kept for forensics).',
     whenToUse:
       'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass ' +
-      '{ artifact } (plus optional mutation/maxIterationsPerTask, and for worktree mode optional ' +
-      'worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. Sequential mode works ' +
+      '{ artifact } (plus optional mutation/maxIterationsPerTask/implementerModel, and for worktree ' +
+      'mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. ' +
+      'implementerModel tiers the per-iteration implementer (default "sonnet"); the independent ' +
+      'checker stays on the strongest tier regardless. Sequential mode works ' +
       'without git; worktree mode requires a git repository and machine commits are unsigned ' +
       'unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute ' +
       'paths under an absolute projectDir are auto-relativized (with a warning); any other ' +

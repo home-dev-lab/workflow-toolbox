@@ -97,6 +97,9 @@ export interface DevFullInput {
   maxIterationsPerTask: number | null
   maxFixIterations: number | null
   dimensions: string[] | null
+  /** Implementer (green) model tier for the dev-implement child. null = OMIT,
+   *  so the child's default ('sonnet') rules. */
+  implementerModel: string | null
   /** Optional VERBATIM diff command (git projects). When set it WINS over the
    *  planned-files derivation — the real diff also catches unplanned files. */
   diffCommand: string | null
@@ -396,6 +399,17 @@ function parseInput(raw: unknown): DevFullInput {
     diffCommand = raw['diffCommand']
   }
 
+  let implementerModel: string | null = null
+  if (raw['implementerModel'] !== undefined && raw['implementerModel'] !== null) {
+    if (typeof raw['implementerModel'] !== 'string' || raw['implementerModel'].trim().length === 0) {
+      throw new Error(
+        'dev-full: "implementerModel" must be a non-empty model alias (e.g. "sonnet", "opus", "haiku", ' +
+        '"inherit") — omit to use the dev-implement default ("sonnet")',
+      )
+    }
+    implementerModel = raw['implementerModel']
+  }
+
   return {
     goal,
     areas,
@@ -406,6 +420,7 @@ function parseInput(raw: unknown): DevFullInput {
     maxFixIterations,
     dimensions,
     diffCommand,
+    implementerModel,
   }
 }
 
@@ -509,6 +524,7 @@ async function run(rt: WorkflowRuntime, input: DevFullInput): Promise<DevFullOut
 
   const implementArgs: Record<string, unknown> = { artifact: plan.artifact }
   if (input.maxIterationsPerTask !== null) implementArgs['maxIterationsPerTask'] = input.maxIterationsPerTask
+  if (input.implementerModel !== null) implementArgs['implementerModel'] = input.implementerModel
 
   const implementCall = await callChild(rt, input.scriptPaths.implement, implementArgs)
   if (!implementCall.ok) return finish('aborted-at-implement', implementCall.reason)

@@ -220,6 +220,11 @@ describe('dev-full parseInput', () => {
     await expect(run(rt, { ...VALID_INPUT, diffCommand: '' })).rejects.toThrow(/diffCommand/i)
   })
 
+  it('throws for an empty-string implementerModel', async () => {
+    const { rt } = makeRuntime()
+    await expect(run(rt, { ...VALID_INPUT, implementerModel: '' })).rejects.toThrow(/implementerModel/i)
+  })
+
   it('throws for an empty areas array', async () => {
     const { rt } = makeRuntime()
     await expect(run(rt, { ...VALID_INPUT, areas: [] })).rejects.toThrow(/areas/i)
@@ -263,12 +268,19 @@ describe('dev-full happy chain', () => {
     expect(sent.artifact).toEqual(ARTIFACT)
     expect('mutation' in sent).toBe(false)
     expect('maxIterationsPerTask' in sent).toBe(false)
+    expect('implementerModel' in sent).toBe(false)
   })
 
   it('forwards maxIterationsPerTask to the implement child when the operator set it', async () => {
     const { rt, calls } = makeRuntime()
     await run(rt, { ...VALID_INPUT, maxIterationsPerTask: 7 })
     expect((calls.implement[0] as Record<string, unknown>).maxIterationsPerTask).toBe(7)
+  })
+
+  it('forwards implementerModel to the implement child when the operator set it', async () => {
+    const { rt, calls } = makeRuntime()
+    await run(rt, { ...VALID_INPUT, implementerModel: 'opus' })
+    expect((calls.implement[0] as Record<string, unknown>).implementerModel).toBe('opus')
   })
 
   it('derives the review child input from the artifact context VERBATIM', async () => {

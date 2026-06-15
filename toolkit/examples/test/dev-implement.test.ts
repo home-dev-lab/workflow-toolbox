@@ -3,7 +3,7 @@
 // TDD: written before the implementation (RED step).
 
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { FakeRuntime, BEST_MODEL } from '@workflow-toolbox/runtime'
 import wf from '../dev-implement.workflow.js'
 // Cross-family contract: the REAL dev-plan workflow drives the chained
 // handoff test at the bottom of this file — a field-name or semantics drift
@@ -1527,5 +1527,73 @@ describe('dev-plan -> dev-implement cross-family snippet contract (lever 1 hando
     for (const c of checkers) {
       expect(c.prompt).not.toContain(CROSS_SNIPPET)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: implementerModel knob — cost/quota tiering of the per-iteration green
+// (implementer) agent, while the checker (the only source of truth for green)
+// stays pinned to BEST_MODEL regardless of the session model. Verified through
+// the recorded opts.model on each agent call, routed by label.
+// ---------------------------------------------------------------------------
+describe('dev-implement implementerModel knob', () => {
+  const greenCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:green:'))
+  const checkCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:check:'))
+  const redCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:red:'))
+
+  it('defaults the implementer (green) to sonnet when implementerModel is omitted', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+    const greens = greenCalls(rt)
+    expect(greens.length).toBeGreaterThan(0)
+    for (const c of greens) expect(c.opts?.model).toBe('sonnet')
+  })
+
+  it('pins the checker to BEST_MODEL and leaves the red (test-writer) inheriting', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+    const checks = checkCalls(rt)
+    const reds = redCalls(rt)
+    expect(checks.length).toBeGreaterThan(0)
+    expect(reds.length).toBeGreaterThan(0)
+    for (const c of checks) expect(c.opts?.model).toBe(BEST_MODEL)
+    // red is once-per-task and authors the contract tests — kept on the session
+    // model (inherits), NOT tiered down with the implementer.
+    for (const c of reds) expect(c.opts?.model).toBeUndefined()
+  })
+
+  it('honours an explicit implementerModel override on the green agent only', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify({ artifact: ARTIFACT, implementerModel: 'opus' }))
+    const greens = greenCalls(rt)
+    expect(greens.length).toBeGreaterThan(0)
+    for (const c of greens) expect(c.opts?.model).toBe('opus')
+    // The checker pin is independent of the implementer knob.
+    for (const c of checkCalls(rt)) expect(c.opts?.model).toBe(BEST_MODEL)
+  })
+
+  it('accepts "inherit" as an implementerModel (no per-call model override on green)', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify({ artifact: ARTIFACT, implementerModel: 'inherit' }))
+    const greens = greenCalls(rt)
+    expect(greens.length).toBeGreaterThan(0)
+    for (const c of greens) expect(c.opts?.model).toBe('inherit')
+  })
+
+  it('rejects an empty-string implementerModel', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ artifact: ARTIFACT, implementerModel: '' })),
+    ).rejects.toThrow(/implementerModel/i)
+  })
+
+  it('rejects a non-string implementerModel', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ artifact: ARTIFACT, implementerModel: 123 })),
+    ).rejects.toThrow(/implementerModel/i)
   })
 })
