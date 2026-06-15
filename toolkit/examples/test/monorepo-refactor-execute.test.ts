@@ -4,7 +4,7 @@
 // TDD: written before the implementation (RED step).
 
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { FakeRuntime, BEST_MODEL } from '@workflow-toolbox/runtime'
 import wf from '../monorepo-refactor-execute.workflow.js'
 
 // ---------------------------------------------------------------------------
@@ -228,6 +228,62 @@ describe('monorepo-refactor-execute happy path', () => {
     for (const call of checkers) {
       expect(call.opts?.isolation).toBeUndefined()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: executeModel knob — cost/quota tiering of the per-step executor
+// (mutating) agent, while the fresh-evidence checker (defence layer 2) stays
+// pinned to BEST_MODEL regardless of the session model. Mirrors dev-implement's
+// implementerModel / dev-review-fix's fixerModel.
+// ---------------------------------------------------------------------------
+describe('monorepo-refactor-execute executeModel knob', () => {
+  const executors = (rt: FakeRuntime) => rt.calls.filter((c) => c.opts?.phase === 'Execute')
+  const checkers = (rt: FakeRuntime) => rt.calls.filter((c) => c.opts?.phase === 'Check')
+
+  it('defaults the executor to sonnet when executeModel is omitted', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+    const execs = executors(rt)
+    expect(execs.length).toBeGreaterThan(0)
+    for (const c of execs) expect(c.opts?.model).toBe('sonnet')
+  })
+
+  it('pins the fresh-evidence checker to BEST_MODEL', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+    const checks = checkers(rt)
+    expect(checks.length).toBeGreaterThan(0)
+    for (const c of checks) expect(c.opts?.model).toBe(BEST_MODEL)
+  })
+
+  it('honours an explicit executeModel override on the executor only', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({ ...VALID_INPUT, executeModel: 'opus' }))
+    for (const c of executors(rt)) expect(c.opts?.model).toBe('opus')
+    for (const c of checkers(rt)) expect(c.opts?.model).toBe(BEST_MODEL)
+  })
+
+  it('accepts "inherit" as an executeModel', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({ ...VALID_INPUT, executeModel: 'inherit' }))
+    const execs = executors(rt)
+    expect(execs.length).toBeGreaterThan(0)
+    for (const c of execs) expect(c.opts?.model).toBe('inherit')
+  })
+
+  it('rejects an empty-string executeModel', async () => {
+    const rt = makeHappyPathRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...VALID_INPUT, executeModel: '' })),
+    ).rejects.toThrow(/executeModel/i)
+  })
+
+  it('rejects a non-string executeModel', async () => {
+    const rt = makeHappyPathRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...VALID_INPUT, executeModel: 123 })),
+    ).rejects.toThrow(/executeModel/i)
   })
 })
 

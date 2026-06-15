@@ -94,6 +94,9 @@ var __wt = (() => {
     rt.log(message);
   }
 
+  // ../packages/runtime/src/constants.ts
+  var BEST_MODEL = "opus";
+
   // monorepo-refactor-execute.workflow.ts
   var EXECUTE_RESULT_SCHEMA = {
     type: "object",
@@ -171,12 +174,22 @@ var __wt = (() => {
         rationale: step["rationale"]
       });
     }
+    let executeModel = "sonnet";
+    if (obj["executeModel"] !== void 0) {
+      if (typeof obj["executeModel"] !== "string" || obj["executeModel"].trim().length === 0) {
+        throw new Error(
+          'monorepo-refactor-execute: "executeModel" must be a non-empty model alias (e.g. "sonnet", "opus", "haiku", "inherit") \u2014 omit for the default "sonnet"'
+        );
+      }
+      executeModel = obj["executeModel"];
+    }
     return {
       goal: obj["goal"],
       plan: {
         planTitle: plan["planTitle"],
         steps: parsedSteps
-      }
+      },
+      executeModel
     };
   }
   async function run(rt, input) {
@@ -196,6 +209,9 @@ Return { "done": true|false, "filesTouched": ["<path>", ...], "note": "<what was
           schema: EXECUTE_RESULT_SCHEMA,
           label: `monorepo-refactor-execute:execute:${step.order}`,
           phase: "Execute",
+          // High-volume mutating execution stage — tiered by the executeModel
+          // knob (default 'sonnet'). The checker below is pinned to BEST_MODEL.
+          model: input.executeModel,
           // Required for parallel mutating agents (arch §8 Risk): each executor
           // gets its own isolated working tree, so concurrent mutations cannot
           // corrupt each other. Worktrees are expensive (per-agent setup) — use
@@ -221,7 +237,12 @@ Return { "verified": true|false, "evidence": "<what you found in the diff/tests>
         {
           schema: CHECK_RESULT_SCHEMA,
           label: `monorepo-refactor-execute:check:${data.step.order}`,
-          phase: "Check"
+          phase: "Check",
+          // The fresh-evidence checker is the independent safety net — pinned to
+          // the strongest tier explicitly (NOT merely inherit), so the verifier
+          // stays strong independent of the session model precisely because the
+          // executor above may be tiered down.
+          model: BEST_MODEL
         }
       );
       return { ...data, checkResult };

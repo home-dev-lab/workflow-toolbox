@@ -48,7 +48,8 @@ import { defineWorkflow } from '@workflow-toolbox/build/define'
 // warn() is envelope infrastructure (record + live rt.log), not a pattern —
 // using it does not change this example's deliberate L0-only composition.
 import { warn } from '@workflow-toolbox/patterns'
-import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
+import { BEST_MODEL } from '@workflow-toolbox/runtime'
+import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
 import type { FromSchema } from 'json-schema-to-ts'
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,17 @@ interface ApprovedPlan {
 export interface MonorepoRefactorExecuteInput {
   goal: string
   plan: ApprovedPlan
+  /** Model for the per-step EXECUTOR (mutating) agent. Default 'sonnet' — the
+   *  executor is the high-volume execution stage (one per plan step, run in
+   *  parallel); the fresh-evidence checker (defence layer 2) is pinned to
+   *  BEST_MODEL regardless. Mirrors dev-implement's implementerModel and
+   *  dev-review-fix's fixerModel. NOTE: this executor MUTATES the tree under
+   *  worktree isolation, and the default extrapolates the dev-implement A/B
+   *  (measured on a non-worktree implementer) — for a complex refactor, prefer
+   *  overriding to 'opus'/BEST_MODEL, or 'inherit' to track the session model.
+   *  The single-pass execute→check (no retry loop) plus the human checkpoint
+   *  before these mutations land bound the downside. */
+  executeModel: ModelAlias
 }
 
 // ---------------------------------------------------------------------------
@@ -225,12 +237,27 @@ function parseInput(raw: unknown): MonorepoRefactorExecuteInput {
     })
   }
 
+  // The executor (mutating) model tier. Default 'sonnet'; the checker stays
+  // BEST_MODEL (set at the call site). ModelAlias is an open string union, so
+  // any non-empty string is a valid alias; only empty/non-string is rejected.
+  let executeModel: ModelAlias = 'sonnet'
+  if (obj['executeModel'] !== undefined) {
+    if (typeof obj['executeModel'] !== 'string' || obj['executeModel'].trim().length === 0) {
+      throw new Error(
+        'monorepo-refactor-execute: "executeModel" must be a non-empty model alias ' +
+        '(e.g. "sonnet", "opus", "haiku", "inherit") — omit for the default "sonnet"',
+      )
+    }
+    executeModel = obj['executeModel']
+  }
+
   return {
     goal: obj['goal'],
     plan: {
       planTitle: plan['planTitle'],
       steps: parsedSteps,
     },
+    executeModel,
   }
 }
 
@@ -284,6 +311,9 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorExecuteInput): Pr
         schema: EXECUTE_RESULT_SCHEMA,
         label: `monorepo-refactor-execute:execute:${step.order}`,
         phase: 'Execute',
+        // High-volume mutating execution stage — tiered by the executeModel
+        // knob (default 'sonnet'). The checker below is pinned to BEST_MODEL.
+        model: input.executeModel,
         // Required for parallel mutating agents (arch §8 Risk): each executor
         // gets its own isolated working tree, so concurrent mutations cannot
         // corrupt each other. Worktrees are expensive (per-agent setup) — use
@@ -320,6 +350,11 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorExecuteInput): Pr
         schema: CHECK_RESULT_SCHEMA,
         label: `monorepo-refactor-execute:check:${data.step.order}`,
         phase: 'Check',
+        // The fresh-evidence checker is the independent safety net — pinned to
+        // the strongest tier explicitly (NOT merely inherit), so the verifier
+        // stays strong independent of the session model precisely because the
+        // executor above may be tiered down.
+        model: BEST_MODEL,
       },
     )
 
