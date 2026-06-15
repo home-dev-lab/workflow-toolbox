@@ -1,7 +1,7 @@
 export const meta = {
   "name": "dev-implement",
   "description": "Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. Two mutation modes: \"sequential\" (default — one task at a time in dependency order, no git required) and \"worktree\" (git required — independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).",
-  "whenToUse": "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask/implementerModel, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. implementerModel tiers the per-iteration implementer (default \"sonnet\"); the independent checker stays on the strongest tier regardless. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.",
+  "whenToUse": "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. implementerModel tiers the per-iteration implementer (default \"sonnet\"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.",
   "phases": [
     {
       "title": "Setup",
@@ -576,11 +576,21 @@ var __wt = (() => {
       }
       implementerModel = obj["implementerModel"];
     }
+    let implementerType = null;
+    if (obj["implementerType"] !== void 0 && obj["implementerType"] !== null) {
+      if (typeof obj["implementerType"] !== "string" || obj["implementerType"].trim().length === 0) {
+        throw new Error(
+          'dev-implement: "implementerType" must be a non-empty subagent-type string (e.g. "magic-claude:ts-tdd-guide") \u2014 omit it for the standard subagent'
+        );
+      }
+      implementerType = obj["implementerType"];
+    }
     return {
       artifact: { goal, context, tasks, risks, outOfScope },
       mutation,
       maxIterationsPerTask,
       implementerModel,
+      implementerType,
       worktreeSetupCommand,
       worktreeRoot,
       signCommits,
@@ -644,7 +654,7 @@ Done criteria: ${JSON.stringify(task.doneCriteria)}
     `Do NOT run git commit (or any other history-mutating git command) \u2014 committing is another agent's job, not yours.
 `;
   }
-  async function runTaskTddLoop(rt, artifact, task, workdir, maxIterationsPerTask, implementerModel, warnings, stats) {
+  async function runTaskTddLoop(rt, artifact, task, workdir, maxIterationsPerTask, implementerModel, implementerType, warnings, stats) {
     const ctx = artifact.context;
     const taskBlock = buildTaskBlock(artifact, task, workdir, true);
     const checkTaskBlock = buildTaskBlock(artifact, task, workdir, false);
@@ -686,7 +696,11 @@ Return { "done": true|false, "filesTouched": ["<path>"], "note": "<what changed>
             phase: "Implement",
             // High-volume implementer stage — tiered by the implementerModel knob
             // (default 'sonnet'). The checker below is pinned to BEST_MODEL.
-            model: implementerModel
+            model: implementerModel,
+            // Optional specialist subagent type (implementerType knob). Omitted
+            // when null → standard subagent (default). Routes the implementer
+            // ONLY; the runtime fails fast on an unknown type.
+            ...implementerType !== null ? { agentType: implementerType } : {}
           }
         );
         if (green === null) {
@@ -780,6 +794,7 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
         artifact.context.projectDir,
         maxIterationsPerTask,
         input.implementerModel,
+        input.implementerType,
         warnings,
         stats
       );
@@ -949,6 +964,7 @@ Return { "ok": true|false, "note": "<what happened>" }`,
             taskWorkdir(task.id),
             maxIterationsPerTask,
             input.implementerModel,
+            input.implementerType,
             warnings,
             stats
           );
@@ -1143,7 +1159,7 @@ Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
     meta: {
       name: "dev-implement",
       description: 'Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. Two mutation modes: "sequential" (default \u2014 one task at a time in dependency order, no git required) and "worktree" (git required \u2014 independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).',
-      whenToUse: 'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask/implementerModel, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. implementerModel tiers the per-iteration implementer (default "sonnet"); the independent checker stays on the strongest tier regardless. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.',
+      whenToUse: 'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. implementerModel tiers the per-iteration implementer (default "sonnet"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.',
       phases: [
         { title: "Setup", detail: "Worktree mode: git check, per-wave worktree provisioning, setup command" },
         { title: "Implement", detail: "Per task: write failing tests, implement (TDD loop) \u2014 parallel within a wave in worktree mode" },

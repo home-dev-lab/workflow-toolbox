@@ -112,6 +112,16 @@ export interface DevImplementInput {
    *  converges in fewer iterations (each extra iteration also costs a checker
    *  round), or to 'inherit' to track the session model. */
   implementerModel: ModelAlias
+  /** Optional SPECIALIST subagent type for the per-iteration GREEN (implementer)
+   *  agent — e.g. a language TDD-guide whose system prompt carries discipline
+   *  the generic subagent lacks. null = the standard subagent (the default;
+   *  unchanged behavior). Routes the implementer ONLY: the red (test-writer) and
+   *  the independent checker are never specialized. The type must exist in the
+   *  CONSUMER's session agent registry — the runtime throws (with the available
+   *  list) on an unknown type, and the registry is session-specific, so this is
+   *  NOT validated here beyond shape. Never hard-code a private (e.g.
+   *  `magic-claude:*`) type as a default — it would break any other consumer. */
+  implementerType: string | null
   /** Worktree mode only — VERBATIM command run inside each fresh worktree
    *  before its TDD loop (fresh worktrees lack installed dependencies for most
    *  ecosystems, e.g. "pnpm install"); null = none. */
@@ -648,11 +658,28 @@ function parseInput(raw: unknown): DevImplementInput {
     implementerModel = obj['implementerModel']
   }
 
+  // Optional specialist subagent type for the implementer (green). Default null
+  // = standard subagent. We can ONLY validate shape: the runtime throws on an
+  // unknown type and the agent registry is session-specific (a published
+  // workflow cannot know the consumer's installed agents), so membership is the
+  // runtime's job, not parseInput's.
+  let implementerType: string | null = null
+  if (obj['implementerType'] !== undefined && obj['implementerType'] !== null) {
+    if (typeof obj['implementerType'] !== 'string' || obj['implementerType'].trim().length === 0) {
+      throw new Error(
+        'dev-implement: "implementerType" must be a non-empty subagent-type string ' +
+        '(e.g. "magic-claude:ts-tdd-guide") — omit it for the standard subagent',
+      )
+    }
+    implementerType = obj['implementerType']
+  }
+
   return {
     artifact: { goal, context, tasks, risks, outOfScope },
     mutation,
     maxIterationsPerTask,
     implementerModel,
+    implementerType,
     worktreeSetupCommand,
     worktreeRoot,
     signCommits,
@@ -827,6 +854,7 @@ async function runTaskTddLoop(
   workdir: string,
   maxIterationsPerTask: number,
   implementerModel: ModelAlias,
+  implementerType: string | null,
   warnings: string[],
   stats: Record<string, PatternStats>,
 ): Promise<TddOutcome> {
@@ -895,6 +923,10 @@ async function runTaskTddLoop(
           // High-volume implementer stage — tiered by the implementerModel knob
           // (default 'sonnet'). The checker below is pinned to BEST_MODEL.
           model: implementerModel,
+          // Optional specialist subagent type (implementerType knob). Omitted
+          // when null → standard subagent (default). Routes the implementer
+          // ONLY; the runtime fails fast on an unknown type.
+          ...(implementerType !== null ? { agentType: implementerType } : {}),
         },
       )
       if (green === null) {
@@ -1017,7 +1049,7 @@ async function run(rt: WorkflowRuntime, input: DevImplementInput): Promise<DevIm
     }
 
     const outcome = await runTaskTddLoop(
-      rt, artifact, task, artifact.context.projectDir, maxIterationsPerTask, input.implementerModel, warnings, stats,
+      rt, artifact, task, artifact.context.projectDir, maxIterationsPerTask, input.implementerModel, input.implementerType, warnings, stats,
     )
     if (outcome.green) {
       statusById.set(task.id, 'succeeded')
@@ -1267,7 +1299,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
         }
 
         const outcome = await runTaskTddLoop(
-          rt, artifact, task, taskWorkdir(task.id), maxIterationsPerTask, input.implementerModel, warnings, stats,
+          rt, artifact, task, taskWorkdir(task.id), maxIterationsPerTask, input.implementerModel, input.implementerType, warnings, stats,
         )
         if (!outcome.green) return { kind: 'tdd-failed', outcome }
 
@@ -1502,10 +1534,12 @@ export default defineWorkflow({
       'merge; conflicts abort conservatively and failure worktrees are kept for forensics).',
     whenToUse:
       'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass ' +
-      '{ artifact } (plus optional mutation/maxIterationsPerTask/implementerModel, and for worktree ' +
-      'mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. ' +
+      '{ artifact } (plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and ' +
+      'for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. ' +
       'implementerModel tiers the per-iteration implementer (default "sonnet"); the independent ' +
-      'checker stays on the strongest tier regardless. Sequential mode works ' +
+      'checker stays on the strongest tier regardless. implementerType (optional) routes the ' +
+      'implementer to a SPECIALIST subagent type that must exist in your session registry (the ' +
+      'runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works ' +
       'without git; worktree mode requires a git repository and machine commits are unsigned ' +
       'unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute ' +
       'paths under an absolute projectDir are auto-relativized (with a warning); any other ' +

@@ -1597,3 +1597,64 @@ describe('dev-implement implementerModel knob', () => {
     ).rejects.toThrow(/implementerModel/i)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Test: implementerType knob — optional SPECIALIST subagent type for the
+// per-iteration green (implementer) agent (e.g. a language TDD-guide). Default:
+// omitted → standard subagent (no agentType on the call). When set, it routes
+// ONLY the green agent; red (test-writer) and check (verifier) are never
+// specialized. The runtime THROWS on an unknown agentType (verified live) and
+// the registry is session-specific, so parseInput validates SHAPE only
+// (non-empty string), never membership. Orthogonal to the implementerModel
+// tier — both can be set independently.
+// ---------------------------------------------------------------------------
+describe('dev-implement implementerType knob', () => {
+  const greenCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:green:'))
+  const checkCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:check:'))
+  const redCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:red:'))
+
+  it('omits agentType on every agent when implementerType is not provided', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+    const greens = greenCalls(rt)
+    expect(greens.length).toBeGreaterThan(0)
+    for (const c of greens) expect(c.opts?.agentType).toBeUndefined()
+    for (const c of checkCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+    for (const c of redCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+  })
+
+  it('routes the implementer (green) to the specialist agentType, green only', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify({ artifact: ARTIFACT, implementerType: 'magic-claude:ts-tdd-guide' }))
+    const greens = greenCalls(rt)
+    expect(greens.length).toBeGreaterThan(0)
+    for (const c of greens) expect(c.opts?.agentType).toBe('magic-claude:ts-tdd-guide')
+    // red + check are NEVER specialized by the implementer knob.
+    for (const c of checkCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+    for (const c of redCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+  })
+
+  it('leaves the implementerModel tier intact when implementerType is set', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify({ artifact: ARTIFACT, implementerType: 'magic-claude:ts-tdd-guide' }))
+    for (const c of greenCalls(rt)) expect(c.opts?.model).toBe('sonnet')
+    for (const c of checkCalls(rt)) expect(c.opts?.model).toBe(BEST_MODEL)
+  })
+
+  it('rejects an empty-string implementerType', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ artifact: ARTIFACT, implementerType: '' })),
+    ).rejects.toThrow(/implementerType/i)
+  })
+
+  it('rejects a non-string implementerType', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ artifact: ARTIFACT, implementerType: 123 })),
+    ).rejects.toThrow(/implementerType/i)
+  })
+})
