@@ -274,7 +274,7 @@ cross-item need. Use a **loop** only when iteration adds value and the size is u
 up front (a known fixed list is just a `map`), and give every loop a hard stop — a
 counter (`while (found < 10)`) or a budget guard (`while (budget.total && budget.remaining() > 50_000)`).
 
-### Schemas and model tiering
+### Schemas, model tiering, and specialist agent types
 
 - **Schema at every consumed boundary.** Put a `schema` (JSON Schema) on any
   `agent()` whose result a later line reads a field off. Without it the agent returns
@@ -291,6 +291,29 @@ counter (`while (found < 10)`) or a budget guard (`while (budget.total && budget
     points to `'opus'` for this reason, so the default is safe; the trap is only if you
     *override* a verifier model to `'fable'` by hand. Revert to `'fable'` only once the
     suspension lifts.
+- **Specialist agent types (the `agentType` lever).** Beyond the model tier, a leaf
+  `agent()` can run as a *registered specialist subagent type* — e.g. a language
+  code-reviewer or TDD guide whose system prompt carries discipline the generic
+  subagent lacks — via the `agentType` option. The dev-workflow family exposes this
+  as an opt-in `*Type` knob family: `implementerType` (dev-implement's green),
+  `fixerType` (dev-review-fix's fixer), `reviewerType` (dev-review-fix / pr-review
+  reviewers). Three rules:
+  - **Default to the standard subagent (`null` → omit `agentType`).** The knob is a
+    per-workflow input, never a baked-in default. **Never hard-code a private type
+    (e.g. `magic-claude:*`) as a default** — it breaks every other consumer. The type
+    must exist in the *consumer's* session registry; the runtime throws (listing the
+    available types) on an unknown one, so validate *shape* only, not membership.
+  - **It is flexibility, not a proven quality win.** A measured reviewer A/B
+    (2026-06-15) found a specialist reviewer surfaces extra idiomatic findings but at a
+    ~50% false-positive rate, with no high-impact win on an already-clean target. A
+    specialist is *more thorough AND noisier* — don't assume the trade pays off; it is a
+    knob the consumer opts into for their own agents, not a default upgrade.
+  - **Exploit the verify synergy — specialize the producer, not the skeptic.** Route a
+    specialist *reviewer/finder* into a composition that already *verifies* its output
+    (the `adversarialVerification` Verify stage): the refute-first verifiers filter the
+    specialist's extra false positives, so you keep the thoroughness without the noise
+    reaching downstream. A refute-first *verifier* itself gains little from domain
+    specialization.
 
 ### Starting points
 
