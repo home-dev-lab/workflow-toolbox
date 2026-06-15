@@ -91,9 +91,10 @@ just run by hand instead of compiled. Route to the lowest rung that fits:
    time — that's **reuse**, not resume, and resume's journal cache does not carry across
    sessions. Absent all three, stay on rung 3.
 5. **Agent teams** — only when the workers must *talk to each other* mid-run
-   (competing-hypothesis debate, hand-offs), and only when the feature is enabled.
+   (competing-hypothesis debate, hand-offs). Teams is opt-in and off by default; don't
+   assume it's available — propose it to the user with the enable step when it fits.
    See [deep-grounding](../deep-grounding/SKILL.md) (*"Subagents vs. agent teams"*) for
-   the decision axis and how to tell whether teams is available — it owns that rung;
+   the decision axis and how to handle its opt-in availability — it owns that rung;
    don't duplicate it here.
 
 The graduation that matters is **3 → 4**: keep work inline until reuse, context-scale,

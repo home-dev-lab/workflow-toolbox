@@ -155,21 +155,29 @@ other?**
   blind-extraction isolation grounding relies on**. So for pure evidence-gathering, prefer
   subagents; reach for teams only when the investigation is a genuine multi-party debate.
 
-**Is agent teams even available? — you observe it, you don't compute it.** Teams is an
-opt-in experiment gated by `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in `settings.json`
-(`env`), Claude Code ≥ 2.1.32. A skill cannot *execute* anything to detect this — but no
-execution is needed, because detection here is an **observation, not a computation**: the
-team tools (`TeamCreate`, `TeamDelete`, `SendMessage`) are present in your tool set **only
-when the feature is enabled**, and you (the model running this skill in the main loop)
-already see your own available tools. So this skill simply instructs you to *notice*
-whether those tools are in your set — *"are the team tools available to me?"* is a reliable
-proxy for *"is teams on?"*. If they're absent, do not propose the teams rung — it isn't
-available. (This is exactly why no extra machinery — a code-running step, or a dedicated
-agent just to detect — is required: the check is reading context you already hold.
-Separately, a *dedicated* subagent **can** carry the team tools via its `tools:` allowlist
-and preload a skill via the `skills:` frontmatter field — the full skill content is
-injected at startup — but that *builds a teams orchestrator* to run teams; it is not needed
-to *decide* between subagents and teams, which this main-loop skill does by observation.)
+**Is agent teams even available? — don't trust tool-presence; surface it to the user.**
+Teams is experimental and **disabled by default**, enabled only by setting
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in `settings.json` (`env`) or the environment
+(Claude Code ≥ 2.1.32; takes effect on a new session). Do **not** infer availability from
+whether `TeamCreate`/`SendMessage` appear in your tool set — that is **not** a reliable
+signal: the tools can be listed regardless of the flag, and the official docs make no
+guarantee either way. A skill can't run a probe to detect it (it can't execute code), and
+you shouldn't gratuitously call `TeamCreate` just to test (it has side effects). The robust
+path is **on-demand**: when the work genuinely needs the teams rung, *propose it to the
+user* with the concrete enable step (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in
+settings.json `env`, new session) and let the real attempt be the test — if you try a team
+operation while the feature is off, it fails, and you relay that as an actionable "enable
+the flag to use this" rather than having guessed up front.
+
+Two facts from the official docs that constrain the "dedicated agent" idea: (1) a subagent
+definition's **`skills:` and `mcpServers:` fields are NOT applied when it runs as a
+teammate** — a teammate uses only the definition's `tools` + `model` + body, and loads
+skills from project/user settings like a normal session; so you cannot "preload a skill
+into a teammate" via frontmatter. (2) `SendMessage` and the task-management tools are
+**always available to a teammate** even when its `tools` allowlist restricts everything
+else. Net: building a teams orchestrator is a real but separate piece of work; deciding
+*whether* to reach for teams is this main-loop skill's job, done by proposing it to the
+user, not by detecting it.
 
 A compiled **workflow** engine for this (deterministic dedup / triangulation across a large
 source set, with a machine-readable audit trail) was prototyped and **deliberately dropped**:
