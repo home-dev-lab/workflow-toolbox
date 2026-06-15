@@ -240,6 +240,11 @@ describe('dev-full parseInput', () => {
     await expect(run(rt, { ...VALID_INPUT, fixerType: '' })).rejects.toThrow(/fixerType/i)
   })
 
+  it('throws for an empty-string reviewerType', async () => {
+    const { rt } = makeRuntime()
+    await expect(run(rt, { ...VALID_INPUT, reviewerType: '' })).rejects.toThrow(/reviewerType/i)
+  })
+
   it('throws for an empty areas array', async () => {
     const { rt } = makeRuntime()
     await expect(run(rt, { ...VALID_INPUT, areas: [] })).rejects.toThrow(/areas/i)
@@ -324,6 +329,7 @@ describe('dev-full happy chain', () => {
     expect('maxFixIterations' in sent).toBe(false)
     expect('fixerModel' in sent).toBe(false)
     expect('fixerType' in sent).toBe(false)
+    expect('reviewerType' in sent).toBe(false)
   })
 
   it('forwards dimensions and maxFixIterations to the review child when set', async () => {
@@ -344,6 +350,12 @@ describe('dev-full happy chain', () => {
     const { rt, calls } = makeRuntime()
     await run(rt, { ...VALID_INPUT, fixerType: 'magic-claude:ts-build-resolver' })
     expect((calls.review[0] as Record<string, unknown>).fixerType).toBe('magic-claude:ts-build-resolver')
+  })
+
+  it('forwards reviewerType to the review child when the operator set it', async () => {
+    const { rt, calls } = makeRuntime()
+    await run(rt, { ...VALID_INPUT, reviewerType: 'magic-claude:ts-reviewer' })
+    expect((calls.review[0] as Record<string, unknown>).reviewerType).toBe('magic-claude:ts-reviewer')
   })
 
   it('derives changedFiles (deduped) from succeeded AND failed tasks, never skipped ones', async () => {

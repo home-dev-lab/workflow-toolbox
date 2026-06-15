@@ -113,6 +113,12 @@ export interface DevFullInput {
    *  consumer's session registry (the child's runtime throws on an unknown
    *  type). */
   fixerType: string | null
+  /** Optional specialist subagent type for the dev-review-fix dimension
+   *  REVIEWERS. null = OMIT, so the child's default (standard subagent) rules.
+   *  Must exist in the consumer's session registry (the child's runtime throws
+   *  on an unknown type). A specialist reviewer is more thorough but noisier;
+   *  the child's refute-first Verify stage filters the extra false positives. */
+  reviewerType: string | null
   /** Optional VERBATIM diff command (git projects). When set it WINS over the
    *  planned-files derivation — the real diff also catches unplanned files. */
   diffCommand: string | null
@@ -456,6 +462,17 @@ function parseInput(raw: unknown): DevFullInput {
     fixerType = raw['fixerType']
   }
 
+  let reviewerType: string | null = null
+  if (raw['reviewerType'] !== undefined && raw['reviewerType'] !== null) {
+    if (typeof raw['reviewerType'] !== 'string' || raw['reviewerType'].trim().length === 0) {
+      throw new Error(
+        'dev-full: "reviewerType" must be a non-empty subagent-type string ' +
+        '(e.g. "magic-claude:ts-reviewer") — omit to use the dev-review-fix default (standard subagent)',
+      )
+    }
+    reviewerType = raw['reviewerType']
+  }
+
   return {
     goal,
     areas,
@@ -470,6 +487,7 @@ function parseInput(raw: unknown): DevFullInput {
     implementerType,
     fixerModel,
     fixerType,
+    reviewerType,
   }
 }
 
@@ -667,6 +685,7 @@ async function run(rt: WorkflowRuntime, input: DevFullInput): Promise<DevFullOut
   if (input.maxFixIterations !== null) reviewArgs['maxFixIterations'] = input.maxFixIterations
   if (input.fixerModel !== null) reviewArgs['fixerModel'] = input.fixerModel
   if (input.fixerType !== null) reviewArgs['fixerType'] = input.fixerType
+  if (input.reviewerType !== null) reviewArgs['reviewerType'] = input.reviewerType
 
   // -------------------------------------------------------------------------
   // Phase 'Review & Fix' — dev-review-fix child (narrow-only: the review

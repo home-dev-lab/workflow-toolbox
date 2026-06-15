@@ -616,6 +616,15 @@ ${renderClaim(claim)}`;
       }
       fixerType = obj["fixerType"];
     }
+    let reviewerType = null;
+    if (obj["reviewerType"] !== void 0 && obj["reviewerType"] !== null) {
+      if (typeof obj["reviewerType"] !== "string" || obj["reviewerType"].trim().length === 0) {
+        throw new Error(
+          'dev-review-fix: "reviewerType" must be a non-empty subagent-type string (e.g. "magic-claude:ts-reviewer") \u2014 omit it for the standard subagent'
+        );
+      }
+      reviewerType = obj["reviewerType"];
+    }
     return {
       projectDir,
       testCommand,
@@ -629,7 +638,8 @@ ${renderClaim(claim)}`;
       adaptationNote,
       maxFixIterations,
       fixerModel,
-      fixerType
+      fixerType,
+      reviewerType
     };
   }
   var SEVERITY_RANK = { high: 0, medium: 1, low: 2 };
@@ -678,7 +688,12 @@ Return { "findings": [{ "file": "<path>", "location": "<line range, e.g. "40-55"
           {
             schema: DIMENSION_FINDINGS_SCHEMA,
             label: `dev-review-fix:review:${dimension}`,
-            phase: "Review"
+            phase: "Review",
+            // Optional specialist subagent type (reviewerType knob). Omitted when
+            // null → standard subagent (default). Routes the dimension reviewers
+            // ONLY; verifiers/fixer/checker stay generic. Runtime fails fast on an
+            // unknown type.
+            ...input.reviewerType !== null ? { agentType: input.reviewerType } : {}
           }
         )
       )

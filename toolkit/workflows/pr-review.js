@@ -509,7 +509,7 @@ ${renderClaim(claim)}`;
           'pr-review: target must be a non-empty string \u2014 provide a git ref range or change description (e.g. "HEAD~3..HEAD")'
         );
       }
-      return { target: raw };
+      return { target: raw, reviewerType: null };
     }
     if (raw === null || typeof raw !== "object") {
       throw new Error(
@@ -527,7 +527,16 @@ ${renderClaim(claim)}`;
         'pr-review: "target" must be a non-empty string \u2014 provide a git ref range or change description (e.g. "HEAD~3..HEAD")'
       );
     }
-    return { target: obj["target"] };
+    let reviewerType = null;
+    if (obj["reviewerType"] !== void 0 && obj["reviewerType"] !== null) {
+      if (typeof obj["reviewerType"] !== "string" || obj["reviewerType"].trim().length === 0) {
+        throw new Error(
+          'pr-review: "reviewerType" must be a non-empty subagent-type string (e.g. "magic-claude:ts-reviewer") \u2014 omit it for the standard subagent'
+        );
+      }
+      reviewerType = obj["reviewerType"];
+    }
+    return { target: obj["target"], reviewerType };
   }
   async function run(rt, input) {
     const warnings = [];
@@ -593,7 +602,12 @@ Each finding: { title, file, severity ('high'|'medium'|'low'), detail }`,
         {
           schema: FINDINGS_SCHEMA,
           label: `pr-review:reviewer:${lens}`,
-          phase: "Review"
+          phase: "Review",
+          // Optional specialist subagent type (reviewerType knob). Omitted when
+          // null → standard subagent (default). Routes the lens reviewers ONLY;
+          // verifiers and synthesizer stay generic. Runtime fails fast on an
+          // unknown type.
+          ...input.reviewerType !== null ? { agentType: input.reviewerType } : {}
         }
       );
       return result;

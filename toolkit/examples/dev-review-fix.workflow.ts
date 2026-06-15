@@ -126,6 +126,19 @@ export interface DevReviewFixInput {
    *  validated here beyond shape. Never hard-code a private (e.g. magic-claude:*)
    *  type as a default. Mirrors dev-implement's implementerType. */
   fixerType: string | null
+  /** Optional SPECIALIST subagent type for the per-dimension REVIEW agents —
+   *  e.g. a language code-reviewer whose system prompt carries review discipline
+   *  the generic subagent lacks. null = the standard subagent (the default;
+   *  unchanged behavior). Routes the dimension reviewers ONLY: the verifiers,
+   *  the fixer, and the fix checker are never specialized. The type must exist
+   *  in the CONSUMER's session agent registry — the runtime throws (with the
+   *  available list) on an unknown type, and the registry is session-specific,
+   *  so this is NOT validated here beyond shape. Never hard-code a private (e.g.
+   *  magic-claude:*) type as a default. A specialist reviewer is more thorough
+   *  but noisier; the existing refute-first Verify stage filters the extra false
+   *  positives, so the noise does not reach the fixer (the 2026-06-15 reviewer
+   *  A/B that motivated this knob). */
+  reviewerType: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +463,20 @@ function parseInput(raw: unknown): DevReviewFixInput {
     fixerType = obj['fixerType']
   }
 
+  // Optional specialist subagent type for the dimension reviewers. Default null
+  // = standard subagent. Shape-only validation (same rationale as fixerType):
+  // the runtime throws on an unknown type and the registry is session-specific.
+  let reviewerType: string | null = null
+  if (obj['reviewerType'] !== undefined && obj['reviewerType'] !== null) {
+    if (typeof obj['reviewerType'] !== 'string' || obj['reviewerType'].trim().length === 0) {
+      throw new Error(
+        'dev-review-fix: "reviewerType" must be a non-empty subagent-type string ' +
+        '(e.g. "magic-claude:ts-reviewer") — omit it for the standard subagent',
+      )
+    }
+    reviewerType = obj['reviewerType']
+  }
+
   return {
     projectDir,
     testCommand,
@@ -464,6 +491,7 @@ function parseInput(raw: unknown): DevReviewFixInput {
     maxFixIterations,
     fixerModel,
     fixerType,
+    reviewerType,
   }
 }
 
@@ -607,6 +635,11 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
           schema: DIMENSION_FINDINGS_SCHEMA,
           label: `dev-review-fix:review:${dimension}`,
           phase: 'Review',
+          // Optional specialist subagent type (reviewerType knob). Omitted when
+          // null → standard subagent (default). Routes the dimension reviewers
+          // ONLY; verifiers/fixer/checker stay generic. Runtime fails fast on an
+          // unknown type.
+          ...(input.reviewerType !== null ? { agentType: input.reviewerType } : {}),
         },
       ),
     ),

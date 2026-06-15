@@ -321,6 +321,15 @@ var __wt = (() => {
       }
       fixerType = raw["fixerType"];
     }
+    let reviewerType = null;
+    if (raw["reviewerType"] !== void 0 && raw["reviewerType"] !== null) {
+      if (typeof raw["reviewerType"] !== "string" || raw["reviewerType"].trim().length === 0) {
+        throw new Error(
+          'dev-full: "reviewerType" must be a non-empty subagent-type string (e.g. "magic-claude:ts-reviewer") \u2014 omit to use the dev-review-fix default (standard subagent)'
+        );
+      }
+      reviewerType = raw["reviewerType"];
+    }
     return {
       goal,
       areas,
@@ -334,7 +343,8 @@ var __wt = (() => {
       implementerModel,
       implementerType,
       fixerModel,
-      fixerType
+      fixerType,
+      reviewerType
     };
   }
   async function callChild(rt, scriptPath, args) {
@@ -465,6 +475,7 @@ ${statusLines.join("\n")}` + (changedFiles !== null ? "\n\nNote: the changed-fil
     if (input.maxFixIterations !== null) reviewArgs["maxFixIterations"] = input.maxFixIterations;
     if (input.fixerModel !== null) reviewArgs["fixerModel"] = input.fixerModel;
     if (input.fixerType !== null) reviewArgs["fixerType"] = input.fixerType;
+    if (input.reviewerType !== null) reviewArgs["reviewerType"] = input.reviewerType;
     rt.phase("Review & Fix");
     const reviewCall = await callChild(rt, input.scriptPaths.reviewFix, reviewArgs);
     if (!reviewCall.ok) return finish("aborted-at-review", reviewCall.reason);

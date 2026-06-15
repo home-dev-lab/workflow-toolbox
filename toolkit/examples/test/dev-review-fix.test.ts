@@ -1259,3 +1259,57 @@ describe('dev-review-fix fixerType knob', () => {
     ).rejects.toThrow(/fixerType/i)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Test: reviewerType knob — optional SPECIALIST subagent type for the per-
+// dimension REVIEW agents (e.g. a language code-reviewer whose system prompt
+// carries review discipline the generic subagent lacks). Default: omitted →
+// standard subagent (no agentType). Routes the dimension reviewers ONLY; the
+// verifiers (adversarialVerification), the fixer, and the fix checker are never
+// specialized. Shape-only validation (the runtime throws on an unknown
+// agentType; the registry is session-specific). Motivated by the 2026-06-15
+// reviewer A/B: a specialist reviewer is more thorough but noisier, and the
+// existing refute-first Verify stage filters the extra false positives —
+// thoroughness without the noise reaching the fixer.
+// ---------------------------------------------------------------------------
+describe('dev-review-fix reviewerType knob', () => {
+  const reviewCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('dev-review-fix:review:'))
+  const verifyCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
+  const fixCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('dev-review-fix:fix:'))
+
+  it('omits agentType on the reviewers when reviewerType is not provided', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    for (const c of reviews) expect(c.opts?.agentType).toBeUndefined()
+  })
+
+  it('routes the dimension reviewers to the specialist agentType, reviewers only', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify({ ...VALID_INPUT, reviewerType: 'magic-claude:ts-reviewer' }))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    for (const c of reviews) expect(c.opts?.agentType).toBe('magic-claude:ts-reviewer')
+    // The verifiers and the fixer are NEVER specialized by the reviewer knob.
+    for (const c of verifyCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+    for (const c of fixCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+  })
+
+  it('rejects an empty-string reviewerType', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...VALID_INPUT, reviewerType: '' })),
+    ).rejects.toThrow(/reviewerType/i)
+  })
+
+  it('rejects a non-string reviewerType', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...VALID_INPUT, reviewerType: 123 })),
+    ).rejects.toThrow(/reviewerType/i)
+  })
+})

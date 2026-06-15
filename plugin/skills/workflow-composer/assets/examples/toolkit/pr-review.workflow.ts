@@ -43,6 +43,17 @@ import type { FromSchema } from 'json-schema-to-ts'
 
 export interface PrReviewInput {
   target: string
+  /** Optional SPECIALIST subagent type for the per-lens REVIEW agents — e.g. a
+   *  language code-reviewer whose system prompt carries review discipline the
+   *  generic subagent lacks. null = the standard subagent (the default;
+   *  unchanged behavior). Routes the lens reviewers ONLY: the verifiers and the
+   *  synthesizer are never specialized. The type must exist in the CONSUMER's
+   *  session agent registry — the runtime throws (with the available list) on an
+   *  unknown type, and the registry is session-specific, so this is NOT
+   *  validated beyond shape. Never hard-code a private (e.g. magic-claude:*) type
+   *  as a default. A specialist reviewer is more thorough but noisier; the
+   *  existing refute-first Verify stage filters the extra false positives. */
+  reviewerType: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +173,7 @@ function parseInput(raw: unknown): PrReviewInput {
         'pr-review: target must be a non-empty string — provide a git ref range or change description (e.g. "HEAD~3..HEAD")',
       )
     }
-    return { target: raw }
+    return { target: raw, reviewerType: null }
   }
 
   if (raw === null || typeof raw !== 'object') {
@@ -186,7 +197,21 @@ function parseInput(raw: unknown): PrReviewInput {
     )
   }
 
-  return { target: obj['target'] }
+  // Optional specialist subagent type for the lens reviewers. Default null =
+  // standard subagent. Shape-only validation: the runtime throws on an unknown
+  // type and the registry is session-specific, so membership is not checked here.
+  let reviewerType: string | null = null
+  if (obj['reviewerType'] !== undefined && obj['reviewerType'] !== null) {
+    if (typeof obj['reviewerType'] !== 'string' || obj['reviewerType'].trim().length === 0) {
+      throw new Error(
+        'pr-review: "reviewerType" must be a non-empty subagent-type string ' +
+        '(e.g. "magic-claude:ts-reviewer") — omit it for the standard subagent',
+      )
+    }
+    reviewerType = obj['reviewerType']
+  }
+
+  return { target: obj['target'], reviewerType }
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +332,11 @@ async function run(rt: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewO
         schema: FINDINGS_SCHEMA,
         label: `pr-review:reviewer:${lens}`,
         phase: 'Review',
+        // Optional specialist subagent type (reviewerType knob). Omitted when
+        // null → standard subagent (default). Routes the lens reviewers ONLY;
+        // verifiers and synthesizer stay generic. Runtime fails fast on an
+        // unknown type.
+        ...(input.reviewerType !== null ? { agentType: input.reviewerType } : {}),
       },
     )
 

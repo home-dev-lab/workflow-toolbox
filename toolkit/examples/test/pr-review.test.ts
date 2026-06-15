@@ -445,3 +445,51 @@ describe('pr-review unknown classification', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Test: reviewerType knob — optional SPECIALIST subagent type for the per-lens
+// REVIEW agents. Default: omitted → standard subagent (no agentType). Routes
+// the lens reviewers ONLY; the verifiers (adversarialVerification) and the
+// synthesizer are never specialized. Shape-only validation (the runtime throws
+// on an unknown agentType; the registry is session-specific). Motivated by the
+// 2026-06-15 reviewer A/B: a specialist reviewer is more thorough but noisier,
+// and the existing refute-first Verify stage filters the extra false positives.
+// ---------------------------------------------------------------------------
+describe('pr-review reviewerType knob', () => {
+  const reviewCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('pr-review:reviewer:'))
+  const verifyCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
+
+  it('omits agentType on the reviewers when reviewerType is not provided', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    for (const c of reviews) expect(c.opts?.agentType).toBeUndefined()
+  })
+
+  it('routes the lens reviewers to the specialist agentType, reviewers only', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', reviewerType: 'magic-claude:ts-reviewer' }))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    for (const c of reviews) expect(c.opts?.agentType).toBe('magic-claude:ts-reviewer')
+    // The verifiers are NEVER specialized by the reviewer knob.
+    for (const c of verifyCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+  })
+
+  it('rejects an empty-string reviewerType', async () => {
+    const rt = makeHappyPathRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', reviewerType: '' })),
+    ).rejects.toThrow(/reviewerType/i)
+  })
+
+  it('rejects a non-string reviewerType', async () => {
+    const rt = makeHappyPathRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', reviewerType: 123 })),
+    ).rejects.toThrow(/reviewerType/i)
+  })
+})
