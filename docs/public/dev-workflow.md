@@ -156,7 +156,9 @@ args: {
 
 Optional `dev-full` knobs: `maxRefutedRatio` (default 0.5),
 `maxIterationsPerTask`, `maxFixIterations`, `dimensions` — unset knobs are
-omitted so each child workflow's own default stays canonical.
+omitted so each child workflow's own default stays canonical. `dev-full` also
+forwards the model-tiering and specialist-agent-type knobs to its children — see
+[Model tiering and specialist agent types](#model-tiering-and-specialist-agent-types-optional-knobs).
 
 Note on the review child's default: with `dimensions` unset and a
 `changedFiles` diff source, `dev-review-fix` adapts a **docs-only** change set
@@ -186,6 +188,61 @@ hands it through to `dev-implement`'s task block with an explicit staleness
 caveat (earlier tasks may have changed that code, so the implementer must
 re-read the file) — making the implementer's first read targeted too. Task
 checkers never receive it.
+
+## Model tiering and specialist agent types (optional knobs)
+
+Two independent, fully optional knob families let you tune *which model* runs a
+stage and *which subagent type* it routes to. Both default to the unchanged
+behaviour — omit them and nothing about a run differs.
+
+**Model tiering** — high-volume execution work is tiered down to `sonnet` by
+default; the only quality-sensitive stage that pays for `opus` is pinned there:
+
+| Knob | Workflow | Default | What it sets |
+|---|---|---|---|
+| `implementerModel` | `dev-implement` (forwarded by `dev-full`) | `sonnet` | the TDD green/implement agent's model |
+| `fixerModel` | `dev-review-fix` (forwarded by `dev-full`) | `sonnet` | the fix-loop agent's model |
+| `executeModel` | `monorepo-refactor-execute` | `sonnet` | the per-task mutation agent's model |
+
+The **checker** in `dev-implement` and `dev-review-fix` — the sole source of
+truth for "green" — is **pinned to `BEST_MODEL` (`opus`)** and is deliberately
+not tunable down; a downgraded judge is the one place a cheap model costs you
+correctness. Override an implementer/fixer up to `opus` on hard tasks.
+
+**Specialist agent types** — route a stage's agents to a specialist subagent
+type (e.g. `magic-claude:ts-reviewer`) via the Agent tool's `agentType`. Workflow
+agents already load `CLAUDE.md` + memory + skills, but **not** a specialist's
+system prompt (encoded TDD discipline, per-ecosystem review checklists) — these
+knobs supply it.
+
+| Knob | Workflow | Routes | Default |
+|---|---|---|---|
+| `implementerType` | `dev-implement` (fwd by `dev-full`) | the green/implement agent | `null` (standard subagent) |
+| `reviewerType` | `dev-review-fix` (dimension reviewers) + `pr-review` (lens reviewers), fwd by `dev-full` | the REVIEW agents only | `null` |
+| `fixerType` | `dev-review-fix` (fwd by `dev-full`) | the fix-loop agent | `null` |
+
+Composers building their own workflows get the same lever one level down: the
+`adversarialVerification` pattern takes a `verifierType` that routes every
+refute-first verifier (see [toolkit/README.md](../../toolkit/README.md)).
+
+**Read the defaults honestly — this is flexibility, not a proven quality win.**
+A controlled A/B (2026-06-15) on a clean, gate-green target measured a specialist
+reviewer surfacing *more* findings than the generic agent but at a **~50%
+false-positive rate**, zero of them high-impact. The lessons baked into these
+defaults:
+
+- **Default `null` everywhere.** The standard subagent already follows project
+  conventions; reach for a specialist only when a stage genuinely needs encoded
+  domain discipline the conventions don't carry.
+- **Never hard-code a private (`magic-claude:*`) type as a default** in a shipped
+  artifact — the runtime *throws* on an unknown `agentType` (with the available
+  list), so a private default breaks every other consumer. These example
+  workflows therefore default `null`; you pass the type at call time.
+- **Specialize the producer, not the skeptic.** The FP rate argues for putting a
+  specialist *reviewer* in front of the existing adversarial verify stage (which
+  filters its noise), not for specializing the verifier — a refute-first verifier
+  benefits least from domain specialization. `verifierType` exists for callers who
+  want it; it is the knob to reach for last.
 
 ## Operational lessons (learned the honest way)
 

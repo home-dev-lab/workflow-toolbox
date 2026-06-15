@@ -297,6 +297,20 @@ keep the 2-of-3 quorum on `medium`/`high`; `dev-plan` (task `risk`) and
 mapping (additive, semver-minor; ships in `@workflow-toolbox/patterns` 0.5.0
 together with `relativizeUnder`).
 
+Specialist verifiers: `adversarialVerification` also takes
+`verifierType?: string` to route **every** refute-first verifier agent to a
+specialist subagent type via the Agent tool's `agentType` (omit for the standard
+subagent). Shape-only validated (non-empty string); the runtime owns registry
+membership and *throws* on an unknown type — so never hard-code a private
+(`magic-claude:*`) type as a default in a published artifact. It is a
+**flexibility knob, not a proven quality win**: a controlled A/B measured a
+specialist *reviewer* at a ~50% false-positive rate, and a refute-first verifier
+benefits *least* from domain specialization — prefer specializing the producer
+(the reviewer feeding this stage) over the skeptic. Routing is surfaced on the
+agent call only; the trail is intentionally not extended (the `model` field
+already covers the pattern's load-bearing audit concern). Additive, semver-minor;
+ships in `@workflow-toolbox/patterns` 0.6.0.
+
 Path mapping: `relativizeUnder(root, path)` is the boundary-safe POSIX
 relativization kernel promoted from the dev-workflow family. It answers ONE
 question — "can `path` be expressed relative to `root`?" — returning the
