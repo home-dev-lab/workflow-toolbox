@@ -158,7 +158,7 @@ export function classifyAgentFile(name: string): string | null {
 /** The Workflow tool_result arrives as FORMATTED TEXT (not JSON). Pull the
  *  identifiers out of it. Any field may be absent → null. `transcriptDir` is the
  *  per-run subagents dir where `agent-<id>.jsonl` transcripts appear — the live
- *  observer tails it (see observe-live.ts). */
+ *  observer tails it (the Workflow Observatory repo's live driver). */
 export function parseLaunchText(text: string): {
   taskId: string | null
   runId: string | null
@@ -429,7 +429,7 @@ export function launchPrompt(scriptPath: string, args?: unknown): string {
  *  hand-quoted scriptPath + a separate args clause, the whole input is embedded as ONE
  *  JSON.stringify literal — scriptPath, resumeFromRunId, and (only when provided) args in a
  *  single object — since the input now has three fields instead of two, and a caller
- *  (observe-live.ts's resumeLiveRun) always has a concrete args value or none, never a
+ *  (the Observatory repo's resumeLiveRun) always has a concrete args value or none, never a
  *  template to interpolate around. */
 export function resumePrompt(scriptPath: string, runId: string, args?: unknown): string {
   const input: Record<string, unknown> = { scriptPath, resumeFromRunId: runId }

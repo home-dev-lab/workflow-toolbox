@@ -5,10 +5,6 @@
   "type": "module",
   "description": "Headless upgrade-canary smoke test: launches committed toolkit artifacts through the real Workflow runtime via the TS Agent SDK. Not part of `pnpm test`.",
   "exports": {
-    "./observe-live": {
-      "import": "./src/observe-live.ts",
-      "types": "./src/observe-live.ts"
-    },
     "./runtimes": {
       "import": "./src/runtimes.ts",
       "types": "./src/runtimes.ts"

@@ -197,7 +197,21 @@ async function probeFreePort(): Promise<number> {
  *  walking up from the public repo reaches the common parent, which contains
  *  the observatory checkout). Returns the SERVER BASE, not the repo root. */
 function findObserveRoot(cwd: string, env: Record<string, string | undefined>): string | null {
-  const hasServer = (d: string): boolean => existsSync(join(d, 'apps', 'observe-ui', 'server', 'dev-api.ts'))
+  // Identity gate (review finding, 2026-07-11): the walk EXECUTES what it finds, so mere
+  // existence of the dev-api.ts path is not enough on a shared filesystem — require the
+  // app manifest to identify itself before trusting the base. Not a cryptographic
+  // boundary (a writer in your ancestor path can forge it), but it stops accidental and
+  // low-effort lookalikes; DWT_OBSERVE_ROOT stays the explicit override.
+  const isObserveApp = (d: string): boolean => {
+    try {
+      const pkg: unknown = JSON.parse(readFileSync(join(d, 'apps', 'observe-ui', 'package.json'), 'utf8'))
+      return typeof pkg === 'object' && pkg !== null && (pkg as Record<string, unknown>)['name'] === '@workflow-toolbox/observe-ui'
+    } catch {
+      return false
+    }
+  }
+  const hasServer = (d: string): boolean =>
+    existsSync(join(d, 'apps', 'observe-ui', 'server', 'dev-api.ts')) && isObserveApp(d)
   const probe = (d: string): string | null =>
     hasServer(d) ? d : hasServer(join(d, 'toolkit')) ? join(d, 'toolkit') : null
   const forced = env['DWT_OBSERVE_ROOT']

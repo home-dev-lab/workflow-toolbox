@@ -143,7 +143,7 @@ type DriveLoopOptions = Pick<DriverOptions, 'scriptPath' | 'timeoutMs' | 'waitFo
 /** Pick the DriverOptions fields a RunnerOptions-typed caller can legitimately
  *  forward (pathToClaudeCodeExecutable, args) — the rest of RunnerOptions
  *  (onLaunch/onModel/onExtraLaunch/onComplete/abortController/launchTimeoutMs)
- *  belongs to observe-live.ts's own, separate driver, not this one; DriverOptions
+ *  belongs to the Workflow Observatory repo's own, separate live driver, not this one; DriverOptions
  *  deliberately does not extend RunnerOptions (see its doc comment) so a future
  *  caller can't silently pass those dead options through here. Uses
  *  `exactOptionalPropertyTypes`-safe conditional spreads so an absent field stays

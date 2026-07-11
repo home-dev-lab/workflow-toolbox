@@ -1,10 +1,10 @@
 // spec.ts — the declarative PipelineSpec authoring/validation surface: pure data shapes plus
-// synchronous structural validation, shared verbatim between the observe-ui pipeline runner
-// (apps/observe-ui/server/pipeline.ts, which owns everything RUNTIME — gates, manifests,
-// launch orchestration) and definePipeline() (@workflow-toolbox/build), so an authored spec and
-// a live-launched spec are validated by the EXACT SAME rules. Extracted from
-// apps/observe-ui/server/pipeline.ts + pipeline-manifest.ts (I5 authoring increment) —
-// single source of truth; the app now imports this instead of defining it locally.
+// synchronous structural validation, shared verbatim with the Workflow Observatory pipeline
+// runner (the companion repo's server/pipeline.ts, which owns everything RUNTIME — gates,
+// manifests, launch orchestration) and definePipeline() (@workflow-toolbox/build), so an
+// authored spec and a live-launched spec are validated by the EXACT SAME rules. Extracted
+// from that runner (I5 authoring increment) — single source of truth; the companion app
+// imports this instead of defining it locally.
 //
 // Zero dependencies (same leaf-package posture as @workflow-toolbox/std) — every check here is
 // a plain `typeof`/`Array.isArray` guard; this module never needed `isRecord`.
@@ -22,7 +22,7 @@ export type InputRef = { from: (typeof INPUT_REF_SOURCES)[number] }
  *  parseStageSpecV2 validates against this SAME array (imported, not hand-duplicated), so
  *  adding an extractor is a one-place change the compiler enforces via ExtractorKey's derived
  *  type. The extraction FUNCTION itself (what actually pulls a handoff artifact out of a
- *  stage's result) is a runtime concern and stays in apps/observe-ui/server/extract-artifact.ts
+ *  stage's result) is a runtime concern and stays in the companion app’s server (extract-artifact)
  *  — only the key enumeration is shared here, since an author only ever CHOOSES a key, never
  *  runs one. */
 export const EXTRACTOR_KEYS = ['plan-artifact', 'raw'] as const
@@ -79,7 +79,7 @@ export interface PipelineSpec {
    *  submitted before this change (or a bare `{goal, projectDir}` legacy start() call) simply
    *  has none — the runner then falls back to the parent's own type for a nested
    *  pipeline-stage, or `null` for a top-level one (see startInternal's doc in
-   *  apps/observe-ui/server/pipeline.ts). */
+   *  the companion app’s pipeline runner). */
   name?: string
   stages: StageSpecV2[]
 }
@@ -93,7 +93,7 @@ export const MAX_STAGES = 12
  *  exceed this before instantiation refuses it. Enforced in TWO places: validateStageList below
  *  rejects a spec whose OWN STATIC nesting (fully computable from the submitted spec alone,
  *  before anything is minted) already exceeds this cap — a clean, zero-mutation failure at the
- *  validation boundary; apps/observe-ui/server/pipeline.ts's runner ALSO still checks the
+ *  validation boundary; the companion app’s runner ALSO still checks the
  *  CUMULATIVE ancestors chain at instantiation (today's v1 inline-only child specs make the two
  *  checks always agree; the cumulative check is what will still matter once by-reference child
  *  specs land — a shallow SUBMITTED spec could reference an externally, already-deeply-nested

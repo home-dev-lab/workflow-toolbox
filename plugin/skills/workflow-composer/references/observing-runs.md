@@ -2,8 +2,11 @@
 
 > **Scope / status.** Run visualization lives in **Workflow Observatory**, the localhost
 > companion app of this plugin (free tier for noncommercial use; distribution being set
-> up — see the repo README). It is **not** part of the shipped plugin itself; the plugin
-> bundles the `wt-observe` launcher that starts it when installed. This reference teaches
+> up — see the repo README). It is **not** part of the shipped plugin itself: the plugin
+> bundles the `wt-observe` launcher, which starts the app **once a Workflow Observatory
+> installation is present on the machine** (the upcoming binary distribution, or a local
+> checkout — without one, `wt-observe start` reports it cannot locate the server, which
+> is expected). This reference teaches
 > how to launch a workflow so you can *watch it unfold* and how to read the result,
 > **and is candid about what it cannot show.** Everything below is grounded in real runs
 > against the server, not assumptions.

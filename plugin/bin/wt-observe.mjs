@@ -445,7 +445,15 @@ async function probeFreePort() {
   });
 }
 function findObserveRoot(cwd, env) {
-  const hasServer = (d) => existsSync2(join5(d, "apps", "observe-ui", "server", "dev-api.ts"));
+  const isObserveApp = (d) => {
+    try {
+      const pkg = JSON.parse(readFileSync3(join5(d, "apps", "observe-ui", "package.json"), "utf8"));
+      return typeof pkg === "object" && pkg !== null && pkg["name"] === "@workflow-toolbox/observe-ui";
+    } catch {
+      return false;
+    }
+  };
+  const hasServer = (d) => existsSync2(join5(d, "apps", "observe-ui", "server", "dev-api.ts")) && isObserveApp(d);
   const probe = (d) => hasServer(d) ? d : hasServer(join5(d, "toolkit")) ? join5(d, "toolkit") : null;
   const forced = env["DWT_OBSERVE_ROOT"];
   if (forced !== void 0 && forced.length > 0) return probe(forced);
