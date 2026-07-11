@@ -445,12 +445,14 @@ async function probeFreePort() {
   });
 }
 function findObserveRoot(cwd, env) {
+  const hasServer = (d) => existsSync2(join5(d, "apps", "observe-ui", "server", "dev-api.ts"));
+  const probe = (d) => hasServer(d) ? d : hasServer(join5(d, "toolkit")) ? join5(d, "toolkit") : null;
   const forced = env["DWT_OBSERVE_ROOT"];
-  const marker = (d) => existsSync2(join5(d, "toolkit", "apps", "observe-ui", "server", "dev-api.ts"));
-  if (forced !== void 0 && forced.length > 0) return marker(forced) ? forced : null;
+  if (forced !== void 0 && forced.length > 0) return probe(forced);
   let dir = cwd;
   for (let depth = 0; depth < 64; depth++) {
-    if (marker(dir)) return dir;
+    const hit = probe(dir) ?? probe(join5(dir, "workflow-observatory"));
+    if (hit !== null) return hit;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -564,10 +566,10 @@ function resolveStartRemotes() {
   return valid;
 }
 async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
-  const root = findObserveRoot(process.cwd(), process.env);
-  if (root === null) {
+  const base = findObserveRoot(process.cwd(), process.env);
+  if (base === null) {
     throw new Error(
-      "cannot locate the observe-ui server (no repo checkout found from cwd; set DWT_OBSERVE_ROOT). Until @workflow-toolbox/observe-ui ships on npm, wt-observe start must run from a workflow-toolbox checkout."
+      "cannot locate the observe server (no checkout found from cwd; set DWT_OBSERVE_ROOT). Until the Workflow Observatory binary distribution ships, wt-observe start needs a workflow-observatory checkout (or a legacy workflow-toolbox one) on this machine."
     );
   }
   const logPath = observeServerLogPath(stateRoot);
@@ -575,13 +577,13 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
   const token = randomBytes(24).toString("hex");
   const tsxCli = (() => {
     try {
-      return createRequire(join5(root, "toolkit", "package.json")).resolve("tsx/cli");
+      return createRequire(join5(base, "package.json")).resolve("tsx/cli");
     } catch {
-      throw new Error(`observe root ${root} has no resolvable 'tsx' \u2014 run pnpm install in ${join5(root, "toolkit")}`);
+      throw new Error(`observe base ${base} has no resolvable 'tsx' \u2014 run pnpm install in ${base}`);
     }
   })();
   const child = spawn(process.execPath, [tsxCli, "apps/observe-ui/server/dev-api.ts", ...flags.watch ? ["--watch"] : []], {
-    cwd: join5(root, "toolkit"),
+    cwd: base,
     env: {
       ...process.env,
       // Both env vars are set regardless of cardinality: dev-api.ts only switches to

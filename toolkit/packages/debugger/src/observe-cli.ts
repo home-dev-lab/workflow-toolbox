@@ -187,16 +187,25 @@ async function probeFreePort(): Promise<number> {
   })
 }
 
-// ── spawn target (interim: the repo checkout) ──────────────────────────────────
+// ── spawn target (interim: a local checkout) ────────────────────────────────────
 
-/** Locate the observe-ui dev server: $DWT_OBSERVE_ROOT, else walk up from cwd. */
+/** Locate the dir that DIRECTLY contains apps/observe-ui/server/dev-api.ts — a
+ *  Workflow Observatory checkout root, or a legacy monorepo's toolkit/ dir.
+ *  $DWT_OBSERVE_ROOT wins (either shape accepted, with or without the toolkit/
+ *  segment); else walk up from cwd, probing each ancestor itself, its toolkit/,
+ *  and a workflow-observatory/ checkout sitting under it (the sibling-dir case:
+ *  walking up from the public repo reaches the common parent, which contains
+ *  the observatory checkout). Returns the SERVER BASE, not the repo root. */
 function findObserveRoot(cwd: string, env: Record<string, string | undefined>): string | null {
+  const hasServer = (d: string): boolean => existsSync(join(d, 'apps', 'observe-ui', 'server', 'dev-api.ts'))
+  const probe = (d: string): string | null =>
+    hasServer(d) ? d : hasServer(join(d, 'toolkit')) ? join(d, 'toolkit') : null
   const forced = env['DWT_OBSERVE_ROOT']
-  const marker = (d: string): boolean => existsSync(join(d, 'toolkit', 'apps', 'observe-ui', 'server', 'dev-api.ts'))
-  if (forced !== undefined && forced.length > 0) return marker(forced) ? forced : null
+  if (forced !== undefined && forced.length > 0) return probe(forced)
   let dir = cwd
   for (let depth = 0; depth < 64; depth++) { // bounded — a cwd 64 dirs deep is not a checkout
-    if (marker(dir)) return dir
+    const hit = probe(dir) ?? probe(join(dir, 'workflow-observatory'))
+    if (hit !== null) return hit
     const parent = dirname(dir)
     if (parent === dir) return null
     dir = parent
@@ -379,11 +388,12 @@ function resolveStartRemotes(): RemoteEntry[] {
 }
 
 async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly string[], remotes: readonly RemoteEntry[], flags: StartFlags): Promise<{ health: Health; token: string }> {
-  const root = findObserveRoot(process.cwd(), process.env)
-  if (root === null) {
+  const base = findObserveRoot(process.cwd(), process.env)
+  if (base === null) {
     throw new Error(
-      'cannot locate the observe-ui server (no repo checkout found from cwd; set DWT_OBSERVE_ROOT). ' +
-        'Until @workflow-toolbox/observe-ui ships on npm, wt-observe start must run from a workflow-toolbox checkout.',
+      'cannot locate the observe server (no checkout found from cwd; set DWT_OBSERVE_ROOT). ' +
+        'Until the Workflow Observatory binary distribution ships, wt-observe start needs a ' +
+        'workflow-observatory checkout (or a legacy workflow-toolbox one) on this machine.',
     )
   }
   const logPath = observeServerLogPath(stateRoot)
@@ -403,13 +413,13 @@ async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly
   // every OS (cross-OS I3, card #1813359570421023938).
   const tsxCli = ((): string => {
     try {
-      return createRequire(join(root, 'toolkit', 'package.json')).resolve('tsx/cli')
+      return createRequire(join(base, 'package.json')).resolve('tsx/cli')
     } catch {
-      throw new Error(`observe root ${root} has no resolvable 'tsx' — run pnpm install in ${join(root, 'toolkit')}`)
+      throw new Error(`observe base ${base} has no resolvable 'tsx' — run pnpm install in ${base}`)
     }
   })()
   const child = spawn(process.execPath, [tsxCli, 'apps/observe-ui/server/dev-api.ts', ...(flags.watch ? ['--watch'] : [])], {
-    cwd: join(root, 'toolkit'),
+    cwd: base,
     env: {
       ...process.env,
       // Both env vars are set regardless of cardinality: dev-api.ts only switches to

@@ -1,9 +1,10 @@
-// Locks the RESOLUTION side of the portable spawns (cross-OS I3, review finding):
-// spawnServer runs `node + require.resolve('tsx/cli')` and dev-api's watcher runs
-// `node + <vite pkg root>/bin/vite.js` — neither exec path is exercised by unit tests
-// (they drive real child processes), so THIS test at least pins that the resolved
-// entries exist in the current checkout. A tsx major bump changing its exports map,
-// or vite moving its bin, fails HERE instead of as a live `wt-observe start` hang.
+// Locks the RESOLUTION side of the portable spawn (cross-OS I3, review finding):
+// spawnServer runs `node + require.resolve('tsx/cli')` — the exec path is not
+// exercised by unit tests (it drives a real child process), so THIS test at least
+// pins that the resolved entry exists in the current checkout. A tsx major bump
+// changing its exports map fails HERE instead of as a live `wt-observe start` hang.
+// (The vite-watcher half of this lock lives with the server, in the Workflow
+// Observatory repo — the app is no longer part of this workspace.)
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
@@ -19,12 +20,5 @@ describe('portable spawn targets resolve in this checkout', () => {
     const tsxCli = createRequire(join(TOOLKIT, 'package.json')).resolve('tsx/cli')
     expect(existsSync(tsxCli)).toBe(true)
     expect(tsxCli.endsWith('.mjs')).toBe(true)
-  })
-
-  it("vite's own JS bin (the watcher's target) resolves from apps/observe-ui", () => {
-    const appDir = join(TOOLKIT, 'apps', 'observe-ui')
-    const vitePkg = createRequire(join(appDir, 'package.json')).resolve('vite/package.json')
-    const viteBin = join(dirname(vitePkg), 'bin', 'vite.js')
-    expect(existsSync(viteBin)).toBe(true)
   })
 })
