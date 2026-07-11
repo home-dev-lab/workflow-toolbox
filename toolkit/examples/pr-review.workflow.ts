@@ -109,7 +109,7 @@ export interface PrReviewInput {
 // ---------------------------------------------------------------------------
 
 // Schema for the routed change summary (classifyAndAct act stage output).
-// Bounds are anti-capitulation defences (card #1814943589197677963, observed live
+// Bounds are anti-capitulation defences (internal note, observed live
 // 2026-07-08): an act agent wrote a LONG correct summary, closed the JSON before
 // riskAreas, got two "missing property" rejections, then capitulated into
 // {"summary":"test","riskAreas":["a","b"]} — which validated. maxLength turns the
@@ -433,7 +433,7 @@ async function run(rt0: WorkflowRuntime, input: PrReviewInput): Promise<PrReview
   const category = routedItem.category
   const changeSummary = routedItem.result
 
-  // Degenerate-output guard (card #1814943589197677963): a schema-rejected agent can
+  // Degenerate-output guard (internal note): a schema-rejected agent can
   // capitulate into minimal junk that VALIDATES — the journal's `attempt` stays 1
   // (StructuredOutput retries are intra-conversation), so nothing else surfaces it.
   // Heuristic + loud, never fatal: the reviewers re-derive findings from the diff, so

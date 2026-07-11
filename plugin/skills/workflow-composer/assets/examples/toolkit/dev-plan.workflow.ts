@@ -156,7 +156,7 @@ const TASK_FILE_SCHEMA = {
 
 // One alternative route the planner weighed for a task, and the one-line
 // reason it was not chosen. Lever 2 (alternatives-considered, increment 1 of
-// card #1811777580496324469): forces enumeration-then-choice instead of
+// internal note): forces enumeration-then-choice instead of
 // choice-then-justification, and gives the Critique phase a concrete,
 // refutable killReason to challenge — see renderClaim's point (4) below.
 const ALTERNATIVE_SCHEMA = {

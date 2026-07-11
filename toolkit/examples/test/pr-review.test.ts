@@ -660,7 +660,7 @@ describe('pr-review effort defaults and overrides', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Test: degenerate act-output guard (card #1814943589197677963)
+// Test: degenerate act-output guard (internal note)
 // Observed live 2026-07-08: two riskAreas-missing schema rejections, then the
 // agent capitulated into {"summary":"test","riskAreas":["a","b"]} — validating
 // junk that silently seeded the reviewers. The guard must surface it loudly.

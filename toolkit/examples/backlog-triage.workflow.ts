@@ -327,7 +327,7 @@ async function run(rt: WorkflowRuntime, input: BacklogTriageInput): Promise<Back
         `<item>${s.item}</item>\n` +
         // firstStep FIRST: a long free-text field emitted before a required short
         // sibling starves it at generation time (pr-review act-stage capitulation,
-        // card #1814943589197677963) — short/required-first is the house convention.
+        // internal note) — short/required-first is the house convention.
         `Return { "firstStep": "<the very first action to take>", "plan": "<concrete plan>" }`,
         {
           schema: PLAN_SCHEMA,

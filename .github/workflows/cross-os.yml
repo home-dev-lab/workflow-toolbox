@@ -1,7 +1,7 @@
-# Cross-OS validation matrix (card #1813359570421023938 item d): the full test
+# Cross-OS validation matrix: the full test
 # suite + the wt-observe lifecycle smoke on real Windows/macOS/Linux runners.
 #
-# Cost discipline (private repo — 2000 quota-min/month, win x2 / mac x10):
+# Cost discipline (CI minutes are finite; win runners cost x2, mac x10):
 # NOT on every push. Triggers: manual dispatch, a weekly cron (default branch
 # only, per GitHub semantics), and a push that touches THIS file (so landing or
 # editing the workflow self-triggers one validation run).
