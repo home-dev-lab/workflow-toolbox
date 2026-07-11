@@ -14,7 +14,6 @@
   },
   "devDependencies": {
     "@workflow-toolbox/runtime": "workspace:*",
-    "@workflow-toolbox/observe": "workspace:*",
     "json-schema-to-ts": "^3.1.1"
   }
 }

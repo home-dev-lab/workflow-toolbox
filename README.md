@@ -115,9 +115,10 @@ the *shape* is industry-agnostic:
 
 ## Prerequisites
 
-**This plugin is free** ([PolyForm Noncommercial](LICENSE)). The only thing you
-pay for is Claude Code itself — the **Workflow tool** is a Claude Code feature,
-and the toolbox adds nothing to that bill.
+**This plugin is free** ([FSL-1.1-ALv2](LICENSE) — free for any use, including
+commercial use inside your business; each release becomes Apache 2.0 after two
+years). The only thing you pay for is Claude Code itself — the **Workflow tool**
+is a Claude Code feature, and the toolbox adds nothing to that bill.
 
 - **Claude Code ≥ v2.1.154** with the Workflow tool. It ships as a research
   preview and is **not available on the free tier** — you need a paid Claude
@@ -213,7 +214,6 @@ what happened and whether resuming is safe.
 | `skills/toolkit-scaffold` | **Start** a new composition: generates a build-clean `.workflow.ts` skeleton wired to the chosen `@workflow-toolbox` pattern, so you fill in prompts instead of boilerplate. | Automatically, or `/workflow-toolbox:toolkit-scaffold` |
 | `skills/workflow-debugger` | **Diagnose** a finished or failed run from its journal: why an agent died, whether schema retries fired, whether resuming is safe. | Automatically, or `/workflow-toolbox:workflow-debugger` |
 | `skills/upgrade-canary` | **Re-verify** the Workflow runtime still behaves the way the toolkit depends on after a Claude Code (or SDK) upgrade, and report what changed. | Automatically, or `/workflow-toolbox:upgrade-canary` |
-| `skills/observe-ui` | **Visualize** a run's phase→agent DAG in a local browser UI — replay a finished run or watch a live one. `wt-observe start [--source <dir>]...` resolves 1+ Claude config dirs and serves them through ONE server — 2+ (a personal + a work account, say) get a source switcher automatically, no separate verb needed. | `/workflow-toolbox:observe-ui`, or the bundled `wt-observe` CLI directly |
 
 ## The toolkit
 
@@ -549,12 +549,23 @@ best-effort fetch of the public Claude Code changelog. See [PRIVACY.md](PRIVACY.
 for the per-component breakdown and [SECURITY.md](SECURITY.md) to report a
 vulnerability.
 
+## Companion app — Workflow Observatory
+
+Run **visualization** (the live phase→agent DAG, replay of finished runs,
+multi-source switching, the themed backdrops) lives in **Workflow Observatory**,
+a separate closed-source companion app with a free tier for noncommercial use
+and per-seat commercial licensing. The bundled `wt-observe` launcher starts it
+when installed. Distribution is being set up — watch this README for the
+download link.
+
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE): free to use, modify, and share for
-any noncommercial purpose — personal projects, research, education, and
-noncommercial organizations. Commercial use requires a separate license — see
-[COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
+[FSL-1.1-ALv2](LICENSE) (Functional Source License): free to use, modify, and
+share for any purpose — including commercial use inside your business — except
+offering a competing product or service. Each release automatically becomes
+[Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) two years after its
+publication. The Workflow Observatory companion app is licensed separately —
+see [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
 
 ## Credits
 

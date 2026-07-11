@@ -11,7 +11,6 @@
 // run.ts), never throw an opaque TypeError.
 
 import { isRecord, strOrNull } from '@workflow-toolbox/std'
-import type { Patch, RunModel } from '@workflow-toolbox/observe'
 
 // ---------------------------------------------------------------------------
 // Tiny narrowing helpers
@@ -349,9 +348,6 @@ export interface RunnerOptions {
    *  LaunchInfo's own doc). Existing callers that destructure only {runId, transcriptDir}
    *  are unaffected — this is a purely additive widening. */
   onLaunch?: (info: { runId: string; transcriptDir: string; sessionId: string | null }) => void
-  /** Called after every folded model update (once per SDK event + a final sweep).
-   *  Defaults to a console progress logger; an SSE caller emits each update instead. */
-  onModel?: (model: RunModel, patches: readonly Patch[]) => void
   /** Called if the driver attempts a SECOND Workflow launch in the same session (the
    *  in-session runaway multiplier). The runner aborts the session right after; the
    *  caller can log it. Fires at most once per run. */
@@ -366,7 +362,7 @@ export interface RunnerOptions {
    *  from "failed", the live-settle truth bug this shape prevents). Lets a caller (the
    *  human-gated pipeline) consume a stage's artifact, not just its DAG.
    *  NOT fired on abort paths (safety timeout, the second-launch guard, or an injected
-   *  abortController) — those reject the `observeLiveRun` promise instead. A caller that
+   *  abortController) — those reject the runner promise instead. A caller that
    *  must run teardown on EVERY exit should use the promise's finally/catch, not onComplete. */
   onComplete?: (outcome: WorkflowCompletion) => void
   /** Total safety timeout (ms) before the run is aborted. Defaults to a short cap

@@ -23,7 +23,6 @@
   },
   "dependencies": {
     "@workflow-toolbox/build": "workspace:*",
-    "@workflow-toolbox/observe": "workspace:*",
     "@workflow-toolbox/patterns": "workspace:*",
     "@workflow-toolbox/std": "workspace:*"
   },

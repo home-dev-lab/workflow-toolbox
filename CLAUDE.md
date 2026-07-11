@@ -2,13 +2,11 @@
 
 This repo has two halves that stand alone but work together:
 
-- **`plugin/`** — the Claude Code plugin. Ships **seven skills** — `workflow-composer`
+- **`plugin/`** — the Claude Code plugin. Ships **six skills** — `workflow-composer`
   (author), `toolkit-scaffold` (start), `workflow-debugger` (diagnose a run),
   `upgrade-canary` (re-verify the runtime after an upgrade), `independent-analysis`
   (trigger the bias-free analysis workflow when relevant), `deep-grounding`
-  (collect + verify evidence against the real sources before asserting/analyzing),
-  `observe-ui` (start/stop/status of the local run-visualization server via the
-  bundled `wt-observe` CLI) —
+  (collect + verify evidence against the real sources before asserting/analyzing) —
   plus a `Stop` hook that
   auto-surfaces a finished run's audit report, and **one bundled workflow**:
   `independent-analysis` (domain-agnostic bias-free multi-lens analysis,
@@ -22,6 +20,10 @@ This repo has two halves that stand alone but work together:
   CLI), plus support packages (`std`, `smoke`, `debugger`, `scaffold`). Example
   compositions live in `toolkit/examples/`; their committed `.js` artifacts in
   `toolkit/workflows/` run as-is via the Workflow tool's `scriptPath`.
+
+Run visualization (the live phase→agent DAG, replay, themes) lives in **Workflow
+Observatory**, a separate closed-source companion app (free tier for noncommercial
+use). The `wt-observe` launcher CLI ships here and starts it when installed.
 
 ## Where to read first
 

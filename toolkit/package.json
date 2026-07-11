@@ -1,7 +1,7 @@
 {
   "name": "wt-toolkit",
   "private": true,
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "FSL-1.1-ALv2",
   "engines": {
     "node": ">=20"
   },
@@ -15,7 +15,6 @@
     "mirror:plugin-workflow": "tsx packages/build/src/cli.ts build examples/independent-analysis.workflow.ts && node -e \"require('fs').copyFileSync('workflows/independent-analysis.js','../plugin/workflows/independent-analysis.js')\"",
     "wt:debug": "tsx packages/debugger/src/cli.ts",
     "wt:report": "tsx packages/debugger/src/report-cli.ts",
-    "wt:observe": "tsx packages/observe/src/cli.ts",
     "wt:scaffold": "tsx packages/scaffold/src/cli.ts",
     "wt:calibrate": "tsx packages/smoke/src/calibrate.ts",
     "debugger:build": "tsx packages/debugger/build.ts",
@@ -34,9 +33,7 @@
     "tsx": "^4.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.5.0",
-    "vitest": "^3.2.6",
-    "svelte": "^5.0.0",
-    "@sveltejs/vite-plugin-svelte": "^5.0.0"
+    "vitest": "^3.2.6"
   },
   "packageManager": "pnpm@11.10.0"
 }
