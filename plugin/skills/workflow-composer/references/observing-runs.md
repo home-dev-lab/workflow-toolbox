@@ -1,14 +1,16 @@
-# Observing a workflow run (observe-ui)
+# Observing a workflow run (Workflow Observatory)
 
-> **Scope / status.** `observe-ui` is a **dev-only, localhost, research-preview** tool that
-> lives in this repo's `toolkit/apps/observe-ui/` — it is **not** part of the shipped plugin.
-> This reference teaches how to launch a workflow so you can *watch it unfold* and how to read
-> the result, **and is candid about what it cannot show.** Everything below is grounded in real
-> runs against the dev server, not assumptions.
+> **Scope / status.** Run visualization lives in **Workflow Observatory**, the localhost
+> companion app of this plugin (free tier for noncommercial use; distribution being set
+> up — see the repo README). It is **not** part of the shipped plugin itself; the plugin
+> bundles the `wt-observe` launcher that starts it when installed. This reference teaches
+> how to launch a workflow so you can *watch it unfold* and how to read the result,
+> **and is candid about what it cannot show.** Everything below is grounded in real runs
+> against the server, not assumptions.
 
-The dev server (`pnpm --filter @workflow-toolbox/observe-ui dev` from `toolkit/`, on
-`http://localhost:5174`) renders a run as a **phase → agent DAG**. There are two ways to see a
-run: **live** (as it executes) and **post-mortem** (replayed from disk after it finishes).
+The server (`wt-observe start`, on `http://localhost:5174`) renders a run as a
+**phase → agent DAG**. There are two ways to see a run: **live** (as it executes) and
+**post-mortem** (replayed from disk after it finishes).
 
 ## Live — delegated SDK launch (the rich pathway)
 
