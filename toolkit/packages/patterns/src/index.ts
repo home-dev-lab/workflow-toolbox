@@ -1,4 +1,4 @@
-// @workflow-toolbox/patterns — public API (envelope + 7 patterns)
+// @workflow-toolbox/patterns — public API (envelope + 8 patterns)
 //
 // Naming convention (deliberate, do not "unify"): each pattern speaks its
 // DOMAIN language — `claims` (adversarialVerification), `tasks`
@@ -8,9 +8,12 @@
 // composition author what the pattern semantically expects; flattening them
 // to generic `items` would trade signal for plumbing uniformity.
 
-export type { PatternStats, PatternResult } from './envelope.js'
-export { warn, applyCap } from './envelope.js'
+export type { PatternStats, PatternResult, TrailRecord } from './envelope.js'
+export { warn, applyCap, emitDigest, collectTrail, makeRecord } from './envelope.js'
 export { relativizeUnder } from './paths.js'
+
+export { probeAgentType } from './probe-agent-type.js'
+export type { AgentTypeProbe, AgentTypeProbeReport, ProbeAgentTypeOptions } from './probe-agent-type.js'
 
 export { classifyAndAct } from './classify-and-act.js'
 export type { ClassifyAndActOptions, ActionSpec } from './classify-and-act.js'
@@ -44,3 +47,11 @@ export type {
 
 export { planAndExecute } from './plan-and-execute.js'
 export type { PlanAndExecuteOptions, PlannedSubtask } from './plan-and-execute.js'
+
+export { scoreAndRank } from './score-and-rank.js'
+export type {
+  ScoreAndRankOptions,
+  ScoreDimension,
+  ScoreCutoff,
+  ScoredItem,
+} from './score-and-rank.js'

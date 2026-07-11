@@ -171,3 +171,84 @@ describe('cli main() — workflow-toolbox build --typecheck', () => {
     expect(fs.existsSync(path.join(outDir, 'wt-fixture-hello.js'))).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// workflow-toolbox pipeline (I5 authoring increment)
+// ---------------------------------------------------------------------------
+
+describe('cli main() — workflow-toolbox pipeline', () => {
+  it('derives the output filename from the entry (.pipeline.ts stripped) into --out-dir', async () => {
+    const outDir = makeTmpDir()
+    await main(['pipeline', path.join(FIXTURES, 'hello.pipeline.ts'), '--out-dir', outDir])
+    const outFile = path.join(outDir, 'hello.json')
+    expect(fs.existsSync(outFile)).toBe(true)
+    const spec = JSON.parse(fs.readFileSync(outFile, 'utf8')) as { goal: string; stages: unknown[] }
+    expect(spec.goal).toBe('minimal fixture pipeline')
+    expect(spec.stages).toHaveLength(2)
+  })
+
+  it('--out overrides the derived filename (without requiring .json)', async () => {
+    const outDir = makeTmpDir()
+    await main(['pipeline', path.join(FIXTURES, 'hello.pipeline.ts'), '--out-dir', outDir, '--out', 'custom-name'])
+    expect(fs.existsSync(path.join(outDir, 'custom-name.json'))).toBe(true)
+    expect(fs.existsSync(path.join(outDir, 'hello.json'))).toBe(false)
+  })
+
+  it('the written file ends with a trailing newline', async () => {
+    const outDir = makeTmpDir()
+    await main(['pipeline', path.join(FIXTURES, 'hello.pipeline.ts'), '--out-dir', outDir])
+    const raw = fs.readFileSync(path.join(outDir, 'hello.json'), 'utf8')
+    expect(raw.endsWith('\n')).toBe(true)
+  })
+
+  it('rejects a spec that fails the parsePipelineSpec round-trip, writing nothing', async () => {
+    const outDir = makeTmpDir()
+    await expect(
+      main(['pipeline', path.join(FIXTURES, 'bad-roundtrip.pipeline.ts'), '--out-dir', outDir]),
+    ).rejects.toThrow(/round-trip/)
+    expect(fs.readdirSync(outDir)).toHaveLength(0)
+  })
+
+  it('fails the build on a type error in the entry with --typecheck', async () => {
+    const outDir = makeTmpDir()
+    await expect(
+      main(['pipeline', path.join(FIXTURES, 'type-error.pipeline.ts'), '--out-dir', outDir, '--typecheck']),
+    ).rejects.toThrow(/typecheck/)
+    expect(fs.readdirSync(outDir)).toHaveLength(0)
+  })
+
+  describe('name injection (card #1813065099577918566 — pipelines become first-class citizens with a type)', () => {
+    it("injects the entry-filename-derived name when the authored spec doesn't declare one", async () => {
+      const outDir = makeTmpDir()
+      await main(['pipeline', path.join(FIXTURES, 'hello.pipeline.ts'), '--out-dir', outDir])
+      const spec = JSON.parse(fs.readFileSync(path.join(outDir, 'hello.json'), 'utf8')) as { name?: string }
+      expect(spec.name).toBe('hello')
+    })
+
+    it("preserves the author's own declared name, never overwriting it with the filename-derived one", async () => {
+      const outDir = makeTmpDir()
+      await main(['pipeline', path.join(FIXTURES, 'hello-named.pipeline.ts'), '--out-dir', outDir])
+      const spec = JSON.parse(fs.readFileSync(path.join(outDir, 'hello-named.json'), 'utf8')) as { name?: string }
+      expect(spec.name).toBe('custom-pattern-name')
+    })
+
+    it('the injected name follows the ENTRY filename, not --out (which only overrides the output FILENAME)', async () => {
+      const outDir = makeTmpDir()
+      await main(['pipeline', path.join(FIXTURES, 'hello.pipeline.ts'), '--out-dir', outDir, '--out', 'custom-name'])
+      const spec = JSON.parse(fs.readFileSync(path.join(outDir, 'custom-name.json'), 'utf8')) as { name?: string }
+      expect(spec.name).toBe('hello')
+    })
+
+    it("regression: name injection preserves the AUTHOR's own key order within a stage — must never reorder via the round-tripped result.spec (parseStageSpecV2 reconstructs a fixed {name,workflow,[input],[gateAfter],[artifact]} order, which once silently reordered every artifact)", async () => {
+      const outDir = makeTmpDir()
+      await main(['pipeline', path.join(FIXTURES, 'hello-key-order.pipeline.ts'), '--out-dir', outDir])
+      const raw = fs.readFileSync(path.join(outDir, 'hello-key-order.json'), 'utf8')
+      const planStage = (JSON.parse(raw) as { stages: Record<string, unknown>[] }).stages[0]!
+      // Object.keys preserves the STRING text's own key order (JSON.parse inserts keys in
+      // source order) — this is the exact author order the fixture declares: name, workflow,
+      // gateAfter, artifact, input. The buggy path put `input` third (right after `workflow`).
+      expect(Object.keys(planStage)).toEqual(['name', 'workflow', 'gateAfter', 'artifact', 'input'])
+      expect(raw).toContain('"name": "hello-key-order"') // the injection itself still landed
+    })
+  })
+})

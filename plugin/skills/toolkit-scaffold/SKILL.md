@@ -41,7 +41,7 @@ that is the judgment the L1 table below encodes.
    }
    ```
    `meta.name` must be non-empty kebab-case (same rule the build enforces). `pattern` is
-   one of the seven canonical names below; `phase` is the title shown in the `/workflows` UI.
+   one of the eight canonical names below; `phase` is the title shown in the `/workflows` UI.
 4. **Scaffold, then build + check** (see below).
 5. **Fill in the placeholders** — the emitted prompts, the `items`/`claims`/`tasks` data,
    and any `as const satisfies JsonSchema` schemas at consumed agent boundaries. Re-build.
@@ -57,14 +57,15 @@ that is the judgment the L1 table below encodes.
 | `tournament` | Solution space is wide; one-attempt-iterated is weak; angles genuinely differ | Convergent task where attempts would be near-identical |
 | `loopUntilDone` | Clear evaluation criteria + iterative refinement adds value; or unknown-size discovery | No articulable feedback; or a fixed list is known up front (just map it) |
 | `planAndExecute` | Subtasks can't be predicted up front; a planner decomposes dynamically | Subtasks are known — use `fanOutAndSynthesize` (cheaper, more predictable) |
+| `scoreAndRank` | Many items, only a few worth an expensive next stage; a cheap model scores them on independent dimensions; you want a ranked cutoff to aim the premium model/human at the top | Few items (just act); scoring signal is garbage (GIGO); or a binary keep/drop suffices — use `generateAndFilter` |
 
 Steps run in spec order. Repeating a `phase` across steps groups them under one phase entry.
 
 > **⚠ Verifier model (`adversarialVerification`).** Its verifier defaults to `BEST_MODEL`
-> (the strongest *callable* tier — currently `'opus'`). **Fable 5 is suspended by export
-> control since 2026-06-12**: never set a verifier `model` to `'fable'` until the
-> suspension lifts — it errors at runtime. The default is already safe; the trap is only a
-> hand-override.
+> (the strongest *reliably-callable* tier — currently `'opus'`). The default is already
+> safe; the trap is only a hand-override to a top-tier alias that is not callable in the
+> consumer's environment (availability varies by plan and over time) — an uncallable
+> alias errors at runtime.
 
 ## Run it
 
@@ -105,7 +106,7 @@ runtime, inside the sandbox. `--typecheck` uses your project's **own** `typescri
 install (it warns and continues if typescript isn't installed).
 
 The freshly scaffolded skeleton builds + checks green **before** you edit it — proof the
-wiring is sound. A representative all-seven-patterns skeleton bundles to ~40 KB (well under
+wiring is sound. A representative all-eight-patterns skeleton bundles to ~40 KB (well under
 the 512 KB sandbox cap).
 
 > **Maintainer note (this repo).** Inside the toolkit workspace the same loop runs as
@@ -125,6 +126,13 @@ compiles and builds immediately. It is not yet useful — you must:
   scaffolder emits none, to stay lint-clean as-is — see the **workflow-composer** skill for
   the schema-authoring contract),
 - and replace the `loopUntilDone` placeholder `done: false` with your real stop condition.
+
+Optionally **tune the agents** (the scaffold emits none of these — add what you need):
+per-role `<role>Model`/`<role>Effort` on any pattern; `adversarialVerification`'s
+`verifierType` for a cross-model (e.g. `codex:codex-rescue`, GPT) verifier; or, for
+launch-time tuning without editing the source, wrap once with
+`withAgentDefaults(rt, defaults)` and/or parse an `args` config via `parseConfig`. See
+the **workflow-composer** skill's `references/patterns.md` ("Tuning at launch").
 
 ## How it works (for maintenance)
 

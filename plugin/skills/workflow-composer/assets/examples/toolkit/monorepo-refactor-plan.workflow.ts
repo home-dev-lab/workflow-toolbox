@@ -31,17 +31,37 @@
 //   Phase 'Verify'    — adversarialVerification: refute weak proposals; exclude refuted ones.
 //   Phase 'Synthesize'— final plan artifact agent from kept (non-refuted) changes.
 
-import { defineWorkflow } from '@workflow-toolbox/build/define'
-import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
+import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
+import type { WorkflowRuntime, JsonSchema, EffortAlias } from '@workflow-toolbox/runtime'
+import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import {
   classifyAndAct,
+  collectTrail,
   fanOutAndSynthesize,
   planAndExecute,
   adversarialVerification,
   warn,
 } from '@workflow-toolbox/patterns'
-import type { VerifiedClaim, PatternStats } from '@workflow-toolbox/patterns'
+import type { VerifiedClaim, PatternStats, TrailRecord } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
+
+// ---------------------------------------------------------------------------
+// Per-stage effort defaults (Class B/C launch-time tuning — see parseConfig).
+// A launch-time `args.effort.<role>` override (parsed into `input.effort`) can
+// retune any of these without a source edit, via resolveEffort. 'verify' is
+// clamped to a 'high' FLOOR (resolveVerifierEffort) — an override may only
+// RAISE it, mirroring adversarialVerification's own model-floor guardrail.
+// ---------------------------------------------------------------------------
+const CLASSIFY_EFFORT: EffortAlias = 'low'              // Map: classify
+const MAP_ACT_EFFORT: EffortAlias = 'high'              // Map: dead-code/duplication/api-drift/structure observations
+const MAP_HEALTHY_EFFORT: EffortAlias = 'low'           // Map: 'healthy' — mechanical confirm (already pinned to haiku)
+const ANALYZE_TASK_EFFORT: EffortAlias = 'high'         // Analyze: per-area deep analysis
+const ANALYZE_SYNTHESIS_EFFORT: EffortAlias = 'medium'  // Analyze: consolidated brief
+const PLAN_EFFORT: EffortAlias = 'high'                 // Plan: planner decomposition
+const PLAN_WORK_EFFORT: EffortAlias = 'high'            // Plan: per-proposal detailing
+const PLAN_SYNTHESIS_EFFORT: EffortAlias = 'medium'     // Plan: draft narrative
+const VERIFY_EFFORT_DEFAULT: EffortAlias = 'high'       // Verify: adversarialVerification (floor 'high')
+const SYNTHESIZE_EFFORT: EffortAlias = 'high'           // Synthesize: final plan artifact — planner-grade
 
 // ---------------------------------------------------------------------------
 // Input contract
@@ -50,6 +70,15 @@ import type { FromSchema } from 'json-schema-to-ts'
 export interface MonorepoRefactorPlanInput {
   goal: string
   areas: string[]
+  /** Optional per-ROLE reasoning-effort overrides (Class B/C, parsed by the
+   *  shared `parseConfig` helper from `args.effort`), e.g.
+   *  `args: { goal, areas, effort: { plan: 'xhigh' } }`. Role keys: 'classify',
+   *  'mapAct', 'mapHealthy', 'analyzeTask', 'analyzeSynthesis', 'plan',
+   *  'planWork', 'planSynthesis', 'verify', 'synthesize'. A role's value may
+   *  also be the literal 'auto' (keep THIS role's own committed default).
+   *  null = no overrides. Resolved per-stage via resolveEffort; 'verify' is
+   *  additionally clamped to a 'high' floor via resolveVerifierEffort. */
+  effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +217,8 @@ interface MonorepoRefactorPlanOutput {
   /** Per-phase pattern envelope stats — kept typed so callers can calibrate
    *  budgets from real runs (arch §8: budgetFloor calibration). */
   stats: Record<string, PatternStats>
+  /** Combined Map+Analyze+Plan+Verify trail (collectTrail, in phase order). */
+  envelope: { trail: TrailRecord[] }
   warnings: readonly string[]
 }
 
@@ -229,9 +260,15 @@ function parseInput(raw: unknown): MonorepoRefactorPlanInput {
     }
   }
 
+  // Optional Class B/C per-role effort overrides, validated by the shared
+  // parseConfig helper. It reads only the recognized `effort` slice and
+  // IGNORES this workflow's bespoke goal/areas keys.
+  const effort = parseConfig(obj).effort ?? null
+
   return {
     goal: obj['goal'],
     areas: obj['areas'] as string[],
+    effort,
   }
 }
 
@@ -242,6 +279,20 @@ function parseInput(raw: unknown): MonorepoRefactorPlanInput {
 async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promise<MonorepoRefactorPlanOutput> {
   const warnings: string[] = []
   const stats: Record<string, PatternStats> = {}
+
+  // Resolve each stage's effort ONCE: a launch-time `args.effort.<role>`
+  // override wins when valid, else the stage-class default declared above.
+  // 'verify' is additionally floored at 'high' — see resolveVerifierEffort.
+  const classifyEffort = resolveEffort(input.effort?.['classify'], CLASSIFY_EFFORT)
+  const mapActEffort = resolveEffort(input.effort?.['mapAct'], MAP_ACT_EFFORT)
+  const mapHealthyEffort = resolveEffort(input.effort?.['mapHealthy'], MAP_HEALTHY_EFFORT)
+  const analyzeTaskEffort = resolveEffort(input.effort?.['analyzeTask'], ANALYZE_TASK_EFFORT)
+  const analyzeSynthesisEffort = resolveEffort(input.effort?.['analyzeSynthesis'], ANALYZE_SYNTHESIS_EFFORT)
+  const planEffort = resolveEffort(input.effort?.['plan'], PLAN_EFFORT)
+  const planWorkEffort = resolveEffort(input.effort?.['planWork'], PLAN_WORK_EFFORT)
+  const planSynthesisEffort = resolveEffort(input.effort?.['planSynthesis'], PLAN_SYNTHESIS_EFFORT)
+  const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
+  const synthesizeEffort = resolveEffort(input.effort?.['synthesize'], SYNTHESIZE_EFFORT)
 
   // -------------------------------------------------------------------------
   // Phase 'Map' — classifyAndAct
@@ -269,6 +320,7 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
       `Goal: ${input.goal}\n` +
       `Area: ${area}\n` +
       `Return { "category": "<one of the five categories>" }`,
+    classifyEffort,
     actions: {
       'dead-code': {
         schema: OBSERVATION_SCHEMA,
@@ -278,6 +330,7 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
           `Area: ${area}\n` +
           `Inspect the area and report files containing dead or unreachable code.\n` +
           `Return { "observations": [{ "file": "<path>", "detail": "<what makes it dead code>" }] }`,
+        effort: mapActEffort,
       },
       'duplication': {
         schema: OBSERVATION_SCHEMA,
@@ -287,6 +340,7 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
           `Area: ${area}\n` +
           `Inspect the area and report files with duplicated logic or copy-paste code.\n` +
           `Return { "observations": [{ "file": "<path>", "detail": "<what is duplicated and where>" }] }`,
+        effort: mapActEffort,
       },
       'api-drift': {
         schema: OBSERVATION_SCHEMA,
@@ -296,6 +350,7 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
           `Area: ${area}\n` +
           `Inspect the area and report files where API contracts have diverged across packages.\n` +
           `Return { "observations": [{ "file": "<path>", "detail": "<the drift and its effect>" }] }`,
+        effort: mapActEffort,
       },
       'structure': {
         schema: OBSERVATION_SCHEMA,
@@ -305,11 +360,13 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
           `Area: ${area}\n` +
           `Inspect the area and report files with structural issues (wrong location, bad boundaries, etc.).\n` +
           `Return { "observations": [{ "file": "<path>", "detail": "<the structural problem>" }] }`,
+        effort: mapActEffort,
       },
       'healthy': {
         schema: OBSERVATION_SCHEMA,
         // 'haiku' for mechanical healthy-area check — no deep analysis needed
         model: 'haiku',
+        effort: mapHealthyEffort,
         prompt: (area) =>
           `This monorepo area appears healthy relative to the goal.\n` +
           `Goal: ${input.goal}\n` +
@@ -380,12 +437,14 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
       `Re-derive from the actual code — do NOT trust the observations above blindly.\n` +
       `Return { "problems": [{ "file": "<path>", "problem": "<what is wrong>", "impact": "<high|medium|low>" }] }`,
     taskSchema: ANALYSIS_SCHEMA,
+    taskEffort: analyzeTaskEffort,
     synthesisPrompt: (parts) =>
       `Consolidate into a single analysis brief from these per-area deep analyses.\n` +
       `Goal: ${input.goal}\n` +
       `Analyses: ${JSON.stringify(parts)}\n` +
       `Return { "brief": "<consolidated summary of key problems>", "hotspots": ["<file1>", ...] }`,
     synthesisSchema: BRIEF_SCHEMA,
+    synthesisEffort: analyzeSynthesisEffort,
     phase: 'Analyze',
   })
 
@@ -425,6 +484,7 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
       `Produce a list of independent, parallel-safe change proposals.\n` +
       `Each subtask description should identify ONE file and ONE concrete action.\n` +
       `Return { "subtasks": [{ "description": "<proposal description>" }] }`,
+    planEffort,
     workerPrompt: (subtask) =>
       `Detail the change proposal: ${subtask.description}\n` +
       `Goal: ${input.goal}\n` +
@@ -437,11 +497,13 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
       `Return { "changes": [{ "file": "<path>", "action": "<what to do>", "rationale": "<why>", ` +
       `"impact": "<low|medium|high>" }] }`,
     workerSchema: CHANGES_SCHEMA,
+    workerEffort: planWorkEffort,
     synthesisPrompt: (results) =>
       `Compose a draft refactoring plan from these detailed change proposals.\n` +
       `Goal: ${input.goal}\n` +
       `Change proposals: ${JSON.stringify(results)}\n` +
       `Produce a coherent draft plan narrative (plain text) that will feed the final plan synthesis.`,
+    synthesisEffort: planSynthesisEffort,
     maxSubtasks: 8,
     phase: 'Plan',
   })
@@ -463,6 +525,9 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
 
   let verifiedChanges: Array<VerifiedClaim<ChangeProposal>> = []
   const rejectedChanges: RejectedChange[] = []
+  // Hoisted so the final envelope.trail can fold it in — stays null (skipped,
+  // not fabricated) when Verify never ran (zero change proposals).
+  let verifyResult: Awaited<ReturnType<typeof adversarialVerification<ChangeProposal>>> | null = null
 
   const workerChanges: ChangeProposal[] = planResult.workerResults.flatMap((r) => r.changes)
 
@@ -486,7 +551,7 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
   }
 
   if (workerChanges.length > 0) {
-    const verifyResult = await adversarialVerification<ChangeProposal>(rt, {
+    verifyResult = await adversarialVerification<ChangeProposal>(rt, {
       claims: workerChanges,
       renderClaim: (change) =>
         `Change proposal: "${change.action}" in ${change.file}\n` +
@@ -497,6 +562,7 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
       // medium/high keep the full 2-of-3 quorum (effectiveThreshold = min(2, claimVotes)).
       votesPerClaim: (change) => (change.impact === 'low' ? 1 : 3),
       maxVerifyClaims: 10,
+      effort: verifyEffort,
       phase: 'Verify',
     })
 
@@ -545,6 +611,7 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
     schema: PLAN_ARTIFACT_SCHEMA,
     label: 'monorepo-refactor-plan:synthesize',
     phase: 'Synthesize',
+    effort: synthesizeEffort,
   })
 
   if (planArtifactAgent === null) {
@@ -559,6 +626,7 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorPlanInput): Promi
     plan: planArtifactAgent,
     rejected: rejectedChanges,
     stats,
+    envelope: { trail: collectTrail(mapResult, analyzeResult, planResult, verifyResult) },
     warnings,
   }
 }

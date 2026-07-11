@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { AuditReport } from '../src/report.js'
+import type { CompactionReport } from '../src/transcript-usage.js'
 import type { Diagnosis, DiagnosisMode } from '../src/diagnose.js'
 import {
   buildFullSurface,
@@ -109,6 +110,99 @@ describe('buildFullSurface', () => {
     expect(s.reason).toContain('pnpm wt:report wf_abc')
     expect(s.reason.toLowerCase()).toContain('unreconciled')
   })
+
+  // A silently-degraded run reads `completed-ok` at the journal level — the denial signal is
+  // an INDEPENDENT block trigger on top of isTrouble. This is the whole point of the feature.
+  const degradedDenials = {
+    total: 7,
+    agentsAffected: 2,
+    bySignature: [{ signature: 'git diff', count: 7 }],
+    degraded: true,
+    denials: [],
+    recoveredCount: 0,
+    allRecovered: false,
+  }
+
+  it('completed-ok BUT degraded (denials): blocks, with a DEGRADED reason + notice suffix', () => {
+    const s = buildFullSurface({
+      runId: 'wf_abc',
+      report: report({ denials: degradedDenials }),
+      diagnosis: diag('completed-ok'),
+      diskDir: null,
+    })
+    expect(s.block).toBe(true)
+    expect(s.systemMessage).toContain('⚠ 7 tool denial(s)/2 agent(s)')
+    expect(s.reason).toMatch(/DEGRADED/)
+    expect(s.reason).toContain('git diff ×7')
+    expect(s.reason).toContain('pnpm wt:report wf_abc')
+  })
+
+  it('trouble AND degraded: reason carries BOTH the failure findings and the denial warning', () => {
+    const d = diag('agent-died', { headline: 'a subagent died', findings: [{ kind: 'dead-agent', detail: 'agent X never finished' }] })
+    const s = buildFullSurface({
+      runId: 'wf_abc',
+      report: report({ denials: degradedDenials }),
+      diagnosis: d,
+      diskDir: null,
+    })
+    expect(s.block).toBe(true)
+    expect(s.reason).toContain('a subagent died')
+    expect(s.reason).toMatch(/DEGRADED/)
+    expect(s.reason).toContain('git diff ×7')
+  })
+
+  it('completed-ok with an explicit zero-denial report: no block, no denial suffix', () => {
+    const s = buildFullSurface({
+      runId: 'wf_abc',
+      report: report({ denials: { total: 0, agentsAffected: 0, bySignature: [], denials: [], degraded: false, recoveredCount: 0, allRecovered: false } }),
+      diagnosis: diag('completed-ok'),
+      diskDir: null,
+    })
+    expect(s.block).toBe(false)
+    expect(s.systemMessage).not.toContain('tool denial')
+  })
+
+  // Auto-compaction is the ADVISORY tier: it appends an ℹ suffix to the always-on notice so the
+  // observer/debugger is warned an agent over-scoped, but it NEVER blocks (the run succeeded) —
+  // deliberately softer than the ⚠ DEGRADED denial signal above.
+  const compactionReport: CompactionReport = {
+    agentsCompacted: 1,
+    peakTokens: 198625,
+    droppedTokens: 99667,
+    compacted: true,
+    agents: [{ agentId: 'a1', label: 'read:big', peakTokens: 198625, droppedTokens: 99667, trigger: 'auto', boundaries: 1 }],
+  }
+
+  it('completed-ok BUT auto-compacted: advisory ℹ notice suffix, NO block', () => {
+    const s = buildFullSurface({
+      runId: 'wf_abc',
+      report: report({ compaction: compactionReport }),
+      diagnosis: diag('completed-ok'),
+      diskDir: null,
+    })
+    expect(s.block).toBe(false) // advisory tier — never blocks
+    expect(s.systemMessage).toContain('ℹ 1 agent(s) compacted context')
+    expect(s.systemMessage).toContain('198,625 tok')
+    expect(s.reason).toBe('')
+  })
+
+  it('auto-compaction does not upgrade a clean run to a block, and stacks with a denial suffix', () => {
+    const s = buildFullSurface({
+      runId: 'wf_abc',
+      report: report({ compaction: compactionReport, denials: degradedDenials }),
+      diagnosis: diag('completed-ok'),
+      diskDir: null,
+    })
+    // denials still drive the block; compaction only adds its advisory suffix alongside.
+    expect(s.block).toBe(true)
+    expect(s.systemMessage).toContain('⚠ 7 tool denial(s)/2 agent(s)')
+    expect(s.systemMessage).toContain('ℹ 1 agent(s) compacted context')
+  })
+
+  it('no compaction field → no compaction suffix', () => {
+    const s = buildFullSurface({ runId: 'wf_abc', report: report(), diagnosis: diag('completed-ok'), diskDir: null })
+    expect(s.systemMessage).not.toContain('compacted context')
+  })
 })
 
 describe('buildProvisionalSurface', () => {
@@ -142,5 +236,51 @@ describe('mergeStopSurfaces + renderHookOutput', () => {
   it('empty input renders the inert {} object', () => {
     expect(renderHookOutput(mergeStopSurfaces([]))).toBe('{}')
     expect(renderHookOutput({ systemMessage: 'x' })).toBe('{"systemMessage":"x"}')
+  })
+})
+
+describe('buildFullSurface — recovery-aware denial wording (annotate, never suppress)', () => {
+  const recovered = (via: string) => ({ via, at: null })
+  const den = (tool: string, rec: { via: string; at: null } | undefined) => ({
+    agentId: 'a1',
+    tool,
+    detail: 'x',
+    kind: 'hook' as const,
+    reason: null,
+    ...(rec !== undefined ? { recovered: rec } : {}),
+  })
+
+  it('ALL denials recovered: still blocks and lists, but wording names the recovery instead of "blind"', () => {
+    const denials = {
+      total: 2,
+      agentsAffected: 1,
+      bySignature: [{ signature: 'WebFetch', count: 2 }],
+      degraded: true,
+      denials: [den('WebFetch', recovered('WebSearch')), den('WebFetch', recovered('WebSearch'))],
+      recoveredCount: 2,
+      allRecovered: true,
+    }
+    const s = buildFullSurface({ runId: 'wf_rec', report: report({ denials }), diagnosis: diag('completed-ok'), diskDir: null })
+    expect(s.block).toBe(true) // never suppress — a human still verifies intent coverage
+    expect(s.reason).toContain('RECOVERY signal')
+    expect(s.reason).toContain('WebSearch')
+    expect(s.reason).toContain('Verify the recovery covered the same intent')
+    expect(s.reason).not.toMatch(/may be blind/i)
+  })
+
+  it('MIXED: keeps the blind warning and counts the recovery signals', () => {
+    const denials = {
+      total: 2,
+      agentsAffected: 1,
+      bySignature: [{ signature: 'WebFetch', count: 1 }, { signature: 'git diff', count: 1 }],
+      degraded: true,
+      denials: [den('WebFetch', recovered('WebSearch')), den('Bash', undefined)],
+      recoveredCount: 1,
+      allRecovered: false,
+    }
+    const s = buildFullSurface({ runId: 'wf_mix', report: report({ denials }), diagnosis: diag('completed-ok'), diskDir: null })
+    expect(s.reason).toMatch(/DEGRADED/)
+    expect(s.reason).toMatch(/may be blind/i)
+    expect(s.reason).toContain('1 of 2 show a recovery signal')
   })
 })

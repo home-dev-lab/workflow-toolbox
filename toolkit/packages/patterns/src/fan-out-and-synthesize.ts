@@ -15,9 +15,11 @@
 // - opts.phase per-call, never rt.phase() (avoids global-state races).
 // - Labels: fanOutAndSynthesize:task:<i> / fanOutAndSynthesize:synthesize.
 
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
-import { warn, applyCap, makeRecord } from './envelope.js'
+import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
+import { warn, applyCap, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+
+const STAGE = 'fanOutAndSynthesize'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,9 +30,21 @@ export interface FanOutAndSynthesizeOptions<TTask, TPart> {
   taskPrompt: (task: TTask, index: number) => string
   taskSchema?: JsonSchema
   taskModel?: ModelAlias
+  /** Per-task reasoning effort. Omit to inherit the session effort. */
+  taskEffort?: EffortAlias
+  /** Subagent type (Agent tool `agentType`) to route the fan-out task agents
+   *  through — e.g. 'codex:codex-rescue' / 'workflow-toolbox:opencode-verifier'
+   *  for a cross-family model. Omit for the standard Claude subagent. */
+  taskType?: string
   synthesisPrompt: (parts: ReadonlyArray<TPart>) => string
   synthesisSchema?: JsonSchema
   synthesisModel?: ModelAlias
+  /** Per-synthesis reasoning effort. Omit to inherit the session effort. */
+  synthesisEffort?: EffortAlias
+  /** Subagent type (Agent tool `agentType`) to route the synthesis agent
+   *  through — e.g. 'codex:codex-rescue' / 'workflow-toolbox:opencode-verifier'
+   *  for a cross-family model. Omit for the standard Claude subagent. */
+  synthesisType?: string
   phase?: string
   maxItems?: number
 }
@@ -83,9 +97,13 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
     taskPrompt,
     taskSchema,
     taskModel,
+    taskEffort,
+    taskType,
     synthesisPrompt,
     synthesisSchema,
     synthesisModel,
+    synthesisEffort,
+    synthesisType,
     phase,
     maxItems,
   } = options
@@ -99,6 +117,9 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
       'fanOutAndSynthesize: tasks must not be empty — nothing to fan out',
     )
   }
+
+  assertAgentTypeOption(STAGE, 'taskType', taskType)
+  assertAgentTypeOption(STAGE, 'synthesisType', synthesisType)
 
   // applyCap throws synchronously when maxItems < 1
   const { kept, truncated } = applyCap(tasks, maxItems)
@@ -135,11 +156,15 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
       phase?: string
       schema?: JsonSchema
       model?: ModelAlias
+      effort?: EffortAlias
+      agentType?: string
     } = {
-      label: `fanOutAndSynthesize:task:${i}`,
+      label: `${STAGE}:task:${i}`,
       ...(phase !== undefined ? { phase } : {}),
       ...(taskSchema !== undefined ? { schema: taskSchema } : {}),
       ...(taskModel !== undefined ? { model: taskModel } : {}),
+      ...(taskEffort !== undefined ? { effort: taskEffort } : {}),
+      ...(taskType !== undefined ? { agentType: taskType } : {}),
     }
 
     agentsSpawned++
@@ -160,7 +185,10 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
     const r = taskResults[i]
     // Push trail record adjacent to the logical spawn site, in index order.
     // invariant: one record per agentsSpawned++ in the fan-out thunks above.
-    trail.push(makeRecord(`fanOutAndSynthesize:task:${i}`, r !== null, taskModel !== undefined ? { model: taskModel } : undefined))
+    trail.push(makeRecord(`${STAGE}:task:${i}`, r !== null, {
+      ...(taskModel !== undefined ? { model: taskModel } : {}),
+      ...(taskEffort !== undefined ? { effort: taskEffort } : {}),
+    }))
 
     if (r !== null) {
       parts.push(r as TPart)
@@ -190,18 +218,25 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
       phase?: string
       schema?: JsonSchema
       model?: ModelAlias
+      effort?: EffortAlias
+      agentType?: string
     } = {
-      label: 'fanOutAndSynthesize:synthesize',
+      label: `${STAGE}:synthesize`,
       ...(phase !== undefined ? { phase } : {}),
       ...(synthesisSchema !== undefined ? { schema: synthesisSchema } : {}),
       ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
+      ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
+      ...(synthesisType !== undefined ? { agentType: synthesisType } : {}),
     }
 
     agentsSpawned++
     const synthesis = await rt.agent<TOut>(synthesisPrompt(parts), synthOpts)
 
     // Trail record for synthesis — adjacent to agentsSpawned++ above.
-    trail.push(makeRecord('fanOutAndSynthesize:synthesize', synthesis !== null, synthesisModel !== undefined ? { model: synthesisModel } : undefined))
+    trail.push(makeRecord(`${STAGE}:synthesize`, synthesis !== null, {
+      ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
+      ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
+    }))
 
     if (synthesis === null) {
       warn(rt, warnings, 'fanOutAndSynthesize: synthesis agent returned null')
@@ -222,6 +257,13 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
     dropped,
     truncated,
   }
+
+  // Phase digest: the handoff out of this phase + how many tasks fed the synthesis.
+  emitDigest(rt, {
+    stage: STAGE,
+    output: value === null ? 'synthesis: none' : `synthesis from ${parts.length}/${tasks.length} tasks`,
+    counts: { tasks: tasks.length, completed: parts.length },
+  })
 
   return { value, stats, warnings, trail }
 }

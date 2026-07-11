@@ -70,6 +70,12 @@ describe('FakeRuntime null response (skipped agent)', () => {
     expect(rt.calls).toHaveLength(1)
     expect(rt.calls[0]!.prompt).toBe('skipped prompt')
   })
+
+  it('records per-agent opts including model and effort', async () => {
+    const rt = new FakeRuntime({ responses: ['ok'] })
+    await rt.agent('tuned prompt', { model: 'sonnet', effort: 'high' })
+    expect(rt.calls[0]!.opts).toEqual({ model: 'sonnet', effort: 'high' })
+  })
 })
 
 // ---------------------------------------------------------------------------

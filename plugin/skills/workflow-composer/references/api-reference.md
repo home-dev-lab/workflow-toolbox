@@ -42,6 +42,17 @@ spawned agent). [documented]
 > toolkit (`@workflow-toolbox`) that compiles typed patterns to workflow artifacts. See
 > `toolkit/README.md`. The rest of this reference describes the raw runtime
 > surface every workflow ultimately targets.
+>
+> **Toolkit-level tuning (not raw runtime) lives in `references/patterns.md`:**
+> per-role `<role>Model`/`<role>Effort`/`<role>Type` knobs on every pattern (the
+> `<role>Type` routes that role to a subagent type — the cross-family lever); the
+> `adversarialVerification` **`verifierType`** option for a cross-family (e.g.
+> `codex:codex-rescue` (GPT), or `workflow-toolbox:opencode-verifier` (GLM 5.2 /
+> zai-coding-plan)) verifier — genuine decorrelation; and the two
+> launch-time config helpers, `withAgentDefaults(rt, defaults)` (wrap `rt` once →
+> all downstream agents inherit `model`/`effort`/`agentType`/…) and
+> `parseConfig(args)` → `WorkflowConfig`. The raw-runtime primitives those build on
+> (`agentType`, `effort`, per-agent `model`) are documented below.
 
 ### Research preview — availability and opt-in
 
@@ -164,16 +175,33 @@ Spawns one fresh-context subagent.
 | Option | Marker | Meaning |
 |---|---|---|
 | `schema` | [observed] | JSON Schema. Forces structured output; see below. |
-| `model` | [verified] | Per-agent model alias (`'haiku'`/`'sonnet'`/`'opus'`/`'fable'`/`'inherit'`) or a full model ID. Omit to inherit the session model. No validation — a typo is passed through and fails later. **`'fable'` is suspended (export control, since 2026-06-12) and errors at runtime — do not select it until the suspension lifts.** |
+| `model` | [verified] | Per-agent model alias (`'haiku'`/`'sonnet'`/`'opus'`/`'fable'`/`'inherit'`) or a full model ID. Omit to inherit the session model. No validation — a typo is passed through and fails later. **Alias availability is environment- and time-dependent (plan, access windows) — an alias that is not callable where the run executes errors at runtime; verify before pinning a top-tier alias.** |
+| `effort` | [verified] | Per-agent reasoning effort: `'low'`/`'medium'`/`'high'`/`'xhigh'`/`'max'`. Omit to inherit the session effort. **Accepted** by the live sandbox — a 27-agent pr-review run (`wf_3263a880-80f`) passed `effort:'low'` on every call with no error; the *behavioral* effect on reasoning depth was not separately measured. `@workflow-toolbox/runtime` types it as `EffortAlias`; patterns expose per-role `<role>Effort` knobs. |
 | `label` | [verified] | Display name shown in `/workflows`. Not part of the resume cache key. |
 | `phase` | [verified] | Assign this call to a named progress group, overriding the current `phase()` for this call only — useful inside `pipeline()`/`parallel()` stages, where the global phase state would race. |
 | `agentType` | [verified] | Run as a registered subagent type (e.g. a specialist reviewer/TDD guide) instead of the default workflow subagent. The type must exist in the **consumer's session registry** — the runtime throws (listing the available types) on an unknown one, and the registry is session-specific, so validate *shape* only, never membership. Composes with `schema` (the forced StructuredOutput tool is injected regardless of the type's own tool allowlist). **Never hard-code a private type (e.g. `magic-claude:*`) as a workflow default** — it breaks other consumers; expose it as an opt-in input defaulting to omit. Specialization is *more thorough but noisier* — flexibility, not a proven quality win; pair a specialist producer with a verify stage that filters its false positives. |
 | `isolation: 'worktree'` | [verified] | Run the agent in a fresh git worktree. Expensive — use only when parallel agents mutate files that would otherwise collide. |
 | `stallMs` | [verified] | Override this agent's stall timeout. Default is 180 000 ms (3 minutes); the runtime retries a stalled agent up to 5 times. |
 
-> `label`, `model`, `agentType`, `isolation`, and `stallMs` are an **unstable
-> surface** [verified] — they are not in any official documentation. `model`
+> `label`, `model`, `effort`, `agentType`, `isolation`, and `stallMs` are an
+> **unstable surface** — they are not in any official documentation. `model`
 > and structured output (`schema`) are the two options you tune most.
+
+> **The wt-meta prompt tag.** `defineWorkflow` wraps `rt` with `withPromptTags`
+> (`@workflow-toolbox/runtime`), so every `agent()` call carrying a `label` and/or a
+> `phase` (explicit or via the current `phase()`) has its prompt prefixed with one
+> machine-readable HTML-comment line: `<!-- wt-meta label="…" phase="…" -->`.
+> Observability tooling reads it from the agent's transcript to assign the agent to
+> its phase and show its real label **live, mid-run** — mid-run, the prompt is the
+> only on-disk carrier of that identity. Consequences for authors: agents see the
+> comment (models treat it as metadata; echo risk is low), and the prompt text
+> changes mean a `resumeFromRunId` across the introduction of this feature re-runs
+> previously-cached calls once. Untagged calls (no label, no phase) pass through
+> untouched. Parse side: `parsePromptTag(text)` from the same module.
+> Live COLUMN assignment additionally needs the tag's phase title to match a
+> `meta.phases` title **exactly** — the same by-title contract the sandbox itself
+> uses to group phases. A title not in `meta.phases` (or seeded ambiguously)
+> degrades to label-only: the agent stays pending until journal reconciliation.
 
 ### `parallel(thunks) → Promise<Array<T | null>>` — a barrier
 
@@ -249,6 +277,29 @@ output tool from the schema, validates the reply (AJV), and makes the agent
 
 Use `schema` for any result a later line of JavaScript reads a field off of.
 Keep schemas small and `required`-tight.
+
+### Guard against schema capitulation (multi-field structured output) [observed]
+
+An agent that gets several StructuredOutput validation rejections in a row can
+**capitulate** — submit minimal junk that technically validates (`{"summary":"test",
+"riskAreas":["a","b"]}`) and let it propagate downstream. It is invisible in telemetry:
+the retries are intra-conversation, so the journal `attempt` stays `1`; only the agent's
+raw transcript shows it. The trigger is a **long free-text field generated FIRST that
+starves a required short sibling** — the model spends its budget on the prose, the JSON
+closes before the required field, rejection, repeat, give up. Three cheap defenses, all
+worth applying to any `schema` with ≥2 required properties where one is long-form:
+
+1. **Order the `Return {...}` template with the SHORT / required fields FIRST, the long
+   free-text field LAST.** It is the GENERATION order that matters, not the schema's
+   property order — put `"riskAreas"` before `"summary"`, `"verdict"` before `"reason"`.
+2. **Bound the long field** — `minLength` (a one-word junk value stops validating) and
+   `maxLength` (a runaway turns into an actionable "too long" rejection instead of a
+   silent "missing sibling"). e.g. `summary: { type: 'string', minLength: 12, maxLength:
+   1200 }`.
+3. **A downstream degenerate guard in the script** — a cheap heuristic (a required field
+   under N trimmed chars, or array items all ≤2 chars) that pushes a `warning` + `rt.log`,
+   **never fatal** when a later stage re-derives from source (a reviewer re-reads the diff
+   regardless). Detection beats silent trust.
 
 ---
 

@@ -46,6 +46,65 @@ var __wt = (() => {
     default: () => dev_review_fix_workflow_default
   });
 
+  // ../packages/runtime/src/constants.ts
+  var BEST_MODEL = "opus";
+
+  // ../packages/runtime/src/digest.ts
+  var DIGEST_PREFIX = "[wt:digest]";
+  var LOOP_STAGE = "loopUntilDone";
+  var LOOP_ITER_MARKER = " \u27F2";
+  function formatDigest(d) {
+    const body = { stage: d.stage };
+    if (d.output !== void 0) body.output = d.output;
+    if (d.taken !== void 0) body.taken = d.taken;
+    if (d.notTaken !== void 0) body.notTaken = d.notTaken;
+    if (d.counts !== void 0) {
+      const counts = d.counts;
+      const sorted = {};
+      for (const k of Object.keys(counts).sort()) {
+        const v = counts[k];
+        if (v !== void 0) sorted[k] = v;
+      }
+      body.counts = sorted;
+    }
+    return `${DIGEST_PREFIX} ${JSON.stringify(body)}`;
+  }
+
+  // ../packages/runtime/src/prompt-tag.ts
+  var PROMPT_TAG_PREFIX = "<!-- wt-meta ";
+  function escapeValue(v) {
+    return v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\n", "&#10;");
+  }
+  function buildPromptTag(fields) {
+    const parts = [];
+    if (fields.label !== void 0) parts.push(`label="${escapeValue(fields.label)}"`);
+    if (fields.phase !== void 0) parts.push(`phase="${escapeValue(fields.phase)}"`);
+    if (parts.length === 0) return null;
+    return `${PROMPT_TAG_PREFIX}${parts.join(" ")} -->`;
+  }
+  function withPromptTags(rt) {
+    let currentPhase;
+    const agent = (prompt, opts) => {
+      const tag = buildPromptTag({ label: opts?.label, phase: opts?.phase ?? currentPhase });
+      const tagged = tag !== null && !prompt.startsWith(tag) ? `${tag}
+
+${prompt}` : prompt;
+      return rt.agent(tagged, opts);
+    };
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => {
+        currentPhase = title;
+        rt.phase(title);
+      },
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
+  }
+
   // ../packages/build/src/define-workflow.ts
   function normalizeArgs(raw) {
     if (raw === void 0) return void 0;
@@ -87,9 +146,95 @@ var __wt = (() => {
       async run(rt, rawArgs) {
         const normalized = normalizeArgs(rawArgs);
         const input = def.parseInput !== void 0 ? def.parseInput(normalized) : normalized;
-        return def.run(rt, input);
+        return def.run(withPromptTags(rt), input);
       }
     };
+  }
+  var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+  var EFFORT_ROLE_VALUES = ["low", "medium", "high", "xhigh", "max", "auto"];
+  var PER_AGENT_KEYS = ["model", "effort", "agentType", "isolation", "stallMs"];
+  function isRecord(v) {
+    return typeof v === "object" && v !== null && !Array.isArray(v);
+  }
+  function asNonEmptyString(v, where) {
+    if (typeof v !== "string" || v.trim().length === 0) {
+      throw new Error(`parseConfig: ${where} must be a non-empty string, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffort(v, where) {
+    if (typeof v !== "string" || !EFFORTS.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORTS.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffortRoleValue(v, where) {
+    if (typeof v !== "string" || !EFFORT_ROLE_VALUES.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORT_ROLE_VALUES.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function parsePerAgent(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: perAgent must be an object, got ${raw === null ? "null" : typeof raw}`);
+    for (const key of Object.keys(raw)) {
+      if (!PER_AGENT_KEYS.includes(key)) {
+        throw new Error(`parseConfig: unknown perAgent key "${key}" \u2014 expected one of ${PER_AGENT_KEYS.join(", ")}`);
+      }
+    }
+    const out = {};
+    if (raw.model !== void 0) out.model = asNonEmptyString(raw.model, "perAgent.model");
+    if (raw.effort !== void 0) out.effort = asEffort(raw.effort, "perAgent.effort");
+    if (raw.agentType !== void 0) out.agentType = asNonEmptyString(raw.agentType, "perAgent.agentType");
+    if (raw.isolation !== void 0) {
+      if (raw.isolation !== "worktree") {
+        throw new Error(`parseConfig: perAgent.isolation must be 'worktree' when set, got ${JSON.stringify(raw.isolation)}`);
+      }
+      out.isolation = "worktree";
+    }
+    if (raw.stallMs !== void 0) {
+      const n = raw.stallMs;
+      if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) {
+        throw new Error(`parseConfig: perAgent.stallMs must be a positive finite number, got ${JSON.stringify(n)}`);
+      }
+      out.stallMs = n;
+    }
+    return out;
+  }
+  function parseStringMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asNonEmptyString(v, `${where}.${k}`);
+    return out;
+  }
+  function parseEffortMap(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: effort must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`);
+    return out;
+  }
+  function parseNumberMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v !== "number" || !Number.isFinite(v)) {
+        throw new Error(`parseConfig: ${where}.${k} must be a finite number, got ${JSON.stringify(v)}`);
+      }
+      out[k] = v;
+    }
+    return out;
+  }
+  function parseConfig(raw) {
+    if (raw === void 0 || raw === null) return {};
+    if (!isRecord(raw)) {
+      throw new Error(`parseConfig: expected an object (or undefined), got ${typeof raw}`);
+    }
+    const config = {};
+    if (raw.perAgent !== void 0) config.perAgent = parsePerAgent(raw.perAgent);
+    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models");
+    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort);
+    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes");
+    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing");
+    return config;
   }
 
   // ../packages/patterns/src/envelope.ts
@@ -98,12 +243,24 @@ var __wt = (() => {
       stage,
       outcome: ok ? "ok" : "null",
       ...extra?.model !== void 0 ? { model: extra.model } : {},
+      ...extra?.effort !== void 0 ? { effort: extra.effort } : {},
       ...extra?.decision !== void 0 ? { decision: extra.decision } : {}
     };
+  }
+  function collectTrail(...results) {
+    const trail = [];
+    for (const r of results) {
+      if (r === null || r === void 0) continue;
+      trail.push(...r.trail);
+    }
+    return trail;
   }
   function warn(rt, warnings, message) {
     warnings.push(message);
     rt.log(message);
+  }
+  function emitDigest(rt, d) {
+    rt.log(formatDigest(d));
   }
   function applyCap(items, cap) {
     if (cap === void 0) {
@@ -123,10 +280,8 @@ var __wt = (() => {
     };
   }
 
-  // ../packages/runtime/src/constants.ts
-  var BEST_MODEL = "opus";
-
   // ../packages/patterns/src/adversarial-verification.ts
+  var STAGE = "adversarialVerification";
   var VERIFIER_SCHEMA = {
     type: "object",
     properties: {
@@ -148,6 +303,7 @@ var __wt = (() => {
       lenses,
       votesPerClaim,
       model,
+      effort,
       phase,
       maxVerifyClaims,
       verifierType
@@ -239,9 +395,10 @@ ${renderClaim(claim)}`;
             const prompt = buildVerifierPrompt(claim, lens);
             const opts = {
               schema: VERIFIER_SCHEMA,
-              label: `adversarialVerification:verify:${claimIndex}:${voteIndex}`,
+              label: `${STAGE}:verify:${claimIndex}:${voteIndex}`,
               ...phase !== void 0 ? { phase } : {},
               model: effectiveModel,
+              ...effort !== void 0 ? { effort } : {},
               ...verifierType !== void 0 ? { agentType: verifierType } : {}
             };
             agentsSpawned++;
@@ -256,10 +413,11 @@ ${renderClaim(claim)}`;
         for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
           const vote = votes[voteIndex] ?? null;
           claimRecords.push(makeRecord(
-            `adversarialVerification:verify:${claimIndex}:${voteIndex}`,
+            `${STAGE}:verify:${claimIndex}:${voteIndex}`,
             vote !== null,
             {
               model: effectiveModel,
+              ...effort !== void 0 ? { effort } : {},
               ...vote !== null ? { decision: vote.verdict } : {}
             }
           ));
@@ -315,10 +473,30 @@ ${renderClaim(claim)}`;
       // null votes = lost work units
       truncated
     };
+    const DIGEST_KEY = {
+      confirmed: "confirmed",
+      refuted: "refuted",
+      "partially-confirmed": "partiallyConfirmed",
+      unverifiable: "unverifiable",
+      "unverified-by-cap": "unverifiedByCap"
+    };
+    const counts = {
+      claims: claims.length,
+      confirmed: 0,
+      refuted: 0,
+      partiallyConfirmed: 0,
+      unverifiable: 0,
+      unverifiedByCap: 0
+    };
+    for (const verdict of Object.keys(DIGEST_KEY)) {
+      counts[DIGEST_KEY[verdict]] = value.filter((v) => v.verdict === verdict).length;
+    }
+    emitDigest(rt, { stage: STAGE, counts });
     return { value, stats, warnings, trail };
   }
 
   // ../packages/patterns/src/loop-until-done.ts
+  var STAGE2 = LOOP_STAGE;
   async function loopUntilDone(rt, options) {
     const { initial, body, maxIterations, dryRounds, budgetFloor } = options;
     if (maxIterations !== void 0 && maxIterations < 1) {
@@ -347,10 +525,12 @@ ${renderClaim(claim)}`;
     let iterationsDone = 0;
     let consecutiveDry = 0;
     let agentsSpawned = 0;
+    let currentIteration = 0;
     const countingRt = {
-      agent: (...args) => {
+      agent: (prompt, opts) => {
         agentsSpawned++;
-        return rt.agent(...args);
+        const label = opts?.label != null ? `${opts.label}${LOOP_ITER_MARKER}${currentIteration}` : `${STAGE2}:iter:${currentIteration}`;
+        return rt.agent(prompt, { ...opts, label });
       },
       parallel: (thunks) => rt.parallel(thunks),
       pipeline: (...args) => rt.pipeline(...args),
@@ -390,11 +570,12 @@ ${renderClaim(claim)}`;
           }
           return "maxIterations";
         }
+        currentIteration = iterationsDone + 1;
         const tick = await body(countingRt, state, iterationsDone + 1);
         const tickIndex = iterationsDone;
         state = tick.state;
         iterationsDone++;
-        trail.push(makeRecord(`loopUntilDone:tick:${tickIndex}`, tick.state !== null));
+        trail.push(makeRecord(`${STAGE2}:tick:${tickIndex}`, tick.state !== null));
         if (tick.done === true) {
           trail[trail.length - 1].decision = "done";
           return "done";
@@ -418,6 +599,7 @@ ${renderClaim(claim)}`;
       }
     };
     const stoppedBy = await runLoop();
+    emitDigest(rt, { stage: STAGE2, output: stoppedBy, counts: { iterations: iterationsDone } });
     return buildResult(state, iterationsDone, stoppedBy, warnings, trail, agentsSpawned);
   }
   function buildResult(state, iterations, stoppedBy, warnings, trail, agentsSpawned) {
@@ -436,7 +618,26 @@ ${renderClaim(claim)}`;
     };
   }
 
+  // ../packages/std/src/resolve-effort.ts
+  var EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
+  function isEffortAlias(v) {
+    return typeof v === "string" && EFFORT_ORDER.includes(v);
+  }
+  function resolveEffort(argsValue, stageDefault) {
+    return isEffortAlias(argsValue) ? argsValue : stageDefault;
+  }
+  function resolveVerifierEffort(argsValue, stageDefault, floor = "high") {
+    const safeFloor = isEffortAlias(floor) ? floor : "high";
+    const resolved = resolveEffort(argsValue, stageDefault);
+    return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor;
+  }
+
   // dev-review-fix.workflow.ts
+  var REVIEW_EFFORT = "high";
+  var CONSOLIDATE_EFFORT = "medium";
+  var VERIFY_EFFORT_DEFAULT = "high";
+  var FIX_EFFORT = "high";
+  var CHECK_EFFORT_DEFAULT = "high";
   var MERGE_MODEL = "sonnet";
   var SEVERITIES = ["low", "medium", "high"];
   var DIMENSION_FINDINGS_SCHEMA = {
@@ -632,6 +833,16 @@ ${renderClaim(claim)}`;
       }
       reviewerType = obj["reviewerType"];
     }
+    let verifierType = null;
+    if (obj["verifierType"] !== void 0 && obj["verifierType"] !== null) {
+      if (typeof obj["verifierType"] !== "string" || obj["verifierType"].trim().length === 0) {
+        throw new Error(
+          'dev-review-fix: "verifierType" must be a non-empty subagent-type string (e.g. "codex:codex-rescue") \u2014 omit it for the standard same-model Verify verifier'
+        );
+      }
+      verifierType = obj["verifierType"];
+    }
+    const effort = parseConfig(obj).effort ?? null;
     return {
       projectDir,
       testCommand,
@@ -646,7 +857,9 @@ ${renderClaim(claim)}`;
       maxFixIterations,
       fixerModel,
       fixerType,
-      reviewerType
+      reviewerType,
+      effort,
+      verifierType
     };
   }
   var SEVERITY_RANK = { high: 0, medium: 1, low: 2 };
@@ -674,6 +887,11 @@ ${renderClaim(claim)}`;
   async function run(rt, input) {
     const warnings = [];
     const stats = {};
+    const reviewEffort = resolveEffort(input.effort?.["review"], REVIEW_EFFORT);
+    const consolidateEffort = resolveEffort(input.effort?.["consolidate"], CONSOLIDATE_EFFORT);
+    const verifyEffort = resolveVerifierEffort(input.effort?.["verify"], VERIFY_EFFORT_DEFAULT);
+    const fixEffort = resolveEffort(input.effort?.["fix"], FIX_EFFORT);
+    const checkEffort = resolveVerifierEffort(input.effort?.["check"], CHECK_EFFORT_DEFAULT);
     if (input.adaptationNote !== null) warn(rt, warnings, input.adaptationNote);
     rt.phase("Review");
     const diffBlock = input.diffCommand !== null ? `Change set: run this command VERBATIM from ${input.projectDir} and read its output \u2014 it prints the diff under review:
@@ -691,11 +909,13 @@ Work from directory: ${input.projectDir}
         (dimension) => () => rt.agent(
           `You are a code reviewer focused on the ${dimension} dimension of one change set.
 ` + contextBlock + diffBlock + `Read enough surrounding code to judge each issue in context. Report ONLY issues introduced or made worse by this change set \u2014 not pre-existing ones. An empty findings list is a valid answer for a clean change set.
+Inspect via READ-ONLY git only \u2014 \`git show <sha>:<path>\`, \`git diff <range>\`, \`git log\` \u2014 NEVER \`git checkout\` / \`git reset\` / \`git restore\` / \`git clean\` (they mutate the shared working tree and will be denied).
 Return { "findings": [{ "file": "<path>", "location": "<line range, e.g. "40-55", or symbol \u2014 precise enough that one targeted read reaches the issue>", "summary": "<one line>", "detail": "<what is wrong and why it matters>", "severity": "low"|"medium"|"high", "snippet": "<the code around the issue, copied VERBATIM from the file (roughly 10-40 lines) \u2014 enough for an independent verifier to locate and judge it without searching; empty string when quoting code does not apply>" }] }`,
           {
             schema: DIMENSION_FINDINGS_SCHEMA,
             label: `dev-review-fix:review:${dimension}`,
             phase: "Review",
+            effort: reviewEffort,
             // Optional specialist subagent type (reviewerType knob). Omitted when
             // null → standard subagent (default). Routes the dimension reviewers
             // ONLY; verifiers/fixer/checker stay generic. Runtime fails fast on an
@@ -735,6 +955,7 @@ Return { "findings": [{ "file": "<path>", "location": "<line range, e.g. "40-55"
         findings: [],
         tallies: { findings: 0, confirmed: 0, rejected: 0, unverified: 0, fixed: 0, unfixed: 0 },
         stats,
+        envelope: { trail: [] },
         warnings
       };
     }
@@ -754,7 +975,8 @@ Return { "findings": [{ "file", "location", "summary", "detail", "severity": "lo
         schema: CONSOLIDATED_SCHEMA,
         label: "dev-review-fix:consolidate",
         phase: "Review",
-        model: MERGE_MODEL
+        model: MERGE_MODEL,
+        effort: consolidateEffort
       }
     );
     reviewStats.agentsSpawned += 1;
@@ -806,6 +1028,8 @@ IMPORTANT: Do NOT trust this finding. The quoted snippet (when present) is revie
       // verdict-deciding medium/high keep the full 2-of-3 quorum.
       votesPerClaim: (f) => f.severity === "low" ? 1 : 3,
       maxVerifyClaims: 12,
+      effort: verifyEffort,
+      ...input.verifierType !== null ? { verifierType: input.verifierType } : {},
       phase: "Verify"
     });
     for (const w of verifyResult.warnings) warnings.push(w);
@@ -855,6 +1079,7 @@ IMPORTANT: Do NOT trust this finding. The quoted snippet (when present) is revie
       green: null,
       checkedAfterLastFix: true
     };
+    let fixLoopResult = null;
     if (fixQueue.length > 0) {
       const queueIds = new Set(fixQueue.map((vc) => vc.claim.id));
       const queueEntry = (vc, withSnippet) => ({
@@ -874,7 +1099,7 @@ IMPORTANT: Do NOT trust this finding. The quoted snippet (when present) is revie
       });
       const queueBlock = JSON.stringify(fixQueue.map((vc) => queueEntry(vc, false)));
       const queueBlockWithSnippets = JSON.stringify(fixQueue.map((vc) => queueEntry(vc, true)));
-      const loopResult = await loopUntilDone(rt, {
+      const loopResult = fixLoopResult = await loopUntilDone(rt, {
         initial: fixState,
         maxIterations: input.maxFixIterations,
         body: async (rtBody, state, iteration) => {
@@ -899,6 +1124,7 @@ Return { "fixed": true|false, "filesTouched": ["<path>"], "note": "<what changed
               // fixerModel knob (default 'sonnet'). The checker below is pinned
               // to BEST_MODEL.
               model: input.fixerModel,
+              effort: fixEffort,
               // Optional specialist subagent type (fixerType knob). Omitted when
               // null → standard subagent (default). Routes the fixer ONLY; the
               // runtime fails fast on an unknown type.
@@ -925,7 +1151,8 @@ Return { "green": true|false (the test suite), "findings": [{ "id": "<F-id>", "f
               // the strongest tier explicitly (NOT merely inherit), so the
               // verifier stays strong independent of the session model precisely
               // because the fixer above may be tiered down.
-              model: BEST_MODEL
+              model: BEST_MODEL,
+              effort: checkEffort
             }
           );
           if (check === null) {
@@ -1006,7 +1233,15 @@ Return { "green": true|false (the test suite), "findings": [{ "id": "<F-id>", "f
         `dev-review-fix: every fix-queue finding is reported fixed but the FINAL check was NOT green \u2014 a fix likely broke something outside the findings (an unrelated test or the build); do not merge on these tallies` + (fixState.lastFailure === "" ? "" : ` \u2014 last check: ${fixState.lastFailure}`)
       );
     }
-    return { goal: input.goal, suiteGreen: fixState.green, findings: reportFindings, tallies, stats, warnings };
+    return {
+      goal: input.goal,
+      suiteGreen: fixState.green,
+      findings: reportFindings,
+      tallies,
+      stats,
+      envelope: { trail: collectTrail(verifyResult, fixLoopResult) },
+      warnings
+    };
   }
   var dev_review_fix_workflow_default = defineWorkflow({
     meta: {

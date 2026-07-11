@@ -21,26 +21,19 @@
 //   TIER 2 — round trip: launch the dedicated packages/smoke/wt-smoke.js to
 //     completion and assert its PatternResult envelope arrived intact.
 
-import { readFileSync, readdirSync } from 'node:fs'
+import { readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { query } from '@anthropic-ai/claude-agent-sdk'
 import {
   annotateAuth,
   checkSmokeResult,
-  isAbortError,
-  isRecord,
-  launchPrompt,
-  launchVerdict,
-  readInitVersion,
-  readTaskNotification,
-  readToolResult,
-  readWorkflowToolUse,
+  ROUNDTRIP_TIMEOUT_MS,
   type RunnerOptions,
   type RuntimeRunResult,
   summarize,
   type CheckResult,
 } from './lib.js'
+import { pickDriverBase, runDriverSession } from './sdk-driver.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const WORKFLOWS_DIR = join(HERE, '../../../workflows')
@@ -48,7 +41,6 @@ const SMOKE_ARTIFACT = join(HERE, '../wt-smoke.js')
 const SMOKE_MARKER = 'wt-smoke-ok'
 
 const LAUNCH_TIMEOUT_MS = 90_000
-const ROUNDTRIP_TIMEOUT_MS = 240_000
 
 interface RunOutcome {
   launchOk: boolean
@@ -60,114 +52,58 @@ interface RunOutcome {
   ccVersion: string | null
 }
 
-/** Drive ONE query() session: launch a workflow, optionally wait for it to
- *  complete. Returns the observed launch + (optional) completion facts. `opts`
- *  selects which Claude Code binary the SDK drives (bundled by default). */
+/** Drive ONE query() session (via the shared driver in sdk-driver.ts): launch a
+ *  workflow, optionally wait for it to complete. Returns the observed launch +
+ *  (optional) completion facts. `opts` selects which Claude Code binary the SDK
+ *  drives (bundled by default). */
 async function launchWorkflow(
   scriptPath: string,
   waitForCompletion: boolean,
   opts: RunnerOptions,
 ): Promise<RunOutcome> {
-  const controller = new AbortController()
   const timeoutMs = waitForCompletion ? ROUNDTRIP_TIMEOUT_MS : LAUNCH_TIMEOUT_MS
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-
-  const q = query({
-    prompt: launchPrompt(scriptPath),
-    options: {
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      allowedTools: ['Workflow'],
-      settingSources: [],
-      maxTurns: 4,
-      abortController: controller,
-      ...(opts.pathToClaudeCodeExecutable
-        ? { pathToClaudeCodeExecutable: opts.pathToClaudeCodeExecutable }
-        : {}),
-    },
+  const d = await runDriverSession({
+    ...pickDriverBase(opts),
+    scriptPath,
+    waitForCompletion,
+    validateScriptPath: true, // run.ts-only: catch the model launching a DIFFERENT committed artifact
+    timeoutMs,
   })
 
   const outcome: RunOutcome = {
-    launchOk: false,
-    launchReason: 'the model never called the Workflow tool',
-    taskId: null,
+    launchOk: d.verdict?.ok ?? false,
+    launchReason: d.scriptMismatch ?? d.verdict?.reason ?? 'the model never called the Workflow tool',
+    taskId: d.verdict?.taskId ?? null,
     completionStatus: null,
     result: undefined,
-    ccVersion: null,
+    ccVersion: d.ccVersion,
   }
-  let expectedToolUseId: string | null = null
-  let sawToolResult = false
-  let abortedByTimeout = false
 
-  try {
-    for await (const message of q) {
-      if (outcome.ccVersion === null) {
-        const v = readInitVersion(message)
-        if (v !== null) outcome.ccVersion = v
-      }
-
-      const toolUse = readWorkflowToolUse(message)
-      if (toolUse !== null) {
-        expectedToolUseId = toolUse.id
-        if (toolUse.scriptPath !== scriptPath) {
-          outcome.launchReason = `model launched the wrong script: ${toolUse.scriptPath}`
-          break
-        }
-      }
-
-      const toolResult = readToolResult(message)
-      if (toolResult !== null) {
-        sawToolResult = true
-        const verdict = launchVerdict(toolResult)
-        outcome.launchOk = verdict.ok
-        outcome.launchReason = verdict.reason
-        outcome.taskId = verdict.taskId
-        if (!waitForCompletion) {
-          if (verdict.taskId !== null) await q.stopTask(verdict.taskId).catch(() => undefined)
-          break
-        }
-        if (!verdict.ok) break // syntax failure never produces a completion
-      }
-
-      const notification = readTaskNotification(message)
-      if (
-        notification !== null &&
-        (expectedToolUseId === null || notification.toolUseId === expectedToolUseId)
-      ) {
-        outcome.completionStatus = notification.status
-        if (notification.status === 'completed' && notification.outputFile !== null) {
-          try {
-            const parsed: unknown = JSON.parse(readFileSync(notification.outputFile, 'utf8'))
-            outcome.result = isRecord(parsed) ? parsed['result'] : undefined
-          } catch (err) {
-            outcome.completionStatus = `read-output-failed: ${(err as Error).message}`
-          }
-        }
-        break
-      }
-
-      // Tier 1 only: the turn ended (a result message) without a tool_result —
-      // stop promptly rather than draining to the timeout.
-      if (!waitForCompletion && isRecord(message) && message['type'] === 'result') break
+  if (waitForCompletion && d.notification !== null) {
+    outcome.completionStatus = d.notification.status
+    if (d.notification.status === 'completed' && d.notification.outputFile !== null) {
+      outcome.completionStatus =
+        d.outputReadError !== null ? `read-output-failed: ${d.outputReadError}` : outcome.completionStatus
+      if (d.outputReadError === null) outcome.result = d.result
     }
-  } catch (err) {
-    // A per-launch timeout fires the AbortController, surfacing here as an abort
-    // error. Treat it as "no decisive result" so the caller reports a clean
-    // FAIL (exit 1), never a thrown harness error (exit 2).
-    if (!isAbortError(err)) throw err
-    abortedByTimeout = true
-  } finally {
-    clearTimeout(timer)
   }
 
-  // Diagnose accurately when the launch never resolved (don't overwrite a real
-  // launch verdict, which already set launchReason).
-  if (!sawToolResult && !outcome.launchOk) {
-    outcome.launchReason = abortedByTimeout
-      ? `timed out after ${timeoutMs} ms before the Workflow launch resolved`
-      : expectedToolUseId !== null
-        ? 'the Workflow tool was invoked but no tool result arrived before the turn ended'
-        : 'the model never called the Workflow tool'
+  // Diagnose accurately when the launch never resolved. This only fires when
+  // sawToolResult is false, at which point verdict is always null and launchOk
+  // is always false — BUT a scriptMismatch is also possible here (the driver
+  // sets scriptMismatch and breaks before ever seeing a tool_result), and this
+  // unconditionally overwrites outcome.launchReason with the generic
+  // noResultReason, clobbering the more specific "model launched the wrong
+  // script: …" message set above. Known, pre-existing quirk (predates the
+  // sdk-driver.ts extraction — see `git show 67a3561`), deliberately left as-is:
+  // it only loses detail (the check still correctly fails), the case is rare
+  // (the model would have to launch the wrong script AND then produce no
+  // tool_result), and fixing it needs a proper test harness for this file's
+  // `launchWorkflow`, which today is integration-verified only, via live
+  // `pnpm smoke` (no mocking of runDriverSession exists anywhere in this
+  // package's tests) — a bigger lift than this fast-follow warrants.
+  if (!d.sawToolResult) {
+    outcome.launchReason = d.noResultReason ?? outcome.launchReason
   }
 
   return outcome

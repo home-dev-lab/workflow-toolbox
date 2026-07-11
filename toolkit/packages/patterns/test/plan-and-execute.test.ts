@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
 import { planAndExecute } from '../src/plan-and-execute.js'
 import type { PlanAndExecuteOptions, PlannedSubtask, PlanAndExecuteResult } from '../src/plan-and-execute.js'
 
@@ -39,6 +39,180 @@ describe('planAndExecute — config validation', () => {
     await expect(
       planAndExecute(rt, makeOptions({ maxSubtasks: 0 })),
     ).rejects.toThrow(/maxSubtasks.*>=.*1/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// agentType routing (planType / workerType / synthesisType) — per-role
+// cross-family routing.
+// ---------------------------------------------------------------------------
+
+function routingOnAgent({ opts }: { opts?: { label?: string } }): unknown {
+  const label = opts?.label ?? ''
+  if (label === 'planAndExecute:plan') return makePlan(['s0', 's1', 's2'])
+  return 'ok'
+}
+
+describe('planAndExecute — agentType routing', () => {
+  it('omits agentType on every call when none of planType/workerType/synthesisType is set', async () => {
+    const rt = new FakeRuntime({ onAgent: routingOnAgent })
+    await planAndExecute(rt, makeOptions())
+    expect(rt.calls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('threads planType to the plan agent only', async () => {
+    const rt = new FakeRuntime({ onAgent: routingOnAgent })
+    await planAndExecute(rt, makeOptions({ planType: 'codex:codex-rescue' }))
+    const planCalls = rt.calls.filter((c) => c.opts?.label === 'planAndExecute:plan')
+    const otherCalls = rt.calls.filter((c) => c.opts?.label !== 'planAndExecute:plan')
+    expect(planCalls.length).toBe(1)
+    expect(planCalls.every((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(true)
+    expect(otherCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('threads workerType to the worker agents only', async () => {
+    const rt = new FakeRuntime({ onAgent: routingOnAgent })
+    await planAndExecute(rt, makeOptions({ workerType: 'workflow-toolbox:opencode-verifier' }))
+    const workCalls = rt.calls.filter((c) => c.opts?.label?.startsWith('planAndExecute:work:'))
+    const otherCalls = rt.calls.filter((c) => !c.opts?.label?.startsWith('planAndExecute:work:'))
+    expect(workCalls.length).toBe(3)
+    expect(workCalls.every((c) => c.opts?.agentType === 'workflow-toolbox:opencode-verifier')).toBe(true)
+    expect(otherCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('threads synthesisType to the synthesis agent only', async () => {
+    const rt = new FakeRuntime({ onAgent: routingOnAgent })
+    await planAndExecute(rt, makeOptions({ synthesisType: 'codex:codex-rescue' }))
+    const synthCalls = rt.calls.filter((c) => c.opts?.label === 'planAndExecute:synthesize')
+    const otherCalls = rt.calls.filter((c) => c.opts?.label !== 'planAndExecute:synthesize')
+    expect(synthCalls.length).toBe(1)
+    expect(synthCalls.every((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(true)
+    expect(otherCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('rejects an empty or whitespace-only planType', async () => {
+    const rt = new FakeRuntime()
+    await expect(planAndExecute(rt, makeOptions({ planType: '' }))).rejects.toThrow(/planType/)
+    await expect(planAndExecute(rt, makeOptions({ planType: '   ' }))).rejects.toThrow(/planType/)
+  })
+
+  it('rejects an empty or whitespace-only workerType', async () => {
+    const rt = new FakeRuntime()
+    await expect(planAndExecute(rt, makeOptions({ workerType: '' }))).rejects.toThrow(/workerType/)
+    await expect(planAndExecute(rt, makeOptions({ workerType: '   ' }))).rejects.toThrow(/workerType/)
+  })
+
+  it('rejects an empty or whitespace-only synthesisType', async () => {
+    const rt = new FakeRuntime()
+    await expect(planAndExecute(rt, makeOptions({ synthesisType: '' }))).rejects.toThrow(/synthesisType/)
+    await expect(planAndExecute(rt, makeOptions({ synthesisType: '   ' }))).rejects.toThrow(/synthesisType/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase digest on the failure early-return
+// ---------------------------------------------------------------------------
+
+describe('planAndExecute — failure digest', () => {
+  it('emits a digest when the planner produces no subtasks', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => (opts?.label === 'planAndExecute:plan' ? makePlan([]) : null),
+    })
+    await planAndExecute(rt, makeOptions())
+    const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'planAndExecute')
+    expect(digest).toBeDefined()
+    expect(digest?.counts).toEqual({ planned: 0, executed: 0, dropped: 0, truncated: 0 })
+    expect(digest?.output).toBe('synthesis: none')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Loss-breakdown digest — dropped (null workers) + truncated (cap) are surfaced
+// in the digest counts, not just in stats, so observe can render the loss funnel.
+// ---------------------------------------------------------------------------
+
+describe('planAndExecute — loss-breakdown digest', () => {
+  const digestOf = (rt: FakeRuntime) =>
+    rt.logs.map(parseDigest).find((d) => d?.stage === 'planAndExecute')
+
+  it('a clean run emits zero losses (planned, executed, dropped:0, truncated:0)', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label === 'planAndExecute:plan') return makePlan(['s0', 's1', 's2'])
+        if (label.startsWith('planAndExecute:work:')) return 'r'
+        if (label === 'planAndExecute:synthesize') return 'done'
+        return null
+      },
+    })
+    await planAndExecute(rt, makeOptions())
+    expect(digestOf(rt)?.counts).toEqual({ planned: 3, executed: 3, dropped: 0, truncated: 0 })
+  })
+
+  it('surfaces BOTH dropped (null worker) and truncated (cap) in one breakdown', async () => {
+    // Plan 5, cap to 3 (truncated=2); of the 3 kept workers, work:1 returns null (dropped=1).
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label === 'planAndExecute:plan') return makePlan(['s0', 's1', 's2', 's3', 's4'])
+        if (label === 'planAndExecute:work:1') return null
+        if (label.startsWith('planAndExecute:work:')) return 'r'
+        if (label === 'planAndExecute:synthesize') return 'done'
+        return null
+      },
+    })
+    const result = await planAndExecute(rt, makeOptions({ maxSubtasks: 3 }))
+    // digest mirrors the stats loss counters (planned pre-cap = 5, executed = 2)
+    expect(digestOf(rt)?.counts).toEqual({ planned: 5, executed: 2, dropped: 1, truncated: 2 })
+    expect(result.stats.dropped).toBe(1)
+    expect(result.stats.truncated).toBe(2)
+  })
+
+  it('the all-workers-failed early-return still emits the dropped count', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label === 'planAndExecute:plan') return makePlan(['s0', 's1'])
+        if (label.startsWith('planAndExecute:work:')) return null
+        return null
+      },
+    })
+    await planAndExecute(rt, makeOptions())
+    expect(digestOf(rt)?.counts).toEqual({ planned: 2, executed: 0, dropped: 2, truncated: 0 })
+  })
+
+  // The observe funnel (total=planned, survivor=executed, losses=[dropped,truncated]) only renders
+  // correctly while planned === executed + dropped + truncated. That holds because `planned` is the
+  // PRE-cap planner count (kept = planned − truncated; executed = kept − dropped). Guard the relation
+  // STRUCTURALLY across scenarios so a future "simplify planned to the post-cap kept count" edit fails
+  // here, and assert the digest counts mirror result.stats (no hand-maintained drift between them).
+  it('every emit satisfies the funnel-balance invariant and mirrors result.stats', async () => {
+    const scenarios: Array<{ plan: string[]; maxSubtasks?: number; nullWork: ReadonlySet<number> }> = [
+      { plan: ['s0', 's1', 's2'], nullWork: new Set() },                                   // clean
+      { plan: ['s0', 's1', 's2', 's3', 's4'], maxSubtasks: 3, nullWork: new Set([1]) },    // dropped + truncated
+      { plan: ['s0', 's1'], nullWork: new Set([0, 1]) },                                    // all workers fail
+    ]
+    for (const sc of scenarios) {
+      const rt = new FakeRuntime({
+        onAgent: ({ opts }) => {
+          const label = opts?.label ?? ''
+          if (label === 'planAndExecute:plan') return makePlan(sc.plan)
+          const m = /planAndExecute:work:(\d+)/.exec(label)
+          if (m) return sc.nullWork.has(Number(m[1])) ? null : 'r'
+          if (label === 'planAndExecute:synthesize') return 'done'
+          return null
+        },
+      })
+      const result = await planAndExecute(rt, makeOptions(sc.maxSubtasks !== undefined ? { maxSubtasks: sc.maxSubtasks } : {}))
+      const c = digestOf(rt)!.counts as { planned: number; executed: number; dropped: number; truncated: number }
+      expect(c.planned).toBe(c.executed + c.dropped + c.truncated)
+      expect(c).toEqual({
+        planned: result.stats.itemsIn,
+        executed: result.stats.itemsOut,
+        dropped: result.stats.dropped,
+        truncated: result.stats.truncated,
+      })
+    }
   })
 })
 
@@ -634,5 +808,87 @@ describe('planAndExecute — trail', () => {
     expect(synthRec!.outcome).toBe('ok')
     // invariant
     expect(trail.length).toBe(result.stats.agentsSpawned)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Effort forwarding
+// ---------------------------------------------------------------------------
+
+describe('planAndExecute — effort forwarding', () => {
+  it('forwards planEffort, workerEffort, synthesisEffort', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label === 'planAndExecute:plan') return makePlan(['s0'])
+        if (label.startsWith('planAndExecute:work:')) return 'r'
+        if (label === 'planAndExecute:synthesize') return 'done'
+        return null
+      },
+    })
+
+    await planAndExecute(rt, makeOptions({
+      planEffort: 'high',
+      workerEffort: 'medium',
+      synthesisEffort: 'max',
+    }))
+
+    const planCall = rt.calls.find(c => c.opts?.label === 'planAndExecute:plan')
+    const workerCalls = rt.calls.filter(c => c.opts?.label?.startsWith('planAndExecute:work:'))
+    const synthCall = rt.calls.find(c => c.opts?.label === 'planAndExecute:synthesize')
+
+    expect(planCall?.opts?.effort).toBe('high')
+    expect(workerCalls.every(c => c.opts?.effort === 'medium')).toBe(true)
+    expect(synthCall?.opts?.effort).toBe('max')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Effort in the audit trail
+// ---------------------------------------------------------------------------
+
+describe('planAndExecute — trail: effort field', () => {
+  it('effort overrides: trail records carry effort when set, absent when unset', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label === 'planAndExecute:plan') return makePlan(['s0'])
+        if (label.startsWith('planAndExecute:work:')) return 'r'
+        if (label === 'planAndExecute:synthesize') return 'done'
+        return null
+      },
+    })
+
+    const result = await planAndExecute(rt, makeOptions({
+      planEffort: 'high',
+      workerEffort: 'medium',
+      synthesisEffort: 'max',
+    })) as PlanAndExecuteResult<string, string>
+
+    const planRec = result.trail!.find(r => r.stage === 'planAndExecute:plan')
+    const workRec = result.trail!.find(r => r.stage === 'planAndExecute:work:0')
+    const synthRec = result.trail!.find(r => r.stage === 'planAndExecute:synthesize')
+
+    expect(planRec!.effort).toBe('high')
+    expect(workRec!.effort).toBe('medium')
+    expect(synthRec!.effort).toBe('max')
+  })
+
+  it('no effort overrides: effort key is ABSENT (not undefined-valued) on all trail records', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label === 'planAndExecute:plan') return makePlan(['s0'])
+        if (label.startsWith('planAndExecute:work:')) return 'r'
+        if (label === 'planAndExecute:synthesize') return 'done'
+        return null
+      },
+    })
+
+    const result = await planAndExecute(rt, makeOptions()) as PlanAndExecuteResult<string, string>
+
+    for (const rec of result.trail!) {
+      expect(rec).not.toHaveProperty('effort')
+    }
   })
 })

@@ -30,12 +30,31 @@
 //  with resumeFromRunId — completed agent() calls replay from cache, only
 //  missing work re-runs. This is the correct recovery path, not a full restart.
 
-import { defineWorkflow } from '@workflow-toolbox/build/define'
-import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
-import { generateAndFilter, loopUntilDone } from '@workflow-toolbox/patterns'
-import type { LoopStoppedBy } from '@workflow-toolbox/patterns'
+import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
+import type { WorkflowRuntime, JsonSchema, EffortAlias } from '@workflow-toolbox/runtime'
+import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
+import { collectTrail, generateAndFilter, loopUntilDone } from '@workflow-toolbox/patterns'
+import type { LoopStoppedBy, TrailRecord } from '@workflow-toolbox/patterns'
 import { warn } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
+
+// ---------------------------------------------------------------------------
+// Per-stage effort defaults (Class B/C launch-time tuning — see parseConfig).
+// A launch-time `args.effort.<role>` override (parsed into `input.effort`) can
+// retune any of these without a source edit, via resolveEffort. generateAndFilter's
+// filter is a cheap single-pass triage sweep over a handful of candidates (the
+// scoreAndRank-style "targeting machine" shape — see backlog-triage.workflow.ts),
+// not the terminal quality gate, so it is NOT floor-clamped. The Refine loop's
+// evaluator IS the terminal accept/reject gate for the whole document (approved =
+// stoppedBy === 'done') — a judge role, floor-clamped to 'high' via
+// resolveVerifierEffort like every other verify/judge stage in this toolkit
+// ("cost lever is votes, not weaker verification"; a launch-time override may
+// only RAISE it).
+// ---------------------------------------------------------------------------
+const GENERATE_EFFORT: EffortAlias = 'high'  // Generate: candidate rewrite (+ the fresh-seed fallback)
+const FILTER_EFFORT: EffortAlias = 'medium'  // Generate: single-pass criteria filter (cheap triage, not the terminal gate)
+const EVALUATE_EFFORT_DEFAULT: EffortAlias = 'high' // Refine: single-pass evaluator — terminal accept/reject gate (floor 'high')
+const OPTIMIZE_EFFORT: EffortAlias = 'high'  // Refine: optimizer rewrite
 
 // ---------------------------------------------------------------------------
 // Input contract
@@ -46,6 +65,14 @@ export interface DocRewriteInput {
   criteria: string[]
   candidates: number
   maxIterations: number
+  /** Optional per-ROLE reasoning-effort overrides (Class B/C, parsed by the
+   *  shared `parseConfig` helper from `args.effort`), e.g.
+   *  `args: { docPath, criteria, effort: { optimize: 'xhigh' } }`. Role keys:
+   *  'generate', 'filter', 'evaluate', 'optimize'. A role's value may also be
+   *  the literal 'auto' (keep THIS role's own committed default). null = no
+   *  overrides. Resolved per-stage via resolveEffort (invalid/missing degrade
+   *  to the stage default, never throw). */
+  effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +154,8 @@ interface DocRewriteOutput {
   approved: boolean
   iterations: number
   stoppedBy: LoopStoppedBy
+  /** Combined Generate+Refine trail (collectTrail, in phase order). */
+  envelope: { trail: TrailRecord[] }
   warnings: string[]
 }
 
@@ -215,11 +244,17 @@ function parseInput(raw: unknown): DocRewriteInput {
     }
   }
 
+  // Optional Class B/C per-role effort overrides, validated by the shared
+  // parseConfig helper. It reads only the recognized `effort` slice and
+  // IGNORES this workflow's bespoke docPath/criteria/candidates keys.
+  const effort = parseConfig(obj).effort ?? null
+
   return {
     docPath: obj['docPath'] as string,
     criteria,
     candidates,
     maxIterations,
+    effort,
   }
 }
 
@@ -229,6 +264,13 @@ function parseInput(raw: unknown): DocRewriteInput {
 
 async function run(rt: WorkflowRuntime, input: DocRewriteInput): Promise<DocRewriteOutput> {
   const warnings: string[] = []
+
+  // Resolve each stage's effort ONCE: a launch-time `args.effort.<role>`
+  // override wins when valid, else the stage-class default declared above.
+  const generateEffort = resolveEffort(input.effort?.['generate'], GENERATE_EFFORT)
+  const filterEffort = resolveEffort(input.effort?.['filter'], FILTER_EFFORT)
+  const evaluateEffort = resolveVerifierEffort(input.effort?.['evaluate'], EVALUATE_EFFORT_DEFAULT)
+  const optimizeEffort = resolveEffort(input.effort?.['optimize'], OPTIMIZE_EFFORT)
 
   // -------------------------------------------------------------------------
   // Phase 'Generate' — generateAndFilter
@@ -253,6 +295,8 @@ async function run(rt: WorkflowRuntime, input: DocRewriteInput): Promise<DocRewr
   const generateResult = await generateAndFilter<CandidateOutput>(rt, {
     count: input.candidates,
     generateSchema: CANDIDATE_SCHEMA,
+    generateEffort,
+    filterEffort,
     generatePrompt: (index) => {
       const angle = angleForIndex(index)
       return (
@@ -316,6 +360,9 @@ async function run(rt: WorkflowRuntime, input: DocRewriteInput): Promise<DocRewr
         schema: CANDIDATE_SCHEMA,
         label: 'doc-rewrite:seed-fallback',
         phase: 'Generate',
+        // Same stage class as generateAndFilter's generate role — this is the
+        // fallback path for the identical job.
+        effort: generateEffort,
       },
     )
 
@@ -367,6 +414,7 @@ async function run(rt: WorkflowRuntime, input: DocRewriteInput): Promise<DocRewr
         schema: EVALUATOR_SCHEMA,
         label: 'doc-rewrite:evaluator',
         phase: 'Refine',
+        effort: evaluateEffort,
       })
 
       // If evaluator failed (null), treat as not passing — continue the loop
@@ -394,6 +442,7 @@ async function run(rt: WorkflowRuntime, input: DocRewriteInput): Promise<DocRewr
         schema: OPTIMIZER_SCHEMA,
         label: 'doc-rewrite:optimizer',
         phase: 'Refine',
+        effort: optimizeEffort,
       })
 
       // If optimizer failed (null), keep current draft, mark as not progressed
@@ -440,6 +489,7 @@ async function run(rt: WorkflowRuntime, input: DocRewriteInput): Promise<DocRewr
     approved: stoppedBy === 'done',
     iterations,
     stoppedBy,
+    envelope: { trail: collectTrail(generateResult, loopResult) },
     warnings,
   }
 }

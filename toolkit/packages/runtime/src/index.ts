@@ -3,6 +3,7 @@
 // consumers include it in their own tsconfig to type-check raw workflow scripts.
 export type {
   ModelAlias,
+  EffortAlias,
   JsonSchema,
   AgentOptions,
   AgentFn,
@@ -16,5 +17,14 @@ export type {
 
 export { BEST_MODEL } from './constants.js'
 
+export { DIGEST_PREFIX, LOOP_STAGE, LOOP_ITER_MARKER, isLoopIterLabel, formatDigest, parseDigest } from './digest.js'
+export type { PhaseDigest, PatternName, PatternCounts, TypedPhaseDigest } from './digest.js'
+
 export { FakeRuntime } from './fake.js'
 export type { AgentCall, FakeRuntimeOptions } from './fake.js'
+
+export { withAgentDefaults } from './with-agent-defaults.js'
+export type { AgentDefaults } from './with-agent-defaults.js'
+
+export { PROMPT_TAG_PREFIX, buildPromptTag, parsePromptTag, withPromptTags } from './prompt-tag.js'
+export type { PromptTagFields } from './prompt-tag.js'

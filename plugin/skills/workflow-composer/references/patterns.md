@@ -165,12 +165,13 @@ refutation; and verifiers re-derive from fresh evidence, not from the claim's
 author. A cap never destroys evidence either: claims a cap cuts are kept too,
 just flagged differently (see the toolkit vocabulary below).
 
-**Toolkit:** `adversarialVerification(rt, { claims, renderClaim, votes, refuteThreshold, lenses, votesPerClaim })`.
+**Toolkit:** `adversarialVerification(rt, { claims, renderClaim, votes, refuteThreshold, lenses, votesPerClaim, model, effort, verifierType, maxVerifyClaims })`.
 The default model is `BEST_MODEL` (currently `'opus'`, exported by
 `@workflow-toolbox/runtime`) — verification quality is model-sensitive, and
-explicitly passing a weaker model warns. (`BEST_MODEL` was `'fable'` until Fable 5
-was suspended by export control on 2026-06-12; it now names the strongest *callable*
-tier. Do not hand-override a verifier to `'fable'` while suspended — it errors at
+explicitly passing a weaker model warns. (`BEST_MODEL` names the strongest
+*reliably-callable* tier, not merely the newest. Do not hand-override a verifier to a
+top-tier alias you have not verified is callable in the consumer's environment —
+alias availability varies by plan and over time, and an uncallable alias errors at
 runtime.) Optional `lenses` give one distinct angle per vote
 (e.g. `['correctness', 'security', 'does-it-reproduce']`) so a claim that fails
 in more than one way is caught. Optional `votesPerClaim` (`(claim) => number`,
@@ -182,6 +183,31 @@ severity-aware review: `(f) => f.severity === 'low' ? 1 : 3`. It overrides
 refute-first vote. `lenses` and `votesPerClaim` are mutually exclusive —
 lenses need one fixed vote count (one lens per vote); pick one or the other
 (additive, semver-minor change, ships in `@workflow-toolbox/patterns` 0.5.0).
+
+**Cross-model verifier — `verifierType`.** `verifierType?: string` routes EVERY
+verifier through a given subagent type (the `Agent` tool's `agentType`); omit it
+for the standard same-model verifier. Its premier use is **genuine decorrelation**:
+a same-model verifier shares the producing model's priors, so a clean panel is
+weakly informative for reasoning errors — the one real lever is a verifier on a
+*different model family*. On a machine with the `codex` plugin,
+`verifierType: 'codex:codex-rescue'` runs every refute-first verifier on a
+non-Claude (GPT) model — and it honors this pattern's structured verdict schema
+(proven from inside a workflow). This plugin also ships
+`workflow-toolbox:opencode-verifier` — a second cross-family option that routes to
+any `opencode` model (default GLM 5.2 / zai-coding-plan, a *different* family
+again) and degrades to a Claude fallback (`OPENCODE_UNAVAILABLE`) when opencode
+isn't installed or no provider is authenticated. Caveat: both depend on a local
+setup + login and are NOT portable; for a SHIPPED workflow prefer an MCP→model
+endpoint as the cross-model verifier. This is distinct from (and stronger than) the discouraged
+"specialist reviewer" use — "specialize the producer, not the skeptic" still holds
+for *same-model* specialization. Launch-time exposure: on `cross-model-verify` and
+`independent-analysis` the request travels in the STRUCTURED config envelope —
+`args.agentTypes.verify` (role key mirrors `effort.verify`; no bespoke top-level
+arg) — and is PROBED at entry (`probeAgentType`, one schema-less call) with a
+graceful fallback to the standard verifier reported in the result's `probe` field;
+`pr-review` routes its lens reviewers the same way via `args.agentTypes.review` (same role key as `effort.review`).
+The dev family (`dev-plan` Critique, `dev-review-fix` Verify, orchestrated by
+`dev-full`) still takes a bespoke `verifierType` input (unmigrated).
 
 The toolkit's claim-level vocabulary (the exported `ClaimVerdict` type) has
 five values: `'confirmed' | 'partially-confirmed' | 'refuted' | 'unverifiable'
@@ -314,6 +340,17 @@ including via `rt.parallel`/`rt.pipeline` thunks — into `stats.agentsSpawned`;
 its trail stays per-**iteration** (`trail.length === iterations`, not
 `agentsSpawned`), and the body's agents still draw on the caller's budget.
 
+> **Gotcha — `loopUntilDone` takes no `phase` option.** Unlike the other six
+> patterns (which accept `phase` and tag their agents with it), the loop's body
+> owns its own phase context. So if you want its iterations grouped under a named
+> phase, call `rt.phase('Refine')` **before** the loop — otherwise its agents
+> carry no `phaseIndex` and land in the observe-ui "(no phase)" column (and any
+> phase you only declared in `meta.phases` renders as an empty container). The
+> bundled `demo-all-patterns` does exactly this (`rt.phase('Refine')` on the line
+> above its loop). The observe-ui graph names the loop's back-edge after that
+> phase — e.g. `↺ repeat Refine (ran 3×)` — so a missing `rt.phase` shows up
+> immediately as `↺ repeat (no phase)`.
+
 ---
 
 ## 7. Orchestrator-workers — `planAndExecute`
@@ -346,6 +383,92 @@ failed synthesis (`value === null` with `itemsOut > 0`) does not lose the
 per-worker work.
 
 ---
+
+## 8. Cheap-model triage + rank cutoff — `scoreAndRank`
+
+**Use when:** there are many items but only a few deserve an expensive next
+stage; a cheap model can score each on one or more *independent* dimensions
+(the classic `impact × opportunity`), and you want a ranked cutoff to AIM the
+premium model / human / downstream pattern at the top — the "targeting machine"
+before you spend the premium tokens.
+**Do NOT use when:** few items (just act on them); the scoring signal is garbage
+(GIGO → the ranks are meaningless); or a binary keep/drop is enough — then
+`generateAndFilter` is simpler (its filter is a yes/no, not a numeric rank).
+
+```js
+const SCORE = { type: 'object', properties: { score: { type: 'number' }, reason: { type: 'string' } }, required: ['score', 'reason'] }
+
+// Cheap sweep: each (item, dimension) scored independently by a CHEAP model.
+const scored = (await parallel(items.map((it) => () =>
+  parallel(['impact', 'opportunity'].map((dim) =>
+    () => agent(`Score ${it} on ${dim}, 1-5.`, { schema: SCORE, model: 'haiku' })))
+    .then((dims) => dims.every(Boolean)
+      ? { it, score: dims.reduce((a, d) => a * d.score, 1) }   // impact × opportunity
+      : null)),                                                // fail-closed: drop on a missing dim
+)).filter(Boolean)
+
+// Rank, then keep the top — aim the PREMIUM stage ONLY at these.
+const targets = scored.sort((a, b) => b.score - a.score).slice(0, K)
+```
+
+**Toolkit:** `scoreAndRank(rt, { items, dimensions, cutoff, scoreModel?, combine?, maxItems? })`.
+Each dimension is scored independently by the cheap `scoreModel`; `combine` folds
+them (default: product = `impact × opportunity`, which **assumes non-negative
+scores** — pass your own `combine` for a signed scale, else two negatives rank a
+doubly-bad item top); `cutoff` is `{ type: 'threshold', min }` or
+`{ type: 'topK', k }`. It returns the ranked survivors and STOPS — point the
+expensive stage at them yourself (the pattern deliberately does NOT bundle the
+premium pass, so it stays composable). A null **or non-finite** dimension/score
+drops that item (fail-closed, so a NaN/±Infinity never corrupts the rank);
+below-cutoff items are logged and derivable from the stats, never silently dropped.
+
+---
+
+## Tuning at launch — per-role model/effort, and the config helpers
+
+Every pattern exposes **per-role** knobs so you tune each role independently
+without editing the workflow source:
+
+- **Per-role model** — `<role>Model` (e.g. `attemptModel`/`judgeModel`/
+  `synthesisModel` on `tournament`, `scoreModel` on `scoreAndRank`,
+  `generateModel`/`filterModel` on `generateAndFilter`, `classifyModel` on
+  `classifyAndAct`, `taskModel`/`synthesisModel` on `fanOutAndSynthesize`,
+  `planModel`/`workerModel`/`synthesisModel` on `planAndExecute`). `scoreAndRank`
+  also takes a per-dimension `model`; `classifyAndAct` a per-action `model`.
+- **Per-role effort** — the matching `<role>Effort` knob takes an `EffortAlias`
+  (`'low' | 'medium' | 'high' | 'xhigh' | 'max'`); omit to inherit the session
+  effort. Mirrors the model plumbing one-for-one.
+- **Per-role agentType** — the matching `<role>Type` knob (a subagent-type string,
+  the `Agent` tool's `agentType`) routes just that role to a different subagent —
+  the lever for cross-family decorrelation (see §3); omit for the standard Claude
+  subagent. Every evaluator/worker role has one: `taskType`/`synthesisType`
+  (`fanOutAndSynthesize`), `generateType`/`filterType` (`generateAndFilter`),
+  `attemptType`/`judgeType`/`synthesisType` (`tournament`),
+  `planType`/`workerType`/`synthesisType` (`planAndExecute`), `classifyType`
+  (`classifyAndAct`, plus a per-action `ActionSpec.agentType`), `scoreType`
+  (`scoreAndRank`), and `verifierType` (`adversarialVerification`). `loopUntilDone`
+  has none — its author callback selects `agentType` directly. This generalizes the
+  cross-family lever to every role so the composer can decorrelate a producer from
+  its verifier (different unrelated families); it is NOT an invitation to route
+  roles to same-model specialists — "specialize the producer, not the skeptic"
+  still holds there (see §3). Use the generic wrapper below to route the WHOLE
+  workflow in one line instead.
+
+**Two launch-time config helpers** let a caller tune a workflow at invocation,
+without touching its source — the natural home for an `args`-driven config:
+
+- **`withAgentDefaults(rt, defaults)`** (`@workflow-toolbox/runtime`) — wrap `rt`
+  ONCE at the top of `run()`; every agent in every pattern downstream inherits the
+  defaults (`model` / `effort` / `agentType` / `isolation` / `stallMs`). Per-call
+  opts always WIN (these are DEFAULTS), so a pattern that pins `judgeModel:'opus'`
+  keeps it. This is the generic alternative to per-role knobs — e.g.
+  `withAgentDefaults(rt, { agentType: 'codex:codex-rescue' })` routes the WHOLE
+  workflow cross-model in one line (when you want every agent on the other model,
+  not just the verifier).
+- **`parseConfig(raw)`** (`@workflow-toolbox/build/define`) → a typed
+  `WorkflowConfig { perAgent, models, effort, agentTypes, sizing }` — normalizes an
+  `args` config envelope so a workflow can accept launch-time tuning declaratively.
+  `perAgent` feeds straight into `withAgentDefaults`.
 
 ## Composition idioms (not patterns)
 
@@ -439,7 +562,10 @@ Agent cost follows **tool-call count**, not prompt size — each turn re-reads
 the context so far, so anything that makes an agent's first read *targeted*
 instead of exploratory pays for itself. Five levers, all measured on this
 toolkit's own dev-workflow family (full numbers and the code in the public
-[cost-engineering guide](https://github.com/home-dev-lab/workflow-toolbox/blob/main/docs/public/cost-engineering.md)):
+[cost-engineering guide](https://github.com/home-dev-lab/workflow-toolbox/blob/main/docs/public/cost-engineering.md)) —
+the percentages below are what THOSE runs measured, not constants: treat them
+as which-lever-moves-what guidance and re-measure on your own composition
+before relying on a number:
 
 1. **Gate scrutiny on stakes** — `votesPerClaim: (claim) => claim.severity
    === 'low' ? 1 : 3` cut a verification phase −47%. But harden the gating

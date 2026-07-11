@@ -22,6 +22,15 @@ node_modules/
 # committed toolkit/workflows/*.js artifacts and toolkit/bin/*.mjs are untouched.
 /toolkit/packages/*/dist/
 
+# Vite build output for the observe-ui app (the monorepo's only real build step,
+# a leaf consumer — generated on demand, never committed).
+/toolkit/apps/*/dist/
+
+# Electron desktop shell build output (esbuild-bundled main + electron-builder
+# packaged artifacts) — generated on demand, never committed.
+/toolkit/apps/*/dist-electron/
+/toolkit/apps/*/release/
+
 # TypeScript incremental build info
 *.tsbuildinfo
 
@@ -37,3 +46,11 @@ node_modules/
 # `pnpm wt:calibrate record`; accrues across runs, never source. The committed
 # demo lives at packages/smoke/test/fixtures/sample-runs.jsonl instead.
 /toolkit/run-stats/
+
+# playwright-cli snapshots/screenshots (per-machine e2e artifacts, throwaway).
+.playwright-cli/
+
+# Python bytecode caches — regenerated whenever the observe-ui bezel generator
+# (apps/observe-ui/scripts/make-bezel-source.py) is imported/run; never source.
+__pycache__/
+*.pyc

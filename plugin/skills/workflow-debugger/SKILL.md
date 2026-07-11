@@ -21,7 +21,8 @@ argument-hint: "[runId|latest|<journal-path>] [--json] [--project <slug>]"
 When Claude Code's Workflow tool runs a script, it writes a **run journal** to disk:
 
 ```text
-~/.claude/projects/<project-slug>/<sessionId>/workflows/wf_<runId>.json
+$CLAUDE_CONFIG_DIR/projects/<project-slug>/<sessionId>/workflows/wf_<runId>.json
+(default config dir: ~/.claude)
 ```
 
 That journal — not the launch message, not the per-agent transcripts — is the single
@@ -54,7 +55,7 @@ npx workflow-toolbox report [runId|latest|<journal-path>] [--project <slug>] [--
   messages print) is also accepted as the positional, bypassing project discovery.
 - `--json` emits the raw `Diagnosis` for scripting; default is a readable report.
 - Run it **from the directory the workflow ran in** (the journal is keyed by that cwd),
-  or pass `--project <slug>` to point at a different `~/.claude/projects/<slug>`. Both
+  or pass `--project <slug>` to point at a different `$CLAUDE_CONFIG_DIR/projects/<slug>`. Both
   `--project <slug>` and `--project=<slug>` work, **including the leading-dash slugs**
   Claude project dirs always use (e.g. `--project -home-me-my-repo`). The CLIs print a
   `[project dir: …]` line saying which project directory was actually scanned — check
@@ -125,6 +126,29 @@ The run therefore lands as a `script-throw`; the debugger matches that error sig
 and attaches a **schema-hint** finding telling you to fix the schema and re-run — the
 "done" agent's cache holds no usable result, so resuming buys nothing for that call.
 
+## Degraded runs — silently-denied tool calls (blind reviews/plans/impls)
+
+A subagent whose tool call is **silently denied** — the auto-mode permission classifier
+blocks it, a PreToolUse hook denies it, or the action is rejected — keeps going and returns
+a normal-looking output. The run journal records cost + agent state but **never** the denied
+`tool_result` inside the agent, so a review / plan / implementation can be **degraded** (an
+agent couldn't read the diff, run the test, reach a file) while the run reads `completed-ok`.
+This bit for real: pr-review reviewers were blind when auto-mode declined their read-only
+`git diff`, and a blind review nearly approved a commit that did not compile.
+
+So both read paths now scan each agent's transcript for the three grounded denial signatures
+— auto-mode classifier (`Permission … denied by the Claude Code auto mode classifier`), a
+hook deny (`Hook PreToolUse:<Tool> denied this tool`), and a generic rejection (`The tool use
+was rejected`) — and surface a **Tool denials** section: `⚠ N tool call(s) DENIED across M
+agent(s) … git diff ×7`, with the per-denial stage/tool/command/reason. The match set is a
+**closed allow-list** (precision over recall): ordinary tool errors — non-zero exit codes, MCP
+arg-validation, oversize-read caps, 404s, `No such tool available` — are deliberately **not**
+flagged, so a clean run never false-alarms. The **Stop hook** treats any denial as a block
+trigger (a degraded run is surfaced even when its journal says `completed-ok`), and
+`workflow-toolbox report` renders the same section. Caveat: a run that diagnoses as `in-progress`
+/ killed is not scanned (the journal isn't conclusive), and a probe workflow that *intends* to
+hit a denial will honestly read as degraded — the human reads the report.
+
 ## How it works (for maintenance)
 
 The logic is a tested package in the toolkit; the plugin ships only the bundled artifact.
@@ -133,6 +157,9 @@ The logic is a tested package in the toolkit; the plugin ships only the bundled 
   agent accessors (`doneAgents`/`incompleteAgents`/`retriedAgents`). Unit-tested.
 - `diagnose.ts` — the pure decision table `diagnoseRun` + `recommendResume`. Unit-tested.
 - `format.ts` — the pure text report. Unit-tested.
+- `tool-denial.ts` — the pure denial scanner (`classifyDenial` / `parseTranscriptDenials` /
+  `buildToolDenialReport`); a closed allow-list of denial signatures. Unit-tested. Fed into the
+  audit report by `audit-folder.ts`'s `scanTranscripts({withDenials})` and surfaced by the Stop hook.
 - `source.ts` — impure journal resolution (filters `wf_*` before the mtime sort so a sibling
   `agent-*.meta.json` never wins "latest"). Held out of `pnpm test`.
 - `cli.ts` — the entry esbuild bundles into `plugin/bin/wt-debug.mjs` (node ESM, zero npm

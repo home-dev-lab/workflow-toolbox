@@ -11,7 +11,8 @@
 import { describe, it, expect } from 'vitest'
 import { buildAuditReport } from '../src/report.js'
 import type { WorkflowJournal } from '../src/journal.js'
-import type { AgentUsage } from '../src/transcript-usage.js'
+import type { AgentUsage, TranscriptCompaction } from '../src/transcript-usage.js'
+import type { ToolDenial } from '../src/tool-denial.js'
 
 // A journal shaped like a real one (modelled on wf_975e3d74-552): two workflow_agent
 // rows under a workflow_phase header, per-agent tokens summing to totalTokens, and an
@@ -194,6 +195,69 @@ describe('buildAuditReport — transcript token breakdown (best-effort, injected
     const r = buildAuditReport(smokeJournal())
     expect(r.tokenBreakdown).toBeNull()
     expect(r.agents.every((a) => a.usage === null)).toBe(true)
+  })
+})
+
+describe('buildAuditReport — tool denials (best-effort, injected)', () => {
+  const denial = (agentId: string, tool: string, detail: string): ToolDenial => ({
+    agentId,
+    tool,
+    detail,
+    kind: 'rejected',
+    reason: null,
+  })
+
+  it('rolls up injected denials and resolves each agent label from the journal rows', () => {
+    const r = buildAuditReport(smokeJournal(), {
+      denialsByAgent: new Map([
+        ['ac83de77485e77ad1', [denial('ac83de77485e77ad1', 'Bash', 'git diff a..b')]],
+      ]),
+    })
+    expect(r.denials).toBeDefined()
+    expect(r.denials!.degraded).toBe(true)
+    expect(r.denials!.total).toBe(1)
+    expect(r.denials!.agentsAffected).toBe(1)
+    expect(r.denials!.denials[0]).toMatchObject({
+      agentId: 'ac83de77485e77ad1',
+      label: 'generateAndFilter:generate:0', // resolved from the journal
+      tool: 'Bash',
+    })
+    expect(r.denials!.bySignature[0]).toEqual({ signature: 'git diff', count: 1 })
+  })
+
+  it('degrades to an explicit empty (not-degraded) denial report when none is injected', () => {
+    const r = buildAuditReport(smokeJournal())
+    expect(r.denials).toEqual({ total: 0, agentsAffected: 0, bySignature: [], denials: [], degraded: false, recoveredCount: 0, allRecovered: false })
+  })
+})
+
+describe('buildAuditReport — auto-compaction (best-effort, injected)', () => {
+  const compaction = (peak: number, dropped: number): TranscriptCompaction => ({
+    compacted: true,
+    peakTokens: peak,
+    events: [{ trigger: 'auto', preTokens: peak, postTokens: peak - dropped, droppedTokens: dropped, durationMs: 31948 }],
+  })
+
+  it('rolls up injected compaction and resolves each agent label from the journal rows', () => {
+    const r = buildAuditReport(smokeJournal(), {
+      compactionByAgent: new Map([['ac83de77485e77ad1', compaction(198625, 99667)]]),
+    })
+    expect(r.compaction).toBeDefined()
+    expect(r.compaction!.compacted).toBe(true)
+    expect(r.compaction!.agentsCompacted).toBe(1)
+    expect(r.compaction!.peakTokens).toBe(198625)
+    expect(r.compaction!.droppedTokens).toBe(99667)
+    expect(r.compaction!.agents[0]).toMatchObject({
+      agentId: 'ac83de77485e77ad1',
+      label: 'generateAndFilter:generate:0', // resolved from the journal
+      peakTokens: 198625,
+      trigger: 'auto',
+    })
+  })
+
+  it('degrades to an explicit empty (not-compacted) report when none is injected', () => {
+    const r = buildAuditReport(smokeJournal())
+    expect(r.compaction).toEqual({ agentsCompacted: 0, peakTokens: null, droppedTokens: null, agents: [], compacted: false })
   })
 })
 

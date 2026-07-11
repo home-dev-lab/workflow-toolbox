@@ -7,14 +7,38 @@
 // Honesty contract (plan F1/F3, verified against real journals):
 //   - Decisions come from the ALWAYS-PRESENT workflowProgress[] agent rows,
 //     enriched best-effort by result.envelope.trail (matched by stage===label).
-//     The top-level `logs` array is NOT a decision source (verified empty / dead).
+//     The top-level `logs` array (rt.log narrator lines) is NOT a decision source
+//     here — it is unstructured progress text, captured separately by observe's
+//     journalToPatches as run.log entries. (Most runs leave it absent/empty; the
+//     audit report intentionally ignores it rather than mining free-form strings.)
 //   - When neither agents nor a trail yield anything, `decisions` is an explicit
 //     empty list — the formatter says so rather than implying a complete trail.
 //   - Per-agent tokens are reconciled against totalTokens; a mismatch (or any
 //     agent with undefined tokens) is surfaced, never silently hidden.
 
 import { agentEvents, type WorkflowJournal } from './journal.js'
-import { addUsage, emptyUsage, type AgentUsage } from './transcript-usage.js'
+import {
+  addUsage,
+  buildCompactionReport,
+  emptyCompactionReport,
+  emptyUsage,
+  type AgentUsage,
+  type CompactionReport,
+  type TranscriptCompaction,
+} from './transcript-usage.js'
+import {
+  buildToolDenialReport,
+  emptyDenialReport,
+  type ToolDenial,
+  type ToolDenialReport,
+} from './tool-denial.js'
+import {
+  buildExternalDelegationReport,
+  emptyExternalDelegationReport,
+  type DelegationScan,
+  type DelegationScanInput,
+  type ExternalDelegationReport,
+} from './external-delegation.js'
 import { isRecord, numOrNull, strOrNull } from '@workflow-toolbox/std'
 
 /** One agent's cost line, projected from a workflow_agent row. */
@@ -61,6 +85,13 @@ export interface DecisionEntry {
   outcome: string | null
   decision: string | null
   phaseTitle: string | null
+  /** Explicit model override the pattern recorded for this stage (trail), else null.
+   *  Optional so existing literal test fixtures need not provide it; the builder always
+   *  sets it. */
+  model?: string | null
+  /** Explicit effort override the pattern recorded for this stage (trail), else null.
+   *  Optional for the same fixture reason; the builder always sets it. */
+  effort?: string | null
 }
 
 /** A best-effort pointer to one agent's transcript inside the audit folder. */
@@ -88,6 +119,19 @@ export interface AuditReport {
    *  was injected/available. Optional so existing literal test fixtures need not provide it;
    *  the builder always sets it. */
   tokenBreakdown?: TokenBreakdown | null
+  /** Tool calls silently denied across the run's agents (degraded-run signal). Optional so
+   *  existing literal test fixtures need not provide it; the builder always sets it (an empty
+   *  report when no denial data was injected). */
+  denials?: ToolDenialReport
+  /** Agents that auto-compacted at their context ceiling (ADVISORY signal — softer than denials;
+   *  the run still succeeded). Optional so existing literal test fixtures need not provide it; the
+   *  builder always sets it (an empty report when no compaction data was injected). */
+  compaction?: CompactionReport
+  /** External-delegation compliance: agents routed to an external agentType that show NO real
+   *  external-CLI invocation may have SELF-ANSWERED (same-family output presented as external).
+   *  Optional so existing literal test fixtures need not provide it; the builder always sets it
+   *  (an empty report when no delegation data was injected). */
+  delegation?: ExternalDelegationReport
 }
 
 export interface BuildReportOptions {
@@ -98,16 +142,37 @@ export interface BuildReportOptions {
    * impure caller — keep the builder pure). The caller MUST only include agents with non-empty
    * usage, so an entry's presence == that agent counts toward coverage. */
   usageByAgent?: Map<string, AgentUsage>
+  /** Per-agent tool denials parsed from transcripts, keyed by agentId (injected by the impure
+   * caller). Absent → an empty denial report. The builder resolves each denial's phase label
+   * from the journal's agent rows before rolling them up. */
+  denialsByAgent?: Map<string, ToolDenial[]>
+  /** Per-agent auto-compaction parsed from transcripts, keyed by agentId (injected by the impure
+   * caller). Absent → an empty compaction report. The builder resolves each agent's phase label
+   * from the journal's rows before rolling them up. */
+  compactionByAgent?: Map<string, TranscriptCompaction>
+  /** Per-agent external delegation read from the `agent-<id>.meta.json` sidecars (injected by
+   * the impure caller). `scan` is the external-CLI invocation scan, null when the agentType has
+   * no registered signature. Absent → an empty delegation report. The builder resolves each
+   * agent's phase label from the journal's rows before rolling them up. */
+  delegationByAgent?: Map<string, DelegationScan>
 }
 
 interface TrailEnrichment {
   outcome: string | null
   decision: string | null
+  model: string | null
+  effort: string | null
 }
 
-/** Index result.envelope.trail by `stage`, tolerant of any non-envelope result shape. */
+/** Index result.envelope.trail by `stage`, tolerant of any non-envelope result shape.
+ *  CONFLICT-AWARE (same class as the observe-side effort-attribution HIGH): pattern stage
+ *  strings carry no per-invocation salt, so a pattern invoked twice in one composition
+ *  emits identical stages — the old unguarded set() enriched Decisions with the LAST
+ *  call's entry. A stage recurring with DIFFERENT enrichment values is dropped entirely
+ *  (ambiguous attribution — no enrichment beats a wrong one); recurring identically stays. */
 function readEnvelopeTrail(result: unknown): Map<string, TrailEnrichment> {
   const map = new Map<string, TrailEnrichment>()
+  const conflicted = new Set<string>()
   if (!isRecord(result)) return map
   const envelope = result['envelope']
   if (!isRecord(envelope)) return map
@@ -116,8 +181,25 @@ function readEnvelopeTrail(result: unknown): Map<string, TrailEnrichment> {
   for (const entry of trail) {
     if (!isRecord(entry)) continue
     const stage = strOrNull(entry['stage'])
-    if (stage === null) continue
-    map.set(stage, { outcome: strOrNull(entry['outcome']), decision: strOrNull(entry['decision']) })
+    if (stage === null || conflicted.has(stage)) continue
+    const enrichment: TrailEnrichment = {
+      outcome: strOrNull(entry['outcome']),
+      decision: strOrNull(entry['decision']),
+      model: strOrNull(entry['model']),
+      effort: strOrNull(entry['effort']),
+    }
+    const seen = map.get(stage)
+    if (seen === undefined) {
+      map.set(stage, enrichment)
+    } else if (
+      seen.outcome !== enrichment.outcome ||
+      seen.decision !== enrichment.decision ||
+      seen.model !== enrichment.model ||
+      seen.effort !== enrichment.effort
+    ) {
+      map.delete(stage)
+      conflicted.add(stage)
+    }
   }
   return map
 }
@@ -181,6 +263,8 @@ export function buildAuditReport(journal: WorkflowJournal, opts: BuildReportOpti
       outcome: enr?.outcome ?? (a.state === 'done' ? 'ok' : a.state),
       decision: enr?.decision ?? null,
       phaseTitle: a.phaseTitle,
+      model: enr?.model ?? null,
+      effort: enr?.effort ?? null,
     }
   })
 
@@ -204,6 +288,51 @@ export function buildAuditReport(journal: WorkflowJournal, opts: BuildReportOpti
       present: present.has(a.agentId),
     }))
 
+  // agentId → phase label, resolved once from the journal rows and shared by the denial and
+  // compaction rollups below (both enrich transcript-derived signals with the run-phase label).
+  const labelById = new Map<string, string>()
+  for (const a of agents) if (a.agentId !== null) labelById.set(a.agentId, a.label)
+
+  // Tool denials: enrich each injected denial with its agent's phase label, then roll up.
+  // No injection → an explicit empty report (degraded: false).
+  let denials: ToolDenialReport = emptyDenialReport()
+  if (opts.denialsByAgent && opts.denialsByAgent.size > 0) {
+    const enriched: ToolDenial[][] = []
+    for (const [agentId, list] of opts.denialsByAgent) {
+      const label = labelById.get(agentId)
+      enriched.push(label === undefined ? list : list.map((d) => ({ ...d, label })))
+    }
+    denials = buildToolDenialReport(enriched)
+  }
+
+  // Auto-compaction (ADVISORY): enrich each injected agent's compaction with its phase label, then
+  // roll up. No injection → an explicit empty report (compacted: false).
+  let compaction: CompactionReport = emptyCompactionReport()
+  if (opts.compactionByAgent && opts.compactionByAgent.size > 0) {
+    const enriched: { agentId: string; label?: string; compaction: TranscriptCompaction }[] = []
+    for (const [agentId, c] of opts.compactionByAgent) {
+      const label = labelById.get(agentId)
+      enriched.push(label === undefined ? { agentId, compaction: c } : { agentId, label, compaction: c })
+    }
+    compaction = buildCompactionReport(enriched)
+  }
+
+  // External delegation: enrich each injected agent's delegation with its phase label, then
+  // roll up. No injection → an explicit empty report (flagged: false).
+  let delegation: ExternalDelegationReport = emptyExternalDelegationReport()
+  if (opts.delegationByAgent && opts.delegationByAgent.size > 0) {
+    const inputs: DelegationScanInput[] = []
+    for (const [agentId, d] of opts.delegationByAgent) {
+      const label = labelById.get(agentId)
+      inputs.push(
+        label === undefined
+          ? { agentId, agentType: d.agentType, scan: d.scan }
+          : { agentId, label, agentType: d.agentType, scan: d.scan },
+      )
+    }
+    delegation = buildExternalDelegationReport(inputs)
+  }
+
   return {
     runId: journal.runId,
     taskId: strOrNull(journal.taskId),
@@ -219,5 +348,8 @@ export function buildAuditReport(journal: WorkflowJournal, opts: BuildReportOpti
     decisions,
     transcripts,
     tokenBreakdown,
+    denials,
+    compaction,
+    delegation,
   }
 }

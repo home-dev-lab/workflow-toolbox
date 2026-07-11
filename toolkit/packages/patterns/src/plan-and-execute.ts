@@ -18,9 +18,11 @@
 // - Agent failures degrade, never throw out.
 // - Labels: planAndExecute:plan, planAndExecute:work:<i>, planAndExecute:synthesize.
 
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
-import { warn, applyCap, makeRecord } from './envelope.js'
+import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
+import { warn, applyCap, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+
+const STAGE = 'planAndExecute'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,12 +43,30 @@ export interface PlanAndExecuteResult<TWork, TOut> extends PatternResult<TOut | 
 export interface PlanAndExecuteOptions<TWork> {
   planPrompt: string
   planModel?: ModelAlias
+  /** Per-plan reasoning effort. Omit to inherit the session effort. */
+  planEffort?: EffortAlias
+  /** Subagent type (Agent tool `agentType`) to route the plan agent
+   *  through — e.g. 'codex:codex-rescue' / 'workflow-toolbox:opencode-verifier'
+   *  for a cross-family model. Omit for the standard Claude subagent. */
+  planType?: string
   workerPrompt: (subtask: PlannedSubtask, index: number) => string
   workerSchema?: JsonSchema
   workerModel?: ModelAlias
+  /** Per-worker reasoning effort. Omit to inherit the session effort. */
+  workerEffort?: EffortAlias
+  /** Subagent type (Agent tool `agentType`) to route the worker agents
+   *  through — e.g. 'codex:codex-rescue' / 'workflow-toolbox:opencode-verifier'
+   *  for a cross-family model. Omit for the standard Claude subagent. */
+  workerType?: string
   synthesisPrompt: (results: ReadonlyArray<TWork>) => string
   synthesisSchema?: JsonSchema
   synthesisModel?: ModelAlias
+  /** Per-synthesis reasoning effort. Omit to inherit the session effort. */
+  synthesisEffort?: EffortAlias
+  /** Subagent type (Agent tool `agentType`) to route the synthesis agent
+   *  through — e.g. 'codex:codex-rescue' / 'workflow-toolbox:opencode-verifier'
+   *  for a cross-family model. Omit for the standard Claude subagent. */
+  synthesisType?: string
   phase?: string
   maxSubtasks?: number  // cap on planner output; truncation reported
 }
@@ -133,12 +153,18 @@ export async function planAndExecute<TWork = string, TOut = string>(
   const {
     planPrompt,
     planModel,
+    planEffort,
+    planType,
     workerPrompt,
     workerSchema,
     workerModel,
+    workerEffort,
+    workerType,
     synthesisPrompt,
     synthesisSchema,
     synthesisModel,
+    synthesisEffort,
+    synthesisType,
     phase,
     maxSubtasks,
   } = options
@@ -160,6 +186,10 @@ export async function planAndExecute<TWork = string, TOut = string>(
     )
   }
 
+  assertAgentTypeOption(STAGE, 'planType', planType)
+  assertAgentTypeOption(STAGE, 'workerType', workerType)
+  assertAgentTypeOption(STAGE, 'synthesisType', synthesisType)
+
   // -------------------------------------------------------------------------
   // Mutable counters
   // -------------------------------------------------------------------------
@@ -177,11 +207,15 @@ export async function planAndExecute<TWork = string, TOut = string>(
     label: string
     phase?: string
     model?: ModelAlias
+    effort?: EffortAlias
+    agentType?: string
   } = {
     schema: PLAN_SCHEMA,
-    label: 'planAndExecute:plan',
+    label: `${STAGE}:plan`,
     ...(phase !== undefined ? { phase } : {}),
     ...(planModel !== undefined ? { model: planModel } : {}),
+    ...(planEffort !== undefined ? { effort: planEffort } : {}),
+    ...(planType !== undefined ? { agentType: planType } : {}),
   }
 
   agentsSpawned++
@@ -190,7 +224,10 @@ export async function planAndExecute<TWork = string, TOut = string>(
   if (plan === null) {
     warn(rt, warnings, 'planAndExecute: planner returned null — nothing executed')
 
-    trail.push(makeRecord('planAndExecute:plan', false, planModel !== undefined ? { model: planModel } : undefined))
+    trail.push(makeRecord(`${STAGE}:plan`, false, {
+      ...(planModel !== undefined ? { model: planModel } : {}),
+      ...(planEffort !== undefined ? { effort: planEffort } : {}),
+    }))
 
     const stats: PatternStats = {
       itemsIn: 0,
@@ -200,6 +237,8 @@ export async function planAndExecute<TWork = string, TOut = string>(
       truncated: 0,
     }
 
+    // Failure digest: the planner produced no subtasks.
+    emitDigest(rt, { stage: STAGE, output: 'synthesis: none', counts: { planned: 0, executed: 0, dropped: 0, truncated: 0 } })
     return { value: null, stats, warnings, workerResults: [], trail }
   }
 
@@ -220,8 +259,9 @@ export async function planAndExecute<TWork = string, TOut = string>(
   }
 
   // Planner succeeded — record it now that we know the post-cap subtask count.
-  trail.push(makeRecord('planAndExecute:plan', true, {
+  trail.push(makeRecord(`${STAGE}:plan`, true, {
     ...(planModel !== undefined ? { model: planModel } : {}),
+    ...(planEffort !== undefined ? { effort: planEffort } : {}),
     decision: `subtasks=${keptSubtasks.length}`,
   }))
 
@@ -240,11 +280,15 @@ export async function planAndExecute<TWork = string, TOut = string>(
       phase?: string
       schema?: JsonSchema
       model?: ModelAlias
+      effort?: EffortAlias
+      agentType?: string
     } = {
-      label: `planAndExecute:work:${i}`,
+      label: `${STAGE}:work:${i}`,
       ...(phase !== undefined ? { phase } : {}),
       ...(workerSchema !== undefined ? { schema: workerSchema } : {}),
       ...(workerModel !== undefined ? { model: workerModel } : {}),
+      ...(workerEffort !== undefined ? { effort: workerEffort } : {}),
+      ...(workerType !== undefined ? { agentType: workerType } : {}),
     }
 
     agentsSpawned++
@@ -260,7 +304,10 @@ export async function planAndExecute<TWork = string, TOut = string>(
 
   for (let i = 0; i < rawWorkerResults.length; i++) {
     const r = rawWorkerResults[i]
-    trail.push(makeRecord(`planAndExecute:work:${i}`, r !== null, workerModel !== undefined ? { model: workerModel } : undefined))
+    trail.push(makeRecord(`${STAGE}:work:${i}`, r !== null, {
+      ...(workerModel !== undefined ? { model: workerModel } : {}),
+      ...(workerEffort !== undefined ? { effort: workerEffort } : {}),
+    }))
 
     if (r !== null) {
       successfulResults.push(r as TWork)
@@ -291,6 +338,8 @@ export async function planAndExecute<TWork = string, TOut = string>(
       truncated,
     }
 
+    // Failure digest: subtasks were planned but no worker produced a result.
+    emitDigest(rt, { stage: STAGE, output: 'synthesis: none', counts: { planned: plannedCount, executed: 0, dropped: droppedWorkers, truncated } })
     return { value: null, stats, warnings, workerResults: [], trail }
   }
 
@@ -303,17 +352,24 @@ export async function planAndExecute<TWork = string, TOut = string>(
     phase?: string
     schema?: JsonSchema
     model?: ModelAlias
+    effort?: EffortAlias
+    agentType?: string
   } = {
-    label: 'planAndExecute:synthesize',
+    label: `${STAGE}:synthesize`,
     ...(phase !== undefined ? { phase } : {}),
     ...(synthesisSchema !== undefined ? { schema: synthesisSchema } : {}),
     ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
+    ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
+    ...(synthesisType !== undefined ? { agentType: synthesisType } : {}),
   }
 
   agentsSpawned++
   const synthesis = await rt.agent<TOut>(synthesisPrompt(successfulResults), synthOpts)
 
-  trail.push(makeRecord('planAndExecute:synthesize', synthesis !== null, synthesisModel !== undefined ? { model: synthesisModel } : undefined))
+  trail.push(makeRecord(`${STAGE}:synthesize`, synthesis !== null, {
+    ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
+    ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
+  }))
 
   let value: TOut | null = null
 
@@ -341,6 +397,17 @@ export async function planAndExecute<TWork = string, TOut = string>(
     dropped: droppedWorkers,
     truncated,
   }
+
+  // Phase digest: how many subtasks the planner intended vs how many executed,
+  // plus the loss breakdown (dropped null workers + cap-truncated subtasks) so
+  // observe can render the funnel — mirrors the stats counters above. `planned` is
+  // the PRE-cap planner count, so the funnel balances: planned === executed +
+  // dropped + truncated (the invariant the observe loss chips render against).
+  emitDigest(rt, {
+    stage: STAGE,
+    output: value === null ? 'synthesis: none' : 'synthesis: ok',
+    counts: { planned: plannedCount, executed: successfulResults.length, dropped: droppedWorkers, truncated },
+  })
 
   return { value, stats, warnings, workerResults: successfulResults, trail }
 }

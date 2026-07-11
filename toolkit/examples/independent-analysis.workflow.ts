@@ -21,12 +21,33 @@
 // MODEL NOTE: adversarialVerification defaults its verifier model to the toolkit
 // BEST_MODEL. Pass `verifierModel` to override (required while a stronger model is
 // unavailable). The fan-out/synthesis agents inherit the session model.
+//
+// CROSS-MODEL NOTE: pass `args.agentTypes.verify = 'codex:codex-rescue'` (the
+// structured config envelope; no bespoke top-level arg) to route every verifier
+// through a non-Claude (GPT) model — genuine decorrelation, the one real lever
+// against same-model correlated findings (the verifier no longer shares the
+// session model's priors). The request is PROBED at entry with graceful fallback
+// to the standard verifier. Local-machine-only (depends on a codex setup); for a
+// portable cross-model verifier prefer an MCP→model endpoint. See cross-model-verify.
 
-import { defineWorkflow } from '@workflow-toolbox/build/define'
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
-import { fanOutAndSynthesize, adversarialVerification } from '@workflow-toolbox/patterns'
-import type { VerifiedClaim } from '@workflow-toolbox/patterns'
+import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
+import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
+import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
+import { adversarialVerification, collectTrail, fanOutAndSynthesize, probeAgentType } from '@workflow-toolbox/patterns'
+import type { VerifiedClaim, AgentTypeProbeReport } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
+
+// ---------------------------------------------------------------------------
+// Per-stage effort defaults (Class B/C launch-time tuning — see parseConfig).
+// A launch-time `args.effort.<role>` override (parsed into `input.effort`) can
+// retune any of these without a source edit, via resolveEffort. 'verify' is
+// clamped to a 'high' FLOOR (resolveVerifierEffort) — an override may only
+// RAISE it, mirroring adversarialVerification's own model-floor guardrail.
+// ---------------------------------------------------------------------------
+const LENSES_EFFORT: EffortAlias = 'medium'          // Lenses: auto-propose analysis angles
+const ANALYZE_TASK_EFFORT: EffortAlias = 'high'      // Analyze: per-lens adversarial analysis
+const ANALYZE_SYNTHESIS_EFFORT: EffortAlias = 'medium' // Analyze: dedup/consolidation
+const VERIFY_EFFORT_DEFAULT: EffortAlias = 'high'    // Verify: adversarialVerification (floor 'high')
 
 // ---------------------------------------------------------------------------
 // Input contract
@@ -49,6 +70,23 @@ export interface IndependentAnalysisInput {
   votes: number
   /** Verifier model override; undefined → adversarialVerification's BEST_MODEL. */
   verifierModel: ModelAlias | undefined
+  /** Subagent type to route EVERY verifier through — e.g. 'codex:codex-rescue'
+   *  for a GPT cross-model verifier (genuine decorrelation, the one real lever
+   *  against same-model correlated findings). undefined → standard same-model
+   *  verifier. Requested via the STRUCTURED config envelope:
+   *  `args.agentTypes.verify` (role key mirrors `effort.verify`; no bespoke
+   *  top-level arg). PROBED at entry (probeAgentType) with graceful fallback
+   *  to the standard verifier, reported in the result's `probe` field.
+   *  Cross-model wrappers are local-machine-only; not portable. */
+  verifierType: string | undefined
+  /** Optional per-ROLE reasoning-effort overrides (Class B/C, parsed by the
+   *  shared `parseConfig` helper from `args.effort`), e.g.
+   *  `args: { subject, effort: { analyzeTask: 'xhigh' } }`. Role keys: 'lenses',
+   *  'analyzeTask', 'analyzeSynthesis', 'verify'. A role's value may also be
+   *  the literal 'auto' (keep THIS role's own committed default). null = no
+   *  overrides. Resolved per-stage via resolveEffort; 'verify' is additionally
+   *  clamped to a 'high' floor via resolveVerifierEffort. */
+  effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
 }
 
 // opus first = the current BEST_MODEL / default; fable last = suspended by export
@@ -189,7 +227,7 @@ export default defineWorkflow({
     name: 'independent-analysis',
     description:
       'Bias-free multi-lens adversarial analysis of a subject: fan out one agent per lens to surface forgotten angles/risks, dedup vs stated assumptions, then refute-first verify the survivors.',
-    phases: [{ title: 'Lenses' }, { title: 'Analyze' }, { title: 'Verify' }],
+    phases: [{ title: 'Probe' }, { title: 'Lenses' }, { title: 'Analyze' }, { title: 'Verify' }],
   },
 
   parseInput: (raw): IndependentAnalysisInput => {
@@ -235,7 +273,17 @@ export default defineWorkflow({
       verifierModel = obj['verifierModel'] as ModelAlias
     }
 
-    return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel }
+
+    // Class B/C launch-time config, validated by the shared parseConfig helper:
+    // per-role effort overrides (`effort.verify`) and the per-role agentType
+    // routing map (`agentTypes.verify` — the structured channel for cross-model
+    // routing; no bespoke top-level arg). Bespoke subject/lenses/votes/
+    // verifierModel keys are IGNORED by parseConfig, so the conventions compose.
+    const cfg = parseConfig(obj)
+    const effort = cfg.effort ?? null
+    const verifierType = cfg.agentTypes?.['verify']
+
+    return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel, verifierType, effort }
   },
 
   run: async (rt: WorkflowRuntime, input: IndependentAnalysisInput) => {
@@ -243,6 +291,27 @@ export default defineWorkflow({
     const contextBlock = input.context.trim().length > 0 ? untrusted('CONTEXT', input.context) : '(no extra context)'
     const assumptionsBlock = renderAssumptions(input.assumptions)
     const sourceBlock = renderSourceRefs(input.sourceRefs)
+
+    // Resolve each stage's effort ONCE: a launch-time `args.effort.<role>`
+    // override wins when valid, else the stage-class default declared above.
+    // 'verify' is additionally floored at 'high' — see resolveVerifierEffort.
+    const lensesEffort = resolveEffort(input.effort?.['lenses'], LENSES_EFFORT)
+    const analyzeTaskEffort = resolveEffort(input.effort?.['analyzeTask'], ANALYZE_TASK_EFFORT)
+    const analyzeSynthesisEffort = resolveEffort(input.effort?.['analyzeSynthesis'], ANALYZE_SYNTHESIS_EFFORT)
+    const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
+
+    // ---- Phase 0 (conditional): probe the requested verifier agentType ----
+    // One schema-less probe; any non-affirmative outcome (UNAVAILABLE marker,
+    // null, error text, throw on an unregistered type) degrades to the standard
+    // same-model verifier. Never silent: logged + digested + result `probe`.
+    let resolvedVerifierType: string | undefined
+    let probeInfo: AgentTypeProbeReport | null = null
+    if (input.verifierType !== undefined) {
+      rt.phase('Probe')
+      const probe = await probeAgentType(rt, input.verifierType, { phase: 'Probe' })
+      resolvedVerifierType = probe.agentType
+      probeInfo = { requested: input.verifierType, available: probe.available, reason: probe.reason }
+    }
 
     // ---- Phase 1: lenses (caller-supplied, else auto-proposed) ----
     rt.phase('Lenses')
@@ -257,7 +326,7 @@ export default defineWorkflow({
           `assumptions, alternatives, scope/altitude — pick what FITS this subject). Return { "lenses": ` +
           `[{ "key": "<short-slug>", "focus": "<one sentence: what this lens hunts for>" }] }.\n\n` +
           `SUBJECT:\n${subjectBlock}\n\nCONTEXT:\n${contextBlock}`,
-        { schema: LENS_SCHEMA, label: 'independent-analysis:propose-lenses', phase: 'Lenses' },
+        { schema: LENS_SCHEMA, label: 'independent-analysis:propose-lenses', phase: 'Lenses', effort: lensesEffort },
       )
       if (proposed === null || proposed.lenses.length === 0) {
         throw new Error(
@@ -286,6 +355,7 @@ export default defineWorkflow({
         `"kind": risk|gap|wrong-assumption|edge-case|alternative, "alreadyKnown": bool }] }. ` +
         `If this lens genuinely surfaces nothing new, return an empty angles array.`,
       taskSchema: ANGLES_SCHEMA,
+      taskEffort: analyzeTaskEffort,
       synthesisPrompt: (parts) =>
         `You are the synthesis agent. Below are findings from ${parts.length} independent lens analysts ` +
         `of the SAME subject (JSON). Produce a DEDUPED candidate list: (1) merge findings that are the ` +
@@ -297,6 +367,7 @@ export default defineWorkflow({
         `Return { "candidates": [{ "title", "lens", "why", "severity": high|medium|low, ` +
         `"kind": risk|gap|wrong-assumption|edge-case|alternative }] }.`,
       synthesisSchema: CANDIDATES_SCHEMA,
+      synthesisEffort: analyzeSynthesisEffort,
       phase: 'Analyze',
     })
 
@@ -312,6 +383,7 @@ export default defineWorkflow({
         allVerified: [],
         candidateCount: 0,
         stats: { analyze: analysis.stats, verify: null },
+        envelope: { trail: collectTrail(analysis) },
         warnings: [...analysis.warnings, 'no candidate findings survived synthesis'],
       }
     }
@@ -334,7 +406,9 @@ export default defineWorkflow({
       votes: input.votes,
       // Low-severity findings get a single vote; the rest get the full panel.
       votesPerClaim: (c) => (c.severity === 'low' ? 1 : input.votes),
+      effort: verifyEffort,
       ...(input.verifierModel !== undefined ? { model: input.verifierModel } : {}),
+      ...(resolvedVerifierType !== undefined ? { verifierType: resolvedVerifierType } : {}),
       phase: 'Verify',
     })
 
@@ -352,6 +426,10 @@ export default defineWorkflow({
     return {
       subject: input.subject,
       lensesUsed: lensList.map((l) => l.key),
+      // Verifier routing outcome: the type actually used (undefined → standard
+      // same-model verifier) + the structured probe story when routing was requested.
+      verifierType: resolvedVerifierType ?? null,
+      probe: probeInfo,
       confirmed,
       refuted,
       allVerified: verified.map((v) => ({
@@ -362,6 +440,7 @@ export default defineWorkflow({
       })),
       candidateCount: candidates.length,
       stats: { analyze: analysis.stats, verify: verification.stats },
+      envelope: { trail: collectTrail(analysis, verification) },
       warnings: [...analysis.warnings, ...verification.warnings],
     }
   },

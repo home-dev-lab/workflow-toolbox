@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 // packages/debugger/src/source.ts
-import { homedir } from "node:os";
-import { join, basename } from "node:path";
+import { join as join2, basename } from "node:path";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 
 // packages/debugger/src/journal.ts
@@ -33,19 +32,36 @@ function retriedAgents(j) {
   return agentEvents(j).filter((a) => (a.attempt ?? 1) > 1);
 }
 
+// packages/debugger/src/config-dir.ts
+import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+function resolveDir(path) {
+  const abs = resolve(path);
+  try {
+    return realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+function resolveConfigDir(env = process.env) {
+  const raw = env["CLAUDE_CONFIG_DIR"];
+  return resolveDir(raw !== void 0 && raw.length > 0 ? raw : join(homedir(), ".claude"));
+}
+
 // packages/debugger/src/source.ts
 var isJournalFile = (name) => /^wf_.*\.json$/.test(name);
 var MAX_JOURNAL_BYTES = 16 * 1024 * 1024;
 function projectSlug(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
 }
-function projectsBase(home) {
-  return join(home, ".claude", "projects");
+function projectsBase(configDir) {
+  return join2(configDir, "projects");
 }
 function scannedProjectDir(opts = {}) {
-  const home = opts.home ?? homedir();
+  const configDir = opts.configDir ?? resolveConfigDir();
   const cwd = opts.cwd ?? process.cwd();
-  return join(projectsBase(home), opts.project ?? projectSlug(cwd));
+  return join2(projectsBase(configDir), opts.project ?? projectSlug(cwd));
 }
 function looksLikeJournalPath(arg) {
   return arg.includes("/") || arg.includes("\\") || arg.endsWith(".json");
@@ -53,11 +69,11 @@ function looksLikeJournalPath(arg) {
 function resolveJournalPath(path) {
   const name = basename(path);
   if (!isJournalFile(name)) return null;
-  const sessionDir = join(path, "..", "..");
+  const sessionDir = join2(path, "..", "..");
   return readResolved({ path, sessionId: basename(sessionDir) });
 }
 function projectDirFor(journalPath) {
-  return join(journalPath, "..", "..", "..");
+  return join2(journalPath, "..", "..", "..");
 }
 function journalLookupErrorMessage(tool, runId, opts = {}) {
   if (runId && looksLikeJournalPath(runId)) {
@@ -66,7 +82,7 @@ function journalLookupErrorMessage(tool, runId, opts = {}) {
   const which = runId && runId !== "latest" ? `run "${runId}"` : "any run in this project";
   return `${tool}: no journal found for ${which}.
   [scanned ${scannedProjectDir(opts)}]
-  Journals live at ~/.claude/projects/<project>/<session>/workflows/wf_<runId>.json.
+  Journals live at $CLAUDE_CONFIG_DIR/projects/<project>/<session>/workflows/wf_<runId>.json (default ~/.claude).
   Run from the project that produced the run, pass --project=<slug>, or pass the journal path directly.`;
 }
 function listDirs(dir) {
@@ -79,7 +95,7 @@ function listDirs(dir) {
 function listJournals(projectDir) {
   const out = [];
   for (const session of listDirs(projectDir)) {
-    const wfDir = join(projectDir, session, "workflows");
+    const wfDir = join2(projectDir, session, "workflows");
     let names;
     try {
       names = readdirSync(wfDir);
@@ -87,7 +103,7 @@ function listJournals(projectDir) {
       continue;
     }
     for (const name of names) {
-      if (isJournalFile(name)) out.push({ path: join(wfDir, name), sessionId: session });
+      if (isJournalFile(name)) out.push({ path: join2(wfDir, name), sessionId: session });
     }
   }
   return out;
@@ -119,15 +135,14 @@ function normalizeRunId(id) {
   return s.startsWith("wf_") ? s : `wf_${s}`;
 }
 function findJournal(runId, opts = {}) {
-  const home = opts.home ?? homedir();
-  const base = projectsBase(home);
+  const base = projectsBase(opts.configDir ?? resolveConfigDir());
   const cwd = opts.cwd ?? process.cwd();
   if (runId && looksLikeJournalPath(runId)) {
     return resolveJournalPath(runId);
   }
   if (runId && runId !== "latest") {
     const wanted = normalizeRunId(runId);
-    const projectDirs = opts.project ? [join(base, opts.project)] : [join(base, projectSlug(cwd)), ...listDirs(base).map((d) => join(base, d))];
+    const projectDirs = opts.project ? [join2(base, opts.project)] : [join2(base, projectSlug(cwd)), ...listDirs(base).map((d) => join2(base, d))];
     const seen = /* @__PURE__ */ new Set();
     for (const dir of projectDirs) {
       if (seen.has(dir)) continue;
@@ -138,7 +153,7 @@ function findJournal(runId, opts = {}) {
     }
     return null;
   }
-  const projectDir = opts.project ? join(base, opts.project) : join(base, projectSlug(cwd));
+  const projectDir = opts.project ? join2(base, opts.project) : join2(base, projectSlug(cwd));
   const journals = listJournals(projectDir);
   if (journals.length === 0) return null;
   let newest = journals[0];
@@ -367,9 +382,9 @@ function printHelp() {
       "",
       "  runId        wf_<id> of the run (with or without the wf_ prefix). Omit or",
       '               pass "latest" to diagnose the newest run in the current project.',
-      "               A literal ~/.claude/.../workflows/wf_<id>.json path also works.",
+      "               A literal <configDir>/.../workflows/wf_<id>.json path also works.",
       "  --json       emit the raw diagnosis as JSON instead of the text report.",
-      "  --project    search a specific ~/.claude/projects/<slug> instead of the cwd",
+      "  --project    search a specific $CLAUDE_CONFIG_DIR/projects/<slug> instead of the cwd",
       '               (slugs start with "-"; both `--project <slug>` and',
       "               `--project=<slug>` forms are accepted).",
       ""

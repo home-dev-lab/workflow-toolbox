@@ -25,6 +25,11 @@ function makeHappyPathRuntime(): FakeRuntime {
     onAgent: ({ prompt }: { prompt: string; index: number }) => {
       const p = prompt.toLowerCase()
 
+      // (0) Availability probe (probeAgentType) — affirmative by default
+      if (p.includes('availability probe')) {
+        return 'PROBE_OK'
+      }
+
       // (1) Adversarial verifier stage — pattern owns this prompt phrase
       if (p.includes('adversarially verify')) {
         return { verdict: 'confirmed', reason: 'Verified: null check is indeed missing' }
@@ -75,7 +80,7 @@ describe('pr-review workflow metadata', () => {
     expect(wf.meta.name).toBe('pr-review')
     expect(wf.meta.description).toBeTruthy()
     const titles = wf.meta.phases?.map(p => p.title)
-    expect(titles).toEqual(['Route', 'Review', 'Verify', 'Synthesize'])
+    expect(titles).toEqual(['Probe', 'Route', 'Review', 'Verify', 'Synthesize'])
   })
 })
 
@@ -160,14 +165,22 @@ describe('pr-review happy path', () => {
     expect(rt.phases).toContain('Synthesize')
   })
 
-  it('spawns at least 1 agent for classify + 3 reviewers + 3 verifiers + 1 synthesizer', async () => {
-    const rt = makeHappyPathRuntime()
+  it('spawns one reviewer per lens (4 for a code category) + classify + act + verifiers + synthesizer', async () => {
+    const rt = makeHappyPathRuntime() // classify → 'bugfix'
     await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
 
-    // classify(1) + act(1) + 3 reviewers + 3*N verifiers + 1 synthesizer
-    // Minimum when bugfix has 3 lenses with 3 votes each: 1+1+3+9+1 = 15
-    // But with maxVerifyClaims:5 and findings may vary; just check > 5
-    expect(rt.agentsSpawned).toBeGreaterThan(5)
+    // ONE reviewer per lens AND four DISTINCT lenses. Assert the exact lens SET, not just the count:
+    // a duplicate-lens, dropped-lens, or renamed-lens regression keeps the count at 4 but changes the
+    // set, so a count-only check (the old `> 5`, or even `=== 4`) would pass it silently. The lens is
+    // the label suffix — `pr-review:reviewer:<lens>` — and 'bugfix' carries these four.
+    const reviewerLabels = rt.calls
+      .map((c) => c.opts?.label)
+      .filter((l): l is string => typeof l === 'string' && l.startsWith('pr-review:reviewer:'))
+    const lenses = new Set(reviewerLabels.map((l) => l.slice('pr-review:reviewer:'.length)))
+    expect(reviewerLabels).toHaveLength(4)
+    expect(lenses).toEqual(new Set(['root-cause', 'regression-risk', 'test-coverage', 'maintainability']))
+    // Then classify(1) + act(1) + per-finding verifiers + the synthesizer all add on top.
+    expect(rt.agentsSpawned).toBeGreaterThan(reviewerLabels.length + 2)
   })
 
   it('findings in result have verdict property from verification', async () => {
@@ -447,49 +460,253 @@ describe('pr-review unknown classification', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Test: reviewerType knob — optional SPECIALIST subagent type for the per-lens
-// REVIEW agents. Default: omitted → standard subagent (no agentType). Routes
-// the lens reviewers ONLY; the verifiers (adversarialVerification) and the
-// synthesizer are never specialized. Shape-only validation (the runtime throws
-// on an unknown agentType; the registry is session-specific). Motivated by the
-// 2026-06-15 reviewer A/B: a specialist reviewer is more thorough but noisier,
-// and the existing refute-first Verify stage filters the extra false positives.
+// Test: reviewer routing via the STRUCTURED config channel `agentTypes.review`
+// (the bespoke top-level `reviewerType` arg was REMOVED — no back-compat).
+// The request is PROBE-RESOLVED at run entry (probeAgentType): affirmative →
+// the lens reviewers carry the type (reviewers ONLY — verifiers/synthesizer
+// never specialized); non-affirmative → graceful fallback to the standard
+// subagent, reported in the result's `probe`, never silent.
 // ---------------------------------------------------------------------------
-describe('pr-review reviewerType knob', () => {
+describe('pr-review reviewer routing (agentTypes.review)', () => {
+  const probeCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label === 'probeAgentType:probe')
   const reviewCalls = (rt: FakeRuntime) =>
     rt.calls.filter((c) => c.opts?.label?.startsWith('pr-review:reviewer:'))
   const verifyCalls = (rt: FakeRuntime) =>
     rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
 
-  it('omits agentType on the reviewers when reviewerType is not provided', async () => {
+  it('omits agentType on the reviewers (and spawns no probe) when agentTypes.review is not provided', async () => {
     const rt = makeHappyPathRuntime()
-    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
     const reviews = reviewCalls(rt)
     expect(reviews.length).toBeGreaterThan(0)
     for (const c of reviews) expect(c.opts?.agentType).toBeUndefined()
+    expect(probeCalls(rt).length).toBe(0)
+    expect((result as { reviewerType: string | null }).reviewerType).toBeNull()
+    expect((result as { probe: unknown }).probe).toBeNull()
   })
 
-  it('routes the lens reviewers to the specialist agentType, reviewers only', async () => {
+  it('probes once then routes the lens reviewers — reviewers only', async () => {
     const rt = makeHappyPathRuntime()
-    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', reviewerType: 'magic-claude:ts-reviewer' }))
+    const result = await wf.run(
+      rt,
+      JSON.stringify({ target: 'HEAD~1..HEAD', agentTypes: { review: 'magic-claude:ts-reviewer' } }),
+    )
+    expect(probeCalls(rt).length).toBe(1)
+    expect(probeCalls(rt)[0]!.opts?.agentType).toBe('magic-claude:ts-reviewer')
     const reviews = reviewCalls(rt)
     expect(reviews.length).toBeGreaterThan(0)
     for (const c of reviews) expect(c.opts?.agentType).toBe('magic-claude:ts-reviewer')
     // The verifiers are NEVER specialized by the reviewer knob.
     for (const c of verifyCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+    expect((result as { reviewerType: string | null }).reviewerType).toBe('magic-claude:ts-reviewer')
+    const probe = (result as { probe: { available: boolean; reason: string | null } }).probe
+    expect(probe.available).toBe(true)
+    expect(probe.reason).toBeNull()
   })
 
-  it('rejects an empty-string reviewerType', async () => {
-    const rt = makeHappyPathRuntime()
-    await expect(
-      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', reviewerType: '' })),
-    ).rejects.toThrow(/reviewerType/i)
+  it('falls back to the standard subagent when the probe is non-affirmative, reporting the reason', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+        if (p.includes('availability probe')) {
+          return 'OPENCODE_UNAVAILABLE: no opencode binary on PATH'
+        }
+        if (p.includes('adversarially verify')) {
+          return { verdict: 'confirmed', reason: 'verified' }
+        }
+        if (p.includes('synthesizing a code review')) {
+          return { verdict: 'approve', summary: 'Fine' }
+        }
+        if (p.includes('you are a specialized code reviewer')) {
+          return { findings: [] }
+        }
+        if (p.includes('classify it into exactly one category')) {
+          return { category: 'bugfix' }
+        }
+        return { summary: 'Change summary', riskAreas: [] }
+      },
+    })
+    const result = await wf.run(
+      rt,
+      JSON.stringify({
+        target: 'HEAD~1..HEAD',
+        agentTypes: { review: 'workflow-toolbox:opencode-verifier' },
+      }),
+    )
+    // Reviewers still ran — WITHOUT the agentType (graceful fallback)
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    for (const c of reviews) expect(c.opts?.agentType).toBeUndefined()
+    expect((result as { reviewerType: string | null }).reviewerType).toBeNull()
+    const probe = (result as {
+      probe: { requested: string; available: boolean; reason: string | null }
+    }).probe
+    expect(probe.requested).toBe('workflow-toolbox:opencode-verifier')
+    expect(probe.available).toBe(false)
+    expect(probe.reason).toContain('OPENCODE_UNAVAILABLE')
   })
 
-  it('rejects a non-string reviewerType', async () => {
+  it('rejects a blank agentTypes.review via the shared parseConfig validation', async () => {
     const rt = makeHappyPathRuntime()
     await expect(
-      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', reviewerType: 123 })),
-    ).rejects.toThrow(/reviewerType/i)
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', agentTypes: { review: '  ' } })),
+    ).rejects.toThrow(/agentTypes\.review/)
+  })
+
+  it('ignores a legacy top-level reviewerType arg (removed contract)', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', reviewerType: 'magic-claude:ts-reviewer' }))
+    expect(probeCalls(rt).length).toBe(0)
+    for (const c of reviewCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: per-stage effort defaults + Class B/C `args.effort.<role>` overrides.
+// Every stage used to inherit the session effort silently; these constants
+// (CLASSIFY_EFFORT='low', ROUTE_ACT_EFFORT='medium', REVIEW_EFFORT='high',
+// VERIFY_EFFORT_DEFAULT='high', SYNTHESIZE_EFFORT='medium') are asserted at
+// their exact call sites, and the launch-time override is resolved through
+// resolveEffort/resolveVerifierEffort — the 'verify' role is a FLOOR: an
+// override may only RAISE it, never lower it below 'high'.
+// ---------------------------------------------------------------------------
+describe('pr-review effort defaults and overrides', () => {
+  const classifyCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label === 'classifyAndAct:classify:0')
+  const actCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('classifyAndAct:act:'))
+  const reviewCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('pr-review:reviewer:'))
+  const verifyCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
+  const synthesizeCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label === 'pr-review:synthesize')
+
+  it('applies the committed stage-class defaults when no override is given', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+
+    for (const c of classifyCalls(rt)) expect(c.opts?.effort).toBe('low')
+    for (const c of actCalls(rt)) expect(c.opts?.effort).toBe('medium')
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    for (const c of reviews) expect(c.opts?.effort).toBe('high')
+    const verifies = verifyCalls(rt)
+    expect(verifies.length).toBeGreaterThan(0)
+    for (const c of verifies) expect(c.opts?.effort).toBe('high')
+    for (const c of synthesizeCalls(rt)) expect(c.opts?.effort).toBe('medium')
+  })
+
+  it('applies a valid launch-time override per role', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      effort: { classify: 'xhigh', route: 'high', review: 'xhigh', synthesize: 'high' },
+    }))
+
+    for (const c of classifyCalls(rt)) expect(c.opts?.effort).toBe('xhigh')
+    for (const c of actCalls(rt)) expect(c.opts?.effort).toBe('high')
+    for (const c of reviewCalls(rt)) expect(c.opts?.effort).toBe('xhigh')
+    for (const c of synthesizeCalls(rt)) expect(c.opts?.effort).toBe('high')
+  })
+
+  it('lets an override RAISE the verify floor above high', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', effort: { verify: 'max' } }))
+    const verifies = verifyCalls(rt)
+    expect(verifies.length).toBeGreaterThan(0)
+    for (const c of verifies) expect(c.opts?.effort).toBe('max')
+  })
+
+  it('clamps an override that tries to LOWER verify below the high floor', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', effort: { verify: 'low' } }))
+    const verifies = verifyCalls(rt)
+    expect(verifies.length).toBeGreaterThan(0)
+    for (const c of verifies) expect(c.opts?.effort).toBe('high')
+  })
+
+  it('rejects an invalid effort value at parse time (parseConfig validates strictly)', async () => {
+    // parseConfig throws before resolveEffort ever sees the value — the
+    // typo-catching happens at the launch-time boundary, not at the stage.
+    // resolveEffort's own graceful-degradation path is covered directly by
+    // packages/std/test/resolve-effort.test.ts (defense-in-depth for any
+    // consumer that does NOT route through parseConfig).
+    const rt = makeHappyPathRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', effort: { classify: 'turbo' } })),
+    ).rejects.toThrow(/effort\.classify must be one of/)
+  })
+
+  it("resolves 'auto' to that role's OWN stage default, independently per role, without throwing", async () => {
+    // parseConfig accepts 'auto' in the effort role map (EffortRoleValue) — it
+    // passes the token through unresolved; resolveEffort/resolveVerifierEffort
+    // at each call site treat it as "not a valid tier" and fall back to that
+    // SPECIFIC stage's own default. 'auto' on one role must not affect another.
+    const rt = makeHappyPathRuntime()
+    const result = await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      effort: { classify: 'auto', review: 'xhigh', verify: 'auto' },
+    }))
+    expect(result).toHaveProperty('verdict')
+
+    for (const c of classifyCalls(rt)) expect(c.opts?.effort).toBe('low')       // CLASSIFY_EFFORT default
+    for (const c of reviewCalls(rt)) expect(c.opts?.effort).toBe('xhigh')       // explicit override, unaffected by 'auto'
+    const verifies = verifyCalls(rt)
+    expect(verifies.length).toBeGreaterThan(0)
+    for (const c of verifies) expect(c.opts?.effort).toBe('high')              // VERIFY_EFFORT_DEFAULT (also the floor)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: degenerate act-output guard (card #1814943589197677963)
+// Observed live 2026-07-08: two riskAreas-missing schema rejections, then the
+// agent capitulated into {"summary":"test","riskAreas":["a","b"]} — validating
+// junk that silently seeded the reviewers. The guard must surface it loudly.
+// ---------------------------------------------------------------------------
+
+describe('pr-review degenerate change-summary guard', () => {
+  function runtimeWithActOutput(act: unknown): FakeRuntime {
+    return new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+        if (p.includes('adversarially verify')) return { verdict: 'confirmed', reason: 'r' }
+        if (p.includes('synthesizing a code review')) return { verdict: 'approve', summary: 'No blocking findings' }
+        if (p.includes('you are a specialized code reviewer')) return { findings: [] }
+        if (p.includes('you are reviewing a')) return act
+        if (p.includes('classify it into exactly one category')) return { category: 'feature' }
+        return { summary: 'Fallback change summary', riskAreas: [] }
+      },
+    })
+  }
+
+  async function warningsFor(act: unknown): Promise<readonly string[]> {
+    const rt = runtimeWithActOutput(act)
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+    return result.warnings
+  }
+
+  it('flags the observed schema-capitulation junk (placeholder summary + 1-char risk areas)', async () => {
+    const warnings = await warningsFor({ summary: 'test', riskAreas: ['a', 'b'] })
+    expect(warnings.some((w) => w.includes('degenerate change summary'))).toBe(true)
+  })
+
+  it('flags junk riskAreas even when the summary itself is long enough', async () => {
+    const warnings = await warningsFor({ summary: 'A real, sufficiently long summary of the change.', riskAreas: ['a', 'b'] })
+    expect(warnings.some((w) => w.includes('degenerate change summary'))).toBe(true)
+  })
+
+  it('does not flag a healthy change summary', async () => {
+    const warnings = await warningsFor({
+      summary: 'Adds copy buttons across the inspector panels.',
+      riskAreas: ['clipboard fallback', 'replay fold gating'],
+    })
+    expect(warnings.some((w) => w.includes('degenerate change summary'))).toBe(false)
+  })
+
+  it('does not flag an empty riskAreas list (legit for a low-risk docs change)', async () => {
+    const warnings = await warningsFor({ summary: 'Updates the README quickstart section.', riskAreas: [] })
+    expect(warnings.some((w) => w.includes('degenerate change summary'))).toBe(false)
   })
 })

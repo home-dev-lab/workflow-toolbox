@@ -19,9 +19,11 @@
 // - Labels: tournament:attempt:<i>, tournament:judge:<attemptIdx>:<judgeIdx>,
 //           tournament:synthesize.
 
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
-import { warn, makeRecord } from './envelope.js'
+import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
+import { warn, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+
+const STAGE = 'tournament'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,12 +42,30 @@ export interface TournamentOptions<TAttempt> {
   attemptPrompt: (angle: string, index: number) => string
   attemptSchema?: JsonSchema
   attemptModel?: ModelAlias
+  /** Per-attempt reasoning effort. Omit to inherit the session effort. */
+  attemptEffort?: EffortAlias
+  /** Subagent type (Agent tool `agentType`) to route the attempt agents
+   *  through — e.g. 'codex:codex-rescue' / 'workflow-toolbox:opencode-verifier'
+   *  for a cross-family model. Omit for the standard Claude subagent. */
+  attemptType?: string
   judgeCount?: number         // default 3, >= 1
   judgePrompt: (attempt: TAttempt) => string
   judgeModel?: ModelAlias
+  /** Per-judge reasoning effort. Omit to inherit the session effort. */
+  judgeEffort?: EffortAlias
+  /** Subagent type (Agent tool `agentType`) to route the judge agents
+   *  through — e.g. 'codex:codex-rescue' / 'workflow-toolbox:opencode-verifier'
+   *  for a cross-family model. Omit for the standard Claude subagent. */
+  judgeType?: string
   synthesisPrompt: (ranked: ReadonlyArray<RankedAttempt<TAttempt>>) => string
   synthesisSchema?: JsonSchema
   synthesisModel?: ModelAlias
+  /** Per-synthesis reasoning effort. Omit to inherit the session effort. */
+  synthesisEffort?: EffortAlias
+  /** Subagent type (Agent tool `agentType`) to route the synthesis agent
+   *  through — e.g. 'codex:codex-rescue' / 'workflow-toolbox:opencode-verifier'
+   *  for a cross-family model. Omit for the standard Claude subagent. */
+  synthesisType?: string
   phase?: string
 }
 
@@ -132,12 +152,18 @@ export async function tournament<TAttempt = string, TOut = string>(
     attemptPrompt,
     attemptSchema,
     attemptModel,
+    attemptEffort,
+    attemptType,
     judgeCount: judgeCountOpt = 3,
     judgePrompt,
     judgeModel,
+    judgeEffort,
+    judgeType,
     synthesisPrompt,
     synthesisSchema,
     synthesisModel,
+    synthesisEffort,
+    synthesisType,
     phase,
   } = options
 
@@ -167,6 +193,10 @@ export async function tournament<TAttempt = string, TOut = string>(
     )
   }
 
+  assertAgentTypeOption(STAGE, 'attemptType', attemptType)
+  assertAgentTypeOption(STAGE, 'judgeType', judgeType)
+  assertAgentTypeOption(STAGE, 'synthesisType', synthesisType)
+
   // -------------------------------------------------------------------------
   // Mutable counters
   // -------------------------------------------------------------------------
@@ -187,11 +217,15 @@ export async function tournament<TAttempt = string, TOut = string>(
       phase?: string
       schema?: JsonSchema
       model?: ModelAlias
+      effort?: EffortAlias
+      agentType?: string
     } = {
-      label: `tournament:attempt:${i}`,
+      label: `${STAGE}:attempt:${i}`,
       ...(phase !== undefined ? { phase } : {}),
       ...(attemptSchema !== undefined ? { schema: attemptSchema } : {}),
       ...(attemptModel !== undefined ? { model: attemptModel } : {}),
+      ...(attemptEffort !== undefined ? { effort: attemptEffort } : {}),
+      ...(attemptType !== undefined ? { agentType: attemptType } : {}),
     }
 
     agentsSpawned++
@@ -207,7 +241,10 @@ export async function tournament<TAttempt = string, TOut = string>(
 
   for (let i = 0; i < attemptResults.length; i++) {
     const attempt = attemptResults[i]
-    trail.push(makeRecord(`tournament:attempt:${i}`, attempt !== null, attemptModel !== undefined ? { model: attemptModel } : undefined))
+    trail.push(makeRecord(`${STAGE}:attempt:${i}`, attempt !== null, {
+      ...(attemptModel !== undefined ? { model: attemptModel } : {}),
+      ...(attemptEffort !== undefined ? { effort: attemptEffort } : {}),
+    }))
 
     if (attempt !== null) {
       survivingAttempts.push({ attempt: attempt as TAttempt, angle: angles[i]!, originalIndex: i })
@@ -235,6 +272,8 @@ export async function tournament<TAttempt = string, TOut = string>(
       truncated: 0,
     }
 
+    // Failure digest: the run reached this phase but no attempt survived to ranking.
+    emitDigest(rt, { stage: STAGE, counts: { attempts: 0 } })
     return { value: null, stats, warnings, trail }
   }
 
@@ -260,11 +299,15 @@ export async function tournament<TAttempt = string, TOut = string>(
             label: string
             phase?: string
             model?: ModelAlias
+            effort?: EffortAlias
+            agentType?: string
           } = {
             schema: JUDGE_SCHEMA,
-            label: `tournament:judge:${originalIndex}:${judgeIndex}`,
+            label: `${STAGE}:judge:${originalIndex}:${judgeIndex}`,
             ...(phase !== undefined ? { phase } : {}),
             ...(judgeModel !== undefined ? { model: judgeModel } : {}),
+            ...(judgeEffort !== undefined ? { effort: judgeEffort } : {}),
+            ...(judgeType !== undefined ? { agentType: judgeType } : {}),
           }
 
           agentsSpawned++
@@ -285,8 +328,9 @@ export async function tournament<TAttempt = string, TOut = string>(
 
     for (let judgeIndex = 0; judgeIndex < judgeResults.length; judgeIndex++) {
       const judgeResult = judgeResults[judgeIndex] ?? null
-      trail.push(makeRecord(`tournament:judge:${originalIndex}:${judgeIndex}`, judgeResult !== null, {
+      trail.push(makeRecord(`${STAGE}:judge:${originalIndex}:${judgeIndex}`, judgeResult !== null, {
         ...(judgeModel !== undefined ? { model: judgeModel } : {}),
+        ...(judgeEffort !== undefined ? { effort: judgeEffort } : {}),
         ...(judgeResult !== null ? { decision: `score=${judgeResult.score}` } : {}),
       }))
     }
@@ -332,6 +376,8 @@ export async function tournament<TAttempt = string, TOut = string>(
       truncated: 0,
     }
 
+    // Failure digest: attempts ran but none were judgeable — no winner to rank.
+    emitDigest(rt, { stage: STAGE, counts: { attempts: 0 } })
     return { value: null, stats, warnings, trail }
   }
 
@@ -353,11 +399,15 @@ export async function tournament<TAttempt = string, TOut = string>(
     phase?: string
     schema?: JsonSchema
     model?: ModelAlias
+    effort?: EffortAlias
+    agentType?: string
   } = {
-    label: 'tournament:synthesize',
+    label: `${STAGE}:synthesize`,
     ...(phase !== undefined ? { phase } : {}),
     ...(synthesisSchema !== undefined ? { schema: synthesisSchema } : {}),
     ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
+    ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
+    ...(synthesisType !== undefined ? { agentType: synthesisType } : {}),
   }
 
   agentsSpawned++
@@ -366,8 +416,9 @@ export async function tournament<TAttempt = string, TOut = string>(
   // The winner is the first ranked entry after DESC sort — capture its originalIndex.
   const winnerOriginalIndex = ranked[0]?.originalIndex ?? 0
 
-  trail.push(makeRecord('tournament:synthesize', synthesis !== null, {
+  trail.push(makeRecord(`${STAGE}:synthesize`, synthesis !== null, {
     ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
+    ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
     decision: `winner=${winnerOriginalIndex}`,
   }))
 
@@ -399,6 +450,15 @@ export async function tournament<TAttempt = string, TOut = string>(
     dropped: droppedAttempts + unjudgeableCount,
     truncated: 0,
   }
+
+  // Phase digest: the winning attempt (taken) vs the runners-up (notTaken).
+  const winner = ranked[0]
+  emitDigest(rt, {
+    stage: STAGE,
+    ...(winner !== undefined ? { taken: [`attempt:${winner.originalIndex}`] } : {}),
+    notTaken: ranked.slice(1).map(r => `attempt:${r.originalIndex}`),
+    counts: { attempts: ranked.length },
+  })
 
   return { value, stats, warnings, trail }
 }

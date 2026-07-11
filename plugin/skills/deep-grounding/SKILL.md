@@ -12,9 +12,9 @@ description: >-
   checkable claim, start a non-trivial analysis / design / diagnosis /
   recommendation, or answer from "what you already know" — ESPECIALLY when you
   notice yourself reaching for a conclusion from a single source or a single
-  angle. This is the collect-and-verify-evidence-first reflex; it is the cheapest
-  correction for a wrong prior, because evidence (not more reasoning) is what
-  escapes priors.
+  angle, or when a result BEATS your expectation (favorable surprises are the ones
+  that silently skip verification). Evidence, not more reasoning, is what escapes a
+  wrong prior.
 ---
 
 # deep-grounding
@@ -55,8 +55,17 @@ pass FIRST — do not answer yet:
    discrepancy remains worth chasing. A disagreement between sources, or a result that
    surprises you, is **not** a finding to report flatly — it is a fresh "*why?*"
    sub-question that **re-enters the crawl** (same relevance-gate, dedup, and budget
-   bound). Dig into the root cause — an override? a stale doc? a different code path?
-   config drift? a measurement artefact? — until that trail too runs dry.
+   bound). **ANY surprise — good, bad, or merely novel — earns the same "*why?*" before
+   it is classified**, and two directions are the ones that slip: the **FAVORABLE**
+   surprise (an unpleasant one triggers digging naturally, while "better/faster/cheaper
+   than expected!" gets narrated straight into the conclusion and skips verification),
+   and the **FIRST-OF-ITS-KIND event** (a message from an unexpected source, an unknown
+   channel, a behavior with no known producer — arriving mid-flow while you are busy
+   with something else, which is exactly when it gets labeled "noise" unexamined). The
+   move is always the same one-line mechanistic question — "*what mechanism produces
+   this?*" — answered from the real source. Dig into the root cause — an override? a
+   stale doc? a different code path? config drift? a measurement artefact? — until that
+   trail too runs dry.
 6. **Only THEN report — as your grounded conclusion, not raw observations.** When the
    whole tree (the original question *and* every "why?" thread it spawned) is exhausted —
    or you've hit the depth/budget bound — state what you conclude ("what you assume",
@@ -72,6 +81,17 @@ weaker as the stronger:
 
 - **Verified** — a ground-truth / observational source *directly bears* on the claim:
   you ran the code, queried the real telemetry, executed the test. This is proof.
+  **Verify against the signal that DECIDES the claim, not a proxy that merely
+  correlates with it**: the exit code, not the absence of error text; the rendered
+  UI, not the API payload that feeds it; the actual data source of a suspicious
+  state, not the component it happens to show up in. A proxy can be green while the
+  deciding signal is red.
+  **Provenance counts as part of the claim**: when work was routed through a
+  wrapper/bridge/delegate, a plausible, well-formed OUTPUT is not evidence of WHERE it
+  ran — "verified" requires the execution trace (the real tool/CLI invocations) showing
+  the claimed executor actually did the work. An entry availability probe proves the
+  route CAN work, never that a given call TOOK it — and a delegate's own green report
+  is an ASSERTION about its work, never the proof of it.
 - **Corroborated** — multiple *assertions* agree (docs, web, runbooks). At best "several
   sources say so" — not proof, especially if they may share an upstream origin.
 - **Single-tier / single-source agreement** — weakest; flag it as such.
@@ -91,6 +111,9 @@ agreement on a proposition.
 - You are about to **assert a checkable claim** or commit to a conclusion.
 - Starting a **non-trivial analysis, design, diagnosis, or recommendation**.
 - You catch yourself **answering from "what you know"** on a single source / single angle.
+- A result **contradicts your own expectation or pre-committed prediction** — in either
+  direction, and **especially the favorable one** (that's the direction verification
+  silently skips).
 - Before a **high-stakes / irreversible / outward-facing** statement.
 
 **When NOT to:** a trivial lookup you confirm in one read; work you *just* grounded

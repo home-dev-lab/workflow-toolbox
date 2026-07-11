@@ -18,9 +18,11 @@
 // - Labels: adversarialVerification:verify:<claimIndex>:<voteIndex>.
 
 import { BEST_MODEL } from '@workflow-toolbox/runtime'
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
-import { warn, applyCap, makeRecord } from './envelope.js'
+import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias, PatternCounts } from '@workflow-toolbox/runtime'
+import { warn, applyCap, makeRecord, emitDigest } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+
+const STAGE = 'adversarialVerification'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -73,6 +75,8 @@ export interface AdversarialVerificationOptions<TClaim> {
    *  fixed vote count). */
   votesPerClaim?: (claim: TClaim) => number
   model?: ModelAlias       // default BEST_MODEL ('opus')
+  /** Per-verifier reasoning effort. Omit to inherit the session effort. */
+  effort?: EffortAlias
   phase?: string
   maxVerifyClaims?: number // cap; truncated claims kept as 'unverified-by-cap'
   /** Optional specialist subagent type to route EVERY verifier agent to (via the
@@ -88,7 +92,19 @@ export interface AdversarialVerificationOptions<TClaim> {
    *  for callers who want it; NEVER hard-code a private (e.g. `magic-claude:*`) type
    *  as a default in a published artifact — the runtime THROWS on an unknown
    *  agentType (with the available-agents list), and a private type breaks every
-   *  other consumer. Validate shape only; the runtime owns registry membership. */
+   *  other consumer. Validate shape only; the runtime owns registry membership.
+   *
+   *  PREMIER USE — cross-model decorrelation (NOT the specialist-reviewer caveat
+   *  above): routing to a NON-Claude wrapper here is the one real lever against
+   *  same-model correlated errors. A same-model verifier shares the producer's
+   *  priors; a different-model verifier does not. On a machine with the `codex`
+   *  plugin, `verifierType: 'codex:codex-rescue'` routes every verifier through the
+   *  Codex app-server so a GPT model answers — and it honors this pattern's
+   *  structured VERIFIER_SCHEMA (proven from inside a workflow: the wrapper
+   *  forwards to codex then emits the {verdict,reason} object). Caveat: it depends
+   *  on a local codex setup + login and is NOT portable — for a SHIPPED workflow,
+   *  prefer an MCP→model endpoint as the cross-model verifier. See the
+   *  cross-model-verify example. */
   verifierType?: string
 }
 
@@ -161,6 +177,7 @@ export async function adversarialVerification<TClaim>(
     lenses,
     votesPerClaim,
     model,
+    effort,
     phase,
     maxVerifyClaims,
     verifierType,
@@ -316,12 +333,14 @@ export async function adversarialVerification<TClaim>(
             label: string
             phase?: string
             model?: ModelAlias
+            effort?: EffortAlias
             agentType?: string
           } = {
             schema: VERIFIER_SCHEMA,
-            label: `adversarialVerification:verify:${claimIndex}:${voteIndex}`,
+            label: `${STAGE}:verify:${claimIndex}:${voteIndex}`,
             ...(phase !== undefined ? { phase } : {}),
             model: effectiveModel,
+            ...(effort !== undefined ? { effort } : {}),
             ...(verifierType !== undefined ? { agentType: verifierType } : {}),
           }
 
@@ -348,10 +367,11 @@ export async function adversarialVerification<TClaim>(
       for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
         const vote = votes[voteIndex] ?? null
         claimRecords.push(makeRecord(
-          `adversarialVerification:verify:${claimIndex}:${voteIndex}`,
+          `${STAGE}:verify:${claimIndex}:${voteIndex}`,
           vote !== null,
           {
             model: effectiveModel,
+            ...(effort !== undefined ? { effort } : {}),
             ...(vote !== null ? { decision: vote.verdict } : {}),
           },
         ))
@@ -468,6 +488,38 @@ export async function adversarialVerification<TClaim>(
     dropped: nullVoteCount,    // null votes = lost work units
     truncated,
   }
+
+  // Phase digest: the FULL verdict tally across all claims. The five buckets partition
+  // `value` (one verdict per claim, incl. cap-truncated) so they always sum to `claims`;
+  // a consumer showing only confirmed+refuted would silently drop partially-confirmed /
+  // unverifiable / unverified-by-cap (the defect this widening fixed). The bucket→key map
+  // is a Record<ClaimVerdict, string> and the counts are built by iterating it, so a future
+  // sixth ClaimVerdict is a COMPILE error here (a missing key), never a silent undercount.
+  // DIGEST_KEY values are typed against the shared counts contract → a verdict mapped to a
+  // non-existent count key is a COMPILE error, and a future sixth ClaimVerdict still forces a
+  // mapping via Record<ClaimVerdict, …>.
+  const DIGEST_KEY: Record<ClaimVerdict, keyof PatternCounts['adversarialVerification']> = {
+    confirmed: 'confirmed',
+    refuted: 'refuted',
+    'partially-confirmed': 'partiallyConfirmed',
+    unverifiable: 'unverifiable',
+    'unverified-by-cap': 'unverifiedByCap',
+  }
+  // Typed to the contract shape (NO cast): the literal makes all six keys mandatory — drop the
+  // `claims` seed or a verdict key and it is a compile error — and the loop overwrites the five
+  // verdict buckets (indexing the closed type by DIGEST_KEY's `keyof`-typed values is allowed).
+  const counts: PatternCounts['adversarialVerification'] = {
+    claims: claims.length,
+    confirmed: 0,
+    refuted: 0,
+    partiallyConfirmed: 0,
+    unverifiable: 0,
+    unverifiedByCap: 0,
+  }
+  for (const verdict of Object.keys(DIGEST_KEY) as ClaimVerdict[]) {
+    counts[DIGEST_KEY[verdict]] = value.filter(v => v.verdict === verdict).length
+  }
+  emitDigest(rt, { stage: STAGE, counts })
 
   return { value, stats, warnings, trail }
 }

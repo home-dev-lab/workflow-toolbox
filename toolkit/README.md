@@ -9,7 +9,7 @@ every raw workflow re-invents the same machinery by hand: fan-out with
 verification, loops with stop conditions, honest accounting of what got
 dropped along the way.
 
-This toolkit is the box of molded bricks for that baseplate: seven tested
+This toolkit is the box of molded bricks for that baseplate: eight tested
 orchestration patterns (classify-and-act, fan-out, adversarial verification,
 tournament, loop-until-done, plan-and-execute…) that snap together with
 ordinary `await` / `if` / `for` in TypeScript. You get type-checked contracts
@@ -47,7 +47,7 @@ toolkit/
 ├── packages/
 │   ├── runtime/    # @workflow-toolbox/runtime  — sandbox typings + FakeRuntime (the ONLY
 │   │               #   coupling point to Claude Code; unstable-surface firewall)
-│   ├── patterns/   # @workflow-toolbox/patterns — the 7 patterns + result envelope
+│   ├── patterns/   # @workflow-toolbox/patterns — the 8 patterns + result envelope
 │   └── build/      # @workflow-toolbox/build    — defineWorkflow + the `workflow-toolbox` CLI (build/check)
 ├── examples/       # @workflow-toolbox/examples — 9 teaching workflows (*.workflow.ts; the
 │                   #   monorepo-refactor pair and the dev-workflow family are
@@ -180,6 +180,7 @@ uniform `items` API.
 | `tournament` | · Judge panel + synthesis<br>· best-of-N selection<br>· LLM-as-judge tournament | Wide solution space; angles genuinely differ | Convergent tasks where attempts would be near-identical |
 | `loopUntilDone` | · Evaluator-optimizer<br>· iterative refinement<br>· self-refine / Reflexion<br>· loop-until-dry | Clear evaluation criteria + iteration adds measurable value; unknown-size discovery | No articulable feedback; or a fixed list is known up front (just map it) |
 | `planAndExecute` | · Orchestrator-workers<br>· plan-and-execute (LangChain)<br>· planner-executor | Subtasks can't be predicted up front; a planner decomposes dynamically (its `PlanAndExecuteResult` also exposes the surviving `workerResults`, not just the synthesis) | Subtasks are known — `fanOutAndSynthesize` or `rt.pipeline` is cheaper and more predictable |
+| `scoreAndRank` | · Targeting machine<br>· cheap-model triage<br>· impact × opportunity ranking<br>· prioritized sweep | Many items, only a few worth an expensive next stage; a cheap model can score them on one+ independent dimensions; you want a ranked cutoff to **aim** the premium model/human at the top | Few items (just act); scoring signal is garbage (GIGO); or you need a binary keep/drop rather than a ranking — `generateAndFilter` |
 
 > In each row the first term is Anthropic's [*Building Effective Agents*](https://www.anthropic.com/engineering/building-effective-agents) vocabulary; the rest are common cross-ecosystem names for the same shape (different frameworks, same orchestration).
 
@@ -311,6 +312,36 @@ agent call only; the trail is intentionally not extended (the `model` field
 already covers the pattern's load-bearing audit concern). Additive, semver-minor;
 ships in `@workflow-toolbox/patterns` 0.6.0.
 
+The "specialize the producer, not the skeptic" caveat above is about *same-model*
+specialization. The **premier use of `verifierType` is the opposite — cross-model
+decorrelation**: routing to a *different model family* is the one real lever
+against same-model correlated errors. `verifierType: 'codex:codex-rescue'` runs
+every refute-first verifier on a non-Claude (GPT) model — verified to honor the
+structured verdict schema from inside a workflow. Crucially, this routes ONLY the
+skeptic: the producers stay on the session model, which `withAgentDefaults({ agentType })`
+(blanket, all-or-nothing) cannot express. Launch-time exposure: `cross-model-verify`
+and `independent-analysis` take the request via the structured config envelope
+(`args.agentTypes.verify`) and PROBE it at entry (`probeAgentType`) with a graceful
+fallback to the standard verifier; `pr-review` routes its lens reviewers likewise
+via `args.agentTypes.review` (the same role key as `effort.review`). The dev family (`dev-plan` Critique,
+`dev-review-fix` Verify, orchestrated by `dev-full`) still takes a bespoke
+`verifierType` input.
+The plugin also ships **`workflow-toolbox:opencode-verifier`**, a second
+cross-family verifier that routes to any `opencode` model (default GLM 5.2 /
+zai-coding-plan — a *different* family again) and degrades gracefully to a Claude
+fallback (`OPENCODE_UNAVAILABLE`) when opencode isn't installed or no provider is
+authenticated. Caveat: both `codex-rescue` and `opencode-verifier` are
+local-machine-only (each needs its own setup + login) and opt-in; for a fully
+portable endpoint prefer an MCP→model bridge.
+
+The same per-role `agentType` routing now generalizes beyond the verifier: every
+fan-out/synthesis pattern exposes a `<role>Type` knob (`taskType`/`synthesisType`,
+`generateType`/`filterType`, `attemptType`/`judgeType`/`synthesisType`,
+`planType`/`workerType`, `scoreType`, `classifyType` + a per-action
+`ActionSpec.agentType`), so *any* role can be routed to a different model family —
+the composer's lever for decorrelating a producer from its verifier. Omit every
+knob for the standard Claude subagent.
+
 Path mapping: `relativizeUnder(root, path)` is the boundary-safe POSIX
 relativization kernel promoted from the dev-workflow family. It answers ONE
 question — "can `path` be expressed relative to `root`?" — returning the
@@ -372,9 +403,9 @@ verifiers cost far more, which is exactly why the floor carries a safety margin.
 Model tiering: mechanical high-volume leaf work → `'haiku'`; judgment work →
 inherit the session model. Verification quality is model-sensitive — verifiers
 default to `BEST_MODEL` (a constant exported by `@workflow-toolbox/runtime`,
-currently `'opus'` — it was `'fable'` until Fable 5's export-control suspension on
-2026-06-12; the constant names the strongest *callable* tier), and explicitly
-passing anything weaker logs a warning.
+currently `'opus'` — the constant names the strongest *reliably-callable* tier,
+not merely the newest; top-tier alias availability varies by plan and over time),
+and explicitly passing anything weaker logs a warning.
 In-repo adopter: dev-review-fix routes its consolidation agent (a mechanical
 dedup/merge, ~44k tokens measured) to `'sonnet'` — safe because the merge is
 triple-netted (in-code concat fallback, integrity guards, downstream
@@ -384,10 +415,28 @@ docs-only `changedFiles` set defaults to two reviewers instead of four
 (deterministic extension allowlist, loudly warned, explicit `dimensions`
 always wins).
 
+**Effort tiering** is the sibling axis to model tiering: every pattern's
+`effort?: EffortAlias` option (omit = inherit the session effort) lets a stage
+run at a cheaper reasoning tier than the session default. The bundled
+compositions (`toolkit/examples/*.workflow.ts`) pin a stage-CLASS default at
+each call site — classify/mechanical/routing → `'low'`, synthesis/consolidation
+→ `'medium'`, reviewer/implementer/fixer/planner → `'high'`, adversarial
+verifiers/judges/checkers → `'high'` as a FLOOR — instead of silently
+inheriting the session effort. `@workflow-toolbox/std` exports
+`resolveEffort(argsValue, stageDefault)` (falls back to the stage default on
+undefined/invalid input, never throws) and its verifier-site variant
+`resolveVerifierEffort(argsValue, stageDefault, floor = 'high')` (clamps UP
+only — an override can raise a verifier's effort, never lower it below the
+floor). Callers retune a composition's effort per role at launch time via the
+existing Class B/C `parseConfig(args).effort` role map (`args: { effort: {
+judge: 'xhigh' } }`) — the same convention that already carries `models` — so
+one config channel governs both axes.
+
 ## Auditing a run (`pnpm wt:report`)
 
 Every Workflow run leaves a structured journal on disk
-(`~/.claude/projects/<project>/<session>/workflows/wf_<runId>.json`).
+(`$CLAUDE_CONFIG_DIR/projects/<project>/<session>/workflows/wf_<runId>.json`,
+default config dir `~/.claude`).
 `pnpm wt:report [runId|latest] [--project <slug>] [--out <dir>] [--quiet]`
 turns one journal into a **cost + traceability audit report**: run identity
 (incl. `taskId`), a per-agent cost rollup (model / tokens / tool calls / phase)
@@ -423,6 +472,21 @@ other question — not "what did it cost?" but "why did it fail, and will a
 `resumeFromRunId` actually save work?". Reach for `wt:debug` when a run errored
 or stalled; reach for `wt:report` when you need the cost + traceability picture
 of any run (success or failure).
+
+Third sibling: **`wt-observe`** (the bundled CLI — `start|stop|status`) drives a
+local browser UI over the SAME journal: replay a finished run's phase→agent DAG,
+or watch a live one. ONE server always runs, resolving 1+ Claude config dirs —
+**`wt-observe start [--source <dir>]...`** — 1 resolved source serves it
+unprefixed (a personal `~/.claude`, say); a machine running several config dirs at
+once (a personal `~/.claude` and a work `~/.claude-work`) resolves 2+ and gets a
+source switcher in the UI automatically, no separate verb needed. With no
+`--source` flags, a persistent source list (`<observeConfigRoot>/config.json`,
+managed via `wt-observe config show|add-source|remove-source`) wins if configured,
+else it auto-discovers existing dirs — `$CLAUDE_CONFIG_DIR` plus every `~/.claude` /
+`~/.claude-<name>` sibling (a glob, e.g. `~/.claude-work`, `~/.claude-acme`) that also
+has a `projects/` run store (a name match alone isn't enough — a stray
+`~/.claude-backup` isn't discovered). Reach for `wt-observe` when you want to *see* the
+run, not just read a report.
 
 ## Testing
 
@@ -471,11 +535,14 @@ surface — start firewalling in `@workflow-toolbox/runtime`.
 canary builds on it:
 
 ```bash
-pnpm canary          # the matrix: smoke + edge (negative) against BOTH runtimes
-                     # (system + bundled), prints a SUMMARY (per-runtime CC version,
-                     # SDK⇒bundled-CC mapping, latest SDK on npm) and a WHAT CHANGED
-                     # section, then records the per-machine marker. --target narrows.
+pnpm canary          # the matrix: smoke + edge (negative) + nesting against BOTH
+                     # runtimes (system + bundled), prints a SUMMARY (per-runtime
+                     # CC version, SDK⇒bundled-CC mapping, latest SDK on npm) and a
+                     # WHAT CHANGED section, then records the per-machine marker.
+                     # --target narrows.
 pnpm canary:edge     # just the negative checks (cap + meta-order) on the bundled runtime.
+pnpm canary:nesting  # canary C1: workflow() rejects nesting past one level (a
+                     # parent→child→grandchild round trip) on the bundled runtime.
 pnpm canary:version  # read-only gate: exit 0 = unchanged since last pass (skip),
                      # 3 = a signal changed / forced (run), 2 = error.
 ```
@@ -487,7 +554,12 @@ measured Claude Code version from each run's init message, and diffs the outcome
 against the last run — so a version move, a check flip, or rejection-wording drift
 shows up in **WHAT CHANGED** (which can drive a fix or feature). The negative
 checks catch the regression where an upgrade silently *accepts* an oversized or
-`meta`-disordered script. It does NOT check the `name`-registry-keyed-by-`meta.name`
+`meta`-disordered script. The nesting check (canary C1) catches the regression
+where an upgrade silently *allows* `workflow()` nesting past one level — it
+launches a parent→child→grandchild round trip and asserts the child's OWN nested
+`workflow()` call is rejected (depth-1, parent→child, is asserted too, as a
+positive control: otherwise a broken `workflow()` that never reaches the child
+would masquerade as "nesting rejected"). It does NOT check the `name`-registry-keyed-by-`meta.name`
 behavior (side-effectful, not headlessly checkable, least load-bearing since
 `workflow-toolbox build` keeps filename == `meta.name`). The **`upgrade-canary` plugin skill**
 is the operator playbook: gate on a version change, run the matrix + `wt:check`,

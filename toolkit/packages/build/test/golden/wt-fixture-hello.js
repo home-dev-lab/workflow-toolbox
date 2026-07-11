@@ -32,6 +32,41 @@ var __wt = (() => {
     default: () => hello_workflow_default
   });
 
+  // ../../../runtime/src/prompt-tag.ts
+  var PROMPT_TAG_PREFIX = "<!-- wt-meta ";
+  function escapeValue(v) {
+    return v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\n", "&#10;");
+  }
+  function buildPromptTag(fields) {
+    const parts = [];
+    if (fields.label !== void 0) parts.push(`label="${escapeValue(fields.label)}"`);
+    if (fields.phase !== void 0) parts.push(`phase="${escapeValue(fields.phase)}"`);
+    if (parts.length === 0) return null;
+    return `${PROMPT_TAG_PREFIX}${parts.join(" ")} -->`;
+  }
+  function withPromptTags(rt) {
+    let currentPhase;
+    const agent = (prompt, opts) => {
+      const tag = buildPromptTag({ label: opts?.label, phase: opts?.phase ?? currentPhase });
+      const tagged = tag !== null && !prompt.startsWith(tag) ? `${tag}
+
+${prompt}` : prompt;
+      return rt.agent(tagged, opts);
+    };
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => {
+        currentPhase = title;
+        rt.phase(title);
+      },
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
+  }
+
   // ../../src/define-workflow.ts
   function normalizeArgs(raw) {
     if (raw === void 0) return void 0;
@@ -73,7 +108,7 @@ var __wt = (() => {
       async run(rt, rawArgs) {
         const normalized = normalizeArgs(rawArgs);
         const input = def.parseInput !== void 0 ? def.parseInput(normalized) : normalized;
-        return def.run(rt, input);
+        return def.run(withPromptTags(rt), input);
       }
     };
   }

@@ -10,10 +10,12 @@
     "lint": "eslint .",
     "test": "vitest run",
     "wt:build": "tsx packages/build/src/cli.ts build",
+    "wt:pipeline": "tsx packages/build/src/cli.ts pipeline",
     "wt:check": "tsx packages/build/src/cli.ts check",
     "mirror:plugin-workflow": "tsx packages/build/src/cli.ts build examples/independent-analysis.workflow.ts && node -e \"require('fs').copyFileSync('workflows/independent-analysis.js','../plugin/workflows/independent-analysis.js')\"",
     "wt:debug": "tsx packages/debugger/src/cli.ts",
     "wt:report": "tsx packages/debugger/src/report-cli.ts",
+    "wt:observe": "tsx packages/observe/src/cli.ts",
     "wt:scaffold": "tsx packages/scaffold/src/cli.ts",
     "wt:calibrate": "tsx packages/smoke/src/calibrate.ts",
     "debugger:build": "tsx packages/debugger/build.ts",
@@ -21,7 +23,10 @@
     "smoke": "tsx packages/smoke/src/run.ts",
     "canary": "tsx packages/smoke/src/canary-all.ts",
     "canary:edge": "tsx packages/smoke/src/edge-canaries.ts",
-    "canary:version": "tsx packages/smoke/src/check-version.ts"
+    "canary:nesting": "tsx packages/smoke/src/nesting-canaries.ts",
+    "canary:budget": "tsx packages/smoke/src/budget-canaries.ts",
+    "canary:version": "tsx packages/smoke/src/check-version.ts",
+    "canary:agents": "tsx packages/smoke/src/sdk-agent-probe.ts"
   },
   "devDependencies": {
     "typescript-eslint": "^8.0.0",
@@ -29,12 +34,9 @@
     "tsx": "^4.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.5.0",
-    "vitest": "^3.2.6"
+    "vitest": "^3.2.6",
+    "svelte": "^5.0.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.0"
   },
-  "pnpm": {
-    "overrides": {
-      "vite": "^6.4.2",
-      "esbuild": "~0.28.1"
-    }
-  }
+  "packageManager": "pnpm@11.10.0"
 }

@@ -1,0 +1,60 @@
+{
+  "goal": "Implement a feature, then have it human-reviewed before wrap-up",
+  "projectDir": ".",
+  "stages": [
+    {
+      "name": "feature",
+      "pipeline": {
+        "goal": "Plan then implement the feature",
+        "projectDir": ".",
+        "stages": [
+          {
+            "name": "plan",
+            "workflow": "dev-plan.js",
+            "gateAfter": true,
+            "artifact": {
+              "extract": "plan-artifact"
+            },
+            "input": {
+              "goal": {
+                "from": "goal"
+              },
+              "projectDir": {
+                "from": "projectDir"
+              }
+            }
+          },
+          {
+            "name": "implement",
+            "workflow": "dev-implement.js",
+            "input": {
+              "artifactPath": {
+                "from": "artifactPath"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "review",
+      "workflow": "pr-review.js",
+      "input": {
+        "target": {
+          "from": "artifactPath"
+        }
+      },
+      "gateAfter": true
+    },
+    {
+      "name": "wrap-up",
+      "workflow": "independent-analysis.js",
+      "input": {
+        "subject": {
+          "from": "artifactPath"
+        }
+      }
+    }
+  ],
+  "name": "feature-review"
+}

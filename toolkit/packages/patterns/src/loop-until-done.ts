@@ -36,9 +36,14 @@
 // - Body throws propagate (programmer errors must not be swallowed).
 // - No phase option — the body's agents own their own phase context.
 
-import type { WorkflowRuntime } from '@workflow-toolbox/runtime'
-import { warn, makeRecord } from './envelope.js'
+import type { AgentOptions, WorkflowRuntime } from '@workflow-toolbox/runtime'
+import { LOOP_STAGE, LOOP_ITER_MARKER } from '@workflow-toolbox/runtime'
+import { warn, makeRecord, emitDigest } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+
+// Sourced from the shared digest contract so the pattern and observe's attribution
+// reference ONE literal (rename-proof — see digest.ts LOOP_STAGE / isLoopIterLabel).
+const STAGE = LOOP_STAGE
 
 // ---------------------------------------------------------------------------
 // Types
@@ -174,6 +179,12 @@ export async function loopUntilDone<TState>(
   let iterationsDone = 0
   let consecutiveDry = 0
   let agentsSpawned = 0
+  // The 1-based iteration the body is currently running. Read by the counting rt's
+  // agent wrapper to TAG each body agent's label with its iteration, so the loop
+  // structure (which agents belong to which round) is observable in the run trace —
+  // the only pattern whose agents would otherwise carry no structured label. Set
+  // just before each body() call below.
+  let currentIteration = 0
 
   // ---- Counting wrapper handed to the body (the OUTER rt keeps driving the
   //      loop's own budgetFloor/warn/log machinery). Explicit 7-member literal,
@@ -182,9 +193,20 @@ export async function loopUntilDone<TState>(
   //      workflow pass BY REFERENCE — the floor checks above read rt.budget on
   //      the outer rt and must see the same object the body spends against.
   const countingRt: WorkflowRuntime = {
-    agent: <T = string>(...args: Parameters<WorkflowRuntime['agent']>) => {
+    agent: <T = string>(prompt: string, opts?: AgentOptions) => {
       agentsSpawned++
-      return rt.agent<T>(...args)
+      // Tag the iteration so the loop is observable in the trace. ADDITIVELY, so it
+      // never hides the author's label:
+      //   - no label of its own → `loopUntilDone:iter:<n>` (the plain-agent loop body,
+      //     e.g. the demo — a clean, self-describing label).
+      //   - has a label → `<label> ⟲<n>` (append): the caller's scheme (dev-*) or a
+      //     nested pattern's structured label survives as the prefix — so the renderer
+      //     still recognizes the inner pattern AND can read the iteration off the end.
+      const label =
+        opts?.label != null
+          ? `${opts.label}${LOOP_ITER_MARKER}${currentIteration}`
+          : `${STAGE}:iter:${currentIteration}`
+      return rt.agent<T>(prompt, { ...opts, label })
     },
     parallel: <T>(thunks: ReadonlyArray<() => Promise<T>>) => rt.parallel<T>(thunks),
     pipeline: (...args: Parameters<WorkflowRuntime['pipeline']>) => rt.pipeline(...args),
@@ -239,6 +261,8 @@ export async function loopUntilDone<TState>(
 
       // ---- 3. Run body — throws propagate (programmer errors, not swallowed).
       //      The body gets the COUNTING rt so its agent() calls land in stats.
+      //      Publish the 1-based iteration first so the rt's agent wrapper tags labels.
+      currentIteration = iterationsDone + 1
       const tick = await body(countingRt, state, iterationsDone + 1)
       const tickIndex = iterationsDone  // 0-based index for this tick
       state = tick.state
@@ -248,7 +272,7 @@ export async function loopUntilDone<TState>(
       // a null state (unusable), 'ok' otherwise. No label/model — the record is
       // per-TICK, not per-agent (the body's agent calls are counted in stats,
       // not individually trailed).
-      trail.push(makeRecord(`loopUntilDone:tick:${tickIndex}`, tick.state !== null))
+      trail.push(makeRecord(`${STAGE}:tick:${tickIndex}`, tick.state !== null))
 
       // ---- done=true → normal completion, no warning; stamp decision on last tick
       if (tick.done === true) {
@@ -281,6 +305,14 @@ export async function loopUntilDone<TState>(
   // budgetFloor fires BEFORE the body runs — no tick record was pushed for that
   // stop, so there is nothing to stamp. The trail already reflects only the
   // iterations that actually executed (correct by construction).
+  // Phase digest: iterations run + why the loop stopped. Resolution note: the loop's
+  // body agents DEFAULT to label 'loopUntilDone:iter:<n>', so observe resolves this
+  // digest to the loop's phase by prefix. A body that passes a custom opts.label
+  // relabels its agents '<label> ⟲<n>' (dropping the 'loopUntilDone:' prefix); observe
+  // then attributes this digest via the LOOP_ITER_MARKER fallback (isLoopIterLabel) —
+  // EXCEPT when a nested pattern's own digest already claims that phase (it keeps
+  // precedence, and the two would collide), where this loop digest is honest-absent.
+  emitDigest(rt, { stage: STAGE, output: stoppedBy, counts: { iterations: iterationsDone } })
   return buildResult(state, iterationsDone, stoppedBy, warnings, trail, agentsSpawned)
 }
 

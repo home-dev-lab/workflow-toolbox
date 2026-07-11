@@ -25,8 +25,8 @@ function printHelp(): void {
       '',
       '  runId        wf_<id> of the run (with or without the wf_ prefix). Omit or',
       '               pass "latest" for the newest run in the current project.',
-      '               A literal ~/.claude/.../workflows/wf_<id>.json path also works.',
-      '  --project    search a specific ~/.claude/projects/<slug> instead of the cwd',
+      '               A literal <configDir>/.../workflows/wf_<id>.json path also works.',
+      '  --project    search a specific $CLAUDE_CONFIG_DIR/projects/<slug> instead of the cwd',
       '               (slugs start with "-"; both `--project <slug>` and',
       '               `--project=<slug>` forms are accepted).',
       '  --out <dir>  also write an audit folder <dir>/<runId>/ (report.md + journal.json',
@@ -73,11 +73,16 @@ function main(): number {
   const agentIds = agentEvents(journal)
     .map((a) => a.agentId)
     .filter((id): id is string => typeof id === 'string')
-  const { presentTranscripts, transcriptSources, usageByAgent } = scanTranscripts(tdir, agentIds, {
-    withUsage: true,
-  })
+  const { presentTranscripts, transcriptSources, usageByAgent, denialsByAgent, compactionByAgent, delegationByAgent } =
+    scanTranscripts(tdir, agentIds, { withUsage: true, withDenials: true, withCompaction: true, withDelegation: true })
 
-  const report = buildAuditReport(journal, { presentTranscripts, usageByAgent })
+  const report = buildAuditReport(journal, {
+    presentTranscripts,
+    usageByAgent,
+    denialsByAgent,
+    compactionByAgent,
+    delegationByAgent,
+  })
   const markdown = formatAuditReportMarkdown(report, { journalPath: resolved.path })
 
   if (!quiet) process.stdout.write(markdown)

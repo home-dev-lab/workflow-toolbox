@@ -8,7 +8,8 @@
 import { describe, it, expect } from 'vitest'
 import { formatAuditReportMarkdown } from '../src/report-format.js'
 import type { AuditReport } from '../src/report.js'
-import type { AgentUsage } from '../src/transcript-usage.js'
+import type { AgentUsage, CompactionReport } from '../src/transcript-usage.js'
+import type { ToolDenialReport } from '../src/tool-denial.js'
 
 const usage = (i: number, o: number, cr: number, cc: number): AgentUsage => ({
   inputTokens: i,
@@ -127,6 +128,100 @@ describe('formatAuditReportMarkdown — transcript token breakdown', () => {
   })
 })
 
+describe('formatAuditReportMarkdown — tool denials section', () => {
+  const denialReport: ToolDenialReport = {
+    total: 2,
+    agentsAffected: 1,
+    bySignature: [{ signature: 'git diff', count: 2 }],
+    degraded: true,
+    denials: [
+      { agentId: 'a1', label: 'review:bugs', tool: 'Bash', detail: 'git diff a..b -- x.ts', kind: 'rejected', reason: null },
+      { agentId: 'a1', label: 'review:bugs', tool: 'Bash', detail: 'git diff c..d', kind: 'auto-mode-classifier', reason: '[Create Unsafe Agents]' },
+    ],
+    recoveredCount: 0,
+    allRecovered: false,
+  }
+
+  it('renders a ⚠ DEGRADED banner + a per-denial table when denials are present', () => {
+    const md = formatAuditReportMarkdown(report({ denials: denialReport }))
+    expect(md).toMatch(/## Tool denials/)
+    expect(md).toMatch(/⚠.*2 tool call\(s\) DENIED across 1 agent\(s\)/)
+    expect(md).toMatch(/DEGRADED/)
+    expect(md).toContain('git diff ×2') // grouped summary
+    expect(md).toContain('review:bugs') // resolved label
+    expect(md).toContain('[Create Unsafe Agents]') // auto-mode reason
+  })
+
+  it('escapes a pipe in a denied command so it cannot inject extra table columns', () => {
+    const piped: ToolDenialReport = {
+      total: 1,
+      agentsAffected: 1,
+      bySignature: [{ signature: 'git log', count: 1 }],
+      degraded: true,
+      denials: [
+        { agentId: 'a1', label: 'review:bugs', tool: 'Bash', detail: 'git log | head -5', kind: 'rejected', reason: null },
+      ],
+      recoveredCount: 0,
+      allRecovered: false,
+    }
+    const md = formatAuditReportMarkdown(report({ denials: piped }))
+    // Select the TABLE ROW (the banner line also says "git log ×1"); "head -5" is unique to it.
+    const row = md.split('\n').find((l) => l.includes('head -5')) ?? ''
+    // The detail's pipe is escaped, so the row keeps exactly its 6 columns (7 delimiters —
+    // Stage/Tool/Attempted/Denial/Reason/Recovered).
+    expect(row).toContain('git log \\| head -5')
+    expect((row.match(/(?<!\\)\|/g) ?? []).length).toBe(7)
+  })
+
+  it('renders an honest clean line when there are no denials (absent field)', () => {
+    const md = formatAuditReportMarkdown(report()) // fixture has no denials field
+    expect(md).toMatch(/## Tool denials/)
+    expect(md).toMatch(/no tool denials detected/i)
+  })
+
+  it('renders the clean line for an explicit zero-denial report too', () => {
+    const md = formatAuditReportMarkdown(
+      report({ denials: { total: 0, agentsAffected: 0, bySignature: [], denials: [], degraded: false, recoveredCount: 0, allRecovered: false } }),
+    )
+    expect(md).toMatch(/no tool denials detected/i)
+  })
+})
+
+describe('formatAuditReportMarkdown — auto-compaction (advisory) section', () => {
+  const compactionReport: CompactionReport = {
+    agentsCompacted: 1,
+    peakTokens: 198625,
+    droppedTokens: 99667,
+    compacted: true,
+    agents: [{ agentId: 'a1', label: 'read:big', peakTokens: 198625, droppedTokens: 99667, trigger: 'auto', boundaries: 1 }],
+  }
+
+  it('renders an ℹ advisory (softer than the ⚠ DEGRADED denial signal) + a per-agent table', () => {
+    const md = formatAuditReportMarkdown(report({ compaction: compactionReport }))
+    expect(md).toMatch(/## Auto-compaction/)
+    expect(md).toMatch(/ℹ/)
+    expect(md).toMatch(/1 agent\(s\) compacted their context/)
+    expect(md).toContain('198,625') // peak
+    expect(md).toContain('99,667') // dropped
+    expect(md).toContain('read:big') // resolved label
+    expect(md).not.toMatch(/DEGRADED/) // advisory tier — the run SUCCEEDED, never call it degraded
+    expect(md).not.toMatch(/200k/) // no hardcoded window size — model-dependent, uses the measured peak
+  })
+
+  it('renders an honest clean line when no agent compacted (absent field)', () => {
+    const md = formatAuditReportMarkdown(report()) // fixture has no compaction field
+    expect(md).toMatch(/## Auto-compaction/)
+    expect(md).toMatch(/no agent compacted/i)
+  })
+
+  it('renders the clean line for an explicit zero-compaction report too', () => {
+    const md = formatAuditReportMarkdown(
+      report({ compaction: { agentsCompacted: 0, peakTokens: null, droppedTokens: null, agents: [], compacted: false } }),
+    )
+    expect(md).toMatch(/no agent compacted/i)
+  })
+})
+
 describe('formatAuditReportMarkdown — determinism', () => {
   it('is byte-stable for a fixed input', () => {
     expect(formatAuditReportMarkdown(report())).toBe(formatAuditReportMarkdown(report()))
@@ -135,5 +230,45 @@ describe('formatAuditReportMarkdown — determinism', () => {
   it('includes the journal path when given in context', () => {
     const md = formatAuditReportMarkdown(report(), { journalPath: '/home/x/.claude/projects/p/s/workflows/wf_975e3d74-552.json' })
     expect(md).toContain('/workflows/wf_975e3d74-552.json')
+  })
+})
+
+describe('formatAuditReportMarkdown — recovery-aware denial rendering', () => {
+  const recDenials: ToolDenialReport = {
+    total: 2,
+    agentsAffected: 1,
+    bySignature: [{ signature: 'WebFetch', count: 2 }],
+    degraded: true,
+    denials: [
+      { agentId: 'a1', label: 'verify:1:0', tool: 'WebFetch', detail: 'https://a', kind: 'hook', reason: null, recovered: { via: 'WebSearch', at: null } },
+      { agentId: 'a1', label: 'verify:1:0', tool: 'WebFetch', detail: 'https://b', kind: 'hook', reason: null, recovered: { via: 'WebSearch', at: null } },
+    ],
+    recoveredCount: 2,
+    allRecovered: true,
+  }
+
+  it('renders each denial row with its recovery signal', () => {
+    const md = formatAuditReportMarkdown(report({ denials: recDenials }))
+    expect(md).toContain('| Recovered |')
+    expect(md).toContain('via WebSearch')
+  })
+
+  it('ALL recovered: softens the banner (recovery signal named, no bare DEGRADED-blind claim)', () => {
+    const md = formatAuditReportMarkdown(report({ denials: recDenials }))
+    expect(md).toContain('RECOVERY signal')
+    expect(md).toContain('Verify the recovery covered the same intent')
+    expect(md).not.toContain('may be DEGRADED')
+  })
+
+  it('MIXED: keeps the DEGRADED banner and counts the recovery signals', () => {
+    const mixed: ToolDenialReport = {
+      ...recDenials,
+      denials: [recDenials.denials[0]!, { agentId: 'a1', label: 'verify:1:0', tool: 'Bash', detail: 'git diff', kind: 'rejected', reason: null }],
+      recoveredCount: 1,
+      allRecovered: false,
+    }
+    const md = formatAuditReportMarkdown(report({ denials: mixed }))
+    expect(md).toContain('may be DEGRADED')
+    expect(md).toContain('1 of 2 show a recovery signal')
   })
 })

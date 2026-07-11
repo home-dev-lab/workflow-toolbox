@@ -5,7 +5,8 @@
 //
 // applyCap() implements the mandatory truncation reporting required by §8.
 
-import type { WorkflowRuntime } from '@workflow-toolbox/runtime'
+import { formatDigest } from '@workflow-toolbox/runtime'
+import type { TypedPhaseDigest, WorkflowRuntime } from '@workflow-toolbox/runtime'
 
 // ---------------------------------------------------------------------------
 // PatternStats — five counters, one source of truth across all patterns
@@ -50,6 +51,11 @@ export interface TrailRecord {
   outcome: 'ok' | 'null'
   /** Only set when the pattern passed an explicit model override. */
   model?: string
+  /** Only set when the pattern passed an explicit effort override. The harness records
+   *  NOTHING about effort per agent (no journal field, no meta sidecar — grounded
+   *  2026-07-10), so this trail entry is the ONLY durable per-stage effort record; the
+   *  audit report and the observe agent panel read it from here. Absent = inherited. */
+  effort?: string
   /**
    * The control decision taken at this step, when the pattern has one.
    * STRICT RULE: typed control values only (e.g. 'subtasks=5', a verdict
@@ -66,17 +72,18 @@ export interface TrailRecord {
 // provided — tests pin this key-absence rule.
 // ---------------------------------------------------------------------------
 
-/** Build one TrailRecord. Spreads keep `model`/`decision` ABSENT (not
+/** Build one TrailRecord. Spreads keep `model`/`effort`/`decision` ABSENT (not
  *  undefined-valued) when not provided — tests pin this key-absence rule. */
 export function makeRecord(
   stage: string,
   ok: boolean,
-  extra?: { model?: string; decision?: string },
+  extra?: { model?: string; effort?: string; decision?: string },
 ): TrailRecord {
   return {
     stage,
     outcome: ok ? 'ok' : 'null',
     ...(extra?.model !== undefined ? { model: extra.model } : {}),
+    ...(extra?.effort !== undefined ? { effort: extra.effort } : {}),
     ...(extra?.decision !== undefined ? { decision: extra.decision } : {}),
   }
 }
@@ -91,8 +98,34 @@ export interface PatternResult<T> {
   warnings: string[]
   /** Audit trail: which agent did what, in deterministic order. See TrailRecord.
    *  REQUIRED: every pattern populates it — tsc enforces that no construction
-   *  site can omit it (the "all 7 patterns are instrumented" guarantee). */
+   *  site can omit it (the "all 8 patterns are instrumented" guarantee). */
   trail: TrailRecord[]
+}
+
+// ---------------------------------------------------------------------------
+// collectTrail() — concatenate a composition's per-pattern trails, in order.
+//
+// Compositions attach `envelope: { trail: collectTrail(a, b, …) }` to their
+// return value — the contract the debugger report builder (Decisions
+// enrichment) and the observe per-agent effort chip read. Ground truth
+// 2026-07-10: no composition produced it before.
+// ---------------------------------------------------------------------------
+
+/**
+ * Concatenate the `trail` of every given PatternResult, in call order,
+ * skipping `null`/`undefined` entries (a pattern stage that was skipped or
+ * never ran — e.g. a conditional Critique/Verify phase, or a survivor list
+ * that ended up empty).
+ */
+export function collectTrail(
+  ...results: Array<{ trail: TrailRecord[] } | null | undefined>
+): TrailRecord[] {
+  const trail: TrailRecord[] = []
+  for (const r of results) {
+    if (r === null || r === undefined) continue
+    trail.push(...r.trail)
+  }
+  return trail
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +142,30 @@ export function warn(
 ): void {
   warnings.push(message)
   rt.log(message)
+}
+
+// ---------------------------------------------------------------------------
+// emitDigest() — report a pattern's per-phase OUTCOME as ONE structured rt.log
+// narrator line (the phase digest). @workflow-toolbox/observe parses it back at
+// reload time into phase.output/phase.choices and attributes it to this pattern's
+// phase by matching `d.stage` against the agents' labels.
+//
+// CONTRACT: `d.stage` MUST equal the pattern-name prefix this pattern uses for its
+// agent labels (e.g. 'classifyAndAct' for labels 'classifyAndAct:classify:0'), or
+// observe cannot resolve the phase. Reload-only (rt.log is absent from the live
+// SDK stream). Call once PER PATTERN RUN, with only the fields the pattern actually
+// knows (all PhaseDigest fields beyond `stage` are optional) — including before a
+// failure early-return, so a failed run still reports an outcome.
+//
+// ATTRIBUTION: observe attributes a digest to a phase by stage→agent-label match and
+// surfaces it ONLY when exactly one digest resolves to that phase. If the SAME
+// pattern is invoked more than once under ONE phase title, both digests resolve to
+// that phase and observe drops BOTH (explicit absence, never a guess) — give
+// repeated invocations distinct phases to keep their digests attributable.
+// ---------------------------------------------------------------------------
+
+export function emitDigest<S extends string>(rt: WorkflowRuntime, d: TypedPhaseDigest<S>): void {
+  rt.log(formatDigest(d))
 }
 
 // ---------------------------------------------------------------------------
@@ -137,5 +194,29 @@ export function applyCap<T>(
   return {
     kept: items.slice(0, cap),
     truncated: items.length - cap,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// assertAgentTypeOption() — validate an optional per-role agentType routing input
+//
+// The `<role>Type` options (taskType, generatorType, judgeType, …) route a role's
+// agents through a custom subagent type (the Agent tool's `agentType`), e.g.
+// 'codex:codex-rescue' or 'workflow-toolbox:opencode-verifier' — the mechanism for
+// cross-family decorrelation. Mirrors adversarialVerification's verifierType guard:
+// omit (undefined) for the standard Claude subagent; a defined-but-blank string is a
+// config error (it would spawn an invalid empty agentType), thrown synchronously at
+// entry like every other pattern config error.
+// ---------------------------------------------------------------------------
+
+export function assertAgentTypeOption(
+  stage: string,
+  name: string,
+  value: string | undefined,
+): void {
+  if (value !== undefined && value.trim().length === 0) {
+    throw new Error(
+      `${stage}: ${name} must be a non-empty subagent-type string (e.g. 'codex:codex-rescue') — omit it for the standard subagent`,
+    )
   }
 }

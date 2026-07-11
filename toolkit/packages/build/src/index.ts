@@ -23,8 +23,8 @@
 // define-workflow: workflow declaration and input normalization
 // ---------------------------------------------------------------------------
 
-export { defineWorkflow, normalizeArgs } from './define-workflow.js'
-export type { WorkflowMeta, DefinedWorkflow } from './define-workflow.js'
+export { defineWorkflow, normalizeArgs, parseConfig } from './define-workflow.js'
+export type { WorkflowMeta, DefinedWorkflow, WorkflowConfig } from './define-workflow.js'
 
 // ---------------------------------------------------------------------------
 // lint: workflow source linter (pure string analysis; validate-workflow.mjs is derived from this module)
@@ -39,3 +39,16 @@ export type { LintResult } from './lint.js'
 
 export { bundleWorkflow } from './bundle.js'
 export type { BundleResult } from './bundle.js'
+
+// ---------------------------------------------------------------------------
+// define-pipeline / bundle-pipeline: ORCHESTRATOR pipeline authoring (I5) — the
+// declarative PipelineSpec the observe-ui pipeline runner consumes, NOT the sandbox
+// `pipeline()` primitive a defineWorkflow-bundled script calls (see docs/public/adr/0008 for
+// the vocabulary convention). No sandbox-pure subpath needed here — a pipeline entry is
+// never bundled into a Workflow-sandbox artifact, so it may import this root freely.
+// ---------------------------------------------------------------------------
+
+export { definePipeline } from './define-pipeline.js'
+export type { DefinedPipeline } from './define-pipeline.js'
+export { bundlePipeline } from './bundle-pipeline.js'
+export type { BundlePipelineResult } from './bundle-pipeline.js'

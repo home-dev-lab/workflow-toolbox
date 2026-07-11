@@ -44,12 +44,31 @@
 //   evolving failureSummary, so mid-loop iterations of the FAILED task re-run —
 //   that is exactly the work that must be redone.)
 
-import { defineWorkflow } from '@workflow-toolbox/build/define'
-import { loopUntilDone, relativizeUnder, warn } from '@workflow-toolbox/patterns'
-import type { PatternStats } from '@workflow-toolbox/patterns'
+import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
+import { collectTrail, loopUntilDone, relativizeUnder, warn } from '@workflow-toolbox/patterns'
+import type { PatternStats, TrailRecord } from '@workflow-toolbox/patterns'
 import { BEST_MODEL } from '@workflow-toolbox/runtime'
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
+import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
+import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import type { FromSchema } from 'json-schema-to-ts'
+
+// ---------------------------------------------------------------------------
+// Per-stage effort defaults (Class B/C launch-time tuning — see parseConfig).
+// A launch-time `args.effort.<role>` override (parsed into `input.effort`) can
+// retune any of these without a source edit, via resolveEffort. 'check' and
+// 'integration' are clamped to a 'high' FLOOR (resolveVerifierEffort) — an
+// override may only RAISE them, mirroring the BEST_MODEL model-floor guardrail
+// already pinned at their call sites. 'mechanical' covers every agent that
+// only runs a verbatim shell command and reports what happened (setup, per-wave
+// worktree provisioning, the per-task setup command, the finalize/merge/revert/
+// cleanup git steps) — none of them make a judgment call.
+// ---------------------------------------------------------------------------
+const LOAD_EFFORT: EffortAlias = 'low'                // Load: verbatim artifact read
+const RED_EFFORT: EffortAlias = 'high'                // Implement: test-writer
+const GREEN_EFFORT: EffortAlias = 'high'              // Implement: implementer
+const CHECK_EFFORT_DEFAULT: EffortAlias = 'high'      // Check: fresh-evidence checker (floor 'high')
+const MECHANICAL_EFFORT: EffortAlias = 'low'          // Setup/Merge: verbatim command runners
+const INTEGRATION_EFFORT_DEFAULT: EffortAlias = 'high' // Merge: integration checker (floor 'high')
 
 // ---------------------------------------------------------------------------
 // Input contract — the approved PlanArtifact from dev-plan
@@ -95,7 +114,23 @@ interface PlanArtifact {
 }
 
 export interface DevImplementInput {
-  artifact: PlanArtifact
+  /** The approved PlanArtifact, supplied INLINE in the args. Mutually exclusive
+   *  with `artifactPath`: parseInput guarantees exactly one of the two is
+   *  non-null. null means "load it from disk" — see `artifactPath`. */
+  artifact: PlanArtifact | null
+  /** Path to a JSON file holding the approved PlanArtifact, as an alternative to
+   *  inlining `artifact` (a real artifact can be ~60 KB; inlining that in the
+   *  Workflow `args` is fragile and was the friction this input removes). The
+   *  workflow sandbox has no filesystem, so run() resolves it through a read
+   *  AGENT at start, JSON.parses the verbatim bytes, then runs the SAME
+   *  validation the inline path uses. null in inline mode.
+   *
+   *  PATH BASE: an ABSOLUTE path is recommended and unambiguous. A relative path
+   *  is resolved by the read agent against ITS working directory — empirically
+   *  the Claude Code session cwd (verified live 2026-06-21), NOT the artifact's
+   *  context.projectDir (which isn't known until the file is read). Prefer
+   *  absolute to avoid depending on where the session was launched. */
+  artifactPath: string | null
   /** "sequential" (default, no git required) or "worktree" (parallel waves of
    *  per-task git worktrees + a merge step; git repo REQUIRED). */
   mutation: 'sequential' | 'worktree'
@@ -134,10 +169,28 @@ export interface DevImplementInput {
    *  Default false: a locked signing agent mid-run would kill merges opaquely;
    *  the operator owns/squashes the final history. */
   signCommits: boolean
-  /** Warnings produced by task-file path normalization in parseInput (which is
-   *  pure and has no rt to log to) — surfaced via warn() at run start so they
-   *  land in both rt.log and the report's warnings[]. */
+  /** Warnings produced by task-file path normalization (which is pure and has
+   *  no rt to log to) — surfaced via warn() at run start so they land in both
+   *  rt.log and the report's warnings[]. In artifactPath mode normalization runs
+   *  AFTER the disk read, so these are merged in by resolveArtifactInput. */
   pathWarnings: string[]
+  /** Optional per-ROLE reasoning-effort overrides (Class B/C, parsed by the
+   *  shared `parseConfig` helper from `args.effort`), e.g.
+   *  `args: { artifact, effort: { green: 'xhigh' } }`. Role keys: 'load', 'red',
+   *  'green', 'check', 'mechanical' (setup/worktree-provisioning/prepare/
+   *  finalize/merge/revert/cleanup), 'integration'. A role's value may also be
+   *  the literal 'auto' (keep THIS role's own committed default). null = no
+   *  overrides. Resolved per-stage via resolveEffort; 'check'/'integration'
+   *  are additionally clamped to a 'high' floor via resolveVerifierEffort. */
+  effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
+}
+
+/** A DevImplementInput whose artifact has been RESOLVED to a concrete value:
+ *  inline mode passes through unchanged; artifactPath mode reads + validates the
+ *  file first (see resolveArtifactInput). `artifact` is non-null here, so the
+ *  run body and runWorktree consume this narrowed type — never the raw input. */
+type ResolvedDevImplementInput = Omit<DevImplementInput, 'artifact' | 'artifactPath'> & {
+  artifact: PlanArtifact
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +238,24 @@ const CHECK_RESULT_SCHEMA = {
 } as const satisfies JsonSchema
 
 type CheckResult = FromSchema<typeof CHECK_RESULT_SCHEMA>
+
+// Load stage output (artifactPath mode only) — the read agent returns the
+// PlanArtifact file's VERBATIM bytes as a single string for the workflow to
+// JSON.parse. `content` carries the raw file text (the sandbox has no fs, so an
+// agent is the only bridge); `found` distinguishes a genuine read from a
+// missing/unreadable path so the failure can be reported precisely.
+const READ_RESULT_SCHEMA = {
+  type: 'object',
+  properties: {
+    found: { type: 'boolean' },
+    content: { type: 'string' },
+    note: { type: 'string' },
+  },
+  required: ['found', 'content', 'note'],
+  additionalProperties: false,
+} as const satisfies JsonSchema
+
+type ReadResult = FromSchema<typeof READ_RESULT_SCHEMA>
 
 // ---- Worktree-mode schemas (all evidence-bearing — never bare booleans) ----
 
@@ -349,6 +420,9 @@ interface DevImplementOutput {
   integrationFailed: number
   /** Per-task loop envelope stats, keyed by task id. */
   stats: Record<string, PatternStats>
+  /** Combined trail of every task's TDD loop (collectTrail, in task-run order).
+   *  Empty when no task's loop ran (e.g. worktree mode with no git repository). */
+  envelope: { trail: TrailRecord[] }
   warnings: readonly string[]
 }
 
@@ -542,22 +616,17 @@ function validateGraph(tasks: PlanTask[]): void {
   }
 }
 
-function parseInput(raw: unknown): DevImplementInput {
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+// Pure PlanArtifact validation — the L3 re-validation gate. Extracted so BOTH
+// input modes run the IDENTICAL checks: inline {artifact} (in parseInput) and
+// {artifactPath} (in resolveArtifactInput, on the JSON read from disk). Returns
+// the normalized artifact plus any task-file path-normalization warnings.
+function validateArtifact(rawArtifact: unknown): { artifact: PlanArtifact; pathWarnings: string[] } {
+  if (rawArtifact === null || typeof rawArtifact !== 'object' || Array.isArray(rawArtifact)) {
     throw new Error(
-      'dev-implement: input must be an object with "artifact" (the approved PlanArtifact from ' +
-      'dev-plan), optional "mutation" ("sequential") and optional "maxIterationsPerTask" (number) — ' +
-      'received: ' + (raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw),
+      'dev-implement: the PlanArtifact must be an object — pass the approved artifact produced by dev-plan',
     )
   }
-  const obj = raw as Record<string, unknown>
-
-  if (obj['artifact'] === null || typeof obj['artifact'] !== 'object' || Array.isArray(obj['artifact']) || obj['artifact'] === undefined) {
-    throw new Error(
-      'dev-implement: "artifact" must be an object — pass the approved PlanArtifact produced by dev-plan',
-    )
-  }
-  const a = obj['artifact'] as Record<string, unknown>
+  const a = rawArtifact as Record<string, unknown>
 
   const goal = requireString(a, 'goal', 'artifact')
 
@@ -587,6 +656,58 @@ function parseInput(raw: unknown): DevImplementInput {
   const outOfScope = Array.isArray(a['outOfScope'])
     ? (a['outOfScope'] as unknown[]).filter((r): r is string => typeof r === 'string')
     : []
+
+  return { artifact: { goal, context, tasks, risks, outOfScope }, pathWarnings }
+}
+
+function parseInput(raw: unknown): DevImplementInput {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(
+      'dev-implement: input must be an object with either "artifact" (the approved PlanArtifact ' +
+      'from dev-plan) or "artifactPath" (a path to a JSON file holding it), plus optional "mutation" ' +
+      '("sequential") and "maxIterationsPerTask" (number) — ' +
+      'received: ' + (raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw),
+    )
+  }
+  const obj = raw as Record<string, unknown>
+
+  // The artifact may be supplied INLINE (obj.artifact) or by PATH
+  // (obj.artifactPath) — exactly one. Path mode defers the actual read +
+  // validation to run start (the sandbox has no filesystem); inline mode
+  // validates here so a bad hand-edited artifact fails before any agent runs.
+  const hasArtifact = obj['artifact'] !== undefined && obj['artifact'] !== null
+  const hasPath = obj['artifactPath'] !== undefined && obj['artifactPath'] !== null
+  if (hasArtifact && hasPath) {
+    throw new Error(
+      'dev-implement: pass EXACTLY ONE of "artifact" (the inline PlanArtifact) or "artifactPath" ' +
+      '(a path to a JSON file holding it) — both were supplied',
+    )
+  }
+  if (!hasArtifact && !hasPath) {
+    throw new Error(
+      'dev-implement: input must supply either "artifact" (the approved PlanArtifact from dev-plan) ' +
+      'or "artifactPath" (a path to a JSON file holding it)',
+    )
+  }
+
+  let artifact: PlanArtifact | null = null
+  let artifactPath: string | null = null
+  let pathWarnings: string[] = []
+  if (hasPath) {
+    if (typeof obj['artifactPath'] !== 'string' || obj['artifactPath'].trim().length === 0) {
+      throw new Error(
+        'dev-implement: "artifactPath" must be a non-empty string path to a JSON file holding the ' +
+        'approved PlanArtifact',
+      )
+    }
+    artifactPath = obj['artifactPath']
+    // artifact + pathWarnings stay deferred: resolveArtifactInput reads the file
+    // via an agent at run start, then runs validateArtifact on its contents.
+  } else {
+    const validated = validateArtifact(obj['artifact'])
+    artifact = validated.artifact
+    pathWarnings = validated.pathWarnings
+  }
 
   if (obj['mutation'] !== undefined && obj['mutation'] !== 'sequential' && obj['mutation'] !== 'worktree') {
     throw new Error(
@@ -674,8 +795,14 @@ function parseInput(raw: unknown): DevImplementInput {
     implementerType = obj['implementerType']
   }
 
+  // Optional Class B/C per-role effort overrides, validated by the shared
+  // parseConfig helper. It reads only the recognized `effort` slice and
+  // IGNORES dev-implement's bespoke artifact/mutation/implementer* keys.
+  const effort = parseConfig(obj).effort ?? null
+
   return {
-    artifact: { goal, context, tasks, risks, outOfScope },
+    artifact,
+    artifactPath,
     mutation,
     maxIterationsPerTask,
     implementerModel,
@@ -683,6 +810,7 @@ function parseInput(raw: unknown): DevImplementInput {
     worktreeSetupCommand,
     worktreeRoot,
     signCommits,
+    effort,
     pathWarnings,
   }
 }
@@ -751,6 +879,9 @@ interface TddOutcome {
   evidence: string
   lastFailure: string
   stoppedBy: string
+  /** The loopUntilDone trail for this task's TDD loop — collected by the
+   *  caller into the composition's `envelope.trail` (collectTrail). */
+  trail: TrailRecord[]
 }
 
 // ---------------------------------------------------------------------------
@@ -855,6 +986,7 @@ async function runTaskTddLoop(
   maxIterationsPerTask: number,
   implementerModel: ModelAlias,
   implementerType: string | null,
+  effort: { red: EffortAlias; green: EffortAlias; check: EffortAlias },
   warnings: string[],
   stats: Record<string, PatternStats>,
 ): Promise<TddOutcome> {
@@ -892,6 +1024,7 @@ async function runTaskTddLoop(
             schema: RED_RESULT_SCHEMA,
             label: `dev-implement:red:${task.id}`,
             phase: 'Implement',
+            effort: effort.red,
           },
         )
         if (red === null) {
@@ -923,6 +1056,7 @@ async function runTaskTddLoop(
           // High-volume implementer stage — tiered by the implementerModel knob
           // (default 'sonnet'). The checker below is pinned to BEST_MODEL.
           model: implementerModel,
+          effort: effort.green,
           // Optional specialist subagent type (implementerType knob). Omitted
           // when null → standard subagent (default). Routes the implementer
           // ONLY; the runtime fails fast on an unknown type.
@@ -955,6 +1089,7 @@ async function runTaskTddLoop(
           // stays strong independent of the session model precisely because
           // the implementer above may be tiered down.
           model: BEST_MODEL,
+          effort: effort.check,
         },
       )
       if (check === null) {
@@ -981,6 +1116,7 @@ async function runTaskTddLoop(
     evidence: outcome.state.evidence,
     lastFailure: outcome.state.lastFailure,
     stoppedBy: outcome.stoppedBy,
+    trail: loopResult.trail,
   }
 }
 
@@ -1019,7 +1155,92 @@ function skippedRecord(task: PlanTask, blockedBy: string[]): ReportTask {
   }
 }
 
-async function run(rt: WorkflowRuntime, input: DevImplementInput): Promise<DevImplementOutput> {
+// ---------------------------------------------------------------------------
+// Artifact resolution — bridge the no-filesystem sandbox for artifactPath mode.
+//
+// parseInput leaves the artifact unresolved when only a path was supplied (it
+// is pure, has no rt, and the sandbox cannot read files). At run start a read
+// AGENT — the sole filesystem bridge — returns the file's VERBATIM bytes, which
+// we JSON.parse and run through the SAME validateArtifact gate the inline path
+// uses. Inline mode passes through untouched: NO agent is spawned (so dev-full's
+// in-memory composition and every existing caller are byte-for-byte unchanged).
+//
+// FAITHFULNESS LIMIT (documented, accepted for this dev convenience): a large
+// artifact is transported through an agent's output, so a silently paraphrased
+// string field cannot be structurally detected. JSON.parse + validateArtifact
+// catch any STRUCTURAL corruption (truncation, bad graph, missing fields), and
+// the downstream fresh-evidence checker — which reads the REAL test output,
+// never the prompt — is the actual safety net, so the blast radius of value
+// drift is a slightly degraded implementer prompt, not a wrong "done".
+// ---------------------------------------------------------------------------
+async function resolveArtifactInput(
+  rt: WorkflowRuntime,
+  input: DevImplementInput,
+): Promise<ResolvedDevImplementInput> {
+  // Inline mode (the common path, incl. dev-full's composition): parseInput
+  // already validated the artifact — pass through, spawn nothing.
+  if (input.artifact !== null) {
+    return { ...input, artifact: input.artifact }
+  }
+
+  // Path mode: artifactPath is non-null here (parseInput enforces the XOR), but
+  // narrow defensively rather than assert.
+  const artifactPath = input.artifactPath
+  if (artifactPath === null) {
+    throw new Error('dev-implement: internal error — neither artifact nor artifactPath after parseInput')
+  }
+
+  rt.phase('Load')
+  const read = await rt.agent<ReadResult>(
+    `You are the plan-artifact loader. Read the plan artifact json file at the path ` +
+    `"${artifactPath}" and return its EXACT, VERBATIM contents — do not reformat, re-indent, ` +
+    `summarize, truncate, or alter a single byte (it is JSON that will be parsed programmatically ` +
+    `and any change corrupts the run). Use a raw read (e.g. \`cat\` the file, or the Read tool). ` +
+    `This is a strictly READ-ONLY task: do NOT write, edit, move, rename, delete, or run any ` +
+    `command that modifies the file at this path or anything else on disk — read and return only. ` +
+    `If the path is relative, resolve it against your current working directory. ` +
+    `If the file does not exist or cannot be read, set found=false.\n` +
+    `Return { "found": true|false, "content": "<the exact file contents, or empty string if not ` +
+    `found>", "note": "<what you saw — e.g. the byte/line count read, or the read error>" }`,
+    {
+      schema: READ_RESULT_SCHEMA,
+      label: 'dev-implement:load-artifact',
+      phase: 'Load',
+      effort: resolveEffort(input.effort?.['load'], LOAD_EFFORT),
+    },
+  )
+
+  if (read === null || !read.found || read.content.trim().length === 0) {
+    throw new Error(
+      `dev-implement: could not read the PlanArtifact from artifactPath "${artifactPath}"` +
+      (read === null
+        ? ' (the loader agent died)'
+        : !read.found
+          ? ` — ${read.note || 'file not found'}`
+          : ' — the file was empty'),
+    )
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(read.content)
+  } catch (err) {
+    throw new Error(
+      `dev-implement: the file at artifactPath "${artifactPath}" is not valid JSON ` +
+      `(${err instanceof Error ? err.message : String(err)}) — it must contain the approved ` +
+      `PlanArtifact serialized as JSON`,
+    )
+  }
+
+  const { artifact, pathWarnings } = validateArtifact(parsed)
+  return { ...input, artifact, pathWarnings: [...input.pathWarnings, ...pathWarnings] }
+}
+
+async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<DevImplementOutput> {
+  // Resolve the artifact first (a no-op in inline mode; a disk read via agent in
+  // artifactPath mode), so the rest of the body — and runWorktree — consume a
+  // guaranteed-non-null artifact (ResolvedDevImplementInput).
+  const input = await resolveArtifactInput(rt, rawInput)
   if (input.mutation === 'worktree') return runWorktree(rt, input)
 
   const warnings: string[] = []
@@ -1027,12 +1248,25 @@ async function run(rt: WorkflowRuntime, input: DevImplementInput): Promise<DevIm
   const stats: Record<string, PatternStats> = {}
   const { artifact, maxIterationsPerTask } = input
 
+  // Resolve the TDD loop's per-role effort ONCE: a launch-time `args.effort.<role>`
+  // override wins when valid, else the stage-class default. 'check' is
+  // additionally floored at 'high' — see resolveVerifierEffort.
+  const taskEffort = {
+    red: resolveEffort(input.effort?.['red'], RED_EFFORT),
+    green: resolveEffort(input.effort?.['green'], GREEN_EFFORT),
+    check: resolveVerifierEffort(input.effort?.['check'], CHECK_EFFORT_DEFAULT),
+  }
+
   rt.phase('Implement')
   rt.phase('Check')
 
   const ordered = topologicalOrder(artifact.tasks)
   const statusById = new Map<string, TaskStatus>()
   const reportTasks: ReportTask[] = []
+  // One entry per task whose TDD loop actually ran (skipped tasks never call
+  // runTaskTddLoop, so they contribute nothing) — folded into envelope.trail
+  // via collectTrail at Report time, in run order.
+  const taskTrails: Array<{ trail: TrailRecord[] }> = []
 
   // SEQUENTIAL mutation: one task at a time, in dependency order. No git
   // required — the working tree plus the real testCommand output are the only
@@ -1049,8 +1283,9 @@ async function run(rt: WorkflowRuntime, input: DevImplementInput): Promise<DevIm
     }
 
     const outcome = await runTaskTddLoop(
-      rt, artifact, task, artifact.context.projectDir, maxIterationsPerTask, input.implementerModel, input.implementerType, warnings, stats,
+      rt, artifact, task, artifact.context.projectDir, maxIterationsPerTask, input.implementerModel, input.implementerType, taskEffort, warnings, stats,
     )
+    taskTrails.push(outcome)
     if (outcome.green) {
       statusById.set(task.id, 'succeeded')
       reportTasks.push({
@@ -1095,6 +1330,7 @@ async function run(rt: WorkflowRuntime, input: DevImplementInput): Promise<DevIm
     tasks: reportTasks,
     ...tallies,
     stats,
+    envelope: { trail: collectTrail(...taskTrails) },
     warnings,
   }
 }
@@ -1116,7 +1352,7 @@ async function run(rt: WorkflowRuntime, input: DevImplementInput): Promise<DevIm
 //   - sign machine commits unless signCommits is true.
 // ---------------------------------------------------------------------------
 
-async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promise<DevImplementOutput> {
+async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput): Promise<DevImplementOutput> {
   const warnings: string[] = []
   for (const w of input.pathWarnings) warn(rt, warnings, w)
   const stats: Record<string, PatternStats> = {}
@@ -1127,6 +1363,19 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
   // Machine commits are unsigned by default: a locked signing agent mid-run
   // would kill merges opaquely; the operator owns/squashes the final history.
   const signFlag = signCommits ? '' : '-c commit.gpgsign=false '
+
+  // Resolve per-role effort ONCE: a launch-time `args.effort.<role>` override
+  // wins when valid, else the stage-class default. 'check'/'integration' are
+  // additionally floored at 'high' — see resolveVerifierEffort. 'mechanical'
+  // covers every verbatim-command-runner agent below (setup, per-wave worktree
+  // provisioning, prepare, finalize, merge, revert, cleanup).
+  const taskEffort = {
+    red: resolveEffort(input.effort?.['red'], RED_EFFORT),
+    green: resolveEffort(input.effort?.['green'], GREEN_EFFORT),
+    check: resolveVerifierEffort(input.effort?.['check'], CHECK_EFFORT_DEFAULT),
+  }
+  const mechanicalEffort = resolveEffort(input.effort?.['mechanical'], MECHANICAL_EFFORT)
+  const integrationEffort = resolveVerifierEffort(input.effort?.['integration'], INTEGRATION_EFFORT_DEFAULT)
 
   // -------------------------------------------------------------------------
   // Phase 'Setup' — git availability (parseInput is pure and cannot check it).
@@ -1139,7 +1388,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
     `\`git rev-parse --is-inside-work-tree\`, then capture the current HEAD with ` +
     `\`git rev-parse HEAD\` and the repository root with \`git rev-parse --show-toplevel\`.\n` +
     `Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<absolute path or empty>", "note": "<what you saw>" }`,
-    { schema: SETUP_RESULT_SCHEMA, label: 'dev-implement:setup', phase: 'Setup' },
+    { schema: SETUP_RESULT_SCHEMA, label: 'dev-implement:setup', phase: 'Setup', effort: mechanicalEffort },
   )
   if (setup === null || !setup.isGitRepo) {
     warn(
@@ -1158,7 +1407,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
       evidence: '',
       note: 'skipped — worktree mode requires a git repository',
     }))
-    return { goal: artifact.goal, tasks: reportTasks, ...tally(reportTasks), stats, warnings }
+    return { goal: artifact.goal, tasks: reportTasks, ...tally(reportTasks), stats, envelope: { trail: [] }, warnings }
   }
 
   // Worktree geometry — derived from the GIT ROOT, not projectDir: a worktree
@@ -1199,6 +1448,9 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
   const statusById = new Map<string, TaskStatus>()
   const reportTasks: ReportTask[] = []
   const merged: Array<{ id: string; path: string; branch: string }> = []
+  // One entry per task whose TDD loop actually ran (prepare-failed chains never
+  // reach runTaskTddLoop) — folded into envelope.trail via collectTrail.
+  const taskTrails: Array<{ trail: TrailRecord[] }> = []
 
   const waves = waveLevels(artifact.tasks)
   for (let w = 0; w < waves.length; w++) {
@@ -1228,7 +1480,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
       `\nIf a path already exists, do NOT force or remove it — report that task in "failures" ` +
       `(a stale worktree from a previous run is the operator's call to delete).\n` +
       `Return { "created": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>"}], "note": "<summary>" }`,
-      { schema: WT_CREATE_SCHEMA, label: `dev-implement:worktrees:wave${w}`, phase: 'Setup' },
+      { schema: WT_CREATE_SCHEMA, label: `dev-implement:worktrees:wave${w}`, phase: 'Setup', effort: mechanicalEffort },
     )
     if (create === null) {
       warn(rt, warnings, `dev-implement: worktree provisioning agent died for wave ${w} — the whole wave fails`)
@@ -1291,7 +1543,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
             `VERBATIM setup command with ${taskWorkdir(task.id)} as the working directory (fresh worktrees ` +
             `lack installed dependencies; this makes the test command runnable):\n${worktreeSetupCommand}\n` +
             `Return { "ok": true|false, "note": "<what happened>" }`,
-            { schema: PREPARE_RESULT_SCHEMA, label: `dev-implement:prepare:${task.id}`, phase: 'Setup' },
+            { schema: PREPARE_RESULT_SCHEMA, label: `dev-implement:prepare:${task.id}`, phase: 'Setup', effort: mechanicalEffort },
           )
           if (prep === null || !prep.ok) {
             return { kind: 'prepare-failed', note: prep === null ? 'preparation agent died' : prep.note }
@@ -1299,7 +1551,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
         }
 
         const outcome = await runTaskTddLoop(
-          rt, artifact, task, taskWorkdir(task.id), maxIterationsPerTask, input.implementerModel, input.implementerType, warnings, stats,
+          rt, artifact, task, taskWorkdir(task.id), maxIterationsPerTask, input.implementerModel, input.implementerType, taskEffort, warnings, stats,
         )
         if (!outcome.green) return { kind: 'tdd-failed', outcome }
 
@@ -1320,7 +1572,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
           `reach the shell unquoted):\n` +
           `<<<MESSAGE\n${wtBranch(task.id)}: ${safeTitle}\nMESSAGE>>>\n` +
           `Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happened>" }`,
-          { schema: FINALIZE_RESULT_SCHEMA, label: `dev-implement:finalize:${task.id}`, phase: 'Implement' },
+          { schema: FINALIZE_RESULT_SCHEMA, label: `dev-implement:finalize:${task.id}`, phase: 'Implement', effort: mechanicalEffort },
         )
         if (fin === null || !fin.committed) {
           return { kind: 'finalize-failed', outcome, note: fin === null ? 'finalize agent died' : fin.note }
@@ -1334,6 +1586,10 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
     ready.forEach((task, i) => {
       const result = chainResults[i] ?? null
       const kept = { worktreePath: wtPath(task.id), branch: wtBranch(task.id) }
+      // Every kind but 'prepare-failed' ran a TDD loop and carries a trail.
+      if (result !== null && result.kind !== 'prepare-failed') {
+        taskTrails.push(result.outcome)
+      }
       if (result === null) {
         statusById.set(task.id, 'failed')
         reportTasks.push({
@@ -1380,7 +1636,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
         `yourself. Evidence required: the pre-merge sha and the resulting sha (or '' if aborted).\n` +
         `Return { "merged": true|false, "conflict": true|false, "preMergeSha": "<sha>", ` +
         `"mergeSha": "<sha or empty>", "note": "<what git actually said>" }`,
-        { schema: MERGE_RESULT_SCHEMA, label: `dev-implement:merge:${task.id}`, phase: 'Merge' },
+        { schema: MERGE_RESULT_SCHEMA, label: `dev-implement:merge:${task.id}`, phase: 'Merge', effort: mechanicalEffort },
       )
       if (merge === null || merge.conflict || !merge.merged) {
         statusById.set(task.id, 'merge-failed')
@@ -1419,7 +1675,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
         `saw an isolated worktree; you are checking that the MERGED whole still passes).\n` +
         `Return { "green": true|false, "evidence": "<what the run actually showed>", ` +
         `"failureSummary": "<empty string if green, else the failures>" }`,
-        { schema: CHECK_RESULT_SCHEMA, label: `dev-implement:integration:${task.id}`, phase: 'Merge' },
+        { schema: CHECK_RESULT_SCHEMA, label: `dev-implement:integration:${task.id}`, phase: 'Merge', effort: integrationEffort },
       )
       if (integ === null || !integ.green) {
         if (integ === null) {
@@ -1429,7 +1685,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
           `You are the merge revert agent — revert the failed merge: from ${ctx.projectDir} run ` +
           `\`git reset --hard ${merge.preMergeSha}\` and confirm with \`git rev-parse HEAD\`.\n` +
           `Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }`,
-          { schema: REVERT_RESULT_SCHEMA, label: `dev-implement:revert:${task.id}`, phase: 'Merge' },
+          { schema: REVERT_RESULT_SCHEMA, label: `dev-implement:revert:${task.id}`, phase: 'Merge', effort: mechanicalEffort },
         )
         // The revert agent's self-report is NOT trusted on its own: the schema's
         // contract is that the resulting HEAD equals the preMergeSha, and the
@@ -1475,7 +1731,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
       merged.map((m) => `${m.id}: ${m.path} (${m.branch})`).join('\n') +
       `\nDo NOT touch any other worktree or branch.\n` +
       `Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>"}], "note": "<summary>" }`,
-      { schema: CLEANUP_RESULT_SCHEMA, label: 'dev-implement:cleanup', phase: 'Merge' },
+      { schema: CLEANUP_RESULT_SCHEMA, label: 'dev-implement:cleanup', phase: 'Merge', effort: mechanicalEffort },
     )
     if (cleanup === null) {
       warn(rt, warnings, `dev-implement: cleanup agent died — merged worktrees left on disk under ${wtRoot} (manual: git worktree remove)`)
@@ -1512,6 +1768,7 @@ async function runWorktree(rt: WorkflowRuntime, input: DevImplementInput): Promi
     tasks: reportTasks,
     ...tallies,
     stats,
+    envelope: { trail: collectTrail(...taskTrails) },
     warnings,
   }
 }
@@ -1533,9 +1790,12 @@ export default defineWorkflow({
       'an isolated git worktree, then merge sequentially with an integration check after every ' +
       'merge; conflicts abort conservatively and failure worktrees are kept for forensics).',
     whenToUse:
-      'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass ' +
-      '{ artifact } (plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and ' +
-      'for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. ' +
+      'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass either ' +
+      '{ artifact } (the inline PlanArtifact) OR { artifactPath } (a path — ABSOLUTE recommended — to ' +
+      'a JSON file holding it; use this when the artifact is large or was produced/edited on disk, to ' +
+      'avoid inlining ~60 KB in the args; it is read from disk and validated identically). Plus optional ' +
+      'mutation/maxIterationsPerTask/implementerModel/implementerType, and ' +
+      'for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits, as the workflow args. ' +
       'implementerModel tiers the per-iteration implementer (default "sonnet"); the independent ' +
       'checker stays on the strongest tier regardless. implementerType (optional) routes the ' +
       'implementer to a SPECIALIST subagent type that must exist in your session registry (the ' +
@@ -1545,6 +1805,7 @@ export default defineWorkflow({
       'paths under an absolute projectDir are auto-relativized (with a warning); any other ' +
       'absolute path is rejected at parse time in both modes.',
     phases: [
+      { title: 'Load', detail: 'artifactPath mode: read the PlanArtifact JSON from disk via an agent (no-op when artifact is inline)' },
       { title: 'Setup', detail: 'Worktree mode: git check, per-wave worktree provisioning, setup command' },
       { title: 'Implement', detail: 'Per task: write failing tests, implement (TDD loop) — parallel within a wave in worktree mode' },
       { title: 'Check', detail: 'Independent fresh-evidence checker runs the real test command per iteration' },

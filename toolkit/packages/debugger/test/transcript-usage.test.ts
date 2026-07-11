@@ -9,7 +9,16 @@
 // skipped, an empty transcript yields zeros, and it never throws.
 
 import { describe, it, expect } from 'vitest'
-import { parseTranscriptUsage, emptyUsage, addUsage } from '../src/transcript-usage.js'
+import {
+  parseTranscriptUsage,
+  parseTranscriptCompaction,
+  buildCompactionReport,
+  mergeCompactionReports,
+  emptyCompactionReport,
+  emptyUsage,
+  addUsage,
+  type TranscriptCompaction,
+} from '../src/transcript-usage.js'
 
 /** Build one assistant transcript line with a usage block. */
 function line(
@@ -96,5 +105,185 @@ describe('emptyUsage / addUsage', () => {
     const b = { inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheCreationTokens: 40 }
     expect(addUsage(a, b)).toEqual({ inputTokens: 11, outputTokens: 22, cacheReadTokens: 33, cacheCreationTokens: 44 })
     expect(a).toEqual({ inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheCreationTokens: 4 }) // unmutated
+  })
+})
+
+// parseTranscriptCompaction(jsonl) surfaces auto-compaction of a fleet agent — the
+// `type:'system', subtype:'compact_boundary'` event the run journal's post-compaction
+// totalTokens erases. `compactMetadata` fields are read defensively (SDK guarantees only
+// { trigger, preTokens }; the runtime also emits postTokens / cumulativeDroppedTokens /
+// durationMs). The shapes below are lifted from a real transcript (run wf_de6d0068-d7e).
+
+/** Build a real-shaped compact_boundary system line with the given metadata. */
+function compactLine(meta: Record<string, unknown>): string {
+  return JSON.stringify({ type: 'system', subtype: 'compact_boundary', isSidechain: true, compactMetadata: meta })
+}
+
+describe('parseTranscriptCompaction — detection', () => {
+  it('extracts every compactMetadata field from a real-shaped boundary + the peak', () => {
+    const jsonl = [
+      line('m1', { i: 10, o: 4, cc: 63000 }), // pre-compaction turn
+      compactLine({ trigger: 'auto', preTokens: 198625, postTokens: 98958, cumulativeDroppedTokens: 99667, durationMs: 31948 }),
+      line('m2', { i: 10, o: 3, cr: 6437 }), // post-compaction turn
+    ].join('\n')
+    expect(parseTranscriptCompaction(jsonl)).toEqual({
+      compacted: true,
+      peakTokens: 198625,
+      events: [{ trigger: 'auto', preTokens: 198625, postTokens: 98958, droppedTokens: 99667, durationMs: 31948 }],
+    })
+  })
+
+  it('is defensive: an SDK-minimal { trigger, preTokens } boundary yields nulls for the rest', () => {
+    const r = parseTranscriptCompaction(compactLine({ trigger: 'auto', preTokens: 170000 }))
+    expect(r.compacted).toBe(true)
+    expect(r.peakTokens).toBe(170000)
+    expect(r.events[0]).toEqual({ trigger: 'auto', preTokens: 170000, postTokens: null, droppedTokens: null, durationMs: null })
+  })
+
+  it('records multiple boundaries and reports the MAX preTokens as the peak', () => {
+    const jsonl = [
+      compactLine({ trigger: 'auto', preTokens: 198000 }),
+      compactLine({ trigger: 'auto', preTokens: 205000 }),
+    ].join('\n')
+    const r = parseTranscriptCompaction(jsonl)
+    expect(r.events).toHaveLength(2)
+    expect(r.peakTokens).toBe(205000)
+  })
+})
+
+describe('parseTranscriptCompaction — tolerance (never throws)', () => {
+  it('a transcript with no boundary is not compacted', () => {
+    const jsonl = [line('m1', { i: 100, o: 10 }), JSON.stringify({ type: 'user', message: { content: 'hi' } })].join('\n')
+    expect(parseTranscriptCompaction(jsonl)).toEqual({ compacted: false, events: [], peakTokens: null })
+  })
+
+  it('skips malformed lines, non-system events, and other system subtypes', () => {
+    const jsonl = [
+      '{ not json',
+      JSON.stringify({ type: 'assistant', subtype: 'compact_boundary' }), // wrong type — not a system event
+      JSON.stringify({ type: 'system', subtype: 'attribution-snapshot' }), // other subtype
+      compactLine({ trigger: 'auto', preTokens: 190000 }),
+    ].join('\n')
+    const r = parseTranscriptCompaction(jsonl)
+    expect(r.events).toHaveLength(1)
+    expect(r.peakTokens).toBe(190000)
+  })
+
+  it('an empty transcript, or a boundary with no metadata, never throws', () => {
+    expect(parseTranscriptCompaction('')).toEqual({ compacted: false, events: [], peakTokens: null })
+    const noMeta = parseTranscriptCompaction(JSON.stringify({ type: 'system', subtype: 'compact_boundary' }))
+    expect(noMeta.compacted).toBe(true)
+    expect(noMeta.peakTokens).toBe(null)
+    expect(noMeta.events[0]).toEqual({ trigger: null, preTokens: null, postTokens: null, droppedTokens: null, durationMs: null })
+  })
+})
+
+// buildCompactionReport(perAgent) rolls per-agent TranscriptCompaction into a RUN-level ADVISORY
+// report (mirrors buildToolDenialReport): agentsCompacted, the worst peak (max preTokens across
+// agents), total dropped (sum of each agent's cumulative drop), and per-agent rows sorted
+// worst-pressure-first. emptyCompactionReport is the explicit not-compacted default.
+
+describe('buildCompactionReport — run-level advisory rollup', () => {
+  const comp = (peak: number, dropped: number | null, trigger: string | null = 'auto'): TranscriptCompaction => ({
+    compacted: true,
+    peakTokens: peak,
+    events: [{ trigger, preTokens: peak, postTokens: peak - (dropped ?? 0), droppedTokens: dropped, durationMs: 31948 }],
+  })
+
+  it('aggregates peak (max) + dropped (sum) across agents and carries the label, worst-first', () => {
+    const r = buildCompactionReport([
+      { agentId: 'a1', label: 'read:big', compaction: comp(198625, 99667) },
+      { agentId: 'a2', label: 'read:huge', compaction: comp(205000, 50000) },
+    ])
+    expect(r.compacted).toBe(true)
+    expect(r.agentsCompacted).toBe(2)
+    expect(r.peakTokens).toBe(205000) // max across agents
+    expect(r.droppedTokens).toBe(149667) // 99667 + 50000
+    expect(r.agents).toHaveLength(2)
+    // worst-pressure-first: a2 (peak 205000) precedes a1 (peak 198625)
+    expect(r.agents[0]).toMatchObject({ agentId: 'a2', label: 'read:huge', peakTokens: 205000, droppedTokens: 50000, trigger: 'auto', boundaries: 1 })
+  })
+
+  it('derives per-agent dropped as the MAX (cumulativeDroppedTokens is cumulative) across boundaries', () => {
+    const twoBoundary: TranscriptCompaction = {
+      compacted: true,
+      peakTokens: 205000,
+      events: [
+        { trigger: 'auto', preTokens: 198000, postTokens: null, droppedTokens: 99000, durationMs: null },
+        { trigger: 'auto', preTokens: 205000, postTokens: null, droppedTokens: 150000, durationMs: null }, // cumulative total
+      ],
+    }
+    const r = buildCompactionReport([{ agentId: 'a1', compaction: twoBoundary }])
+    expect(r.agents[0]!.droppedTokens).toBe(150000) // the cumulative max, NOT 99000+150000
+    expect(r.agents[0]!.boundaries).toBe(2)
+  })
+
+  it('reports the trigger of the PEAK boundary, so the Trigger column matches the Peak beside it', () => {
+    const mixed: TranscriptCompaction = {
+      compacted: true,
+      peakTokens: 205000,
+      events: [
+        { trigger: 'manual', preTokens: 150000, postTokens: null, droppedTokens: 40000, durationMs: null },
+        { trigger: 'auto', preTokens: 205000, postTokens: null, droppedTokens: 90000, durationMs: null }, // the peak
+      ],
+    }
+    const r = buildCompactionReport([{ agentId: 'a1', compaction: mixed }])
+    expect(r.agents[0]!.peakTokens).toBe(205000)
+    expect(r.agents[0]!.trigger).toBe('auto') // the PEAK boundary's trigger, not the first ('manual')
+  })
+
+  it('skips non-compacted entries defensively → empty report', () => {
+    const r = buildCompactionReport([{ agentId: 'a1', compaction: { compacted: false, events: [], peakTokens: null } }])
+    expect(r).toEqual(emptyCompactionReport())
+  })
+
+  it('is null-safe: an SDK-minimal boundary with no dropped yields null run-level dropped', () => {
+    const r = buildCompactionReport([{ agentId: 'a1', compaction: comp(170000, null) }])
+    expect(r.peakTokens).toBe(170000)
+    expect(r.droppedTokens).toBe(null)
+  })
+
+  it('emptyCompactionReport is an explicit not-compacted zero', () => {
+    expect(emptyCompactionReport()).toEqual({ agentsCompacted: 0, peakTokens: null, droppedTokens: null, agents: [], compacted: false })
+  })
+})
+
+// mergeCompactionReports — multi-stage pipeline rollup of CompactionReports.
+// Mirrors rollupPipelineDenials: concatenates all per-agent rows, recomputes peak (max)
+// and dropped (sum), re-sorts worst-peak-first. Empty stages are skipped (no agents).
+
+describe('mergeCompactionReports — pipeline-level advisory rollup', () => {
+  it('merges two stage reports: peak = max, dropped = sum, sorted worst-first', () => {
+    const stage1 = buildCompactionReport([
+      { agentId: 'a1', label: 'plan:read', compaction: { compacted: true, peakTokens: 180000, events: [{ trigger: 'auto', preTokens: 180000, postTokens: 80000, droppedTokens: 80000, durationMs: null }] } },
+    ])
+    const stage2 = buildCompactionReport([
+      { agentId: 'a2', label: 'impl:code', compaction: { compacted: true, peakTokens: 205000, events: [{ trigger: 'auto', preTokens: 205000, postTokens: 100000, droppedTokens: 50000, durationMs: null }] } },
+    ])
+    const merged = mergeCompactionReports([stage1, stage2])
+    expect(merged.compacted).toBe(true)
+    expect(merged.agentsCompacted).toBe(2)
+    expect(merged.peakTokens).toBe(205000) // max across both stages
+    expect(merged.droppedTokens).toBe(130000) // sum: 80000 + 50000
+    expect(merged.agents[0]!.agentId).toBe('a2') // worst-peak first
+    expect(merged.agents[1]!.agentId).toBe('a1')
+  })
+
+  it('empty array of reports yields the empty compaction report', () => {
+    expect(mergeCompactionReports([])).toEqual(emptyCompactionReport())
+  })
+
+  it('merging two empty (not-compacted) reports yields the empty report', () => {
+    expect(mergeCompactionReports([emptyCompactionReport(), emptyCompactionReport()])).toEqual(emptyCompactionReport())
+  })
+
+  it('merging a compacted + an empty report returns the compacted one unchanged', () => {
+    const stage = buildCompactionReport([
+      { agentId: 'a1', compaction: { compacted: true, peakTokens: 190000, events: [{ trigger: 'auto', preTokens: 190000, postTokens: 90000, droppedTokens: 75000, durationMs: null }] } },
+    ])
+    const merged = mergeCompactionReports([stage, emptyCompactionReport()])
+    expect(merged.agentsCompacted).toBe(1)
+    expect(merged.peakTokens).toBe(190000)
+    expect(merged.droppedTokens).toBe(75000)
   })
 })

@@ -1,8 +1,12 @@
 export const meta = {
   "name": "dev-implement",
   "description": "Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. Two mutation modes: \"sequential\" (default — one task at a time in dependency order, no git required) and \"worktree\" (git required — independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).",
-  "whenToUse": "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. implementerModel tiers the per-iteration implementer (default \"sonnet\"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.",
+  "whenToUse": "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass either { artifact } (the inline PlanArtifact) OR { artifactPath } (a path — ABSOLUTE recommended — to a JSON file holding it; use this when the artifact is large or was produced/edited on disk, to avoid inlining ~60 KB in the args; it is read from disk and validated identically). Plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits, as the workflow args. implementerModel tiers the per-iteration implementer (default \"sonnet\"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.",
   "phases": [
+    {
+      "title": "Load",
+      "detail": "artifactPath mode: read the PlanArtifact JSON from disk via an agent (no-op when artifact is inline)"
+    },
     {
       "title": "Setup",
       "detail": "Worktree mode: git check, per-wave worktree provisioning, setup command"
@@ -50,6 +54,65 @@ var __wt = (() => {
     default: () => dev_implement_workflow_default
   });
 
+  // ../packages/runtime/src/constants.ts
+  var BEST_MODEL = "opus";
+
+  // ../packages/runtime/src/digest.ts
+  var DIGEST_PREFIX = "[wt:digest]";
+  var LOOP_STAGE = "loopUntilDone";
+  var LOOP_ITER_MARKER = " \u27F2";
+  function formatDigest(d) {
+    const body = { stage: d.stage };
+    if (d.output !== void 0) body.output = d.output;
+    if (d.taken !== void 0) body.taken = d.taken;
+    if (d.notTaken !== void 0) body.notTaken = d.notTaken;
+    if (d.counts !== void 0) {
+      const counts = d.counts;
+      const sorted = {};
+      for (const k of Object.keys(counts).sort()) {
+        const v = counts[k];
+        if (v !== void 0) sorted[k] = v;
+      }
+      body.counts = sorted;
+    }
+    return `${DIGEST_PREFIX} ${JSON.stringify(body)}`;
+  }
+
+  // ../packages/runtime/src/prompt-tag.ts
+  var PROMPT_TAG_PREFIX = "<!-- wt-meta ";
+  function escapeValue(v) {
+    return v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\n", "&#10;");
+  }
+  function buildPromptTag(fields) {
+    const parts = [];
+    if (fields.label !== void 0) parts.push(`label="${escapeValue(fields.label)}"`);
+    if (fields.phase !== void 0) parts.push(`phase="${escapeValue(fields.phase)}"`);
+    if (parts.length === 0) return null;
+    return `${PROMPT_TAG_PREFIX}${parts.join(" ")} -->`;
+  }
+  function withPromptTags(rt) {
+    let currentPhase;
+    const agent = (prompt, opts) => {
+      const tag = buildPromptTag({ label: opts?.label, phase: opts?.phase ?? currentPhase });
+      const tagged = tag !== null && !prompt.startsWith(tag) ? `${tag}
+
+${prompt}` : prompt;
+      return rt.agent(tagged, opts);
+    };
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => {
+        currentPhase = title;
+        rt.phase(title);
+      },
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
+  }
+
   // ../packages/build/src/define-workflow.ts
   function normalizeArgs(raw) {
     if (raw === void 0) return void 0;
@@ -91,9 +154,95 @@ var __wt = (() => {
       async run(rt, rawArgs) {
         const normalized = normalizeArgs(rawArgs);
         const input = def.parseInput !== void 0 ? def.parseInput(normalized) : normalized;
-        return def.run(rt, input);
+        return def.run(withPromptTags(rt), input);
       }
     };
+  }
+  var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+  var EFFORT_ROLE_VALUES = ["low", "medium", "high", "xhigh", "max", "auto"];
+  var PER_AGENT_KEYS = ["model", "effort", "agentType", "isolation", "stallMs"];
+  function isRecord(v) {
+    return typeof v === "object" && v !== null && !Array.isArray(v);
+  }
+  function asNonEmptyString(v, where) {
+    if (typeof v !== "string" || v.trim().length === 0) {
+      throw new Error(`parseConfig: ${where} must be a non-empty string, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffort(v, where) {
+    if (typeof v !== "string" || !EFFORTS.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORTS.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffortRoleValue(v, where) {
+    if (typeof v !== "string" || !EFFORT_ROLE_VALUES.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORT_ROLE_VALUES.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function parsePerAgent(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: perAgent must be an object, got ${raw === null ? "null" : typeof raw}`);
+    for (const key of Object.keys(raw)) {
+      if (!PER_AGENT_KEYS.includes(key)) {
+        throw new Error(`parseConfig: unknown perAgent key "${key}" \u2014 expected one of ${PER_AGENT_KEYS.join(", ")}`);
+      }
+    }
+    const out = {};
+    if (raw.model !== void 0) out.model = asNonEmptyString(raw.model, "perAgent.model");
+    if (raw.effort !== void 0) out.effort = asEffort(raw.effort, "perAgent.effort");
+    if (raw.agentType !== void 0) out.agentType = asNonEmptyString(raw.agentType, "perAgent.agentType");
+    if (raw.isolation !== void 0) {
+      if (raw.isolation !== "worktree") {
+        throw new Error(`parseConfig: perAgent.isolation must be 'worktree' when set, got ${JSON.stringify(raw.isolation)}`);
+      }
+      out.isolation = "worktree";
+    }
+    if (raw.stallMs !== void 0) {
+      const n = raw.stallMs;
+      if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) {
+        throw new Error(`parseConfig: perAgent.stallMs must be a positive finite number, got ${JSON.stringify(n)}`);
+      }
+      out.stallMs = n;
+    }
+    return out;
+  }
+  function parseStringMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asNonEmptyString(v, `${where}.${k}`);
+    return out;
+  }
+  function parseEffortMap(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: effort must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`);
+    return out;
+  }
+  function parseNumberMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v !== "number" || !Number.isFinite(v)) {
+        throw new Error(`parseConfig: ${where}.${k} must be a finite number, got ${JSON.stringify(v)}`);
+      }
+      out[k] = v;
+    }
+    return out;
+  }
+  function parseConfig(raw) {
+    if (raw === void 0 || raw === null) return {};
+    if (!isRecord(raw)) {
+      throw new Error(`parseConfig: expected an object (or undefined), got ${typeof raw}`);
+    }
+    const config = {};
+    if (raw.perAgent !== void 0) config.perAgent = parsePerAgent(raw.perAgent);
+    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models");
+    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort);
+    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes");
+    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing");
+    return config;
   }
 
   // ../packages/patterns/src/envelope.ts
@@ -102,12 +251,24 @@ var __wt = (() => {
       stage,
       outcome: ok ? "ok" : "null",
       ...extra?.model !== void 0 ? { model: extra.model } : {},
+      ...extra?.effort !== void 0 ? { effort: extra.effort } : {},
       ...extra?.decision !== void 0 ? { decision: extra.decision } : {}
     };
+  }
+  function collectTrail(...results) {
+    const trail = [];
+    for (const r of results) {
+      if (r === null || r === void 0) continue;
+      trail.push(...r.trail);
+    }
+    return trail;
   }
   function warn(rt, warnings, message) {
     warnings.push(message);
     rt.log(message);
+  }
+  function emitDigest(rt, d) {
+    rt.log(formatDigest(d));
   }
 
   // ../packages/patterns/src/paths.ts
@@ -122,10 +283,8 @@ var __wt = (() => {
     return rel;
   }
 
-  // ../packages/runtime/src/constants.ts
-  var BEST_MODEL = "opus";
-
   // ../packages/patterns/src/loop-until-done.ts
+  var STAGE = LOOP_STAGE;
   async function loopUntilDone(rt, options) {
     const { initial, body, maxIterations, dryRounds, budgetFloor } = options;
     if (maxIterations !== void 0 && maxIterations < 1) {
@@ -154,10 +313,12 @@ var __wt = (() => {
     let iterationsDone = 0;
     let consecutiveDry = 0;
     let agentsSpawned = 0;
+    let currentIteration = 0;
     const countingRt = {
-      agent: (...args) => {
+      agent: (prompt, opts) => {
         agentsSpawned++;
-        return rt.agent(...args);
+        const label = opts?.label != null ? `${opts.label}${LOOP_ITER_MARKER}${currentIteration}` : `${STAGE}:iter:${currentIteration}`;
+        return rt.agent(prompt, { ...opts, label });
       },
       parallel: (thunks) => rt.parallel(thunks),
       pipeline: (...args) => rt.pipeline(...args),
@@ -197,11 +358,12 @@ var __wt = (() => {
           }
           return "maxIterations";
         }
+        currentIteration = iterationsDone + 1;
         const tick = await body(countingRt, state, iterationsDone + 1);
         const tickIndex = iterationsDone;
         state = tick.state;
         iterationsDone++;
-        trail.push(makeRecord(`loopUntilDone:tick:${tickIndex}`, tick.state !== null));
+        trail.push(makeRecord(`${STAGE}:tick:${tickIndex}`, tick.state !== null));
         if (tick.done === true) {
           trail[trail.length - 1].decision = "done";
           return "done";
@@ -225,6 +387,7 @@ var __wt = (() => {
       }
     };
     const stoppedBy = await runLoop();
+    emitDigest(rt, { stage: STAGE, output: stoppedBy, counts: { iterations: iterationsDone } });
     return buildResult(state, iterationsDone, stoppedBy, warnings, trail, agentsSpawned);
   }
   function buildResult(state, iterations, stoppedBy, warnings, trail, agentsSpawned) {
@@ -243,7 +406,27 @@ var __wt = (() => {
     };
   }
 
+  // ../packages/std/src/resolve-effort.ts
+  var EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
+  function isEffortAlias(v) {
+    return typeof v === "string" && EFFORT_ORDER.includes(v);
+  }
+  function resolveEffort(argsValue, stageDefault) {
+    return isEffortAlias(argsValue) ? argsValue : stageDefault;
+  }
+  function resolveVerifierEffort(argsValue, stageDefault, floor = "high") {
+    const safeFloor = isEffortAlias(floor) ? floor : "high";
+    const resolved = resolveEffort(argsValue, stageDefault);
+    return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor;
+  }
+
   // dev-implement.workflow.ts
+  var LOAD_EFFORT = "low";
+  var RED_EFFORT = "high";
+  var GREEN_EFFORT = "high";
+  var CHECK_EFFORT_DEFAULT = "high";
+  var MECHANICAL_EFFORT = "low";
+  var INTEGRATION_EFFORT_DEFAULT = "high";
   var RED_RESULT_SCHEMA = {
     type: "object",
     properties: {
@@ -272,6 +455,16 @@ var __wt = (() => {
       failureSummary: { type: "string" }
     },
     required: ["green", "evidence", "failureSummary"],
+    additionalProperties: false
+  };
+  var READ_RESULT_SCHEMA = {
+    type: "object",
+    properties: {
+      found: { type: "boolean" },
+      content: { type: "string" },
+      note: { type: "string" }
+    },
+    required: ["found", "content", "note"],
     additionalProperties: false
   };
   var SETUP_RESULT_SCHEMA = {
@@ -489,19 +682,13 @@ var __wt = (() => {
       }
     }
   }
-  function parseInput(raw) {
-    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+  function validateArtifact(rawArtifact) {
+    if (rawArtifact === null || typeof rawArtifact !== "object" || Array.isArray(rawArtifact)) {
       throw new Error(
-        'dev-implement: input must be an object with "artifact" (the approved PlanArtifact from dev-plan), optional "mutation" ("sequential") and optional "maxIterationsPerTask" (number) \u2014 received: ' + (raw === null ? "null" : Array.isArray(raw) ? "array" : typeof raw)
+        "dev-implement: the PlanArtifact must be an object \u2014 pass the approved artifact produced by dev-plan"
       );
     }
-    const obj = raw;
-    if (obj["artifact"] === null || typeof obj["artifact"] !== "object" || Array.isArray(obj["artifact"]) || obj["artifact"] === void 0) {
-      throw new Error(
-        'dev-implement: "artifact" must be an object \u2014 pass the approved PlanArtifact produced by dev-plan'
-      );
-    }
-    const a = obj["artifact"];
+    const a = rawArtifact;
     const goal = requireString(a, "goal", "artifact");
     if (a["context"] === null || typeof a["context"] !== "object" || Array.isArray(a["context"])) {
       throw new Error("dev-implement: artifact.context must be an object");
@@ -524,6 +711,42 @@ var __wt = (() => {
     const { tasks, warnings: pathWarnings } = normalizeTaskFiles(parsedTasks, context.projectDir);
     const risks = Array.isArray(a["risks"]) ? a["risks"].filter((r) => typeof r === "string") : [];
     const outOfScope = Array.isArray(a["outOfScope"]) ? a["outOfScope"].filter((r) => typeof r === "string") : [];
+    return { artifact: { goal, context, tasks, risks, outOfScope }, pathWarnings };
+  }
+  function parseInput(raw) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(
+        'dev-implement: input must be an object with either "artifact" (the approved PlanArtifact from dev-plan) or "artifactPath" (a path to a JSON file holding it), plus optional "mutation" ("sequential") and "maxIterationsPerTask" (number) \u2014 received: ' + (raw === null ? "null" : Array.isArray(raw) ? "array" : typeof raw)
+      );
+    }
+    const obj = raw;
+    const hasArtifact = obj["artifact"] !== void 0 && obj["artifact"] !== null;
+    const hasPath = obj["artifactPath"] !== void 0 && obj["artifactPath"] !== null;
+    if (hasArtifact && hasPath) {
+      throw new Error(
+        'dev-implement: pass EXACTLY ONE of "artifact" (the inline PlanArtifact) or "artifactPath" (a path to a JSON file holding it) \u2014 both were supplied'
+      );
+    }
+    if (!hasArtifact && !hasPath) {
+      throw new Error(
+        'dev-implement: input must supply either "artifact" (the approved PlanArtifact from dev-plan) or "artifactPath" (a path to a JSON file holding it)'
+      );
+    }
+    let artifact = null;
+    let artifactPath = null;
+    let pathWarnings = [];
+    if (hasPath) {
+      if (typeof obj["artifactPath"] !== "string" || obj["artifactPath"].trim().length === 0) {
+        throw new Error(
+          'dev-implement: "artifactPath" must be a non-empty string path to a JSON file holding the approved PlanArtifact'
+        );
+      }
+      artifactPath = obj["artifactPath"];
+    } else {
+      const validated = validateArtifact(obj["artifact"]);
+      artifact = validated.artifact;
+      pathWarnings = validated.pathWarnings;
+    }
     if (obj["mutation"] !== void 0 && obj["mutation"] !== "sequential" && obj["mutation"] !== "worktree") {
       throw new Error(
         'dev-implement: "mutation" must be "sequential" (default, no git required) or "worktree" (parallel per-task worktrees + a merge step \u2014 git repo required)'
@@ -585,8 +808,10 @@ var __wt = (() => {
       }
       implementerType = obj["implementerType"];
     }
+    const effort = parseConfig(obj).effort ?? null;
     return {
-      artifact: { goal, context, tasks, risks, outOfScope },
+      artifact,
+      artifactPath,
       mutation,
       maxIterationsPerTask,
       implementerModel,
@@ -594,6 +819,7 @@ var __wt = (() => {
       worktreeSetupCommand,
       worktreeRoot,
       signCommits,
+      effort,
       pathWarnings
     };
   }
@@ -654,7 +880,7 @@ Done criteria: ${JSON.stringify(task.doneCriteria)}
     `Do NOT run git commit (or any other history-mutating git command) \u2014 committing is another agent's job, not yours.
 `;
   }
-  async function runTaskTddLoop(rt, artifact, task, workdir, maxIterationsPerTask, implementerModel, implementerType, warnings, stats) {
+  async function runTaskTddLoop(rt, artifact, task, workdir, maxIterationsPerTask, implementerModel, implementerType, effort, warnings, stats) {
     const ctx = artifact.context;
     const taskBlock = buildTaskBlock(artifact, task, workdir, true);
     const checkTaskBlock = buildTaskBlock(artifact, task, workdir, false);
@@ -672,7 +898,8 @@ Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was writ
             {
               schema: RED_RESULT_SCHEMA,
               label: `dev-implement:red:${task.id}`,
-              phase: "Implement"
+              phase: "Implement",
+              effort: effort.red
             }
           );
           if (red === null) {
@@ -697,6 +924,7 @@ Return { "done": true|false, "filesTouched": ["<path>"], "note": "<what changed>
             // High-volume implementer stage — tiered by the implementerModel knob
             // (default 'sonnet'). The checker below is pinned to BEST_MODEL.
             model: implementerModel,
+            effort: effort.green,
             // Optional specialist subagent type (implementerType knob). Omitted
             // when null → standard subagent (default). Routes the implementer
             // ONLY; the runtime fails fast on an unknown type.
@@ -719,7 +947,8 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
             // strongest tier explicitly (NOT merely inherit), so the verifier
             // stays strong independent of the session model precisely because
             // the implementer above may be tiered down.
-            model: BEST_MODEL
+            model: BEST_MODEL,
+            effort: effort.check
           }
         );
         if (check === null) {
@@ -742,7 +971,8 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
       iterations: outcome.iterations,
       evidence: outcome.state.evidence,
       lastFailure: outcome.state.lastFailure,
-      stoppedBy: outcome.stoppedBy
+      stoppedBy: outcome.stoppedBy,
+      trail: loopResult.trail
     };
   }
   function failureNote(outcome) {
@@ -769,17 +999,59 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
       note: `skipped \u2014 depends on non-succeeded task(s): ${blockedBy.join(", ")}`
     };
   }
-  async function run(rt, input) {
+  async function resolveArtifactInput(rt, input) {
+    if (input.artifact !== null) {
+      return { ...input, artifact: input.artifact };
+    }
+    const artifactPath = input.artifactPath;
+    if (artifactPath === null) {
+      throw new Error("dev-implement: internal error \u2014 neither artifact nor artifactPath after parseInput");
+    }
+    rt.phase("Load");
+    const read = await rt.agent(
+      `You are the plan-artifact loader. Read the plan artifact json file at the path "${artifactPath}" and return its EXACT, VERBATIM contents \u2014 do not reformat, re-indent, summarize, truncate, or alter a single byte (it is JSON that will be parsed programmatically and any change corrupts the run). Use a raw read (e.g. \`cat\` the file, or the Read tool). This is a strictly READ-ONLY task: do NOT write, edit, move, rename, delete, or run any command that modifies the file at this path or anything else on disk \u2014 read and return only. If the path is relative, resolve it against your current working directory. If the file does not exist or cannot be read, set found=false.
+Return { "found": true|false, "content": "<the exact file contents, or empty string if not found>", "note": "<what you saw \u2014 e.g. the byte/line count read, or the read error>" }`,
+      {
+        schema: READ_RESULT_SCHEMA,
+        label: "dev-implement:load-artifact",
+        phase: "Load",
+        effort: resolveEffort(input.effort?.["load"], LOAD_EFFORT)
+      }
+    );
+    if (read === null || !read.found || read.content.trim().length === 0) {
+      throw new Error(
+        `dev-implement: could not read the PlanArtifact from artifactPath "${artifactPath}"` + (read === null ? " (the loader agent died)" : !read.found ? ` \u2014 ${read.note || "file not found"}` : " \u2014 the file was empty")
+      );
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(read.content);
+    } catch (err) {
+      throw new Error(
+        `dev-implement: the file at artifactPath "${artifactPath}" is not valid JSON (${err instanceof Error ? err.message : String(err)}) \u2014 it must contain the approved PlanArtifact serialized as JSON`
+      );
+    }
+    const { artifact, pathWarnings } = validateArtifact(parsed);
+    return { ...input, artifact, pathWarnings: [...input.pathWarnings, ...pathWarnings] };
+  }
+  async function run(rt, rawInput) {
+    const input = await resolveArtifactInput(rt, rawInput);
     if (input.mutation === "worktree") return runWorktree(rt, input);
     const warnings = [];
     for (const w of input.pathWarnings) warn(rt, warnings, w);
     const stats = {};
     const { artifact, maxIterationsPerTask } = input;
+    const taskEffort = {
+      red: resolveEffort(input.effort?.["red"], RED_EFFORT),
+      green: resolveEffort(input.effort?.["green"], GREEN_EFFORT),
+      check: resolveVerifierEffort(input.effort?.["check"], CHECK_EFFORT_DEFAULT)
+    };
     rt.phase("Implement");
     rt.phase("Check");
     const ordered = topologicalOrder(artifact.tasks);
     const statusById = /* @__PURE__ */ new Map();
     const reportTasks = [];
+    const taskTrails = [];
     for (const task of ordered) {
       const blockedBy = task.dependsOn.filter((d) => statusById.get(d) !== "succeeded");
       if (blockedBy.length > 0) {
@@ -795,9 +1067,11 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
         maxIterationsPerTask,
         input.implementerModel,
         input.implementerType,
+        taskEffort,
         warnings,
         stats
       );
+      taskTrails.push(outcome);
       if (outcome.green) {
         statusById.set(task.id, "succeeded");
         reportTasks.push({
@@ -833,6 +1107,7 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
       tasks: reportTasks,
       ...tallies,
       stats,
+      envelope: { trail: collectTrail(...taskTrails) },
       warnings
     };
   }
@@ -844,11 +1119,18 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
     const ctx = artifact.context;
     const wtBranch = (id) => `wt-task/${id}`;
     const signFlag = signCommits ? "" : "-c commit.gpgsign=false ";
+    const taskEffort = {
+      red: resolveEffort(input.effort?.["red"], RED_EFFORT),
+      green: resolveEffort(input.effort?.["green"], GREEN_EFFORT),
+      check: resolveVerifierEffort(input.effort?.["check"], CHECK_EFFORT_DEFAULT)
+    };
+    const mechanicalEffort = resolveEffort(input.effort?.["mechanical"], MECHANICAL_EFFORT);
+    const integrationEffort = resolveVerifierEffort(input.effort?.["integration"], INTEGRATION_EFFORT_DEFAULT);
     rt.phase("Setup");
     const setup = await rt.agent(
       `You are the environment setup agent for a worktree-mode dev-implement run. First verify this is a git repository: from ${ctx.projectDir} run \`git rev-parse --is-inside-work-tree\`, then capture the current HEAD with \`git rev-parse HEAD\` and the repository root with \`git rev-parse --show-toplevel\`.
 Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<absolute path or empty>", "note": "<what you saw>" }`,
-      { schema: SETUP_RESULT_SCHEMA, label: "dev-implement:setup", phase: "Setup" }
+      { schema: SETUP_RESULT_SCHEMA, label: "dev-implement:setup", phase: "Setup", effort: mechanicalEffort }
     );
     if (setup === null || !setup.isGitRepo) {
       warn(
@@ -865,7 +1147,7 @@ Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<abso
         evidence: "",
         note: "skipped \u2014 worktree mode requires a git repository"
       }));
-      return { goal: artifact.goal, tasks: reportTasks2, ...tally(reportTasks2), stats, warnings };
+      return { goal: artifact.goal, tasks: reportTasks2, ...tally(reportTasks2), stats, envelope: { trail: [] }, warnings };
     }
     const reportedGitRoot = setup.gitRoot.trim().replace(/\/+$/, "");
     const gitRoot = reportedGitRoot === "" ? ctx.projectDir : reportedGitRoot;
@@ -887,6 +1169,7 @@ Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<abso
     const statusById = /* @__PURE__ */ new Map();
     const reportTasks = [];
     const merged = [];
+    const taskTrails = [];
     const waves = waveLevels(artifact.tasks);
     for (let w = 0; w < waves.length; w++) {
       const wave = waves[w];
@@ -906,7 +1189,7 @@ Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<abso
 ` + eligible.map((t) => `git worktree add ${wtPath(t.id)} -b ${wtBranch(t.id)}`).join("\n") + `
 If a path already exists, do NOT force or remove it \u2014 report that task in "failures" (a stale worktree from a previous run is the operator's call to delete).
 Return { "created": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>"}], "note": "<summary>" }`,
-        { schema: WT_CREATE_SCHEMA, label: `dev-implement:worktrees:wave${w}`, phase: "Setup" }
+        { schema: WT_CREATE_SCHEMA, label: `dev-implement:worktrees:wave${w}`, phase: "Setup", effort: mechanicalEffort }
       );
       if (create === null) {
         warn(rt, warnings, `dev-implement: worktree provisioning agent died for wave ${w} \u2014 the whole wave fails`);
@@ -951,7 +1234,7 @@ Return { "created": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
               `You are the worktree preparation agent \u2014 prepare the task worktree for ${task.id}: run this VERBATIM setup command with ${taskWorkdir(task.id)} as the working directory (fresh worktrees lack installed dependencies; this makes the test command runnable):
 ${worktreeSetupCommand}
 Return { "ok": true|false, "note": "<what happened>" }`,
-              { schema: PREPARE_RESULT_SCHEMA, label: `dev-implement:prepare:${task.id}`, phase: "Setup" }
+              { schema: PREPARE_RESULT_SCHEMA, label: `dev-implement:prepare:${task.id}`, phase: "Setup", effort: mechanicalEffort }
             );
             if (prep === null || !prep.ok) {
               return { kind: "prepare-failed", note: prep === null ? "preparation agent died" : prep.note };
@@ -965,6 +1248,7 @@ Return { "ok": true|false, "note": "<what happened>" }`,
             maxIterationsPerTask,
             input.implementerModel,
             input.implementerType,
+            taskEffort,
             warnings,
             stats
           );
@@ -977,7 +1261,7 @@ The commit message is the LITERAL line between the markers below \u2014 quote/es
 ${wtBranch(task.id)}: ${safeTitle}
 MESSAGE>>>
 Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happened>" }`,
-            { schema: FINALIZE_RESULT_SCHEMA, label: `dev-implement:finalize:${task.id}`, phase: "Implement" }
+            { schema: FINALIZE_RESULT_SCHEMA, label: `dev-implement:finalize:${task.id}`, phase: "Implement", effort: mechanicalEffort }
           );
           if (fin === null || !fin.committed) {
             return { kind: "finalize-failed", outcome, note: fin === null ? "finalize agent died" : fin.note };
@@ -989,6 +1273,9 @@ Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happen
       ready.forEach((task, i) => {
         const result = chainResults[i] ?? null;
         const kept = { worktreePath: wtPath(task.id), branch: wtBranch(task.id) };
+        if (result !== null && result.kind !== "prepare-failed") {
+          taskTrails.push(result.outcome);
+        }
         if (result === null) {
           statusById.set(task.id, "failed");
           reportTasks.push({
@@ -1045,7 +1332,7 @@ Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happen
           `You are the merge agent \u2014 from ${ctx.projectDir} (the MAIN tree), merge the task branch ${wtBranch(task.id)} into the current branch: FIRST capture the pre-merge HEAD (\`git rev-parse HEAD\`), then run \`git ${signFlag}merge --no-ff ${wtBranch(task.id)}\`.
 On CONFLICT: run \`git merge --abort\` and report conflict: true \u2014 NEVER resolve conflicts yourself. Evidence required: the pre-merge sha and the resulting sha (or '' if aborted).
 Return { "merged": true|false, "conflict": true|false, "preMergeSha": "<sha>", "mergeSha": "<sha or empty>", "note": "<what git actually said>" }`,
-          { schema: MERGE_RESULT_SCHEMA, label: `dev-implement:merge:${task.id}`, phase: "Merge" }
+          { schema: MERGE_RESULT_SCHEMA, label: `dev-implement:merge:${task.id}`, phase: "Merge", effort: mechanicalEffort }
         );
         if (merge === null || merge.conflict || !merge.merged) {
           statusById.set(task.id, "merge-failed");
@@ -1081,7 +1368,7 @@ Return { "merged": true|false, "conflict": true|false, "preMergeSha": "<sha>", "
         const integ = await rt.agent(
           `You are the independent integration checker \u2014 verify the integrated main tree: run ${ctx.testCommand} from ${ctx.projectDir} and read the ACTUAL output (the per-task checker saw an isolated worktree; you are checking that the MERGED whole still passes).
 Return { "green": true|false, "evidence": "<what the run actually showed>", "failureSummary": "<empty string if green, else the failures>" }`,
-          { schema: CHECK_RESULT_SCHEMA, label: `dev-implement:integration:${task.id}`, phase: "Merge" }
+          { schema: CHECK_RESULT_SCHEMA, label: `dev-implement:integration:${task.id}`, phase: "Merge", effort: integrationEffort }
         );
         if (integ === null || !integ.green) {
           if (integ === null) {
@@ -1090,7 +1377,7 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
           const revert = await rt.agent(
             `You are the merge revert agent \u2014 revert the failed merge: from ${ctx.projectDir} run \`git reset --hard ${merge.preMergeSha}\` and confirm with \`git rev-parse HEAD\`.
 Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }`,
-            { schema: REVERT_RESULT_SCHEMA, label: `dev-implement:revert:${task.id}`, phase: "Merge" }
+            { schema: REVERT_RESULT_SCHEMA, label: `dev-implement:revert:${task.id}`, phase: "Merge", effort: mechanicalEffort }
           );
           if (revert === null || !revert.reverted || revert.headSha !== merge.preMergeSha) {
             const how = revert === null ? "agent died" : !revert.reverted ? "failed" : `reported HEAD ${revert.headSha} instead of the pre-merge sha`;
@@ -1129,7 +1416,7 @@ Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }
 ` + merged.map((m) => `${m.id}: ${m.path} (${m.branch})`).join("\n") + `
 Do NOT touch any other worktree or branch.
 Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>"}], "note": "<summary>" }`,
-        { schema: CLEANUP_RESULT_SCHEMA, label: "dev-implement:cleanup", phase: "Merge" }
+        { schema: CLEANUP_RESULT_SCHEMA, label: "dev-implement:cleanup", phase: "Merge", effort: mechanicalEffort }
       );
       if (cleanup === null) {
         warn(rt, warnings, `dev-implement: cleanup agent died \u2014 merged worktrees left on disk under ${wtRoot} (manual: git worktree remove)`);
@@ -1152,6 +1439,7 @@ Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
       tasks: reportTasks,
       ...tallies,
       stats,
+      envelope: { trail: collectTrail(...taskTrails) },
       warnings
     };
   }
@@ -1159,8 +1447,9 @@ Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
     meta: {
       name: "dev-implement",
       description: 'Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. Two mutation modes: "sequential" (default \u2014 one task at a time in dependency order, no git required) and "worktree" (git required \u2014 independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).',
-      whenToUse: 'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass { artifact } (plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits) as the workflow args. implementerModel tiers the per-iteration implementer (default "sonnet"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.',
+      whenToUse: 'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass either { artifact } (the inline PlanArtifact) OR { artifactPath } (a path \u2014 ABSOLUTE recommended \u2014 to a JSON file holding it; use this when the artifact is large or was produced/edited on disk, to avoid inlining ~60 KB in the args; it is read from disk and validated identically). Plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits, as the workflow args. implementerModel tiers the per-iteration implementer (default "sonnet"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.',
       phases: [
+        { title: "Load", detail: "artifactPath mode: read the PlanArtifact JSON from disk via an agent (no-op when artifact is inline)" },
         { title: "Setup", detail: "Worktree mode: git check, per-wave worktree provisioning, setup command" },
         { title: "Implement", detail: "Per task: write failing tests, implement (TDD loop) \u2014 parallel within a wave in worktree mode" },
         { title: "Check", detail: "Independent fresh-evidence checker runs the real test command per iteration" },

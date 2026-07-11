@@ -40,7 +40,12 @@ export interface Finding {
 export interface ResumeRecommendation {
   recommended: boolean
   /** When true, resumeFromRunId only replays cached agents IN THE ORIGINATING SESSION;
-   * read off disk in a different session, the cache is gone and everything re-runs. */
+   * read off disk in a different session, the cache is gone and everything re-runs.
+   * "Session" is SESSION-ID-scoped, NOT process-scoped (canary-pinned 2026-07-08, CC
+   * 2.1.204 / SDK 0.3.204): a session whose process was SIGKILLed mid-run and continued
+   * via SDK `resume: sessionId` (unforked) is still the originating session — completed
+   * agents replay from cache, incomplete ones re-run, and the harness itself surfaces a
+   * task_notification recommending exactly this resume on the orphaned run. */
   sameSessionOnly: boolean
   rationale: string
 }

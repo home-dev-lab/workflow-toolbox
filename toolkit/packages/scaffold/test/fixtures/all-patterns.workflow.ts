@@ -5,13 +5,13 @@
 //   npx workflow-toolbox build <this-file>   &&   npx workflow-toolbox check workflows/<name>.js
 
 import { defineWorkflow } from '@workflow-toolbox/build/define'
-import { classifyAndAct, fanOutAndSynthesize, adversarialVerification, generateAndFilter, tournament, loopUntilDone, planAndExecute } from '@workflow-toolbox/patterns'
+import { classifyAndAct, fanOutAndSynthesize, adversarialVerification, generateAndFilter, tournament, loopUntilDone, planAndExecute, scoreAndRank } from '@workflow-toolbox/patterns'
 
 export default defineWorkflow({
   meta: {
     name: "all-patterns-demo",
     description: "A scaffold exercising every pattern (typecheck + lint fixture).",
-    phases: [{ title: "Route" }, { title: "Analyze" }, { title: "Verify" }, { title: "Generate" }, { title: "Compete" }, { title: "Refine" }, { title: "Execute" }],
+    phases: [{ title: "Route" }, { title: "Analyze" }, { title: "Verify" }, { title: "Generate" }, { title: "Compete" }, { title: "Refine" }, { title: "Execute" }, { title: "Triage" }],
   },
   run: async (rt) => {
     const step1 = await classifyAndAct(rt, {
@@ -71,6 +71,16 @@ export default defineWorkflow({
       phase: "Execute",
     })
 
-    return { step1: step1.value, step2: step2.value, step3: step3.value, step4: step4.value, step5: step5.value, step6: step6.value, step7: step7.value }
+    const step8 = await scoreAndRank(rt, {
+      items: ['placeholder-item'],
+      dimensions: [
+        { name: 'impact', prompt: (item) => `Score the impact of ${item} from 1 to 5.` },
+        { name: 'opportunity', prompt: (item) => `Score the opportunity in ${item} from 1 to 5.` },
+      ],
+      cutoff: { type: 'topK', k: 3 },
+      phase: "Triage",
+    })
+
+    return { step1: step1.value, step2: step2.value, step3: step3.value, step4: step4.value, step5: step5.value, step6: step6.value, step7: step7.value, step8: step8.value }
   },
 })

@@ -7,6 +7,7 @@
 
 import type { AuditReport } from './report.js'
 import type { Diagnosis, DiagnosisMode } from './diagnose.js'
+import { recoveryVias } from './tool-denial.js'
 
 /** Trouble = a conclusive failure mode that warrants grabbing Claude. `completed-ok`
  * and the inconclusive `in-progress` are NOT trouble. */
@@ -58,32 +59,94 @@ export interface FullSurfaceInput {
   diskDir: string | null
 }
 
-/** A finished run with a readable journal: the always-on notice, plus (when trouble) a
- * compact reason fed back to Claude. */
+/** A finished run with a readable journal: the always-on notice, plus a compact reason fed back
+ * to Claude when the run is trouble OR DEGRADED (any tool call was silently denied — a blind
+ * review/plan/impl looks `completed-ok` in the journal, so denials are an independent block
+ * trigger on top of `isTrouble`). Auto-compaction adds a softer ADVISORY suffix to the notice
+ * (an agent over-scoped and summarized history away — the run still succeeded) but, unlike a
+ * denial, NEVER blocks: it is guidance to re-scope, not a degraded-output warning. */
 export function buildFullSurface(input: FullSurfaceInput): StopSurface {
   const { runId, report, diagnosis, diskDir } = input
-  const block = isTrouble(diagnosis.mode)
+  const trouble = isTrouble(diagnosis.mode)
+  const degraded = report.denials?.degraded ?? false
+  const compacted = report.compaction?.compacted ?? false
+  // Same severity family as a denial: a delegated agent with NO external-CLI call may have
+  // self-answered, so the "external" verdicts may be same-family — degraded-output class.
+  const selfAnswered = report.delegation?.flagged ?? false
+  const block = trouble || degraded || selfAnswered // compaction is advisory-only — deliberately NOT a block trigger
 
-  const notice =
+  let notice =
     `DWT audit · ${runId} (${cell(report.workflowName)}) ${cell(report.status)} · ` +
     `${report.agentCount} agents · ${tok(report.totalTokens)} tok · ${report.decisions.length} decisions ` +
     `→ pnpm wt:report ${runId}` +
     (diskDir !== null ? ` · written to ${diskDir}` : '')
+  if (degraded && report.denials) {
+    notice += ` · ⚠ ${report.denials.total} tool denial(s)/${report.denials.agentsAffected} agent(s)`
+  }
+  if (selfAnswered && report.delegation) {
+    notice += ` · ⚠ ${report.delegation.withoutCli.length}/${report.delegation.delegatedAgents} delegated agent(s) NO external CLI`
+  }
+  if (compacted && report.compaction) {
+    notice += ` · ℹ ${report.compaction.agentsCompacted} agent(s) compacted context (peak ~${tok(report.compaction.peakTokens)} tok)`
+  }
 
   if (!block) return { systemMessage: notice, block: false, reason: '' }
 
-  const recon = report.reconciliation
-  const reconNote = recon.reconciles
-    ? 'reconciled'
-    : `UNRECONCILED (Δ ${recon.delta === null ? '—' : recon.delta.toLocaleString('en-US')}, ` +
-      `${recon.missingTokenAgents} agent(s) missing tokens)`
-  const lines: string[] = [
-    `⚠ Workflow run ${runId} (${cell(report.workflowName)}) needs attention — ${diagnosis.headline}`,
-    `cost: ${report.agentCount} agents · ${tok(report.totalTokens)} tok (${reconNote}) · ${tok(report.totalToolCalls)} tool calls`,
-  ]
-  if (diagnosis.findings.length > 0) {
-    lines.push('findings:')
-    for (const f of diagnosis.findings) lines.push(`  - [${f.kind}] ${f.detail}`)
+  const lines: string[] = []
+  if (trouble) {
+    const recon = report.reconciliation
+    const reconNote = recon.reconciles
+      ? 'reconciled'
+      : `UNRECONCILED (Δ ${recon.delta === null ? '—' : recon.delta.toLocaleString('en-US')}, ` +
+        `${recon.missingTokenAgents} agent(s) missing tokens)`
+    lines.push(`⚠ Workflow run ${runId} (${cell(report.workflowName)}) needs attention — ${diagnosis.headline}`)
+    lines.push(
+      `cost: ${report.agentCount} agents · ${tok(report.totalTokens)} tok (${reconNote}) · ${tok(report.totalToolCalls)} tool calls`,
+    )
+    if (diagnosis.findings.length > 0) {
+      lines.push('findings:')
+      for (const f of diagnosis.findings) lines.push(`  - [${f.kind}] ${f.detail}`)
+    }
+  }
+  if (degraded && report.denials) {
+    const d = report.denials
+    const groups = d.bySignature.map((g) => `${g.signature} ×${g.count}`).join(', ')
+    // Recovery-awareness: denied+recovered ≠ denied+blind. When EVERY denial carries a
+    // recovery signal (the same agent later succeeded via an equivalent tool), soften the
+    // wording — but never suppress the denial list, and keep blocking: "same intent" is a
+    // heuristic only a human can confirm.
+    if (d.allRecovered) {
+      const vias = recoveryVias(d).join(', ')
+      lines.push(
+        `⚠ Workflow run ${runId} (${cell(report.workflowName)}) — ${d.total} tool call(s) DENIED across ` +
+          `${d.agentsAffected} agent(s) (${groups}), but ALL show a RECOVERY signal: the agent(s) later ` +
+          `succeeded via ${vias}.`,
+      )
+      lines.push('  Verify the recovery covered the same intent; the full denial list is in the audit report.')
+    } else {
+      lines.push(
+        `⚠ Workflow run ${runId} (${cell(report.workflowName)}) may be DEGRADED — ${d.total} tool call(s) ` +
+          `silently DENIED across ${d.agentsAffected} agent(s): ${groups}.`,
+      )
+      lines.push(
+        '  An agent could not use a tool it asked for (e.g. read the diff / run a test) — its output may be blind.',
+      )
+      if (d.recoveredCount > 0) {
+        lines.push(
+          `  (${d.recoveredCount} of ${d.total} show a recovery signal — the agent later succeeded via an equivalent tool.)`,
+        )
+      }
+    }
+  }
+  if (selfAnswered && report.delegation) {
+    const d = report.delegation
+    const types = [...new Set(d.withoutCli.map((a) => a.agentType))].join(', ')
+    lines.push(
+      `⚠ Workflow run ${runId} (${cell(report.workflowName)}) requested EXTERNAL delegation (${types}) but ` +
+        `${d.withoutCli.length} of ${d.delegatedAgents} routed agent(s) show NO external-CLI tool_use — ` +
+        'the wrapper may have SELF-ANSWERED, so those verdicts may be same-family, not external.',
+    )
+    lines.push('  Verify from the agent transcript(s) before trusting them as decorrelated; details in the audit report.')
   }
   lines.push(`Full audit: pnpm wt:report ${runId}${diskDir !== null ? ` (written to ${diskDir})` : ''}`)
 

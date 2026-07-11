@@ -1,6 +1,6 @@
 <h1 align="center">
   <img src="docs/assets/banner.png"
-       alt="Workflow Toolbox — build, run, and trust multi-agent workflows in Claude Code. The Lego metaphor: molded bricks (seven tested @workflow-toolbox orchestration patterns), instruction sheets (Claude Code skills to author, scaffold, and debug), and finished models (runnable workflows).">
+       alt="Workflow Toolbox — build, run, and trust multi-agent workflows in Claude Code. The Lego metaphor: molded bricks (eight tested @workflow-toolbox orchestration patterns), instruction sheets (Claude Code skills to author, scaffold, and debug), and finished models (runnable workflows).">
 </h1>
 
 **Measured, not promised.** Every claim in this section traces to a journaled
@@ -9,9 +9,9 @@ tool-call counts, dropped-item tallies — auditable after the fact on the
 machine that ran them with `npx workflow-toolbox report <runId>`.
 
 **Workflow Toolbox** is a free Claude Code plugin plus the `@workflow-toolbox`
-npm packages: seven tested orchestration patterns for Claude Code's **Workflow
+npm packages: eight tested orchestration patterns for Claude Code's **Workflow
 tool** (research preview), skills to author, scaffold, and debug workflows, and
-nine runnable example compositions — including a full dev pipeline
+thirteen runnable example compositions — including a full dev pipeline
 (plan → implement → review-fix).
 
 What the journals show:
@@ -64,7 +64,7 @@ Think of it as Lego. The Workflow tool is the **baseplate** — solid, but it
 comes with no bricks. This repository adds:
 
 - **Molded bricks** — `@workflow-toolbox` (`toolkit/`), a compile-time TypeScript library
-  of seven tested orchestration patterns that snap together with ordinary
+  of eight tested orchestration patterns that snap together with ordinary
   `await` / `if` / `for`.
 - **Instruction sheets** — Claude Code skills (`plugin/`) that teach Claude
   itself to author, scaffold, and debug workflow scripts.
@@ -213,6 +213,7 @@ what happened and whether resuming is safe.
 | `skills/toolkit-scaffold` | **Start** a new composition: generates a build-clean `.workflow.ts` skeleton wired to the chosen `@workflow-toolbox` pattern, so you fill in prompts instead of boilerplate. | Automatically, or `/workflow-toolbox:toolkit-scaffold` |
 | `skills/workflow-debugger` | **Diagnose** a finished or failed run from its journal: why an agent died, whether schema retries fired, whether resuming is safe. | Automatically, or `/workflow-toolbox:workflow-debugger` |
 | `skills/upgrade-canary` | **Re-verify** the Workflow runtime still behaves the way the toolkit depends on after a Claude Code (or SDK) upgrade, and report what changed. | Automatically, or `/workflow-toolbox:upgrade-canary` |
+| `skills/observe-ui` | **Visualize** a run's phase→agent DAG in a local browser UI — replay a finished run or watch a live one. `wt-observe start [--source <dir>]...` resolves 1+ Claude config dirs and serves them through ONE server — 2+ (a personal + a work account, say) get a source switcher automatically, no separate verb needed. | `/workflow-toolbox:observe-ui`, or the bundled `wt-observe` CLI directly |
 
 ## The toolkit
 
@@ -221,10 +222,11 @@ what happened and whether resuming is safe.
 - **`@workflow-toolbox/runtime`** — typed declarations of the workflow sandbox surface,
   plus a `FakeRuntime` for deterministic tests. The only coupling point to
   Claude Code.
-- **`@workflow-toolbox/patterns`** — the seven patterns (`classifyAndAct`,
+- **`@workflow-toolbox/patterns`** — the eight patterns (`classifyAndAct`,
   `fanOutAndSynthesize`, `adversarialVerification`, `generateAndFilter`,
-  `tournament`, `loopUntilDone`, `planAndExecute`), each returning a result
-  envelope with stats, warnings, and a replayable audit trail.
+  `tournament`, `loopUntilDone`, `planAndExecute`, `scoreAndRank`), each
+  returning a result envelope with stats, warnings, and a replayable audit
+  trail.
 - **`@workflow-toolbox/build`** — the `workflow-toolbox` CLI plus `defineWorkflow`, which workflow
   entries import from the **`@workflow-toolbox/build/define`** subpath (the package
   root re-exports it too, but that import — while it typechecks — makes
@@ -232,7 +234,7 @@ what happened and whether resuming is safe.
   TypeScript composition into one self-contained `.js` the Workflow tool runs
   directly.
 
-Nine example compositions live in `toolkit/examples/`; their built artifacts
+Ten example compositions live in `toolkit/examples/`; their built artifacts
 (12–52 KB each) are committed under `toolkit/workflows/` and run as-is via
 `scriptPath` — no install, no build. Start with
 [toolkit/README.md](toolkit/README.md). The flagship set is the
@@ -241,7 +243,7 @@ the autonomous `dev-full` chaining them) — a full development cycle the toolbo
 used to build itself, with the real run numbers:
 [docs/public/dev-workflow.md](docs/public/dev-workflow.md).
 
-### The seven patterns at a glance
+### The eight patterns at a glance
 
 Each pattern is a plain typed function: it takes the runtime and an options
 object, spawns the agents shown below, and returns a result envelope with
@@ -365,6 +367,27 @@ graph LR
     class S accent
 ```
 
+**`scoreAndRank`** — the targeting machine: a cheap model scores every item on
+one or more *independent* dimensions (default combine = impact × opportunity),
+ranks them, and a `threshold` / `topK` cutoff keeps the top — so an expensive
+next stage (a premium model, a human, another pattern) only ever touches the
+highest-value work. It produces the ranked list and stops; aiming the
+expensive stage is the caller's separate act.
+
+```mermaid
+graph LR
+    I([items]) --> S1["score · cheap"]
+    I --> S2["score · cheap"]
+    I --> S3["score · cheap"]
+    S1 --> RK{rank + cutoff}
+    S2 --> RK
+    S3 --> RK
+    RK -->|top by score| K["ranked survivors → aim the premium stage"]
+    RK -.->|"cut, logged"| X[below cutoff]
+    classDef accent fill:#E8543F,stroke:#E8543F,color:#fff
+    class RK accent
+```
+
 ## Heads up: the Workflow tool is a research preview
 
 Everything in this repo targets Claude Code's **Workflow tool** (see
@@ -421,12 +444,12 @@ workflow-toolbox/
 │   ├── packages/
 │   │   ├── build/              # @workflow-toolbox/build    — defineWorkflow (./define) + the workflow-toolbox CLI
 │   │   ├── debugger/           # @workflow-toolbox/debugger — run diagnosis + audit report (private; bundled into the CLI)
-│   │   ├── patterns/           # @workflow-toolbox/patterns — the 7 patterns + envelope
+│   │   ├── patterns/           # @workflow-toolbox/patterns — the 8 patterns + envelope
 │   │   ├── runtime/            # @workflow-toolbox/runtime  — sandbox typings + FakeRuntime
 │   │   ├── scaffold/           # @workflow-toolbox/scaffold — .workflow.ts skeleton emitter (private; bundled into the CLI)
 │   │   ├── smoke/              # @workflow-toolbox/smoke    — headless upgrade-canary harness (private; maintainer-only)
 │   │   └── std/                # @workflow-toolbox/std      — zero-dep narrowing helpers (private; bundled)
-│   ├── examples/               # 9 teaching compositions (*.workflow.ts)
+│   ├── examples/               # 10 teaching compositions (*.workflow.ts)
 │   └── workflows/              # committed build artifacts — runnable as-is
 ├── docs/
 │   └── public/                 # architecture, known issues, ADRs

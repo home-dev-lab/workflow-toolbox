@@ -42,6 +42,62 @@ var __wt = (() => {
     default: () => doc_rewrite_workflow_default
   });
 
+  // ../packages/runtime/src/digest.ts
+  var DIGEST_PREFIX = "[wt:digest]";
+  var LOOP_STAGE = "loopUntilDone";
+  var LOOP_ITER_MARKER = " \u27F2";
+  function formatDigest(d) {
+    const body = { stage: d.stage };
+    if (d.output !== void 0) body.output = d.output;
+    if (d.taken !== void 0) body.taken = d.taken;
+    if (d.notTaken !== void 0) body.notTaken = d.notTaken;
+    if (d.counts !== void 0) {
+      const counts = d.counts;
+      const sorted = {};
+      for (const k of Object.keys(counts).sort()) {
+        const v = counts[k];
+        if (v !== void 0) sorted[k] = v;
+      }
+      body.counts = sorted;
+    }
+    return `${DIGEST_PREFIX} ${JSON.stringify(body)}`;
+  }
+
+  // ../packages/runtime/src/prompt-tag.ts
+  var PROMPT_TAG_PREFIX = "<!-- wt-meta ";
+  function escapeValue(v) {
+    return v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\n", "&#10;");
+  }
+  function buildPromptTag(fields) {
+    const parts = [];
+    if (fields.label !== void 0) parts.push(`label="${escapeValue(fields.label)}"`);
+    if (fields.phase !== void 0) parts.push(`phase="${escapeValue(fields.phase)}"`);
+    if (parts.length === 0) return null;
+    return `${PROMPT_TAG_PREFIX}${parts.join(" ")} -->`;
+  }
+  function withPromptTags(rt) {
+    let currentPhase;
+    const agent = (prompt, opts) => {
+      const tag = buildPromptTag({ label: opts?.label, phase: opts?.phase ?? currentPhase });
+      const tagged = tag !== null && !prompt.startsWith(tag) ? `${tag}
+
+${prompt}` : prompt;
+      return rt.agent(tagged, opts);
+    };
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => {
+        currentPhase = title;
+        rt.phase(title);
+      },
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
+  }
+
   // ../packages/build/src/define-workflow.ts
   function normalizeArgs(raw) {
     if (raw === void 0) return void 0;
@@ -83,9 +139,109 @@ var __wt = (() => {
       async run(rt, rawArgs) {
         const normalized = normalizeArgs(rawArgs);
         const input = def.parseInput !== void 0 ? def.parseInput(normalized) : normalized;
-        return def.run(rt, input);
+        return def.run(withPromptTags(rt), input);
       }
     };
+  }
+  var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+  var EFFORT_ROLE_VALUES = ["low", "medium", "high", "xhigh", "max", "auto"];
+  var PER_AGENT_KEYS = ["model", "effort", "agentType", "isolation", "stallMs"];
+  function isRecord(v) {
+    return typeof v === "object" && v !== null && !Array.isArray(v);
+  }
+  function asNonEmptyString(v, where) {
+    if (typeof v !== "string" || v.trim().length === 0) {
+      throw new Error(`parseConfig: ${where} must be a non-empty string, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffort(v, where) {
+    if (typeof v !== "string" || !EFFORTS.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORTS.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffortRoleValue(v, where) {
+    if (typeof v !== "string" || !EFFORT_ROLE_VALUES.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORT_ROLE_VALUES.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function parsePerAgent(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: perAgent must be an object, got ${raw === null ? "null" : typeof raw}`);
+    for (const key of Object.keys(raw)) {
+      if (!PER_AGENT_KEYS.includes(key)) {
+        throw new Error(`parseConfig: unknown perAgent key "${key}" \u2014 expected one of ${PER_AGENT_KEYS.join(", ")}`);
+      }
+    }
+    const out = {};
+    if (raw.model !== void 0) out.model = asNonEmptyString(raw.model, "perAgent.model");
+    if (raw.effort !== void 0) out.effort = asEffort(raw.effort, "perAgent.effort");
+    if (raw.agentType !== void 0) out.agentType = asNonEmptyString(raw.agentType, "perAgent.agentType");
+    if (raw.isolation !== void 0) {
+      if (raw.isolation !== "worktree") {
+        throw new Error(`parseConfig: perAgent.isolation must be 'worktree' when set, got ${JSON.stringify(raw.isolation)}`);
+      }
+      out.isolation = "worktree";
+    }
+    if (raw.stallMs !== void 0) {
+      const n = raw.stallMs;
+      if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) {
+        throw new Error(`parseConfig: perAgent.stallMs must be a positive finite number, got ${JSON.stringify(n)}`);
+      }
+      out.stallMs = n;
+    }
+    return out;
+  }
+  function parseStringMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asNonEmptyString(v, `${where}.${k}`);
+    return out;
+  }
+  function parseEffortMap(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: effort must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`);
+    return out;
+  }
+  function parseNumberMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v !== "number" || !Number.isFinite(v)) {
+        throw new Error(`parseConfig: ${where}.${k} must be a finite number, got ${JSON.stringify(v)}`);
+      }
+      out[k] = v;
+    }
+    return out;
+  }
+  function parseConfig(raw) {
+    if (raw === void 0 || raw === null) return {};
+    if (!isRecord(raw)) {
+      throw new Error(`parseConfig: expected an object (or undefined), got ${typeof raw}`);
+    }
+    const config = {};
+    if (raw.perAgent !== void 0) config.perAgent = parsePerAgent(raw.perAgent);
+    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models");
+    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort);
+    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes");
+    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing");
+    return config;
+  }
+
+  // ../packages/std/src/resolve-effort.ts
+  var EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
+  function isEffortAlias(v) {
+    return typeof v === "string" && EFFORT_ORDER.includes(v);
+  }
+  function resolveEffort(argsValue, stageDefault) {
+    return isEffortAlias(argsValue) ? argsValue : stageDefault;
+  }
+  function resolveVerifierEffort(argsValue, stageDefault, floor = "high") {
+    const safeFloor = isEffortAlias(floor) ? floor : "high";
+    const resolved = resolveEffort(argsValue, stageDefault);
+    return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor;
   }
 
   // ../packages/patterns/src/envelope.ts
@@ -94,23 +250,45 @@ var __wt = (() => {
       stage,
       outcome: ok ? "ok" : "null",
       ...extra?.model !== void 0 ? { model: extra.model } : {},
+      ...extra?.effort !== void 0 ? { effort: extra.effort } : {},
       ...extra?.decision !== void 0 ? { decision: extra.decision } : {}
     };
+  }
+  function collectTrail(...results) {
+    const trail = [];
+    for (const r of results) {
+      if (r === null || r === void 0) continue;
+      trail.push(...r.trail);
+    }
+    return trail;
   }
   function warn(rt, warnings, message) {
     warnings.push(message);
     rt.log(message);
   }
+  function emitDigest(rt, d) {
+    rt.log(formatDigest(d));
+  }
+  function assertAgentTypeOption(stage, name, value) {
+    if (value !== void 0 && value.trim().length === 0) {
+      throw new Error(
+        `${stage}: ${name} must be a non-empty subagent-type string (e.g. 'codex:codex-rescue') \u2014 omit it for the standard subagent`
+      );
+    }
+  }
 
   // ../packages/patterns/src/generate-and-filter.ts
+  var STAGE = "generateAndFilter";
   var REJECTED = /* @__PURE__ */ Symbol("generate-and-filter:REJECTED");
   async function generateAndFilter(rt, options) {
-    const { count, generatePrompt, generateSchema, generateModel, filterPrompt, filterModel, phase } = options;
+    const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase } = options;
     if (count < 1) {
       throw new Error(
         `generateAndFilter: count must be >= 1, got ${count} \u2014 set count to a positive integer`
       );
     }
+    assertAgentTypeOption(STAGE, "generateType", generateType);
+    assertAgentTypeOption(STAGE, "filterType", filterType);
     let agentsSpawned = 0;
     let generateFailures = 0;
     let filterFailures = 0;
@@ -127,10 +305,12 @@ var __wt = (() => {
     };
     const generateStage = async (_prev, _originalItem, index) => {
       const genOpts = {
-        label: `generateAndFilter:generate:${index}`,
+        label: `${STAGE}:generate:${index}`,
         ...phase !== void 0 ? { phase } : {},
         ...generateSchema !== void 0 ? { schema: generateSchema } : {},
-        ...generateModel !== void 0 ? { model: generateModel } : {}
+        ...generateModel !== void 0 ? { model: generateModel } : {},
+        ...generateEffort !== void 0 ? { effort: generateEffort } : {},
+        ...generateType !== void 0 ? { agentType: generateType } : {}
       };
       agentsSpawned++;
       const candidate = await rt.agent(generatePrompt(index), genOpts);
@@ -139,14 +319,20 @@ var __wt = (() => {
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0,
-          record: makeRecord(`generateAndFilter:generate:${index}`, false, generateModel !== void 0 ? { model: generateModel } : void 0)
+          record: makeRecord(`${STAGE}:generate:${index}`, false, {
+            ...generateModel !== void 0 ? { model: generateModel } : {},
+            ...generateEffort !== void 0 ? { effort: generateEffort } : {}
+          })
         });
         throw new Error("generate returned null");
       }
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0,
-        record: makeRecord(`generateAndFilter:generate:${index}`, true, generateModel !== void 0 ? { model: generateModel } : void 0)
+        record: makeRecord(`${STAGE}:generate:${index}`, true, {
+          ...generateModel !== void 0 ? { model: generateModel } : {},
+          ...generateEffort !== void 0 ? { effort: generateEffort } : {}
+        })
       });
       return candidate;
     };
@@ -154,9 +340,11 @@ var __wt = (() => {
       const candidate = prev;
       const filterOpts = {
         schema: filterSchema,
-        label: `generateAndFilter:filter:${index}`,
+        label: `${STAGE}:filter:${index}`,
         ...phase !== void 0 ? { phase } : {},
-        ...filterModel !== void 0 ? { model: filterModel } : {}
+        ...filterModel !== void 0 ? { model: filterModel } : {},
+        ...filterEffort !== void 0 ? { effort: filterEffort } : {},
+        ...filterType !== void 0 ? { agentType: filterType } : {}
       };
       agentsSpawned++;
       const verdict = await rt.agent(
@@ -168,15 +356,19 @@ var __wt = (() => {
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 1,
-          record: makeRecord(`generateAndFilter:filter:${index}`, false, filterModel !== void 0 ? { model: filterModel } : void 0)
+          record: makeRecord(`${STAGE}:filter:${index}`, false, {
+            ...filterModel !== void 0 ? { model: filterModel } : {},
+            ...filterEffort !== void 0 ? { effort: filterEffort } : {}
+          })
         });
         throw new Error("filter returned null");
       }
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 1,
-        record: makeRecord(`generateAndFilter:filter:${index}`, true, {
+        record: makeRecord(`${STAGE}:filter:${index}`, true, {
           ...filterModel !== void 0 ? { model: filterModel } : {},
+          ...filterEffort !== void 0 ? { effort: filterEffort } : {},
           decision: verdict.pass ? "pass" : "fail"
         })
       });
@@ -222,10 +414,20 @@ var __wt = (() => {
       (a, b) => a.itemIndex !== b.itemIndex ? a.itemIndex - b.itemIndex : a.stageOrder - b.stageOrder
     );
     const trail = pendingTrail.map((e) => e.record);
+    emitDigest(rt, {
+      stage: STAGE,
+      counts: {
+        requested: count,
+        kept: value.length,
+        rejected: Math.max(0, rejected),
+        failed: generateFailures + filterFailures
+      }
+    });
     return { value, stats, warnings, trail };
   }
 
   // ../packages/patterns/src/loop-until-done.ts
+  var STAGE2 = LOOP_STAGE;
   async function loopUntilDone(rt, options) {
     const { initial, body, maxIterations, dryRounds, budgetFloor } = options;
     if (maxIterations !== void 0 && maxIterations < 1) {
@@ -254,10 +456,12 @@ var __wt = (() => {
     let iterationsDone = 0;
     let consecutiveDry = 0;
     let agentsSpawned = 0;
+    let currentIteration = 0;
     const countingRt = {
-      agent: (...args) => {
+      agent: (prompt, opts) => {
         agentsSpawned++;
-        return rt.agent(...args);
+        const label = opts?.label != null ? `${opts.label}${LOOP_ITER_MARKER}${currentIteration}` : `${STAGE2}:iter:${currentIteration}`;
+        return rt.agent(prompt, { ...opts, label });
       },
       parallel: (thunks) => rt.parallel(thunks),
       pipeline: (...args) => rt.pipeline(...args),
@@ -297,11 +501,12 @@ var __wt = (() => {
           }
           return "maxIterations";
         }
+        currentIteration = iterationsDone + 1;
         const tick = await body(countingRt, state, iterationsDone + 1);
         const tickIndex = iterationsDone;
         state = tick.state;
         iterationsDone++;
-        trail.push(makeRecord(`loopUntilDone:tick:${tickIndex}`, tick.state !== null));
+        trail.push(makeRecord(`${STAGE2}:tick:${tickIndex}`, tick.state !== null));
         if (tick.done === true) {
           trail[trail.length - 1].decision = "done";
           return "done";
@@ -325,6 +530,7 @@ var __wt = (() => {
       }
     };
     const stoppedBy = await runLoop();
+    emitDigest(rt, { stage: STAGE2, output: stoppedBy, counts: { iterations: iterationsDone } });
     return buildResult(state, iterationsDone, stoppedBy, warnings, trail, agentsSpawned);
   }
   function buildResult(state, iterations, stoppedBy, warnings, trail, agentsSpawned) {
@@ -344,6 +550,10 @@ var __wt = (() => {
   }
 
   // doc-rewrite.workflow.ts
+  var GENERATE_EFFORT = "high";
+  var FILTER_EFFORT = "medium";
+  var EVALUATE_EFFORT_DEFAULT = "high";
+  var OPTIMIZE_EFFORT = "high";
   var CANDIDATE_SCHEMA = {
     type: "object",
     properties: {
@@ -451,19 +661,27 @@ var __wt = (() => {
         );
       }
     }
+    const effort = parseConfig(obj).effort ?? null;
     return {
       docPath: obj["docPath"],
       criteria,
       candidates,
-      maxIterations
+      maxIterations,
+      effort
     };
   }
   async function run(rt, input) {
     const warnings = [];
+    const generateEffort = resolveEffort(input.effort?.["generate"], GENERATE_EFFORT);
+    const filterEffort = resolveEffort(input.effort?.["filter"], FILTER_EFFORT);
+    const evaluateEffort = resolveVerifierEffort(input.effort?.["evaluate"], EVALUATE_EFFORT_DEFAULT);
+    const optimizeEffort = resolveEffort(input.effort?.["optimize"], OPTIMIZE_EFFORT);
     rt.phase("Generate");
     const generateResult = await generateAndFilter(rt, {
       count: input.candidates,
       generateSchema: CANDIDATE_SCHEMA,
+      generateEffort,
+      filterEffort,
       generatePrompt: (index) => {
         const angle = angleForIndex(index);
         return `Generate a rewrite of the document at path: ${input.docPath}
@@ -505,7 +723,10 @@ Return { "rewrite": "<full rewritten document>", "angle": "balanced" }`,
         {
           schema: CANDIDATE_SCHEMA,
           label: "doc-rewrite:seed-fallback",
-          phase: "Generate"
+          phase: "Generate",
+          // Same stage class as generateAndFilter's generate role — this is the
+          // fallback path for the identical job.
+          effort: generateEffort
         }
       );
       if (freshSeed === null) {
@@ -532,7 +753,8 @@ Return { "pass": true|false, "feedback": "<what passes or what needs improvement
         const evaluation = await loopRt.agent(evaluatorPrompt, {
           schema: EVALUATOR_SCHEMA,
           label: "doc-rewrite:evaluator",
-          phase: "Refine"
+          phase: "Refine",
+          effort: evaluateEffort
         });
         if (evaluation === null) {
           return { state, done: false, progressed: false };
@@ -555,7 +777,8 @@ Return { "rewrite": "<full improved document>" }`;
         const optimized = await loopRt.agent(optimizerPrompt, {
           schema: OPTIMIZER_SCHEMA,
           label: "doc-rewrite:optimizer",
-          phase: "Refine"
+          phase: "Refine",
+          effort: optimizeEffort
         });
         if (optimized === null) {
           return {
@@ -580,6 +803,7 @@ Return { "rewrite": "<full improved document>" }`;
       approved: stoppedBy === "done",
       iterations,
       stoppedBy,
+      envelope: { trail: collectTrail(generateResult, loopResult) },
       warnings
     };
   }

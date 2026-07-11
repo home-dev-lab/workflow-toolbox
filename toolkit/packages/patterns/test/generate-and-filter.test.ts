@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
 import { generateAndFilter } from '../src/generate-and-filter.js'
 import type { GenerateAndFilterOptions } from '../src/generate-and-filter.js'
 
@@ -50,10 +50,70 @@ describe('generateAndFilter — config validation', () => {
 })
 
 // ---------------------------------------------------------------------------
+// agentType routing (generateType / filterType) — per-role cross-family routing
+// ---------------------------------------------------------------------------
+
+describe('generateAndFilter — agentType routing', () => {
+  it('omits agentType on every call when neither generateType nor filterType is set', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'ok' })
+    await generateAndFilter(rt, makeOptions())
+    expect(rt.calls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('threads generateType to the generate agents only (not filter)', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'ok' })
+    await generateAndFilter(rt, makeOptions({ generateType: 'codex:codex-rescue' }))
+    const generateCalls = rt.calls.filter((c) => c.opts?.label?.startsWith('generateAndFilter:generate:'))
+    const filterCalls = rt.calls.filter((c) => c.opts?.label?.startsWith('generateAndFilter:filter:'))
+    expect(generateCalls.length).toBe(3)
+    expect(generateCalls.every((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(true)
+    expect(filterCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('threads filterType to the filter agents only (not generate)', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'ok' })
+    await generateAndFilter(rt, makeOptions({ filterType: 'workflow-toolbox:opencode-verifier' }))
+    const generateCalls = rt.calls.filter((c) => c.opts?.label?.startsWith('generateAndFilter:generate:'))
+    const filterCalls = rt.calls.filter((c) => c.opts?.label?.startsWith('generateAndFilter:filter:'))
+    expect(filterCalls.length).toBe(3)
+    expect(filterCalls.every((c) => c.opts?.agentType === 'workflow-toolbox:opencode-verifier')).toBe(true)
+    expect(generateCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('rejects an empty or whitespace-only generateType', async () => {
+    const rt = new FakeRuntime()
+    await expect(generateAndFilter(rt, makeOptions({ generateType: '' }))).rejects.toThrow(/generateType/)
+    await expect(generateAndFilter(rt, makeOptions({ generateType: '   ' }))).rejects.toThrow(/generateType/)
+  })
+
+  it('rejects an empty or whitespace-only filterType', async () => {
+    const rt = new FakeRuntime()
+    await expect(generateAndFilter(rt, makeOptions({ filterType: '' }))).rejects.toThrow(/filterType/)
+    await expect(generateAndFilter(rt, makeOptions({ filterType: '   ' }))).rejects.toThrow(/filterType/)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Happy path
 // ---------------------------------------------------------------------------
 
 describe('generateAndFilter — happy path', () => {
+  it('emits a phase digest with generated/kept/rejected/failed counts', async () => {
+    let n = 0
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isFilterCall(opts)) {
+          n++
+          return n === 1 ? { pass: false, reason: 'too noisy' } : { pass: true, reason: 'fine' }
+        }
+        return 'candidate'
+      },
+    })
+    await generateAndFilter(rt, makeOptions({ count: 3 }))
+    const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'generateAndFilter')
+    expect(digest?.counts).toEqual({ requested: 3, kept: 2, rejected: 1, failed: 0 })
+  })
+
   it('returns all candidates that pass, with exact stats and empty warnings', async () => {
     const rt = new FakeRuntime({
       onAgent: ({ opts }) => {
@@ -557,5 +617,94 @@ describe('generateAndFilter — audit trail', () => {
     const resultB = await generateAndFilter(makeRt(), makeOptions({ count: 4 }))
 
     expect(resultA.trail).toEqual(resultB.trail)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Effort forwarding
+// ---------------------------------------------------------------------------
+
+describe('generateAndFilter — effort forwarding', () => {
+  it('forwards generateEffort to generate agents and filterEffort to filter agents', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isFilterCall(opts)) return { pass: true, reason: 'ok' }
+        return 'candidate'
+      },
+    })
+
+    await generateAndFilter(rt, makeOptions({ count: 2, generateEffort: 'medium', filterEffort: 'high' }))
+
+    const generateCalls = rt.calls.filter(c => c.opts?.label?.startsWith('generateAndFilter:generate:'))
+    const filterCalls = rt.calls.filter(c => c.opts?.label?.startsWith('generateAndFilter:filter:'))
+
+    expect(generateCalls.every(c => c.opts?.effort === 'medium')).toBe(true)
+    expect(filterCalls.every(c => c.opts?.effort === 'high')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Effort in the audit trail
+// ---------------------------------------------------------------------------
+
+describe('generateAndFilter — trail: effort field', () => {
+  it('effort override present in generate trail records when generateEffort set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isFilterCall(opts)) return { pass: true, reason: 'ok' }
+        return 'candidate'
+      },
+    })
+
+    const result = await generateAndFilter(rt, makeOptions({ count: 1, generateEffort: 'medium' }))
+
+    const trail = result.trail!
+    const genRecord = trail.find(r => r.stage === 'generateAndFilter:generate:0')!
+    expect(genRecord.effort).toBe('medium')
+  })
+
+  it('effort absent from generate trail records when generateEffort not set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isFilterCall(opts)) return { pass: true, reason: 'ok' }
+        return 'candidate'
+      },
+    })
+
+    const result = await generateAndFilter(rt, makeOptions({ count: 1 }))
+
+    const trail = result.trail!
+    const genRecord = trail.find(r => r.stage === 'generateAndFilter:generate:0')!
+    expect(genRecord).not.toHaveProperty('effort')
+  })
+
+  it('effort override present in filter trail records when filterEffort set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isFilterCall(opts)) return { pass: true, reason: 'ok' }
+        return 'candidate'
+      },
+    })
+
+    const result = await generateAndFilter(rt, makeOptions({ count: 1, filterEffort: 'high' }))
+
+    const trail = result.trail!
+    const filterRecord = trail.find(r => r.stage === 'generateAndFilter:filter:0')!
+    expect(filterRecord.effort).toBe('high')
+  })
+
+  it('effort absent from filter trail records when filterEffort not set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isFilterCall(opts)) return { pass: true, reason: 'ok' }
+        return 'candidate'
+      },
+    })
+
+    const result = await generateAndFilter(rt, makeOptions({ count: 1 }))
+
+    const trail = result.trail!
+    const filterRecord = trail.find(r => r.stage === 'generateAndFilter:filter:0')!
+    expect(filterRecord).not.toHaveProperty('effort')
   })
 })

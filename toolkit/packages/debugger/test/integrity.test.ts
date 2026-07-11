@@ -3,14 +3,17 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
+import { DEBUGGER_ENTRIES } from '../build-bundles.js'
+
 // The shipped plugin/bin artifact must equal the toolkit/bin source-of-truth; this guard
 // catches MANUAL drift only — regenerate both by hand with `pnpm debugger:build` at ship time.
 const here = dirname(fileURLToPath(import.meta.url)) // packages/debugger/test
 const toolkitRoot = join(here, '..', '..', '..') // toolkit
 const repoRoot = join(toolkitRoot, '..')
 
-// Every shipped node CLI bundled by `pnpm debugger:build`.
-const BINS = ['wt-debug.mjs', 'wt-stop-hook.mjs']
+// Every shipped node CLI, DERIVED from the single source of truth in build-bundles.ts — not a
+// parallel hardcoded list, so adding/renaming a CLI wires up this twin-integrity gate automatically.
+const BINS = DEBUGGER_ENTRIES.map((e) => e.out)
 
 describe.each(BINS)('bundled artifact integrity — %s', (bin) => {
   const toolkitBin = join(toolkitRoot, 'bin', bin)

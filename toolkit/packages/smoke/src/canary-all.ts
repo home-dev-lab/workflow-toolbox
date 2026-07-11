@@ -8,14 +8,18 @@
 // (diffSnapshot, canonicalizeReason, readInitVersion, summarize) is covered there.
 
 import { readFileSync, writeFileSync } from 'node:fs'
+import { diffSchema, extractTypeFields, formatSchemaDrift, type LiveSchema } from './agent-schema.js'
+import { runBudgetChecks } from './budget-canaries.js'
 import { buildChangelogReport, type ChangelogReport } from './changelog.js'
 import { CHANGELOG_URL, resolveChangelogText } from './changelog-source.js'
 import { runEdgeChecks } from './edge-canaries.js'
 import { type CheckResult, summarize } from './lib.js'
+import { runNestingChecks } from './nesting-canaries.js'
 import { runSmokeChecks } from './run.js'
 import {
   getClaudeVersion,
   getLatestSdkVersion,
+  getSdkTypesPath,
   getSdkVersion,
   MARKER_PATH,
   parseTargetSelection,
@@ -86,6 +90,31 @@ function printChangelog(r: ChangelogReport): void {
   }
 }
 
+/** Read the live `AgentDefinition` / `Options` field sets off the installed SDK's
+ *  `.d.ts`. Impure (fs) → held out of `pnpm test`; the pure extraction + diff it feeds
+ *  (extractTypeFields, diffSchema) are covered there. Any read failure degrades to nulls,
+ *  which the diff renders as "schema source unavailable" — never a throw, never a gate. */
+function readLiveSchema(): LiveSchema {
+  const p = getSdkTypesPath()
+  if (p === null) return { agentDefinitionFields: null, optionFields: null }
+  let text: string
+  try {
+    text = readFileSync(p, 'utf8')
+  } catch {
+    return { agentDefinitionFields: null, optionFields: null }
+  }
+  return {
+    agentDefinitionFields: extractTypeFields(text, 'AgentDefinition'),
+    optionFields: extractTypeFields(text, 'Options'),
+  }
+}
+
+/** Thin console adapter over the pure `formatSchemaDrift` (which owns the wording, so it
+ *  is unit-testable without spending launches). Informational only — never gates. */
+function printSchemaDrift(live: LiveSchema, sdkVersion: string | null): void {
+  console.log(`\n${formatSchemaDrift(diffSchema(live), sdkVersion).join('\n')}`)
+}
+
 async function main(): Promise<void> {
   const selection = parseTargetSelection(process.argv.slice(2))
   const sdkVersion = getSdkVersion()
@@ -103,8 +132,10 @@ async function main(): Promise<void> {
     console.log(`\n[canary] ──── target: ${t.name} ${where} ────`)
     const smoke = await runSmokeChecks(t.opts)
     const edge = await runEdgeChecks(t.opts)
-    const checks = [...smoke.checks, ...edge.checks]
-    const ccVersion = smoke.ccVersion ?? edge.ccVersion
+    const nesting = await runNestingChecks(t.opts)
+    const budget = await runBudgetChecks(t.opts)
+    const checks = [...smoke.checks, ...edge.checks, ...nesting.checks, ...budget.checks]
+    const ccVersion = smoke.ccVersion ?? edge.ccVersion ?? nesting.ccVersion ?? budget.ccVersion
     currentTargets[t.name] = { ccVersion, checks: toSnapshot(checks) }
     allChecks.push(...checks)
     console.log(`  → ${t.name}: CC ${ccVersion ?? 'unknown'} · ${checks.filter((c) => c.ok).length}/${checks.length} checks passed`)
@@ -137,6 +168,11 @@ async function main(): Promise<void> {
     for (const f of diff.flips) console.log(`  • CHECK FLIP: ${f}  ← investigate (may drive a fix)`)
     for (const r of diff.reasonDrift) console.log(`  • rejection wording drifted: ${r}  ← may drive a fix/feature`)
   }
+
+  // AgentDefinition / least-priv Options schema drift vs the committed baseline
+  // (informational — never gates; the SDK type is the ground-truth proxy for CC's .md
+  // frontmatter parser). Runs every canary invocation, not only on a version move.
+  printSchemaDrift(readLiveSchema(), sdkVersion)
 
   // What the official changelog documents for this version move (informational —
   // never gates). `to` mirrors how the marker's claudeVersion is chosen below.

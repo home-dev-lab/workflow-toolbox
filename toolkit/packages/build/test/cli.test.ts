@@ -6,6 +6,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest'
 import * as fs from 'node:fs'
+import { createRequire } from 'node:module'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as cp from 'node:child_process'
@@ -16,6 +17,12 @@ import { main } from '../src/cli.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURES = path.join(__dirname, 'fixtures')
 const PACKAGE_ROOT = path.resolve(__dirname, '..')
+
+// Spawn target = node + tsx's OWN JS entry, resolved from this package — NOT
+// `execFile('pnpm', ['exec', 'tsx', ...])`: on Windows the pnpm shim is a .cmd file,
+// which Node (>=18.20, CVE-2024-27980) refuses to spawn without shell:true. node + a
+// resolved .mjs runs identically on every OS (same pattern as observe-cli.ts's tsx spawn).
+const TSX_CLI = createRequire(path.join(PACKAGE_ROOT, 'package.json')).resolve('tsx/cli')
 
 const tmpDirs: string[] = []
 
@@ -142,9 +149,9 @@ describe('cli — spawn test via tsx', () => {
     const outDir = makeTmpDir()
     await new Promise<void>((resolve, reject) => {
       const proc = cp.execFile(
-        'pnpm',
+        process.execPath,
         [
-          'exec', 'tsx', 'src/cli.ts',
+          TSX_CLI, 'src/cli.ts',
           'build', path.join(FIXTURES, 'hello.workflow.ts'),
           '--out-dir', outDir,
         ],
@@ -178,9 +185,9 @@ describe('cli — spawn test via tsx', () => {
     fs.symlinkSync(path.join(PACKAGE_ROOT, 'src', 'cli.ts'), link)
     await new Promise<void>((resolve, reject) => {
       const proc = cp.execFile(
-        'pnpm',
+        process.execPath,
         [
-          'exec', 'tsx', link,
+          TSX_CLI, link,
           'build', path.join(FIXTURES, 'hello.workflow.ts'),
           '--out-dir', outDir,
         ],

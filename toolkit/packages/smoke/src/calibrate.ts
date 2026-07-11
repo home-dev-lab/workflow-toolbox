@@ -25,6 +25,7 @@ import {
   readToolResult,
   readWorkflowToolUse,
   launchVerdict,
+  ROUNDTRIP_TIMEOUT_MS,
 } from './lib.js'
 import {
   readTaskUsage,
@@ -41,8 +42,6 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const TOOLKIT_ROOT = join(HERE, '../../..')
 const DEFAULT_PROBE = join(HERE, '../wt-calib.js')
 const DEFAULT_LOG = join(TOOLKIT_ROOT, 'run-stats', 'runs.jsonl')
-
-const ROUNDTRIP_TIMEOUT_MS = 240_000
 
 // ---------------------------------------------------------------------------
 // arg parsing (minimal, mirrors the other toolkit CLIs)

@@ -19,84 +19,34 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { query } from '@anthropic-ai/claude-agent-sdk'
-import {
-  annotateAuth,
-  type CheckResult,
-  isAbortError,
-  isRecord,
-  launchPrompt,
-  parseLaunchText,
-  readInitVersion,
-  readToolResult,
-  readWorkflowToolUse,
-  type RunnerOptions,
-  type RuntimeRunResult,
-  summarize,
-} from './lib.js'
+import { annotateAuth, type CheckResult, readToolResult, type RunnerOptions, type RuntimeRunResult, summarize } from './lib.js'
 import { type EdgeCase, edgeCases, judgeRejection } from './edge.js'
+import { pickDriverBase, runDriverSession } from './sdk-driver.js'
 
 const LAUNCH_TIMEOUT_MS = 90_000
 
 interface CaptureOutcome {
   message: unknown
   ccVersion: string | null
+  /** The driver's 3-way "no decisive tool_result" diagnosis (timed out /
+   *  invoked-but-no-result / never called) — null once message is non-null. */
+  noResultReason: string | null
 }
 
 /** Launch one (expected-invalid) script and return the raw SDK message that
  *  carried the tool_result (+ the runtime's init version), or message=null if
  *  none arrived. Defensive: if the launch is unexpectedly ACCEPTED (a regression),
- *  stop the spawned task so we never leak a real run from the canary. `opts`
- *  selects which Claude Code binary the SDK drives (bundled by default). */
+ *  the shared driver (sdk-driver.ts) stops the spawned task so we never leak a
+ *  real run from the canary. `opts` selects which Claude Code binary the SDK
+ *  drives (bundled by default). */
 async function launchAndCaptureResult(scriptPath: string, opts: RunnerOptions): Promise<CaptureOutcome> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), LAUNCH_TIMEOUT_MS)
-  const q = query({
-    prompt: launchPrompt(scriptPath),
-    options: {
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      allowedTools: ['Workflow'],
-      settingSources: [],
-      maxTurns: 4,
-      abortController: controller,
-      ...(opts.pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable: opts.pathToClaudeCodeExecutable } : {}),
-    },
+  const d = await runDriverSession({
+    ...pickDriverBase(opts),
+    scriptPath,
+    waitForCompletion: false,
+    timeoutMs: LAUNCH_TIMEOUT_MS,
   })
-
-  const outcome: CaptureOutcome = { message: null, ccVersion: null }
-  let expectedToolUseId: string | null = null
-  try {
-    for await (const message of q) {
-      if (outcome.ccVersion === null) {
-        const v = readInitVersion(message)
-        if (v !== null) outcome.ccVersion = v
-      }
-
-      const toolUse = readWorkflowToolUse(message)
-      if (toolUse !== null) expectedToolUseId = toolUse.id
-
-      const toolResult = readToolResult(message)
-      if (toolResult !== null && (expectedToolUseId === null || toolResult.toolUseId === expectedToolUseId)) {
-        outcome.message = message
-        // Regression guard: an invalid script that is ACCEPTED returns a taskId —
-        // stop it so the canary never leaves a real run draining in the background.
-        if (!toolResult.isError) {
-          const { taskId } = parseLaunchText(toolResult.text)
-          if (taskId !== null) await q.stopTask(taskId).catch(() => undefined)
-        }
-        break
-      }
-
-      // Turn ended (a result message) without a tool_result — stop promptly.
-      if (isRecord(message) && message['type'] === 'result') break
-    }
-  } catch (err) {
-    if (!isAbortError(err)) throw annotateAuth(err)
-  } finally {
-    clearTimeout(timer)
-  }
-  return outcome
+  return { message: d.toolResultMessage, ccVersion: d.ccVersion, noResultReason: d.noResultReason }
 }
 
 /** Run the negative-case checks against ONE runtime target. Returns the measured
@@ -126,7 +76,7 @@ export async function runEdgeChecks(opts: RunnerOptions): Promise<RuntimeRunResu
         const result = o.message !== null ? readToolResult(o.message) : null
         check =
           result === null
-            ? { name: c.name, ok: false, detail: 'no tool_result observed (timeout or the model never called Workflow)' }
+            ? { name: c.name, ok: false, detail: o.noResultReason ?? 'no tool_result observed' }
             : judgeRejection(c.name, result, c.reasonPattern)
       } catch (err) {
         check = { name: c.name, ok: false, detail: annotateAuth(err).message }

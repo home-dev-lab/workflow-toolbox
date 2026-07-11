@@ -63,9 +63,9 @@
 //   = corrections appended to the goal) or fall back to the split workflow
 //   for the failed step, feeding it the preserved section from this output.
 
-import { defineWorkflow } from '@workflow-toolbox/build/define'
+import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
 import { relativizeUnder, warn } from '@workflow-toolbox/patterns'
-import type { WorkflowRuntime } from '@workflow-toolbox/runtime'
+import type { WorkflowRuntime, EffortAlias } from '@workflow-toolbox/runtime'
 
 // ---------------------------------------------------------------------------
 // Input contract
@@ -119,9 +119,28 @@ export interface DevFullInput {
    *  on an unknown type). A specialist reviewer is more thorough but noisier;
    *  the child's refute-first Verify stage filters the extra false positives. */
   reviewerType: string | null
+  /** Optional subagent type to route the refute-first verifiers of BOTH the
+   *  dev-plan Critique stage AND the dev-review-fix Verify stage through — e.g.
+   *  'codex:codex-rescue' for a cross-model (GPT) verifier across the whole dev
+   *  chain. Only the skeptics cross models; planners/reviewers/fixers stay on the
+   *  session model. null = OMIT, so each child's same-model default rules. Must
+   *  exist in the consumer's session registry (the child's runtime throws on an
+   *  unknown type). */
+  verifierType: string | null
   /** Optional VERBATIM diff command (git projects). When set it WINS over the
    *  planned-files derivation — the real diff also catches unplanned files. */
   diffCommand: string | null
+  /** Optional per-ROLE reasoning-effort overrides (Class B/C), forwarded VERBATIM
+   *  to ALL THREE children's `args.effort` — each child looks up only the role
+   *  keys it recognizes (dev-plan: 'discoverTask'/'plan'/'critique'/…; dev-implement:
+   *  'red'/'green'/'check'/…; dev-review-fix: 'review'/'verify'/'fix'/…) and ignores
+   *  the rest, so one map can retune the whole chain without a source edit. A
+   *  role's value may also be the literal 'auto' (keep that role's own
+   *  committed default in whichever child owns it) — forwarded verbatim like
+   *  any other value, since dev-full has no stages of its own to resolve it
+   *  against. null = OMIT, so each child's own committed stage-class defaults
+   *  rule (mirrors implementerModel/fixerModel/verifierType passthrough). */
+  effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +492,22 @@ function parseInput(raw: unknown): DevFullInput {
     reviewerType = raw['reviewerType']
   }
 
+  let verifierType: string | null = null
+  if (raw['verifierType'] !== undefined && raw['verifierType'] !== null) {
+    if (typeof raw['verifierType'] !== 'string' || raw['verifierType'].trim().length === 0) {
+      throw new Error(
+        'dev-full: "verifierType" must be a non-empty subagent-type string ' +
+        '(e.g. "codex:codex-rescue") — omit to use the dev-plan default (standard same-model Critique verifier)',
+      )
+    }
+    verifierType = raw['verifierType']
+  }
+
+  // Optional Class B/C per-role effort overrides, validated by the shared
+  // parseConfig helper (reads only the recognized `effort` slice). Forwarded
+  // VERBATIM to all three children — see the field doc on DevFullInput.
+  const effort = parseConfig(raw).effort ?? null
+
   return {
     goal,
     areas,
@@ -488,6 +523,8 @@ function parseInput(raw: unknown): DevFullInput {
     fixerModel,
     fixerType,
     reviewerType,
+    verifierType,
+    effort,
   }
 }
 
@@ -542,6 +579,8 @@ async function run(rt: WorkflowRuntime, input: DevFullInput): Promise<DevFullOut
     goal: input.goal,
     areas: input.areas,
     projectDir: input.projectDir,
+    ...(input.verifierType !== null ? { verifierType: input.verifierType } : {}),
+    ...(input.effort !== null ? { effort: input.effort } : {}),
   })
   if (!planCall.ok) return finish('aborted-at-plan', planCall.reason)
 
@@ -593,6 +632,7 @@ async function run(rt: WorkflowRuntime, input: DevFullInput): Promise<DevFullOut
   if (input.maxIterationsPerTask !== null) implementArgs['maxIterationsPerTask'] = input.maxIterationsPerTask
   if (input.implementerModel !== null) implementArgs['implementerModel'] = input.implementerModel
   if (input.implementerType !== null) implementArgs['implementerType'] = input.implementerType
+  if (input.effort !== null) implementArgs['effort'] = input.effort
 
   const implementCall = await callChild(rt, input.scriptPaths.implement, implementArgs)
   if (!implementCall.ok) return finish('aborted-at-implement', implementCall.reason)
@@ -686,6 +726,8 @@ async function run(rt: WorkflowRuntime, input: DevFullInput): Promise<DevFullOut
   if (input.fixerModel !== null) reviewArgs['fixerModel'] = input.fixerModel
   if (input.fixerType !== null) reviewArgs['fixerType'] = input.fixerType
   if (input.reviewerType !== null) reviewArgs['reviewerType'] = input.reviewerType
+  if (input.verifierType !== null) reviewArgs['verifierType'] = input.verifierType
+  if (input.effort !== null) reviewArgs['effort'] = input.effort
 
   // -------------------------------------------------------------------------
   // Phase 'Review & Fix' — dev-review-fix child (narrow-only: the review

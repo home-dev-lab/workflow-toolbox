@@ -110,10 +110,10 @@ Workflow({
 ### Model note
 
 The verifier **defaults to `BEST_MODEL`** (currently `'opus'`), so you normally pass
-**no `verifierModel` at all**. Do **not** pass `'fable'`: Fable 5 is suspended by
-export control (since 2026-06-12) and errors at runtime until it returns. (Passing
-`'opus'` explicitly is harmless but redundant — it matches the default and emits no
-warning.)
+**no `verifierModel` at all**. Only override it to an alias you know is callable in
+YOUR environment — top-tier alias availability varies by plan, access window, and
+over time, and an uncallable alias errors at runtime. (Passing `'opus'` explicitly is
+harmless but redundant — it matches the default and emits no warning.)
 
 ## What it returns
 

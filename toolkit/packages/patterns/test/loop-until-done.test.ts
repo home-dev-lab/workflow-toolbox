@@ -420,6 +420,51 @@ describe('loopUntilDone — trail: tick stage naming (0-based)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Iteration-tagged labels — makes the loop structure observable in the trace
+// ---------------------------------------------------------------------------
+
+describe('loopUntilDone — iteration-tagged agent labels', () => {
+  it('tags an UNLABELLED body agent with loopUntilDone:iter:<n> (makes the loop observable)', async () => {
+    const rt = new FakeRuntime({ responses: ['a', 'b', 'c'] })
+
+    await loopUntilDone(rt, {
+      initial: 0,
+      maxIterations: 3,
+      body: async (bodyRt, state) => {
+        await bodyRt.agent('do work') // no label of its own
+        return { state: state + 1, done: state + 1 >= 3, progressed: true }
+      },
+    })
+
+    expect(rt.calls.map((c) => c.opts?.label)).toEqual([
+      'loopUntilDone:iter:1',
+      'loopUntilDone:iter:2',
+      'loopUntilDone:iter:3',
+    ])
+  })
+
+  it('APPENDS ⟲<n> to an explicit body label (preserves the label prefix → nested pattern / caller scheme survives)', async () => {
+    const rt = new FakeRuntime({ responses: ['r1', 'r2'] })
+
+    await loopUntilDone(rt, {
+      initial: 0,
+      maxIterations: 2,
+      body: async (bodyRt, state) => {
+        await bodyRt.agent('verify the claim', { label: 'adversarialVerification:verify:0:0' })
+        return { state: state + 1, done: state + 1 >= 2, progressed: true }
+      },
+    })
+
+    // The original label is preserved as the PREFIX (so the renderer still parses the
+    // inner pattern); only the iteration marker is appended.
+    expect(rt.calls.map((c) => c.opts?.label)).toEqual([
+      'adversarialVerification:verify:0:0 ⟲1',
+      'adversarialVerification:verify:0:0 ⟲2',
+    ])
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Trail — outcome per tick reflects body result
 // ---------------------------------------------------------------------------
 

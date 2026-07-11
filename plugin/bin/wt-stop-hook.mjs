@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 // packages/debugger/src/source.ts
-import { homedir } from "node:os";
-import { join, basename } from "node:path";
+import { join as join2, basename } from "node:path";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 
 // packages/debugger/src/journal.ts
@@ -33,6 +32,34 @@ function retriedAgents(j) {
   return agentEvents(j).filter((a) => (a.attempt ?? 1) > 1);
 }
 
+// packages/std/src/narrow.ts
+function isRecord(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function numOrNull(v) {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+function strOrNull(v) {
+  return typeof v === "string" ? v : null;
+}
+
+// packages/debugger/src/config-dir.ts
+import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+function resolveDir(path) {
+  const abs = resolve(path);
+  try {
+    return realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+function resolveConfigDir(env = process.env) {
+  const raw = env["CLAUDE_CONFIG_DIR"];
+  return resolveDir(raw !== void 0 && raw.length > 0 ? raw : join(homedir(), ".claude"));
+}
+
 // packages/debugger/src/source.ts
 var isJournalFile = (name) => /^wf_.*\.json$/.test(name);
 var MAX_JOURNAL_BYTES = 16 * 1024 * 1024;
@@ -40,10 +67,10 @@ function projectSlug(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
 }
 function transcriptDirFor(journalPath, runId) {
-  return join(journalPath, "..", "..", "subagents", "workflows", runId);
+  return join2(journalPath, "..", "..", "subagents", "workflows", runId);
 }
-function projectsBase(home) {
-  return join(home, ".claude", "projects");
+function projectsBase(configDir) {
+  return join2(configDir, "projects");
 }
 function listDirs(dir) {
   try {
@@ -55,7 +82,7 @@ function listDirs(dir) {
 function listJournals(projectDir) {
   const out = [];
   for (const session of listDirs(projectDir)) {
-    const wfDir = join(projectDir, session, "workflows");
+    const wfDir = join2(projectDir, session, "workflows");
     let names;
     try {
       names = readdirSync(wfDir);
@@ -63,7 +90,7 @@ function listJournals(projectDir) {
       continue;
     }
     for (const name of names) {
-      if (isJournalFile(name)) out.push({ path: join(wfDir, name), sessionId: session });
+      if (isJournalFile(name)) out.push({ path: join2(wfDir, name), sessionId: session });
     }
   }
   return out;
@@ -91,10 +118,9 @@ function mtimeMs(path) {
   }
 }
 function findJournalByTaskId(taskId, opts = {}) {
-  const home = opts.home ?? homedir();
-  const base = projectsBase(home);
+  const base = projectsBase(opts.configDir ?? resolveConfigDir());
   const cwd = opts.cwd ?? process.cwd();
-  const projectDir = opts.project ? join(base, opts.project) : join(base, projectSlug(cwd));
+  const projectDir = opts.project ? join2(base, opts.project) : join2(base, projectSlug(cwd));
   let best = null;
   let bestMtime = -1;
   for (const entry of listJournals(projectDir)) {
@@ -244,17 +270,6 @@ function firstErrorLine(error) {
   return line.length > 0 ? line : "no error text recorded.";
 }
 
-// packages/std/src/narrow.ts
-function isRecord(v) {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-function numOrNull(v) {
-  return typeof v === "number" && Number.isFinite(v) ? v : null;
-}
-function strOrNull(v) {
-  return typeof v === "string" ? v : null;
-}
-
 // packages/debugger/src/transcript-usage.ts
 function emptyUsage() {
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
@@ -295,7 +310,7 @@ function parseTranscriptUsage(jsonl) {
     if (!isRecord(message)) continue;
     const usage = message["usage"];
     if (!isRecord(usage)) continue;
-    const key = strOrNull(message["id"]) ?? `\0synthetic-${synthetic++}`;
+    const key = strOrNull(message["id"]) ?? ` synthetic-${synthetic++}`;
     const current = readUsage(usage);
     const prior = finals.get(key);
     if (prior === void 0 || current.outputTokens >= prior.outputTokens) finals.set(key, current);
@@ -304,10 +319,333 @@ function parseTranscriptUsage(jsonl) {
   for (const u of finals.values()) total = addUsage(total, u);
   return total;
 }
+function parseTranscriptCompaction(jsonl) {
+  const events = [];
+  for (const raw of jsonl.split("\n")) {
+    const trimmed = raw.trim();
+    if (trimmed === "") continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!isRecord(parsed) || parsed["type"] !== "system" || parsed["subtype"] !== "compact_boundary") continue;
+    const meta = isRecord(parsed["compactMetadata"]) ? parsed["compactMetadata"] : {};
+    events.push({
+      trigger: strOrNull(meta["trigger"]),
+      preTokens: numOrNull(meta["preTokens"]),
+      postTokens: numOrNull(meta["postTokens"]),
+      droppedTokens: numOrNull(meta["cumulativeDroppedTokens"]),
+      durationMs: numOrNull(meta["durationMs"])
+    });
+  }
+  const peaks = events.map((e) => e.preTokens).filter((n) => n !== null);
+  return {
+    compacted: events.length > 0,
+    events,
+    // reduce, NOT Math.max(...peaks): a pathological transcript with a huge boundary count would
+    // blow the argument-spread limit and THROW, violating this parser's never-throws contract (and
+    // — since scanTranscripts wraps no per-parse try/catch — aborting the whole scan, which would
+    // also suppress the tool-denial signal read in the same pass).
+    peakTokens: reduceOrNull(peaks, (a, b) => Math.max(a, b))
+  };
+}
+function emptyCompactionReport() {
+  return { agentsCompacted: 0, peakTokens: null, droppedTokens: null, agents: [], compacted: false };
+}
+function reduceOrNull(nums, fn) {
+  return nums.length === 0 ? null : nums.reduce(fn);
+}
+function buildCompactionReport(perAgent) {
+  const agents = [];
+  for (const { agentId, label, compaction } of perAgent) {
+    if (!compaction.compacted || compaction.events.length === 0) continue;
+    const drops2 = compaction.events.map((e) => e.droppedTokens).filter((n) => n !== null);
+    const peakEvent = compaction.events.find(
+      (e) => compaction.peakTokens !== null && e.preTokens === compaction.peakTokens
+    );
+    const trigger = peakEvent?.trigger ?? compaction.events.map((e) => e.trigger).find((t) => t !== null) ?? null;
+    agents.push({
+      agentId,
+      ...label !== void 0 ? { label } : {},
+      peakTokens: compaction.peakTokens,
+      droppedTokens: reduceOrNull(drops2, (a, b) => Math.max(a, b)),
+      trigger,
+      boundaries: compaction.events.length
+    });
+  }
+  agents.sort((a, b) => (b.peakTokens ?? -1) - (a.peakTokens ?? -1) || a.agentId.localeCompare(b.agentId));
+  const peaks = agents.map((a) => a.peakTokens).filter((n) => n !== null);
+  const drops = agents.map((a) => a.droppedTokens).filter((n) => n !== null);
+  return {
+    agentsCompacted: agents.length,
+    peakTokens: reduceOrNull(peaks, (a, b) => Math.max(a, b)),
+    droppedTokens: reduceOrNull(drops, (a, b) => a + b),
+    agents,
+    compacted: agents.length > 0
+  };
+}
+
+// packages/debugger/src/tool-denial.ts
+var AUTO_MODE = /denied by the Claude Code auto mode classifier/i;
+var AUTO_MODE_REASON = /Reason:\s*(\[[^\]]+\])/;
+var HOOK = /\bHook \S+ denied this tool\b/i;
+var REJECTED = /\bthe tool use was rejected\b|\bwant to proceed with this tool use\b/i;
+function classifyDenial(resultText2) {
+  if (typeof resultText2 !== "string" || resultText2 === "") return null;
+  if (AUTO_MODE.test(resultText2)) {
+    const m = AUTO_MODE_REASON.exec(resultText2);
+    return { kind: "auto-mode-classifier", reason: m ? m[1] : null };
+  }
+  if (HOOK.test(resultText2)) return { kind: "hook", reason: null };
+  if (REJECTED.test(resultText2)) return { kind: "rejected", reason: null };
+  return null;
+}
+function resultText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((b) => isRecord(b) && typeof b["text"] === "string" ? b["text"] : "").join("\n");
+  }
+  return "";
+}
+var DETAIL_MAX = 120;
+function deriveDetail(input) {
+  if (!isRecord(input)) return "";
+  const candidate = strOrNull(input["command"]) ?? strOrNull(input["url"]) ?? strOrNull(input["query"]) ?? strOrNull(input["file_path"]) ?? strOrNull(input["path"]) ?? strOrNull(input["pattern"]) ?? firstStringValue(input);
+  return candidate === null ? "" : candidate.replace(/\s+/g, " ").trim();
+}
+function firstStringValue(rec) {
+  for (const v of Object.values(rec)) {
+    if (typeof v === "string" && v.trim() !== "") return v;
+  }
+  return null;
+}
+function segmentHead(seg) {
+  const toks = seg.split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i++;
+  return { verb: toks[i] ?? null, head: toks.slice(i, i + 2).join(" ") };
+}
+function signatureOf(tool, detail) {
+  if (tool !== "Bash" || detail === "") return tool;
+  const segs = detail.split("&&").map((s) => s.trim()).filter(Boolean);
+  for (const seg of segs) {
+    const { verb, head } = segmentHead(seg);
+    if (verb === "cd") continue;
+    if (head) return head;
+  }
+  return (segs[0] ? segmentHead(segs[0]).head : "") || tool;
+}
+var FETCH_RE = /(^|[^a-z])(fetch|search)([^a-z]|$)/i;
+function isFetchClass(name) {
+  if (name === "WebFetch" || name === "WebSearch") return true;
+  return name.startsWith("mcp__") && FETCH_RE.test(name);
+}
+var EXEC_RE = /(^|[^a-z])execute([^a-z]|$)/i;
+function isMcpExec(name) {
+  return name.startsWith("mcp__") && EXEC_RE.test(name);
+}
+var RECOVERY_WINDOW = 5;
+function isRecoveryFor(denied, success) {
+  if (success.name === denied.tool && denied.detail !== "" && success.detail === denied.detail) return true;
+  if (isFetchClass(denied.tool) && isFetchClass(success.name)) return true;
+  if (denied.tool === "Bash" && isMcpExec(success.name)) return true;
+  return false;
+}
+function parseTranscriptDenials(jsonl, agentId) {
+  const toolUses = /* @__PURE__ */ new Map();
+  const denials = [];
+  const successes = [];
+  let resultIndex = 0;
+  for (const raw of jsonl.split("\n")) {
+    const trimmed = raw.trim();
+    if (trimmed === "") continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!isRecord(parsed)) continue;
+    const lineAt = strOrNull(parsed["timestamp"]);
+    const message = parsed["message"];
+    if (!isRecord(message)) continue;
+    const content = message["content"];
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!isRecord(block)) continue;
+      if (block["type"] === "tool_use") {
+        const id = strOrNull(block["id"]);
+        if (id !== null) toolUses.set(id, { name: strOrNull(block["name"]) ?? "(unknown)", input: block["input"] });
+      } else if (block["type"] === "tool_result") {
+        resultIndex++;
+        const id = strOrNull(block["tool_use_id"]);
+        const use = id !== null ? toolUses.get(id) : void 0;
+        if (block["is_error"] !== true) {
+          if (use !== void 0) successes.push({ resultIndex, name: use.name, detail: deriveDetail(use.input), at: lineAt });
+          continue;
+        }
+        const verdict = classifyDenial(resultText(block["content"]));
+        if (verdict === null) continue;
+        const detail = deriveDetail(use?.input);
+        denials.push({
+          resultIndex,
+          detail,
+          denial: {
+            agentId,
+            tool: use?.name ?? "(unknown)",
+            detail: detail.slice(0, DETAIL_MAX),
+            kind: verdict.kind,
+            reason: verdict.reason
+          }
+        });
+      }
+    }
+  }
+  for (const s of successes) {
+    let closest;
+    for (const d of denials) {
+      if (d.resultIndex >= s.resultIndex) break;
+      if (d.denial.recovered !== void 0) continue;
+      if (s.resultIndex - d.resultIndex > RECOVERY_WINDOW) continue;
+      if (isRecoveryFor({ tool: d.denial.tool, detail: d.detail }, s)) closest = d;
+    }
+    if (closest !== void 0) closest.denial.recovered = { via: s.name, at: s.at };
+  }
+  return denials.map((d) => d.denial);
+}
+function buildToolDenialReport(perAgent) {
+  const denials = [];
+  const affected = /* @__PURE__ */ new Set();
+  for (const list of perAgent) {
+    for (const d of list) {
+      denials.push(d);
+      affected.add(d.agentId);
+    }
+  }
+  const counts = /* @__PURE__ */ new Map();
+  for (const d of denials) {
+    const sig = signatureOf(d.tool, d.detail);
+    counts.set(sig, (counts.get(sig) ?? 0) + 1);
+  }
+  const bySignature = [...counts.entries()].map(([signature, count]) => ({ signature, count })).sort((a, b) => b.count - a.count || a.signature.localeCompare(b.signature));
+  const recoveredCount = denials.filter((d) => d.recovered !== void 0).length;
+  return {
+    total: denials.length,
+    agentsAffected: affected.size,
+    bySignature,
+    denials,
+    degraded: denials.length > 0,
+    recoveredCount,
+    allRecovered: denials.length > 0 && recoveredCount === denials.length
+  };
+}
+function emptyDenialReport() {
+  return { total: 0, agentsAffected: 0, bySignature: [], denials: [], degraded: false, recoveredCount: 0, allRecovered: false };
+}
+function recoveryVias(report) {
+  return [...new Set(report.denials.map((d) => d.recovered?.via).filter((v) => v !== void 0))];
+}
+
+// packages/debugger/src/external-delegation.ts
+var DELEGATION_EXPECTATIONS = [
+  {
+    id: "opencode",
+    typeRe: /opencode/i,
+    commandRe: /(?:^|[\s;|&(=])(?:[^\s;|&"']*\/)?opencode(?:\.exe|\.cmd)?\s+run\b|(?:^|[\s;|&(=])["'](?:[^"']*\/)?opencode(?:\.exe|\.cmd)?["']\s+run\b|[A-Za-z_]*BIN=[^\n]*opencode[\s\S]*?"?\$\{?[A-Za-z_]*BIN\}?"?\s+run\b/im
+  },
+  {
+    id: "codex",
+    typeRe: /codex/i,
+    commandRe: /codex-companion\.mjs["']?\s+task\b|(?:^|[\s;|&(=])(?:[^\s;|&"']*\/)?codex(?:\.exe)?\s+exec\b|(?:^|[\s;|&(=])["'](?:[^"']*\/)?codex(?:\.exe)?["']\s+exec\b/im
+  }
+];
+var DEFAULT_AGENT_TYPES = /* @__PURE__ */ new Set(["workflow-subagent"]);
+function isDelegatedAgentType(agentType) {
+  return !DEFAULT_AGENT_TYPES.has(agentType);
+}
+function expectationForAgentType(agentType) {
+  for (const e of DELEGATION_EXPECTATIONS) if (e.typeRe.test(agentType)) return e;
+  return null;
+}
+var COMMAND_SCAN_MAX = 2e4;
+function isExternalCliCommand(command, expectation) {
+  const text = command.length > COMMAND_SCAN_MAX ? command.slice(0, COMMAND_SCAN_MAX) : command;
+  return expectation.commandRe.test(text);
+}
+var COMMAND_PREVIEW_MAX = 120;
+function parseTranscriptExternalCalls(jsonl, expectation) {
+  let cliCalls = 0;
+  let firstCommand = null;
+  for (const raw of jsonl.split("\n")) {
+    const trimmed = raw.trim();
+    if (trimmed === "") continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!isRecord(parsed)) continue;
+    const message = parsed["message"];
+    if (!isRecord(message)) continue;
+    const content = message["content"];
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!isRecord(block) || block["type"] !== "tool_use") continue;
+      if (strOrNull(block["name"]) !== "Bash") continue;
+      const input = block["input"];
+      if (!isRecord(input)) continue;
+      const command = strOrNull(input["command"]);
+      if (command === null || !isExternalCliCommand(command, expectation)) continue;
+      cliCalls++;
+      if (firstCommand === null) firstCommand = command.replace(/\s+/g, " ").trim().slice(0, COMMAND_PREVIEW_MAX);
+    }
+  }
+  return { cliCalls, firstCommand };
+}
+function emptyExternalDelegationReport() {
+  return { delegatedAgents: 0, withoutCli: [], agents: [], unknown: [], flagged: false };
+}
+function buildExternalDelegationReport(perAgent) {
+  const agents = [];
+  const unknown = [];
+  for (const input of perAgent) {
+    const expectation = expectationForAgentType(input.agentType);
+    if (expectation === null) {
+      unknown.push({
+        agentId: input.agentId,
+        ...input.label !== void 0 ? { label: input.label } : {},
+        agentType: input.agentType
+      });
+      continue;
+    }
+    if (input.scan === null) continue;
+    agents.push({
+      agentId: input.agentId,
+      ...input.label !== void 0 ? { label: input.label } : {},
+      agentType: input.agentType,
+      expectation: expectation.id,
+      cliCalls: input.scan.cliCalls,
+      firstCommand: input.scan.firstCommand,
+      cliSeen: input.scan.cliCalls > 0
+    });
+  }
+  const withoutCli = agents.filter((a) => !a.cliSeen);
+  return {
+    delegatedAgents: agents.length,
+    withoutCli,
+    agents,
+    unknown,
+    flagged: withoutCli.length > 0
+  };
+}
 
 // packages/debugger/src/report.ts
 function readEnvelopeTrail(result) {
   const map = /* @__PURE__ */ new Map();
+  const conflicted = /* @__PURE__ */ new Set();
   if (!isRecord(result)) return map;
   const envelope = result["envelope"];
   if (!isRecord(envelope)) return map;
@@ -316,8 +654,20 @@ function readEnvelopeTrail(result) {
   for (const entry of trail) {
     if (!isRecord(entry)) continue;
     const stage = strOrNull(entry["stage"]);
-    if (stage === null) continue;
-    map.set(stage, { outcome: strOrNull(entry["outcome"]), decision: strOrNull(entry["decision"]) });
+    if (stage === null || conflicted.has(stage)) continue;
+    const enrichment = {
+      outcome: strOrNull(entry["outcome"]),
+      decision: strOrNull(entry["decision"]),
+      model: strOrNull(entry["model"]),
+      effort: strOrNull(entry["effort"])
+    };
+    const seen = map.get(stage);
+    if (seen === void 0) {
+      map.set(stage, enrichment);
+    } else if (seen.outcome !== enrichment.outcome || seen.decision !== enrichment.decision || seen.model !== enrichment.model || seen.effort !== enrichment.effort) {
+      map.delete(stage);
+      conflicted.add(stage);
+    }
   }
   return map;
 }
@@ -364,7 +714,9 @@ function buildAuditReport(journal, opts = {}) {
       // "ok" for a done agent is more informative than a deliberately-null trail outcome.
       outcome: enr?.outcome ?? (a.state === "done" ? "ok" : a.state),
       decision: enr?.decision ?? null,
-      phaseTitle: a.phaseTitle
+      phaseTitle: a.phaseTitle,
+      model: enr?.model ?? null,
+      effort: enr?.effort ?? null
     };
   });
   const tokensWithValue = agents.filter((a) => a.tokens !== null);
@@ -383,6 +735,37 @@ function buildAuditReport(journal, opts = {}) {
     relativePath: `transcripts/agent-${a.agentId}.jsonl`,
     present: present.has(a.agentId)
   }));
+  const labelById = /* @__PURE__ */ new Map();
+  for (const a of agents) if (a.agentId !== null) labelById.set(a.agentId, a.label);
+  let denials = emptyDenialReport();
+  if (opts.denialsByAgent && opts.denialsByAgent.size > 0) {
+    const enriched = [];
+    for (const [agentId, list] of opts.denialsByAgent) {
+      const label = labelById.get(agentId);
+      enriched.push(label === void 0 ? list : list.map((d) => ({ ...d, label })));
+    }
+    denials = buildToolDenialReport(enriched);
+  }
+  let compaction = emptyCompactionReport();
+  if (opts.compactionByAgent && opts.compactionByAgent.size > 0) {
+    const enriched = [];
+    for (const [agentId, c] of opts.compactionByAgent) {
+      const label = labelById.get(agentId);
+      enriched.push(label === void 0 ? { agentId, compaction: c } : { agentId, label, compaction: c });
+    }
+    compaction = buildCompactionReport(enriched);
+  }
+  let delegation = emptyExternalDelegationReport();
+  if (opts.delegationByAgent && opts.delegationByAgent.size > 0) {
+    const inputs = [];
+    for (const [agentId, d] of opts.delegationByAgent) {
+      const label = labelById.get(agentId);
+      inputs.push(
+        label === void 0 ? { agentId, agentType: d.agentType, scan: d.scan } : { agentId, label, agentType: d.agentType, scan: d.scan }
+      );
+    }
+    delegation = buildExternalDelegationReport(inputs);
+  }
   return {
     runId: journal.runId,
     taskId: strOrNull(journal.taskId),
@@ -397,7 +780,10 @@ function buildAuditReport(journal, opts = {}) {
     reconciliation,
     decisions,
     transcripts,
-    tokenBreakdown
+    tokenBreakdown,
+    denials,
+    compaction,
+    delegation
   };
 }
 
@@ -406,7 +792,8 @@ function num(n) {
   return n === null ? "\u2014" : n.toLocaleString("en-US");
 }
 function cell(s) {
-  return s === null || s === "" ? "\u2014" : s;
+  if (s === null || s === "") return "\u2014";
+  return s.replace(/\|/g, "\\|");
 }
 function usageCell(u, key) {
   return u === null || u === void 0 ? "\u2014" : num(u[key]);
@@ -425,6 +812,83 @@ function formatAuditReportMarkdown(r, ctx = {}) {
   lines.push(`- **Total tool calls:** ${num(r.totalToolCalls)}`);
   if (ctx.generatedAt !== void 0) lines.push(`- **Generated:** ${ctx.generatedAt}`);
   if (ctx.journalPath !== void 0) lines.push(`- **Journal:** ${ctx.journalPath}`);
+  lines.push("");
+  lines.push("## Tool denials");
+  lines.push("");
+  const den = r.denials;
+  if (den === void 0 || den.total === 0) {
+    lines.push("_No tool denials detected \u2014 no agent was blocked from a tool it asked for._");
+  } else {
+    const groups = den.bySignature.map((g) => `${g.signature} \xD7${g.count}`).join(", ");
+    if (den.allRecovered) {
+      const vias = recoveryVias(den).join(", ");
+      lines.push(
+        `\u26A0 **${den.total} tool call(s) DENIED across ${den.agentsAffected} agent(s) \u2014 ALL show a RECOVERY signal** (the agent later succeeded via ${vias}): ${groups}. Verify the recovery covered the same intent.`
+      );
+    } else {
+      lines.push(
+        `\u26A0 **${den.total} tool call(s) DENIED across ${den.agentsAffected} agent(s)** \u2014 this run may be DEGRADED (an agent silently could not use a tool it asked for): ${groups}.` + (den.recoveredCount > 0 ? ` ${den.recoveredCount} of ${den.total} show a recovery signal.` : "")
+      );
+    }
+    lines.push("");
+    lines.push("| Stage | Tool | Attempted | Denial | Reason | Recovered |");
+    lines.push("|-------|------|-----------|--------|--------|-----------|");
+    for (const d of den.denials) {
+      lines.push(
+        `| ${cell(d.label ?? null)} | ${cell(d.tool)} | ${cell(d.detail || null)} | ${cell(d.kind)} | ${cell(d.reason)} | ${d.recovered !== void 0 ? `via ${cell(d.recovered.via)}` : "\u2014"} |`
+      );
+    }
+  }
+  lines.push("");
+  lines.push("## External delegation");
+  lines.push("");
+  const del = r.delegation;
+  if (del === void 0 || del.delegatedAgents === 0 && del.unknown.length === 0) {
+    lines.push("_No external delegation requested \u2014 no agent ran under an external agentType._");
+  } else {
+    if (del.flagged) {
+      lines.push(
+        `\u26A0 **${del.withoutCli.length} of ${del.delegatedAgents} delegated agent(s) show NO external-CLI tool_use** \u2014 the wrapper may have SELF-ANSWERED (output is same-family, presented as external). Verify from the agent transcript before trusting these outputs as decorrelated.`
+      );
+    } else if (del.delegatedAgents > 0) {
+      lines.push(
+        `\u2713 ${del.delegatedAgents} delegated agent(s) \u2014 every one shows a real external-CLI invocation.`
+      );
+    }
+    if (del.agents.length > 0) {
+      lines.push("");
+      lines.push("| Stage | Agent type | CLI | Calls | First command |");
+      lines.push("|-------|-----------|-----|------:|---------------|");
+      for (const a of del.agents) {
+        lines.push(
+          `| ${cell(a.label ?? null)} | ${cell(a.agentType)} | ${a.cliSeen ? "\u2713" : "\u26A0 NONE"} | ${a.cliCalls} | ${cell(a.firstCommand)} |`
+        );
+      }
+    }
+    if (del.unknown.length > 0) {
+      lines.push("");
+      lines.push(
+        `\u2139 ${del.unknown.length} delegation(s) to agentType(s) with no registered CLI signature \u2014 compliance not judged: ${del.unknown.map((u) => u.agentType).join(", ")}.`
+      );
+    }
+  }
+  lines.push("");
+  lines.push("## Auto-compaction");
+  lines.push("");
+  const comp = r.compaction;
+  if (comp === void 0 || comp.agentsCompacted === 0) {
+    lines.push("_No agent compacted its context \u2014 every agent stayed within its window._");
+  } else {
+    lines.push(
+      `\u2139 **${comp.agentsCompacted} agent(s) compacted their context** (peak ~${num(comp.peakTokens)} tokens) \u2014 an agent's context window filled up mid-run, so Claude Code auto-compacted it: the earliest ~${num(comp.droppedTokens)} tokens of its history were replaced with a short summary. The agent then kept working from that summary instead of the original detail, so anything it produced afterward may be less accurate. The run still SUCCEEDED \u2014 a heads-up to fan out more / read less per agent, not a failure.`
+    );
+    lines.push("");
+    lines.push("| Stage | Peak tokens | Dropped | Trigger |");
+    lines.push("|-------|------------:|--------:|---------|");
+    for (const a of comp.agents) {
+      lines.push(`| ${cell(a.label ?? null)} | ${num(a.peakTokens)} | ${num(a.droppedTokens)} | ${cell(a.trigger)} |`);
+    }
+  }
   lines.push("");
   lines.push("## Cost by agent");
   lines.push("");
@@ -476,10 +940,12 @@ function formatAuditReportMarkdown(r, ctx = {}) {
   if (r.decisions.length === 0) {
     lines.push("_No structured decision trail recorded for this run._");
   } else {
-    lines.push("| Stage | Outcome | Decision | Phase |");
-    lines.push("|-------|---------|----------|-------|");
+    lines.push("| Stage | Outcome | Decision | Model | Effort | Phase |");
+    lines.push("|-------|---------|----------|-------|--------|-------|");
     for (const d of r.decisions) {
-      lines.push(`| ${cell(d.stage)} | ${cell(d.outcome)} | ${cell(d.decision)} | ${cell(d.phaseTitle)} |`);
+      lines.push(
+        `| ${cell(d.stage)} | ${cell(d.outcome)} | ${cell(d.decision)} | ${cell(d.model ?? null)} | ${cell(d.effort ?? null)} | ${cell(d.phaseTitle)} |`
+      );
     }
   }
   lines.push("");
@@ -499,20 +965,28 @@ function formatAuditReportMarkdown(r, ctx = {}) {
 
 // packages/debugger/src/audit-folder.ts
 import { mkdirSync, writeFileSync, copyFileSync, statSync as statSync2, readFileSync as readFileSync2 } from "node:fs";
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 function resolveLogDir(env, outFlag) {
   if (outFlag !== void 0 && outFlag.trim() !== "") return { baseDir: outFlag, source: "flag" };
   const envDir = env["DWT_WORKFLOW_LOG_DIR"];
   if (typeof envDir === "string" && envDir.trim() !== "") return { baseDir: envDir, source: "env" };
   return null;
 }
+function isSafeAgentId(agentId) {
+  return /^[A-Za-z0-9_-]+$/.test(agentId);
+}
 function scanTranscripts(transcriptDir, agentIds, opts = {}) {
   const presentTranscripts = /* @__PURE__ */ new Set();
   const transcriptSources = [];
   const usageByAgent = /* @__PURE__ */ new Map();
+  const denialsByAgent = /* @__PURE__ */ new Map();
+  const compactionByAgent = /* @__PURE__ */ new Map();
+  const delegationByAgent = /* @__PURE__ */ new Map();
+  const needRead = opts.withUsage === true || opts.withDenials === true || opts.withCompaction === true || opts.withDelegation === true;
   for (const agentId of agentIds) {
-    const sourcePath = join2(transcriptDir, `agent-${agentId}.jsonl`);
-    if (opts.withUsage) {
+    if (!isSafeAgentId(agentId)) continue;
+    const sourcePath = join3(transcriptDir, `agent-${agentId}.jsonl`);
+    if (needRead) {
       let text;
       try {
         text = readFileSync2(sourcePath, "utf8");
@@ -521,8 +995,28 @@ function scanTranscripts(transcriptDir, agentIds, opts = {}) {
       }
       presentTranscripts.add(agentId);
       transcriptSources.push({ agentId, sourcePath });
-      const usage = parseTranscriptUsage(text);
-      if (isNonEmptyUsage(usage)) usageByAgent.set(agentId, usage);
+      if (opts.withUsage) {
+        const usage = parseTranscriptUsage(text);
+        if (isNonEmptyUsage(usage)) usageByAgent.set(agentId, usage);
+      }
+      if (opts.withDenials) {
+        const denials = parseTranscriptDenials(text, agentId);
+        if (denials.length > 0) denialsByAgent.set(agentId, denials);
+      }
+      if (opts.withCompaction) {
+        const compaction = parseTranscriptCompaction(text);
+        if (compaction.compacted) compactionByAgent.set(agentId, compaction);
+      }
+      if (opts.withDelegation) {
+        const agentType = readAgentTypeSidecar(join3(transcriptDir, `agent-${agentId}.meta.json`));
+        if (agentType !== null && isDelegatedAgentType(agentType)) {
+          const expectation = expectationForAgentType(agentType);
+          delegationByAgent.set(agentId, {
+            agentType,
+            scan: expectation !== null ? parseTranscriptExternalCalls(text, expectation) : null
+          });
+        }
+      }
     } else {
       try {
         if (statSync2(sourcePath).isFile()) {
@@ -533,24 +1027,38 @@ function scanTranscripts(transcriptDir, agentIds, opts = {}) {
       }
     }
   }
-  return { presentTranscripts, transcriptSources, usageByAgent };
+  return { presentTranscripts, transcriptSources, usageByAgent, denialsByAgent, compactionByAgent, delegationByAgent };
+}
+function readAgentTypeSidecar(metaPath) {
+  let text;
+  try {
+    text = readFileSync2(metaPath, "utf8");
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return isRecord(parsed) ? strOrNull(parsed["agentType"]) : null;
+  } catch {
+    return null;
+  }
 }
 function writeAuditFolder(args) {
-  const dir = join2(args.baseDir, args.runId);
+  const dir = join3(args.baseDir, args.runId);
   try {
     mkdirSync(dir, { recursive: true });
     const files = [];
-    writeFileSync(join2(dir, "report.md"), args.markdown, "utf8");
+    writeFileSync(join3(dir, "report.md"), args.markdown, "utf8");
     files.push("report.md");
-    writeFileSync(join2(dir, "journal.json"), args.journalText, "utf8");
+    writeFileSync(join3(dir, "journal.json"), args.journalText, "utf8");
     files.push("journal.json");
     if (args.transcriptSources.length > 0) {
-      const tdir = join2(dir, "transcripts");
+      const tdir = join3(dir, "transcripts");
       mkdirSync(tdir, { recursive: true });
       for (const t of args.transcriptSources) {
         const rel = `transcripts/agent-${t.agentId}.jsonl`;
         try {
-          copyFileSync(t.sourcePath, join2(dir, rel));
+          copyFileSync(t.sourcePath, join3(dir, rel));
           files.push(rel);
         } catch {
         }
@@ -616,18 +1124,65 @@ function cell2(s) {
 }
 function buildFullSurface(input) {
   const { runId, report, diagnosis, diskDir } = input;
-  const block = isTrouble(diagnosis.mode);
-  const notice = `DWT audit \xB7 ${runId} (${cell2(report.workflowName)}) ${cell2(report.status)} \xB7 ${report.agentCount} agents \xB7 ${tok(report.totalTokens)} tok \xB7 ${report.decisions.length} decisions \u2192 pnpm wt:report ${runId}` + (diskDir !== null ? ` \xB7 written to ${diskDir}` : "");
+  const trouble = isTrouble(diagnosis.mode);
+  const degraded = report.denials?.degraded ?? false;
+  const compacted = report.compaction?.compacted ?? false;
+  const selfAnswered = report.delegation?.flagged ?? false;
+  const block = trouble || degraded || selfAnswered;
+  let notice = `DWT audit \xB7 ${runId} (${cell2(report.workflowName)}) ${cell2(report.status)} \xB7 ${report.agentCount} agents \xB7 ${tok(report.totalTokens)} tok \xB7 ${report.decisions.length} decisions \u2192 pnpm wt:report ${runId}` + (diskDir !== null ? ` \xB7 written to ${diskDir}` : "");
+  if (degraded && report.denials) {
+    notice += ` \xB7 \u26A0 ${report.denials.total} tool denial(s)/${report.denials.agentsAffected} agent(s)`;
+  }
+  if (selfAnswered && report.delegation) {
+    notice += ` \xB7 \u26A0 ${report.delegation.withoutCli.length}/${report.delegation.delegatedAgents} delegated agent(s) NO external CLI`;
+  }
+  if (compacted && report.compaction) {
+    notice += ` \xB7 \u2139 ${report.compaction.agentsCompacted} agent(s) compacted context (peak ~${tok(report.compaction.peakTokens)} tok)`;
+  }
   if (!block) return { systemMessage: notice, block: false, reason: "" };
-  const recon = report.reconciliation;
-  const reconNote = recon.reconciles ? "reconciled" : `UNRECONCILED (\u0394 ${recon.delta === null ? "\u2014" : recon.delta.toLocaleString("en-US")}, ${recon.missingTokenAgents} agent(s) missing tokens)`;
-  const lines = [
-    `\u26A0 Workflow run ${runId} (${cell2(report.workflowName)}) needs attention \u2014 ${diagnosis.headline}`,
-    `cost: ${report.agentCount} agents \xB7 ${tok(report.totalTokens)} tok (${reconNote}) \xB7 ${tok(report.totalToolCalls)} tool calls`
-  ];
-  if (diagnosis.findings.length > 0) {
-    lines.push("findings:");
-    for (const f of diagnosis.findings) lines.push(`  - [${f.kind}] ${f.detail}`);
+  const lines = [];
+  if (trouble) {
+    const recon = report.reconciliation;
+    const reconNote = recon.reconciles ? "reconciled" : `UNRECONCILED (\u0394 ${recon.delta === null ? "\u2014" : recon.delta.toLocaleString("en-US")}, ${recon.missingTokenAgents} agent(s) missing tokens)`;
+    lines.push(`\u26A0 Workflow run ${runId} (${cell2(report.workflowName)}) needs attention \u2014 ${diagnosis.headline}`);
+    lines.push(
+      `cost: ${report.agentCount} agents \xB7 ${tok(report.totalTokens)} tok (${reconNote}) \xB7 ${tok(report.totalToolCalls)} tool calls`
+    );
+    if (diagnosis.findings.length > 0) {
+      lines.push("findings:");
+      for (const f of diagnosis.findings) lines.push(`  - [${f.kind}] ${f.detail}`);
+    }
+  }
+  if (degraded && report.denials) {
+    const d = report.denials;
+    const groups = d.bySignature.map((g) => `${g.signature} \xD7${g.count}`).join(", ");
+    if (d.allRecovered) {
+      const vias = recoveryVias(d).join(", ");
+      lines.push(
+        `\u26A0 Workflow run ${runId} (${cell2(report.workflowName)}) \u2014 ${d.total} tool call(s) DENIED across ${d.agentsAffected} agent(s) (${groups}), but ALL show a RECOVERY signal: the agent(s) later succeeded via ${vias}.`
+      );
+      lines.push("  Verify the recovery covered the same intent; the full denial list is in the audit report.");
+    } else {
+      lines.push(
+        `\u26A0 Workflow run ${runId} (${cell2(report.workflowName)}) may be DEGRADED \u2014 ${d.total} tool call(s) silently DENIED across ${d.agentsAffected} agent(s): ${groups}.`
+      );
+      lines.push(
+        "  An agent could not use a tool it asked for (e.g. read the diff / run a test) \u2014 its output may be blind."
+      );
+      if (d.recoveredCount > 0) {
+        lines.push(
+          `  (${d.recoveredCount} of ${d.total} show a recovery signal \u2014 the agent later succeeded via an equivalent tool.)`
+        );
+      }
+    }
+  }
+  if (selfAnswered && report.delegation) {
+    const d = report.delegation;
+    const types = [...new Set(d.withoutCli.map((a) => a.agentType))].join(", ");
+    lines.push(
+      `\u26A0 Workflow run ${runId} (${cell2(report.workflowName)}) requested EXTERNAL delegation (${types}) but ${d.withoutCli.length} of ${d.delegatedAgents} routed agent(s) show NO external-CLI tool_use \u2014 the wrapper may have SELF-ANSWERED, so those verdicts may be same-family, not external.`
+    );
+    lines.push("  Verify from the agent transcript(s) before trusting them as decorrelated; details in the audit report.");
   }
   lines.push(`Full audit: pnpm wt:report ${runId}${diskDir !== null ? ` (written to ${diskDir})` : ""}`);
   return { systemMessage: notice, block: true, reason: lines.join("\n") };
@@ -657,15 +1212,15 @@ function renderHookOutput(out) {
 // packages/debugger/src/stop-state.ts
 import { mkdirSync as mkdirSync2, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join as join3 } from "node:path";
+import { join as join4 } from "node:path";
 var REPORTED_CAP = 200;
 var PROTO_KEYS = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
 function stateDir() {
-  return join3(tmpdir(), "wt-stop-hook");
+  return join4(tmpdir(), "wt-stop-hook");
 }
 function statePath(sessionId) {
   const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_") || "unknown";
-  return join3(stateDir(), `${safe}.json`);
+  return join4(stateDir(), `${safe}.json`);
 }
 function strArray(v) {
   return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
@@ -696,17 +1251,51 @@ function writeStopState(sessionId, state) {
   } catch {
   }
 }
+var DURABLE_SET_CAP = 500;
+function durableSetPath(cwd, kind) {
+  const safe = (projectSlug(cwd) || "unknown").slice(0, 200);
+  return join4(stateDir(), `${kind}-${safe}.json`);
+}
+function readDurableSet(cwd, kind, field) {
+  try {
+    const data = JSON.parse(readFileSync3(durableSetPath(cwd, kind), "utf8"));
+    if (!isRecord(data)) return [];
+    return strArray(data[field]);
+  } catch {
+    return [];
+  }
+}
+function writeDurableSet(cwd, kind, field, values) {
+  try {
+    mkdirSync2(stateDir(), { recursive: true });
+    const merged = [.../* @__PURE__ */ new Set([...readDurableSet(cwd, kind, field), ...values])];
+    writeFileSync2(durableSetPath(cwd, kind), JSON.stringify({ [field]: merged.slice(-DURABLE_SET_CAP) }));
+  } catch {
+  }
+}
+function readReportedRuns(cwd) {
+  return readDurableSet(cwd, "reported-runs", "runs");
+}
+function writeReportedRuns(cwd, runs) {
+  writeDurableSet(cwd, "reported-runs", "runs", runs);
+}
+function readGivenUpTasks(cwd) {
+  return readDurableSet(cwd, "given-up-tasks", "tasks");
+}
+function writeGivenUpTasks(cwd, tasks) {
+  writeDurableSet(cwd, "given-up-tasks", "tasks", tasks);
+}
 
 // packages/debugger/src/stop-hook.ts
 function readStdin() {
-  return new Promise((resolve) => {
+  return new Promise((resolve2) => {
     let data = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (c) => {
       data += c;
     });
-    process.stdin.on("end", () => resolve(data));
-    process.stdin.on("error", () => resolve(data));
+    process.stdin.on("end", () => resolve2(data));
+    process.stdin.on("error", () => resolve2(data));
   });
 }
 function emit(output) {
@@ -735,6 +1324,10 @@ async function main() {
   const sessionId = payload.sessionId;
   const cwd = payload.cwd ?? process.cwd();
   const state = readStopState(sessionId);
+  const reportedRuns = new Set(readReportedRuns(cwd));
+  let reportedRunsChanged = false;
+  const givenUpTasks = new Set(readGivenUpTasks(cwd));
+  let givenUpTasksChanged = false;
   const { toResolve, running } = planStopActions(state.pending, payload.workflows);
   const surfaces = [];
   const stillPending = [];
@@ -743,17 +1336,37 @@ async function main() {
     const tries = (state.tries[id] ?? 0) + 1;
     state.tries[id] = tries;
     const resolved = findJournalByTaskId(id, { cwd });
+    const runId = resolved?.runId ?? null;
+    if (runId !== null && reportedRuns.has(runId)) {
+      state.reported.push(id);
+      delete state.tries[id];
+      continue;
+    }
     const journal = resolved ? parseJournal(resolved.text) : null;
     const diagnosis = journal ? diagnoseRun(journal) : null;
+    if (diagnosis === null && givenUpTasks.has(id)) {
+      state.reported.push(id);
+      delete state.tries[id];
+      continue;
+    }
     const decision = decideSurface(diagnosis, tries);
     if (decision.surface === "full" && resolved && journal && diagnosis) {
       const tdir = transcriptDirFor(resolved.path, resolved.runId);
       const agentIds = agentEvents(journal).map((a) => a.agentId).filter((id2) => typeof id2 === "string");
       const logDir = resolveLogDir(process.env);
-      const { presentTranscripts, transcriptSources, usageByAgent } = scanTranscripts(tdir, agentIds, {
-        withUsage: logDir !== null
+      const { presentTranscripts, transcriptSources, usageByAgent, denialsByAgent, compactionByAgent, delegationByAgent } = scanTranscripts(tdir, agentIds, {
+        withUsage: logDir !== null,
+        withDenials: true,
+        withCompaction: true,
+        withDelegation: true
       });
-      const report = buildAuditReport(journal, { presentTranscripts, usageByAgent });
+      const report = buildAuditReport(journal, {
+        presentTranscripts,
+        usageByAgent,
+        denialsByAgent,
+        compactionByAgent,
+        delegationByAgent
+      });
       let diskDir = null;
       if (logDir) {
         const markdown = formatAuditReportMarkdown(report, { journalPath: resolved.path });
@@ -774,6 +1387,15 @@ async function main() {
     if (decision.conclusive) {
       state.reported.push(id);
       delete state.tries[id];
+      if (runId !== null) {
+        if (!reportedRuns.has(runId)) {
+          reportedRuns.add(runId);
+          reportedRunsChanged = true;
+        }
+      } else if (!givenUpTasks.has(id)) {
+        givenUpTasks.add(id);
+        givenUpTasksChanged = true;
+      }
     } else {
       stillPending.push(id);
     }
@@ -781,6 +1403,8 @@ async function main() {
   const finalSurfaces = payload.stopHookActive ? surfaces.map((s) => ({ ...s, block: false })) : surfaces;
   state.pending = [.../* @__PURE__ */ new Set([...running, ...stillPending])];
   writeStopState(sessionId, state);
+  if (reportedRunsChanged) writeReportedRuns(cwd, [...reportedRuns]);
+  if (givenUpTasksChanged) writeGivenUpTasks(cwd, [...givenUpTasks]);
   emit(renderHookOutput(mergeStopSurfaces(finalSurfaces)));
 }
 main().catch(() => {

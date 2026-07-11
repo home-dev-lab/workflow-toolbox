@@ -14,6 +14,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
+  "dependencies": {
+    "@workflow-toolbox/runtime": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "tsx": "^4.0.0",

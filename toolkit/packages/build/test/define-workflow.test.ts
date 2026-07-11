@@ -5,7 +5,7 @@
 //   normalizeArgs(rawArgs) → parseInput (default: identity) → def.run(rt, input)
 
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { FakeRuntime, parsePromptTag, type WorkflowRuntime } from '@workflow-toolbox/runtime'
 import { defineWorkflow } from '../src/define-workflow.js'
 
 // ---------------------------------------------------------------------------
@@ -183,15 +183,20 @@ describe('defineWorkflow — return value', () => {
 // ---------------------------------------------------------------------------
 
 describe('defineWorkflow — run() pipeline', () => {
-  it('passes the same rt instance to def.run', async () => {
+  it('passes a prompt-tagging wrapper of rt to def.run (shared members by reference)', async () => {
     const rt = new FakeRuntime()
-    let receivedRt: unknown
+    let receivedRt: WorkflowRuntime | undefined
     const def = defineWorkflow({
       meta: makeValidMeta(),
       run: async (r) => { receivedRt = r; return 'done' },
     })
     await def.run(rt, undefined)
-    expect(receivedRt).toBe(rt)
+    // rt is wrapped (withPromptTags), not passed by identity — but the
+    // pass-through members are the source rt's own.
+    expect(receivedRt).not.toBe(rt)
+    expect(receivedRt!.parallel).toBe(rt.parallel)
+    expect(receivedRt!.pipeline).toBe(rt.pipeline)
+    expect(receivedRt!.budget).toBe(rt.budget)
   })
 
   it('normalizes JSON-encoded string rawArgs before calling def.run', async () => {
@@ -295,7 +300,7 @@ describe('defineWorkflow — typed return', () => {
 // ---------------------------------------------------------------------------
 
 describe('defineWorkflow — integration with FakeRuntime', () => {
-  it('def.run can call rt.agent and the call is recorded', async () => {
+  it('def.run can call rt.agent and the call is recorded (labeled → prompt is tagged)', async () => {
     const rt = new FakeRuntime({
       onAgent: ({ index }) => `response-${index}`,
     })
@@ -306,7 +311,49 @@ describe('defineWorkflow — integration with FakeRuntime', () => {
     const result = await def.run(rt, undefined)
     expect(result).toBe('response-1')
     expect(rt.calls).toHaveLength(1)
-    expect(rt.calls[0]?.prompt).toBe('my prompt')
+    expect(rt.calls[0]?.prompt.endsWith('my prompt')).toBe(true)
     expect(rt.calls[0]?.index).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Prompt tagging — defineWorkflow wraps rt with withPromptTags, so every
+// labeled/phased agent call carries the observe-facing wt-meta marker line.
+// ---------------------------------------------------------------------------
+
+describe('defineWorkflow — prompt tagging', () => {
+  it('tags agent prompts with label + phase from opts', async () => {
+    const rt = new FakeRuntime({ responses: ['ok'] })
+    const def = defineWorkflow({
+      meta: makeValidMeta(),
+      run: async (r) => r.agent('do it', { label: 'gen:0', phase: 'Generate' }),
+    })
+    await def.run(rt, undefined)
+    expect(parsePromptTag(rt.calls[0]!.prompt)).toEqual({ label: 'gen:0', phase: 'Generate' })
+    expect(rt.calls[0]!.prompt.endsWith('do it')).toBe(true)
+  })
+
+  it('tags with the current rt.phase() title when opts.phase is absent', async () => {
+    const rt = new FakeRuntime({ responses: ['ok'] })
+    const def = defineWorkflow({
+      meta: makeValidMeta(),
+      run: async (r) => {
+        r.phase('Refine')
+        return r.agent('iterate', { label: 'iter:0' })
+      },
+    })
+    await def.run(rt, undefined)
+    expect(parsePromptTag(rt.calls[0]!.prompt)).toEqual({ label: 'iter:0', phase: 'Refine' })
+    expect(rt.phases).toContain('Refine')
+  })
+
+  it('leaves unlabeled, phaseless prompts untouched', async () => {
+    const rt = new FakeRuntime({ responses: ['ok'] })
+    const def = defineWorkflow({
+      meta: makeValidMeta(),
+      run: async (r) => r.agent('bare'),
+    })
+    await def.run(rt, undefined)
+    expect(rt.calls[0]!.prompt).toBe('bare')
   })
 })

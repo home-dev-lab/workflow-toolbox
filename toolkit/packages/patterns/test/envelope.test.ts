@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@workflow-toolbox/runtime'
-import { warn, applyCap, makeRecord } from '../src/envelope.js'
+import { FakeRuntime, DIGEST_PREFIX, parseDigest } from '@workflow-toolbox/runtime'
+import { warn, applyCap, makeRecord, emitDigest, collectTrail } from '../src/envelope.js'
 import type { TrailRecord, PatternResult } from '../src/envelope.js'
 
 describe('warn', () => {
@@ -66,6 +66,27 @@ describe('applyCap', () => {
     const result = applyCap(['a', 'b', 'c'], 1)
     expect(result.kept).toEqual(['a'])
     expect(result.truncated).toBe(2)
+  })
+})
+
+describe('emitDigest', () => {
+  it('logs exactly one parseable digest line via rt.log()', () => {
+    const rt = new FakeRuntime()
+    emitDigest(rt, { stage: 'fanOutAndSynthesize', counts: { tasks: 3, completed: 2 } })
+    expect(rt.logs.length).toBe(1)
+    expect(rt.logs[0]!.startsWith(DIGEST_PREFIX)).toBe(true)
+    expect(parseDigest(rt.logs[0]!)).toEqual({ stage: 'fanOutAndSynthesize', counts: { tasks: 3, completed: 2 } })
+  })
+
+  it('round-trips taken/notTaken/output through the shared grammar', () => {
+    const rt = new FakeRuntime()
+    emitDigest(rt, { stage: 'classifyAndAct', taken: ['bug'], notTaken: ['feature', 'question'], output: 'ok' })
+    expect(parseDigest(rt.logs[0]!)).toEqual({
+      stage: 'classifyAndAct',
+      taken: ['bug'],
+      notTaken: ['feature', 'question'],
+      output: 'ok',
+    })
   })
 })
 
@@ -165,5 +186,49 @@ describe('PatternResult — trail is required', () => {
     }
     expect(result.trail).toHaveLength(2)
     expect(trail.at(0)!.stage).toBe('planAndExecute:plan')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// collectTrail — concatenates a composition's per-pattern trails, in order
+// ---------------------------------------------------------------------------
+
+describe('collectTrail', () => {
+  function fakeResult(trail: TrailRecord[]): PatternResult<null> {
+    return { value: null, stats: { itemsIn: 0, itemsOut: 0, agentsSpawned: 0, dropped: 0, truncated: 0 }, warnings: [], trail }
+  }
+
+  it('concatenates trails in call order', () => {
+    const a = fakeResult([{ stage: 'a:0', outcome: 'ok' }])
+    const b = fakeResult([{ stage: 'b:0', outcome: 'ok' }, { stage: 'b:1', outcome: 'null' }])
+    expect(collectTrail(a, b)).toEqual([
+      { stage: 'a:0', outcome: 'ok' },
+      { stage: 'b:0', outcome: 'ok' },
+      { stage: 'b:1', outcome: 'null' },
+    ])
+  })
+
+  it('skips null and undefined entries (a skipped/aborted pattern)', () => {
+    const a = fakeResult([{ stage: 'a:0', outcome: 'ok' }])
+    const c = fakeResult([{ stage: 'c:0', outcome: 'ok' }])
+    expect(collectTrail(a, null, undefined, c)).toEqual([
+      { stage: 'a:0', outcome: 'ok' },
+      { stage: 'c:0', outcome: 'ok' },
+    ])
+  })
+
+  it('returns an empty array for an empty call', () => {
+    expect(collectTrail()).toEqual([])
+  })
+
+  it('returns an empty array when every argument is null/undefined', () => {
+    expect(collectTrail(null, undefined)).toEqual([])
+  })
+
+  it('does not mutate the source trails', () => {
+    const aTrail: TrailRecord[] = [{ stage: 'a:0', outcome: 'ok' }]
+    const a = fakeResult(aTrail)
+    collectTrail(a)
+    expect(aTrail).toHaveLength(1)
   })
 })

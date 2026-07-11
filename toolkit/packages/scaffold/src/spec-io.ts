@@ -6,25 +6,37 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { assertSpecShape } from './scaffold.js'
-import type { ScaffoldSpec } from './scaffold.js'
+import { assertAgentSpecShape, assertSpecShape } from './scaffold.js'
+import type { AgentScaffoldSpec, ScaffoldSpec } from './scaffold.js'
 
-/** Read + parse + shape-narrow a spec file. Throws an actionable Error. */
-export function loadSpec(specPath: string): ScaffoldSpec {
+/** Read + parse a spec file to raw JSON. Throws an actionable Error. Shared by
+ *  the workflow + agent loaders so their read/parse error messages cannot drift. */
+function readSpecJson(specPath: string): unknown {
   let raw: string
   try {
     raw = fs.readFileSync(path.resolve(specPath), 'utf8')
   } catch {
     throw new Error(`workflow-toolbox scaffold: cannot read spec file ${JSON.stringify(specPath)}`)
   }
-  let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    return JSON.parse(raw)
   } catch (err) {
     throw new Error(
       `workflow-toolbox scaffold: ${JSON.stringify(specPath)} is not valid JSON — ${(err as Error).message}`,
     )
   }
+}
+
+/** Read + parse + shape-narrow a WORKFLOW spec file. Throws an actionable Error. */
+export function loadSpec(specPath: string): ScaffoldSpec {
+  const parsed = readSpecJson(specPath)
   assertSpecShape(parsed)
+  return parsed
+}
+
+/** Read + parse + shape-narrow an AGENT spec file. Throws an actionable Error. */
+export function loadAgentSpec(specPath: string): AgentScaffoldSpec {
+  const parsed = readSpecJson(specPath)
+  assertAgentSpecShape(parsed)
   return parsed
 }

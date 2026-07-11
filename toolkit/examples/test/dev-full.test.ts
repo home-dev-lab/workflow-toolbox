@@ -330,6 +330,7 @@ describe('dev-full happy chain', () => {
     expect('fixerModel' in sent).toBe(false)
     expect('fixerType' in sent).toBe(false)
     expect('reviewerType' in sent).toBe(false)
+    expect('verifierType' in sent).toBe(false)
   })
 
   it('forwards dimensions and maxFixIterations to the review child when set', async () => {
@@ -356,6 +357,30 @@ describe('dev-full happy chain', () => {
     const { rt, calls } = makeRuntime()
     await run(rt, { ...VALID_INPUT, reviewerType: 'magic-claude:ts-reviewer' })
     expect((calls.review[0] as Record<string, unknown>).reviewerType).toBe('magic-claude:ts-reviewer')
+  })
+
+  it('OMITS verifierType from the plan child when unset (child same-model default rules)', async () => {
+    const { rt, calls } = makeRuntime()
+    await run(rt, VALID_INPUT)
+    expect('verifierType' in (calls.plan[0] as Record<string, unknown>)).toBe(false)
+  })
+
+  it('forwards verifierType to the plan child when the operator set it', async () => {
+    const { rt, calls } = makeRuntime()
+    await run(rt, { ...VALID_INPUT, verifierType: 'codex:codex-rescue' })
+    expect((calls.plan[0] as Record<string, unknown>).verifierType).toBe('codex:codex-rescue')
+  })
+
+  it('forwards verifierType to BOTH the plan and review children (whole-chain cross-model verify)', async () => {
+    const { rt, calls } = makeRuntime()
+    await run(rt, { ...VALID_INPUT, verifierType: 'codex:codex-rescue' })
+    expect((calls.plan[0] as Record<string, unknown>).verifierType).toBe('codex:codex-rescue')
+    expect((calls.review[0] as Record<string, unknown>).verifierType).toBe('codex:codex-rescue')
+  })
+
+  it('throws for an empty-string verifierType', async () => {
+    const { rt } = makeRuntime()
+    await expect(run(rt, { ...VALID_INPUT, verifierType: '' })).rejects.toThrow(/verifierType/i)
   })
 
   it('derives changedFiles (deduped) from succeeded AND failed tasks, never skipped ones', async () => {

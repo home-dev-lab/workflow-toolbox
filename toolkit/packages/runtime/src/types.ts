@@ -5,6 +5,12 @@
 /** Model aliases understood by Claude Code's resolver, plus pass-through for full model IDs. */
 export type ModelAlias = 'haiku' | 'sonnet' | 'opus' | 'fable' | 'inherit' | (string & {})
 
+/** Reasoning-effort tiers accepted by the sandbox agent() call. Omit to inherit
+ *  the session effort. Closed union (no string pass-through): the tier set is
+ *  fixed by the Workflow tool — if it grows, bump it here, the single sandbox
+ *  coupling point, to keep autocomplete and type-safety honest. */
+export type EffortAlias = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
 /** Minimal structural type for JSON Schema objects. Consumers derive TS types
  *  via json-schema-to-ts (FromSchema) on their side — this package does not
  *  depend on that library. */
@@ -12,15 +18,22 @@ export type JsonSchema = { readonly [k: string]: unknown }
 
 /** Options accepted by agent(). All fields map 1-to-1 to the sandbox API (§6). */
 export interface AgentOptions {
-  /** Display name shown in /workflows. Not part of the resume cache key. */
+  /** Display name shown in /workflows. Not part of the sandbox's resume cache
+   *  key AS AN OPTION — but under defineWorkflow's withPromptTags wrapper the
+   *  label is embedded in the prompt text (the wt-meta tag), so changing it
+   *  between runs DOES invalidate that call's resume cache entry. */
   label?: string
   /** Assign this call to a named progress group. Overrides the current phase()
-   *  for this single call only. Not part of the cache key. */
+   *  for this single call only. Not part of the cache key as an option — but
+   *  like `label`, it is embedded in the prompt by withPromptTags, so a change
+   *  invalidates the call's resume cache entry. */
   phase?: string
   /** JSON Schema. Forces structured output; agent() returns the validated object. */
   schema?: JsonSchema
   /** Per-agent model alias or full model ID. Omit to inherit the session model. */
   model?: ModelAlias
+  /** Per-agent reasoning effort. Omit to inherit the session effort. */
+  effort?: EffortAlias
   /** Run the agent in a fresh git worktree. Expensive — use only when parallel
    *  agents mutate files that would otherwise collide. */
   isolation?: 'worktree'

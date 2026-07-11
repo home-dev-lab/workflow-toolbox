@@ -2,11 +2,13 @@
 
 This repo has two halves that stand alone but work together:
 
-- **`plugin/`** — the Claude Code plugin. Ships **six skills** — `workflow-composer`
+- **`plugin/`** — the Claude Code plugin. Ships **seven skills** — `workflow-composer`
   (author), `toolkit-scaffold` (start), `workflow-debugger` (diagnose a run),
   `upgrade-canary` (re-verify the runtime after an upgrade), `independent-analysis`
   (trigger the bias-free analysis workflow when relevant), `deep-grounding`
-  (collect + verify evidence against the real sources before asserting/analyzing) —
+  (collect + verify evidence against the real sources before asserting/analyzing),
+  `observe-ui` (start/stop/status of the local run-visualization server via the
+  bundled `wt-observe` CLI) —
   plus a `Stop` hook that
   auto-surfaces a finished run's audit report, and **one bundled workflow**:
   `independent-analysis` (domain-agnostic bias-free multi-lens analysis,
@@ -16,21 +18,21 @@ This repo has two halves that stand alone but work together:
   ships because it helps any analysis task.
 - **`toolkit/`** — `@workflow-toolbox`, a compile-time TypeScript pattern library for Workflow
   scripts: `@workflow-toolbox/runtime` (sandbox typings + `FakeRuntime`), `@workflow-toolbox/patterns` (the
-  seven patterns + result envelope), `@workflow-toolbox/build` (`defineWorkflow` + the `workflow-toolbox`
+  eight patterns + result envelope), `@workflow-toolbox/build` (`defineWorkflow` + the `workflow-toolbox`
   CLI), plus support packages (`std`, `smoke`, `debugger`, `scaffold`). Example
   compositions live in `toolkit/examples/`; their committed `.js` artifacts in
   `toolkit/workflows/` run as-is via the Workflow tool's `scriptPath`.
 
 ## Where to read first
 
-- [README.md](README.md) — what this is, install, the seven patterns, quickstart.
+- [README.md](README.md) — what this is, install, the eight patterns, quickstart.
 - [toolkit/README.md](toolkit/README.md) — the authoring contract, the pattern
   table (when to use / when not to), the result envelope.
 - [docs/public/architecture.md](docs/public/architecture.md) — design principles,
   the evidence-tiered runtime facts, guardrails, what was deliberately not built.
 - [docs/public/known-issues.md](docs/public/known-issues.md) — open items + the
   research-preview limitations.
-- [docs/public/adr/](docs/public/adr/) — the five architecture decision records.
+- [docs/public/adr/](docs/public/adr/) — the architecture decision records.
 - `plugin/skills/workflow-composer/SKILL.md` (+ `references/`) — the authoring
   guide and API reference for workflow scripts.
 

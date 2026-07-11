@@ -3,6 +3,9 @@ export const meta = {
   "description": "Bias-free multi-lens adversarial analysis of a subject: fan out one agent per lens to surface forgotten angles/risks, dedup vs stated assumptions, then refute-first verify the survivors.",
   "phases": [
     {
+      "title": "Probe"
+    },
+    {
       "title": "Lenses"
     },
     {
@@ -37,6 +40,63 @@ var __wt = (() => {
   __export(independent_analysis_workflow_exports, {
     default: () => independent_analysis_workflow_default
   });
+
+  // ../packages/runtime/src/constants.ts
+  var BEST_MODEL = "opus";
+
+  // ../packages/runtime/src/digest.ts
+  var DIGEST_PREFIX = "[wt:digest]";
+  function formatDigest(d) {
+    const body = { stage: d.stage };
+    if (d.output !== void 0) body.output = d.output;
+    if (d.taken !== void 0) body.taken = d.taken;
+    if (d.notTaken !== void 0) body.notTaken = d.notTaken;
+    if (d.counts !== void 0) {
+      const counts = d.counts;
+      const sorted = {};
+      for (const k of Object.keys(counts).sort()) {
+        const v = counts[k];
+        if (v !== void 0) sorted[k] = v;
+      }
+      body.counts = sorted;
+    }
+    return `${DIGEST_PREFIX} ${JSON.stringify(body)}`;
+  }
+
+  // ../packages/runtime/src/prompt-tag.ts
+  var PROMPT_TAG_PREFIX = "<!-- wt-meta ";
+  function escapeValue(v) {
+    return v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\n", "&#10;");
+  }
+  function buildPromptTag(fields) {
+    const parts = [];
+    if (fields.label !== void 0) parts.push(`label="${escapeValue(fields.label)}"`);
+    if (fields.phase !== void 0) parts.push(`phase="${escapeValue(fields.phase)}"`);
+    if (parts.length === 0) return null;
+    return `${PROMPT_TAG_PREFIX}${parts.join(" ")} -->`;
+  }
+  function withPromptTags(rt) {
+    let currentPhase;
+    const agent = (prompt, opts) => {
+      const tag = buildPromptTag({ label: opts?.label, phase: opts?.phase ?? currentPhase });
+      const tagged = tag !== null && !prompt.startsWith(tag) ? `${tag}
+
+${prompt}` : prompt;
+      return rt.agent(tagged, opts);
+    };
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => {
+        currentPhase = title;
+        rt.phase(title);
+      },
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
+  }
 
   // ../packages/build/src/define-workflow.ts
   function normalizeArgs(raw) {
@@ -79,9 +139,109 @@ var __wt = (() => {
       async run(rt, rawArgs) {
         const normalized = normalizeArgs(rawArgs);
         const input = def.parseInput !== void 0 ? def.parseInput(normalized) : normalized;
-        return def.run(rt, input);
+        return def.run(withPromptTags(rt), input);
       }
     };
+  }
+  var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+  var EFFORT_ROLE_VALUES = ["low", "medium", "high", "xhigh", "max", "auto"];
+  var PER_AGENT_KEYS = ["model", "effort", "agentType", "isolation", "stallMs"];
+  function isRecord(v) {
+    return typeof v === "object" && v !== null && !Array.isArray(v);
+  }
+  function asNonEmptyString(v, where) {
+    if (typeof v !== "string" || v.trim().length === 0) {
+      throw new Error(`parseConfig: ${where} must be a non-empty string, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffort(v, where) {
+    if (typeof v !== "string" || !EFFORTS.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORTS.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffortRoleValue(v, where) {
+    if (typeof v !== "string" || !EFFORT_ROLE_VALUES.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORT_ROLE_VALUES.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function parsePerAgent(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: perAgent must be an object, got ${raw === null ? "null" : typeof raw}`);
+    for (const key of Object.keys(raw)) {
+      if (!PER_AGENT_KEYS.includes(key)) {
+        throw new Error(`parseConfig: unknown perAgent key "${key}" \u2014 expected one of ${PER_AGENT_KEYS.join(", ")}`);
+      }
+    }
+    const out = {};
+    if (raw.model !== void 0) out.model = asNonEmptyString(raw.model, "perAgent.model");
+    if (raw.effort !== void 0) out.effort = asEffort(raw.effort, "perAgent.effort");
+    if (raw.agentType !== void 0) out.agentType = asNonEmptyString(raw.agentType, "perAgent.agentType");
+    if (raw.isolation !== void 0) {
+      if (raw.isolation !== "worktree") {
+        throw new Error(`parseConfig: perAgent.isolation must be 'worktree' when set, got ${JSON.stringify(raw.isolation)}`);
+      }
+      out.isolation = "worktree";
+    }
+    if (raw.stallMs !== void 0) {
+      const n = raw.stallMs;
+      if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) {
+        throw new Error(`parseConfig: perAgent.stallMs must be a positive finite number, got ${JSON.stringify(n)}`);
+      }
+      out.stallMs = n;
+    }
+    return out;
+  }
+  function parseStringMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asNonEmptyString(v, `${where}.${k}`);
+    return out;
+  }
+  function parseEffortMap(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: effort must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`);
+    return out;
+  }
+  function parseNumberMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v !== "number" || !Number.isFinite(v)) {
+        throw new Error(`parseConfig: ${where}.${k} must be a finite number, got ${JSON.stringify(v)}`);
+      }
+      out[k] = v;
+    }
+    return out;
+  }
+  function parseConfig(raw) {
+    if (raw === void 0 || raw === null) return {};
+    if (!isRecord(raw)) {
+      throw new Error(`parseConfig: expected an object (or undefined), got ${typeof raw}`);
+    }
+    const config = {};
+    if (raw.perAgent !== void 0) config.perAgent = parsePerAgent(raw.perAgent);
+    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models");
+    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort);
+    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes");
+    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing");
+    return config;
+  }
+
+  // ../packages/std/src/resolve-effort.ts
+  var EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
+  function isEffortAlias(v) {
+    return typeof v === "string" && EFFORT_ORDER.includes(v);
+  }
+  function resolveEffort(argsValue, stageDefault) {
+    return isEffortAlias(argsValue) ? argsValue : stageDefault;
+  }
+  function resolveVerifierEffort(argsValue, stageDefault, floor = "high") {
+    const safeFloor = isEffortAlias(floor) ? floor : "high";
+    const resolved = resolveEffort(argsValue, stageDefault);
+    return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor;
   }
 
   // ../packages/patterns/src/envelope.ts
@@ -90,12 +250,24 @@ var __wt = (() => {
       stage,
       outcome: ok ? "ok" : "null",
       ...extra?.model !== void 0 ? { model: extra.model } : {},
+      ...extra?.effort !== void 0 ? { effort: extra.effort } : {},
       ...extra?.decision !== void 0 ? { decision: extra.decision } : {}
     };
+  }
+  function collectTrail(...results) {
+    const trail = [];
+    for (const r of results) {
+      if (r === null || r === void 0) continue;
+      trail.push(...r.trail);
+    }
+    return trail;
   }
   function warn(rt, warnings, message) {
     warnings.push(message);
     rt.log(message);
+  }
+  function emitDigest(rt, d) {
+    rt.log(formatDigest(d));
   }
   function applyCap(items, cap) {
     if (cap === void 0) {
@@ -114,17 +286,102 @@ var __wt = (() => {
       truncated: items.length - cap
     };
   }
+  function assertAgentTypeOption(stage, name, value) {
+    if (value !== void 0 && value.trim().length === 0) {
+      throw new Error(
+        `${stage}: ${name} must be a non-empty subagent-type string (e.g. 'codex:codex-rescue') \u2014 omit it for the standard subagent`
+      );
+    }
+  }
+
+  // ../packages/patterns/src/probe-agent-type.ts
+  var STAGE = "probeAgentType";
+  var DEFAULT_PROBE_PROMPT = "Availability probe. This is a REAL task: execute your normal procedure end-to-end (availability gate, then run the task through your external CLI \u2014 do NOT answer from your own knowledge). Task: reply with exactly: PROBE_OK";
+  var DEFAULT_EXPECTED_TOKEN = "PROBE_OK";
+  var REASON_HEAD_CHARS = 200;
+  function stripAnsi(text) {
+    return text.replace(/\u001b?\[[0-9;]*m/g, "");
+  }
+  function head(text) {
+    const t = text.trim();
+    return t.length > REASON_HEAD_CHARS ? `${t.slice(0, REASON_HEAD_CHARS)}\u2026` : t;
+  }
+  function escapeRegExp(literal) {
+    return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  async function probeAgentType(rt, agentType, options = {}) {
+    const { phase, probePrompt, expectedToken } = options;
+    assertAgentTypeOption(STAGE, "agentType", agentType);
+    if (expectedToken !== void 0 && expectedToken.trim().length === 0) {
+      throw new Error(
+        `${STAGE}: expectedToken must be a non-empty string \u2014 omit it for the default 'PROBE_OK'`
+      );
+    }
+    const token = expectedToken ?? DEFAULT_EXPECTED_TOKEN;
+    const prompt = probePrompt ?? DEFAULT_PROBE_PROMPT;
+    let reply;
+    let spawnError = null;
+    try {
+      reply = await rt.agent(prompt, {
+        label: `${STAGE}:probe`,
+        agentType,
+        ...phase !== void 0 ? { phase } : {}
+      });
+    } catch (e) {
+      reply = null;
+      spawnError = head(e instanceof Error ? e.message : String(e));
+    }
+    let available = false;
+    let reason = null;
+    if (reply === null) {
+      reason = spawnError ?? "probe agent returned null";
+    } else if (typeof reply !== "string") {
+      reason = "non-string probe reply";
+    } else {
+      const stripped = stripAnsi(reply).trim();
+      const endsWithToken = new RegExp(`${escapeRegExp(token)}\\s*[.!]?$`).test(stripped);
+      if (stripped.includes("UNAVAILABLE")) {
+        const marker = /\S*UNAVAILABLE[\s\S]*/.exec(stripped);
+        reason = head(marker ? marker[0] : stripped);
+      } else if (endsWithToken) {
+        available = true;
+      } else {
+        reason = `unexpected probe reply: ${head(stripped)}`;
+      }
+    }
+    if (available) {
+      rt.log(`${STAGE}: '${agentType}' available \u2014 routing externally`);
+    } else {
+      rt.log(
+        `${STAGE}: '${agentType}' unavailable \u2014 falling back to the standard subagent (${reason ?? "unknown"})`
+      );
+    }
+    emitDigest(rt, {
+      stage: STAGE,
+      output: available ? `available: ${agentType}` : "fallback: standard subagent"
+    });
+    return {
+      agentType: available ? agentType : void 0,
+      available,
+      reason
+    };
+  }
 
   // ../packages/patterns/src/fan-out-and-synthesize.ts
+  var STAGE2 = "fanOutAndSynthesize";
   async function fanOutAndSynthesize(rt, options) {
     const {
       tasks,
       taskPrompt,
       taskSchema,
       taskModel,
+      taskEffort,
+      taskType,
       synthesisPrompt,
       synthesisSchema,
       synthesisModel,
+      synthesisEffort,
+      synthesisType,
       phase,
       maxItems
     } = options;
@@ -133,6 +390,8 @@ var __wt = (() => {
         "fanOutAndSynthesize: tasks must not be empty \u2014 nothing to fan out"
       );
     }
+    assertAgentTypeOption(STAGE2, "taskType", taskType);
+    assertAgentTypeOption(STAGE2, "synthesisType", synthesisType);
     const { kept, truncated } = applyCap(tasks, maxItems);
     let agentsSpawned = 0;
     const warnings = [];
@@ -147,10 +406,12 @@ var __wt = (() => {
     const keptArray = kept;
     const taskThunks = keptArray.map((task, i) => async () => {
       const taskOpts = {
-        label: `fanOutAndSynthesize:task:${i}`,
+        label: `${STAGE2}:task:${i}`,
         ...phase !== void 0 ? { phase } : {},
         ...taskSchema !== void 0 ? { schema: taskSchema } : {},
-        ...taskModel !== void 0 ? { model: taskModel } : {}
+        ...taskModel !== void 0 ? { model: taskModel } : {},
+        ...taskEffort !== void 0 ? { effort: taskEffort } : {},
+        ...taskType !== void 0 ? { agentType: taskType } : {}
       };
       agentsSpawned++;
       return rt.agent(taskPrompt(task, i), taskOpts);
@@ -160,7 +421,10 @@ var __wt = (() => {
     let dropped = 0;
     for (let i = 0; i < taskResults.length; i++) {
       const r = taskResults[i];
-      trail.push(makeRecord(`fanOutAndSynthesize:task:${i}`, r !== null, taskModel !== void 0 ? { model: taskModel } : void 0));
+      trail.push(makeRecord(`${STAGE2}:task:${i}`, r !== null, {
+        ...taskModel !== void 0 ? { model: taskModel } : {},
+        ...taskEffort !== void 0 ? { effort: taskEffort } : {}
+      }));
       if (r !== null) {
         parts.push(r);
       } else {
@@ -179,14 +443,19 @@ var __wt = (() => {
       warn(rt, warnings, "fanOutAndSynthesize: fan-out produced no parts; synthesis skipped");
     } else {
       const synthOpts = {
-        label: "fanOutAndSynthesize:synthesize",
+        label: `${STAGE2}:synthesize`,
         ...phase !== void 0 ? { phase } : {},
         ...synthesisSchema !== void 0 ? { schema: synthesisSchema } : {},
-        ...synthesisModel !== void 0 ? { model: synthesisModel } : {}
+        ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
+        ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {},
+        ...synthesisType !== void 0 ? { agentType: synthesisType } : {}
       };
       agentsSpawned++;
       const synthesis = await rt.agent(synthesisPrompt(parts), synthOpts);
-      trail.push(makeRecord("fanOutAndSynthesize:synthesize", synthesis !== null, synthesisModel !== void 0 ? { model: synthesisModel } : void 0));
+      trail.push(makeRecord(`${STAGE2}:synthesize`, synthesis !== null, {
+        ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
+        ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
+      }));
       if (synthesis === null) {
         warn(rt, warnings, "fanOutAndSynthesize: synthesis agent returned null");
       } else {
@@ -200,13 +469,16 @@ var __wt = (() => {
       dropped,
       truncated
     };
+    emitDigest(rt, {
+      stage: STAGE2,
+      output: value === null ? "synthesis: none" : `synthesis from ${parts.length}/${tasks.length} tasks`,
+      counts: { tasks: tasks.length, completed: parts.length }
+    });
     return { value, stats, warnings, trail };
   }
 
-  // ../packages/runtime/src/constants.ts
-  var BEST_MODEL = "opus";
-
   // ../packages/patterns/src/adversarial-verification.ts
+  var STAGE3 = "adversarialVerification";
   var VERIFIER_SCHEMA = {
     type: "object",
     properties: {
@@ -228,6 +500,7 @@ var __wt = (() => {
       lenses,
       votesPerClaim,
       model,
+      effort,
       phase,
       maxVerifyClaims,
       verifierType
@@ -319,9 +592,10 @@ ${renderClaim(claim)}`;
             const prompt = buildVerifierPrompt(claim, lens);
             const opts = {
               schema: VERIFIER_SCHEMA,
-              label: `adversarialVerification:verify:${claimIndex}:${voteIndex}`,
+              label: `${STAGE3}:verify:${claimIndex}:${voteIndex}`,
               ...phase !== void 0 ? { phase } : {},
               model: effectiveModel,
+              ...effort !== void 0 ? { effort } : {},
               ...verifierType !== void 0 ? { agentType: verifierType } : {}
             };
             agentsSpawned++;
@@ -336,10 +610,11 @@ ${renderClaim(claim)}`;
         for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
           const vote = votes[voteIndex] ?? null;
           claimRecords.push(makeRecord(
-            `adversarialVerification:verify:${claimIndex}:${voteIndex}`,
+            `${STAGE3}:verify:${claimIndex}:${voteIndex}`,
             vote !== null,
             {
               model: effectiveModel,
+              ...effort !== void 0 ? { effort } : {},
               ...vote !== null ? { decision: vote.verdict } : {}
             }
           ));
@@ -395,10 +670,33 @@ ${renderClaim(claim)}`;
       // null votes = lost work units
       truncated
     };
+    const DIGEST_KEY = {
+      confirmed: "confirmed",
+      refuted: "refuted",
+      "partially-confirmed": "partiallyConfirmed",
+      unverifiable: "unverifiable",
+      "unverified-by-cap": "unverifiedByCap"
+    };
+    const counts = {
+      claims: claims.length,
+      confirmed: 0,
+      refuted: 0,
+      partiallyConfirmed: 0,
+      unverifiable: 0,
+      unverifiedByCap: 0
+    };
+    for (const verdict of Object.keys(DIGEST_KEY)) {
+      counts[DIGEST_KEY[verdict]] = value.filter((v) => v.verdict === verdict).length;
+    }
+    emitDigest(rt, { stage: STAGE3, counts });
     return { value, stats, warnings, trail };
   }
 
   // independent-analysis.workflow.ts
+  var LENSES_EFFORT = "medium";
+  var ANALYZE_TASK_EFFORT = "high";
+  var ANALYZE_SYNTHESIS_EFFORT = "medium";
+  var VERIFY_EFFORT_DEFAULT = "high";
   var MODEL_ALIASES = ["opus", "sonnet", "haiku", "fable"];
   var LENS_SCHEMA = {
     type: "object",
@@ -495,7 +793,7 @@ ${renderClaim(claim)}`;
     meta: {
       name: "independent-analysis",
       description: "Bias-free multi-lens adversarial analysis of a subject: fan out one agent per lens to surface forgotten angles/risks, dedup vs stated assumptions, then refute-first verify the survivors.",
-      phases: [{ title: "Lenses" }, { title: "Analyze" }, { title: "Verify" }]
+      phases: [{ title: "Probe" }, { title: "Lenses" }, { title: "Analyze" }, { title: "Verify" }]
     },
     parseInput: (raw) => {
       if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
@@ -532,13 +830,28 @@ ${renderClaim(claim)}`;
         }
         verifierModel = obj["verifierModel"];
       }
-      return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel };
+      const cfg = parseConfig(obj);
+      const effort = cfg.effort ?? null;
+      const verifierType = cfg.agentTypes?.["verify"];
+      return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel, verifierType, effort };
     },
     run: async (rt, input) => {
       const subjectBlock = untrusted("SUBJECT", input.subject);
       const contextBlock = input.context.trim().length > 0 ? untrusted("CONTEXT", input.context) : "(no extra context)";
       const assumptionsBlock = renderAssumptions(input.assumptions);
       const sourceBlock = renderSourceRefs(input.sourceRefs);
+      const lensesEffort = resolveEffort(input.effort?.["lenses"], LENSES_EFFORT);
+      const analyzeTaskEffort = resolveEffort(input.effort?.["analyzeTask"], ANALYZE_TASK_EFFORT);
+      const analyzeSynthesisEffort = resolveEffort(input.effort?.["analyzeSynthesis"], ANALYZE_SYNTHESIS_EFFORT);
+      const verifyEffort = resolveVerifierEffort(input.effort?.["verify"], VERIFY_EFFORT_DEFAULT);
+      let resolvedVerifierType;
+      let probeInfo = null;
+      if (input.verifierType !== void 0) {
+        rt.phase("Probe");
+        const probe = await probeAgentType(rt, input.verifierType, { phase: "Probe" });
+        resolvedVerifierType = probe.agentType;
+        probeInfo = { requested: input.verifierType, available: probe.available, reason: probe.reason };
+      }
       rt.phase("Lenses");
       let lensList;
       if (input.lenses.length > 0) {
@@ -552,7 +865,7 @@ ${subjectBlock}
 
 CONTEXT:
 ${contextBlock}`,
-          { schema: LENS_SCHEMA, label: "independent-analysis:propose-lenses", phase: "Lenses" }
+          { schema: LENS_SCHEMA, label: "independent-analysis:propose-lenses", phase: "Lenses", effort: lensesEffort }
         );
         if (proposed === null || proposed.lenses.length === 0) {
           throw new Error(
@@ -582,6 +895,7 @@ ${assumptionsBlock}
 
 Return { "angles": [{ "title", "why", "severity": high|medium|low, "kind": risk|gap|wrong-assumption|edge-case|alternative, "alreadyKnown": bool }] }. If this lens genuinely surfaces nothing new, return an empty angles array.`,
         taskSchema: ANGLES_SCHEMA,
+        taskEffort: analyzeTaskEffort,
         synthesisPrompt: (parts) => `You are the synthesis agent. Below are findings from ${parts.length} independent lens analysts of the SAME subject (JSON). Produce a DEDUPED candidate list: (1) merge findings that are the same angle in different words into one; (2) DROP any finding with alreadyKnown=true or that merely restates one of the stated assumptions; (3) keep only genuinely-new angles. Carry the most representative lens for each. Order by severity (high first).
 
 STATED ASSUMPTIONS (already covered \u2014 drop matches):
@@ -592,6 +906,7 @@ ${untrusted("LENS-FINDINGS", JSON.stringify(parts))}
 
 Return { "candidates": [{ "title", "lens", "why", "severity": high|medium|low, "kind": risk|gap|wrong-assumption|edge-case|alternative }] }.`,
         synthesisSchema: CANDIDATES_SCHEMA,
+        synthesisEffort: analyzeSynthesisEffort,
         phase: "Analyze"
       });
       const candidates = analysis.value?.candidates ?? [];
@@ -605,6 +920,7 @@ Return { "candidates": [{ "title", "lens", "why", "severity": high|medium|low, "
           allVerified: [],
           candidateCount: 0,
           stats: { analyze: analysis.stats, verify: null },
+          envelope: { trail: collectTrail(analysis) },
           warnings: [...analysis.warnings, "no candidate findings survived synthesis"]
         };
       }
@@ -626,7 +942,9 @@ ${subjectBlock}`,
         votes: input.votes,
         // Low-severity findings get a single vote; the rest get the full panel.
         votesPerClaim: (c) => c.severity === "low" ? 1 : input.votes,
+        effort: verifyEffort,
         ...input.verifierModel !== void 0 ? { model: input.verifierModel } : {},
+        ...resolvedVerifierType !== void 0 ? { verifierType: resolvedVerifierType } : {},
         phase: "Verify"
       });
       const verified = verification.value ?? [];
@@ -636,6 +954,10 @@ ${subjectBlock}`,
       return {
         subject: input.subject,
         lensesUsed: lensList.map((l) => l.key),
+        // Verifier routing outcome: the type actually used (undefined → standard
+        // same-model verifier) + the structured probe story when routing was requested.
+        verifierType: resolvedVerifierType ?? null,
+        probe: probeInfo,
         confirmed,
         refuted,
         allVerified: verified.map((v) => ({
@@ -646,6 +968,7 @@ ${subjectBlock}`,
         })),
         candidateCount: candidates.length,
         stats: { analyze: analysis.stats, verify: verification.stats },
+        envelope: { trail: collectTrail(analysis, verification) },
         warnings: [...analysis.warnings, ...verification.warnings]
       };
     }

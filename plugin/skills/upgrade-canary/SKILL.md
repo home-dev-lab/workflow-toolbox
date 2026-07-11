@@ -95,7 +95,10 @@ for f in workflows/*.js; do pnpm wt:check "$f" || echo "FAIL $f"; done
 
 `pnpm canary` runs smoke + edge against each target, prints a SUMMARY (per-target
 Claude Code version, the SDK⇒bundled-CC mapping, installed-vs-latest SDK on npm),
-a **WHAT CHANGED SINCE LAST RUN** section, a **WHAT THE CHANGELOG DOCUMENTS**
+a **WHAT CHANGED SINCE LAST RUN** section, an **AGENT SCHEMA DRIFT** section (the SDK
+`AgentDefinition` field set + the least-privilege `Options` fields, diffed against a
+committed baseline — the SDK type is the ground-truth PROXY for Claude Code's `.md`
+frontmatter parser), a **WHAT THE CHANGELOG DOCUMENTS**
 section (the official Claude Code changelog entries for the measured version range,
 with toolbox-relevant lines — workflow/agent/tool/sdk — highlighted as drivers for
 fixes or features), and **records the marker itself** (it is the sole writer — there
@@ -124,6 +127,25 @@ the run and may drive work:
   to pull the newer SDK + its bundled runtime, then re-run `pnpm canary` to test it.
 - A **`wt:check`** failure → a committed artifact drifted from source; rebuild with
   `pnpm wt:build` and re-check byte-determinism.
+- **AGENT SCHEMA DRIFT** (an `AgentDefinition` field ADDED / REMOVED / renamed, or a
+  least-priv `Options` field MISSING) → the least-privilege agent surface drifted. A
+  REMOVAL/rename of a field we USE is also caught by typecheck (the probe derives
+  `QueryOptions` from the live SDK types); an **ADDED** field is the gap typecheck can't
+  see (additions never break the build). When the section flags drift, **sync all three
+  in one commit** — the report names them:
+  1. **`AGENT_DEFINITION_BASELINE`** (and, if a least-priv field changed,
+     `OPTIONS_LEAST_PRIV_BASELINE` / `leastPrivilegeOptions`) in
+     `packages/smoke/src/agent-schema.ts` — the committed record of the schema we've
+     accounted for;
+  2. the **scaffold emitter** `scaffoldAgent` (`packages/scaffold/src/scaffold.ts`) +
+     its `AgentScaffoldSpec`, so a genuinely useful new field can be emitted (and add it
+     to `SCAFFOLD_HANDLED_AGENT_FIELDS` so the canary stops flagging it as unhandled);
+  3. the **composer's agent-creation guidance** (`workflow-composer/SKILL.md`, the
+     "Specialist agent types" section) if the new field changes how an agent should be
+     defined.
+  Not every added field is worth adopting — decide per field; but the baseline MUST be
+  updated regardless (even just to acknowledge a field we deliberately ignore), or the
+  section keeps re-flagging it every run.
 
 Cross-read the **WHAT THE CHANGELOG DOCUMENTS** section against the deltas above: it
 lists what Anthropic's official changelog records for the `(last-verified, current]`
@@ -143,6 +165,14 @@ message-parsing helpers), not in this skill:
 
 - `version.ts` — pure marker (de)serialization, the gate (`decideRun`), and
   `diffSnapshot` (the change report). Unit-tested.
+- `agent-schema.ts` — pure `AgentDefinition` / `Options` schema-drift detection:
+  `extractTypeFields` (TypeScript-AST field extraction from the SDK `.d.ts` — never a
+  regex, so an inline-object field can't corrupt the set), the committed
+  `AGENT_DEFINITION_BASELINE` / `OPTIONS_LEAST_PRIV_BASELINE` / `SCAFFOLD_HANDLED_AGENT_FIELDS`,
+  `diffSchema`, and `formatSchemaDrift` (the report wording). Unit-tested. The impure
+  reader (`readLiveSchema` in `canary-all.ts`, fed by `runtimes.getSdkTypesPath`) locates
+  and reads the installed SDK's `sdk.d.ts`; a missing source degrades to "unavailable",
+  never a throw or a gate.
 - `edge.ts` — pure negative-case generators, `judgeRejection`, and
   `canonicalizeReason` (strips volatile taskIds so wording-drift detection is
   signal, not noise). Unit-tested.
@@ -153,7 +183,8 @@ message-parsing helpers), not in this skill:
   lines, and a single `buildChangelogReport` decision table. Unit-tested.
 - `changelog-source.ts` — resolves the offline changelog mirror text (impure, held
   out of `pnpm test`); offline-graceful (absent → null, never gates).
-- `runtimes.ts` — resolves the targets, the SDK version, and the latest SDK on npm.
+- `runtimes.ts` — resolves the targets, the SDK version, the latest SDK on npm, and
+  `getSdkTypesPath` (the installed SDK's `sdk.d.ts`, for the schema-drift check).
 - `run.ts` / `edge-canaries.ts` — the live runners (`runSmokeChecks` / `runEdgeChecks`),
   also runnable standalone as `pnpm smoke` / `pnpm canary:edge` against the bundled runtime.
 - `canary-all.ts` — the `pnpm canary` orchestrator: matrix → diff → report → record.

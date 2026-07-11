@@ -28,12 +28,13 @@ export const PATTERN_NAMES = [
   'tournament',
   'loopUntilDone',
   'planAndExecute',
+  'scoreAndRank',
 ] as const
 
 export type PatternName = (typeof PATTERN_NAMES)[number]
 
 export interface ScaffoldStep {
-  /** Which pattern this step calls — one of the seven canonical names. */
+  /** Which pattern this step calls — one of the eight canonical names. */
   pattern: PatternName
   /** The phase title shown in the /workflows UI; the step's agents are grouped under it. */
   phase: string
@@ -121,6 +122,17 @@ const EMITTERS: Record<PatternName, Emitter> = {
     "      planPrompt: 'Break the goal into independent subtasks.',",
     '      workerPrompt: (subtask, index) => `Subtask ${index}: ${subtask.description}`,',
     '      synthesisPrompt: (results) => `Combine the ${results.length} worker results.`,',
+    `      phase: ${q(phase)},`,
+    '    })',
+  ],
+  scoreAndRank: (v, phase) => [
+    `    const ${v} = await scoreAndRank(rt, {`,
+    `      items: ['placeholder-item'],`,
+    '      dimensions: [',
+    "        { name: 'impact', prompt: (item) => `Score the impact of ${item} from 1 to 5.` },",
+    "        { name: 'opportunity', prompt: (item) => `Score the opportunity in ${item} from 1 to 5.` },",
+    '      ],',
+    "      cutoff: { type: 'topK', k: 3 },",
     `      phase: ${q(phase)},`,
     '    })',
   ],
@@ -219,6 +231,116 @@ export function assertSpecShape(x: unknown): asserts x is ScaffoldSpec {
     if (typeof s['pattern'] !== 'string' || typeof s['phase'] !== 'string') {
       fail(`spec.steps[${i}].pattern and .phase must both be strings.`)
     }
+  }
+}
+
+// ── agentType `.md` scaffolder ────────────────────────────────────────────────
+// Emits a least-privilege agentType `.md` (the capability FENCE for a workflow leaf
+// or an SDK agent): frontmatter `tools`/`disallowedTools`/`skills`/`model`/`effort`
+// + a system-prompt body + optional "Do NOT …" non-goals backstop. Capability denial
+// is the primary guard (a tool the agent lacks cannot be misused); the non-goals are
+// only the backstop for what can't be cleanly denied (e.g. Bash). Frontmatter field
+// set mirrors the current agent schema — kept honest by the canary drift check
+// (card #1815347737189680613).
+
+export interface AgentScaffoldSpec {
+  /** kebab-case agent name — the `.md` filename AND the agentType key. */
+  name: string
+  /** One-line "when to use this agent" (the frontmatter `description`). */
+  description: string
+  /** The agent's system prompt (the `.md` body). */
+  prompt: string
+  /** Tools allowlist — the capability fence. Omit → the agent INHERITS ALL tools
+   *  (a ⚠ warning is emitted into the body). */
+  tools?: string[]
+  /** Denylist, applied before `tools` (accepts `mcp__server` / `mcp__*` patterns). */
+  disallowedTools?: string[]
+  /** Skills the agent may invoke. */
+  skills?: string[]
+  /** Model alias (e.g. 'sonnet', 'haiku'). */
+  model?: string
+  /** Reasoning effort (low|medium|high|xhigh|max). */
+  effort?: string
+  /** Instruction backstop → "Do NOT <goal>." lines appended to the body. */
+  nonGoals?: string[]
+}
+
+/** YAML-safe scalar: double-quote + escape only when the value could break an
+ *  unquoted YAML scalar (over-quoting is harmless — double-quoted YAML is always
+ *  valid — so this errs toward quoting). */
+function yamlScalar(s: string): string {
+  const needsQuote =
+    s === '' ||
+    /^[\s\-?:,[\]{}#&*!|>'"%@`]/.test(s) || // leading YAML indicator
+    /:\s|\s#/.test(s) || // mid colon-space / space-hash
+    /[\n\t"\\]/.test(s) || // control / quote / backslash
+    /\s$/.test(s) // trailing space
+  return needsQuote ? `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : s
+}
+
+/**
+ * Emit a least-privilege agentType `.md` from a capability spec. Pure: same spec →
+ * byte-identical output, zero IO. Throws an actionable Error on an invalid spec.
+ */
+export function scaffoldAgent(spec: AgentScaffoldSpec): string {
+  if (!KEBAB_RE.test(spec.name)) {
+    throw new Error(
+      `scaffoldAgent: invalid name ${q(spec.name)} — must be non-empty kebab-case (e.g. "locked-reviewer").`,
+    )
+  }
+  if (spec.description.trim() === '') {
+    throw new Error('scaffoldAgent: description is empty — provide a one-line "when to use" summary.')
+  }
+  if (spec.prompt.trim() === '') {
+    throw new Error('scaffoldAgent: prompt is empty — provide the agent’s system prompt.')
+  }
+
+  const fm: string[] = ['---', `name: ${spec.name}`, `description: ${yamlScalar(spec.description)}`]
+  if (spec.tools && spec.tools.length > 0) fm.push(`tools: ${spec.tools.join(', ')}`)
+  if (spec.disallowedTools && spec.disallowedTools.length > 0) fm.push(`disallowedTools: ${spec.disallowedTools.join(', ')}`)
+  if (spec.skills && spec.skills.length > 0) fm.push(`skills: ${spec.skills.join(', ')}`)
+  if (spec.model !== undefined && spec.model !== '') fm.push(`model: ${spec.model}`)
+  if (spec.effort !== undefined && spec.effort !== '') fm.push(`effort: ${spec.effort}`)
+  fm.push('---')
+
+  const body: string[] = ['', spec.prompt.trim(), '']
+  if (!spec.tools || spec.tools.length === 0) {
+    body.push(
+      '> ⚠ No `tools:` allowlist in the frontmatter — this agent INHERITS ALL tools',
+      '> (Write/Edit/Bash/MCP included). For a least-privilege fence, add a `tools:` line',
+      '> listing ONLY what it needs — capability denial beats instruction (a tool it lacks',
+      '> cannot be misused).',
+      '',
+    )
+  }
+  if (spec.nonGoals && spec.nonGoals.length > 0) {
+    body.push(
+      '## Non-goals (instruction backstop — the frontmatter capability fence is the PRIMARY guard)',
+      ...spec.nonGoals.map((g) => `- Do NOT ${g.replace(/[.]\s*$/, '')}.`),
+      '',
+    )
+  }
+  return [...fm, ...body].join('\n') + '\n'
+}
+
+/** Narrow untrusted JSON to the agent-spec shape, actionable message on first defect. Pure. */
+export function assertAgentSpecShape(x: unknown): asserts x is AgentScaffoldSpec {
+  const fail = (msg: string): never => {
+    throw new Error(`workflow-toolbox scaffold agent: ${msg}`)
+  }
+  if (typeof x !== 'object' || x === null) fail('spec must be a JSON object { name, description, prompt, ... }.')
+  const s = x as Record<string, unknown>
+  for (const k of ['name', 'description', 'prompt'] as const) {
+    if (typeof s[k] !== 'string') fail(`spec.${k} must be a string.`)
+  }
+  for (const k of ['tools', 'disallowedTools', 'skills', 'nonGoals'] as const) {
+    const v = s[k]
+    if (v !== undefined && (!Array.isArray(v) || v.some((e) => typeof e !== 'string'))) {
+      fail(`spec.${k}, if present, must be an array of strings.`)
+    }
+  }
+  for (const k of ['model', 'effort'] as const) {
+    if (s[k] !== undefined && typeof s[k] !== 'string') fail(`spec.${k}, if present, must be a string.`)
   }
 }
 

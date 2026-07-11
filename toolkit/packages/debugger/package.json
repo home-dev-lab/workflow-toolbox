@@ -17,9 +17,37 @@
       "import": "./src/audit-folder.ts",
       "types": "./src/audit-folder.ts"
     },
+    "./tool-denial": {
+      "import": "./src/tool-denial.ts",
+      "types": "./src/tool-denial.ts"
+    },
+    "./external-delegation": {
+      "import": "./src/external-delegation.ts",
+      "types": "./src/external-delegation.ts"
+    },
+    "./transcript-usage": {
+      "import": "./src/transcript-usage.ts",
+      "types": "./src/transcript-usage.ts"
+    },
     "./cli-args": {
       "import": "./src/cli-args.ts",
       "types": "./src/cli-args.ts"
+    },
+    "./observe-lifecycle": {
+      "import": "./src/observe-lifecycle.ts",
+      "types": "./src/observe-lifecycle.ts"
+    },
+    "./launch-enable-state": {
+      "import": "./src/launch-enable-state.ts",
+      "types": "./src/launch-enable-state.ts"
+    },
+    "./observe-config": {
+      "import": "./src/observe-config.ts",
+      "types": "./src/observe-config.ts"
+    },
+    "./observe-identity": {
+      "import": "./src/observe-identity.ts",
+      "types": "./src/observe-identity.ts"
     }
   },
   "scripts": {

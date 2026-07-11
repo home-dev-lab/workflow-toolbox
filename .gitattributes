@@ -1,0 +1,6 @@
+# Normalize line endings to LF in the repo and on checkout everywhere,
+# including Windows runners (whose default core.autocrlf=true would otherwise
+# convert committed text files to CRLF, breaking byte-identity / golden tests).
+# Git still auto-detects binary content, so this does not affect the tracked
+# png/webp/font assets under apps/observe-ui.
+* text=auto eol=lf

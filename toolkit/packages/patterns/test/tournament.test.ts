@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
 import { tournament } from '../src/tournament.js'
 import type { TournamentOptions } from '../src/tournament.js'
 
@@ -47,6 +47,89 @@ describe('tournament — config validation', () => {
     await expect(
       tournament(rt, makeOptions({ judgeCount: 0 })),
     ).rejects.toThrow(/judgeCount.*>=.*1/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// agentType routing (attemptType / judgeType / synthesisType) — per-role
+// cross-family routing. Judge spawns are nested (parallel-of-parallel), so
+// judgeType must thread to every judge across every surviving attempt.
+// ---------------------------------------------------------------------------
+
+function routingOnAgent({ opts }: { opts?: { label?: string } }): unknown {
+  const label = opts?.label ?? ''
+  if (label.startsWith('tournament:judge:')) return makeJudgeResponse(5)
+  return 'ok'
+}
+
+describe('tournament — agentType routing', () => {
+  it('omits agentType on every call when none of attemptType/judgeType/synthesisType is set', async () => {
+    const rt = new FakeRuntime({ onAgent: routingOnAgent })
+    await tournament(rt, makeOptions())
+    expect(rt.calls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('threads attemptType to the attempt agents only', async () => {
+    const rt = new FakeRuntime({ onAgent: routingOnAgent })
+    await tournament(rt, makeOptions({ attemptType: 'codex:codex-rescue' }))
+    const attemptCalls = rt.calls.filter((c) => c.opts?.label?.startsWith('tournament:attempt:'))
+    const otherCalls = rt.calls.filter((c) => !c.opts?.label?.startsWith('tournament:attempt:'))
+    expect(attemptCalls.length).toBe(3)
+    expect(attemptCalls.every((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(true)
+    expect(otherCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('threads judgeType to every judge agent across every attempt (nested parallel-of-parallel)', async () => {
+    const rt = new FakeRuntime({ onAgent: routingOnAgent })
+    await tournament(rt, makeOptions({ judgeType: 'workflow-toolbox:opencode-verifier', judgeCount: 3 }))
+    const judgeCalls = rt.calls.filter((c) => c.opts?.label?.startsWith('tournament:judge:'))
+    const otherCalls = rt.calls.filter((c) => !c.opts?.label?.startsWith('tournament:judge:'))
+    // 3 angles * 3 judges = 9 judge calls
+    expect(judgeCalls.length).toBe(9)
+    expect(judgeCalls.every((c) => c.opts?.agentType === 'workflow-toolbox:opencode-verifier')).toBe(true)
+    expect(otherCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('threads synthesisType to the synthesis agent only', async () => {
+    const rt = new FakeRuntime({ onAgent: routingOnAgent })
+    await tournament(rt, makeOptions({ synthesisType: 'codex:codex-rescue' }))
+    const synthCalls = rt.calls.filter((c) => c.opts?.label === 'tournament:synthesize')
+    const otherCalls = rt.calls.filter((c) => c.opts?.label !== 'tournament:synthesize')
+    expect(synthCalls.length).toBe(1)
+    expect(synthCalls.every((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(true)
+    expect(otherCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('rejects an empty or whitespace-only attemptType', async () => {
+    const rt = new FakeRuntime()
+    await expect(tournament(rt, makeOptions({ attemptType: '' }))).rejects.toThrow(/attemptType/)
+    await expect(tournament(rt, makeOptions({ attemptType: '   ' }))).rejects.toThrow(/attemptType/)
+  })
+
+  it('rejects an empty or whitespace-only judgeType', async () => {
+    const rt = new FakeRuntime()
+    await expect(tournament(rt, makeOptions({ judgeType: '' }))).rejects.toThrow(/judgeType/)
+    await expect(tournament(rt, makeOptions({ judgeType: '   ' }))).rejects.toThrow(/judgeType/)
+  })
+
+  it('rejects an empty or whitespace-only synthesisType', async () => {
+    const rt = new FakeRuntime()
+    await expect(tournament(rt, makeOptions({ synthesisType: '' }))).rejects.toThrow(/synthesisType/)
+    await expect(tournament(rt, makeOptions({ synthesisType: '   ' }))).rejects.toThrow(/synthesisType/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase digest on the failure early-return
+// ---------------------------------------------------------------------------
+
+describe('tournament — failure digest', () => {
+  it('emits a digest even when all attempts fail (no winner to rank)', async () => {
+    const rt = new FakeRuntime({ onAgent: () => null }) // every attempt returns null
+    await tournament(rt, makeOptions())
+    const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'tournament')
+    expect(digest).toBeDefined()
+    expect(digest?.counts).toEqual({ attempts: 0 })
   })
 })
 
@@ -745,6 +828,95 @@ describe('tournament — trail: model override', () => {
 
     for (const rec of result.trail!) {
       expect(rec).not.toHaveProperty('model')
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Effort forwarding
+// ---------------------------------------------------------------------------
+
+describe('tournament — effort forwarding', () => {
+  it('forwards attemptEffort, judgeEffort, and synthesisEffort to each call site', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label.startsWith('tournament:attempt:')) return 'att'
+        if (label.startsWith('tournament:judge:')) return makeJudgeResponse(7)
+        if (label === 'tournament:synthesize') return 'done'
+        return null
+      },
+    })
+
+    await tournament(rt, makeOptions({
+      angles: ['a', 'b'],
+      judgeCount: 1,
+      attemptEffort: 'low',
+      judgeEffort: 'high',
+      synthesisEffort: 'max',
+    }))
+
+    const attemptCalls = rt.calls.filter(c => c.opts?.label?.startsWith('tournament:attempt:'))
+    const judgeCalls = rt.calls.filter(c => c.opts?.label?.startsWith('tournament:judge:'))
+    const synthCall = rt.calls.find(c => c.opts?.label === 'tournament:synthesize')
+
+    expect(attemptCalls.every(c => c.opts?.effort === 'low')).toBe(true)
+    expect(judgeCalls.every(c => c.opts?.effort === 'high')).toBe(true)
+    expect(synthCall?.opts?.effort).toBe('max')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Effort in the audit trail
+// ---------------------------------------------------------------------------
+
+describe('tournament — trail: effort override', () => {
+  it('effort key present in trail record when explicit effort passed', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label.startsWith('tournament:attempt:')) return 'att'
+        if (label.startsWith('tournament:judge:')) return makeJudgeResponse(7)
+        if (label === 'tournament:synthesize') return 'done'
+        return null
+      },
+    })
+
+    const result = await tournament(rt, makeOptions({
+      angles: ['a', 'b'],
+      judgeCount: 1,
+      attemptEffort: 'low',
+      judgeEffort: 'high',
+      synthesisEffort: 'max',
+    }))
+
+    const attemptRecs = result.trail!.filter(r => r.stage.startsWith('tournament:attempt:'))
+    const judgeRecs = result.trail!.filter(r => r.stage.startsWith('tournament:judge:'))
+    const synthRec = result.trail!.find(r => r.stage === 'tournament:synthesize')
+
+    for (const rec of attemptRecs) expect(rec.effort).toBe('low')
+    for (const rec of judgeRecs) expect(rec.effort).toBe('high')
+    expect(synthRec!.effort).toBe('max')
+  })
+
+  it('effort key absent in trail record when no effort override', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label.startsWith('tournament:attempt:')) return 'att'
+        if (label.startsWith('tournament:judge:')) return makeJudgeResponse(7)
+        if (label === 'tournament:synthesize') return 'done'
+        return null
+      },
+    })
+
+    const result = await tournament(rt, makeOptions({
+      angles: ['a', 'b'],
+      judgeCount: 1,
+    }))
+
+    for (const rec of result.trail!) {
+      expect(rec).not.toHaveProperty('effort')
     }
   })
 })

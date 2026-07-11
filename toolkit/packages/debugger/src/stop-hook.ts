@@ -25,7 +25,14 @@ import {
   renderHookOutput,
   type StopSurface,
 } from './stop-surface.js'
-import { readStopState, writeStopState } from './stop-state.js'
+import {
+  readStopState,
+  writeStopState,
+  readReportedRuns,
+  writeReportedRuns,
+  readGivenUpTasks,
+  writeGivenUpTasks,
+} from './stop-state.js'
 
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -71,6 +78,18 @@ async function main(): Promise<void> {
   const cwd = payload.cwd ?? process.cwd()
 
   const state = readStopState(sessionId)
+  // Durable, PROJECT-scoped set of runIds already surfaced — survives a mid-session sessionId
+  // change (auto-compaction can spawn a new UUID, claude-code#65796), which would otherwise reset
+  // the per-session `reported` set and replay every still-listed finished run.
+  const reportedRuns = new Set(readReportedRuns(cwd))
+  let reportedRunsChanged = false
+  // Durable, PROJECT-scoped set of taskIds we gave up resolving because the journal was NEVER
+  // readable (VANISHED runs). reported-runs keys on runId, which such a run never yields, so it
+  // needs its own taskId-keyed set to suppress the cross-session provisional replay (#65796) —
+  // WITHOUT permanently silencing it: resolution is still re-attempted every Stop, so a journal
+  // that later becomes readable (a transient failure that healed) still surfaces its full report.
+  const givenUpTasks = new Set(readGivenUpTasks(cwd))
+  let givenUpTasksChanged = false
   const { toResolve, running } = planStopActions(state.pending, payload.workflows)
 
   const surfaces: StopSurface[] = []
@@ -82,8 +101,27 @@ async function main(): Promise<void> {
     state.tries[id] = tries
 
     const resolved = findJournalByTaskId(id, { cwd })
+    const runId = resolved?.runId ?? null
+    // Cross-session guard: this run was already conclusively surfaced (possibly under a different
+    // sessionId, before an auto-compaction UUID change) — don't replay it. Keyed on the stable
+    // runId, so a fresh (post-UUID-change) per-session state can't re-announce it.
+    if (runId !== null && reportedRuns.has(runId)) {
+      state.reported.push(id)
+      delete state.tries[id]
+      continue
+    }
     const journal = resolved ? parseJournal(resolved.text) : null
     const diagnosis = journal ? diagnoseRun(journal) : null
+    // Durable VANISHED-run guard: we already conclusively gave up on this taskId in a PRIOR session
+    // (its journal was never readable). If it is STILL unresolvable, suppress the provisional replay
+    // — that cross-session re-announce is the #65796 noise. But if the journal has since become
+    // readable (a transient read failure that healed), fall through and surface the full report: the
+    // give-up must never permanently silence a run that can now be audited.
+    if (diagnosis === null && givenUpTasks.has(id)) {
+      state.reported.push(id)
+      delete state.tries[id]
+      continue
+    }
     const decision = decideSurface(diagnosis, tries)
 
     if (decision.surface === 'full' && resolved && journal && diagnosis) {
@@ -95,10 +133,24 @@ async function main(): Promise<void> {
         .map((a) => a.agentId)
         .filter((id): id is string => typeof id === 'string')
       const logDir = resolveLogDir(process.env)
-      const { presentTranscripts, transcriptSources, usageByAgent } = scanTranscripts(tdir, agentIds, {
-        withUsage: logDir !== null,
+      // Always scan for tool denials AND auto-compaction (a silently-degraded or over-scoped run
+      // reads `completed-ok` in the journal — the transcript is the only on-disk signal; the read
+      // already happens for denials, so compaction is free). Token usage stays gated on a
+      // configured log dir since it's only rendered into the disk report.md.
+      const { presentTranscripts, transcriptSources, usageByAgent, denialsByAgent, compactionByAgent, delegationByAgent } =
+        scanTranscripts(tdir, agentIds, {
+          withUsage: logDir !== null,
+          withDenials: true,
+          withCompaction: true,
+          withDelegation: true,
+        })
+      const report = buildAuditReport(journal, {
+        presentTranscripts,
+        usageByAgent,
+        denialsByAgent,
+        compactionByAgent,
+        delegationByAgent,
       })
-      const report = buildAuditReport(journal, { presentTranscripts, usageByAgent })
 
       let diskDir: string | null = null
       if (logDir) {
@@ -123,6 +175,18 @@ async function main(): Promise<void> {
     if (decision.conclusive) {
       state.reported.push(id)
       delete state.tries[id]
+      // Record the run durably so a later sessionId change can't replay it. A resolved run is keyed
+      // by its stable runId; a run we gave up on (never-readable journal, runId null) is keyed by
+      // taskId in the given-up set instead — otherwise it re-announces once per UUID change.
+      if (runId !== null) {
+        if (!reportedRuns.has(runId)) {
+          reportedRuns.add(runId)
+          reportedRunsChanged = true
+        }
+      } else if (!givenUpTasks.has(id)) {
+        givenUpTasks.add(id)
+        givenUpTasksChanged = true
+      }
     } else {
       stillPending.push(id)
     }
@@ -134,6 +198,8 @@ async function main(): Promise<void> {
 
   state.pending = [...new Set([...running, ...stillPending])]
   writeStopState(sessionId, state)
+  if (reportedRunsChanged) writeReportedRuns(cwd, [...reportedRuns])
+  if (givenUpTasksChanged) writeGivenUpTasks(cwd, [...givenUpTasks])
 
   emit(renderHookOutput(mergeStopSurfaces(finalSurfaces)))
 }

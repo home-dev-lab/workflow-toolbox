@@ -1,0 +1,47 @@
+# Cross-OS validation matrix (card #1813359570421023938 item d): the full test
+# suite + the wt-observe lifecycle smoke on real Windows/macOS/Linux runners.
+#
+# Cost discipline (private repo — 2000 quota-min/month, win x2 / mac x10):
+# NOT on every push. Triggers: manual dispatch, a weekly cron (default branch
+# only, per GitHub semantics), and a push that touches THIS file (so landing or
+# editing the workflow self-triggers one validation run).
+# Run 1 (2026-07-08) immediately caught a real macOS-only test-fixture bug
+# (/var → /private/var symlink vs realpath'd resolveDir) — the matrix earns its keep.
+# ci-trigger: win-fixes iteration 1
+name: cross-os
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 6 * * 1' # Mondays 06:23 UTC (off-minute by design)
+  push:
+    paths:
+      - '.github/workflows/cross-os.yml'
+
+jobs:
+  matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: toolkit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Enable corepack (pnpm pinned via packageManager)
+        run: corepack enable
+      - name: Install
+        run: pnpm install
+      - name: Test
+        run: pnpm test
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: wt-observe lifecycle smoke (native state root, PID identity, portable spawn)
+        run: node scripts/ci-lifecycle-smoke.mjs

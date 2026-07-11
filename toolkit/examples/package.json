@@ -9,10 +9,12 @@
   },
   "dependencies": {
     "@workflow-toolbox/patterns": "workspace:*",
-    "@workflow-toolbox/build": "workspace:*"
+    "@workflow-toolbox/build": "workspace:*",
+    "@workflow-toolbox/std": "workspace:*"
   },
   "devDependencies": {
     "@workflow-toolbox/runtime": "workspace:*",
+    "@workflow-toolbox/observe": "workspace:*",
     "json-schema-to-ts": "^3.1.1"
   }
 }

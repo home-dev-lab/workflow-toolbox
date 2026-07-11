@@ -28,14 +28,36 @@
 //  - Synthesize IS a barrier: synthesis needs ALL verified findings from ALL
 //    reviewers to produce a coherent overall verdict.
 
-import { defineWorkflow } from '@workflow-toolbox/build/define'
-import type { WorkflowRuntime, JsonSchema } from '@workflow-toolbox/runtime'
+import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
+import { withAgentDefaults } from '@workflow-toolbox/runtime'
+import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias, AgentDefaults } from '@workflow-toolbox/runtime'
+import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import {
   classifyAndAct,
   adversarialVerification,
+  collectTrail,
+  probeAgentType,
 } from '@workflow-toolbox/patterns'
-import type { ClaimVerdict, VerifiedClaim } from '@workflow-toolbox/patterns'
+import type { ClaimVerdict, VerifiedClaim, AgentTypeProbeReport, TrailRecord } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
+
+// ---------------------------------------------------------------------------
+// Per-stage effort defaults (Class B/C launch-time tuning — see parseConfig).
+//
+// Every stage below used to inherit the SESSION effort silently (no `effort`
+// opt passed to rt.agent/pattern calls). These constants are the stage-class
+// defaults; a launch-time `args.effort.<role>` override (parsed by parseConfig
+// into `input.effort`) can retune any of them without a source edit, via
+// resolveEffort. The Verify role is clamped to a 'high' FLOOR — an override
+// may only RAISE it, mirroring adversarialVerification's own model-floor
+// guardrail (weaker effort on a refute-first verifier is exactly as risky as
+// a weaker model there).
+// ---------------------------------------------------------------------------
+const CLASSIFY_EFFORT: EffortAlias = 'low'       // Route: classify — routing/mechanical
+const ROUTE_ACT_EFFORT: EffortAlias = 'medium'   // Route: per-category summary — consolidation
+const REVIEW_EFFORT: EffortAlias = 'high'        // Review: per-lens reviewer agents
+const VERIFY_EFFORT_DEFAULT: EffortAlias = 'high' // Verify: adversarialVerification (floor 'high')
+const SYNTHESIZE_EFFORT: EffortAlias = 'medium'  // Synthesize: final verdict — consolidation
 
 // ---------------------------------------------------------------------------
 // Input contract
@@ -43,33 +65,74 @@ import type { FromSchema } from 'json-schema-to-ts'
 
 export interface PrReviewInput {
   target: string
-  /** Optional SPECIALIST subagent type for the per-lens REVIEW agents — e.g. a
-   *  language code-reviewer whose system prompt carries review discipline the
-   *  generic subagent lacks. null = the standard subagent (the default;
-   *  unchanged behavior). Routes the lens reviewers ONLY: the verifiers and the
-   *  synthesizer are never specialized. The type must exist in the CONSUMER's
-   *  session agent registry — the runtime throws (with the available list) on an
-   *  unknown type, and the registry is session-specific, so this is NOT
-   *  validated beyond shape. Never hard-code a private (e.g. magic-claude:*) type
-   *  as a default. A specialist reviewer is more thorough but noisier; the
-   *  existing refute-first Verify stage filters the extra false positives. */
+  /** Optional model for the VERIFY fan (adversarialVerification). null = the pattern default
+   *  (BEST_MODEL = opus). Pass 'sonnet' at launch — `args: { target, verifierModel: 'sonnet' }` —
+   *  for the cheaper, abundant-quota bucket: the verify is targeted + diff-grounded, so sonnet is
+   *  good enough and the fan dominates the run's tokens. Launch-time config; no source edit. */
+  verifierModel: ModelAlias | null
+  /** Optional subagent type for the per-lens REVIEW agents — a specialist
+   *  reviewer, or a cross-family bridge (e.g. 'workflow-toolbox:opencode-verifier')
+   *  for decorrelated review. null = the standard subagent (the default).
+   *  Requested via the STRUCTURED config envelope: `args.agentTypes.review`
+   *  (the SAME role key as `effort.review` — one role, one key; no bespoke
+   *  top-level arg), validated by the shared parseConfig. PROBED at run entry
+   *  (probeAgentType): when the type cannot answer, the run degrades to the
+   *  standard subagent — reported in the result's `probe`, never silent. Routes
+   *  the lens reviewers ONLY: the verifiers and the synthesizer are never
+   *  specialized. Never hard-code a private (e.g. magic-claude:*) type as a
+   *  default. A specialist reviewer is more thorough but noisier; the
+   *  refute-first Verify stage filters the extra false positives. */
   reviewerType: string | null
+  /** Optional Class-A blanket per-agent defaults, applied to EVERY agent in EVERY
+   *  stage via one withAgentDefaults wrap (model/effort/agentType/isolation/stallMs).
+   *  null = no blanket default. Parsed from `args.perAgent` by the shared
+   *  `parseConfig` helper — launch-time, no source edit, e.g.
+   *  `args: { target, perAgent: { model: 'sonnet', effort: 'low' } }`. Per-stage
+   *  knobs still WIN: the verify fan's `verifierModel` overrides perAgent.model,
+   *  so the blanket default tunes only the agents that do NOT pin their own. */
+  perAgent: AgentDefaults | null
+  /** Optional per-ROLE reasoning-effort overrides (Class B/C, parsed by the
+   *  shared `parseConfig` helper from `args.effort`), e.g.
+   *  `args: { target, effort: { review: 'xhigh' } }`. Role keys: 'classify',
+   *  'route', 'review', 'verify', 'synthesize'. A role's value may also be
+   *  the literal 'auto', meaning "keep THIS role's own committed default"
+   *  (useful for symmetry in an explicit map). null = no overrides — every
+   *  stage keeps its committed default. Resolved per-stage via resolveEffort
+   *  (invalid/missing values degrade to the stage default, never throw); the
+   *  'verify' role is additionally clamped to a 'high' floor via
+   *  resolveVerifierEffort — an override may only raise it. */
+  effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
 }
 
 // ---------------------------------------------------------------------------
 // JSON Schemas (as-const + FromSchema for type safety at consumed boundaries)
 // ---------------------------------------------------------------------------
 
-// Schema for the routed change summary (classifyAndAct act stage output)
+// Schema for the routed change summary (classifyAndAct act stage output).
+// Bounds are anti-capitulation defences (card #1814943589197677963, observed live
+// 2026-07-08): an act agent wrote a LONG correct summary, closed the JSON before
+// riskAreas, got two "missing property" rejections, then capitulated into
+// {"summary":"test","riskAreas":["a","b"]} — which validated. maxLength turns the
+// runaway-summary trigger into an actionable "too long" rejection; minLength makes
+// single-word junk fail validation instead of silently seeding the reviewers.
 const CHANGE_SUMMARY_SCHEMA = {
   type: 'object',
   properties: {
-    summary: { type: 'string' },
+    summary: { type: 'string', minLength: 12, maxLength: 1200 },
     riskAreas: { type: 'array', items: { type: 'string' } },
   },
   required: ['summary', 'riskAreas'],
   additionalProperties: false,
 } as const satisfies JsonSchema
+
+// Shared contract line for every act prompt below. riskAreas is asked for FIRST:
+// the observed failure was generation-order — a long summary emitted first starved
+// the required sibling field. Short/required-first is the same convention the other
+// compositions already follow ("score" then "reason", "verdict" then "summary").
+const CHANGE_SUMMARY_RULES =
+  'Both fields are REQUIRED. Emit "riskAreas" FIRST, then "summary" — at most 500 characters ' +
+  '(the schema rejects longer). Never satisfy the schema with placeholder values ("test", "a"); ' +
+  'if a field is hard to fill, shorten it — do not fake it.'
 
 type ChangeSummary = FromSchema<typeof CHANGE_SUMMARY_SCHEMA>
 
@@ -112,21 +175,36 @@ const SYNTHESIS_SCHEMA = {
 type SynthesisOutput = FromSchema<typeof SYNTHESIS_SCHEMA>
 
 // ---------------------------------------------------------------------------
+// Read-only git constraint — interpolated into every prompt below that asks an
+// agent to inspect a change. Prevents agents from reaching for destructive git
+// (observed live: a verifier ran `git checkout <sha> -- .`), which mutates the
+// shared working tree and is denied by auto-mode, silently degrading the run.
+// ---------------------------------------------------------------------------
+
+const READ_ONLY_GIT =
+  'Inspect via READ-ONLY git only — `git show <sha>:<path>`, `git diff <range>`, `git log` — ' +
+  'NEVER `git checkout` / `git reset` / `git restore` / `git clean` (they mutate the shared working tree and will be denied).'
+
+// ---------------------------------------------------------------------------
 // Reviewer lenses per category
-// Each category gets 3 specialized lenses: different failure modes, not
-// redundant coverage. Distinct lenses catch failures plain redundancy misses.
+// Each category gets specialized lenses: different failure modes, not redundant
+// coverage. Distinct lenses catch failures plain redundancy misses. Every CODE
+// category also carries `maintainability` (duplication / missed abstraction / DRY
+// / coupling / complexity) — a correctness/security review otherwise never reports
+// that a change copy-pastes code or could be abstracted, since each reviewer is
+// told to focus ONLY on its own lens. `docs` (prose) is the sole exception.
 // ---------------------------------------------------------------------------
 
 const REVIEWER_LENSES: Readonly<Record<string, readonly string[]>> = {
-  bugfix: ['root-cause', 'regression-risk', 'test-coverage'],
-  feature: ['correctness', 'security', 'api-design'],
-  refactor: ['behavioral-equivalence', 'test-coverage', 'readability'],
-  config: ['correctness', 'security', 'blast-radius'],
+  bugfix: ['root-cause', 'regression-risk', 'test-coverage', 'maintainability'],
+  feature: ['correctness', 'security', 'api-design', 'maintainability'],
+  refactor: ['behavioral-equivalence', 'test-coverage', 'readability', 'maintainability'],
+  config: ['correctness', 'security', 'blast-radius', 'maintainability'],
   docs: ['accuracy', 'completeness', 'clarity'],
 }
 
-// Fallback lenses when the category is not in the map
-const DEFAULT_LENSES: readonly string[] = ['correctness', 'security', 'test-coverage']
+// Fallback lenses when the category is not in the map (code-shaped → includes maintainability)
+const DEFAULT_LENSES: readonly string[] = ['correctness', 'security', 'test-coverage', 'maintainability']
 
 // ---------------------------------------------------------------------------
 // A finding enriched with its adversarial verdict (for the final output)
@@ -151,6 +229,11 @@ interface PrReviewOutput {
   verdict: 'approve' | 'request-changes'
   summary: string
   findings: readonly VerifiedFinding[]
+  /** The subagent type the lens reviewers actually ran through (probe-resolved);
+   *  null = the standard subagent (default, or graceful fallback). */
+  reviewerType: string | null
+  /** Probe story when `agentTypes.review` was requested; null otherwise. */
+  probe: AgentTypeProbeReport | null
   stats: {
     reviewersSpawned: number
     findingsRaw: number
@@ -158,6 +241,8 @@ interface PrReviewOutput {
     findingsRefuted: number
     dropped: number
   }
+  /** Combined Route + per-lens Verify trail (collectTrail, in pipeline order). */
+  envelope: { trail: TrailRecord[] }
   warnings: readonly string[]
 }
 
@@ -173,7 +258,7 @@ function parseInput(raw: unknown): PrReviewInput {
         'pr-review: target must be a non-empty string — provide a git ref range or change description (e.g. "HEAD~3..HEAD")',
       )
     }
-    return { target: raw, reviewerType: null }
+    return { target: raw, reviewerType: null, verifierModel: null, perAgent: null, effort: null }
   }
 
   if (raw === null || typeof raw !== 'object') {
@@ -197,31 +282,76 @@ function parseInput(raw: unknown): PrReviewInput {
     )
   }
 
-  // Optional specialist subagent type for the lens reviewers. Default null =
-  // standard subagent. Shape-only validation: the runtime throws on an unknown
-  // type and the registry is session-specific, so membership is not checked here.
-  let reviewerType: string | null = null
-  if (obj['reviewerType'] !== undefined && obj['reviewerType'] !== null) {
-    if (typeof obj['reviewerType'] !== 'string' || obj['reviewerType'].trim().length === 0) {
+  // Optional verify-fan model override. Shape-only (a non-empty string); ModelAlias is an open
+  // union so an unknown alias is the runtime's problem, not parse-time. Omit → pattern default.
+  let verifierModel: ModelAlias | null = null
+  if (obj['verifierModel'] !== undefined && obj['verifierModel'] !== null) {
+    if (typeof obj['verifierModel'] !== 'string' || obj['verifierModel'].trim().length === 0) {
       throw new Error(
-        'pr-review: "reviewerType" must be a non-empty subagent-type string ' +
-        '(e.g. "magic-claude:ts-reviewer") — omit it for the standard subagent',
+        'pr-review: "verifierModel" must be a non-empty model alias string (e.g. "sonnet") — omit it for the default (opus)',
       )
     }
-    reviewerType = obj['reviewerType']
+    verifierModel = obj['verifierModel'] as ModelAlias
   }
 
-  return { target: obj['target'], reviewerType }
+  // Class-A blanket per-agent defaults + Class B per-role effort overrides +
+  // the per-role agentType routing map, all validated by the shared parseConfig
+  // helper. It reads only the recognized `perAgent`/`effort`/`agentTypes`
+  // slices and IGNORES pr-review's bespoke target/verifierModel keys, so the
+  // conventions compose cleanly. The lens reviewers' routing request lives at
+  // `agentTypes.review` — the SAME role key as `effort.review` (one role, one
+  // key: parseConfig never validates key sets, so a near-miss key would be a
+  // SILENT no-op — mirroring the effort key is the guard).
+  const cfg = parseConfig(obj)
+  const perAgent = cfg.perAgent ?? null
+  const effort = cfg.effort ?? null
+  const reviewerType = cfg.agentTypes?.['review'] ?? null
+
+  return { target: obj['target'], reviewerType, verifierModel, perAgent, effort }
 }
 
 // ---------------------------------------------------------------------------
 // Workflow body
 // ---------------------------------------------------------------------------
 
-async function run(rt: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewOutput> {
+async function run(rt0: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewOutput> {
+  // Class-A one-wiring-point: wrap the runtime ONCE so the blanket per-agent
+  // defaults reach every agent in every pattern below (per-call/pattern opts
+  // still win). When no perAgent was supplied this is a no-op passthrough.
+  const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0
   const warnings: string[] = []
   let reviewersSpawned = 0
   let dropped = 0
+  // One entry per lens whose verifyStage actually ran adversarialVerification
+  // (a dropped reviewer or an empty findings list contributes nothing) —
+  // folded into envelope.trail via collectTrail at Synthesize time.
+  const lensTrails: Array<{ trail: TrailRecord[] }> = []
+
+  // Resolve each stage's effort ONCE: a launch-time `args.effort.<role>`
+  // override wins when valid, else the stage-class default declared above.
+  // 'verify' is additionally floored at 'high' — see resolveVerifierEffort.
+  const classifyEffort = resolveEffort(input.effort?.['classify'], CLASSIFY_EFFORT)
+  const routeActEffort = resolveEffort(input.effort?.['route'], ROUTE_ACT_EFFORT)
+  const reviewEffort = resolveEffort(input.effort?.['review'], REVIEW_EFFORT)
+  const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
+  const synthesizeEffort = resolveEffort(input.effort?.['synthesize'], SYNTHESIZE_EFFORT)
+
+  // -------------------------------------------------------------------------
+  // Phase 'Probe' (conditional) — resolve the reviewer routing BEFORE any
+  // reviewer spawns. One schema-less probe through the requested type; any
+  // non-affirmative outcome (UNAVAILABLE marker, null, error text, throw on an
+  // unregistered type) degrades to the standard subagent. Never silent: the
+  // probe logs + emits its own digest, and the result carries `probe`.
+  // -------------------------------------------------------------------------
+
+  let resolvedReviewerType: string | null = null
+  let probeReport: AgentTypeProbeReport | null = null
+  if (input.reviewerType !== null) {
+    rt.phase('Probe')
+    const probe = await probeAgentType(rt, input.reviewerType, { phase: 'Probe' })
+    resolvedReviewerType = probe.agentType ?? null
+    probeReport = { requested: input.reviewerType, available: probe.available, reason: probe.reason }
+  }
 
   // -------------------------------------------------------------------------
   // Phase 'Route' — classifyAndAct
@@ -241,37 +371,49 @@ async function run(rt: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewO
     classifyPrompt: (target) =>
       `Inspect this change and classify it into exactly one category: feature, bugfix, refactor, config, or docs.\n` +
       `Change target: ${target}\n` +
+      `${READ_ONLY_GIT}\n` +
       `Return { "category": "<one of the five categories>" }`,
+    classifyEffort,
     actions: {
       feature: {
         schema: CHANGE_SUMMARY_SCHEMA,
         prompt: (target) =>
           `You are reviewing a FEATURE change. Inspect the actual change (${target}) and produce a focused summary.\n` +
-          `Return { "summary": "<what the feature does>", "riskAreas": ["<risk1>", ...] }`,
+          `${READ_ONLY_GIT}\n` +
+          `Return { "riskAreas": ["<risk1>", ...], "summary": "<what the feature does>" }. ${CHANGE_SUMMARY_RULES}`,
+        effort: routeActEffort,
       },
       bugfix: {
         schema: CHANGE_SUMMARY_SCHEMA,
         prompt: (target) =>
           `You are reviewing a BUGFIX change. Inspect the actual change (${target}) — re-derive from first principles.\n` +
-          `Return { "summary": "<what was broken and how it is fixed>", "riskAreas": ["<risk1>", ...] }`,
+          `${READ_ONLY_GIT}\n` +
+          `Return { "riskAreas": ["<risk1>", ...], "summary": "<what was broken and how it is fixed>" }. ${CHANGE_SUMMARY_RULES}`,
+        effort: routeActEffort,
       },
       refactor: {
         schema: CHANGE_SUMMARY_SCHEMA,
         prompt: (target) =>
           `You are reviewing a REFACTOR change. Inspect the actual change (${target}).\n` +
-          `Return { "summary": "<what was refactored and why>", "riskAreas": ["<risk1>", ...] }`,
+          `${READ_ONLY_GIT}\n` +
+          `Return { "riskAreas": ["<risk1>", ...], "summary": "<what was refactored and why>" }. ${CHANGE_SUMMARY_RULES}`,
+        effort: routeActEffort,
       },
       config: {
         schema: CHANGE_SUMMARY_SCHEMA,
         prompt: (target) =>
           `You are reviewing a CONFIG change. Inspect the actual change (${target}).\n` +
-          `Return { "summary": "<what config changed and its effect>", "riskAreas": ["<risk1>", ...] }`,
+          `${READ_ONLY_GIT}\n` +
+          `Return { "riskAreas": ["<risk1>", ...], "summary": "<what config changed and its effect>" }. ${CHANGE_SUMMARY_RULES}`,
+        effort: routeActEffort,
       },
       docs: {
         schema: CHANGE_SUMMARY_SCHEMA,
         prompt: (target) =>
           `You are reviewing a DOCS change. Inspect the actual change (${target}).\n` +
-          `Return { "summary": "<what documentation was updated>", "riskAreas": ["<risk1>", ...] }`,
+          `${READ_ONLY_GIT}\n` +
+          `Return { "riskAreas": ["<risk1>", ...], "summary": "<what documentation was updated>" }. ${CHANGE_SUMMARY_RULES}`,
+        effort: routeActEffort,
       },
     },
     phase: 'Route',
@@ -290,6 +432,22 @@ async function run(rt: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewO
 
   const category = routedItem.category
   const changeSummary = routedItem.result
+
+  // Degenerate-output guard (card #1814943589197677963): a schema-rejected agent can
+  // capitulate into minimal junk that VALIDATES — the journal's `attempt` stays 1
+  // (StructuredOutput retries are intra-conversation), so nothing else surfaces it.
+  // Heuristic + loud, never fatal: the reviewers re-derive findings from the diff, so
+  // a lost seeding degrades orientation, it does not invalidate the review.
+  const junkAreas =
+    changeSummary.riskAreas.length > 0 && changeSummary.riskAreas.every((r) => r.trim().length <= 2)
+  if (junkAreas || changeSummary.summary.trim().length < 12) {
+    const w =
+      `route: degenerate change summary from the ${category} act stage ` +
+      `(summary="${changeSummary.summary.slice(0, 40)}", riskAreas=${JSON.stringify(changeSummary.riskAreas.slice(0, 4))}) — ` +
+      'reviewer seeding lost; findings still re-derive from the actual diff'
+    warnings.push(w)
+    rt.log(`⚠ ${w}`)
+  }
 
   // -------------------------------------------------------------------------
   // Phase 'Review' + 'Verify' — pipeline form, NO barrier between them.
@@ -320,23 +478,32 @@ async function run(rt: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewO
     reviewersSpawned++
 
     // Defence (1): schema enforces the findings shape at this consumed boundary.
+    // Prompt is STRUCTURED MARKDOWN (## sections, bullets), not one \n-joined wall:
+    // transcript viewers render markdown, where a single \n does NOT break a paragraph —
+    // the old shape read as one giant unscannable blob (user finding, 2026-07-08).
     const result = await rt.agent<FindingsOutput>(
-      `You are a specialized code reviewer examining the "${lens}" aspect of this change.\n` +
-      `Change target: ${input.target}\n` +
-      `Change summary: ${changeSummary.summary}\n` +
-      `Risk areas: ${changeSummary.riskAreas.join(', ')}\n` +
+      `## Role\n` +
+      `You are a specialized code reviewer examining the **${lens}** aspect of this change.\n\n` +
+      `## Change\n` +
+      `- **Target:** \`${input.target}\`\n\n` +
+      `### Summary (from the routing stage)\n${changeSummary.summary}\n\n` +
+      `### Risk areas\n${changeSummary.riskAreas.map((r) => `- ${r}`).join('\n')}\n\n` +
+      `## Instructions\n` +
       `Read the ACTUAL change (you have repo access). Do NOT trust the summary above — re-derive findings from first principles.\n` +
-      `Focus ONLY on the "${lens}" lens. Return your findings.\n` +
-      `Each finding: { title, file, severity ('high'|'medium'|'low'), detail }`,
+      `${READ_ONLY_GIT}\n` +
+      `Focus ONLY on the "${lens}" lens.\n\n` +
+      `## Output\n` +
+      `Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'low'), detail }\``,
       {
         schema: FINDINGS_SCHEMA,
         label: `pr-review:reviewer:${lens}`,
         phase: 'Review',
-        // Optional specialist subagent type (reviewerType knob). Omitted when
-        // null → standard subagent (default). Routes the lens reviewers ONLY;
-        // verifiers and synthesizer stay generic. Runtime fails fast on an
-        // unknown type.
-        ...(input.reviewerType !== null ? { agentType: input.reviewerType } : {}),
+        effort: reviewEffort,
+        // Optional subagent type (agentTypes.review knob), PROBE-RESOLVED at
+        // run entry. Omitted when null → standard subagent (default; also the
+        // graceful-fallback path when the requested type could not answer).
+        // Routes the lens reviewers ONLY; verifiers and synthesizer stay generic.
+        ...(resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {}),
       },
     )
 
@@ -368,20 +535,28 @@ async function run(rt: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewO
     // Defence (2): renderClaim embeds the instruction to RE-DERIVE from the
     // actual diff, never trust the reviewer's summary (fresh-evidence checker).
     const verifyResult = await adversarialVerification(rt, {
+      // Verify-fan model: launch-time override via `args.verifierModel`, default opus (BEST_MODEL).
+      // This verification is TARGETED + diff-grounded, so passing 'sonnet' at launch is a sound,
+      // cheaper choice — but the committed DEFAULT stays opus (no implicit downgrade).
+      ...(input.verifierModel !== null ? { model: input.verifierModel } : {}),
       claims: findings,
       renderClaim: (finding) =>
-        `Reviewer (lens: ${lens}) reported: "${finding.title}" in ${finding.file}\n` +
-        `Detail: ${finding.detail}\n` +
-        `Severity: ${finding.severity}\n\n` +
-        `IMPORTANT: Do NOT trust the reviewer summary above. Open the actual diff at ${input.target} ` +
-        `and re-derive whether this finding is genuine from first principles.`,
+        `## Claim to verify (lens: ${lens})\n` +
+        `**${finding.title}** — \`${finding.file}\` · severity: ${finding.severity}\n\n` +
+        `${finding.detail}\n\n` +
+        `## Instructions\n` +
+        `IMPORTANT: Do NOT trust the reviewer summary above. Open the actual diff at \`${input.target}\` ` +
+        `and re-derive whether this finding is genuine from first principles.\n` +
+        `${READ_ONLY_GIT}`,
       lenses: ['correctness', 'security', 'does-it-reproduce'],
       votes: 3,
       maxVerifyClaims: 5,
+      effort: verifyEffort,
       phase: 'Verify',
     })
 
     for (const w of verifyResult.warnings) warnings.push(w)
+    lensTrails.push(verifyResult)
 
     return verifyResult.value
   }
@@ -452,10 +627,12 @@ async function run(rt: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewO
   rt.phase('Synthesize')
 
   const synthesisPrompt =
-    `You are synthesizing a code review for the change: ${input.target}\n` +
-    `Category: ${category}\n` +
-    `Change summary: ${changeSummary.summary}\n\n` +
-    `Verified findings (non-refuted):\n${JSON.stringify(synthesisFindings, null, 2)}\n\n` +
+    `## Task\n` +
+    `You are synthesizing a code review for the change \`${input.target}\` (category: ${category}).\n\n` +
+    `### Change summary\n${changeSummary.summary}\n\n` +
+    `## Verified findings (non-refuted)\n` +
+    '```json\n' + JSON.stringify(synthesisFindings, null, 2) + '\n```\n\n' +
+    `## Output\n` +
     `Produce an overall verdict: "approve" if no high-severity confirmed findings remain, ` +
     `"request-changes" otherwise. Include a concise summary.\n` +
     `Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" }`
@@ -464,6 +641,7 @@ async function run(rt: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewO
     schema: SYNTHESIS_SCHEMA,
     label: 'pr-review:synthesize',
     phase: 'Synthesize',
+    effort: synthesizeEffort,
   })
 
   // Synthesis is the final gate — if it fails, surface a meaningful error
@@ -479,6 +657,10 @@ async function run(rt: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewO
     verdict: synthesisAgent.verdict,
     summary: synthesisAgent.summary,
     findings: outputFindings,
+    // Reviewer routing outcome: the pure identifier actually used (null =
+    // standard subagent) + the structured probe story when routing was requested.
+    reviewerType: resolvedReviewerType,
+    probe: probeReport,
     stats: {
       reviewersSpawned,
       findingsRaw,
@@ -486,6 +668,7 @@ async function run(rt: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewO
       findingsRefuted,
       dropped,
     },
+    envelope: { trail: collectTrail(routeResult, ...lensTrails) },
     warnings,
   }
 }
@@ -500,6 +683,7 @@ export default defineWorkflow({
     description: 'Multi-lens code review of a change set: classifies the change, spawns specialized reviewers, adversarially verifies findings, and synthesizes a verdict.',
     whenToUse: 'Use when you need a structured, adversarially-verified code review of a git ref range or change description.',
     phases: [
+      { title: 'Probe', detail: 'Resolve the requested reviewer agentType (graceful Claude fallback)' },
       { title: 'Route', detail: 'Classify the change and produce a targeted summary' },
       { title: 'Review', detail: 'Spawn specialized reviewer agents per lens' },
       { title: 'Verify', detail: 'Adversarially verify each finding (fresh-evidence check)' },

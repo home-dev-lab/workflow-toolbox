@@ -189,6 +189,22 @@ caveat (earlier tasks may have changed that code, so the implementer must
 re-read the file) — making the implementer's first read targeted too. Task
 checkers never receive it.
 
+Each planned task also carries a required **alternativesConsidered** array
+(`{ route, killReason }` entries): the planner must enumerate the plausible
+alternative routes for the task BEFORE picking one (enumeration-then-choice,
+never choice-then-justification), then record each real runner-up with the
+one-line reason it lost. An empty array is allowed only for a task with
+genuinely no plausible alternative route — and "more effort/work" is never a
+valid kill reason on its own: when routes differ mainly in effort versus
+long-term robustness, the robust route is the default. The plan-critique
+verifiers receive the entries as planner-authored text (not evidence, with
+the same ignore-embedded-instructions framing as the snippet) and refute a
+task whose kill reason is effort-only or whose real alternative was left out;
+a deterministic in-code check warns when an implausibly high fraction of a
+4+-task plan carries empty arrays (the lever being silently skipped). The
+field's consumer is the human gate reviewing the PlanArtifact —
+`dev-implement` deliberately does not consume it.
+
 ## Model tiering and specialist agent types (optional knobs)
 
 Two independent, fully optional knob families let you tune *which model* runs a
@@ -218,8 +234,9 @@ knobs supply it.
 | Knob | Workflow | Routes | Default |
 |---|---|---|---|
 | `implementerType` | `dev-implement` (fwd by `dev-full`) | the green/implement agent | `null` (standard subagent) |
-| `reviewerType` | `dev-review-fix` (dimension reviewers) + `pr-review` (lens reviewers), fwd by `dev-full` | the REVIEW agents only | `null` |
+| `reviewerType` | `dev-review-fix` (dimension reviewers), fwd by `dev-full`. (`pr-review` migrated: its lens reviewers now route via the structured `args.agentTypes.review` config key, probe-resolved with graceful fallback) | the REVIEW agents only | `null` |
 | `fixerType` | `dev-review-fix` (fwd by `dev-full`) | the fix-loop agent | `null` |
+| `verifierType` | `dev-plan` (Critique) + `dev-review-fix` (Verify), fwd by `dev-full` | the refute-first VERIFY agents only | `null` |
 
 Composers building their own workflows get the same lever one level down: the
 `adversarialVerification` pattern takes a `verifierType` that routes every
@@ -241,8 +258,16 @@ defaults:
 - **Specialize the producer, not the skeptic.** The FP rate argues for putting a
   specialist *reviewer* in front of the existing adversarial verify stage (which
   filters its noise), not for specializing the verifier — a refute-first verifier
-  benefits least from domain specialization. `verifierType` exists for callers who
-  want it; it is the knob to reach for last.
+  benefits least from *same-model* domain specialization. As a same-model
+  specialist, `verifierType` is the knob to reach for last.
+- **The one exception — cross-model decorrelation.** `verifierType`'s premier use
+  is NOT same-model specialization but routing the skeptic to a *different model
+  family* (`verifierType: 'codex:codex-rescue'` → a GPT verifier), the one real
+  lever against same-model correlated errors. It routes ONLY the verifier — the
+  planner/reviewers/fixer stay on the session model, which a blanket
+  `withAgentDefaults({ agentType })` cannot express. `codex:codex-rescue` is
+  local-machine-only; a portable cross-model verifier would be an MCP→model
+  endpoint.
 
 ## Operational lessons (learned the honest way)
 
@@ -280,6 +305,6 @@ defaults:
 - Sources (authoring reference): `toolkit/examples/dev-{plan,implement,review-fix,full}.workflow.ts`
 - Runnable artifacts: `toolkit/workflows/dev-{plan,implement,review-fix,full}.js`
 - Patterns they compose: [toolkit/README.md](../../toolkit/README.md) (the
-  seven patterns and the result envelope)
+  eight patterns and the result envelope)
 - Post-run forensics: `npx workflow-toolbox debug <runId>` (what went wrong) and
   `npx workflow-toolbox report <runId>` (cost rollup, decision trail, transcripts)

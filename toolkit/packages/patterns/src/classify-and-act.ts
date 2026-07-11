@@ -10,9 +10,11 @@
 // - Labels: <patternName>:<stage>:<index> for high-signal /workflows UI (§6.2).
 // - exactOptionalPropertyTypes: only include optional keys when defined (§bootstrap).
 
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
-import { warn, applyCap, makeRecord } from './envelope.js'
+import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
+import { warn, applyCap, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+
+const STAGE = 'classifyAndAct'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,6 +24,14 @@ export interface ActionSpec<TIn> {
   prompt: (item: TIn) => string
   schema?: JsonSchema
   model?: ModelAlias
+  /** Per-action reasoning effort. Omit to inherit the session effort. */
+  effort?: EffortAlias
+  /** Per-action subagent type (Agent tool `agentType`) to route THIS category's
+   *  act agents through — e.g. 'codex:codex-rescue' /
+   *  'workflow-toolbox:opencode-verifier' for a cross-family model. Omit for the
+   *  standard Claude subagent. Per-category (like `model`/`effort`) so different
+   *  categories can decorrelate to different families. */
+  agentType?: string
 }
 
 export interface ClassifyAndActOptions<TIn> {
@@ -30,6 +40,12 @@ export interface ClassifyAndActOptions<TIn> {
   classifyPrompt: (item: TIn) => string
   actions: Readonly<Record<string, ActionSpec<TIn>>>
   classifyModel?: ModelAlias
+  /** Per-classify reasoning effort. Omit to inherit the session effort. */
+  classifyEffort?: EffortAlias
+  /** Subagent type (Agent tool `agentType`) to route the classify agents
+   *  through — e.g. 'codex:codex-rescue' / 'workflow-toolbox:opencode-verifier'
+   *  for a cross-family model. Omit for the standard Claude subagent. */
+  classifyType?: string
   phase?: string
   maxItems?: number
 }
@@ -73,7 +89,7 @@ export async function classifyAndAct<TIn, TOut = string>(
   rt: WorkflowRuntime,
   options: ClassifyAndActOptions<TIn>,
 ): Promise<PatternResult<Array<{ item: TIn; category: string; result: TOut }>>> {
-  const { items, categories, classifyPrompt, actions, classifyModel, phase, maxItems } = options
+  const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems } = options
 
   // -------------------------------------------------------------------------
   // Synchronous validation — throw with actionable messages
@@ -100,6 +116,11 @@ export async function classifyAndAct<TIn, TOut = string>(
       `${missingFromActions.length === 1 ? 'has' : 'have'} no action — ` +
       `add an entry to options.actions or remove the category`,
     )
+  }
+
+  assertAgentTypeOption(STAGE, 'classifyType', classifyType)
+  for (const [category, spec] of Object.entries(actions)) {
+    assertAgentTypeOption(STAGE, `actions.${category}.agentType`, spec.agentType)
   }
 
   // applyCap throws synchronously when maxItems < 1
@@ -178,11 +199,15 @@ export async function classifyAndAct<TIn, TOut = string>(
       label: string
       phase?: string
       model?: ModelAlias
+      effort?: EffortAlias
+      agentType?: string
     } = {
       schema: controlSchema,
-      label: `classifyAndAct:classify:${index}`,
+      label: `${STAGE}:classify:${index}`,
       ...(phase !== undefined ? { phase } : {}),
       ...(classifyModel !== undefined ? { model: classifyModel } : {}),
+      ...(classifyEffort !== undefined ? { effort: classifyEffort } : {}),
+      ...(classifyType !== undefined ? { agentType: classifyType } : {}),
     }
 
     agentsSpawned++
@@ -193,7 +218,10 @@ export async function classifyAndAct<TIn, TOut = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0,
-        record: makeRecord(`classifyAndAct:classify:${index}`, false, classifyModel !== undefined ? { model: classifyModel } : undefined),
+        record: makeRecord(`${STAGE}:classify:${index}`, false, {
+          ...(classifyModel !== undefined ? { model: classifyModel } : {}),
+          ...(classifyEffort !== undefined ? { effort: classifyEffort } : {}),
+        }),
       })
       throw new Error('classify returned null')
     }
@@ -205,7 +233,10 @@ export async function classifyAndAct<TIn, TOut = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0,
-        record: makeRecord(`classifyAndAct:classify:${index}`, false, classifyModel !== undefined ? { model: classifyModel } : undefined),
+        record: makeRecord(`${STAGE}:classify:${index}`, false, {
+          ...(classifyModel !== undefined ? { model: classifyModel } : {}),
+          ...(classifyEffort !== undefined ? { effort: classifyEffort } : {}),
+        }),
       })
       throw new Error(`classify returned unknown category "${classified.category}"`)
     }
@@ -213,8 +244,9 @@ export async function classifyAndAct<TIn, TOut = string>(
     pendingTrail.push({
       itemIndex: index,
       stageOrder: 0,
-      record: makeRecord(`classifyAndAct:classify:${index}`, true, {
+      record: makeRecord(`${STAGE}:classify:${index}`, true, {
         ...(classifyModel !== undefined ? { model: classifyModel } : {}),
+        ...(classifyEffort !== undefined ? { effort: classifyEffort } : {}),
         decision: classified.category,
       }),
     })
@@ -244,11 +276,15 @@ export async function classifyAndAct<TIn, TOut = string>(
       phase?: string
       schema?: JsonSchema
       model?: ModelAlias
+      effort?: EffortAlias
+      agentType?: string
     } = {
-      label: `classifyAndAct:act:${category}:${index}`,
+      label: `${STAGE}:act:${category}:${index}`,
       ...(phase !== undefined ? { phase } : {}),
       ...(spec.schema !== undefined ? { schema: spec.schema } : {}),
       ...(spec.model !== undefined ? { model: spec.model } : {}),
+      ...(spec.effort !== undefined ? { effort: spec.effort } : {}),
+      ...(spec.agentType !== undefined ? { agentType: spec.agentType } : {}),
     }
 
     agentsSpawned++
@@ -259,7 +295,10 @@ export async function classifyAndAct<TIn, TOut = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 1,
-        record: makeRecord(`classifyAndAct:act:${category}:${index}`, false, spec.model !== undefined ? { model: spec.model } : undefined),
+        record: makeRecord(`${STAGE}:act:${category}:${index}`, false, {
+          ...(spec.model !== undefined ? { model: spec.model } : {}),
+          ...(spec.effort !== undefined ? { effort: spec.effort } : {}),
+        }),
       })
       throw new Error('act returned null')
     }
@@ -267,7 +306,10 @@ export async function classifyAndAct<TIn, TOut = string>(
     pendingTrail.push({
       itemIndex: index,
       stageOrder: 1,
-      record: makeRecord(`classifyAndAct:act:${category}:${index}`, true, spec.model !== undefined ? { model: spec.model } : undefined),
+      record: makeRecord(`${STAGE}:act:${category}:${index}`, true, {
+        ...(spec.model !== undefined ? { model: spec.model } : {}),
+        ...(spec.effort !== undefined ? { effort: spec.effort } : {}),
+      }),
     })
 
     return { item, category, result }
@@ -320,6 +362,17 @@ export async function classifyAndAct<TIn, TOut = string>(
     a.itemIndex !== b.itemIndex ? a.itemIndex - b.itemIndex : a.stageOrder - b.stageOrder,
   )
   const trail: TrailRecord[] = pendingTrail.map(e => e.record)
+
+  // Phase digest: which categories were routed to (taken) vs which existed in the
+  // classifier's enum but were never chosen (notTaken — the ghost branches).
+  const allCategories = [...categories]
+  const chosen = new Set(value.map(r => r.category))
+  emitDigest(rt, {
+    stage: STAGE,
+    taken: allCategories.filter(c => chosen.has(c)),
+    notTaken: allCategories.filter(c => !chosen.has(c)),
+    counts: { in: items.length, out: value.length },
+  })
 
   return { value, stats, warnings, trail }
 }

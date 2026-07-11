@@ -78,11 +78,20 @@ function makeRuntime(overrides?: {
   check?: (prompt: string, callIndex: number) => unknown
   red?: (prompt: string) => unknown
   green?: (prompt: string) => unknown
+  read?: (prompt: string) => unknown
 }): FakeRuntime {
   let checkCalls = 0
   return new FakeRuntime({
     onAgent: ({ prompt }: { prompt: string; index: number }) => {
       const p = prompt.toLowerCase()
+
+      // (0) Load stage — read the PlanArtifact file from disk (artifactPath mode).
+      // Only spawned when the input supplies artifactPath instead of an inline
+      // artifact; inline-mode runs never reach this route.
+      if (p.includes('plan artifact json file at the path')) {
+        if (overrides?.read) return overrides.read(prompt)
+        return { found: true, content: JSON.stringify(ARTIFACT), note: 'read the file (verbatim)' }
+      }
 
       // (1) Check stage — independent fresh-evidence verification
       if (p.includes('independently verify by running')) {
@@ -118,9 +127,11 @@ describe('dev-implement workflow metadata', () => {
     expect(wf.meta.name).toBe('dev-implement')
     expect(wf.meta.description).toBeTruthy()
     const titles = wf.meta.phases?.map(p => p.title)
-    // Setup + Merge are worktree-mode display groups; sequential runs simply
-    // never emit them (unused declared phases are harmless display grouping).
-    expect(titles).toEqual(['Setup', 'Implement', 'Check', 'Merge', 'Report'])
+    // Load is the artifactPath-mode read group (emitted only when the artifact
+    // is loaded from disk); Setup + Merge are worktree-mode display groups.
+    // Sequential / inline runs simply never emit them (unused declared phases
+    // are harmless display grouping).
+    expect(titles).toEqual(['Load', 'Setup', 'Implement', 'Check', 'Merge', 'Report'])
   })
 })
 
@@ -207,6 +218,86 @@ describe('dev-implement parseInput', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Test: artifactPath input — load the PlanArtifact from disk instead of inline
+//
+// The workflow sandbox has no filesystem, so artifactPath mode resolves the
+// artifact through a read AGENT (the only fs bridge) at run start, JSON.parses
+// its verbatim output, then runs it through the SAME validateArtifact gate the
+// inline path uses. Inline {artifact} mode stays byte-for-byte backward
+// compatible — no read agent is spawned.
+// ---------------------------------------------------------------------------
+
+describe('dev-implement artifactPath input (load PlanArtifact from disk)', () => {
+  it('reads the artifact from artifactPath via an agent, then runs the TDD loop', async () => {
+    const rt = makeRuntime() // default read route returns the ARTIFACT fixture verbatim
+    const result = await wf.run(rt, JSON.stringify({ artifactPath: '/tmp/plan.json' }))
+    expect(result).toMatchObject({ goal: ARTIFACT.goal, succeeded: 2 })
+  })
+
+  it('rejects when BOTH artifact and artifactPath are supplied (ambiguous)', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ artifact: ARTIFACT, artifactPath: '/tmp/plan.json' })),
+    ).rejects.toThrow(/exactly one|both|artifactpath/i)
+  })
+
+  it('rejects when NEITHER artifact nor artifactPath is supplied', async () => {
+    const rt = makeRuntime()
+    await expect(wf.run(rt, JSON.stringify({}))).rejects.toThrow(/artifact|artifactpath/i)
+  })
+
+  it('rejects a non-string artifactPath', async () => {
+    const rt = makeRuntime()
+    await expect(wf.run(rt, JSON.stringify({ artifactPath: 123 }))).rejects.toThrow(/artifactpath/i)
+  })
+
+  it('errors clearly when the file cannot be read (agent reports not found)', async () => {
+    const rt = makeRuntime({ read: () => ({ found: false, content: '', note: 'no such file' }) })
+    await expect(
+      wf.run(rt, JSON.stringify({ artifactPath: '/tmp/missing.json' })),
+    ).rejects.toThrow(/could not|not.*read|not found|artifactpath/i)
+  })
+
+  it('errors clearly when a dead read agent returns null', async () => {
+    const rt = makeRuntime({ read: () => null })
+    await expect(
+      wf.run(rt, JSON.stringify({ artifactPath: '/tmp/plan.json' })),
+    ).rejects.toThrow(/could not|read|artifactpath/i)
+  })
+
+  it('errors clearly when the file contents are not valid JSON', async () => {
+    const rt = makeRuntime({ read: () => ({ found: true, content: '{not valid json', note: '' }) })
+    await expect(
+      wf.run(rt, JSON.stringify({ artifactPath: '/tmp/bad.json' })),
+    ).rejects.toThrow(/json|parse/i)
+  })
+
+  it('re-validates the loaded artifact (a dependency cycle in the file is rejected)', async () => {
+    const cyclic = {
+      ...ARTIFACT,
+      tasks: [
+        { ...ARTIFACT.tasks[1], dependsOn: ['T2'] },
+        { ...ARTIFACT.tasks[0], dependsOn: ['T1'] },
+      ],
+    }
+    const rt = makeRuntime({ read: () => ({ found: true, content: JSON.stringify(cyclic), note: '' }) })
+    await expect(
+      wf.run(rt, JSON.stringify({ artifactPath: '/tmp/cyclic.json' })),
+    ).rejects.toThrow(/cycle/i)
+  })
+
+  it('does NOT spawn a read agent in inline {artifact} mode (backward compatible)', async () => {
+    const rt = makeRuntime({
+      read: () => {
+        throw new Error('read agent must not be spawned in inline {artifact} mode')
+      },
+    })
+    const result = await wf.run(rt, JSON.stringify({ artifact: ARTIFACT }))
+    expect(result).toMatchObject({ succeeded: 2 })
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Test: happy path — sequential TDD over both tasks
 // ---------------------------------------------------------------------------
 
@@ -257,7 +348,7 @@ describe('dev-implement happy path', () => {
     const rt = makeRuntime()
     await wf.run(rt, JSON.stringify(VALID_INPUT))
 
-    const red = rt.calls.find((c) => c.opts?.label === 'dev-implement:red:T1')!
+    const red = rt.calls.find((c) => c.opts?.label ?.startsWith('dev-implement:red:T1'))!
     expect(red.prompt).toMatch(/nothing to write|no tests are needed/i)
     expect(red.prompt).toMatch(/written.*true.*empty|empty.*testFiles/i)
   })
@@ -1094,7 +1185,7 @@ describe('dev-implement worktree projectSub boundary', () => {
     expect(result.succeeded).toBe(3)
     const create = rt.calls.find((c) => c.opts?.label === 'dev-implement:worktrees:wave0')
     expect(create?.prompt).toContain('git worktree add /repo-worktrees/T1')
-    const t1Red = rt.calls.find((c) => c.opts?.label === 'dev-implement:red:T1')
+    const t1Red = rt.calls.find((c) => c.opts?.label ?.startsWith('dev-implement:red:T1'))
     expect(t1Red?.prompt).toContain('Work from directory: /repo-worktrees/T1/toolkit')
   })
 
@@ -1158,7 +1249,7 @@ describe('dev-implement snippet-enriched implementer handoff', () => {
     const rt = makeRuntime()
     await wf.run(rt, JSON.stringify(VALID_INPUT))
 
-    const red = rt.calls.find((c) => c.opts?.label === 'dev-implement:red:T2')
+    const red = rt.calls.find((c) => c.opts?.label ?.startsWith('dev-implement:red:T2'))
     expect(red).toBeDefined()
     const prompt = red!.prompt
     // The verbatim quote itself…
@@ -1191,7 +1282,7 @@ describe('dev-implement snippet-enriched implementer handoff', () => {
     const rt = makeRuntime()
     await wf.run(rt, JSON.stringify({ artifact: soloTask(OVERSIZED_SNIPPET) }))
 
-    const red = rt.calls.find((c) => c.opts?.label === 'dev-implement:red:T2')
+    const red = rt.calls.find((c) => c.opts?.label ?.startsWith('dev-implement:red:T2'))
     expect(red).toBeDefined()
     const prompt = red!.prompt
     expect(prompt).toContain('… (snippet truncated)')
@@ -1219,7 +1310,7 @@ describe('dev-implement snippet-enriched implementer handoff', () => {
     const rt = makeRuntime()
     await wf.run(rt, JSON.stringify(VALID_INPUT))
 
-    const red = rt.calls.find((c) => c.opts?.label === 'dev-implement:red:T1')
+    const red = rt.calls.find((c) => c.opts?.label ?.startsWith('dev-implement:red:T1'))
     expect(red).toBeDefined()
     // T1 creates a new file (snippet: '') — no delimiter block, no stale
     // caveat, no stray "undefined" from a careless interpolation.
@@ -1238,7 +1329,7 @@ describe('dev-implement snippet-enriched implementer handoff', () => {
     const rt = makeRuntime()
     await wf.run(rt, JSON.stringify({ artifact: soloTask(FORGED) }))
 
-    const red = rt.calls.find((c) => c.opts?.label === 'dev-implement:red:T2')
+    const red = rt.calls.find((c) => c.opts?.label ?.startsWith('dev-implement:red:T2'))
     expect(red).toBeDefined()
     const prompt = red!.prompt
     // Embedded copies are neutralized…
@@ -1380,7 +1471,7 @@ describe('dev-plan -> dev-implement cross-family snippet contract (lever 1 hando
     const rt = makeRuntime()
     await wf.run(rt, JSON.stringify({ artifact: CROSS_PLAN_ARTIFACT }))
 
-    const red = rt.calls.find((c) => c.opts?.label === 'dev-implement:red:P1')!
+    const red = rt.calls.find((c) => c.opts?.label ?.startsWith('dev-implement:red:P1'))!
     const green = rt.calls.find((c) => c.opts?.label?.startsWith('dev-implement:green:P1'))!
     expect(red).toBeDefined()
     expect(green).toBeDefined()
@@ -1418,7 +1509,7 @@ describe('dev-plan -> dev-implement cross-family snippet contract (lever 1 hando
     const rt = makeRuntime()
     await wf.run(rt, JSON.stringify({ artifact: CROSS_PLAN_ARTIFACT }))
 
-    const red = rt.calls.find((c) => c.opts?.label === 'dev-implement:red:P2')!
+    const red = rt.calls.find((c) => c.opts?.label ?.startsWith('dev-implement:red:P2'))!
     expect(red).toBeDefined()
     // '' means "new code, nothing to quote" — an empty delimiter block (or a
     // stringified undefined) would burn prompt space and confuse the agent.
@@ -1515,7 +1606,7 @@ describe('dev-plan -> dev-implement cross-family snippet contract (lever 1 hando
 
     // The snippet that originated in dev-plan's output reaches the
     // implementer prompts wrapped in the IDENTICAL untrusted delimiters.
-    const red = implRt.calls.find((c) => c.opts?.label === 'dev-implement:red:P1')!
+    const red = implRt.calls.find((c) => c.opts?.label ?.startsWith('dev-implement:red:P1'))!
     expect(red).toBeDefined()
     expect(red.prompt).toContain(CROSS_SNIPPET)
     expect(red.prompt).toContain('----- BEGIN REVIEWER-QUOTED SNIPPET (UNTRUSTED:')

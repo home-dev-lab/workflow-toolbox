@@ -13,14 +13,18 @@ import { describe, expect, it } from 'vitest'
 import {
   annotateAuth,
   checkSmokeResult,
+  classifyAgentFile,
   isAbortError,
+  LaunchTimeoutError,
   launchPrompt,
   launchVerdict,
   parseLaunchText,
+  peelLaunch,
   readInitVersion,
   readTaskNotification,
   readToolResult,
   readWorkflowToolUse,
+  resumePrompt,
   summarize,
 } from '../src/lib.js'
 
@@ -90,13 +94,41 @@ describe('readTaskNotification', () => {
 })
 
 describe('parseLaunchText', () => {
-  it('pulls Task ID and Run ID out of the formatted launch text', () => {
-    const text = 'Workflow launched in background. Task ID: w71kc0tlj\nSummary: x\nRun ID: wf_89363eba-692\n'
-    expect(parseLaunchText(text)).toEqual({ taskId: 'w71kc0tlj', runId: 'wf_89363eba-692' })
+  it('pulls Task ID, Run ID and Transcript dir out of the formatted launch text', () => {
+    const text =
+      'Workflow launched in background. Task ID: w71kc0tlj\nSummary: x\n' +
+      'Transcript dir: /home/u/.claude/projects/slug/sess/subagents/workflows/wf_89363eba-692\nRun ID: wf_89363eba-692\n'
+    expect(parseLaunchText(text)).toEqual({
+      taskId: 'w71kc0tlj',
+      runId: 'wf_89363eba-692',
+      transcriptDir: '/home/u/.claude/projects/slug/sess/subagents/workflows/wf_89363eba-692',
+    })
+  })
+
+  it('returns null for transcriptDir when only that marker is absent (fields are independent)', () => {
+    const text = 'Task ID: w71kc0tlj\nRun ID: wf_89363eba-692\n'
+    expect(parseLaunchText(text)).toEqual({ taskId: 'w71kc0tlj', runId: 'wf_89363eba-692', transcriptDir: null })
   })
 
   it('returns nulls when the markers are absent', () => {
-    expect(parseLaunchText('nothing here')).toEqual({ taskId: null, runId: null })
+    expect(parseLaunchText('nothing here')).toEqual({ taskId: null, runId: null, transcriptDir: null })
+  })
+})
+
+describe('classifyAgentFile', () => {
+  it('returns the agentId for a valid agent transcript filename', () => {
+    expect(classifyAgentFile('agent-abc123.jsonl')).toBe('abc123')
+    expect(classifyAgentFile('agent-wf_89363eba-692.jsonl')).toBe('wf_89363eba-692')
+    expect(classifyAgentFile('agent-A_B-C.jsonl')).toBe('A_B-C')
+  })
+
+  it('returns null for non-transcript siblings', () => {
+    expect(classifyAgentFile('journal.jsonl')).toBeNull()
+    expect(classifyAgentFile('agent-abc123.meta.json')).toBeNull()
+    expect(classifyAgentFile('agent-abc123.json')).toBeNull()
+    expect(classifyAgentFile('agent-.jsonl')).toBeNull() // empty id
+    expect(classifyAgentFile('agent-abc 123.jsonl')).toBeNull() // space not in charset
+    expect(classifyAgentFile('other.jsonl')).toBeNull()
   })
 })
 
@@ -195,6 +227,15 @@ describe('live-runner helpers', () => {
     expect(p).toContain('exactly once')
   })
 
+  it('launchPrompt omits the args clause when no args are given', () => {
+    expect(launchPrompt('/abs/path/wf.js')).not.toContain('args set to')
+  })
+
+  it('launchPrompt embeds args as an exact JSON literal when provided', () => {
+    const p = launchPrompt('/abs/path/wf.js', { topic: 'x', n: 3 })
+    expect(p).toContain('args set to this exact JSON value: {"topic":"x","n":3}')
+  })
+
   it('isAbortError recognizes AbortError by name and by message', () => {
     const named = new Error('whatever')
     named.name = 'AbortError'
@@ -209,5 +250,85 @@ describe('live-runner helpers', () => {
     expect(auth.message).toMatch(/~\/\.claude credentials/)
     const other = new Error('some unrelated failure')
     expect(annotateAuth(other)).toBe(other)
+  })
+
+  it('resumePrompt embeds scriptPath + resumeFromRunId as one exact JSON literal', () => {
+    const p = resumePrompt('/abs/path/wf.js', 'wf_abc123-def')
+    expect(p).toContain(JSON.stringify({ scriptPath: '/abs/path/wf.js', resumeFromRunId: 'wf_abc123-def' }))
+  })
+
+  it('resumePrompt omits the args field entirely when no args are given', () => {
+    const p = resumePrompt('/abs/path/wf.js', 'wf_abc123-def')
+    expect(p).not.toContain('"args"')
+  })
+
+  it('resumePrompt embeds args as an exact JSON literal when provided', () => {
+    const p = resumePrompt('/abs/path/wf.js', 'wf_abc123-def', { topic: 'x', n: 3 })
+    expect(p).toContain(JSON.stringify({ scriptPath: '/abs/path/wf.js', resumeFromRunId: 'wf_abc123-def', args: { topic: 'x', n: 3 } }))
+  })
+
+  it('resumePrompt instructs a single Workflow call, same posture as launchPrompt', () => {
+    const p = resumePrompt('/abs/path/wf.js', 'wf_abc123-def')
+    expect(p).toMatch(/exactly once/)
+  })
+})
+
+describe('peelLaunch', () => {
+  // Build a user tool_result message the way readToolResult expects it.
+  const toolResultMsg = (text: string, isError = false): unknown => ({
+    type: 'user',
+    message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_peel', is_error: isError, content: text }] },
+  })
+  // A finite async iterator over a fixed list (mimics the SDK stream iterator).
+  const iterOf = (items: readonly unknown[]): AsyncIterator<unknown> => {
+    let i = 0
+    return { next: () => Promise.resolve(i < items.length ? { value: items[i++], done: false } : { value: undefined, done: true }) }
+  }
+  const LAUNCH_TEXT =
+    'Workflow launched in background. Task ID: w1\n' +
+    'Transcript dir: /tmp/subagents/workflows/wf_peel-1\nRun ID: wf_peel-1\n'
+
+  it('returns the runId + transcriptDir + toolUseId from the launch tool_result, skipping leading non-results', async () => {
+    const it = iterOf([
+      // The init is SKIPPED as a non-result but its session_id is CAPTURED — the
+      // identity a server needs to resume this session after its process dies
+      // (resume-parity canary 2026-07-08, card #1812476922312000519).
+      { type: 'system', subtype: 'init', session_id: 'sess-4ee409c8' },
+      { type: 'assistant', message: { content: [] } }, // no tool_result — skipped
+      toolResultMsg(LAUNCH_TEXT),
+    ])
+    await expect(peelLaunch(it, 1000)).resolves.toEqual({
+      runId: 'wf_peel-1',
+      transcriptDir: '/tmp/subagents/workflows/wf_peel-1',
+      toolUseId: 'toolu_peel',
+      sessionId: 'sess-4ee409c8',
+    })
+  })
+
+  it('yields sessionId null when no init precedes the launch tool_result', async () => {
+    const it = iterOf([toolResultMsg(LAUNCH_TEXT)])
+    await expect(peelLaunch(it, 1000)).resolves.toMatchObject({ runId: 'wf_peel-1', sessionId: null })
+  })
+
+  it('rejects with LaunchTimeoutError when no tool_result arrives within the deadline', async () => {
+    const neverIter: AsyncIterator<unknown> = { next: () => new Promise<never>(() => {}) }
+    const err = await peelLaunch(neverIter, 30).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(LaunchTimeoutError)
+    expect((err as LaunchTimeoutError).timeoutMs).toBe(30)
+  })
+
+  it('throws when the launch tool_result is an error (syntax rejection)', async () => {
+    const it = iterOf([toolResultMsg('<tool_use_error>Invalid workflow script</tool_use_error>', true)])
+    await expect(peelLaunch(it, 1000)).rejects.toThrow(/rejected/)
+  })
+
+  it('throws when the stream ends before any launch tool_result', async () => {
+    const it = iterOf([{ type: 'system', subtype: 'init' }])
+    await expect(peelLaunch(it, 1000)).rejects.toThrow(/ended before/)
+  })
+
+  it('throws when the tool_result lacks the Run ID / Transcript dir markers', async () => {
+    const it = iterOf([toolResultMsg('launched, but no identifiers here')])
+    await expect(peelLaunch(it, 1000)).rejects.toThrow(/Run ID/)
   })
 })

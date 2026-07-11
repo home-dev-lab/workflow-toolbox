@@ -22,7 +22,7 @@ There are two authoring paths, and the skill picks the right one for the job:
 |------|------------|
 | `SKILL.md` | The Claude-facing skill: file format, the `pipeline` vs `parallel` call, schemas, determinism rules, gotchas, a worked example. |
 | `references/api-reference.md` | The evidence-tiered runtime reference — every global, option, cap, and failure mode. |
-| `references/patterns.md` | The seven orchestration patterns as copy-paste recipes. |
+| `references/patterns.md` | The eight orchestration patterns as copy-paste recipes. |
 | `assets/templates/` | Three starter skeletons: `fan-out`, `pipeline`, `loop`. |
 | `assets/examples/` | Two runnable raw examples, plus a `toolkit/` subdir with four `@workflow-toolbox` composition sources to read. See its own README. |
 | `scripts/validate-workflow.mjs` | The linter — checks a workflow file against the parser's hard rules before you spend a run. |

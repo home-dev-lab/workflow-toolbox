@@ -13,9 +13,11 @@
 // - opts.phase per-call, never rt.phase() (avoids global-state races).
 // - Labels: generateAndFilter:<stage>:<index>.
 
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
-import { warn, makeRecord } from './envelope.js'
+import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
+import { warn, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+
+const STAGE = 'generateAndFilter'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,8 +29,20 @@ export interface GenerateAndFilterOptions<TCand> {
   generatePrompt: (index: number) => string
   generateSchema?: JsonSchema
   generateModel?: ModelAlias
+  /** Per-generate reasoning effort. Omit to inherit the session effort. */
+  generateEffort?: EffortAlias
+  /** Subagent type (Agent tool `agentType`) to route the generate agents
+   *  through — e.g. 'codex:codex-rescue' / 'workflow-toolbox:opencode-verifier'
+   *  for a cross-family model. Omit for the standard Claude subagent. */
+  generateType?: string
   filterPrompt: (candidate: TCand) => string
   filterModel?: ModelAlias
+  /** Per-filter reasoning effort. Omit to inherit the session effort. */
+  filterEffort?: EffortAlias
+  /** Subagent type (Agent tool `agentType`) to route the filter agents
+   *  through — e.g. 'codex:codex-rescue' / 'workflow-toolbox:opencode-verifier'
+   *  for a cross-family model. Omit for the standard Claude subagent. */
+  filterType?: string
   phase?: string
 }
 
@@ -81,7 +95,7 @@ export async function generateAndFilter<TCand = string>(
   rt: WorkflowRuntime,
   options: GenerateAndFilterOptions<TCand>,
 ): Promise<PatternResult<TCand[]>> {
-  const { count, generatePrompt, generateSchema, generateModel, filterPrompt, filterModel, phase } = options
+  const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase } = options
 
   // -------------------------------------------------------------------------
   // Synchronous validation
@@ -92,6 +106,9 @@ export async function generateAndFilter<TCand = string>(
       `generateAndFilter: count must be >= 1, got ${count} — set count to a positive integer`,
     )
   }
+
+  assertAgentTypeOption(STAGE, 'generateType', generateType)
+  assertAgentTypeOption(STAGE, 'filterType', filterType)
 
   // -------------------------------------------------------------------------
   // Mutable counters
@@ -136,11 +153,15 @@ export async function generateAndFilter<TCand = string>(
       phase?: string
       schema?: JsonSchema
       model?: ModelAlias
+      effort?: EffortAlias
+      agentType?: string
     } = {
-      label: `generateAndFilter:generate:${index}`,
+      label: `${STAGE}:generate:${index}`,
       ...(phase !== undefined ? { phase } : {}),
       ...(generateSchema !== undefined ? { schema: generateSchema } : {}),
       ...(generateModel !== undefined ? { model: generateModel } : {}),
+      ...(generateEffort !== undefined ? { effort: generateEffort } : {}),
+      ...(generateType !== undefined ? { agentType: generateType } : {}),
     }
 
     agentsSpawned++
@@ -151,7 +172,10 @@ export async function generateAndFilter<TCand = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0,
-        record: makeRecord(`generateAndFilter:generate:${index}`, false, generateModel !== undefined ? { model: generateModel } : undefined),
+        record: makeRecord(`${STAGE}:generate:${index}`, false, {
+          ...(generateModel !== undefined ? { model: generateModel } : {}),
+          ...(generateEffort !== undefined ? { effort: generateEffort } : {}),
+        }),
       })
       throw new Error('generate returned null')
     }
@@ -159,7 +183,10 @@ export async function generateAndFilter<TCand = string>(
     pendingTrail.push({
       itemIndex: index,
       stageOrder: 0,
-      record: makeRecord(`generateAndFilter:generate:${index}`, true, generateModel !== undefined ? { model: generateModel } : undefined),
+      record: makeRecord(`${STAGE}:generate:${index}`, true, {
+        ...(generateModel !== undefined ? { model: generateModel } : {}),
+        ...(generateEffort !== undefined ? { effort: generateEffort } : {}),
+      }),
     })
 
     return candidate
@@ -177,11 +204,15 @@ export async function generateAndFilter<TCand = string>(
       label: string
       phase?: string
       model?: ModelAlias
+      effort?: EffortAlias
+      agentType?: string
     } = {
       schema: filterSchema,
-      label: `generateAndFilter:filter:${index}`,
+      label: `${STAGE}:filter:${index}`,
       ...(phase !== undefined ? { phase } : {}),
       ...(filterModel !== undefined ? { model: filterModel } : {}),
+      ...(filterEffort !== undefined ? { effort: filterEffort } : {}),
+      ...(filterType !== undefined ? { agentType: filterType } : {}),
     }
 
     agentsSpawned++
@@ -198,7 +229,10 @@ export async function generateAndFilter<TCand = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 1,
-        record: makeRecord(`generateAndFilter:filter:${index}`, false, filterModel !== undefined ? { model: filterModel } : undefined),
+        record: makeRecord(`${STAGE}:filter:${index}`, false, {
+          ...(filterModel !== undefined ? { model: filterModel } : {}),
+          ...(filterEffort !== undefined ? { effort: filterEffort } : {}),
+        }),
       })
       throw new Error('filter returned null')
     }
@@ -207,8 +241,9 @@ export async function generateAndFilter<TCand = string>(
     pendingTrail.push({
       itemIndex: index,
       stageOrder: 1,
-      record: makeRecord(`generateAndFilter:filter:${index}`, true, {
+      record: makeRecord(`${STAGE}:filter:${index}`, true, {
         ...(filterModel !== undefined ? { model: filterModel } : {}),
+        ...(filterEffort !== undefined ? { effort: filterEffort } : {}),
         decision: verdict.pass ? 'pass' : 'fail',
       }),
     })
@@ -281,6 +316,20 @@ export async function generateAndFilter<TCand = string>(
     a.itemIndex !== b.itemIndex ? a.itemIndex - b.itemIndex : a.stageOrder - b.stageOrder,
   )
   const trail: TrailRecord[] = pendingTrail.map(e => e.record)
+
+  // Phase digest: the filter's selectivity — generated vs kept vs rejected
+  // (pass=false) vs failed (null generate/filter calls).
+  // `requested` is the configured count (itemsIn), NOT the number actually produced
+  // (= requested − failed); the breakdown is requested = kept + rejected + failed.
+  emitDigest(rt, {
+    stage: STAGE,
+    counts: {
+      requested: count,
+      kept: value.length,
+      rejected: Math.max(0, rejected),
+      failed: generateFailures + filterFailures,
+    },
+  })
 
   return { value, stats, warnings, trail }
 }

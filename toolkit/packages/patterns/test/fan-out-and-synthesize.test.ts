@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
 import { fanOutAndSynthesize } from '../src/fan-out-and-synthesize.js'
 import type { FanOutAndSynthesizeOptions } from '../src/fan-out-and-synthesize.js'
 
@@ -40,10 +40,64 @@ describe('fanOutAndSynthesize — config validation', () => {
 })
 
 // ---------------------------------------------------------------------------
+// agentType routing (taskType / synthesisType) — per-role cross-family routing
+// ---------------------------------------------------------------------------
+
+describe('fanOutAndSynthesize — agentType routing', () => {
+  it('omits agentType on every call when neither taskType nor synthesisType is set', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'ok' })
+    await fanOutAndSynthesize(rt, makeOptions())
+    expect(rt.calls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('threads taskType to the fan-out task agents only (not synthesis)', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'ok' })
+    await fanOutAndSynthesize(rt, makeOptions({ taskType: 'codex:codex-rescue' }))
+    const taskCalls = rt.calls.filter((c) => !isSynthesisCall(c.opts?.label))
+    const synthCalls = rt.calls.filter((c) => isSynthesisCall(c.opts?.label))
+    expect(taskCalls.length).toBe(3)
+    expect(taskCalls.every((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(true)
+    expect(synthCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('threads synthesisType to the synthesis agent only (not the tasks)', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'ok' })
+    await fanOutAndSynthesize(rt, makeOptions({ synthesisType: 'workflow-toolbox:opencode-verifier' }))
+    const taskCalls = rt.calls.filter((c) => !isSynthesisCall(c.opts?.label))
+    const synthCalls = rt.calls.filter((c) => isSynthesisCall(c.opts?.label))
+    expect(synthCalls.length).toBe(1)
+    expect(synthCalls.every((c) => c.opts?.agentType === 'workflow-toolbox:opencode-verifier')).toBe(true)
+    expect(taskCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('rejects an empty or whitespace-only taskType', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'ok' })
+    await expect(fanOutAndSynthesize(rt, makeOptions({ taskType: '' }))).rejects.toThrow(/taskType/)
+    await expect(fanOutAndSynthesize(rt, makeOptions({ taskType: '   ' }))).rejects.toThrow(/taskType/)
+  })
+
+  it('rejects an empty or whitespace-only synthesisType', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'ok' })
+    await expect(fanOutAndSynthesize(rt, makeOptions({ synthesisType: '' }))).rejects.toThrow(/synthesisType/)
+    await expect(fanOutAndSynthesize(rt, makeOptions({ synthesisType: '   ' }))).rejects.toThrow(/synthesisType/)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Happy path
 // ---------------------------------------------------------------------------
 
 describe('fanOutAndSynthesize — happy path', () => {
+  it('emits a phase digest with the synthesis handoff output + task counts', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => (isSynthesisCall(opts?.label) ? 'synthesis-result' : 'part-result'),
+    })
+    await fanOutAndSynthesize(rt, makeOptions())
+    const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'fanOutAndSynthesize')
+    expect(digest?.counts).toEqual({ tasks: 3, completed: 3 })
+    expect(digest?.output).toBe('synthesis from 3/3 tasks')
+  })
+
   it('returns correct value, exact stats, and empty warnings', async () => {
     const rt = new FakeRuntime({
       onAgent: ({ opts }) => {
@@ -477,5 +531,84 @@ describe('fanOutAndSynthesize — schema/model forwarding', () => {
 
     const synthCall = rt.calls.find(c => isSynthesisCall(c.opts?.label))
     expect(synthCall?.opts?.model).toBe('opus')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Effort forwarding
+// ---------------------------------------------------------------------------
+
+describe('fanOutAndSynthesize — effort forwarding', () => {
+  it('forwards taskEffort to task agents and synthesisEffort to synthesis agent', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isSynthesisCall(opts?.label)) return 'done'
+        return 'part'
+      },
+    })
+
+    await fanOutAndSynthesize(rt, makeOptions({ taskEffort: 'low', synthesisEffort: 'high' }))
+
+    const taskCalls = rt.calls.filter(c => !isSynthesisCall(c.opts?.label))
+    const synthCall = rt.calls.find(c => isSynthesisCall(c.opts?.label))
+
+    expect(taskCalls.every(c => c.opts?.effort === 'low')).toBe(true)
+    expect(synthCall?.opts?.effort).toBe('high')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Effort in the audit trail
+// ---------------------------------------------------------------------------
+
+describe('fanOutAndSynthesize — trail: effort override', () => {
+  it('records effort field on task records when taskEffort is set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isSynthesisCall(opts?.label)) return 'synth'
+        return 'part'
+      },
+    })
+
+    const result = await fanOutAndSynthesize(rt, makeOptions({ taskEffort: 'low' }))
+
+    const trail = result.trail!
+    expect(trail[0]!.effort).toBe('low')
+    expect(trail[1]!.effort).toBe('low')
+    expect(trail[2]!.effort).toBe('low')
+    // synthesis record has no effort override
+    expect(trail[3]!).not.toHaveProperty('effort')
+  })
+
+  it('records effort field on synthesis record when synthesisEffort is set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isSynthesisCall(opts?.label)) return 'synth'
+        return 'part'
+      },
+    })
+
+    const result = await fanOutAndSynthesize(rt, makeOptions({ synthesisEffort: 'high' }))
+
+    const trail = result.trail!
+    // task records have no effort override
+    expect(trail[0]!).not.toHaveProperty('effort')
+    // synthesis record carries effort
+    expect(trail[3]!.effort).toBe('high')
+  })
+
+  it('omits effort field when no effort override is set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isSynthesisCall(opts?.label)) return 'synth'
+        return 'part'
+      },
+    })
+
+    const result = await fanOutAndSynthesize(rt, makeOptions())
+
+    for (const rec of result.trail!) {
+      expect(rec).not.toHaveProperty('effort')
+    }
   })
 })

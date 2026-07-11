@@ -46,9 +46,18 @@ afterEach(() => {
   }
 })
 
+// TypeScript's internal SourceFile#fileName is always forward-slash-normalized
+// (even on win32), while `snippetFile` comes from Node's path.join and uses
+// the native separator — compare after normalizing both, or the filter drops
+// every diagnostic on Windows and this check silently becomes a no-op there.
+function toPosix(p: string): string {
+  return p.split(path.sep).join('/')
+}
+
 function getDiagnostics(snippetFile: string): ts.Diagnostic[] {
   const program = ts.createProgram([snippetFile, GLOBALS_DTS], COMPILER_OPTIONS)
-  return ts.getPreEmitDiagnostics(program).filter(d => d.file?.fileName === snippetFile) as ts.Diagnostic[]
+  const target = toPosix(snippetFile)
+  return ts.getPreEmitDiagnostics(program).filter(d => d.file !== undefined && toPosix(d.file.fileName) === target) as ts.Diagnostic[]
 }
 
 // ---------------------------------------------------------------------------

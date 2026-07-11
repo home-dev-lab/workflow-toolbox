@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { BEST_MODEL, FakeRuntime } from '@workflow-toolbox/runtime'
+import { BEST_MODEL, FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
 import { adversarialVerification } from '../src/adversarial-verification.js'
 import type { AdversarialVerificationOptions, VerifierVote, Verdict, ClaimVerdict } from '../src/adversarial-verification.js'
 // Convention: new public types must also be re-exported from the package index.
@@ -1189,5 +1189,133 @@ describe('adversarialVerification — votesPerClaim × maxVerifyClaims', () => {
     expect(result.value[2]?.verdict).toBe('unverified-by-cap')
     expect(result.value[3]?.verdict).toBe('unverified-by-cap')
     expect(result.value[2]?.votes).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase digest — partition invariant.
+//
+// The emitted [wt:digest] counts must account for EVERY claim: the five verdict
+// buckets partition `value` (one verdict per claim, incl. cap-truncated), so they
+// always sum to `claims`. This is the load-bearing property of the widened digest
+// (a consumer can render the true outcome of every claim, none hidden). Exercised
+// across a run that hits all five outcomes at once.
+// ---------------------------------------------------------------------------
+
+describe('adversarialVerification — phase digest partition invariant', () => {
+  it('the five buckets span every outcome (incl. cap) and sum to claims', async () => {
+    // 5 claims, cap 4 → one of each verdict: c0 confirmed, c1 refuted, c2 partially-
+    // confirmed, c3 unverifiable (all verifiers null), c4 unverified-by-cap. votes:1
+    // keeps each kept claim's verdict crisp.
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label.startsWith('adversarialVerification:verify:0:')) return confirmedVote
+        if (label.startsWith('adversarialVerification:verify:1:')) return refutedVote
+        if (label.startsWith('adversarialVerification:verify:2:')) return partialVote
+        if (label.startsWith('adversarialVerification:verify:3:')) return null
+        return confirmedVote
+      },
+    })
+
+    await adversarialVerification(rt, makeOptions({
+      claims: ['c0', 'c1', 'c2', 'c3', 'c4'],
+      votes: 1,
+      refuteThreshold: 1,
+      maxVerifyClaims: 4,
+    }))
+
+    const line = rt.logs.find((l) => l.startsWith('[wt:digest]'))
+    expect(line).toBeDefined()
+    const counts = parseDigest(line!)?.counts
+    expect(counts).toEqual({
+      claims: 5,
+      confirmed: 1,
+      refuted: 1,
+      partiallyConfirmed: 1,
+      unverifiable: 1,
+      unverifiedByCap: 1,
+    })
+    // The invariant itself, independent of the exact values above.
+    const c = counts!
+    const sum =
+      (c['confirmed'] ?? 0) +
+      (c['refuted'] ?? 0) +
+      (c['partiallyConfirmed'] ?? 0) +
+      (c['unverifiable'] ?? 0) +
+      (c['unverifiedByCap'] ?? 0)
+    expect(sum).toBe(c['claims'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Effort forwarding
+// ---------------------------------------------------------------------------
+
+describe('adversarialVerification — effort forwarding', () => {
+  it('forwards effort to all verifier agent calls when set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: () => confirmedVote,
+    })
+
+    await adversarialVerification(rt, makeOptions({
+      claims: ['c0'],
+      votes: 2,
+      refuteThreshold: 1,
+      effort: 'high',
+    }))
+
+    expect(rt.calls.every(c => c.opts?.effort === 'high')).toBe(true)
+  })
+
+  it('omits effort from verifier calls when not set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: () => confirmedVote,
+    })
+
+    await adversarialVerification(rt, makeOptions({
+      claims: ['c0'],
+      votes: 1,
+      refuteThreshold: 1,
+    }))
+
+    expect(rt.calls.every(c => c.opts?.effort === undefined)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Effort in the audit trail
+// ---------------------------------------------------------------------------
+
+describe('adversarialVerification — trail: effort field', () => {
+  it('records effort on every verifier record when set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: () => confirmedVote,
+    })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'],
+      votes: 1,
+      refuteThreshold: 1,
+      effort: 'high',
+    }))
+
+    const trail = result.trail!
+    expect(trail[0]!.effort).toBe('high')
+  })
+
+  it('omits effort from verifier records when not set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: () => confirmedVote,
+    })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'],
+      votes: 1,
+      refuteThreshold: 1,
+    }))
+
+    const trail = result.trail!
+    expect(trail[0]).not.toHaveProperty('effort')
   })
 })

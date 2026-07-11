@@ -60,12 +60,27 @@
 //   to let agents modify autonomously — NOT at an untrusted third-party PR
 //   checked out locally.
 
-import { defineWorkflow } from '@workflow-toolbox/build/define'
-import { adversarialVerification, loopUntilDone, warn } from '@workflow-toolbox/patterns'
-import type { PatternStats, VerifiedClaim } from '@workflow-toolbox/patterns'
+import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
+import { adversarialVerification, collectTrail, loopUntilDone, warn } from '@workflow-toolbox/patterns'
+import type { PatternStats, TrailRecord, VerifiedClaim } from '@workflow-toolbox/patterns'
 import { BEST_MODEL } from '@workflow-toolbox/runtime'
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
+import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
+import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import type { FromSchema } from 'json-schema-to-ts'
+
+// ---------------------------------------------------------------------------
+// Per-stage effort defaults (Class B/C launch-time tuning — see parseConfig).
+// A launch-time `args.effort.<role>` override (parsed into `input.effort`) can
+// retune any of these without a source edit, via resolveEffort. 'verify' and
+// 'check' are clamped to a 'high' FLOOR (resolveVerifierEffort) — an override
+// may only RAISE them, mirroring the BEST_MODEL model-floor guardrail already
+// pinned at their call sites.
+// ---------------------------------------------------------------------------
+const REVIEW_EFFORT: EffortAlias = 'high'          // Review: per-dimension reviewers
+const CONSOLIDATE_EFFORT: EffortAlias = 'medium'   // Review: consolidation agent
+const VERIFY_EFFORT_DEFAULT: EffortAlias = 'high'  // Verify: adversarialVerification (floor 'high')
+const FIX_EFFORT: EffortAlias = 'high'             // Fix: per-iteration fixer
+const CHECK_EFFORT_DEFAULT: EffortAlias = 'high'   // Fix: fresh-evidence checker (floor 'high')
 
 // Model tier for the consolidation agent. The merge is mechanical (dedup +
 // keep-highest-severity over reviewer-provided text) and triple-netted: the
@@ -139,6 +154,22 @@ export interface DevReviewFixInput {
    *  positives, so the noise does not reach the fixer (the 2026-06-15 reviewer
    *  A/B that motivated this knob). */
   reviewerType: string | null
+  /** Optional subagent type to route every Verify verifier through — e.g.
+   *  'codex:codex-rescue' for a cross-model (GPT) verifier. Genuine decorrelation
+   *  on the refute-first stage that gates which findings reach the fixer; the
+   *  reviewers/fixer stay on the session model (only the skeptic crosses models —
+   *  what `withAgentDefaults` cannot express, being all-or-nothing). null = OMIT,
+   *  standard same-model verifier. Local-machine-only; not portable. */
+  verifierType: string | null
+  /** Optional per-ROLE reasoning-effort overrides (Class B/C, parsed by the
+   *  shared `parseConfig` helper from `args.effort`), e.g.
+   *  `args: { projectDir, testCommand, effort: { fix: 'xhigh' } }`. Role keys:
+   *  'review', 'consolidate', 'verify', 'fix', 'check'. A role's value may
+   *  also be the literal 'auto' (keep THIS role's own committed default).
+   *  null = no overrides. Resolved per-stage via resolveEffort;
+   *  'verify'/'check' are additionally clamped to a 'high' floor via
+   *  resolveVerifierEffort. */
+  effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +323,9 @@ interface DevReviewFixOutput {
   }
   /** Pattern/phase envelope stats: review (hand-built), verify, fix. */
   stats: Record<string, PatternStats>
+  /** Combined Verify+Fix trail (collectTrail). Review is a hand-rolled fan-out
+   *  (see header), not a pattern, so it contributes no trail. */
+  envelope: { trail: TrailRecord[] }
   warnings: readonly string[]
 }
 
@@ -477,6 +511,22 @@ function parseInput(raw: unknown): DevReviewFixInput {
     reviewerType = obj['reviewerType']
   }
 
+  let verifierType: string | null = null
+  if (obj['verifierType'] !== undefined && obj['verifierType'] !== null) {
+    if (typeof obj['verifierType'] !== 'string' || obj['verifierType'].trim().length === 0) {
+      throw new Error(
+        'dev-review-fix: "verifierType" must be a non-empty subagent-type string ' +
+        '(e.g. "codex:codex-rescue") — omit it for the standard same-model Verify verifier',
+      )
+    }
+    verifierType = obj['verifierType']
+  }
+
+  // Optional Class B/C per-role effort overrides, validated by the shared
+  // parseConfig helper. It reads only the recognized `effort` slice and
+  // IGNORES dev-review-fix's bespoke projectDir/testCommand/fixer*/etc. keys.
+  const effort = parseConfig(obj).effort ?? null
+
   return {
     projectDir,
     testCommand,
@@ -492,6 +542,8 @@ function parseInput(raw: unknown): DevReviewFixInput {
     fixerModel,
     fixerType,
     reviewerType,
+    effort,
+    verifierType,
   }
 }
 
@@ -588,6 +640,15 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
   const warnings: string[] = []
   const stats: Record<string, PatternStats> = {}
 
+  // Resolve each stage's effort ONCE: a launch-time `args.effort.<role>`
+  // override wins when valid, else the stage-class default declared above.
+  // 'verify'/'check' are additionally floored at 'high' — see resolveVerifierEffort.
+  const reviewEffort = resolveEffort(input.effort?.['review'], REVIEW_EFFORT)
+  const consolidateEffort = resolveEffort(input.effort?.['consolidate'], CONSOLIDATE_EFFORT)
+  const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
+  const fixEffort = resolveEffort(input.effort?.['fix'], FIX_EFFORT)
+  const checkEffort = resolveVerifierEffort(input.effort?.['check'], CHECK_EFFORT_DEFAULT)
+
   // Reduced review coverage must be loud: in the narrator, the journal AND the
   // report (dev-full relays child warnings, so autonomous runs surface it too).
   if (input.adaptationNote !== null) warn(rt, warnings, input.adaptationNote)
@@ -624,6 +685,8 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
         `Read enough surrounding code to judge each issue in context. Report ONLY issues ` +
         `introduced or made worse by this change set — not pre-existing ones. An empty ` +
         `findings list is a valid answer for a clean change set.\n` +
+        `Inspect via READ-ONLY git only — \`git show <sha>:<path>\`, \`git diff <range>\`, \`git log\` — ` +
+        `NEVER \`git checkout\` / \`git reset\` / \`git restore\` / \`git clean\` (they mutate the shared working tree and will be denied).\n` +
         `Return { "findings": [{ "file": "<path>", "location": "<line range, e.g. "40-55", ` +
         `or symbol — precise enough that one targeted read reaches the issue>", ` +
         `"summary": "<one line>", "detail": "<what is wrong and why it matters>", ` +
@@ -635,6 +698,7 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
           schema: DIMENSION_FINDINGS_SCHEMA,
           label: `dev-review-fix:review:${dimension}`,
           phase: 'Review',
+          effort: reviewEffort,
           // Optional specialist subagent type (reviewerType knob). Omitted when
           // null → standard subagent (default). Routes the dimension reviewers
           // ONLY; verifiers/fixer/checker stay generic. Runtime fails fast on an
@@ -683,6 +747,7 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
       findings: [],
       tallies: { findings: 0, confirmed: 0, rejected: 0, unverified: 0, fixed: 0, unfixed: 0 },
       stats,
+      envelope: { trail: [] },
       warnings,
     }
   }
@@ -717,6 +782,7 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
       label: 'dev-review-fix:consolidate',
       phase: 'Review',
       model: MERGE_MODEL,
+      effort: consolidateEffort,
     },
   )
   reviewStats.agentsSpawned += 1
@@ -802,6 +868,8 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
     // verdict-deciding medium/high keep the full 2-of-3 quorum.
     votesPerClaim: (f) => (f.severity === 'low' ? 1 : 3),
     maxVerifyClaims: 12,
+    effort: verifyEffort,
+    ...(input.verifierType !== null ? { verifierType: input.verifierType } : {}),
     phase: 'Verify',
   })
 
@@ -872,6 +940,9 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
     green: null,
     checkedAfterLastFix: true,
   }
+  // Hoisted so the final envelope.trail can fold it in — stays null (skipped,
+  // not fabricated) when the fix queue is empty (nothing confirmed to fix).
+  let fixLoopResult: Awaited<ReturnType<typeof loopUntilDone<FixLoopState>>> | null = null
 
   if (fixQueue.length > 0) {
     const queueIds = new Set(fixQueue.map((vc) => vc.claim.id))
@@ -905,7 +976,7 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
     const queueBlock = JSON.stringify(fixQueue.map((vc) => queueEntry(vc, false)))
     const queueBlockWithSnippets = JSON.stringify(fixQueue.map((vc) => queueEntry(vc, true)))
 
-    const loopResult = await loopUntilDone<FixLoopState>(rt, {
+    const loopResult = fixLoopResult = await loopUntilDone<FixLoopState>(rt, {
       initial: fixState,
       maxIterations: input.maxFixIterations,
       body: async (rtBody, state, iteration) => {
@@ -941,6 +1012,7 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
             // fixerModel knob (default 'sonnet'). The checker below is pinned
             // to BEST_MODEL.
             model: input.fixerModel,
+            effort: fixEffort,
             // Optional specialist subagent type (fixerType knob). Omitted when
             // null → standard subagent (default). Routes the fixer ONLY; the
             // runtime fails fast on an unknown type.
@@ -982,6 +1054,7 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
             // verifier stays strong independent of the session model precisely
             // because the fixer above may be tiered down.
             model: BEST_MODEL,
+            effort: checkEffort,
           },
         )
         if (check === null) {
@@ -1102,7 +1175,15 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
     )
   }
 
-  return { goal: input.goal, suiteGreen: fixState.green, findings: reportFindings, tallies, stats, warnings }
+  return {
+    goal: input.goal,
+    suiteGreen: fixState.green,
+    findings: reportFindings,
+    tallies,
+    stats,
+    envelope: { trail: collectTrail(verifyResult, fixLoopResult) },
+    warnings,
+  }
 }
 
 // ---------------------------------------------------------------------------

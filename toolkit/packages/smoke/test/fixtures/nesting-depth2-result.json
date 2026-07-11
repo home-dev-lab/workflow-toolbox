@@ -1,0 +1,29 @@
+{
+  "summary": "nesting canary — depth-1 positive control, runs the child",
+  "agentCount": 0,
+  "logs": [
+    "▸ running dynamic workflow wt-canary-nest-child",
+    "▸ wt-canary-nest-child done"
+  ],
+  "result": {
+    "marker": "wt-canary-nest-child",
+    "grandchildRejected": true,
+    "rejectionMessage": "workflow() cannot be called from within a child workflow — nesting is limited to one level. Inline the inner script or call its agents directly.",
+    "grandchildResult": null
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "x"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "▸ wt-canary-nest-child",
+      "kind": "child"
+    }
+  ],
+  "totalTokens": 0,
+  "totalToolCalls": 0
+}

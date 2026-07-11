@@ -44,13 +44,25 @@
 //   with resumeFromRunId after fixing the root cause — completed steps replay
 //   from cache and only failed/dropped steps re-run.
 
-import { defineWorkflow } from '@workflow-toolbox/build/define'
+import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
 // warn() is envelope infrastructure (record + live rt.log), not a pattern —
 // using it does not change this example's deliberate L0-only composition.
 import { warn } from '@workflow-toolbox/patterns'
 import { BEST_MODEL } from '@workflow-toolbox/runtime'
-import type { WorkflowRuntime, JsonSchema, ModelAlias } from '@workflow-toolbox/runtime'
+import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
+import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import type { FromSchema } from 'json-schema-to-ts'
+
+// ---------------------------------------------------------------------------
+// Per-stage effort defaults (Class B/C launch-time tuning — see parseConfig).
+// A launch-time `args.effort.<role>` override (parsed into `input.effort`) can
+// retune any of these without a source edit, via resolveEffort. 'check' is
+// clamped to a 'high' FLOOR (resolveVerifierEffort) — an override may only
+// RAISE it, mirroring the BEST_MODEL model-floor guardrail already pinned at
+// its call site.
+// ---------------------------------------------------------------------------
+const EXECUTE_EFFORT: EffortAlias = 'high'         // Execute: per-step mutating executor
+const CHECK_EFFORT_DEFAULT: EffortAlias = 'high'   // Check: fresh-evidence checker (floor 'high')
 
 // ---------------------------------------------------------------------------
 // Input contract — the approved plan artifact from monorepo-refactor-plan
@@ -82,6 +94,14 @@ export interface MonorepoRefactorExecuteInput {
    *  The single-pass execute→check (no retry loop) plus the human checkpoint
    *  before these mutations land bound the downside. */
   executeModel: ModelAlias
+  /** Optional per-ROLE reasoning-effort overrides (Class B/C, parsed by the
+   *  shared `parseConfig` helper from `args.effort`), e.g.
+   *  `args: { goal, plan, effort: { execute: 'xhigh' } }`. Role keys: 'execute',
+   *  'check'. A role's value may also be the literal 'auto' (keep THIS role's
+   *  own committed default). null = no overrides. Resolved per-stage via
+   *  resolveEffort; 'check' is additionally clamped to a 'high' floor via
+   *  resolveVerifierEffort. */
+  effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +271,11 @@ function parseInput(raw: unknown): MonorepoRefactorExecuteInput {
     executeModel = obj['executeModel']
   }
 
+  // Optional Class B/C per-role effort overrides, validated by the shared
+  // parseConfig helper. It reads only the recognized `effort` slice and
+  // IGNORES this workflow's bespoke goal/plan/executeModel keys.
+  const effort = parseConfig(obj).effort ?? null
+
   return {
     goal: obj['goal'],
     plan: {
@@ -258,6 +283,7 @@ function parseInput(raw: unknown): MonorepoRefactorExecuteInput {
       steps: parsedSteps,
     },
     executeModel,
+    effort,
   }
 }
 
@@ -267,6 +293,12 @@ function parseInput(raw: unknown): MonorepoRefactorExecuteInput {
 
 async function run(rt: WorkflowRuntime, input: MonorepoRefactorExecuteInput): Promise<MonorepoRefactorExecuteOutput> {
   const warnings: string[] = []
+
+  // Resolve each stage's effort ONCE: a launch-time `args.effort.<role>`
+  // override wins when valid, else the stage-class default declared above.
+  // 'check' is additionally floored at 'high' — see resolveVerifierEffort.
+  const executeEffort = resolveEffort(input.effort?.['execute'], EXECUTE_EFFORT)
+  const checkEffort = resolveVerifierEffort(input.effort?.['check'], CHECK_EFFORT_DEFAULT)
 
   // -------------------------------------------------------------------------
   // Phases 'Execute' + 'Check' — rt.pipeline(steps, executeStage, checkStage)
@@ -314,6 +346,7 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorExecuteInput): Pr
         // High-volume mutating execution stage — tiered by the executeModel
         // knob (default 'sonnet'). The checker below is pinned to BEST_MODEL.
         model: input.executeModel,
+        effort: executeEffort,
         // Required for parallel mutating agents (arch §8 Risk): each executor
         // gets its own isolated working tree, so concurrent mutations cannot
         // corrupt each other. Worktrees are expensive (per-agent setup) — use
@@ -345,6 +378,8 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorExecuteInput): Pr
       `IMPORTANT: Do NOT trust the executor self-report above. Read the actual diff ` +
       `for ${data.step.file} and run the relevant tests. Re-derive from first principles ` +
       `whether the change was actually applied correctly.\n` +
+      `Inspect the diff via READ-ONLY git only — \`git show <sha>:<path>\`, \`git diff <range>\`, \`git log\` — ` +
+      `NEVER \`git checkout\` / \`git reset\` / \`git restore\` / \`git clean\` (they mutate the shared working tree and will be denied).\n` +
       `Return { "verified": true|false, "evidence": "<what you found in the diff/tests>" }`,
       {
         schema: CHECK_RESULT_SCHEMA,
@@ -355,6 +390,7 @@ async function run(rt: WorkflowRuntime, input: MonorepoRefactorExecuteInput): Pr
         // stays strong independent of the session model precisely because the
         // executor above may be tiered down.
         model: BEST_MODEL,
+        effort: checkEffort,
       },
     )
 

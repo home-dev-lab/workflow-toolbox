@@ -3,7 +3,9 @@
 // SANDBOX-PURE CONSTRAINT: this file is bundled into workflow artifacts that
 // run inside the Claude Code workflow sandbox. The sandbox has no Node.js
 // APIs, no filesystem, no require(), no dynamic imports. Therefore:
-//   • No imports except type-only imports from @workflow-toolbox/runtime (erased at emit).
+//   • Imports from @workflow-toolbox/runtime are type-only (erased at emit) —
+//     with one deliberate value exception: withPromptTags, itself sandbox-pure
+//     (primitive JS only), bundled into the artifact by esbuild.
 //   • No `node:` imports, no `process`, no `Buffer`, no esbuild.
 //   • All validation is synchronous and uses only primitive JS operations.
 //
@@ -17,7 +19,8 @@
 //   cast) → def.run(rt, input). parseInput errors propagate untouched — the
 //   caller-supplied validator owns its error messages (fail-fast input guard).
 
-import type { WorkflowRuntime } from '@workflow-toolbox/runtime'
+import type { WorkflowRuntime, ModelAlias, EffortAlias, AgentDefaults } from '@workflow-toolbox/runtime'
+import { withPromptTags } from '@workflow-toolbox/runtime'
 
 // ---------------------------------------------------------------------------
 // WorkflowMeta — the static descriptor every workflow must declare
@@ -165,8 +168,168 @@ export function defineWorkflow<TInput = unknown, TOut = unknown>(def: {
         ? def.parseInput(normalized)
         : (normalized as TInput)
 
-      // Step 3: delegate to the workflow body
-      return def.run(rt, input)
+      // Step 3: delegate to the workflow body. rt is wrapped with
+      // withPromptTags so every labeled/phased agent call carries the
+      // observe-facing wt-meta marker line (live agent→phase assignment for
+      // attached runs) — patterns and plain rt.agent() calls alike.
+      return def.run(withPromptTags(rt), input)
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// parseConfig — launch-time tuning-config normalizer (Class B/C convention)
+//
+// Validates the conventional tuning envelope a workflow author threads from
+// `args` into a typed WorkflowConfig. SANDBOX-PURE (only primitive JS; the
+// runtime imports above are type-only, erased at emit). Two policies:
+//   • UNRECOGNIZED top-level keys are IGNORED — so a workflow can pass its own
+//     bespoke args next to the tuning slices (e.g. { target, models:{…} }) and
+//     parseConfig reads `models`, leaving `target` to the author's own parser.
+//   • Recognized slices are validated STRICTLY; a bad value throws an actionable
+//     message (fail-fast, same discipline as a parseInput guard).
+//
+// `perAgent` is a FIXED shape (the AgentDefaults knobs) — unknown keys there ARE
+// rejected (typo-catching where we can afford it). The role maps (`models` /
+// `effort` / `agentTypes` / `sizing`) have author-defined role keys, so only
+// their VALUES are validated, never the key set.
+// ---------------------------------------------------------------------------
+
+/** A per-ROLE effort override value: one of the five tiers, or the sentinel
+ *  `'auto'` meaning "use this role's own stage-class default" (resolved by
+ *  the composition via `resolveEffort`/`resolveVerifierEffort` from
+ *  `@workflow-toolbox/std` — parseConfig only validates the token, it has no
+ *  notion of what a role's default IS). Scoped to the `effort` role map ONLY:
+ *  `perAgent.effort` (Class A) stays the strict 5-tier `EffortAlias` — it is a
+ *  blanket default with no per-role resolution step downstream, so 'auto'
+ *  would reach the sandbox as a literal (which does not understand it). */
+export type EffortRoleValue = EffortAlias | 'auto'
+
+/** The conventional launch-time tuning envelope. Feed `perAgent` straight to
+ *  withAgentDefaults (Class A); spread the role maps into pattern options
+ *  (Class B/C), e.g. `judgeModel: config.models?.judge`. */
+export interface WorkflowConfig {
+  /** Class-A blanket per-agent defaults (model/effort/agentType/isolation/stallMs). */
+  perAgent?: AgentDefaults
+  /** Class-B role→model map. Role keys are author-defined (e.g. attempt, judge). */
+  models?: Readonly<Record<string, ModelAlias>>
+  /** role→effort map. Values may be 'auto' — see {@link EffortRoleValue}. */
+  effort?: Readonly<Record<string, EffortRoleValue>>
+  /** role→agentType map. */
+  agentTypes?: Readonly<Record<string, string>>
+  /** Class-C role→numeric-knob map (votes, judgeCount, count, maxIterations, …).
+   *  Structured knobs like scoreAndRank's `cutoff` are pattern-specific and stay
+   *  the author's bespoke arg — they are intentionally out of this generic map. */
+  sizing?: Readonly<Record<string, number>>
+}
+
+// Local effort allowlist for runtime validation. Annotated `readonly EffortAlias[]`
+// so a value that is NOT a valid EffortAlias fails to compile; keep it in sync if
+// the EffortAlias union ever grows (a new alias missing here is merely rejected).
+const EFFORTS: readonly EffortAlias[] = ['low', 'medium', 'high', 'xhigh', 'max']
+// effort role-map allowlist = the 5 tiers + the 'auto' sentinel (role-map ONLY —
+// see EffortRoleValue; perAgent.effort keeps the strict EFFORTS list via asEffort).
+// A literal array, NOT `[...EFFORTS, 'auto']`: spread syntax invokes the iterable
+// protocol (a method call), which a bundler's tree-shaker cannot statically prove
+// side-effect-free — the same class of issue as a module-scope `new Set(...)` (see
+// packages/std/src/resolve-effort.ts). An unreferenced spread-built array survives
+// into consumers that only import THIS file's OTHER exports (observed live via the
+// wt-fixture-hello golden bundle). A plain literal has no such side effect.
+const EFFORT_ROLE_VALUES: readonly EffortRoleValue[] = ['low', 'medium', 'high', 'xhigh', 'max', 'auto']
+const PER_AGENT_KEYS = ['model', 'effort', 'agentType', 'isolation', 'stallMs'] as const
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+function asNonEmptyString(v: unknown, where: string): string {
+  if (typeof v !== 'string' || v.trim().length === 0) {
+    throw new Error(`parseConfig: ${where} must be a non-empty string, got ${JSON.stringify(v)}`)
+  }
+  return v
+}
+
+function asEffort(v: unknown, where: string): EffortAlias {
+  if (typeof v !== 'string' || !(EFFORTS as readonly string[]).includes(v)) {
+    throw new Error(`parseConfig: ${where} must be one of ${EFFORTS.join(', ')}, got ${JSON.stringify(v)}`)
+  }
+  return v as EffortAlias
+}
+
+function asEffortRoleValue(v: unknown, where: string): EffortRoleValue {
+  if (typeof v !== 'string' || !(EFFORT_ROLE_VALUES as readonly string[]).includes(v)) {
+    throw new Error(`parseConfig: ${where} must be one of ${EFFORT_ROLE_VALUES.join(', ')}, got ${JSON.stringify(v)}`)
+  }
+  return v as EffortRoleValue
+}
+
+function parsePerAgent(raw: unknown): AgentDefaults {
+  if (!isRecord(raw)) throw new Error(`parseConfig: perAgent must be an object, got ${raw === null ? 'null' : typeof raw}`)
+  for (const key of Object.keys(raw)) {
+    if (!(PER_AGENT_KEYS as readonly string[]).includes(key)) {
+      throw new Error(`parseConfig: unknown perAgent key "${key}" — expected one of ${PER_AGENT_KEYS.join(', ')}`)
+    }
+  }
+  const out: AgentDefaults = {}
+  if (raw.model !== undefined) out.model = asNonEmptyString(raw.model, 'perAgent.model')
+  if (raw.effort !== undefined) out.effort = asEffort(raw.effort, 'perAgent.effort')
+  if (raw.agentType !== undefined) out.agentType = asNonEmptyString(raw.agentType, 'perAgent.agentType')
+  if (raw.isolation !== undefined) {
+    if (raw.isolation !== 'worktree') {
+      throw new Error(`parseConfig: perAgent.isolation must be 'worktree' when set, got ${JSON.stringify(raw.isolation)}`)
+    }
+    out.isolation = 'worktree'
+  }
+  if (raw.stallMs !== undefined) {
+    const n = raw.stallMs
+    if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {
+      throw new Error(`parseConfig: perAgent.stallMs must be a positive finite number, got ${JSON.stringify(n)}`)
+    }
+    out.stallMs = n
+  }
+  return out
+}
+
+function parseStringMap(raw: unknown, where: string): Record<string, string> {
+  if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? 'null' : typeof raw}`)
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(raw)) out[k] = asNonEmptyString(v, `${where}.${k}`)
+  return out
+}
+
+function parseEffortMap(raw: unknown): Record<string, EffortRoleValue> {
+  if (!isRecord(raw)) throw new Error(`parseConfig: effort must be an object, got ${raw === null ? 'null' : typeof raw}`)
+  const out: Record<string, EffortRoleValue> = {}
+  for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`)
+  return out
+}
+
+function parseNumberMap(raw: unknown, where: string): Record<string, number> {
+  if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? 'null' : typeof raw}`)
+  const out: Record<string, number> = {}
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      throw new Error(`parseConfig: ${where}.${k} must be a finite number, got ${JSON.stringify(v)}`)
+    }
+    out[k] = v
+  }
+  return out
+}
+
+/** Normalize + validate the conventional tuning envelope into a typed
+ *  WorkflowConfig. `undefined`/`null` → `{}` (no tuning supplied). A non-object
+ *  throws. Recognized slices (perAgent/models/effort/agentTypes/sizing) are
+ *  validated; unrecognized top-level keys are ignored. */
+export function parseConfig(raw: unknown): WorkflowConfig {
+  if (raw === undefined || raw === null) return {}
+  if (!isRecord(raw)) {
+    throw new Error(`parseConfig: expected an object (or undefined), got ${typeof raw}`)
+  }
+  const config: WorkflowConfig = {}
+  if (raw.perAgent !== undefined) config.perAgent = parsePerAgent(raw.perAgent)
+  if (raw.models !== undefined) config.models = parseStringMap(raw.models, 'models')
+  if (raw.effort !== undefined) config.effort = parseEffortMap(raw.effort)
+  if (raw.agentTypes !== undefined) config.agentTypes = parseStringMap(raw.agentTypes, 'agentTypes')
+  if (raw.sizing !== undefined) config.sizing = parseNumberMap(raw.sizing, 'sizing')
+  return config
 }

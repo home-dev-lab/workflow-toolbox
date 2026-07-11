@@ -1312,4 +1312,23 @@ describe('dev-review-fix reviewerType knob', () => {
       wf.run(rt, JSON.stringify({ ...VALID_INPUT, reviewerType: 123 })),
     ).rejects.toThrow(/reviewerType/i)
   })
+
+  it('routes every Verify verifier to verifierType, skeptics only (reviewers + fixer stay on the session model)', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify({ ...VALID_INPUT, verifierType: 'codex:codex-rescue' }))
+    const verifiers = verifyCalls(rt)
+    expect(verifiers.length).toBeGreaterThan(0)
+    for (const c of verifiers) expect(c.opts?.agentType).toBe('codex:codex-rescue')
+    // The load-bearing distinction vs withAgentDefaults: only the skeptic crosses
+    // models — reviewers + fixer carry no agentType override.
+    for (const c of reviewCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+    for (const c of fixCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+  })
+
+  it('rejects an empty-string verifierType', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...VALID_INPUT, verifierType: '' })),
+    ).rejects.toThrow(/verifierType/i)
+  })
 })

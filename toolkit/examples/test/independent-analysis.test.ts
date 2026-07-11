@@ -39,6 +39,11 @@ function makeRuntime(opts: {
     onAgent: ({ prompt }: { prompt: string; index: number }) => {
       const p = prompt.toLowerCase()
 
+      // (0) Availability probe (probeAgentType) — affirmative by default.
+      if (p.includes('availability probe')) {
+        return 'PROBE_OK'
+      }
+
       // (1) Verifier — pattern embeds renderClaim; this phrase is verifier-only.
       if (p.includes('an independent multi-lens sweep proposes')) {
         return { verdict, reason: `vote: ${verdict}` }
@@ -102,7 +107,7 @@ describe('independent-analysis workflow metadata', () => {
     expect(wf.meta.name).toBe('independent-analysis')
     expect(wf.meta.description).toBeTruthy()
     const titles = wf.meta.phases?.map((p) => p.title)
-    expect(titles).toEqual(['Lenses', 'Analyze', 'Verify'])
+    expect(titles).toEqual(['Probe', 'Lenses', 'Analyze', 'Verify'])
   })
 })
 
@@ -147,6 +152,74 @@ describe('independent-analysis parseInput', () => {
     const rt = makeRuntime()
     const result = await wf.run(rt, JSON.stringify({ ...baseInput, verifierModel: 'fable' }))
     expect(result).toHaveProperty('confirmed')
+  })
+
+  it('rejects a blank agentTypes.verify via the shared parseConfig validation', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...baseInput, agentTypes: { verify: '   ' } })),
+    ).rejects.toThrow(/agentTypes\.verify/)
+  })
+
+  it("routes verifiers through agentTypes.verify after an affirmative probe", async () => {
+    const rt = makeRuntime({ verdict: 'confirmed' })
+    const result = await wf.run(
+      rt,
+      JSON.stringify({ ...baseInput, agentTypes: { verify: 'codex:codex-rescue' } }),
+    )
+    expect(result).toHaveProperty('confirmed')
+    expect(result).toHaveProperty('verifierType', 'codex:codex-rescue')
+    // One probe, routed through the requested type.
+    const probeCalls = rt.calls.filter((c) => c.opts?.label === 'probeAgentType:probe')
+    expect(probeCalls.length).toBe(1)
+    // Every verifier call carries the routed agentType; producer agents do not.
+    const verifierCalls = rt.calls.filter((c) =>
+      c.prompt.toLowerCase().includes('an independent multi-lens sweep proposes'),
+    )
+    expect(verifierCalls.length).toBeGreaterThan(0)
+    expect(verifierCalls.every((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(true)
+  })
+
+  it('falls back to the standard verifier when the probe is non-affirmative', async () => {
+    // Mirrors makeRuntime's prompt-routing, with a FAILING probe branch.
+    const failing = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+        if (p.includes('availability probe')) return 'OPENCODE_UNAVAILABLE: no binary'
+        if (p.includes('an independent multi-lens sweep proposes')) {
+          return { verdict: 'confirmed', reason: 'vote' }
+        }
+        if (p.includes('you are the synthesis agent')) {
+          return {
+            candidates: [
+              { title: 'Finding', lens: 'correctness', why: 'w', severity: 'high', kind: 'risk' },
+            ],
+          }
+        }
+        if (p.includes('you are an independent analyst')) {
+          return {
+            angles: [
+              { title: 'Angle', why: 'w', severity: 'high', kind: 'risk', alreadyKnown: false },
+            ],
+          }
+        }
+        return { lenses: ['correctness'] }
+      },
+    })
+    const result = await wf.run(
+      failing,
+      JSON.stringify({ ...baseInput, agentTypes: { verify: 'workflow-toolbox:opencode-verifier' } }),
+    )
+    expect(result).toHaveProperty('verifierType', null)
+    const probeField = (result as { probe: { available: boolean; reason: string | null } }).probe
+    expect(probeField.available).toBe(false)
+    expect(probeField.reason).toContain('OPENCODE_UNAVAILABLE')
+    // Verifiers ran WITHOUT the agentType (graceful fallback).
+    const verifierCalls = failing.calls.filter((c) =>
+      c.prompt.toLowerCase().includes('an independent multi-lens sweep proposes'),
+    )
+    expect(verifierCalls.length).toBeGreaterThan(0)
+    expect(verifierCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
   })
 })
 

@@ -1,0 +1,1153 @@
+// observe-cli.ts — the IMPURE shell of `wt-observe`: probes (pid liveness, /proc
+// identity, /api/health), actions (detached spawn with a rotating logfile, SIGTERM,
+// authenticated /api calls), and the bounded decide→act loop around the pure
+// decision tables in observe-lifecycle.ts (+ observe-await.ts for `await`).
+//
+// ONE observe server total (verb-unification — the old split between a per-config-dir
+// single-source server and a separate `hub` verb is dissolved): `start` always resolves
+// 1+ Claude config dirs (--source flags > the persistent config-file list > auto-discovery
+// — resolveHubSources' own precedence, unchanged) and serves that whole SET through ONE
+// server + ONE pidfile (`server.json`) under the config-dir-INDEPENDENT state root
+// (~/.local/state/wt-observe). 1 resolved source runs unprefixed (byte-identical to the old
+// single-source server); 2+ mount a source-switcher server, each under /s/<key>/ — see
+// createHost in host.ts, unchanged by this refactor.
+//
+//     wt-observe start [--source <dir>]... [--watch] [--enable-launch]
+//                          — resolve the source set, adopt a healthy server or spawn one
+//                          (detached). --enable-launch opts the instance into live launches
+//                          (spawn env, or runtime POST /api/launch-enable on adopt — the
+//                          latter only when EXACTLY 1 source is served: multi-source has no
+//                          server-wide launch toggle, only a per-source one under
+//                          /s/<key>/api/launch-enable).
+//     wt-observe stop    — SIGTERM the owned server (identity-checked), clear the pidfile
+//     wt-observe status  — pidfile + live health (sources served, launch opt-in), human-readable
+//     wt-observe launch  — POST /api/launch a workflow by id, print { runId }
+//     wt-observe await   — block until a run finishes, print { runId, status, result }
+//                          (run it with run_in_background: its exit IS the notification)
+//     wt-observe config show|add-source <dir>|remove-source <dir>
+//                          — manage the persistent source list at
+//                          <observeConfigRoot>/config.json (readObserveConfig/
+//                          writeObserveConfig) — NEVER auto-written by `start`; the file
+//                          stays strictly opt-in, populated only via this verb.
+//
+// Source resolution (unchanged from the old `hub` verb, minus its <2 refusal): `--source`
+// flags win outright; else the persistent list at <observeConfigRoot>/config.json; else
+// auto-discovery of $CLAUDE_CONFIG_DIR (if set) plus every existing ~/.claude* sibling
+// (discoverConfigDirCandidates — a glob), each validated to contain a projects/ run store.
+// A 0-source resolution (nothing configured/discovered yet — e.g. a brand-new config dir
+// with no run history) falls back to the bare CLAUDE_CONFIG_DIR ?? ~/.claude default, so
+// `start` never regresses to a hard failure for a fresh single-user setup.
+//
+// Interim (pre-npm distribution): the spawn target is the repo checkout's dev
+// server (tsx apps/observe-ui/server/dev-api.ts), located from $DWT_OBSERVE_ROOT
+// or by walking up from cwd — the same interim posture as the card's
+// "Distribution" item (build-from-repo until @workflow-toolbox/observe-ui ships).
+
+import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
+import { randomBytes } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, openSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { delimiter, dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import {
+  classifyHealth,
+  decideStart,
+  decideStop,
+  normalizeRemoteUrl,
+  observeConfigRoot,
+  observeServerLogPath,
+  observeServerPidfilePath,
+  observeStateRoot,
+  parseConfigAction,
+  parseObservePidfile,
+  resolveHubSources,
+  serializeObservePidfile,
+  withCarriedToken,
+  type HealthIdentity,
+  type ObservePidfile,
+} from './observe-lifecycle.js'
+import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
+import { readBootId, readProcStartStamp } from './observe-identity.js'
+import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
+import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode } from './observe-await.js'
+import { resolveConfigDir, resolveDir } from './config-dir.js'
+import {
+  selectRuns,
+  runNameFromScript,
+  parseDurationMs,
+  pathsToDelete,
+  DEFAULT_TEST_PREFIXES,
+  type PruneRunRecord,
+} from './observe-prune.js'
+
+const DEFAULT_PORT = 5174
+const HEALTH_TIMEOUT_MS = 2_000
+// How long `start` waits for a fresh spawn to answer /api/health before declaring failure.
+const SPAWN_READY_TIMEOUT_MS = 30_000
+const LOG_ROTATE_BYTES = 5 * 1024 * 1024
+
+// ── identity probes — EXTRACTED to observe-identity.ts (shared with the Electron
+// desktop shell, which writes the same pidfile through the same probes). ────────────────
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** The (alive, identity-still-matches) pair every decision needs — one home. */
+function pidState(pf: ObservePidfile | null): { alive: boolean; idMatch: boolean } {
+  const alive = pf !== null && pidAlive(pf.pid)
+  return { alive, idMatch: pf !== null && alive && pidIdentityMatches(pf) }
+}
+
+/** The recycled-pid guard: identity matches when the recorded boot-id AND start
+ *  ticks both still describe pid. Unknown identity (nulls recorded, e.g. non-Linux)
+ *  degrades to NOT matching — the safe direction (never signal on a guess). */
+function pidIdentityMatches(pf: ObservePidfile): boolean {
+  if (pf.bootId === null || pf.procStartTicks === null) return false
+  return readBootId() === pf.bootId && readProcStartStamp(pf.pid) === pf.procStartTicks
+}
+
+// ── health probe ────────────────────────────────────────────────────────────────
+
+interface Health {
+  app: string
+  pid: number
+  port: number
+  // 1-source mode: the served config dir. Absent when the server serves 2+ sources
+  // (`sources` reported instead) — see server/host.ts's makeHubHandler.
+  configDir?: string
+  startedAt: string
+  // S1 version observability (additive, absent on pre-I8 servers): WHICH claude
+  // drives that server's live launches, and its version. Not identity-relevant —
+  // never part of the adopt/foreign classification.
+  claude?: string | null
+  claudeVersion?: string | null
+  // Live-launch opt-in state (additive, absent on older builds). Not identity-relevant.
+  launchEnabled?: boolean
+  // 2+-source mode: one entry per mounted config dir, INSTEAD of a single `configDir`.
+  sources?: { key: string; configDir: string }[]
+}
+
+/** Probe /api/health. Distinguishes "nothing listens" (ECONNREFUSED → the port is
+ *  free, safe to bind), "something answered CONCLUSIVELY not-ours" (an old server
+ *  build, or an unrelated process → FOREIGN), and "the probe TIMED OUT" (a listener
+ *  accepted but did not answer in time → maybe a busy-but-healthy server: an
+ *  INCONCLUSIVE verdict no destructive action may rest on). The self-reported `port`
+ *  must match the port actually probed — a mismatching answer is treated as not-ours
+ *  (never adopt/print an identity a squatter chose). */
+async function probeHealth(port: number, timeoutMs = HEALTH_TIMEOUT_MS): Promise<Health | 'no-listener' | 'not-ours' | 'timeout'> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!res.ok) return 'not-ours'
+    const body: unknown = await res.json()
+    if (typeof body !== 'object' || body === null) return 'not-ours'
+    const h = body as Record<string, unknown>
+    if (h['app'] !== 'observe-ui') return 'not-ours'
+    if (typeof h['pid'] !== 'number' || typeof h['port'] !== 'number') return 'not-ours'
+    if (typeof h['startedAt'] !== 'string') return 'not-ours'
+    // A 1-source server reports `configDir` (a string); a 2+-source server reports
+    // `sources` (an array) INSTEAD. Accept either identity shape here — classifyHealth
+    // (observe-lifecycle.ts) no longer distinguishes them at all (see its own doc).
+    const hasConfigDir = typeof h['configDir'] === 'string'
+    const hasSources = Array.isArray(h['sources'])
+    if (!hasConfigDir && !hasSources) return 'not-ours'
+    if (h['port'] !== port) return 'not-ours' // self-reported port must be the one probed
+    // Residual trust: pid/configDir/startedAt are still self-reported (unauthenticated
+    // localhost). The per-server token (I8) closes this; impact today is bounded to
+    // same-user confused-deputy (kill only reaches processes the user already owns).
+    return h as unknown as Health
+  } catch (err) {
+    if (err instanceof Error && err.name === 'TimeoutError') return 'timeout'
+    const cause = (err as { cause?: { code?: string } }).cause
+    // Connection refused = the port is genuinely free. Other conclusive transport
+    // errors (reset, protocol garbage) = something holds the port and is not ours.
+    return cause?.code === 'ECONNREFUSED' ? 'no-listener' : 'not-ours'
+  }
+}
+
+/** Ask the OS for a free port: listen(0), read it back, close. */
+async function probeFreePort(): Promise<number> {
+  const { createServer } = await import('node:net')
+  return new Promise((resolvePort, reject) => {
+    const srv = createServer()
+    srv.once('error', reject)
+    srv.listen(0, '127.0.0.1', () => {
+      const addr = srv.address()
+      const port = typeof addr === 'object' && addr !== null ? addr.port : 0
+      srv.close(() => (port > 0 ? resolvePort(port) : reject(new Error('no port assigned'))))
+    })
+  })
+}
+
+// ── spawn target (interim: the repo checkout) ──────────────────────────────────
+
+/** Locate the observe-ui dev server: $DWT_OBSERVE_ROOT, else walk up from cwd. */
+function findObserveRoot(cwd: string, env: Record<string, string | undefined>): string | null {
+  const forced = env['DWT_OBSERVE_ROOT']
+  const marker = (d: string): boolean => existsSync(join(d, 'toolkit', 'apps', 'observe-ui', 'server', 'dev-api.ts'))
+  if (forced !== undefined && forced.length > 0) return marker(forced) ? forced : null
+  let dir = cwd
+  for (let depth = 0; depth < 64; depth++) { // bounded — a cwd 64 dirs deep is not a checkout
+    if (marker(dir)) return dir
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+  return null
+}
+
+// ── logfile (one rotation generation) ───────────────────────────────────────────
+
+/** The actual open+rotate logic, parameterized by the ALREADY-COMPUTED log path — shared by
+ *  every caller (just observeServerLogPath's path now, post verb-unification). */
+function openLogFileAt(path: string): number {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  try {
+    if (existsSync(path) && statSync(path).size > LOG_ROTATE_BYTES) {
+      renameSync(path, `${path}.1`)
+    }
+  } catch {
+    // rotation is best-effort
+  }
+  return openSync(path, 'a', 0o600)
+}
+
+// ── pidfile IO ──────────────────────────────────────────────────────────────────
+
+function readPidfileAt(path: string): ObservePidfile | null {
+  try {
+    return parseObservePidfile(readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function writePidfileAt(path: string, pf: ObservePidfile): void {
+  // 0700 dir / 0600 file: the pidfile will carry the per-server token (I8) — keep
+  // the whole state root out of other local users' reach from day one.
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+  writeFileSync(path, serializeObservePidfile(pf), { mode: 0o600 })
+}
+
+function clearPidfileAt(path: string): void {
+  try {
+    unlinkSync(path)
+  } catch {
+    // already gone
+  }
+}
+
+/** One-line best-effort cleanup of the OLD (pre-verb-unification) hub pidfile: a prior
+ *  bundle version could leave `hub.json` behind under the same state root once the user
+ *  moves to the unified `start`/`stop` (which only ever read/write `server.json`). Never
+ *  throws — most machines never had one; this must never block the real command. */
+function clearLegacyHubPidfile(stateRoot: string): void {
+  try {
+    unlinkSync(join(stateRoot, 'hub.json'))
+  } catch {
+    // absent, or unremovable — best-effort only
+  }
+}
+
+/** Pidfile content for a server we just confirmed healthy: identity is read from
+ *  /proc for the pid HEALTH reported (not the spawn wrapper's pid — tsx/pnpm may
+ *  interpose), so stop/adopt later verify the right process. `configDir` mirrors
+ *  `sources[0]` (the primary/first-resolved source) — see ObservePidfile's own doc. */
+/** The config-dir SET a health payload says the server ACTUALLY serves — hub shape
+ *  (`sources[]`) or single-source shape (`configDir`). Used to record the pidfile from what
+ *  is really running, NOT from the caller's freshly-resolved request (codex review): on an
+ *  ADOPT of a server whose served set has drifted from the request, recording the request
+ *  would write a pidfile — and print an "adopted" message — claiming a set the server does
+ *  not serve. Deriving from `h` keeps the pidfile-of-record true. Empty only for a malformed
+ *  payload probeHealth would already have rejected as not-ours. */
+function sourcesFromHealth(h: Health): string[] {
+  if (Array.isArray(h.sources)) return h.sources.map((s) => s.configDir)
+  return typeof h.configDir === 'string' ? [h.configDir] : []
+}
+
+/** Order-independent set equality — the adopt path compares the server's actual served set
+ *  against the freshly-resolved request to decide whether to warn about drift. */
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false
+  const sa = [...a].sort()
+  const sb = [...b].sort()
+  return sa.every((v, i) => v === sb[i])
+}
+
+function pidfileFromHealth(h: Health): ObservePidfile {
+  const sources = sourcesFromHealth(h)
+  return {
+    pid: h.pid,
+    port: h.port,
+    configDir: sources[0]!,
+    bootId: readBootId(),
+    procStartTicks: readProcStartStamp(h.pid),
+    startedAt: h.startedAt,
+    sources,
+  }
+}
+
+// ── commands ────────────────────────────────────────────────────────────────────
+
+interface Ctx {
+  pidfilePath: string
+  stateRoot: string
+}
+
+function makeCtx(): Ctx {
+  const stateRoot = observeStateRoot(process.env, homedir(), process.platform)
+  return { stateRoot, pidfilePath: observeServerPidfilePath(stateRoot) }
+}
+
+async function probeFor(ctx: Ctx): Promise<{ pf: ObservePidfile | null; health: Health | null; identity: HealthIdentity; alive: boolean; idMatch: boolean; port: number }> {
+  const pf = readPidfileAt(ctx.pidfilePath)
+  const port = pf?.port ?? Number(process.env['OBSERVE_UI_SERVER_PORT'] ?? DEFAULT_PORT)
+  const probed = await probeHealth(port)
+  const { alive, idMatch } = pidState(pf)
+  return {
+    pf,
+    health: typeof probed === 'object' ? probed : null,
+    identity: classifyHealth(probed),
+    alive,
+    idMatch,
+    port,
+  }
+}
+
+interface StartFlags {
+  watch: boolean
+  enableLaunch: boolean
+}
+
+/** Resolve the source set `wt-observe start` serves: --source flags > the persistent
+ *  config-file list > auto-discovery (resolveHubSources' own precedence, unchanged from the
+ *  old `hub` verb). Unlike the pre-unification hub, there is NO <2 refusal — 1 resolved
+ *  source is the common case (createHost runs it unprefixed, byte-identical to the old
+ *  single-source server). A 0-source resolution (nothing --source'd, configured, or
+ *  discovered — e.g. a brand-new config dir with no run history yet, so it fails
+ *  discovery's `projects/` content check) falls back to the bare CLAUDE_CONFIG_DIR ??
+ *  ~/.claude default: the EXACT pre-unification single-source default, so `start` never
+ *  regresses to a hard failure for a fresh single-user setup that configured/discovered
+ *  nothing yet. */
+function resolveStartSources(explicitRaw: readonly string[]): string[] {
+  const explicit = explicitRaw.map(resolveDir)
+  for (const [i, dir] of explicit.entries()) {
+    if (!existsSync(dir)) throw new Error(`--source ${explicitRaw[i]}: directory does not exist (resolved to ${dir})`)
+  }
+  const configRoot = observeConfigRoot(process.env, homedir(), process.platform)
+  const { sources: configSources } = readObserveConfig(configRoot)
+  const discoveryCandidates = discoverConfigDirCandidates(process.env, homedir())
+  const resolved = resolveHubSources(explicit, configSources, discoveryCandidates, existsSync, resolveDir)
+  if (resolved.length > 0) return resolved
+  // Nothing resolved — fall back to the active config dir so `start` always works (matching the
+  // pre-unification single-source start, which never existence-checked). But SAY so (codex
+  // review): an all-stale CONFIGURED list resolving to nothing is materially different from a
+  // fresh setup, and a silent substitution would hide it. `config show` surfaces the details.
+  const fallback = resolveConfigDir()
+  if (configSources.length > 0 || discoveryCandidates.length > 0) {
+    process.stderr.write(
+      `note: no configured/discovered source still resolves — falling back to ${fallback}. Run \`wt-observe config show\` to see why.\n`,
+    )
+  }
+  return [fallback]
+}
+
+/** The configured remote-hub entries `start` forwards to the server (OBSERVE_REMOTES).
+ *  Config-file only (no --remote flag: remotes are durable pairings, not per-start
+ *  gestures); entries whose URL is unusable are SKIPPED with a note — one stale remote
+ *  must not block the whole start. */
+function resolveStartRemotes(): RemoteEntry[] {
+  const configRoot = observeConfigRoot(process.env, homedir(), process.platform)
+  const { remotes } = readObserveConfig(configRoot)
+  const valid: RemoteEntry[] = []
+  for (const remote of remotes) {
+    if (normalizeRemoteUrl(remote.url) === null) {
+      process.stderr.write(`note: skipping configured remote "${remote.url}" — not a usable http(s) URL (\`wt-observe config show\`).\n`)
+    } else {
+      valid.push(remote)
+    }
+  }
+  return valid
+}
+
+async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly string[], remotes: readonly RemoteEntry[], flags: StartFlags): Promise<{ health: Health; token: string }> {
+  const root = findObserveRoot(process.cwd(), process.env)
+  if (root === null) {
+    throw new Error(
+      'cannot locate the observe-ui server (no repo checkout found from cwd; set DWT_OBSERVE_ROOT). ' +
+        'Until @workflow-toolbox/observe-ui ships on npm, wt-observe start must run from a workflow-toolbox checkout.',
+    )
+  }
+  const logPath = observeServerLogPath(stateRoot)
+  const log = openLogFileAt(logPath)
+  // Per-server API token (I8): generated here, handed to the server via env, kept
+  // in the 0600 pidfile. The browser receives it through the served page only.
+  const token = randomBytes(24).toString('hex')
+  // --watch: the server owns a vite build watcher child (dev-api.ts reaps it on every
+  // exit path), so UI edits rebuild live — the dev loop the bare start deliberately skips.
+  // --enable-launch: boot-time live-launch opt-in (dev-api.ts reads the env) — the
+  // DELIBERATE per-start gesture that replaces "re-POST /api/launch-enable after every
+  // restart" without ever persisting the opt-in across starts.
+  // Spawn target = node + tsx's OWN JS entry, resolved from the checkout — NOT
+  // `spawn('pnpm', ...)`: on Windows the pnpm/.bin shims are .cmd files, which Node
+  // (>=18.20, CVE-2024-27980) refuses to spawn without shell:true, and shell:true
+  // reopens quoting of paths-with-spaces. node + a resolved .mjs runs identically on
+  // every OS (cross-OS I3, card #1813359570421023938).
+  const tsxCli = ((): string => {
+    try {
+      return createRequire(join(root, 'toolkit', 'package.json')).resolve('tsx/cli')
+    } catch {
+      throw new Error(`observe root ${root} has no resolvable 'tsx' — run pnpm install in ${join(root, 'toolkit')}`)
+    }
+  })()
+  const child = spawn(process.execPath, [tsxCli, 'apps/observe-ui/server/dev-api.ts', ...(flags.watch ? ['--watch'] : [])], {
+    cwd: join(root, 'toolkit'),
+    env: {
+      ...process.env,
+      // Both env vars are set regardless of cardinality: dev-api.ts only switches to
+      // multi-source mode when OBSERVE_SOURCES resolves to 2+ UNIQUE entries (its own
+      // `parsedSources.length >= 2` check) — with exactly 1 resolved source it falls
+      // straight through to CLAUDE_CONFIG_DIR, so setting both here is always correct and
+      // needs no cardinality branch on this side either.
+      CLAUDE_CONFIG_DIR: sourceDirs[0]!,
+      // path.delimiter, not ':' — a colon inside 'C:\...' would shred Windows paths;
+      // dev-api.ts splits with the same constant (same machine, same value).
+      OBSERVE_SOURCES: sourceDirs.join(delimiter),
+      OBSERVE_UI_SERVER_PORT: String(port),
+      OBSERVE_UI_TOKEN: token,
+      // Remote-hub mounts (hub federation) — JSON, not delimiter-joined: URLs carry
+      // colons everywhere. Only set when configured, so a remote-less start's env is
+      // byte-identical to before.
+      ...(remotes.length > 0 ? { OBSERVE_REMOTES: JSON.stringify(remotes) } : {}),
+      ...(flags.enableLaunch ? { OBSERVE_UI_ENABLE_LAUNCH: '1' } : {}),
+    },
+    detached: true,
+    windowsHide: true, // win32: detached must not flash a console window
+    stdio: ['ignore', log, log],
+  })
+  // Both failure signals are OBSERVED, not assumed: an async spawn error (e.g. a
+  // missing node executable → ENOENT) must reject cleanly, and a child that dies right
+  // away (EADDRINUSE, tsx load error) must fail FAST with the log tail — not mask
+  // itself as a silent 30s readiness timeout.
+  let spawnError: Error | null = null
+  let exited: { code: number | null; signal: NodeJS.Signals | null } | null = null
+  child.once('error', (e) => {
+    spawnError = e
+  })
+  child.once('exit', (code, signal) => {
+    exited = { code, signal }
+  })
+  child.unref()
+
+  // The port bind is the mutex: wait for /api/health to answer OURS. A lost
+  // concurrent-start race surfaces here as the WINNER's health — which we adopt.
+  const deadline = Date.now() + SPAWN_READY_TIMEOUT_MS
+  for (;;) {
+    if (spawnError !== null) {
+      throw new Error(`failed to spawn the server: ${(spawnError as Error).message}`)
+    }
+    if (exited !== null) {
+      const e = exited as { code: number | null; signal: NodeJS.Signals | null }
+      throw new Error(
+        `server exited immediately (code ${e.code ?? 'null'}${e.signal ? `, signal ${e.signal}` : ''}).\n${logTail(logPath)}`,
+      )
+    }
+    // Accept EITHER health shape (the readiness poll must not assume cardinality).
+    const h = await probeHealth(port)
+    if (typeof h === 'object' && (Array.isArray(h.sources) || typeof h.configDir === 'string')) return { health: h, token }
+    if (Date.now() > deadline) {
+      throw new Error(`server did not become healthy on :${port} within ${SPAWN_READY_TIMEOUT_MS} ms.\n${logTail(logPath)}`)
+    }
+    await new Promise((r) => setTimeout(r, 500))
+  }
+}
+
+/** Last few log lines, labelled — the actionable cause of most spawn failures. */
+function logTail(logPath: string, lines = 5): string {
+  try {
+    const text = readFileSync(logPath, 'utf8')
+    const tail = text.split('\n').filter(Boolean).slice(-lines).join('\n')
+    return tail.length > 0 ? `log tail (${logPath}):\n${tail}` : `log is empty (${logPath})`
+  } catch {
+    return `log unreadable (${logPath})`
+  }
+}
+
+/** `wt-observe start` — resolves the source set (see resolveStartSources), then runs the
+ *  bounded decide→act loop (kill-zombie / clear-stale are intermediate actions) against the
+ *  ONE server pidfile. */
+async function cmdStart(ctx: Ctx, sourceDirs: readonly string[], remotes: readonly RemoteEntry[], flags: StartFlags): Promise<void> {
+  for (let round = 0; round < 3; round++) {
+    const p = await probeFor(ctx)
+    const d = decideStart({ pidfile: p.pf, pidAlive: p.alive, pidIdentityMatches: p.idMatch, health: p.identity })
+    if (d.action === 'adopt') {
+      // health is non-null whenever identity === 'ours'. Preserve the recorded token:
+      // health never carries it (deliberately), so a bare rewrite would WIPE the only
+      // out-of-browser copy on every adopt — the common path once a server is up.
+      const h = p.health as Health
+      // Record the pidfile + report the set the server ACTUALLY serves (from health), NOT the
+      // freshly-resolved request — on a drift adopt they differ (codex review): recording the
+      // request would write a pidfile-of-record, and print an "adopted for X" line, claiming a
+      // set the running server does not serve.
+      const served = sourcesFromHealth(h)
+      writePidfileAt(ctx.pidfilePath, withCarriedToken(pidfileFromHealth(h), p.pf))
+      const label = served.length === 1 ? ` for ${served[0]}` : ''
+      const sourcesLine = served.length > 1 ? `sources: ${served.join(', ')}\n` : ''
+      process.stdout.write(`observe-ui already running${label} — adopted.\n${sourcesLine}URL: http://127.0.0.1:${h.port}/\n`)
+      // Drift: the running server serves a DIFFERENT set than requested. Adopt keeps it AS-IS
+      // (applying a new set needs stop+restart) — warn rather than silently imply the request took.
+      if (!sameSet(served, sourceDirs)) {
+        process.stderr.write(
+          `note: the running server serves ${served.join(', ')}, not the requested ${sourceDirs.join(', ')} — \`wt-observe stop\` then \`start\` to apply the new set.\n`,
+        )
+      }
+      // Adopt keeps the running server AS-IS — a --watch request cannot retrofit a watcher.
+      if (flags.watch) process.stderr.write('note: --watch ignored (adopted a running server). `wt-observe stop` then `start --watch` to get the watcher.\n')
+      // --enable-launch CAN retrofit when EXACTLY 1 source is served (a root-level runtime
+      // opt-in exists there, same as before verb-unification). 2+ sources have NO
+      // server-wide toggle (launches are per-source, under /s/<key>/api/launch-enable) —
+      // declined with a note, same posture the old hub adopt branch already had.
+      if (flags.enableLaunch && h.launchEnabled !== true) {
+        if (sourceDirs.length > 1) {
+          process.stderr.write(
+            'note: --enable-launch not retrofitted on an adopted multi-source server (launches are per-source; no server-wide toggle). ' +
+              '`wt-observe stop` then `start --enable-launch` to enable at boot.\n',
+          )
+        } else if (!p.idMatch) {
+          process.stderr.write('note: --enable-launch skipped — the running server\'s process identity does not verify against the pidfile; `wt-observe stop` then `start --enable-launch`.\n')
+        } else {
+          const token = readPidfileAt(ctx.pidfilePath)?.token
+          if (token === undefined) {
+            process.stderr.write('note: --enable-launch skipped — no token recorded for this server (restart with `wt-observe stop` then `start --enable-launch`).\n')
+          } else {
+            // Best-effort: the ADOPT already succeeded — a failed retrofit must degrade to
+            // a note, never flip the command's exit code to failure.
+            try {
+              const res = await fetch(`http://127.0.0.1:${h.port}/api/launch-enable`, {
+                method: 'POST',
+                headers: { 'x-observe-token': token },
+                signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+              })
+              if (res.ok) process.stdout.write('live launches ENABLED on the adopted server (runtime opt-in).\n')
+              else process.stderr.write(`note: --enable-launch failed (HTTP ${res.status}) — enable from the UI or restart with the flag.\n`)
+            } catch (e) {
+              process.stderr.write(`note: --enable-launch failed (${e instanceof Error ? e.message : String(e)}) — enable from the UI or restart with the flag.\n`)
+            }
+          }
+        }
+      }
+      return
+    }
+    if (d.action === 'kill-zombie') {
+      process.stderr.write(`wt-observe: owned server (pid ${d.pid}) is wedged — SIGTERM, restarting…\n`)
+      try {
+        process.kill(d.pid, 'SIGTERM')
+      } catch {
+        // died in between — fine
+      }
+      clearPidfileAt(ctx.pidfilePath)
+      await new Promise((r) => setTimeout(r, 1000))
+      continue
+    }
+    if (d.action === 'clear-stale') {
+      clearPidfileAt(ctx.pidfilePath)
+      clearLegacyHubPidfile(ctx.stateRoot) // one-line best-effort — no pre-unification orphan lingers
+      continue
+    }
+    if (d.action === 'retry-health') {
+      // The 2s probe timed out on our own alive server — maybe just busy (journal
+      // scan, GC). One patient retry; if still silent, REPORT rather than kill:
+      // a timeout is never proof of a zombie.
+      process.stderr.write('wt-observe: owned server slow to answer — retrying health with a longer timeout…\n')
+      const h = await probeHealth(p.port, 10_000)
+      if (typeof h === 'object') {
+        writePidfileAt(ctx.pidfilePath, withCarriedToken(pidfileFromHealth(h), p.pf))
+        process.stdout.write(`observe-ui already running (answered on retry) — adopted.\nURL: http://127.0.0.1:${h.port}/\n`)
+        return
+      }
+      throw new Error(
+        `owned server (pid ${p.pf?.pid ?? '?'}) is alive but not answering /api/health on :${p.port} — busy or wedged. ` +
+          'Retry shortly, or run `wt-observe stop` then `start` to force-restart it.',
+      )
+    }
+    const port = d.action === 'start-free-port' ? await probeFreePort() : p.port
+    const { health: h, token } = await spawnServer(ctx.stateRoot, port, sourceDirs, remotes, flags)
+    writePidfileAt(ctx.pidfilePath, { ...pidfileFromHealth(h), token })
+    const notes = [flags.watch ? ' with the vite build watcher (--watch)' : '', flags.enableLaunch ? ' with live launches ENABLED (--enable-launch)' : ''].join('')
+    const label = sourceDirs.length === 1 ? ` for ${sourceDirs[0]}` : ''
+    const sourcesLine = sourceDirs.length > 1 ? `sources: ${sourceDirs.join(', ')}\n` : ''
+    process.stdout.write(`observe-ui started${label} (pid ${h.pid})${notes}.\n${sourcesLine}URL: http://127.0.0.1:${h.port}/\n`)
+    return
+  }
+  throw new Error('start did not converge after 3 rounds — check `wt-observe status` and the state dir')
+}
+
+async function cmdStop(ctx: Ctx): Promise<void> {
+  clearLegacyHubPidfile(ctx.stateRoot) // one-line best-effort — no pre-unification orphan lingers
+  const pf = readPidfileAt(ctx.pidfilePath)
+  const { alive, idMatch } = pidState(pf)
+  const d = decideStop({ pidfile: pf, pidAlive: alive, pidIdentityMatches: idMatch })
+  if (d.action === 'noop') {
+    process.stdout.write('no observe-ui pidfile — nothing to stop.\n')
+    return
+  }
+  if (d.action === 'kill') {
+    try {
+      process.kill(d.pid, 'SIGTERM')
+      process.stdout.write(`stopped observe-ui (pid ${d.pid}).\n`)
+    } catch {
+      process.stdout.write(`observe-ui (pid ${d.pid}) was already gone.\n`)
+    }
+  } else {
+    process.stdout.write('stale pidfile (pid dead or recycled) — cleared, nothing signalled.\n')
+  }
+  clearPidfileAt(ctx.pidfilePath)
+  // Card #1812476922312000519 increment B — a DELIBERATE stop revokes every source's
+  // live-launch opt-in (never the in-flight launch records themselves: a run this stop just
+  // killed is exactly what the next `--enable-launch` start should resume — see
+  // launch-enable-state.ts's own header doc).
+  clearAllLaunchEnableRecords(ctx.stateRoot)
+}
+
+async function cmdStatus(ctx: Ctx): Promise<void> {
+  const p = await probeFor(ctx)
+  process.stdout.write(`pidfile    : ${ctx.pidfilePath}${p.pf === null ? ' (absent)' : ''}\n`)
+  if (p.pf !== null) {
+    process.stdout.write(`recorded   : pid ${p.pf.pid} port ${p.pf.port} startedAt ${p.pf.startedAt}\n`)
+    process.stdout.write(`pid state  : ${p.alive ? (p.idMatch ? 'alive (identity OK)' : 'alive but RECYCLED (identity mismatch)') : 'dead'}\n`)
+    process.stdout.write('recorded sources:\n')
+    for (const s of p.pf.sources) process.stdout.write(`  - ${s}\n`)
+  }
+  if (p.identity === 'ours' && p.health !== null) {
+    process.stdout.write(`health :${p.port} → ours — pid ${p.health.pid}, up since ${p.health.startedAt}\n`)
+    // Which interpreter drives that server's live launches (S1) — absent on old builds.
+    if (p.health.claude !== undefined) {
+      const v = p.health.claudeVersion != null ? ` (v${p.health.claudeVersion})` : ''
+      process.stdout.write(`claude     : ${p.health.claude ?? 'SDK bundled fallback'}${v}\n`)
+    }
+    if (p.health.launchEnabled !== undefined) {
+      process.stdout.write(`launches   : ${p.health.launchEnabled ? 'ENABLED (live-launch opt-in active)' : 'disabled (start --enable-launch, or the UI Launch opt-in)'}\n`)
+    }
+    // Straight from the server's OWN live /api/health (the authoritative current source
+    // list, not just what the pidfile last recorded at start/adopt time).
+    if (Array.isArray(p.health.sources)) {
+      process.stdout.write('sources    :\n')
+      for (const s of p.health.sources) process.stdout.write(`  - ${s.key}  ${s.configDir}\n`)
+    } else if (typeof p.health.configDir === 'string') {
+      process.stdout.write(`config dir : ${p.health.configDir}\n`)
+    }
+    process.stdout.write(`URL        : http://127.0.0.1:${p.health.port}/\n`)
+  } else if (p.identity === 'foreign') {
+    // Any object payload reaching classifyHealth now classifies 'ours' by construction
+    // (see its own doc) — so 'foreign' here always means probeHealth itself concluded
+    // not-ours (an old/unrelated build, or a self-reported-port mismatch): there is no
+    // health payload to describe.
+    process.stdout.write(`health :${p.port} → FOREIGN — no health identity (old build or unrelated process)\n`)
+  } else if (p.identity === 'inconclusive') {
+    process.stdout.write(`health :${p.port} → INCONCLUSIVE (listener accepted but timed out — busy server?)\n`)
+  } else {
+    process.stdout.write(`health :${p.port} → unreachable (port free)\n`)
+  }
+}
+
+// ── launch + await (the launch-and-notify pair) ─────────────────────────────────
+
+/** The owned, healthy server's (port, token) — the precondition of every /api call
+ *  the CLI makes. Fails with an actionable message instead of guessing a port.
+ *
+ *  SECURITY (pr-review round 3, high): these are the only paths where the CLI TRANSMITS
+ *  the plaintext token, so the weak self-reported health match ('ours') is not enough —
+ *  a local port-squatter can answer /api/health with guessable fields and harvest the
+ *  token. Require the SAME proof-of-identity the SIGTERM path already does
+ *  (pidIdentityMatches: recorded boot-id + /proc start ticks), which a squatter cannot
+ *  satisfy without being the exact process we spawned. On platforms where identity is
+ *  unavailable (non-Linux → nulls recorded) this degrades to REFUSING — the safe
+ *  direction, consistent with stop's "never signal on a guess". */
+async function requireOwnedServer(ctx: Ctx): Promise<{ port: number; token: string }> {
+  const p = await probeFor(ctx)
+  if (p.identity !== 'ours' || p.health === null) {
+    throw new Error(`no owned observe-ui server (health on :${p.port} → ${p.identity}). Run \`wt-observe start\` first.`)
+  }
+  if (!p.idMatch) {
+    throw new Error(
+      'server answers as ours but its recorded process identity does not verify (stale pidfile, recycled pid, or a platform without /proc identity) — ' +
+        'refusing to send the API token. `wt-observe stop` then `start` to re-establish identity.',
+    )
+  }
+  const token = p.pf?.token
+  if (token === undefined) {
+    throw new Error('owned server found but no token recorded in the pidfile — `wt-observe stop` then `start` to mint one.')
+  }
+  return { port: p.health.port, token }
+}
+
+async function api(port: number, token: string, path: string, init: RequestInit = {}, timeoutMs = HEALTH_TIMEOUT_MS): Promise<Response> {
+  return fetch(`http://127.0.0.1:${port}${path}`, {
+    ...init,
+    headers: { 'x-observe-token': token, ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}), ...(init.headers ?? {}) },
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+}
+
+/** Resolve the URL prefix for source-scoped endpoints (/api/launch, /api/runs/*, …).
+ *  A MULTI-SOURCE hub mounts every per-source route under /s/<key>/ and answers GET
+ *  /api/sources with the mount list; a single-source server has no such route and
+ *  serves everything unprefixed — burnt live 2026-07-08: `launch` POSTed the bare
+ *  path against a hub and got "unknown hub route" (and `await`'s unprefixed polls
+ *  would read every hub run as missing). `wanted` matches a source by key, label,
+ *  or configDir (exact or path-suffix); default = the FIRST source, echoed so a
+ *  multi-source user sees which one was targeted. */
+async function resolveSourcePrefix(port: number, token: string, wanted: string | undefined): Promise<{ prefix: string; label: string }> {
+  const body: unknown = await api(port, token, '/api/sources', {}, 10_000)
+    .then((r) => (r.ok ? (r.json() as Promise<unknown>) : null))
+    .catch(() => null)
+  const raw = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['sources'] : undefined
+  // configDir is ABSENT on remote entries (hub federation) — every field access below
+  // must survive a partial entry (a .endsWith on undefined would kill launch/await against
+  // ANY federated hub, even when targeting a local source).
+  const sources = Array.isArray(raw) ? (raw as { key: string; label?: string; configDir?: string }[]) : null
+  if (sources === null || sources.length === 0) return { prefix: '', label: '' } // single-source server
+  const pick =
+    wanted === undefined
+      ? sources[0]
+      : sources.find(
+          (s) =>
+            s.key === wanted ||
+            s.label === wanted ||
+            (typeof s.configDir === 'string' && (s.configDir === wanted || s.configDir.endsWith(`/${wanted}`))),
+        )
+  if (pick === undefined) {
+    throw new Error(
+      `--source ${String(wanted)} matches no hub source — available: ${sources.map((s) => `${s.label ?? s.key} (${s.configDir ?? 'remote'})`).join(', ')}`,
+    )
+  }
+  return { prefix: `/s/${pick.key}`, label: pick.label ?? pick.key }
+}
+
+/** `wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]` — POST
+ *  /api/launch (source-prefixed on a hub), print {runId}. The id is the workflow's
+ *  filename under the server's allowlisted roots (GET /api/workflows lists them —
+ *  echoed here on an unknown id). */
+async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string | undefined, sourceFlag: string | undefined): Promise<void> {
+  if (script === undefined) throw new Error('usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]')
+  let args: unknown
+  if (rawArgs !== undefined) {
+    try {
+      args = JSON.parse(rawArgs)
+    } catch {
+      throw new Error(`--args is not valid JSON: ${rawArgs}`)
+    }
+  }
+  const { port, token } = await requireOwnedServer(ctx)
+  const { prefix, label } = await resolveSourcePrefix(port, token, sourceFlag)
+  if (label !== '') process.stderr.write(`launching under source ${label}\n`)
+  const res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify({ script, ...(args !== undefined ? { args } : {}) }) }, 30_000)
+  const body: unknown = await res.json().catch(() => null)
+  if (!res.ok) {
+    const code = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['code'] : undefined
+    let hint = ''
+    if (res.status === 404) {
+      const list = await api(port, token, `${prefix}/api/workflows`).then((r) => r.json() as Promise<{ id: string }[]>, () => [])
+      if (list.length > 0) hint = `\navailable: ${list.map((w) => w.id).join(', ')}`
+    }
+    // 403 is TWO different refusals (pr-review round 3): the launch-disabled gate tags
+    // its body with code:'launch-disabled'; a bare 403 is the token check refusing us.
+    if (res.status === 403 && code === 'launch-disabled') hint = '\nlive launches are disabled — `wt-observe start --enable-launch` (or the UI Launch opt-in).'
+    else if (res.status === 403) hint = '\ntoken rejected — the pidfile token no longer matches the server; `wt-observe stop` then `start` to re-mint.'
+    const msg = typeof body === 'object' && body !== null ? String((body as Record<string, unknown>)['error'] ?? res.status) : String(res.status)
+    throw new Error(`launch failed: ${msg}${hint}`)
+  }
+  // One machine-readable line — the runId feeds `wt-observe await` (and the UI attaches
+  // to the same registry run automatically).
+  process.stdout.write(`${JSON.stringify(body)}\n`)
+}
+
+const AWAIT_DEFAULT_TIMEOUT_S = 7_200
+const AWAIT_DEFAULT_POLL_S = 3
+const AWAIT_MISSING_GRACE_MS = 30_000
+// Post-completion settle window: the registry can know `finished` before the completion
+// artifact (and thus io.result) lands on disk — bounded retries, COMPLETED runs only
+// (a stopped/early-failed run structurally never grows a result; waiting on it would
+// burn the whole window every time — pr-review round 3, confirmed medium).
+const AWAIT_SETTLE_TRIES = 10
+const AWAIT_SETTLE_INTERVAL_MS = 1_000
+
+/** GET /api/runs/:runId as parsed JSON, null on any failure — the recall read both the
+ *  main poll loop and the settle window share. `prefix` = hub source mount ('' single-source). */
+async function fetchRecall(port: number, token: string, prefix: string, runId: string): Promise<unknown> {
+  return api(port, token, `${prefix}/api/runs/${encodeURIComponent(runId)}`, {}, 10_000)
+    .then((r) => (r.ok ? (r.json() as Promise<unknown>) : null))
+    .catch(() => null)
+}
+
+/** `wt-observe await <runId>` — block until the run reaches a terminal state, then print
+ *  ONE JSON line { runId, status, result } and exit 0 (completed) / 2 (other terminal) /
+ *  3 (timeout) / 4 (never seen). Designed to be run with run_in_background from an agent
+ *  session: the process EXIT is the completion notification (self-nudge), and the result
+ *  tail arrives with it — no follow-up fetch needed. Polling (not SSE) on purpose: the
+ *  poll is 2 cheap localhost GETs, survives server-side SSE hiccups, and the decision
+ *  logic stays pure/unit-tested (observe-await.ts). */
+async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, pollS: number, sourceFlag: string | undefined): Promise<number> {
+  if (runId === undefined) throw new Error('usage: wt-observe await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]')
+  const { port, token } = await requireOwnedServer(ctx)
+  const { prefix } = await resolveSourcePrefix(port, token, sourceFlag)
+  const startedAt = Date.now()
+  for (;;) {
+    const live = await api(port, token, `${prefix}/api/runs/live`)
+      .then((r) => (r.ok ? (r.json() as Promise<{ runId: string; finished: boolean; status: string | null }[]>) : []))
+      .catch(() => [] as { runId: string; finished: boolean; status: string | null }[])
+    const entry = live.find((e) => e.runId === runId) ?? null
+    let recallStatus: string | null = null
+    let recall: unknown = null
+    if (entry === null || entry.finished) {
+      recall = await fetchRecall(port, token, prefix, runId)
+      recallStatus = extractAwaitOutcome(recall).status
+    }
+    const verdict = classifyAwaitTick({
+      live: entry === null ? null : { finished: entry.finished, status: entry.status },
+      recallStatus,
+      elapsedMs: Date.now() - startedAt,
+      timeoutMs: timeoutS * 1000,
+      missingGraceMs: AWAIT_MISSING_GRACE_MS,
+    })
+    if (verdict.kind === 'pending') {
+      await new Promise((r) => setTimeout(r, pollS * 1000))
+      continue
+    }
+    if (verdict.kind === 'done') {
+      let outcome = extractAwaitOutcome(recall)
+      // A status that POSITIVELY says "not completed" (killed/failed/stopped on the
+      // artifact) will never grow a result — print immediately instead of burning the
+      // window (pr-review round 3). An UNKNOWN/absent status must keep settling: at
+      // done-time the completion artifact may simply not have landed yet, and cutting
+      // early would drop a genuinely-completed run's verdict tail. Residual accepted:
+      // a stopped run that never writes an artifact still waits the full window (the
+      // registry doesn't expose which of "not yet" vs "never" applies).
+      const resultRuledOut = (s: string | null): boolean => s !== null && s !== 'completed' && s !== 'unknown'
+      for (let i = 0; i < AWAIT_SETTLE_TRIES && outcome.result === null && !resultRuledOut(outcome.status); i++) {
+        await new Promise((r) => setTimeout(r, AWAIT_SETTLE_INTERVAL_MS))
+        recall = await fetchRecall(port, token, prefix, runId)
+        outcome = extractAwaitOutcome(recall)
+      }
+      const status = outcome.status ?? verdict.status
+      process.stdout.write(`${JSON.stringify({ runId, status, result: outcome.result })}\n`)
+      return awaitExitCode({ kind: 'done', status })
+    }
+    // timeout / missing — one machine-readable error line, distinct exit codes.
+    process.stdout.write(`${JSON.stringify({ runId, error: verdict.kind })}\n`)
+    return awaitExitCode(verdict)
+  }
+}
+
+// ── config verb: manage the persistent source list ──────────────────────────────
+
+/** `wt-observe config show` — the config-file path, its current sources, and what
+ *  auto-discovery currently finds (so the user sees both, and understands precedence:
+ *  a non-empty configured list wins over discovery outright for `start`). */
+async function cmdConfigShow(): Promise<void> {
+  const configRoot = observeConfigRoot(process.env, homedir(), process.platform)
+  const configPath = join(configRoot, 'config.json')
+  const { sources, remotes } = readObserveConfig(configRoot)
+  // discoverConfigDirCandidates is deliberately RAW/undeduped (dedup is resolveHubSources'
+  // job) — e.g. an explicit $CLAUDE_CONFIG_DIR that also matches the glob shows up twice.
+  // Canonicalize + dedupe here purely for a clean user-facing list (mirrors what `start`
+  // would actually resolve to, without changing the shared discovery function's contract).
+  const discovered = [...new Set(discoverConfigDirCandidates(process.env, homedir()).map(resolveDir))]
+  process.stdout.write(`config file : ${configPath}\n`)
+  process.stdout.write(`configured  : ${sources.length > 0 ? sources.join(', ') : '(none — start falls through to auto-discovery)'}\n`)
+  process.stdout.write(`discovered  : ${discovered.length > 0 ? discovered.join(', ') : '(none found)'}\n`)
+  process.stdout.write(`remotes     : ${remotes.length > 0 ? remotes.map(describeRemote).join(', ') : '(none configured)'}\n`)
+  if (sources.length > 0) {
+    process.stdout.write('note        : a non-empty configured list WINS over discovery outright for `start` — the discovered list above is informational only.\n')
+  }
+}
+
+/** `wt-observe config add-source <dir>` — validates the dir exists (hard error on a typo),
+ *  appends it to the persistent list if not already present (canonical dedupe), writes back. */
+async function cmdConfigAddSource(dirRaw: string): Promise<void> {
+  const dir = resolveDir(dirRaw)
+  if (!existsSync(dir)) throw new Error(`config add-source ${dirRaw}: directory does not exist (resolved to ${dir})`)
+  const configRoot = observeConfigRoot(process.env, homedir(), process.platform)
+  const config = readObserveConfig(configRoot)
+  const already = config.sources.some((s) => resolveDir(s) === dir)
+  const next = already ? config.sources : [...config.sources, dir]
+  writeObserveConfig(configRoot, { ...config, sources: next })
+  process.stdout.write(`sources: ${next.join(', ')}\n`)
+}
+
+/** `wt-observe config remove-source <dir>` — removes a matching (canonical) entry, writes
+ *  back. Removing an absent entry is a no-op (still prints the resulting list). */
+async function cmdConfigRemoveSource(dirRaw: string): Promise<void> {
+  const dir = resolveDir(dirRaw)
+  const configRoot = observeConfigRoot(process.env, homedir(), process.platform)
+  const config = readObserveConfig(configRoot)
+  const next = config.sources.filter((s) => resolveDir(s) !== dir)
+  writeObserveConfig(configRoot, { ...config, sources: next })
+  process.stdout.write(`sources: ${next.length > 0 ? next.join(', ') : '(none configured)'}\n`)
+}
+
+/** One-line human description of a remote entry (config show / add/remove output). */
+function describeRemote(remote: RemoteEntry): string {
+  const label = remote.label !== undefined ? ` (${remote.label})` : ''
+  const cred = remote.token !== undefined ? ' [token]' : remote.tokenFile !== undefined ? ` [token-file: ${remote.tokenFile}]` : ''
+  return `${remote.url}${label}${cred}`
+}
+
+/** `wt-observe config add-remote <url> [--token|--token-file|--label]` — canonicalizes the
+ *  URL (hard error on a non-http(s)/unparseable one), then ADDS OR REPLACES the entry with
+ *  the same canonical URL (an add-remote with new credentials is how you rotate them). */
+async function cmdConfigAddRemote(remote: { url: string; token?: string; tokenFile?: string; label?: string }): Promise<void> {
+  const url = normalizeRemoteUrl(remote.url)
+  if (url === null) throw new Error(`config add-remote ${remote.url}: not a usable http(s) URL`)
+  const configRoot = observeConfigRoot(process.env, homedir(), process.platform)
+  const config = readObserveConfig(configRoot)
+  // --token puts the remote credential in argv (visible via `ps` / `/proc/<pid>/cmdline` and
+  // shell history on a shared machine). The rest of federation is careful with secrets (0600
+  // files, per-request lazy tokenFile reads, the proxy stripping the hub token) — steer to
+  // --token-file, which the pairing pidfile form also makes restart-durable.
+  if (remote.token !== undefined) {
+    process.stderr.write(
+      `[wt-observe] warning: --token exposes the remote credential in argv (ps / shell history on a shared host). Prefer --token-file pointing at the remote's server.json — see docs/public/observe-federation.md.\n`,
+    )
+  }
+  const entry: RemoteEntry = { url }
+  if (remote.token !== undefined) entry.token = remote.token
+  if (remote.tokenFile !== undefined) entry.tokenFile = remote.tokenFile
+  if (remote.label !== undefined) entry.label = remote.label
+  const wasNoRemotes = config.remotes.length === 0
+  const kept = config.remotes.filter((r) => normalizeRemoteUrl(r.url) !== url)
+  const next = [...kept, entry]
+  writeObserveConfig(configRoot, { ...config, remotes: next })
+  process.stdout.write(`remotes: ${next.map(describeRemote).join(', ')}\n`)
+  // The first remote flips a single-source server into HUB mode: bare /api/* routes move
+  // under /s/<key>/api/*. The bundled `wt-observe launch|await` resolve the prefix
+  // automatically; direct /api/* callers (scripts, bookmarks) must add it.
+  if (wasNoRemotes) {
+    process.stderr.write(
+      `[wt-observe] note: with a remote configured the server runs in HUB mode — bare /api/* routes are now served under /s/<key>/api/*. wt-observe launch|await handle this; direct /api/* scripts must add the source prefix.\n`,
+    )
+  }
+}
+
+/** `wt-observe config remove-remote <url>` — removes the canonical match; removing an
+ *  absent entry is a no-op (still prints the resulting list), same as remove-source. */
+async function cmdConfigRemoveRemote(urlRaw: string): Promise<void> {
+  const url = normalizeRemoteUrl(urlRaw)
+  if (url === null) throw new Error(`config remove-remote ${urlRaw}: not a usable http(s) URL`)
+  const configRoot = observeConfigRoot(process.env, homedir(), process.platform)
+  const config = readObserveConfig(configRoot)
+  const next = config.remotes.filter((r) => normalizeRemoteUrl(r.url) !== url)
+  writeObserveConfig(configRoot, { ...config, remotes: next })
+  process.stdout.write(`remotes: ${next.length > 0 ? next.map(describeRemote).join(', ') : '(none configured)'}\n`)
+}
+
+/** The value following `--<name>` in argv, undefined when absent. */
+function flagValue(argv: readonly string[], name: string): string | undefined {
+  const i = argv.indexOf(`--${name}`)
+  return i >= 0 ? argv[i + 1] : undefined
+}
+
+/** EVERY value following a `--<name>` occurrence, in order — unlike flagValue (first only),
+ *  needed for `--source <dir>`, which repeats. */
+function flagValues(argv: readonly string[], name: string): string[] {
+  const out: string[] = []
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === `--${name}` && argv[i + 1] !== undefined) out.push(argv[i + 1]!)
+  }
+  return out
+}
+
+/** Impure scan: every workflow run recorded on disk under the given config dirs, as
+ *  PruneRunRecords. A run's completion record is `<cfg>/projects/<slug>/<session>/workflows/
+ *  <runId>.json` (what the timeline lists); its NAME comes from the sibling script
+ *  `.../workflows/scripts/<name>-<runId>.js`, whose project slug can DIFFER from the json's
+ *  (run-attach.ts) — so scripts are mapped per config dir across ALL slugs first. Tolerant
+ *  throughout: a vanished/unreadable dir is skipped, never thrown.
+ *
+ *  LIVE-RUN SAFETY (load-bearing): a record is emitted ONLY when the completion `<runId>.json`
+ *  exists — and the harness writes that json ONLY at run completion, never mid-run (see the
+ *  workflow-harness-disk-layout ground truth). So an in-flight run (script + a growing sidecar,
+ *  no json yet) is INVISIBLE to prune and can never be deleted while running. If a future harness
+ *  ever wrote a provisional json mid-run, this invariant — and prune's live-safety — would break;
+ *  observe-prune-scan.test.ts pins the no-json → no-record contract. Note the sidecar is ALWAYS
+ *  co-located with the JSON's session (siblings under one sessionDir); only the SCRIPT can live
+ *  under a different slug, which the pass-1 map resolves. */
+export function scanRunsForPrune(configDirs: readonly string[]): PruneRunRecord[] {
+  const subdirs = (p: string): string[] => {
+    try {
+      return readdirSync(p, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)
+    } catch {
+      return []
+    }
+  }
+  const filesIn = (p: string): string[] => {
+    try {
+      return readdirSync(p, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name)
+    } catch {
+      return []
+    }
+  }
+  const RUNID_IN_SCRIPT = /-(wf_[A-Za-z0-9_-]+)\.js$/
+  const RUN_JSON = /^(wf_[A-Za-z0-9_-]+)\.json$/
+  const records: PruneRunRecord[] = []
+  const seen = new Set<string>() // config-dir globs can overlap → dedupe by json path
+  for (const configDir of new Set(configDirs)) {
+    const projectsDir = join(configDir, 'projects')
+    // pass 1: runId -> {name, scriptPath} across every slug/session in this config dir
+    const scriptByRun = new Map<string, { name: string | null; scriptPath: string }>()
+    for (const slug of subdirs(projectsDir)) {
+      for (const session of subdirs(join(projectsDir, slug))) {
+        const scriptsDir = join(projectsDir, slug, session, 'workflows', 'scripts')
+        for (const f of filesIn(scriptsDir)) {
+          const m = RUNID_IN_SCRIPT.exec(f)
+          if (m) scriptByRun.set(m[1]!, { name: runNameFromScript(f, m[1]!), scriptPath: join(scriptsDir, f) })
+        }
+      }
+    }
+    // pass 2: the completion records the timeline lists
+    for (const slug of subdirs(projectsDir)) {
+      for (const session of subdirs(join(projectsDir, slug))) {
+        const wfDir = join(projectsDir, slug, session, 'workflows')
+        for (const f of filesIn(wfDir)) {
+          const m = RUN_JSON.exec(f)
+          if (!m) continue
+          const runId = m[1]!
+          const jsonPath = join(wfDir, f)
+          if (seen.has(jsonPath)) continue
+          seen.add(jsonPath)
+          let mtimeMs: number
+          try {
+            mtimeMs = statSync(jsonPath).mtimeMs
+          } catch {
+            continue // vanished between readdir and stat
+          }
+          const sc = scriptByRun.get(runId)
+          records.push({
+            runId,
+            name: sc?.name ?? null,
+            mtimeMs,
+            jsonPath,
+            scriptPath: sc?.scriptPath ?? null,
+            sidecarDir: join(projectsDir, slug, session, 'subagents', 'workflows', runId),
+          })
+        }
+      }
+    }
+  }
+  return records
+}
+
+/** `wt-observe prune` — delete test/probe workflow run records so they stop lingering in the
+ *  observe "recent runs". Dry-run by DEFAULT (lists matches); pass `--yes` to actually delete.
+ *  Selection (see observe-prune.selectRuns): `--run <id>` exact; else `--name-prefix <p>`
+ *  (repeatable; defaults to the reserved test prefixes) AND optional `--older-than <dur>`. */
+async function cmdPrune(argv: readonly string[]): Promise<number> {
+  const runId = flagValue(argv, 'run')
+  const explicitPrefixes = flagValues(argv, 'name-prefix')
+  const olderThanRaw = flagValue(argv, 'older-than')
+  const execute = argv.includes('--yes') || argv.includes('--force')
+
+  let olderThanMs: number | null = null
+  if (olderThanRaw !== undefined) {
+    olderThanMs = parseDurationMs(olderThanRaw)
+    if (olderThanMs === null) {
+      process.stderr.write(`prune: invalid --older-than '${olderThanRaw}' (use e.g. 45s, 30m, 2h, 7d)\n`)
+      return 2
+    }
+  }
+
+  const configDirs = [...new Set(discoverConfigDirCandidates(process.env, homedir()).map(resolveDir))]
+  const records = scanRunsForPrune(configDirs)
+  const selected = selectRuns(records, {
+    runId: runId ?? null,
+    namePrefixes: explicitPrefixes.length > 0 ? explicitPrefixes : null,
+    olderThanMs,
+    nowMs: Date.now(),
+  })
+
+  const scope = runId
+    ? `run ${runId}`
+    : `name-prefix [${(explicitPrefixes.length > 0 ? explicitPrefixes : DEFAULT_TEST_PREFIXES).join(', ')}]` +
+      (olderThanMs !== null ? ` older than ${olderThanRaw}` : '')
+  if (selected.length === 0) {
+    process.stdout.write(`prune: no runs match (${scope}) across ${configDirs.length} config dir(s).\n`)
+    return 0
+  }
+
+  const verb = execute ? 'Deleting' : 'Would delete (dry-run — pass --yes to apply)'
+  process.stdout.write(`${verb} ${selected.length} run(s) — ${scope}:\n`)
+  for (const r of selected) {
+    process.stdout.write(`  ${r.runId}  ${r.name ?? '(no name)'}\n`)
+    if (execute) for (const p of pathsToDelete(r)) rmSync(p, { recursive: true, force: true })
+  }
+  if (!execute) process.stdout.write('(nothing deleted — re-run with --yes)\n')
+  return 0
+}
+
+// ── entry ───────────────────────────────────────────────────────────────────────
+
+export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
+  const cmd = argv[0] ?? 'status'
+  const ctx = makeCtx()
+  try {
+    if (cmd === 'start') {
+      const sourceDirs = resolveStartSources(flagValues(argv, 'source'))
+      const remotes = resolveStartRemotes()
+      await cmdStart(ctx, sourceDirs, remotes, { watch: argv.includes('--watch'), enableLaunch: argv.includes('--enable-launch') })
+    } else if (cmd === 'stop') await cmdStop(ctx)
+    else if (cmd === 'status') await cmdStatus(ctx)
+    else if (cmd === 'prune') return await cmdPrune(argv)
+    else if (cmd === 'launch') await cmdLaunch(ctx, argv[1], flagValue(argv, 'args'), flagValue(argv, 'source'))
+    else if (cmd === 'await') {
+      const timeoutS = Number(flagValue(argv, 'timeout-s') ?? AWAIT_DEFAULT_TIMEOUT_S) || AWAIT_DEFAULT_TIMEOUT_S
+      const pollS = Number(flagValue(argv, 'poll-s') ?? AWAIT_DEFAULT_POLL_S) || AWAIT_DEFAULT_POLL_S
+      return await cmdAwait(ctx, argv[1], timeoutS, pollS, flagValue(argv, 'source'))
+    } else if (cmd === 'config') {
+      const parsed = parseConfigAction(argv.slice(1))
+      if (parsed.action === 'invalid') {
+        process.stderr.write(`${parsed.message}\n`)
+        return 2
+      }
+      if (parsed.action === 'show') await cmdConfigShow()
+      else if (parsed.action === 'add-source') await cmdConfigAddSource(parsed.dir)
+      else if (parsed.action === 'remove-source') await cmdConfigRemoveSource(parsed.dir)
+      else if (parsed.action === 'add-remote') await cmdConfigAddRemote(parsed)
+      else await cmdConfigRemoveRemote(parsed.url)
+    } else {
+      process.stderr.write(
+        'usage: wt-observe [start [--source <dir>]... [--watch] [--enable-launch]|stop|status|' +
+          'launch <workflow.js> [--args <json>] [--source <label|dir>]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|' +
+          'config [show|add-source <dir>|remove-source <dir>|add-remote <url> [--token <t>|--token-file <p>] [--label <l>]|remove-remote <url>]]\n',
+      )
+      return 2
+    }
+    return 0
+  } catch (err) {
+    process.stderr.write(`wt-observe ${cmd}: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
+}
+
+// Realpath-compare the entry guard (bin symlinks NO-OP a naive === — see
+// bin-symlink-entry-guard): run main() only when executed directly.
+const argv1 = process.argv[1]
+if (argv1 !== undefined) {
+  let same = false
+  try {
+    const { realpathSync } = await import('node:fs')
+    same = import.meta.url === pathToFileURL(realpathSync(argv1)).href
+  } catch {
+    same = import.meta.url === pathToFileURL(argv1).href
+  }
+  if (same) {
+    process.exitCode = await main()
+  }
+}

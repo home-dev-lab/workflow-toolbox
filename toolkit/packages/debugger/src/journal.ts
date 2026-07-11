@@ -36,6 +36,12 @@ export interface WorkflowAgentEvent {
   tokens?: number
   toolCalls?: number
   durationMs?: number
+  /** Wall-clock ms epochs, observed on disk (real journal, 2026-07-08): when the agent
+   *  was enqueued / actually started. With durationMs they let replay ingest stamp an
+   *  agent's lifecycle patches at its REAL times instead of bunching them at journal-write
+   *  time (the votes-stuck-at-0-while-synthesize-speaks replay artifact). */
+  queuedAt?: number
+  startedAt?: number
   lastToolName?: string
   lastToolSummary?: string
   resultPreview?: string
@@ -55,6 +61,9 @@ export interface WorkflowJournal {
   taskId?: string
   status?: WorkflowStatus
   workflowName?: string
+  /** One-line workflow goal — mirrors the artifact's `meta.description`. Verified
+   * present on 243/243 real journals (2026-06-20); surfaced by readRunSummary. */
+  summary?: string
   error?: string
   result?: unknown
   args?: unknown
@@ -69,6 +78,11 @@ export interface WorkflowJournal {
   defaultModel?: string
   phases?: { title?: string }[]
   workflowProgress?: WorkflowProgressEvent[]
+  /** Narrator lines emitted by `rt.log()` during the run, in call order. Real journals
+   * carry these as BARE strings (e.g. "Evidence gathered: 3/4"); most runs have none, so
+   * the array is often absent or empty. Captured into the observe model as `run.log`
+   * patches — see observe's journalToPatches. NOT a decision source for the audit report. */
+  logs?: string[]
 }
 
 /**

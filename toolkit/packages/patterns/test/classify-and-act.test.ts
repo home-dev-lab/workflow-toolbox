@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
 import { classifyAndAct } from '../src/classify-and-act.js'
 import type { ClassifyAndActOptions } from '../src/classify-and-act.js'
 
@@ -69,10 +69,108 @@ describe('classifyAndAct — config validation', () => {
 })
 
 // ---------------------------------------------------------------------------
+// agentType routing (classifyType top-level / per-category ActionSpec.agentType)
+// ---------------------------------------------------------------------------
+
+function routingOnAgent({ opts }: { opts?: { label?: string } }): unknown {
+  const label = opts?.label ?? ''
+  if (label.startsWith('classifyAndAct:classify:')) return { category: 'docs' }
+  return 'action-result'
+}
+
+describe('classifyAndAct — agentType routing', () => {
+  it('omits agentType on every call when neither classifyType nor any action agentType is set', async () => {
+    const rt = new FakeRuntime({ onAgent: routingOnAgent })
+    await classifyAndAct(rt, makeOptions())
+    expect(rt.calls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('threads classifyType to the classify agents only (not act)', async () => {
+    const rt = new FakeRuntime({ onAgent: routingOnAgent })
+    await classifyAndAct(rt, makeOptions({ classifyType: 'codex:codex-rescue' }))
+    const classifyCalls = rt.calls.filter((c) => c.opts?.label?.startsWith('classifyAndAct:classify:'))
+    const actCalls = rt.calls.filter((c) => c.opts?.label?.startsWith('classifyAndAct:act:'))
+    expect(classifyCalls.length).toBe(2)
+    expect(classifyCalls.every((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(true)
+    expect(actCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('threads a per-category ActionSpec.agentType to THAT category act agents only', async () => {
+    // route item-0 -> docs, item-1 -> bug; only docs carries an agentType
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label.startsWith('classifyAndAct:classify:0')) return { category: 'docs' }
+        if (label.startsWith('classifyAndAct:classify:')) return { category: 'bug' }
+        return 'action-result'
+      },
+    })
+    await classifyAndAct(rt, makeOptions({
+      actions: {
+        docs: { prompt: (i: string) => `docs: ${i}`, agentType: 'workflow-toolbox:opencode-verifier' },
+        bug: { prompt: (i: string) => `bug: ${i}` },
+        feature: { prompt: (i: string) => `feature: ${i}` },
+      },
+    }))
+    const docsAct = rt.calls.filter((c) => c.opts?.label?.startsWith('classifyAndAct:act:docs:'))
+    const otherAct = rt.calls.filter(
+      (c) => c.opts?.label?.startsWith('classifyAndAct:act:') && !c.opts?.label?.startsWith('classifyAndAct:act:docs:'),
+    )
+    const classifyCalls = rt.calls.filter((c) => c.opts?.label?.startsWith('classifyAndAct:classify:'))
+    expect(docsAct.length).toBe(1)
+    expect(docsAct.every((c) => c.opts?.agentType === 'workflow-toolbox:opencode-verifier')).toBe(true)
+    expect(otherAct.length).toBe(1)
+    expect(otherAct.every((c) => c.opts?.agentType === undefined)).toBe(true)
+    expect(classifyCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+
+  it('rejects an empty or whitespace-only classifyType', async () => {
+    const rt = new FakeRuntime()
+    await expect(classifyAndAct(rt, makeOptions({ classifyType: '' }))).rejects.toThrow(/classifyType/)
+    await expect(classifyAndAct(rt, makeOptions({ classifyType: '   ' }))).rejects.toThrow(/classifyType/)
+  })
+
+  it('rejects an empty or whitespace-only ActionSpec.agentType', async () => {
+    const rt = new FakeRuntime()
+    await expect(classifyAndAct(rt, makeOptions({
+      actions: {
+        docs: { prompt: (i: string) => `docs: ${i}`, agentType: '' },
+        bug: { prompt: (i: string) => `bug: ${i}` },
+        feature: { prompt: (i: string) => `feature: ${i}` },
+      },
+    }))).rejects.toThrow(/agentType/)
+    await expect(classifyAndAct(rt, makeOptions({
+      actions: {
+        docs: { prompt: (i: string) => `docs: ${i}`, agentType: '   ' },
+        bug: { prompt: (i: string) => `bug: ${i}` },
+        feature: { prompt: (i: string) => `feature: ${i}` },
+      },
+    }))).rejects.toThrow(/agentType/)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Happy path
 // ---------------------------------------------------------------------------
 
 describe('classifyAndAct — happy path', () => {
+  it('emits a phase digest: chosen category in taken, the unrouted ones in notTaken (ghost branches)', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (opts?.schema !== undefined) {
+          const schema = opts.schema as { properties?: { category?: { enum?: string[] } } }
+          if (schema.properties?.category?.enum !== undefined) return { category: 'docs' }
+        }
+        return 'action-result'
+      },
+    })
+    await classifyAndAct(rt, makeOptions())
+    const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'classifyAndAct')
+    expect(digest).toBeDefined()
+    expect(digest?.taken).toEqual(['docs'])
+    expect(digest?.notTaken).toEqual(['bug', 'feature'])
+  })
+
   it('returns correct value, exact stats, and empty warnings', async () => {
     const rt = new FakeRuntime({
       onAgent: ({ opts }) => {
@@ -576,5 +674,117 @@ describe('classifyAndAct — audit trail', () => {
     const resultB = await classifyAndAct(makeRt(), makeOptions({ items: ['x', 'y', 'z'] }))
 
     expect(resultA.trail).toEqual(resultB.trail)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Effort forwarding
+// ---------------------------------------------------------------------------
+
+describe('classifyAndAct — effort forwarding', () => {
+  it('forwards classifyEffort to classify agents and per-action effort to act agents', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const schema = opts?.schema as { properties?: { category?: { enum?: unknown[] } } } | undefined
+        if (schema?.properties?.category?.enum !== undefined) return { category: 'bug' }
+        return 'done'
+      },
+    })
+
+    await classifyAndAct(rt, makeOptions({
+      items: ['one'],
+      classifyEffort: 'low',
+      actions: {
+        docs: { prompt: () => 'docs' },
+        bug: { prompt: () => 'bug', effort: 'high' },
+        feature: { prompt: () => 'feature' },
+      },
+    }))
+
+    const classifyCall = rt.calls.find(c => c.opts?.label?.startsWith('classifyAndAct:classify:'))
+    const actCall = rt.calls.find(c => c.opts?.label?.startsWith('classifyAndAct:act:bug:'))
+
+    expect(classifyCall?.opts?.effort).toBe('low')
+    expect(actCall?.opts?.effort).toBe('high')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Effort in the audit trail
+// ---------------------------------------------------------------------------
+
+describe('classifyAndAct — trail: effort field', () => {
+  it('effort override present in classify trail records when classifyEffort set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const schema = opts?.schema as { properties?: { category?: { enum?: unknown[] } } } | undefined
+        if (schema?.properties?.category?.enum !== undefined) return { category: 'docs' }
+        return 'action-result'
+      },
+    })
+
+    const result = await classifyAndAct(rt, makeOptions({
+      items: ['item-0'],
+      classifyEffort: 'low',
+    }))
+
+    const trail = result.trail!
+    const classifyRecord = trail.find(r => r.stage === 'classifyAndAct:classify:0')!
+    expect(classifyRecord.effort).toBe('low')
+  })
+
+  it('effort absent from classify trail records when classifyEffort not set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const schema = opts?.schema as { properties?: { category?: { enum?: unknown[] } } } | undefined
+        if (schema?.properties?.category?.enum !== undefined) return { category: 'docs' }
+        return 'action-result'
+      },
+    })
+
+    const result = await classifyAndAct(rt, makeOptions({ items: ['item-0'] }))
+
+    const trail = result.trail!
+    const classifyRecord = trail.find(r => r.stage === 'classifyAndAct:classify:0')!
+    expect(classifyRecord).not.toHaveProperty('effort')
+  })
+
+  it('act trail records carry per-action effort when set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const schema = opts?.schema as { properties?: { category?: { enum?: unknown[] } } } | undefined
+        if (schema?.properties?.category?.enum !== undefined) return { category: 'bug' }
+        return 'done'
+      },
+    })
+
+    const result = await classifyAndAct(rt, makeOptions({
+      items: ['item-0'],
+      actions: {
+        docs: { prompt: () => 'docs' },
+        bug: { prompt: () => 'bug', effort: 'high' },
+        feature: { prompt: () => 'feature' },
+      },
+    }))
+
+    const trail = result.trail!
+    const actRecord = trail.find(r => r.stage === 'classifyAndAct:act:bug:0')!
+    expect(actRecord.effort).toBe('high')
+  })
+
+  it('act trail records have no effort when per-action effort not set', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const schema = opts?.schema as { properties?: { category?: { enum?: unknown[] } } } | undefined
+        if (schema?.properties?.category?.enum !== undefined) return { category: 'docs' }
+        return 'action-result'
+      },
+    })
+
+    const result = await classifyAndAct(rt, makeOptions({ items: ['item-0'] }))
+
+    const trail = result.trail!
+    const actRecord = trail.find(r => r.stage === 'classifyAndAct:act:docs:0')!
+    expect(actRecord).not.toHaveProperty('effort')
   })
 })

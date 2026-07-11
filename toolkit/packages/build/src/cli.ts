@@ -6,8 +6,9 @@
 // tsup, which preserves this shebang and chmods the output) — see
 // `publishConfig.bin`. The shebang is an inert comment under tsx, so the dev
 // scripts keep working unchanged. Primary form, from the workspace root
-// (toolkit/), where the default out-dir `workflows/` resolves correctly:
+// (toolkit/), where the default out-dirs `workflows/`/`pipelines/` resolve correctly:
 //   pnpm wt:build <entry.ts> [--out-dir <dir>] [--minify]
+//   pnpm wt:pipeline <entry.ts> [--out-dir <dir>] [--out <name>] [--minify]
 //   pnpm wt:check <file.js>
 // Also supported: `pnpm wt …` from this package, or `pnpm -F @workflow-toolbox/build
 // wt …` from the root (cwd is packages/build/ — paths need ../../).
@@ -16,9 +17,12 @@
 // import.meta.url guard for direct invocation via:
 //   pnpm exec tsx src/cli.ts build ...
 //
-// NOTE: The output filename is `<meta.name>.js` (not the entry filename).
-// The Claude Code runtime registry is keyed by meta.name — using the source
-// filename would cause a mismatch if the file is renamed.
+// NOTE: `build`'s output filename is `<meta.name>.js` (not the entry filename) — the Claude
+// Code runtime registry is keyed by meta.name, so using the source filename would cause a
+// mismatch if the file is renamed. `pipeline`'s output FILENAME is instead derived from the
+// ENTRY filename (see pipelineBaseName); as of card #1813065099577918566, that same derived
+// name is ALSO injected into the emitted spec's own (optional) `name` field when the author's
+// spec doesn't already declare one — see `runPipeline` below.
 
 import { parseArgs } from 'node:util'
 import { createRequire } from 'node:module'
@@ -26,11 +30,13 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { bundleWorkflow } from './bundle.js'
+import { bundlePipeline, pipelineBaseName } from './bundle-pipeline.js'
 import { lintWorkflowSource } from './lint.js'
+import type { PipelineSpec } from '@workflow-toolbox/pipeline-spec'
 // The packages below are PRIVATE workspace devDependencies: tsup inlines them
 // into dist/cli.js (verified — no bare imports survive in the bundle), so the
 // published package stays self-contained without publishing them to npm.
-import { scaffoldWorkflow, MINIMAL_TSCONFIG } from '@workflow-toolbox/scaffold'
+import { scaffoldWorkflow, scaffoldAgent, MINIMAL_TSCONFIG } from '@workflow-toolbox/scaffold'
 import {
   parseJournal,
   agentEvents,
@@ -45,7 +51,7 @@ import {
   projectDirFor,
   transcriptDirFor,
 } from '@workflow-toolbox/debugger/source'
-import { loadSpec } from '@workflow-toolbox/scaffold/spec-io'
+import { loadSpec, loadAgentSpec } from '@workflow-toolbox/scaffold/spec-io'
 import { resolveLogDir, writeAuditFolder, scanTranscripts } from '@workflow-toolbox/debugger/audit-folder'
 import { parseDebugArgs, parseReportArgs } from '@workflow-toolbox/debugger/cli-args'
 
@@ -58,6 +64,9 @@ export async function main(argv: string[]): Promise<void> {
 
   if (command === 'build') {
     return runBuild(argv.slice(1))
+  }
+  if (command === 'pipeline') {
+    return runPipeline(argv.slice(1))
   }
   if (command === 'check') {
     return runCheck(argv.slice(1))
@@ -151,6 +160,84 @@ async function runBuild(argv: string[]): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// runPipeline — bundle an entry PIPELINE file (I5 authoring increment): the declarative
+// PipelineSpec the observe-ui runner consumes, NOT a Workflow-sandbox artifact — see
+// bundle-pipeline.ts's doc for why this needs no --typecheck-vs-sandbox distinction beyond
+// what runBuild already does.
+// ---------------------------------------------------------------------------
+
+async function runPipeline(argv: string[]): Promise<void> {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      'out-dir': { type: 'string', short: 'o' },
+      out: { type: 'string' },
+      minify: { type: 'boolean', default: false },
+      typecheck: { type: 'boolean', default: false },
+    },
+    allowPositionals: true,
+    strict: true,
+  })
+
+  const entry = positionals[0]
+  if (entry === undefined || entry === '') {
+    printUsage()
+    throw new Error('workflow-toolbox pipeline: missing <entry.ts> positional argument')
+  }
+
+  const absEntry = path.resolve(entry)
+
+  // Default out-dir: 'pipelines' relative to cwd — mirrors runBuild's 'workflows' default.
+  const outDir = path.resolve(values['out-dir'] ?? 'pipelines')
+
+  if (values.typecheck) {
+    await typecheckEntry(absEntry)
+  }
+
+  const result = await bundlePipeline({ entry: absEntry, minify: values.minify })
+
+  fs.mkdirSync(outDir, { recursive: true })
+
+  // Output filename: derived from the ENTRY file, stripping a `.pipeline.ts` suffix if
+  // present (else just `.ts`) — OVERWRITES silently, same rebuild-in-place convention as
+  // runBuild. `--out` overrides the derived FILENAME entirely (with or without a trailing
+  // .json — both forms accepted); it does NOT affect the `name` injection below, which is
+  // always derived from the ENTRY file regardless of `--out`.
+  const outName = values.out !== undefined
+    ? (values.out.endsWith('.json') ? values.out : `${values.out}.json`)
+    : `${pipelineBaseName(absEntry)}.json`
+  const outFile = path.join(outDir, outName)
+
+  // Pattern-name injection (card #1813065099577918566, "pipelines become first-class
+  // citizens with a type"): a pipeline artifact's own `name` — symmetric to a workflow's
+  // meta.name — makes a launched pipeline recognizable by TYPE (PipelineManifest.type),
+  // not just its one-off goal string. Derived from the SAME entry filename `pipelineBaseName`
+  // already uses for the output filename, ONLY when the authored spec doesn't declare its
+  // own `name` (definePipeline() lets an author set one explicitly; that always wins).
+  //
+  // Bug fixed live (card #1813065099577918566 follow-up): this MUST build off `result.json`
+  // (parsed back), NOT `result.spec` — `result.spec` is the ROUND-TRIPPED, re-PARSED spec
+  // (parseStageSpecV2 reconstructs each stage as `{name, workflow, [input], [gateAfter],
+  // [artifact]}`, a FIXED order), which silently reordered every stage's keys away from the
+  // author's own order the first time this ran, contradicting define-pipeline.ts's own
+  // documented promise ("preserving the author's own key order in the emitted JSON... rather
+  // than churning committed artifacts' diffs on a behavior-neutral internal reconstruction").
+  // `result.json` is built from the RAW, pre-round-trip `rawSpec` (bundle-pipeline.ts's Step
+  // 3 doc), so re-parsing IT (not result.spec) keeps every existing key in the author's exact
+  // order — `name` is the ONLY key ever appended, and only when genuinely absent.
+  const parsedForInjection = JSON.parse(result.json) as PipelineSpec
+  const spec = parsedForInjection.name !== undefined ? parsedForInjection : { ...parsedForInjection, name: pipelineBaseName(absEntry) }
+  const json = JSON.stringify(spec, null, 2)
+  // Trailing newline: the repo's own text-file convention (package.json, etc.) — also what
+  // the committed toolkit/pipelines/*.json artifacts + their byte-identity gate expect.
+  fs.writeFileSync(outFile, json + '\n', 'utf8')
+
+  // Buffer.byteLength(json), not the stale result.bytes — a `name` injection can change the
+  // byte count from what bundlePipeline alone measured.
+  console.log(`workflow-toolbox pipeline: wrote ${outFile} (${Buffer.byteLength(json)} bytes)`)
+}
+
+// ---------------------------------------------------------------------------
 // typecheckEntry — `workflow-toolbox build --typecheck` support
 // ---------------------------------------------------------------------------
 
@@ -224,10 +311,34 @@ async function runScaffold(argv: string[]): Promise<void> {
     strict: true,
   })
 
-  const specPath = positionals[0]
+  // `scaffold agent <spec.json>` emits a least-privilege agentType .md; plain
+  // `scaffold <spec.json>` emits a .workflow.ts.
+  const isAgent = positionals[0] === 'agent'
+  const specPath = positionals[isAgent ? 1 : 0]
   if (specPath === undefined || specPath === '') {
     printUsage()
     throw new Error('workflow-toolbox scaffold: missing <spec.json> positional argument')
+  }
+
+  if (isAgent) {
+    const agentSpec = loadAgentSpec(specPath)
+    const agentSource = scaffoldAgent(agentSpec)
+    if (values.stdout) {
+      process.stdout.write(agentSource)
+      return
+    }
+    const agentOutDir = path.resolve(values['out-dir'] ?? '.')
+    const agentOutFile = path.join(agentOutDir, `${agentSpec.name}.md`)
+    if (fs.existsSync(agentOutFile) && !values.force) {
+      throw new Error(`workflow-toolbox scaffold agent: refusing to overwrite ${agentOutFile} — pass --force to replace it`)
+    }
+    fs.mkdirSync(agentOutDir, { recursive: true })
+    fs.writeFileSync(agentOutFile, agentSource, 'utf8')
+    console.log(`workflow-toolbox scaffold agent: wrote ${agentOutFile}`)
+    console.log(
+      `  next: put ${agentSpec.name}.md under ~/.claude/agents/ (or .claude/agents/), then reference it via agent(prompt, { agentType: '${agentSpec.name}' })`,
+    )
+    return
   }
 
   const spec = loadSpec(specPath)
@@ -408,13 +519,16 @@ workflow-toolbox — Workflow Toolbox CLI
 
 Usage (npm consumers: npx workflow-toolbox …  or  pnpm exec workflow-toolbox …; in this repo: pnpm wt:* scripts):
   workflow-toolbox scaffold <spec.json> [--out-dir <dir>] [--stdout] [--force] [--no-tsconfig]
+  workflow-toolbox scaffold agent <spec.json> [--out-dir <dir>] [--stdout] [--force]
   workflow-toolbox build <entry.ts> [--out-dir <dir>] [--minify] [--typecheck]
+  workflow-toolbox pipeline <entry.ts> [--out-dir <dir>] [--out <name>] [--minify] [--typecheck]
   workflow-toolbox check <file.js>
   workflow-toolbox debug [runId|latest|<journal-path>] [--json] [--project <slug>]
   workflow-toolbox report [runId|latest|<journal-path>] [--project <slug>] [--out <dir>] [--quiet]
 
 Commands:
   scaffold  Emit a build-clean <name>.workflow.ts skeleton from a JSON spec
+            (or "scaffold agent <spec.json>" → a least-privilege agentType <name>.md)
             ({ "meta": { "name", "description" }, "steps": [{ "pattern", "phase" }] }).
             Also writes a minimal tsconfig.json when the target dir has none
             (--no-tsconfig to skip; an existing tsconfig is never touched).
@@ -423,6 +537,14 @@ Commands:
             Output filename is <meta.name>.js in --out-dir (default: workflows/).
             An existing artifact with the same name is overwritten.
             The runtime registry is keyed by meta.name, NOT the filename.
+
+  pipeline  Bundle a TypeScript ORCHESTRATOR-PIPELINE entry file (an
+            "export default definePipeline({...})") to a PipelineSpec .json artifact — NOT a
+            Workflow-sandbox artifact; this is the declarative spec the observe-ui pipeline
+            runner consumes over POST /api/pipeline {spec}. Output filename is derived from
+            the entry file (strips a .pipeline.ts suffix, else .ts) in --out-dir (default:
+            pipelines/); --out overrides it. An existing artifact with the same name is
+            overwritten.
 
   check     Lint an already-built workflow artifact with lintWorkflowSource.
             Exits 1 if any errors are found.
@@ -434,7 +556,9 @@ Commands:
             (or $DWT_WORKFLOW_LOG_DIR) also writes the audit folder.
 
 Options:
-  --out-dir, -o  Output directory (build: default workflows/; scaffold: default .)
+  --out-dir, -o  Output directory (build: default workflows/; pipeline: default pipelines/;
+                 scaffold: default .)
+  --out          pipeline only: override the derived output filename (with or without .json)
   --minify       Enable whitespace + syntax minification (never minifies identifiers)
   --typecheck    Type-check the entry with the project's own typescript before
                  bundling (skipped with a warning when typescript is not installed)

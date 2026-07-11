@@ -25,7 +25,10 @@ export interface StopPayload {
 }
 
 /** A status that means the run is over. Anything else (incl. an unknown value) is
- * treated as still in-flight, so we wait for a disappearance rather than resolve early. */
+ * treated as still in-flight, so we wait for a disappearance rather than resolve early.
+ * NOTE: observe-await.ts classifies a DIFFERENT feed with the OPPOSITE unknown-polarity
+ * (unknown = terminal — a blocking `await` must never hang forever). Both fail-safe
+ * directions are deliberate for their consumer; do not unify without re-deciding both. */
 function isTerminalStatus(status: string | null): boolean {
   return status === 'completed' || status === 'failed'
 }

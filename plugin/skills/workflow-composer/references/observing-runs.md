@@ -1,0 +1,70 @@
+# Observing a workflow run (observe-ui)
+
+> **Scope / status.** `observe-ui` is a **dev-only, localhost, research-preview** tool that
+> lives in this repo's `toolkit/apps/observe-ui/` — it is **not** part of the shipped plugin.
+> This reference teaches how to launch a workflow so you can *watch it unfold* and how to read
+> the result, **and is candid about what it cannot show.** Everything below is grounded in real
+> runs against the dev server, not assumptions.
+
+The dev server (`pnpm --filter @workflow-toolbox/observe-ui dev` from `toolkit/`, on
+`http://localhost:5174`) renders a run as a **phase → agent DAG**. There are two ways to see a
+run: **live** (as it executes) and **post-mortem** (replayed from disk after it finishes).
+
+## Live — delegated SDK launch (the rich pathway)
+
+The **server** launches the workflow through the Claude Agent SDK and owns the stream, fanning
+the live model out to every viewer.
+
+- **Launch:** `POST /api/launch { script, args? }` → `{ runId }`, then `GET /api/stream?runId=…`
+  (SSE). Or the browser **Launcher**.
+- **Fidelity: full.** The SDK's `workflow_progress` carries, per agent, the real
+  `phaseIndex` + `phaseTitle`, `tokens`, `state`, and the phase→agent **edges** — so you get the
+  workflow's **true DAG**, phase titles included. Phase indices here are **1-based**
+  (`phase('Generate')` → index 1).
+- **Constraint:** `script` must be a `.js` artifact discoverable in the allowlist —
+  `toolkit/workflows/` or a dir in `OBSERVE_WORKFLOWS_DIR`. So this is the path for **committed,
+  compiled** workflows (author in `.workflow.ts`, build, then launch the artifact). No
+  arbitrary-path exec.
+
+This is the only pathway that shows the genuine per-pattern structure *as it happens* — so it is
+the meaningful way to **watch** a pattern run. An **inline / non-compiled** fan-out you drive
+from a conversation has no `.js` to delegate, so it has **no live UI** — *compile to observe*.
+
+## Post-mortem — disk replay (any finished run)
+
+Every completed run is reconstructed from its on-disk journal + transcripts, no launch needed:
+`GET /api/runs[?project=<slug>]` lists recent runs and `GET /api/runs/:runId` returns the patch
+log + raw transcripts. The **RunPicker** — a grouped-by-project/date combobox with a hover/focus
+detail popover — reads `GET /api/timeline` (runs + pipelines merged) and drives both. This works
+for **any** finished run — including the ones you launch from your own session with the Workflow
+tool — and rebuilds the same rich phase→agent model (phases, agents, tokens, message bodies) from
+what the runtime wrote at completion.
+
+## The eight patterns, observed
+
+Via the live SDK pathway (or disk replay of a finished run) each pattern shows its genuine
+structure — phases, edges, tokens — because that data comes from the SDK stream / journal, not a
+guess. That is the meaningful way to "see" a pattern run.
+
+## Quick recipes
+
+- **Watch a saved/compiled workflow live:** build it into `toolkit/workflows/` (or point
+  `OBSERVE_WORKFLOWS_DIR` at it), then `POST /api/launch { script }` (or the Launcher) and open
+  `/api/stream?runId=…`. Full DAG.
+- **Inspect a finished run (incl. your own Workflow-tool runs):** open the RunPicker (it reads
+  `/api/timeline`), pick the run — the full model is replayed from disk.
+- **Educate the user on the limit:** live observation requires a **compiled artifact** the
+  server can launch; an inline workflow run in your own session is observable only **after** it
+  finishes, via disk replay.
+
+## Removed: the hook-fed own-session pathway
+
+An earlier pathway (path B) tried to observe a workflow running in your **own** terminal session
+*live*, via Claude Code lifecycle hooks POSTed to the dev server. It was **removed** because it
+was coarse by construction — hooks carry only `{ session_id, agent_id, agent_type }`, so there
+are **no edges, phases, or tokens**; runs were session-keyed (two workflows in one session
+merged), and an `agent_type` reused across phases collapsed into one column. The retrospective —
+everything tried (prefix filter, `p<N>` name encoding, declared shape, `agent_type→phase` map,
+the `declare-shape` CLI) and why it was dropped — is
+[ADR 0006](../../../../docs/public/adr/0006-path-b-hook-observation-removed.md). Net today:
+**live = compiled artifact via the SDK; own-session / inline = disk replay after it finishes.**

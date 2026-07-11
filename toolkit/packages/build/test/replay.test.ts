@@ -60,7 +60,8 @@ describe('replay — hello fixture', () => {
     const typedOutput = output as { greeting: string | null }
     expect(typedOutput).toBeDefined()
     // The workflow calls rt.agent('say hello to world') — arg must have been decoded
-    expect(rt.calls[0]?.prompt).toBe('say hello to world')
+    // (defineWorkflow prefixes the wt-meta prompt tag; the body follows it verbatim)
+    expect(rt.calls[0]?.prompt.endsWith('say hello to world')).toBe(true)
     expect(rt.calls[0]?.opts?.label).toBe('hello')
     // Result greeting is whatever the FakeRuntime returned
     expect(typedOutput.greeting).toBe('Hello, world!')

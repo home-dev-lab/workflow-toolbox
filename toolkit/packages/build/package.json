@@ -19,6 +19,10 @@
     "./define": {
       "import": "./src/define-workflow.ts",
       "types": "./src/define-workflow.ts"
+    },
+    "./define-pipeline": {
+      "import": "./src/define-pipeline.ts",
+      "types": "./src/define-pipeline.ts"
     }
   },
   "publishConfig": {
@@ -36,6 +40,10 @@
       "./define": {
         "types": "./dist/define-workflow.d.ts",
         "import": "./dist/define-workflow.js"
+      },
+      "./define-pipeline": {
+        "types": "./dist/define-pipeline.d.ts",
+        "import": "./dist/define-pipeline.js"
       }
     }
   },
@@ -56,6 +64,7 @@
     "typescript": "^5.5.0",
     "@workflow-toolbox/scaffold": "workspace:*",
     "@workflow-toolbox/debugger": "workspace:*",
-    "@workflow-toolbox/std": "workspace:*"
+    "@workflow-toolbox/std": "workspace:*",
+    "@workflow-toolbox/pipeline-spec": "workspace:*"
   }
 }

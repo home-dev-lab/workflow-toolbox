@@ -1,0 +1,190 @@
+# Schemas, model tiering, and agent routing
+
+<!-- Extracted from SKILL.md (progressive disclosure) — loaded on demand via the stub that links here. -->
+
+
+- **Schema at every consumed boundary.** Put a `schema` (JSON Schema) on any
+  `agent()` whose result a later line reads a field off. Without it the agent returns
+  free text and `r.field` is silently `undefined`. Free text is fine only when the
+  whole string is passed into the next prompt. See `references/api-reference.md` for
+  the structured-output contract.
+- **Model tiering.** Mechanical, high-volume leaf work → `model: 'haiku'`. Judgment
+  work → inherit the session model (omit `model`). **Verifiers default to the strong
+  model** (`BEST_MODEL`) — verification quality is model-sensitive, and a downgraded
+  verifier is the one place a cheap model costs you correctness.
+  - **⚠ Top-tier alias availability is environment- and time-dependent — never
+    hard-pin a verifier to an alias you have not verified is callable where the
+    workflow will RUN.** Aliases come and go with plans, access windows, and provider
+    policy; an alias that is not callable in the consumer's environment errors at
+    runtime. The toolkit's `BEST_MODEL` tracks the strongest *reliably-callable* tier
+    (currently `'opus'`), so the default is safe; the trap is only a hand-override.
+- **Effort tiering (the second axis — pick it WITH the model, per stage).** Subagents
+  inherit the session's reasoning effort unless a stage passes an explicit override
+  (`effort` on `agent()`, or the per-role `<role>Effort` knobs every pattern exposes).
+  Floors by stage class: classify/extract/mechanical → `'low'`; review/implement →
+  `'high'`; verify/judge → `'high'` MINIMUM (never below — the cost lever is votes,
+  not weaker verification); synthesize → `'medium'`; reserve `'xhigh'` for a genuine
+  final-arbitration stage. Floors are minimums: pinning above them is fine. Pure
+  render/e2e fixtures may pin everything `'low'` — state that intent in the file
+  header so a later pass doesn't "fix" it.
+- **The composition envelope (`envelope.trail` — attach it, or your run is unauditable).**
+  Each pattern returns its own `trail` (per-stage records carrying explicit `model`/
+  `effort` overrides + control decisions), but readers — the audit report's Decisions
+  enrichment and the observe agent panel's per-agent effort chip — read ONE place:
+  `result.envelope.trail` on the composition's RETURN VALUE. Attach it with the
+  helper: `return { …yourPayload, envelope: { trail: collectTrail(a, b, c) } }`
+  (`collectTrail` from `@workflow-toolbox/patterns` — concatenates trails in call
+  order, skips null/undefined results from skipped stages). A composition that omits
+  it still runs, but its effort tiering and decisions are invisible to every audit
+  surface. Skip it only when the composition spawns no patterns at all — never attach
+  a fabricated empty envelope.
+  - **PLAIN `rt.agent()` stages write NO trail record** (only patterns do): their
+    explicit `model`/`effort` are applied at runtime yet invisible to the audit
+    surfaces. Hand-record them: give the call an explicit `label`, build a matching
+    record with `makeRecord(label, ok, { model, effort })`, and pass it to
+    `collectTrail(..., { trail: [record] })` — the record's stage and the agent's
+    label must match EXACTLY (that string equality is the join every reader uses).
+- **Specialist agent types (the `agentType` lever).** Beyond the model tier, a leaf
+  `agent()` can run as a *registered specialist subagent type* — e.g. a language
+  code-reviewer or TDD guide whose system prompt carries discipline the generic
+  subagent lacks — via the `agentType` option. Launch-time exposure comes in two
+  shapes: the STRUCTURED config envelope `args.agentTypes.<role>` (pr-review's
+  `agentTypes.review`, cross-model-verify's / independent-analysis's
+  `agentTypes.verify` — probe-resolved at entry with graceful fallback), and the
+  dev-workflow family's older bespoke `*Type` knob family: `implementerType`
+  (dev-implement's green), `fixerType` (dev-review-fix's fixer), `reviewerType`
+  (dev-review-fix's reviewers). Four rules:
+  - **Default to the standard subagent (`null` → omit `agentType`).** The knob is a
+    per-workflow input, never a baked-in default. **Never hard-code a private type
+    (e.g. `magic-claude:*`) as a default** — it breaks every other consumer. The type
+    must exist in the *consumer's* session registry; the runtime throws (listing the
+    available types) on an unknown one, so validate *shape* only, not membership.
+  - **It is flexibility, not a proven quality win.** In ONE internal reviewer A/B
+    (2026-06-15 — single target repo, single specialist config, already-clean code)
+    the specialist surfaced extra idiomatic findings at roughly one false positive per
+    real finding, with no high-impact win. That is a single data point, not a
+    constant: the thoroughness/noise trade varies with domain, prompt, and target —
+    measure it on YOUR target before treating a specialist as an upgrade.
+    Directionally, expect *more thorough AND noisier*; it is a knob the consumer opts
+    into for their own agents, not a default upgrade.
+  - **Exploit the verify synergy — specialize the producer, not the skeptic.** Route a
+    specialist *reviewer/finder* into a composition that already *verifies* its output
+    (the `adversarialVerification` Verify stage): the refute-first verifiers filter the
+    specialist's extra false positives, so you keep the thoroughness without the noise
+    reaching downstream. A refute-first *verifier* itself gains little from domain
+    specialization.
+  - **Cross-family routing: the composer PROPOSES — never silently applies, never
+    silently skips.** When you are composing (or configuring the launch of) a workflow
+    with verify/review roles, CHECK at authoring time whether a cross-family bridge is
+    actually available on this machine (the `codex` plugin's `codex:codex-rescue`;
+    `workflow-toolbox:opencode-verifier` — gate with `opencode providers list`, which
+    shows auth without spending a run). If one is, SURFACE the option to the user as a
+    per-role proposal with the real trade-off — genuine prior-decorrelation (the one
+    lever a same-model panel lacks) vs. the external plan's cost/latency — and let them
+    decide. The absolute default stays the standard Claude subagent. Rules of the
+    proposal:
+    - **The benefit is task-dependent — validate it empirically per workflow.**
+      Cross-family decorrelation pays most on checkable/refutable claims (code reads,
+      reproducible facts) and least on judgment/convention calls — and it always costs
+      extra latency, setup complexity, and external-plan spend. If a claim set comes
+      back with identical verdicts across families, the run bought latency, not
+      quality. A cheap A/B (the same claims through the standard verifier and through
+      the bridge — `cross-model-verify` runs this as-is) tells you what YOUR workflow
+      actually gains before you make external routing standing config. The cost side
+      lives on the consumer's external plan — pricing and limits only the user knows
+      (they are not discoverable from the machine) — which is exactly why this is a
+      PROPOSAL, never a silent default.
+    - **Ask the plan tier — it is NOT discoverable.** `providers list` shows *auth*, not
+      the plan (e.g. a provider's Lite vs Max tiers, Plus vs Pro). Small plan → propose
+      external routing only on NARROW roles (a 1–3-vote verifier, a judge, a synthesis)
+      and keep wide fan-out roles (`taskType`, `attemptType`, reviewer fans) on Claude;
+      big plan / token pricing → wide roles become proposable. Existing width knobs
+      (`votes`, `votesPerClaim`, `maxItems`, `sizing`) are the throttle — there is
+      deliberately no toolkit-side concurrency limiter (one dated measurement, 2026-07-09,
+      on one small plan tier: 16 concurrent calls all succeeded, the rate-limit wall
+      absorbed by the CLI's own retry at a 5–8× latency cost; your tier's wall and
+      latency multiplier WILL differ — re-measure on your plan; the bridge's hard ceiling
+      is its 570 s CLI timeout).
+    - **Decorrelate by FAMILY, per role-pair.** The value is a producer and its verifier
+      on UNRELATED model families. Fixed families: `codex:codex-rescue` = GPT/OpenAI;
+      the standard subagent = Claude/Anthropic. The opencode bridge's family is
+      *configured, not fixed* — it runs whatever `OPENCODE_MODEL:` selects (default GLM
+      5.2 / `zai-coding-plan`; discover with `opencode models`) — so state WHICH model
+      the proposal assumes. Routing producer AND verifier to the SAME external family
+      buys nothing.
+    - **The user can PRE-DECIDE via config — then don't re-ask.** A standing
+      `agentTypes.<role>` entry in the user's launch config / project instructions is
+      the structured, deterministic pre-decision channel; respect it silently (the
+      entry IS the decision). Availability still resolves at run time: every migrated
+      workflow probes the requested type once (`probeAgentType`) and degrades to the
+      standard subagent with the reason reported in the result's `probe` field.
+    - **The probe validates AVAILABILITY, not per-call COMPLIANCE.** A bridge whose
+      no-self-answer discipline lives only in prompt/skill text can be overridden by the
+      routed task's own instructions — a verification prompt that says "READ these files
+      to ground the verdict" invites the WRAPPER to answer directly, and the run then
+      reports the wrapper's (same-family) verdicts as if they were external. Prefer
+      bridges whose agent DEFINITION carries an output CONTRACT ("your final text may
+      come from exactly these sources: gate marker / CLI stdout / CLI error — never your
+      own knowledge") over a behavioral "do not inspect the repo". When the external
+      verdict actually matters, verify compliance from the run's agent transcripts —
+      the external CLI must appear as a real tool invocation (`tool_use` evidence), not
+      just in the injected instructions. The toolbox runs this check automatically: the
+      audit report (`wt:report`, and the plugin's Stop hook) carries an
+      `## External delegation` section that scans each routed agent's transcript for
+      real external-CLI `tool_use` and flags agents that show none, and the observe-ui
+      agent panel shows the same signal live (« delegated → CLI seen ✓ / NO CLI call ⚠ »).
+    - **Warn on headless launches.** Server-launched / headless-SDK runs do NOT load
+      plugin agents (verified live 2026-07-09: `workflow-toolbox:opencode-verifier` was
+      absent from a launched run's registry) — a cross-family request in that path
+      always falls back to Claude. The probe makes that safe and visible, but if the
+      user WANTS the external verdict, tell them to launch via the in-session Workflow
+      tool.
+- **`agentType` is ALSO a capability FENCE — and capability denial beats instruction.** A
+  leaf `agent()` receives the FULL ambient context as injected TEXT (every rule + the memory
+  index + the skill listing — verified), so a leaf that HAS `Write`/`Edit`/`Bash`/an MCP can
+  act on a rule it merely *read* ("save memory after every task", "auto-commit when green")
+  and mutate your memory, the board, or the repo when you wanted a read-only pass. Guard by
+  REMOVING the capability, not by instructing it away:
+  - **Capability first.** Define a registered agentType `.md` whose frontmatter withholds
+    exactly what the leaf must not do — `tools` (allowlist) / `disallowedTools` (denylist) /
+    `skills`: no `Write`/`Edit` → can't touch memory files; no `Bash` → can't `git commit`;
+    no board MCP → can't move cards; omit the save-memory skill → can't run it. A tool the
+    leaf lacks cannot be misused — a mechanical guarantee an instruction is not.
+  - **Instruction is only the backstop, for what you can't cleanly deny.** `Bash` is the
+    escape hatch (an agent that needs it can still commit / write / curl, and you can't drop
+    git without dropping Bash) — THERE, add an explicit non-goals line to the agentType's own
+    prompt ("do NOT commit, push, write memory, or modify the board"). Instruction ALONE, on
+    a capable leaf that also has "auto-commit" in its injected context, is the unreliable case.
+  - **Harness vs SDK.** On the Workflow-tool (`agent()`) path this frontmatter fence is the
+    ONLY capability lever — no per-call `tools`, and the ambient text can't be shed. On the SDK
+    path we own `query()`, so `settingSources: []` sheds the ambient rules text too and
+    `@workflow-toolbox/smoke`'s `leastPrivilegeOptions()` bakes the safe defaults (no
+    tools/skills/mcp/ambient, `strictMcpConfig` on) — proven by `pnpm canary:agents`.
+  - **The inter-agent messaging channel is part of what the fence controls.** When a workflow
+    runs inside an interactive session, the harness may give each leaf agent a session-level
+    messaging tool (e.g. `SendMessage`) AND advertise the session's addressable agents to it —
+    so a default-type leaf has an OUTBOUND channel to the launching conversation and to any
+    named live agent, and under-specified prompts have been observed using it spontaneously
+    (e.g. asking the main conversation for missing context). Verified control facts:
+    - The advertisement FOLLOWS the capability: an agentType whose `tools:` allowlist omits the
+      messaging tool gets neither the tool NOR the teammates advertisement — denying the
+      capability removes the knowledge with it. This is the one clean off-switch.
+    - Sibling agents within the same run are NOT addressable by their `label` — there is no
+      practicable intra-run lateral channel; anything cross-agent must relay through the
+      launching conversation.
+    - Headless-launched runs (a server/SDK session) still carry the messaging tool but have no
+      session teammates to address — no leakage into other sessions by construction.
+    - Consequence for briefs: a read-only or fixture leaf should run under a fenced agentType
+      (no messaging tool) rather than being instructed not to message; for capable leaves,
+      remember their output channel is not limited to their return value.
+  - **The agentType registry is read at session start.** An agent `.md` added mid-session is
+    not visible to `agent({agentType})` until a fresh session; the runtime errors listing the
+    available types, so the failure is loud, not silent.
+- **When to define an `.md` vs inline the prompt.** Inline when the leaf is a generic worker
+  the default subagent's capabilities already fit. Define a registered agentType `.md` when you
+  need a capability fence (above), reusable discipline across workflows, or a specific
+  model/effort/skills preload the frontmatter carries that a per-call prompt can't. Generate a
+  starting fence with `workflow-toolbox scaffold agent <spec.json>` — it emits the frontmatter
+  (tools/disallowedTools/skills/model/effort) + a "Do NOT …" non-goals backstop from a
+  capability spec, so you don't hand-write it.
+

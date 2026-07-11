@@ -46,6 +46,41 @@ var __wt = (() => {
     default: () => dev_full_workflow_default
   });
 
+  // ../packages/runtime/src/prompt-tag.ts
+  var PROMPT_TAG_PREFIX = "<!-- wt-meta ";
+  function escapeValue(v) {
+    return v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\n", "&#10;");
+  }
+  function buildPromptTag(fields) {
+    const parts = [];
+    if (fields.label !== void 0) parts.push(`label="${escapeValue(fields.label)}"`);
+    if (fields.phase !== void 0) parts.push(`phase="${escapeValue(fields.phase)}"`);
+    if (parts.length === 0) return null;
+    return `${PROMPT_TAG_PREFIX}${parts.join(" ")} -->`;
+  }
+  function withPromptTags(rt) {
+    let currentPhase;
+    const agent = (prompt, opts) => {
+      const tag = buildPromptTag({ label: opts?.label, phase: opts?.phase ?? currentPhase });
+      const tagged = tag !== null && !prompt.startsWith(tag) ? `${tag}
+
+${prompt}` : prompt;
+      return rt.agent(tagged, opts);
+    };
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => {
+        currentPhase = title;
+        rt.phase(title);
+      },
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
+  }
+
   // ../packages/build/src/define-workflow.ts
   function normalizeArgs(raw) {
     if (raw === void 0) return void 0;
@@ -87,9 +122,95 @@ var __wt = (() => {
       async run(rt, rawArgs) {
         const normalized = normalizeArgs(rawArgs);
         const input = def.parseInput !== void 0 ? def.parseInput(normalized) : normalized;
-        return def.run(rt, input);
+        return def.run(withPromptTags(rt), input);
       }
     };
+  }
+  var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+  var EFFORT_ROLE_VALUES = ["low", "medium", "high", "xhigh", "max", "auto"];
+  var PER_AGENT_KEYS = ["model", "effort", "agentType", "isolation", "stallMs"];
+  function isRecord(v) {
+    return typeof v === "object" && v !== null && !Array.isArray(v);
+  }
+  function asNonEmptyString(v, where) {
+    if (typeof v !== "string" || v.trim().length === 0) {
+      throw new Error(`parseConfig: ${where} must be a non-empty string, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffort(v, where) {
+    if (typeof v !== "string" || !EFFORTS.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORTS.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffortRoleValue(v, where) {
+    if (typeof v !== "string" || !EFFORT_ROLE_VALUES.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORT_ROLE_VALUES.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function parsePerAgent(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: perAgent must be an object, got ${raw === null ? "null" : typeof raw}`);
+    for (const key of Object.keys(raw)) {
+      if (!PER_AGENT_KEYS.includes(key)) {
+        throw new Error(`parseConfig: unknown perAgent key "${key}" \u2014 expected one of ${PER_AGENT_KEYS.join(", ")}`);
+      }
+    }
+    const out = {};
+    if (raw.model !== void 0) out.model = asNonEmptyString(raw.model, "perAgent.model");
+    if (raw.effort !== void 0) out.effort = asEffort(raw.effort, "perAgent.effort");
+    if (raw.agentType !== void 0) out.agentType = asNonEmptyString(raw.agentType, "perAgent.agentType");
+    if (raw.isolation !== void 0) {
+      if (raw.isolation !== "worktree") {
+        throw new Error(`parseConfig: perAgent.isolation must be 'worktree' when set, got ${JSON.stringify(raw.isolation)}`);
+      }
+      out.isolation = "worktree";
+    }
+    if (raw.stallMs !== void 0) {
+      const n = raw.stallMs;
+      if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) {
+        throw new Error(`parseConfig: perAgent.stallMs must be a positive finite number, got ${JSON.stringify(n)}`);
+      }
+      out.stallMs = n;
+    }
+    return out;
+  }
+  function parseStringMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asNonEmptyString(v, `${where}.${k}`);
+    return out;
+  }
+  function parseEffortMap(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: effort must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`);
+    return out;
+  }
+  function parseNumberMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v !== "number" || !Number.isFinite(v)) {
+        throw new Error(`parseConfig: ${where}.${k} must be a finite number, got ${JSON.stringify(v)}`);
+      }
+      out[k] = v;
+    }
+    return out;
+  }
+  function parseConfig(raw) {
+    if (raw === void 0 || raw === null) return {};
+    if (!isRecord(raw)) {
+      throw new Error(`parseConfig: expected an object (or undefined), got ${typeof raw}`);
+    }
+    const config = {};
+    if (raw.perAgent !== void 0) config.perAgent = parsePerAgent(raw.perAgent);
+    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models");
+    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort);
+    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes");
+    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing");
+    return config;
   }
 
   // ../packages/patterns/src/envelope.ts
@@ -111,7 +232,7 @@ var __wt = (() => {
   }
 
   // dev-full.workflow.ts
-  function isRecord(v) {
+  function isRecord2(v) {
     return typeof v === "object" && v !== null && !Array.isArray(v);
   }
   function isStringArray(v) {
@@ -121,18 +242,18 @@ var __wt = (() => {
     return isStringArray(v) ? v : [];
   }
   function narrowPlanResult(value) {
-    if (!isRecord(value)) {
+    if (!isRecord2(value)) {
       return { ok: false, reason: 'plan child returned an unexpected shape (not an object) \u2014 cannot read "artifact"' };
     }
     const artifact = value["artifact"];
-    if (!isRecord(artifact)) {
+    if (!isRecord2(artifact)) {
       return { ok: false, reason: 'plan child returned no "artifact" object \u2014 cannot hand off to dev-implement' };
     }
     if (typeof artifact["goal"] !== "string") {
       return { ok: false, reason: 'plan child artifact has no string "goal"' };
     }
     const context = artifact["context"];
-    if (!isRecord(context)) {
+    if (!isRecord2(context)) {
       return { ok: false, reason: 'plan child artifact has no "context" object' };
     }
     for (const key of ["projectDir", "testCommand", "buildCommand", "conventions"]) {
@@ -145,11 +266,11 @@ var __wt = (() => {
       return { ok: false, reason: 'plan child artifact has no non-empty "tasks" array' };
     }
     for (const task of tasks) {
-      if (!isRecord(task) || typeof task["id"] !== "string" || typeof task["title"] !== "string") {
+      if (!isRecord2(task) || typeof task["id"] !== "string" || typeof task["title"] !== "string") {
         return { ok: false, reason: 'plan child artifact has a task without string "id"/"title"' };
       }
       const files = task["files"];
-      if (!Array.isArray(files) || files.some((f) => !isRecord(f) || typeof f["path"] !== "string")) {
+      if (!Array.isArray(files) || files.some((f) => !isRecord2(f) || typeof f["path"] !== "string")) {
         return { ok: false, reason: `plan child artifact task "${String(task["id"])}" has a malformed "files" list` };
       }
     }
@@ -165,7 +286,7 @@ var __wt = (() => {
     };
   }
   function narrowImplementResult(value) {
-    if (!isRecord(value)) {
+    if (!isRecord2(value)) {
       return { ok: false, reason: 'implement child returned an unexpected shape (not an object) \u2014 cannot read "succeeded"' };
     }
     for (const key of ["succeeded", "failed", "skipped"]) {
@@ -178,7 +299,7 @@ var __wt = (() => {
       return { ok: false, reason: 'implement child returned no "tasks" array' };
     }
     for (const task of tasks) {
-      if (!isRecord(task) || typeof task["id"] !== "string" || typeof task["title"] !== "string" || typeof task["status"] !== "string") {
+      if (!isRecord2(task) || typeof task["id"] !== "string" || typeof task["title"] !== "string" || typeof task["status"] !== "string") {
         return { ok: false, reason: 'implement child report has a task without string "id"/"title"/"status"' };
       }
     }
@@ -195,7 +316,7 @@ var __wt = (() => {
     };
   }
   function narrowReviewResult(value) {
-    if (!isRecord(value)) {
+    if (!isRecord2(value)) {
       return { ok: false, reason: "review child returned an unexpected shape (not an object)" };
     }
     return {
@@ -204,7 +325,7 @@ var __wt = (() => {
     };
   }
   function parseInput(raw) {
-    if (!isRecord(raw)) {
+    if (!isRecord2(raw)) {
       throw new Error(
         'dev-full: input must be an object with "goal" (string), "projectDir" (string) and "scriptPaths" ({plan, implement, reviewFix} absolute artifact paths) \u2014 received: ' + (raw === null ? "null" : Array.isArray(raw) ? "array" : typeof raw)
       );
@@ -231,7 +352,7 @@ var __wt = (() => {
       areas = raw["areas"];
     }
     const sp = raw["scriptPaths"];
-    if (!isRecord(sp)) {
+    if (!isRecord2(sp)) {
       throw new Error(
         'dev-full: "scriptPaths" must be an object {plan, implement, reviewFix} \u2014 absolute paths to the three committed child artifacts (e.g. "<repo>/toolkit/workflows/dev-plan.js")'
       );
@@ -330,6 +451,16 @@ var __wt = (() => {
       }
       reviewerType = raw["reviewerType"];
     }
+    let verifierType = null;
+    if (raw["verifierType"] !== void 0 && raw["verifierType"] !== null) {
+      if (typeof raw["verifierType"] !== "string" || raw["verifierType"].trim().length === 0) {
+        throw new Error(
+          'dev-full: "verifierType" must be a non-empty subagent-type string (e.g. "codex:codex-rescue") \u2014 omit to use the dev-plan default (standard same-model Critique verifier)'
+        );
+      }
+      verifierType = raw["verifierType"];
+    }
+    const effort = parseConfig(raw).effort ?? null;
     return {
       goal,
       areas,
@@ -344,7 +475,9 @@ var __wt = (() => {
       implementerType,
       fixerModel,
       fixerType,
-      reviewerType
+      reviewerType,
+      verifierType,
+      effort
     };
   }
   async function callChild(rt, scriptPath, args) {
@@ -376,7 +509,9 @@ var __wt = (() => {
     const planCall = await callChild(rt, input.scriptPaths.plan, {
       goal: input.goal,
       areas: input.areas,
-      projectDir: input.projectDir
+      projectDir: input.projectDir,
+      ...input.verifierType !== null ? { verifierType: input.verifierType } : {},
+      ...input.effort !== null ? { effort: input.effort } : {}
     });
     if (!planCall.ok) return finish("aborted-at-plan", planCall.reason);
     const planNarrow = narrowPlanResult(planCall.value);
@@ -410,6 +545,7 @@ var __wt = (() => {
     if (input.maxIterationsPerTask !== null) implementArgs["maxIterationsPerTask"] = input.maxIterationsPerTask;
     if (input.implementerModel !== null) implementArgs["implementerModel"] = input.implementerModel;
     if (input.implementerType !== null) implementArgs["implementerType"] = input.implementerType;
+    if (input.effort !== null) implementArgs["effort"] = input.effort;
     const implementCall = await callChild(rt, input.scriptPaths.implement, implementArgs);
     if (!implementCall.ok) return finish("aborted-at-implement", implementCall.reason);
     const implementNarrow = narrowImplementResult(implementCall.value);
@@ -476,6 +612,8 @@ ${statusLines.join("\n")}` + (changedFiles !== null ? "\n\nNote: the changed-fil
     if (input.fixerModel !== null) reviewArgs["fixerModel"] = input.fixerModel;
     if (input.fixerType !== null) reviewArgs["fixerType"] = input.fixerType;
     if (input.reviewerType !== null) reviewArgs["reviewerType"] = input.reviewerType;
+    if (input.verifierType !== null) reviewArgs["verifierType"] = input.verifierType;
+    if (input.effort !== null) reviewArgs["effort"] = input.effort;
     rt.phase("Review & Fix");
     const reviewCall = await callChild(rt, input.scriptPaths.reviewFix, reviewArgs);
     if (!reviewCall.ok) return finish("aborted-at-review", reviewCall.reason);
