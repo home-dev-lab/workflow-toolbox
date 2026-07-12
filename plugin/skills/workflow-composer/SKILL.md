@@ -33,7 +33,7 @@ The reference files carry the deep material — read them when a step points you
 
 - `references/api-reference.md` — every global, option, cap, and constant, each
   tagged with its evidence tier (documented / observed / verified).
-- `references/patterns.md` — the eight orchestration patterns as copy-paste recipes.
+- `references/patterns.md` — the nine orchestration patterns as copy-paste recipes.
 - `references/orchestrator-pipelines.md` — human-gated multi-workflow jobs (L3).
 - `references/shipped-compositions.md` — the 13 shipped compositions + operational lessons.
 - `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
@@ -78,9 +78,9 @@ just run by hand instead of compiled. Route to the lowest rung that fits:
    itself, **with no `.js` artifact and without the Workflow tool**. This is the rung
    the gate above was hiding. It buys you the pattern (refute-first verify,
    fan-out-synthesize, tournament, loop-until-dry) for a one-off, at zero build cost.
-   The eight shapes and a sandbox→main-loop translation table are in
+   The nine shapes and a sandbox→main-loop translation table are in
    [patterns.md](references/patterns.md) (*"Inline in the main conversation loop"*).
-   This is the same default `deep-grounding` reaches for; seven of the eight patterns
+   This is the same default `deep-grounding` reaches for; eight of the nine patterns
    translate cleanly — only `planAndExecute` at scale really wants the artifact.
 4. **Compiled workflow** (the rest of this guide) — graduate here the moment **any**
    of three holds, and not before: **reuse** (kept, re-run, version-pinned), **scale**
@@ -107,7 +107,7 @@ If the workflow will be **kept, re-run, and maintained** — not a one-off — d
 hand-write the orchestration. The **`@workflow-toolbox` toolkit** is a compile-time
 TypeScript pattern library, published to npm as `@workflow-toolbox/{runtime,patterns,build}`
 (its source lives at `toolkit/` in this plugin's repo / marketplace clone). It packages
-the eight orchestration patterns as
+the nine orchestration patterns as
 typed, tested functions and compiles each workflow into a self-contained `.js`
 artifact:
 
@@ -256,7 +256,7 @@ the dev-workflow family.
 
 ## The raw authoring path (one-offs)
 
-Hand-write the `.js` when the job is a one-off, fits none of the eight patterns, or
+Hand-write the `.js` when the job is a one-off, fits none of the nine patterns, or
 the toolkit's build chain is unavailable.
 
 ### File anatomy
@@ -408,7 +408,7 @@ review-like workflow.
 
 - `references/api-reference.md` — the evidence-tiered runtime reference: every global,
   option, cap, and failure mode, each tagged documented / observed / verified.
-- `references/patterns.md` — the eight orchestration patterns as copy-paste recipes.
+- `references/patterns.md` — the nine orchestration patterns as copy-paste recipes.
 - `references/orchestrator-pipelines.md` — human-gated multi-workflow jobs (L3).
 - `references/shipped-compositions.md` — the 13 shipped compositions + operational lessons.
 - `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.

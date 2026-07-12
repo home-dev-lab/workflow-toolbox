@@ -1,6 +1,6 @@
 export const meta = {
   "name": "demo-all-patterns",
-  "description": "Render demo: exercises all eight patterns in one run, one phase each, for observe-ui graph verification.",
+  "description": "Render demo: exercises eight of the nine patterns in one run, one phase each (the all-nine nested showcase is demo-showcase-v2), for observe-ui graph verification.",
   "whenToUse": "Use only to populate the observe-ui graph with every pattern shape (a rendering fixture) — not a real task workflow.",
   "phases": [
     {
@@ -1538,7 +1538,7 @@ ${renderClaim(claim)}`;
   var demo_all_patterns_workflow_default = defineWorkflow({
     meta: {
       name: "demo-all-patterns",
-      description: "Render demo: exercises all eight patterns in one run, one phase each, for observe-ui graph verification.",
+      description: "Render demo: exercises eight of the nine patterns in one run, one phase each (the all-nine nested showcase is demo-showcase-v2), for observe-ui graph verification.",
       whenToUse: "Use only to populate the observe-ui graph with every pattern shape (a rendering fixture) \u2014 not a real task workflow.",
       phases: [
         { title: "Route", detail: "classifyAndAct \u2014 one router agent then one action agent" },
