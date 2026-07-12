@@ -1,6 +1,5 @@
 {
   "name": "@workflow-toolbox/pipeline-spec",
-  "private": true,
   "version": "0.1.0",
   "license": "FSL-1.1-ALv2",
   "type": "module",
@@ -12,11 +11,26 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build": "tsup"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.5.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
   }
 }

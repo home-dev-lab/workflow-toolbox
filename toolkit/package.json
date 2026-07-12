@@ -18,7 +18,7 @@
     "wt:scaffold": "tsx packages/scaffold/src/cli.ts",
     "wt:calibrate": "tsx packages/smoke/src/calibrate.ts",
     "debugger:build": "tsx packages/debugger/build.ts",
-    "build:dist": "pnpm --filter @workflow-toolbox/runtime --filter @workflow-toolbox/patterns --filter @workflow-toolbox/build run build",
+    "build:dist": "pnpm --filter @workflow-toolbox/runtime --filter @workflow-toolbox/patterns --filter @workflow-toolbox/build --filter @workflow-toolbox/std --filter @workflow-toolbox/pipeline-spec run build",
     "smoke": "tsx packages/smoke/src/run.ts",
     "canary": "tsx packages/smoke/src/canary-all.ts",
     "canary:edge": "tsx packages/smoke/src/edge-canaries.ts",
