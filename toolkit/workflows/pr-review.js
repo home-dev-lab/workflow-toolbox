@@ -403,13 +403,18 @@ ${prompt}` : prompt;
 
   // ../packages/patterns/src/leaf-fence.ts
   var LEAF_AGENT_TYPE = "workflow-toolbox:leaf";
+  var FENCE_UNAVAILABLE_MESSAGE = "fence UNAVAILABLE \u2014 leaves run with SendMessage enabled this run";
   async function withLeafFence(rt, options = {}) {
-    const { phase, agentType = LEAF_AGENT_TYPE, disabled = false } = options;
+    const { phase, agentType = LEAF_AGENT_TYPE, disabled = false, perAgent } = options;
     if (disabled) {
       return { rt, report: { resolvedAgentType: null, probe: null } };
     }
-    const probe = await probeAgentType(rt, agentType, phase !== void 0 ? { phase } : {});
+    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
+    const probe = await probeAgentType(probeRt, agentType, phase !== void 0 ? { phase } : {});
     const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
+    if (probe.agentType === void 0) {
+      rt.log(`[leaf-fence] \u26A0 ${FENCE_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
+    }
     return {
       rt: withAgentDefaults(rt, defaults),
       report: {
@@ -907,7 +912,11 @@ ${renderClaim(claim)}`;
     rt00.phase("Fence");
     const { rt: rt0, report: leafFence } = await withLeafFence(rt00, {
       phase: "Fence",
-      disabled: input.messaging === true
+      disabled: input.messaging === true,
+      // The probe call itself must inherit the SAME blanket default the rest of the
+      // run gets below — otherwise it silently runs on the raw session model/effort,
+      // contradicting perAgent's own "every agent inherits" contract.
+      ...input.perAgent !== null ? { perAgent: input.perAgent } : {}
     });
     const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0;
     const warnings = [];

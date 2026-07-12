@@ -393,13 +393,18 @@ ${prompt}` : prompt;
 
   // ../packages/patterns/src/leaf-fence.ts
   var LEAF_AGENT_TYPE = "workflow-toolbox:leaf";
+  var FENCE_UNAVAILABLE_MESSAGE = "fence UNAVAILABLE \u2014 leaves run with SendMessage enabled this run";
   async function withLeafFence(rt, options = {}) {
-    const { phase, agentType = LEAF_AGENT_TYPE, disabled = false } = options;
+    const { phase, agentType = LEAF_AGENT_TYPE, disabled = false, perAgent } = options;
     if (disabled) {
       return { rt, report: { resolvedAgentType: null, probe: null } };
     }
-    const probe = await probeAgentType(rt, agentType, phase !== void 0 ? { phase } : {});
+    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
+    const probe = await probeAgentType(probeRt, agentType, phase !== void 0 ? { phase } : {});
     const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
+    if (probe.agentType === void 0) {
+      rt.log(`[leaf-fence] \u26A0 ${FENCE_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
+    }
     return {
       rt: withAgentDefaults(rt, defaults),
       report: {

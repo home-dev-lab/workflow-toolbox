@@ -57,6 +57,19 @@ export interface WithLeafFenceOptions {
    *  agent that must notify a live teammate) sets this, once, at the top of run().
    *  Default false — the fence applies. */
   disabled?: boolean
+  /** A workflow's own blanket per-agent defaults (the SAME object you'd pass to an
+   *  outer `withAgentDefaults(fencedRt, config.perAgent)` afterward), applied to the
+   *  fence's OWN internal probe call ONLY. Without this, the probe silently ran on
+   *  the raw session model/effort even when the workflow declares a blanket
+   *  `perAgent` override — contradicting perAgent's own "every agent in every
+   *  pattern inherits" contract (review finding). Safe to pass the whole object
+   *  including `agentType`: the probe call always sets its OWN explicit `agentType`
+   *  (the type being probed), which wins over anything in `perAgent` per the normal
+   *  `{...defaults, ...opts}` precedence — only `model`/`effort`/`isolation`/
+   *  `stallMs` actually reach the probe. Does NOT change the fence's OWN precedence
+   *  (still innermost — an outer `withAgentDefaults(fencedRt, perAgent)` applied by
+   *  the caller AFTER this call still wins for every OTHER agent in the workflow). */
+  perAgent?: AgentDefaults
 }
 
 /** The leaf-fence probe story, for a workflow that wants to surface it in its own
@@ -71,6 +84,17 @@ export interface LeafFenceReport {
   probe: AgentTypeProbeReport | null
 }
 
+// Fail-open must be LOUD (review finding): the probe/fallback convention is
+// deliberately graceful (never abort a run over a missing agentType), but a SILENT
+// degradation here means every leaf in the run keeps SendMessage without anyone
+// noticing short of inspecting the returned report. This line is unconditional and
+// UNMISSABLE in the journal — never gated behind opt-in report inspection. It is
+// leaf-fence's OWN log call, distinct from probeAgentType's generic "falling back to
+// the standard subagent" line, because that generic line never says WHAT capability
+// silently came back (SendMessage) or that it applies to the WHOLE run's leaves.
+const FENCE_UNAVAILABLE_MESSAGE =
+  'fence UNAVAILABLE — leaves run with SendMessage enabled this run'
+
 /**
  * Wrap `rt` so every agent() call defaults to the fenced leaf agentType — UNLESS
  * that call (or an outer `withAgentDefaults`/per-role `<role>Type` override)
@@ -80,11 +104,17 @@ export interface LeafFenceReport {
  * `withAgentDefaults` wrap (e.g. for `config.perAgent`) — composition order is
  * "outer wins" (see withAgentDefaults), so applying the fence first keeps it the
  * lowest-priority default and lets a workflow's own blanket override win cleanly.
+ * Pass the SAME `perAgent` object as `options.perAgent` too, so the fence's own
+ * probe call inherits its model/effort instead of silently running on the session
+ * default (see `WithLeafFenceOptions.perAgent`).
  *
  * @example
  * ```ts
  * async function run(rt0: WorkflowRuntime, input: MyInput) {
- *   const { rt: fenced, report } = await withLeafFence(rt0, { disabled: input.messaging === true })
+ *   const { rt: fenced, report } = await withLeafFence(rt0, {
+ *     disabled: input.messaging === true,
+ *     ...(input.perAgent !== null ? { perAgent: input.perAgent } : {}),
+ *   })
  *   const rt = input.perAgent !== null ? withAgentDefaults(fenced, input.perAgent) : fenced
  *   // ...
  *   return { ...., leafFence: report }
@@ -95,14 +125,23 @@ export async function withLeafFence(
   rt: WorkflowRuntime,
   options: WithLeafFenceOptions = {},
 ): Promise<{ rt: WorkflowRuntime; report: LeafFenceReport }> {
-  const { phase, agentType = LEAF_AGENT_TYPE, disabled = false } = options
+  const { phase, agentType = LEAF_AGENT_TYPE, disabled = false, perAgent } = options
 
   if (disabled) {
     return { rt, report: { resolvedAgentType: null, probe: null } }
   }
 
-  const probe = await probeAgentType(rt, agentType, phase !== undefined ? { phase } : {})
+  // The probe call inherits perAgent's model/effort/isolation/stallMs (NOT
+  // agentType — probeAgentType always sets its OWN explicit agentType, which wins
+  // regardless of what perAgent carries). Without this, the probe silently ran on
+  // the raw session model even when the workflow declares a blanket override.
+  const probeRt = perAgent !== undefined ? withAgentDefaults(rt, perAgent) : rt
+  const probe = await probeAgentType(probeRt, agentType, phase !== undefined ? { phase } : {})
   const defaults: AgentDefaults = probe.agentType !== undefined ? { agentType: probe.agentType } : {}
+
+  if (probe.agentType === undefined) {
+    rt.log(`[leaf-fence] ⚠ ${FENCE_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? 'unknown'})`)
+  }
 
   return {
     rt: withAgentDefaults(rt, defaults),

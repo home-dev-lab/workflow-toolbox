@@ -258,6 +258,45 @@ describe('independent-analysis leaf-agent fence (messaging)', () => {
     expect(leafFence.probe).toBeNull()
   })
 
+  it('logs an unmissable fence-unavailable warning in the journal (fail-open must be LOUD)', async () => {
+    const failing = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+        if (p.includes('availability probe')) {
+          throw new Error(`agentType '${LEAF_AGENT_TYPE}' not found`)
+        }
+        if (p.includes('an independent multi-lens sweep proposes')) {
+          return { verdict: 'confirmed', reason: 'vote' }
+        }
+        if (p.includes('you are the synthesis agent')) {
+          return {
+            candidates: [
+              { title: 'Finding', lens: 'correctness', why: 'w', severity: 'high', kind: 'risk' },
+            ],
+          }
+        }
+        if (p.includes('you are an independent analyst')) {
+          return {
+            angles: [
+              { title: 'Angle', why: 'w', severity: 'high', kind: 'risk', alreadyKnown: false },
+            ],
+          }
+        }
+        return { lenses: ['correctness'] }
+      },
+    })
+    await wf.run(failing, JSON.stringify(baseInput))
+    const warning = failing.logs.find((l) => l.includes('fence UNAVAILABLE'))
+    expect(warning).toBeDefined()
+    expect(warning).toContain('leaves run with SendMessage enabled this run')
+  })
+
+  it('does not log the fence-unavailable warning on the happy path (fence resolves)', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(baseInput))
+    expect(rt.logs.some((l) => l.includes('fence UNAVAILABLE'))).toBe(false)
+  })
+
   it('rejects a non-boolean messaging value via the shared parseConfig validation', async () => {
     const rt = makeRuntime()
     await expect(

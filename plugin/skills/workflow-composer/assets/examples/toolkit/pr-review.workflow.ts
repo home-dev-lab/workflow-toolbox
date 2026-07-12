@@ -341,6 +341,10 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   const { rt: rt0, report: leafFence } = await withLeafFence(rt00, {
     phase: 'Fence',
     disabled: input.messaging === true,
+    // The probe call itself must inherit the SAME blanket default the rest of the
+    // run gets below — otherwise it silently runs on the raw session model/effort,
+    // contradicting perAgent's own "every agent inherits" contract.
+    ...(input.perAgent !== null ? { perAgent: input.perAgent } : {}),
   })
 
   // Class-A one-wiring-point: wrap the runtime ONCE so the blanket per-agent

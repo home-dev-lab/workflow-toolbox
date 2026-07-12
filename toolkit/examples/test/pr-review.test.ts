@@ -633,6 +633,67 @@ describe('pr-review leaf-agent fence (messaging)', () => {
     expect((result as { leafFence: { resolvedAgentType: string | null } }).leafFence.resolvedAgentType).toBeNull()
   })
 
+  it('logs an unmissable fence-unavailable warning in the journal (fail-open must be LOUD)', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+        if (p.includes('availability probe')) {
+          throw new Error(`agentType '${LEAF_AGENT_TYPE}' not found`)
+        }
+        if (p.includes('adversarially verify')) return { verdict: 'confirmed', reason: 'r' }
+        if (p.includes('synthesizing a code review')) return { verdict: 'approve', summary: 'Fine' }
+        if (p.includes('you are a specialized code reviewer')) return { findings: [] }
+        if (p.includes('you are reviewing a')) return { summary: 'Summary text here', riskAreas: ['a'] }
+        if (p.includes('classify it into exactly one category')) return { category: 'bugfix' }
+        return { summary: 'Default', riskAreas: [] }
+      },
+    })
+    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+    const warning = rt.logs.find((l) => l.includes('fence UNAVAILABLE'))
+    expect(warning).toBeDefined()
+    expect(warning).toContain('leaves run with SendMessage enabled this run')
+  })
+
+  it('does not log the fence-unavailable warning on the happy path (fence resolves)', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+    expect(rt.logs.some((l) => l.includes('fence UNAVAILABLE'))).toBe(false)
+  })
+
+  it('the fence PROBE inherits perAgent.model — not the raw session default (regression: silent-inheritance review finding)', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(
+      rt,
+      JSON.stringify({ target: 'HEAD~1..HEAD', perAgent: { model: 'sonnet', effort: 'low' } }),
+    )
+    const probe = rt.calls.find((c) => c.opts?.label === 'probeAgentType:probe')!
+    expect(probe.opts?.model).toBe('sonnet')
+    expect(probe.opts?.effort).toBe('low')
+    // The probe's own explicit agentType still wins over perAgent's (none set here, but
+    // asserted for clarity that the fence probe target is unaffected).
+    expect(probe.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+  })
+
+  it('perAgent.agentType still wins over the fence for every OTHER agent (probe unaffected)', async () => {
+    const rt = makeHappyPathRuntime()
+    const result = await wf.run(
+      rt,
+      JSON.stringify({ target: 'HEAD~1..HEAD', perAgent: { agentType: 'my-custom-blanket-type' } }),
+    )
+    // The fence probe itself still targets the fenced type (perAgent.agentType must
+    // NOT redirect the probe away from what it is meant to check).
+    const probe = rt.calls.find((c) => c.opts?.label === 'probeAgentType:probe')!
+    expect(probe.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    // But every OTHER agent — reviewers included — carries perAgent's blanket
+    // agentType, not the fence: perAgent is the OUTER wrap, applied after the fence.
+    const nonProbeCalls = rt.calls.filter((c) => c.opts?.label !== 'probeAgentType:probe')
+    expect(nonProbeCalls.length).toBeGreaterThan(0)
+    for (const c of nonProbeCalls) expect(c.opts?.agentType).toBe('my-custom-blanket-type')
+    expect((result as { leafFence: { resolvedAgentType: string | null } }).leafFence.resolvedAgentType).toBe(
+      LEAF_AGENT_TYPE,
+    )
+  })
+
   it('rejects a non-boolean messaging value via the shared parseConfig validation', async () => {
     const rt = makeHappyPathRuntime()
     await expect(

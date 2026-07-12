@@ -52,6 +52,71 @@ describe('withLeafFence — available (probe answers)', () => {
   })
 })
 
+describe('withLeafFence — options.perAgent (probe inherits the workflow blanket default)', () => {
+  it('the probe call itself carries perAgent.model/effort, not the raw session default', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
+    await withLeafFence(rt, { perAgent: { model: 'sonnet', effort: 'low' } })
+    // Exactly one call was made — the probe itself.
+    expect(rt.calls.length).toBe(1)
+    const probeCall = rt.calls[0]!
+    expect(probeCall.opts?.label).toBe('probeAgentType:probe')
+    expect(probeCall.opts?.model).toBe('sonnet')
+    expect(probeCall.opts?.effort).toBe('low')
+    // The probe's OWN explicit agentType (the type being probed) still wins over
+    // whatever agentType perAgent might also carry.
+    expect(probeCall.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+  })
+
+  it('an agentType inside perAgent does NOT redirect the probe away from the fenced type', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
+    await withLeafFence(rt, { perAgent: { agentType: 'some-other-type', model: 'haiku' } })
+    const probeCall = rt.calls[0]!
+    expect(probeCall.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    expect(probeCall.opts?.model).toBe('haiku')
+  })
+
+  it('without perAgent, the probe carries no model/effort override (unchanged prior behavior)', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
+    await withLeafFence(rt)
+    const probeCall = rt.calls[0]!
+    expect(probeCall.opts?.model).toBeUndefined()
+    expect(probeCall.opts?.effort).toBeUndefined()
+  })
+
+  it('perAgent does not change the RETURNED wrapper’s precedence — a per-role override still wins', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
+    const { rt: fenced } = await withLeafFence(rt, { perAgent: { model: 'sonnet' } })
+    await fenced.agent('do the task', { agentType: 'workflow-toolbox:opencode-verifier' })
+    const call = rt.calls[rt.calls.length - 1]!
+    expect(call.opts?.agentType).toBe('workflow-toolbox:opencode-verifier')
+  })
+})
+
+describe('withLeafFence — fail-open is LOUD (unmissable journal log)', () => {
+  it('logs an unmissable warning when the fence is unavailable', async () => {
+    const rt = new FakeRuntime({
+      onAgent: () => 'OPENCODE_UNAVAILABLE: plugin not installed',
+    })
+    await withLeafFence(rt)
+    const warning = rt.logs.find((l) => l.includes('fence UNAVAILABLE'))
+    expect(warning).toBeDefined()
+    expect(warning).toContain('leaves run with SendMessage enabled this run')
+    expect(warning).toContain(LEAF_AGENT_TYPE)
+  })
+
+  it('does NOT log the fence-unavailable warning when the probe succeeds', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
+    await withLeafFence(rt)
+    expect(rt.logs.some((l) => l.includes('fence UNAVAILABLE'))).toBe(false)
+  })
+
+  it('does NOT log the fence-unavailable warning when the fence is disabled (intentional opt-out)', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
+    await withLeafFence(rt, { disabled: true })
+    expect(rt.logs.some((l) => l.includes('fence UNAVAILABLE'))).toBe(false)
+  })
+})
+
 describe('withLeafFence — graceful fallback (agentType not installed/registered)', () => {
   it('degrades to the standard subagent when the probe cannot answer, without throwing', async () => {
     // Only a call actually routed through the fenced agentType fails — mirrors the
