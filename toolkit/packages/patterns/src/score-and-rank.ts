@@ -376,6 +376,7 @@ export async function scoreAndRank<TItem = string>(
   // → (below cutoff) → survivors.
   emitDigest(rt, {
     stage: STAGE,
+    ...(phase !== undefined ? { phase } : {}),
     counts: {
       requested: items.length,
       kept: survivors.length,

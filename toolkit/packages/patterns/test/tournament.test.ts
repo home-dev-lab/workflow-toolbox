@@ -131,10 +131,11 @@ describe('tournament — agentType routing', () => {
 describe('tournament — failure digest', () => {
   it('emits a digest even when all attempts fail (no winner to rank)', async () => {
     const rt = new FakeRuntime({ onAgent: () => null }) // every attempt returns null
-    await tournament(rt, makeOptions())
+    await tournament(rt, makeOptions({ phase: 'tourney-phase' }))
     const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'tournament')
     expect(digest).toBeDefined()
     expect(digest?.counts).toEqual({ attempts: 0 })
+    expect(digest?.phase).toBe('tourney-phase')
   })
 })
 
@@ -157,6 +158,7 @@ describe('tournament — happy path', () => {
     const result = await tournament(rt, makeOptions({
       angles: ['a', 'b'],
       judgeCount: 2,
+      phase: 'tourney-phase',
     }))
 
     expect(result.warnings).toHaveLength(0)
@@ -169,6 +171,8 @@ describe('tournament — happy path', () => {
     expect(result.stats.truncated).toBe(0)
     // 2 attempts + 2*2 judges + 1 synthesis = 7
     expect(result.stats.agentsSpawned).toBe(7)
+    const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'tournament')
+    expect(digest?.phase).toBe('tourney-phase')
   })
 })
 
@@ -522,11 +526,14 @@ describe('tournament — empty ranking after judging', () => {
       },
     })
 
-    const result = await tournament(rt, makeOptions({ angles: ['a', 'b'], judgeCount: 1 }))
+    const result = await tournament(rt, makeOptions({ angles: ['a', 'b'], judgeCount: 1, phase: 'tourney-phase' }))
 
     expect(result.value).toBeNull()
     expect(rt.calls.find(c => c.opts?.label === 'tournament:synthesize')).toBeUndefined()
     expect(result.warnings.some(w => w.includes('ranking') || w.includes('empty'))).toBe(true)
+    const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'tournament')
+    expect(digest?.counts).toEqual({ attempts: 0 })
+    expect(digest?.phase).toBe('tourney-phase')
   })
 })
 

@@ -273,6 +273,7 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
   // Phase digest: the handoff out of this phase + how many tasks fed the synthesis.
   emitDigest(rt, {
     stage: STAGE,
+    ...(phase !== undefined ? { phase } : {}),
     output: value === null ? 'synthesis: none' : `synthesis from ${parts.length}/${tasks.length} tasks`,
     counts: { tasks: tasks.length, completed: parts.length },
   })

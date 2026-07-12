@@ -148,10 +148,12 @@ describe('scoreAndRank — happy path', () => {
       dimensions: [{ name: 'x', prompt: (f) => `x of ${f}` }],
       maxItems: 4,
       cutoff: { type: 'topK', k: 2 },
+      phase: 'score-phase',
     })
 
     const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'scoreAndRank')
     expect(digest?.counts).toEqual({ requested: 5, kept: 2, cut: 1, dropped: 1, truncated: 1 })
+    expect(digest?.phase).toBe('score-phase')
     // the partition holds: kept + cut + dropped + truncated === requested
     const c = digest?.counts ?? {}
     expect((c.kept ?? 0) + (c.cut ?? 0) + (c.dropped ?? 0) + (c.truncated ?? 0)).toBe(c.requested ?? 0)

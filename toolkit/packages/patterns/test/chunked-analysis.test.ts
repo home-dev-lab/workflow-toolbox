@@ -178,10 +178,11 @@ describe('chunkedAnalysis — happy path', () => {
     const rt = new FakeRuntime({
       onAgent: ({ opts }) => (isSynthesisCall(opts?.label) ? 'final' : 'a'),
     })
-    await chunkedAnalysis(rt, makeOptions())
+    await chunkedAnalysis(rt, makeOptions({ phase: 'Map' }))
     const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'chunkedAnalysis')
     expect(digest?.counts).toEqual({ chunks: 3, analyzed: 3, dropped: 0, truncated: 0 })
     expect(digest?.output).toBe('synthesis from 3/3 chunks')
+    expect(digest?.phase).toBe('Map')
   })
 
   it('assigns chunk / synthesis label shapes', async () => {

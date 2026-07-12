@@ -157,11 +157,16 @@ export function warn(
 // knows (all PhaseDigest fields beyond `stage` are optional) — including before a
 // failure early-return, so a failed run still reports an outcome.
 //
-// ATTRIBUTION: observe attributes a digest to a phase by stage→agent-label match and
-// surfaces it ONLY when exactly one digest resolves to that phase. If the SAME
-// pattern is invoked more than once under ONE phase title, both digests resolve to
-// that phase and observe drops BOTH (explicit absence, never a guess) — give
-// repeated invocations distinct phases to keep their digests attributable.
+// ATTRIBUTION: observe resolves a digest to a phase in priority order: (1) `d.phase`
+// (the caller's `opts.phase`, when the pattern accepts one and the caller passed it) —
+// matched directly against a `workflow_phase` event's title, so it resolves even a
+// phase with zero surviving agents (an early-failure digest); (2) failing that,
+// stage→agent-label prefix match, surfacing ONLY when exactly one digest resolves to
+// that phase (if the SAME pattern is invoked more than once under ONE phase title,
+// both digests resolve to that phase and observe drops BOTH — explicit absence, never
+// a guess — give repeated invocations distinct phases, or distinct `phase` values, to
+// keep their digests attributable); (3) a pattern-specific fallback (loopUntilDone's
+// iteration-marker match) as last resort for patterns with no phase notion of their own.
 // ---------------------------------------------------------------------------
 
 export function emitDigest<S extends string>(rt: WorkflowRuntime, d: TypedPhaseDigest<S>): void {

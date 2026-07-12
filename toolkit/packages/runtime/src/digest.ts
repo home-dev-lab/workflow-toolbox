@@ -55,8 +55,17 @@ export function isLoopIterLabel(label: string): boolean {
  *  fanOutAndSynthesize fills output). */
 export interface PhaseDigest {
   /** The emitting pattern's name, e.g. 'classifyAndAct'. observe resolves this to a
-   *  phaseIndex by matching agent labels that share this prefix. */
+   *  phaseIndex by matching agent labels that share this prefix (fallback — see `phase`). */
   stage: string
+  /** The phase TITLE the pattern was called under (the same string the caller passes as
+   *  its agents' `opts.phase`), when the pattern accepts a `phase` option and the caller
+   *  supplied one. This is the PRIMARY phase-resolution hint: observe matches it directly
+   *  against a `workflow_phase` event's title, independent of whether any agent ran (closes
+   *  the gap the label-prefix fallback can't — e.g. an early-failure digest with zero
+   *  agents spawned). Omitted when the pattern has no phase notion at its digest site (e.g.
+   *  loopUntilDone — the body's agents own their own phase context) or the caller passed
+   *  none; observe then falls back to `stage`-based label matching. */
+  phase?: string
   /** A short summary of the value handed off out of this phase (the handoff node). */
   output?: string
   /** Branches/candidates that were taken (e.g. the chosen category). */
@@ -125,6 +134,7 @@ export type TypedPhaseDigest<S extends string> = Omit<PhaseDigest, 'stage' | 'co
  *  bytes. Absent fields are omitted entirely (never `null`/`undefined` valued). */
 export function formatDigest(d: PhaseDigest): string {
   const body: Record<string, unknown> = { stage: d.stage }
+  if (d.phase !== undefined) body.phase = d.phase
   if (d.output !== undefined) body.output = d.output
   if (d.taken !== undefined) body.taken = d.taken
   if (d.notTaken !== undefined) body.notTaken = d.notTaken
@@ -177,6 +187,7 @@ export function parseDigest(line: string): PhaseDigest | null {
   const rec = parsed as Record<string, unknown>
   if (typeof rec.stage !== 'string' || rec.stage.length === 0) return null
   const out: PhaseDigest = { stage: rec.stage }
+  if (typeof rec.phase === 'string' && rec.phase.length > 0) out.phase = rec.phase
   if (typeof rec.output === 'string') out.output = rec.output
   const taken = asStringArray(rec.taken)
   if (taken !== null) out.taken = taken

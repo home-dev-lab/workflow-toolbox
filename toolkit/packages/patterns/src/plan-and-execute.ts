@@ -249,7 +249,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
     }
 
     // Failure digest: the planner produced no subtasks.
-    emitDigest(rt, { stage: STAGE, output: 'synthesis: none', counts: { planned: 0, executed: 0, dropped: 0, truncated: 0 } })
+    emitDigest(rt, { stage: STAGE, ...(phase !== undefined ? { phase } : {}), output: 'synthesis: none', counts: { planned: 0, executed: 0, dropped: 0, truncated: 0 } })
     return { value: null, stats, warnings, workerResults: [], trail }
   }
 
@@ -350,7 +350,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
     }
 
     // Failure digest: subtasks were planned but no worker produced a result.
-    emitDigest(rt, { stage: STAGE, output: 'synthesis: none', counts: { planned: plannedCount, executed: 0, dropped: droppedWorkers, truncated } })
+    emitDigest(rt, { stage: STAGE, ...(phase !== undefined ? { phase } : {}), output: 'synthesis: none', counts: { planned: plannedCount, executed: 0, dropped: droppedWorkers, truncated } })
     return { value: null, stats, warnings, workerResults: [], trail }
   }
 
@@ -416,6 +416,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
   // dropped + truncated (the invariant the observe loss chips render against).
   emitDigest(rt, {
     stage: STAGE,
+    ...(phase !== undefined ? { phase } : {}),
     output: value === null ? 'synthesis: none' : 'synthesis: ok',
     counts: { planned: plannedCount, executed: successfulResults.length, dropped: droppedWorkers, truncated },
   })

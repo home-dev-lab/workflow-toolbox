@@ -122,11 +122,12 @@ describe('planAndExecute — failure digest', () => {
     const rt = new FakeRuntime({
       onAgent: ({ opts }) => (opts?.label === 'planAndExecute:plan' ? makePlan([]) : null),
     })
-    await planAndExecute(rt, makeOptions())
+    await planAndExecute(rt, makeOptions({ phase: 'exec-phase' }))
     const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'planAndExecute')
     expect(digest).toBeDefined()
     expect(digest?.counts).toEqual({ planned: 0, executed: 0, dropped: 0, truncated: 0 })
     expect(digest?.output).toBe('synthesis: none')
+    expect(digest?.phase).toBe('exec-phase')
   })
 })
 
@@ -149,8 +150,9 @@ describe('planAndExecute — loss-breakdown digest', () => {
         return null
       },
     })
-    await planAndExecute(rt, makeOptions())
+    await planAndExecute(rt, makeOptions({ phase: 'exec-phase' }))
     expect(digestOf(rt)?.counts).toEqual({ planned: 3, executed: 3, dropped: 0, truncated: 0 })
+    expect(digestOf(rt)?.phase).toBe('exec-phase')
   })
 
   it('surfaces BOTH dropped (null worker) and truncated (cap) in one breakdown', async () => {
@@ -181,8 +183,9 @@ describe('planAndExecute — loss-breakdown digest', () => {
         return null
       },
     })
-    await planAndExecute(rt, makeOptions())
+    await planAndExecute(rt, makeOptions({ phase: 'exec-phase' }))
     expect(digestOf(rt)?.counts).toEqual({ planned: 2, executed: 0, dropped: 2, truncated: 0 })
+    expect(digestOf(rt)?.phase).toBe('exec-phase')
   })
 
   // The observe funnel (total=planned, survivor=executed, losses=[dropped,truncated]) only renders

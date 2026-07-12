@@ -88,6 +88,19 @@ describe('emitDigest', () => {
       output: 'ok',
     })
   })
+
+  it('round-trips phase when the caller passes one', () => {
+    const rt = new FakeRuntime()
+    emitDigest(rt, { stage: 'tournament', phase: 'Compete', counts: { attempts: 2 } })
+    expect(parseDigest(rt.logs[0]!)).toEqual({ stage: 'tournament', phase: 'Compete', counts: { attempts: 2 } })
+  })
+
+  it('omits phase when the caller does not pass one', () => {
+    const rt = new FakeRuntime()
+    emitDigest(rt, { stage: 'tournament', counts: { attempts: 0 } })
+    expect(parseDigest(rt.logs[0]!)).toEqual({ stage: 'tournament', counts: { attempts: 0 } })
+    expect(rt.logs[0]).not.toContain('"phase"')
+  })
 })
 
 // ---------------------------------------------------------------------------

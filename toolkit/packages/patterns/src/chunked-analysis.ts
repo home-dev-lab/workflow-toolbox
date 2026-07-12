@@ -436,6 +436,7 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
   // observe's loss chips render against).
   emitDigest(rt, {
     stage: STAGE,
+    ...(phase !== undefined ? { phase } : {}),
     output: value === null ? 'synthesis: none' : `synthesis from ${chunkResults.length}/${chunks.length} chunks`,
     counts: { chunks: chunks.length, analyzed: chunkResults.length, dropped, truncated },
   })

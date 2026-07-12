@@ -382,6 +382,7 @@ export async function classifyAndAct<TIn, TOut = string>(
   const chosen = new Set(value.map(r => r.category))
   emitDigest(rt, {
     stage: STAGE,
+    ...(phase !== undefined ? { phase } : {}),
     taken: allCategories.filter(c => chosen.has(c)),
     notTaken: allCategories.filter(c => !chosen.has(c)),
     counts: { in: items.length, out: value.length },

@@ -168,11 +168,12 @@ describe('classifyAndAct — happy path', () => {
         return 'action-result'
       },
     })
-    await classifyAndAct(rt, makeOptions())
+    await classifyAndAct(rt, makeOptions({ phase: 'my-phase' }))
     const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'classifyAndAct')
     expect(digest).toBeDefined()
     expect(digest?.taken).toEqual(['docs'])
     expect(digest?.notTaken).toEqual(['bug', 'feature'])
+    expect(digest?.phase).toBe('my-phase')
   })
 
   it('returns correct value, exact stats, and empty warnings', async () => {

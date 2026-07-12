@@ -336,6 +336,7 @@ export async function generateAndFilter<TCand = string>(
   // (= requested − failed); the breakdown is requested = kept + rejected + failed.
   emitDigest(rt, {
     stage: STAGE,
+    ...(phase !== undefined ? { phase } : {}),
     counts: {
       requested: count,
       kept: value.length,

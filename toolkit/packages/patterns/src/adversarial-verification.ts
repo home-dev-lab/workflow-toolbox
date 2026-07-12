@@ -553,7 +553,7 @@ export async function adversarialVerification<TClaim>(
   for (const verdict of Object.keys(DIGEST_KEY) as ClaimVerdict[]) {
     counts[DIGEST_KEY[verdict]] = value.filter(v => v.verdict === verdict).length
   }
-  emitDigest(rt, { stage: STAGE, counts })
+  emitDigest(rt, { stage: STAGE, ...(phase !== undefined ? { phase } : {}), counts })
 
   return { value, stats, warnings, trail }
 }

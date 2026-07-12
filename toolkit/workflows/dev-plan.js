@@ -53,6 +53,7 @@ var __wt = (() => {
   var DIGEST_PREFIX = "[wt:digest]";
   function formatDigest(d) {
     const body = { stage: d.stage };
+    if (d.phase !== void 0) body.phase = d.phase;
     if (d.output !== void 0) body.output = d.output;
     if (d.taken !== void 0) body.taken = d.taken;
     if (d.notTaken !== void 0) body.notTaken = d.notTaken;
@@ -456,6 +457,7 @@ ${prompt}` : prompt;
     };
     emitDigest(rt, {
       stage: STAGE,
+      ...phase !== void 0 ? { phase } : {},
       output: value === null ? "synthesis: none" : `synthesis from ${parts.length}/${tasks.length} tasks`,
       counts: { tasks: tasks.length, completed: parts.length }
     });
@@ -683,7 +685,7 @@ ${renderClaim(claim)}`;
     for (const verdict of Object.keys(DIGEST_KEY)) {
       counts[DIGEST_KEY[verdict]] = value.filter((v) => v.verdict === verdict).length;
     }
-    emitDigest(rt, { stage: STAGE2, counts });
+    emitDigest(rt, { stage: STAGE2, ...phase !== void 0 ? { phase } : {}, counts });
     return { value, stats, warnings, trail };
   }
 
@@ -767,7 +769,7 @@ ${renderClaim(claim)}`;
         dropped: 0,
         truncated: 0
       };
-      emitDigest(rt, { stage: STAGE3, output: "synthesis: none", counts: { planned: 0, executed: 0, dropped: 0, truncated: 0 } });
+      emitDigest(rt, { stage: STAGE3, ...phase !== void 0 ? { phase } : {}, output: "synthesis: none", counts: { planned: 0, executed: 0, dropped: 0, truncated: 0 } });
       return { value: null, stats: stats2, warnings, workerResults: [], trail };
     }
     const plannedSubtasks = plan.subtasks;
@@ -829,7 +831,7 @@ ${renderClaim(claim)}`;
         dropped: droppedWorkers,
         truncated
       };
-      emitDigest(rt, { stage: STAGE3, output: "synthesis: none", counts: { planned: plannedCount, executed: 0, dropped: droppedWorkers, truncated } });
+      emitDigest(rt, { stage: STAGE3, ...phase !== void 0 ? { phase } : {}, output: "synthesis: none", counts: { planned: plannedCount, executed: 0, dropped: droppedWorkers, truncated } });
       return { value: null, stats: stats2, warnings, workerResults: [], trail };
     }
     const synthOpts = {
@@ -861,6 +863,7 @@ ${renderClaim(claim)}`;
     };
     emitDigest(rt, {
       stage: STAGE3,
+      ...phase !== void 0 ? { phase } : {},
       output: value === null ? "synthesis: none" : "synthesis: ok",
       counts: { planned: plannedCount, executed: successfulResults.length, dropped: droppedWorkers, truncated }
     });

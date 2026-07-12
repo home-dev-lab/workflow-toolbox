@@ -38,6 +38,7 @@ var __wt = (() => {
   var DIGEST_PREFIX = "[wt:digest]";
   function formatDigest(d) {
     const body = { stage: d.stage };
+    if (d.phase !== void 0) body.phase = d.phase;
     if (d.output !== void 0) body.output = d.output;
     if (d.taken !== void 0) body.taken = d.taken;
     if (d.notTaken !== void 0) body.notTaken = d.notTaken;
@@ -382,7 +383,7 @@ ${prompt}` : prompt;
         dropped: 0,
         truncated: 0
       };
-      emitDigest(rt, { stage: STAGE, output: "synthesis: none", counts: { planned: 0, executed: 0, dropped: 0, truncated: 0 } });
+      emitDigest(rt, { stage: STAGE, ...phase !== void 0 ? { phase } : {}, output: "synthesis: none", counts: { planned: 0, executed: 0, dropped: 0, truncated: 0 } });
       return { value: null, stats: stats2, warnings, workerResults: [], trail };
     }
     const plannedSubtasks = plan.subtasks;
@@ -444,7 +445,7 @@ ${prompt}` : prompt;
         dropped: droppedWorkers,
         truncated
       };
-      emitDigest(rt, { stage: STAGE, output: "synthesis: none", counts: { planned: plannedCount, executed: 0, dropped: droppedWorkers, truncated } });
+      emitDigest(rt, { stage: STAGE, ...phase !== void 0 ? { phase } : {}, output: "synthesis: none", counts: { planned: plannedCount, executed: 0, dropped: droppedWorkers, truncated } });
       return { value: null, stats: stats2, warnings, workerResults: [], trail };
     }
     const synthOpts = {
@@ -476,6 +477,7 @@ ${prompt}` : prompt;
     };
     emitDigest(rt, {
       stage: STAGE,
+      ...phase !== void 0 ? { phase } : {},
       output: value === null ? "synthesis: none" : "synthesis: ok",
       counts: { planned: plannedCount, executed: successfulResults.length, dropped: droppedWorkers, truncated }
     });

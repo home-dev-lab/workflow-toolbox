@@ -198,15 +198,24 @@ describe('probeAgentType — options', () => {
 describe('probeAgentType — phase digest', () => {
   it('emits an available digest', async () => {
     const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
-    await probeAgentType(rt, 'codex:codex-rescue')
+    await probeAgentType(rt, 'codex:codex-rescue', { phase: 'Probe' })
     const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'probeAgentType')
     expect(digest?.output).toContain('available')
+    expect(digest?.phase).toBe('Probe')
   })
 
   it('emits a fallback digest when unavailable', async () => {
     const rt = new FakeRuntime({ onAgent: () => 'OPENCODE_UNAVAILABLE: x' })
-    await probeAgentType(rt, 'codex:codex-rescue')
+    await probeAgentType(rt, 'codex:codex-rescue', { phase: 'Probe' })
     const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'probeAgentType')
     expect(digest?.output).toContain('fallback')
+    expect(digest?.phase).toBe('Probe')
+  })
+
+  it('omits phase when the caller does not pass one', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
+    await probeAgentType(rt, 'codex:codex-rescue')
+    const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'probeAgentType')
+    expect(digest?.phase).toBeUndefined()
   })
 })

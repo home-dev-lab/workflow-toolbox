@@ -97,10 +97,11 @@ describe('fanOutAndSynthesize — happy path', () => {
     const rt = new FakeRuntime({
       onAgent: ({ opts }) => (isSynthesisCall(opts?.label) ? 'synthesis-result' : 'part-result'),
     })
-    await fanOutAndSynthesize(rt, makeOptions())
+    await fanOutAndSynthesize(rt, makeOptions({ phase: 'fan-phase' }))
     const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'fanOutAndSynthesize')
     expect(digest?.counts).toEqual({ tasks: 3, completed: 3 })
     expect(digest?.output).toBe('synthesis from 3/3 tasks')
+    expect(digest?.phase).toBe('fan-phase')
   })
 
   it('returns correct value, exact stats, and empty warnings', async () => {

@@ -83,6 +83,7 @@ var __wt = (() => {
   var LOOP_ITER_MARKER = " \u27F2";
   function formatDigest(d) {
     const body = { stage: d.stage };
+    if (d.phase !== void 0) body.phase = d.phase;
     if (d.output !== void 0) body.output = d.output;
     if (d.taken !== void 0) body.taken = d.taken;
     if (d.notTaken !== void 0) body.notTaken = d.notTaken;
@@ -554,6 +555,7 @@ ${prompt}` : prompt;
     const chosen = new Set(value.map((r) => r.category));
     emitDigest(rt, {
       stage: STAGE,
+      ...phase !== void 0 ? { phase } : {},
       taken: allCategories.filter((c) => chosen.has(c)),
       notTaken: allCategories.filter((c) => !chosen.has(c)),
       counts: { in: items.length, out: value.length }
@@ -705,6 +707,7 @@ ${prompt}` : prompt;
     const trail = pendingTrail.map((e) => e.record);
     emitDigest(rt, {
       stage: STAGE2,
+      ...phase !== void 0 ? { phase } : {},
       counts: {
         requested: count,
         kept: value.length,
@@ -820,6 +823,7 @@ ${prompt}` : prompt;
     };
     emitDigest(rt, {
       stage: STAGE3,
+      ...phase !== void 0 ? { phase } : {},
       output: value === null ? "synthesis: none" : `synthesis from ${parts.length}/${tasks.length} tasks`,
       counts: { tasks: tasks.length, completed: parts.length }
     });
@@ -1047,7 +1051,7 @@ ${renderClaim(claim)}`;
     for (const verdict of Object.keys(DIGEST_KEY)) {
       counts[DIGEST_KEY[verdict]] = value.filter((v) => v.verdict === verdict).length;
     }
-    emitDigest(rt, { stage: STAGE4, counts });
+    emitDigest(rt, { stage: STAGE4, ...phase !== void 0 ? { phase } : {}, counts });
     return { value, stats, warnings, trail };
   }
 
@@ -1171,7 +1175,7 @@ ${renderClaim(claim)}`;
         dropped: droppedAttempts,
         truncated: 0
       };
-      emitDigest(rt, { stage: STAGE5, counts: { attempts: 0 } });
+      emitDigest(rt, { stage: STAGE5, ...phase !== void 0 ? { phase } : {}, counts: { attempts: 0 } });
       return { value: null, stats: stats2, warnings, trail };
     }
     const ranked = [];
@@ -1246,7 +1250,7 @@ ${renderClaim(claim)}`;
         dropped: droppedAttempts + unjudgeableCount,
         truncated: 0
       };
-      emitDigest(rt, { stage: STAGE5, counts: { attempts: 0 } });
+      emitDigest(rt, { stage: STAGE5, ...phase !== void 0 ? { phase } : {}, counts: { attempts: 0 } });
       return { value: null, stats: stats2, warnings, trail };
     }
     ranked.sort((a, b) => b.score - a.score);
@@ -1282,6 +1286,7 @@ ${renderClaim(claim)}`;
     const winner = ranked[0];
     emitDigest(rt, {
       stage: STAGE5,
+      ...phase !== void 0 ? { phase } : {},
       ...winner !== void 0 ? { taken: [`attempt:${winner.originalIndex}`] } : {},
       notTaken: ranked.slice(1).map((r) => `attempt:${r.originalIndex}`),
       counts: { attempts: ranked.length }
@@ -1492,7 +1497,7 @@ ${renderClaim(claim)}`;
         dropped: 0,
         truncated: 0
       };
-      emitDigest(rt, { stage: STAGE7, output: "synthesis: none", counts: { planned: 0, executed: 0, dropped: 0, truncated: 0 } });
+      emitDigest(rt, { stage: STAGE7, ...phase !== void 0 ? { phase } : {}, output: "synthesis: none", counts: { planned: 0, executed: 0, dropped: 0, truncated: 0 } });
       return { value: null, stats: stats2, warnings, workerResults: [], trail };
     }
     const plannedSubtasks = plan.subtasks;
@@ -1554,7 +1559,7 @@ ${renderClaim(claim)}`;
         dropped: droppedWorkers,
         truncated
       };
-      emitDigest(rt, { stage: STAGE7, output: "synthesis: none", counts: { planned: plannedCount, executed: 0, dropped: droppedWorkers, truncated } });
+      emitDigest(rt, { stage: STAGE7, ...phase !== void 0 ? { phase } : {}, output: "synthesis: none", counts: { planned: plannedCount, executed: 0, dropped: droppedWorkers, truncated } });
       return { value: null, stats: stats2, warnings, workerResults: [], trail };
     }
     const synthOpts = {
@@ -1586,6 +1591,7 @@ ${renderClaim(claim)}`;
     };
     emitDigest(rt, {
       stage: STAGE7,
+      ...phase !== void 0 ? { phase } : {},
       output: value === null ? "synthesis: none" : "synthesis: ok",
       counts: { planned: plannedCount, executed: successfulResults.length, dropped: droppedWorkers, truncated }
     });
@@ -1730,6 +1736,7 @@ ${renderClaim(claim)}`;
     const trail = pendingTrail.map((e) => e.record);
     emitDigest(rt, {
       stage: STAGE8,
+      ...phase !== void 0 ? { phase } : {},
       counts: {
         requested: items.length,
         kept: survivors.length,
@@ -1896,6 +1903,7 @@ ${renderClaim(claim)}`;
     };
     emitDigest(rt, {
       stage: STAGE9,
+      ...phase !== void 0 ? { phase } : {},
       output: value === null ? "synthesis: none" : `synthesis from ${chunkResults.length}/${chunks.length} chunks`,
       counts: { chunks: chunks.length, analyzed: chunkResults.length, dropped, truncated }
     });

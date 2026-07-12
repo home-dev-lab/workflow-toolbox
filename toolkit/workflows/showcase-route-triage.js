@@ -42,6 +42,7 @@ var __wt = (() => {
   var DIGEST_PREFIX = "[wt:digest]";
   function formatDigest(d) {
     const body = { stage: d.stage };
+    if (d.phase !== void 0) body.phase = d.phase;
     if (d.output !== void 0) body.output = d.output;
     if (d.taken !== void 0) body.taken = d.taken;
     if (d.notTaken !== void 0) body.notTaken = d.notTaken;
@@ -491,6 +492,7 @@ ${prompt}` : prompt;
     const chosen = new Set(value.map((r) => r.category));
     emitDigest(rt, {
       stage: STAGE,
+      ...phase !== void 0 ? { phase } : {},
       taken: allCategories.filter((c) => chosen.has(c)),
       notTaken: allCategories.filter((c) => !chosen.has(c)),
       counts: { in: items.length, out: value.length }
@@ -636,6 +638,7 @@ ${prompt}` : prompt;
     const trail = pendingTrail.map((e) => e.record);
     emitDigest(rt, {
       stage: STAGE2,
+      ...phase !== void 0 ? { phase } : {},
       counts: {
         requested: items.length,
         kept: survivors.length,

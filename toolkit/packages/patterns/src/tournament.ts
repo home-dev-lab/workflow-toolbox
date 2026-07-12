@@ -303,7 +303,7 @@ export async function tournament<TAttempt = string, TOut = string>(
     }
 
     // Failure digest: the run reached this phase but no attempt survived to ranking.
-    emitDigest(rt, { stage: STAGE, counts: { attempts: 0 } })
+    emitDigest(rt, { stage: STAGE, ...(phase !== undefined ? { phase } : {}), counts: { attempts: 0 } })
     return { value: null, stats, warnings, trail }
   }
 
@@ -423,7 +423,7 @@ export async function tournament<TAttempt = string, TOut = string>(
     }
 
     // Failure digest: attempts ran but none were judgeable — no winner to rank.
-    emitDigest(rt, { stage: STAGE, counts: { attempts: 0 } })
+    emitDigest(rt, { stage: STAGE, ...(phase !== undefined ? { phase } : {}), counts: { attempts: 0 } })
     return { value: null, stats, warnings, trail }
   }
 
@@ -501,6 +501,7 @@ export async function tournament<TAttempt = string, TOut = string>(
   const winner = ranked[0]
   emitDigest(rt, {
     stage: STAGE,
+    ...(phase !== undefined ? { phase } : {}),
     ...(winner !== undefined ? { taken: [`attempt:${winner.originalIndex}`] } : {}),
     notTaken: ranked.slice(1).map(r => `attempt:${r.originalIndex}`),
     counts: { attempts: ranked.length },

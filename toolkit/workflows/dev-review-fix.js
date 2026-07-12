@@ -55,6 +55,7 @@ var __wt = (() => {
   var LOOP_ITER_MARKER = " \u27F2";
   function formatDigest(d) {
     const body = { stage: d.stage };
+    if (d.phase !== void 0) body.phase = d.phase;
     if (d.output !== void 0) body.output = d.output;
     if (d.taken !== void 0) body.taken = d.taken;
     if (d.notTaken !== void 0) body.notTaken = d.notTaken;
@@ -532,7 +533,7 @@ ${renderClaim(claim)}`;
     for (const verdict of Object.keys(DIGEST_KEY)) {
       counts[DIGEST_KEY[verdict]] = value.filter((v) => v.verdict === verdict).length;
     }
-    emitDigest(rt, { stage: STAGE, counts });
+    emitDigest(rt, { stage: STAGE, ...phase !== void 0 ? { phase } : {}, counts });
     return { value, stats, warnings, trail };
   }
 

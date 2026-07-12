@@ -19,9 +19,21 @@ describe('formatDigest / parseDigest — round-trip', () => {
     expect(parseDigest(formatDigest(d))).toEqual(d)
   })
 
+  it('round-trips a digest carrying phase', () => {
+    const d: PhaseDigest = { stage: 'tournament', phase: 'Compete', counts: { attempts: 2 } }
+    expect(parseDigest(formatDigest(d))).toEqual(d)
+  })
+
   it('omits absent fields entirely (no null/undefined keys in the line)', () => {
     const line = formatDigest({ stage: 'tournament', output: 'winner: attempt-2' })
     expect(line).toBe(`${DIGEST_PREFIX} {"stage":"tournament","output":"winner: attempt-2"}`)
+  })
+
+  it('omits phase when absent, includes it right after stage when present', () => {
+    const withoutPhase = formatDigest({ stage: 'tournament', output: 'winner: attempt-2' })
+    expect(withoutPhase).not.toContain('"phase"')
+    const withPhase = formatDigest({ stage: 'tournament', phase: 'Compete', output: 'winner: attempt-2' })
+    expect(withPhase).toBe(`${DIGEST_PREFIX} {"stage":"tournament","phase":"Compete","output":"winner: attempt-2"}`)
   })
 
   it('is deterministic — fixed key order regardless of construction order', () => {
@@ -70,6 +82,11 @@ describe('parseDigest — tolerant, never throws', () => {
     expect(parseDigest(`${DIGEST_PREFIX} {"stage":"s","taken":[1,2],"counts":{"a":"b"}}`)).toEqual({
       stage: 's',
     })
+  })
+
+  it('drops a non-string or empty-string phase but keeps stage', () => {
+    expect(parseDigest(`${DIGEST_PREFIX} {"stage":"s","phase":5}`)).toEqual({ stage: 's' })
+    expect(parseDigest(`${DIGEST_PREFIX} {"stage":"s","phase":""}`)).toEqual({ stage: 's' })
   })
 
   it('tolerates leading/trailing whitespace around the line', () => {

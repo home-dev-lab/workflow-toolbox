@@ -113,9 +113,10 @@ describe('generateAndFilter — happy path', () => {
         return 'candidate'
       },
     })
-    await generateAndFilter(rt, makeOptions({ count: 3 }))
+    await generateAndFilter(rt, makeOptions({ count: 3, phase: 'gen-phase' }))
     const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'generateAndFilter')
     expect(digest?.counts).toEqual({ requested: 3, kept: 2, rejected: 1, failed: 0 })
+    expect(digest?.phase).toBe('gen-phase')
   })
 
   it('returns all candidates that pass, with exact stats and empty warnings', async () => {

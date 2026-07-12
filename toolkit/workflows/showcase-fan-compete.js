@@ -42,6 +42,7 @@ var __wt = (() => {
   var DIGEST_PREFIX = "[wt:digest]";
   function formatDigest(d) {
     const body = { stage: d.stage };
+    if (d.phase !== void 0) body.phase = d.phase;
     if (d.output !== void 0) body.output = d.output;
     if (d.taken !== void 0) body.taken = d.taken;
     if (d.notTaken !== void 0) body.notTaken = d.notTaken;
@@ -433,6 +434,7 @@ ${prompt}` : prompt;
     };
     emitDigest(rt, {
       stage: STAGE,
+      ...phase !== void 0 ? { phase } : {},
       output: value === null ? "synthesis: none" : `synthesis from ${parts.length}/${tasks.length} tasks`,
       counts: { tasks: tasks.length, completed: parts.length }
     });
@@ -559,7 +561,7 @@ ${prompt}` : prompt;
         dropped: droppedAttempts,
         truncated: 0
       };
-      emitDigest(rt, { stage: STAGE2, counts: { attempts: 0 } });
+      emitDigest(rt, { stage: STAGE2, ...phase !== void 0 ? { phase } : {}, counts: { attempts: 0 } });
       return { value: null, stats: stats2, warnings, trail };
     }
     const ranked = [];
@@ -634,7 +636,7 @@ ${prompt}` : prompt;
         dropped: droppedAttempts + unjudgeableCount,
         truncated: 0
       };
-      emitDigest(rt, { stage: STAGE2, counts: { attempts: 0 } });
+      emitDigest(rt, { stage: STAGE2, ...phase !== void 0 ? { phase } : {}, counts: { attempts: 0 } });
       return { value: null, stats: stats2, warnings, trail };
     }
     ranked.sort((a, b) => b.score - a.score);
@@ -670,6 +672,7 @@ ${prompt}` : prompt;
     const winner = ranked[0];
     emitDigest(rt, {
       stage: STAGE2,
+      ...phase !== void 0 ? { phase } : {},
       ...winner !== void 0 ? { taken: [`attempt:${winner.originalIndex}`] } : {},
       notTaken: ranked.slice(1).map((r) => `attempt:${r.originalIndex}`),
       counts: { attempts: ranked.length }

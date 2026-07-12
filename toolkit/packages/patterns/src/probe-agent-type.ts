@@ -220,6 +220,7 @@ export async function probeAgentType(
 
   emitDigest(rt, {
     stage: STAGE,
+    ...(phase !== undefined ? { phase } : {}),
     output: available ? `available: ${agentType}` : 'fallback: standard subagent',
   })
 

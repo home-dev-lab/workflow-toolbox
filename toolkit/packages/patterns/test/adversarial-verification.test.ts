@@ -1228,10 +1228,12 @@ describe('adversarialVerification — phase digest partition invariant', () => {
       votes: 1,
       refuteThreshold: 1,
       maxVerifyClaims: 4,
+      phase: 'verify-phase',
     }))
 
     const line = rt.logs.find((l) => l.startsWith('[wt:digest]'))
     expect(line).toBeDefined()
+    expect(parseDigest(line!)?.phase).toBe('verify-phase')
     const counts = parseDigest(line!)?.counts
     expect(counts).toEqual({
       claims: 5,
