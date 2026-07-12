@@ -357,8 +357,10 @@ skeptic: the producers stay on the session model, which `withAgentDefaults({ age
 (blanket, all-or-nothing) cannot express. Launch-time exposure: `cross-model-verify`
 and `independent-analysis` take the request via the structured config envelope
 (`args.agentTypes.verify`) and PROBE it at entry (`probeAgentType`) with a graceful
-fallback to the standard verifier; `pr-review` routes its lens reviewers likewise
-via `args.agentTypes.review` (the same role key as `effort.review`). The dev family (`dev-plan` Critique,
+fallback to the standard verifier; `pr-review` wires the SAME `agentTypes.verify` knob
+for its own Verify fan, symmetric with its `agentTypes.review` knob for the lens
+reviewers (each role independently probed and routed; the same role key as
+`effort.review`/`effort.verify`). The dev family (`dev-plan` Critique,
 `dev-review-fix` Verify, orchestrated by `dev-full`) still takes a bespoke
 `verifierType` input.
 The plugin also ships **`workflow-toolbox:opencode-verifier`**, a second

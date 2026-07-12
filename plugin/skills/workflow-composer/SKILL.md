@@ -210,8 +210,9 @@ Layering, outer-to-inner precedence: explicit pattern knob (e.g. `verifierModel`
 `withAgentDefaults` blanket default > session default. **`pr-review.workflow.ts` is
 the worked example** — it parses `perAgent`/`effort`/`agentTypes` via `parseConfig`,
 wraps once with `withAgentDefaults`, and keeps its targeted `verifierModel` knob and
-its probe-resolved `agentTypes.review` routing, which still win over the blanket
-default. Type per-role knobs as scalars today; they can widen to a per-instance
+its probe-resolved `agentTypes.review` / `agentTypes.verify` routing (independently
+resolved, one per stage), which still win over the blanket default. Type per-role
+knobs as scalars today; they can widen to a per-instance
 selector (array/function) non-breaking when same-role model mixing lands (needs
 cross-model dispatch).
 
@@ -337,7 +338,8 @@ cross-family proposal protocol, and the capability-fence how-to.
 - **Example agentType definitions** (copy-and-wire): `assets/examples/agents/reviewer.md`
   and `assets/examples/agents/verifier.md` — a diff-grounded multi-lens reviewer and a
   refute-first verifier, both read-only and fenced against `SendMessage`. See
-  `assets/examples/agents/README.md` for wiring into `pr-review`'s `agentTypes.review`.
+  `assets/examples/agents/README.md` for wiring into `pr-review`'s `agentTypes.review` /
+  `agentTypes.verify`.
 
 ## Validate before you run
 

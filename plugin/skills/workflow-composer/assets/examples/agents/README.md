@@ -30,30 +30,34 @@ As example assets, they cost nothing until a user copies them in.
    The registry is read at session start, so a fresh session is needed before
    `agentType: 'reviewer'` (or `'verifier'`) resolves.
 
-2. Route the **reviewer** role into `pr-review`'s per-lens reviewers via the structured
-   config envelope:
+2. Route the **reviewer** and **verifier** roles into `pr-review` via the structured
+   config envelope — each role is probed independently and wired to its own stage:
 
    ```js
    Workflow({
      scriptPath: '.../pr-review.js',
-     args: { target: 'HEAD~3..HEAD', agentTypes: { review: 'reviewer' } },
+     args: {
+       target: 'HEAD~3..HEAD',
+       agentTypes: { review: 'reviewer', verify: 'verifier' },
+     },
    })
    ```
 
-   `pr-review` probes the requested type before any reviewer spawns and degrades to the
-   standard subagent — reported in the result's `probe` field, never silently — when the
-   type can't answer.
+   `pr-review` probes each requested type before its stage spawns any agent and degrades to
+   the standard subagent — reported in the result's `probe` (review) / `verifierProbe`
+   (verify) fields, never silently — when a type can't answer. `agentTypes.review` routes
+   only the per-lens reviewers; `agentTypes.verify` routes only the adversarial-verification
+   fan (`adversarialVerification`'s own `verifierType` option) — the synthesizer is never
+   specialized by either knob.
 
 3. **`verifier.md` and the `verify` role.** The structured `agentTypes.verify` knob is real
    and used by other compositions in this toolkit (`independent-analysis`,
    `cross-model-verify`) to route their adversarial-verification fan to a specialist or a
-   cross-family bridge. `pr-review`, as shipped, only reads `agentTypes.review` — its verify
-   fan does not currently expose a matching `verify` role knob, so passing
-   `agentTypes: { verify: 'verifier' }` to `pr-review` has no effect today. Use
-   `verifier.md` directly wherever `adversarialVerification`'s own `verifierType` option is
-   exposed (`independent-analysis`, `cross-model-verify`, or a custom composition you
-   author), and treat wiring it into `pr-review` as a natural follow-on enhancement to that
-   workflow rather than something these example files alone can turn on.
+   cross-family bridge — and `pr-review` now wires it too (its Verify stage's own
+   `adversarialVerification` call), symmetric with `agentTypes.review`. Use `verifier.md`
+   wherever `adversarialVerification`'s own `verifierType` option is exposed (`pr-review`,
+   `independent-analysis`, `cross-model-verify`, or a custom composition you author) — the
+   same probe-then-degrade contract applies everywhere it's wired in.
 
 ## The trade-off these mitigate
 
@@ -73,7 +77,8 @@ reviewed persona rather than the ambient default.
 ## See also
 
 - [`../toolkit/pr-review.workflow.ts`](../toolkit/pr-review.workflow.ts) — the composition
-  these agents route into (the `Probe` phase and the `agentTypes.review` knob).
+  these agents route into (the `Probe` phase and the `agentTypes.review` / `agentTypes.verify`
+  knobs).
 - [`../../references/model-and-agent-routing.md`](../../references/model-and-agent-routing.md)
   — the full rules on model tiering, `agentType` routing, and the capability-fence
   mechanism these two files rely on.

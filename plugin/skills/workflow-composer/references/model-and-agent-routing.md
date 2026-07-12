@@ -49,8 +49,9 @@
   code-reviewer or TDD guide whose system prompt carries discipline the generic
   subagent lacks — via the `agentType` option. Launch-time exposure comes in two
   shapes: the STRUCTURED config envelope `args.agentTypes.<role>` (pr-review's
-  `agentTypes.review`, cross-model-verify's / independent-analysis's
-  `agentTypes.verify` — probe-resolved at entry with graceful fallback), and the
+  `agentTypes.review` AND `agentTypes.verify` — symmetric, both probe-resolved at entry
+  with graceful fallback — plus cross-model-verify's / independent-analysis's own
+  `agentTypes.verify`), and the
   dev-workflow family's older bespoke `*Type` knob family: `implementerType`
   (dev-implement's green), `fixerType` (dev-review-fix's fixer), `reviewerType`
   (dev-review-fix's reviewers). Four rules:
