@@ -176,6 +176,13 @@ These are the rules the library follows; follow them in your own `run` body:
    start a new paragraph: a `\n`-joined prompt reads back as one unscannable wall
    of text (user finding on pr-review, 2026-07-08). Structure also helps the
    receiving agent parse the brief.
+7. **Consider the `cacheWarm` trade-off on any fan-out pattern call** (the eight
+   patterns that launch >1 agent concurrently — see "Cache-warm" in
+   `references/patterns.md`). It defaults to `true` (staggers the burst to save
+   redundant prompt-cache writes, at the cost of a bit more latency per burst).
+   When it's not obvious which way a workflow should go, ASK: does latency or
+   token/cache cost matter more here? Set `cacheWarm: false` on that call if the
+   answer is latency.
 
 ### Launch-time configuration — tune model/effort/agentType without editing source
 

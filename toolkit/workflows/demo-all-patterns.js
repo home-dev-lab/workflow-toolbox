@@ -401,7 +401,7 @@ ${prompt}` : prompt;
       rt,
       kept,
       [classifyStage, actStage],
-      cacheWarm ?? false
+      cacheWarm ?? true
     );
     const value = rawResults.filter(
       (r) => r !== null
@@ -547,7 +547,7 @@ ${prompt}` : prompt;
       rt,
       indices,
       [generateStage, filterStage],
-      cacheWarm ?? false
+      cacheWarm ?? true
     );
     const value = [];
     for (const r of rawResults) {
@@ -646,7 +646,7 @@ ${prompt}` : prompt;
       agentsSpawned++;
       return rt.agent(taskPrompt(task, i), taskOpts);
     });
-    const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? false);
+    const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? true);
     const parts = [];
     let dropped = 0;
     for (let i = 0; i < taskResults.length; i++) {
@@ -813,9 +813,9 @@ Examine it through the lens of: ${lens}.` : "";
 Claim:
 ${renderClaim(claim)}`;
     }
-    if (cacheWarm) {
+    if (cacheWarm ?? true) {
       agentsSpawned++;
-      trail.push(await runCacheWarmup(rt, warnings, `${STAGE4}:verify:warm`, STAGE4, {
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE4}:warm`, STAGE4, {
         ...phase !== void 0 ? { phase } : {},
         model: effectiveModel,
         ...effort !== void 0 ? { effort } : {},
@@ -1001,9 +1001,9 @@ ${renderClaim(claim)}`;
     let nullJudgeVoteCount = 0;
     const warnings = [];
     const trail = [];
-    if (cacheWarm) {
+    if (cacheWarm ?? true) {
       agentsSpawned++;
-      trail.push(await runCacheWarmup(rt, warnings, `${STAGE5}:attempt:warm`, STAGE5, {
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE5}:warm:attempt`, STAGE5, {
         ...phase !== void 0 ? { phase } : {},
         ...attemptModel !== void 0 ? { model: attemptModel } : {},
         ...attemptEffort !== void 0 ? { effort: attemptEffort } : {},
@@ -1057,9 +1057,9 @@ ${renderClaim(claim)}`;
     }
     const ranked = [];
     let unjudgeableCount = 0;
-    if (cacheWarm) {
+    if (cacheWarm ?? true) {
       agentsSpawned++;
-      trail.push(await runCacheWarmup(rt, warnings, `${STAGE5}:judge:warm`, STAGE5, {
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE5}:warm:judge`, STAGE5, {
         ...phase !== void 0 ? { phase } : {},
         ...judgeModel !== void 0 ? { model: judgeModel } : {},
         ...judgeEffort !== void 0 ? { effort: judgeEffort } : {},
@@ -1404,7 +1404,7 @@ ${renderClaim(claim)}`;
       agentsSpawned++;
       return rt.agent(workerPrompt(subtask, i), opts);
     });
-    const rawWorkerResults = await parallelWithCacheWarm(rt, workerThunks, cacheWarm ?? false);
+    const rawWorkerResults = await parallelWithCacheWarm(rt, workerThunks, cacheWarm ?? true);
     const successfulResults = [];
     let droppedWorkers = 0;
     for (let i = 0; i < rawWorkerResults.length; i++) {
@@ -1556,7 +1556,7 @@ ${renderClaim(claim)}`;
       });
       return { itemIndex: t.itemIndex, dimIndex: t.dimIndex, score: verdict.score };
     });
-    const rawCells = await parallelWithCacheWarm(rt, thunks, cacheWarm ?? false);
+    const rawCells = await parallelWithCacheWarm(rt, thunks, cacheWarm ?? true);
     const dimScores = keptItems.map(() => dimensions.map(() => null));
     for (const cell of rawCells) {
       if (cell === null) continue;

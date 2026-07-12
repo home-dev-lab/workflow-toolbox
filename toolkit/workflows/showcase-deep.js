@@ -460,7 +460,7 @@ ${prompt}` : prompt;
       rt,
       indices,
       [generateStage, filterStage],
-      cacheWarm ?? false
+      cacheWarm ?? true
     );
     const value = [];
     for (const r of rawResults) {
@@ -615,9 +615,9 @@ Examine it through the lens of: ${lens}.` : "";
 Claim:
 ${renderClaim(claim)}`;
     }
-    if (cacheWarm) {
+    if (cacheWarm ?? true) {
       agentsSpawned++;
-      trail.push(await runCacheWarmup(rt, warnings, `${STAGE2}:verify:warm`, STAGE2, {
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE2}:warm`, STAGE2, {
         ...phase !== void 0 ? { phase } : {},
         model: effectiveModel,
         ...effort !== void 0 ? { effort } : {},
@@ -957,7 +957,7 @@ ${renderClaim(claim)}`;
       agentsSpawned++;
       return rt.agent(analyzePrompt(chunk, i, total), opts);
     });
-    const analyzeResults = await parallelWithCacheWarm(rt, analyzeThunks, cacheWarm ?? false);
+    const analyzeResults = await parallelWithCacheWarm(rt, analyzeThunks, cacheWarm ?? true);
     const chunkResults = [];
     let dropped = 0;
     for (let i = 0; i < analyzeResults.length; i++) {

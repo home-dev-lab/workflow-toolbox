@@ -15,6 +15,11 @@ function makeOptions(
   return {
     claims: ['claim-0', 'claim-1', 'claim-2'],
     renderClaim: (c) => c,
+    // cacheWarm now defaults to TRUE at the pattern level — pin it false here
+    // so every PRE-EXISTING test in this file (many of which count agent
+    // calls positionally, e.g. via a callCount closure) keeps testing exactly
+    // what it always tested, decoupled from the new default.
+    cacheWarm: false,
     ...overrides,
   }
 }
@@ -1329,19 +1334,55 @@ describe('adversarialVerification — trail: effort field', () => {
 // proportionally more than a single extra throwaway agent.
 // ---------------------------------------------------------------------------
 
-describe('adversarialVerification — cacheWarm=false (default, inert)', () => {
-  it('is byte-identical to omitting the option: no warm call, same stats/trail', async () => {
-    const rtOmitted = new FakeRuntime({ onAgent: () => confirmedVote })
+describe('adversarialVerification — cacheWarm=false (explicit opt-out)', () => {
+  it('fires no warmup call at all — behavior matches the pattern\'s pre-cacheWarm shape', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 3, refuteThreshold: 2, cacheWarm: false,
+    }))
+
+    expect(rt.calls).toHaveLength(3) // 3 votes, no warm call
+    expect(rt.calls.some(c => c.opts?.label?.includes('warm'))).toBe(false)
+    expect(result.stats.agentsSpawned).toBe(3)
+    expect(result.trail).toHaveLength(3)
+    expect(result.trail[0]!.stage).not.toContain('warm')
+  })
+
+  it('produces identical stats/trail to cacheWarm:true modulo the extra warm record', async () => {
     const rtFalse = new FakeRuntime({ onAgent: () => confirmedVote })
+    const rtTrue = new FakeRuntime({ onAgent: () => confirmedVote })
 
     const opts = makeOptions({ claims: ['c0'], votes: 3, refuteThreshold: 2 })
-    const resultOmitted = await adversarialVerification(rtOmitted, opts)
     const resultFalse = await adversarialVerification(rtFalse, { ...opts, cacheWarm: false })
+    const resultTrue = await adversarialVerification(rtTrue, { ...opts, cacheWarm: true })
 
-    expect(resultFalse.stats).toEqual(resultOmitted.stats)
-    expect(resultFalse.trail).toEqual(resultOmitted.trail)
-    expect(rtFalse.calls).toHaveLength(rtOmitted.calls.length)
-    expect(rtFalse.calls.some(c => c.opts?.label?.includes('warm'))).toBe(false)
+    // Same verdicts either way — cacheWarm never changes the OUTCOME, only
+    // whether an extra warm call precedes the real burst.
+    expect(resultFalse.value).toEqual(resultTrue.value)
+    expect(resultTrue.stats.agentsSpawned).toBe(resultFalse.stats.agentsSpawned + 1)
+    expect(resultTrue.trail).toHaveLength(resultFalse.trail.length + 1)
+  })
+})
+
+describe('adversarialVerification — cacheWarm omitted (defaults to TRUE)', () => {
+  it('fires the warmup call by default when the option is not passed at all', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    // Bypass this file's makeOptions() (which pins cacheWarm:false for the
+    // OTHER tests in this file) — construct the options object directly, with
+    // the cacheWarm key genuinely ABSENT, to prove the PATTERN's own default.
+    const result = await adversarialVerification(rt, {
+      claims: ['c0'],
+      renderClaim: (c) => c,
+      votes: 3,
+      refuteThreshold: 2,
+    })
+
+    expect(rt.calls).toHaveLength(4) // 1 warm + 3 votes
+    expect(rt.calls[0]!.opts?.label).toBe('adversarialVerification:warm')
+    expect(result.stats.agentsSpawned).toBe(4)
+    expect(result.value[0]!.verdict).toBe('confirmed')
   })
 })
 
@@ -1354,13 +1395,13 @@ describe('adversarialVerification — cacheWarm=true (warmup-agent)', () => {
     }))
 
     expect(rt.calls).toHaveLength(4) // 1 warm + 3 votes
-    expect(rt.calls[0]!.opts?.label).toBe('adversarialVerification:verify:warm')
+    expect(rt.calls[0]!.opts?.label).toBe('adversarialVerification:warm')
     expect(rt.calls[0]!.opts?.model).toBe('opus') // BEST_MODEL default
 
     // agentsSpawned + trail invariant (trail.length === agentsSpawned) still holds.
     expect(result.stats.agentsSpawned).toBe(4)
     expect(result.trail).toHaveLength(4)
-    expect(result.trail[0]!.stage).toBe('adversarialVerification:verify:warm')
+    expect(result.trail[0]!.stage).toBe('adversarialVerification:warm')
     expect(result.trail[0]!.outcome).toBe('ok')
 
     // Real verification unaffected.
@@ -1408,7 +1449,7 @@ describe('adversarialVerification — cacheWarm=true (warmup-agent)', () => {
       claims: ['c0'], votes: 3, refuteThreshold: 2, cacheWarm: true,
     }))
 
-    expect(result.trail[0]!.stage).toBe('adversarialVerification:verify:warm')
+    expect(result.trail[0]!.stage).toBe('adversarialVerification:warm')
     expect(result.trail[0]!.outcome).toBe('null')
     expect(result.warnings.some(w => w.includes('cache-warm'))).toBe(true)
 

@@ -14,6 +14,10 @@ function makeOptions(
     planPrompt: 'Create a plan for the task',
     workerPrompt: (subtask, i) => `execute subtask ${i}: ${subtask.description}`,
     synthesisPrompt: (results) => `synthesize: ${results.join(', ')}`,
+    // cacheWarm now defaults to TRUE at the pattern level — pin it false here
+    // so every PRE-EXISTING test in this file keeps testing exactly what it
+    // always tested, decoupled from the new default.
+    cacheWarm: false,
     ...overrides,
   }
 }
@@ -894,11 +898,42 @@ describe('planAndExecute — trail: effort field', () => {
 })
 
 // ---------------------------------------------------------------------------
-// cacheWarm (opt-in, mechanism a — first-completes-then-burst, on the WORKER stage)
+// cacheWarm (default TRUE, mechanism a — first-completes-then-burst, on the
+// WORKER stage; opt OUT with cacheWarm: false)
 // ---------------------------------------------------------------------------
 
-describe('planAndExecute — cacheWarm=false (default, inert)', () => {
-  it('is byte-identical to omitting the option: same stats, same trail', async () => {
+describe('planAndExecute — cacheWarm=false (explicit opt-out)', () => {
+  it('disables staggering entirely: later workers start before work:0 resolves', async () => {
+    let laterWorkerStartedBeforeFirstResolved = false
+    let firstResolved = false
+    let resolveFirst: (v: string) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label === 'planAndExecute:plan') return makePlan(['s0', 's1', 's2'])
+        if (label === 'planAndExecute:synthesize') return 'done'
+        if (label === 'planAndExecute:work:0') {
+          return new Promise<string>((resolve) => {
+            resolveFirst = (v) => { firstResolved = true; resolve(v) }
+          })
+        }
+        if (!firstResolved) laterWorkerStartedBeforeFirstResolved = true
+        return 'r'
+      },
+    })
+
+    const promise = planAndExecute(rt, makeOptions({ cacheWarm: false }))
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterWorkerStartedBeforeFirstResolved).toBe(true)
+    resolveFirst('r0')
+    await promise
+  })
+
+  it('produces identical stats/trail to cacheWarm:true — cacheWarm only affects timing, not outcome', async () => {
     const onAgent = ({ opts }: { opts?: { label?: string } }): unknown => {
       const label = opts?.label ?? ''
       if (label === 'planAndExecute:plan') return makePlan(['s0', 's1', 's2'])
@@ -907,15 +942,54 @@ describe('planAndExecute — cacheWarm=false (default, inert)', () => {
       return null
     }
 
-    const rtOmitted = new FakeRuntime({ onAgent })
     const rtFalse = new FakeRuntime({ onAgent })
+    const rtTrue = new FakeRuntime({ onAgent })
 
-    const resultOmitted = await planAndExecute(rtOmitted, makeOptions())
     const resultFalse = await planAndExecute(rtFalse, makeOptions({ cacheWarm: false }))
+    const resultTrue = await planAndExecute(rtTrue, makeOptions({ cacheWarm: true }))
 
-    expect(resultFalse.stats).toEqual(resultOmitted.stats)
-    expect(resultFalse.trail).toEqual(resultOmitted.trail)
-    expect(rtFalse.calls.map(c => c.opts?.label)).toEqual(rtOmitted.calls.map(c => c.opts?.label))
+    expect(resultFalse.stats).toEqual(resultTrue.stats)
+    expect(resultFalse.trail).toEqual(resultTrue.trail)
+  })
+})
+
+describe('planAndExecute — cacheWarm omitted (defaults to TRUE)', () => {
+  it('staggers by default when the option is not passed at all', async () => {
+    let laterWorkerStartedBeforeFirstResolved = false
+    let firstResolved = false
+    let resolveFirst: (v: string) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label === 'planAndExecute:plan') return makePlan(['s0', 's1', 's2'])
+        if (label === 'planAndExecute:synthesize') return 'done'
+        if (label === 'planAndExecute:work:0') {
+          return new Promise<string>((resolve) => {
+            resolveFirst = (v) => { firstResolved = true; resolve(v) }
+          })
+        }
+        if (!firstResolved) laterWorkerStartedBeforeFirstResolved = true
+        return 'r'
+      },
+    })
+
+    // Bypass this file's makeOptions() (which pins cacheWarm:false for the
+    // OTHER tests in this file) — construct the options object directly, with
+    // the cacheWarm key genuinely ABSENT, to prove the PATTERN's own default.
+    const promise = planAndExecute(rt, {
+      planPrompt: 'Create a plan for the task',
+      workerPrompt: (subtask, i) => `execute subtask ${i}: ${subtask.description}`,
+      synthesisPrompt: (results) => `synthesize: ${results.join(', ')}`,
+    })
+
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterWorkerStartedBeforeFirstResolved).toBe(false)
+    resolveFirst('r0')
+    await promise
   })
 })
 

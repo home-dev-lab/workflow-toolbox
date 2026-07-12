@@ -14,6 +14,10 @@ function makeOptions(
     count: 3,
     generatePrompt: (i) => `generate candidate ${i}`,
     filterPrompt: (c) => `filter: ${c}`,
+    // cacheWarm now defaults to TRUE at the pattern level — pin it false here
+    // so every PRE-EXISTING test in this file keeps testing exactly what it
+    // always tested, decoupled from the new default.
+    cacheWarm: false,
     ...overrides,
   }
 }
@@ -710,23 +714,89 @@ describe('generateAndFilter — trail: effort field', () => {
 })
 
 // ---------------------------------------------------------------------------
-// cacheWarm (opt-in, mechanism a — first-completes-then-burst, over rt.pipeline)
+// cacheWarm (default TRUE, mechanism a — first-completes-then-burst, over
+// rt.pipeline; opt OUT with cacheWarm: false)
 // ---------------------------------------------------------------------------
 
-describe('generateAndFilter — cacheWarm=false (default, inert)', () => {
-  it('is byte-identical to omitting the option: same stats, same trail', async () => {
+describe('generateAndFilter — cacheWarm=false (explicit opt-out)', () => {
+  it('disables staggering entirely: candidate 1 starts before candidate 0 finishes', async () => {
+    let laterCandidateStarted = false
+    let gen0Resolved = false
+    let resolveGen0: (v: string) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = (opts as { label?: string } | undefined)?.label ?? ''
+        if (label === 'generateAndFilter:generate:0') {
+          return new Promise<string>((resolve) => {
+            resolveGen0 = (v) => { gen0Resolved = true; resolve(v) }
+          })
+        }
+        if (isFilterCall(opts)) return { pass: true, reason: 'ok' }
+        if (!gen0Resolved) laterCandidateStarted = true
+        return 'candidate'
+      },
+    })
+
+    const promise = generateAndFilter(rt, makeOptions({ cacheWarm: false }))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterCandidateStarted).toBe(true)
+    resolveGen0('candidate-0')
+    await promise
+  })
+
+  it('produces identical stats/trail to cacheWarm:true — cacheWarm only affects timing, not outcome', async () => {
     const onAgent = ({ opts }: { opts?: unknown }): unknown =>
       isFilterCall(opts) ? { pass: true, reason: 'ok' } : 'candidate'
 
-    const rtOmitted = new FakeRuntime({ onAgent })
     const rtFalse = new FakeRuntime({ onAgent })
+    const rtTrue = new FakeRuntime({ onAgent })
 
-    const resultOmitted = await generateAndFilter(rtOmitted, makeOptions())
     const resultFalse = await generateAndFilter(rtFalse, makeOptions({ cacheWarm: false }))
+    const resultTrue = await generateAndFilter(rtTrue, makeOptions({ cacheWarm: true }))
 
-    expect(resultFalse.stats).toEqual(resultOmitted.stats)
-    expect(resultFalse.trail).toEqual(resultOmitted.trail)
-    expect(rtFalse.calls.map(c => c.opts?.label)).toEqual(rtOmitted.calls.map(c => c.opts?.label))
+    expect(resultFalse.stats).toEqual(resultTrue.stats)
+    expect(resultFalse.trail).toEqual(resultTrue.trail)
+  })
+})
+
+describe('generateAndFilter — cacheWarm omitted (defaults to TRUE)', () => {
+  it('staggers by default when the option is not passed at all', async () => {
+    let laterCandidateStarted = false
+    let gen0Resolved = false
+    let resolveGen0: (v: string) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = (opts as { label?: string } | undefined)?.label ?? ''
+        if (label === 'generateAndFilter:generate:0') {
+          return new Promise<string>((resolve) => {
+            resolveGen0 = (v) => { gen0Resolved = true; resolve(v) }
+          })
+        }
+        if (isFilterCall(opts)) return { pass: true, reason: 'ok' }
+        if (!gen0Resolved) laterCandidateStarted = true
+        return 'candidate'
+      },
+    })
+
+    // Bypass this file's makeOptions() (which pins cacheWarm:false for the
+    // OTHER tests in this file) — construct the options object directly, with
+    // the cacheWarm key genuinely ABSENT, to prove the PATTERN's own default.
+    const promise = generateAndFilter(rt, {
+      count: 3,
+      generatePrompt: (i) => `generate candidate ${i}`,
+      filterPrompt: (c) => `filter: ${c}`,
+    })
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterCandidateStarted).toBe(false)
+    resolveGen0('candidate-0')
+    await promise
   })
 })
 

@@ -68,17 +68,18 @@ export interface TournamentOptions<TAttempt> {
    *  for a cross-family model. Omit for the standard Claude subagent. */
   synthesisType?: string
   phase?: string
-  /** Opt-in: before EACH concurrent burst (the attempts stage, then — after
-   *  attempts are known — the judges stage), fire a single throwaway warmup
-   *  agent on that stage's own uniform model (attemptModel / judgeModel),
-   *  await it, THEN launch the full burst — mechanism (b), "warmup-agent",
-   *  chosen here (over peeling out one real attempt/judge) so every real
-   *  attempt and judge stays fully concurrent: angles/judgeCount are typically
-   *  small (judgeCount defaults to 3), and losing one real slot to serial
-   *  execution would cost proportionally more than elsewhere. A failed/null
-   *  warmup only warns; the real burst always proceeds. Heuristic cost lever,
-   *  not a correctness change; default false = today's behavior,
-   *  byte-identical. See @workflow-toolbox/patterns' cache-warm.ts. */
+  /** Before EACH concurrent burst (the attempts stage, then — after attempts
+   *  are known — the judges stage), fire a single throwaway warmup agent on
+   *  that stage's own uniform model (attemptModel / judgeModel), await it,
+   *  THEN launch the full burst — mechanism (b), "warmup-agent", chosen here
+   *  (over peeling out one real attempt/judge) so every real attempt and
+   *  judge stays fully concurrent: angles/judgeCount are typically small
+   *  (judgeCount defaults to 3), and losing one real slot to serial execution
+   *  would cost proportionally more than elsewhere. A failed/null warmup only
+   *  warns; the real burst always proceeds. Heuristic cost lever, not a
+   *  correctness change. **Default true**; set `cacheWarm: false` to opt OUT
+   *  when wall-clock latency matters more than token/cache cost. See
+   *  @workflow-toolbox/patterns' cache-warm.ts. */
   cacheWarm?: boolean
 }
 
@@ -226,10 +227,13 @@ export async function tournament<TAttempt = string, TOut = string>(
   // -------------------------------------------------------------------------
 
   // Cache-warm (mechanism b): one throwaway agent on attemptModel/attemptType,
-  // awaited BEFORE the attempts burst launches.
-  if (cacheWarm) {
+  // awaited BEFORE the attempts burst launches. Label is `${STAGE}:warm:
+  // attempt` — deliberately NOT nested under `:attempt:` so a caller
+  // filtering real attempts by `startsWith('tournament:attempt:')` never
+  // sweeps the warmup call in.
+  if (cacheWarm ?? true) {
     agentsSpawned++
-    trail.push(await runCacheWarmup(rt, warnings, `${STAGE}:attempt:warm`, STAGE, {
+    trail.push(await runCacheWarmup(rt, warnings, `${STAGE}:warm:attempt`, STAGE, {
       ...(phase !== undefined ? { phase } : {}),
       ...(attemptModel !== undefined ? { model: attemptModel } : {}),
       ...(attemptEffort !== undefined ? { effort: attemptEffort } : {}),
@@ -314,10 +318,12 @@ export async function tournament<TAttempt = string, TOut = string>(
   // Cache-warm (mechanism b): one throwaway agent on judgeModel/judgeType,
   // awaited BEFORE the (potentially many, per-attempt) judge panels launch —
   // a single warm covers the whole judges stage since every panel shares the
-  // same judgeModel.
-  if (cacheWarm) {
+  // same judgeModel. Label is `${STAGE}:warm:judge` — deliberately NOT nested
+  // under `:judge:` so a caller filtering real judges by
+  // `startsWith('tournament:judge:')` never sweeps the warmup call in.
+  if (cacheWarm ?? true) {
     agentsSpawned++
-    trail.push(await runCacheWarmup(rt, warnings, `${STAGE}:judge:warm`, STAGE, {
+    trail.push(await runCacheWarmup(rt, warnings, `${STAGE}:warm:judge`, STAGE, {
       ...(phase !== undefined ? { phase } : {}),
       ...(judgeModel !== undefined ? { model: judgeModel } : {}),
       ...(judgeEffort !== undefined ? { effort: judgeEffort } : {}),

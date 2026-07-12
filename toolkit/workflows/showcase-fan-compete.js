@@ -378,7 +378,7 @@ ${prompt}` : prompt;
       agentsSpawned++;
       return rt.agent(taskPrompt(task, i), taskOpts);
     });
-    const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? false);
+    const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? true);
     const parts = [];
     let dropped = 0;
     for (let i = 0; i < taskResults.length; i++) {
@@ -508,9 +508,9 @@ ${prompt}` : prompt;
     let nullJudgeVoteCount = 0;
     const warnings = [];
     const trail = [];
-    if (cacheWarm) {
+    if (cacheWarm ?? true) {
       agentsSpawned++;
-      trail.push(await runCacheWarmup(rt, warnings, `${STAGE2}:attempt:warm`, STAGE2, {
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE2}:warm:attempt`, STAGE2, {
         ...phase !== void 0 ? { phase } : {},
         ...attemptModel !== void 0 ? { model: attemptModel } : {},
         ...attemptEffort !== void 0 ? { effort: attemptEffort } : {},
@@ -564,9 +564,9 @@ ${prompt}` : prompt;
     }
     const ranked = [];
     let unjudgeableCount = 0;
-    if (cacheWarm) {
+    if (cacheWarm ?? true) {
       agentsSpawned++;
-      trail.push(await runCacheWarmup(rt, warnings, `${STAGE2}:judge:warm`, STAGE2, {
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE2}:warm:judge`, STAGE2, {
         ...phase !== void 0 ? { phase } : {},
         ...judgeModel !== void 0 ? { model: judgeModel } : {},
         ...judgeEffort !== void 0 ? { effort: judgeEffort } : {},

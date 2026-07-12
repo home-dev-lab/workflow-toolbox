@@ -507,19 +507,20 @@ without touching its source — the natural home for an `args`-driven config:
   `args` config envelope so a workflow can accept launch-time tuning declaratively.
   `perAgent` feeds straight into `withAgentDefaults`.
 
-## Cache-warm — opt-in staggering for a concurrent burst
+## Cache-warm — staggering for a concurrent burst (on by default)
 
 `fanOutAndSynthesize`, `chunkedAnalysis`, `planAndExecute`, `scoreAndRank`,
 `generateAndFilter`, `classifyAndAct`, `adversarialVerification`, and
-`tournament` accept `cacheWarm?: boolean` (default `false` — omitting it is
-byte-identical to passing `false`). N agents launched at once each write the
-identical shared system/tools prefix to the provider's prompt cache before any
-single write becomes reusable by the others; `cacheWarm: true` staggers the
-burst so one call's write lands first, letting the rest read that cache entry
-instead of re-writing it. This is a **heuristic cost/latency lever** —
-provider-side cache behavior is not guaranteed, and this toolkit does not
-measure the actual hit rate — it is never a correctness change, and does not
-belong among the *measured* levers in "Cost engineering" below.
+`tournament` accept `cacheWarm?: boolean`, **default `true`**. N agents
+launched at once each write the identical shared system/tools prefix to the
+provider's prompt cache before any single write becomes reusable by the
+others; by default the burst is staggered so one call's write lands first,
+letting the rest read that cache entry instead of re-writing it. This is a
+**heuristic cost/latency lever** — provider-side cache behavior is not
+guaranteed, and this toolkit does not measure the actual hit rate — it is
+never a correctness change, and does not belong among the *measured* levers
+in "Cost engineering" below. Pass `cacheWarm: false` to opt OUT for a
+specific call.
 
 Two mechanisms, already chosen for you per pattern (nothing to configure
 beyond the boolean):
@@ -542,10 +543,15 @@ beyond the boolean):
   proportionally more than one extra cheap agent. A failed/null warmup only
   warns; the real burst always proceeds unaffected.
 
-When to turn it on: fan-outs with several concurrent agents on the same
-model/agentType, launched often enough that the cache-write redundancy adds
-up. Leave it off for one-off runs or bursts of 0-1 agents (both mechanisms are
-no-ops there anyway).
+**When composing a workflow, consider asking the user the trade-off
+explicitly** rather than silently accepting the default: "this fan-out can
+stagger to save redundant cache writes (default), at the cost of a bit more
+wall-clock latency per burst — does latency or token/cache cost matter more
+for this workflow?" If the user (or the workflow's own purpose — an
+interactive, latency-sensitive tool vs. a background batch job) says latency
+wins, set `cacheWarm: false` on that pattern call. Default to leaving it on
+(`true`) when unclear — it costs nothing extra to ask, and the pattern is
+already inert-safe (bursts of 0-1 agents are always no-ops either way).
 
 ## Composition idioms (not patterns)
 

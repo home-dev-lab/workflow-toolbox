@@ -1,7 +1,7 @@
 {
   "name": "workflow-toolbox",
   "displayName": "Workflow Toolbox",
-  "version": "0.38.0",
+  "version": "0.39.0",
   "description": "Toolbox for Claude Code's Workflow tool — author deterministic multi-agent workflow scripts (workflow-composer, with the @workflow-toolbox compile-time pattern toolkit as its standard library), scaffold a build-clean workflow skeleton from a spec (toolkit-scaffold), diagnose a failed run from its journal and decide whether resumeFromRunId helps (workflow-debugger), re-verify the runtime surface after a Claude Code upgrade (upgrade-canary), run a bias-free multi-lens analysis of any subject when relevant (independent-analysis), and run a deep-grounding pass that collects and verifies evidence against the real sources before asserting or analyzing (deep-grounding). Ships the independent-analysis workflow that skill triggers (domain-agnostic adversarial multi-lens analysis) and a Stop hook that auto-surfaces a finished Workflow run's cost + traceability audit report (always a notice; grabs the session when the run looks like trouble, was degraded by a silently-denied tool call, or requested external delegation whose agents show no real external-CLI invocation).",
   "author": {
     "name": "Frederic Thomas",

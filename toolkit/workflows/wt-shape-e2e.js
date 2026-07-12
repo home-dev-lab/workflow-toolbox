@@ -325,7 +325,7 @@ ${prompt}` : prompt;
       rt,
       indices,
       [generateStage, filterStage],
-      cacheWarm ?? false
+      cacheWarm ?? true
     );
     const value = [];
     for (const r of rawResults) {
@@ -457,7 +457,7 @@ ${prompt}` : prompt;
       });
       return { itemIndex: t.itemIndex, dimIndex: t.dimIndex, score: verdict.score };
     });
-    const rawCells = await parallelWithCacheWarm(rt, thunks, cacheWarm ?? false);
+    const rawCells = await parallelWithCacheWarm(rt, thunks, cacheWarm ?? true);
     const dimScores = keptItems.map(() => dimensions.map(() => null));
     for (const cell of rawCells) {
       if (cell === null) continue;

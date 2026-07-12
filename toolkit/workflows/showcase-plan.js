@@ -413,7 +413,7 @@ ${prompt}` : prompt;
       agentsSpawned++;
       return rt.agent(workerPrompt(subtask, i), opts);
     });
-    const rawWorkerResults = await parallelWithCacheWarm(rt, workerThunks, cacheWarm ?? false);
+    const rawWorkerResults = await parallelWithCacheWarm(rt, workerThunks, cacheWarm ?? true);
     const successfulResults = [];
     let droppedWorkers = 0;
     for (let i = 0; i < rawWorkerResults.length; i++) {

@@ -14,6 +14,11 @@ function makeOptions(
     tasks: ['task-0', 'task-1', 'task-2'],
     taskPrompt: (task, i) => `process task ${i}: ${task}`,
     synthesisPrompt: (parts) => `synthesize: ${parts.join(', ')}`,
+    // cacheWarm now defaults to TRUE at the pattern level — pin it false here
+    // so every PRE-EXISTING test in this file keeps testing exactly what it
+    // always tested, decoupled from the new default. The cacheWarm-specific
+    // describe blocks below override this explicitly where they need to.
+    cacheWarm: false,
     ...overrides,
   }
 }
@@ -562,20 +567,86 @@ describe('fanOutAndSynthesize — effort forwarding', () => {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// cacheWarm (opt-in, mechanism a — first-completes-then-burst)
+// cacheWarm (default TRUE, mechanism a — first-completes-then-burst; opt OUT
+// with cacheWarm: false)
 // ---------------------------------------------------------------------------
 
-describe('fanOutAndSynthesize — cacheWarm=false (default, inert)', () => {
-  it('is byte-identical to omitting the option: same stats, same trail, same value', async () => {
+describe('fanOutAndSynthesize — cacheWarm=false (explicit opt-out)', () => {
+  it('disables staggering entirely: later tasks start before task:0 resolves', async () => {
+    let laterTaskStartedBeforeFirstResolved = false
+    let firstResolved = false
+    let resolveFirst: (v: string) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isSynthesisCall(opts?.label)) return 'synth'
+        if (opts?.label === 'fanOutAndSynthesize:task:0') {
+          return new Promise<string>((resolve) => {
+            resolveFirst = (v) => { firstResolved = true; resolve(v) }
+          })
+        }
+        if (!firstResolved) laterTaskStartedBeforeFirstResolved = true
+        return 'part'
+      },
+    })
+
+    const promise = fanOutAndSynthesize(rt, makeOptions({ cacheWarm: false }))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterTaskStartedBeforeFirstResolved).toBe(true)
+    resolveFirst('part-from-0')
+    await promise
+  })
+
+  it('produces identical stats/trail to cacheWarm:true — cacheWarm only affects timing, not outcome', async () => {
     const responses = ['part-a', 'part-b', 'part-c', 'synthesis']
-    const rtOmitted = new FakeRuntime({ responses })
     const rtFalse = new FakeRuntime({ responses })
+    const rtTrue = new FakeRuntime({ responses })
 
-    const resultOmitted = await fanOutAndSynthesize(rtOmitted, makeOptions())
     const resultFalse = await fanOutAndSynthesize(rtFalse, makeOptions({ cacheWarm: false }))
+    const resultTrue = await fanOutAndSynthesize(rtTrue, makeOptions({ cacheWarm: true }))
 
-    expect(resultFalse).toEqual(resultOmitted)
-    expect(rtFalse.calls.map(c => c.prompt)).toEqual(rtOmitted.calls.map(c => c.prompt))
+    expect(resultFalse.stats).toEqual(resultTrue.stats)
+    expect(resultFalse.trail).toEqual(resultTrue.trail)
+    expect(resultFalse.value).toEqual(resultTrue.value)
+  })
+})
+
+describe('fanOutAndSynthesize — cacheWarm omitted (defaults to TRUE)', () => {
+  it('stagger by default when the option is not passed at all', async () => {
+    let laterTaskStartedBeforeFirstResolved = false
+    let firstResolved = false
+    let resolveFirst: (v: string) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isSynthesisCall(opts?.label)) return 'synth'
+        if (opts?.label === 'fanOutAndSynthesize:task:0') {
+          return new Promise<string>((resolve) => {
+            resolveFirst = (v) => { firstResolved = true; resolve(v) }
+          })
+        }
+        if (!firstResolved) laterTaskStartedBeforeFirstResolved = true
+        return 'part'
+      },
+    })
+
+    // Bypass this file's makeOptions() (which pins cacheWarm:false for the
+    // OTHER tests in this file) — construct the options object directly, with
+    // the cacheWarm key genuinely ABSENT, to prove the PATTERN's own default.
+    const promise = fanOutAndSynthesize(rt, {
+      tasks: ['task-0', 'task-1', 'task-2'],
+      taskPrompt: (task, i) => `process task ${i}: ${task}`,
+      synthesisPrompt: (parts) => `synthesize: ${parts.join(', ')}`,
+    })
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterTaskStartedBeforeFirstResolved).toBe(false)
+    resolveFirst('part-from-0')
+    await promise
   })
 })
 

@@ -457,7 +457,7 @@ ${prompt}` : prompt;
       rt,
       kept,
       [classifyStage, actStage],
-      cacheWarm ?? false
+      cacheWarm ?? true
     );
     const value = rawResults.filter(
       (r) => r !== null
@@ -581,7 +581,7 @@ ${prompt}` : prompt;
       });
       return { itemIndex: t.itemIndex, dimIndex: t.dimIndex, score: verdict.score };
     });
-    const rawCells = await parallelWithCacheWarm(rt, thunks, cacheWarm ?? false);
+    const rawCells = await parallelWithCacheWarm(rt, thunks, cacheWarm ?? true);
     const dimScores = keptItems.map(() => dimensions.map(() => null));
     for (const cell of rawCells) {
       if (cell === null) continue;

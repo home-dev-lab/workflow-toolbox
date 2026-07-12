@@ -185,19 +185,21 @@ uniform `items` API.
 
 > In each row the first term is Anthropic's [*Building Effective Agents*](https://www.anthropic.com/engineering/building-effective-agents) vocabulary; the rest are common cross-ecosystem names for the same shape (different frameworks, same orchestration).
 
-### `cacheWarm` — opt-in cache-warm staggering for concurrent fan-outs
+### `cacheWarm` — cache-warm staggering for concurrent fan-outs (on by default)
 
 `fanOutAndSynthesize`, `chunkedAnalysis`, `planAndExecute`, `scoreAndRank`,
 `generateAndFilter`, `classifyAndAct`, `adversarialVerification`, and
-`tournament` accept an opt-in `cacheWarm?: boolean` (default `false`, inert —
-byte-identical to omitting it). A fan-out of N concurrent agents pays a
-redundant prompt-cache **write** cost: each agent writes the identical shared
-system/tools prefix to the provider's cache before any single write becomes
-reusable by the others. `cacheWarm: true` staggers the burst so one call's
-write lands before the rest launch, letting them **read** the warmed cache
-entry instead. This is a **heuristic cost/latency lever** — provider-side
-cache behavior is not guaranteed and is not measured by this toolkit — never a
-correctness change.
+`tournament` accept `cacheWarm?: boolean`, **default `true`**. A fan-out of N
+concurrent agents pays a redundant prompt-cache **write** cost: each agent
+writes the identical shared system/tools prefix to the provider's cache before
+any single write becomes reusable by the others. By default, the burst is
+staggered so one call's write lands before the rest launch, letting them
+**read** the warmed cache entry instead. This is a **heuristic cost/latency
+lever** — provider-side cache behavior is not guaranteed and is not measured
+by this toolkit — never a correctness change. Set `cacheWarm: false` to opt
+OUT when wall-clock latency matters more than token/cache cost for a given
+call (staggering costs one extra task/agent's latency on the critical path;
+see the per-mechanism cost below).
 
 Two mechanisms, picked per pattern by its burst shape:
 

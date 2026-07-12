@@ -16,6 +16,10 @@ function makeOptions(
     maxChars: 5,
     analyzePrompt: (chunk, i, total) => `analyze chunk ${i}/${total}: ${chunk}`,
     synthesizePrompt: (parts) => `synthesize: ${parts.join(', ')}`,
+    // cacheWarm now defaults to TRUE at the pattern level — pin it false here
+    // so every PRE-EXISTING test in this file keeps testing exactly what it
+    // always tested, decoupled from the new default.
+    cacheWarm: false,
     ...overrides,
   }
 }
@@ -427,24 +431,86 @@ describe('chunkedAnalysis — audit trail', () => {
 })
 
 // ---------------------------------------------------------------------------
-// cacheWarm (opt-in, mechanism a — first-completes-then-burst)
+// cacheWarm (default TRUE, mechanism a — first-completes-then-burst; opt OUT
+// with cacheWarm: false)
 // ---------------------------------------------------------------------------
 
-describe('chunkedAnalysis — cacheWarm=false (default, inert)', () => {
-  it('is byte-identical to omitting the option: same stats, same trail', async () => {
-    const rtOmitted = new FakeRuntime({
-      onAgent: ({ opts }) => (isSynthesisCall(opts?.label) ? 'final' : 'a'),
-    })
-    const rtFalse = new FakeRuntime({
-      onAgent: ({ opts }) => (isSynthesisCall(opts?.label) ? 'final' : 'a'),
+describe('chunkedAnalysis — cacheWarm=false (explicit opt-out)', () => {
+  it('disables staggering entirely: later chunks start before chunk:0 resolves', async () => {
+    let laterChunkStartedBeforeFirstResolved = false
+    let firstResolved = false
+    let resolveFirst: (v: string) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isSynthesisCall(opts?.label)) return 'final'
+        if (opts?.label === 'chunkedAnalysis:chunk:0') {
+          return new Promise<string>((resolve) => {
+            resolveFirst = (v) => { firstResolved = true; resolve(v) }
+          })
+        }
+        if (!firstResolved) laterChunkStartedBeforeFirstResolved = true
+        return 'a'
+      },
     })
 
-    const resultOmitted = await chunkedAnalysis(rtOmitted, makeOptions())
+    const promise = chunkedAnalysis(rt, makeOptions({ cacheWarm: false }))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterChunkStartedBeforeFirstResolved).toBe(true)
+    resolveFirst('first-chunk-result')
+    await promise
+  })
+
+  it('produces identical stats/trail to cacheWarm:true — cacheWarm only affects timing, not outcome', async () => {
+    const onAgent = ({ opts }: { opts?: { label?: string } }) => (isSynthesisCall(opts?.label) ? 'final' : 'a')
+    const rtFalse = new FakeRuntime({ onAgent })
+    const rtTrue = new FakeRuntime({ onAgent })
+
     const resultFalse = await chunkedAnalysis(rtFalse, makeOptions({ cacheWarm: false }))
+    const resultTrue = await chunkedAnalysis(rtTrue, makeOptions({ cacheWarm: true }))
 
-    expect(resultFalse.stats).toEqual(resultOmitted.stats)
-    expect(resultFalse.trail).toEqual(resultOmitted.trail)
-    expect(rtFalse.calls.map(c => c.opts?.label)).toEqual(rtOmitted.calls.map(c => c.opts?.label))
+    expect(resultFalse.stats).toEqual(resultTrue.stats)
+    expect(resultFalse.trail).toEqual(resultTrue.trail)
+  })
+})
+
+describe('chunkedAnalysis — cacheWarm omitted (defaults to TRUE)', () => {
+  it('staggers by default when the option is not passed at all', async () => {
+    let laterChunkStartedBeforeFirstResolved = false
+    let firstResolved = false
+    let resolveFirst: (v: string) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isSynthesisCall(opts?.label)) return 'final'
+        if (opts?.label === 'chunkedAnalysis:chunk:0') {
+          return new Promise<string>((resolve) => {
+            resolveFirst = (v) => { firstResolved = true; resolve(v) }
+          })
+        }
+        if (!firstResolved) laterChunkStartedBeforeFirstResolved = true
+        return 'a'
+      },
+    })
+
+    // Bypass this file's makeOptions() (which pins cacheWarm:false for the
+    // OTHER tests in this file) — construct the options object directly, with
+    // the cacheWarm key genuinely ABSENT, to prove the PATTERN's own default.
+    const promise = chunkedAnalysis(rt, {
+      input: 'aaaa\nbbbb\ncccc',
+      maxChars: 5,
+      analyzePrompt: (chunk, i, total) => `analyze chunk ${i}/${total}: ${chunk}`,
+      synthesizePrompt: (parts) => `synthesize: ${parts.join(', ')}`,
+    })
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterChunkStartedBeforeFirstResolved).toBe(false)
+    resolveFirst('first-chunk-result')
+    await promise
   })
 })
 

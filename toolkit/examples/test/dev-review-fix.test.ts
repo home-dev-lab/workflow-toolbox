@@ -614,7 +614,10 @@ describe('dev-review-fix model tiering', () => {
     expect(others.length).toBeGreaterThan(0)
     for (const call of others) {
       const label = call.opts?.label ?? ''
-      if (label.startsWith('adversarialVerification:verify:')) {
+      // Prefix is 'adversarialVerification:' (not just '...:verify:') so it
+      // also catches the pattern's own cache-warm agent, which mirrors the
+      // real verifiers' model by design (it primes their cache entry).
+      if (label.startsWith('adversarialVerification:')) {
         // §8 guardrail in the pattern — verification quality is model-sensitive.
         // Asserted against the exported constant: the property under test is
         // "verifiers use the pattern default, untiered", not the default's

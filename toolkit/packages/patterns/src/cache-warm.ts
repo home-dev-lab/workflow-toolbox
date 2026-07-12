@@ -1,13 +1,16 @@
-// cache-warm.ts — opt-in prompt-cache warm-up for concurrent fan-out bursts.
+// cache-warm.ts — prompt-cache warm-up for concurrent fan-out bursts (each
+// pattern defaults its own `cacheWarm` option to true — opt OUT with `false`).
 //
 // WHY THIS EXISTS: N agents launched simultaneously each write the (identical)
 // system/tools prefix to the provider's prompt cache before the first agent's
 // write is reusable by the others — a fan-out burns N redundant cache WRITES
 // instead of 1 write + (N-1) reads. This is a HEURISTIC latency/cost lever
 // (provider-side cache behavior, not verified end-to-end by this module — see
-// each pattern's `cacheWarm` doc comment) — never a correctness fix. Every
-// pattern using these helpers is byte-identical to its pre-cacheWarm behavior
-// when the option is omitted/false (see the `enabled` early-return below).
+// each pattern's `cacheWarm` doc comment) — never a correctness fix. These
+// helpers themselves are neutral (a plain `enabled: boolean`, no baked-in
+// default); ON-by-default is a decision each PATTERN makes at its own
+// `cacheWarm ?? true` resolution. Passing `enabled: false` is byte-identical
+// to a pattern's pre-cacheWarm behavior (see the early-return below).
 //
 // Two mechanisms, picked per pattern by its burst shape (rationale at each
 // call site, not repeated here):

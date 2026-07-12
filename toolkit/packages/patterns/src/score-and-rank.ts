@@ -95,16 +95,17 @@ export interface ScoreAndRankOptions<TItem> {
    *  stats.truncated; the first `maxItems` items are kept, in input order). */
   maxItems?: number
   phase?: string
-  /** Opt-in: stagger the (item, dimension) score burst so the FIRST scoring
-   *  agent completes (and writes the shared system/tools prefix to the
-   *  provider's prompt cache) BEFORE the rest launch, instead of all of them
-   *  writing that prefix redundantly at once. Deliberately model-agnostic
-   *  (mechanism (a), not a warmup agent): dimensions can each override
-   *  `scoreModel`, so the burst may already be multi-model — peeling out one
-   *  of the REAL scoring calls (rather than a stand-in on a single guessed
-   *  model) never risks warming the wrong cache entry. Heuristic cost lever,
-   *  not a correctness change — costs +1 call's latency on the critical path;
-   *  default false = today's behavior, byte-identical. See
+  /** Stagger the (item, dimension) score burst so the FIRST scoring agent
+   *  completes (and writes the shared system/tools prefix to the provider's
+   *  prompt cache) BEFORE the rest launch, instead of all of them writing
+   *  that prefix redundantly at once. Deliberately model-agnostic (mechanism
+   *  (a), not a warmup agent): dimensions can each override `scoreModel`, so
+   *  the burst may already be multi-model — peeling out one of the REAL
+   *  scoring calls (rather than a stand-in on a single guessed model) never
+   *  risks warming the wrong cache entry. Heuristic cost lever, not a
+   *  correctness change — costs +1 call's latency on the critical path.
+   *  **Default true**; set `cacheWarm: false` to opt OUT when wall-clock
+   *  latency matters more than token/cache cost. See
    *  @workflow-toolbox/patterns' cache-warm.ts. */
   cacheWarm?: boolean
 }
@@ -267,7 +268,7 @@ export async function scoreAndRank<TItem = string>(
     return { itemIndex: t.itemIndex, dimIndex: t.dimIndex, score: verdict.score }
   })
 
-  const rawCells = await parallelWithCacheWarm(rt, thunks, cacheWarm ?? false)
+  const rawCells = await parallelWithCacheWarm(rt, thunks, cacheWarm ?? true)
 
   // -------------------------------------------------------------------------
   // Assemble per-item dimension scores

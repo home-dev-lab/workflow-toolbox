@@ -530,8 +530,11 @@ describe('dev-plan risk-aware votes', () => {
     const rt = makeRuntime()
     await wf.run(rt, JSON.stringify({ ...VALID_INPUT, verifierType: 'codex:codex-rescue' }))
 
+    // The prefix is 'adversarialVerification:' (not just '...:verify:') so it
+    // also catches the pattern's own cache-warm agent, which mirrors the real
+    // verifiers' agentType/model by design (it primes their cache entry).
     const verifyCalls = rt.calls.filter((c) =>
-      (c.opts?.label ?? '').startsWith('adversarialVerification:verify:'),
+      (c.opts?.label ?? '').startsWith('adversarialVerification:'),
     )
     expect(verifyCalls.length).toBeGreaterThan(0)
     expect(verifyCalls.every((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(true)
@@ -539,7 +542,7 @@ describe('dev-plan risk-aware votes', () => {
     // The load-bearing distinction vs withAgentDefaults: only the skeptic crosses
     // models — Discover/Plan/Synthesize producers carry no agentType override.
     const producerCalls = rt.calls.filter(
-      (c) => !(c.opts?.label ?? '').startsWith('adversarialVerification:verify:'),
+      (c) => !(c.opts?.label ?? '').startsWith('adversarialVerification:'),
     )
     expect(producerCalls.some((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(false)
   })

@@ -15,6 +15,11 @@ function makeOptions(
     attemptPrompt: (angle, i) => `attempt ${i}: ${angle}`,
     judgePrompt: (attempt) => `judge: ${attempt}`,
     synthesisPrompt: (ranked) => `synthesize: ${ranked.map(r => r.attempt).join(', ')}`,
+    // cacheWarm now defaults to TRUE at the pattern level — pin it false here
+    // so every PRE-EXISTING test in this file (many of which count agent
+    // calls positionally) keeps testing exactly what it always tested,
+    // decoupled from the new default.
+    cacheWarm: false,
     ...overrides,
   }
 }
@@ -937,18 +942,51 @@ function tournamentOnAgent({ opts }: { opts?: { label?: string } }): unknown {
   return 'ok' // covers attempts, synthesis, and both warm calls
 }
 
-describe('tournament — cacheWarm=false (default, inert)', () => {
-  it('is byte-identical to omitting the option: no warm calls, same stats/trail', async () => {
-    const rtOmitted = new FakeRuntime({ onAgent: tournamentOnAgent })
+describe('tournament — cacheWarm=false (explicit opt-out)', () => {
+  it('fires no warmup calls at all — behavior matches the pattern\'s pre-cacheWarm shape', async () => {
+    const rt = new FakeRuntime({ onAgent: tournamentOnAgent })
+
+    const result = await tournament(rt, makeOptions({ cacheWarm: false }))
+
+    // 3 attempts + 9 judges (3x3) + 1 synthesis = 13, no warm calls.
+    expect(rt.calls).toHaveLength(13)
+    expect(rt.calls.some(c => c.opts?.label?.includes('warm'))).toBe(false)
+    expect(result.stats.agentsSpawned).toBe(13)
+    expect(result.trail).toHaveLength(13)
+  })
+
+  it('produces identical stats/trail to cacheWarm:true modulo the two extra warm records', async () => {
     const rtFalse = new FakeRuntime({ onAgent: tournamentOnAgent })
+    const rtTrue = new FakeRuntime({ onAgent: tournamentOnAgent })
 
-    const resultOmitted = await tournament(rtOmitted, makeOptions())
     const resultFalse = await tournament(rtFalse, makeOptions({ cacheWarm: false }))
+    const resultTrue = await tournament(rtTrue, makeOptions({ cacheWarm: true }))
 
-    expect(resultFalse.stats).toEqual(resultOmitted.stats)
-    expect(resultFalse.trail).toEqual(resultOmitted.trail)
-    expect(rtFalse.calls).toHaveLength(rtOmitted.calls.length)
-    expect(rtFalse.calls.some(c => c.opts?.label?.includes('warm'))).toBe(false)
+    expect(resultFalse.value).toEqual(resultTrue.value)
+    expect(resultTrue.stats.agentsSpawned).toBe(resultFalse.stats.agentsSpawned + 2)
+    expect(resultTrue.trail).toHaveLength(resultFalse.trail.length + 2)
+  })
+})
+
+describe('tournament — cacheWarm omitted (defaults to TRUE)', () => {
+  it('fires both warmup calls by default when the option is not passed at all', async () => {
+    const rt = new FakeRuntime({ onAgent: tournamentOnAgent })
+
+    // Bypass this file's makeOptions() (which pins cacheWarm:false for the
+    // OTHER tests in this file) — construct the options object directly, with
+    // the cacheWarm key genuinely ABSENT, to prove the PATTERN's own default.
+    const result = await tournament(rt, {
+      angles: ['angle-0', 'angle-1', 'angle-2'],
+      attemptPrompt: (angle, i) => `attempt ${i}: ${angle}`,
+      judgePrompt: (attempt) => `judge: ${attempt}`,
+      synthesisPrompt: (ranked) => `synthesize: ${ranked.map(r => r.attempt).join(', ')}`,
+    })
+
+    // 1 attempt-warm + 3 attempts + 1 judge-warm + 9 judges + 1 synthesis = 15
+    expect(rt.calls).toHaveLength(15)
+    expect(rt.calls[0]!.opts?.label).toBe('tournament:warm:attempt')
+    expect(result.stats.agentsSpawned).toBe(15)
+    expect(result.value).not.toBeNull()
   })
 })
 
@@ -962,16 +1000,16 @@ describe('tournament — cacheWarm=true (warmup-agent, two stages)', () => {
     expect(rt.calls).toHaveLength(15)
 
     const labels = rt.calls.map(c => c.opts?.label)
-    expect(labels[0]).toBe('tournament:attempt:warm')
+    expect(labels[0]).toBe('tournament:warm:attempt')
     // The 3 real attempts follow, then the judge warm, before any real judge call.
-    const judgeWarmIndex = labels.indexOf('tournament:judge:warm')
-    const firstRealJudgeIndex = labels.findIndex(l => l?.startsWith('tournament:judge:') && l !== 'tournament:judge:warm')
+    const judgeWarmIndex = labels.indexOf('tournament:warm:judge')
+    const firstRealJudgeIndex = labels.findIndex(l => l?.startsWith('tournament:judge:') && l !== 'tournament:warm:judge')
     expect(judgeWarmIndex).toBeGreaterThan(0)
     expect(firstRealJudgeIndex).toBeGreaterThan(judgeWarmIndex)
 
     expect(result.stats.agentsSpawned).toBe(15)
     expect(result.trail).toHaveLength(15)
-    expect(result.trail[0]!.stage).toBe('tournament:attempt:warm')
+    expect(result.trail[0]!.stage).toBe('tournament:warm:attempt')
     expect(result.value).not.toBeNull()
   })
 
@@ -985,8 +1023,8 @@ describe('tournament — cacheWarm=true (warmup-agent, two stages)', () => {
       cacheWarm: true,
     }))
 
-    const attemptWarm = rt.calls.find(c => c.opts?.label === 'tournament:attempt:warm')!
-    const judgeWarm = rt.calls.find(c => c.opts?.label === 'tournament:judge:warm')!
+    const attemptWarm = rt.calls.find(c => c.opts?.label === 'tournament:warm:attempt')!
+    const judgeWarm = rt.calls.find(c => c.opts?.label === 'tournament:warm:judge')!
 
     expect(attemptWarm.opts?.model).toBe('sonnet')
     expect(attemptWarm.opts?.agentType).toBe('codex:codex-rescue')
@@ -1010,7 +1048,7 @@ describe('tournament — cacheWarm=true (warmup-agent, two stages)', () => {
     const rt = new FakeRuntime({
       onAgent: ({ opts }) => {
         const label = opts?.label ?? ''
-        if (label === 'tournament:attempt:warm' || label === 'tournament:judge:warm') return null
+        if (label === 'tournament:warm:attempt' || label === 'tournament:warm:judge') return null
         if (label.startsWith('tournament:judge:')) return makeJudgeResponse(5)
         return 'ok'
       },
@@ -1018,8 +1056,8 @@ describe('tournament — cacheWarm=true (warmup-agent, two stages)', () => {
 
     const result = await tournament(rt, makeOptions({ cacheWarm: true }))
 
-    const attemptWarmRec = result.trail!.find(r => r.stage === 'tournament:attempt:warm')!
-    const judgeWarmRec = result.trail!.find(r => r.stage === 'tournament:judge:warm')!
+    const attemptWarmRec = result.trail!.find(r => r.stage === 'tournament:warm:attempt')!
+    const judgeWarmRec = result.trail!.find(r => r.stage === 'tournament:warm:judge')!
     expect(attemptWarmRec.outcome).toBe('null')
     expect(judgeWarmRec.outcome).toBe('null')
 

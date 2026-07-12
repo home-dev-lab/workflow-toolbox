@@ -401,7 +401,7 @@ ${prompt}` : prompt;
       agentsSpawned++;
       return rt.agent(analyzePrompt(chunk, i, total), opts);
     });
-    const analyzeResults = await parallelWithCacheWarm(rt, analyzeThunks, cacheWarm ?? false);
+    const analyzeResults = await parallelWithCacheWarm(rt, analyzeThunks, cacheWarm ?? true);
     const chunkResults = [];
     let dropped = 0;
     for (let i = 0; i < analyzeResults.length; i++) {

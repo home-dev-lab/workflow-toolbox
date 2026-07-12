@@ -107,7 +107,7 @@ export interface AdversarialVerificationOptions<TClaim> {
    *  prefer an MCP→model endpoint as the cross-model verifier. See the
    *  cross-model-verify example. */
   verifierType?: string
-  /** Opt-in: before the concurrent verifier burst (every claim's votes launch
+  /** Before the concurrent verifier burst (every claim's votes launch
    *  together via nested rt.parallel calls, all under ONE uniform model — the
    *  resolved `model` above), fire a single throwaway warmup agent on that
    *  same model, await it, THEN launch the full burst — mechanism (b),
@@ -116,8 +116,9 @@ export interface AdversarialVerificationOptions<TClaim> {
    *  verification quality/latency is this pattern's core value, so losing one
    *  real vote to serial execution would cost proportionally more than
    *  elsewhere. A failed/null warmup only warns; the real burst always
-   *  proceeds. Heuristic cost lever, not a correctness change; default false =
-   *  today's behavior, byte-identical. See @workflow-toolbox/patterns'
+   *  proceeds. Heuristic cost lever, not a correctness change. **Default
+   *  true**; set `cacheWarm: false` to opt OUT when wall-clock latency
+   *  matters more than token/cache cost. See @workflow-toolbox/patterns'
    *  cache-warm.ts. */
   cacheWarm?: boolean
 }
@@ -332,9 +333,14 @@ export async function adversarialVerification<TClaim>(
   // Cache-warm (mechanism b): one throwaway agent on the SAME model (+
   // verifierType) as the whole burst below, awaited BEFORE the burst launches.
   // Recorded first in `trail` (deterministic: always precedes the barrier).
-  if (cacheWarm) {
+  // Label is `${STAGE}:warm` — deliberately NOT nested under `:verify:` so a
+  // caller filtering real verifier calls by the natural
+  // `startsWith('adversarialVerification:verify:')` prefix never sweeps the
+  // warmup call in (real labels are `adversarialVerification:verify:<claim>:
+  // <vote>`, one level deeper).
+  if (cacheWarm ?? true) {
     agentsSpawned++
-    trail.push(await runCacheWarmup(rt, warnings, `${STAGE}:verify:warm`, STAGE, {
+    trail.push(await runCacheWarmup(rt, warnings, `${STAGE}:warm`, STAGE, {
       ...(phase !== undefined ? { phase } : {}),
       model: effectiveModel,
       ...(effort !== undefined ? { effort } : {}),

@@ -405,7 +405,7 @@ ${prompt}` : prompt;
       rt,
       indices,
       [generateStage, filterStage],
-      cacheWarm ?? false
+      cacheWarm ?? true
     );
     const value = [];
     for (const r of rawResults) {

@@ -181,13 +181,14 @@ export interface ChunkedAnalysisOptions<TChunk> {
    *  stats.truncated; the first `maxChunks` chunks are kept, in reading order).
    *  The guard against an unbounded fan-out on a huge input. */
   maxChunks?: number
-  /** Opt-in: stagger the chunk map stage so the first chunk agent completes
-   *  (and writes the shared system/tools prefix to the provider's prompt
-   *  cache) BEFORE the remaining chunks launch, instead of all N writing that
+  /** Stagger the chunk map stage so the first chunk agent completes (and
+   *  writes the shared system/tools prefix to the provider's prompt cache)
+   *  BEFORE the remaining chunks launch, instead of all N writing that
    *  prefix redundantly at once. Heuristic cost lever, not a correctness
    *  change — costs +1 chunk's latency on the critical path, which amortizes
-   *  well when there are many chunks; default false = today's behavior,
-   *  byte-identical. See @workflow-toolbox/patterns' cache-warm.ts. */
+   *  well when there are many chunks. **Default true**; set `cacheWarm:
+   *  false` to opt OUT when wall-clock latency matters more than token/cache
+   *  cost. See @workflow-toolbox/patterns' cache-warm.ts. */
   cacheWarm?: boolean
 }
 
@@ -338,7 +339,7 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
     return rt.agent<TChunk>(analyzePrompt(chunk, i, total), opts)
   })
 
-  const analyzeResults = await parallelWithCacheWarm(rt, analyzeThunks, cacheWarm ?? false)
+  const analyzeResults = await parallelWithCacheWarm(rt, analyzeThunks, cacheWarm ?? true)
 
   // -------------------------------------------------------------------------
   // Collect non-null analyses and append trail records in chunk-index order

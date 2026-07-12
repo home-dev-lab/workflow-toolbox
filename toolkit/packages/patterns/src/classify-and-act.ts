@@ -49,13 +49,14 @@ export interface ClassifyAndActOptions<TIn> {
   classifyType?: string
   phase?: string
   maxItems?: number
-  /** Opt-in: stagger the per-item pipeline so item 0's classify call completes
-   *  (and writes the shared system/tools prefix to the provider's prompt
-   *  cache) BEFORE the remaining items' classify calls launch, instead of all
-   *  N writing that prefix redundantly at once (rt.pipeline runs every item's
+  /** Stagger the per-item pipeline so item 0's classify call completes (and
+   *  writes the shared system/tools prefix to the provider's prompt cache)
+   *  BEFORE the remaining items' classify calls launch, instead of all N
+   *  writing that prefix redundantly at once (rt.pipeline runs every item's
    *  first stage concurrently, with no barrier between stages). Heuristic
    *  cost lever, not a correctness change — costs +1 item's latency on the
-   *  critical path; default false = today's behavior, byte-identical. See
+   *  critical path. **Default true**; set `cacheWarm: false` to opt OUT when
+   *  wall-clock latency matters more than token/cache cost. See
    *  @workflow-toolbox/patterns' cache-warm.ts. */
   cacheWarm?: boolean
 }
@@ -326,7 +327,7 @@ export async function classifyAndAct<TIn, TOut = string>(
   }
 
   const rawResults = await pipelineWithCacheWarm(
-    rt, kept as readonly unknown[], [classifyStage, actStage], cacheWarm ?? false,
+    rt, kept as readonly unknown[], [classifyStage, actStage], cacheWarm ?? true,
   )
 
   // -------------------------------------------------------------------------

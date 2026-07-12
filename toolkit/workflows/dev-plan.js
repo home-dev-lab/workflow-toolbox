@@ -401,7 +401,7 @@ ${prompt}` : prompt;
       agentsSpawned++;
       return rt.agent(taskPrompt(task, i), taskOpts);
     });
-    const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? false);
+    const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? true);
     const parts = [];
     let dropped = 0;
     for (let i = 0; i < taskResults.length; i++) {
@@ -568,9 +568,9 @@ Examine it through the lens of: ${lens}.` : "";
 Claim:
 ${renderClaim(claim)}`;
     }
-    if (cacheWarm) {
+    if (cacheWarm ?? true) {
       agentsSpawned++;
-      trail.push(await runCacheWarmup(rt, warnings, `${STAGE2}:verify:warm`, STAGE2, {
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE2}:warm`, STAGE2, {
         ...phase !== void 0 ? { phase } : {},
         model: effectiveModel,
         ...effort !== void 0 ? { effort } : {},
@@ -798,7 +798,7 @@ ${renderClaim(claim)}`;
       agentsSpawned++;
       return rt.agent(workerPrompt(subtask, i), opts);
     });
-    const rawWorkerResults = await parallelWithCacheWarm(rt, workerThunks, cacheWarm ?? false);
+    const rawWorkerResults = await parallelWithCacheWarm(rt, workerThunks, cacheWarm ?? true);
     const successfulResults = [];
     let droppedWorkers = 0;
     for (let i = 0; i < rawWorkerResults.length; i++) {

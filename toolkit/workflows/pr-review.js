@@ -599,7 +599,7 @@ ${prompt}` : prompt;
       rt,
       kept,
       [classifyStage, actStage],
-      cacheWarm ?? false
+      cacheWarm ?? true
     );
     const value = rawResults.filter(
       (r) => r !== null
@@ -746,9 +746,9 @@ Examine it through the lens of: ${lens}.` : "";
 Claim:
 ${renderClaim(claim)}`;
     }
-    if (cacheWarm) {
+    if (cacheWarm ?? true) {
       agentsSpawned++;
-      trail.push(await runCacheWarmup(rt, warnings, `${STAGE3}:verify:warm`, STAGE3, {
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE3}:warm`, STAGE3, {
         ...phase !== void 0 ? { phase } : {},
         model: effectiveModel,
         ...effort !== void 0 ? { effort } : {},

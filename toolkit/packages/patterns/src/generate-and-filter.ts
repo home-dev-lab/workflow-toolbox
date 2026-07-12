@@ -45,14 +45,15 @@ export interface GenerateAndFilterOptions<TCand> {
    *  for a cross-family model. Omit for the standard Claude subagent. */
   filterType?: string
   phase?: string
-  /** Opt-in: stagger the per-candidate pipeline so candidate 0's generate call
+  /** Stagger the per-candidate pipeline so candidate 0's generate call
    *  completes (and writes the shared system/tools prefix to the provider's
    *  prompt cache) BEFORE the remaining candidates' generate calls launch,
    *  instead of all N writing that prefix redundantly at once (rt.pipeline
    *  runs every item's first stage concurrently, with no barrier between
    *  stages). Heuristic cost lever, not a correctness change — costs +1
-   *  candidate's latency on the critical path; default false = today's
-   *  behavior, byte-identical. See @workflow-toolbox/patterns' cache-warm.ts. */
+   *  candidate's latency on the critical path. **Default true**; set
+   *  `cacheWarm: false` to opt OUT when wall-clock latency matters more than
+   *  token/cache cost. See @workflow-toolbox/patterns' cache-warm.ts. */
   cacheWarm?: boolean
 }
 
@@ -267,7 +268,7 @@ export async function generateAndFilter<TCand = string>(
 
   const indices: readonly number[] = Array.from({ length: count }, (_, i) => i)
   const rawResults = await pipelineWithCacheWarm(
-    rt, indices as readonly unknown[], [generateStage, filterStage], cacheWarm ?? false,
+    rt, indices as readonly unknown[], [generateStage, filterStage], cacheWarm ?? true,
   )
 
   // -------------------------------------------------------------------------

@@ -19,6 +19,10 @@ function makeOptions(
     items: ['a', 'b', 'c'],
     dimensions: TWO_DIMS,
     cutoff: { type: 'threshold', min: 1 },
+    // cacheWarm now defaults to TRUE at the pattern level — pin it false here
+    // so every PRE-EXISTING test in this file keeps testing exactly what it
+    // always tested, decoupled from the new default.
+    cacheWarm: false,
     ...overrides,
   }
 }
@@ -499,25 +503,87 @@ describe('scoreAndRank — trail: effort field', () => {
 })
 
 // ---------------------------------------------------------------------------
-// cacheWarm (opt-in, mechanism a — first-completes-then-burst)
+// cacheWarm (default TRUE, mechanism a — first-completes-then-burst; opt OUT
+// with cacheWarm: false)
 //
 // Model-agnostic by design: dimensions may each override their own model, so
 // mechanism (a) (peel out one of the REAL score calls) is used rather than a
 // warmup agent guessing a single model for the whole burst.
 // ---------------------------------------------------------------------------
 
-describe('scoreAndRank — cacheWarm=false (default, inert)', () => {
-  it('is byte-identical to omitting the option: same stats, same trail', async () => {
+describe('scoreAndRank — cacheWarm=false (explicit opt-out)', () => {
+  it('disables staggering entirely: later scores start before (item0,dim0) resolves', async () => {
+    let laterScoreStartedBeforeFirstResolved = false
+    let firstResolved = false
+    let resolveFirst: (v: { score: number; reason: string }) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (opts?.label === 'scoreAndRank:score:0:impact') {
+          return new Promise<{ score: number; reason: string }>((resolve) => {
+            resolveFirst = (v) => { firstResolved = true; resolve(v) }
+          })
+        }
+        if (!firstResolved) laterScoreStartedBeforeFirstResolved = true
+        return { score: 3, reason: 'r' }
+      },
+    })
+
+    const promise = scoreAndRank(rt, makeOptions({ cacheWarm: false }))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterScoreStartedBeforeFirstResolved).toBe(true)
+    resolveFirst({ score: 5, reason: 'warmed' })
+    await promise
+  })
+
+  it('produces identical stats/value to cacheWarm:true — cacheWarm only affects timing, not outcome', async () => {
     const onAgent = () => ({ score: 3, reason: 'r' })
-    const rtOmitted = new FakeRuntime({ onAgent })
     const rtFalse = new FakeRuntime({ onAgent })
+    const rtTrue = new FakeRuntime({ onAgent })
 
-    const resultOmitted = await scoreAndRank(rtOmitted, makeOptions())
     const resultFalse = await scoreAndRank(rtFalse, makeOptions({ cacheWarm: false }))
+    const resultTrue = await scoreAndRank(rtTrue, makeOptions({ cacheWarm: true }))
 
-    expect(resultFalse.stats).toEqual(resultOmitted.stats)
-    expect(resultFalse.value).toEqual(resultOmitted.value)
-    expect(rtFalse.calls.map(c => c.opts?.label)).toEqual(rtOmitted.calls.map(c => c.opts?.label))
+    expect(resultFalse.stats).toEqual(resultTrue.stats)
+    expect(resultFalse.value).toEqual(resultTrue.value)
+  })
+})
+
+describe('scoreAndRank — cacheWarm omitted (defaults to TRUE)', () => {
+  it('staggers by default when the option is not passed at all', async () => {
+    let laterScoreStartedBeforeFirstResolved = false
+    let firstResolved = false
+    let resolveFirst: (v: { score: number; reason: string }) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (opts?.label === 'scoreAndRank:score:0:impact') {
+          return new Promise<{ score: number; reason: string }>((resolve) => {
+            resolveFirst = (v) => { firstResolved = true; resolve(v) }
+          })
+        }
+        if (!firstResolved) laterScoreStartedBeforeFirstResolved = true
+        return { score: 3, reason: 'r' }
+      },
+    })
+
+    // Bypass this file's makeOptions() (which pins cacheWarm:false for the
+    // OTHER tests in this file) — construct the options object directly, with
+    // the cacheWarm key genuinely ABSENT, to prove the PATTERN's own default.
+    const promise = scoreAndRank(rt, {
+      items: ['a', 'b', 'c'],
+      dimensions: TWO_DIMS,
+      cutoff: { type: 'threshold', min: 1 },
+    })
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterScoreStartedBeforeFirstResolved).toBe(false)
+    resolveFirst({ score: 5, reason: 'warmed' })
+    await promise
   })
 })
 

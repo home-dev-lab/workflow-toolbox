@@ -21,6 +21,10 @@ function makeOptions(
       bug: { prompt: (item) => `bug action: ${item}` },
       feature: { prompt: (item) => `feature action: ${item}` },
     },
+    // cacheWarm now defaults to TRUE at the pattern level — pin it false here
+    // so every PRE-EXISTING test in this file keeps testing exactly what it
+    // always tested, decoupled from the new default.
+    cacheWarm: false,
     ...overrides,
   }
 }
@@ -790,7 +794,8 @@ describe('classifyAndAct — trail: effort field', () => {
 })
 
 // ---------------------------------------------------------------------------
-// cacheWarm (opt-in, mechanism a — first-completes-then-burst, over rt.pipeline)
+// cacheWarm (default TRUE, mechanism a — first-completes-then-burst, over
+// rt.pipeline; opt OUT with cacheWarm: false)
 // ---------------------------------------------------------------------------
 
 function classifyOnAgent({ opts }: { opts?: unknown }): unknown {
@@ -799,18 +804,99 @@ function classifyOnAgent({ opts }: { opts?: unknown }): unknown {
   return 'action-result'
 }
 
-describe('classifyAndAct — cacheWarm=false (default, inert)', () => {
-  it('is byte-identical to omitting the option: same stats, same trail', async () => {
-    const rtOmitted = new FakeRuntime({ onAgent: classifyOnAgent })
+describe('classifyAndAct — cacheWarm=false (explicit opt-out)', () => {
+  it('disables staggering entirely: item 1 starts before item 0 finishes', async () => {
+    let laterItemStarted = false
+    let classify0Resolved = false
+    let resolveClassify0: (v: { category: string }) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = (opts as { label?: string } | undefined)?.label ?? ''
+        const schema = (opts as { schema?: { properties?: { category?: { enum?: unknown[] } } } } | undefined)?.schema
+
+        if (label === 'classifyAndAct:classify:0') {
+          return new Promise<{ category: string }>((resolve) => {
+            resolveClassify0 = (v) => { classify0Resolved = true; resolve(v) }
+          })
+        }
+        if (schema?.properties?.category?.enum !== undefined) {
+          if (!classify0Resolved) laterItemStarted = true
+          return { category: 'docs' }
+        }
+        return 'action-result'
+      },
+    })
+
+    const promise = classifyAndAct(rt, makeOptions({
+      items: ['item-0', 'item-1', 'item-2'], cacheWarm: false,
+    }))
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterItemStarted).toBe(true)
+    resolveClassify0({ category: 'docs' })
+    await promise
+  })
+
+  it('produces identical stats/trail to cacheWarm:true — cacheWarm only affects timing, not outcome', async () => {
     const rtFalse = new FakeRuntime({ onAgent: classifyOnAgent })
+    const rtTrue = new FakeRuntime({ onAgent: classifyOnAgent })
 
     const opts = makeOptions({ items: ['item-0', 'item-1', 'item-2'] })
-    const resultOmitted = await classifyAndAct(rtOmitted, opts)
     const resultFalse = await classifyAndAct(rtFalse, { ...opts, cacheWarm: false })
+    const resultTrue = await classifyAndAct(rtTrue, { ...opts, cacheWarm: true })
 
-    expect(resultFalse.stats).toEqual(resultOmitted.stats)
-    expect(resultFalse.trail).toEqual(resultOmitted.trail)
-    expect(rtFalse.calls.map(c => c.opts?.label)).toEqual(rtOmitted.calls.map(c => c.opts?.label))
+    expect(resultFalse.stats).toEqual(resultTrue.stats)
+    expect(resultFalse.trail).toEqual(resultTrue.trail)
+  })
+})
+
+describe('classifyAndAct — cacheWarm omitted (defaults to TRUE)', () => {
+  it('staggers by default when the option is not passed at all', async () => {
+    let laterItemStarted = false
+    let classify0Resolved = false
+    let resolveClassify0: (v: { category: string }) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = (opts as { label?: string } | undefined)?.label ?? ''
+        const schema = (opts as { schema?: { properties?: { category?: { enum?: unknown[] } } } } | undefined)?.schema
+
+        if (label === 'classifyAndAct:classify:0') {
+          return new Promise<{ category: string }>((resolve) => {
+            resolveClassify0 = (v) => { classify0Resolved = true; resolve(v) }
+          })
+        }
+        if (schema?.properties?.category?.enum !== undefined) {
+          if (!classify0Resolved) laterItemStarted = true
+          return { category: 'docs' }
+        }
+        return 'action-result'
+      },
+    })
+
+    // Bypass this file's makeOptions() (which pins cacheWarm:false for the
+    // OTHER tests in this file) — construct the options object directly, with
+    // the cacheWarm key genuinely ABSENT, to prove the PATTERN's own default.
+    const promise = classifyAndAct(rt, {
+      items: ['item-0', 'item-1', 'item-2'],
+      categories: [...CATEGORIES],
+      classifyPrompt: (item) => `classify: ${item}`,
+      actions: {
+        docs: { prompt: (item) => `docs action: ${item}` },
+        bug: { prompt: (item) => `bug action: ${item}` },
+        feature: { prompt: (item) => `feature action: ${item}` },
+      },
+    })
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterItemStarted).toBe(false)
+    resolveClassify0({ category: 'docs' })
+    await promise
   })
 })
 
