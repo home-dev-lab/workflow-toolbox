@@ -36,7 +36,7 @@ describe('scaffoldWorkflow — determinism', () => {
 })
 
 describe('scaffoldWorkflow — per-pattern emission', () => {
-  it('exports all eight canonical pattern names', () => {
+  it('exports all nine canonical pattern names', () => {
     expect(PATTERN_NAMES).toEqual([
       'classifyAndAct',
       'fanOutAndSynthesize',
@@ -46,6 +46,7 @@ describe('scaffoldWorkflow — per-pattern emission', () => {
       'loopUntilDone',
       'planAndExecute',
       'scoreAndRank',
+      'chunkedAnalysis',
     ])
   })
 
@@ -57,6 +58,7 @@ describe('scaffoldWorkflow — per-pattern emission', () => {
     'tournament',
     'loopUntilDone',
     'planAndExecute',
+    'chunkedAnalysis',
   ] as const) {
     it(`${pattern}: imports it from @workflow-toolbox/patterns, calls it, and binds the result`, () => {
       const src = scaffoldWorkflow(single(pattern))
@@ -198,6 +200,7 @@ const ALL_PATTERNS_SPEC: ScaffoldSpec = {
     { pattern: 'loopUntilDone', phase: 'Refine' },
     { pattern: 'planAndExecute', phase: 'Execute' },
     { pattern: 'scoreAndRank', phase: 'Triage' },
+    { pattern: 'chunkedAnalysis', phase: 'Chunk' },
   ],
 }
 

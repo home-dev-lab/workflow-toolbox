@@ -29,12 +29,13 @@ export const PATTERN_NAMES = [
   'loopUntilDone',
   'planAndExecute',
   'scoreAndRank',
+  'chunkedAnalysis',
 ] as const
 
 export type PatternName = (typeof PATTERN_NAMES)[number]
 
 export interface ScaffoldStep {
-  /** Which pattern this step calls — one of the eight canonical names. */
+  /** Which pattern this step calls — one of the nine canonical names. */
   pattern: PatternName
   /** The phase title shown in the /workflows UI; the step's agents are grouped under it. */
   phase: string
@@ -133,6 +134,15 @@ const EMITTERS: Record<PatternName, Emitter> = {
     "        { name: 'opportunity', prompt: (item) => `Score the opportunity in ${item} from 1 to 5.` },",
     '      ],',
     "      cutoff: { type: 'topK', k: 3 },",
+    `      phase: ${q(phase)},`,
+    '    })',
+  ],
+  chunkedAnalysis: (v, phase) => [
+    `    const ${v} = await chunkedAnalysis(rt, {`,
+    `      input: 'placeholder-content-to-chunk',`,
+    '      maxChars: 4000,',
+    '      analyzePrompt: (chunk, index, total) => `Analyze chunk ${index + 1} of ${total}: ${chunk}`,',
+    '      synthesizePrompt: (chunkResults) => `Synthesize these ${chunkResults.length} chunk analyses.`,',
     `      phase: ${q(phase)},`,
     '    })',
   ],

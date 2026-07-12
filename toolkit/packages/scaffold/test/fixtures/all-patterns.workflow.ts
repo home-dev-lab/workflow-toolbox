@@ -5,13 +5,13 @@
 //   npx workflow-toolbox build <this-file>   &&   npx workflow-toolbox check workflows/<name>.js
 
 import { defineWorkflow } from '@workflow-toolbox/build/define'
-import { classifyAndAct, fanOutAndSynthesize, adversarialVerification, generateAndFilter, tournament, loopUntilDone, planAndExecute, scoreAndRank, withLeafFence } from '@workflow-toolbox/patterns'
+import { classifyAndAct, fanOutAndSynthesize, adversarialVerification, generateAndFilter, tournament, loopUntilDone, planAndExecute, scoreAndRank, chunkedAnalysis, withLeafFence } from '@workflow-toolbox/patterns'
 
 export default defineWorkflow({
   meta: {
     name: "all-patterns-demo",
     description: "A scaffold exercising every pattern (typecheck + lint fixture).",
-    phases: [{ title: "Fence" }, { title: "Route" }, { title: "Analyze" }, { title: "Verify" }, { title: "Generate" }, { title: "Compete" }, { title: "Refine" }, { title: "Execute" }, { title: "Triage" }],
+    phases: [{ title: "Fence" }, { title: "Route" }, { title: "Analyze" }, { title: "Verify" }, { title: "Generate" }, { title: "Compete" }, { title: "Refine" }, { title: "Execute" }, { title: "Triage" }, { title: "Chunk" }],
   },
   run: async (rt0) => {
     // Default leaf-agent fence: every agent this workflow spawns denies SendMessage
@@ -86,6 +86,14 @@ export default defineWorkflow({
       phase: "Triage",
     })
 
-    return { step1: step1.value, step2: step2.value, step3: step3.value, step4: step4.value, step5: step5.value, step6: step6.value, step7: step7.value, step8: step8.value }
+    const step9 = await chunkedAnalysis(rt, {
+      input: 'placeholder-content-to-chunk',
+      maxChars: 4000,
+      analyzePrompt: (chunk, index, total) => `Analyze chunk ${index + 1} of ${total}: ${chunk}`,
+      synthesizePrompt: (chunkResults) => `Synthesize these ${chunkResults.length} chunk analyses.`,
+      phase: "Chunk",
+    })
+
+    return { step1: step1.value, step2: step2.value, step3: step3.value, step4: step4.value, step5: step5.value, step6: step6.value, step7: step7.value, step8: step8.value, step9: step9.value }
   },
 })
