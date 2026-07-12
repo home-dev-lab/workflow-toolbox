@@ -930,7 +930,15 @@ ${renderClaim(claim)}`;
           'pr-review: target must be a non-empty string \u2014 provide a git ref range or change description (e.g. "HEAD~3..HEAD")'
         );
       }
-      return { target: raw, reviewerType: null, verifierModel: null, perAgent: null, effort: null, messaging: null };
+      return {
+        target: raw,
+        reviewerType: null,
+        verifierModel: null,
+        verifierType: null,
+        perAgent: null,
+        effort: null,
+        messaging: null
+      };
     }
     if (raw === null || typeof raw !== "object") {
       throw new Error(
@@ -961,8 +969,9 @@ ${renderClaim(claim)}`;
     const perAgent = cfg.perAgent ?? null;
     const effort = cfg.effort ?? null;
     const reviewerType = cfg.agentTypes?.["review"] ?? null;
+    const verifierType = cfg.agentTypes?.["verify"] ?? null;
     const messaging = cfg.messaging ?? null;
-    return { target: obj["target"], reviewerType, verifierModel, perAgent, effort, messaging };
+    return { target: obj["target"], reviewerType, verifierModel, verifierType, perAgent, effort, messaging };
   }
   async function run(rt00, input) {
     rt00.phase("Fence");
@@ -991,6 +1000,14 @@ ${renderClaim(claim)}`;
       const probe = await probeAgentType(rt, input.reviewerType, { phase: "Probe" });
       resolvedReviewerType = probe.agentType ?? null;
       probeReport = { requested: input.reviewerType, available: probe.available, reason: probe.reason };
+    }
+    let resolvedVerifierType = null;
+    let verifierProbeReport = null;
+    if (input.verifierType !== null) {
+      rt.phase("Probe");
+      const probe = await probeAgentType(rt, input.verifierType, { phase: "Probe" });
+      resolvedVerifierType = probe.agentType ?? null;
+      verifierProbeReport = { requested: input.verifierType, available: probe.available, reason: probe.reason };
     }
     rt.phase("Route");
     const routeResult = await classifyAndAct(rt, {
@@ -1109,6 +1126,10 @@ Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'
         // This verification is TARGETED + diff-grounded, so passing 'sonnet' at launch is a sound,
         // cheaper choice — but the committed DEFAULT stays opus (no implicit downgrade).
         ...input.verifierModel !== null ? { model: input.verifierModel } : {},
+        // Verify-fan agentType: launch-time override via `args.agentTypes.verify`,
+        // probe-resolved above. Omitted when null → the standard subagent (default,
+        // also the graceful-fallback path when the requested type could not answer).
+        ...resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {},
         claims: findings,
         renderClaim: (finding) => `## Claim to verify (lens: ${lens})
 **${finding.title}** \u2014 \`${finding.file}\` \xB7 severity: ${finding.severity}
@@ -1195,6 +1216,8 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
       // standard subagent) + the structured probe story when routing was requested.
       reviewerType: resolvedReviewerType,
       probe: probeReport,
+      verifierType: resolvedVerifierType,
+      verifierProbe: verifierProbeReport,
       leafFence,
       stats: {
         reviewersSpawned,

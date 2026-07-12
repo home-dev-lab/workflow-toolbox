@@ -579,6 +579,128 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Test: Verify-fan routing via the STRUCTURED config channel `agentTypes.verify`
+// — mirrors the agentTypes.review block above exactly (same probe-then-resolve
+// shape, same graceful-fallback contract), but routes the ADVERSARIAL VERIFIER
+// agents (adversarialVerification's own `verifierType` option) instead of the
+// lens reviewers. Reported in the result's `verifierType` / `verifierProbe`.
+// ---------------------------------------------------------------------------
+describe('pr-review verifier routing (agentTypes.verify)', () => {
+  const probeCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label === 'probeAgentType:probe')
+  const reviewCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('pr-review:reviewer:'))
+  const verifyCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
+
+  it('defaults the Verify fan to the leaf fence (and spawns exactly the fence probe) when agentTypes.verify is not provided', async () => {
+    const rt = makeHappyPathRuntime()
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+    const verifies = verifyCalls(rt)
+    expect(verifies.length).toBeGreaterThan(0)
+    for (const c of verifies) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    expect(probeCalls(rt).length).toBe(1)
+    expect(probeCalls(rt)[0]!.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    expect((result as { verifierType: string | null }).verifierType).toBeNull()
+    expect((result as { verifierProbe: unknown }).verifierProbe).toBeNull()
+  })
+
+  it('probes once then routes the Verify fan — verify only (review/synthesize stay on the leaf fence)', async () => {
+    const rt = makeHappyPathRuntime()
+    const result = await wf.run(
+      rt,
+      JSON.stringify({ target: 'HEAD~1..HEAD', agentTypes: { verify: 'workflow-toolbox:opencode-verifier' } }),
+    )
+    // Two probes now run: the unconditional leaf-fence probe and the
+    // verifierType probe (conditional, 'Probe' phase) — find each by the
+    // agentType it actually probed, not by position.
+    const probes = probeCalls(rt)
+    expect(probes.length).toBe(2)
+    const fenceProbe = probes.find((c) => c.opts?.agentType === LEAF_AGENT_TYPE)
+    const verifierProbe = probes.find((c) => c.opts?.agentType === 'workflow-toolbox:opencode-verifier')
+    expect(fenceProbe).toBeDefined()
+    expect(verifierProbe).toBeDefined()
+    const verifies = verifyCalls(rt)
+    expect(verifies.length).toBeGreaterThan(0)
+    // The per-role override wins over the fence for the verifiers specifically.
+    for (const c of verifies) expect(c.opts?.agentType).toBe('workflow-toolbox:opencode-verifier')
+    // The lens reviewers/synthesizer are NEVER specialized by the verify knob —
+    // they fall back to the toolkit's default leaf fence instead.
+    for (const c of reviewCalls(rt)) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    expect((result as { verifierType: string | null }).verifierType).toBe('workflow-toolbox:opencode-verifier')
+    const probe = (result as { verifierProbe: { available: boolean; reason: string | null } }).verifierProbe
+    expect(probe.available).toBe(true)
+    expect(probe.reason).toBeNull()
+  })
+
+  it('falls back to the standard subagent when the probe is non-affirmative, reporting the reason', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+        if (p.includes('availability probe')) {
+          return 'OPENCODE_UNAVAILABLE: no opencode binary on PATH'
+        }
+        if (p.includes('adversarially verify')) {
+          return { verdict: 'confirmed', reason: 'verified' }
+        }
+        if (p.includes('synthesizing a code review')) {
+          return { verdict: 'request-changes', summary: 'Needs work' }
+        }
+        if (p.includes('you are a specialized code reviewer')) {
+          // Non-empty findings so the Verify fan actually runs (an empty
+          // findings list skips adversarialVerification entirely — see verifyStage).
+          return { findings: [{ title: 'x', file: 'a.ts', severity: 'low', detail: 'd' }] }
+        }
+        if (p.includes('classify it into exactly one category')) {
+          return { category: 'bugfix' }
+        }
+        return { summary: 'Change summary here', riskAreas: [] }
+      },
+    })
+    const result = await wf.run(
+      rt,
+      JSON.stringify({
+        target: 'HEAD~1..HEAD',
+        agentTypes: { verify: 'workflow-toolbox:opencode-verifier' },
+      }),
+    )
+    // Verifiers still ran — WITHOUT the agentType (graceful fallback)
+    const verifies = verifyCalls(rt)
+    expect(verifies.length).toBeGreaterThan(0)
+    for (const c of verifies) expect(c.opts?.agentType).toBeUndefined()
+    expect((result as { verifierType: string | null }).verifierType).toBeNull()
+    const probe = (result as {
+      verifierProbe: { requested: string; available: boolean; reason: string | null }
+    }).verifierProbe
+    expect(probe.requested).toBe('workflow-toolbox:opencode-verifier')
+    expect(probe.available).toBe(false)
+    expect(probe.reason).toContain('OPENCODE_UNAVAILABLE')
+  })
+
+  it('rejects a blank agentTypes.verify via the shared parseConfig validation', async () => {
+    const rt = makeHappyPathRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', agentTypes: { verify: '  ' } })),
+    ).rejects.toThrow(/agentTypes\.verify/)
+  })
+
+  it('routes agentTypes.review and agentTypes.verify independently in the same run', async () => {
+    const rt = makeHappyPathRuntime()
+    const result = await wf.run(
+      rt,
+      JSON.stringify({
+        target: 'HEAD~1..HEAD',
+        agentTypes: { review: 'magic-claude:ts-reviewer', verify: 'workflow-toolbox:opencode-verifier' },
+      }),
+    )
+    for (const c of reviewCalls(rt)) expect(c.opts?.agentType).toBe('magic-claude:ts-reviewer')
+    for (const c of verifyCalls(rt)) expect(c.opts?.agentType).toBe('workflow-toolbox:opencode-verifier')
+    expect((result as { reviewerType: string | null }).reviewerType).toBe('magic-claude:ts-reviewer')
+    expect((result as { verifierType: string | null }).verifierType).toBe('workflow-toolbox:opencode-verifier')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Test: default leaf-agent fence (withLeafFence) — every spawned agent denies
 // SendMessage by default; `messaging: true` is the blanket launch-time opt-out.
 // ---------------------------------------------------------------------------

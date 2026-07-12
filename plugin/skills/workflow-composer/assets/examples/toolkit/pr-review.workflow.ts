@@ -77,6 +77,22 @@ export interface PrReviewInput {
    *  for the cheaper, abundant-quota bucket: the verify is targeted + diff-grounded, so sonnet is
    *  good enough and the fan dominates the run's tokens. Launch-time config; no source edit. */
   verifierModel: ModelAlias | null
+  /** Optional subagent type for the Verify fan (adversarialVerification's own
+   *  `verifierType` option) — routes the ADVERSARIAL VERIFIER agents through a
+   *  specialist or cross-family bridge (e.g. 'codex:codex-rescue' /
+   *  'workflow-toolbox:opencode-verifier') for decorrelated verification. This is
+   *  the pattern's PREMIER use case for that option (see adversarial-verification.ts):
+   *  a same-model verifier shares the reviewer's priors, a genuinely different
+   *  model does not. null = the standard subagent (the default). Requested via the
+   *  SAME structured config envelope as reviewerType: `args.agentTypes.verify`
+   *  (the SAME role key as a future `effort.verify` override — one role, one key),
+   *  validated by the shared parseConfig. PROBED at run entry (probeAgentType),
+   *  mirroring the reviewerType precedent exactly: when the type cannot answer,
+   *  the run degrades to the standard subagent — reported in the result's
+   *  `verifierProbe`, never silent. Routes the Verify fan ONLY: the lens reviewers
+   *  and the synthesizer are never specialized by this knob. Never hard-code a
+   *  private (e.g. magic-claude:*) type as a default. */
+  verifierType: string | null
   /** Optional subagent type for the per-lens REVIEW agents — a specialist
    *  reviewer, or a cross-family bridge (e.g. 'workflow-toolbox:opencode-verifier')
    *  for decorrelated review. null = the standard subagent (the default).
@@ -247,6 +263,11 @@ interface PrReviewOutput {
   reviewerType: string | null
   /** Probe story when `agentTypes.review` was requested; null otherwise. */
   probe: AgentTypeProbeReport | null
+  /** The subagent type the Verify fan actually ran through (probe-resolved);
+   *  null = the standard subagent (default, or graceful fallback). */
+  verifierType: string | null
+  /** Probe story when `agentTypes.verify` was requested; null otherwise. */
+  verifierProbe: AgentTypeProbeReport | null
   /** Leaf-agent fence outcome (withLeafFence): whether every spawned agent
    *  defaulted to the SendMessage-denying agentType, or degraded/opted out. */
   leafFence: LeafFenceReport
@@ -274,7 +295,15 @@ function parseInput(raw: unknown): PrReviewInput {
         'pr-review: target must be a non-empty string — provide a git ref range or change description (e.g. "HEAD~3..HEAD")',
       )
     }
-    return { target: raw, reviewerType: null, verifierModel: null, perAgent: null, effort: null, messaging: null }
+    return {
+      target: raw,
+      reviewerType: null,
+      verifierModel: null,
+      verifierType: null,
+      perAgent: null,
+      effort: null,
+      messaging: null,
+    }
   }
 
   if (raw === null || typeof raw !== 'object') {
@@ -317,14 +346,16 @@ function parseInput(raw: unknown): PrReviewInput {
   // conventions compose cleanly. The lens reviewers' routing request lives at
   // `agentTypes.review` — the SAME role key as `effort.review` (one role, one
   // key: parseConfig never validates key sets, so a near-miss key would be a
-  // SILENT no-op — mirroring the effort key is the guard).
+  // SILENT no-op — mirroring the effort key is the guard). The Verify fan's
+  // routing request follows the SAME convention at `agentTypes.verify`.
   const cfg = parseConfig(obj)
   const perAgent = cfg.perAgent ?? null
   const effort = cfg.effort ?? null
   const reviewerType = cfg.agentTypes?.['review'] ?? null
+  const verifierType = cfg.agentTypes?.['verify'] ?? null
   const messaging = cfg.messaging ?? null
 
-  return { target: obj['target'], reviewerType, verifierModel, perAgent, effort, messaging }
+  return { target: obj['target'], reviewerType, verifierModel, verifierType, perAgent, effort, messaging }
 }
 
 // ---------------------------------------------------------------------------
@@ -383,6 +414,19 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     const probe = await probeAgentType(rt, input.reviewerType, { phase: 'Probe' })
     resolvedReviewerType = probe.agentType ?? null
     probeReport = { requested: input.reviewerType, available: probe.available, reason: probe.reason }
+  }
+
+  // Same probe-then-resolve treatment for the Verify fan's routing request
+  // (agentTypes.verify) — mirrors the reviewerType block above exactly, so an
+  // unavailable cross-family verifier degrades to the standard subagent
+  // instead of silently starving every verify call.
+  let resolvedVerifierType: string | null = null
+  let verifierProbeReport: AgentTypeProbeReport | null = null
+  if (input.verifierType !== null) {
+    rt.phase('Probe')
+    const probe = await probeAgentType(rt, input.verifierType, { phase: 'Probe' })
+    resolvedVerifierType = probe.agentType ?? null
+    verifierProbeReport = { requested: input.verifierType, available: probe.available, reason: probe.reason }
   }
 
   // -------------------------------------------------------------------------
@@ -571,6 +615,10 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       // This verification is TARGETED + diff-grounded, so passing 'sonnet' at launch is a sound,
       // cheaper choice — but the committed DEFAULT stays opus (no implicit downgrade).
       ...(input.verifierModel !== null ? { model: input.verifierModel } : {}),
+      // Verify-fan agentType: launch-time override via `args.agentTypes.verify`,
+      // probe-resolved above. Omitted when null → the standard subagent (default,
+      // also the graceful-fallback path when the requested type could not answer).
+      ...(resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}),
       claims: findings,
       renderClaim: (finding) =>
         `## Claim to verify (lens: ${lens})\n` +
@@ -693,6 +741,8 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     // standard subagent) + the structured probe story when routing was requested.
     reviewerType: resolvedReviewerType,
     probe: probeReport,
+    verifierType: resolvedVerifierType,
+    verifierProbe: verifierProbeReport,
     leafFence,
     stats: {
       reviewersSpawned,
