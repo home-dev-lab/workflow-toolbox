@@ -180,6 +180,28 @@
   - **The agentType registry is read at session start.** An agent `.md` added mid-session is
     not visible to `agent({agentType})` until a fresh session; the runtime errors listing the
     available types, so the failure is loud, not silent.
+  - **The toolkit ships this fence as the DEFAULT — `withLeafFence`, from
+    `@workflow-toolbox/patterns`.** Call it ONCE, as the very FIRST line of `run()`, before any
+    other `withAgentDefaults` wrap:
+    ```ts
+    run: async (rt0, input) => {
+      const { rt, report: leafFence } = await withLeafFence(rt0, { phase: 'Fence' })
+      // ... use `rt` for every agent()/pattern call below; optionally return `leafFence`
+    }
+    ```
+    It probes the toolkit's own `workflow-toolbox:leaf` agentType (`disallowedTools:
+    SendMessage`, ships as `plugin/agents/leaf.md`) via `probeAgentType` and applies it as the
+    LOWEST-priority `withAgentDefaults` default — an explicit per-role `<role>Type` (e.g.
+    `verifierType`) or an outer blanket `perAgent.agentType` still wins on conflict, and an
+    environment where the agentType isn't registered (plugin not installed) degrades
+    gracefully to the standard subagent, exactly like every other `probeAgentType` consumer.
+    Pass `{ disabled: true }` only when a workflow genuinely needs its leaves to coordinate —
+    thread it from a launch-time `messaging: true` arg via the shared `parseConfig` (a
+    recognized top-level slice, parsed to `WorkflowConfig.messaging`) so a LAUNCHER, not just
+    the author, can opt out per run. `workflow-toolbox scaffold` wires this in by default for
+    every new workflow; `pr-review` and `independent-analysis` are retrofitted as the
+    reference examples — the remaining bundled `toolkit/examples/*.workflow.ts` compositions
+    have not been retrofitted yet (adopt the same one-line wrap when you touch them).
 - **When to define an `.md` vs inline the prompt.** Inline when the leaf is a generic worker
   the default subagent's capabilities already fit. Define a registered agentType `.md` when you
   need a capability fence (above), reusable discipline across workflows, or a specific

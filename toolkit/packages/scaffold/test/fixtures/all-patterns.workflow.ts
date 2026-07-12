@@ -5,15 +5,20 @@
 //   npx workflow-toolbox build <this-file>   &&   npx workflow-toolbox check workflows/<name>.js
 
 import { defineWorkflow } from '@workflow-toolbox/build/define'
-import { classifyAndAct, fanOutAndSynthesize, adversarialVerification, generateAndFilter, tournament, loopUntilDone, planAndExecute, scoreAndRank } from '@workflow-toolbox/patterns'
+import { classifyAndAct, fanOutAndSynthesize, adversarialVerification, generateAndFilter, tournament, loopUntilDone, planAndExecute, scoreAndRank, withLeafFence } from '@workflow-toolbox/patterns'
 
 export default defineWorkflow({
   meta: {
     name: "all-patterns-demo",
     description: "A scaffold exercising every pattern (typecheck + lint fixture).",
-    phases: [{ title: "Route" }, { title: "Analyze" }, { title: "Verify" }, { title: "Generate" }, { title: "Compete" }, { title: "Refine" }, { title: "Execute" }, { title: "Triage" }],
+    phases: [{ title: "Fence" }, { title: "Route" }, { title: "Analyze" }, { title: "Verify" }, { title: "Generate" }, { title: "Compete" }, { title: "Refine" }, { title: "Execute" }, { title: "Triage" }],
   },
-  run: async (rt) => {
+  run: async (rt0) => {
+    // Default leaf-agent fence: every agent this workflow spawns denies SendMessage
+    // by default (see @workflow-toolbox/patterns' withLeafFence). Pass
+    // `{ disabled: true }` only if this workflow genuinely needs its agents to coordinate.
+    const { rt } = await withLeafFence(rt0, { phase: 'Fence' })
+
     const step1 = await classifyAndAct(rt, {
       items: ['placeholder-item'],
       categories: ['category-a', 'category-b'],

@@ -103,7 +103,7 @@ describe('scaffoldWorkflow — structure', () => {
   })
 
   it('omits the unused `input` param from run', () => {
-    expect(src).toContain('run: async (rt) => {')
+    expect(src).toContain('run: async (rt0) => {')
   })
 
   it('dedups pattern imports', () => {
@@ -131,6 +131,14 @@ describe('scaffoldWorkflow — structure', () => {
     expect(meta).toContain('name: "multi-step"')
     expect(meta).toContain('description: "Several patterns in sequence."')
     expect(meta).not.toContain('`')
+  })
+
+  it('wires the default leaf-agent fence (withLeafFence) as the first run-body line', () => {
+    expect(src).toContain("import { classifyAndAct, adversarialVerification, withLeafFence } from '@workflow-toolbox/patterns'")
+    expect(src).toContain("const { rt } = await withLeafFence(rt0, { phase: 'Fence' })")
+    // 'Fence' is the first phase, ahead of every step phase.
+    const meta = metaSpan(src)
+    expect(meta.indexOf('{ title: "Fence" }')).toBeLessThan(meta.indexOf('{ title: "Route" }'))
   })
 })
 

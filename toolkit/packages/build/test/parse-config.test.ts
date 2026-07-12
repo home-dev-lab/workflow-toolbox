@@ -92,4 +92,22 @@ describe('parseConfig', () => {
       /effort\.judge must be one of low, medium, high, xhigh, max, auto/,
     )
   })
+
+  // ---------------------------------------------------------------------------
+  // messaging — blanket opt-out of the toolkit's default leaf-agent fence
+  // (withLeafFence, @workflow-toolbox/patterns). parseConfig only validates the
+  // boolean shape; it has no notion of what the fence does.
+  // ---------------------------------------------------------------------------
+  it('parses messaging: true/false', () => {
+    expect(parseConfig({ messaging: true }).messaging).toBe(true)
+    expect(parseConfig({ messaging: false }).messaging).toBe(false)
+  })
+
+  it('omits messaging when absent', () => {
+    expect(parseConfig({}).messaging).toBeUndefined()
+  })
+
+  it('rejects a non-boolean messaging value', () => {
+    expect(() => parseConfig({ messaging: 'true' })).toThrow(/messaging must be a boolean/)
+  })
 })

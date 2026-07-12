@@ -37,8 +37,15 @@ import {
   adversarialVerification,
   collectTrail,
   probeAgentType,
+  withLeafFence,
 } from '@workflow-toolbox/patterns'
-import type { ClaimVerdict, VerifiedClaim, AgentTypeProbeReport, TrailRecord } from '@workflow-toolbox/patterns'
+import type {
+  ClaimVerdict,
+  VerifiedClaim,
+  AgentTypeProbeReport,
+  TrailRecord,
+  LeafFenceReport,
+} from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
 
 // ---------------------------------------------------------------------------
@@ -102,6 +109,12 @@ export interface PrReviewInput {
    *  'verify' role is additionally clamped to a 'high' floor via
    *  resolveVerifierEffort — an override may only raise it. */
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
+  /** Blanket opt-OUT of the default leaf-agent fence (withLeafFence): every agent
+   *  this workflow spawns denies SendMessage by default. true = allow the standard
+   *  (messaging-capable) subagent instead — set only when this run genuinely needs
+   *  its agents to coordinate. null/false (default) = the fence applies. Parsed
+   *  from `args.messaging` by the shared parseConfig helper. */
+  messaging: boolean | null
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +247,9 @@ interface PrReviewOutput {
   reviewerType: string | null
   /** Probe story when `agentTypes.review` was requested; null otherwise. */
   probe: AgentTypeProbeReport | null
+  /** Leaf-agent fence outcome (withLeafFence): whether every spawned agent
+   *  defaulted to the SendMessage-denying agentType, or degraded/opted out. */
+  leafFence: LeafFenceReport
   stats: {
     reviewersSpawned: number
     findingsRaw: number
@@ -258,7 +274,7 @@ function parseInput(raw: unknown): PrReviewInput {
         'pr-review: target must be a non-empty string — provide a git ref range or change description (e.g. "HEAD~3..HEAD")',
       )
     }
-    return { target: raw, reviewerType: null, verifierModel: null, perAgent: null, effort: null }
+    return { target: raw, reviewerType: null, verifierModel: null, perAgent: null, effort: null, messaging: null }
   }
 
   if (raw === null || typeof raw !== 'object') {
@@ -306,15 +322,27 @@ function parseInput(raw: unknown): PrReviewInput {
   const perAgent = cfg.perAgent ?? null
   const effort = cfg.effort ?? null
   const reviewerType = cfg.agentTypes?.['review'] ?? null
+  const messaging = cfg.messaging ?? null
 
-  return { target: obj['target'], reviewerType, verifierModel, perAgent, effort }
+  return { target: obj['target'], reviewerType, verifierModel, perAgent, effort, messaging }
 }
 
 // ---------------------------------------------------------------------------
 // Workflow body
 // ---------------------------------------------------------------------------
 
-async function run(rt0: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewOutput> {
+async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewOutput> {
+  // Leaf-agent fence — the LOWEST-priority default, applied first/innermost so
+  // it never clobbers a workflow-level perAgent blanket (below) or a per-role
+  // agentType (each call site's own opts). Every agent this workflow spawns
+  // defaults to the SendMessage-denying agentType unless `messaging: true` was
+  // requested — see @workflow-toolbox/patterns' withLeafFence.
+  rt00.phase('Fence')
+  const { rt: rt0, report: leafFence } = await withLeafFence(rt00, {
+    phase: 'Fence',
+    disabled: input.messaging === true,
+  })
+
   // Class-A one-wiring-point: wrap the runtime ONCE so the blanket per-agent
   // defaults reach every agent in every pattern below (per-call/pattern opts
   // still win). When no perAgent was supplied this is a no-op passthrough.
@@ -661,6 +689,7 @@ async function run(rt0: WorkflowRuntime, input: PrReviewInput): Promise<PrReview
     // standard subagent) + the structured probe story when routing was requested.
     reviewerType: resolvedReviewerType,
     probe: probeReport,
+    leafFence,
     stats: {
       reviewersSpawned,
       findingsRaw,
@@ -683,6 +712,7 @@ export default defineWorkflow({
     description: 'Multi-lens code review of a change set: classifies the change, spawns specialized reviewers, adversarially verifies findings, and synthesizes a verdict.',
     whenToUse: 'Use when you need a structured, adversarially-verified code review of a git ref range or change description.',
     phases: [
+      { title: 'Fence', detail: 'Resolve the default leaf-agent fence (SendMessage denied by default)' },
       { title: 'Probe', detail: 'Resolve the requested reviewer agentType (graceful Claude fallback)' },
       { title: 'Route', detail: 'Classify the change and produce a targeted summary' },
       { title: 'Review', detail: 'Spawn specialized reviewer agents per lens' },

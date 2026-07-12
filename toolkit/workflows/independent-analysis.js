@@ -3,6 +3,9 @@ export const meta = {
   "description": "Bias-free multi-lens adversarial analysis of a subject: fan out one agent per lens to surface forgotten angles/risks, dedup vs stated assumptions, then refute-first verify the survivors.",
   "phases": [
     {
+      "title": "Fence"
+    },
+    {
       "title": "Probe"
     },
     {
@@ -61,6 +64,20 @@ var __wt = (() => {
       body.counts = sorted;
     }
     return `${DIGEST_PREFIX} ${JSON.stringify(body)}`;
+  }
+
+  // ../packages/runtime/src/with-agent-defaults.ts
+  function withAgentDefaults(rt, defaults) {
+    const agent = (prompt, opts) => rt.agent(prompt, { ...defaults, ...opts });
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => rt.phase(title),
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
   }
 
   // ../packages/runtime/src/prompt-tag.ts
@@ -205,6 +222,12 @@ ${prompt}` : prompt;
     for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`);
     return out;
   }
+  function asBoolean(v, where) {
+    if (typeof v !== "boolean") {
+      throw new Error(`parseConfig: ${where} must be a boolean, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
   function parseNumberMap(raw, where) {
     if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
     const out = {};
@@ -227,6 +250,7 @@ ${prompt}` : prompt;
     if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort);
     if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes");
     if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing");
+    if (raw.messaging !== void 0) config.messaging = asBoolean(raw.messaging, "messaging");
     return config;
   }
 
@@ -364,6 +388,24 @@ ${prompt}` : prompt;
       agentType: available ? agentType : void 0,
       available,
       reason
+    };
+  }
+
+  // ../packages/patterns/src/leaf-fence.ts
+  var LEAF_AGENT_TYPE = "workflow-toolbox:leaf";
+  async function withLeafFence(rt, options = {}) {
+    const { phase, agentType = LEAF_AGENT_TYPE, disabled = false } = options;
+    if (disabled) {
+      return { rt, report: { resolvedAgentType: null, probe: null } };
+    }
+    const probe = await probeAgentType(rt, agentType, phase !== void 0 ? { phase } : {});
+    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
+    return {
+      rt: withAgentDefaults(rt, defaults),
+      report: {
+        resolvedAgentType: probe.agentType ?? null,
+        probe: { requested: agentType, available: probe.available, reason: probe.reason }
+      }
     };
   }
 
@@ -793,7 +835,7 @@ ${renderClaim(claim)}`;
     meta: {
       name: "independent-analysis",
       description: "Bias-free multi-lens adversarial analysis of a subject: fan out one agent per lens to surface forgotten angles/risks, dedup vs stated assumptions, then refute-first verify the survivors.",
-      phases: [{ title: "Probe" }, { title: "Lenses" }, { title: "Analyze" }, { title: "Verify" }]
+      phases: [{ title: "Fence" }, { title: "Probe" }, { title: "Lenses" }, { title: "Analyze" }, { title: "Verify" }]
     },
     parseInput: (raw) => {
       if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
@@ -833,9 +875,15 @@ ${renderClaim(claim)}`;
       const cfg = parseConfig(obj);
       const effort = cfg.effort ?? null;
       const verifierType = cfg.agentTypes?.["verify"];
-      return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel, verifierType, effort };
+      const messaging = cfg.messaging ?? null;
+      return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel, verifierType, effort, messaging };
     },
-    run: async (rt, input) => {
+    run: async (rt0, input) => {
+      rt0.phase("Fence");
+      const { rt, report: leafFence } = await withLeafFence(rt0, {
+        phase: "Fence",
+        disabled: input.messaging === true
+      });
       const subjectBlock = untrusted("SUBJECT", input.subject);
       const contextBlock = input.context.trim().length > 0 ? untrusted("CONTEXT", input.context) : "(no extra context)";
       const assumptionsBlock = renderAssumptions(input.assumptions);
@@ -958,6 +1006,9 @@ ${subjectBlock}`,
         // same-model verifier) + the structured probe story when routing was requested.
         verifierType: resolvedVerifierType ?? null,
         probe: probeInfo,
+        // Leaf-agent fence outcome (withLeafFence): whether every spawned agent
+        // defaulted to the SendMessage-denying agentType, or degraded/opted out.
+        leafFence,
         confirmed,
         refuted,
         allVerified: verified.map((v) => ({

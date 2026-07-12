@@ -221,6 +221,15 @@ export interface WorkflowConfig {
    *  Structured knobs like scoreAndRank's `cutoff` are pattern-specific and stay
    *  the author's bespoke arg — they are intentionally out of this generic map. */
   sizing?: Readonly<Record<string, number>>
+  /** Blanket opt-OUT of the toolkit's default leaf-agent fence (see
+   *  `@workflow-toolbox/patterns`' `withLeafFence`): toolkit-spawned leaf/worker
+   *  agents deny SendMessage by default (a fresh-context task executor has no
+   *  legitimate use for an inter-agent channel). Set `messaging: true` only when
+   *  a workflow genuinely needs its leaves to coordinate (e.g. an agent that
+   *  must notify a live teammate) — the fence's own per-role escape hatch
+   *  (`agentTypes.<role>`) still applies for a single role. Default false/omitted
+   *  — the fence applies. */
+  messaging?: boolean
 }
 
 // Local effort allowlist for runtime validation. Annotated `readonly EffortAlias[]`
@@ -304,6 +313,13 @@ function parseEffortMap(raw: unknown): Record<string, EffortRoleValue> {
   return out
 }
 
+function asBoolean(v: unknown, where: string): boolean {
+  if (typeof v !== 'boolean') {
+    throw new Error(`parseConfig: ${where} must be a boolean, got ${JSON.stringify(v)}`)
+  }
+  return v
+}
+
 function parseNumberMap(raw: unknown, where: string): Record<string, number> {
   if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? 'null' : typeof raw}`)
   const out: Record<string, number> = {}
@@ -331,5 +347,6 @@ export function parseConfig(raw: unknown): WorkflowConfig {
   if (raw.effort !== undefined) config.effort = parseEffortMap(raw.effort)
   if (raw.agentTypes !== undefined) config.agentTypes = parseStringMap(raw.agentTypes, 'agentTypes')
   if (raw.sizing !== undefined) config.sizing = parseNumberMap(raw.sizing, 'sizing')
+  if (raw.messaging !== undefined) config.messaging = asBoolean(raw.messaging, 'messaging')
   return config
 }

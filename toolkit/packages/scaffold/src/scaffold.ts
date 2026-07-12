@@ -170,11 +170,13 @@ export function scaffoldWorkflow(spec: ScaffoldSpec): string {
     }
   }
 
-  // Imports: patterns deduped, in canonical order (stable output regardless of step order).
+  // Imports: patterns deduped, in canonical order (stable output regardless of step order),
+  // plus withLeafFence — the toolkit's default leaf-agent fence, always wired in (below).
   const usedPatterns = PATTERN_NAMES.filter((p) => spec.steps.some((s) => s.pattern === p))
 
-  // Phases: deduped, first-seen order.
-  const phases: string[] = []
+  // Phases: 'Fence' first (the leaf-fence probe, always run), then deduped step phases in
+  // first-seen order.
+  const phases: string[] = ['Fence']
   for (const step of spec.steps) {
     if (!phases.includes(step.phase)) phases.push(step.phase)
   }
@@ -192,7 +194,7 @@ export function scaffoldWorkflow(spec: ScaffoldSpec): string {
     ...HEADER,
     '',
     "import { defineWorkflow } from '@workflow-toolbox/build/define'",
-    `import { ${usedPatterns.join(', ')} } from '@workflow-toolbox/patterns'`,
+    `import { ${usedPatterns.join(', ')}, withLeafFence } from '@workflow-toolbox/patterns'`,
     '',
     'export default defineWorkflow({',
     '  meta: {',
@@ -200,7 +202,12 @@ export function scaffoldWorkflow(spec: ScaffoldSpec): string {
     `    description: ${q(spec.meta.description)},`,
     `    phases: [${phases.map((p) => `{ title: ${q(p)} }`).join(', ')}],`,
     '  },',
-    '  run: async (rt) => {',
+    '  run: async (rt0) => {',
+    "    // Default leaf-agent fence: every agent this workflow spawns denies SendMessage",
+    "    // by default (see @workflow-toolbox/patterns' withLeafFence). Pass",
+    "    // `{ disabled: true }` only if this workflow genuinely needs its agents to coordinate.",
+    "    const { rt } = await withLeafFence(rt0, { phase: 'Fence' })",
+    '',
     ...body,
     '  },',
     '})',

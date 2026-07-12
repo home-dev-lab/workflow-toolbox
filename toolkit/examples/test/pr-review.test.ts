@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { LEAF_AGENT_TYPE } from '@workflow-toolbox/patterns'
 import wf from '../pr-review.workflow.js'
 
 // ---------------------------------------------------------------------------
@@ -80,7 +81,7 @@ describe('pr-review workflow metadata', () => {
     expect(wf.meta.name).toBe('pr-review')
     expect(wf.meta.description).toBeTruthy()
     const titles = wf.meta.phases?.map(p => p.title)
-    expect(titles).toEqual(['Probe', 'Route', 'Review', 'Verify', 'Synthesize'])
+    expect(titles).toEqual(['Fence', 'Probe', 'Route', 'Review', 'Verify', 'Synthesize'])
   })
 })
 
@@ -475,30 +476,42 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
   const verifyCalls = (rt: FakeRuntime) =>
     rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
 
-  it('omits agentType on the reviewers (and spawns no probe) when agentTypes.review is not provided', async () => {
+  it('defaults reviewers to the leaf fence (and spawns exactly the fence probe) when agentTypes.review is not provided', async () => {
     const rt = makeHappyPathRuntime()
     const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
     const reviews = reviewCalls(rt)
     expect(reviews.length).toBeGreaterThan(0)
-    for (const c of reviews) expect(c.opts?.agentType).toBeUndefined()
-    expect(probeCalls(rt).length).toBe(0)
+    // No role-specific override was requested — every reviewer falls back to the
+    // toolkit's default leaf fence (withLeafFence), not "no agentType at all".
+    for (const c of reviews) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    expect(probeCalls(rt).length).toBe(1)
+    expect(probeCalls(rt)[0]!.opts?.agentType).toBe(LEAF_AGENT_TYPE)
     expect((result as { reviewerType: string | null }).reviewerType).toBeNull()
     expect((result as { probe: unknown }).probe).toBeNull()
   })
 
-  it('probes once then routes the lens reviewers — reviewers only', async () => {
+  it('probes once then routes the lens reviewers — reviewers only (verify/synthesize stay on the leaf fence)', async () => {
     const rt = makeHappyPathRuntime()
     const result = await wf.run(
       rt,
       JSON.stringify({ target: 'HEAD~1..HEAD', agentTypes: { review: 'magic-claude:ts-reviewer' } }),
     )
-    expect(probeCalls(rt).length).toBe(1)
-    expect(probeCalls(rt)[0]!.opts?.agentType).toBe('magic-claude:ts-reviewer')
+    // Two probes now run: the unconditional leaf-fence probe (first, 'Fence'
+    // phase) and the reviewerType probe (conditional, 'Probe' phase) — find each
+    // by the agentType it actually probed, not by position.
+    const probes = probeCalls(rt)
+    expect(probes.length).toBe(2)
+    const fenceProbe = probes.find((c) => c.opts?.agentType === LEAF_AGENT_TYPE)
+    const reviewerProbe = probes.find((c) => c.opts?.agentType === 'magic-claude:ts-reviewer')
+    expect(fenceProbe).toBeDefined()
+    expect(reviewerProbe).toBeDefined()
     const reviews = reviewCalls(rt)
     expect(reviews.length).toBeGreaterThan(0)
+    // The per-role override wins over the fence for the reviewers specifically.
     for (const c of reviews) expect(c.opts?.agentType).toBe('magic-claude:ts-reviewer')
-    // The verifiers are NEVER specialized by the reviewer knob.
-    for (const c of verifyCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+    // The verifiers/synthesizer are NEVER specialized by the reviewer knob — they
+    // fall back to the toolkit's default leaf fence instead.
+    for (const c of verifyCalls(rt)) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
     expect((result as { reviewerType: string | null }).reviewerType).toBe('magic-claude:ts-reviewer')
     const probe = (result as { probe: { available: boolean; reason: string | null } }).probe
     expect(probe.available).toBe(true)
@@ -557,8 +570,74 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
   it('ignores a legacy top-level reviewerType arg (removed contract)', async () => {
     const rt = makeHappyPathRuntime()
     await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', reviewerType: 'magic-claude:ts-reviewer' }))
-    expect(probeCalls(rt).length).toBe(0)
-    for (const c of reviewCalls(rt)) expect(c.opts?.agentType).toBeUndefined()
+    // Only the unconditional leaf-fence probe runs — the legacy key is ignored,
+    // so no reviewerType-specific probe is spawned.
+    expect(probeCalls(rt).length).toBe(1)
+    expect(probeCalls(rt)[0]!.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    for (const c of reviewCalls(rt)) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: default leaf-agent fence (withLeafFence) — every spawned agent denies
+// SendMessage by default; `messaging: true` is the blanket launch-time opt-out.
+// ---------------------------------------------------------------------------
+describe('pr-review leaf-agent fence (messaging)', () => {
+  const allCalls = (rt: FakeRuntime) => rt.calls
+
+  it('defaults EVERY agent (classify/act/review/verify/synthesize) to the fence', async () => {
+    const rt = makeHappyPathRuntime()
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+    const nonProbeCalls = allCalls(rt).filter((c) => c.opts?.label !== 'probeAgentType:probe')
+    expect(nonProbeCalls.length).toBeGreaterThan(0)
+    for (const c of nonProbeCalls) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    expect((result as { leafFence: { resolvedAgentType: string | null } }).leafFence.resolvedAgentType).toBe(
+      LEAF_AGENT_TYPE,
+    )
+  })
+
+  it('messaging: true opts out — no fence probe, no agent carries the fenced agentType', async () => {
+    const rt = makeHappyPathRuntime()
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', messaging: true }))
+    const probes = rt.calls.filter((c) => c.opts?.label === 'probeAgentType:probe')
+    expect(probes.length).toBe(0)
+    for (const c of rt.calls) expect(c.opts?.agentType).toBeUndefined()
+    const leafFence = (result as {
+      leafFence: { resolvedAgentType: string | null; probe: unknown }
+    }).leafFence
+    expect(leafFence.resolvedAgentType).toBeNull()
+    expect(leafFence.probe).toBeNull()
+  })
+
+  it('degrades gracefully (no throw) when the fenced agentType is not registered', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+        if (p.includes('availability probe')) {
+          throw new Error(`agentType '${LEAF_AGENT_TYPE}' not found`)
+        }
+        if (p.includes('adversarially verify')) return { verdict: 'confirmed', reason: 'r' }
+        if (p.includes('synthesizing a code review')) return { verdict: 'approve', summary: 'Fine' }
+        if (p.includes('you are a specialized code reviewer')) return { findings: [] }
+        if (p.includes('you are reviewing a')) return { summary: 'Summary text here', riskAreas: ['a'] }
+        if (p.includes('classify it into exactly one category')) return { category: 'bugfix' }
+        return { summary: 'Default', riskAreas: [] }
+      },
+    })
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+    expect(result).toHaveProperty('verdict')
+    for (const c of rt.calls) {
+      if (c.opts?.label === 'probeAgentType:probe') continue
+      expect(c.opts?.agentType).toBeUndefined()
+    }
+    expect((result as { leafFence: { resolvedAgentType: string | null } }).leafFence.resolvedAgentType).toBeNull()
+  })
+
+  it('rejects a non-boolean messaging value via the shared parseConfig validation', async () => {
+    const rt = makeHappyPathRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', messaging: 'yes' })),
+    ).rejects.toThrow(/messaging must be a boolean/)
   })
 })
 

@@ -33,7 +33,13 @@
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
 import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
-import { adversarialVerification, collectTrail, fanOutAndSynthesize, probeAgentType } from '@workflow-toolbox/patterns'
+import {
+  adversarialVerification,
+  collectTrail,
+  fanOutAndSynthesize,
+  probeAgentType,
+  withLeafFence,
+} from '@workflow-toolbox/patterns'
 import type { VerifiedClaim, AgentTypeProbeReport } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
 
@@ -87,6 +93,10 @@ export interface IndependentAnalysisInput {
    *  overrides. Resolved per-stage via resolveEffort; 'verify' is additionally
    *  clamped to a 'high' floor via resolveVerifierEffort. */
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
+  /** Blanket opt-OUT of the default leaf-agent fence (withLeafFence): every agent
+   *  this workflow spawns denies SendMessage by default. true = allow the standard
+   *  (messaging-capable) subagent instead. null/false (default) = the fence applies. */
+  messaging: boolean | null
 }
 
 // opus first = the current BEST_MODEL / default; fable last = suspended by export
@@ -227,7 +237,7 @@ export default defineWorkflow({
     name: 'independent-analysis',
     description:
       'Bias-free multi-lens adversarial analysis of a subject: fan out one agent per lens to surface forgotten angles/risks, dedup vs stated assumptions, then refute-first verify the survivors.',
-    phases: [{ title: 'Probe' }, { title: 'Lenses' }, { title: 'Analyze' }, { title: 'Verify' }],
+    phases: [{ title: 'Fence' }, { title: 'Probe' }, { title: 'Lenses' }, { title: 'Analyze' }, { title: 'Verify' }],
   },
 
   parseInput: (raw): IndependentAnalysisInput => {
@@ -282,11 +292,22 @@ export default defineWorkflow({
     const cfg = parseConfig(obj)
     const effort = cfg.effort ?? null
     const verifierType = cfg.agentTypes?.['verify']
+    const messaging = cfg.messaging ?? null
 
-    return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel, verifierType, effort }
+    return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel, verifierType, effort, messaging }
   },
 
-  run: async (rt: WorkflowRuntime, input: IndependentAnalysisInput) => {
+  run: async (rt0: WorkflowRuntime, input: IndependentAnalysisInput) => {
+    // Leaf-agent fence — the LOWEST-priority default, applied first so it never
+    // clobbers a per-role agentType (each call site's own opts, e.g. verifierType
+    // below). Every agent this workflow spawns defaults to the SendMessage-denying
+    // agentType unless `messaging: true` was requested — see
+    // @workflow-toolbox/patterns' withLeafFence.
+    rt0.phase('Fence')
+    const { rt, report: leafFence } = await withLeafFence(rt0, {
+      phase: 'Fence',
+      disabled: input.messaging === true,
+    })
     const subjectBlock = untrusted('SUBJECT', input.subject)
     const contextBlock = input.context.trim().length > 0 ? untrusted('CONTEXT', input.context) : '(no extra context)'
     const assumptionsBlock = renderAssumptions(input.assumptions)
@@ -430,6 +451,9 @@ export default defineWorkflow({
       // same-model verifier) + the structured probe story when routing was requested.
       verifierType: resolvedVerifierType ?? null,
       probe: probeInfo,
+      // Leaf-agent fence outcome (withLeafFence): whether every spawned agent
+      // defaulted to the SendMessage-denying agentType, or degraded/opted out.
+      leafFence,
       confirmed,
       refuted,
       allVerified: verified.map((v) => ({

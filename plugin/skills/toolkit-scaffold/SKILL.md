@@ -127,6 +127,13 @@ compiles and builds immediately. It is not yet useful — you must:
   the schema-authoring contract),
 - and replace the `loopUntilDone` placeholder `done: false` with your real stop condition.
 
+The skeleton wires `withLeafFence(rt0, { phase: 'Fence' })` as the FIRST line of `run` —
+every agent it spawns denies SendMessage by default (the toolkit's `workflow-toolbox:leaf`
+agentType), gracefully falling back to the standard subagent if that agentType isn't
+registered (e.g. the plugin isn't installed). Leave it as-is unless this workflow genuinely
+needs its agents to coordinate, in which case pass `{ disabled: true }` (or thread the
+launch-time `messaging: true` knob via `parseConfig`) — see `references/model-and-agent-routing.md`.
+
 Optionally **tune the agents** (the scaffold emits none of these — add what you need):
 per-role `<role>Model`/`<role>Effort` on any pattern; `adversarialVerification`'s
 `verifierType` for a cross-model (e.g. `codex:codex-rescue`, GPT) verifier; or, for

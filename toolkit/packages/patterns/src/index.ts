@@ -15,6 +15,9 @@ export { relativizeUnder } from './paths.js'
 export { probeAgentType } from './probe-agent-type.js'
 export type { AgentTypeProbe, AgentTypeProbeReport, ProbeAgentTypeOptions } from './probe-agent-type.js'
 
+export { withLeafFence, LEAF_AGENT_TYPE } from './leaf-fence.js'
+export type { WithLeafFenceOptions, LeafFenceReport } from './leaf-fence.js'
+
 export { classifyAndAct } from './classify-and-act.js'
 export type { ClassifyAndActOptions, ActionSpec } from './classify-and-act.js'
 

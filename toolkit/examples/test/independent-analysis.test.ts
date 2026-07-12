@@ -10,6 +10,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { LEAF_AGENT_TYPE } from '@workflow-toolbox/patterns'
 import wf from '../independent-analysis.workflow.js'
 
 // ---------------------------------------------------------------------------
@@ -107,7 +108,7 @@ describe('independent-analysis workflow metadata', () => {
     expect(wf.meta.name).toBe('independent-analysis')
     expect(wf.meta.description).toBeTruthy()
     const titles = wf.meta.phases?.map((p) => p.title)
-    expect(titles).toEqual(['Probe', 'Lenses', 'Analyze', 'Verify'])
+    expect(titles).toEqual(['Fence', 'Probe', 'Lenses', 'Analyze', 'Verify'])
   })
 })
 
@@ -169,10 +170,14 @@ describe('independent-analysis parseInput', () => {
     )
     expect(result).toHaveProperty('confirmed')
     expect(result).toHaveProperty('verifierType', 'codex:codex-rescue')
-    // One probe, routed through the requested type.
+    // Two probes now run: the unconditional leaf-fence probe and the
+    // verifierType probe — find each by the agentType it actually probed.
     const probeCalls = rt.calls.filter((c) => c.opts?.label === 'probeAgentType:probe')
-    expect(probeCalls.length).toBe(1)
-    // Every verifier call carries the routed agentType; producer agents do not.
+    expect(probeCalls.length).toBe(2)
+    expect(probeCalls.some((c) => c.opts?.agentType === LEAF_AGENT_TYPE)).toBe(true)
+    expect(probeCalls.some((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(true)
+    // Every verifier call carries the routed agentType; producer agents fall
+    // back to the default leaf fence instead.
     const verifierCalls = rt.calls.filter((c) =>
       c.prompt.toLowerCase().includes('an independent multi-lens sweep proposes'),
     )
@@ -220,6 +225,44 @@ describe('independent-analysis parseInput', () => {
     )
     expect(verifierCalls.length).toBeGreaterThan(0)
     expect(verifierCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Default leaf-agent fence (withLeafFence) — every spawned agent denies
+// SendMessage by default; `messaging: true` is the blanket launch-time opt-out.
+// ---------------------------------------------------------------------------
+
+describe('independent-analysis leaf-agent fence (messaging)', () => {
+  it('defaults every spawned agent (lenses/analyze/synthesis/verify) to the fence', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify(baseInput))
+    const nonProbeCalls = rt.calls.filter((c) => c.opts?.label !== 'probeAgentType:probe')
+    expect(nonProbeCalls.length).toBeGreaterThan(0)
+    for (const c of nonProbeCalls) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    expect(
+      (result as { leafFence: { resolvedAgentType: string | null } }).leafFence.resolvedAgentType,
+    ).toBe(LEAF_AGENT_TYPE)
+  })
+
+  it('messaging: true opts out — no fence probe, no agent carries the fenced agentType', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify({ ...baseInput, messaging: true }))
+    const probes = rt.calls.filter((c) => c.opts?.label === 'probeAgentType:probe')
+    expect(probes.length).toBe(0)
+    for (const c of rt.calls) expect(c.opts?.agentType).toBeUndefined()
+    const leafFence = (result as {
+      leafFence: { resolvedAgentType: string | null; probe: unknown }
+    }).leafFence
+    expect(leafFence.resolvedAgentType).toBeNull()
+    expect(leafFence.probe).toBeNull()
+  })
+
+  it('rejects a non-boolean messaging value via the shared parseConfig validation', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...baseInput, messaging: 'yes' })),
+    ).rejects.toThrow(/messaging must be a boolean/)
   })
 })
 

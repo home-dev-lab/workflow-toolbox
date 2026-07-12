@@ -4,6 +4,10 @@ export const meta = {
   "whenToUse": "Use when you need a structured, adversarially-verified code review of a git ref range or change description.",
   "phases": [
     {
+      "title": "Fence",
+      "detail": "Resolve the default leaf-agent fence (SendMessage denied by default)"
+    },
+    {
       "title": "Probe",
       "detail": "Resolve the requested reviewer agentType (graceful Claude fallback)"
     },
@@ -228,6 +232,12 @@ ${prompt}` : prompt;
     for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`);
     return out;
   }
+  function asBoolean(v, where) {
+    if (typeof v !== "boolean") {
+      throw new Error(`parseConfig: ${where} must be a boolean, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
   function parseNumberMap(raw, where) {
     if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
     const out = {};
@@ -250,6 +260,7 @@ ${prompt}` : prompt;
     if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort);
     if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes");
     if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing");
+    if (raw.messaging !== void 0) config.messaging = asBoolean(raw.messaging, "messaging");
     return config;
   }
 
@@ -387,6 +398,24 @@ ${prompt}` : prompt;
       agentType: available ? agentType : void 0,
       available,
       reason
+    };
+  }
+
+  // ../packages/patterns/src/leaf-fence.ts
+  var LEAF_AGENT_TYPE = "workflow-toolbox:leaf";
+  async function withLeafFence(rt, options = {}) {
+    const { phase, agentType = LEAF_AGENT_TYPE, disabled = false } = options;
+    if (disabled) {
+      return { rt, report: { resolvedAgentType: null, probe: null } };
+    }
+    const probe = await probeAgentType(rt, agentType, phase !== void 0 ? { phase } : {});
+    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
+    return {
+      rt: withAgentDefaults(rt, defaults),
+      report: {
+        resolvedAgentType: probe.agentType ?? null,
+        probe: { requested: agentType, available: probe.available, reason: probe.reason }
+      }
     };
   }
 
@@ -840,7 +869,7 @@ ${renderClaim(claim)}`;
           'pr-review: target must be a non-empty string \u2014 provide a git ref range or change description (e.g. "HEAD~3..HEAD")'
         );
       }
-      return { target: raw, reviewerType: null, verifierModel: null, perAgent: null, effort: null };
+      return { target: raw, reviewerType: null, verifierModel: null, perAgent: null, effort: null, messaging: null };
     }
     if (raw === null || typeof raw !== "object") {
       throw new Error(
@@ -871,9 +900,15 @@ ${renderClaim(claim)}`;
     const perAgent = cfg.perAgent ?? null;
     const effort = cfg.effort ?? null;
     const reviewerType = cfg.agentTypes?.["review"] ?? null;
-    return { target: obj["target"], reviewerType, verifierModel, perAgent, effort };
+    const messaging = cfg.messaging ?? null;
+    return { target: obj["target"], reviewerType, verifierModel, perAgent, effort, messaging };
   }
-  async function run(rt0, input) {
+  async function run(rt00, input) {
+    rt00.phase("Fence");
+    const { rt: rt0, report: leafFence } = await withLeafFence(rt00, {
+      phase: "Fence",
+      disabled: input.messaging === true
+    });
     const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0;
     const warnings = [];
     let reviewersSpawned = 0;
@@ -1095,6 +1130,7 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
       // standard subagent) + the structured probe story when routing was requested.
       reviewerType: resolvedReviewerType,
       probe: probeReport,
+      leafFence,
       stats: {
         reviewersSpawned,
         findingsRaw,
@@ -1112,6 +1148,7 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
       description: "Multi-lens code review of a change set: classifies the change, spawns specialized reviewers, adversarially verifies findings, and synthesizes a verdict.",
       whenToUse: "Use when you need a structured, adversarially-verified code review of a git ref range or change description.",
       phases: [
+        { title: "Fence", detail: "Resolve the default leaf-agent fence (SendMessage denied by default)" },
         { title: "Probe", detail: "Resolve the requested reviewer agentType (graceful Claude fallback)" },
         { title: "Route", detail: "Classify the change and produce a targeted summary" },
         { title: "Review", detail: "Spawn specialized reviewer agents per lens" },
