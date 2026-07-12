@@ -32,7 +32,7 @@ const STAGES = [
   { name: 'showcase-fan-compete', wf: fanCompete, phases: ['Fan', 'Compete'] },
   { name: 'showcase-deep', wf: deep, phases: ['Generate', 'Chunk', 'Verify', 'Refine-Inner'] },
   { name: 'showcase-plan', wf: plan, phases: ['Plan'] },
-  { name: 'showcase-refine-outer', wf: refineOuter, phases: ['Refine-Outer', 'Synthesize'] },
+  { name: 'showcase-refine-outer', wf: refineOuter, phases: ['Draft', 'Critique', 'Synthesize'] },
 ] as const
 
 describe('showcase stages — metadata + phases', () => {

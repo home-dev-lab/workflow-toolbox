@@ -4,8 +4,12 @@ export const meta = {
   "whenToUse": "Runs as the last root stage of the demo-showcase-v2 orchestrator pipeline (or standalone as a render fixture). Not a real task workflow.",
   "phases": [
     {
-      "title": "Refine-Outer",
-      "detail": "loopUntilDone OUTER — root-level polish loop"
+      "title": "Draft",
+      "detail": "loopUntilDone OUTER, first half — each round drafts the line"
+    },
+    {
+      "title": "Critique",
+      "detail": "loopUntilDone OUTER, second half — each round critiques the draft (cross-phase loop)"
     },
     {
       "title": "Synthesize",
@@ -406,13 +410,18 @@ ${prompt}` : prompt;
   async function run(rt0, input) {
     const model = input.perAgent?.model ?? "haiku";
     const rt = withAgentDefaults(rt0, { effort: "low", ...input.perAgent ?? {}, model });
-    rt.phase("Refine-Outer");
+    rt.phase("Draft");
     const outer = await loopUntilDone(rt, {
       initial: { rounds: 0 },
       maxIterations: 2,
       body: async (rtBody, state, iteration) => {
-        await rtBody.agent(`Render demo (outer polish), round ${iteration}. Refine the overall mascot brief into one crisp line.${GUARD}`, {
-          label: `refine-outer:round:${iteration}`
+        await rtBody.agent(`Render demo (outer polish), round ${iteration}. DRAFT: refine the overall mascot brief into one crisp line.${GUARD}`, {
+          label: `refine-outer:draft:${iteration}`,
+          phase: "Draft"
+        });
+        await rtBody.agent(`Render demo (outer polish), round ${iteration}. CRITIQUE: name the draft's single weakest word and a better one.${GUARD}`, {
+          label: `refine-outer:critique:${iteration}`,
+          phase: "Critique"
         });
         return { state: { rounds: state.rounds + 1 }, done: iteration >= 1 };
       }
@@ -436,7 +445,8 @@ ${prompt}` : prompt;
       description: "demo-showcase-v2 pipeline L1 root final stage: loopUntilDone OUTER (root-level polish loop) + a final synthesis agent. Every agent honors args.perAgent, defaulting to haiku + low. A render fixture, not real work.",
       whenToUse: "Runs as the last root stage of the demo-showcase-v2 orchestrator pipeline (or standalone as a render fixture). Not a real task workflow.",
       phases: [
-        { title: "Refine-Outer", detail: "loopUntilDone OUTER \u2014 root-level polish loop" },
+        { title: "Draft", detail: "loopUntilDone OUTER, first half \u2014 each round drafts the line" },
+        { title: "Critique", detail: "loopUntilDone OUTER, second half \u2014 each round critiques the draft (cross-phase loop)" },
         { title: "Synthesize", detail: "one plain agent \u2014 the final campaign tagline" }
       ]
     },
