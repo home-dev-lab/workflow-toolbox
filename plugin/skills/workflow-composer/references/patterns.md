@@ -507,6 +507,46 @@ without touching its source — the natural home for an `args`-driven config:
   `args` config envelope so a workflow can accept launch-time tuning declaratively.
   `perAgent` feeds straight into `withAgentDefaults`.
 
+## Cache-warm — opt-in staggering for a concurrent burst
+
+`fanOutAndSynthesize`, `chunkedAnalysis`, `planAndExecute`, `scoreAndRank`,
+`generateAndFilter`, `classifyAndAct`, `adversarialVerification`, and
+`tournament` accept `cacheWarm?: boolean` (default `false` — omitting it is
+byte-identical to passing `false`). N agents launched at once each write the
+identical shared system/tools prefix to the provider's prompt cache before any
+single write becomes reusable by the others; `cacheWarm: true` staggers the
+burst so one call's write lands first, letting the rest read that cache entry
+instead of re-writing it. This is a **heuristic cost/latency lever** —
+provider-side cache behavior is not guaranteed, and this toolkit does not
+measure the actual hit rate — it is never a correctness change, and does not
+belong among the *measured* levers in "Cost engineering" below.
+
+Two mechanisms, already chosen for you per pattern (nothing to configure
+beyond the boolean):
+
+- **first-completes-then-burst** — `fanOutAndSynthesize`, `chunkedAnalysis`,
+  `planAndExecute`, `scoreAndRank`, `generateAndFilter`, `classifyAndAct`.
+  The first real task/item runs alone to completion, then the rest launch
+  concurrently. Zero extra agents; costs +1 task's latency on the critical
+  path — cheap when the burst is large, since the added latency doesn't scale
+  with N. Safe even when items resolve to different models (e.g.
+  `scoreAndRank`'s per-dimension `model` override) because the peeled-out call
+  is one of the real agents, never a stand-in.
+- **warmup-agent** — `adversarialVerification`, `tournament` (the latter warms
+  BOTH its attempts stage and its judges stage independently). A single
+  throwaway agent, on the SAME model/agentType as the stage it primes (a
+  different model does not share the prefix cache), runs first; then the
+  full burst launches at full concurrency. Used where the whole burst shares
+  one uniform model AND is typically small (e.g. a 3-vote verifier panel or a
+  3-judge panel) — losing one real slot to serial execution there would cost
+  proportionally more than one extra cheap agent. A failed/null warmup only
+  warns; the real burst always proceeds unaffected.
+
+When to turn it on: fan-outs with several concurrent agents on the same
+model/agentType, launched often enough that the cache-write redundancy adds
+up. Leave it off for one-off runs or bursts of 0-1 agents (both mechanisms are
+no-ops there anyway).
+
 ## Composition idioms (not patterns)
 
 These are how patterns and agents combine. They are deliberately **not**

@@ -424,10 +424,48 @@ ${prompt}` : prompt;
     };
   }
 
+  // ../packages/patterns/src/cache-warm.ts
+  var WARMUP_PROMPT = "Reply with a single word: ready.";
+  function offsetStages(stages, offset) {
+    return stages.map(
+      (stage) => (prev, originalItem, localIndex) => stage(prev, originalItem, localIndex + offset)
+    );
+  }
+  async function pipelineWithCacheWarm(rt, items, stages, enabled) {
+    if (!enabled || items.length <= 1) {
+      return rt.pipeline(items, ...stages);
+    }
+    const [first, ...rest] = items;
+    const firstResult = await rt.pipeline([first], ...offsetStages(stages, 0));
+    const restResults = await rt.pipeline(rest, ...offsetStages(stages, 1));
+    return [...firstResult, ...restResults];
+  }
+  async function runCacheWarmup(rt, warnings, label, patternName, opts) {
+    const agentOpts = {
+      label,
+      ...opts.phase !== void 0 ? { phase: opts.phase } : {},
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {},
+      ...opts.agentType !== void 0 ? { agentType: opts.agentType } : {}
+    };
+    const result = await rt.agent(WARMUP_PROMPT, agentOpts);
+    if (result === null) {
+      warn(
+        rt,
+        warnings,
+        `${patternName}: cache-warm agent (${label}) returned null \u2014 proceeding without a warmed cache`
+      );
+    }
+    return makeRecord(label, result !== null, {
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {}
+    });
+  }
+
   // ../packages/patterns/src/classify-and-act.ts
   var STAGE2 = "classifyAndAct";
   async function classifyAndAct(rt, options) {
-    const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems } = options;
+    const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems, cacheWarm } = options;
     if (categories.length === 0) {
       throw new Error("classifyAndAct: categories must not be empty \u2014 provide at least one category");
     }
@@ -557,7 +595,12 @@ ${prompt}` : prompt;
       });
       return { item, category, result };
     };
-    const rawResults = await rt.pipeline(kept, classifyStage, actStage);
+    const rawResults = await pipelineWithCacheWarm(
+      rt,
+      kept,
+      [classifyStage, actStage],
+      cacheWarm ?? false
+    );
     const value = rawResults.filter(
       (r) => r !== null
     );
@@ -623,7 +666,8 @@ ${prompt}` : prompt;
       effort,
       phase,
       maxVerifyClaims,
-      verifierType
+      verifierType,
+      cacheWarm
     } = options;
     const refuteThreshold = refuteThresholdOpt ?? 2;
     if (claims.length === 0) {
@@ -701,6 +745,15 @@ Examine it through the lens of: ${lens}.` : "";
       return `Adversarially verify the following claim. Actively try to REFUTE it; default to "refuted" when uncertain.` + lensLine + `
 Claim:
 ${renderClaim(claim)}`;
+    }
+    if (cacheWarm) {
+      agentsSpawned++;
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE3}:verify:warm`, STAGE3, {
+        ...phase !== void 0 ? { phase } : {},
+        model: effectiveModel,
+        ...effort !== void 0 ? { effort } : {},
+        ...verifierType !== void 0 ? { agentType: verifierType } : {}
+      }));
     }
     const trailByClaim = [];
     const verifiedKept = await Promise.all(

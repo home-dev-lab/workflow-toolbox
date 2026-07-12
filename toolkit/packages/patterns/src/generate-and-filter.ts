@@ -16,6 +16,7 @@
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
 import { warn, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+import { pipelineWithCacheWarm } from './cache-warm.js'
 
 const STAGE = 'generateAndFilter'
 
@@ -44,6 +45,15 @@ export interface GenerateAndFilterOptions<TCand> {
    *  for a cross-family model. Omit for the standard Claude subagent. */
   filterType?: string
   phase?: string
+  /** Opt-in: stagger the per-candidate pipeline so candidate 0's generate call
+   *  completes (and writes the shared system/tools prefix to the provider's
+   *  prompt cache) BEFORE the remaining candidates' generate calls launch,
+   *  instead of all N writing that prefix redundantly at once (rt.pipeline
+   *  runs every item's first stage concurrently, with no barrier between
+   *  stages). Heuristic cost lever, not a correctness change — costs +1
+   *  candidate's latency on the critical path; default false = today's
+   *  behavior, byte-identical. See @workflow-toolbox/patterns' cache-warm.ts. */
+  cacheWarm?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +105,7 @@ export async function generateAndFilter<TCand = string>(
   rt: WorkflowRuntime,
   options: GenerateAndFilterOptions<TCand>,
 ): Promise<PatternResult<TCand[]>> {
-  const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase } = options
+  const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase, cacheWarm } = options
 
   // -------------------------------------------------------------------------
   // Synchronous validation
@@ -256,7 +266,9 @@ export async function generateAndFilter<TCand = string>(
   }
 
   const indices: readonly number[] = Array.from({ length: count }, (_, i) => i)
-  const rawResults = await rt.pipeline(indices as readonly unknown[], generateStage, filterStage)
+  const rawResults = await pipelineWithCacheWarm(
+    rt, indices as readonly unknown[], [generateStage, filterStage], cacheWarm ?? false,
+  )
 
   // -------------------------------------------------------------------------
   // Collect results: exclude nulls (drops) and REJECTED sentinels

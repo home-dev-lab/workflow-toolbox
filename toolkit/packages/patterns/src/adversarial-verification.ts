@@ -21,6 +21,7 @@ import { BEST_MODEL } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias, PatternCounts } from '@workflow-toolbox/runtime'
 import { warn, applyCap, makeRecord, emitDigest } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+import { runCacheWarmup } from './cache-warm.js'
 
 const STAGE = 'adversarialVerification'
 
@@ -106,6 +107,19 @@ export interface AdversarialVerificationOptions<TClaim> {
    *  prefer an MCP→model endpoint as the cross-model verifier. See the
    *  cross-model-verify example. */
   verifierType?: string
+  /** Opt-in: before the concurrent verifier burst (every claim's votes launch
+   *  together via nested rt.parallel calls, all under ONE uniform model — the
+   *  resolved `model` above), fire a single throwaway warmup agent on that
+   *  same model, await it, THEN launch the full burst — mechanism (b),
+   *  "warmup-agent", chosen here (over peeling out one real vote) so every
+   *  real verifier stays fully concurrent: votes default to only 3, and
+   *  verification quality/latency is this pattern's core value, so losing one
+   *  real vote to serial execution would cost proportionally more than
+   *  elsewhere. A failed/null warmup only warns; the real burst always
+   *  proceeds. Heuristic cost lever, not a correctness change; default false =
+   *  today's behavior, byte-identical. See @workflow-toolbox/patterns'
+   *  cache-warm.ts. */
+  cacheWarm?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +195,7 @@ export async function adversarialVerification<TClaim>(
     phase,
     maxVerifyClaims,
     verifierType,
+    cacheWarm,
   } = options
 
   const refuteThreshold = refuteThresholdOpt ?? 2
@@ -313,6 +328,19 @@ export async function adversarialVerification<TClaim>(
   // Verify kept claims: map each claim to a parallel group of vote thunks.
   // All claim groups are processed concurrently (Promise.all over the map).
   // -------------------------------------------------------------------------
+
+  // Cache-warm (mechanism b): one throwaway agent on the SAME model (+
+  // verifierType) as the whole burst below, awaited BEFORE the burst launches.
+  // Recorded first in `trail` (deterministic: always precedes the barrier).
+  if (cacheWarm) {
+    agentsSpawned++
+    trail.push(await runCacheWarmup(rt, warnings, `${STAGE}:verify:warm`, STAGE, {
+      ...(phase !== undefined ? { phase } : {}),
+      model: effectiveModel,
+      ...(effort !== undefined ? { effort } : {}),
+      ...(verifierType !== undefined ? { agentType: verifierType } : {}),
+    }))
+  }
 
   // Per-claim trail records, written by claim INDEX (order-independent writes),
   // flattened after the global barrier — claim completion order is

@@ -13,6 +13,7 @@
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
 import { warn, applyCap, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+import { pipelineWithCacheWarm } from './cache-warm.js'
 
 const STAGE = 'classifyAndAct'
 
@@ -48,6 +49,15 @@ export interface ClassifyAndActOptions<TIn> {
   classifyType?: string
   phase?: string
   maxItems?: number
+  /** Opt-in: stagger the per-item pipeline so item 0's classify call completes
+   *  (and writes the shared system/tools prefix to the provider's prompt
+   *  cache) BEFORE the remaining items' classify calls launch, instead of all
+   *  N writing that prefix redundantly at once (rt.pipeline runs every item's
+   *  first stage concurrently, with no barrier between stages). Heuristic
+   *  cost lever, not a correctness change — costs +1 item's latency on the
+   *  critical path; default false = today's behavior, byte-identical. See
+   *  @workflow-toolbox/patterns' cache-warm.ts. */
+  cacheWarm?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +99,7 @@ export async function classifyAndAct<TIn, TOut = string>(
   rt: WorkflowRuntime,
   options: ClassifyAndActOptions<TIn>,
 ): Promise<PatternResult<Array<{ item: TIn; category: string; result: TOut }>>> {
-  const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems } = options
+  const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems, cacheWarm } = options
 
   // -------------------------------------------------------------------------
   // Synchronous validation — throw with actionable messages
@@ -315,7 +325,9 @@ export async function classifyAndAct<TIn, TOut = string>(
     return { item, category, result }
   }
 
-  const rawResults = await rt.pipeline(kept as readonly unknown[], classifyStage, actStage)
+  const rawResults = await pipelineWithCacheWarm(
+    rt, kept as readonly unknown[], [classifyStage, actStage], cacheWarm ?? false,
+  )
 
   // -------------------------------------------------------------------------
   // Collect non-null results

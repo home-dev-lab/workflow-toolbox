@@ -291,6 +291,17 @@ ${prompt}` : prompt;
     }
   }
 
+  // ../packages/patterns/src/cache-warm.ts
+  async function parallelWithCacheWarm(rt, thunks, enabled) {
+    if (!enabled || thunks.length <= 1) {
+      return rt.parallel(thunks);
+    }
+    const [first, ...rest] = thunks;
+    const firstResult = await Promise.resolve().then(() => first()).then((v) => v).catch(() => null);
+    const restResults = await rt.parallel(rest);
+    return [firstResult, ...restResults];
+  }
+
   // ../packages/patterns/src/plan-and-execute.ts
   var STAGE = "planAndExecute";
   var PLAN_SCHEMA = {
@@ -329,7 +340,8 @@ ${prompt}` : prompt;
       synthesisEffort,
       synthesisType,
       phase,
-      maxSubtasks
+      maxSubtasks,
+      cacheWarm
     } = options;
     if (planPrompt.trim().length === 0) {
       throw new Error(
@@ -401,7 +413,7 @@ ${prompt}` : prompt;
       agentsSpawned++;
       return rt.agent(workerPrompt(subtask, i), opts);
     });
-    const rawWorkerResults = await rt.parallel(workerThunks);
+    const rawWorkerResults = await parallelWithCacheWarm(rt, workerThunks, cacheWarm ?? false);
     const successfulResults = [];
     let droppedWorkers = 0;
     for (let i = 0; i < rawWorkerResults.length; i++) {

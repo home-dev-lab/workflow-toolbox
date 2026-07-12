@@ -195,11 +195,36 @@ ${prompt}` : prompt;
     }
   }
 
+  // ../packages/patterns/src/cache-warm.ts
+  async function parallelWithCacheWarm(rt, thunks, enabled) {
+    if (!enabled || thunks.length <= 1) {
+      return rt.parallel(thunks);
+    }
+    const [first, ...rest] = thunks;
+    const firstResult = await Promise.resolve().then(() => first()).then((v) => v).catch(() => null);
+    const restResults = await rt.parallel(rest);
+    return [firstResult, ...restResults];
+  }
+  function offsetStages(stages, offset) {
+    return stages.map(
+      (stage) => (prev, originalItem, localIndex) => stage(prev, originalItem, localIndex + offset)
+    );
+  }
+  async function pipelineWithCacheWarm(rt, items, stages, enabled) {
+    if (!enabled || items.length <= 1) {
+      return rt.pipeline(items, ...stages);
+    }
+    const [first, ...rest] = items;
+    const firstResult = await rt.pipeline([first], ...offsetStages(stages, 0));
+    const restResults = await rt.pipeline(rest, ...offsetStages(stages, 1));
+    return [...firstResult, ...restResults];
+  }
+
   // ../packages/patterns/src/generate-and-filter.ts
   var STAGE = "generateAndFilter";
   var REJECTED = /* @__PURE__ */ Symbol("generate-and-filter:REJECTED");
   async function generateAndFilter(rt, options) {
-    const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase } = options;
+    const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase, cacheWarm } = options;
     if (count < 1) {
       throw new Error(
         `generateAndFilter: count must be >= 1, got ${count} \u2014 set count to a positive integer`
@@ -296,7 +321,12 @@ ${prompt}` : prompt;
       return candidate;
     };
     const indices = Array.from({ length: count }, (_, i) => i);
-    const rawResults = await rt.pipeline(indices, generateStage, filterStage);
+    const rawResults = await pipelineWithCacheWarm(
+      rt,
+      indices,
+      [generateStage, filterStage],
+      cacheWarm ?? false
+    );
     const value = [];
     for (const r of rawResults) {
       if (r !== null && r !== REJECTED) {
@@ -356,7 +386,7 @@ ${prompt}` : prompt;
     additionalProperties: false
   };
   async function scoreAndRank(rt, options) {
-    const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase } = options;
+    const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase, cacheWarm } = options;
     const combine = options.combine ?? ((scores) => scores.reduce((a, b) => a * b, 1));
     if (items.length < 1) {
       throw new Error(`scoreAndRank: items must be a non-empty array \u2014 got length ${items.length}`);
@@ -427,7 +457,7 @@ ${prompt}` : prompt;
       });
       return { itemIndex: t.itemIndex, dimIndex: t.dimIndex, score: verdict.score };
     });
-    const rawCells = await rt.parallel(thunks);
+    const rawCells = await parallelWithCacheWarm(rt, thunks, cacheWarm ?? false);
     const dimScores = keptItems.map(() => dimensions.map(() => null));
     for (const cell of rawCells) {
       if (cell === null) continue;

@@ -708,3 +708,83 @@ describe('generateAndFilter — trail: effort field', () => {
     expect(filterRecord).not.toHaveProperty('effort')
   })
 })
+
+// ---------------------------------------------------------------------------
+// cacheWarm (opt-in, mechanism a — first-completes-then-burst, over rt.pipeline)
+// ---------------------------------------------------------------------------
+
+describe('generateAndFilter — cacheWarm=false (default, inert)', () => {
+  it('is byte-identical to omitting the option: same stats, same trail', async () => {
+    const onAgent = ({ opts }: { opts?: unknown }): unknown =>
+      isFilterCall(opts) ? { pass: true, reason: 'ok' } : 'candidate'
+
+    const rtOmitted = new FakeRuntime({ onAgent })
+    const rtFalse = new FakeRuntime({ onAgent })
+
+    const resultOmitted = await generateAndFilter(rtOmitted, makeOptions())
+    const resultFalse = await generateAndFilter(rtFalse, makeOptions({ cacheWarm: false }))
+
+    expect(resultFalse.stats).toEqual(resultOmitted.stats)
+    expect(resultFalse.trail).toEqual(resultOmitted.trail)
+    expect(rtFalse.calls.map(c => c.opts?.label)).toEqual(rtOmitted.calls.map(c => c.opts?.label))
+  })
+})
+
+describe('generateAndFilter — cacheWarm=true (staggered)', () => {
+  it('runs candidate 0 through generate+filter fully before candidate 1/2 start', async () => {
+    let laterCandidateStarted = false
+    let gen0Resolved = false
+    let resolveGen0: (v: string) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = (opts as { label?: string } | undefined)?.label ?? ''
+        if (label === 'generateAndFilter:generate:0') {
+          return new Promise<string>((resolve) => {
+            resolveGen0 = (v) => { gen0Resolved = true; resolve(v) }
+          })
+        }
+        if (isFilterCall(opts)) return { pass: true, reason: 'ok' }
+        // Any OTHER generate call (candidate 1/2) — must not fire before gen0 resolves.
+        if (!gen0Resolved) laterCandidateStarted = true
+        return 'candidate'
+      },
+    })
+
+    const promise = generateAndFilter(rt, makeOptions({ cacheWarm: true }))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterCandidateStarted).toBe(false)
+    expect(rt.calls.map(c => c.opts?.label)).toEqual(['generateAndFilter:generate:0'])
+
+    resolveGen0('candidate-0')
+    const result = await promise
+
+    expect(result.stats.agentsSpawned).toBe(6) // 3 candidates x (generate + filter)
+  })
+
+  it('does not add an extra agent — stats/agentsSpawned match the un-staggered run', async () => {
+    const onAgent = ({ opts }: { opts?: unknown }): unknown =>
+      isFilterCall(opts) ? { pass: true, reason: 'ok' } : 'candidate'
+
+    const rtWarm = new FakeRuntime({ onAgent })
+    const rtPlain = new FakeRuntime({ onAgent })
+
+    const resultWarm = await generateAndFilter(rtWarm, makeOptions({ cacheWarm: true }))
+    const resultPlain = await generateAndFilter(rtPlain, makeOptions())
+
+    expect(resultWarm.stats).toEqual(resultPlain.stats)
+    expect(resultWarm.trail).toEqual(resultPlain.trail)
+  })
+
+  it('is a no-op (no staggering) when count is 1', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => (isFilterCall(opts) ? { pass: true, reason: 'ok' } : 'candidate'),
+    })
+
+    const result = await generateAndFilter(rt, makeOptions({ count: 1, cacheWarm: true }))
+
+    expect(result.stats.agentsSpawned).toBe(2) // 1 generate + 1 filter
+  })
+})

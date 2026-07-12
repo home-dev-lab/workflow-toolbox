@@ -414,6 +414,39 @@ ${prompt}` : prompt;
     };
   }
 
+  // ../packages/patterns/src/cache-warm.ts
+  var WARMUP_PROMPT = "Reply with a single word: ready.";
+  async function parallelWithCacheWarm(rt, thunks, enabled) {
+    if (!enabled || thunks.length <= 1) {
+      return rt.parallel(thunks);
+    }
+    const [first, ...rest] = thunks;
+    const firstResult = await Promise.resolve().then(() => first()).then((v) => v).catch(() => null);
+    const restResults = await rt.parallel(rest);
+    return [firstResult, ...restResults];
+  }
+  async function runCacheWarmup(rt, warnings, label, patternName, opts) {
+    const agentOpts = {
+      label,
+      ...opts.phase !== void 0 ? { phase: opts.phase } : {},
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {},
+      ...opts.agentType !== void 0 ? { agentType: opts.agentType } : {}
+    };
+    const result = await rt.agent(WARMUP_PROMPT, agentOpts);
+    if (result === null) {
+      warn(
+        rt,
+        warnings,
+        `${patternName}: cache-warm agent (${label}) returned null \u2014 proceeding without a warmed cache`
+      );
+    }
+    return makeRecord(label, result !== null, {
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {}
+    });
+  }
+
   // ../packages/patterns/src/fan-out-and-synthesize.ts
   var STAGE2 = "fanOutAndSynthesize";
   async function fanOutAndSynthesize(rt, options) {
@@ -430,7 +463,8 @@ ${prompt}` : prompt;
       synthesisEffort,
       synthesisType,
       phase,
-      maxItems
+      maxItems,
+      cacheWarm
     } = options;
     if (tasks.length === 0) {
       throw new Error(
@@ -463,7 +497,7 @@ ${prompt}` : prompt;
       agentsSpawned++;
       return rt.agent(taskPrompt(task, i), taskOpts);
     });
-    const taskResults = await rt.parallel(taskThunks);
+    const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? false);
     const parts = [];
     let dropped = 0;
     for (let i = 0; i < taskResults.length; i++) {
@@ -550,7 +584,8 @@ ${prompt}` : prompt;
       effort,
       phase,
       maxVerifyClaims,
-      verifierType
+      verifierType,
+      cacheWarm
     } = options;
     const refuteThreshold = refuteThresholdOpt ?? 2;
     if (claims.length === 0) {
@@ -628,6 +663,15 @@ Examine it through the lens of: ${lens}.` : "";
       return `Adversarially verify the following claim. Actively try to REFUTE it; default to "refuted" when uncertain.` + lensLine + `
 Claim:
 ${renderClaim(claim)}`;
+    }
+    if (cacheWarm) {
+      agentsSpawned++;
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE3}:verify:warm`, STAGE3, {
+        ...phase !== void 0 ? { phase } : {},
+        model: effectiveModel,
+        ...effort !== void 0 ? { effort } : {},
+        ...verifierType !== void 0 ? { agentType: verifierType } : {}
+      }));
     }
     const trailByClaim = [];
     const verifiedKept = await Promise.all(

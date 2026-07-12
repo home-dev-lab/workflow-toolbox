@@ -18,6 +18,7 @@
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
 import { warn, applyCap, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+import { parallelWithCacheWarm } from './cache-warm.js'
 
 const STAGE = 'fanOutAndSynthesize'
 
@@ -47,6 +48,13 @@ export interface FanOutAndSynthesizeOptions<TTask, TPart> {
   synthesisType?: string
   phase?: string
   maxItems?: number
+  /** Opt-in: stagger the task fan-out so the first task agent completes (and
+   *  writes the shared system/tools prefix to the provider's prompt cache)
+   *  BEFORE the remaining tasks launch, instead of all N writing that prefix
+   *  redundantly at once. Heuristic cost lever, not a correctness change —
+   *  costs +1 task's latency on the critical path; default false = today's
+   *  behavior, byte-identical. See @workflow-toolbox/patterns' cache-warm.ts. */
+  cacheWarm?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +114,7 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
     synthesisType,
     phase,
     maxItems,
+    cacheWarm,
   } = options
 
   // -------------------------------------------------------------------------
@@ -171,7 +180,7 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
     return rt.agent<TPart>(taskPrompt(task, i), taskOpts)
   })
 
-  const taskResults = await rt.parallel(taskThunks)
+  const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? false)
 
   // -------------------------------------------------------------------------
   // Collect non-null parts and append trail records in item-index order

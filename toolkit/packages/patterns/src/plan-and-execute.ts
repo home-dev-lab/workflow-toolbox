@@ -21,6 +21,7 @@
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
 import { warn, applyCap, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+import { parallelWithCacheWarm } from './cache-warm.js'
 
 const STAGE = 'planAndExecute'
 
@@ -69,6 +70,13 @@ export interface PlanAndExecuteOptions<TWork> {
   synthesisType?: string
   phase?: string
   maxSubtasks?: number  // cap on planner output; truncation reported
+  /** Opt-in: stagger the worker fan-out so the first worker agent completes
+   *  (and writes the shared system/tools prefix to the provider's prompt
+   *  cache) BEFORE the remaining workers launch, instead of all N writing that
+   *  prefix redundantly at once. Heuristic cost lever, not a correctness
+   *  change — costs +1 worker's latency on the critical path; default false =
+   *  today's behavior, byte-identical. See @workflow-toolbox/patterns' cache-warm.ts. */
+  cacheWarm?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +175,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
     synthesisType,
     phase,
     maxSubtasks,
+    cacheWarm,
   } = options
 
   // -------------------------------------------------------------------------
@@ -295,7 +304,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
     return rt.agent<TWork>(workerPrompt(subtask, i), opts)
   })
 
-  const rawWorkerResults = await rt.parallel(workerThunks)
+  const rawWorkerResults = await parallelWithCacheWarm(rt, workerThunks, cacheWarm ?? false)
 
   // Collect non-null results in index order, build worker trail records in index order
   // after the parallel barrier (determinism: never completion order).

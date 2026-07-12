@@ -1319,3 +1319,101 @@ describe('adversarialVerification — trail: effort field', () => {
     expect(trail[0]).not.toHaveProperty('effort')
   })
 })
+
+// ---------------------------------------------------------------------------
+// cacheWarm (opt-in, mechanism b — warmup-agent)
+//
+// Chosen over mechanism (a) here because every verifier in the burst shares
+// ONE uniform model (effectiveModel = model ?? BEST_MODEL) and vote counts
+// default to a small 3 — losing one real vote to serial execution would cost
+// proportionally more than a single extra throwaway agent.
+// ---------------------------------------------------------------------------
+
+describe('adversarialVerification — cacheWarm=false (default, inert)', () => {
+  it('is byte-identical to omitting the option: no warm call, same stats/trail', async () => {
+    const rtOmitted = new FakeRuntime({ onAgent: () => confirmedVote })
+    const rtFalse = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    const opts = makeOptions({ claims: ['c0'], votes: 3, refuteThreshold: 2 })
+    const resultOmitted = await adversarialVerification(rtOmitted, opts)
+    const resultFalse = await adversarialVerification(rtFalse, { ...opts, cacheWarm: false })
+
+    expect(resultFalse.stats).toEqual(resultOmitted.stats)
+    expect(resultFalse.trail).toEqual(resultOmitted.trail)
+    expect(rtFalse.calls).toHaveLength(rtOmitted.calls.length)
+    expect(rtFalse.calls.some(c => c.opts?.label?.includes('warm'))).toBe(false)
+  })
+})
+
+describe('adversarialVerification — cacheWarm=true (warmup-agent)', () => {
+  it('fires exactly one warmup call FIRST, on the effective model, before any real verifier', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 3, refuteThreshold: 2, cacheWarm: true,
+    }))
+
+    expect(rt.calls).toHaveLength(4) // 1 warm + 3 votes
+    expect(rt.calls[0]!.opts?.label).toBe('adversarialVerification:verify:warm')
+    expect(rt.calls[0]!.opts?.model).toBe('opus') // BEST_MODEL default
+
+    // agentsSpawned + trail invariant (trail.length === agentsSpawned) still holds.
+    expect(result.stats.agentsSpawned).toBe(4)
+    expect(result.trail).toHaveLength(4)
+    expect(result.trail[0]!.stage).toBe('adversarialVerification:verify:warm')
+    expect(result.trail[0]!.outcome).toBe('ok')
+
+    // Real verification unaffected.
+    expect(result.value[0]!.verdict).toBe('confirmed')
+  })
+
+  it('threads verifierType/model/effort/phase to the warmup call, matching the real burst', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 1, refuteThreshold: 1,
+      model: 'sonnet', effort: 'low', verifierType: 'codex:codex-rescue', phase: 'verify-phase',
+      cacheWarm: true,
+    }))
+
+    const warmCall = rt.calls[0]!
+    expect(warmCall.opts?.model).toBe('sonnet')
+    expect(warmCall.opts?.effort).toBe('low')
+    expect(warmCall.opts?.agentType).toBe('codex:codex-rescue')
+    expect(warmCall.phase).toBe('verify-phase')
+  })
+
+  it('charges the warmup call against the budget like every other verifier', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote, budgetTotal: 1000, agentTokenCost: 10 })
+
+    await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 3, refuteThreshold: 2, cacheWarm: true,
+    }))
+
+    // 1 warm + 3 votes = 4 charged calls.
+    expect(rt.budget.spent()).toBe(40)
+  })
+
+  it('degrades gracefully when the warmup agent returns null: warns, real burst still proceeds', async () => {
+    let callCount = 0
+    const rt = new FakeRuntime({
+      onAgent: () => {
+        callCount++
+        if (callCount === 1) return null // the warmup call
+        return confirmedVote
+      },
+    })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 3, refuteThreshold: 2, cacheWarm: true,
+    }))
+
+    expect(result.trail[0]!.stage).toBe('adversarialVerification:verify:warm')
+    expect(result.trail[0]!.outcome).toBe('null')
+    expect(result.warnings.some(w => w.includes('cache-warm'))).toBe(true)
+
+    // Real verification burst proceeded normally and reached the correct verdict.
+    expect(result.value[0]!.verdict).toBe('confirmed')
+    expect(result.stats.agentsSpawned).toBe(4)
+  })
+})

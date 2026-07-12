@@ -561,6 +561,84 @@ describe('fanOutAndSynthesize — effort forwarding', () => {
 // Effort in the audit trail
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// cacheWarm (opt-in, mechanism a — first-completes-then-burst)
+// ---------------------------------------------------------------------------
+
+describe('fanOutAndSynthesize — cacheWarm=false (default, inert)', () => {
+  it('is byte-identical to omitting the option: same stats, same trail, same value', async () => {
+    const responses = ['part-a', 'part-b', 'part-c', 'synthesis']
+    const rtOmitted = new FakeRuntime({ responses })
+    const rtFalse = new FakeRuntime({ responses })
+
+    const resultOmitted = await fanOutAndSynthesize(rtOmitted, makeOptions())
+    const resultFalse = await fanOutAndSynthesize(rtFalse, makeOptions({ cacheWarm: false }))
+
+    expect(resultFalse).toEqual(resultOmitted)
+    expect(rtFalse.calls.map(c => c.prompt)).toEqual(rtOmitted.calls.map(c => c.prompt))
+  })
+})
+
+describe('fanOutAndSynthesize — cacheWarm=true (staggered)', () => {
+  it('awaits task:0 to completion before task:1/task:2 are invoked', async () => {
+    let laterTaskStartedBeforeFirstResolved = false
+    let firstResolved = false
+    let resolveFirst: (v: string) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isSynthesisCall(opts?.label)) return 'synth'
+        if (opts?.label === 'fanOutAndSynthesize:task:0') {
+          return new Promise<string>((resolve) => {
+            resolveFirst = (v) => { firstResolved = true; resolve(v) }
+          })
+        }
+        if (!firstResolved) laterTaskStartedBeforeFirstResolved = true
+        return 'part'
+      },
+    })
+
+    const promise = fanOutAndSynthesize(rt, makeOptions({ cacheWarm: true }))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterTaskStartedBeforeFirstResolved).toBe(false)
+    expect(rt.calls.map(c => c.opts?.label)).toEqual(['fanOutAndSynthesize:task:0'])
+
+    resolveFirst('part-from-0')
+    const result = await promise
+
+    expect(result.stats.agentsSpawned).toBe(4)
+    expect(result.stats.dropped).toBe(0)
+  })
+
+  it('does not add an extra agent — stats/agentsSpawned match the un-staggered run', async () => {
+    const responses = ['part-a', 'part-b', 'part-c', 'synthesis']
+    const rtWarm = new FakeRuntime({ responses })
+    const rtPlain = new FakeRuntime({ responses })
+
+    const resultWarm = await fanOutAndSynthesize(rtWarm, makeOptions({ cacheWarm: true }))
+    const resultPlain = await fanOutAndSynthesize(rtPlain, makeOptions())
+
+    expect(resultWarm.stats).toEqual(resultPlain.stats)
+    expect(resultWarm.trail).toEqual(resultPlain.trail)
+  })
+
+  it('is a no-op (no staggering) when there is only 1 task', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => (isSynthesisCall(opts?.label) ? 'synth' : 'part'),
+    })
+
+    const result = await fanOutAndSynthesize(rt, makeOptions({ tasks: ['only'], cacheWarm: true }))
+
+    expect(result.stats.agentsSpawned).toBe(2) // 1 task + 1 synthesis
+    expect(rt.calls.map(c => c.opts?.label)).toEqual([
+      'fanOutAndSynthesize:task:0',
+      'fanOutAndSynthesize:synthesize',
+    ])
+  })
+})
+
 describe('fanOutAndSynthesize — trail: effort override', () => {
   it('records effort field on task records when taskEffort is set', async () => {
     const rt = new FakeRuntime({

@@ -185,6 +185,38 @@ uniform `items` API.
 
 > In each row the first term is Anthropic's [*Building Effective Agents*](https://www.anthropic.com/engineering/building-effective-agents) vocabulary; the rest are common cross-ecosystem names for the same shape (different frameworks, same orchestration).
 
+### `cacheWarm` — opt-in cache-warm staggering for concurrent fan-outs
+
+`fanOutAndSynthesize`, `chunkedAnalysis`, `planAndExecute`, `scoreAndRank`,
+`generateAndFilter`, `classifyAndAct`, `adversarialVerification`, and
+`tournament` accept an opt-in `cacheWarm?: boolean` (default `false`, inert —
+byte-identical to omitting it). A fan-out of N concurrent agents pays a
+redundant prompt-cache **write** cost: each agent writes the identical shared
+system/tools prefix to the provider's cache before any single write becomes
+reusable by the others. `cacheWarm: true` staggers the burst so one call's
+write lands before the rest launch, letting them **read** the warmed cache
+entry instead. This is a **heuristic cost/latency lever** — provider-side
+cache behavior is not guaranteed and is not measured by this toolkit — never a
+correctness change.
+
+Two mechanisms, picked per pattern by its burst shape:
+
+- **first-completes-then-burst** (`fanOutAndSynthesize`, `chunkedAnalysis`,
+  `planAndExecute`, `scoreAndRank`, `generateAndFilter`, `classifyAndAct`): the
+  first real task runs alone to completion, then the rest launch concurrently.
+  Zero extra agents; costs +1 task's latency on the critical path. Works even
+  when different items in the same burst resolve to different models (e.g.
+  `scoreAndRank`'s per-dimension `model` override), since the peeled-out call
+  is one of the real agents, never a stand-in.
+- **warmup-agent** (`adversarialVerification`, `tournament`): a single
+  throwaway agent (on the SAME model/agentType as the burst — a different
+  model does not share the prefix cache) runs first, then the full burst
+  launches at full concurrency. Chosen where every agent in the burst shares
+  one uniform model and the burst is typically small (e.g. a 3-vote verifier
+  panel), so losing one real slot to serial execution would cost
+  proportionally more than a single extra agent. A failed warmup only warns —
+  the real burst always proceeds.
+
 The other layers:
 
 - **L0 — runtime primitives** (`rt.agent`, `rt.parallel`, `rt.pipeline`,

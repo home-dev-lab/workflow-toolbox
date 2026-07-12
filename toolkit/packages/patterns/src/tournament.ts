@@ -22,6 +22,7 @@
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
 import { warn, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
+import { runCacheWarmup } from './cache-warm.js'
 
 const STAGE = 'tournament'
 
@@ -67,6 +68,18 @@ export interface TournamentOptions<TAttempt> {
    *  for a cross-family model. Omit for the standard Claude subagent. */
   synthesisType?: string
   phase?: string
+  /** Opt-in: before EACH concurrent burst (the attempts stage, then — after
+   *  attempts are known — the judges stage), fire a single throwaway warmup
+   *  agent on that stage's own uniform model (attemptModel / judgeModel),
+   *  await it, THEN launch the full burst — mechanism (b), "warmup-agent",
+   *  chosen here (over peeling out one real attempt/judge) so every real
+   *  attempt and judge stays fully concurrent: angles/judgeCount are typically
+   *  small (judgeCount defaults to 3), and losing one real slot to serial
+   *  execution would cost proportionally more than elsewhere. A failed/null
+   *  warmup only warns; the real burst always proceeds. Heuristic cost lever,
+   *  not a correctness change; default false = today's behavior,
+   *  byte-identical. See @workflow-toolbox/patterns' cache-warm.ts. */
+  cacheWarm?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +178,7 @@ export async function tournament<TAttempt = string, TOut = string>(
     synthesisEffort,
     synthesisType,
     phase,
+    cacheWarm,
   } = options
 
   // -------------------------------------------------------------------------
@@ -210,6 +224,18 @@ export async function tournament<TAttempt = string, TOut = string>(
   // -------------------------------------------------------------------------
   // Stage 1 — Attempts: rt.parallel over angles
   // -------------------------------------------------------------------------
+
+  // Cache-warm (mechanism b): one throwaway agent on attemptModel/attemptType,
+  // awaited BEFORE the attempts burst launches.
+  if (cacheWarm) {
+    agentsSpawned++
+    trail.push(await runCacheWarmup(rt, warnings, `${STAGE}:attempt:warm`, STAGE, {
+      ...(phase !== undefined ? { phase } : {}),
+      ...(attemptModel !== undefined ? { model: attemptModel } : {}),
+      ...(attemptEffort !== undefined ? { effort: attemptEffort } : {}),
+      ...(attemptType !== undefined ? { agentType: attemptType } : {}),
+    }))
+  }
 
   const attemptThunks = angles.map((angle, i) => async (): Promise<TAttempt | null> => {
     const opts: {
@@ -284,6 +310,20 @@ export async function tournament<TAttempt = string, TOut = string>(
 
   const ranked: Array<RankedAttempt<TAttempt>> = []
   let unjudgeableCount = 0
+
+  // Cache-warm (mechanism b): one throwaway agent on judgeModel/judgeType,
+  // awaited BEFORE the (potentially many, per-attempt) judge panels launch —
+  // a single warm covers the whole judges stage since every panel shares the
+  // same judgeModel.
+  if (cacheWarm) {
+    agentsSpawned++
+    trail.push(await runCacheWarmup(rt, warnings, `${STAGE}:judge:warm`, STAGE, {
+      ...(phase !== undefined ? { phase } : {}),
+      ...(judgeModel !== undefined ? { model: judgeModel } : {}),
+      ...(judgeEffort !== undefined ? { effort: judgeEffort } : {}),
+      ...(judgeType !== undefined ? { agentType: judgeType } : {}),
+    }))
+  }
 
   // Judge ALL surviving attempts concurrently — each attempt gets its own
   // judge panel (rt.parallel); panels must not serialize across attempts

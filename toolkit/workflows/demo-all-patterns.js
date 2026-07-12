@@ -217,10 +217,57 @@ ${prompt}` : prompt;
     }
   }
 
+  // ../packages/patterns/src/cache-warm.ts
+  var WARMUP_PROMPT = "Reply with a single word: ready.";
+  async function parallelWithCacheWarm(rt, thunks, enabled) {
+    if (!enabled || thunks.length <= 1) {
+      return rt.parallel(thunks);
+    }
+    const [first, ...rest] = thunks;
+    const firstResult = await Promise.resolve().then(() => first()).then((v) => v).catch(() => null);
+    const restResults = await rt.parallel(rest);
+    return [firstResult, ...restResults];
+  }
+  function offsetStages(stages, offset) {
+    return stages.map(
+      (stage) => (prev, originalItem, localIndex) => stage(prev, originalItem, localIndex + offset)
+    );
+  }
+  async function pipelineWithCacheWarm(rt, items, stages, enabled) {
+    if (!enabled || items.length <= 1) {
+      return rt.pipeline(items, ...stages);
+    }
+    const [first, ...rest] = items;
+    const firstResult = await rt.pipeline([first], ...offsetStages(stages, 0));
+    const restResults = await rt.pipeline(rest, ...offsetStages(stages, 1));
+    return [...firstResult, ...restResults];
+  }
+  async function runCacheWarmup(rt, warnings, label, patternName, opts) {
+    const agentOpts = {
+      label,
+      ...opts.phase !== void 0 ? { phase: opts.phase } : {},
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {},
+      ...opts.agentType !== void 0 ? { agentType: opts.agentType } : {}
+    };
+    const result = await rt.agent(WARMUP_PROMPT, agentOpts);
+    if (result === null) {
+      warn(
+        rt,
+        warnings,
+        `${patternName}: cache-warm agent (${label}) returned null \u2014 proceeding without a warmed cache`
+      );
+    }
+    return makeRecord(label, result !== null, {
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {}
+    });
+  }
+
   // ../packages/patterns/src/classify-and-act.ts
   var STAGE = "classifyAndAct";
   async function classifyAndAct(rt, options) {
-    const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems } = options;
+    const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems, cacheWarm } = options;
     if (categories.length === 0) {
       throw new Error("classifyAndAct: categories must not be empty \u2014 provide at least one category");
     }
@@ -350,7 +397,12 @@ ${prompt}` : prompt;
       });
       return { item, category, result };
     };
-    const rawResults = await rt.pipeline(kept, classifyStage, actStage);
+    const rawResults = await pipelineWithCacheWarm(
+      rt,
+      kept,
+      [classifyStage, actStage],
+      cacheWarm ?? false
+    );
     const value = rawResults.filter(
       (r) => r !== null
     );
@@ -394,7 +446,7 @@ ${prompt}` : prompt;
   var STAGE2 = "generateAndFilter";
   var REJECTED = /* @__PURE__ */ Symbol("generate-and-filter:REJECTED");
   async function generateAndFilter(rt, options) {
-    const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase } = options;
+    const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase, cacheWarm } = options;
     if (count < 1) {
       throw new Error(
         `generateAndFilter: count must be >= 1, got ${count} \u2014 set count to a positive integer`
@@ -491,7 +543,12 @@ ${prompt}` : prompt;
       return candidate;
     };
     const indices = Array.from({ length: count }, (_, i) => i);
-    const rawResults = await rt.pipeline(indices, generateStage, filterStage);
+    const rawResults = await pipelineWithCacheWarm(
+      rt,
+      indices,
+      [generateStage, filterStage],
+      cacheWarm ?? false
+    );
     const value = [];
     for (const r of rawResults) {
       if (r !== null && r !== REJECTED) {
@@ -555,7 +612,8 @@ ${prompt}` : prompt;
       synthesisEffort,
       synthesisType,
       phase,
-      maxItems
+      maxItems,
+      cacheWarm
     } = options;
     if (tasks.length === 0) {
       throw new Error(
@@ -588,7 +646,7 @@ ${prompt}` : prompt;
       agentsSpawned++;
       return rt.agent(taskPrompt(task, i), taskOpts);
     });
-    const taskResults = await rt.parallel(taskThunks);
+    const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? false);
     const parts = [];
     let dropped = 0;
     for (let i = 0; i < taskResults.length; i++) {
@@ -675,7 +733,8 @@ ${prompt}` : prompt;
       effort,
       phase,
       maxVerifyClaims,
-      verifierType
+      verifierType,
+      cacheWarm
     } = options;
     const refuteThreshold = refuteThresholdOpt ?? 2;
     if (claims.length === 0) {
@@ -753,6 +812,15 @@ Examine it through the lens of: ${lens}.` : "";
       return `Adversarially verify the following claim. Actively try to REFUTE it; default to "refuted" when uncertain.` + lensLine + `
 Claim:
 ${renderClaim(claim)}`;
+    }
+    if (cacheWarm) {
+      agentsSpawned++;
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE4}:verify:warm`, STAGE4, {
+        ...phase !== void 0 ? { phase } : {},
+        model: effectiveModel,
+        ...effort !== void 0 ? { effort } : {},
+        ...verifierType !== void 0 ? { agentType: verifierType } : {}
+      }));
     }
     const trailByClaim = [];
     const verifiedKept = await Promise.all(
@@ -903,7 +971,8 @@ ${renderClaim(claim)}`;
       synthesisModel,
       synthesisEffort,
       synthesisType,
-      phase
+      phase,
+      cacheWarm
     } = options;
     if (angles.length < 2) {
       throw new Error(
@@ -932,6 +1001,15 @@ ${renderClaim(claim)}`;
     let nullJudgeVoteCount = 0;
     const warnings = [];
     const trail = [];
+    if (cacheWarm) {
+      agentsSpawned++;
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE5}:attempt:warm`, STAGE5, {
+        ...phase !== void 0 ? { phase } : {},
+        ...attemptModel !== void 0 ? { model: attemptModel } : {},
+        ...attemptEffort !== void 0 ? { effort: attemptEffort } : {},
+        ...attemptType !== void 0 ? { agentType: attemptType } : {}
+      }));
+    }
     const attemptThunks = angles.map((angle, i) => async () => {
       const opts = {
         label: `${STAGE5}:attempt:${i}`,
@@ -979,6 +1057,15 @@ ${renderClaim(claim)}`;
     }
     const ranked = [];
     let unjudgeableCount = 0;
+    if (cacheWarm) {
+      agentsSpawned++;
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE5}:judge:warm`, STAGE5, {
+        ...phase !== void 0 ? { phase } : {},
+        ...judgeModel !== void 0 ? { model: judgeModel } : {},
+        ...judgeEffort !== void 0 ? { effort: judgeEffort } : {},
+        ...judgeType !== void 0 ? { agentType: judgeType } : {}
+      }));
+    }
     const panels = await Promise.all(
       survivingAttempts.map(({ attempt, originalIndex }) => {
         const judgeThunks = Array.from({ length: judgeCountOpt }, (_, judgeIndex) => {
@@ -1244,7 +1331,8 @@ ${renderClaim(claim)}`;
       synthesisEffort,
       synthesisType,
       phase,
-      maxSubtasks
+      maxSubtasks,
+      cacheWarm
     } = options;
     if (planPrompt.trim().length === 0) {
       throw new Error(
@@ -1316,7 +1404,7 @@ ${renderClaim(claim)}`;
       agentsSpawned++;
       return rt.agent(workerPrompt(subtask, i), opts);
     });
-    const rawWorkerResults = await rt.parallel(workerThunks);
+    const rawWorkerResults = await parallelWithCacheWarm(rt, workerThunks, cacheWarm ?? false);
     const successfulResults = [];
     let droppedWorkers = 0;
     for (let i = 0; i < rawWorkerResults.length; i++) {
@@ -1397,7 +1485,7 @@ ${renderClaim(claim)}`;
     additionalProperties: false
   };
   async function scoreAndRank(rt, options) {
-    const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase } = options;
+    const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase, cacheWarm } = options;
     const combine = options.combine ?? ((scores) => scores.reduce((a, b) => a * b, 1));
     if (items.length < 1) {
       throw new Error(`scoreAndRank: items must be a non-empty array \u2014 got length ${items.length}`);
@@ -1468,7 +1556,7 @@ ${renderClaim(claim)}`;
       });
       return { itemIndex: t.itemIndex, dimIndex: t.dimIndex, score: verdict.score };
     });
-    const rawCells = await rt.parallel(thunks);
+    const rawCells = await parallelWithCacheWarm(rt, thunks, cacheWarm ?? false);
     const dimScores = keptItems.map(() => dimensions.map(() => null));
     for (const cell of rawCells) {
       if (cell === null) continue;

@@ -892,3 +892,87 @@ describe('planAndExecute — trail: effort field', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// cacheWarm (opt-in, mechanism a — first-completes-then-burst, on the WORKER stage)
+// ---------------------------------------------------------------------------
+
+describe('planAndExecute — cacheWarm=false (default, inert)', () => {
+  it('is byte-identical to omitting the option: same stats, same trail', async () => {
+    const onAgent = ({ opts }: { opts?: { label?: string } }): unknown => {
+      const label = opts?.label ?? ''
+      if (label === 'planAndExecute:plan') return makePlan(['s0', 's1', 's2'])
+      if (label.startsWith('planAndExecute:work:')) return 'r'
+      if (label === 'planAndExecute:synthesize') return 'done'
+      return null
+    }
+
+    const rtOmitted = new FakeRuntime({ onAgent })
+    const rtFalse = new FakeRuntime({ onAgent })
+
+    const resultOmitted = await planAndExecute(rtOmitted, makeOptions())
+    const resultFalse = await planAndExecute(rtFalse, makeOptions({ cacheWarm: false }))
+
+    expect(resultFalse.stats).toEqual(resultOmitted.stats)
+    expect(resultFalse.trail).toEqual(resultOmitted.trail)
+    expect(rtFalse.calls.map(c => c.opts?.label)).toEqual(rtOmitted.calls.map(c => c.opts?.label))
+  })
+})
+
+describe('planAndExecute — cacheWarm=true (staggered)', () => {
+  it('awaits work:0 to completion before work:1/work:2 are invoked', async () => {
+    let laterWorkerStartedBeforeFirstResolved = false
+    let firstResolved = false
+    let resolveFirst: (v: string) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label === 'planAndExecute:plan') return makePlan(['s0', 's1', 's2'])
+        if (label === 'planAndExecute:synthesize') return 'done'
+        if (label === 'planAndExecute:work:0') {
+          return new Promise<string>((resolve) => {
+            resolveFirst = (v) => { firstResolved = true; resolve(v) }
+          })
+        }
+        if (!firstResolved) laterWorkerStartedBeforeFirstResolved = true
+        return 'r'
+      },
+    })
+
+    const promise = planAndExecute(rt, makeOptions({ cacheWarm: true }))
+    // Flush enough microtasks for the plan call (a real awaited agent() call)
+    // to resolve and the worker fan-out to begin.
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterWorkerStartedBeforeFirstResolved).toBe(false)
+    const workerLabelsSeen = rt.calls.map(c => c.opts?.label).filter(l => l?.startsWith('planAndExecute:work:'))
+    expect(workerLabelsSeen).toEqual(['planAndExecute:work:0'])
+
+    resolveFirst('r0')
+    const result = await promise as PlanAndExecuteResult<string, string>
+
+    expect(result.stats.agentsSpawned).toBe(5) // 1 plan + 3 workers + 1 synthesis
+  })
+
+  it('does not add an extra agent — stats/agentsSpawned match the un-staggered run', async () => {
+    const onAgent = ({ opts }: { opts?: { label?: string } }): unknown => {
+      const label = opts?.label ?? ''
+      if (label === 'planAndExecute:plan') return makePlan(['s0', 's1', 's2'])
+      if (label.startsWith('planAndExecute:work:')) return 'r'
+      if (label === 'planAndExecute:synthesize') return 'done'
+      return null
+    }
+
+    const rtWarm = new FakeRuntime({ onAgent })
+    const rtPlain = new FakeRuntime({ onAgent })
+
+    const resultWarm = await planAndExecute(rtWarm, makeOptions({ cacheWarm: true }))
+    const resultPlain = await planAndExecute(rtPlain, makeOptions())
+
+    expect(resultWarm.stats).toEqual(resultPlain.stats)
+    expect(resultWarm.trail).toEqual(resultPlain.trail)
+  })
+})

@@ -920,3 +920,113 @@ describe('tournament — trail: effort override', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// cacheWarm (opt-in, mechanism b — warmup-agent, TWO independent warm points:
+// one before the attempts stage, one before the judges stage)
+//
+// Chosen over mechanism (a) here because both stages share ONE uniform model
+// each (attemptModel / judgeModel) and angles/judgeCount are typically small
+// (judgeCount defaults to 3) — losing one real slot to serial execution would
+// cost proportionally more than a single extra throwaway agent per stage.
+// ---------------------------------------------------------------------------
+
+function tournamentOnAgent({ opts }: { opts?: { label?: string } }): unknown {
+  const label = opts?.label ?? ''
+  if (label.startsWith('tournament:judge:')) return makeJudgeResponse(5)
+  return 'ok' // covers attempts, synthesis, and both warm calls
+}
+
+describe('tournament — cacheWarm=false (default, inert)', () => {
+  it('is byte-identical to omitting the option: no warm calls, same stats/trail', async () => {
+    const rtOmitted = new FakeRuntime({ onAgent: tournamentOnAgent })
+    const rtFalse = new FakeRuntime({ onAgent: tournamentOnAgent })
+
+    const resultOmitted = await tournament(rtOmitted, makeOptions())
+    const resultFalse = await tournament(rtFalse, makeOptions({ cacheWarm: false }))
+
+    expect(resultFalse.stats).toEqual(resultOmitted.stats)
+    expect(resultFalse.trail).toEqual(resultOmitted.trail)
+    expect(rtFalse.calls).toHaveLength(rtOmitted.calls.length)
+    expect(rtFalse.calls.some(c => c.opts?.label?.includes('warm'))).toBe(false)
+  })
+})
+
+describe('tournament — cacheWarm=true (warmup-agent, two stages)', () => {
+  it('fires attempt:warm first, then judge:warm after attempts complete but before any judge', async () => {
+    const rt = new FakeRuntime({ onAgent: tournamentOnAgent })
+
+    const result = await tournament(rt, makeOptions({ cacheWarm: true }))
+
+    // 3 angles: 1 attempt-warm + 3 attempts + 1 judge-warm + 9 judges (3x3) + 1 synthesis = 15
+    expect(rt.calls).toHaveLength(15)
+
+    const labels = rt.calls.map(c => c.opts?.label)
+    expect(labels[0]).toBe('tournament:attempt:warm')
+    // The 3 real attempts follow, then the judge warm, before any real judge call.
+    const judgeWarmIndex = labels.indexOf('tournament:judge:warm')
+    const firstRealJudgeIndex = labels.findIndex(l => l?.startsWith('tournament:judge:') && l !== 'tournament:judge:warm')
+    expect(judgeWarmIndex).toBeGreaterThan(0)
+    expect(firstRealJudgeIndex).toBeGreaterThan(judgeWarmIndex)
+
+    expect(result.stats.agentsSpawned).toBe(15)
+    expect(result.trail).toHaveLength(15)
+    expect(result.trail[0]!.stage).toBe('tournament:attempt:warm')
+    expect(result.value).not.toBeNull()
+  })
+
+  it('threads attemptModel/attemptType to attempt:warm and judgeModel/judgeType to judge:warm', async () => {
+    const rt = new FakeRuntime({ onAgent: tournamentOnAgent })
+
+    await tournament(rt, makeOptions({
+      attemptModel: 'sonnet', attemptType: 'codex:codex-rescue',
+      judgeModel: 'opus', judgeType: 'workflow-toolbox:opencode-verifier',
+      phase: 'tourney-phase',
+      cacheWarm: true,
+    }))
+
+    const attemptWarm = rt.calls.find(c => c.opts?.label === 'tournament:attempt:warm')!
+    const judgeWarm = rt.calls.find(c => c.opts?.label === 'tournament:judge:warm')!
+
+    expect(attemptWarm.opts?.model).toBe('sonnet')
+    expect(attemptWarm.opts?.agentType).toBe('codex:codex-rescue')
+    expect(attemptWarm.phase).toBe('tourney-phase')
+
+    expect(judgeWarm.opts?.model).toBe('opus')
+    expect(judgeWarm.opts?.agentType).toBe('workflow-toolbox:opencode-verifier')
+    expect(judgeWarm.phase).toBe('tourney-phase')
+  })
+
+  it('charges both warmup calls against the budget like every other agent', async () => {
+    const rt = new FakeRuntime({ onAgent: tournamentOnAgent, budgetTotal: 10_000, agentTokenCost: 10 })
+
+    await tournament(rt, makeOptions({ cacheWarm: true }))
+
+    // 15 total calls (2 warm + 13 real) x 10 = 150.
+    expect(rt.budget.spent()).toBe(150)
+  })
+
+  it('degrades gracefully when a warmup agent returns null: warns, both stages still proceed', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label === 'tournament:attempt:warm' || label === 'tournament:judge:warm') return null
+        if (label.startsWith('tournament:judge:')) return makeJudgeResponse(5)
+        return 'ok'
+      },
+    })
+
+    const result = await tournament(rt, makeOptions({ cacheWarm: true }))
+
+    const attemptWarmRec = result.trail!.find(r => r.stage === 'tournament:attempt:warm')!
+    const judgeWarmRec = result.trail!.find(r => r.stage === 'tournament:judge:warm')!
+    expect(attemptWarmRec.outcome).toBe('null')
+    expect(judgeWarmRec.outcome).toBe('null')
+
+    expect(result.warnings.filter(w => w.includes('cache-warm'))).toHaveLength(2)
+
+    // Both real stages proceeded normally to a winning synthesis.
+    expect(result.value).not.toBeNull()
+    expect(result.stats.itemsOut).toBe(3) // all 3 attempts ranked
+  })
+})

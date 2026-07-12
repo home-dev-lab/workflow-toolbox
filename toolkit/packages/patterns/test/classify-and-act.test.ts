@@ -788,3 +788,88 @@ describe('classifyAndAct — trail: effort field', () => {
     expect(actRecord).not.toHaveProperty('effort')
   })
 })
+
+// ---------------------------------------------------------------------------
+// cacheWarm (opt-in, mechanism a — first-completes-then-burst, over rt.pipeline)
+// ---------------------------------------------------------------------------
+
+function classifyOnAgent({ opts }: { opts?: unknown }): unknown {
+  const schema = (opts as { schema?: { properties?: { category?: { enum?: unknown[] } } } } | undefined)?.schema
+  if (schema?.properties?.category?.enum !== undefined) return { category: 'docs' }
+  return 'action-result'
+}
+
+describe('classifyAndAct — cacheWarm=false (default, inert)', () => {
+  it('is byte-identical to omitting the option: same stats, same trail', async () => {
+    const rtOmitted = new FakeRuntime({ onAgent: classifyOnAgent })
+    const rtFalse = new FakeRuntime({ onAgent: classifyOnAgent })
+
+    const opts = makeOptions({ items: ['item-0', 'item-1', 'item-2'] })
+    const resultOmitted = await classifyAndAct(rtOmitted, opts)
+    const resultFalse = await classifyAndAct(rtFalse, { ...opts, cacheWarm: false })
+
+    expect(resultFalse.stats).toEqual(resultOmitted.stats)
+    expect(resultFalse.trail).toEqual(resultOmitted.trail)
+    expect(rtFalse.calls.map(c => c.opts?.label)).toEqual(rtOmitted.calls.map(c => c.opts?.label))
+  })
+})
+
+describe('classifyAndAct — cacheWarm=true (staggered)', () => {
+  it('runs item 0 through classify+act fully before item 1/2 start', async () => {
+    let laterItemStarted = false
+    let classify0Resolved = false
+    let resolveClassify0: (v: { category: string }) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = (opts as { label?: string } | undefined)?.label ?? ''
+        const schema = (opts as { schema?: { properties?: { category?: { enum?: unknown[] } } } } | undefined)?.schema
+
+        if (label === 'classifyAndAct:classify:0') {
+          return new Promise<{ category: string }>((resolve) => {
+            resolveClassify0 = (v) => { classify0Resolved = true; resolve(v) }
+          })
+        }
+        if (schema?.properties?.category?.enum !== undefined) {
+          // classify:1 / classify:2 — must not fire before classify:0 resolves.
+          if (!classify0Resolved) laterItemStarted = true
+          return { category: 'docs' }
+        }
+        return 'action-result'
+      },
+    })
+
+    const promise = classifyAndAct(rt, makeOptions({
+      items: ['item-0', 'item-1', 'item-2'], cacheWarm: true,
+    }))
+
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterItemStarted).toBe(false)
+    expect(rt.calls.map(c => c.opts?.label)).toEqual(['classifyAndAct:classify:0'])
+
+    resolveClassify0({ category: 'docs' })
+    const result = await promise
+
+    expect(result.stats.agentsSpawned).toBe(6) // 3 items x (classify + act)
+  })
+
+  it('does not add an extra agent — stats/agentsSpawned match the un-staggered run', async () => {
+    const rtWarm = new FakeRuntime({ onAgent: classifyOnAgent })
+    const rtPlain = new FakeRuntime({ onAgent: classifyOnAgent })
+
+    const opts = makeOptions({ items: ['item-0', 'item-1', 'item-2'] })
+    const resultWarm = await classifyAndAct(rtWarm, { ...opts, cacheWarm: true })
+    const resultPlain = await classifyAndAct(rtPlain, opts)
+
+    expect(resultWarm.stats).toEqual(resultPlain.stats)
+    expect(resultWarm.trail).toEqual(resultPlain.trail)
+  })
+
+  it('is a no-op (no staggering) for a single item', async () => {
+    const rt = new FakeRuntime({ onAgent: classifyOnAgent })
+    const result = await classifyAndAct(rt, makeOptions({ items: ['item-0'], cacheWarm: true }))
+    expect(result.stats.agentsSpawned).toBe(2) // 1 classify + 1 act
+  })
+})

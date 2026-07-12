@@ -425,3 +425,73 @@ describe('chunkedAnalysis — audit trail', () => {
     expect(a.trail).toEqual(b.trail)
   })
 })
+
+// ---------------------------------------------------------------------------
+// cacheWarm (opt-in, mechanism a — first-completes-then-burst)
+// ---------------------------------------------------------------------------
+
+describe('chunkedAnalysis — cacheWarm=false (default, inert)', () => {
+  it('is byte-identical to omitting the option: same stats, same trail', async () => {
+    const rtOmitted = new FakeRuntime({
+      onAgent: ({ opts }) => (isSynthesisCall(opts?.label) ? 'final' : 'a'),
+    })
+    const rtFalse = new FakeRuntime({
+      onAgent: ({ opts }) => (isSynthesisCall(opts?.label) ? 'final' : 'a'),
+    })
+
+    const resultOmitted = await chunkedAnalysis(rtOmitted, makeOptions())
+    const resultFalse = await chunkedAnalysis(rtFalse, makeOptions({ cacheWarm: false }))
+
+    expect(resultFalse.stats).toEqual(resultOmitted.stats)
+    expect(resultFalse.trail).toEqual(resultOmitted.trail)
+    expect(rtFalse.calls.map(c => c.opts?.label)).toEqual(rtOmitted.calls.map(c => c.opts?.label))
+  })
+})
+
+describe('chunkedAnalysis — cacheWarm=true (staggered)', () => {
+  it('awaits chunk:0 to completion before chunk:1/chunk:2 are invoked', async () => {
+    let laterChunkStartedBeforeFirstResolved = false
+    let firstResolved = false
+    let resolveFirst: (v: string) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (isSynthesisCall(opts?.label)) return 'final'
+        if (opts?.label === 'chunkedAnalysis:chunk:0') {
+          return new Promise<string>((resolve) => {
+            resolveFirst = (v) => { firstResolved = true; resolve(v) }
+          })
+        }
+        if (!firstResolved) laterChunkStartedBeforeFirstResolved = true
+        return 'a'
+      },
+    })
+
+    const promise = chunkedAnalysis(rt, makeOptions({ cacheWarm: true }))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterChunkStartedBeforeFirstResolved).toBe(false)
+    expect(rt.calls.map(c => c.opts?.label)).toEqual(['chunkedAnalysis:chunk:0'])
+
+    resolveFirst('first-chunk-result')
+    const result = await promise
+
+    expect(result.stats.agentsSpawned).toBe(4) // 3 chunks + 1 synthesis
+  })
+
+  it('does not add an extra agent — stats/agentsSpawned match the un-staggered run', async () => {
+    const rtWarm = new FakeRuntime({
+      onAgent: ({ opts }) => (isSynthesisCall(opts?.label) ? 'final' : 'a'),
+    })
+    const rtPlain = new FakeRuntime({
+      onAgent: ({ opts }) => (isSynthesisCall(opts?.label) ? 'final' : 'a'),
+    })
+
+    const resultWarm = await chunkedAnalysis(rtWarm, makeOptions({ cacheWarm: true }))
+    const resultPlain = await chunkedAnalysis(rtPlain, makeOptions())
+
+    expect(resultWarm.stats).toEqual(resultPlain.stats)
+    expect(resultWarm.trail).toEqual(resultPlain.trail)
+  })
+})

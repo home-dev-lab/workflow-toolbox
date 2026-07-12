@@ -290,6 +290,17 @@ ${prompt}` : prompt;
     }
   }
 
+  // ../packages/patterns/src/cache-warm.ts
+  async function parallelWithCacheWarm(rt, thunks, enabled) {
+    if (!enabled || thunks.length <= 1) {
+      return rt.parallel(thunks);
+    }
+    const [first, ...rest] = thunks;
+    const firstResult = await Promise.resolve().then(() => first()).then((v) => v).catch(() => null);
+    const restResults = await rt.parallel(rest);
+    return [firstResult, ...restResults];
+  }
+
   // ../packages/patterns/src/chunked-analysis.ts
   var STAGE = "chunkedAnalysis";
   function chunkText(input, options) {
@@ -348,7 +359,8 @@ ${prompt}` : prompt;
       synthesizeEffort,
       synthesizeType,
       phase,
-      maxChunks
+      maxChunks,
+      cacheWarm
     } = options;
     assertAgentTypeOption(STAGE, "analyzeType", analyzeType);
     assertAgentTypeOption(STAGE, "synthesizeType", synthesizeType);
@@ -389,7 +401,7 @@ ${prompt}` : prompt;
       agentsSpawned++;
       return rt.agent(analyzePrompt(chunk, i, total), opts);
     });
-    const analyzeResults = await rt.parallel(analyzeThunks);
+    const analyzeResults = await parallelWithCacheWarm(rt, analyzeThunks, cacheWarm ?? false);
     const chunkResults = [];
     let dropped = 0;
     for (let i = 0; i < analyzeResults.length; i++) {

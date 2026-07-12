@@ -287,6 +287,30 @@ ${prompt}` : prompt;
     };
   }
 
+  // ../packages/patterns/src/cache-warm.ts
+  var WARMUP_PROMPT = "Reply with a single word: ready.";
+  async function runCacheWarmup(rt, warnings, label, patternName, opts) {
+    const agentOpts = {
+      label,
+      ...opts.phase !== void 0 ? { phase: opts.phase } : {},
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {},
+      ...opts.agentType !== void 0 ? { agentType: opts.agentType } : {}
+    };
+    const result = await rt.agent(WARMUP_PROMPT, agentOpts);
+    if (result === null) {
+      warn(
+        rt,
+        warnings,
+        `${patternName}: cache-warm agent (${label}) returned null \u2014 proceeding without a warmed cache`
+      );
+    }
+    return makeRecord(label, result !== null, {
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {}
+    });
+  }
+
   // ../packages/patterns/src/adversarial-verification.ts
   var STAGE = "adversarialVerification";
   var VERIFIER_SCHEMA = {
@@ -313,7 +337,8 @@ ${prompt}` : prompt;
       effort,
       phase,
       maxVerifyClaims,
-      verifierType
+      verifierType,
+      cacheWarm
     } = options;
     const refuteThreshold = refuteThresholdOpt ?? 2;
     if (claims.length === 0) {
@@ -391,6 +416,15 @@ Examine it through the lens of: ${lens}.` : "";
       return `Adversarially verify the following claim. Actively try to REFUTE it; default to "refuted" when uncertain.` + lensLine + `
 Claim:
 ${renderClaim(claim)}`;
+    }
+    if (cacheWarm) {
+      agentsSpawned++;
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE}:verify:warm`, STAGE, {
+        ...phase !== void 0 ? { phase } : {},
+        model: effectiveModel,
+        ...effort !== void 0 ? { effort } : {},
+        ...verifierType !== void 0 ? { agentType: verifierType } : {}
+      }));
     }
     const trailByClaim = [];
     const verifiedKept = await Promise.all(

@@ -290,6 +290,17 @@ ${prompt}` : prompt;
     }
   }
 
+  // ../packages/patterns/src/cache-warm.ts
+  async function parallelWithCacheWarm(rt, thunks, enabled) {
+    if (!enabled || thunks.length <= 1) {
+      return rt.parallel(thunks);
+    }
+    const [first, ...rest] = thunks;
+    const firstResult = await Promise.resolve().then(() => first()).then((v) => v).catch(() => null);
+    const restResults = await rt.parallel(rest);
+    return [firstResult, ...restResults];
+  }
+
   // ../packages/patterns/src/score-and-rank.ts
   var STAGE = "scoreAndRank";
   var scoreSchema = {
@@ -302,7 +313,7 @@ ${prompt}` : prompt;
     additionalProperties: false
   };
   async function scoreAndRank(rt, options) {
-    const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase } = options;
+    const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase, cacheWarm } = options;
     const combine = options.combine ?? ((scores) => scores.reduce((a, b) => a * b, 1));
     if (items.length < 1) {
       throw new Error(`scoreAndRank: items must be a non-empty array \u2014 got length ${items.length}`);
@@ -373,7 +384,7 @@ ${prompt}` : prompt;
       });
       return { itemIndex: t.itemIndex, dimIndex: t.dimIndex, score: verdict.score };
     });
-    const rawCells = await rt.parallel(thunks);
+    const rawCells = await parallelWithCacheWarm(rt, thunks, cacheWarm ?? false);
     const dimScores = keptItems.map(() => dimensions.map(() => null));
     for (const cell of rawCells) {
       if (cell === null) continue;

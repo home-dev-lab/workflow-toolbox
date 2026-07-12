@@ -497,3 +497,81 @@ describe('scoreAndRank — trail: effort field', () => {
     expect(r2.trail.every((r) => !Object.prototype.hasOwnProperty.call(r, 'effort'))).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// cacheWarm (opt-in, mechanism a — first-completes-then-burst)
+//
+// Model-agnostic by design: dimensions may each override their own model, so
+// mechanism (a) (peel out one of the REAL score calls) is used rather than a
+// warmup agent guessing a single model for the whole burst.
+// ---------------------------------------------------------------------------
+
+describe('scoreAndRank — cacheWarm=false (default, inert)', () => {
+  it('is byte-identical to omitting the option: same stats, same trail', async () => {
+    const onAgent = () => ({ score: 3, reason: 'r' })
+    const rtOmitted = new FakeRuntime({ onAgent })
+    const rtFalse = new FakeRuntime({ onAgent })
+
+    const resultOmitted = await scoreAndRank(rtOmitted, makeOptions())
+    const resultFalse = await scoreAndRank(rtFalse, makeOptions({ cacheWarm: false }))
+
+    expect(resultFalse.stats).toEqual(resultOmitted.stats)
+    expect(resultFalse.value).toEqual(resultOmitted.value)
+    expect(rtFalse.calls.map(c => c.opts?.label)).toEqual(rtOmitted.calls.map(c => c.opts?.label))
+  })
+})
+
+describe('scoreAndRank — cacheWarm=true (staggered)', () => {
+  it('awaits the FIRST (item0,dim0) score call to completion before the rest are invoked', async () => {
+    let laterScoreStartedBeforeFirstResolved = false
+    let firstResolved = false
+    let resolveFirst: (v: { score: number; reason: string }) => void = () => {}
+
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (opts?.label === 'scoreAndRank:score:0:impact') {
+          return new Promise<{ score: number; reason: string }>((resolve) => {
+            resolveFirst = (v) => { firstResolved = true; resolve(v) }
+          })
+        }
+        if (!firstResolved) laterScoreStartedBeforeFirstResolved = true
+        return { score: 3, reason: 'r' }
+      },
+    })
+
+    const promise = scoreAndRank(rt, makeOptions({ cacheWarm: true }))
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(laterScoreStartedBeforeFirstResolved).toBe(false)
+    expect(rt.calls.map(c => c.opts?.label)).toEqual(['scoreAndRank:score:0:impact'])
+
+    resolveFirst({ score: 5, reason: 'warmed' })
+    const result = await promise
+
+    expect(result.stats.agentsSpawned).toBe(6) // 3 items x 2 dims
+  })
+
+  it('does not add an extra agent — stats/agentsSpawned match the un-staggered run', async () => {
+    const onAgent = () => ({ score: 3, reason: 'r' })
+    const rtWarm = new FakeRuntime({ onAgent })
+    const rtPlain = new FakeRuntime({ onAgent })
+
+    const resultWarm = await scoreAndRank(rtWarm, makeOptions({ cacheWarm: true }))
+    const resultPlain = await scoreAndRank(rtPlain, makeOptions())
+
+    expect(resultWarm.stats).toEqual(resultPlain.stats)
+    expect(resultWarm.value).toEqual(resultPlain.value)
+  })
+
+  it('is a no-op (no staggering) for a single (item, dimension) task', async () => {
+    const rt = new FakeRuntime({ onAgent: () => ({ score: 3, reason: 'r' }) })
+    const result = await scoreAndRank(rt, makeOptions({
+      items: ['solo'],
+      dimensions: [{ name: 'impact', prompt: (f) => `impact of ${f}` }],
+      cutoff: { type: 'threshold', min: 0 },
+      cacheWarm: true,
+    }))
+    expect(result.stats.agentsSpawned).toBe(1)
+  })
+})
