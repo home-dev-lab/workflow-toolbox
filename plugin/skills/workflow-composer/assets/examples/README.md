@@ -15,6 +15,13 @@ sources you read rather than run.
   skipped readers leave `null` holes that are filtered out and **counted**, so
   coverage loss is visible.
 
+## The `agents/` subdir
+
+Two ready-to-copy `agentType` definitions — `reviewer.md` and `verifier.md` — for the
+review/verify roles a composition exposes via `agentTypes.<role>`. See
+[`agents/README.md`](agents/README.md) for what they are, how to wire them into
+`pr-review`, and which role knob (`review`) is actually wired there today.
+
 ## The `toolkit/` subdir
 
 All nine TypeScript composition **sources** from the `@workflow-toolbox` toolkit, kept here

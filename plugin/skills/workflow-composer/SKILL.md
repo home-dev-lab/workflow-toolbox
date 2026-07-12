@@ -327,6 +327,10 @@ cross-family proposal protocol, and the capability-fence how-to.
 - **Runnable raw examples** (complete, working): `assets/examples/verify-findings.js`
   (refute-first triple-verification of claims passed via `args`) and
   `assets/examples/repo-health-snapshot.js` (fan-out per repo area + synthesis barrier).
+- **Example agentType definitions** (copy-and-wire): `assets/examples/agents/reviewer.md`
+  and `assets/examples/agents/verifier.md` — a diff-grounded multi-lens reviewer and a
+  refute-first verifier, both read-only and fenced against `SendMessage`. See
+  `assets/examples/agents/README.md` for wiring into `pr-review`'s `agentTypes.review`.
 
 ## Validate before you run
 
