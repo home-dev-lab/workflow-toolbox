@@ -1,0 +1,46 @@
+{
+  "goal": "Render the all-nine-patterns showcase across three nested, gated pipeline levels",
+  "projectDir": ".",
+  "stages": [
+    {
+      "name": "route-triage",
+      "workflow": "showcase-route-triage.js",
+      "gateAfter": true
+    },
+    {
+      "name": "nested",
+      "pipeline": {
+        "goal": "Render the L2 nested level: scatter-gather + tournament, then drill deeper, then plan",
+        "projectDir": ".",
+        "stages": [
+          {
+            "name": "fan-compete",
+            "workflow": "showcase-fan-compete.js"
+          },
+          {
+            "name": "deep",
+            "pipeline": {
+              "goal": "Render the L3 deep level: generate/filter, chunked map-reduce, refute-first verify, inner loop",
+              "projectDir": ".",
+              "stages": [
+                {
+                  "name": "generate-verify",
+                  "workflow": "showcase-deep.js"
+                }
+              ]
+            }
+          },
+          {
+            "name": "plan",
+            "workflow": "showcase-plan.js"
+          }
+        ]
+      }
+    },
+    {
+      "name": "refine-outer",
+      "workflow": "showcase-refine-outer.js"
+    }
+  ],
+  "name": "demo-showcase-v2"
+}

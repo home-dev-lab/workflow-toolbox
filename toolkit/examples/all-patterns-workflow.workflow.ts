@@ -1,13 +1,17 @@
-// demo-showcase-v2.workflow.ts — the ALL-NINE-PATTERNS nested showcase fixture.
+// all-patterns-workflow.workflow.ts — ALL NINE patterns in ONE run, one artifact.
 //
 // Purpose: a single runnable workflow that exercises EVERY one of the nine
-// @workflow-toolbox patterns across THREE levels of real in-run nesting, so the
-// observe-ui reviewer can explore the full variety of DAG shapes — a router, a
+// @workflow-toolbox patterns across THREE levels of real in-run nesting, so a
+// reviewer can see the full variety of DAG shapes in ONE view — a router, a
 // gate, a scatter-gather fan, a judge tournament, an orchestrator expansion, a
 // chunked map-reduce, a refute-first verifier fan, a rank+cutoff triage, and
 // loopUntilDone drawn BOTH as an inner (deep) loop and an outer (root) loop — in
-// one launch. It supersedes demo-all-patterns (flat, eight patterns) as the
-// showcase fixture; that older one stays as the minimal per-pattern render check.
+// one launch. This is the single-artifact sibling of the `demo-showcase-v2`
+// ORCHESTRATOR PIPELINE (examples/demo-showcase-v2.pipeline.ts), which distributes
+// the same nine patterns across real gated, nested pipeline stages for the
+// fold/unfold drill-down + HITL-gate showcase; this file is the all-in-one-run
+// composition and a great single-view render test. It supersedes demo-all-patterns
+// (flat, eight patterns); that older one stays as the minimal per-pattern check.
 //
 // THREE NESTING LEVELS (real code nesting: run → runNestedPipeline → runDeepPipeline):
 //   L1 root      : classifyAndAct (Route) · human gate (Gate) · loopUntilDone OUTER
@@ -88,7 +92,7 @@ function parseInput(raw: unknown): ShowcaseInput {
 // ---------------------------------------------------------------------------
 
 interface ShowcaseOutput {
-  marker: 'DEMO_SHOWCASE_V2_OK'
+  marker: 'ALL_PATTERNS_WORKFLOW_OK'
   route: string | null
   approved: boolean
   tagline: string | null
@@ -278,7 +282,7 @@ async function run(rt0: WorkflowRuntime, input: ShowcaseInput): Promise<Showcase
   })
 
   return {
-    marker: 'DEMO_SHOWCASE_V2_OK',
+    marker: 'ALL_PATTERNS_WORKFLOW_OK',
     route: route.value[0]?.category ?? null,
     approved,
     tagline: nested.tagline,
@@ -297,11 +301,11 @@ async function run(rt0: WorkflowRuntime, input: ShowcaseInput): Promise<Showcase
 
 export default defineWorkflow({
   meta: {
-    name: 'demo-showcase-v2',
+    name: 'all-patterns-workflow',
     description:
-      'All-nine-patterns nested showcase: three levels of in-run nesting (root → nested → deep), each level exercising different patterns, with loopUntilDone drawn both inner and outer, an auto-approvable human gate, and every agent honoring args.perAgent.model (defaults to haiku). A render/cost fixture for observe-ui, not a real workflow.',
+      'All nine patterns in one run: three levels of in-run nesting (root → nested → deep), each level exercising different patterns, with loopUntilDone drawn both inner and outer, an auto-approvable in-code gate, and every agent honoring args.perAgent.model (defaults to haiku). The single-artifact sibling of the demo-showcase-v2 orchestrator pipeline. A render/cost fixture, not a real workflow.',
     whenToUse:
-      'Launch only to populate the observe-ui graph with every pattern shape across three nesting levels (a rendering fixture) — never for real work; the result is meaningless by design. Pin args.perAgent={model:"haiku"} for a trivially cheap capture run.',
+      'Launch to render every pattern shape across three nesting levels in ONE workflow run (a rendering/single-view fixture) — never for real work; the result is meaningless by design. For the real gated, nested pipeline-of-pipelines showcase use demo-showcase-v2.pipeline instead. Pin args.perAgent={model:"haiku"} for a trivially cheap capture run.',
     phases: [
       { title: 'Route', detail: 'L1 root — classifyAndAct: one router then one handler' },
       { title: 'Gate', detail: 'L1 root — auto-approvable human gate at the phase boundary' },

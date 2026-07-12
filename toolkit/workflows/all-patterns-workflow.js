@@ -1,7 +1,7 @@
 export const meta = {
-  "name": "demo-showcase-v2",
-  "description": "All-nine-patterns nested showcase: three levels of in-run nesting (root → nested → deep), each level exercising different patterns, with loopUntilDone drawn both inner and outer, an auto-approvable human gate, and every agent honoring args.perAgent.model (defaults to haiku). A render/cost fixture for observe-ui, not a real workflow.",
-  "whenToUse": "Launch only to populate the observe-ui graph with every pattern shape across three nesting levels (a rendering fixture) — never for real work; the result is meaningless by design. Pin args.perAgent={model:\"haiku\"} for a trivially cheap capture run.",
+  "name": "all-patterns-workflow",
+  "description": "All nine patterns in one run: three levels of in-run nesting (root → nested → deep), each level exercising different patterns, with loopUntilDone drawn both inner and outer, an auto-approvable in-code gate, and every agent honoring args.perAgent.model (defaults to haiku). The single-artifact sibling of the demo-showcase-v2 orchestrator pipeline. A render/cost fixture, not a real workflow.",
+  "whenToUse": "Launch to render every pattern shape across three nesting levels in ONE workflow run (a rendering/single-view fixture) — never for real work; the result is meaningless by design. For the real gated, nested pipeline-of-pipelines showcase use demo-showcase-v2.pipeline instead. Pin args.perAgent={model:\"haiku\"} for a trivially cheap capture run.",
   "phases": [
     {
       "title": "Route",
@@ -68,10 +68,10 @@ var __wt = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // demo-showcase-v2.workflow.ts
-  var demo_showcase_v2_workflow_exports = {};
-  __export(demo_showcase_v2_workflow_exports, {
-    default: () => demo_showcase_v2_workflow_default
+  // all-patterns-workflow.workflow.ts
+  var all_patterns_workflow_workflow_exports = {};
+  __export(all_patterns_workflow_workflow_exports, {
+    default: () => all_patterns_workflow_workflow_default
   });
 
   // ../packages/runtime/src/constants.ts
@@ -1813,7 +1813,7 @@ ${renderClaim(claim)}`;
     return { value, stats, warnings, trail, chunkResults };
   }
 
-  // demo-showcase-v2.workflow.ts
+  // all-patterns-workflow.workflow.ts
   var GUARD = " IMPORTANT: render demo \u2014 reply with a short line of TEXT ONLY. Do NOT use any tools, and do NOT create, modify, or delete any files.";
   var GATE_SCHEMA = {
     type: "object",
@@ -1944,7 +1944,7 @@ ${c}${GUARD}`,
       phase: "Triage"
     });
     return {
-      marker: "DEMO_SHOWCASE_V2_OK",
+      marker: "ALL_PATTERNS_WORKFLOW_OK",
       route: route.value[0]?.category ?? null,
       approved,
       tagline: nested.tagline,
@@ -1955,11 +1955,11 @@ ${c}${GUARD}`,
       }
     };
   }
-  var demo_showcase_v2_workflow_default = defineWorkflow({
+  var all_patterns_workflow_workflow_default = defineWorkflow({
     meta: {
-      name: "demo-showcase-v2",
-      description: "All-nine-patterns nested showcase: three levels of in-run nesting (root \u2192 nested \u2192 deep), each level exercising different patterns, with loopUntilDone drawn both inner and outer, an auto-approvable human gate, and every agent honoring args.perAgent.model (defaults to haiku). A render/cost fixture for observe-ui, not a real workflow.",
-      whenToUse: 'Launch only to populate the observe-ui graph with every pattern shape across three nesting levels (a rendering fixture) \u2014 never for real work; the result is meaningless by design. Pin args.perAgent={model:"haiku"} for a trivially cheap capture run.',
+      name: "all-patterns-workflow",
+      description: "All nine patterns in one run: three levels of in-run nesting (root \u2192 nested \u2192 deep), each level exercising different patterns, with loopUntilDone drawn both inner and outer, an auto-approvable in-code gate, and every agent honoring args.perAgent.model (defaults to haiku). The single-artifact sibling of the demo-showcase-v2 orchestrator pipeline. A render/cost fixture, not a real workflow.",
+      whenToUse: 'Launch to render every pattern shape across three nesting levels in ONE workflow run (a rendering/single-view fixture) \u2014 never for real work; the result is meaningless by design. For the real gated, nested pipeline-of-pipelines showcase use demo-showcase-v2.pipeline instead. Pin args.perAgent={model:"haiku"} for a trivially cheap capture run.',
       phases: [
         { title: "Route", detail: "L1 root \u2014 classifyAndAct: one router then one handler" },
         { title: "Gate", detail: "L1 root \u2014 auto-approvable human gate at the phase boundary" },
@@ -1977,7 +1977,7 @@ ${c}${GUARD}`,
     parseInput,
     run
   });
-  return __toCommonJS(demo_showcase_v2_workflow_exports);
+  return __toCommonJS(all_patterns_workflow_workflow_exports);
 })();
 
 // --- wt glue: bind sandbox globals into rt, run the workflow, return ---

@@ -1,4 +1,4 @@
-// demo-showcase-v2.test.ts — offline checks for the all-nine-patterns nested
+// all-patterns-workflow.test.ts — offline checks for the all-nine-patterns nested
 // showcase fixture. The load-bearing assertion is the MANDATORY model knob:
 // args.perAgent.model must be honored by EVERY agent() call (ground-truthed on
 // the recorded calls), including adversarialVerification which pins BEST_MODEL by
@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { FakeRuntime } from '@workflow-toolbox/runtime'
-import wf from '../demo-showcase-v2.workflow.js'
+import wf from '../all-patterns-workflow.workflow.js'
 
 // A permissive handler: returns a shape rich enough that no pattern THROWS (they
 // degrade on a mismatch, never throw). Routed lightly on prompt content.
@@ -24,9 +24,9 @@ function makeRuntime(): FakeRuntime {
   })
 }
 
-describe('demo-showcase-v2 metadata', () => {
+describe('all-patterns-workflow metadata', () => {
   it('has the expected name and the 11-phase spine in execution order', () => {
-    expect(wf.meta.name).toBe('demo-showcase-v2')
+    expect(wf.meta.name).toBe('all-patterns-workflow')
     expect(wf.meta.description).toBeTruthy()
     const titles = wf.meta.phases?.map((ph) => ph.title)
     expect(titles).toEqual([
@@ -36,12 +36,12 @@ describe('demo-showcase-v2 metadata', () => {
   })
 })
 
-describe('demo-showcase-v2 parseInput', () => {
+describe('all-patterns-workflow parseInput', () => {
   it('parses args.perAgent and tolerates missing/empty args', async () => {
     const rt = makeRuntime()
     // No args → runs on the haiku default without throwing.
     const out = await wf.run(rt, JSON.stringify({}))
-    expect(out.marker).toBe('DEMO_SHOWCASE_V2_OK')
+    expect(out.marker).toBe('ALL_PATTERNS_WORKFLOW_OK')
   })
 
   it('rejects an unknown perAgent key (parseConfig strictness)', async () => {
@@ -50,7 +50,7 @@ describe('demo-showcase-v2 parseInput', () => {
   })
 })
 
-describe('demo-showcase-v2 — MANDATORY model knob honored by every agent()', () => {
+describe('all-patterns-workflow — MANDATORY model knob honored by every agent()', () => {
   it('defaults every agent to haiku when no perAgent is given', async () => {
     const rt = makeRuntime()
     await wf.run(rt, JSON.stringify({}))
@@ -78,12 +78,12 @@ describe('demo-showcase-v2 — MANDATORY model knob honored by every agent()', (
   })
 })
 
-describe('demo-showcase-v2 — three nesting levels all execute', () => {
+describe('all-patterns-workflow — three nesting levels all execute', () => {
   it('fires all 11 phases and returns the marker + a populated trail', async () => {
     const rt = makeRuntime()
     const out = await wf.run(rt, JSON.stringify({ perAgent: { model: 'haiku' } }))
 
-    expect(out.marker).toBe('DEMO_SHOWCASE_V2_OK')
+    expect(out.marker).toBe('ALL_PATTERNS_WORKFLOW_OK')
     for (const phase of ['Route', 'Gate', 'Fan', 'Compete', 'Generate', 'Chunk', 'Verify', 'Refine-Inner', 'Plan', 'Refine-Outer', 'Triage']) {
       expect(rt.phases).toContain(phase)
     }
