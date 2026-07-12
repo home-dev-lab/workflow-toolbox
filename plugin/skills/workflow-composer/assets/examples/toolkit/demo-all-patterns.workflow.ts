@@ -7,9 +7,11 @@
 // multi-rank tournament with a synthesis funnel, a generate→filter funnel, a
 // repeated-phase loop, a plan→execute expansion, a classify→act router, and a
 // score→rank+cutoff triage. Each pattern gets its own phase, so the graph shows
-// eight labelled columns joined by the phase spine. The all-nine nested showcase
-// (adding chunkedAnalysis, plus three levels of nesting) is demo-showcase-v2; this
-// stays the minimal one-phase-per-pattern render check.
+// eight labelled columns joined by the phase spine. The all-nine showcase (adding
+// chunkedAnalysis, plus three levels of nesting) now lives in two forms — the
+// demo-showcase-v2 orchestrator PIPELINE (nested + gated) and the all-patterns-workflow
+// single-run composition; this stays the minimal eight-of-nine one-phase-per-pattern
+// render check.
 //
 // The agent prompts are deliberately TRIVIAL and self-contained (no repo access,
 // no real work) so the run completes fast and cheap — only the SHAPE matters here,
@@ -30,7 +32,7 @@ import { classifyAndAct, collectTrail, fanOutAndSynthesize, adversarialVerificat
 export default defineWorkflow({
   meta: {
     name: 'demo-all-patterns',
-    description: 'Render demo: exercises eight of the nine patterns in one run, one phase each (the all-nine nested showcase is demo-showcase-v2), for observe-ui graph verification.',
+    description: 'Render demo: exercises eight of the nine patterns in one run, one phase each (the full all-nine showcase is the demo-showcase-v2 orchestrator pipeline / the all-patterns-workflow single-run composition), for observe-ui graph verification.',
     whenToUse: 'Use only to populate the observe-ui graph with every pattern shape (a rendering fixture) — not a real task workflow.',
     phases: [
       { title: 'Route', detail: 'classifyAndAct — one router agent then one action agent' },
