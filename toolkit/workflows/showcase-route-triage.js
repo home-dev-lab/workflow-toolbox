@@ -1,0 +1,674 @@
+export const meta = {
+  "name": "showcase-route-triage",
+  "description": "demo-showcase-v2 pipeline L1 root stage: classifyAndAct (Route) + scoreAndRank (Triage). Its output is the artifact a human gate approves. Every agent honors args.perAgent, defaulting to haiku + low. A render fixture, not real work.",
+  "whenToUse": "Runs as the first stage of the demo-showcase-v2 orchestrator pipeline (or standalone as a render fixture). Not a real task workflow — the result is meaningless by design.",
+  "phases": [
+    {
+      "title": "Route",
+      "detail": "classifyAndAct — one router then one handler"
+    },
+    {
+      "title": "Triage",
+      "detail": "scoreAndRank — cheap per-dimension scoring + cutoff"
+    }
+  ]
+}
+var __wt = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // showcase-route-triage.workflow.ts
+  var showcase_route_triage_workflow_exports = {};
+  __export(showcase_route_triage_workflow_exports, {
+    default: () => showcase_route_triage_workflow_default
+  });
+
+  // ../packages/runtime/src/digest.ts
+  var DIGEST_PREFIX = "[wt:digest]";
+  function formatDigest(d) {
+    const body = { stage: d.stage };
+    if (d.output !== void 0) body.output = d.output;
+    if (d.taken !== void 0) body.taken = d.taken;
+    if (d.notTaken !== void 0) body.notTaken = d.notTaken;
+    if (d.counts !== void 0) {
+      const counts = d.counts;
+      const sorted = {};
+      for (const k of Object.keys(counts).sort()) {
+        const v = counts[k];
+        if (v !== void 0) sorted[k] = v;
+      }
+      body.counts = sorted;
+    }
+    return `${DIGEST_PREFIX} ${JSON.stringify(body)}`;
+  }
+
+  // ../packages/runtime/src/with-agent-defaults.ts
+  function withAgentDefaults(rt, defaults) {
+    const agent = (prompt, opts) => rt.agent(prompt, { ...defaults, ...opts });
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => rt.phase(title),
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
+  }
+
+  // ../packages/runtime/src/prompt-tag.ts
+  var PROMPT_TAG_PREFIX = "<!-- wt-meta ";
+  function escapeValue(v) {
+    return v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\n", "&#10;");
+  }
+  function buildPromptTag(fields) {
+    const parts = [];
+    if (fields.label !== void 0) parts.push(`label="${escapeValue(fields.label)}"`);
+    if (fields.phase !== void 0) parts.push(`phase="${escapeValue(fields.phase)}"`);
+    if (parts.length === 0) return null;
+    return `${PROMPT_TAG_PREFIX}${parts.join(" ")} -->`;
+  }
+  function withPromptTags(rt) {
+    let currentPhase;
+    const agent = (prompt, opts) => {
+      const tag = buildPromptTag({ label: opts?.label, phase: opts?.phase ?? currentPhase });
+      const tagged = tag !== null && !prompt.startsWith(tag) ? `${tag}
+
+${prompt}` : prompt;
+      return rt.agent(tagged, opts);
+    };
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => {
+        currentPhase = title;
+        rt.phase(title);
+      },
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
+  }
+
+  // ../packages/build/src/define-workflow.ts
+  function normalizeArgs(raw) {
+    if (raw === void 0) return void 0;
+    if (typeof raw !== "string") return raw;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
+  var KEBAB_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+  function validateMeta(meta) {
+    if (!KEBAB_RE.test(meta.name)) {
+      throw new Error(
+        `defineWorkflow: invalid name "${meta.name}" \u2014 name must be non-empty kebab-case (e.g. "my-workflow", "plan-and-execute-v2"); only lowercase letters, digits, and hyphens are allowed, starting and ending with a letter or digit`
+      );
+    }
+    if (meta.description.trim().length === 0) {
+      throw new Error(
+        `defineWorkflow: description must be a non-empty string \u2014 provide a short summary of what this workflow does`
+      );
+    }
+    if (meta.phases !== void 0) {
+      for (let i = 0; i < meta.phases.length; i++) {
+        const phase = meta.phases[i];
+        if (phase === void 0) continue;
+        if (phase.title.trim().length === 0) {
+          throw new Error(
+            `defineWorkflow: phase at index ${i} has an empty title \u2014 every phase must have a non-empty title string`
+          );
+        }
+      }
+    }
+  }
+  function defineWorkflow(def) {
+    validateMeta(def.meta);
+    return {
+      meta: def.meta,
+      async run(rt, rawArgs) {
+        const normalized = normalizeArgs(rawArgs);
+        const input = def.parseInput !== void 0 ? def.parseInput(normalized) : normalized;
+        return def.run(withPromptTags(rt), input);
+      }
+    };
+  }
+  var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+  var EFFORT_ROLE_VALUES = ["low", "medium", "high", "xhigh", "max", "auto"];
+  var PER_AGENT_KEYS = ["model", "effort", "agentType", "isolation", "stallMs"];
+  function isRecord(v) {
+    return typeof v === "object" && v !== null && !Array.isArray(v);
+  }
+  function asNonEmptyString(v, where) {
+    if (typeof v !== "string" || v.trim().length === 0) {
+      throw new Error(`parseConfig: ${where} must be a non-empty string, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffort(v, where) {
+    if (typeof v !== "string" || !EFFORTS.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORTS.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffortRoleValue(v, where) {
+    if (typeof v !== "string" || !EFFORT_ROLE_VALUES.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORT_ROLE_VALUES.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function parsePerAgent(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: perAgent must be an object, got ${raw === null ? "null" : typeof raw}`);
+    for (const key of Object.keys(raw)) {
+      if (!PER_AGENT_KEYS.includes(key)) {
+        throw new Error(`parseConfig: unknown perAgent key "${key}" \u2014 expected one of ${PER_AGENT_KEYS.join(", ")}`);
+      }
+    }
+    const out = {};
+    if (raw.model !== void 0) out.model = asNonEmptyString(raw.model, "perAgent.model");
+    if (raw.effort !== void 0) out.effort = asEffort(raw.effort, "perAgent.effort");
+    if (raw.agentType !== void 0) out.agentType = asNonEmptyString(raw.agentType, "perAgent.agentType");
+    if (raw.isolation !== void 0) {
+      if (raw.isolation !== "worktree") {
+        throw new Error(`parseConfig: perAgent.isolation must be 'worktree' when set, got ${JSON.stringify(raw.isolation)}`);
+      }
+      out.isolation = "worktree";
+    }
+    if (raw.stallMs !== void 0) {
+      const n = raw.stallMs;
+      if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) {
+        throw new Error(`parseConfig: perAgent.stallMs must be a positive finite number, got ${JSON.stringify(n)}`);
+      }
+      out.stallMs = n;
+    }
+    return out;
+  }
+  function parseStringMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asNonEmptyString(v, `${where}.${k}`);
+    return out;
+  }
+  function parseEffortMap(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: effort must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`);
+    return out;
+  }
+  function asBoolean(v, where) {
+    if (typeof v !== "boolean") {
+      throw new Error(`parseConfig: ${where} must be a boolean, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function parseNumberMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v !== "number" || !Number.isFinite(v)) {
+        throw new Error(`parseConfig: ${where}.${k} must be a finite number, got ${JSON.stringify(v)}`);
+      }
+      out[k] = v;
+    }
+    return out;
+  }
+  function parseConfig(raw) {
+    if (raw === void 0 || raw === null) return {};
+    if (!isRecord(raw)) {
+      throw new Error(`parseConfig: expected an object (or undefined), got ${typeof raw}`);
+    }
+    const config = {};
+    if (raw.perAgent !== void 0) config.perAgent = parsePerAgent(raw.perAgent);
+    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models");
+    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort);
+    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes");
+    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing");
+    if (raw.messaging !== void 0) config.messaging = asBoolean(raw.messaging, "messaging");
+    return config;
+  }
+
+  // ../packages/patterns/src/envelope.ts
+  function makeRecord(stage, ok, extra) {
+    return {
+      stage,
+      outcome: ok ? "ok" : "null",
+      ...extra?.model !== void 0 ? { model: extra.model } : {},
+      ...extra?.effort !== void 0 ? { effort: extra.effort } : {},
+      ...extra?.decision !== void 0 ? { decision: extra.decision } : {}
+    };
+  }
+  function collectTrail(...results) {
+    const trail = [];
+    for (const r of results) {
+      if (r === null || r === void 0) continue;
+      trail.push(...r.trail);
+    }
+    return trail;
+  }
+  function warn(rt, warnings, message) {
+    warnings.push(message);
+    rt.log(message);
+  }
+  function emitDigest(rt, d) {
+    rt.log(formatDigest(d));
+  }
+  function applyCap(items, cap) {
+    if (cap === void 0) {
+      return { kept: items, truncated: 0 };
+    }
+    if (cap < 1) {
+      throw new Error(
+        `applyCap: cap must be >= 1, got ${cap} \u2014 set maxItems to a positive integer or omit it`
+      );
+    }
+    if (cap >= items.length) {
+      return { kept: items, truncated: 0 };
+    }
+    return {
+      kept: items.slice(0, cap),
+      truncated: items.length - cap
+    };
+  }
+  function assertAgentTypeOption(stage, name, value) {
+    if (value !== void 0 && value.trim().length === 0) {
+      throw new Error(
+        `${stage}: ${name} must be a non-empty subagent-type string (e.g. 'codex:codex-rescue') \u2014 omit it for the standard subagent`
+      );
+    }
+  }
+
+  // ../packages/patterns/src/classify-and-act.ts
+  var STAGE = "classifyAndAct";
+  async function classifyAndAct(rt, options) {
+    const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems } = options;
+    if (categories.length === 0) {
+      throw new Error("classifyAndAct: categories must not be empty \u2014 provide at least one category");
+    }
+    const seen = /* @__PURE__ */ new Set();
+    for (const cat of categories) {
+      if (seen.has(cat)) {
+        throw new Error(
+          `classifyAndAct: duplicate category "${cat}" \u2014 each category must appear exactly once`
+        );
+      }
+      seen.add(cat);
+    }
+    const missingFromActions = categories.filter((cat) => !(cat in actions));
+    if (missingFromActions.length > 0) {
+      throw new Error(
+        `classifyAndAct: ${missingFromActions.map((c) => `category "${c}"`).join(", ")} ${missingFromActions.length === 1 ? "has" : "have"} no action \u2014 add an entry to options.actions or remove the category`
+      );
+    }
+    assertAgentTypeOption(STAGE, "classifyType", classifyType);
+    for (const [category, spec] of Object.entries(actions)) {
+      assertAgentTypeOption(STAGE, `actions.${category}.agentType`, spec.agentType);
+    }
+    const { kept, truncated } = applyCap(items, maxItems);
+    let agentsSpawned = 0;
+    let classifyFailures = 0;
+    let actionFailures = 0;
+    const warnings = [];
+    const pendingTrail = [];
+    if (truncated > 0) {
+      warn(
+        rt,
+        warnings,
+        `classifyAndAct: ${truncated} of ${items.length} items truncated by maxItems=${maxItems ?? "?"}`
+      );
+    }
+    const controlSchema = {
+      type: "object",
+      properties: {
+        category: { type: "string", enum: [...categories] }
+      },
+      required: ["category"],
+      additionalProperties: false
+    };
+    const classifyStage = async (_prev, originalItem, index) => {
+      const item = originalItem;
+      const classifyOpts = {
+        schema: controlSchema,
+        label: `${STAGE}:classify:${index}`,
+        ...phase !== void 0 ? { phase } : {},
+        ...classifyModel !== void 0 ? { model: classifyModel } : {},
+        ...classifyEffort !== void 0 ? { effort: classifyEffort } : {},
+        ...classifyType !== void 0 ? { agentType: classifyType } : {}
+      };
+      agentsSpawned++;
+      const classified = await rt.agent(classifyPrompt(item), classifyOpts);
+      if (classified === null) {
+        classifyFailures++;
+        pendingTrail.push({
+          itemIndex: index,
+          stageOrder: 0,
+          record: makeRecord(`${STAGE}:classify:${index}`, false, {
+            ...classifyModel !== void 0 ? { model: classifyModel } : {},
+            ...classifyEffort !== void 0 ? { effort: classifyEffort } : {}
+          })
+        });
+        throw new Error("classify returned null");
+      }
+      if (!(classified.category in actions)) {
+        classifyFailures++;
+        pendingTrail.push({
+          itemIndex: index,
+          stageOrder: 0,
+          record: makeRecord(`${STAGE}:classify:${index}`, false, {
+            ...classifyModel !== void 0 ? { model: classifyModel } : {},
+            ...classifyEffort !== void 0 ? { effort: classifyEffort } : {}
+          })
+        });
+        throw new Error(`classify returned unknown category "${classified.category}"`);
+      }
+      pendingTrail.push({
+        itemIndex: index,
+        stageOrder: 0,
+        record: makeRecord(`${STAGE}:classify:${index}`, true, {
+          ...classifyModel !== void 0 ? { model: classifyModel } : {},
+          ...classifyEffort !== void 0 ? { effort: classifyEffort } : {},
+          decision: classified.category
+        })
+      });
+      return { item, category: classified.category };
+    };
+    const actStage = async (prev, _originalItem, index) => {
+      const { item, category } = prev;
+      const spec = actions[category];
+      if (spec === void 0) {
+        classifyFailures++;
+        throw new Error(`no action for category "${category}"`);
+      }
+      const actOpts = {
+        label: `${STAGE}:act:${category}:${index}`,
+        ...phase !== void 0 ? { phase } : {},
+        ...spec.schema !== void 0 ? { schema: spec.schema } : {},
+        ...spec.model !== void 0 ? { model: spec.model } : {},
+        ...spec.effort !== void 0 ? { effort: spec.effort } : {},
+        ...spec.agentType !== void 0 ? { agentType: spec.agentType } : {}
+      };
+      agentsSpawned++;
+      const result = await rt.agent(spec.prompt(item), actOpts);
+      if (result === null) {
+        actionFailures++;
+        pendingTrail.push({
+          itemIndex: index,
+          stageOrder: 1,
+          record: makeRecord(`${STAGE}:act:${category}:${index}`, false, {
+            ...spec.model !== void 0 ? { model: spec.model } : {},
+            ...spec.effort !== void 0 ? { effort: spec.effort } : {}
+          })
+        });
+        throw new Error("act returned null");
+      }
+      pendingTrail.push({
+        itemIndex: index,
+        stageOrder: 1,
+        record: makeRecord(`${STAGE}:act:${category}:${index}`, true, {
+          ...spec.model !== void 0 ? { model: spec.model } : {},
+          ...spec.effort !== void 0 ? { effort: spec.effort } : {}
+        })
+      });
+      return { item, category, result };
+    };
+    const rawResults = await rt.pipeline(kept, classifyStage, actStage);
+    const value = rawResults.filter(
+      (r) => r !== null
+    );
+    if (classifyFailures > 0) {
+      warn(
+        rt,
+        warnings,
+        `classifyAndAct: ${classifyFailures} of ${kept.length} items failed classification`
+      );
+    }
+    if (actionFailures > 0) {
+      warn(
+        rt,
+        warnings,
+        `classifyAndAct: ${actionFailures} items failed their action`
+      );
+    }
+    const stats = {
+      itemsIn: items.length,
+      itemsOut: value.length,
+      agentsSpawned,
+      dropped: kept.length - value.length,
+      truncated
+    };
+    pendingTrail.sort(
+      (a, b) => a.itemIndex !== b.itemIndex ? a.itemIndex - b.itemIndex : a.stageOrder - b.stageOrder
+    );
+    const trail = pendingTrail.map((e) => e.record);
+    const allCategories = [...categories];
+    const chosen = new Set(value.map((r) => r.category));
+    emitDigest(rt, {
+      stage: STAGE,
+      taken: allCategories.filter((c) => chosen.has(c)),
+      notTaken: allCategories.filter((c) => !chosen.has(c)),
+      counts: { in: items.length, out: value.length }
+    });
+    return { value, stats, warnings, trail };
+  }
+
+  // ../packages/patterns/src/score-and-rank.ts
+  var STAGE2 = "scoreAndRank";
+  var scoreSchema = {
+    type: "object",
+    properties: {
+      score: { type: "number" },
+      reason: { type: "string" }
+    },
+    required: ["score", "reason"],
+    additionalProperties: false
+  };
+  async function scoreAndRank(rt, options) {
+    const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase } = options;
+    const combine = options.combine ?? ((scores) => scores.reduce((a, b) => a * b, 1));
+    if (items.length < 1) {
+      throw new Error(`scoreAndRank: items must be a non-empty array \u2014 got length ${items.length}`);
+    }
+    if (dimensions.length < 1) {
+      throw new Error("scoreAndRank: dimensions must be a non-empty array \u2014 pass at least one ScoreDimension");
+    }
+    const ct = cutoff;
+    if (ct.type === "threshold") {
+      if (!Number.isFinite(ct.min)) {
+        throw new Error(`scoreAndRank: threshold cutoff needs a finite min, got ${String(ct.min)}`);
+      }
+    } else if (ct.type === "topK") {
+      const k = ct.k;
+      if (typeof k !== "number" || !Number.isInteger(k) || k < 1) {
+        throw new Error(`scoreAndRank: topK cutoff needs an integer k >= 1, got ${String(k)}`);
+      }
+    } else {
+      throw new Error("scoreAndRank: cutoff must be { type: 'threshold', min } or { type: 'topK', k }");
+    }
+    assertAgentTypeOption(STAGE2, "scoreType", scoreType);
+    let agentsSpawned = 0;
+    let dropped = 0;
+    const warnings = [];
+    const { kept: keptItems, truncated } = applyCap(items, maxItems);
+    const pendingTrail = [];
+    const tasks = [];
+    for (let i = 0; i < keptItems.length; i++) {
+      for (let d = 0; d < dimensions.length; d++) {
+        tasks.push({ itemIndex: i, dimIndex: d });
+      }
+    }
+    const thunks = tasks.map((t) => async () => {
+      const dim = dimensions[t.dimIndex];
+      const item = keptItems[t.itemIndex];
+      if (dim === void 0 || item === void 0) return null;
+      const model = dim.model ?? scoreModel;
+      const effort = dim.effort ?? scoreEffort;
+      const label = `${STAGE2}:score:${t.itemIndex}:${dim.name}`;
+      const opts = {
+        schema: scoreSchema,
+        label,
+        ...phase !== void 0 ? { phase } : {},
+        ...model !== void 0 ? { model } : {},
+        ...effort !== void 0 ? { effort } : {},
+        ...scoreType !== void 0 ? { agentType: scoreType } : {}
+      };
+      const order = t.itemIndex * dimensions.length + t.dimIndex;
+      agentsSpawned++;
+      const verdict = await rt.agent(dim.prompt(item), opts);
+      if (verdict === null) {
+        pendingTrail.push({
+          order,
+          record: makeRecord(label, false, {
+            ...model !== void 0 ? { model } : {},
+            ...effort !== void 0 ? { effort } : {}
+          })
+        });
+        return null;
+      }
+      pendingTrail.push({
+        order,
+        record: makeRecord(label, true, {
+          ...model !== void 0 ? { model } : {},
+          ...effort !== void 0 ? { effort } : {},
+          decision: `score=${verdict.score}`
+        })
+      });
+      return { itemIndex: t.itemIndex, dimIndex: t.dimIndex, score: verdict.score };
+    });
+    const rawCells = await rt.parallel(thunks);
+    const dimScores = keptItems.map(() => dimensions.map(() => null));
+    for (const cell of rawCells) {
+      if (cell === null) continue;
+      const row = dimScores[cell.itemIndex];
+      if (row !== void 0) row[cell.dimIndex] = cell.score;
+    }
+    const scoredItems = [];
+    for (let i = 0; i < keptItems.length; i++) {
+      const item = keptItems[i];
+      const row = dimScores[i];
+      if (item === void 0 || row === void 0) continue;
+      if (row.some((s) => s === null)) {
+        dropped++;
+        continue;
+      }
+      const scores = row.filter((s) => s !== null);
+      const combined = combine(scores);
+      if (!scores.every((s) => Number.isFinite(s)) || !Number.isFinite(combined)) {
+        dropped++;
+        continue;
+      }
+      scoredItems.push({ item, scores: [...scores], score: combined });
+    }
+    if (dropped > 0) {
+      warn(
+        rt,
+        warnings,
+        `${STAGE2}: ${dropped} of ${keptItems.length} items dropped (a dimension score was null or non-finite \u2014 fail-closed, item un-rankable)`
+      );
+    }
+    const ranked = scoredItems.map((si, idx) => ({ si, idx })).sort((a, b) => b.si.score - a.si.score || a.idx - b.idx).map((x) => x.si);
+    const survivors = cutoff.type === "threshold" ? ranked.filter((s) => s.score >= cutoff.min) : ranked.slice(0, cutoff.k);
+    const rejectedByCutoff = ranked.length - survivors.length;
+    if (rejectedByCutoff > 0) {
+      rt.log(`${STAGE2}: ${rejectedByCutoff} of ${ranked.length} ranked items cut by the ${cutoff.type} cutoff`);
+    }
+    if (truncated > 0) {
+      warn(
+        rt,
+        warnings,
+        `${STAGE2}: ${truncated} of ${items.length} items not scored (maxItems cap)`
+      );
+    }
+    const stats = {
+      itemsIn: items.length,
+      itemsOut: survivors.length,
+      agentsSpawned,
+      dropped,
+      truncated
+    };
+    pendingTrail.sort((a, b) => a.order - b.order);
+    const trail = pendingTrail.map((e) => e.record);
+    emitDigest(rt, {
+      stage: STAGE2,
+      counts: {
+        requested: items.length,
+        kept: survivors.length,
+        cut: rejectedByCutoff,
+        dropped,
+        truncated
+      }
+    });
+    return { value: survivors, stats, warnings, trail };
+  }
+
+  // showcase-route-triage.workflow.ts
+  var GUARD = " IMPORTANT: render demo \u2014 reply with a short line of TEXT ONLY. Do NOT use any tools, and do NOT create, modify, or delete any files.";
+  function parseInput(raw) {
+    const obj = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    return { perAgent: parseConfig(obj).perAgent ?? null };
+  }
+  async function run(rt0, input) {
+    const model = input.perAgent?.model ?? "haiku";
+    const rt = withAgentDefaults(rt0, { effort: "low", ...input.perAgent ?? {}, model });
+    rt.phase("Route");
+    const route = await classifyAndAct(rt, {
+      items: ["a new mascot"],
+      categories: ["playful", "serious"],
+      classifyPrompt: (item) => `Render demo. Classify the tone for "${item}": playful or serious. Return {"category":"..."}.${GUARD}`,
+      actions: {
+        playful: { prompt: (item) => `Render demo. "${item}" is playful \u2014 give a one-line upbeat brief.${GUARD}` },
+        serious: { prompt: (item) => `Render demo. "${item}" is serious \u2014 give a one-line measured brief.${GUARD}` }
+      },
+      phase: "Route"
+    });
+    rt.phase("Triage");
+    const triage = await scoreAndRank(rt, {
+      items: ["social", "email", "billboard"],
+      dimensions: [
+        { name: "reach", prompt: (item) => `Render demo. Score the reach of "${item}" 1-5. Return {"score":N,"reason":"..."}.${GUARD}` }
+      ],
+      cutoff: { type: "topK", k: 2 },
+      phase: "Triage"
+    });
+    return {
+      stage: "route-triage",
+      route: route.value[0]?.category ?? null,
+      triageKept: triage.value.length,
+      envelope: { trail: collectTrail(route, triage) }
+    };
+  }
+  var showcase_route_triage_workflow_default = defineWorkflow({
+    meta: {
+      name: "showcase-route-triage",
+      description: "demo-showcase-v2 pipeline L1 root stage: classifyAndAct (Route) + scoreAndRank (Triage). Its output is the artifact a human gate approves. Every agent honors args.perAgent, defaulting to haiku + low. A render fixture, not real work.",
+      whenToUse: "Runs as the first stage of the demo-showcase-v2 orchestrator pipeline (or standalone as a render fixture). Not a real task workflow \u2014 the result is meaningless by design.",
+      phases: [
+        { title: "Route", detail: "classifyAndAct \u2014 one router then one handler" },
+        { title: "Triage", detail: "scoreAndRank \u2014 cheap per-dimension scoring + cutoff" }
+      ]
+    },
+    parseInput,
+    run
+  });
+  return __toCommonJS(showcase_route_triage_workflow_exports);
+})();
+
+// --- wt glue: bind sandbox globals into rt, run the workflow, return ---
+const __rt = { agent, parallel, pipeline, phase, log, budget, workflow };
+return await __wt.default.run(__rt, typeof args !== "undefined" ? args : undefined);

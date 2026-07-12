@@ -9,9 +9,9 @@ every raw workflow re-invents the same machinery by hand: fan-out with
 verification, loops with stop conditions, honest accounting of what got
 dropped along the way.
 
-This toolkit is the box of molded bricks for that baseplate: eight tested
+This toolkit is the box of molded bricks for that baseplate: nine tested
 orchestration patterns (classify-and-act, fan-out, adversarial verification,
-tournament, loop-until-done, plan-and-execute…) that snap together with
+tournament, loop-until-done, plan-and-execute, chunked-analysis…) that snap together with
 ordinary `await` / `if` / `for` in TypeScript. You get type-checked contracts
 at every agent boundary, compositions you can unit-test offline against a
 fake runtime, and a one-command build that compiles a workflow into a single
@@ -47,7 +47,7 @@ toolkit/
 ├── packages/
 │   ├── runtime/    # @workflow-toolbox/runtime  — sandbox typings + FakeRuntime (the ONLY
 │   │               #   coupling point to Claude Code; unstable-surface firewall)
-│   ├── patterns/   # @workflow-toolbox/patterns — the 8 patterns + result envelope
+│   ├── patterns/   # @workflow-toolbox/patterns — the 9 patterns + result envelope
 │   └── build/      # @workflow-toolbox/build    — defineWorkflow + the `workflow-toolbox` CLI (build/check)
 ├── examples/       # @workflow-toolbox/examples — 9 teaching workflows (*.workflow.ts; the
 │                   #   monorepo-refactor pair and the dev-workflow family are
@@ -181,6 +181,7 @@ uniform `items` API.
 | `loopUntilDone` | · Evaluator-optimizer<br>· iterative refinement<br>· self-refine / Reflexion<br>· loop-until-dry | Clear evaluation criteria + iteration adds measurable value; unknown-size discovery | No articulable feedback; or a fixed list is known up front (just map it) |
 | `planAndExecute` | · Orchestrator-workers<br>· plan-and-execute (LangChain)<br>· planner-executor | Subtasks can't be predicted up front; a planner decomposes dynamically (its `PlanAndExecuteResult` also exposes the surviving `workerResults`, not just the synthesis) | Subtasks are known — `fanOutAndSynthesize` or `rt.pipeline` is cheaper and more predictable |
 | `scoreAndRank` | · Targeting machine<br>· cheap-model triage<br>· impact × opportunity ranking<br>· prioritized sweep | Many items, only a few worth an expensive next stage; a cheap model can score them on one+ independent dimensions; you want a ranked cutoff to **aim** the premium model/human at the top | Few items (just act); scoring signal is garbage (GIGO); or you need a binary keep/drop rather than a ranking — `generateAndFilter` |
+| `chunkedAnalysis` | · Chunked map-reduce<br>· RLM-like long-context<br>· map-analyze-then-synthesize<br>· sectioning by size | Content is too large for one agent context (a big diff, log, or CSV): a deterministic **char-based** chunker splits it, each chunk is analyzed in parallel, one synthesis folds the results (its result also exposes the surviving per-chunk `chunkResults`) | Content fits one context — `fanOutAndSynthesize` over sections you already have; or the per-chunk outputs are the answer and need no synthesis (`rt.pipeline`) |
 
 > In each row the first term is Anthropic's [*Building Effective Agents*](https://www.anthropic.com/engineering/building-effective-agents) vocabulary; the rest are common cross-ecosystem names for the same shape (different frameworks, same orchestration).
 

@@ -1,9 +1,10 @@
-// @workflow-toolbox/patterns — public API (envelope + 8 patterns)
+// @workflow-toolbox/patterns — public API (envelope + 9 patterns)
 //
 // Naming convention (deliberate, do not "unify"): each pattern speaks its
 // DOMAIN language — `claims` (adversarialVerification), `tasks`
-// (fanOutAndSynthesize), `angles` (tournament), `items` (classifyAndAct) —
-// and caps are named after what they cap (`maxVerifyClaims`, `maxSubtasks`).
+// (fanOutAndSynthesize), `angles` (tournament), `items` (classifyAndAct),
+// `chunks` (chunkedAnalysis) — and caps are named after what they cap
+// (`maxVerifyClaims`, `maxSubtasks`, `maxChunks`).
 // P7/ACI asks for UNAMBIGUOUS names, not uniform ones: domain names tell the
 // composition author what the pattern semantically expects; flattening them
 // to generic `items` would trade signal for plumbing uniformity.
@@ -58,3 +59,10 @@ export type {
   ScoreCutoff,
   ScoredItem,
 } from './score-and-rank.js'
+
+export { chunkedAnalysis, chunkText } from './chunked-analysis.js'
+export type {
+  ChunkedAnalysisOptions,
+  ChunkedAnalysisResult,
+  ChunkingOptions,
+} from './chunked-analysis.js'

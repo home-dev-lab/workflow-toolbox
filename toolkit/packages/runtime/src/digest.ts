@@ -98,6 +98,7 @@ export interface PatternCounts {
   tournament: { attempts: number }
   scoreAndRank: { requested: number; kept: number; cut: number; dropped: number; truncated: number }
   fanOutAndSynthesize: { tasks: number; completed: number }
+  chunkedAnalysis: { chunks: number; analyzed: number; dropped: number; truncated: number }
 }
 
 /** The closed set of pattern names that emit a phase digest. DERIVED from `PatternCounts`

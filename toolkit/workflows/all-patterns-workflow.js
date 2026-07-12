@@ -1,39 +1,51 @@
 export const meta = {
-  "name": "demo-all-patterns",
-  "description": "Render demo: exercises eight of the nine patterns in one run, one phase each (the full all-nine showcase is the demo-showcase-v2 orchestrator pipeline / the all-patterns-workflow single-run composition), for observe-ui graph verification.",
-  "whenToUse": "Use only to populate the observe-ui graph with every pattern shape (a rendering fixture) — not a real task workflow.",
+  "name": "all-patterns-workflow",
+  "description": "All nine patterns in one run: three levels of in-run nesting (root → nested → deep), each level exercising different patterns, with loopUntilDone drawn both inner and outer, an auto-approvable in-code gate, and every agent honoring args.perAgent.model (defaults to haiku). The single-artifact sibling of the demo-showcase-v2 orchestrator pipeline. A render/cost fixture, not a real workflow.",
+  "whenToUse": "Launch to render every pattern shape across three nesting levels in ONE workflow run (a rendering/single-view fixture) — never for real work; the result is meaningless by design. For the real gated, nested pipeline-of-pipelines showcase use demo-showcase-v2.pipeline instead. Pin args.perAgent={model:\"haiku\"} for a trivially cheap capture run.",
   "phases": [
     {
       "title": "Route",
-      "detail": "classifyAndAct — one router agent then one action agent"
+      "detail": "L1 root — classifyAndAct: one router then one handler"
     },
     {
-      "title": "Analyze",
-      "detail": "fanOutAndSynthesize — a wide fan of workers then a synthesis"
+      "title": "Gate",
+      "detail": "L1 root — auto-approvable human gate at the phase boundary"
     },
     {
-      "title": "Verify",
-      "detail": "adversarialVerification — a refute-first verifier fan per claim"
-    },
-    {
-      "title": "Generate",
-      "detail": "generateAndFilter — candidate generation then a filter"
+      "title": "Fan",
+      "detail": "L2 nested — fanOutAndSynthesize (scatter-gather) of angle workers"
     },
     {
       "title": "Compete",
-      "detail": "tournament — attempts, judges, and a synthesis funnel"
+      "detail": "L2 nested — tournament: attempts, judges, synthesis funnel"
     },
     {
-      "title": "Refine",
-      "detail": "loopUntilDone — a repeated-phase refinement loop"
+      "title": "Generate",
+      "detail": "L3 deep — generateAndFilter: candidate taglines, filtered"
     },
     {
-      "title": "Execute",
-      "detail": "planAndExecute — a planner then dynamic workers"
+      "title": "Chunk",
+      "detail": "L3 deep — chunkedAnalysis: map-reduce a feedback log into clusters"
+    },
+    {
+      "title": "Verify",
+      "detail": "L3 deep — adversarialVerification: refute-first verifier fan"
+    },
+    {
+      "title": "Refine-Inner",
+      "detail": "L3 deep — loopUntilDone INNER: intra-phase polish loop"
+    },
+    {
+      "title": "Plan",
+      "detail": "L2 nested — planAndExecute: planner then dynamic workers"
+    },
+    {
+      "title": "Refine-Outer",
+      "detail": "L1 root — loopUntilDone OUTER: root-level polish loop"
     },
     {
       "title": "Triage",
-      "detail": "scoreAndRank — cheap per-dimension scoring then a rank + cutoff"
+      "detail": "L1 root — scoreAndRank: cheap per-dimension scoring + cutoff"
     }
   ]
 }
@@ -56,10 +68,10 @@ var __wt = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // demo-all-patterns.workflow.ts
-  var demo_all_patterns_workflow_exports = {};
-  __export(demo_all_patterns_workflow_exports, {
-    default: () => demo_all_patterns_workflow_default
+  // all-patterns-workflow.workflow.ts
+  var all_patterns_workflow_workflow_exports = {};
+  __export(all_patterns_workflow_workflow_exports, {
+    default: () => all_patterns_workflow_workflow_default
   });
 
   // ../packages/runtime/src/constants.ts
@@ -84,6 +96,20 @@ var __wt = (() => {
       body.counts = sorted;
     }
     return `${DIGEST_PREFIX} ${JSON.stringify(body)}`;
+  }
+
+  // ../packages/runtime/src/with-agent-defaults.ts
+  function withAgentDefaults(rt, defaults) {
+    const agent = (prompt, opts) => rt.agent(prompt, { ...defaults, ...opts });
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => rt.phase(title),
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
   }
 
   // ../packages/runtime/src/prompt-tag.ts
@@ -165,6 +191,99 @@ ${prompt}` : prompt;
         return def.run(withPromptTags(rt), input);
       }
     };
+  }
+  var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+  var EFFORT_ROLE_VALUES = ["low", "medium", "high", "xhigh", "max", "auto"];
+  var PER_AGENT_KEYS = ["model", "effort", "agentType", "isolation", "stallMs"];
+  function isRecord(v) {
+    return typeof v === "object" && v !== null && !Array.isArray(v);
+  }
+  function asNonEmptyString(v, where) {
+    if (typeof v !== "string" || v.trim().length === 0) {
+      throw new Error(`parseConfig: ${where} must be a non-empty string, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffort(v, where) {
+    if (typeof v !== "string" || !EFFORTS.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORTS.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffortRoleValue(v, where) {
+    if (typeof v !== "string" || !EFFORT_ROLE_VALUES.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORT_ROLE_VALUES.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function parsePerAgent(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: perAgent must be an object, got ${raw === null ? "null" : typeof raw}`);
+    for (const key of Object.keys(raw)) {
+      if (!PER_AGENT_KEYS.includes(key)) {
+        throw new Error(`parseConfig: unknown perAgent key "${key}" \u2014 expected one of ${PER_AGENT_KEYS.join(", ")}`);
+      }
+    }
+    const out = {};
+    if (raw.model !== void 0) out.model = asNonEmptyString(raw.model, "perAgent.model");
+    if (raw.effort !== void 0) out.effort = asEffort(raw.effort, "perAgent.effort");
+    if (raw.agentType !== void 0) out.agentType = asNonEmptyString(raw.agentType, "perAgent.agentType");
+    if (raw.isolation !== void 0) {
+      if (raw.isolation !== "worktree") {
+        throw new Error(`parseConfig: perAgent.isolation must be 'worktree' when set, got ${JSON.stringify(raw.isolation)}`);
+      }
+      out.isolation = "worktree";
+    }
+    if (raw.stallMs !== void 0) {
+      const n = raw.stallMs;
+      if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) {
+        throw new Error(`parseConfig: perAgent.stallMs must be a positive finite number, got ${JSON.stringify(n)}`);
+      }
+      out.stallMs = n;
+    }
+    return out;
+  }
+  function parseStringMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asNonEmptyString(v, `${where}.${k}`);
+    return out;
+  }
+  function parseEffortMap(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: effort must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`);
+    return out;
+  }
+  function asBoolean(v, where) {
+    if (typeof v !== "boolean") {
+      throw new Error(`parseConfig: ${where} must be a boolean, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function parseNumberMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v !== "number" || !Number.isFinite(v)) {
+        throw new Error(`parseConfig: ${where}.${k} must be a finite number, got ${JSON.stringify(v)}`);
+      }
+      out[k] = v;
+    }
+    return out;
+  }
+  function parseConfig(raw) {
+    if (raw === void 0 || raw === null) return {};
+    if (!isRecord(raw)) {
+      throw new Error(`parseConfig: expected an object (or undefined), got ${typeof raw}`);
+    }
+    const config = {};
+    if (raw.perAgent !== void 0) config.perAgent = parsePerAgent(raw.perAgent);
+    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models");
+    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort);
+    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes");
+    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing");
+    if (raw.messaging !== void 0) config.messaging = asBoolean(raw.messaging, "messaging");
+    return config;
   }
 
   // ../packages/patterns/src/envelope.ts
@@ -1534,123 +1653,331 @@ ${renderClaim(claim)}`;
     return { value: survivors, stats, warnings, trail };
   }
 
-  // demo-all-patterns.workflow.ts
-  var demo_all_patterns_workflow_default = defineWorkflow({
+  // ../packages/patterns/src/chunked-analysis.ts
+  var STAGE9 = "chunkedAnalysis";
+  function chunkText(input, options) {
+    const { maxChars, overlapChars = 0 } = options;
+    if (!Number.isInteger(maxChars) || maxChars < 1) {
+      throw new Error(
+        `chunkText: maxChars must be an integer >= 1, got ${String(maxChars)}`
+      );
+    }
+    if (!Number.isInteger(overlapChars) || overlapChars < 0) {
+      throw new Error(
+        `chunkText: overlapChars must be an integer >= 0, got ${String(overlapChars)}`
+      );
+    }
+    if (overlapChars >= maxChars) {
+      throw new Error(
+        `chunkText: overlapChars (${overlapChars}) must be < maxChars (${maxChars}) \u2014 an overlap >= the chunk size makes no forward progress`
+      );
+    }
+    const pieces = typeof input === "string" ? [input] : input;
+    const out = [];
+    for (const piece of pieces) {
+      chunkOnePiece(piece, maxChars, overlapChars, out);
+    }
+    return out;
+  }
+  function chunkOnePiece(text, maxChars, overlapChars, out) {
+    if (text.length === 0) return;
+    let start = 0;
+    while (start < text.length) {
+      let end = Math.min(start + maxChars, text.length);
+      if (end < text.length) {
+        const nl = text.lastIndexOf("\n", end - 1);
+        if (nl > start) end = nl + 1;
+      }
+      out.push(text.slice(start, end));
+      if (end >= text.length) break;
+      let next = end - overlapChars;
+      if (next <= start) next = end;
+      start = next;
+    }
+  }
+  async function chunkedAnalysis(rt, options) {
+    const {
+      input,
+      maxChars,
+      overlapChars,
+      analyzePrompt,
+      analyzeSchema,
+      analyzeModel,
+      analyzeEffort,
+      analyzeType,
+      synthesizePrompt,
+      synthesizeSchema,
+      synthesizeModel,
+      synthesizeEffort,
+      synthesizeType,
+      phase,
+      maxChunks
+    } = options;
+    assertAgentTypeOption(STAGE9, "analyzeType", analyzeType);
+    assertAgentTypeOption(STAGE9, "synthesizeType", synthesizeType);
+    if (maxChunks !== void 0 && maxChunks < 1) {
+      throw new Error(`chunkedAnalysis: maxChunks must be >= 1, got ${maxChunks}`);
+    }
+    const chunks = chunkText(input, {
+      maxChars,
+      ...overlapChars !== void 0 ? { overlapChars } : {}
+    });
+    if (chunks.length === 0) {
+      throw new Error(
+        "chunkedAnalysis: input produced no chunks (empty input) \u2014 provide non-empty content to analyze"
+      );
+    }
+    let agentsSpawned = 0;
+    const warnings = [];
+    const trail = [];
+    const { kept: keptChunks, truncated } = applyCap(chunks, maxChunks);
+    const total = keptChunks.length;
+    if (truncated > 0) {
+      warn(
+        rt,
+        warnings,
+        `chunkedAnalysis: ${truncated} of ${chunks.length} chunks truncated by maxChunks=${maxChunks ?? "?"}`
+      );
+    }
+    const keptArray = keptChunks;
+    const analyzeThunks = keptArray.map((chunk, i) => async () => {
+      const opts = {
+        label: `${STAGE9}:chunk:${i}`,
+        ...phase !== void 0 ? { phase } : {},
+        ...analyzeSchema !== void 0 ? { schema: analyzeSchema } : {},
+        ...analyzeModel !== void 0 ? { model: analyzeModel } : {},
+        ...analyzeEffort !== void 0 ? { effort: analyzeEffort } : {},
+        ...analyzeType !== void 0 ? { agentType: analyzeType } : {}
+      };
+      agentsSpawned++;
+      return rt.agent(analyzePrompt(chunk, i, total), opts);
+    });
+    const analyzeResults = await rt.parallel(analyzeThunks);
+    const chunkResults = [];
+    let dropped = 0;
+    for (let i = 0; i < analyzeResults.length; i++) {
+      const r = analyzeResults[i];
+      trail.push(makeRecord(`${STAGE9}:chunk:${i}`, r !== null, {
+        ...analyzeModel !== void 0 ? { model: analyzeModel } : {},
+        ...analyzeEffort !== void 0 ? { effort: analyzeEffort } : {}
+      }));
+      if (r !== null) {
+        chunkResults.push(r);
+      } else {
+        dropped++;
+      }
+    }
+    if (dropped > 0) {
+      warn(
+        rt,
+        warnings,
+        `chunkedAnalysis: ${dropped} of ${keptArray.length} chunk analyzers returned null`
+      );
+    }
+    let value = null;
+    if (chunkResults.length === 0) {
+      warn(rt, warnings, "chunkedAnalysis: every chunk analysis was null; synthesis skipped");
+    } else {
+      const synthOpts = {
+        label: `${STAGE9}:synthesize`,
+        ...phase !== void 0 ? { phase } : {},
+        ...synthesizeSchema !== void 0 ? { schema: synthesizeSchema } : {},
+        ...synthesizeModel !== void 0 ? { model: synthesizeModel } : {},
+        ...synthesizeEffort !== void 0 ? { effort: synthesizeEffort } : {},
+        ...synthesizeType !== void 0 ? { agentType: synthesizeType } : {}
+      };
+      agentsSpawned++;
+      const synthesis = await rt.agent(synthesizePrompt(chunkResults), synthOpts);
+      trail.push(makeRecord(`${STAGE9}:synthesize`, synthesis !== null, {
+        ...synthesizeModel !== void 0 ? { model: synthesizeModel } : {},
+        ...synthesizeEffort !== void 0 ? { effort: synthesizeEffort } : {}
+      }));
+      if (synthesis === null) {
+        warn(rt, warnings, "chunkedAnalysis: synthesis agent returned null");
+      } else {
+        value = synthesis;
+      }
+    }
+    const stats = {
+      itemsIn: chunks.length,
+      itemsOut: chunkResults.length,
+      agentsSpawned,
+      dropped,
+      truncated
+    };
+    emitDigest(rt, {
+      stage: STAGE9,
+      output: value === null ? "synthesis: none" : `synthesis from ${chunkResults.length}/${chunks.length} chunks`,
+      counts: { chunks: chunks.length, analyzed: chunkResults.length, dropped, truncated }
+    });
+    return { value, stats, warnings, trail, chunkResults };
+  }
+
+  // all-patterns-workflow.workflow.ts
+  var GUARD = " IMPORTANT: render demo \u2014 reply with a short line of TEXT ONLY. Do NOT use any tools, and do NOT create, modify, or delete any files.";
+  var GATE_SCHEMA = {
+    type: "object",
+    properties: {
+      approve: { type: "boolean" },
+      reason: { type: "string", maxLength: 160 }
+    },
+    required: ["approve", "reason"],
+    additionalProperties: false
+  };
+  function parseInput(raw) {
+    const obj = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const perAgent = parseConfig(obj).perAgent ?? null;
+    return { perAgent };
+  }
+  async function runDeepPipeline(rt, resolvedModel) {
+    rt.phase("Generate");
+    const gen = await generateAndFilter(rt, {
+      count: 2,
+      generatePrompt: (i) => `Render demo. Write playful mascot tagline candidate #${i} (one short line).${GUARD}`,
+      filterPrompt: (c) => `Render demo. Keep this tagline? Answer yes or no: "${c}".${GUARD}`,
+      phase: "Generate"
+    });
+    rt.phase("Chunk");
+    const chunk = await chunkedAnalysis(rt, {
+      input: "LOVE the colors\nfont too small\nLOVE the mascot\nfont too small\nmascot is scary",
+      maxChars: 24,
+      analyzePrompt: (c, i, total) => `Render demo. Chunk ${i + 1}/${total}. Summarize the feedback themes in one short line:
+${c}${GUARD}`,
+      synthesizePrompt: (parts) => `Render demo. Merge these ${parts.length} theme notes into one short "top clusters" line.${GUARD}`,
+      phase: "Chunk"
+    });
+    rt.phase("Verify");
+    const verify = await adversarialVerification(rt, {
+      model: resolvedModel,
+      effort: "low",
+      claims: ["mascots boost recall", "small fonts help reading"],
+      renderClaim: (claim) => `Render demo. Decide if this claim is true, refuting if uncertain: "${claim}".${GUARD}`,
+      phase: "Verify"
+    });
+    rt.phase("Refine-Inner");
+    const inner = await loopUntilDone(rt, {
+      initial: { rounds: 0 },
+      maxIterations: 2,
+      body: async (rtBody, state, iteration) => {
+        await rtBody.agent(`Render demo (inner polish), pass ${iteration}. Tighten the tagline into one snappier line.${GUARD}`, {
+          label: `refine-inner:pass:${iteration}`
+        });
+        return { state: { rounds: state.rounds + 1 }, done: iteration >= 1 };
+      }
+    });
+    return {
+      clusters: chunk.value,
+      trail: collectTrail(gen, chunk, verify, inner)
+    };
+  }
+  async function runNestedPipeline(rt, resolvedModel) {
+    rt.phase("Fan");
+    const fan = await fanOutAndSynthesize(rt, {
+      tasks: ["colors", "personality", "catchphrase"],
+      taskPrompt: (task, i) => `Render demo, angle ${i}. One short idea about the mascot's ${task}.${GUARD}`,
+      synthesisPrompt: (parts) => `Render demo. Fuse these ${parts.length} angle notes into one mascot brief line.${GUARD}`,
+      phase: "Fan"
+    });
+    rt.phase("Compete");
+    const compete = await tournament(rt, {
+      angles: ["bold", "whimsical"],
+      attemptPrompt: (angle, i) => `Render demo, attempt ${i}. Write a ${angle} mascot tagline (one short line).${GUARD}`,
+      judgePrompt: (attempt) => `Render demo. Score this tagline 1-10: "${attempt}".${GUARD}`,
+      synthesisPrompt: (ranked) => `Render demo. From the best of ${ranked.length} taglines, write the final one line.${GUARD}`,
+      phase: "Compete"
+    });
+    const deep = await runDeepPipeline(rt, resolvedModel);
+    rt.phase("Plan");
+    const plan = await planAndExecute(rt, {
+      planPrompt: `Render demo. Return a 3-item PLAN (do NOT implement) that splits "introduce the mascot" into 3 independent one-line steps.${GUARD}`,
+      workerPrompt: (subtask, i) => `Render demo, step ${i}: ${subtask.description}. Reply in one short line.${GUARD}`,
+      synthesisPrompt: (results) => `Render demo. Combine these ${results.length} step lines into one rollout summary.${GUARD}`,
+      phase: "Plan"
+    });
+    return {
+      tagline: compete.value,
+      clusters: deep.clusters,
+      trail: collectTrail(fan, compete, { trail: deep.trail }, plan)
+    };
+  }
+  async function run(rt0, input) {
+    const resolvedModel = input.perAgent?.model ?? "haiku";
+    const rt = withAgentDefaults(rt0, { effort: "low", ...input.perAgent ?? {}, model: resolvedModel });
+    rt.phase("Route");
+    const route = await classifyAndAct(rt, {
+      items: ["a new mascot"],
+      categories: ["playful", "serious"],
+      classifyPrompt: (item) => `Render demo. Classify the tone for "${item}": playful or serious. Return {"category":"..."}.${GUARD}`,
+      actions: {
+        playful: { prompt: (item) => `Render demo. "${item}" is playful \u2014 give a one-line upbeat brief.${GUARD}` },
+        serious: { prompt: (item) => `Render demo. "${item}" is serious \u2014 give a one-line measured brief.${GUARD}` }
+      },
+      phase: "Route"
+    });
+    rt.phase("Gate");
+    const gate = await rt.agent(
+      `Render demo. Approve this mascot brief to proceed? Reply {"approve":true,"reason":"..."} (approve for the demo).${GUARD}`,
+      { label: "gate:approve", phase: "Gate", schema: GATE_SCHEMA }
+    );
+    const approved = gate?.approve ?? true;
+    rt.log(`demo-showcase-v2 gate: ${approved ? "approved" : "reject vote overridden (auto-approve)"} \u2014 proceeding`);
+    const gateTrail = { trail: [makeRecord("gate:approve", gate !== null, {})] };
+    const nested = await runNestedPipeline(rt, resolvedModel);
+    rt.phase("Refine-Outer");
+    const outer = await loopUntilDone(rt, {
+      initial: { rounds: 0 },
+      maxIterations: 2,
+      body: async (rtBody, state, iteration) => {
+        await rtBody.agent(`Render demo (outer polish), round ${iteration}. Refine the overall mascot brief into one crisp line.${GUARD}`, {
+          label: `refine-outer:round:${iteration}`
+        });
+        return { state: { rounds: state.rounds + 1 }, done: iteration >= 1 };
+      }
+    });
+    rt.phase("Triage");
+    const triage = await scoreAndRank(rt, {
+      items: ["social", "email", "billboard"],
+      dimensions: [
+        { name: "reach", prompt: (item) => `Render demo. Score the reach of "${item}" 1-5. Return {"score":N,"reason":"..."}.${GUARD}` }
+      ],
+      cutoff: { type: "topK", k: 2 },
+      phase: "Triage"
+    });
+    return {
+      marker: "ALL_PATTERNS_WORKFLOW_OK",
+      route: route.value[0]?.category ?? null,
+      approved,
+      tagline: nested.tagline,
+      clusters: nested.clusters,
+      triage: triage.value.length,
+      envelope: {
+        trail: collectTrail(route, gateTrail, { trail: nested.trail }, outer, triage)
+      }
+    };
+  }
+  var all_patterns_workflow_workflow_default = defineWorkflow({
     meta: {
-      name: "demo-all-patterns",
-      description: "Render demo: exercises eight of the nine patterns in one run, one phase each (the full all-nine showcase is the demo-showcase-v2 orchestrator pipeline / the all-patterns-workflow single-run composition), for observe-ui graph verification.",
-      whenToUse: "Use only to populate the observe-ui graph with every pattern shape (a rendering fixture) \u2014 not a real task workflow.",
+      name: "all-patterns-workflow",
+      description: "All nine patterns in one run: three levels of in-run nesting (root \u2192 nested \u2192 deep), each level exercising different patterns, with loopUntilDone drawn both inner and outer, an auto-approvable in-code gate, and every agent honoring args.perAgent.model (defaults to haiku). The single-artifact sibling of the demo-showcase-v2 orchestrator pipeline. A render/cost fixture, not a real workflow.",
+      whenToUse: 'Launch to render every pattern shape across three nesting levels in ONE workflow run (a rendering/single-view fixture) \u2014 never for real work; the result is meaningless by design. For the real gated, nested pipeline-of-pipelines showcase use demo-showcase-v2.pipeline instead. Pin args.perAgent={model:"haiku"} for a trivially cheap capture run.',
       phases: [
-        { title: "Route", detail: "classifyAndAct \u2014 one router agent then one action agent" },
-        { title: "Analyze", detail: "fanOutAndSynthesize \u2014 a wide fan of workers then a synthesis" },
-        { title: "Verify", detail: "adversarialVerification \u2014 a refute-first verifier fan per claim" },
-        { title: "Generate", detail: "generateAndFilter \u2014 candidate generation then a filter" },
-        { title: "Compete", detail: "tournament \u2014 attempts, judges, and a synthesis funnel" },
-        { title: "Refine", detail: "loopUntilDone \u2014 a repeated-phase refinement loop" },
-        { title: "Execute", detail: "planAndExecute \u2014 a planner then dynamic workers" },
-        { title: "Triage", detail: "scoreAndRank \u2014 cheap per-dimension scoring then a rank + cutoff" }
+        { title: "Route", detail: "L1 root \u2014 classifyAndAct: one router then one handler" },
+        { title: "Gate", detail: "L1 root \u2014 auto-approvable human gate at the phase boundary" },
+        { title: "Fan", detail: "L2 nested \u2014 fanOutAndSynthesize (scatter-gather) of angle workers" },
+        { title: "Compete", detail: "L2 nested \u2014 tournament: attempts, judges, synthesis funnel" },
+        { title: "Generate", detail: "L3 deep \u2014 generateAndFilter: candidate taglines, filtered" },
+        { title: "Chunk", detail: "L3 deep \u2014 chunkedAnalysis: map-reduce a feedback log into clusters" },
+        { title: "Verify", detail: "L3 deep \u2014 adversarialVerification: refute-first verifier fan" },
+        { title: "Refine-Inner", detail: "L3 deep \u2014 loopUntilDone INNER: intra-phase polish loop" },
+        { title: "Plan", detail: "L2 nested \u2014 planAndExecute: planner then dynamic workers" },
+        { title: "Refine-Outer", detail: "L1 root \u2014 loopUntilDone OUTER: root-level polish loop" },
+        { title: "Triage", detail: "L1 root \u2014 scoreAndRank: cheap per-dimension scoring + cutoff" }
       ]
     },
-    run: async (rt) => {
-      const GUARD = " IMPORTANT: this is a render demo \u2014 reply with text only. Do NOT use any tools, and do NOT create, modify, or delete any files.";
-      const step1 = await classifyAndAct(rt, {
-        classifyModel: "haiku",
-        classifyEffort: "low",
-        items: ["a short note"],
-        categories: ["greeting", "question"],
-        classifyPrompt: (item) => `Render demo. Classify "${item}" into greeting or question. Return {"category":"..."}.${GUARD}`,
-        actions: {
-          greeting: { model: "haiku", effort: "low", prompt: (item) => `Render demo. The item "${item}" is a greeting \u2014 reply in one short line.${GUARD}` },
-          question: { model: "haiku", effort: "low", prompt: (item) => `Render demo. The item "${item}" is a question \u2014 reply in one short line.${GUARD}` }
-        },
-        phase: "Route"
-      });
-      const step2 = await fanOutAndSynthesize(rt, {
-        taskModel: "haiku",
-        taskEffort: "low",
-        synthesisModel: "haiku",
-        synthesisEffort: "low",
-        tasks: ["alpha", "beta", "gamma", "delta"],
-        taskPrompt: (task, index) => `Render demo, worker ${index}. Reply with one short line about "${task}".${GUARD}`,
-        synthesisPrompt: (parts) => `Render demo. Combine these ${parts.length} short notes into one line.${GUARD}`,
-        phase: "Analyze"
-      });
-      const step3 = await adversarialVerification(rt, {
-        model: "haiku",
-        effort: "low",
-        claims: ["the sky is blue", "water is dry"],
-        renderClaim: (claim) => `Render demo. Decide if this claim is true, refuting if uncertain: "${claim}".${GUARD}`,
-        phase: "Verify"
-      });
-      const step4 = await generateAndFilter(rt, {
-        generateModel: "haiku",
-        generateEffort: "low",
-        filterModel: "haiku",
-        filterEffort: "low",
-        count: 3,
-        generatePrompt: (index) => `Render demo. Generate short candidate idea number ${index} (one line).${GUARD}`,
-        filterPrompt: (candidate) => `Render demo. Keep this candidate? Answer yes or no: "${candidate}".${GUARD}`,
-        phase: "Generate"
-      });
-      const step5 = await tournament(rt, {
-        attemptModel: "haiku",
-        attemptEffort: "low",
-        judgeModel: "haiku",
-        judgeEffort: "low",
-        synthesisModel: "haiku",
-        synthesisEffort: "low",
-        angles: ["concise", "playful"],
-        attemptPrompt: (angle, index) => `Render demo, attempt ${index}. Write one short slogan in a ${angle} style.${GUARD}`,
-        judgePrompt: (attempt) => `Render demo. Score this slogan 1-10: "${attempt}".${GUARD}`,
-        synthesisPrompt: (ranked) => `Render demo. From the best of ${ranked.length} slogans, write the final one line.${GUARD}`,
-        phase: "Compete"
-      });
-      rt.phase("Refine");
-      const step6 = await loopUntilDone(rt, {
-        initial: { rounds: 0 },
-        maxIterations: 2,
-        body: async (rt2, state, iteration) => {
-          await rt2.agent(`Render demo, refinement iteration ${iteration}. Reply with one short improved line.${GUARD}`, { model: "haiku", effort: "low" });
-          return { state: { rounds: state.rounds + 1 }, done: iteration >= 1 };
-        }
-      });
-      const step7 = await planAndExecute(rt, {
-        planModel: "sonnet",
-        planEffort: "low",
-        workerModel: "sonnet",
-        workerEffort: "low",
-        synthesisModel: "sonnet",
-        synthesisEffort: "low",
-        planPrompt: `Render demo. Return a 3-item plan that breaks "say hello in three languages" into 3 independent subtasks \u2014 as a PLAN ONLY. Do NOT implement it.${GUARD}`,
-        workerPrompt: (subtask, index) => `Render demo, subtask ${index}: ${subtask.description}. Reply in one short line.${GUARD}`,
-        synthesisPrompt: () => `Render demo. Combine the 3 worker lines into one greeting.${GUARD}`,
-        phase: "Execute"
-      });
-      const step8 = await scoreAndRank(rt, {
-        items: ["module-a", "module-b", "module-c"],
-        scoreModel: "haiku",
-        scoreEffort: "low",
-        dimensions: [
-          { name: "impact", prompt: (item) => `Render demo. Score the impact of "${item}" from 1 to 5. Return {"score":N,"reason":"..."}.${GUARD}` },
-          { name: "opportunity", prompt: (item) => `Render demo. Score the opportunity in "${item}" from 1 to 5. Return {"score":N,"reason":"..."}.${GUARD}` }
-        ],
-        cutoff: { type: "topK", k: 2 },
-        phase: "Triage"
-      });
-      return {
-        step1: step1.value,
-        step2: step2.value,
-        step3: step3.value,
-        step4: step4.value,
-        step5: step5.value,
-        step6: step6.value,
-        step7: step7.value,
-        step8: step8.value,
-        envelope: { trail: collectTrail(step1, step2, step3, step4, step5, step6, step7, step8) }
-      };
-    }
+    parseInput,
+    run
   });
-  return __toCommonJS(demo_all_patterns_workflow_exports);
+  return __toCommonJS(all_patterns_workflow_workflow_exports);
 })();
 
 // --- wt glue: bind sandbox globals into rt, run the workflow, return ---

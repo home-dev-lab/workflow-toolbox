@@ -424,6 +424,41 @@ below-cutoff items are logged and derivable from the stats, never silently dropp
 
 ---
 
+## 9. Chunked map-analyze + synthesis — `chunkedAnalysis`
+
+**Use when:** the content is too big for a single agent context — a large diff, a
+long log, a CSV — and you want a map-analyze-then-synthesize pass: a deterministic
+chunker splits the text, each chunk is analyzed in parallel, and one synthesis
+folds the per-chunk results (the RLM-like shape).
+**Do NOT use when:** the content fits one context (just `agent()` it, or
+`fanOutAndSynthesize` over sections you already have); or the per-chunk outputs
+ARE the answer and need no synthesis barrier — then `rt.pipeline`.
+
+```js
+// Deterministic char-based chunker (no tokenizer): cut at maxChars, preferring
+// line boundaries, with optional overlap. PURE — safe in the sandbox.
+const chunks = chunkText(bigLog, { maxChars: 4000, overlapChars: 200 })
+
+// Map: analyze each chunk in parallel. Reduce: one synthesis over the survivors.
+const parts = (await parallel(chunks.map((c, i) => () =>
+  agent(`Chunk ${i + 1}/${chunks.length}. List error signatures:\n${c}`)))
+).filter(Boolean)
+const report = await agent(`Cluster these per-chunk findings:\n${parts.join('\n')}`)
+```
+
+**Toolkit:** `chunkedAnalysis(rt, { input, maxChars, overlapChars?, analyzePrompt, synthesizePrompt, analyzeSchema?, synthesizeSchema?, maxChunks?, ... })`.
+`input` is a string (chunked) or a `string[]` (caller pre-chunks, each still
+re-split to respect `maxChars`); the chunker prefers cutting at line boundaries
+and hard-cuts a single over-long line. Chunk analyzers fan out concurrently; the
+synthesis runs once after the barrier, over the surviving analyses. Chars are a
+DELIBERATE token proxy (a real tokenizer is a heavy, model-specific dependency) —
+size `maxChars` for the analyze model. `maxChunks` caps the fan-out on a giant
+input (truncation reported). The result exposes the nullable synthesized `value`,
+the surviving per-chunk `chunkResults`, and the standard stats/trail. `chunkText`
+is exported standalone too, for when you only need the deterministic split.
+
+---
+
 ## Tuning at launch — per-role model/effort, and the config helpers
 
 Every pattern exposes **per-role** knobs so you tune each role independently
@@ -433,7 +468,8 @@ without editing the workflow source:
   `synthesisModel` on `tournament`, `scoreModel` on `scoreAndRank`,
   `generateModel`/`filterModel` on `generateAndFilter`, `classifyModel` on
   `classifyAndAct`, `taskModel`/`synthesisModel` on `fanOutAndSynthesize`,
-  `planModel`/`workerModel`/`synthesisModel` on `planAndExecute`). `scoreAndRank`
+  `planModel`/`workerModel`/`synthesisModel` on `planAndExecute`,
+  `analyzeModel`/`synthesizeModel` on `chunkedAnalysis`). `scoreAndRank`
   also takes a per-dimension `model`; `classifyAndAct` a per-action `model`.
 - **Per-role effort** — the matching `<role>Effort` knob takes an `EffortAlias`
   (`'low' | 'medium' | 'high' | 'xhigh' | 'max'`); omit to inherit the session
@@ -446,7 +482,8 @@ without editing the workflow source:
   `attemptType`/`judgeType`/`synthesisType` (`tournament`),
   `planType`/`workerType`/`synthesisType` (`planAndExecute`), `classifyType`
   (`classifyAndAct`, plus a per-action `ActionSpec.agentType`), `scoreType`
-  (`scoreAndRank`), and `verifierType` (`adversarialVerification`). `loopUntilDone`
+  (`scoreAndRank`), `analyzeType`/`synthesizeType` (`chunkedAnalysis`), and
+  `verifierType` (`adversarialVerification`). `loopUntilDone`
   has none — its author callback selects `agentType` directly. This generalizes the
   cross-family lever to every role so the composer can decorrelate a producer from
   its verifier (different unrelated families); it is NOT an invitation to route
