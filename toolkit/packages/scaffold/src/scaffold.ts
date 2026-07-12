@@ -138,6 +138,11 @@ const EMITTERS: Record<PatternName, Emitter> = {
     '    })',
   ],
   chunkedAnalysis: (v, phase) => [
+    '    // chunkedAnalysis fans out one agent per chunk of the input — size maxChars for',
+    '    // the analyze model. Tune cost/quality per role with analyzeModel/analyzeEffort/',
+    '    // analyzeType (+ the synthesize equivalents), or blanket-tune every agent in this',
+    '    // run via the launch-time `perAgent` knob (args.perAgent -> parseConfig ->',
+    '    // withAgentDefaults; see toolkit/examples/pr-review.workflow.ts for the idiom).',
     `    const ${v} = await chunkedAnalysis(rt, {`,
     `      input: 'placeholder-content-to-chunk',`,
     '      maxChars: 4000,',
