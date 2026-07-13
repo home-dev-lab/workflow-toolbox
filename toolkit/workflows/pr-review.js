@@ -333,6 +333,7 @@ ${prompt}` : prompt;
   var STAGE = "probeAgentType";
   var DEFAULT_PROBE_PROMPT = "Availability probe. This is a REAL task: execute your normal procedure end-to-end (availability gate, then run the task through your external CLI \u2014 do NOT answer from your own knowledge). Task: reply with exactly: PROBE_OK";
   var DEFAULT_EXPECTED_TOKEN = "PROBE_OK";
+  var LOCAL_AGENT_PROBE_PROMPT = "Availability probe. This task is fully self-contained: it needs no tools and no lookup \u2014 answering directly from this prompt is the correct procedure. Task: reply with exactly: PROBE_OK";
   var REASON_HEAD_CHARS = 200;
   function stripAnsi(text) {
     return text.replace(/\u001b?\[[0-9;]*m/g, "");
@@ -412,7 +413,10 @@ ${prompt}` : prompt;
       return { rt, report: { resolvedAgentType: null, probe: null } };
     }
     const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
-    const probe = await probeAgentType(probeRt, agentType, phase !== void 0 ? { phase } : {});
+    const probe = await probeAgentType(probeRt, agentType, {
+      probePrompt: LOCAL_AGENT_PROBE_PROMPT,
+      ...phase !== void 0 ? { phase } : {}
+    });
     const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
     if (probe.agentType === void 0) {
       rt.log(`[leaf-fence] \u26A0 ${FENCE_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
@@ -435,7 +439,10 @@ ${prompt}` : prompt;
       return { rt, report: { resolvedAgentType: null, probe: null } };
     }
     const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
-    const probe = await probeAgentType(probeRt, agentType, phase !== void 0 ? { phase } : {});
+    const probe = await probeAgentType(probeRt, agentType, {
+      probePrompt: LOCAL_AGENT_PROBE_PROMPT,
+      ...phase !== void 0 ? { phase } : {}
+    });
     const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
     if (probe.agentType === void 0) {
       rt.log(`[lean-routing] \u26A0 ${ROUTING_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);

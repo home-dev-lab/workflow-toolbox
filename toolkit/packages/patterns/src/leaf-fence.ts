@@ -36,7 +36,7 @@
 
 import type { AgentDefaults, WorkflowRuntime } from '@workflow-toolbox/runtime'
 import { withAgentDefaults } from '@workflow-toolbox/runtime'
-import { probeAgentType } from './probe-agent-type.js'
+import { probeAgentType, LOCAL_AGENT_PROBE_PROMPT } from './probe-agent-type.js'
 import type { AgentTypeProbeReport } from './probe-agent-type.js'
 
 /** The toolkit's own fenced leaf agentType (plugin-scoped name; ships as
@@ -136,7 +136,13 @@ export async function withLeafFence(
   // regardless of what perAgent carries). Without this, the probe silently ran on
   // the raw session model even when the workflow declares a blanket override.
   const probeRt = perAgent !== undefined ? withAgentDefaults(rt, perAgent) : rt
-  const probe = await probeAgentType(probeRt, agentType, phase !== undefined ? { phase } : {})
+  // LOCAL probe prompt, not the bridge default: the leaf is a locally-registered
+  // type with no CLI chain to exercise — under the bridge prompt it passed only
+  // by charitable interpretation (see the lean regression, run wf_19cdcdcb-4b7).
+  const probe = await probeAgentType(probeRt, agentType, {
+    probePrompt: LOCAL_AGENT_PROBE_PROMPT,
+    ...(phase !== undefined ? { phase } : {}),
+  })
   const defaults: AgentDefaults = probe.agentType !== undefined ? { agentType: probe.agentType } : {}
 
   if (probe.agentType === undefined) {

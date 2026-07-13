@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
-import { probeAgentType } from '../src/probe-agent-type.js'
+import { probeAgentType, LOCAL_AGENT_PROBE_PROMPT } from '../src/probe-agent-type.js'
 
 // ---------------------------------------------------------------------------
 // Config validation
@@ -217,5 +217,30 @@ describe('probeAgentType — phase digest', () => {
     await probeAgentType(rt, 'codex:codex-rescue')
     const digest = rt.logs.map(parseDigest).find((d) => d?.stage === 'probeAgentType')
     expect(digest?.phase).toBeUndefined()
+  })
+})
+
+describe('LOCAL_AGENT_PROBE_PROMPT — preset for locally-registered (non-bridge) agentTypes', () => {
+  // The DEFAULT prompt's external-CLI demand is load-bearing for bridges (it
+  // forces the real gate+CLI chain — see the anti-shortcut note in the source)
+  // but WRONG for local fenced types: a tool-less lean agent must honestly
+  // refuse it (observed live 2026-07-13, run wf_19cdcdcb-4b7 — the refusal was
+  // classified unavailable). For a local type the only question is "is the
+  // type registered and does it answer?" — self-answering IS the procedure.
+  it('never demands an external CLI nor forbids answering from own knowledge', () => {
+    expect(LOCAL_AGENT_PROBE_PROMPT).not.toMatch(/external CLI/i)
+    expect(LOCAL_AGENT_PROBE_PROMPT).not.toMatch(/do not answer from your own knowledge/i)
+  })
+
+  it('keeps the artificial end-anchored token convention', () => {
+    expect(LOCAL_AGENT_PROBE_PROMPT).toMatch(/reply with exactly: PROBE_OK$/)
+  })
+
+  it('rides the probePrompt option end-to-end', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }) => (prompt === LOCAL_AGENT_PROBE_PROMPT ? 'PROBE_OK' : 'I cannot: no tools.'),
+    })
+    const probe = await probeAgentType(rt, 'workflow-toolbox:lean', { probePrompt: LOCAL_AGENT_PROBE_PROMPT })
+    expect(probe.available).toBe(true)
   })
 })

@@ -46,7 +46,7 @@
 
 import type { AgentDefaults, WorkflowRuntime } from '@workflow-toolbox/runtime'
 import { withAgentDefaults } from '@workflow-toolbox/runtime'
-import { probeAgentType } from './probe-agent-type.js'
+import { probeAgentType, LOCAL_AGENT_PROBE_PROMPT } from './probe-agent-type.js'
 import type { AgentTypeProbeReport } from './probe-agent-type.js'
 
 /** The toolkit's own minimal-ambient-context agentType (plugin-scoped name;
@@ -145,7 +145,13 @@ export async function withLeanRouting(
   // silently ran on the raw session model even when the workflow declares a
   // blanket override.
   const probeRt = perAgent !== undefined ? withAgentDefaults(rt, perAgent) : rt
-  const probe = await probeAgentType(probeRt, agentType, phase !== undefined ? { phase } : {})
+  // LOCAL probe prompt, not the bridge default: lean is a locally-registered
+  // tool-less type — the bridge prompt's external-CLI demand is exactly what
+  // it must honestly refuse (live regression, run wf_19cdcdcb-4b7).
+  const probe = await probeAgentType(probeRt, agentType, {
+    probePrompt: LOCAL_AGENT_PROBE_PROMPT,
+    ...(phase !== undefined ? { phase } : {}),
+  })
   const defaults: AgentDefaults = probe.agentType !== undefined ? { agentType: probe.agentType } : {}
 
   if (probe.agentType === undefined) {

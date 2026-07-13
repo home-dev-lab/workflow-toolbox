@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { FakeRuntime } from '@workflow-toolbox/runtime'
 import { withLeanRouting, LEAN_AGENT_TYPE } from '../src/lean-routing.js'
+import { LOCAL_AGENT_PROBE_PROMPT } from '../src/probe-agent-type.js'
 
 describe('withLeanRouting — available (probe answers)', () => {
   it('probes the default LEAN_AGENT_TYPE and reports it resolved', async () => {
@@ -149,5 +150,32 @@ describe('withLeanRouting — disabled', () => {
     await leanRt.agent('synthesize the verdict')
     const call = rt.calls[rt.calls.length - 1]!
     expect(call.opts?.agentType).toBeUndefined()
+  })
+})
+
+describe('withLeanRouting — probe prompt fits a TOOL-LESS agent (regression, live run wf_19cdcdcb-4b7)', () => {
+  // Live failure 2026-07-13: the probe's bridge DEFAULT prompt demands "run
+  // the task through your external CLI — do NOT answer from your own
+  // knowledge". A lean agent has no tools and its preamble tells it to say so
+  // instead of fabricating compliance — the probe read that honest refusal as
+  // UNAVAILABLE, and every routed call silently kept the full ambient context
+  // lean exists to strip.
+  const honestToolLessAgent = ({ prompt }: { prompt: string }) =>
+    /external CLI|do NOT answer from your own knowledge/i.test(prompt)
+      ? 'I cannot execute this task as specified: I have no tools at all — no shell, no external CLI.'
+      : 'PROBE_OK'
+
+  it('resolves AVAILABLE against an honest tool-less agent (the live-failure reproduction)', async () => {
+    const rt = new FakeRuntime({ onAgent: honestToolLessAgent })
+    const { report } = await withLeanRouting(rt)
+    expect(report.resolvedAgentType).toBe(LEAN_AGENT_TYPE)
+    expect(report.probe).toEqual({ requested: LEAN_AGENT_TYPE, available: true, reason: null })
+  })
+
+  it('sends the LOCAL self-contained probe prompt, not the bridge default', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
+    await withLeanRouting(rt)
+    const probeCall = rt.calls[0]!
+    expect(probeCall.prompt).toBe(LOCAL_AGENT_PROBE_PROMPT)
   })
 })

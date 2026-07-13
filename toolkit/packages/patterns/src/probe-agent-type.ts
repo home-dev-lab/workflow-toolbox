@@ -42,6 +42,21 @@ const DEFAULT_PROBE_PROMPT =
   'from your own knowledge). Task: reply with exactly: PROBE_OK'
 const DEFAULT_EXPECTED_TOKEN = 'PROBE_OK'
 
+/** Probe prompt for LOCALLY-REGISTERED agentTypes (`workflow-toolbox:lean`,
+ *  `workflow-toolbox:leaf`, a consumer's own fenced type): there is no
+ *  availability gate or CLI chain to exercise — the only question is "is the
+ *  type registered and does it answer?", so self-answering IS the correct
+ *  procedure and the prompt says so. The bridge DEFAULT above is WRONG for
+ *  these: its external-CLI demand is exactly what a tool-less lean agent must
+ *  honestly refuse (observed live 2026-07-13, run wf_19cdcdcb-4b7 — the
+ *  refusal was classified unavailable and the run silently kept the full
+ *  ambient context lean exists to strip). Pass via `{ probePrompt }` from any
+ *  local-type wrapper (withLeanRouting / withLeafFence do). */
+export const LOCAL_AGENT_PROBE_PROMPT =
+  'Availability probe. This task is fully self-contained: it needs no tools and no ' +
+  'lookup — answering directly from this prompt is the correct procedure. ' +
+  'Task: reply with exactly: PROBE_OK'
+
 /** Cap unavailability reasons to a headline excerpt (never dump a full CLI error). */
 const REASON_HEAD_CHARS = 200
 

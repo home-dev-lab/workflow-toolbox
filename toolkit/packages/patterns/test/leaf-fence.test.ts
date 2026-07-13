@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { FakeRuntime } from '@workflow-toolbox/runtime'
 import { withLeafFence, LEAF_AGENT_TYPE } from '../src/leaf-fence.js'
+import { LOCAL_AGENT_PROBE_PROMPT } from '../src/probe-agent-type.js'
 
 describe('withLeafFence — available (probe answers)', () => {
   it('probes the default LEAF_AGENT_TYPE and reports it resolved', async () => {
@@ -150,5 +151,19 @@ describe('withLeafFence — disabled (messaging: true opt-out)', () => {
     await fenced.agent('do the task')
     const call = rt.calls[rt.calls.length - 1]!
     expect(call.opts?.agentType).toBeUndefined()
+  })
+})
+
+describe('withLeafFence — probe prompt is the LOCAL variant (same class as the lean regression)', () => {
+  // The leaf is a locally-registered agentType — there is no availability gate
+  // or CLI chain to exercise. Under the bridge default prompt the fence passed
+  // only by charitable interpretation ("your external CLI" — the leaf has
+  // none); a strict reader refusing like lean did (live run wf_19cdcdcb-4b7)
+  // would have silently dropped the fence.
+  it('sends the LOCAL self-contained probe prompt, not the bridge default', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
+    await withLeafFence(rt)
+    const probeCall = rt.calls[0]!
+    expect(probeCall.prompt).toBe(LOCAL_AGENT_PROBE_PROMPT)
   })
 })
