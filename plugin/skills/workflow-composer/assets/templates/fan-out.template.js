@@ -44,6 +44,10 @@ if (dropped > 0) log(`${dropped} worker(s) returned null — coverage reduced`);
 phase('Synthesize');
 // The synthesis agent sees ALL results at once (that is the whole point of the
 // barrier). Data crosses the boundary as prompt text — stringify it in.
+// Its prompt is 100% inline (no "read the repo/diff" instruction), so it can shed
+// the ambient tool/skill injection every spawn otherwise pays: add
+// `agentType: 'workflow-toolbox:lean'` to the opts when the workflow-toolbox
+// plugin is installed (it is, if you are composing from its skill).
 const summary = await agent(
   `YOUR_SYNTHESIS_INSTRUCTION over these findings:\n${JSON.stringify(results, null, 2)}`,
   { label: 'synthesize' }

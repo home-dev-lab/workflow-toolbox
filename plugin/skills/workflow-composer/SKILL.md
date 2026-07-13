@@ -322,6 +322,15 @@ counter (`while (found < 10)`) or a budget guard (`while (budget.total && budget
   FAMILY) — never silently applied, never silently skipped.
 - **agentType is ALSO a capability fence** — deny by REMOVING tools in the agent
   definition, never by instruction alone.
+- **Pure-reasoning stages should shed the ambient context.** A stage whose prompt is
+  100% inline (classify / vote / score / dedup / synthesize — no "read the repo/diff" /
+  "run git" instruction anywhere in it) pays the full ambient tool/skill injection on
+  every spawn for capabilities it cannot use. TS compositions: route exactly those call
+  sites through `withLeanRouting` (selective — a separate lean-defaulting runtime, never
+  blanket; `withLeafFence` stays the blanket default and the scaffold wires it in). Raw
+  sandbox scripts (no imports available): pass `agentType: 'workflow-toolbox:lean'` on
+  the call's opts — safe whenever this plugin is installed, which is the case if you are
+  reading this skill.
 
 **Read [references/model-and-agent-routing.md](references/model-and-agent-routing.md)
 BEFORE tuning schemas, models, effort, or any agentType routing** — it carries the
