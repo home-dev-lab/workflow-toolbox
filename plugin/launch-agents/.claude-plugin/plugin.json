@@ -1,0 +1,5 @@
+{
+  "name": "workflow-toolbox",
+  "version": "0.1.0",
+  "description": "Agents-only shim of the workflow-toolbox plugin, loaded by the observe server into delegated (server-launched) SDK sessions so workflow-toolbox:* agentTypes resolve there despite settingSources: []. Byte-identity-mirrored from plugin/agents/ (launch-agents-identity gate). Not for interactive install — the full workflow-toolbox plugin already provides these agents."
+}

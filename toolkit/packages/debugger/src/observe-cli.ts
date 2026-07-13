@@ -46,10 +46,10 @@
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, openSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, openSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { delimiter, dirname, join, resolve as resolvePath } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   classifyHealth,
   decideStart,
@@ -401,6 +401,27 @@ function resolveStartRemotes(): RemoteEntry[] {
   return valid
 }
 
+/** The agents-only shim plugin (plugin/launch-agents/) handed to the server for its
+ *  delegated SDK sessions. Resolved from THIS module's own location so both homes work:
+ *  the built artifact (plugin/bin/wt-observe.mjs → ../launch-agents) and a source run
+ *  (toolkit/packages/debugger/src/ → repo-root plugin/launch-agents). realpath FIRST —
+ *  a symlinked bin must resolve the true plugin dir, not the symlink's neighborhood
+ *  (same class as the bin entry-guard realpath lesson). null when no candidate exists
+ *  (an older layout): the env stays unset and the server behaves exactly as before. */
+function resolveLaunchAgentsDir(): string | null {
+  let selfDir: string
+  try {
+    selfDir = dirname(realpathSync(fileURLToPath(import.meta.url)))
+  } catch {
+    return null
+  }
+  for (const rel of ['../launch-agents', '../../../../plugin/launch-agents']) {
+    const candidate = resolvePath(selfDir, rel)
+    if (existsSync(join(candidate, '.claude-plugin', 'plugin.json'))) return candidate
+  }
+  return null
+}
+
 async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly string[], remotes: readonly RemoteEntry[], flags: StartFlags): Promise<{ health: Health; token: string }> {
   const base = findObserveRoot(process.cwd(), process.env)
   if (base === null) {
@@ -415,6 +436,7 @@ async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly
   // Per-server API token (I8): generated here, handed to the server via env, kept
   // in the 0600 pidfile. The browser receives it through the served page only.
   const token = randomBytes(24).toString('hex')
+  const launchAgentsDir = resolveLaunchAgentsDir()
   // --watch: the server owns a vite build watcher child (dev-api.ts reaps it on every
   // exit path), so UI edits rebuild live — the dev loop the bare start deliberately skips.
   // --enable-launch: boot-time live-launch opt-in (dev-api.ts reads the env) — the
@@ -452,6 +474,15 @@ async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly
       // byte-identical to before.
       ...(remotes.length > 0 ? { OBSERVE_REMOTES: JSON.stringify(remotes) } : {}),
       ...(flags.enableLaunch ? { OBSERVE_UI_ENABLE_LAUNCH: '1' } : {}),
+      // The agents-only shim plugin the server loads into every DELEGATED SDK
+      // session (SDK `plugins` option), so `workflow-toolbox:lean`/`leaf` resolve
+      // there despite the sessions' deliberate `settingSources: []` (without it
+      // the fences always probe "not found" and degrade — found live 2026-07-13).
+      // An explicit user-set value wins; absent shim (older checkout) = unset,
+      // the server then launches exactly as before.
+      ...(process.env['OBSERVE_LAUNCH_PLUGIN_DIRS'] === undefined && launchAgentsDir !== null
+        ? { OBSERVE_LAUNCH_PLUGIN_DIRS: launchAgentsDir }
+        : {}),
     },
     detached: true,
     windowsHide: true, // win32: detached must not flash a console window

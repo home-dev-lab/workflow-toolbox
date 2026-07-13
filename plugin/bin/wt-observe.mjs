@@ -4,10 +4,10 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { randomBytes } from "node:crypto";
-import { existsSync as existsSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync3, readdirSync as readdirSync3, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, openSync } from "node:fs";
+import { existsSync as existsSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync3, readdirSync as readdirSync3, realpathSync as realpathSync2, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, openSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { delimiter, dirname, join as join5 } from "node:path";
-import { pathToFileURL } from "node:url";
+import { delimiter, dirname, join as join5, resolve as resolvePath } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // packages/debugger/src/observe-lifecycle.ts
 import { join } from "node:path";
@@ -573,6 +573,19 @@ function resolveStartRemotes() {
   }
   return valid;
 }
+function resolveLaunchAgentsDir() {
+  let selfDir;
+  try {
+    selfDir = dirname(realpathSync2(fileURLToPath(import.meta.url)));
+  } catch {
+    return null;
+  }
+  for (const rel of ["../launch-agents", "../../../../plugin/launch-agents"]) {
+    const candidate = resolvePath(selfDir, rel);
+    if (existsSync2(join5(candidate, ".claude-plugin", "plugin.json"))) return candidate;
+  }
+  return null;
+}
 async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
   const base = findObserveRoot(process.cwd(), process.env);
   if (base === null) {
@@ -583,6 +596,7 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
   const logPath = observeServerLogPath(stateRoot);
   const log = openLogFileAt(logPath);
   const token = randomBytes(24).toString("hex");
+  const launchAgentsDir = resolveLaunchAgentsDir();
   const tsxCli = (() => {
     try {
       return createRequire(join5(base, "package.json")).resolve("tsx/cli");
@@ -609,7 +623,14 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
       // colons everywhere. Only set when configured, so a remote-less start's env is
       // byte-identical to before.
       ...remotes.length > 0 ? { OBSERVE_REMOTES: JSON.stringify(remotes) } : {},
-      ...flags.enableLaunch ? { OBSERVE_UI_ENABLE_LAUNCH: "1" } : {}
+      ...flags.enableLaunch ? { OBSERVE_UI_ENABLE_LAUNCH: "1" } : {},
+      // The agents-only shim plugin the server loads into every DELEGATED SDK
+      // session (SDK `plugins` option), so `workflow-toolbox:lean`/`leaf` resolve
+      // there despite the sessions' deliberate `settingSources: []` (without it
+      // the fences always probe "not found" and degrade — found live 2026-07-13).
+      // An explicit user-set value wins; absent shim (older checkout) = unset,
+      // the server then launches exactly as before.
+      ...process.env["OBSERVE_LAUNCH_PLUGIN_DIRS"] === void 0 && launchAgentsDir !== null ? { OBSERVE_LAUNCH_PLUGIN_DIRS: launchAgentsDir } : {}
     },
     detached: true,
     windowsHide: true,
@@ -1179,8 +1200,8 @@ var argv1 = process.argv[1];
 if (argv1 !== void 0) {
   let same = false;
   try {
-    const { realpathSync: realpathSync2 } = await import("node:fs");
-    same = import.meta.url === pathToFileURL(realpathSync2(argv1)).href;
+    const { realpathSync: realpathSync3 } = await import("node:fs");
+    same = import.meta.url === pathToFileURL(realpathSync3(argv1)).href;
   } catch {
     same = import.meta.url === pathToFileURL(argv1).href;
   }
