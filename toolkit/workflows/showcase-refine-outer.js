@@ -277,9 +277,156 @@ ${prompt}` : prompt;
   function emitDigest(rt, d) {
     rt.log(formatDigest(d));
   }
+  function applyCap(items, cap) {
+    if (cap === void 0) {
+      return { kept: items, truncated: 0 };
+    }
+    if (cap < 1) {
+      throw new Error(
+        `applyCap: cap must be >= 1, got ${cap} \u2014 set maxItems to a positive integer or omit it`
+      );
+    }
+    if (cap >= items.length) {
+      return { kept: items, truncated: 0 };
+    }
+    return {
+      kept: items.slice(0, cap),
+      truncated: items.length - cap
+    };
+  }
+  function assertAgentTypeOption(stage, name, value) {
+    if (value !== void 0 && value.trim().length === 0) {
+      throw new Error(
+        `${stage}: ${name} must be a non-empty subagent-type string (e.g. 'codex:codex-rescue') \u2014 omit it for the standard subagent`
+      );
+    }
+  }
+
+  // ../packages/patterns/src/cache-warm.ts
+  async function parallelWithCacheWarm(rt, thunks, enabled) {
+    if (!enabled || thunks.length <= 1) {
+      return rt.parallel(thunks);
+    }
+    const [first, ...rest] = thunks;
+    const firstResult = await Promise.resolve().then(() => first()).then((v) => v).catch(() => null);
+    const restResults = await rt.parallel(rest);
+    return [firstResult, ...restResults];
+  }
+
+  // ../packages/patterns/src/fan-out-and-synthesize.ts
+  var STAGE = "fanOutAndSynthesize";
+  async function fanOutAndSynthesize(rt, options) {
+    const {
+      tasks,
+      taskPrompt,
+      taskSchema,
+      taskModel,
+      taskEffort,
+      taskType,
+      synthesisPrompt,
+      synthesisSchema,
+      synthesisModel,
+      synthesisEffort,
+      synthesisType,
+      phase,
+      maxItems,
+      cacheWarm
+    } = options;
+    if (tasks.length === 0) {
+      throw new Error(
+        "fanOutAndSynthesize: tasks must not be empty \u2014 nothing to fan out"
+      );
+    }
+    assertAgentTypeOption(STAGE, "taskType", taskType);
+    assertAgentTypeOption(STAGE, "synthesisType", synthesisType);
+    const { kept, truncated } = applyCap(tasks, maxItems);
+    let agentsSpawned = 0;
+    const warnings = [];
+    const trail = [];
+    if (truncated > 0) {
+      warn(
+        rt,
+        warnings,
+        `fanOutAndSynthesize: ${truncated} of ${tasks.length} tasks truncated by maxItems=${maxItems ?? "?"}`
+      );
+    }
+    const keptArray = kept;
+    const taskThunks = keptArray.map((task, i) => async () => {
+      const taskOpts = {
+        label: `${STAGE}:task:${i}`,
+        ...phase !== void 0 ? { phase } : {},
+        ...taskSchema !== void 0 ? { schema: taskSchema } : {},
+        ...taskModel !== void 0 ? { model: taskModel } : {},
+        ...taskEffort !== void 0 ? { effort: taskEffort } : {},
+        ...taskType !== void 0 ? { agentType: taskType } : {}
+      };
+      agentsSpawned++;
+      return rt.agent(taskPrompt(task, i), taskOpts);
+    });
+    const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? true);
+    const parts = [];
+    let dropped = 0;
+    for (let i = 0; i < taskResults.length; i++) {
+      const r = taskResults[i];
+      trail.push(makeRecord(`${STAGE}:task:${i}`, r !== null, {
+        ...taskModel !== void 0 ? { model: taskModel } : {},
+        ...taskEffort !== void 0 ? { effort: taskEffort } : {}
+      }));
+      if (r !== null) {
+        parts.push(r);
+      } else {
+        dropped++;
+      }
+    }
+    if (dropped > 0) {
+      warn(
+        rt,
+        warnings,
+        `fanOutAndSynthesize: ${dropped} of ${keptArray.length} fan-out agents returned null`
+      );
+    }
+    let value = null;
+    if (parts.length === 0) {
+      warn(rt, warnings, "fanOutAndSynthesize: fan-out produced no parts; synthesis skipped");
+    } else {
+      const synthOpts = {
+        label: `${STAGE}:synthesize`,
+        ...phase !== void 0 ? { phase } : {},
+        ...synthesisSchema !== void 0 ? { schema: synthesisSchema } : {},
+        ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
+        ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {},
+        ...synthesisType !== void 0 ? { agentType: synthesisType } : {}
+      };
+      agentsSpawned++;
+      const synthesis = await rt.agent(synthesisPrompt(parts), synthOpts);
+      trail.push(makeRecord(`${STAGE}:synthesize`, synthesis !== null, {
+        ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
+        ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
+      }));
+      if (synthesis === null) {
+        warn(rt, warnings, "fanOutAndSynthesize: synthesis agent returned null");
+      } else {
+        value = synthesis;
+      }
+    }
+    const stats = {
+      itemsIn: tasks.length,
+      itemsOut: parts.length,
+      agentsSpawned,
+      dropped,
+      truncated
+    };
+    emitDigest(rt, {
+      stage: STAGE,
+      ...phase !== void 0 ? { phase } : {},
+      output: value === null ? "synthesis: none" : `synthesis from ${parts.length}/${tasks.length} tasks`,
+      counts: { tasks: tasks.length, completed: parts.length }
+    });
+    return { value, stats, warnings, trail };
+  }
 
   // ../packages/patterns/src/loop-until-done.ts
-  var STAGE = LOOP_STAGE;
+  var STAGE2 = LOOP_STAGE;
   async function loopUntilDone(rt, options) {
     const { initial, body, maxIterations, dryRounds, budgetFloor } = options;
     if (maxIterations !== void 0 && maxIterations < 1) {
@@ -312,7 +459,7 @@ ${prompt}` : prompt;
     const countingRt = {
       agent: (prompt, opts) => {
         agentsSpawned++;
-        const label = opts?.label != null ? `${opts.label}${LOOP_ITER_MARKER}${currentIteration}` : `${STAGE}:iter:${currentIteration}`;
+        const label = opts?.label != null ? `${opts.label}${LOOP_ITER_MARKER}${currentIteration}` : `${STAGE2}:iter:${currentIteration}`;
         return rt.agent(prompt, { ...opts, label });
       },
       parallel: (thunks) => rt.parallel(thunks),
@@ -358,7 +505,7 @@ ${prompt}` : prompt;
         const tickIndex = iterationsDone;
         state = tick.state;
         iterationsDone++;
-        trail.push(makeRecord(`${STAGE}:tick:${tickIndex}`, tick.state !== null));
+        trail.push(makeRecord(`${STAGE2}:tick:${tickIndex}`, tick.state !== null));
         if (tick.done === true) {
           trail[trail.length - 1].decision = "done";
           return "done";
@@ -382,7 +529,7 @@ ${prompt}` : prompt;
       }
     };
     const stoppedBy = await runLoop();
-    emitDigest(rt, { stage: STAGE, output: stoppedBy, counts: { iterations: iterationsDone } });
+    emitDigest(rt, { stage: STAGE2, output: stoppedBy, counts: { iterations: iterationsDone } });
     return buildResult(state, iterationsDone, stoppedBy, warnings, trail, agentsSpawned);
   }
   function buildResult(state, iterations, stoppedBy, warnings, trail, agentsSpawned) {
@@ -415,14 +562,19 @@ ${prompt}` : prompt;
       initial: { rounds: 0 },
       maxIterations: 2,
       body: async (rtBody, state, iteration) => {
-        await rtBody.agent(`Render demo (outer polish), round ${iteration}. DRAFT: refine the overall mascot brief into one crisp line.${GUARD}`, {
-          label: `refine-outer:draft:${iteration}`,
+        const draft = await fanOutAndSynthesize(rtBody, {
+          tasks: ["tone", "imagery", "rhythm"],
+          taskPrompt: (angle, i) => `Render demo (outer polish, round ${iteration}), writer ${i}. Draft one tagline line focused on the mascot's ${angle}.${GUARD}`,
+          synthesisPrompt: (parts) => `Render demo (outer polish, round ${iteration}). Merge these ${parts.length} draft lines into ONE crisp tagline.${GUARD}`,
           phase: "Draft"
         });
-        await rtBody.agent(`Render demo (outer polish), round ${iteration}. CRITIQUE: name the draft's single weakest word and a better one.${GUARD}`, {
-          label: `refine-outer:critique:${iteration}`,
-          phase: "Critique"
-        });
+        await rtBody.agent(
+          `Render demo (outer polish), round ${iteration}. CRITIQUE this tagline: name its single weakest word and a better one. Tagline: "${String(draft.value ?? "").slice(0, 120)}"${GUARD}`,
+          {
+            label: `refine-outer:critique:${iteration}`,
+            phase: "Critique"
+          }
+        );
         return { state: { rounds: state.rounds + 1 }, done: iteration >= 1 };
       }
     });

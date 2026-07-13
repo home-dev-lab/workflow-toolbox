@@ -5,7 +5,7 @@
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
 import { withAgentDefaults } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, AgentDefaults, ModelAlias } from '@workflow-toolbox/runtime'
-import { loopUntilDone, collectTrail, makeRecord } from '@workflow-toolbox/patterns'
+import { fanOutAndSynthesize, loopUntilDone, collectTrail, makeRecord } from '@workflow-toolbox/patterns'
 import type { TrailRecord } from '@workflow-toolbox/patterns'
 
 const GUARD =
@@ -31,23 +31,30 @@ async function run(rt0: WorkflowRuntime, input: StageInput): Promise<StageOutput
   const model: ModelAlias = input.perAgent?.model ?? 'haiku'
   const rt = withAgentDefaults(rt0, { effort: 'low', ...(input.perAgent ?? {}), model })
 
-  // The outer polish loop is deliberately CROSS-PHASE: each iteration runs a Draft
-  // agent and a Critique agent in two DIFFERENT declared phases, so the renderer
-  // draws the loop's back-edge ACROSS phase frames (the inter-phase loop rendering —
-  // the intra-phase variant is already showcased by deep's Refine-Inner).
+  // The outer polish loop is deliberately CROSS-PHASE: each iteration runs a REAL
+  // multi-agent Draft (a fan-out of 3 writers + a synthesizer) and then a single
+  // Critique agent, in two DIFFERENT declared phases, so the renderer draws the
+  // loop's back-edge ACROSS phase frames — and each frame looks like a plausible
+  // production flow, not a one-agent placeholder (user feedback 2026-07-13; the
+  // intra-phase loop variant is already showcased by deep's Refine-Inner).
   rt.phase('Draft')
   const outer = await loopUntilDone<{ rounds: number }>(rt, {
     initial: { rounds: 0 },
     maxIterations: 2,
     body: async (rtBody, state, iteration) => {
-      await rtBody.agent(`Render demo (outer polish), round ${iteration}. DRAFT: refine the overall mascot brief into one crisp line.${GUARD}`, {
-        label: `refine-outer:draft:${iteration}`,
+      const draft = await fanOutAndSynthesize(rtBody, {
+        tasks: ['tone', 'imagery', 'rhythm'],
+        taskPrompt: (angle, i) => `Render demo (outer polish, round ${iteration}), writer ${i}. Draft one tagline line focused on the mascot's ${angle}.${GUARD}`,
+        synthesisPrompt: (parts) => `Render demo (outer polish, round ${iteration}). Merge these ${parts.length} draft lines into ONE crisp tagline.${GUARD}`,
         phase: 'Draft',
       })
-      await rtBody.agent(`Render demo (outer polish), round ${iteration}. CRITIQUE: name the draft's single weakest word and a better one.${GUARD}`, {
-        label: `refine-outer:critique:${iteration}`,
-        phase: 'Critique',
-      })
+      await rtBody.agent(
+        `Render demo (outer polish), round ${iteration}. CRITIQUE this tagline: name its single weakest word and a better one. Tagline: "${String(draft.value ?? '').slice(0, 120)}"${GUARD}`,
+        {
+          label: `refine-outer:critique:${iteration}`,
+          phase: 'Critique',
+        },
+      )
       return { state: { rounds: state.rounds + 1 }, done: iteration >= 1 }
     },
   })
