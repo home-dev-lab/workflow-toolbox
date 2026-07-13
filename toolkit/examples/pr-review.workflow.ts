@@ -190,11 +190,14 @@ const CHANGE_SUMMARY_SCHEMA = {
 } as const satisfies JsonSchema
 
 // Shared contract line for every act prompt below. The mechanical fields come
-// FIRST — changedFiles, then riskAreas, then the free-text summary LAST: the
-// observed failure was generation-order — a long summary emitted first starved
-// the required sibling fields. Short/required-first is the same convention the
-// other compositions already follow ("score" then "reason", "verdict" then
-// "summary").
+// FIRST — changedFiles, then addedPublicSurface, then riskAreas, then the
+// free-text summary LAST: the observed failure was generation-order — a long
+// summary emitted first starved the required sibling fields. Short/required-
+// first is the same convention the other compositions already follow ("score"
+// then "reason", "verdict" then "summary"). The literal JSON templates in the
+// act prompts MUST show every required field (review finding, run
+// wf_4115390a-8a0: a template still showing the old 3-field shape invites
+// exactly the capitulation the schema bounds exist to catch).
 const CHANGE_SUMMARY_RULES =
   'All four fields are REQUIRED. Emit "changedFiles" FIRST (the repo-relative paths from ' +
   '`git diff --name-only <range>`, up to 200), then "addedPublicSurface" — ONLY the NEW public ' +
@@ -619,7 +622,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         prompt: (target) =>
           `You are reviewing a FEATURE change. Inspect the actual change (${target}) and produce a focused summary.\n` +
           `${READ_ONLY_GIT}\n` +
-          `Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what the feature does>" }. ${CHANGE_SUMMARY_RULES}`,
+          `Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what the feature does>" }. ${CHANGE_SUMMARY_RULES}`,
         effort: routeActEffort,
       },
       bugfix: {
@@ -627,7 +630,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         prompt: (target) =>
           `You are reviewing a BUGFIX change. Inspect the actual change (${target}) — re-derive from first principles.\n` +
           `${READ_ONLY_GIT}\n` +
-          `Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was broken and how it is fixed>" }. ${CHANGE_SUMMARY_RULES}`,
+          `Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was broken and how it is fixed>" }. ${CHANGE_SUMMARY_RULES}`,
         effort: routeActEffort,
       },
       refactor: {
@@ -635,7 +638,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         prompt: (target) =>
           `You are reviewing a REFACTOR change. Inspect the actual change (${target}).\n` +
           `${READ_ONLY_GIT}\n` +
-          `Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was refactored and why>" }. ${CHANGE_SUMMARY_RULES}`,
+          `Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was refactored and why>" }. ${CHANGE_SUMMARY_RULES}`,
         effort: routeActEffort,
       },
       config: {
@@ -643,7 +646,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         prompt: (target) =>
           `You are reviewing a CONFIG change. Inspect the actual change (${target}).\n` +
           `${READ_ONLY_GIT}\n` +
-          `Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what config changed and its effect>" }. ${CHANGE_SUMMARY_RULES}`,
+          `Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what config changed and its effect>" }. ${CHANGE_SUMMARY_RULES}`,
         effort: routeActEffort,
       },
       docs: {
@@ -651,7 +654,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         prompt: (target) =>
           `You are reviewing a DOCS change. Inspect the actual change (${target}).\n` +
           `${READ_ONLY_GIT}\n` +
-          `Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what documentation was updated>" }. ${CHANGE_SUMMARY_RULES}`,
+          `Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what documentation was updated>" }. ${CHANGE_SUMMARY_RULES}`,
         effort: routeActEffort,
       },
     },
@@ -758,6 +761,14 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     rt.log(
       `docs-coverage lens armed: ${coverageSurfaces.length} added public surface(s), no doc file touched`,
     )
+  } else if (changeSummary.addedPublicSurface.length > 0) {
+    // Loud suppression (review finding, run wf_4115390a-8a0): without this
+    // line, "surface added but the author touched docs" is indistinguishable
+    // in the logs from "nothing new was exposed".
+    rt.log(
+      `docs-coverage lens silent: ${changeSummary.addedPublicSurface.length} added public surface(s) ` +
+      `but doc files are part of this change — the docs-alignment lens and the mechanical gates cover that path`,
+    )
   }
 
   const baseLenses = REVIEWER_LENSES[category] ?? DEFAULT_LENSES
@@ -766,6 +777,67 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     ...(provenanceDocs.length > 0 ? ['docs-alignment'] : []),
     ...(coverageSurfaces.length > 0 ? ['docs-coverage'] : []),
   ]
+
+  // Per-lens reviewer instructions (review finding, run wf_4115390a-8a0: the
+  // former three-way nested ternary duplicated structure per branch — extracted
+  // to one early-return builder per lens family).
+  // - docs-alignment reviews the mapped DOC SURFACES against the change (its
+  //   findings are stale claims in prose);
+  // - docs-coverage is its INVERSE: it judges the NEW surface the change adds
+  //   without touching any doc;
+  // - every other lens reviews the code itself.
+  const lensInstructionsFor = (lens: string): string => {
+    if (lens === 'docs-coverage') {
+      // Added-surface strings are agent-derived from the UNTRUSTED diff and
+      // get interpolated into the prompt list — strip backticks and control
+      // characters so a hostile diff cannot escape the list formatting (same
+      // injection class as the launch-time provenance paths). Semantic
+      // injection (a misleading surface DESCRIPTION) is out of scope here by
+      // design: the data is agent-reported like every other Route field, and
+      // the refute-first Verify fan re-derives findings from the real diff.
+      const sanitizedSurface = (s: string): string =>
+        s.replace(/[`\u0000-\u001f\u007f]/g, ' ').slice(0, 200)
+      return (
+        `The routing stage reports this change ADDS the following public surface, while touching ` +
+        `NO documentation file:\n` +
+        coverageSurfaces.map((s) => `- ${sanitizedSurface(s)}`).join('\n') +
+        `\n\nMapped doc homes for the changed modules (docs-provenance manifest):\n` +
+        (provenanceDocs.length > 0
+          ? provenanceDocs.map((d) => `- \`${d}\``).join('\n')
+          : `- (none mapped — name the natural home)`) +
+        `\n\nRead the ACTUAL change first (${READ_ONLY_GIT}). For EACH added surface, judge: is it ` +
+        `USER-FACING (an author, operator, or consumer must know it to use the product) or internal ` +
+        `plumbing?\n` +
+        `- User-facing and undocumented = one finding: set \`file\` to the SOURCE path that grew the ` +
+        `surface, and in \`detail\` name the doc surface where it should be described (a mapped home ` +
+        `above when the module is mapped; otherwise the natural home, plus suggest adding the ` +
+        `docs-provenance pair). Severity by consumer impact: a surface a consumer cannot discover ` +
+        `without reading source = high; a niche or advanced knob = medium; marginal = low.\n` +
+        `- Internal-only additions are NOT findings — at most note them as candidates for the repo's ` +
+        `reasoned exemption allowlists.\n` +
+        `Do NOT re-review the code quality itself (other lenses do), and do NOT report surfaces this ` +
+        `change does not add.`
+      )
+    }
+    if (lens === 'docs-alignment') {
+      return (
+        `These committed doc surfaces (repo-relative) document the modules this change touches:\n` +
+        provenanceDocs.map((d) => `- \`${d}\``).join('\n') +
+        `\n\nRead the ACTUAL change first (${READ_ONLY_GIT}), then read EACH mapped surface and check ` +
+        `every claim it makes about the changed behavior is still true after this change — names, ` +
+        `defaults, option lists, counts, quoted values, described semantics, worked examples.\n` +
+        `A finding = one claim that is now false or misleading; set \`file\` to the DOC path and quote ` +
+        `the stale sentence in \`detail\` with what it should say instead. Severity by consumer impact: ` +
+        `an author following the doc builds the wrong thing = high; imprecise but harmless = low.\n` +
+        `Do NOT review the code itself (other lenses do), and do NOT report doc prose the change does not affect.`
+      )
+    }
+    return (
+      `Read the ACTUAL change (you have repo access). Do NOT trust the summary above — re-derive findings from first principles.\n` +
+      `${READ_ONLY_GIT}\n` +
+      `Focus ONLY on the "${lens}" lens.`
+    )
+  }
 
   // reviewStage: for a given lens, spawn one reviewer agent with focused scope.
   // The stage receives the lens as originalItem (items = lenses).
@@ -777,51 +849,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
 
     reviewersSpawned++
 
-    // Added-surface strings are agent-derived from the UNTRUSTED diff and get
-    // interpolated into the docs-coverage prompt below — strip backticks and
-    // control characters so a hostile diff cannot escape the list formatting
-    // (same injection class as the launch-time provenance paths).
-    const sanitizedSurface = (s: string): string =>
-      s.replace(/[`\u0000-\u001f\u007f]/g, ' ').slice(0, 200)
-
-    // The docs-alignment lens reviews the mapped DOC SURFACES against the
-    // change, not the change's code: its findings are stale claims in prose.
-    // The docs-coverage lens is its INVERSE: it judges the NEW surface the
-    // change adds without touching any doc.
-    const lensInstructions =
-      lens === 'docs-coverage'
-        ? `The routing stage reports this change ADDS the following public surface, while touching ` +
-          `NO documentation file:\n` +
-          coverageSurfaces.map((s) => `- ${sanitizedSurface(s)}`).join('\n') +
-          `\n\nMapped doc homes for the changed modules (docs-provenance manifest):\n` +
-          (provenanceDocs.length > 0
-            ? provenanceDocs.map((d) => `- \`${d}\``).join('\n')
-            : `- (none mapped — name the natural home)`) +
-          `\n\nRead the ACTUAL change first (${READ_ONLY_GIT}). For EACH added surface, judge: is it ` +
-          `USER-FACING (an author, operator, or consumer must know it to use the product) or internal ` +
-          `plumbing?\n` +
-          `- User-facing and undocumented = one finding: set \`file\` to the SOURCE path that grew the ` +
-          `surface, and in \`detail\` name the doc surface where it should be described (a mapped home ` +
-          `above when the module is mapped; otherwise the natural home, plus suggest adding the ` +
-          `docs-provenance pair). Severity by consumer impact: a surface a consumer cannot discover ` +
-          `without reading source = high; a niche or advanced knob = medium; marginal = low.\n` +
-          `- Internal-only additions are NOT findings — at most note them as candidates for the repo's ` +
-          `reasoned exemption allowlists.\n` +
-          `Do NOT re-review the code quality itself (other lenses do), and do NOT report surfaces this ` +
-          `change does not add.`
-        : lens === 'docs-alignment'
-        ? `These committed doc surfaces (repo-relative) document the modules this change touches:\n` +
-          provenanceDocs.map((d) => `- \`${d}\``).join('\n') +
-          `\n\nRead the ACTUAL change first (${READ_ONLY_GIT}), then read EACH mapped surface and check ` +
-          `every claim it makes about the changed behavior is still true after this change — names, ` +
-          `defaults, option lists, counts, quoted values, described semantics, worked examples.\n` +
-          `A finding = one claim that is now false or misleading; set \`file\` to the DOC path and quote ` +
-          `the stale sentence in \`detail\` with what it should say instead. Severity by consumer impact: ` +
-          `an author following the doc builds the wrong thing = high; imprecise but harmless = low.\n` +
-          `Do NOT review the code itself (other lenses do), and do NOT report doc prose the change does not affect.`
-        : `Read the ACTUAL change (you have repo access). Do NOT trust the summary above — re-derive findings from first principles.\n` +
-          `${READ_ONLY_GIT}\n` +
-          `Focus ONLY on the "${lens}" lens.`
+    const lensInstructions = lensInstructionsFor(lens)
 
     // Defence (1): schema enforces the findings shape at this consumed boundary.
     // Prompt is STRUCTURED MARKDOWN (## sections, bullets), not one \n-joined wall:
