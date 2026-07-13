@@ -702,8 +702,10 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   if (changeSummary.changedFiles.length === 0 && looksLikeGitRange) {
     const w =
       `route: empty changedFiles from the ${category} act stage on a range-shaped target — ` +
-      'likely schema capitulation; the docs-alignment and docs-coverage lenses are DISARMED ' +
-      'for this run (stale prose anchors remain covered by the mechanical docs-contract gate)'
+      'likely schema capitulation; the docs-alignment lens is DISARMED for this run ' +
+      '(docs-coverage arms off addedPublicSurface, a separate field — though a capitulating ' +
+      'agent has likely emptied both; stale prose anchors remain covered by the mechanical ' +
+      'docs-contract gate)'
     warnings.push(w)
     rt.log(`⚠ ${w}`)
   }
@@ -796,7 +798,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       // design: the data is agent-reported like every other Route field, and
       // the refute-first Verify fan re-derives findings from the real diff.
       const sanitizedSurface = (s: string): string =>
-        s.replace(/[`\u0000-\u001f\u007f]/g, ' ').slice(0, 200)
+        s.replace(/[`\u0000-\u001f\u007f\u2028\u2029]/g, ' ').slice(0, 200)
       return (
         `The routing stage reports this change ADDS the following public surface, while touching ` +
         `NO documentation file:\n` +

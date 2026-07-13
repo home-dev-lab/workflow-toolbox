@@ -1308,7 +1308,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     }
     const looksLikeGitRange = /[0-9a-f]{6,40}|\bHEAD\b|\.\./.test(input.target);
     if (changeSummary.changedFiles.length === 0 && looksLikeGitRange) {
-      const w = `route: empty changedFiles from the ${category} act stage on a range-shaped target \u2014 likely schema capitulation; the docs-alignment and docs-coverage lenses are DISARMED for this run (stale prose anchors remain covered by the mechanical docs-contract gate)`;
+      const w = `route: empty changedFiles from the ${category} act stage on a range-shaped target \u2014 likely schema capitulation; the docs-alignment lens is DISARMED for this run (docs-coverage arms off addedPublicSurface, a separate field \u2014 though a capitulating agent has likely emptied both; stale prose anchors remain covered by the mechanical docs-contract gate)`;
       warnings.push(w);
       rt.log(`\u26A0 ${w}`);
     }
@@ -1343,7 +1343,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     ];
     const lensInstructionsFor = (lens) => {
       if (lens === "docs-coverage") {
-        const sanitizedSurface = (s) => s.replace(/[`\u0000-\u001f\u007f]/g, " ").slice(0, 200);
+        const sanitizedSurface = (s) => s.replace(/[`\u0000-\u001f\u007f\u2028\u2029]/g, " ").slice(0, 200);
         return `The routing stage reports this change ADDS the following public surface, while touching NO documentation file:
 ` + coverageSurfaces.map((s) => `- ${sanitizedSurface(s)}`).join("\n") + `
 

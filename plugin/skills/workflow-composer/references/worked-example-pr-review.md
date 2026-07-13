@@ -32,7 +32,8 @@ them. Each reviewer carries a `schema` (defence a) and is told to **re-derive fr
 actual diff, not the summary** (defence b); one reviewer per lens keeps scopes small
 (defence c). A reviewer that dies returns `null` → the lens is skipped and counted:
 
-The lens list is category-driven, plus one conditionally-triggered extra: the Route
+The lens list is category-driven, plus up to two conditionally-triggered extras
+(docs-alignment and its inverse docs-coverage, below) — the first: the Route
 stage returns the change's `changedFiles` (agent-reported from the real diff — the
 script itself has no fs/git to cross-check it), and when any of them matches the
 committed doc↔source provenance map (`docs-provenance.ts`, bundled at build time;

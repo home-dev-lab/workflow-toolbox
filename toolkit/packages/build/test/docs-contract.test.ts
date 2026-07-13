@@ -499,13 +499,24 @@ describe('docs-contract — public exports are documented', () => {
         for (const v of nested.values) values.add(v)
         for (const t of nested.types) types.add(t)
       }
+    } else if (/export\s*\*\s*from/.test(src)) {
+      // A star-barrel pointing at another star-barrel would silently drop the
+      // second level's exports from the contract — fail loud instead (extend
+      // the collector when a real two-level barrel appears).
+      throw new Error(`${file}: nested \`export * from\` beyond one level — extend collectExports`)
     }
     return { values, types }
   }
 
+  // Union across packages — the allowlist-hygiene checks below need it.
+  const allValues = new Set<string>()
+  const allTypes = new Set<string>()
+
   for (const pkg of PACKAGES) {
     const barrel = join(REPO_ROOT, 'toolkit/packages', pkg, 'src/index.ts')
     const { values, types } = collectExports(barrel)
+    for (const v of values) allValues.add(v)
+    for (const t of types) allTypes.add(t)
 
     it(`every @workflow-toolbox/${pkg} value export appears in a doc surface`, () => {
       expect(values.size, `${pkg}/src/index.ts yielded no value exports — collector anchor moved?`).toBeGreaterThan(0)
@@ -534,6 +545,19 @@ describe('docs-contract — public exports are documented', () => {
       expect(missing, `undocumented ${pkg} type exports: ${missing.join(', ')}`).toEqual([])
     })
   }
+
+  // Allowlist hygiene (review finding, run wf_c58c5b18-d8b): an exemption whose
+  // export was since renamed/removed is a dead entry that silently misstates
+  // the contract — each key must still name a real export.
+  it('every DELIBERATELY_UNDOCUMENTED entry still names a real value export', () => {
+    const dead = [...DELIBERATELY_UNDOCUMENTED.keys()].filter((k) => !allValues.has(k))
+    expect(dead, `stale value exemptions (export gone?): ${dead.join(', ')}`).toEqual([])
+  })
+
+  it('every TYPES_DELIBERATELY_UNDOCUMENTED entry still names a real type export', () => {
+    const dead = [...TYPES_DELIBERATELY_UNDOCUMENTED.keys()].filter((k) => !allTypes.has(k))
+    expect(dead, `stale type exemptions (type gone?): ${dead.join(', ')}`).toEqual([])
+  })
 })
 
 describe('docs-contract — operator env vars are documented', () => {
@@ -556,24 +580,25 @@ describe('docs-contract — operator env vars are documented', () => {
   // the same package sources (counting them would double-report).
   const ENV_SOURCE_ROOTS = ['toolkit/packages', 'toolkit/bin', 'plugin/hooks']
 
-  it('every env var the shipped sources read is documented or exempted', () => {
-    const reads = new Map<string, string>()
-    for (const root of ENV_SOURCE_ROOTS) {
-      const abs = join(REPO_ROOT, root)
-      if (!existsSync(abs)) continue
-      for (const f of walk(abs)) {
-        if (!/\.(ts|mjs|cjs)$/.test(f) || /\.test\.ts$/.test(f) || /[/\\]test[/\\]/.test(f)) continue
-        const text = readFileSync(f, 'utf8')
-        // Direct reads plus SCREAMING_SNAKE reads through a passed-around env
-        // object (the debugger's xdgOverride(env, …) style).
-        for (const m of text.matchAll(
-          /process\.env(?:\.([A-Za-z_]\w*)|\[['"]([A-Za-z_]\w*)['"]\])|\benv\[['"]([A-Z][A-Z0-9_]+)['"]\]/g,
-        )) {
-          const name = m[1] ?? m[2] ?? m[3] ?? ''
-          if (name !== '' && !reads.has(name)) reads.set(name, f.slice(REPO_ROOT.length))
-        }
+  const reads = new Map<string, string>()
+  for (const root of ENV_SOURCE_ROOTS) {
+    const abs = join(REPO_ROOT, root)
+    if (!existsSync(abs)) continue
+    for (const f of walk(abs)) {
+      if (!/\.(ts|mjs|cjs)$/.test(f) || /\.test\.ts$/.test(f) || /[/\\]test[/\\]/.test(f)) continue
+      const text = readFileSync(f, 'utf8')
+      // Direct reads plus SCREAMING_SNAKE reads through a passed-around env
+      // object (the debugger's xdgOverride(env, …) style).
+      for (const m of text.matchAll(
+        /process\.env(?:\.([A-Za-z_]\w*)|\[['"]([A-Za-z_]\w*)['"]\])|\benv\[['"]([A-Z][A-Z0-9_]+)['"]\]/g,
+      )) {
+        const name = m[1] ?? m[2] ?? m[3] ?? ''
+        if (name !== '' && !reads.has(name)) reads.set(name, f.slice(REPO_ROOT.length))
       }
     }
+  }
+
+  it('every env var the shipped sources read is documented or exempted', () => {
     expect(reads.size, 'no env reads found — enumeration anchor moved?').toBeGreaterThan(0)
     const missing = [...reads.entries()].filter(
       ([n]) =>
@@ -584,6 +609,11 @@ describe('docs-contract — operator env vars are documented', () => {
       missing.map(([n, f]) => `${n} (read in ${f})`),
       '\nundocumented operator env vars — document or exempt with a reason\n',
     ).toEqual([])
+  })
+
+  it('every ENV_DELIBERATELY_UNDOCUMENTED entry still names a real env read', () => {
+    const dead = [...ENV_DELIBERATELY_UNDOCUMENTED.keys()].filter((k) => !reads.has(k))
+    expect(dead, `stale env exemptions (read gone?): ${dead.join(', ')}`).toEqual([])
   })
 })
 
@@ -621,6 +651,30 @@ describe('docs-contract — wt-observe CLI verbs are documented', () => {
     expect(actions.size, 'config sub-action anchor moved — update this check').toBeGreaterThanOrEqual(4)
     const missing = [...actions].filter((a) => !new RegExp(`config\\s+${a}\\b`).test(docCorpus))
     expect(missing, `\nconfig sub-actions no doc surface shows: ${missing.join(', ')}\n`).toEqual([])
+  })
+
+  // Inverse of the two checks above (review finding, run wf_c58c5b18-d8b): the
+  // verb names are anchored, but a doc could cite a --flag the CLI never had.
+  // Every --flag a doc line mentions next to wt-observe must exist in the
+  // dispatch sources (observe-cli.ts literals / flagValue names, or the
+  // add-remote flag map in observe-lifecycle.ts).
+  it('every --flag the docs cite on a wt-observe line exists in the CLI source', () => {
+    const lifecycleSrc = readFileSync(
+      join(REPO_ROOT, 'toolkit/packages/debugger/src/observe-lifecycle.ts'),
+      'utf8',
+    )
+    const cliCorpus = cliSrc + lifecycleSrc
+    const cited = new Set<string>()
+    for (const surface of SURFACES.filter((s) => existsSync(join(REPO_ROOT, s)))) {
+      for (const line of readFileSync(join(REPO_ROOT, surface), 'utf8').split('\n')) {
+        if (!line.includes('wt-observe')) continue
+        for (const m of line.matchAll(/--([a-z][a-z0-9-]*)/g)) cited.add(m[1] ?? '')
+      }
+    }
+    const missing = [...cited].filter(
+      (f) => !cliCorpus.includes(`'--${f}'`) && !cliCorpus.includes(`'${f}'`),
+    )
+    expect(missing, `\ndoc-cited wt-observe flags absent from the CLI source: ${missing.join(', ')}\n`).toEqual([])
   })
 })
 
