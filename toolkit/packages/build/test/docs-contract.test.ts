@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 
 import { LEAN_AGENT_TYPE, LEAF_AGENT_TYPE } from '@workflow-toolbox/patterns'
 import { PATTERN_NAMES } from '@workflow-toolbox/scaffold'
+import { MAX_STAGES, MAX_PIPELINE_DEPTH } from '@workflow-toolbox/pipeline-spec'
 import { MAX_WORKFLOW_BYTES, lintWorkflowSource } from '../src/lint.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -248,6 +249,12 @@ describe('docs-contract — value anchors (imported, never re-typed)', () => {
     expect(caps).toMatch(/\b4,?096\b/)
   })
 
+  it('pipeline caps quoted by the pipelines reference match the source constants', () => {
+    const pipelinesDoc = read('plugin/skills/workflow-composer/references/orchestrator-pipelines.md')
+    expect(pipelinesDoc).toContain(`\`MAX_STAGES\` (${MAX_STAGES})`)
+    expect(pipelinesDoc).toContain(`\`MAX_PIPELINE_DEPTH\` (${MAX_PIPELINE_DEPTH})`)
+  })
+
   it('agentType constants match the shipped agent definitions and the routing doc', () => {
     for (const [constant, slug] of [
       [LEAN_AGENT_TYPE, 'lean'],
@@ -343,9 +350,25 @@ describe('docs-contract — value anchors (imported, never re-typed)', () => {
   })
 })
 
-describe('docs-contract — public value exports are documented', () => {
-  /** Exports deliberately NOT documented in the authoring surfaces — each
-   *  entry says why. An entry without a reason is a doc gap, not an exemption. */
+// ---------------------------------------------------------------------------
+// Inverse (code → docs) checks. Everything above holds the DOCS to the code
+// (a cited anchor must exist); the checks below hold the CODE to the docs —
+// every public surface the code grows (exports, operator env vars, CLI verbs)
+// must be documented somewhere or carry a REASONED exemption. Inventory
+// semantics: each run re-enumerates the current surface, so there is no
+// historical-debt class — a surface added years ago fails the same as one
+// added today.
+// ---------------------------------------------------------------------------
+
+/** Doc corpus for the inverse checks: the concatenated contract surfaces. */
+const docCorpus = SURFACES.filter((s) => existsSync(join(REPO_ROOT, s)))
+  .map((s) => readFileSync(join(REPO_ROOT, s), 'utf8'))
+  .join('\n')
+
+describe('docs-contract — public exports are documented', () => {
+  /** Value exports deliberately NOT documented in the authoring surfaces —
+   *  each entry says why. An entry without a reason is a doc gap, not an
+   *  exemption. */
   const DELIBERATELY_UNDOCUMENTED = new Map<string, string>([
     ['applyCap', 'pattern-internal envelope machinery, exported for composed patterns'],
     ['emitDigest', 'pattern-internal digest emission, exported for composed patterns'],
@@ -358,30 +381,247 @@ describe('docs-contract — public value exports are documented', () => {
     ['PROMPT_TAG_PREFIX', 'prompt-tag wire protocol; the author surface is withPromptTags/parsePromptTag'],
     ['buildPromptTag', 'prompt-tag wire protocol; the author surface is withPromptTags/parsePromptTag'],
     ['normalizeArgs', 'bundler plumbing invoked by the emitted artifact, never by authors'],
+    // debugger / scaffold are private packages: their library surface is
+    // consumed by Workflow Observatory and the plugin CLIs through direct
+    // imports, not by authors following a doc. Their AUTHOR-facing pieces
+    // (parseJournal, diagnoseRun, scaffoldWorkflow, PATTERN_NAMES…) are
+    // documented and NOT exempted — only the plumbing is.
+    ['agentEvents', 'debugger journal plumbing consumed by Workflow Observatory imports (private package)'],
+    ['formatDiagnosis', 'debugger CLI rendering plumbing (private package); the author surface is the wt-debug CLI itself'],
+    ['buildAuditReport', 'debugger audit plumbing consumed by the Stop hook and Workflow Observatory (private package)'],
+    ['formatAuditReportMarkdown', 'debugger audit rendering plumbing (private package, same consumers)'],
+    ['assertSpecShape', 'scaffold CLI plumbing (private package); the author surface is the documented scaffoldWorkflow'],
+    ['assertAgentSpecShape', 'scaffold CLI plumbing (private package); the author surface is the documented scaffoldAgent'],
+    ['MINIMAL_TSCONFIG', 'scaffold CLI plumbing (private package): the tsconfig content the scaffolder writes'],
   ])
 
-  const docCorpus = SURFACES.filter((s) => existsSync(join(REPO_ROOT, s)))
-    .map((s) => readFileSync(join(REPO_ROOT, s), 'utf8'))
-    .join('\n')
+  // Shared exemption reasons for the type allowlist — a NEW public type export
+  // either gets documented or lands below under one of these (or its own,
+  // stated) reasons.
+  const R_OPTIONS =
+    'options parameter type of a same-named documented function; TS surfaces it at the call site'
+  const R_ENVELOPE =
+    "result-envelope member type; the authoring surface is the documented parent function's result fields"
+  const R_SANDBOX =
+    'sandbox global signature type; the documented surface is the global itself (agent/pipeline/parallel/…)'
+  const R_WIRE =
+    'wire-protocol type shared with Workflow Observatory (same family as the DIGEST_PREFIX value exemptions)'
+  const R_RETURN = 'return type of a documented function; authors consume fields, never name the type'
 
-  for (const pkg of ['patterns', 'runtime', 'build']) {
-    it(`every @workflow-toolbox/${pkg} value export appears in a doc surface`, () => {
-      const idx = readFileSync(join(REPO_ROOT, 'toolkit/packages', pkg, 'src/index.ts'), 'utf8')
-      const values = new Set<string>()
-      for (const m of idx.matchAll(/export\s*\{([^}]+)\}/g)) {
-        if (/^export\s+type\s*\{/.test(m[0])) continue
-        for (const part of (m[1] ?? '').split(',')) {
-          const n = part.trim().split(/\s+as\s+/).pop()?.trim()
-          if (n && !n.startsWith('type ')) values.add(n)
-        }
+  /** Exported TYPES deliberately not documented. The original check skipped
+   *  types wholesale ("types travel with their functions"); that blanket is
+   *  now a per-entry, reasoned exemption like every other allowlist here. */
+  const TYPES_DELIBERATELY_UNDOCUMENTED = new Map<string, string>([
+    // @workflow-toolbox/build
+    ['LintResult', R_RETURN],
+    ['BundleResult', R_RETURN],
+    ['BundlePipelineResult', R_RETURN],
+    // @workflow-toolbox/patterns — pattern option bags
+    ['ClassifyAndActOptions', R_OPTIONS],
+    ['GenerateAndFilterOptions', R_OPTIONS],
+    ['FanOutAndSynthesizeOptions', R_OPTIONS],
+    ['AdversarialVerificationOptions', R_OPTIONS],
+    ['TournamentOptions', R_OPTIONS],
+    ['LoopUntilDoneOptions', R_OPTIONS],
+    ['PlanAndExecuteOptions', R_OPTIONS],
+    ['ScoreAndRankOptions', R_OPTIONS],
+    ['ChunkedAnalysisOptions', R_OPTIONS],
+    ['ChunkingOptions', R_OPTIONS],
+    ['WithLeafFenceOptions', R_OPTIONS],
+    ['WithLeanRoutingOptions', R_OPTIONS],
+    ['ProbeAgentTypeOptions', R_OPTIONS],
+    // @workflow-toolbox/patterns — result-envelope members
+    ['PatternStats', R_ENVELOPE],
+    ['AgentTypeProbe', R_ENVELOPE],
+    ['AgentTypeProbeReport', R_ENVELOPE],
+    ['LeafFenceReport', R_ENVELOPE],
+    ['LeanRoutingReport', R_ENVELOPE],
+    ['VerifierVote', R_ENVELOPE],
+    ['VerifiedClaim', R_ENVELOPE],
+    ['Verdict', R_ENVELOPE],
+    ['RankedAttempt', R_ENVELOPE],
+    ['LoopStopConditions', R_OPTIONS],
+    ['LoopTick', R_ENVELOPE],
+    ['LoopOutcome', R_ENVELOPE],
+    ['LoopStoppedBy', R_ENVELOPE],
+    ['PlannedSubtask', R_ENVELOPE],
+    ['ScoreDimension', R_OPTIONS],
+    ['ScoreCutoff', R_OPTIONS],
+    ['ScoredItem', R_ENVELOPE],
+    ['ChunkedAnalysisResult', R_RETURN],
+    // @workflow-toolbox/runtime
+    ['AgentFn', R_SANDBOX],
+    ['PipelineStage', R_SANDBOX],
+    ['PipelineFn', R_SANDBOX],
+    ['ParallelFn', R_SANDBOX],
+    ['WorkflowFn', R_SANDBOX],
+    ['PhaseDigest', R_WIRE],
+    ['TypedPhaseDigest', R_WIRE],
+    ['PatternCounts', R_WIRE],
+    ['PromptTagFields', R_WIRE],
+    ['FakeRuntimeOptions', R_OPTIONS],
+    ['AgentDefaults', R_OPTIONS],
+    ['AgentCall', 'FakeRuntime introspection record; the test-authoring surface is the documented FakeRuntime itself'],
+    ['PatternName', 'the pattern names are the documented vocabulary (patterns.md); the union type is TS plumbing'],
+  ])
+
+  // Every package with a src/index.ts barrel is under contract — published
+  // and private alike (private surfaces are consumed by the plugin skills and
+  // this repo's own docs). smoke ships subpath-only entries (no barrel): its
+  // two entry points are upgrade-canary plumbing, deliberately out of contract.
+  const PACKAGES = readdirSync(join(REPO_ROOT, 'toolkit/packages'))
+    .filter((d) => existsSync(join(REPO_ROOT, 'toolkit/packages', d, 'src/index.ts')))
+    .sort()
+
+  /** Collect exported names from a barrel, following `export * from` ONE
+   *  level (std and pipeline-spec are star-barrels over declaration files). */
+  function collectExports(file: string, depth = 0): { values: Set<string>; types: Set<string> } {
+    const src = readFileSync(file, 'utf8')
+    const values = new Set<string>()
+    const types = new Set<string>()
+    for (const m of src.matchAll(/export\s+(type\s+)?\{([^}]+)\}/g)) {
+      for (const part of (m[2] ?? '').split(',')) {
+        const trimmed = part.trim()
+        if (trimmed === '') continue
+        const isType = m[1] !== undefined || trimmed.startsWith('type ')
+        const alias = trimmed.replace(/^type\s+/, '').split(/\s+as\s+/).pop()?.trim() ?? ''
+        if (alias !== '') (isType ? types : values).add(alias)
       }
-      expect(values.size).toBeGreaterThan(0)
+    }
+    for (const m of src.matchAll(/export\s+(?:async\s+)?(?:function|const|let|class)\s+([A-Za-z_$][\w$]*)/g))
+      values.add(m[1] ?? '')
+    for (const m of src.matchAll(/export\s+(?:interface|type)\s+([A-Za-z_$][\w$]*)/g)) types.add(m[1] ?? '')
+    if (depth === 0) {
+      for (const m of src.matchAll(/export\s*\*\s*from\s*'([^']+)'/g)) {
+        const target = join(dirname(file), (m[1] ?? '').replace(/\.js$/, '.ts'))
+        if (!existsSync(target)) continue
+        const nested = collectExports(target, 1)
+        for (const v of nested.values) values.add(v)
+        for (const t of nested.types) types.add(t)
+      }
+    }
+    return { values, types }
+  }
+
+  for (const pkg of PACKAGES) {
+    const barrel = join(REPO_ROOT, 'toolkit/packages', pkg, 'src/index.ts')
+    const { values, types } = collectExports(barrel)
+
+    it(`every @workflow-toolbox/${pkg} value export appears in a doc surface`, () => {
+      expect(values.size, `${pkg}/src/index.ts yielded no value exports — collector anchor moved?`).toBeGreaterThan(0)
       const missing = [...values].filter(
         (n) => !DELIBERATELY_UNDOCUMENTED.has(n) && !new RegExp(`\\b${n}\\b`).test(docCorpus),
       )
       expect(missing, `undocumented ${pkg} exports: ${missing.join(', ')}`).toEqual([])
     })
+
+    // Private packages are exempt from TYPE coverage by rule: not installable,
+    // their types are consumed through direct TS imports (this repo + the
+    // Observatory), never by an author following a doc. Their VALUE exports
+    // stay under contract above — a new private function still forces the
+    // "document or exempt?" question.
+    const isPrivate =
+      (JSON.parse(readFileSync(join(REPO_ROOT, 'toolkit/packages', pkg, 'package.json'), 'utf8')) as {
+        private?: boolean
+      }).private === true
+
+    it.skipIf(isPrivate)(`every @workflow-toolbox/${pkg} type export appears in a doc surface`, () => {
+      // A package may legitimately export no types from its barrel — the
+      // value-export check above already guards against a silent parse miss.
+      const missing = [...types].filter(
+        (n) => !TYPES_DELIBERATELY_UNDOCUMENTED.has(n) && !new RegExp(`\\b${n}\\b`).test(docCorpus),
+      )
+      expect(missing, `undocumented ${pkg} type exports: ${missing.join(', ')}`).toEqual([])
+    })
   }
+})
+
+describe('docs-contract — operator env vars are documented', () => {
+  /** Env reads that are deliberately NOT documented — each entry says why. */
+  const ENV_DELIBERATELY_UNDOCUMENTED = new Map<string, string>([
+    ['OBSERVE_LAUNCH_PLUGIN_DIRS', 'launcher→server plumbing: set BY wt-observe for the delegated session, never by an operator'],
+    ['CANARY_CAPTURE', 'upgrade-canary fixture-capture knob — repo-dev tooling, not operator surface'],
+    ['SDK_PROBE_SENTINEL_DIR', 'smoke-battery probe plumbing, set by the battery itself'],
+  ])
+
+  /** Platform/harness-ambient vocabulary — someone else's surface, not ours. */
+  const AMBIENT_ENV = new Set([
+    'PATH', 'HOME', 'NODE_ENV', 'CI', 'TMPDIR', 'TEMP', 'TMP', 'SHELL', 'TERM',
+    'XDG_STATE_HOME', 'XDG_CONFIG_HOME', 'LOCALAPPDATA', 'APPDATA', 'USERPROFILE',
+  ])
+
+  // Shipped sources only: package src trees, the toolkit bin entries, and the
+  // plugin hooks. toolkit/scripts (repo-dev tooling) and test files are not
+  // operator surface; plugin/bin and plugin/workflows are bundled artifacts of
+  // the same package sources (counting them would double-report).
+  const ENV_SOURCE_ROOTS = ['toolkit/packages', 'toolkit/bin', 'plugin/hooks']
+
+  it('every env var the shipped sources read is documented or exempted', () => {
+    const reads = new Map<string, string>()
+    for (const root of ENV_SOURCE_ROOTS) {
+      const abs = join(REPO_ROOT, root)
+      if (!existsSync(abs)) continue
+      for (const f of walk(abs)) {
+        if (!/\.(ts|mjs|cjs)$/.test(f) || /\.test\.ts$/.test(f) || /[/\\]test[/\\]/.test(f)) continue
+        const text = readFileSync(f, 'utf8')
+        // Direct reads plus SCREAMING_SNAKE reads through a passed-around env
+        // object (the debugger's xdgOverride(env, …) style).
+        for (const m of text.matchAll(
+          /process\.env(?:\.([A-Za-z_]\w*)|\[['"]([A-Za-z_]\w*)['"]\])|\benv\[['"]([A-Z][A-Z0-9_]+)['"]\]/g,
+        )) {
+          const name = m[1] ?? m[2] ?? m[3] ?? ''
+          if (name !== '' && !reads.has(name)) reads.set(name, f.slice(REPO_ROOT.length))
+        }
+      }
+    }
+    expect(reads.size, 'no env reads found — enumeration anchor moved?').toBeGreaterThan(0)
+    const missing = [...reads.entries()].filter(
+      ([n]) =>
+        !AMBIENT_ENV.has(n) && !ENV_DELIBERATELY_UNDOCUMENTED.has(n) &&
+        !new RegExp(`\\b${escapeRe(n)}\\b`).test(docCorpus),
+    )
+    expect(
+      missing.map(([n, f]) => `${n} (read in ${f})`),
+      '\nundocumented operator env vars — document or exempt with a reason\n',
+    ).toEqual([])
+  })
+})
+
+describe('docs-contract — wt-observe CLI verbs are documented', () => {
+  // plugin/bin/wt-observe.mjs is a bundled ARTIFACT; the dispatch source of
+  // truth is the debugger package's observe-cli.ts main() (`cmd === '<verb>'`)
+  // plus parseConfigAction's action literals in observe-lifecycle.ts.
+  const cliSrc = readFileSync(join(REPO_ROOT, 'toolkit/packages/debugger/src/observe-cli.ts'), 'utf8')
+
+  it('every dispatched verb appears in a doc surface as `wt-observe <verb>`', () => {
+    const mainStart = cliSrc.indexOf('export async function main')
+    expect(mainStart, 'observe-cli.ts main() anchor moved — update this check').toBeGreaterThanOrEqual(0)
+    const verbs = new Set(['status']) // `argv[0] ?? 'status'` — the no-verb default
+    for (const m of cliSrc.slice(mainStart).matchAll(/\bcmd === '([a-z-]+)'/g)) verbs.add(m[1] ?? '')
+    expect(verbs.size, 'verb dispatch anchor moved — update this check').toBeGreaterThanOrEqual(7)
+    const missing = [...verbs].filter(
+      (v) => !new RegExp(`wt-observe(?:\\.mjs)?[ \`]+${v}\\b`).test(docCorpus),
+    )
+    expect(missing, `\nCLI verbs no doc surface shows: ${missing.join(', ')}\n`).toEqual([])
+  })
+
+  it('every config sub-action appears in a doc surface', () => {
+    const lifecycle = readFileSync(
+      join(REPO_ROOT, 'toolkit/packages/debugger/src/observe-lifecycle.ts'),
+      'utf8',
+    )
+    const fnStart = lifecycle.indexOf('function parseConfigAction')
+    expect(fnStart, 'parseConfigAction anchor moved — update this check').toBeGreaterThanOrEqual(0)
+    const fnEnd = lifecycle.indexOf('\nexport function', fnStart + 1)
+    const body = lifecycle.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
+    // Sub-actions appear as `sub === '<action>'` comparisons (add-source and
+    // remove-source are constructed dynamically as `action: sub`, so matching
+    // on action literals under-enumerates).
+    const actions = new Set([...body.matchAll(/\bsub === '([a-z-]+)'/g)].map((m) => m[1] ?? ''))
+    expect(actions.size, 'config sub-action anchor moved — update this check').toBeGreaterThanOrEqual(4)
+    const missing = [...actions].filter((a) => !new RegExp(`config\\s+${a}\\b`).test(docCorpus))
+    expect(missing, `\nconfig sub-actions no doc surface shows: ${missing.join(', ')}\n`).toEqual([])
+  })
 })
 
 describe('docs-contract — composer templates lint clean', () => {

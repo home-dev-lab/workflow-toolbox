@@ -581,6 +581,26 @@ and per-seat commercial licensing. The bundled `wt-observe` launcher starts it
 when installed. Distribution is being set up — watch this README for the
 download link.
 
+The launcher is a thin lifecycle CLI (`node plugin/bin/wt-observe.mjs …`):
+
+| Verb | What it does |
+|---|---|
+| `wt-observe status` | Report whether a server is running, on which port, serving which sources. The default when no verb is given. |
+| `wt-observe start [--source <dir>]… [--watch] [--enable-launch]` | Start the server (or adopt one already running on the preferred port). `--enable-launch` opts into delegated workflow launches. |
+| `wt-observe stop` | Stop the server this launcher owns (by its pidfile). |
+| `wt-observe launch <artifact> [--args <json>] [--source <label>]` | Run a workflow artifact through a delegated headless session (requires a server started with `--enable-launch`). |
+| `wt-observe await <runId> [--timeout-s N] [--poll-s N]` | Block until a launched run completes; the exit code mirrors the run outcome. |
+| `wt-observe prune` | Delete old run records — dry-run by default, `--yes` to apply. |
+| `wt-observe config show` | Show the persisted launcher config. |
+| `wt-observe config add-source <dir>` / `config remove-source <dir>` | Persist (or drop) a workflow source dir across restarts. |
+| `wt-observe config add-remote <url> [--token <t>] [--token-file <p>] [--label <l>]` / `config remove-remote <url>` | Persist (or drop) a remote Observatory the hub federates. |
+
+Operator environment variables: `DWT_OBSERVE_ROOT` points the launcher at a
+specific Workflow Observatory checkout (default: sibling-resolve next to this
+repo, then the installed app); `OBSERVE_UI_SERVER_PORT` overrides the port the
+launcher probes and starts the server on; `OBSERVE_WORKFLOWS_DIR` adds workflow
+roots the server offers as launchable sources.
+
 ## License
 
 [FSL-1.1-ALv2](LICENSE) (Functional Source License): free to use, modify, and

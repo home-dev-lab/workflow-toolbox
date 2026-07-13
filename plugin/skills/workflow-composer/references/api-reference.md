@@ -131,6 +131,10 @@ export const meta = {
 }
 ```
 
+In TypeScript sources this shape is the `WorkflowMeta` type
+(`@workflow-toolbox/build`); `defineWorkflow()` returns a `DefinedWorkflow` —
+the carry-through value the build CLI consumes, never constructed by hand.
+
 - **`name`** (required) and **`description`** (required) are documented fields.
   `description` is shown in the permission dialog. [verified]
 - **`whenToUse`** and **`phases`** are optional. `whenToUse` is **[observed]**

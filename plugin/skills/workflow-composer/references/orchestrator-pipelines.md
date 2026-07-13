@@ -73,6 +73,22 @@ Build it with the `pipeline` CLI subcommand (mirrors `build`'s `--typecheck`/`--
 npx workflow-toolbox pipeline feature-review.pipeline.ts --typecheck   # → pipelines/feature-review.json
 ```
 
+The spec's validation contract is the standalone `@workflow-toolbox/pipeline-spec` package
+(shared by `definePipeline()` — which returns a `DefinedPipeline`, the pipeline twin of
+`DefinedWorkflow` — and the Observatory's pipeline runner):
+
+- `parsePipelineSpec(value)` — parse + validate an untyped JSON value into a
+  `PipelineSpec`; returns `null` when the shape is invalid.
+- `validateStageList(stages)` — the structural rules as one reusable check; returns an
+  error string, or `null` when the list is valid.
+- `MAX_STAGES` (12) — hard cap on stages per spec; nested sub-specs are re-checked
+  against the same cap.
+- `MAX_PIPELINE_DEPTH` (8) — hard cap on pipeline nesting depth.
+- `EXTRACTOR_KEYS` (type `ExtractorKey`) — the legal `artifact.extract` values:
+  `plan-artifact`, `raw`.
+- `INPUT_REF_SOURCES` — the legal `{ from: … }` sources an `input` template may
+  reference: `artifactPath`, `goal`, `projectDir`.
+
 The full, buildable version of this example is the toolkit's own living documentation for
 `definePipeline()` — read it at `toolkit/examples/feature-review.pipeline.ts` (its built
 artifact, `toolkit/pipelines/feature-review.json`, is committed and gated byte-identical
