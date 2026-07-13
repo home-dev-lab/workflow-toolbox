@@ -335,10 +335,25 @@ interface PrReviewOutput {
 // parseInput — fail fast with actionable error
 // ---------------------------------------------------------------------------
 
+// Bounds on the launch-time provenance manifest — anti-inflation caps (an
+// operator mistake, e.g. passing a whole file tree, would otherwise balloon
+// the lens prompt) sized well above any real manifest (the largest committed
+// one has 12 entries).
+const MAX_PROVENANCE_ENTRIES = 64
+const MAX_PROVENANCE_PATHS_PER_FIELD = 32
+const MAX_PROVENANCE_PATH_LENGTH = 300
+// A provenance "path" must look like one: no control characters (newlines
+// would break the prompt's line-per-surface layout) and no backticks (the
+// docs paths are interpolated inside backtick-quoted markdown in the
+// docs-alignment reviewer prompt — a backtick there is an injection vector,
+// never a legitimate repo-relative path).
+const PROVENANCE_PATH_RE = /^[^`\u0000-\u001f\u007f]+$/
+
 /** Validate the optional launch-time `provenance` manifest: a NON-EMPTY array
- *  of { sources, docs } entries, each a non-empty array of non-empty strings.
- *  Fail-fast + actionable: a malformed manifest silently matching nothing
- *  would disarm the docs-alignment lens — exactly the degradation this knob's
+ *  of { sources, docs } entries, each a non-empty array of path-shaped
+ *  strings (repo-relative), within the size bounds above. Fail-fast +
+ *  actionable: a malformed manifest silently matching nothing would disarm
+ *  the docs-alignment lens — exactly the degradation this knob's
  *  `provenanceSource` output field exists to make visible. */
 function parseProvenance(raw: unknown): readonly ProvenanceEntry[] | null {
   if (raw === undefined || raw === null) return null
@@ -346,6 +361,11 @@ function parseProvenance(raw: unknown): readonly ProvenanceEntry[] | null {
     throw new Error(
       'pr-review: "provenance" must be a NON-EMPTY array of { sources, docs } entries — ' +
       'omit it entirely to use the bundled dwt manifest',
+    )
+  }
+  if (raw.length > MAX_PROVENANCE_ENTRIES) {
+    throw new Error(
+      `pr-review: "provenance" has ${raw.length} entries — the cap is ${MAX_PROVENANCE_ENTRIES}`,
     )
   }
   return raw.map((entry, i) => {
@@ -357,11 +377,28 @@ function parseProvenance(raw: unknown): readonly ProvenanceEntry[] | null {
     const e = entry as Record<string, unknown>
     for (const field of ['sources', 'docs'] as const) {
       const v = e[field]
-      if (!Array.isArray(v) || v.length === 0 || v.some((s) => typeof s !== 'string' || s.trim().length === 0)) {
+      if (
+        !Array.isArray(v) ||
+        v.length === 0 ||
+        v.some((s) => typeof s !== 'string' || s.trim().length === 0)
+      ) {
         throw new Error(
           `pr-review: provenance[${i}].${field} must be a non-empty array of non-empty strings ` +
           '(repo-relative paths; a path ending in "/" covers its subtree, otherwise exact file match)',
         )
+      }
+      if (v.length > MAX_PROVENANCE_PATHS_PER_FIELD) {
+        throw new Error(
+          `pr-review: provenance[${i}].${field} has ${v.length} paths — the cap is ${MAX_PROVENANCE_PATHS_PER_FIELD}`,
+        )
+      }
+      for (const s of v as string[]) {
+        if (s.length > MAX_PROVENANCE_PATH_LENGTH || !PROVENANCE_PATH_RE.test(s)) {
+          throw new Error(
+            `pr-review: provenance[${i}].${field} contains "${s.slice(0, 60)}…" — ` +
+            `each path must be ≤ ${MAX_PROVENANCE_PATH_LENGTH} chars with no backticks or control characters`,
+          )
+        }
       }
     }
     return { sources: e['sources'] as string[], docs: e['docs'] as string[] }
@@ -677,10 +714,10 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   // true?) stays with the LLM reviewer; the decision to spawn it is
   // deterministic script code.
   const provenanceSource: 'input' | 'bundled' = input.provenance !== null ? 'input' : 'bundled'
-  const provenanceDocs =
-    input.provenance !== null
-      ? docsForChangedFiles(changeSummary.changedFiles, input.provenance)
-      : docsForChangedFiles(changeSummary.changedFiles)
+  const provenanceDocs = docsForChangedFiles(
+    changeSummary.changedFiles,
+    input.provenance ?? undefined,
+  )
   if (provenanceDocs.length > 0) {
     rt.log(
       `docs-alignment lens armed: ${provenanceDocs.length} mapped doc surface(s) for this change (${provenanceSource} manifest)`,

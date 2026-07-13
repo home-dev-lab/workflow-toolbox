@@ -39,8 +39,16 @@ const BUNDLED_DIR = join(
 const TOOLKIT_WORKFLOWS = join(REPO_ROOT, 'toolkit/workflows')
 const PLUGIN_WORKFLOWS = join(REPO_ROOT, 'plugin/workflows')
 
+// Study-bundled files: every composition source, PLUS the non-workflow support
+// modules the compositions import and the skill bundles for study (today:
+// docs-provenance.ts, imported by pr-review). The examples-root .pipeline.ts
+// specs are deliberately NOT bundled — a different family, not workflow study
+// material. A support module bundled without appearing here would silently
+// escape the byte-identity gate (review finding, run wf_8c882e9f-54e).
+const isStudyFile = (f: string): boolean => f.endsWith('.workflow.ts') || f === 'docs-provenance.ts'
+
 const sources = readdirSync(EXAMPLES_DIR)
-  .filter((f) => f.endsWith('.workflow.ts'))
+  .filter(isStudyFile)
   .sort()
 
 describe('plugin bundled study sources — full set, byte-identical', () => {
@@ -51,7 +59,7 @@ describe('plugin bundled study sources — full set, byte-identical', () => {
   it('bundles EVERY toolkit/examples source byte-identically, with no orphans', () => {
     const bundled = existsSync(BUNDLED_DIR)
       ? readdirSync(BUNDLED_DIR)
-          .filter((f) => f.endsWith('.workflow.ts'))
+          .filter(isStudyFile)
           .sort()
       : []
 

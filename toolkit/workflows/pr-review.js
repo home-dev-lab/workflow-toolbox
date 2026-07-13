@@ -1095,11 +1095,20 @@ ${renderClaim(claim)}`;
     docs: ["accuracy", "completeness", "clarity"]
   };
   var DEFAULT_LENSES = ["correctness", "security", "test-coverage", "maintainability"];
+  var MAX_PROVENANCE_ENTRIES = 64;
+  var MAX_PROVENANCE_PATHS_PER_FIELD = 32;
+  var MAX_PROVENANCE_PATH_LENGTH = 300;
+  var PROVENANCE_PATH_RE = /^[^`\u0000-\u001f\u007f]+$/;
   function parseProvenance(raw) {
     if (raw === void 0 || raw === null) return null;
     if (!Array.isArray(raw) || raw.length === 0) {
       throw new Error(
         'pr-review: "provenance" must be a NON-EMPTY array of { sources, docs } entries \u2014 omit it entirely to use the bundled dwt manifest'
+      );
+    }
+    if (raw.length > MAX_PROVENANCE_ENTRIES) {
+      throw new Error(
+        `pr-review: "provenance" has ${raw.length} entries \u2014 the cap is ${MAX_PROVENANCE_ENTRIES}`
       );
     }
     return raw.map((entry, i) => {
@@ -1115,6 +1124,18 @@ ${renderClaim(claim)}`;
           throw new Error(
             `pr-review: provenance[${i}].${field} must be a non-empty array of non-empty strings (repo-relative paths; a path ending in "/" covers its subtree, otherwise exact file match)`
           );
+        }
+        if (v.length > MAX_PROVENANCE_PATHS_PER_FIELD) {
+          throw new Error(
+            `pr-review: provenance[${i}].${field} has ${v.length} paths \u2014 the cap is ${MAX_PROVENANCE_PATHS_PER_FIELD}`
+          );
+        }
+        for (const s of v) {
+          if (s.length > MAX_PROVENANCE_PATH_LENGTH || !PROVENANCE_PATH_RE.test(s)) {
+            throw new Error(
+              `pr-review: provenance[${i}].${field} contains "${s.slice(0, 60)}\u2026" \u2014 each path must be \u2264 ${MAX_PROVENANCE_PATH_LENGTH} chars with no backticks or control characters`
+            );
+          }
         }
       }
       return { sources: e["sources"], docs: e["docs"] };
@@ -1284,7 +1305,10 @@ Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summar
       rt.log(`\u26A0 ${w}`);
     }
     const provenanceSource = input.provenance !== null ? "input" : "bundled";
-    const provenanceDocs = input.provenance !== null ? docsForChangedFiles(changeSummary.changedFiles, input.provenance) : docsForChangedFiles(changeSummary.changedFiles);
+    const provenanceDocs = docsForChangedFiles(
+      changeSummary.changedFiles,
+      input.provenance ?? void 0
+    );
     if (provenanceDocs.length > 0) {
       rt.log(
         `docs-alignment lens armed: ${provenanceDocs.length} mapped doc surface(s) for this change (${provenanceSource} manifest)`
