@@ -273,7 +273,9 @@ describe('docs-contract — value anchors (imported, never re-typed)', () => {
     const wrong: string[] = []
     for (const surface of SURFACES.filter((s) => existsSync(join(REPO_ROOT, s)))) {
       const md = read(surface)
-      for (const m of md.matchAll(/\b(seven|eight|nine|ten|eleven|\d+)\s+patterns\b/gi)) {
+      // [\s-]+ tolerates hyphenated forms ("all-seven-patterns fixture") — a
+      // spelled count drifted unseen behind hyphens once (architecture.md).
+      for (const m of md.matchAll(/\b(seven|eight|nine|ten|eleven|\d+)[\s-]+patterns\b/gi)) {
         const count = m[1] ?? ''
         const n = WORD_COUNTS[count.toLowerCase()] ?? Number(count)
         if (n === PATTERN_NAMES.length) continue

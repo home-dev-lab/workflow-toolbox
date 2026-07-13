@@ -8,8 +8,8 @@ Accepted
 
 ## Context
 
-Before this increment, an N-stage, human-gated job (ADR 0007's `observe-ui` pipeline
-runner) could only be launched by POSTing a hand-written JSON body
+Before this increment, an N-stage, human-gated job (the `observe-ui` pipeline
+runner — Workflow Observatory ADR 0007) could only be launched by POSTing a hand-written JSON body
 (`POST /api/pipeline { goal, projectDir? }`) — there was no way to *author* a multi-stage,
 possibly-nested pipeline as typed TypeScript the way `defineWorkflow` already lets an
 author express a single workflow. The runner had in fact already grown a richer,

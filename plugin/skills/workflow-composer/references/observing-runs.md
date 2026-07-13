@@ -71,5 +71,6 @@ are **no edges, phases, or tokens**; runs were session-keyed (two workflows in o
 merged), and an `agent_type` reused across phases collapsed into one column. The retrospective —
 everything tried (prefix filter, `p<N>` name encoding, declared shape, `agent_type→phase` map,
 the `declare-shape` CLI) and why it was dropped — is
-[ADR 0006](../../../../docs/public/adr/0006-path-b-hook-observation-removed.md). Net today:
+Workflow Observatory ADR 0006 (an observe-product decision record, shipped with that
+product's own repository). Net today:
 **live = compiled artifact via the SDK; own-session / inline = disk replay after it finishes.**

@@ -106,7 +106,7 @@ runtime, inside the sandbox. `--typecheck` uses your project's **own** `typescri
 install (it warns and continues if typescript isn't installed).
 
 The freshly scaffolded skeleton builds + checks green **before** you edit it — proof the
-wiring is sound. A representative all-eight-patterns skeleton bundles to ~40 KB (well under
+wiring is sound. A representative all-patterns skeleton bundles to ~40 KB (well under
 the 512 KB sandbox cap).
 
 > **Maintainer note (this repo).** Inside the toolkit workspace the same loop runs as
