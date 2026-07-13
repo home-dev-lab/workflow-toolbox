@@ -1050,12 +1050,20 @@ ${renderClaim(claim)}`;
       // agent that lists fewer files only under-triggers the lens (the Tier 1
       // docs-contract gate still guards the anchors mechanically), and an EMPTY
       // list on a range-shaped target trips the degenerate-output warning below.
-      changedFiles: { type: "array", items: { type: "string" }, maxItems: 200 }
+      changedFiles: { type: "array", items: { type: "string" }, maxItems: 200 },
+      // NEW public surface this change ADDS (exports, HTTP routes, env vars,
+      // CLI verbs/flags, config knobs) — the docs-coverage lens's arming
+      // signal. Same trust posture as changedFiles: the DECISION is mechanical
+      // script code, the DATA is agent-reported from the real diff. An empty
+      // array is schema-valid ("nothing new exposed"), so a capitulating agent
+      // only UNDER-arms the lens — the repos' inverse docs-contract gates
+      // still hold the enumerable classes mechanically.
+      addedPublicSurface: { type: "array", items: { type: "string", maxLength: 200 }, maxItems: 40 }
     },
-    required: ["summary", "riskAreas", "changedFiles"],
+    required: ["summary", "riskAreas", "changedFiles", "addedPublicSurface"],
     additionalProperties: false
   };
-  var CHANGE_SUMMARY_RULES = 'All three fields are REQUIRED. Emit "changedFiles" FIRST (the repo-relative paths from `git diff --name-only <range>`, up to 200), then "riskAreas", then "summary" \u2014 at most 500 characters (the schema rejects longer). Never satisfy the schema with placeholder values ("test", "a"); if a field is hard to fill, shorten it \u2014 do not fake it.';
+  var CHANGE_SUMMARY_RULES = 'All four fields are REQUIRED. Emit "changedFiles" FIRST (the repo-relative paths from `git diff --name-only <range>`, up to 200), then "addedPublicSurface" \u2014 ONLY the NEW public surface this change ADDS (new exports, HTTP routes, env vars, CLI verbs/flags, config knobs), one short entry each, e.g. "export: parsePipelineSpec" or "env var: SERVER_TTL"; an EMPTY array when the change exposes nothing new \u2014 then "riskAreas", then "summary" \u2014 at most 500 characters (the schema rejects longer). Never satisfy the schema with placeholder values ("test", "a"); if a field is hard to fill, shorten it \u2014 do not fake it.';
   var FINDINGS_SCHEMA = {
     type: "object",
     properties: {
@@ -1300,7 +1308,7 @@ Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summar
     }
     const looksLikeGitRange = /[0-9a-f]{6,40}|\bHEAD\b|\.\./.test(input.target);
     if (changeSummary.changedFiles.length === 0 && looksLikeGitRange) {
-      const w = `route: empty changedFiles from the ${category} act stage on a range-shaped target \u2014 likely schema capitulation; the docs-alignment lens is DISARMED for this run (stale prose anchors remain covered by the mechanical docs-contract gate)`;
+      const w = `route: empty changedFiles from the ${category} act stage on a range-shaped target \u2014 likely schema capitulation; the docs-alignment and docs-coverage lenses are DISARMED for this run (stale prose anchors remain covered by the mechanical docs-contract gate)`;
       warnings.push(w);
       rt.log(`\u26A0 ${w}`);
     }
@@ -1314,12 +1322,35 @@ Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summar
         `docs-alignment lens armed: ${provenanceDocs.length} mapped doc surface(s) for this change (${provenanceSource} manifest)`
       );
     }
+    const docsTouchedInDiff = changeSummary.changedFiles.some(
+      (f) => f.endsWith(".md") || provenanceDocs.includes(f)
+    );
+    const coverageSurfaces = !docsTouchedInDiff && changeSummary.addedPublicSurface.length > 0 ? changeSummary.addedPublicSurface : [];
+    if (coverageSurfaces.length > 0) {
+      rt.log(
+        `docs-coverage lens armed: ${coverageSurfaces.length} added public surface(s), no doc file touched`
+      );
+    }
     const baseLenses = REVIEWER_LENSES[category] ?? DEFAULT_LENSES;
-    const lenses = provenanceDocs.length > 0 ? [...baseLenses, "docs-alignment"] : baseLenses;
+    const lenses = [
+      ...baseLenses,
+      ...provenanceDocs.length > 0 ? ["docs-alignment"] : [],
+      ...coverageSurfaces.length > 0 ? ["docs-coverage"] : []
+    ];
     const reviewStage = async (_prev, originalItem) => {
       const lens = originalItem;
       reviewersSpawned++;
-      const lensInstructions = lens === "docs-alignment" ? `These committed doc surfaces (repo-relative) document the modules this change touches:
+      const sanitizedSurface = (s) => s.replace(/[`\u0000-\u001f\u007f]/g, " ").slice(0, 200);
+      const lensInstructions = lens === "docs-coverage" ? `The routing stage reports this change ADDS the following public surface, while touching NO documentation file:
+` + coverageSurfaces.map((s) => `- ${sanitizedSurface(s)}`).join("\n") + `
+
+Mapped doc homes for the changed modules (docs-provenance manifest):
+` + (provenanceDocs.length > 0 ? provenanceDocs.map((d) => `- \`${d}\``).join("\n") : `- (none mapped \u2014 name the natural home)`) + `
+
+Read the ACTUAL change first (${READ_ONLY_GIT}). For EACH added surface, judge: is it USER-FACING (an author, operator, or consumer must know it to use the product) or internal plumbing?
+- User-facing and undocumented = one finding: set \`file\` to the SOURCE path that grew the surface, and in \`detail\` name the doc surface where it should be described (a mapped home above when the module is mapped; otherwise the natural home, plus suggest adding the docs-provenance pair). Severity by consumer impact: a surface a consumer cannot discover without reading source = high; a niche or advanced knob = medium; marginal = low.
+- Internal-only additions are NOT findings \u2014 at most note them as candidates for the repo's reasoned exemption allowlists.
+Do NOT re-review the code quality itself (other lenses do), and do NOT report surfaces this change does not add.` : lens === "docs-alignment" ? `These committed doc surfaces (repo-relative) document the modules this change touches:
 ` + provenanceDocs.map((d) => `- \`${d}\``).join("\n") + `
 
 Read the ACTUAL change first (${READ_ONLY_GIT}), then read EACH mapped surface and check every claim it makes about the changed behavior is still true after this change \u2014 names, defaults, option lists, counts, quoted values, described semantics, worked examples.
@@ -1471,6 +1502,7 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
       leanRouting,
       provenanceDocs,
       provenanceSource,
+      coverageSurfaces,
       stats: {
         reviewersSpawned,
         findingsRaw,

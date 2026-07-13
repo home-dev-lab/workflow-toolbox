@@ -176,8 +176,16 @@ const CHANGE_SUMMARY_SCHEMA = {
     // docs-contract gate still guards the anchors mechanically), and an EMPTY
     // list on a range-shaped target trips the degenerate-output warning below.
     changedFiles: { type: 'array', items: { type: 'string' }, maxItems: 200 },
+    // NEW public surface this change ADDS (exports, HTTP routes, env vars,
+    // CLI verbs/flags, config knobs) — the docs-coverage lens's arming
+    // signal. Same trust posture as changedFiles: the DECISION is mechanical
+    // script code, the DATA is agent-reported from the real diff. An empty
+    // array is schema-valid ("nothing new exposed"), so a capitulating agent
+    // only UNDER-arms the lens — the repos' inverse docs-contract gates
+    // still hold the enumerable classes mechanically.
+    addedPublicSurface: { type: 'array', items: { type: 'string', maxLength: 200 }, maxItems: 40 },
   },
-  required: ['summary', 'riskAreas', 'changedFiles'],
+  required: ['summary', 'riskAreas', 'changedFiles', 'addedPublicSurface'],
   additionalProperties: false,
 } as const satisfies JsonSchema
 
@@ -188,8 +196,11 @@ const CHANGE_SUMMARY_SCHEMA = {
 // other compositions already follow ("score" then "reason", "verdict" then
 // "summary").
 const CHANGE_SUMMARY_RULES =
-  'All three fields are REQUIRED. Emit "changedFiles" FIRST (the repo-relative paths from ' +
-  '`git diff --name-only <range>`, up to 200), then "riskAreas", then "summary" — at most 500 characters ' +
+  'All four fields are REQUIRED. Emit "changedFiles" FIRST (the repo-relative paths from ' +
+  '`git diff --name-only <range>`, up to 200), then "addedPublicSurface" — ONLY the NEW public ' +
+  'surface this change ADDS (new exports, HTTP routes, env vars, CLI verbs/flags, config knobs), ' +
+  'one short entry each, e.g. "export: parsePipelineSpec" or "env var: SERVER_TTL"; an EMPTY array ' +
+  'when the change exposes nothing new — then "riskAreas", then "summary" — at most 500 characters ' +
   '(the schema rejects longer). Never satisfy the schema with placeholder values ("test", "a"); ' +
   'if a field is hard to fill, shorten it — do not fake it.'
 
@@ -319,6 +330,12 @@ interface PrReviewOutput {
    *  module touched" — the same silent-disarm class the empty-changedFiles
    *  warning covers. */
   provenanceSource: 'input' | 'bundled'
+  /** The Route-reported NEW public surfaces that armed the docs-coverage
+   *  lens. Empty = lens silent: the change adds no new surface, or a doc
+   *  file was touched in the same diff (the author engaged the docs — the
+   *  alignment lens and the mechanical gates cover that path). Observability
+   *  guard against silent disarm, same class as provenanceSource. */
+  coverageSurfaces: readonly string[]
   stats: {
     reviewersSpawned: number
     findingsRaw: number
@@ -682,8 +699,8 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   if (changeSummary.changedFiles.length === 0 && looksLikeGitRange) {
     const w =
       `route: empty changedFiles from the ${category} act stage on a range-shaped target — ` +
-      'likely schema capitulation; the docs-alignment lens is DISARMED for this run ' +
-      '(stale prose anchors remain covered by the mechanical docs-contract gate)'
+      'likely schema capitulation; the docs-alignment and docs-coverage lenses are DISARMED ' +
+      'for this run (stale prose anchors remain covered by the mechanical docs-contract gate)'
     warnings.push(w)
     rt.log(`⚠ ${w}`)
   }
@@ -724,9 +741,31 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     )
   }
 
+  // docs-coverage lens (Tier 2 INVERSE of the doc-alignment defence): the
+  // change ADDS public surface (Route-reported) while touching NO doc file —
+  // one extra reviewer judges "user-facing or internal?" per added surface.
+  // A diff that touches any .md (or a mapped doc surface) is treated as the
+  // author engaging the docs: the alignment lens and the mechanical gates
+  // cover the QUALITY of that engagement, so coverage stays silent there.
+  const docsTouchedInDiff = changeSummary.changedFiles.some(
+    (f) => f.endsWith('.md') || provenanceDocs.includes(f),
+  )
+  const coverageSurfaces: readonly string[] =
+    !docsTouchedInDiff && changeSummary.addedPublicSurface.length > 0
+      ? changeSummary.addedPublicSurface
+      : []
+  if (coverageSurfaces.length > 0) {
+    rt.log(
+      `docs-coverage lens armed: ${coverageSurfaces.length} added public surface(s), no doc file touched`,
+    )
+  }
+
   const baseLenses = REVIEWER_LENSES[category] ?? DEFAULT_LENSES
-  const lenses =
-    provenanceDocs.length > 0 ? [...baseLenses, 'docs-alignment'] : baseLenses
+  const lenses = [
+    ...baseLenses,
+    ...(provenanceDocs.length > 0 ? ['docs-alignment'] : []),
+    ...(coverageSurfaces.length > 0 ? ['docs-coverage'] : []),
+  ]
 
   // reviewStage: for a given lens, spawn one reviewer agent with focused scope.
   // The stage receives the lens as originalItem (items = lenses).
@@ -738,10 +777,39 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
 
     reviewersSpawned++
 
+    // Added-surface strings are agent-derived from the UNTRUSTED diff and get
+    // interpolated into the docs-coverage prompt below — strip backticks and
+    // control characters so a hostile diff cannot escape the list formatting
+    // (same injection class as the launch-time provenance paths).
+    const sanitizedSurface = (s: string): string =>
+      s.replace(/[`\u0000-\u001f\u007f]/g, ' ').slice(0, 200)
+
     // The docs-alignment lens reviews the mapped DOC SURFACES against the
     // change, not the change's code: its findings are stale claims in prose.
+    // The docs-coverage lens is its INVERSE: it judges the NEW surface the
+    // change adds without touching any doc.
     const lensInstructions =
-      lens === 'docs-alignment'
+      lens === 'docs-coverage'
+        ? `The routing stage reports this change ADDS the following public surface, while touching ` +
+          `NO documentation file:\n` +
+          coverageSurfaces.map((s) => `- ${sanitizedSurface(s)}`).join('\n') +
+          `\n\nMapped doc homes for the changed modules (docs-provenance manifest):\n` +
+          (provenanceDocs.length > 0
+            ? provenanceDocs.map((d) => `- \`${d}\``).join('\n')
+            : `- (none mapped — name the natural home)`) +
+          `\n\nRead the ACTUAL change first (${READ_ONLY_GIT}). For EACH added surface, judge: is it ` +
+          `USER-FACING (an author, operator, or consumer must know it to use the product) or internal ` +
+          `plumbing?\n` +
+          `- User-facing and undocumented = one finding: set \`file\` to the SOURCE path that grew the ` +
+          `surface, and in \`detail\` name the doc surface where it should be described (a mapped home ` +
+          `above when the module is mapped; otherwise the natural home, plus suggest adding the ` +
+          `docs-provenance pair). Severity by consumer impact: a surface a consumer cannot discover ` +
+          `without reading source = high; a niche or advanced knob = medium; marginal = low.\n` +
+          `- Internal-only additions are NOT findings — at most note them as candidates for the repo's ` +
+          `reasoned exemption allowlists.\n` +
+          `Do NOT re-review the code quality itself (other lenses do), and do NOT report surfaces this ` +
+          `change does not add.`
+        : lens === 'docs-alignment'
         ? `These committed doc surfaces (repo-relative) document the modules this change touches:\n` +
           provenanceDocs.map((d) => `- \`${d}\``).join('\n') +
           `\n\nRead the ACTUAL change first (${READ_ONLY_GIT}), then read EACH mapped surface and check ` +
@@ -950,6 +1018,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     leanRouting,
     provenanceDocs,
     provenanceSource,
+    coverageSurfaces,
     stats: {
       reviewersSpawned,
       findingsRaw,
