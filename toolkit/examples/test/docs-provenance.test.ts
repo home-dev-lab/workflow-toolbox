@@ -97,4 +97,16 @@ describe('docsForChangedFiles — pure prefix matcher', () => {
     // prefix guarantees it.
     expect(docsForChangedFiles(['toolkit/packages/patterns-extra/src/x.ts'])).toEqual([])
   })
+
+  it('a file-level entry is an EXACT match — a same-stem sibling does not false-trigger', () => {
+    // Review finding (run wf_0decbfe8-7e4, verified live by the reviewer):
+    // 'toolkit/packages/build/src/lint.tsx'.startsWith('…/lint.ts') is true, so
+    // a naive prefix match armed the lens for a file the manifest never mapped.
+    // File entries (no trailing '/') must match exactly.
+    expect(docsForChangedFiles(['toolkit/packages/build/src/lint.tsx'])).toEqual([])
+    expect(docsForChangedFiles(['toolkit/packages/build/src/lint.ts.bak'])).toEqual([])
+    // Same-stem sibling of an exact runtime entry: no directory entry covers
+    // runtime/src/, so this must map to nothing at all.
+    expect(docsForChangedFiles(['toolkit/packages/runtime/src/digest.ts.orig'])).toEqual([])
+  })
 })

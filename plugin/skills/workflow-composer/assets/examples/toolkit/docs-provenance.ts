@@ -145,13 +145,18 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
 
 /** The doc surfaces mapped to any of `changedFiles` (repo-relative), deduped,
  *  in manifest order. Empty array = no mapped module touched → the caller
- *  skips the docs-alignment lens. Pure prefix matching — no fs access, safe
- *  inside the workflow sandbox. */
+ *  skips the docs-alignment lens. Pure path matching — no fs access, safe
+ *  inside the workflow sandbox. Matching semantics: an entry ending in '/'
+ *  covers its whole subtree; any other entry is an EXACT file path — never a
+ *  string prefix, so a same-stem sibling (`lint.tsx` vs the mapped `lint.ts`)
+ *  cannot false-trigger the lens (review finding, run wf_0decbfe8-7e4). */
 export function docsForChangedFiles(changedFiles: readonly string[]): string[] {
   const out: string[] = []
   for (const entry of DOCS_PROVENANCE) {
     const touched = changedFiles.some((f) =>
-      entry.sources.some((prefix) => f === prefix || f.startsWith(prefix)),
+      entry.sources.some((source) =>
+        source.endsWith('/') ? f.startsWith(source) : f === source,
+      ),
     )
     if (!touched) continue
     for (const doc of entry.docs) if (!out.includes(doc)) out.push(doc)

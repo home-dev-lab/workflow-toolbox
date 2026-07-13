@@ -1145,4 +1145,28 @@ describe('pr-review degenerate change-summary guard', () => {
     const warnings = await warningsFor({ summary: 'Updates the README quickstart section.', riskAreas: [], changedFiles: ['src/app.ts'] })
     expect(warnings.some((w) => w.includes('degenerate change summary'))).toBe(false)
   })
+
+  it('flags empty changedFiles on a range-shaped target (silent lens disarm = capitulation)', async () => {
+    // Review finding (run wf_0decbfe8-7e4): "changedFiles": [] validates and is
+    // indistinguishable from "nothing mapped touched" — on a git range it must warn.
+    const warnings = await warningsFor({
+      summary: 'A perfectly reasonable change summary.',
+      riskAreas: ['core'],
+      changedFiles: [],
+    })
+    expect(warnings.some((w) => w.includes('empty changedFiles'))).toBe(true)
+  })
+
+  it('does not flag empty changedFiles on a free-text change description (no range syntax)', async () => {
+    const rt = runtimeWithActOutput({
+      summary: 'A perfectly reasonable change summary.',
+      riskAreas: ['core'],
+      changedFiles: [],
+    })
+    const result = await wf.run(
+      rt,
+      JSON.stringify({ target: 'the proposed retry policy for the ingest worker' }),
+    )
+    expect(result.warnings.some((w) => w.includes('empty changedFiles'))).toBe(false)
+  })
 })

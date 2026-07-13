@@ -152,22 +152,27 @@ const CHANGE_SUMMARY_SCHEMA = {
   properties: {
     summary: { type: 'string', minLength: 12, maxLength: 1200 },
     riskAreas: { type: 'array', items: { type: 'string' } },
-    // Repo-relative changed paths (`git diff --name-only <range>`). Consumed
-    // MECHANICALLY: prefix-matched against the committed docs-provenance
-    // manifest to decide whether the docs-alignment reviewer lens fires.
+    // Repo-relative changed paths (`git diff --name-only <range>`). The
+    // DECISION on this data is mechanical (deterministic path matching against
+    // the committed docs-provenance manifest → docs-alignment lens on/off),
+    // but the DATA is agent-reported from the real diff, not independently
+    // verified — the script has no fs/git access to cross-check it.
     // maxItems is a schema-level runaway bound, not a truncation license — an
     // agent that lists fewer files only under-triggers the lens (the Tier 1
-    // docs-contract gate still guards the anchors mechanically).
+    // docs-contract gate still guards the anchors mechanically), and an EMPTY
+    // list on a range-shaped target trips the degenerate-output warning below.
     changedFiles: { type: 'array', items: { type: 'string' }, maxItems: 200 },
   },
   required: ['summary', 'riskAreas', 'changedFiles'],
   additionalProperties: false,
 } as const satisfies JsonSchema
 
-// Shared contract line for every act prompt below. riskAreas is asked for FIRST:
-// the observed failure was generation-order — a long summary emitted first starved
-// the required sibling field. Short/required-first is the same convention the other
-// compositions already follow ("score" then "reason", "verdict" then "summary").
+// Shared contract line for every act prompt below. The mechanical fields come
+// FIRST — changedFiles, then riskAreas, then the free-text summary LAST: the
+// observed failure was generation-order — a long summary emitted first starved
+// the required sibling fields. Short/required-first is the same convention the
+// other compositions already follow ("score" then "reason", "verdict" then
+// "summary").
 const CHANGE_SUMMARY_RULES =
   'All three fields are REQUIRED. Emit "changedFiles" FIRST (the repo-relative paths from ' +
   '`git diff --name-only <range>`, up to 200), then "riskAreas", then "summary" — at most 500 characters ' +
@@ -567,6 +572,23 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       `route: degenerate change summary from the ${category} act stage ` +
       `(summary="${changeSummary.summary.slice(0, 40)}", riskAreas=${JSON.stringify(changeSummary.riskAreas.slice(0, 4))}) — ` +
       'reviewer seeding lost; findings still re-derive from the actual diff'
+    warnings.push(w)
+    rt.log(`⚠ ${w}`)
+  }
+
+  // Same guard class for changedFiles (review finding, run wf_0decbfe8-7e4):
+  // an act agent that capitulates to `"changedFiles": []` is schema-valid and
+  // otherwise indistinguishable from "no mapped module touched" — it silently
+  // disarms the docs-alignment lens. A git-range-shaped target ALWAYS changes
+  // at least one file, so an empty list there is capitulation, not signal.
+  // Heuristic + loud, never fatal: a free-text change DESCRIPTION (no range
+  // syntax) can legitimately have no file list.
+  const looksLikeGitRange = /[0-9a-f]{6,40}|\bHEAD\b|\.\./.test(input.target)
+  if (changeSummary.changedFiles.length === 0 && looksLikeGitRange) {
+    const w =
+      `route: empty changedFiles from the ${category} act stage on a range-shaped target — ` +
+      'likely schema capitulation; the docs-alignment lens is DISARMED for this run ' +
+      '(stale prose anchors remain covered by the mechanical docs-contract gate)'
     warnings.push(w)
     rt.log(`⚠ ${w}`)
   }

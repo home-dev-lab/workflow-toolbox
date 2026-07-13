@@ -1020,7 +1020,9 @@ ${renderClaim(claim)}`;
     const out = [];
     for (const entry of DOCS_PROVENANCE) {
       const touched = changedFiles.some(
-        (f) => entry.sources.some((prefix) => f === prefix || f.startsWith(prefix))
+        (f) => entry.sources.some(
+          (source) => source.endsWith("/") ? f.startsWith(source) : f === source
+        )
       );
       if (!touched) continue;
       for (const doc of entry.docs) if (!out.includes(doc)) out.push(doc);
@@ -1039,12 +1041,15 @@ ${renderClaim(claim)}`;
     properties: {
       summary: { type: "string", minLength: 12, maxLength: 1200 },
       riskAreas: { type: "array", items: { type: "string" } },
-      // Repo-relative changed paths (`git diff --name-only <range>`). Consumed
-      // MECHANICALLY: prefix-matched against the committed docs-provenance
-      // manifest to decide whether the docs-alignment reviewer lens fires.
+      // Repo-relative changed paths (`git diff --name-only <range>`). The
+      // DECISION on this data is mechanical (deterministic path matching against
+      // the committed docs-provenance manifest → docs-alignment lens on/off),
+      // but the DATA is agent-reported from the real diff, not independently
+      // verified — the script has no fs/git access to cross-check it.
       // maxItems is a schema-level runaway bound, not a truncation license — an
       // agent that lists fewer files only under-triggers the lens (the Tier 1
-      // docs-contract gate still guards the anchors mechanically).
+      // docs-contract gate still guards the anchors mechanically), and an EMPTY
+      // list on a range-shaped target trips the degenerate-output warning below.
       changedFiles: { type: "array", items: { type: "string" }, maxItems: 200 }
     },
     required: ["summary", "riskAreas", "changedFiles"],
@@ -1242,6 +1247,12 @@ Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summar
     const junkAreas = changeSummary.riskAreas.length > 0 && changeSummary.riskAreas.every((r) => r.trim().length <= 2);
     if (junkAreas || changeSummary.summary.trim().length < 12) {
       const w = `route: degenerate change summary from the ${category} act stage (summary="${changeSummary.summary.slice(0, 40)}", riskAreas=${JSON.stringify(changeSummary.riskAreas.slice(0, 4))}) \u2014 reviewer seeding lost; findings still re-derive from the actual diff`;
+      warnings.push(w);
+      rt.log(`\u26A0 ${w}`);
+    }
+    const looksLikeGitRange = /[0-9a-f]{6,40}|\bHEAD\b|\.\./.test(input.target);
+    if (changeSummary.changedFiles.length === 0 && looksLikeGitRange) {
+      const w = `route: empty changedFiles from the ${category} act stage on a range-shaped target \u2014 likely schema capitulation; the docs-alignment lens is DISARMED for this run (stale prose anchors remain covered by the mechanical docs-contract gate)`;
       warnings.push(w);
       rt.log(`\u26A0 ${w}`);
     }
