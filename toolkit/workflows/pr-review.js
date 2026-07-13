@@ -898,6 +898,136 @@ ${renderClaim(claim)}`;
     return { value, stats, warnings, trail };
   }
 
+  // docs-provenance.ts
+  var DOCS_PROVENANCE = [
+    {
+      // AgentType probing + the leaf fence + lean routing (availability gates,
+      // probe prompts, graceful degradation semantics).
+      sources: [
+        "toolkit/packages/patterns/src/probe-agent-type.ts",
+        "toolkit/packages/patterns/src/leaf-fence.ts",
+        "toolkit/packages/patterns/src/lean-routing.ts",
+        "plugin/agents/"
+      ],
+      docs: [
+        "plugin/skills/workflow-composer/references/model-and-agent-routing.md",
+        "plugin/skills/workflow-composer/SKILL.md"
+      ]
+    },
+    {
+      // The nine patterns + the result envelope (options, caps, envelope shape,
+      // pattern count claims).
+      sources: ["toolkit/packages/patterns/src/"],
+      docs: [
+        "plugin/skills/workflow-composer/references/patterns.md",
+        "toolkit/README.md",
+        "README.md"
+      ]
+    },
+    {
+      // Digest + prompt-tag wire protocols (what the observatory parses; the
+      // reload-only semantics known-issues documents).
+      sources: [
+        "toolkit/packages/runtime/src/digest.ts",
+        "toolkit/packages/runtime/src/prompt-tag.ts"
+      ],
+      docs: [
+        "docs/public/known-issues.md",
+        "plugin/skills/workflow-composer/references/observing-runs.md"
+      ]
+    },
+    {
+      // Runtime contract: sandbox typings, model/effort aliases, BEST_MODEL.
+      sources: [
+        "toolkit/packages/runtime/src/types.ts",
+        "toolkit/packages/runtime/src/constants.ts",
+        "toolkit/packages/runtime/src/with-agent-defaults.ts"
+      ],
+      docs: [
+        "plugin/skills/workflow-composer/references/model-and-agent-routing.md",
+        "plugin/skills/workflow-composer/references/api-reference.md"
+      ]
+    },
+    {
+      // Workflow linter rules + size cap (what "compliant artifact" means).
+      sources: ["toolkit/packages/build/src/lint.ts"],
+      docs: [
+        "plugin/skills/workflow-composer/references/api-reference.md",
+        "CLAUDE.md"
+      ]
+    },
+    {
+      // defineWorkflow / bundler / CLI (the authoring pipeline and its contract).
+      sources: [
+        "toolkit/packages/build/src/define-workflow.ts",
+        "toolkit/packages/build/src/bundle.ts",
+        "toolkit/packages/build/src/cli.ts"
+      ],
+      docs: [
+        "plugin/skills/workflow-composer/SKILL.md",
+        "toolkit/README.md",
+        "README.md"
+      ]
+    },
+    {
+      // Orchestrator pipelines (definePipeline / bundlePipeline / PipelineSpec).
+      sources: [
+        "toolkit/packages/build/src/define-pipeline.ts",
+        "toolkit/packages/build/src/bundle-pipeline.ts",
+        "toolkit/packages/pipeline-spec/"
+      ],
+      docs: ["plugin/skills/workflow-composer/references/orchestrator-pipelines.md"]
+    },
+    {
+      // Scaffold emitter (what `wt:scaffold` generates, PATTERN_NAMES).
+      sources: ["toolkit/packages/scaffold/src/"],
+      docs: [
+        "plugin/skills/toolkit-scaffold/SKILL.md",
+        "plugin/skills/workflow-composer/SKILL.md"
+      ]
+    },
+    {
+      // Run forensics (journal/transcript parsing, tool-denial detection).
+      sources: ["toolkit/packages/debugger/src/"],
+      docs: [
+        "plugin/skills/workflow-debugger/SKILL.md",
+        "docs/public/known-issues.md"
+      ]
+    },
+    {
+      // Smoke / canaries (the upgrade re-verification story).
+      sources: ["toolkit/packages/smoke/src/"],
+      docs: ["plugin/skills/upgrade-canary/SKILL.md"]
+    },
+    {
+      // The pr-review composition itself (its worked example + the shipped list).
+      sources: ["toolkit/examples/pr-review.workflow.ts"],
+      docs: [
+        "plugin/skills/workflow-composer/references/worked-example-pr-review.md",
+        "plugin/skills/workflow-composer/references/shipped-compositions.md"
+      ]
+    },
+    {
+      // Every other shipped composition (the catalog doc + the dev-workflow story).
+      sources: ["toolkit/examples/"],
+      docs: [
+        "plugin/skills/workflow-composer/references/shipped-compositions.md",
+        "docs/public/dev-workflow.md"
+      ]
+    }
+  ];
+  function docsForChangedFiles(changedFiles) {
+    const out = [];
+    for (const entry of DOCS_PROVENANCE) {
+      const touched = changedFiles.some(
+        (f) => entry.sources.some((prefix) => f === prefix || f.startsWith(prefix))
+      );
+      if (!touched) continue;
+      for (const doc of entry.docs) if (!out.includes(doc)) out.push(doc);
+    }
+    return out;
+  }
+
   // pr-review.workflow.ts
   var CLASSIFY_EFFORT = "low";
   var ROUTE_ACT_EFFORT = "medium";
@@ -908,12 +1038,19 @@ ${renderClaim(claim)}`;
     type: "object",
     properties: {
       summary: { type: "string", minLength: 12, maxLength: 1200 },
-      riskAreas: { type: "array", items: { type: "string" } }
+      riskAreas: { type: "array", items: { type: "string" } },
+      // Repo-relative changed paths (`git diff --name-only <range>`). Consumed
+      // MECHANICALLY: prefix-matched against the committed docs-provenance
+      // manifest to decide whether the docs-alignment reviewer lens fires.
+      // maxItems is a schema-level runaway bound, not a truncation license — an
+      // agent that lists fewer files only under-triggers the lens (the Tier 1
+      // docs-contract gate still guards the anchors mechanically).
+      changedFiles: { type: "array", items: { type: "string" }, maxItems: 200 }
     },
-    required: ["summary", "riskAreas"],
+    required: ["summary", "riskAreas", "changedFiles"],
     additionalProperties: false
   };
-  var CHANGE_SUMMARY_RULES = 'Both fields are REQUIRED. Emit "riskAreas" FIRST, then "summary" \u2014 at most 500 characters (the schema rejects longer). Never satisfy the schema with placeholder values ("test", "a"); if a field is hard to fill, shorten it \u2014 do not fake it.';
+  var CHANGE_SUMMARY_RULES = 'All three fields are REQUIRED. Emit "changedFiles" FIRST (the repo-relative paths from `git diff --name-only <range>`, up to 200), then "riskAreas", then "summary" \u2014 at most 500 characters (the schema rejects longer). Never satisfy the schema with placeholder values ("test", "a"); if a field is hard to fill, shorten it \u2014 do not fake it.';
   var FINDINGS_SCHEMA = {
     type: "object",
     properties: {
@@ -1059,35 +1196,35 @@ Return { "category": "<one of the five categories>" }`,
           schema: CHANGE_SUMMARY_SCHEMA,
           prompt: (target) => `You are reviewing a FEATURE change. Inspect the actual change (${target}) and produce a focused summary.
 ${READ_ONLY_GIT}
-Return { "riskAreas": ["<risk1>", ...], "summary": "<what the feature does>" }. ${CHANGE_SUMMARY_RULES}`,
+Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what the feature does>" }. ${CHANGE_SUMMARY_RULES}`,
           effort: routeActEffort
         },
         bugfix: {
           schema: CHANGE_SUMMARY_SCHEMA,
           prompt: (target) => `You are reviewing a BUGFIX change. Inspect the actual change (${target}) \u2014 re-derive from first principles.
 ${READ_ONLY_GIT}
-Return { "riskAreas": ["<risk1>", ...], "summary": "<what was broken and how it is fixed>" }. ${CHANGE_SUMMARY_RULES}`,
+Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was broken and how it is fixed>" }. ${CHANGE_SUMMARY_RULES}`,
           effort: routeActEffort
         },
         refactor: {
           schema: CHANGE_SUMMARY_SCHEMA,
           prompt: (target) => `You are reviewing a REFACTOR change. Inspect the actual change (${target}).
 ${READ_ONLY_GIT}
-Return { "riskAreas": ["<risk1>", ...], "summary": "<what was refactored and why>" }. ${CHANGE_SUMMARY_RULES}`,
+Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was refactored and why>" }. ${CHANGE_SUMMARY_RULES}`,
           effort: routeActEffort
         },
         config: {
           schema: CHANGE_SUMMARY_SCHEMA,
           prompt: (target) => `You are reviewing a CONFIG change. Inspect the actual change (${target}).
 ${READ_ONLY_GIT}
-Return { "riskAreas": ["<risk1>", ...], "summary": "<what config changed and its effect>" }. ${CHANGE_SUMMARY_RULES}`,
+Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what config changed and its effect>" }. ${CHANGE_SUMMARY_RULES}`,
           effort: routeActEffort
         },
         docs: {
           schema: CHANGE_SUMMARY_SCHEMA,
           prompt: (target) => `You are reviewing a DOCS change. Inspect the actual change (${target}).
 ${READ_ONLY_GIT}
-Return { "riskAreas": ["<risk1>", ...], "summary": "<what documentation was updated>" }. ${CHANGE_SUMMARY_RULES}`,
+Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what documentation was updated>" }. ${CHANGE_SUMMARY_RULES}`,
           effort: routeActEffort
         }
       },
@@ -1108,10 +1245,25 @@ Return { "riskAreas": ["<risk1>", ...], "summary": "<what documentation was upda
       warnings.push(w);
       rt.log(`\u26A0 ${w}`);
     }
-    const lenses = REVIEWER_LENSES[category] ?? DEFAULT_LENSES;
+    const provenanceDocs = docsForChangedFiles(changeSummary.changedFiles);
+    if (provenanceDocs.length > 0) {
+      rt.log(
+        `docs-alignment lens armed: ${provenanceDocs.length} mapped doc surface(s) for this change`
+      );
+    }
+    const baseLenses = REVIEWER_LENSES[category] ?? DEFAULT_LENSES;
+    const lenses = provenanceDocs.length > 0 ? [...baseLenses, "docs-alignment"] : baseLenses;
     const reviewStage = async (_prev, originalItem) => {
       const lens = originalItem;
       reviewersSpawned++;
+      const lensInstructions = lens === "docs-alignment" ? `These committed doc surfaces (repo-relative) document the modules this change touches:
+` + provenanceDocs.map((d) => `- \`${d}\``).join("\n") + `
+
+Read the ACTUAL change first (${READ_ONLY_GIT}), then read EACH mapped surface and check every claim it makes about the changed behavior is still true after this change \u2014 names, defaults, option lists, counts, quoted values, described semantics, worked examples.
+A finding = one claim that is now false or misleading; set \`file\` to the DOC path and quote the stale sentence in \`detail\` with what it should say instead. Severity by consumer impact: an author following the doc builds the wrong thing = high; imprecise but harmless = low.
+Do NOT review the code itself (other lenses do), and do NOT report doc prose the change does not affect.` : `Read the ACTUAL change (you have repo access). Do NOT trust the summary above \u2014 re-derive findings from first principles.
+${READ_ONLY_GIT}
+Focus ONLY on the "${lens}" lens.`;
       const result = await rt.agent(
         `## Role
 You are a specialized code reviewer examining the **${lens}** aspect of this change.
@@ -1126,9 +1278,7 @@ ${changeSummary.summary}
 ${changeSummary.riskAreas.map((r) => `- ${r}`).join("\n")}
 
 ## Instructions
-Read the ACTUAL change (you have repo access). Do NOT trust the summary above \u2014 re-derive findings from first principles.
-${READ_ONLY_GIT}
-Focus ONLY on the "${lens}" lens.
+${lensInstructions}
 
 ## Output
 Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'low'), detail }\``,
@@ -1256,6 +1406,7 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
       verifierProbe: verifierProbeReport,
       leafFence,
       leanRouting,
+      provenanceDocs,
       stats: {
         reviewersSpawned,
         findingsRaw,

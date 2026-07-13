@@ -32,6 +32,16 @@ them. Each reviewer carries a `schema` (defence a) and is told to **re-derive fr
 actual diff, not the summary** (defence b); one reviewer per lens keeps scopes small
 (defence c). A reviewer that dies returns `null` → the lens is skipped and counted:
 
+The lens list is category-driven, plus one MECHANICALLY-triggered extra: the Route
+stage returns the change's `changedFiles`, and when any of them prefix-matches the
+committed doc↔source provenance map (`docs-provenance.ts`, bundled at build time —
+the sandbox has no fs), a **`docs-alignment`** reviewer is appended, scoped to
+exactly the mapped doc surfaces. Its findings are stale prose claims (`file` = the
+doc path), verified like any other finding; the run's `provenanceDocs` output names
+the surfaces it covered (empty = lens skipped, zero extra agents). The pattern to
+copy: *deterministic script code decides whether to spawn; the LLM only judges the
+prose.*
+
 ```ts
 const reviewStage = (lens) => rt.agent(
   `Review the "${lens}" aspect. Read the ACTUAL change — do NOT trust the summary…`,

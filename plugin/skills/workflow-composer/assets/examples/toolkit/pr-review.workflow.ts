@@ -49,6 +49,7 @@ import type {
   LeanRoutingReport,
 } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
+import { docsForChangedFiles } from './docs-provenance.js'
 
 // ---------------------------------------------------------------------------
 // Per-stage effort defaults (Class B/C launch-time tuning — see parseConfig).
@@ -151,8 +152,15 @@ const CHANGE_SUMMARY_SCHEMA = {
   properties: {
     summary: { type: 'string', minLength: 12, maxLength: 1200 },
     riskAreas: { type: 'array', items: { type: 'string' } },
+    // Repo-relative changed paths (`git diff --name-only <range>`). Consumed
+    // MECHANICALLY: prefix-matched against the committed docs-provenance
+    // manifest to decide whether the docs-alignment reviewer lens fires.
+    // maxItems is a schema-level runaway bound, not a truncation license — an
+    // agent that lists fewer files only under-triggers the lens (the Tier 1
+    // docs-contract gate still guards the anchors mechanically).
+    changedFiles: { type: 'array', items: { type: 'string' }, maxItems: 200 },
   },
-  required: ['summary', 'riskAreas'],
+  required: ['summary', 'riskAreas', 'changedFiles'],
   additionalProperties: false,
 } as const satisfies JsonSchema
 
@@ -161,7 +169,8 @@ const CHANGE_SUMMARY_SCHEMA = {
 // the required sibling field. Short/required-first is the same convention the other
 // compositions already follow ("score" then "reason", "verdict" then "summary").
 const CHANGE_SUMMARY_RULES =
-  'Both fields are REQUIRED. Emit "riskAreas" FIRST, then "summary" — at most 500 characters ' +
+  'All three fields are REQUIRED. Emit "changedFiles" FIRST (the repo-relative paths from ' +
+  '`git diff --name-only <range>`, up to 200), then "riskAreas", then "summary" — at most 500 characters ' +
   '(the schema rejects longer). Never satisfy the schema with placeholder values ("test", "a"); ' +
   'if a field is hard to fill, shorten it — do not fake it.'
 
@@ -280,6 +289,10 @@ interface PrReviewOutput {
    *  instructs its agent to inspect the actual diff/repo (READ_ONLY_GIT), so
    *  they genuinely need tool access and would break if fenced to zero tools. */
   leanRouting: LeanRoutingReport
+  /** Doc surfaces the docs-provenance manifest mapped to this change's files.
+   *  Non-empty = the docs-alignment reviewer lens ran, scoped to exactly these
+   *  surfaces; empty = no mapped module touched, lens skipped. */
+  provenanceDocs: readonly string[]
   stats: {
     reviewersSpawned: number
     findingsRaw: number
@@ -489,7 +502,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         prompt: (target) =>
           `You are reviewing a FEATURE change. Inspect the actual change (${target}) and produce a focused summary.\n` +
           `${READ_ONLY_GIT}\n` +
-          `Return { "riskAreas": ["<risk1>", ...], "summary": "<what the feature does>" }. ${CHANGE_SUMMARY_RULES}`,
+          `Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what the feature does>" }. ${CHANGE_SUMMARY_RULES}`,
         effort: routeActEffort,
       },
       bugfix: {
@@ -497,7 +510,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         prompt: (target) =>
           `You are reviewing a BUGFIX change. Inspect the actual change (${target}) — re-derive from first principles.\n` +
           `${READ_ONLY_GIT}\n` +
-          `Return { "riskAreas": ["<risk1>", ...], "summary": "<what was broken and how it is fixed>" }. ${CHANGE_SUMMARY_RULES}`,
+          `Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was broken and how it is fixed>" }. ${CHANGE_SUMMARY_RULES}`,
         effort: routeActEffort,
       },
       refactor: {
@@ -505,7 +518,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         prompt: (target) =>
           `You are reviewing a REFACTOR change. Inspect the actual change (${target}).\n` +
           `${READ_ONLY_GIT}\n` +
-          `Return { "riskAreas": ["<risk1>", ...], "summary": "<what was refactored and why>" }. ${CHANGE_SUMMARY_RULES}`,
+          `Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was refactored and why>" }. ${CHANGE_SUMMARY_RULES}`,
         effort: routeActEffort,
       },
       config: {
@@ -513,7 +526,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         prompt: (target) =>
           `You are reviewing a CONFIG change. Inspect the actual change (${target}).\n` +
           `${READ_ONLY_GIT}\n` +
-          `Return { "riskAreas": ["<risk1>", ...], "summary": "<what config changed and its effect>" }. ${CHANGE_SUMMARY_RULES}`,
+          `Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what config changed and its effect>" }. ${CHANGE_SUMMARY_RULES}`,
         effort: routeActEffort,
       },
       docs: {
@@ -521,7 +534,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         prompt: (target) =>
           `You are reviewing a DOCS change. Inspect the actual change (${target}).\n` +
           `${READ_ONLY_GIT}\n` +
-          `Return { "riskAreas": ["<risk1>", ...], "summary": "<what documentation was updated>" }. ${CHANGE_SUMMARY_RULES}`,
+          `Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what documentation was updated>" }. ${CHANGE_SUMMARY_RULES}`,
         effort: routeActEffort,
       },
     },
@@ -574,7 +587,23 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   // Defence (1): schema enforced on reviewer output (FINDINGS_SCHEMA).
   // -------------------------------------------------------------------------
 
-  const lenses = REVIEWER_LENSES[category] ?? DEFAULT_LENSES
+  // Provenance-triggered docs-alignment lens (Tier 2 of the doc-alignment
+  // defence). MECHANICAL trigger, zero extra agents when nothing mapped is
+  // touched: the Route stage's changedFiles are prefix-matched against the
+  // committed docs-provenance manifest (bundled at build time — the sandbox
+  // has no fs); a hit appends ONE extra reviewer scoped to the mapped
+  // surfaces. The judgment (is the prose still true?) stays with the LLM
+  // reviewer; the decision to spawn it is deterministic script code.
+  const provenanceDocs = docsForChangedFiles(changeSummary.changedFiles)
+  if (provenanceDocs.length > 0) {
+    rt.log(
+      `docs-alignment lens armed: ${provenanceDocs.length} mapped doc surface(s) for this change`,
+    )
+  }
+
+  const baseLenses = REVIEWER_LENSES[category] ?? DEFAULT_LENSES
+  const lenses =
+    provenanceDocs.length > 0 ? [...baseLenses, 'docs-alignment'] : baseLenses
 
   // reviewStage: for a given lens, spawn one reviewer agent with focused scope.
   // The stage receives the lens as originalItem (items = lenses).
@@ -585,6 +614,23 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     const lens = originalItem as string
 
     reviewersSpawned++
+
+    // The docs-alignment lens reviews the mapped DOC SURFACES against the
+    // change, not the change's code: its findings are stale claims in prose.
+    const lensInstructions =
+      lens === 'docs-alignment'
+        ? `These committed doc surfaces (repo-relative) document the modules this change touches:\n` +
+          provenanceDocs.map((d) => `- \`${d}\``).join('\n') +
+          `\n\nRead the ACTUAL change first (${READ_ONLY_GIT}), then read EACH mapped surface and check ` +
+          `every claim it makes about the changed behavior is still true after this change — names, ` +
+          `defaults, option lists, counts, quoted values, described semantics, worked examples.\n` +
+          `A finding = one claim that is now false or misleading; set \`file\` to the DOC path and quote ` +
+          `the stale sentence in \`detail\` with what it should say instead. Severity by consumer impact: ` +
+          `an author following the doc builds the wrong thing = high; imprecise but harmless = low.\n` +
+          `Do NOT review the code itself (other lenses do), and do NOT report doc prose the change does not affect.`
+        : `Read the ACTUAL change (you have repo access). Do NOT trust the summary above — re-derive findings from first principles.\n` +
+          `${READ_ONLY_GIT}\n` +
+          `Focus ONLY on the "${lens}" lens.`
 
     // Defence (1): schema enforces the findings shape at this consumed boundary.
     // Prompt is STRUCTURED MARKDOWN (## sections, bullets), not one \n-joined wall:
@@ -598,9 +644,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       `### Summary (from the routing stage)\n${changeSummary.summary}\n\n` +
       `### Risk areas\n${changeSummary.riskAreas.map((r) => `- ${r}`).join('\n')}\n\n` +
       `## Instructions\n` +
-      `Read the ACTUAL change (you have repo access). Do NOT trust the summary above — re-derive findings from first principles.\n` +
-      `${READ_ONLY_GIT}\n` +
-      `Focus ONLY on the "${lens}" lens.\n\n` +
+      `${lensInstructions}\n\n` +
       `## Output\n` +
       `Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'low'), detail }\``,
       {
@@ -781,6 +825,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     verifierProbe: verifierProbeReport,
     leafFence,
     leanRouting,
+    provenanceDocs,
     stats: {
       reviewersSpawned,
       findingsRaw,

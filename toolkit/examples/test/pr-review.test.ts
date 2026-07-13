@@ -58,7 +58,7 @@ function makeHappyPathRuntime(): FakeRuntime {
 
       // (4) Act stage (change summary) — "you are reviewing a <category> change"
       if (p.includes('you are reviewing a')) {
-        return { summary: 'Fixes null pointer in payment processor', riskAreas: ['payment', 'auth'] }
+        return { summary: 'Fixes null pointer in payment processor', riskAreas: ['payment', 'auth'], changedFiles: ['src/app.ts'] }
       }
 
       // (5) Classifier — "classify it into exactly one category"
@@ -67,7 +67,7 @@ function makeHappyPathRuntime(): FakeRuntime {
       }
 
       // Fallback
-      return { summary: 'Change summary', riskAreas: [] }
+      return { summary: 'Change summary', riskAreas: [], changedFiles: ['src/app.ts'] }
     },
   })
 }
@@ -239,7 +239,7 @@ describe('pr-review null reviewer handling', () => {
 
         // (4) Act stage (change summary)
         if (p.includes('you are reviewing a')) {
-          return { summary: 'Bugfix summary', riskAreas: ['core'] }
+          return { summary: 'Bugfix summary', riskAreas: ['core'], changedFiles: ['src/app.ts'] }
         }
 
         // (5) Classifier
@@ -247,7 +247,7 @@ describe('pr-review null reviewer handling', () => {
           return { category: 'bugfix' }
         }
 
-        return { summary: 'Default summary', riskAreas: [] }
+        return { summary: 'Default summary', riskAreas: [], changedFiles: ['src/app.ts'] }
       },
     })
 
@@ -292,7 +292,7 @@ describe('pr-review finding refutation', () => {
 
         // (4) Act stage (change summary)
         if (p.includes('you are reviewing a')) {
-          return { summary: 'Feature summary', riskAreas: ['api'] }
+          return { summary: 'Feature summary', riskAreas: ['api'], changedFiles: ['src/app.ts'] }
         }
 
         // (5) Classifier
@@ -300,7 +300,7 @@ describe('pr-review finding refutation', () => {
           return { category: 'feature' }
         }
 
-        return { summary: 'Default', riskAreas: [] }
+        return { summary: 'Default', riskAreas: [], changedFiles: ['src/app.ts'] }
       },
     })
 
@@ -373,7 +373,7 @@ describe('pr-review cap-truncated findings (unverified-by-cap)', () => {
 
         // (4) Act stage (change summary)
         if (p.includes('you are reviewing a')) {
-          return { summary: 'Wide-reaching bugfix', riskAreas: ['core'] }
+          return { summary: 'Wide-reaching bugfix', riskAreas: ['core'], changedFiles: ['src/app.ts'] }
         }
 
         // (5) Classifier
@@ -381,7 +381,7 @@ describe('pr-review cap-truncated findings (unverified-by-cap)', () => {
           return { category: 'bugfix' }
         }
 
-        return { summary: 'Default summary', riskAreas: [] }
+        return { summary: 'Default summary', riskAreas: [], changedFiles: ['src/app.ts'] }
       },
     })
 
@@ -544,7 +544,7 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
         if (p.includes('classify it into exactly one category')) {
           return { category: 'bugfix' }
         }
-        return { summary: 'Change summary', riskAreas: [] }
+        return { summary: 'Change summary', riskAreas: [], changedFiles: ['src/app.ts'] }
       },
     })
     const result = await wf.run(
@@ -665,7 +665,7 @@ describe('pr-review verifier routing (agentTypes.verify)', () => {
         if (p.includes('classify it into exactly one category')) {
           return { category: 'bugfix' }
         }
-        return { summary: 'Change summary here', riskAreas: [] }
+        return { summary: 'Change summary here', riskAreas: [], changedFiles: ['src/app.ts'] }
       },
     })
     const result = await wf.run(
@@ -770,9 +770,9 @@ describe('pr-review leaf-agent fence (messaging)', () => {
         if (p.includes('adversarially verify')) return { verdict: 'confirmed', reason: 'r' }
         if (p.includes('synthesizing a code review')) return { verdict: 'approve', summary: 'Fine' }
         if (p.includes('you are a specialized code reviewer')) return { findings: [] }
-        if (p.includes('you are reviewing a')) return { summary: 'Summary text here', riskAreas: ['a'] }
+        if (p.includes('you are reviewing a')) return { summary: 'Summary text here', riskAreas: ['a'], changedFiles: ['src/app.ts'] }
         if (p.includes('classify it into exactly one category')) return { category: 'bugfix' }
-        return { summary: 'Default', riskAreas: [] }
+        return { summary: 'Default', riskAreas: [], changedFiles: ['src/app.ts'] }
       },
     })
     const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
@@ -794,9 +794,9 @@ describe('pr-review leaf-agent fence (messaging)', () => {
         if (p.includes('adversarially verify')) return { verdict: 'confirmed', reason: 'r' }
         if (p.includes('synthesizing a code review')) return { verdict: 'approve', summary: 'Fine' }
         if (p.includes('you are a specialized code reviewer')) return { findings: [] }
-        if (p.includes('you are reviewing a')) return { summary: 'Summary text here', riskAreas: ['a'] }
+        if (p.includes('you are reviewing a')) return { summary: 'Summary text here', riskAreas: ['a'], changedFiles: ['src/app.ts'] }
         if (p.includes('classify it into exactly one category')) return { category: 'bugfix' }
-        return { summary: 'Default', riskAreas: [] }
+        return { summary: 'Default', riskAreas: [], changedFiles: ['src/app.ts'] }
       },
     })
     await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
@@ -883,9 +883,9 @@ describe('pr-review lean routing (Synthesize)', () => {
         if (p.includes('adversarially verify')) return { verdict: 'confirmed', reason: 'r' }
         if (p.includes('synthesizing a code review')) return { verdict: 'approve', summary: 'Fine' }
         if (p.includes('you are a specialized code reviewer')) return { findings: [] }
-        if (p.includes('you are reviewing a')) return { summary: 'Summary text here', riskAreas: ['a'] }
+        if (p.includes('you are reviewing a')) return { summary: 'Summary text here', riskAreas: ['a'], changedFiles: ['src/app.ts'] }
         if (p.includes('classify it into exactly one category')) return { category: 'bugfix' }
-        return { summary: 'Default', riskAreas: [] }
+        return { summary: 'Default', riskAreas: [], changedFiles: ['src/app.ts'] }
       },
     })
     const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
@@ -1038,6 +1038,69 @@ describe('pr-review effort defaults and overrides', () => {
 // junk that silently seeded the reviewers. The guard must surface it loudly.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Test: provenance-triggered docs-alignment lens (Tier 2 doc-alignment defence)
+// ---------------------------------------------------------------------------
+
+describe('pr-review docs-alignment lens (docs-provenance manifest)', () => {
+  function runtimeWithChangedFiles(changedFiles: string[]): FakeRuntime {
+    return new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+        if (p.includes('availability probe')) return 'PROBE_OK'
+        if (p.includes('adversarially verify')) return { verdict: 'confirmed', reason: 'r' }
+        if (p.includes('synthesizing a code review')) return { verdict: 'approve', summary: 'No blocking findings' }
+        if (p.includes('you are a specialized code reviewer')) return { findings: [] }
+        if (p.includes('you are reviewing a'))
+          return { summary: 'Reworks the lean-routing probe prompt.', riskAreas: ['routing'], changedFiles }
+        if (p.includes('classify it into exactly one category')) return { category: 'refactor' }
+        return { summary: 'Fallback change summary', riskAreas: [], changedFiles: [] }
+      },
+    })
+  }
+
+  const reviewerLabelsOf = (rt: FakeRuntime): string[] =>
+    rt.calls
+      .map((c) => c.opts?.label)
+      .filter((l): l is string => typeof l === 'string' && l.startsWith('pr-review:reviewer:'))
+
+  it('appends the docs-alignment lens when a mapped source module is touched', async () => {
+    const rt = runtimeWithChangedFiles(['toolkit/packages/patterns/src/lean-routing.ts'])
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+
+    const labels = reviewerLabelsOf(rt)
+    expect(labels).toContain('pr-review:reviewer:docs-alignment')
+    // The refactor base lenses all still run — the docs lens is ADDITIVE.
+    expect(labels).toHaveLength(5)
+
+    // The output names the exact surfaces the lens was scoped to.
+    expect(result.provenanceDocs).toContain(
+      'plugin/skills/workflow-composer/references/model-and-agent-routing.md',
+    )
+  })
+
+  it('the docs-alignment reviewer prompt lists the mapped doc surfaces, not code-lens instructions', async () => {
+    const rt = runtimeWithChangedFiles(['toolkit/packages/patterns/src/lean-routing.ts'])
+    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+
+    const call = rt.calls.find((c) => c.opts?.label === 'pr-review:reviewer:docs-alignment')
+    expect(call).toBeDefined()
+    expect(call?.prompt).toContain('plugin/skills/workflow-composer/references/model-and-agent-routing.md')
+    expect(call?.prompt).toContain('still true after this change')
+    expect(call?.prompt).not.toContain('Focus ONLY on the "docs-alignment" lens')
+  })
+
+  it('skips the lens entirely when nothing mapped is touched (zero extra agents)', async () => {
+    const rt = runtimeWithChangedFiles(['server/app.ts', 'some/other/file.ts'])
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+
+    const labels = reviewerLabelsOf(rt)
+    expect(labels).not.toContain('pr-review:reviewer:docs-alignment')
+    expect(labels).toHaveLength(4)
+    expect(result.provenanceDocs).toEqual([])
+  })
+})
+
 describe('pr-review degenerate change-summary guard', () => {
   function runtimeWithActOutput(act: unknown): FakeRuntime {
     return new FakeRuntime({
@@ -1048,7 +1111,7 @@ describe('pr-review degenerate change-summary guard', () => {
         if (p.includes('you are a specialized code reviewer')) return { findings: [] }
         if (p.includes('you are reviewing a')) return act
         if (p.includes('classify it into exactly one category')) return { category: 'feature' }
-        return { summary: 'Fallback change summary', riskAreas: [] }
+        return { summary: 'Fallback change summary', riskAreas: [], changedFiles: ['src/app.ts'] }
       },
     })
   }
@@ -1060,12 +1123,12 @@ describe('pr-review degenerate change-summary guard', () => {
   }
 
   it('flags the observed schema-capitulation junk (placeholder summary + 1-char risk areas)', async () => {
-    const warnings = await warningsFor({ summary: 'test', riskAreas: ['a', 'b'] })
+    const warnings = await warningsFor({ summary: 'test', riskAreas: ['a', 'b'], changedFiles: ['src/app.ts'] })
     expect(warnings.some((w) => w.includes('degenerate change summary'))).toBe(true)
   })
 
   it('flags junk riskAreas even when the summary itself is long enough', async () => {
-    const warnings = await warningsFor({ summary: 'A real, sufficiently long summary of the change.', riskAreas: ['a', 'b'] })
+    const warnings = await warningsFor({ summary: 'A real, sufficiently long summary of the change.', riskAreas: ['a', 'b'], changedFiles: ['src/app.ts'] })
     expect(warnings.some((w) => w.includes('degenerate change summary'))).toBe(true)
   })
 
@@ -1073,12 +1136,13 @@ describe('pr-review degenerate change-summary guard', () => {
     const warnings = await warningsFor({
       summary: 'Adds copy buttons across the inspector panels.',
       riskAreas: ['clipboard fallback', 'replay fold gating'],
+      changedFiles: ['src/app.ts'],
     })
     expect(warnings.some((w) => w.includes('degenerate change summary'))).toBe(false)
   })
 
   it('does not flag an empty riskAreas list (legit for a low-risk docs change)', async () => {
-    const warnings = await warningsFor({ summary: 'Updates the README quickstart section.', riskAreas: [] })
+    const warnings = await warningsFor({ summary: 'Updates the README quickstart section.', riskAreas: [], changedFiles: ['src/app.ts'] })
     expect(warnings.some((w) => w.includes('degenerate change summary'))).toBe(false)
   })
 })
