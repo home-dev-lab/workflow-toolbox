@@ -239,6 +239,17 @@
     array), so it is the one stage in that composition routed to `lean`; Classify, Review,
     and Verify all explicitly instruct their agents to re-derive from the actual diff
     (the fresh-evidence defence), so they stay on `leaf`/standard instead.
+  - **Probing a LOCAL agentType directly? Pass the LOCAL probe prompt.** `probeAgentType`'s
+    DEFAULT prompt is written for external-CLI bridges — it demands "run the task through
+    your external CLI — do NOT answer from your own knowledge", which a bridge must honor
+    end-to-end (the anti-shortcut defence: a wrapper that self-answers the probe would turn
+    it into a false positive). A locally-registered type must do the OPPOSITE: a tool-less
+    `lean` agent honestly refuses that instruction, so under the bridge prompt the probe
+    reads a perfectly available type as unavailable. `withLeafFence` and `withLeanRouting`
+    already pass the right prompt internally; if you call `probeAgentType` yourself for a
+    locally-registered type (e.g. your own fenced `.md`), pass
+    `{ probePrompt: LOCAL_AGENT_PROBE_PROMPT }` (exported by `@workflow-toolbox/patterns`)
+    and keep the default only for external bridges.
   - **Cross-family verifier** (`codex:codex-rescue`, `workflow-toolbox:opencode-verifier`) —
     opt-in decorrelation for a review/verify role, covered in its own bullets above. Not a
     default; a per-workflow proposal.
