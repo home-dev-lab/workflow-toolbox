@@ -32,6 +32,7 @@
 //  (4) UNTRUSTED EMBEDDING — caller claims/sources are data, never instructions.
 
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
+import { MODEL_ALIASES } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
 import { resolveVerifierEffort } from '@workflow-toolbox/std'
 import { adversarialVerification, collectTrail, probeAgentType } from '@workflow-toolbox/patterns'
@@ -75,9 +76,6 @@ export interface CrossModelVerifyInput {
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
 }
 
-// opus first = current BEST_MODEL / default; fable last = export-control suspended
-// (still a valid alias). Order is presentational — validation is membership-only.
-const MODEL_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'] as const
 
 // ---------------------------------------------------------------------------
 // Untrusted-text embedding — caller text is data, never instructions.

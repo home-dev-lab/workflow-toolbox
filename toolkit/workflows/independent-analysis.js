@@ -46,6 +46,7 @@ var __wt = (() => {
 
   // ../packages/runtime/src/constants.ts
   var BEST_MODEL = "opus";
+  var MODEL_ALIASES = ["opus", "sonnet", "haiku", "fable"];
 
   // ../packages/runtime/src/digest.ts
   var DIGEST_PREFIX = "[wt:digest]";
@@ -795,7 +796,6 @@ ${renderClaim(claim)}`;
   var ANALYZE_TASK_EFFORT = "high";
   var ANALYZE_SYNTHESIS_EFFORT = "medium";
   var VERIFY_EFFORT_DEFAULT = "high";
-  var MODEL_ALIASES = ["opus", "sonnet", "haiku", "fable"];
   var LENS_SCHEMA = {
     type: "object",
     properties: {

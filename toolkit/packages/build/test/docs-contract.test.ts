@@ -305,6 +305,16 @@ describe('docs-contract — value anchors (imported, never re-typed)', () => {
     }
     const artifactCount = readdirSync(join(REPO_ROOT, 'toolkit/workflows'))
       .filter((f) => f.endsWith('.js')).length
+    const wrong: string[] = []
+    // The lexicon must cover the current fleet size, or spelled-out claims
+    // silently stop matching — fail LOUD instead of going quiet at 26.
+    const lexiconMax = Math.max(...Object.values(WORD_COUNTS))
+    if (artifactCount > lexiconMax) {
+      wrong.push(
+        `WORD_COUNTS lexicon tops out at ${lexiconMax} but toolkit/workflows has ` +
+        `${artifactCount} artifacts — extend the lexicon so spelled-out count claims stay checkable`,
+      )
+    }
     const NUM = Object.keys(WORD_COUNTS).join('|')
     // Full-set phrasings only: a qualified subset ("five core-pattern
     // compositions") has a non-matching word between the number and the noun.
@@ -313,7 +323,6 @@ describe('docs-contract — value anchors (imported, never re-typed)', () => {
       `|\\b(${NUM}|\\d+)\\s+shipped examples\\b`,
       'gi',
     )
-    const wrong: string[] = []
     for (const surface of SURFACES.filter((s) => existsSync(join(REPO_ROOT, s)))) {
       const md = read(surface)
       for (const m of md.matchAll(CLAIM)) {

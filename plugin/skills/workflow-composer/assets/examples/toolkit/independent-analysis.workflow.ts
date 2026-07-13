@@ -31,6 +31,7 @@
 // portable cross-model verifier prefer an MCP→model endpoint. See cross-model-verify.
 
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
+import { MODEL_ALIASES } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
 import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import {
@@ -99,10 +100,6 @@ export interface IndependentAnalysisInput {
   messaging: boolean | null
 }
 
-// opus first = the current BEST_MODEL / default; fable last = suspended by export
-// control since 2026-06-12 (still a valid alias for when it returns — see
-// runtime/constants.ts). Order is presentational: validation is membership-only.
-const MODEL_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'] as const
 
 // ---------------------------------------------------------------------------
 // JSON Schemas (as-const + FromSchema for type safety at consumed boundaries)

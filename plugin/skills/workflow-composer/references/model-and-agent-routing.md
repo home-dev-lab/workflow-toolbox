@@ -18,6 +18,10 @@
     policy; an alias that is not callable in the consumer's environment errors at
     runtime. The toolkit's `BEST_MODEL` tracks the strongest *reliably-callable* tier
     (currently `'opus'`), so the default is safe; the trap is only a hand-override.
+  - **Validating a model-selection INPUT** (e.g. a `verifierModel` arg): check it
+    against the runtime's exported `MODEL_ALIASES` allowlist — the closed set of
+    user-passable aliases (deliberately stricter than the open `ModelAlias` type;
+    `'inherit'` and raw model ids are excluded).
 - **Effort tiering (the second axis — pick it WITH the model, per stage).** Subagents
   inherit the session's reasoning effort unless a stage passes an explicit override
   (`effort` on `agent()`, or the per-role `<role>Effort` knobs every pattern exposes).

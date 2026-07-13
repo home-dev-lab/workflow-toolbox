@@ -17,3 +17,14 @@ import type { ModelAlias } from './types.js'
  *  bundled workflow artifacts by esbuild, so changing it re-emits committed
  *  artifacts (the artifact-identity gate enforces the regeneration). */
 export const BEST_MODEL: ModelAlias = 'opus'
+
+/** The closed allowlist of user-passable model aliases, for compositions that
+ *  validate a model-selection INPUT (e.g. a `verifierModel` arg). Deliberately
+ *  stricter than the open `ModelAlias` type: `'inherit'` and raw model ids are
+ *  excluded — this is a validation allowlist, not the type's full domain.
+ *  `'fable'` stays listed while its tier is suspended (see BEST_MODEL above):
+ *  passing it errors at runtime, but the alias itself remains well-formed.
+ *
+ *  NOTE: a VALUE import — inlined into bundled workflow artifacts by esbuild,
+ *  so changing it re-emits committed artifacts (artifact-identity gate). */
+export const MODEL_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'] as const

@@ -15,7 +15,7 @@ export type {
   WorkflowRuntime,
 } from './types.js'
 
-export { BEST_MODEL } from './constants.js'
+export { BEST_MODEL, MODEL_ALIASES } from './constants.js'
 
 export { DIGEST_PREFIX, LOOP_STAGE, LOOP_ITER_MARKER, isLoopIterLabel, formatDigest, parseDigest } from './digest.js'
 export type { PhaseDigest, PatternName, PatternCounts, TypedPhaseDigest } from './digest.js'
