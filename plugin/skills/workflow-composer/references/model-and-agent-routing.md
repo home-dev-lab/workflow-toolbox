@@ -203,6 +203,45 @@
     every new workflow; `pr-review` and `independent-analysis` are retrofitted as the
     reference examples — the remaining bundled `toolkit/examples/*.workflow.ts` compositions
     have not been retrofitted yet (adopt the same one-line wrap when you touch them).
+  - **Ambient-context cost is a SEPARATE axis from capability — `lean` addresses it, `leaf`
+    doesn't.** Every agent a toolkit workflow spawns is injected with the FULL ambient
+    context of the launching session (every rule, the memory index, the whole skill/MCP
+    tool listing) as text on every single spawn, paid as a cache-write per agent — even a
+    `leaf`-fenced agent still pays this, since `disallowedTools` only removes SendMessage,
+    not the rest of the injected text. A role whose entire task is inline in its prompt (it
+    never reads a file, runs a command, or calls any tool) gains nothing from that
+    injection; it only pays for it.
+- **Which agentType for which role — standard / leaf / lean / cross-family verifier.**
+  - **Standard subagent (no `agentType`)** — the default. Use for any role that genuinely
+    needs tools (reading the repo, running git, calling an MCP) or inter-agent messaging.
+    Most reviewer/verifier roles that re-derive findings from the actual diff belong here
+    (or on `leaf`, below) — NOT on `lean`.
+  - **`workflow-toolbox:leaf`** (`disallowedTools: SendMessage`) — the toolkit's blanket
+    default fence (`withLeafFence`, above). Denies SendMessage only; keeps every other
+    tool. Applied to EVERY agent a workflow spawns, unconditionally, unless a role
+    overrides it or the run opts out via `messaging: true`.
+  - **`workflow-toolbox:lean`** (empty `tools` allowlist + `disallowedTools: SendMessage`,
+    ships as `plugin/agents/lean.md`) — a minimal-ambient-context agentType for provably
+    PURE-REASONING roles: classify / vote / judge / score / dedup / synthesize calls whose
+    entire task content already arrives inline in the prompt. Route via `withLeanRouting`
+    from `@workflow-toolbox/patterns` (mirrors `withLeafFence`'s exact probe/graceful-
+    fallback mechanics — `probeAgentType` once, degrade loudly to the wrapped runtime's own
+    default if unavailable). **Unlike `withLeafFence`, this is SELECTIVE, not blanket**: call
+    it once to obtain a separate lean-defaulting runtime, then route ONLY the call sites you
+    have verified are pure through it — every other call keeps using the workflow's normal
+    (tool-capable) runtime. Purity is a per-CALL-SITE judgment, not a per-pattern one: the
+    same pattern (e.g. `adversarialVerification`) can be pure in one composition and impure
+    in another, because purity depends on what the caller's `renderClaim`/prompt actually
+    asks the agent to do. **Never route a call whose prompt contains an "inspect the repo" /
+    "read the diff" / "run git" instruction** — that call needs real tool access and would
+    silently break if fenced to zero tools. `pr-review`'s Synthesize stage is the reference
+    example: its prompt is 100% inline (the change summary + a JSON-stringified findings
+    array), so it is the one stage in that composition routed to `lean`; Classify, Review,
+    and Verify all explicitly instruct their agents to re-derive from the actual diff
+    (the fresh-evidence defence), so they stay on `leaf`/standard instead.
+  - **Cross-family verifier** (`codex:codex-rescue`, `workflow-toolbox:opencode-verifier`) —
+    opt-in decorrelation for a review/verify role, covered in its own bullets above. Not a
+    default; a per-workflow proposal.
 - **When to define an `.md` vs inline the prompt.** Inline when the leaf is a generic worker
   the default subagent's capabilities already fit. Define a registered agentType `.md` when you
   need a capability fence (above), reusable discipline across workflows, or a specific

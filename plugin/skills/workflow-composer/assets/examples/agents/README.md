@@ -68,6 +68,21 @@ worker: safe, but with no review lenses, no refute-first discipline, no model/ef
 for the role. `reviewer.md` / `verifier.md` keep that same safety property (still no
 messaging surface) while adding the domain-specific behavior a generic leaf lacks.
 
+## Related: `lean`, for pure-reasoning roles (not an example asset — ships as a plugin agent)
+
+`reviewer.md` / `verifier.md` above address WHO reviews (a specialist persona); a
+different, orthogonal knob addresses HOW MUCH each spawn costs. Every agent — including a
+`leaf`-fenced one — is still injected with the full ambient session context (rules, memory
+index, the whole skill/MCP listing) as text on every spawn; a role whose entire task is
+already inline in its prompt (classify / vote / judge / score / dedup / synthesize; never
+reads a file, runs a command, or calls a tool) gains nothing from that injection. The
+toolkit ships `plugin/agents/lean.md` (an empty `tools` allowlist + `disallowedTools:
+SendMessage`) plus `withLeanRouting` (`@workflow-toolbox/patterns`) to route just those
+call sites through it — selectively, per call site, never blanket like the leaf fence. See
+[`../../references/model-and-agent-routing.md`](../../references/model-and-agent-routing.md)'s
+"Which agentType for which role" section for the full standard/leaf/lean/cross-family
+picture, and `pr-review.workflow.ts`'s Synthesize stage for the reference wiring.
+
 The residual case these files are the direct mitigation for: launching the workflow
 in-session (rather than via a headless/server launch) from a conversation that itself has
 other live agents addressable by name. Where that combination is a concern, either launch

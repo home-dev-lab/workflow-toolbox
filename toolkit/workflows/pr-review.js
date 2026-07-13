@@ -5,7 +5,7 @@ export const meta = {
   "phases": [
     {
       "title": "Fence",
-      "detail": "Resolve the default leaf-agent fence (SendMessage denied by default)"
+      "detail": "Resolve the default leaf-agent fence (SendMessage denied by default) and the lean-routing default for the pure Synthesize stage"
     },
     {
       "title": "Probe",
@@ -416,6 +416,29 @@ ${prompt}` : prompt;
     const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
     if (probe.agentType === void 0) {
       rt.log(`[leaf-fence] \u26A0 ${FENCE_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
+    }
+    return {
+      rt: withAgentDefaults(rt, defaults),
+      report: {
+        resolvedAgentType: probe.agentType ?? null,
+        probe: { requested: agentType, available: probe.available, reason: probe.reason }
+      }
+    };
+  }
+
+  // ../packages/patterns/src/lean-routing.ts
+  var LEAN_AGENT_TYPE = "workflow-toolbox:lean";
+  var ROUTING_UNAVAILABLE_MESSAGE = "routing UNAVAILABLE \u2014 calls through this runtime keep the FULL ambient context this run (no lean savings)";
+  async function withLeanRouting(rt, options = {}) {
+    const { phase, agentType = LEAN_AGENT_TYPE, disabled = false, perAgent } = options;
+    if (disabled) {
+      return { rt, report: { resolvedAgentType: null, probe: null } };
+    }
+    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
+    const probe = await probeAgentType(probeRt, agentType, phase !== void 0 ? { phase } : {});
+    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
+    if (probe.agentType === void 0) {
+      rt.log(`[lean-routing] \u26A0 ${ROUTING_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
     }
     return {
       rt: withAgentDefaults(rt, defaults),
@@ -983,7 +1006,13 @@ ${renderClaim(claim)}`;
       // contradicting perAgent's own "every agent inherits" contract.
       ...input.perAgent !== null ? { perAgent: input.perAgent } : {}
     });
+    const { rt: leanBase, report: leanRouting } = await withLeanRouting(rt0, {
+      phase: "Fence",
+      disabled: input.messaging === true,
+      ...input.perAgent !== null ? { perAgent: input.perAgent } : {}
+    });
     const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0;
+    const leanRt = input.perAgent !== null ? withAgentDefaults(leanBase, input.perAgent) : leanBase;
     const warnings = [];
     let reviewersSpawned = 0;
     let dropped = 0;
@@ -1196,7 +1225,7 @@ ${changeSummary.summary}
 ## Output
 Produce an overall verdict: "approve" if no high-severity confirmed findings remain, "request-changes" otherwise. Include a concise summary.
 Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" }`;
-    const synthesisAgent = await rt.agent(synthesisPrompt, {
+    const synthesisAgent = await leanRt.agent(synthesisPrompt, {
       schema: SYNTHESIS_SCHEMA,
       label: "pr-review:synthesize",
       phase: "Synthesize",
@@ -1219,6 +1248,7 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
       verifierType: resolvedVerifierType,
       verifierProbe: verifierProbeReport,
       leafFence,
+      leanRouting,
       stats: {
         reviewersSpawned,
         findingsRaw,
@@ -1236,7 +1266,7 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
       description: "Multi-lens code review of a change set: classifies the change, spawns specialized reviewers, adversarially verifies findings, and synthesizes a verdict.",
       whenToUse: "Use when you need a structured, adversarially-verified code review of a git ref range or change description.",
       phases: [
-        { title: "Fence", detail: "Resolve the default leaf-agent fence (SendMessage denied by default)" },
+        { title: "Fence", detail: "Resolve the default leaf-agent fence (SendMessage denied by default) and the lean-routing default for the pure Synthesize stage" },
         { title: "Probe", detail: "Resolve the requested reviewer agentType (graceful Claude fallback)" },
         { title: "Route", detail: "Classify the change and produce a targeted summary" },
         { title: "Review", detail: "Spawn specialized reviewer agents per lens" },

@@ -38,6 +38,7 @@ import {
   collectTrail,
   probeAgentType,
   withLeafFence,
+  withLeanRouting,
 } from '@workflow-toolbox/patterns'
 import type {
   ClaimVerdict,
@@ -45,6 +46,7 @@ import type {
   AgentTypeProbeReport,
   TrailRecord,
   LeafFenceReport,
+  LeanRoutingReport,
 } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
 
@@ -271,6 +273,13 @@ interface PrReviewOutput {
   /** Leaf-agent fence outcome (withLeafFence): whether every spawned agent
    *  defaulted to the SendMessage-denying agentType, or degraded/opted out. */
   leafFence: LeafFenceReport
+  /** Lean-routing outcome (withLeanRouting): whether the Synthesize stage —
+   *  the run's one provably pure, tool-free stage — defaulted to the
+   *  minimal-ambient-context agentType, or degraded/opted out. Classify,
+   *  Review, and Verify are NOT routed here: each of those prompts explicitly
+   *  instructs its agent to inspect the actual diff/repo (READ_ONLY_GIT), so
+   *  they genuinely need tool access and would break if fenced to zero tools. */
+  leanRouting: LeanRoutingReport
   stats: {
     reviewersSpawned: number
     findingsRaw: number
@@ -378,10 +387,34 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     ...(input.perAgent !== null ? { perAgent: input.perAgent } : {}),
   })
 
+  // Lean routing — a SEPARATE, SELECTIVE default (unlike the blanket leaf
+  // fence above): resolved once here on the fenced `rt0`, but only actually
+  // applied to the one stage below that is provably pure (Synthesize — its
+  // entire prompt is inline summary + JSON, no "inspect the diff" instruction
+  // anywhere in it). Classify/Review/Verify all explicitly instruct their
+  // agents to read the actual change via READ_ONLY_GIT, so they keep the
+  // normal (tool-capable) runtime — routing them here would strip the very
+  // tool access their fresh-evidence defence depends on. See lean-routing.ts.
+  // `messaging: true` disables this too: `lean.md` also denies SendMessage
+  // (empty tools allowlist), so honoring a run's explicit request for
+  // messaging-capable agents means standing BOTH capability fences down, not
+  // just the leaf one — a silent SendMessage denial on the one call this knob
+  // was meant to exempt would be exactly the regression withLeafFence guards
+  // against elsewhere.
+  const { rt: leanBase, report: leanRouting } = await withLeanRouting(rt0, {
+    phase: 'Fence',
+    disabled: input.messaging === true,
+    ...(input.perAgent !== null ? { perAgent: input.perAgent } : {}),
+  })
+
   // Class-A one-wiring-point: wrap the runtime ONCE so the blanket per-agent
   // defaults reach every agent in every pattern below (per-call/pattern opts
   // still win). When no perAgent was supplied this is a no-op passthrough.
+  // Applied identically to BOTH the fenced runtime (rt, used by every
+  // tool-needing stage) and the lean-defaulting runtime (leanRt, used ONLY by
+  // Synthesize below) so a workflow author's blanket override wins on either.
   const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0
+  const leanRt = input.perAgent !== null ? withAgentDefaults(leanBase, input.perAgent) : leanBase
   const warnings: string[] = []
   let reviewersSpawned = 0
   let dropped = 0
@@ -717,7 +750,10 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     `"request-changes" otherwise. Include a concise summary.\n` +
     `Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" }`
 
-  const synthesisAgent = await rt.agent<SynthesisOutput>(synthesisPrompt, {
+  // Routed through leanRt: this prompt's entire content (change summary +
+  // JSON-stringified verified findings) is already inline above — the agent
+  // never needs to inspect the repo, so it is the run's one lean-eligible call.
+  const synthesisAgent = await leanRt.agent<SynthesisOutput>(synthesisPrompt, {
     schema: SYNTHESIS_SCHEMA,
     label: 'pr-review:synthesize',
     phase: 'Synthesize',
@@ -744,6 +780,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     verifierType: resolvedVerifierType,
     verifierProbe: verifierProbeReport,
     leafFence,
+    leanRouting,
     stats: {
       reviewersSpawned,
       findingsRaw,
@@ -766,7 +803,7 @@ export default defineWorkflow({
     description: 'Multi-lens code review of a change set: classifies the change, spawns specialized reviewers, adversarially verifies findings, and synthesizes a verdict.',
     whenToUse: 'Use when you need a structured, adversarially-verified code review of a git ref range or change description.',
     phases: [
-      { title: 'Fence', detail: 'Resolve the default leaf-agent fence (SendMessage denied by default)' },
+      { title: 'Fence', detail: 'Resolve the default leaf-agent fence (SendMessage denied by default) and the lean-routing default for the pure Synthesize stage' },
       { title: 'Probe', detail: 'Resolve the requested reviewer agentType (graceful Claude fallback)' },
       { title: 'Route', detail: 'Classify the change and produce a targeted summary' },
       { title: 'Review', detail: 'Spawn specialized reviewer agents per lens' },

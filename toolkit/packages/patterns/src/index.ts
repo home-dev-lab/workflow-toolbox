@@ -19,6 +19,9 @@ export type { AgentTypeProbe, AgentTypeProbeReport, ProbeAgentTypeOptions } from
 export { withLeafFence, LEAF_AGENT_TYPE } from './leaf-fence.js'
 export type { WithLeafFenceOptions, LeafFenceReport } from './leaf-fence.js'
 
+export { withLeanRouting, LEAN_AGENT_TYPE } from './lean-routing.js'
+export type { WithLeanRoutingOptions, LeanRoutingReport } from './lean-routing.js'
+
 export { classifyAndAct } from './classify-and-act.js'
 export type { ClassifyAndActOptions, ActionSpec } from './classify-and-act.js'
 

@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { FakeRuntime } from '@workflow-toolbox/runtime'
-import { LEAF_AGENT_TYPE } from '@workflow-toolbox/patterns'
+import { LEAF_AGENT_TYPE, LEAN_AGENT_TYPE } from '@workflow-toolbox/patterns'
 import wf from '../pr-review.workflow.js'
 
 // ---------------------------------------------------------------------------
@@ -476,7 +476,7 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
   const verifyCalls = (rt: FakeRuntime) =>
     rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
 
-  it('defaults reviewers to the leaf fence (and spawns exactly the fence probe) when agentTypes.review is not provided', async () => {
+  it('defaults reviewers to the leaf fence (and spawns exactly the fence + lean-routing probes) when agentTypes.review is not provided', async () => {
     const rt = makeHappyPathRuntime()
     const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
     const reviews = reviewCalls(rt)
@@ -484,8 +484,12 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
     // No role-specific override was requested — every reviewer falls back to the
     // toolkit's default leaf fence (withLeafFence), not "no agentType at all".
     for (const c of reviews) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
-    expect(probeCalls(rt).length).toBe(1)
+    // Two UNCONDITIONAL probes now run every time: the leaf fence and lean
+    // routing (both resolved once at the top of run(), independent of
+    // agentTypes.review) — in that order.
+    expect(probeCalls(rt).length).toBe(2)
     expect(probeCalls(rt)[0]!.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    expect(probeCalls(rt)[1]!.opts?.agentType).toBe(LEAN_AGENT_TYPE)
     expect((result as { reviewerType: string | null }).reviewerType).toBeNull()
     expect((result as { probe: unknown }).probe).toBeNull()
   })
@@ -496,14 +500,17 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
       rt,
       JSON.stringify({ target: 'HEAD~1..HEAD', agentTypes: { review: 'magic-claude:ts-reviewer' } }),
     )
-    // Two probes now run: the unconditional leaf-fence probe (first, 'Fence'
-    // phase) and the reviewerType probe (conditional, 'Probe' phase) — find each
-    // by the agentType it actually probed, not by position.
+    // Three probes now run: the two unconditional ones (leaf fence, lean
+    // routing — both in the 'Fence' phase) and the reviewerType probe
+    // (conditional, 'Probe' phase) — find each by the agentType it actually
+    // probed, not by position.
     const probes = probeCalls(rt)
-    expect(probes.length).toBe(2)
+    expect(probes.length).toBe(3)
     const fenceProbe = probes.find((c) => c.opts?.agentType === LEAF_AGENT_TYPE)
+    const leanProbe = probes.find((c) => c.opts?.agentType === LEAN_AGENT_TYPE)
     const reviewerProbe = probes.find((c) => c.opts?.agentType === 'magic-claude:ts-reviewer')
     expect(fenceProbe).toBeDefined()
+    expect(leanProbe).toBeDefined()
     expect(reviewerProbe).toBeDefined()
     const reviews = reviewCalls(rt)
     expect(reviews.length).toBeGreaterThan(0)
@@ -570,10 +577,11 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
   it('ignores a legacy top-level reviewerType arg (removed contract)', async () => {
     const rt = makeHappyPathRuntime()
     await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', reviewerType: 'magic-claude:ts-reviewer' }))
-    // Only the unconditional leaf-fence probe runs — the legacy key is ignored,
-    // so no reviewerType-specific probe is spawned.
-    expect(probeCalls(rt).length).toBe(1)
+    // Only the two unconditional probes run (leaf fence, lean routing) — the
+    // legacy key is ignored, so no reviewerType-specific probe is spawned.
+    expect(probeCalls(rt).length).toBe(2)
     expect(probeCalls(rt)[0]!.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    expect(probeCalls(rt)[1]!.opts?.agentType).toBe(LEAN_AGENT_TYPE)
     for (const c of reviewCalls(rt)) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
   })
 })
@@ -593,39 +601,42 @@ describe('pr-review verifier routing (agentTypes.verify)', () => {
   const verifyCalls = (rt: FakeRuntime) =>
     rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
 
-  it('defaults the Verify fan to the leaf fence (and spawns exactly the fence probe) when agentTypes.verify is not provided', async () => {
+  it('defaults the Verify fan to the leaf fence (and spawns exactly the fence + lean-routing probes) when agentTypes.verify is not provided', async () => {
     const rt = makeHappyPathRuntime()
     const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
     const verifies = verifyCalls(rt)
     expect(verifies.length).toBeGreaterThan(0)
     for (const c of verifies) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
-    expect(probeCalls(rt).length).toBe(1)
+    expect(probeCalls(rt).length).toBe(2)
     expect(probeCalls(rt)[0]!.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    expect(probeCalls(rt)[1]!.opts?.agentType).toBe(LEAN_AGENT_TYPE)
     expect((result as { verifierType: string | null }).verifierType).toBeNull()
     expect((result as { verifierProbe: unknown }).verifierProbe).toBeNull()
   })
 
-  it('probes once then routes the Verify fan — verify only (review/synthesize stay on the leaf fence)', async () => {
+  it('probes once then routes the Verify fan — verify only (review stays on the leaf fence, synthesize stays on lean)', async () => {
     const rt = makeHappyPathRuntime()
     const result = await wf.run(
       rt,
       JSON.stringify({ target: 'HEAD~1..HEAD', agentTypes: { verify: 'workflow-toolbox:opencode-verifier' } }),
     )
-    // Two probes now run: the unconditional leaf-fence probe and the
-    // verifierType probe (conditional, 'Probe' phase) — find each by the
-    // agentType it actually probed, not by position.
+    // Three probes now run: the two unconditional ones (leaf fence, lean
+    // routing) and the verifierType probe (conditional, 'Probe' phase) — find
+    // each by the agentType it actually probed, not by position.
     const probes = probeCalls(rt)
-    expect(probes.length).toBe(2)
+    expect(probes.length).toBe(3)
     const fenceProbe = probes.find((c) => c.opts?.agentType === LEAF_AGENT_TYPE)
+    const leanProbe = probes.find((c) => c.opts?.agentType === LEAN_AGENT_TYPE)
     const verifierProbe = probes.find((c) => c.opts?.agentType === 'workflow-toolbox:opencode-verifier')
     expect(fenceProbe).toBeDefined()
+    expect(leanProbe).toBeDefined()
     expect(verifierProbe).toBeDefined()
     const verifies = verifyCalls(rt)
     expect(verifies.length).toBeGreaterThan(0)
     // The per-role override wins over the fence for the verifiers specifically.
     for (const c of verifies) expect(c.opts?.agentType).toBe('workflow-toolbox:opencode-verifier')
-    // The lens reviewers/synthesizer are NEVER specialized by the verify knob —
-    // they fall back to the toolkit's default leaf fence instead.
+    // The lens reviewers are NEVER specialized by the verify knob — they fall
+    // back to the toolkit's default leaf fence instead.
     for (const c of reviewCalls(rt)) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
     expect((result as { verifierType: string | null }).verifierType).toBe('workflow-toolbox:opencode-verifier')
     const probe = (result as { verifierProbe: { available: boolean; reason: string | null } }).verifierProbe
@@ -707,18 +718,27 @@ describe('pr-review verifier routing (agentTypes.verify)', () => {
 describe('pr-review leaf-agent fence (messaging)', () => {
   const allCalls = (rt: FakeRuntime) => rt.calls
 
-  it('defaults EVERY agent (classify/act/review/verify/synthesize) to the fence', async () => {
+  it('defaults EVERY agent (classify/act/review/verify) to the fence — EXCEPT Synthesize, the one pure stage routed to lean', async () => {
     const rt = makeHappyPathRuntime()
     const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
     const nonProbeCalls = allCalls(rt).filter((c) => c.opts?.label !== 'probeAgentType:probe')
     expect(nonProbeCalls.length).toBeGreaterThan(0)
-    for (const c of nonProbeCalls) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    const synthesisCalls = nonProbeCalls.filter((c) => c.opts?.label === 'pr-review:synthesize')
+    const otherCalls = nonProbeCalls.filter((c) => c.opts?.label !== 'pr-review:synthesize')
+    expect(synthesisCalls.length).toBe(1)
+    for (const c of otherCalls) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    // Synthesize is the one provably-pure, tool-free stage — it defaults to
+    // the minimal-ambient-context lean agentType instead of the leaf fence.
+    expect(synthesisCalls[0]!.opts?.agentType).toBe(LEAN_AGENT_TYPE)
     expect((result as { leafFence: { resolvedAgentType: string | null } }).leafFence.resolvedAgentType).toBe(
       LEAF_AGENT_TYPE,
     )
+    expect((result as { leanRouting: { resolvedAgentType: string | null } }).leanRouting.resolvedAgentType).toBe(
+      LEAN_AGENT_TYPE,
+    )
   })
 
-  it('messaging: true opts out — no fence probe, no agent carries the fenced agentType', async () => {
+  it('messaging: true opts out — no fence probe, no lean-routing probe, no agent carries either agentType', async () => {
     const rt = makeHappyPathRuntime()
     const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', messaging: true }))
     const probes = rt.calls.filter((c) => c.opts?.label === 'probeAgentType:probe')
@@ -729,6 +749,15 @@ describe('pr-review leaf-agent fence (messaging)', () => {
     }).leafFence
     expect(leafFence.resolvedAgentType).toBeNull()
     expect(leafFence.probe).toBeNull()
+    // Synthesize would otherwise deny SendMessage via the lean agentType too —
+    // `messaging: true` must stand BOTH capability fences down, not just the
+    // leaf one, or the Synthesize call would silently keep denying messaging
+    // despite the run explicitly asking for messaging-capable agents.
+    const leanRouting = (result as {
+      leanRouting: { resolvedAgentType: string | null; probe: unknown }
+    }).leanRouting
+    expect(leanRouting.resolvedAgentType).toBeNull()
+    expect(leanRouting.probe).toBeNull()
   })
 
   it('degrades gracefully (no throw) when the fenced agentType is not registered', async () => {
@@ -774,6 +803,12 @@ describe('pr-review leaf-agent fence (messaging)', () => {
     const warning = rt.logs.find((l) => l.includes('fence UNAVAILABLE'))
     expect(warning).toBeDefined()
     expect(warning).toContain('leaves run with SendMessage enabled this run')
+    // The SAME agentType-not-found reason degrades lean routing too (both probes
+    // share the generic "availability probe" prompt in this fixture) — its own,
+    // differently-worded warning must be equally unmissable.
+    const leanWarning = rt.logs.find((l) => l.includes('routing UNAVAILABLE'))
+    expect(leanWarning).toBeDefined()
+    expect(leanWarning).toContain('no lean savings')
   })
 
   it('does not log the fence-unavailable warning on the happy path (fence resolves)', async () => {
@@ -821,6 +856,81 @@ describe('pr-review leaf-agent fence (messaging)', () => {
     await expect(
       wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', messaging: 'yes' })),
     ).rejects.toThrow(/messaging must be a boolean/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: lean routing (withLeanRouting) — the run's ONE provably-pure, tool-free
+// stage (Synthesize: its whole prompt is the inline change summary + a
+// JSON-stringified findings array, no "inspect the diff" instruction anywhere)
+// defaults to the minimal-ambient-context agentType. Classify/Review/Verify all
+// explicitly instruct their agents to read the actual change via READ_ONLY_GIT,
+// so they keep the leaf fence instead — see the "EXCEPT Synthesize" test above
+// for that split. This block covers lean routing's OWN degrade/override
+// contract, symmetric with the leaf-agent-fence block above.
+// ---------------------------------------------------------------------------
+describe('pr-review lean routing (Synthesize)', () => {
+  const synthesizeCall = (rt: FakeRuntime) =>
+    rt.calls.find((c) => c.opts?.label === 'pr-review:synthesize')
+
+  it('degrades gracefully (no throw) when the lean agentType is not registered', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+        if (p.includes('availability probe')) {
+          throw new Error(`agentType '${LEAN_AGENT_TYPE}' not found`)
+        }
+        if (p.includes('adversarially verify')) return { verdict: 'confirmed', reason: 'r' }
+        if (p.includes('synthesizing a code review')) return { verdict: 'approve', summary: 'Fine' }
+        if (p.includes('you are a specialized code reviewer')) return { findings: [] }
+        if (p.includes('you are reviewing a')) return { summary: 'Summary text here', riskAreas: ['a'] }
+        if (p.includes('classify it into exactly one category')) return { category: 'bugfix' }
+        return { summary: 'Default', riskAreas: [] }
+      },
+    })
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+    expect(result).toHaveProperty('verdict')
+    // The Synthesize call itself degrades to no agentType at all (the fenced
+    // rt0 it falls back to still carries no OWN default here — the fence probe
+    // also throws in this fixture's blanket "availability probe" handler).
+    const call = synthesizeCall(rt)
+    expect(call?.opts?.agentType).toBeUndefined()
+    expect(
+      (result as { leanRouting: { resolvedAgentType: string | null } }).leanRouting.resolvedAgentType,
+    ).toBeNull()
+  })
+
+  it("perAgent.agentType wins over lean routing for Synthesize specifically (the run's escape hatch)", async () => {
+    const rt = makeHappyPathRuntime()
+    const result = await wf.run(
+      rt,
+      JSON.stringify({ target: 'HEAD~1..HEAD', perAgent: { agentType: 'my-custom-blanket-type' } }),
+    )
+    const call = synthesizeCall(rt)
+    expect(call?.opts?.agentType).toBe('my-custom-blanket-type')
+    // The lean-routing probe itself still targets the lean type (perAgent.agentType
+    // must NOT redirect the probe away from what it is meant to check) — mirrors
+    // the fence's own probe-immunity from the block above.
+    const leanProbe = rt.calls.find(
+      (c) => c.opts?.label === 'probeAgentType:probe' && c.opts?.agentType === LEAN_AGENT_TYPE,
+    )
+    expect(leanProbe).toBeDefined()
+    expect(
+      (result as { leanRouting: { resolvedAgentType: string | null } }).leanRouting.resolvedAgentType,
+    ).toBe(LEAN_AGENT_TYPE)
+  })
+
+  it('the lean-routing PROBE inherits perAgent.model/effort, not the raw session default', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(
+      rt,
+      JSON.stringify({ target: 'HEAD~1..HEAD', perAgent: { model: 'sonnet', effort: 'low' } }),
+    )
+    const leanProbe = rt.calls.find(
+      (c) => c.opts?.label === 'probeAgentType:probe' && c.opts?.agentType === LEAN_AGENT_TYPE,
+    )!
+    expect(leanProbe.opts?.model).toBe('sonnet')
+    expect(leanProbe.opts?.effort).toBe('low')
   })
 })
 
