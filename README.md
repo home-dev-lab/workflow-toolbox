@@ -17,8 +17,8 @@ twenty-two runnable example compositions — including a full dev pipeline
 What the journals show:
 
 - **Quality** — adversarial review sweeps caught **22 verified findings**
-  ([sweep 1](https://github.com/home-dev-lab/workflow-toolbox/commit/68be3b1),
-  [sweep 2](https://github.com/home-dev-lab/workflow-toolbox/commit/8b14eba)) on
+  ([sweep 1](https://github.com/home-dev-lab/workflow-toolbox/commit/ddad93d),
+  [sweep 2](https://github.com/home-dev-lab/workflow-toolbox/commit/175feb7)) on
   code whose quality gates (tests + typecheck + lint) were already green.
   Among them: a literal NUL byte written into a file by a previous run's fixer
   agent, and a revert path that, fed an empty SHA by an agent self-report,
