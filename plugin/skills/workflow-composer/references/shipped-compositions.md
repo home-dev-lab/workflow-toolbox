@@ -3,8 +3,8 @@
 <!-- Extracted from SKILL.md (progressive disclosure) — loaded on demand via the stub that links here. -->
 
 
-The repository ships thirteen built example compositions under `toolkit/workflows/`,
-and **all thirteen have their TypeScript sources bundled with this skill** for study at
+The repository ships twenty-two built example compositions under `toolkit/workflows/`,
+and **all of them have their TypeScript sources bundled with this skill** for study at
 `assets/examples/toolkit/`. (Progressive disclosure means a bundled source costs no
 context until you actually Read it — so the skill ships the complete set, not a
 hand-picked subset, and an offline plugin install can study every one.)
@@ -33,7 +33,7 @@ The **dev-workflow family** — the most advanced compositions (multi-artifact
 - `dev-full.workflow.ts` — chains the three children via `rt.workflow()` over their
   committed artifacts, converting human gates into code gates.
 
-Two standalone analysis/verification compositions:
+Three standalone analysis/verification compositions:
 
 - `independent-analysis.workflow.ts` — (optionally) auto-propose diverse lenses →
   `fanOutAndSynthesize` one analyst per lens, dedup against the caller's stated
@@ -61,6 +61,18 @@ Two standalone analysis/verification compositions:
   Matching opencode's own rules / MCP / plugins to your project is the user's
   responsibility (configure `AGENTS.md` / `opencode.json`) — opencode reads a repo's
   `CLAUDE.md` + `.claude/skills/` by default but NOT its `.claude/rules/`, MCP, or plugins.
+- `docs-audit.workflow.ts` — pre-release semantic docs audit: inventory the doc
+  surfaces (or take them as `args.surfaces`), extract checkable claims in
+  angle-cycled `loopUntilDone` rounds until a full sweep finds nothing new
+  (deduped against a seen-set), then refute-first `adversarialVerification` of
+  each claim against the actual sources — evidence-tiered verdicts (confirmed /
+  stale / partially-stale / unverifiable, plus the pattern's honest
+  `unverified-by-cap`). Claims are risk-sorted BEFORE the verification cap so
+  `maxVerifyClaims` cuts the cheapest-to-lose claims first — a zero-agent
+  substitute for a scoring stage. The semantic layer of a docs-drift defence:
+  mechanical anchors (symbol existence, value equalities) belong in compile-time
+  gates; this workflow judges the PROSE those gates cannot check. Run it before
+  a release; its findings are remediation input (e.g. for `doc-rewrite`).
 
 And three demonstration compositions:
 

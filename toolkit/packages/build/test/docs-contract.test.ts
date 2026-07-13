@@ -292,6 +292,44 @@ describe('docs-contract — value anchors (imported, never re-typed)', () => {
     }
     expect(wrong, `\n${wrong.join('\n')}\n`).toEqual([])
   })
+
+  it('every "<N> example compositions / shipped examples" claim matches the artifact count', () => {
+    // Spelled-out counts are invisible to digit-anchor checks — this claim
+    // class drifted THREE surfaces at once when the 22nd composition landed
+    // ("thirteen" ×2 + "twenty-one"). Narrow lexicon: a count outside it
+    // simply doesn't match (extend it when the fleet grows past it).
+    const WORD_COUNTS: Record<string, number> = {
+      thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17,
+      eighteen: 18, nineteen: 19, twenty: 20, 'twenty-one': 21, 'twenty-two': 22,
+      'twenty-three': 23, 'twenty-four': 24, 'twenty-five': 25,
+    }
+    const artifactCount = readdirSync(join(REPO_ROOT, 'toolkit/workflows'))
+      .filter((f) => f.endsWith('.js')).length
+    const NUM = Object.keys(WORD_COUNTS).join('|')
+    // Full-set phrasings only: a qualified subset ("five core-pattern
+    // compositions") has a non-matching word between the number and the noun.
+    const CLAIM = new RegExp(
+      `\\b(${NUM}|\\d+)\\s+(?:runnable\\s+|built\\s+|shipped\\s+)*(?:example\\s+)?compositions\\b` +
+      `|\\b(${NUM}|\\d+)\\s+shipped examples\\b`,
+      'gi',
+    )
+    const wrong: string[] = []
+    for (const surface of SURFACES.filter((s) => existsSync(join(REPO_ROOT, s)))) {
+      const md = read(surface)
+      for (const m of md.matchAll(CLAIM)) {
+        const count = m[1] ?? m[2] ?? ''
+        const n = WORD_COUNTS[count.toLowerCase()] ?? Number(count)
+        if (n === artifactCount) continue
+        if (/^\s+that\b/.test(md.slice((m.index ?? 0) + m[0].length))) continue
+        const lineStart = md.lastIndexOf('\n', m.index ?? 0) + 1
+        const lineEnd = md.indexOf('\n', m.index ?? 0)
+        const line = md.slice(lineStart, lineEnd === -1 ? md.length : lineEnd)
+        if (line.includes('wt:historical')) continue
+        wrong.push(`${surface}: "${m[0]}" (toolkit/workflows has ${artifactCount})`)
+      }
+    }
+    expect(wrong, `\n${wrong.join('\n')}\n`).toEqual([])
+  })
 })
 
 describe('docs-contract — public value exports are documented', () => {

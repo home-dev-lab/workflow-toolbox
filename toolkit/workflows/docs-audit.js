@@ -1,0 +1,1167 @@
+export const meta = {
+  "name": "docs-audit",
+  "description": "Pre-release semantic docs audit: inventories doc surfaces, extracts checkable claims in loop-until-dry rounds, then refute-first verifies each claim against the actual sources with evidence-tiered verdicts (confirmed / stale / partially-stale / unverifiable).",
+  "whenToUse": "Use BEFORE a release (npm publish, plugin version bump) to catch documentation whose prose has drifted from the implementation — the semantic layer compile-time doc gates cannot check. Pass repoRoot (absolute); optionally surfaces, hints (e.g. a provenance map location), and sizing knobs. Findings are remediation input, e.g. for doc-rewrite.",
+  "phases": [
+    {
+      "title": "Fence",
+      "detail": "Leaf-fence + optional cross-model verifier probe"
+    },
+    {
+      "title": "Inventory",
+      "detail": "Derive or validate the audited doc-surface list"
+    },
+    {
+      "title": "Extract",
+      "detail": "Loop-until-dry claim extraction: angle-cycled sweeps, deduped against seen"
+    },
+    {
+      "title": "Verify",
+      "detail": "Refute-first adversarial verification of each claim against the sources"
+    },
+    {
+      "title": "Report",
+      "detail": "Deterministic verdict aggregation — stale findings, honest caps and stops"
+    }
+  ]
+}
+var __wt = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // docs-audit.workflow.ts
+  var docs_audit_workflow_exports = {};
+  __export(docs_audit_workflow_exports, {
+    default: () => docs_audit_workflow_default
+  });
+
+  // ../packages/runtime/src/constants.ts
+  var BEST_MODEL = "opus";
+
+  // ../packages/runtime/src/digest.ts
+  var DIGEST_PREFIX = "[wt:digest]";
+  var LOOP_STAGE = "loopUntilDone";
+  var LOOP_ITER_MARKER = " \u27F2";
+  function formatDigest(d) {
+    const body = { stage: d.stage };
+    if (d.phase !== void 0) body.phase = d.phase;
+    if (d.output !== void 0) body.output = d.output;
+    if (d.taken !== void 0) body.taken = d.taken;
+    if (d.notTaken !== void 0) body.notTaken = d.notTaken;
+    if (d.counts !== void 0) {
+      const counts = d.counts;
+      const sorted = {};
+      for (const k of Object.keys(counts).sort()) {
+        const v = counts[k];
+        if (v !== void 0) sorted[k] = v;
+      }
+      body.counts = sorted;
+    }
+    return `${DIGEST_PREFIX} ${JSON.stringify(body)}`;
+  }
+
+  // ../packages/runtime/src/with-agent-defaults.ts
+  function withAgentDefaults(rt, defaults) {
+    const agent = (prompt, opts) => rt.agent(prompt, { ...defaults, ...opts });
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => rt.phase(title),
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
+  }
+
+  // ../packages/runtime/src/prompt-tag.ts
+  var PROMPT_TAG_PREFIX = "<!-- wt-meta ";
+  function escapeValue(v) {
+    return v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll("\n", "&#10;");
+  }
+  function buildPromptTag(fields) {
+    const parts = [];
+    if (fields.label !== void 0) parts.push(`label="${escapeValue(fields.label)}"`);
+    if (fields.phase !== void 0) parts.push(`phase="${escapeValue(fields.phase)}"`);
+    if (parts.length === 0) return null;
+    return `${PROMPT_TAG_PREFIX}${parts.join(" ")} -->`;
+  }
+  function withPromptTags(rt) {
+    let currentPhase;
+    const agent = (prompt, opts) => {
+      const tag = buildPromptTag({ label: opts?.label, phase: opts?.phase ?? currentPhase });
+      const tagged = tag !== null && !prompt.startsWith(tag) ? `${tag}
+
+${prompt}` : prompt;
+      return rt.agent(tagged, opts);
+    };
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => {
+        currentPhase = title;
+        rt.phase(title);
+      },
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
+  }
+
+  // ../packages/build/src/define-workflow.ts
+  function normalizeArgs(raw) {
+    if (raw === void 0) return void 0;
+    if (typeof raw !== "string") return raw;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
+  var KEBAB_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+  function validateMeta(meta) {
+    if (!KEBAB_RE.test(meta.name)) {
+      throw new Error(
+        `defineWorkflow: invalid name "${meta.name}" \u2014 name must be non-empty kebab-case (e.g. "my-workflow", "plan-and-execute-v2"); only lowercase letters, digits, and hyphens are allowed, starting and ending with a letter or digit`
+      );
+    }
+    if (meta.description.trim().length === 0) {
+      throw new Error(
+        `defineWorkflow: description must be a non-empty string \u2014 provide a short summary of what this workflow does`
+      );
+    }
+    if (meta.phases !== void 0) {
+      for (let i = 0; i < meta.phases.length; i++) {
+        const phase = meta.phases[i];
+        if (phase === void 0) continue;
+        if (phase.title.trim().length === 0) {
+          throw new Error(
+            `defineWorkflow: phase at index ${i} has an empty title \u2014 every phase must have a non-empty title string`
+          );
+        }
+      }
+    }
+  }
+  function defineWorkflow(def) {
+    validateMeta(def.meta);
+    return {
+      meta: def.meta,
+      async run(rt, rawArgs) {
+        const normalized = normalizeArgs(rawArgs);
+        const input = def.parseInput !== void 0 ? def.parseInput(normalized) : normalized;
+        return def.run(withPromptTags(rt), input);
+      }
+    };
+  }
+  var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+  var EFFORT_ROLE_VALUES = ["low", "medium", "high", "xhigh", "max", "auto"];
+  var PER_AGENT_KEYS = ["model", "effort", "agentType", "isolation", "stallMs"];
+  function isRecord(v) {
+    return typeof v === "object" && v !== null && !Array.isArray(v);
+  }
+  function asNonEmptyString(v, where) {
+    if (typeof v !== "string" || v.trim().length === 0) {
+      throw new Error(`parseConfig: ${where} must be a non-empty string, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffort(v, where) {
+    if (typeof v !== "string" || !EFFORTS.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORTS.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function asEffortRoleValue(v, where) {
+    if (typeof v !== "string" || !EFFORT_ROLE_VALUES.includes(v)) {
+      throw new Error(`parseConfig: ${where} must be one of ${EFFORT_ROLE_VALUES.join(", ")}, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function parsePerAgent(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: perAgent must be an object, got ${raw === null ? "null" : typeof raw}`);
+    for (const key of Object.keys(raw)) {
+      if (!PER_AGENT_KEYS.includes(key)) {
+        throw new Error(`parseConfig: unknown perAgent key "${key}" \u2014 expected one of ${PER_AGENT_KEYS.join(", ")}`);
+      }
+    }
+    const out = {};
+    if (raw.model !== void 0) out.model = asNonEmptyString(raw.model, "perAgent.model");
+    if (raw.effort !== void 0) out.effort = asEffort(raw.effort, "perAgent.effort");
+    if (raw.agentType !== void 0) out.agentType = asNonEmptyString(raw.agentType, "perAgent.agentType");
+    if (raw.isolation !== void 0) {
+      if (raw.isolation !== "worktree") {
+        throw new Error(`parseConfig: perAgent.isolation must be 'worktree' when set, got ${JSON.stringify(raw.isolation)}`);
+      }
+      out.isolation = "worktree";
+    }
+    if (raw.stallMs !== void 0) {
+      const n = raw.stallMs;
+      if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) {
+        throw new Error(`parseConfig: perAgent.stallMs must be a positive finite number, got ${JSON.stringify(n)}`);
+      }
+      out.stallMs = n;
+    }
+    return out;
+  }
+  function parseStringMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asNonEmptyString(v, `${where}.${k}`);
+    return out;
+  }
+  function parseEffortMap(raw) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: effort must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`);
+    return out;
+  }
+  function asBoolean(v, where) {
+    if (typeof v !== "boolean") {
+      throw new Error(`parseConfig: ${where} must be a boolean, got ${JSON.stringify(v)}`);
+    }
+    return v;
+  }
+  function parseNumberMap(raw, where) {
+    if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    const out = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v !== "number" || !Number.isFinite(v)) {
+        throw new Error(`parseConfig: ${where}.${k} must be a finite number, got ${JSON.stringify(v)}`);
+      }
+      out[k] = v;
+    }
+    return out;
+  }
+  function parseConfig(raw) {
+    if (raw === void 0 || raw === null) return {};
+    if (!isRecord(raw)) {
+      throw new Error(`parseConfig: expected an object (or undefined), got ${typeof raw}`);
+    }
+    const config = {};
+    if (raw.perAgent !== void 0) config.perAgent = parsePerAgent(raw.perAgent);
+    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models");
+    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort);
+    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes");
+    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing");
+    if (raw.messaging !== void 0) config.messaging = asBoolean(raw.messaging, "messaging");
+    return config;
+  }
+
+  // ../packages/std/src/resolve-effort.ts
+  var EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
+  function isEffortAlias(v) {
+    return typeof v === "string" && EFFORT_ORDER.includes(v);
+  }
+  function resolveEffort(argsValue, stageDefault) {
+    return isEffortAlias(argsValue) ? argsValue : stageDefault;
+  }
+  function resolveVerifierEffort(argsValue, stageDefault, floor = "high") {
+    const safeFloor = isEffortAlias(floor) ? floor : "high";
+    const resolved = resolveEffort(argsValue, stageDefault);
+    return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor;
+  }
+
+  // ../packages/patterns/src/envelope.ts
+  function makeRecord(stage, ok, extra) {
+    return {
+      stage,
+      outcome: ok ? "ok" : "null",
+      ...extra?.model !== void 0 ? { model: extra.model } : {},
+      ...extra?.effort !== void 0 ? { effort: extra.effort } : {},
+      ...extra?.decision !== void 0 ? { decision: extra.decision } : {}
+    };
+  }
+  function collectTrail(...results) {
+    const trail = [];
+    for (const r of results) {
+      if (r === null || r === void 0) continue;
+      trail.push(...r.trail);
+    }
+    return trail;
+  }
+  function warn(rt, warnings, message) {
+    warnings.push(message);
+    rt.log(message);
+  }
+  function emitDigest(rt, d) {
+    rt.log(formatDigest(d));
+  }
+  function applyCap(items, cap) {
+    if (cap === void 0) {
+      return { kept: items, truncated: 0 };
+    }
+    if (cap < 1) {
+      throw new Error(
+        `applyCap: cap must be >= 1, got ${cap} \u2014 set maxItems to a positive integer or omit it`
+      );
+    }
+    if (cap >= items.length) {
+      return { kept: items, truncated: 0 };
+    }
+    return {
+      kept: items.slice(0, cap),
+      truncated: items.length - cap
+    };
+  }
+  function assertAgentTypeOption(stage, name, value) {
+    if (value !== void 0 && value.trim().length === 0) {
+      throw new Error(
+        `${stage}: ${name} must be a non-empty subagent-type string (e.g. 'codex:codex-rescue') \u2014 omit it for the standard subagent`
+      );
+    }
+  }
+
+  // ../packages/patterns/src/probe-agent-type.ts
+  var STAGE = "probeAgentType";
+  var DEFAULT_PROBE_PROMPT = "Availability probe. This is a REAL task: execute your normal procedure end-to-end (availability gate, then run the task through your external CLI \u2014 do NOT answer from your own knowledge). Task: reply with exactly: PROBE_OK";
+  var DEFAULT_EXPECTED_TOKEN = "PROBE_OK";
+  var LOCAL_AGENT_PROBE_PROMPT = "Availability probe. This task is fully self-contained: it needs no tools and no lookup \u2014 answering directly from this prompt is the correct procedure. Task: reply with exactly: PROBE_OK";
+  var REASON_HEAD_CHARS = 200;
+  function stripAnsi(text) {
+    return text.replace(/\u001b?\[[0-9;]*m/g, "");
+  }
+  function head(text) {
+    const t = text.trim();
+    return t.length > REASON_HEAD_CHARS ? `${t.slice(0, REASON_HEAD_CHARS)}\u2026` : t;
+  }
+  function escapeRegExp(literal) {
+    return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  async function probeAgentType(rt, agentType, options = {}) {
+    const { phase, probePrompt, expectedToken } = options;
+    assertAgentTypeOption(STAGE, "agentType", agentType);
+    if (expectedToken !== void 0 && expectedToken.trim().length === 0) {
+      throw new Error(
+        `${STAGE}: expectedToken must be a non-empty string \u2014 omit it for the default 'PROBE_OK'`
+      );
+    }
+    const token = expectedToken ?? DEFAULT_EXPECTED_TOKEN;
+    const prompt = probePrompt ?? DEFAULT_PROBE_PROMPT;
+    let reply;
+    let spawnError = null;
+    try {
+      reply = await rt.agent(prompt, {
+        label: `${STAGE}:probe`,
+        agentType,
+        ...phase !== void 0 ? { phase } : {}
+      });
+    } catch (e) {
+      reply = null;
+      spawnError = head(e instanceof Error ? e.message : String(e));
+    }
+    let available = false;
+    let reason = null;
+    if (reply === null) {
+      reason = spawnError ?? "probe agent returned null";
+    } else if (typeof reply !== "string") {
+      reason = "non-string probe reply";
+    } else {
+      const stripped = stripAnsi(reply).trim();
+      const endsWithToken = new RegExp(`${escapeRegExp(token)}\\s*[.!]?$`).test(stripped);
+      if (stripped.includes("UNAVAILABLE")) {
+        const marker = /\S*UNAVAILABLE[\s\S]*/.exec(stripped);
+        reason = head(marker ? marker[0] : stripped);
+      } else if (endsWithToken) {
+        available = true;
+      } else {
+        reason = `unexpected probe reply: ${head(stripped)}`;
+      }
+    }
+    if (available) {
+      rt.log(`${STAGE}: '${agentType}' available \u2014 routing externally`);
+    } else {
+      rt.log(
+        `${STAGE}: '${agentType}' unavailable \u2014 falling back to the standard subagent (${reason ?? "unknown"})`
+      );
+    }
+    emitDigest(rt, {
+      stage: STAGE,
+      ...phase !== void 0 ? { phase } : {},
+      output: available ? `available: ${agentType}` : "fallback: standard subagent"
+    });
+    return {
+      agentType: available ? agentType : void 0,
+      available,
+      reason
+    };
+  }
+
+  // ../packages/patterns/src/leaf-fence.ts
+  var LEAF_AGENT_TYPE = "workflow-toolbox:leaf";
+  var FENCE_UNAVAILABLE_MESSAGE = "fence UNAVAILABLE \u2014 leaves run with SendMessage enabled this run";
+  async function withLeafFence(rt, options = {}) {
+    const { phase, agentType = LEAF_AGENT_TYPE, disabled = false, perAgent } = options;
+    if (disabled) {
+      return { rt, report: { resolvedAgentType: null, probe: null } };
+    }
+    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
+    const probe = await probeAgentType(probeRt, agentType, {
+      probePrompt: LOCAL_AGENT_PROBE_PROMPT,
+      ...phase !== void 0 ? { phase } : {}
+    });
+    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
+    if (probe.agentType === void 0) {
+      rt.log(`[leaf-fence] \u26A0 ${FENCE_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
+    }
+    return {
+      rt: withAgentDefaults(rt, defaults),
+      report: {
+        resolvedAgentType: probe.agentType ?? null,
+        probe: { requested: agentType, available: probe.available, reason: probe.reason }
+      }
+    };
+  }
+
+  // ../packages/patterns/src/cache-warm.ts
+  var WARMUP_PROMPT = "Reply with a single word: ready.";
+  async function runCacheWarmup(rt, warnings, label, patternName, opts) {
+    const agentOpts = {
+      label,
+      ...opts.phase !== void 0 ? { phase: opts.phase } : {},
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {},
+      ...opts.agentType !== void 0 ? { agentType: opts.agentType } : {}
+    };
+    const result = await rt.agent(WARMUP_PROMPT, agentOpts);
+    if (result === null) {
+      warn(
+        rt,
+        warnings,
+        `${patternName}: cache-warm agent (${label}) returned null \u2014 proceeding without a warmed cache`
+      );
+    }
+    return makeRecord(label, result !== null, {
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {}
+    });
+  }
+
+  // ../packages/patterns/src/adversarial-verification.ts
+  var STAGE2 = "adversarialVerification";
+  var VERIFIER_SCHEMA = {
+    type: "object",
+    properties: {
+      verdict: {
+        type: "string",
+        enum: ["confirmed", "partially-confirmed", "refuted", "unverifiable"]
+      },
+      reason: { type: "string" }
+    },
+    required: ["verdict", "reason"],
+    additionalProperties: false
+  };
+  async function adversarialVerification(rt, options) {
+    const {
+      claims,
+      renderClaim,
+      votes: votesOpt = 3,
+      refuteThreshold: refuteThresholdOpt,
+      lenses,
+      votesPerClaim,
+      model,
+      effort,
+      phase,
+      maxVerifyClaims,
+      verifierType,
+      cacheWarm
+    } = options;
+    const refuteThreshold = refuteThresholdOpt ?? 2;
+    if (claims.length === 0) {
+      throw new Error(
+        "adversarialVerification: empty claims \u2014 provide at least one claim to verify"
+      );
+    }
+    if (votesOpt < 1) {
+      throw new Error(
+        `adversarialVerification: votes must be >= 1, got ${votesOpt}`
+      );
+    }
+    if (refuteThreshold < 1) {
+      throw new Error(
+        `adversarialVerification: refuteThreshold must be >= 1, got ${refuteThreshold}`
+      );
+    }
+    if (votesPerClaim === void 0 && refuteThreshold > votesOpt) {
+      throw new Error(
+        `adversarialVerification: refuteThreshold (${refuteThreshold}) must not be > votes (${votesOpt})`
+      );
+    }
+    if (lenses !== void 0 && lenses.length !== votesOpt) {
+      throw new Error(
+        `adversarialVerification: lenses.length (${lenses.length}) must equal votes (${votesOpt}) \u2014 each lens corresponds to one vote`
+      );
+    }
+    if (lenses !== void 0 && votesPerClaim !== void 0) {
+      throw new Error(
+        "adversarialVerification: lenses cannot be combined with votesPerClaim \u2014 lenses require a fixed votes count (one lens per vote); use one or the other"
+      );
+    }
+    const perClaimVotes = claims.map((claim, i) => {
+      if (votesPerClaim === void 0) return votesOpt;
+      const n = votesPerClaim(claim);
+      if (!Number.isInteger(n) || n < 1) {
+        throw new Error(
+          `adversarialVerification: votesPerClaim(claims[${i}]) returned ${String(n)} \u2014 must be an integer >= 1`
+        );
+      }
+      return n;
+    });
+    if (verifierType !== void 0 && verifierType.trim().length === 0) {
+      throw new Error(
+        'adversarialVerification: verifierType must be a non-empty subagent-type string (e.g. "magic-claude:ts-reviewer") \u2014 omit it for the standard subagent'
+      );
+    }
+    if (maxVerifyClaims !== void 0 && maxVerifyClaims < 1) {
+      throw new Error(
+        `adversarialVerification: maxVerifyClaims must be >= 1, got ${maxVerifyClaims}`
+      );
+    }
+    let agentsSpawned = 0;
+    const warnings = [];
+    const trail = [];
+    const effectiveModel = model ?? BEST_MODEL;
+    if (model !== void 0 && model !== BEST_MODEL) {
+      warn(
+        rt,
+        warnings,
+        `adversarialVerification: verifier model downgraded to "${model}" \u2014 verification quality is model-sensitive`
+      );
+    }
+    const { kept: keptClaims, truncated } = applyCap(claims, maxVerifyClaims);
+    if (truncated > 0) {
+      warn(
+        rt,
+        warnings,
+        `adversarialVerification: ${truncated} of ${claims.length} claims truncated by maxVerifyClaims=${maxVerifyClaims ?? "?"} \u2014 kept as unverified-by-cap`
+      );
+    }
+    function buildVerifierPrompt(claim, lens) {
+      const lensLine = lens !== void 0 ? `
+Examine it through the lens of: ${lens}.` : "";
+      return `Adversarially verify the following claim. Actively try to REFUTE it; default to "refuted" when uncertain.` + lensLine + `
+Claim:
+${renderClaim(claim)}`;
+    }
+    if (cacheWarm ?? true) {
+      agentsSpawned++;
+      trail.push(await runCacheWarmup(rt, warnings, `${STAGE2}:warm`, STAGE2, {
+        ...phase !== void 0 ? { phase } : {},
+        model: effectiveModel,
+        ...effort !== void 0 ? { effort } : {},
+        ...verifierType !== void 0 ? { agentType: verifierType } : {}
+      }));
+    }
+    const trailByClaim = [];
+    const verifiedKept = await Promise.all(
+      keptClaims.map(async (claim, claimIndex) => {
+        const claimVotes = perClaimVotes[claimIndex] ?? votesOpt;
+        const voteThunks = Array.from({ length: claimVotes }, (_, voteIndex) => {
+          return async () => {
+            const lens = lenses !== void 0 ? lenses[voteIndex] : void 0;
+            const prompt = buildVerifierPrompt(claim, lens);
+            const opts = {
+              schema: VERIFIER_SCHEMA,
+              label: `${STAGE2}:verify:${claimIndex}:${voteIndex}`,
+              ...phase !== void 0 ? { phase } : {},
+              model: effectiveModel,
+              ...effort !== void 0 ? { effort } : {},
+              ...verifierType !== void 0 ? { agentType: verifierType } : {}
+            };
+            agentsSpawned++;
+            return rt.agent(prompt, opts);
+          };
+        });
+        const rawVotes = await rt.parallel(voteThunks);
+        const votes = rawVotes.map(
+          (v) => v
+        );
+        const claimRecords = [];
+        for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
+          const vote = votes[voteIndex] ?? null;
+          claimRecords.push(makeRecord(
+            `${STAGE2}:verify:${claimIndex}:${voteIndex}`,
+            vote !== null,
+            {
+              model: effectiveModel,
+              ...effort !== void 0 ? { effort } : {},
+              ...vote !== null ? { decision: vote.verdict } : {}
+            }
+          ));
+        }
+        trailByClaim[claimIndex] = claimRecords;
+        const nonNull = votes.filter((v) => v !== null);
+        const effectiveThreshold = Math.min(refuteThreshold, claimVotes);
+        let verdict;
+        if (nonNull.length === 0) {
+          verdict = "unverifiable";
+        } else if (nonNull.filter((v) => v.verdict === "refuted").length >= effectiveThreshold) {
+          verdict = "refuted";
+        } else if (nonNull.every((v) => v.verdict === "confirmed")) {
+          verdict = "confirmed";
+        } else {
+          verdict = "partially-confirmed";
+        }
+        return { claim, verdict, votes };
+      })
+    );
+    trail.push(...trailByClaim.flat());
+    const truncatedClaims = claims.slice(keptClaims.length).map((claim) => ({ claim, verdict: "unverified-by-cap", votes: [] }));
+    const value = [...verifiedKept, ...truncatedClaims];
+    let nullVoteCount = 0;
+    let allNullClaimsCount = 0;
+    for (const verified of verifiedKept) {
+      const nullsInClaim = verified.votes.filter((v) => v === null).length;
+      nullVoteCount += nullsInClaim;
+      if (nullsInClaim === verified.votes.length) {
+        allNullClaimsCount++;
+      }
+    }
+    if (nullVoteCount > 0) {
+      warn(
+        rt,
+        warnings,
+        `adversarialVerification: ${nullVoteCount} verifier votes returned null across ${verifiedKept.length} claims`
+      );
+    }
+    if (allNullClaimsCount > 0) {
+      warn(
+        rt,
+        warnings,
+        `adversarialVerification: ${allNullClaimsCount} claims left unverifiable (all verifiers failed)`
+      );
+    }
+    const stats = {
+      itemsIn: claims.length,
+      itemsOut: claims.length,
+      // claims never dropped — always equal
+      agentsSpawned,
+      dropped: nullVoteCount,
+      // null votes = lost work units
+      truncated
+    };
+    const DIGEST_KEY = {
+      confirmed: "confirmed",
+      refuted: "refuted",
+      "partially-confirmed": "partiallyConfirmed",
+      unverifiable: "unverifiable",
+      "unverified-by-cap": "unverifiedByCap"
+    };
+    const counts = {
+      claims: claims.length,
+      confirmed: 0,
+      refuted: 0,
+      partiallyConfirmed: 0,
+      unverifiable: 0,
+      unverifiedByCap: 0
+    };
+    for (const verdict of Object.keys(DIGEST_KEY)) {
+      counts[DIGEST_KEY[verdict]] = value.filter((v) => v.verdict === verdict).length;
+    }
+    emitDigest(rt, { stage: STAGE2, ...phase !== void 0 ? { phase } : {}, counts });
+    return { value, stats, warnings, trail };
+  }
+
+  // ../packages/patterns/src/loop-until-done.ts
+  var STAGE3 = LOOP_STAGE;
+  async function loopUntilDone(rt, options) {
+    const { initial, body, maxIterations, dryRounds, budgetFloor } = options;
+    if (maxIterations !== void 0 && maxIterations < 1) {
+      throw new Error(
+        `loopUntilDone: maxIterations must be >= 1, got ${maxIterations}`
+      );
+    }
+    if (dryRounds !== void 0 && dryRounds < 1) {
+      throw new Error(
+        `loopUntilDone: dryRounds must be >= 1, got ${dryRounds}`
+      );
+    }
+    if (budgetFloor !== void 0 && budgetFloor < 0) {
+      throw new Error(
+        `loopUntilDone: budgetFloor must be >= 0, got ${budgetFloor}`
+      );
+    }
+    if (budgetFloor !== void 0 && maxIterations === void 0 && dryRounds === void 0 && rt.budget.total === null) {
+      throw new Error(
+        `loopUntilDone: budgetFloor is the only stop condition but no budget target is set (rt.budget.total is null) \u2014 an inert floor means an unbounded loop; add maxIterations or dryRounds, or run with a token target`
+      );
+    }
+    const warnings = [];
+    const trail = [];
+    let state = initial;
+    let iterationsDone = 0;
+    let consecutiveDry = 0;
+    let agentsSpawned = 0;
+    let currentIteration = 0;
+    const countingRt = {
+      agent: (prompt, opts) => {
+        agentsSpawned++;
+        const label = opts?.label != null ? `${opts.label}${LOOP_ITER_MARKER}${currentIteration}` : `${STAGE3}:iter:${currentIteration}`;
+        return rt.agent(prompt, { ...opts, label });
+      },
+      parallel: (thunks) => rt.parallel(thunks),
+      pipeline: (...args) => rt.pipeline(...args),
+      phase: (title) => rt.phase(title),
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
+    if (budgetFloor !== void 0 && rt.budget.total === null) {
+      warn(
+        rt,
+        warnings,
+        `loopUntilDone: budgetFloor=${budgetFloor} is inert (no budget target set)`
+      );
+    }
+    const runLoop = async () => {
+      while (true) {
+        if (budgetFloor !== void 0 && rt.budget.total !== null) {
+          const remaining = rt.budget.remaining();
+          if (remaining <= budgetFloor) {
+            warn(
+              rt,
+              warnings,
+              `loopUntilDone: stopped by budgetFloor (remaining=${remaining} <= floor=${budgetFloor}) after ${iterationsDone} iterations`
+            );
+            return "budgetFloor";
+          }
+        }
+        if (maxIterations !== void 0 && iterationsDone >= maxIterations) {
+          warn(
+            rt,
+            warnings,
+            `loopUntilDone: stopped by maxIterations=${maxIterations} after ${iterationsDone} iterations`
+          );
+          if (trail.length > 0) {
+            trail[trail.length - 1].decision = "maxIterations";
+          }
+          return "maxIterations";
+        }
+        currentIteration = iterationsDone + 1;
+        const tick = await body(countingRt, state, iterationsDone + 1);
+        const tickIndex = iterationsDone;
+        state = tick.state;
+        iterationsDone++;
+        trail.push(makeRecord(`${STAGE3}:tick:${tickIndex}`, tick.state !== null));
+        if (tick.done === true) {
+          trail[trail.length - 1].decision = "done";
+          return "done";
+        }
+        if (dryRounds !== void 0) {
+          if (tick.progressed === false) {
+            consecutiveDry++;
+          } else {
+            consecutiveDry = 0;
+          }
+          if (consecutiveDry >= dryRounds) {
+            warn(
+              rt,
+              warnings,
+              `loopUntilDone: stopped by dryRounds=${dryRounds} after ${iterationsDone} iterations`
+            );
+            trail[trail.length - 1].decision = "dryRounds";
+            return "dryRounds";
+          }
+        }
+      }
+    };
+    const stoppedBy = await runLoop();
+    emitDigest(rt, { stage: STAGE3, output: stoppedBy, counts: { iterations: iterationsDone } });
+    return buildResult(state, iterationsDone, stoppedBy, warnings, trail, agentsSpawned);
+  }
+  function buildResult(state, iterations, stoppedBy, warnings, trail, agentsSpawned) {
+    const stats = {
+      itemsIn: iterations,
+      itemsOut: iterations,
+      agentsSpawned,
+      dropped: 0,
+      truncated: 0
+    };
+    return {
+      value: { state, iterations, stoppedBy },
+      stats,
+      warnings,
+      trail
+    };
+  }
+
+  // docs-audit.workflow.ts
+  var INVENTORY_EFFORT = "low";
+  var EXTRACT_EFFORT = "medium";
+  var VERIFY_EFFORT_DEFAULT = "high";
+  var MODEL_ALIASES = ["opus", "sonnet", "haiku", "fable"];
+  var INVENTORY_SCHEMA = {
+    type: "object",
+    properties: {
+      surfaces: {
+        type: "array",
+        maxItems: 200,
+        items: { type: "string", maxLength: 300 }
+      }
+    },
+    required: ["surfaces"],
+    additionalProperties: false
+  };
+  var EXTRACT_SCHEMA = {
+    type: "object",
+    properties: {
+      claims: {
+        type: "array",
+        maxItems: 25,
+        items: {
+          type: "object",
+          properties: {
+            surface: { type: "string", maxLength: 300 },
+            kind: { enum: ["behavior", "instruction", "boundary", "cross-reference", "other"] },
+            risk: { enum: ["high", "medium", "low"] },
+            quote: { type: "string", maxLength: 400 },
+            claim: { type: "string", maxLength: 400 },
+            checkHint: { type: "string", maxLength: 250 }
+          },
+          required: ["surface", "kind", "risk", "quote", "claim", "checkHint"],
+          additionalProperties: false
+        }
+      }
+    },
+    required: ["claims"],
+    additionalProperties: false
+  };
+  var ANGLES = [
+    "behavioral contracts \u2014 what the doc says the code DOES: flows, defaults, failure modes, degradation semantics",
+    "instructions and examples \u2014 commands, snippets, config keys, file paths the reader is told to use",
+    "boundaries and guarantees \u2014 caps, invariants, ordering/precedence promises, compatibility and limitation statements"
+  ];
+  function angleForRound(round) {
+    return ANGLES[round % ANGLES.length] ?? ANGLES[0] ?? "";
+  }
+  var DEFAULT_SURFACE_RULES = "Include every always-read documentation surface a consumer or an authoring model relies on:\n- README files at the repository root and one directory level down;\n- every markdown file under a docs/ directory (public docs), EXCLUDING ADR archives and dated records;\n- every skill SKILL.md and its references/*.md (e.g. under plugin/skills/);\n- the repository's CLAUDE.md files.\nExclude: CHANGELOGs, LICENSE files, generated artifacts, node_modules, and historical narrative marked as such.";
+  var RISK_ORDER = { high: 0, medium: 1, low: 2 };
+  function claimKey(c) {
+    return c.surface + "\0" + c.quote.toLowerCase().replace(/\s+/g, " ").trim();
+  }
+  function chunk(items, size) {
+    const out = [];
+    for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+    return out;
+  }
+  function parsePositiveInt(obj, field, fallback, max) {
+    const raw = obj[field];
+    if (raw === void 0) return fallback;
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1) {
+      throw new Error(`docs-audit: "${field}" must be an integer >= 1, got ${JSON.stringify(raw)}`);
+    }
+    if (max !== void 0 && raw > max) {
+      throw new Error(`docs-audit: "${field}" must be <= ${max}, got ${raw}`);
+    }
+    return raw;
+  }
+  function parseOptionalString(obj, field) {
+    const raw = obj[field];
+    if (raw === void 0 || raw === null) return null;
+    if (typeof raw !== "string" || raw.trim().length === 0) {
+      throw new Error(`docs-audit: "${field}" must be a non-empty string when provided`);
+    }
+    return raw;
+  }
+  function parseInput(raw) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(
+        'docs-audit: input must be an object with at least a "repoRoot" field \u2014 received: ' + (raw === null ? "null" : typeof raw)
+      );
+    }
+    const obj = raw;
+    if (obj["repoRoot"] === void 0) {
+      throw new Error(
+        'docs-audit: missing required field "repoRoot" \u2014 provide the ABSOLUTE path to the repository to audit'
+      );
+    }
+    if (typeof obj["repoRoot"] !== "string" || obj["repoRoot"].trim().length === 0) {
+      throw new Error(
+        'docs-audit: "repoRoot" must be a non-empty string \u2014 the ABSOLUTE path to the repository to audit'
+      );
+    }
+    const repoRoot = obj["repoRoot"].trim();
+    let surfaces = null;
+    if (obj["surfaces"] !== void 0 && obj["surfaces"] !== null) {
+      if (!Array.isArray(obj["surfaces"]) || obj["surfaces"].length === 0) {
+        throw new Error(
+          'docs-audit: "surfaces" must be a non-empty array of repo-relative paths when provided (omit it to let the Inventory agent derive the list)'
+        );
+      }
+      for (let i = 0; i < obj["surfaces"].length; i++) {
+        const s = obj["surfaces"][i];
+        if (typeof s !== "string" || s.trim().length === 0) {
+          throw new Error(`docs-audit: surfaces[${i}] must be a non-empty string`);
+        }
+      }
+      surfaces = [...new Set(obj["surfaces"].map((s) => s.trim()))];
+    }
+    let verifierModel;
+    if (obj["verifierModel"] !== void 0) {
+      if (typeof obj["verifierModel"] !== "string" || !MODEL_ALIASES.includes(obj["verifierModel"])) {
+        throw new Error(
+          `docs-audit: "verifierModel" must be one of ${MODEL_ALIASES.join(", ")}`
+        );
+      }
+      verifierModel = obj["verifierModel"];
+    }
+    const cfg = parseConfig(obj);
+    return {
+      repoRoot,
+      surfaces,
+      surfaceRules: parseOptionalString(obj, "surfaceRules"),
+      hints: parseOptionalString(obj, "hints"),
+      maxRounds: parsePositiveInt(obj, "maxRounds", 3),
+      dryRounds: parsePositiveInt(obj, "dryRounds", 1),
+      surfacesPerAgent: parsePositiveInt(obj, "surfacesPerAgent", 4, 10),
+      maxVerifyClaims: parsePositiveInt(obj, "maxVerifyClaims", 60),
+      votes: parsePositiveInt(obj, "votes", 3),
+      verifierModel,
+      effort: cfg.effort ?? null,
+      perAgent: cfg.perAgent ?? null,
+      verifierType: cfg.agentTypes?.["verify"] ?? null,
+      messaging: cfg.messaging === true
+    };
+  }
+  function inventoryPrompt(input) {
+    return `Inventory the documentation surfaces of the repository at ${input.repoRoot}.
+
+Rules for what counts as a surface:
+${input.surfaceRules ?? DEFAULT_SURFACE_RULES}
+
+` + (input.hints !== null ? `Extra context:
+${input.hints}
+
+` : "") + `List the actual directories to find every matching file that EXISTS \u2014 never guess a path.
+Return { "surfaces": ["<repo-relative path>", ...] } using forward slashes, relative to ${input.repoRoot}.`;
+  }
+  function extractPrompt(input, group, round, angle) {
+    return `Extract checkable claims from documentation \u2014 extraction round ${round}.
+Repository root: ${input.repoRoot} (all surface paths below are relative to it; read the files from this root).
+
+Doc surfaces assigned to YOU in this task:
+` + group.map((s) => `  - ${s}`).join("\n") + "\n\n" + (input.hints !== null ? `Extra context:
+${input.hints}
+
+` : "") + `A claim is a statement a reader would RELY ON that can be CHECKED against the repository's current sources: behavior descriptions ("X does Y"), instructions and examples (commands, config keys, snippets, file paths), boundaries and guarantees (caps, defaults, invariants, compatibility statements). Focus on SEMANTIC prose. Skip: purely mechanical anchors (bare symbol-name existence, literal number equalities) that compile-time gates already pin; opinions and marketing; dated historical narrative (changelogs, ADRs, content marked historical).
+
+Angle emphasis for THIS round: ${angle}.
+
+For each claim return: surface (the repo-relative doc path it came from \u2014 one of the assigned surfaces above), kind, risk (impact if the claim turned out stale: would a reader be misled into broken usage?), quote (EXACT substring copied from the doc), claim (the checkable assertion in your own words), checkHint (where in the sources to verify it).
+Return at most 25 claims \u2014 the HIGHEST-risk ones you found.`;
+  }
+  function renderAuditClaim(repoRoot, hints) {
+    return (c) => `Documentation-drift audit \u2014 verdict for ONE documentation claim.
+Repository root: ${repoRoot}.
+Doc surface: ${c.surface}
+Quote (exact text from the doc): "${c.quote}"
+Claim to check: ${c.claim}
+Where to look first: ${c.checkHint}
+` + (hints !== null ? `Extra context:
+${hints}
+` : "") + `Read the ACTUAL current sources under the repository root (grep/read files; use git read-only if helpful) and decide:
+- confirmed: the sources today match the claim;
+- partially-confirmed: partly accurate but imprecise or drifted in detail;
+- refuted: the doc statement is STALE or wrong versus the current sources;
+- unverifiable: you could not locate relevant evidence either way (say what you looked for).
+Cite the file paths (and line numbers where possible) your verdict rests on in "reason".`;
+  }
+  async function run(rt00, input) {
+    const { rt: rt0, report: leafFence } = await withLeafFence(rt00, {
+      phase: "Fence",
+      disabled: input.messaging,
+      ...input.perAgent !== null ? { perAgent: input.perAgent } : {}
+    });
+    const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0;
+    const warnings = [];
+    const inventoryEffort = resolveEffort(input.effort?.["inventory"], INVENTORY_EFFORT);
+    const extractEffort = resolveEffort(input.effort?.["extract"], EXTRACT_EFFORT);
+    const verifyEffort = resolveVerifierEffort(input.effort?.["verify"], VERIFY_EFFORT_DEFAULT);
+    let verifierProbe = null;
+    let resolvedVerifierType = null;
+    if (input.verifierType !== null) {
+      const probe = await probeAgentType(rt, input.verifierType, { phase: "Fence" });
+      resolvedVerifierType = probe.agentType ?? null;
+      verifierProbe = { requested: input.verifierType, available: probe.available, reason: probe.reason };
+    }
+    rt.phase("Inventory");
+    let surfaces;
+    let inventorySource;
+    if (input.surfaces !== null) {
+      surfaces = input.surfaces;
+      inventorySource = "input";
+    } else {
+      const inv = await rt.agent(inventoryPrompt(input), {
+        schema: INVENTORY_SCHEMA,
+        label: "docs-audit:inventory",
+        phase: "Inventory",
+        effort: inventoryEffort
+      });
+      if (inv === null) {
+        throw new Error(
+          'docs-audit: the inventory agent failed \u2014 relaunch with resumeFromRunId, or pass an explicit "surfaces" array to skip inventory entirely'
+        );
+      }
+      const cleaned = [...new Set(inv.surfaces.map((s) => s.trim()).filter((s) => s.length > 0))];
+      if (cleaned.length === 0) {
+        throw new Error(
+          `docs-audit: inventory returned no surfaces \u2014 the surface rules matched nothing under ${input.repoRoot}. Review "surfaceRules" or pass an explicit "surfaces" array.`
+        );
+      }
+      surfaces = cleaned;
+      inventorySource = "agent";
+    }
+    rt.phase("Extract");
+    const surfaceSet = new Set(surfaces);
+    const groups = chunk(surfaces, input.surfacesPerAgent);
+    const loopResult = await loopUntilDone(rt, {
+      maxIterations: input.maxRounds,
+      dryRounds: input.dryRounds,
+      initial: { claims: [], seenKeys: [], rounds: 0 },
+      body: async (loopRt, state) => {
+        const round = state.rounds + 1;
+        const angle = angleForRound(state.rounds);
+        const results = await loopRt.parallel(
+          groups.map(
+            (group, gi) => () => loopRt.agent(extractPrompt(input, group, round, angle), {
+              schema: EXTRACT_SCHEMA,
+              label: `docs-audit:extract:${round}:${gi}`,
+              phase: "Extract",
+              effort: extractEffort
+            })
+          )
+        );
+        const seen = new Set(state.seenKeys);
+        const freshClaims = [];
+        const freshKeys = [];
+        for (let gi = 0; gi < results.length; gi++) {
+          const res = results[gi];
+          if (res === null || res === void 0) {
+            warn(
+              rt,
+              warnings,
+              `docs-audit [Extract]: extractor ${round}:${gi} failed \u2014 its surfaces contribute nothing this round (${(groups[gi] ?? []).join(", ")})`
+            );
+            continue;
+          }
+          for (const claim of res.claims) {
+            if (!surfaceSet.has(claim.surface)) {
+              warn(
+                rt,
+                warnings,
+                `docs-audit [Extract]: dropped a claim citing "${claim.surface}" \u2014 not in the audited surface set`
+              );
+              continue;
+            }
+            const key = claimKey(claim);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            freshClaims.push(claim);
+            freshKeys.push(key);
+          }
+        }
+        if (freshClaims.length === 0) {
+          return {
+            state: { ...state, rounds: round },
+            done: false,
+            progressed: false
+          };
+        }
+        rt.log(`docs-audit: round ${round} (+${freshClaims.length} claims, ${state.claims.length + freshClaims.length} total)`);
+        return {
+          state: {
+            claims: [...state.claims, ...freshClaims],
+            seenKeys: [...state.seenKeys, ...freshKeys],
+            rounds: round
+          },
+          done: false,
+          progressed: true
+        };
+      }
+    });
+    for (const w of loopResult.warnings) warnings.push(w);
+    const { state: finalState, stoppedBy } = loopResult.value;
+    const sortedClaims = finalState.claims.map((c, i) => ({ c, i })).sort(
+      (a, b) => (RISK_ORDER[a.c.risk] ?? ANGLES.length) - (RISK_ORDER[b.c.risk] ?? ANGLES.length) || a.i - b.i
+    ).map((x) => x.c);
+    const verifyResult = await adversarialVerification(rt, {
+      claims: sortedClaims,
+      renderClaim: renderAuditClaim(input.repoRoot, input.hints),
+      votes: input.votes,
+      refuteThreshold: Math.min(2, input.votes),
+      maxVerifyClaims: input.maxVerifyClaims,
+      effort: verifyEffort,
+      phase: "Verify",
+      ...input.verifierModel !== void 0 ? { model: input.verifierModel } : {},
+      ...resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}
+    });
+    for (const w of verifyResult.warnings) warnings.push(w);
+    rt.phase("Report");
+    const verdictCount = (v) => verifyResult.value.filter((r) => r.verdict === v).length;
+    const findings = verifyResult.value.filter((r) => r.verdict !== "confirmed").map((r) => ({ ...r.claim, verdict: r.verdict, votes: r.votes }));
+    const summary = {
+      total: verifyResult.value.length,
+      confirmed: verdictCount("confirmed"),
+      stale: verdictCount("refuted"),
+      partiallyStale: verdictCount("partially-confirmed"),
+      unverifiable: verdictCount("unverifiable"),
+      unverifiedByCap: verdictCount("unverified-by-cap")
+    };
+    rt.log(
+      `docs-audit: ${summary.total} claims \u2014 ${summary.confirmed} confirmed, ${summary.stale} stale, ${summary.partiallyStale} partial, ${summary.unverifiable} unverifiable, ${summary.unverifiedByCap} unverified-by-cap`
+    );
+    return {
+      repoRoot: input.repoRoot,
+      surfaces,
+      inventorySource,
+      rounds: finalState.rounds,
+      // HONEST: complete only when a full sweep found nothing new — a
+      // maxIterations stop means the claim space was NOT exhausted.
+      extractionComplete: stoppedBy === "dryRounds",
+      stoppedBy,
+      claimsSeen: finalState.claims.length,
+      summary,
+      findings,
+      verifierProbe,
+      leafFence,
+      envelope: { trail: collectTrail(loopResult, verifyResult) },
+      warnings
+    };
+  }
+  var docs_audit_workflow_default = defineWorkflow({
+    meta: {
+      name: "docs-audit",
+      description: "Pre-release semantic docs audit: inventories doc surfaces, extracts checkable claims in loop-until-dry rounds, then refute-first verifies each claim against the actual sources with evidence-tiered verdicts (confirmed / stale / partially-stale / unverifiable).",
+      whenToUse: "Use BEFORE a release (npm publish, plugin version bump) to catch documentation whose prose has drifted from the implementation \u2014 the semantic layer compile-time doc gates cannot check. Pass repoRoot (absolute); optionally surfaces, hints (e.g. a provenance map location), and sizing knobs. Findings are remediation input, e.g. for doc-rewrite.",
+      phases: [
+        { title: "Fence", detail: "Leaf-fence + optional cross-model verifier probe" },
+        { title: "Inventory", detail: "Derive or validate the audited doc-surface list" },
+        { title: "Extract", detail: "Loop-until-dry claim extraction: angle-cycled sweeps, deduped against seen" },
+        { title: "Verify", detail: "Refute-first adversarial verification of each claim against the sources" },
+        { title: "Report", detail: "Deterministic verdict aggregation \u2014 stale findings, honest caps and stops" }
+      ]
+    },
+    parseInput,
+    run
+  });
+  return __toCommonJS(docs_audit_workflow_exports);
+})();
+
+// --- wt glue: bind sandbox globals into rt, run the workflow, return ---
+const __rt = { agent, parallel, pipeline, phase, log, budget, workflow };
+return await __wt.default.run(__rt, typeof args !== "undefined" ? args : undefined);

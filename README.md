@@ -11,7 +11,7 @@ machine that ran them with `npx workflow-toolbox report <runId>`.
 **Workflow Toolbox** is a free Claude Code plugin plus the `@workflow-toolbox`
 npm packages: nine tested orchestration patterns for Claude Code's **Workflow
 tool** (research preview), skills to author, scaffold, and debug workflows, and
-twenty-one runnable example compositions — including a full dev pipeline
+twenty-two runnable example compositions — including a full dev pipeline
 (plan → implement → review-fix).
 
 What the journals show:
@@ -187,7 +187,8 @@ pnpm add -D @workflow-toolbox/runtime @workflow-toolbox/patterns @workflow-toolb
 
 Write a `*.workflow.ts` against `@workflow-toolbox/patterns` — and note the
 `/define` subpath for `defineWorkflow` (the package-root re-export typechecks,
-but `workflow-toolbox build` then fails with a `node:vm` resolve error):
+but `workflow-toolbox build` rejects it up front with an error naming the
+`/define` subpath to import instead):
 
 ```ts
 import { defineWorkflow } from '@workflow-toolbox/build/define'
@@ -229,12 +230,13 @@ what happened and whether resuming is safe.
   a replayable audit trail.
 - **`@workflow-toolbox/build`** — the `workflow-toolbox` CLI plus `defineWorkflow`, which workflow
   entries import from the **`@workflow-toolbox/build/define`** subpath (the package
-  root re-exports it too, but that import — while it typechecks — makes
-  `workflow-toolbox build` fail with a `node:vm` resolve error). The CLI compiles a
+  root re-exports it too, but that import — while it typechecks — is rejected
+  by `workflow-toolbox build`'s pre-flight check, with an actionable error
+  naming the subpath). The CLI compiles a
   TypeScript composition into one self-contained `.js` the Workflow tool runs
   directly.
 
-Twenty-one example compositions live in `toolkit/examples/`; their built artifacts
+Twenty-two example compositions live in `toolkit/examples/`; their built artifacts
 (12–75 KB each) are committed under `toolkit/workflows/` and run as-is via
 `scriptPath` — no install, no build. Start with
 [toolkit/README.md](toolkit/README.md). The flagship set is the
