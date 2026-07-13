@@ -1101,6 +1101,110 @@ describe('pr-review docs-alignment lens (docs-provenance manifest)', () => {
   })
 })
 
+describe('pr-review provenance input knob (external-repo manifest)', () => {
+  function runtimeWithChangedFiles(changedFiles: string[]): FakeRuntime {
+    return new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+        if (p.includes('availability probe')) return 'PROBE_OK'
+        if (p.includes('adversarially verify')) return { verdict: 'confirmed', reason: 'r' }
+        if (p.includes('synthesizing a code review')) return { verdict: 'approve', summary: 'No blocking findings' }
+        if (p.includes('you are a specialized code reviewer')) return { findings: [] }
+        if (p.includes('you are reviewing a'))
+          return { summary: 'Hardens the SSE backpressure guard.', riskAreas: ['sse'], changedFiles }
+        if (p.includes('classify it into exactly one category')) return { category: 'refactor' }
+        return { summary: 'Fallback change summary', riskAreas: [], changedFiles: [] }
+      },
+    })
+  }
+
+  const reviewerLabelsOf = (rt: FakeRuntime): string[] =>
+    rt.calls
+      .map((c) => c.opts?.label)
+      .filter((l): l is string => typeof l === 'string' && l.startsWith('pr-review:reviewer:'))
+
+  // An external repo's manifest (workflow-observatory-shaped) — the concrete
+  // consumer this knob exists for (card follow-up of the Tier 2 replication).
+  const OBS_PROVENANCE = [
+    {
+      sources: ['apps/observe-ui/server/'],
+      docs: ['apps/observe-ui/README.md', 'docs/known-issues.md'],
+    },
+  ]
+
+  it('arms the lens from the PROVIDED manifest and reports provenanceSource "input"', async () => {
+    const rt = runtimeWithChangedFiles(['apps/observe-ui/server/host.ts'])
+    const result = await wf.run(
+      rt,
+      JSON.stringify({ target: 'HEAD~1..HEAD', provenance: OBS_PROVENANCE }),
+    )
+
+    expect(reviewerLabelsOf(rt)).toContain('pr-review:reviewer:docs-alignment')
+    expect(result.provenanceDocs).toEqual([
+      'apps/observe-ui/README.md',
+      'docs/known-issues.md',
+    ])
+    expect(result.provenanceSource).toBe('input')
+  })
+
+  it('REPLACES the bundled manifest — a dwt-mapped path no longer arms the lens', async () => {
+    // lean-routing.ts arms the lens via the BUNDLED manifest (test above);
+    // with a provided manifest the bundled pairs must be inert (no merge).
+    const rt = runtimeWithChangedFiles(['toolkit/packages/patterns/src/lean-routing.ts'])
+    const result = await wf.run(
+      rt,
+      JSON.stringify({ target: 'HEAD~1..HEAD', provenance: OBS_PROVENANCE }),
+    )
+
+    expect(reviewerLabelsOf(rt)).not.toContain('pr-review:reviewer:docs-alignment')
+    expect(result.provenanceDocs).toEqual([])
+    expect(result.provenanceSource).toBe('input')
+  })
+
+  it('reports provenanceSource "bundled" when the knob is omitted', async () => {
+    const rt = runtimeWithChangedFiles(['toolkit/packages/patterns/src/lean-routing.ts'])
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+    expect(result.provenanceSource).toBe('bundled')
+    expect(reviewerLabelsOf(rt)).toContain('pr-review:reviewer:docs-alignment')
+  })
+
+  it('rejects a non-array provenance at parse time', async () => {
+    const rt = runtimeWithChangedFiles([])
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', provenance: 'apps/' })),
+    ).rejects.toThrow(/provenance/)
+  })
+
+  it('rejects an EMPTY provenance array (omit the knob to use the bundled manifest)', async () => {
+    const rt = runtimeWithChangedFiles([])
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', provenance: [] })),
+    ).rejects.toThrow(/provenance/)
+  })
+
+  it('rejects an entry whose sources/docs are missing, empty, or non-string', async () => {
+    const rt = runtimeWithChangedFiles([])
+    await expect(
+      wf.run(
+        rt,
+        JSON.stringify({ target: 'HEAD~1..HEAD', provenance: [{ sources: ['a/'] }] }),
+      ),
+    ).rejects.toThrow(/provenance\[0\]/)
+    await expect(
+      wf.run(
+        rt,
+        JSON.stringify({ target: 'HEAD~1..HEAD', provenance: [{ sources: [], docs: ['d.md'] }] }),
+      ),
+    ).rejects.toThrow(/provenance\[0\]/)
+    await expect(
+      wf.run(
+        rt,
+        JSON.stringify({ target: 'HEAD~1..HEAD', provenance: [{ sources: ['a/'], docs: ['  '] }] }),
+      ),
+    ).rejects.toThrow(/provenance\[0\]/)
+  })
+})
+
 describe('pr-review degenerate change-summary guard', () => {
   function runtimeWithActOutput(act: unknown): FakeRuntime {
     return new FakeRuntime({

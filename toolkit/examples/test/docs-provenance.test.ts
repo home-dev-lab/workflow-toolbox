@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { DOCS_PROVENANCE, docsForChangedFiles } from '../docs-provenance.js'
+import type { ProvenanceEntry } from '../docs-provenance.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url))
 
@@ -108,5 +109,42 @@ describe('docsForChangedFiles — pure prefix matcher', () => {
     // Same-stem sibling of an exact runtime entry: no directory entry covers
     // runtime/src/, so this must map to nothing at all.
     expect(docsForChangedFiles(['toolkit/packages/runtime/src/digest.ts.orig'])).toEqual([])
+  })
+})
+
+describe('docsForChangedFiles — explicit manifest parameter (pr-review provenance knob)', () => {
+  // An external repo's manifest (observatory-shaped paths — they deliberately
+  // do NOT exist in this tree: the matcher is pure, only the bundled
+  // DOCS_PROVENANCE is integrity-gated against the real tree above).
+  const CUSTOM: readonly ProvenanceEntry[] = [
+    {
+      sources: ['apps/observe-ui/server/'],
+      docs: ['apps/observe-ui/README.md', 'docs/known-issues.md'],
+    },
+    { sources: ['packages/licensing/src/license.ts'], docs: ['EULA.md'] },
+  ]
+
+  it('uses the provided manifest instead of the bundled one', () => {
+    const docs = docsForChangedFiles(['apps/observe-ui/server/host.ts'], CUSTOM)
+    expect(docs).toEqual(['apps/observe-ui/README.md', 'docs/known-issues.md'])
+  })
+
+  it('REPLACES the bundled manifest, never merges: a bundled-mapped path stops matching', () => {
+    // This path maps via the BUNDLED manifest (build/lint.ts entry); under a
+    // custom manifest it must map to nothing.
+    expect(docsForChangedFiles(['toolkit/packages/build/src/lint.ts'], CUSTOM)).toEqual([])
+  })
+
+  it('applies the same exact-vs-subtree semantics to a custom manifest', () => {
+    // Exact file entry: same-stem sibling must not false-trigger.
+    expect(docsForChangedFiles(['packages/licensing/src/license.tsx'], CUSTOM)).toEqual([])
+    expect(docsForChangedFiles(['packages/licensing/src/license.ts'], CUSTOM)).toEqual(['EULA.md'])
+    // Directory entry: '/' terminator guards the sibling-dir case.
+    expect(docsForChangedFiles(['apps/observe-ui/server-extra/x.ts'], CUSTOM)).toEqual([])
+  })
+
+  it('passing the bundled manifest explicitly behaves exactly like the default', () => {
+    const changed = ['toolkit/packages/scaffold/src/scaffold.ts']
+    expect(docsForChangedFiles(changed, DOCS_PROVENANCE)).toEqual(docsForChangedFiles(changed))
   })
 })

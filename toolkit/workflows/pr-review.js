@@ -1016,9 +1016,9 @@ ${renderClaim(claim)}`;
       ]
     }
   ];
-  function docsForChangedFiles(changedFiles) {
+  function docsForChangedFiles(changedFiles, manifest = DOCS_PROVENANCE) {
     const out = [];
-    for (const entry of DOCS_PROVENANCE) {
+    for (const entry of manifest) {
       const touched = changedFiles.some(
         (f) => entry.sources.some(
           (source) => source.endsWith("/") ? f.startsWith(source) : f === source
@@ -1095,6 +1095,31 @@ ${renderClaim(claim)}`;
     docs: ["accuracy", "completeness", "clarity"]
   };
   var DEFAULT_LENSES = ["correctness", "security", "test-coverage", "maintainability"];
+  function parseProvenance(raw) {
+    if (raw === void 0 || raw === null) return null;
+    if (!Array.isArray(raw) || raw.length === 0) {
+      throw new Error(
+        'pr-review: "provenance" must be a NON-EMPTY array of { sources, docs } entries \u2014 omit it entirely to use the bundled dwt manifest'
+      );
+    }
+    return raw.map((entry, i) => {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+        throw new Error(
+          `pr-review: provenance[${i}] must be an object with "sources" and "docs" string arrays`
+        );
+      }
+      const e = entry;
+      for (const field of ["sources", "docs"]) {
+        const v = e[field];
+        if (!Array.isArray(v) || v.length === 0 || v.some((s) => typeof s !== "string" || s.trim().length === 0)) {
+          throw new Error(
+            `pr-review: provenance[${i}].${field} must be a non-empty array of non-empty strings (repo-relative paths; a path ending in "/" covers its subtree, otherwise exact file match)`
+          );
+        }
+      }
+      return { sources: e["sources"], docs: e["docs"] };
+    });
+  }
   function parseInput(raw) {
     if (typeof raw === "string") {
       if (raw.trim().length === 0) {
@@ -1109,7 +1134,8 @@ ${renderClaim(claim)}`;
         verifierType: null,
         perAgent: null,
         effort: null,
-        messaging: null
+        messaging: null,
+        provenance: null
       };
     }
     if (raw === null || typeof raw !== "object") {
@@ -1143,7 +1169,8 @@ ${renderClaim(claim)}`;
     const reviewerType = cfg.agentTypes?.["review"] ?? null;
     const verifierType = cfg.agentTypes?.["verify"] ?? null;
     const messaging = cfg.messaging ?? null;
-    return { target: obj["target"], reviewerType, verifierModel, verifierType, perAgent, effort, messaging };
+    const provenance = parseProvenance(obj["provenance"]);
+    return { target: obj["target"], reviewerType, verifierModel, verifierType, perAgent, effort, messaging, provenance };
   }
   async function run(rt00, input) {
     rt00.phase("Fence");
@@ -1256,10 +1283,11 @@ Return { "changedFiles": ["<path>", ...], "riskAreas": ["<risk1>", ...], "summar
       warnings.push(w);
       rt.log(`\u26A0 ${w}`);
     }
-    const provenanceDocs = docsForChangedFiles(changeSummary.changedFiles);
+    const provenanceSource = input.provenance !== null ? "input" : "bundled";
+    const provenanceDocs = input.provenance !== null ? docsForChangedFiles(changeSummary.changedFiles, input.provenance) : docsForChangedFiles(changeSummary.changedFiles);
     if (provenanceDocs.length > 0) {
       rt.log(
-        `docs-alignment lens armed: ${provenanceDocs.length} mapped doc surface(s) for this change`
+        `docs-alignment lens armed: ${provenanceDocs.length} mapped doc surface(s) for this change (${provenanceSource} manifest)`
       );
     }
     const baseLenses = REVIEWER_LENSES[category] ?? DEFAULT_LENSES;
@@ -1418,6 +1446,7 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
       leafFence,
       leanRouting,
       provenanceDocs,
+      provenanceSource,
       stats: {
         reviewersSpawned,
         findingsRaw,

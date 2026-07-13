@@ -50,6 +50,7 @@ import type {
 } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
 import { docsForChangedFiles } from './docs-provenance.js'
+import type { ProvenanceEntry } from './docs-provenance.js'
 
 // ---------------------------------------------------------------------------
 // Per-stage effort defaults (Class B/C launch-time tuning — see parseConfig).
@@ -134,6 +135,19 @@ export interface PrReviewInput {
    *  its agents to coordinate. null/false (default) = the fence applies. Parsed
    *  from `args.messaging` by the shared parseConfig helper. */
   messaging: boolean | null
+  /** Optional REPLACEMENT docs-provenance manifest for the docs-alignment lens —
+   *  the knob that arms the lens on an EXTERNAL repo (the bundled manifest maps
+   *  dwt paths only, so a foreign repo's changedFiles never match it). Same
+   *  shape and matching semantics as the committed manifest: each entry maps
+   *  `sources` (a path ending in '/' covers its whole subtree, anything else is
+   *  an EXACT file match) to the `docs` surfaces describing them. Provided → it
+   *  REPLACES the bundled manifest for the whole cross-check (never merged —
+   *  the bundled map is dwt-specific). Must be a NON-EMPTY array when present:
+   *  to leave the lens on the bundled manifest, omit the knob entirely (an
+   *  empty array is more likely an authoring mistake than an intent). null =
+   *  the bundled manifest. The result reports which one was consulted via
+   *  `provenanceSource`. */
+  provenance: readonly ProvenanceEntry[] | null
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +312,13 @@ interface PrReviewOutput {
    *  Non-empty = the docs-alignment reviewer lens ran, scoped to exactly these
    *  surfaces; empty = no mapped module touched, lens skipped. */
   provenanceDocs: readonly string[]
+  /** Which manifest the lens cross-check consulted: 'input' = the launch-time
+   *  `provenance` knob (external-repo review), 'bundled' = the committed dwt
+   *  manifest (default). Observability guard: without it, a mis-shaped launch
+   *  manifest that matches nothing would be indistinguishable from "no mapped
+   *  module touched" — the same silent-disarm class the empty-changedFiles
+   *  warning covers. */
+  provenanceSource: 'input' | 'bundled'
   stats: {
     reviewersSpawned: number
     findingsRaw: number
@@ -313,6 +334,39 @@ interface PrReviewOutput {
 // ---------------------------------------------------------------------------
 // parseInput — fail fast with actionable error
 // ---------------------------------------------------------------------------
+
+/** Validate the optional launch-time `provenance` manifest: a NON-EMPTY array
+ *  of { sources, docs } entries, each a non-empty array of non-empty strings.
+ *  Fail-fast + actionable: a malformed manifest silently matching nothing
+ *  would disarm the docs-alignment lens — exactly the degradation this knob's
+ *  `provenanceSource` output field exists to make visible. */
+function parseProvenance(raw: unknown): readonly ProvenanceEntry[] | null {
+  if (raw === undefined || raw === null) return null
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error(
+      'pr-review: "provenance" must be a NON-EMPTY array of { sources, docs } entries — ' +
+      'omit it entirely to use the bundled dwt manifest',
+    )
+  }
+  return raw.map((entry, i) => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(
+        `pr-review: provenance[${i}] must be an object with "sources" and "docs" string arrays`,
+      )
+    }
+    const e = entry as Record<string, unknown>
+    for (const field of ['sources', 'docs'] as const) {
+      const v = e[field]
+      if (!Array.isArray(v) || v.length === 0 || v.some((s) => typeof s !== 'string' || s.trim().length === 0)) {
+        throw new Error(
+          `pr-review: provenance[${i}].${field} must be a non-empty array of non-empty strings ` +
+          '(repo-relative paths; a path ending in "/" covers its subtree, otherwise exact file match)',
+        )
+      }
+    }
+    return { sources: e['sources'] as string[], docs: e['docs'] as string[] }
+  })
+}
 
 function parseInput(raw: unknown): PrReviewInput {
   // Bare string shorthand: accept a plain string as { target: string }
@@ -330,6 +384,7 @@ function parseInput(raw: unknown): PrReviewInput {
       perAgent: null,
       effort: null,
       messaging: null,
+      provenance: null,
     }
   }
 
@@ -381,8 +436,11 @@ function parseInput(raw: unknown): PrReviewInput {
   const reviewerType = cfg.agentTypes?.['review'] ?? null
   const verifierType = cfg.agentTypes?.['verify'] ?? null
   const messaging = cfg.messaging ?? null
+  // Bespoke pr-review key (parseConfig ignores it): the external-repo
+  // docs-provenance manifest for the docs-alignment lens.
+  const provenance = parseProvenance(obj['provenance'])
 
-  return { target: obj['target'], reviewerType, verifierModel, verifierType, perAgent, effort, messaging }
+  return { target: obj['target'], reviewerType, verifierModel, verifierType, perAgent, effort, messaging, provenance }
 }
 
 // ---------------------------------------------------------------------------
@@ -612,14 +670,20 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   // Provenance-triggered docs-alignment lens (Tier 2 of the doc-alignment
   // defence). MECHANICAL trigger, zero extra agents when nothing mapped is
   // touched: the Route stage's changedFiles are prefix-matched against the
-  // committed docs-provenance manifest (bundled at build time — the sandbox
-  // has no fs); a hit appends ONE extra reviewer scoped to the mapped
-  // surfaces. The judgment (is the prose still true?) stays with the LLM
-  // reviewer; the decision to spawn it is deterministic script code.
-  const provenanceDocs = docsForChangedFiles(changeSummary.changedFiles)
+  // docs-provenance manifest — the launch-time `provenance` input when
+  // provided (external-repo review), else the committed dwt manifest
+  // (bundled at build time — the sandbox has no fs). A hit appends ONE extra
+  // reviewer scoped to the mapped surfaces. The judgment (is the prose still
+  // true?) stays with the LLM reviewer; the decision to spawn it is
+  // deterministic script code.
+  const provenanceSource: 'input' | 'bundled' = input.provenance !== null ? 'input' : 'bundled'
+  const provenanceDocs =
+    input.provenance !== null
+      ? docsForChangedFiles(changeSummary.changedFiles, input.provenance)
+      : docsForChangedFiles(changeSummary.changedFiles)
   if (provenanceDocs.length > 0) {
     rt.log(
-      `docs-alignment lens armed: ${provenanceDocs.length} mapped doc surface(s) for this change`,
+      `docs-alignment lens armed: ${provenanceDocs.length} mapped doc surface(s) for this change (${provenanceSource} manifest)`,
     )
   }
 
@@ -848,6 +912,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     leafFence,
     leanRouting,
     provenanceDocs,
+    provenanceSource,
     stats: {
       reviewersSpawned,
       findingsRaw,

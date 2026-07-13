@@ -149,10 +149,16 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
  *  inside the workflow sandbox. Matching semantics: an entry ending in '/'
  *  covers its whole subtree; any other entry is an EXACT file path — never a
  *  string prefix, so a same-stem sibling (`lint.tsx` vs the mapped `lint.ts`)
- *  cannot false-trigger the lens (review finding, run wf_0decbfe8-7e4). */
-export function docsForChangedFiles(changedFiles: readonly string[]): string[] {
+ *  cannot false-trigger the lens (review finding, run wf_0decbfe8-7e4).
+ *  `manifest` defaults to the bundled DOCS_PROVENANCE (dwt paths); pr-review's
+ *  launch-time `provenance` knob passes an external repo's manifest here — it
+ *  REPLACES the bundled one for the whole match (never merged). */
+export function docsForChangedFiles(
+  changedFiles: readonly string[],
+  manifest: readonly ProvenanceEntry[] = DOCS_PROVENANCE,
+): string[] {
   const out: string[] = []
-  for (const entry of DOCS_PROVENANCE) {
+  for (const entry of manifest) {
     const touched = changedFiles.some((f) =>
       entry.sources.some((source) =>
         source.endsWith('/') ? f.startsWith(source) : f === source,

@@ -46,6 +46,16 @@ empty list there is schema capitulation, and it would otherwise silently disarm 
 lens). The pattern to copy: *deterministic script code decides whether to spawn —
 on agent-reported data; the LLM only judges the prose.*
 
+The bundled map covers dwt paths only, so on an **external repo** the lens would
+never arm — the launch-time **`provenance`** knob closes that: pass
+`args.provenance` (a non-empty array of `{ sources, docs }` entries, same
+subtree-vs-exact matching semantics) and it **replaces** the bundled manifest for
+the whole cross-check (never merged — the bundled map is dwt-specific). Validated
+fail-fast in `parseInput` (`parseProvenance`); the result's `provenanceSource`
+(`'input'` | `'bundled'`) reports which manifest was consulted, so a mis-shaped
+launch manifest that matches nothing stays distinguishable from "no mapped module
+touched".
+
 ```ts
 const reviewStage = (lens) => rt.agent(
   `Review the "${lens}" aspect. Read the ACTUAL change — do NOT trust the summary…`,
