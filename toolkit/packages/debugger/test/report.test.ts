@@ -205,6 +205,7 @@ describe('buildAuditReport — tool denials (best-effort, injected)', () => {
     detail,
     kind: 'rejected',
     reason: null,
+    at: null,
   })
 
   it('rolls up injected denials and resolves each agent label from the journal rows', () => {

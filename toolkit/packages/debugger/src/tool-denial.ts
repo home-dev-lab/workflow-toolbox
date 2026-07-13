@@ -71,6 +71,10 @@ export interface ToolDenial {
   /** The auto-mode "[Category]" reason tag when present (e.g. "[Create Unsafe Agents]"),
    *  else null. */
   reason: string | null
+  /** ISO timestamp of the transcript line the denial was detected on (the error
+   *  tool_result), null when the line carries no timestamp. Lets a replay fold
+   *  gate the denial overlay at a scrub position (Workflow Observatory). */
+  at: string | null
   /** Present iff a recovery signal was found AFTER this denial in the same transcript.
    *  Absent (not null) when there is none — precision over recall, never guess. */
   recovered?: DenialRecovery
@@ -285,6 +289,7 @@ export function parseTranscriptDenials(jsonl: string, agentId: string): ToolDeni
             detail: detail.slice(0, DETAIL_MAX),
             kind: verdict.kind,
             reason: verdict.reason,
+            at: lineAt,
           },
         })
       }

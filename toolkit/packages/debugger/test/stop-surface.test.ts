@@ -247,6 +247,7 @@ describe('buildFullSurface — recovery-aware denial wording (annotate, never su
     detail: 'x',
     kind: 'hook' as const,
     reason: null,
+    at: null,
     ...(rec !== undefined ? { recovered: rec } : {}),
   })
 

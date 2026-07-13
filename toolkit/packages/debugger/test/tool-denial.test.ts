@@ -102,7 +102,19 @@ describe('parseTranscriptDenials — over a realistic transcript', () => {
       '{"type":"user","message":{"role":"user","content":[{"type":"tool_result",' +
       '"tool_use_id":"toolu_x","is_error":true,"content":"The tool use was rejected"}]}}'
     const out = parseTranscriptDenials(orphan, 'a-orphan')
-    expect(out).toEqual([{ agentId: 'a-orphan', tool: '(unknown)', detail: '', kind: 'rejected', reason: null }])
+    expect(out).toEqual([{ agentId: 'a-orphan', tool: '(unknown)', detail: '', kind: 'rejected', reason: null, at: null }])
+  })
+
+  it('stamps each denial with its line timestamp (at), null when the line has none', () => {
+    const stamped =
+      '{"type":"user","timestamp":"2026-07-13T22:00:00.000Z","message":{"role":"user","content":[{"type":"tool_result",' +
+      '"tool_use_id":"t","is_error":true,"content":"The tool use was rejected"}]}}\n' +
+      '{"type":"user","message":{"role":"user","content":[{"type":"tool_result",' +
+      '"tool_use_id":"t2","is_error":true,"content":"The tool use was rejected"}]}}'
+    const out = parseTranscriptDenials(stamped, 'a-ts')
+    expect(out).toHaveLength(2)
+    expect(out[0]!.at).toBe('2026-07-13T22:00:00.000Z')
+    expect(out[1]!.at).toBeNull()
   })
 
   it('never throws on malformed lines', () => {
@@ -139,12 +151,12 @@ describe('parseTranscriptDenials — over a realistic transcript', () => {
 describe('buildToolDenialReport — run-level rollup', () => {
   it('aggregates across agents, groups Bash by command head, and flags degraded', () => {
     const a1: ToolDenial[] = [
-      { agentId: 'a1', tool: 'Bash', detail: 'git diff a..b -- x', kind: 'rejected', reason: null },
-      { agentId: 'a1', tool: 'Bash', detail: 'git diff c..d -- y', kind: 'rejected', reason: null },
+      { agentId: 'a1', tool: 'Bash', detail: 'git diff a..b -- x', kind: 'rejected', reason: null, at: null },
+      { agentId: 'a1', tool: 'Bash', detail: 'git diff c..d -- y', kind: 'rejected', reason: null, at: null },
     ]
     const a2: ToolDenial[] = [
-      { agentId: 'a2', tool: 'Bash', detail: 'git diff e..f', kind: 'rejected', reason: null },
-      { agentId: 'a2', tool: 'WebFetch', detail: 'https://x', kind: 'hook', reason: null },
+      { agentId: 'a2', tool: 'Bash', detail: 'git diff e..f', kind: 'rejected', reason: null, at: null },
+      { agentId: 'a2', tool: 'WebFetch', detail: 'https://x', kind: 'hook', reason: null, at: null },
     ]
     const r = buildToolDenialReport([a1, a2])
     expect(r.total).toBe(4)
@@ -156,14 +168,14 @@ describe('buildToolDenialReport — run-level rollup', () => {
 
   it('collapses a leading "cd <dir> &&" to the real verb (first non-cd segment)', () => {
     const r = buildToolDenialReport([
-      [{ agentId: 'a', tool: 'Bash', detail: 'cd toolkit && git log --oneline', kind: 'rejected', reason: null }],
+      [{ agentId: 'a', tool: 'Bash', detail: 'cd toolkit && git log --oneline', kind: 'rejected', reason: null, at: null }],
     ])
     expect(r.bySignature[0]).toEqual({ signature: 'git log', count: 1 })
   })
 
   it('groups by the FIRST command, not a trailing "&& echo" (signatureOf direction)', () => {
     const r = buildToolDenialReport([
-      [{ agentId: 'a', tool: 'Bash', detail: 'git diff a..b && echo done', kind: 'rejected', reason: null }],
+      [{ agentId: 'a', tool: 'Bash', detail: 'git diff a..b && echo done', kind: 'rejected', reason: null, at: null }],
     ])
     expect(r.bySignature[0]).toEqual({ signature: 'git diff', count: 1 })
   })
@@ -171,15 +183,15 @@ describe('buildToolDenialReport — run-level rollup', () => {
   it('aggregates ACROSS sources (pipeline stages) by global agentId — distinct ids sum, a shared id counts once', () => {
     // The observe-ui pipeline combined view flattens each stage's denials into one report.
     // Two stages with DISTINCT agentIds (the 17-char random-id runtime guarantee) → summed.
-    const stage1: ToolDenial[] = [{ agentId: 'a-stage1', tool: 'Bash', detail: 'git diff x', kind: 'rejected', reason: null }]
-    const stage2: ToolDenial[] = [{ agentId: 'a-stage2', tool: 'Bash', detail: 'git diff y', kind: 'rejected', reason: null }]
+    const stage1: ToolDenial[] = [{ agentId: 'a-stage1', tool: 'Bash', detail: 'git diff x', kind: 'rejected', reason: null, at: null }]
+    const stage2: ToolDenial[] = [{ agentId: 'a-stage2', tool: 'Bash', detail: 'git diff y', kind: 'rejected', reason: null, at: null }]
     const r = buildToolDenialReport([stage1, stage2])
     expect(r.total).toBe(2)
     expect(r.agentsAffected).toBe(2) // distinct agentIds → two affected agents
 
     // A shared agentId across sources is the SAME affected agent (the documented global-key contract
     // the cross-stage rollup relies on) — counted once, not double-counted.
-    const shared: ToolDenial[] = [{ agentId: 'a-stage1', tool: 'Bash', detail: 'git diff z', kind: 'rejected', reason: null }]
+    const shared: ToolDenial[] = [{ agentId: 'a-stage1', tool: 'Bash', detail: 'git diff z', kind: 'rejected', reason: null, at: null }]
     const r2 = buildToolDenialReport([stage1, shared])
     expect(r2.total).toBe(2)
     expect(r2.agentsAffected).toBe(1) // same agentId → one affected agent
@@ -371,8 +383,8 @@ describe('recovery matching — precision hardening (review wf_9fdbddfe-ba5)', (
   })
 
   it('buildToolDenialReport exposes recoveredCount + allRecovered (single source for the wording gates)', () => {
-    const rec: ToolDenial = { agentId: 'a', tool: 'WebFetch', detail: 'https://a', kind: 'hook', reason: null, recovered: { via: 'WebSearch', at: null } }
-    const bare: ToolDenial = { agentId: 'a', tool: 'Bash', detail: 'git diff', kind: 'rejected', reason: null }
+    const rec: ToolDenial = { agentId: 'a', tool: 'WebFetch', detail: 'https://a', kind: 'hook', reason: null, at: null, recovered: { via: 'WebSearch', at: null } }
+    const bare: ToolDenial = { agentId: 'a', tool: 'Bash', detail: 'git diff', kind: 'rejected', reason: null, at: null }
     const mixed = buildToolDenialReport([[rec, bare]])
     expect(mixed.recoveredCount).toBe(1)
     expect(mixed.allRecovered).toBe(false)

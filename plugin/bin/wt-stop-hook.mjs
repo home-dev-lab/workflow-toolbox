@@ -497,7 +497,8 @@ function parseTranscriptDenials(jsonl, agentId) {
             tool: use?.name ?? "(unknown)",
             detail: detail.slice(0, DETAIL_MAX),
             kind: verdict.kind,
-            reason: verdict.reason
+            reason: verdict.reason,
+            at: lineAt
           }
         });
       }

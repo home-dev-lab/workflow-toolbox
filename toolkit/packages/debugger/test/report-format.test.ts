@@ -135,8 +135,8 @@ describe('formatAuditReportMarkdown — tool denials section', () => {
     bySignature: [{ signature: 'git diff', count: 2 }],
     degraded: true,
     denials: [
-      { agentId: 'a1', label: 'review:bugs', tool: 'Bash', detail: 'git diff a..b -- x.ts', kind: 'rejected', reason: null },
-      { agentId: 'a1', label: 'review:bugs', tool: 'Bash', detail: 'git diff c..d', kind: 'auto-mode-classifier', reason: '[Create Unsafe Agents]' },
+      { agentId: 'a1', label: 'review:bugs', tool: 'Bash', detail: 'git diff a..b -- x.ts', kind: 'rejected', reason: null, at: null },
+      { agentId: 'a1', label: 'review:bugs', tool: 'Bash', detail: 'git diff c..d', kind: 'auto-mode-classifier', reason: '[Create Unsafe Agents]', at: null },
     ],
     recoveredCount: 0,
     allRecovered: false,
@@ -159,7 +159,7 @@ describe('formatAuditReportMarkdown — tool denials section', () => {
       bySignature: [{ signature: 'git log', count: 1 }],
       degraded: true,
       denials: [
-        { agentId: 'a1', label: 'review:bugs', tool: 'Bash', detail: 'git log | head -5', kind: 'rejected', reason: null },
+        { agentId: 'a1', label: 'review:bugs', tool: 'Bash', detail: 'git log | head -5', kind: 'rejected', reason: null, at: null },
       ],
       recoveredCount: 0,
       allRecovered: false,
@@ -240,8 +240,8 @@ describe('formatAuditReportMarkdown — recovery-aware denial rendering', () => 
     bySignature: [{ signature: 'WebFetch', count: 2 }],
     degraded: true,
     denials: [
-      { agentId: 'a1', label: 'verify:1:0', tool: 'WebFetch', detail: 'https://a', kind: 'hook', reason: null, recovered: { via: 'WebSearch', at: null } },
-      { agentId: 'a1', label: 'verify:1:0', tool: 'WebFetch', detail: 'https://b', kind: 'hook', reason: null, recovered: { via: 'WebSearch', at: null } },
+      { agentId: 'a1', label: 'verify:1:0', tool: 'WebFetch', detail: 'https://a', kind: 'hook', reason: null, at: null, recovered: { via: 'WebSearch', at: null } },
+      { agentId: 'a1', label: 'verify:1:0', tool: 'WebFetch', detail: 'https://b', kind: 'hook', reason: null, at: null, recovered: { via: 'WebSearch', at: null } },
     ],
     recoveredCount: 2,
     allRecovered: true,
@@ -263,7 +263,7 @@ describe('formatAuditReportMarkdown — recovery-aware denial rendering', () => 
   it('MIXED: keeps the DEGRADED banner and counts the recovery signals', () => {
     const mixed: ToolDenialReport = {
       ...recDenials,
-      denials: [recDenials.denials[0]!, { agentId: 'a1', label: 'verify:1:0', tool: 'Bash', detail: 'git diff', kind: 'rejected', reason: null }],
+      denials: [recDenials.denials[0]!, { agentId: 'a1', label: 'verify:1:0', tool: 'Bash', detail: 'git diff', kind: 'rejected', reason: null, at: null }],
       recoveredCount: 1,
       allRecovered: false,
     }
