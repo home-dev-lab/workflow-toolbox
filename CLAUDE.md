@@ -16,7 +16,7 @@ This repo has two halves that stand alone but work together:
   ships because it helps any analysis task.
 - **`toolkit/`** — `@workflow-toolbox`, a compile-time TypeScript pattern library for Workflow
   scripts: `@workflow-toolbox/runtime` (sandbox typings + `FakeRuntime`), `@workflow-toolbox/patterns` (the
-  eight patterns + result envelope), `@workflow-toolbox/build` (`defineWorkflow` + the `workflow-toolbox`
+  nine patterns + result envelope), `@workflow-toolbox/build` (`defineWorkflow` + the `workflow-toolbox`
   CLI), plus support packages (`std`, `smoke`, `debugger`, `scaffold`). Example
   compositions live in `toolkit/examples/`; their committed `.js` artifacts in
   `toolkit/workflows/` run as-is via the Workflow tool's `scriptPath`.
@@ -27,7 +27,7 @@ use). The `wt-observe` launcher CLI ships here and starts it when installed.
 
 ## Where to read first
 
-- [README.md](README.md) — what this is, install, the eight patterns, quickstart.
+- [README.md](README.md) — what this is, install, the nine patterns, quickstart.
 - [toolkit/README.md](toolkit/README.md) — the authoring contract, the pattern
   table (when to use / when not to), the result envelope.
 - [docs/public/architecture.md](docs/public/architecture.md) — design principles,

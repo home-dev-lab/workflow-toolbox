@@ -323,7 +323,7 @@ timestamps in via `args` and stamp results after the workflow returns.
 | Concurrent agents | [documented] | Up to **16** at once (fewer on machines with limited CPU cores). |
 | Lifetime agents | [documented] | **1,000** agents total per run — prevents runaway loops. |
 | Items per call | [observed] | A single `parallel()` / `pipeline()` call accepts at most **4,096** items; passing more is an explicit error, not a silent truncation (per the tool's own description). |
-| Script size | [verified] | **512 KB** (524 288 bytes). On the `script`/`scriptPath` path the tool **rejects** an oversized script before launch ("exceeds 524288 bytes"). On the `name` path the oversized file is **silently excluded** from the registry — no error anywhere, the workflow is just absent. |
+| Script size | [verified] | **512 KB** (524 288 bytes — `MAX_WORKFLOW_BYTES` in `@workflow-toolbox/build`, which the `workflow-toolbox check` linter enforces pre-launch). On the `script`/`scriptPath` path the tool **rejects** an oversized script before launch ("exceeds 524288 bytes"). On the `name` path the oversized file is **silently excluded** from the registry — no error anywhere, the workflow is just absent. |
 | Mid-run input | [documented] | None. Only agent permission prompts can pause a run; for sign-off between stages, run each stage as its own workflow. |
 | FS / shell | [documented] | The script itself has no filesystem or shell access; agents do. |
 

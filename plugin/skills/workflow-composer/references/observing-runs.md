@@ -45,7 +45,7 @@ for **any** finished run — including the ones you launch from your own session
 tool — and rebuilds the same rich phase→agent model (phases, agents, tokens, message bodies) from
 what the runtime wrote at completion.
 
-## The eight patterns, observed
+## The nine patterns, observed
 
 Via the live SDK pathway (or disk replay of a finished run) each pattern shows its genuine
 structure — phases, edges, tokens — because that data comes from the SDK stream / journal, not a

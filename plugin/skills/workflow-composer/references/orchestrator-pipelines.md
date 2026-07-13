@@ -101,7 +101,10 @@ to a rebuild). A few things worth knowing before you write one:
   input completeness (a workflow with no required args is entirely legitimate) — read the
   target workflow's own input contract before wiring a stage.
 - The emitted JSON is exactly the wire body a runtime POSTs as
-  `POST /api/pipeline { spec }` — see `toolkit/apps/observe-ui/README.md`'s **"Pipeline
-  spec (v2 authoring form)"** section for the full `PipelineSpec`/`StageSpecV2`/`InputRef`
-  shape reference and validation rules (stage caps, nesting depth, extractor keys).
+  `POST /api/pipeline { spec }` — the full `PipelineSpec`/`StageSpecV2`/`InputRef`
+  shape reference and validation rules (stage caps, nesting depth, extractor keys) live in
+  the Workflow Observatory docs (the closed-source companion that runs the pipeline);
+  the spec types themselves ship here in `@workflow-toolbox/pipeline-spec`.
+  Programmatically, `bundlePipeline` (from `@workflow-toolbox/build`) is the API twin of
+  the `workflow-toolbox pipeline` CLI — same entry in, same emitted JSON out.
 

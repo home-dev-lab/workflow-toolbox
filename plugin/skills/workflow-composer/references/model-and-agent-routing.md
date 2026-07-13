@@ -219,7 +219,9 @@
   - **`workflow-toolbox:leaf`** (`disallowedTools: SendMessage`) — the toolkit's blanket
     default fence (`withLeafFence`, above). Denies SendMessage only; keeps every other
     tool. Applied to EVERY agent a workflow spawns, unconditionally, unless a role
-    overrides it or the run opts out via `messaging: true`.
+    overrides it or the run opts out via `messaging: true`. When wiring the name by hand,
+    import the `LEAF_AGENT_TYPE` / `LEAN_AGENT_TYPE` constants from
+    `@workflow-toolbox/patterns` instead of retyping the strings.
   - **`workflow-toolbox:lean`** (empty `tools` allowlist + `disallowedTools: SendMessage`,
     ships as `plugin/agents/lean.md`) — a minimal-ambient-context agentType for provably
     PURE-REASONING roles: classify / vote / judge / score / dedup / synthesize calls whose
