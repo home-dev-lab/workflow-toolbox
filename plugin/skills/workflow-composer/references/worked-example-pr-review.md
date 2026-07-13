@@ -56,6 +56,18 @@ fail-fast in `parseInput` (`parseProvenance`); the result's `provenanceSource`
 launch manifest that matches nothing stays distinguishable from "no mapped module
 touched".
 
+The INVERSE direction has its own conditional lens: the Route stage also reports
+`addedPublicSurface` (the NEW exports, HTTP routes, env vars, CLI verbs/flags the
+change adds; empty when nothing new is exposed), and when it is non-empty while
+the diff touches **no** doc file, a **`docs-coverage`** reviewer is appended — it
+judges each added surface *user-facing or internal plumbing?* and reports the
+user-facing ones as findings naming the doc surface where they belong (the mapped
+provenance homes when the module is mapped). The run's `coverageSurfaces` output
+names what armed it (empty = silent: nothing added, or the author already touched
+docs in the same diff — the alignment lens and the repo's mechanical inverse
+docs-contract gates cover that path). Same pattern again: *deterministic script
+code decides whether to spawn; the LLM only judges "user-facing?".*
+
 ```ts
 const reviewStage = (lens) => rt.agent(
   `Review the "${lens}" aspect. Read the ACTUAL change — do NOT trust the summary…`,

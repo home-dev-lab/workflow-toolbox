@@ -14,7 +14,10 @@ The five core-pattern compositions:
 - `pr-review.workflow.ts` — route the diff → per-lens reviewers → adversarial verify
   → synthesis. The docs-alignment lens arms off the bundled `docs-provenance.ts`
   map by default; the launch-time `provenance` knob replaces it with an external
-  repo's manifest (the result's `provenanceSource` says which one ran).
+  repo's manifest (the result's `provenanceSource` says which one ran). Its inverse,
+  the docs-coverage lens, arms when the Route stage reports `addedPublicSurface`
+  and the diff touches no doc file (the result's `coverageSurfaces` says what
+  armed it).
 - `monorepo-refactor-plan.workflow.ts` — fan out per area, classify, synthesize a plan.
 - `monorepo-refactor-execute.workflow.ts` — execute the plan with mutating agents
   behind isolation.
