@@ -160,7 +160,11 @@ function asNumberRecord(v: unknown): Record<string, number> | null {
   if (v === null || typeof v !== 'object' || Array.isArray(v)) return null
   const out: Record<string, number> = {}
   for (const [k, val] of Object.entries(v)) {
-    if (typeof val !== 'number' || !Number.isFinite(val)) return null
+    // Negatives rejected alongside non-finites: every producer emits
+    // `.filter(...).length`-style counts (≥ 0 by construction), so a negative
+    // can only come from a corrupt/hand-edited journal — drop the record
+    // rather than render an absurd count (card #1805295335967295486, D).
+    if (typeof val !== 'number' || !Number.isFinite(val) || val < 0) return null
     out[k] = val
   }
   return out

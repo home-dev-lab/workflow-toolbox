@@ -94,6 +94,14 @@ describe('parseDigest — tolerant, never throws', () => {
   })
 })
 
+  it('drops a counts record containing a NEGATIVE value (corrupt/hand-edited journal guard)', () => {
+    const line = `${DIGEST_PREFIX}${JSON.stringify({ stage: 'verify', counts: { confirmed: 2, refuted: -1 } })}`
+    const d = parseDigest(line)
+    expect(d).not.toBeNull()
+    expect(d?.stage).toBe('verify')
+    expect(d?.counts).toBeUndefined()
+  })
+
 describe('loopUntilDone attribution constants + isLoopIterLabel', () => {
   it('pins the shared literals (the pattern and observe both import these)', () => {
     // If either drifts, loopUntilDone's source const / observe's fallback desync — but
