@@ -592,8 +592,16 @@ export function decidePortAdoption(args: {
   health: unknown
   pidfile: ObservePidfile | null
   wanted: readonly string[]
+  /** The recorded pid is a LIVE process (kill(pid,0)). Computed by the impure
+   *  caller via observe-identity.pidState. Defaults true so pre-card callers
+   *  (and the pure tests that predate this gate) keep their behavior; a real
+   *  caller passes the probed value. */
+  pidAlive?: boolean
+  /** boot-id + /proc start ticks still match the pidfile (recycled-pid guard).
+   *  Same default rationale as pidAlive. */
+  pidIdentityMatches?: boolean
 }): PortAdoptionDecision {
-  const { port, health, pidfile, wanted } = args
+  const { port, health, pidfile, wanted, pidAlive = true, pidIdentityMatches = true } = args
   const healthObj = typeof health === 'object' && health !== null ? (health as Record<string, unknown>) : null
   // Map the raw probe result onto the SHARED HealthShape and classify with the SAME table the
   // CLI's start path uses — so a no-answer/TIMEOUT becomes 'inconclusive', never 'foreign'
@@ -603,10 +611,13 @@ export function decidePortAdoption(args: {
     healthObj === null ? 'timeout' : healthObj['app'] === 'observe-ui' ? (healthObj as { configDir?: string; sources?: unknown[] }) : 'not-ours'
   const identity = classifyHealth(shape)
   // Trust anchor = the 0600 identity-probed pidfile recording THIS port as ours, NOT the
-  // spoofable health `app` flag. (Residual: a stale pidfile whose recorded process died and
-  // whose port a foreign process rebound would still read as owned — a same-uid loopback edge;
-  // adding a pidAlive + boot/proc identity re-check is the follow-up hardening card.)
-  const pidfileOwnsPort = pidfile !== null && pidfile.port === port
+  // spoofable health `app` flag — AND the recorded process must still be genuinely alive with
+  // a matching boot/proc identity (card #1815076918890857882): a STALE pidfile whose process
+  // died and whose port a FOREIGN process rebound used to read as owned (same-uid loopback
+  // edge), so a stale-but-present pidfile could load a foreign origin into the trusted window.
+  // pidAlive + pidIdentityMatches (computed by the caller via observe-identity.pidState) close
+  // that — a dead or recycled pid is NOT ownership.
+  const pidfileOwnsPort = pidfile !== null && pidfile.port === port && pidAlive && pidIdentityMatches
 
   if (pidfileOwnsPort) {
     // Authenticated as ours. Compare the served set ONLY when the probe actually answered (a

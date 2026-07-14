@@ -257,6 +257,22 @@ function readProcStartStamp(pid) {
     return null;
   }
 }
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function pidIdentityMatches(pf) {
+  if (pf.bootId === null || pf.procStartTicks === null) return false;
+  return readBootId() === pf.bootId && readProcStartStamp(pf.pid) === pf.procStartTicks;
+}
+function pidState(pf) {
+  const alive = pf !== null && pidAlive(pf.pid);
+  return { alive, idMatch: pf !== null && alive && pidIdentityMatches(pf) };
+}
 
 // packages/debugger/src/observe-config.ts
 import { mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync2, renameSync as renameSync2, statSync, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
@@ -393,22 +409,6 @@ var DEFAULT_PORT = 5174;
 var HEALTH_TIMEOUT_MS = 2e3;
 var SPAWN_READY_TIMEOUT_MS = 3e4;
 var LOG_ROTATE_BYTES = 5 * 1024 * 1024;
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function pidState(pf) {
-  const alive = pf !== null && pidAlive(pf.pid);
-  return { alive, idMatch: pf !== null && alive && pidIdentityMatches(pf) };
-}
-function pidIdentityMatches(pf) {
-  if (pf.bootId === null || pf.procStartTicks === null) return false;
-  return readBootId() === pf.bootId && readProcStartStamp(pf.pid) === pf.procStartTicks;
-}
 async function probeHealth(port, timeoutMs = HEALTH_TIMEOUT_MS) {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/health`, {

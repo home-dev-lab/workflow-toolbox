@@ -68,7 +68,7 @@ import {
   type ObservePidfile,
 } from './observe-lifecycle.js'
 import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
-import { readBootId, readProcStartStamp } from './observe-identity.js'
+import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
 import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
 import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode } from './observe-await.js'
 import { resolveConfigDir, resolveDir } from './config-dir.js'
@@ -89,29 +89,6 @@ const LOG_ROTATE_BYTES = 5 * 1024 * 1024
 
 // ── identity probes — EXTRACTED to observe-identity.ts (shared with the Electron
 // desktop shell, which writes the same pidfile through the same probes). ────────────────
-
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/** The (alive, identity-still-matches) pair every decision needs — one home. */
-function pidState(pf: ObservePidfile | null): { alive: boolean; idMatch: boolean } {
-  const alive = pf !== null && pidAlive(pf.pid)
-  return { alive, idMatch: pf !== null && alive && pidIdentityMatches(pf) }
-}
-
-/** The recycled-pid guard: identity matches when the recorded boot-id AND start
- *  ticks both still describe pid. Unknown identity (nulls recorded, e.g. non-Linux)
- *  degrades to NOT matching — the safe direction (never signal on a guess). */
-function pidIdentityMatches(pf: ObservePidfile): boolean {
-  if (pf.bootId === null || pf.procStartTicks === null) return false
-  return readBootId() === pf.bootId && readProcStartStamp(pf.pid) === pf.procStartTicks
-}
 
 // ── health probe ────────────────────────────────────────────────────────────────
 

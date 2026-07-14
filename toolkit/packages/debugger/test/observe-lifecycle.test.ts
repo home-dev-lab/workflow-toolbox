@@ -704,6 +704,27 @@ describe('decidePortAdoption (EADDRINUSE arbitration — pidfile is the trust an
     // of THIS port, a timeout must never be trusted into adoption.
     expect(decidePortAdoption({ port: 5174, health: null, pidfile: pf({ port: 5999 }), wanted })).toEqual({ kind: 'ephemeral', reason: 'inconclusive' })
   })
+
+  // Card #1815076918890857882 — a stale pidfile whose recorded process DIED and whose port a
+  // FOREIGN process rebound must NOT read as owned (same-uid loopback hardening).
+  it('#2 hardening: a DEAD recorded pid (pidAlive=false) never authenticates ownership → ephemeral, not adopt', () => {
+    // health answers as a DIFFERENT (foreign) observe origin now on the port; the stale pidfile
+    // still records THIS port, but its process is gone.
+    const d = decidePortAdoption({ port: 5174, health: { app: 'something-else' }, pidfile: pf(), wanted, pidAlive: false })
+    expect(d).toEqual({ kind: 'ephemeral', reason: 'foreign' })
+  })
+
+  it('#2 hardening: a RECYCLED pid (alive but identity mismatch) never authenticates ownership → ephemeral', () => {
+    // pid is alive but boot-id/proc-start no longer match the pidfile → a different process
+    // reusing the number. A no-answer probe with no authenticated ownership stays inconclusive.
+    const d = decidePortAdoption({ port: 5174, health: null, pidfile: pf(), wanted, pidAlive: true, pidIdentityMatches: false })
+    expect(d).toEqual({ kind: 'ephemeral', reason: 'inconclusive' })
+  })
+
+  it('a LIVE, identity-matching pidfile still adopts (the happy path is unchanged when the guards pass)', () => {
+    const d = decidePortAdoption({ port: 5174, health: null, pidfile: pf(), wanted, pidAlive: true, pidIdentityMatches: true })
+    expect(d).toEqual({ kind: 'adopt', served: ['/home/u/.claude'], mismatch: false })
+  })
 })
 
 describe('resolveRemoteMounts (shared probe→explode loop)', () => {

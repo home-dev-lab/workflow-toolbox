@@ -11,7 +11,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { parsePowershellInt, parsePsLstartEpochSec, parseSysctlBoottimeSec } from './observe-lifecycle.js'
+import { parsePowershellInt, parsePsLstartEpochSec, parseSysctlBoottimeSec, type ObservePidfile } from './observe-lifecycle.js'
 
 /** Short-timeout exec for identity probes — a hung probe must degrade (null → treated
  *  as identity-unknown, the safe direction), never wedge start/stop/status. */
@@ -63,4 +63,35 @@ export function readProcStartStamp(pid: number): number | null {
   } catch {
     return null
   }
+}
+
+/** Is `pid` a live process this uid can signal? (`kill(pid, 0)` — no signal
+ *  sent, just an existence+permission probe.) EXTRACTED from observe-cli.ts so
+ *  the desktop shell's EADDRINUSE adoption gate consumes the SAME check the CLI
+ *  start path already does (card #1815076918890857882 — Rule of Three: desktop
+ *  is the 2nd consumer). */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** The recycled-pid guard: identity matches when the recorded boot-id AND start
+ *  ticks both still describe pid. Unknown identity (nulls recorded, e.g. a
+ *  probe that returned null) degrades to NOT matching — the safe direction
+ *  (never signal ownership on a guess). Shared by the CLI and the desktop shell. */
+export function pidIdentityMatches(pf: ObservePidfile): boolean {
+  if (pf.bootId === null || pf.procStartTicks === null) return false
+  return readBootId() === pf.bootId && readProcStartStamp(pf.pid) === pf.procStartTicks
+}
+
+/** The (alive, identity-still-matches) pair every pidfile decision needs — one
+ *  home, so the CLI's start/stop paths and the desktop's adoption gate can
+ *  never drift on how they read a pidfile's liveness. */
+export function pidState(pf: ObservePidfile | null): { alive: boolean; idMatch: boolean } {
+  const alive = pf !== null && pidAlive(pf.pid)
+  return { alive, idMatch: pf !== null && alive && pidIdentityMatches(pf) }
 }
