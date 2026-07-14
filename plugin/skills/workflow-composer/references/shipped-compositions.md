@@ -3,7 +3,7 @@
 <!-- Extracted from SKILL.md (progressive disclosure) — loaded on demand via the stub that links here. -->
 
 
-The repository ships twenty-two built example compositions under `toolkit/workflows/`,
+The repository ships twenty-three built example compositions under `toolkit/workflows/`,
 and **all of them have their TypeScript sources bundled with this skill** for study at
 `assets/examples/toolkit/`. (Progressive disclosure means a bundled source costs no
 context until you actually Read it — so the skill ships the complete set, not a
@@ -38,7 +38,7 @@ The **dev-workflow family** — the most advanced compositions (multi-artifact
 - `dev-full.workflow.ts` — chains the three children via `rt.workflow()` over their
   committed artifacts, converting human gates into code gates.
 
-Three standalone analysis/verification compositions:
+Four standalone analysis/verification compositions:
 
 - `independent-analysis.workflow.ts` — (optionally) auto-propose diverse lenses →
   `fanOutAndSynthesize` one analyst per lens, dedup against the caller's stated
@@ -78,6 +78,20 @@ Three standalone analysis/verification compositions:
   mechanical anchors (symbol existence, value equalities) belong in compile-time
   gates; this workflow judges the PROSE those gates cannot check. Run it before
   a release; its findings are remediation input (e.g. for `doc-rewrite`).
+- `coverage-audit.workflow.ts` — the INVERSE of `docs-audit`: instead of checking
+  whether doc claims are stale, it checks whether real code capabilities are
+  documented AT ALL. Each `docs-provenance.ts` manifest entry is one unit of
+  work: an Inventory fan enumerates the capabilities (exports, behaviors,
+  knobs, flags) of the entry's `sources`, then an angle-cycled `loopUntilDone`
+  Extract stage cross-checks each capability against the entry's mapped
+  `docs`, reporting "undocumented" or "mentioned-only" gaps. Refute-first
+  `adversarialVerification` closes the loop with an INVERTED filter versus
+  `docs-audit`: `confirmed` means the gap is real (a finding), `refuted` means
+  the extractor was wrong and the docs do describe it (excluded). The
+  `provenance` input replaces the bundled dwt manifest for an external-repo
+  audit, mirroring `pr-review`'s `provenance` knob. Run it before a release
+  alongside `docs-audit`; its findings are remediation input (e.g. for
+  `doc-rewrite`).
 
 And three demonstration compositions:
 
