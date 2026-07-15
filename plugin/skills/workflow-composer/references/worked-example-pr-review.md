@@ -80,6 +80,21 @@ const verifyStage = (prev, lens) => {
 }
 ```
 
+**The proportionate-review ladder — a launch-time `mode` knob, not a design fork.**
+`mode: 'full'` (default, and what an omitted `mode` resolves to — bit-compatible with
+the pre-ladder behavior) runs the pipeline over EVERY lens above, one reviewer each,
+exactly as shown. `mode: 'single-verifier'` is the quota-degraded rung: the pipeline
+collapses to a single sentinel item, and the review stage builds ONE prompt that
+concatenates every armed lens' own instructions (the same `lensInstructionsFor`
+builder, called once per lens and joined) instead of spawning one reviewer per lens —
+same `FINDINGS_SCHEMA`, same `agentTypes.review` routing (this is exactly the shape a
+cross-family or quota-degraded verifier wants), same effort. `verifyStage` is
+untouched: it still adversarially verifies whatever that one reviewer found — the
+ladder degrades the *finder* count, never the *verification* step, and Synthesize is
+unaffected either way. `'diff-read'`, the ladder's bottom rung, is deliberately not a
+mode this workflow accepts: it means "read the diff yourself, don't launch this
+workflow" — requesting it is a parse-time error, not a silent no-op.
+
 **4. Synthesize — a genuine barrier.** Synthesis needs *all* verified findings from
 *all* lenses, so this is the one place a barrier is correct. Only non-`refuted`
 findings flow in: `unverifiable` means a verifier failed, not that the finding is

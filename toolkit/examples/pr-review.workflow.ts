@@ -76,6 +76,28 @@ const SYNTHESIZE_EFFORT: EffortAlias = 'medium'  // Synthesize: final verdict �
 
 export interface PrReviewInput {
   target: string
+  /** Proportionate-review ladder rung this run executes (card #1819690936574150367).
+   *  'full' (default, and the result when the `mode` key is OMITTED entirely) is
+   *  today's behavior, bit-compatible: the Review phase spawns one reviewer PER LENS
+   *  (see REVIEWER_LENSES/DEFAULT_LENSES below, plus docs-alignment/docs-coverage when
+   *  armed) — nothing in that code path changes when this field is 'full'.
+   *  'single-verifier' is the quota-degraded rung (`~/.claude/rules/proportionate-
+   *  verification.md`'s "single verifier" shape, made launchable in one call): the
+   *  Review phase spawns EXACTLY ONE reviewer whose prompt is the UNION of every lens
+   *  that would have been armed for this range (including docs-alignment/docs-coverage
+   *  when the provenance manifest arms them) — same FINDINGS_SCHEMA. The `agentTypes.review`
+   *  override still applies to that one reviewer (this is precisely the shape a
+   *  cross-family/quota-degraded verifier like 'workflow-toolbox:opencode-verifier'
+   *  wants). The Verify phase (adversarialVerification) is UNCHANGED and still runs on
+   *  whatever that one reviewer found — the ladder degrades the FINDER count, never the
+   *  verification of what was found. Synthesize is unchanged.
+   *  NOTE — 'diff-read' (the ladder's bottom rung: the arbiter reads the diff directly
+   *  instead of reviewing findings) is DELIBERATELY NOT a mode here: it means "do not
+   *  invoke this workflow at all", so there is nothing for this workflow to execute for
+   *  it. Requesting it (or any other unrecognized value) is a parse-time error.
+   *  Parsed from the bespoke top-level `mode` key (like `provenance` — not part of the
+   *  shared parseConfig envelope). */
+  mode: 'full' | 'single-verifier'
   /** Optional model for the VERIFY fan (adversarialVerification). null = the pattern default
    *  (BEST_MODEL = opus). Pass 'sonnet' at launch — `args: { target, verifierModel: 'sonnet' }` —
    *  for the cheaper, abundant-quota bucket: the verify is targeted + diff-grounded, so sonnet is
@@ -279,6 +301,13 @@ const REVIEWER_LENSES: Readonly<Record<string, readonly string[]>> = {
 // Fallback lenses when the category is not in the map (code-shaped → includes maintainability)
 const DEFAULT_LENSES: readonly string[] = ['correctness', 'security', 'test-coverage', 'maintainability']
 
+// Sentinel pipeline item for `mode: 'single-verifier'` — the Review phase
+// spawns EXACTLY ONE reviewer covering every armed lens' instructions
+// combined, instead of the one-reviewer-per-lens fan below. Never collides
+// with a real lens name (every real lens key comes from REVIEWER_LENSES,
+// DEFAULT_LENSES, 'docs-alignment', or 'docs-coverage').
+const CONSOLIDATED_LENS = 'consolidated'
+
 // ---------------------------------------------------------------------------
 // A finding enriched with its adversarial verdict (for the final output)
 // ---------------------------------------------------------------------------
@@ -301,6 +330,9 @@ interface PrReviewOutput {
   category: string
   verdict: 'approve' | 'request-changes'
   summary: string
+  /** The resolved mode this run executed — 'full' (default/omitted) or
+   *  'single-verifier'. See the `mode` field's doc comment on PrReviewInput. */
+  mode: 'full' | 'single-verifier'
   findings: readonly VerifiedFinding[]
   /** The subagent type the lens reviewers actually ran through (probe-resolved);
    *  null = the standard subagent (default, or graceful fallback). */
@@ -425,6 +457,31 @@ function parseProvenance(raw: unknown): readonly ProvenanceEntry[] | null {
   })
 }
 
+// Proportionate-review ladder rungs this workflow accepts as `mode`.
+// 'diff-read' — the ladder's bottom rung — is DELIBERATELY EXCLUDED: it means
+// "do not invoke this workflow at all" (the arbiter reads the diff directly),
+// so there is no run-time behavior for it to select. See the `mode` field's
+// doc comment on PrReviewInput for the full rationale.
+const ALLOWED_MODES = ['full', 'single-verifier'] as const
+type PrReviewMode = typeof ALLOWED_MODES[number]
+
+/** Validate the optional launch-time `mode` key. undefined/null → 'full' (the
+ *  default rung, bit-compatible with pre-ladder behavior). Any other value
+ *  must be one of ALLOWED_MODES — fail-fast + actionable, same discipline as
+ *  parseProvenance, and the one place that spells out why 'diff-read' throws
+ *  instead of silently degrading. */
+function parseMode(raw: unknown): PrReviewMode {
+  if (raw === undefined || raw === null) return 'full'
+  if (typeof raw !== 'string' || !(ALLOWED_MODES as readonly string[]).includes(raw)) {
+    throw new Error(
+      `pr-review: "mode" must be one of ${ALLOWED_MODES.join(', ')} — got ${JSON.stringify(raw)}. ` +
+      `("diff-read" is deliberately NOT a mode: the proportionate-review ladder's bottom rung ` +
+      `means "do not invoke this workflow at all" — read the diff directly instead.)`,
+    )
+  }
+  return raw as PrReviewMode
+}
+
 function parseInput(raw: unknown): PrReviewInput {
   // Bare string shorthand: accept a plain string as { target: string }
   if (typeof raw === 'string') {
@@ -435,6 +492,7 @@ function parseInput(raw: unknown): PrReviewInput {
     }
     return {
       target: raw,
+      mode: 'full',
       reviewerType: null,
       verifierModel: null,
       verifierType: null,
@@ -497,7 +555,11 @@ function parseInput(raw: unknown): PrReviewInput {
   // docs-provenance manifest for the docs-alignment lens.
   const provenance = parseProvenance(obj['provenance'])
 
-  return { target: obj['target'], reviewerType, verifierModel, verifierType, perAgent, effort, messaging, provenance }
+  // Bespoke pr-review key (parseConfig ignores it, like provenance above):
+  // the proportionate-review ladder rung. undefined → 'full'.
+  const mode = parseMode(obj['mode'])
+
+  return { target: obj['target'], mode, reviewerType, verifierModel, verifierType, perAgent, effort, messaging, provenance }
 }
 
 // ---------------------------------------------------------------------------
@@ -780,6 +842,15 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     ...(coverageSurfaces.length > 0 ? ['docs-coverage'] : []),
   ]
 
+  // Proportionate-review ladder (card #1819690936574150367): 'full' (default)
+  // runs the pipeline over EVERY lens below — one reviewer each, exactly the
+  // pre-ladder code path (reviewItems === lenses, byte-identical prompts).
+  // 'single-verifier' collapses the fan to ONE sentinel item; reviewStage
+  // below special-cases CONSOLIDATED_LENS to build a single prompt covering
+  // every lens' instructions combined instead of iterating them.
+  const isConsolidated = input.mode === 'single-verifier'
+  const reviewItems: readonly string[] = isConsolidated ? [CONSOLIDATED_LENS] : lenses
+
   // Per-lens reviewer instructions (review finding, run wf_4115390a-8a0: the
   // former three-way nested ternary duplicated structure per branch — extracted
   // to one early-return builder per lens family).
@@ -842,7 +913,9 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   }
 
   // reviewStage: for a given lens, spawn one reviewer agent with focused scope.
-  // The stage receives the lens as originalItem (items = lenses).
+  // The stage receives the lens as originalItem (items = reviewItems: `lenses`
+  // in 'full' mode, or the single CONSOLIDATED_LENS sentinel in
+  // 'single-verifier' mode).
   const reviewStage = async (
     _prev: unknown,
     originalItem: unknown,
@@ -850,6 +923,41 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     const lens = originalItem as string
 
     reviewersSpawned++
+
+    // mode: 'single-verifier' — ONE consolidated reviewer whose prompt is the
+    // UNION of every armed lens' own instructions (built from the SAME
+    // lensInstructionsFor used by the per-lens path below), instead of
+    // spawning one reviewer per lens. Same FINDINGS_SCHEMA, same
+    // agentTypes.review routing, same effort — only the FAN collapses.
+    if (lens === CONSOLIDATED_LENS) {
+      const consolidatedInstructions = lenses
+        .map((l) => `### Lens: ${l}\n${lensInstructionsFor(l)}`)
+        .join('\n\n')
+
+      const result = await rt.agent<FindingsOutput>(
+        `## Role\n` +
+        `You are reviewing this change in single-verifier mode: ONE consolidated pass ` +
+        `covering every lens that would normally get its own reviewer (${lenses.join(', ')}).\n\n` +
+        `## Change\n` +
+        `- **Target:** \`${input.target}\`\n\n` +
+        `### Summary (from the routing stage)\n${changeSummary.summary}\n\n` +
+        `### Risk areas\n${changeSummary.riskAreas.map((r) => `- ${r}`).join('\n')}\n\n` +
+        `## Instructions — cover EVERY lens below, in full\n${consolidatedInstructions}\n\n` +
+        `## Output\n` +
+        `Return your findings across ALL lenses combined. Each finding: \`{ title, file, severity ('high'|'medium'|'low'), detail }\``,
+        {
+          schema: FINDINGS_SCHEMA,
+          label: 'pr-review:reviewer:consolidated',
+          phase: 'Review',
+          effort: reviewEffort,
+          // Same agentTypes.review routing as the per-lens path — this is
+          // precisely the shape a cross-family/quota-degraded verifier wants.
+          ...(resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {}),
+        },
+      )
+
+      return result
+    }
 
     const lensInstructions = lensInstructionsFor(lens)
 
@@ -939,9 +1047,11 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     return verifyResult.value
   }
 
-  // Run review + verify pipeline concurrently across lenses (no barrier).
+  // Run review + verify pipeline concurrently across reviewItems (no barrier).
+  // 'full' mode: one pipeline slot per lens (byte-identical to pre-ladder).
+  // 'single-verifier' mode: one pipeline slot — the consolidated sentinel.
   const pipelineResults = await rt.pipeline(
-    lenses as readonly unknown[],
+    reviewItems as readonly unknown[],
     reviewStage,
     verifyStage,
   )
@@ -1037,6 +1147,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     category,
     verdict: synthesisAgent.verdict,
     summary: synthesisAgent.summary,
+    mode: input.mode,
     findings: outputFindings,
     // Reviewer routing outcome: the pure identifier actually used (null =
     // standard subagent) + the structured probe story when routing was requested.
@@ -1069,7 +1180,10 @@ export default defineWorkflow({
   meta: {
     name: 'pr-review',
     description: 'Multi-lens code review of a change set: classifies the change, spawns specialized reviewers, adversarially verifies findings, and synthesizes a verdict.',
-    whenToUse: 'Use when you need a structured, adversarially-verified code review of a git ref range or change description.',
+    whenToUse: 'Use when you need a structured, adversarially-verified code review of a git ref range or change description. ' +
+      'Pass mode: "single-verifier" for the quota-degraded proportionate-review rung (one consolidated reviewer instead ' +
+      'of one per lens); the ladder\'s bottom rung ("diff-read": read the diff yourself, no findings to verify) is not a ' +
+      'mode this workflow accepts — don\'t launch it for that case.',
     phases: [
       { title: 'Fence', detail: 'Resolve the default leaf-agent fence (SendMessage denied by default) and the lean-routing default for the pure Synthesize stage' },
       { title: 'Probe', detail: 'Resolve the requested reviewer agentType (graceful Claude fallback)' },

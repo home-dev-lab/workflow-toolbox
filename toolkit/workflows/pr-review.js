@@ -1,7 +1,7 @@
 export const meta = {
   "name": "pr-review",
   "description": "Multi-lens code review of a change set: classifies the change, spawns specialized reviewers, adversarially verifies findings, and synthesizes a verdict.",
-  "whenToUse": "Use when you need a structured, adversarially-verified code review of a git ref range or change description.",
+  "whenToUse": "Use when you need a structured, adversarially-verified code review of a git ref range or change description. Pass mode: \"single-verifier\" for the quota-degraded proportionate-review rung (one consolidated reviewer instead of one per lens); the ladder's bottom rung (\"diff-read\": read the diff yourself, no findings to verify) is not a mode this workflow accepts — don't launch it for that case.",
   "phases": [
     {
       "title": "Fence",
@@ -1103,6 +1103,7 @@ ${renderClaim(claim)}`;
     docs: ["accuracy", "completeness", "clarity"]
   };
   var DEFAULT_LENSES = ["correctness", "security", "test-coverage", "maintainability"];
+  var CONSOLIDATED_LENS = "consolidated";
   var MAX_PROVENANCE_ENTRIES = 64;
   var MAX_PROVENANCE_PATHS_PER_FIELD = 32;
   var MAX_PROVENANCE_PATH_LENGTH = 300;
@@ -1149,6 +1150,16 @@ ${renderClaim(claim)}`;
       return { sources: e["sources"], docs: e["docs"] };
     });
   }
+  var ALLOWED_MODES = ["full", "single-verifier"];
+  function parseMode(raw) {
+    if (raw === void 0 || raw === null) return "full";
+    if (typeof raw !== "string" || !ALLOWED_MODES.includes(raw)) {
+      throw new Error(
+        `pr-review: "mode" must be one of ${ALLOWED_MODES.join(", ")} \u2014 got ${JSON.stringify(raw)}. ("diff-read" is deliberately NOT a mode: the proportionate-review ladder's bottom rung means "do not invoke this workflow at all" \u2014 read the diff directly instead.)`
+      );
+    }
+    return raw;
+  }
   function parseInput(raw) {
     if (typeof raw === "string") {
       if (raw.trim().length === 0) {
@@ -1158,6 +1169,7 @@ ${renderClaim(claim)}`;
       }
       return {
         target: raw,
+        mode: "full",
         reviewerType: null,
         verifierModel: null,
         verifierType: null,
@@ -1199,7 +1211,8 @@ ${renderClaim(claim)}`;
     const verifierType = cfg.agentTypes?.["verify"] ?? null;
     const messaging = cfg.messaging ?? null;
     const provenance = parseProvenance(obj["provenance"]);
-    return { target: obj["target"], reviewerType, verifierModel, verifierType, perAgent, effort, messaging, provenance };
+    const mode = parseMode(obj["mode"]);
+    return { target: obj["target"], mode, reviewerType, verifierModel, verifierType, perAgent, effort, messaging, provenance };
   }
   async function run(rt00, input) {
     rt00.phase("Fence");
@@ -1341,6 +1354,8 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       ...provenanceDocs.length > 0 ? ["docs-alignment"] : [],
       ...coverageSurfaces.length > 0 ? ["docs-coverage"] : []
     ];
+    const isConsolidated = input.mode === "single-verifier";
+    const reviewItems = isConsolidated ? [CONSOLIDATED_LENS] : lenses;
     const lensInstructionsFor = (lens) => {
       if (lens === "docs-coverage") {
         const sanitizedSurface = (s) => s.replace(/[`\u0000-\u001f\u007f\u2028\u2029]/g, " ").slice(0, 200);
@@ -1370,6 +1385,39 @@ Focus ONLY on the "${lens}" lens.`;
     const reviewStage = async (_prev, originalItem) => {
       const lens = originalItem;
       reviewersSpawned++;
+      if (lens === CONSOLIDATED_LENS) {
+        const consolidatedInstructions = lenses.map((l) => `### Lens: ${l}
+${lensInstructionsFor(l)}`).join("\n\n");
+        const result2 = await rt.agent(
+          `## Role
+You are reviewing this change in single-verifier mode: ONE consolidated pass covering every lens that would normally get its own reviewer (${lenses.join(", ")}).
+
+## Change
+- **Target:** \`${input.target}\`
+
+### Summary (from the routing stage)
+${changeSummary.summary}
+
+### Risk areas
+${changeSummary.riskAreas.map((r) => `- ${r}`).join("\n")}
+
+## Instructions \u2014 cover EVERY lens below, in full
+${consolidatedInstructions}
+
+## Output
+Return your findings across ALL lenses combined. Each finding: \`{ title, file, severity ('high'|'medium'|'low'), detail }\``,
+          {
+            schema: FINDINGS_SCHEMA,
+            label: "pr-review:reviewer:consolidated",
+            phase: "Review",
+            effort: reviewEffort,
+            // Same agentTypes.review routing as the per-lens path — this is
+            // precisely the shape a cross-family/quota-degraded verifier wants.
+            ...resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {}
+          }
+        );
+        return result2;
+      }
       const lensInstructions = lensInstructionsFor(lens);
       const result = await rt.agent(
         `## Role
@@ -1443,7 +1491,7 @@ ${READ_ONLY_GIT}`,
       return verifyResult.value;
     };
     const pipelineResults = await rt.pipeline(
-      lenses,
+      reviewItems,
       reviewStage,
       verifyStage
     );
@@ -1504,6 +1552,7 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
       category,
       verdict: synthesisAgent.verdict,
       summary: synthesisAgent.summary,
+      mode: input.mode,
       findings: outputFindings,
       // Reviewer routing outcome: the pure identifier actually used (null =
       // standard subagent) + the structured probe story when routing was requested.
@@ -1531,7 +1580,7 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
     meta: {
       name: "pr-review",
       description: "Multi-lens code review of a change set: classifies the change, spawns specialized reviewers, adversarially verifies findings, and synthesizes a verdict.",
-      whenToUse: "Use when you need a structured, adversarially-verified code review of a git ref range or change description.",
+      whenToUse: `Use when you need a structured, adversarially-verified code review of a git ref range or change description. Pass mode: "single-verifier" for the quota-degraded proportionate-review rung (one consolidated reviewer instead of one per lens); the ladder's bottom rung ("diff-read": read the diff yourself, no findings to verify) is not a mode this workflow accepts \u2014 don't launch it for that case.`,
       phases: [
         { title: "Fence", detail: "Resolve the default leaf-agent fence (SendMessage denied by default) and the lean-routing default for the pure Synthesize stage" },
         { title: "Probe", detail: "Resolve the requested reviewer agentType (graceful Claude fallback)" },

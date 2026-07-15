@@ -1437,3 +1437,166 @@ describe('pr-review degenerate change-summary guard', () => {
     expect(result.warnings.some((w) => w.includes('empty changedFiles'))).toBe(false)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Test: mode ladder (card #1819690936574150367) — 'full' (default) vs
+// 'single-verifier'. 'full' must be BIT-COMPATIBLE whether `mode` is omitted
+// or explicitly 'full' (same reviewer fan, same code path). 'single-verifier'
+// collapses the Review phase to EXACTLY ONE consolidated reviewer covering the
+// union of every lens that would have been armed (including docs-alignment /
+// docs-coverage when the provenance manifest arms them) — the Verify phase
+// still adversarially verifies whatever that one reviewer found (the ladder
+// degrades the FINDER count, never the verification step); Synthesize is
+// unchanged. 'diff-read' — the ladder's bottom rung — is deliberately NOT a
+// mode here: it means "don't launch this workflow at all" (see the `mode`
+// field's doc comment on PrReviewInput) — a rejected value proves it was
+// never wired in as an accepted mode.
+// ---------------------------------------------------------------------------
+
+describe('pr-review mode ladder', () => {
+  const reviewCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('pr-review:reviewer:'))
+  const verifyCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
+
+  function runtimeForSingleVerifier(): FakeRuntime {
+    return new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+        if (p.includes('availability probe')) return 'PROBE_OK'
+        if (p.includes('adversarially verify')) {
+          return { verdict: 'confirmed', reason: 'Re-derived from the diff' }
+        }
+        if (p.includes('synthesizing a code review')) {
+          return { verdict: 'request-changes', summary: 'One finding to address' }
+        }
+        // The ONE consolidated reviewer's prompt — distinct phrase from the
+        // per-lens "you are a specialized code reviewer" prompt below.
+        if (p.includes('single-verifier mode')) {
+          return {
+            findings: [
+              {
+                title: 'Missing null check',
+                file: 'src/payment.ts',
+                severity: 'high',
+                detail: 'The payment processor does not check for null user before charging',
+              },
+            ],
+          }
+        }
+        if (p.includes('you are a specialized code reviewer')) {
+          throw new Error('single-verifier mode must NOT spawn per-lens reviewers')
+        }
+        if (p.includes('you are reviewing a')) {
+          return {
+            summary: 'Fixes a null pointer bug in payment processing.',
+            riskAreas: ['payment'],
+            changedFiles: ['src/payment.ts'],
+            addedPublicSurface: [],
+          }
+        }
+        if (p.includes('classify it into exactly one category')) {
+          return { category: 'bugfix' }
+        }
+        return { summary: 'Fallback summary', riskAreas: [], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
+      },
+    })
+  }
+
+  it('mode omitted and mode:"full" are bit-identical (same reviewer labels, same stats)', async () => {
+    const rtOmitted = makeHappyPathRuntime()
+    const resultOmitted = await wf.run(rtOmitted, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+    const rtFull = makeHappyPathRuntime()
+    const resultFull = await wf.run(rtFull, JSON.stringify({ target: 'HEAD~1..HEAD', mode: 'full' }))
+
+    const labelsOmitted = reviewCalls(rtOmitted).map((c) => c.opts?.label).sort()
+    const labelsFull = reviewCalls(rtFull).map((c) => c.opts?.label).sort()
+    expect(labelsFull).toEqual(labelsOmitted)
+    expect(labelsOmitted).toHaveLength(4)
+    expect(resultFull.stats.reviewersSpawned).toBe(resultOmitted.stats.reviewersSpawned)
+    expect((resultFull as { mode: string }).mode).toBe('full')
+    expect((resultOmitted as { mode: string }).mode).toBe('full')
+  })
+
+  it('single-verifier spawns EXACTLY ONE reviewer covering the union of lenses', async () => {
+    const rt = runtimeForSingleVerifier()
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', mode: 'single-verifier' }))
+
+    const reviews = reviewCalls(rt)
+    expect(reviews).toHaveLength(1)
+    expect(reviews[0]!.opts?.label).toBe('pr-review:reviewer:consolidated')
+    expect(result.stats.reviewersSpawned).toBe(1)
+    expect((result as { mode: string }).mode).toBe('single-verifier')
+    // The consolidated prompt names every lens armed for a 'bugfix' category.
+    const prompt = reviews[0]!.prompt
+    for (const lens of ['root-cause', 'regression-risk', 'test-coverage', 'maintainability']) {
+      expect(prompt).toContain(lens)
+    }
+  })
+
+  it('agentTypes.review still routes the single consolidated reviewer', async () => {
+    const rt = runtimeForSingleVerifier()
+    const result = await wf.run(
+      rt,
+      JSON.stringify({
+        target: 'HEAD~1..HEAD',
+        mode: 'single-verifier',
+        agentTypes: { review: 'workflow-toolbox:opencode-verifier' },
+      }),
+    )
+    const reviews = reviewCalls(rt)
+    expect(reviews).toHaveLength(1)
+    expect(reviews[0]!.opts?.agentType).toBe('workflow-toolbox:opencode-verifier')
+    expect((result as { reviewerType: string | null }).reviewerType).toBe('workflow-toolbox:opencode-verifier')
+  })
+
+  it('Verify still adversarially verifies the single reviewer findings (ladder degrades the FINDER count, not verification)', async () => {
+    const rt = runtimeForSingleVerifier()
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', mode: 'single-verifier' }))
+    const verifies = verifyCalls(rt)
+    expect(verifies.length).toBeGreaterThan(0)
+    expect(result.stats.findingsRaw).toBeGreaterThan(0)
+    for (const f of result.findings) expect(f).toHaveProperty('verdict')
+  })
+
+  it('includes docs-alignment in the consolidated prompt when the provenance manifest arms it', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+        if (p.includes('availability probe')) return 'PROBE_OK'
+        if (p.includes('adversarially verify')) return { verdict: 'confirmed', reason: 'r' }
+        if (p.includes('synthesizing a code review')) return { verdict: 'approve', summary: 'No blocking findings' }
+        if (p.includes('single-verifier mode')) return { findings: [] }
+        if (p.includes('you are reviewing a')) {
+          return {
+            summary: 'Reworks the lean-routing probe prompt.',
+            riskAreas: ['routing'],
+            changedFiles: ['toolkit/packages/patterns/src/lean-routing.ts'],
+            addedPublicSurface: [],
+          }
+        }
+        if (p.includes('classify it into exactly one category')) return { category: 'refactor' }
+        return { summary: 'Fallback', riskAreas: [], changedFiles: [], addedPublicSurface: [] }
+      },
+    })
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', mode: 'single-verifier' }))
+    const reviews = reviewCalls(rt)
+    expect(reviews).toHaveLength(1)
+    expect(reviews[0]!.prompt).toContain('docs-alignment')
+    expect(reviews[0]!.prompt).toContain('model-and-agent-routing.md')
+    expect(result.provenanceDocs.length).toBeGreaterThan(0)
+  })
+
+  it('rejects an invalid mode value at parse time, including the deliberately-excluded "diff-read"', async () => {
+    const rt = makeHappyPathRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', mode: 'diff-read' })),
+    ).rejects.toThrow(/mode/)
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', mode: 'bogus' })),
+    ).rejects.toThrow(/mode/)
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', mode: 42 })),
+    ).rejects.toThrow(/mode/)
+  })
+})

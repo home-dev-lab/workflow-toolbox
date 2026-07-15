@@ -17,7 +17,14 @@ The five core-pattern compositions:
   repo's manifest (the result's `provenanceSource` says which one ran). Its inverse,
   the docs-coverage lens, arms when the Route stage reports `addedPublicSurface`
   and the diff touches no doc file (the result's `coverageSurfaces` says what
-  armed it).
+  armed it). The proportionate-review ladder is a launch-time `mode` knob: `'full'`
+  (default, bit-compatible when omitted) keeps the per-lens fan above; `'single-
+  verifier'` collapses Review to ONE consolidated reviewer covering the union of
+  every armed lens (still routed through `agentTypes.review`, e.g. a cross-family
+  bridge) while Verify/Synthesize stay exactly as they are — the ladder degrades
+  the finder count, never the verification step. `'diff-read'`, the ladder's
+  bottom rung, is deliberately not a mode this workflow accepts: it means don't
+  launch the workflow at all.
 - `monorepo-refactor-plan.workflow.ts` — fan out per area, classify, synthesize a plan.
 - `monorepo-refactor-execute.workflow.ts` — execute the plan with mutating agents
   behind isolation.
