@@ -214,37 +214,47 @@ const CANDIDATE_TASKS_SCHEMA = {
 type CandidateTasksOutput = FromSchema<typeof CANDIDATE_TASKS_SCHEMA>
 type CandidateTask = CandidateTasksOutput['tasks'][number]
 
-// Schema for the final PlanArtifact (Synthesize phase) — the L3 handoff contract
+// Schema for the final PlanArtifact (Synthesize phase) — the L3 handoff contract.
+// Output bounds (maxLength/maxItems on THIS schema only): the synthesize agent emits
+// the COMPLETE artifact as one API response, so unbounded prose fields let a rich
+// plan overrun the hard output-token cap (observed live — the run dies at the last
+// step with all prior work intact). A bound turns that runaway into an actionable
+// schema rejection the agent can retry shorter. The bounds live here and NOT on the
+// shared TASK_FILE_SCHEMA/ALTERNATIVE_SCHEMA consts: those participate in earlier
+// phases' agent calls, and changing them would invalidate the resume cache prefix.
 const PLAN_ARTIFACT_SCHEMA = {
   type: 'object',
   properties: {
-    goal: { type: 'string' },
+    goal: { type: 'string', maxLength: 8000 },
     context: {
       type: 'object',
       properties: {
-        projectDir: { type: 'string' },
-        testCommand: { type: 'string' },
-        buildCommand: { type: 'string' },
-        conventions: { type: 'string' },
+        projectDir: { type: 'string', maxLength: 500 },
+        testCommand: { type: 'string', maxLength: 400 },
+        buildCommand: { type: 'string', maxLength: 400 },
+        conventions: { type: 'string', maxLength: 2400 },
       },
       required: ['projectDir', 'testCommand', 'buildCommand', 'conventions'],
       additionalProperties: false,
     },
     tasks: {
       type: 'array',
+      maxItems: 16,
       items: {
         type: 'object',
         properties: {
-          id: { type: 'string' },
-          title: { type: 'string' },
-          intent: { type: 'string' },
+          id: { type: 'string', maxLength: 12 },
+          title: { type: 'string', maxLength: 200 },
+          intent: { type: 'string', maxLength: 1600 },
           files: { type: 'array', items: TASK_FILE_SCHEMA },
-          contracts: { type: 'string' },
-          testPlan: { type: 'string' },
-          doneCriteria: { type: 'array', items: { type: 'string' } },
+          contracts: { type: 'string', maxLength: 3200 },
+          testPlan: { type: 'string', maxLength: 3200 },
+          doneCriteria: { type: 'array', maxItems: 12, items: { type: 'string', maxLength: 500 } },
           // Carried through from the candidate task — dev-implement embeds it
           // in the implementer's task block so the first read is targeted.
-          snippet: { type: 'string' },
+          // 3400 = SNIPPET_RENDER_CAP + truncation-marker headroom: the prompt-side cap
+          // guarantees the echoed copy fits, so this bound never blocks a faithful echo.
+          snippet: { type: 'string', maxLength: 3400 },
           // Carried through UNCHANGED from the candidate task (see
           // synthesizePrompt) — the human reviewer at the L3 gate can see and
           // challenge the runners-up the planner rejected, not just the pick.
@@ -263,8 +273,8 @@ const PLAN_ARTIFACT_SCHEMA = {
         additionalProperties: false,
       },
     },
-    risks: { type: 'array', items: { type: 'string' } },
-    outOfScope: { type: 'array', items: { type: 'string' } },
+    risks: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 500 } },
+    outOfScope: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 500 } },
   },
   required: ['goal', 'context', 'tasks', 'risks', 'outOfScope'],
   additionalProperties: false,
@@ -882,6 +892,10 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
     `implementer's navigation aid).\n` +
     `Echo each task's "alternativesConsidered" UNCHANGED from its kept task (the runners-up ` +
     `and kill reasons the planner weighed — the human reviewer must see them, not just the pick).\n` +
+    `OUTPUT BUDGET (hard): the complete JSON is ONE model response and must stay comfortably ` +
+    `under the output-token cap — write "intent", "contracts" and "testPlan" as terse ` +
+    `engineering prose (a few sentences each), reference repo locations as path:line instead ` +
+    `of restating file contents, and NEVER inline file bodies beyond the echoed "snippet".\n` +
     `Return { "goal", "context": { "projectDir", "testCommand", "buildCommand", "conventions" }, ` +
     `"tasks": [{ "id", "title", "intent", "files": [{ "path", "status", "role" }], "contracts", ` +
     `"testPlan", "doneCriteria": [], "snippet", "alternativesConsidered": [{ "route", "killReason" }], ` +

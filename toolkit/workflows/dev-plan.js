@@ -979,33 +979,36 @@ ${renderClaim(claim)}`;
   var PLAN_ARTIFACT_SCHEMA = {
     type: "object",
     properties: {
-      goal: { type: "string" },
+      goal: { type: "string", maxLength: 8e3 },
       context: {
         type: "object",
         properties: {
-          projectDir: { type: "string" },
-          testCommand: { type: "string" },
-          buildCommand: { type: "string" },
-          conventions: { type: "string" }
+          projectDir: { type: "string", maxLength: 500 },
+          testCommand: { type: "string", maxLength: 400 },
+          buildCommand: { type: "string", maxLength: 400 },
+          conventions: { type: "string", maxLength: 2400 }
         },
         required: ["projectDir", "testCommand", "buildCommand", "conventions"],
         additionalProperties: false
       },
       tasks: {
         type: "array",
+        maxItems: 16,
         items: {
           type: "object",
           properties: {
-            id: { type: "string" },
-            title: { type: "string" },
-            intent: { type: "string" },
+            id: { type: "string", maxLength: 12 },
+            title: { type: "string", maxLength: 200 },
+            intent: { type: "string", maxLength: 1600 },
             files: { type: "array", items: TASK_FILE_SCHEMA },
-            contracts: { type: "string" },
-            testPlan: { type: "string" },
-            doneCriteria: { type: "array", items: { type: "string" } },
+            contracts: { type: "string", maxLength: 3200 },
+            testPlan: { type: "string", maxLength: 3200 },
+            doneCriteria: { type: "array", maxItems: 12, items: { type: "string", maxLength: 500 } },
             // Carried through from the candidate task — dev-implement embeds it
             // in the implementer's task block so the first read is targeted.
-            snippet: { type: "string" },
+            // 3400 = SNIPPET_RENDER_CAP + truncation-marker headroom: the prompt-side cap
+            // guarantees the echoed copy fits, so this bound never blocks a faithful echo.
+            snippet: { type: "string", maxLength: 3400 },
             // Carried through UNCHANGED from the candidate task (see
             // synthesizePrompt) — the human reviewer at the L3 gate can see and
             // challenge the runners-up the planner rejected, not just the pick.
@@ -1032,8 +1035,8 @@ ${renderClaim(claim)}`;
           additionalProperties: false
         }
       },
-      risks: { type: "array", items: { type: "string" } },
-      outOfScope: { type: "array", items: { type: "string" } }
+      risks: { type: "array", maxItems: 16, items: { type: "string", maxLength: 500 } },
+      outOfScope: { type: "array", maxItems: 16, items: { type: "string", maxLength: 500 } }
     },
     required: ["goal", "context", "tasks", "risks", "outOfScope"],
     additionalProperties: false
@@ -1361,6 +1364,7 @@ Assign sequential ids ("T1", "T2", \u2026) and a dependsOn graph (ids only, no c
 File paths must be RELATIVE to projectDir, never absolute (dev-implement maps them into per-task worktrees and rejects absolute paths).
 Echo each task's "snippet" UNCHANGED from its kept task (it is the downstream implementer's navigation aid).
 Echo each task's "alternativesConsidered" UNCHANGED from its kept task (the runners-up and kill reasons the planner weighed \u2014 the human reviewer must see them, not just the pick).
+OUTPUT BUDGET (hard): the complete JSON is ONE model response and must stay comfortably under the output-token cap \u2014 write "intent", "contracts" and "testPlan" as terse engineering prose (a few sentences each), reference repo locations as path:line instead of restating file contents, and NEVER inline file bodies beyond the echoed "snippet".
 Return { "goal", "context": { "projectDir", "testCommand", "buildCommand", "conventions" }, "tasks": [{ "id", "title", "intent", "files": [{ "path", "status", "role" }], "contracts", "testPlan", "doneCriteria": [], "snippet", "alternativesConsidered": [{ "route", "killReason" }], "dependsOn": [] }], "risks": [], "outOfScope": [] }`;
     const synthesized = await rt.agent(synthesizePrompt, {
       schema: PLAN_ARTIFACT_SCHEMA,
