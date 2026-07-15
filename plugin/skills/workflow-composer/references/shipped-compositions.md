@@ -34,7 +34,9 @@ The **dev-workflow family** — the most advanced compositions (multi-artifact
 - `dev-plan.workflow.ts` — discovery → planner fan-out → adversarial plan critique
   (snippet-enriched task claims) → plan artifact.
 - `dev-implement.workflow.ts` — per-task red → green → check TDD loops over a plan
-  artifact, sequential or worktree-parallel.
+  artifact, sequential or worktree-parallel; the test-writer can end a task with a
+  named blocking verdict (`no-test-seam` / `premise-falsified` / `repro-hard`) that
+  reports as a routable `blocked` outcome instead of a silent retry-until-failed.
 - `dev-full.workflow.ts` — chains the three children via `rt.workflow()` over their
   committed artifacts, converting human gates into code gates.
 

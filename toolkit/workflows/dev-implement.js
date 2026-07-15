@@ -1,6 +1,6 @@
 export const meta = {
   "name": "dev-implement",
-  "description": "Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. Two mutation modes: \"sequential\" (default — one task at a time in dependency order, no git required) and \"worktree\" (git required — independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).",
+  "description": "Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. The test-writer has three NAMED blocking verdicts (no-test-seam, premise-falsified, repro-hard) that end the task as a routable \"blocked\" outcome instead of a silent retry-until-failed. Two mutation modes: \"sequential\" (default — one task at a time in dependency order, no git required) and \"worktree\" (git required — independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).",
   "whenToUse": "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass either { artifact } (the inline PlanArtifact) OR { artifactPath } (a path — ABSOLUTE recommended — to a JSON file holding it; use this when the artifact is large or was produced/edited on disk, to avoid inlining ~60 KB in the args; it is read from disk and validated identically). Plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits, as the workflow args. implementerModel tiers the per-iteration implementer (default \"sonnet\"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.",
   "phases": [
     {
@@ -25,7 +25,7 @@ export const meta = {
     },
     {
       "title": "Report",
-      "detail": "Deterministic tally incl. merge-failed/integration-failed (in code, no agent)"
+      "detail": "Deterministic tally incl. merge-failed/integration-failed/blocked (in code, no agent)"
     }
   ]
 }
@@ -440,7 +440,8 @@ ${prompt}` : prompt;
     properties: {
       written: { type: "boolean" },
       testFiles: { type: "array", items: { type: "string" } },
-      note: { type: "string" }
+      note: { type: "string" },
+      verdict: { type: "string", enum: ["none", "no-test-seam", "premise-falsified", "repro-hard"] }
     },
     required: ["written", "testFiles", "note"],
     additionalProperties: false
@@ -562,6 +563,11 @@ ${prompt}` : prompt;
     },
     required: ["removed", "failures", "note"],
     additionalProperties: false
+  };
+  var VERDICT_ROUTING = {
+    "no-test-seam": "a test seam here is a DESIGN decision \u2014 escalate to the plan owner; do not fabricate a speculative abstraction to satisfy the pipeline",
+    "premise-falsified": "the red stage proved the plan premise wrong \u2014 route back to planning (a corrective re-plan), not to re-coding against a falsified plan",
+    "repro-hard": "designing the reproduction is an investigation of its own \u2014 route to a grounding/investigation pass before retrying the task"
   };
   function requireString(obj, key, where) {
     const v = obj[key];
@@ -893,7 +899,7 @@ Done criteria: ${JSON.stringify(task.doneCriteria)}
     const taskBlock = buildTaskBlock(artifact, task, workdir, true);
     const checkTaskBlock = buildTaskBlock(artifact, task, workdir, false);
     const loopResult = await loopUntilDone(rt, {
-      initial: { testsWritten: false, green: false, lastFailure: "", evidence: "" },
+      initial: { testsWritten: false, green: false, lastFailure: "", evidence: "", verdict: null },
       maxIterations: maxIterationsPerTask,
       body: async (rtBody, state, iteration) => {
         const next = { ...state };
@@ -902,7 +908,13 @@ Done criteria: ${JSON.stringify(task.doneCriteria)}
             `You are the TDD test-writer for one task. Write the failing tests first \u2014 do NOT implement any production code.
 ` + taskBlock + `Create/extend the test files per the test plan and confirm the new tests FAIL for the right reason \u2014 when your test runner supports running a subset, confirm on just the new test files (cheaper feedback), then run ${ctx.testCommand} in full once before reporting (the rest of the suite must still collect and pass).
 If the test plan says there is nothing to write (a docs-only or no-test task), that is a SUCCESS, not a failure: return written: true with an empty testFiles list and say so in the note \u2014 the done criteria will still be verified by the checker.
-Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was written>" }`,
+If you CANNOT deliver the failing tests, do NOT force it: return written: false with the matching verdict \u2014 these are accepted first-class outcomes, not failures:
+- "no-test-seam": testing this requires introducing a new abstraction or refactor in production code. That is a design decision \u2014 do NOT fabricate a speculative seam to satisfy this pipeline; name the missing seam in the note.
+- "premise-falsified": what the code actually does CONTRADICTS the task's premise (e.g. the behavior the test plan assumes does not exist or already differs) \u2014 put the contradicting evidence in the note.
+- "repro-hard": reproducing the target behavior needs a real investigation beyond this task \u2014 describe in the note what you tried and what the repro design requires.
+- "none" (or omit the field): any other, transient reason \u2014 the loop will retry.
+Before returning a blocking verdict, remove any probe files you created.
+Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was written>", "verdict": "none|no-test-seam|premise-falsified|repro-hard" }`,
             {
               schema: RED_RESULT_SCHEMA,
               label: `dev-implement:red:${task.id}`,
@@ -914,9 +926,22 @@ Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was writ
             warn(rtBody, warnings, `dev-implement: red (test-writer) agent died for task ${task.id} \u2014 retrying next iteration`);
             return { state: next, done: false };
           }
+          const verdict = red.verdict ?? "none";
           if (!red.written) {
+            if (verdict !== "none") {
+              next.verdict = verdict;
+              next.lastFailure = red.note;
+              return { state: next, done: true };
+            }
             warn(rtBody, warnings, `dev-implement: test-writer could not write tests for task ${task.id}: ${red.note}`);
             return { state: next, done: false };
+          }
+          if (verdict !== "none") {
+            warn(
+              rtBody,
+              warnings,
+              `dev-implement: test-writer returned written: true with a contradictory blocking verdict "${verdict}" for task ${task.id} \u2014 verdict ignored (the tests exist): ${red.note}`
+            );
           }
           next.testsWritten = true;
         }
@@ -980,22 +1005,48 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
       evidence: outcome.state.evidence,
       lastFailure: outcome.state.lastFailure,
       stoppedBy: outcome.stoppedBy,
+      verdict: outcome.state.verdict,
       trail: loopResult.trail
     };
   }
   function failureNote(outcome) {
     return outcome.lastFailure === "" ? `failed \u2014 loop stopped by ${outcome.stoppedBy} before any check ran` : `failed \u2014 last check: ${outcome.lastFailure}`;
   }
+  function blockedNote(verdict, reason) {
+    return `blocked (${verdict}) \u2014 ${reason}. Routing: ${VERDICT_ROUTING[verdict]}.`;
+  }
+  function blockedRecord(task, outcome, verdict) {
+    return {
+      id: task.id,
+      title: task.title,
+      status: "blocked",
+      iterations: outcome.iterations,
+      evidence: outcome.evidence,
+      verdict,
+      note: blockedNote(verdict, outcome.lastFailure)
+    };
+  }
   function tally(reportTasks) {
-    const t = { succeeded: 0, failed: 0, skipped: 0, mergeFailed: 0, integrationFailed: 0 };
+    const t = { succeeded: 0, failed: 0, skipped: 0, mergeFailed: 0, integrationFailed: 0, blocked: 0 };
     for (const task of reportTasks) {
       if (task.status === "succeeded") t.succeeded++;
       else if (task.status === "failed") t.failed++;
       else if (task.status === "merge-failed") t.mergeFailed++;
       else if (task.status === "integration-failed") t.integrationFailed++;
+      else if (task.status === "blocked") t.blocked++;
       else t.skipped++;
     }
     return t;
+  }
+  function warnBlocked(rt, warnings, reportTasks) {
+    for (const t of reportTasks) {
+      if (t.status !== "blocked" || t.verdict === void 0) continue;
+      warn(
+        rt,
+        warnings,
+        `dev-implement: task ${t.id} blocked with verdict "${t.verdict}" \u2014 do NOT relaunch as-is; route it: ${VERDICT_ROUTING[t.verdict]}`
+      );
+    }
   }
   function skippedRecord(task, blockedBy) {
     return {
@@ -1089,6 +1140,9 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
           iterations: outcome.iterations,
           evidence: outcome.evidence
         });
+      } else if (outcome.verdict !== null) {
+        statusById.set(task.id, "blocked");
+        reportTasks.push(blockedRecord(task, outcome, outcome.verdict));
       } else {
         statusById.set(task.id, "failed");
         reportTasks.push({
@@ -1110,6 +1164,7 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
         `dev-implement: ${tallies.failed} task(s) failed, ${tallies.skipped} skipped \u2014 fix the root cause and relaunch with resumeFromRunId (agents of completed tasks replay from cache), or feed the failure notes back into a corrective dev-plan run`
       );
     }
+    warnBlocked(rt, warnings, reportTasks);
     return {
       goal: artifact.goal,
       tasks: reportTasks,
@@ -1307,6 +1362,9 @@ Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happen
             note: `failed \u2014 worktree setup command: ${result.note}`,
             ...kept
           });
+        } else if (result.kind === "tdd-failed" && result.outcome.verdict !== null) {
+          statusById.set(task.id, "blocked");
+          reportTasks.push({ ...blockedRecord(task, result.outcome, result.outcome.verdict), ...kept });
         } else if (result.kind === "tdd-failed") {
           statusById.set(task.id, "failed");
           reportTasks.push({
@@ -1442,6 +1500,7 @@ Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
         `dev-implement: ${tallies.failed} task(s) failed, ${tallies.mergeFailed} merge-failed, ${tallies.integrationFailed} integration-failed, ${tallies.skipped} skipped \u2014 the MAIN tree only contains the ${tallies.succeeded} merged task(s)` + (keptWorktrees.length > 0 ? `; kept worktree(s) for forensics: ${keptWorktrees.map((t) => `${t.id} at ${t.worktreePath ?? ""}`).join(", ")}` : "") + `. Fix the root cause and re-run (worktree creation refuses stale paths \u2014 remove kept worktrees first), or feed the failure notes back into a corrective dev-plan run.`
       );
     }
+    warnBlocked(rt, warnings, reportTasks);
     return {
       goal: artifact.goal,
       tasks: reportTasks,
@@ -1454,7 +1513,7 @@ Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
   var dev_implement_workflow_default = defineWorkflow({
     meta: {
       name: "dev-implement",
-      description: 'Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. Two mutation modes: "sequential" (default \u2014 one task at a time in dependency order, no git required) and "worktree" (git required \u2014 independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).',
+      description: 'Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. The test-writer has three NAMED blocking verdicts (no-test-seam, premise-falsified, repro-hard) that end the task as a routable "blocked" outcome instead of a silent retry-until-failed. Two mutation modes: "sequential" (default \u2014 one task at a time in dependency order, no git required) and "worktree" (git required \u2014 independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).',
       whenToUse: 'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass either { artifact } (the inline PlanArtifact) OR { artifactPath } (a path \u2014 ABSOLUTE recommended \u2014 to a JSON file holding it; use this when the artifact is large or was produced/edited on disk, to avoid inlining ~60 KB in the args; it is read from disk and validated identically). Plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits, as the workflow args. implementerModel tiers the per-iteration implementer (default "sonnet"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.',
       phases: [
         { title: "Load", detail: "artifactPath mode: read the PlanArtifact JSON from disk via an agent (no-op when artifact is inline)" },
@@ -1462,7 +1521,7 @@ Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
         { title: "Implement", detail: "Per task: write failing tests, implement (TDD loop) \u2014 parallel within a wave in worktree mode" },
         { title: "Check", detail: "Independent fresh-evidence checker runs the real test command per iteration" },
         { title: "Merge", detail: "Worktree mode: sequential merges, integration check after EACH merge, revert on red" },
-        { title: "Report", detail: "Deterministic tally incl. merge-failed/integration-failed (in code, no agent)" }
+        { title: "Report", detail: "Deterministic tally incl. merge-failed/integration-failed/blocked (in code, no agent)" }
       ]
     },
     parseInput,

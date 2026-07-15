@@ -502,6 +502,187 @@ describe('dev-implement failing task', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Test: named blocking verdicts — "could not" is a ROUTABLE first-class
+// outcome of the RED stage, never a silent retry (design constraint n°4).
+// Three verdicts: no-test-seam (→ design decision), premise-falsified
+// (→ re-plan, not re-code), repro-hard (→ investigation). A blocking verdict
+// ends the task loop IMMEDIATELY — no iteration burn — and reports status
+// 'blocked' with the verdict and a routing note.
+// ---------------------------------------------------------------------------
+
+describe('dev-implement named blocking verdicts (no-test-seam / premise-falsified / repro-hard)', () => {
+  it('no-test-seam blocks the task immediately (single red call, no green/check burn) and routes to a design decision', async () => {
+    const rt = makeRuntime({
+      red: () => ({
+        written: false,
+        testFiles: [],
+        note: 'testing this requires extracting the inline wiring into a pure function first — a design call',
+        verdict: 'no-test-seam',
+      }),
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('blocked')
+    expect(t1.verdict).toBe('no-test-seam')
+    // The named verdict must STOP the loop: exactly ONE red call for T1,
+    // and no implementer/checker ever spawned for it.
+    expect(rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:red:T1')).length).toBe(1)
+    expect(rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:green:T1')).length).toBe(0)
+    expect(rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:check:T1')).length).toBe(0)
+    expect(t1.iterations).toBe(1)
+    // The note keeps the writer's reason AND routes: a seam is a design
+    // decision — never fabricated debt.
+    expect(t1.note).toMatch(/design/i)
+    expect(t1.note).toMatch(/pure function/)
+    // Dependents of a blocked task are skipped, exactly like other
+    // non-succeeded dependencies.
+    expect(result.tasks.find((t: { id: string }) => t.id === 'T2')!.status).toBe('skipped')
+    // Blocked is its OWN tally — not a failure.
+    expect(result.blocked).toBe(1)
+    expect(result.failed).toBe(0)
+    expect(result.succeeded).toBe(0)
+    expect(result.skipped).toBe(1)
+  })
+
+  it('premise-falsified routes to RE-PLAN, not re-code', async () => {
+    const rt = makeRuntime({
+      red: () => ({
+        written: false,
+        testFiles: [],
+        note: 'the plan assumes the endpoint returns 500 on conflict; the code returns 409 — the test cannot fail for the planned reason',
+        verdict: 'premise-falsified',
+      }),
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('blocked')
+    expect(t1.verdict).toBe('premise-falsified')
+    expect(t1.note).toMatch(/re-?plan/i)
+    expect(t1.note).toMatch(/409/)
+    expect(result.blocked).toBe(1)
+  })
+
+  it('repro-hard is a named investigation state, not an iteration failure', async () => {
+    const rt = makeRuntime({
+      red: () => ({
+        written: false,
+        testFiles: [],
+        note: 'the crash only reproduces after a rehydrate with a deferred listener — designing the repro needs its own investigation',
+        verdict: 'repro-hard',
+      }),
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('blocked')
+    expect(t1.verdict).toBe('repro-hard')
+    expect(t1.note).toMatch(/investigat/i)
+    expect(result.blocked).toBe(1)
+  })
+
+  it('written:false WITHOUT a verdict keeps the retry path (backward compatible with old caches/stubs)', async () => {
+    const rt = makeRuntime({
+      red: () => ({ written: false, testFiles: [], note: 'test runner misconfigured, could not run' }),
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    // No named verdict → today's behavior: warn + retry until exhaustion.
+    expect(result.blocked).toBe(0)
+    expect(result.failed + result.skipped).toBe(2)
+    expect(result.warnings.some((w: string) => /could not write tests/i.test(w))).toBe(true)
+  })
+
+  it('verdict "none" is the explicit retry escape valve (never a block)', async () => {
+    const rt = makeRuntime({
+      red: () => ({ written: false, testFiles: [], note: 'transient failure', verdict: 'none' }),
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    expect(result.blocked).toBe(0)
+    expect(result.failed + result.skipped).toBe(2)
+  })
+
+  it('a contradictory written:true + blocking verdict lets written WIN (the red state exists) and warns', async () => {
+    const rt = makeRuntime({
+      red: () => ({
+        written: true,
+        testFiles: ['test/validate.test.ts'],
+        note: 'tests written',
+        verdict: 'no-test-seam',
+      }),
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    // The tests exist — the loop proceeds and the checker (default green)
+    // flips the tasks to succeeded; the contradiction is surfaced, not obeyed.
+    expect(result.succeeded).toBe(2)
+    expect(result.blocked).toBe(0)
+    expect(result.warnings.some((w: string) => /contradictor|ignor/i.test(w))).toBe(true)
+  })
+
+  it('the red prompt names the three verdicts as first-class exits and forbids fabricating a seam', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const red = rt.calls.find((c) => c.opts?.label?.startsWith('dev-implement:red:'))!
+    expect(red.prompt).toContain('no-test-seam')
+    expect(red.prompt).toContain('premise-falsified')
+    expect(red.prompt).toContain('repro-hard')
+    expect(red.prompt).toMatch(/do not fabricate|never fabricate/i)
+    // The router phrase the whole suite depends on must survive the edit.
+    expect(red.prompt.toLowerCase()).toContain('write the failing tests first')
+  })
+
+  it('the report warning routes blocked tasks by verdict instead of the resume hint', async () => {
+    const rt = makeRuntime({
+      red: () => ({ written: false, testFiles: [], note: 'no seam', verdict: 'no-test-seam' }),
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    expect(
+      result.warnings.some((w: string) => /blocked/i.test(w) && /verdict|route/i.test(w)),
+    ).toBe(true)
+  })
+
+  it('the six tallies sum to tasks.length when a task is blocked', async () => {
+    const rt = makeRuntime({
+      red: () => ({ written: false, testFiles: [], note: 'no seam', verdict: 'no-test-seam' }),
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const sum =
+      result.succeeded + result.failed + result.skipped +
+      result.mergeFailed + result.integrationFailed + result.blocked
+    expect(sum).toBe(result.tasks.length)
+  })
+
+  it('worktree mode: a blocked task keeps its worktree, is never merged, and its dependents skip', async () => {
+    const rt = makeWtRuntime({
+      red: (p) =>
+        p.includes('Task T1:')
+          ? { written: false, testFiles: [], note: 'no seam here', verdict: 'no-test-seam' }
+          : { written: true, testFiles: ['test/x.test.ts'], note: 'failing tests written' },
+    })
+    const result = await wf.run(rt, JSON.stringify(WT_INPUT))
+
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('blocked')
+    expect(t1.verdict).toBe('no-test-seam')
+    // Forensics parity with failed tasks: the worktree is kept and named.
+    expect(typeof t1.worktreePath).toBe('string')
+    expect(typeof t1.branch).toBe('string')
+    // A blocked task must never reach merge.
+    expect(rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:merge:T1')).length).toBe(0)
+    // The independent sibling still merges; the dependent skips.
+    expect(result.tasks.find((t: { id: string }) => t.id === 'T2')!.status).toBe('succeeded')
+    expect(result.tasks.find((t: { id: string }) => t.id === 'T3')!.status).toBe('skipped')
+    expect(result.blocked).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Worktree mutation mode (v2): waves of independent tasks run their TDD loops
 // in parallel, each in an isolated git worktree, then merge sequentially with
 // a per-merge integration check. Conservative policies (user-ratified):

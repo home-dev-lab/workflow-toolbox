@@ -36,6 +36,17 @@
 //   the report (it is the input to the corrective re-run); tasks depending on a
 //   non-succeeded task are SKIPPED — computed in code, not by a model.
 //
+//   NAMED BLOCKING VERDICTS (design constraint: "could not" is a first-class,
+//   ROUTABLE outcome — a stage whose output is mandatory WILL be satisfied,
+//   with filler if need be): the red test-writer may return one of three
+//   verdicts instead of silently failing — 'no-test-seam' (testing needs a
+//   production-code seam: a DESIGN decision, never fabricated to satisfy the
+//   pipeline), 'premise-falsified' (the red stage proved the plan's premise
+//   wrong: route to RE-PLAN, not re-code), 'repro-hard' (designing the repro
+//   is an investigation of its own). A blocking verdict ends the task loop
+//   IMMEDIATELY (no iteration burn) and reports status 'blocked' with the
+//   verdict and a routing note.
+//
 //   Phase 'Report' — deterministic tallying IN CODE (no agent).
 //
 // RESUME HINT:
@@ -197,13 +208,20 @@ type ResolvedDevImplementInput = Omit<DevImplementInput, 'artifact' | 'artifactP
 // JSON Schemas (as-const + FromSchema for type safety at consumed boundaries)
 // ---------------------------------------------------------------------------
 
-// Red stage output — the test-writer's report
+// Red stage output — the test-writer's report. `verdict` is DELIBERATELY
+// optional (normalized to 'none' in code): resumed runs replay cached
+// pre-verdict results without the field, and a required enum would pressure
+// the writer into picking a blocker when 'could not, transiently' is the
+// honest answer (the structured-output capitulation failure mode). 'none'
+// keeps written:false on the warn+retry path; the three named verdicts are
+// accepted first-class exits that STOP the task loop.
 const RED_RESULT_SCHEMA = {
   type: 'object',
   properties: {
     written: { type: 'boolean' },
     testFiles: { type: 'array', items: { type: 'string' } },
     note: { type: 'string' },
+    verdict: { type: 'string', enum: ['none', 'no-test-seam', 'premise-falsified', 'repro-hard'] },
   },
   required: ['written', 'testFiles', 'note'],
   additionalProperties: false,
@@ -389,7 +407,35 @@ type CleanupResult = FromSchema<typeof CLEANUP_RESULT_SCHEMA>
 // downstream consumers deriving a change set from 'succeeded'|'failed' tasks
 // (dev-full) correctly exclude them. Plain worktree 'failed' tasks never
 // merged either — main stays clean, unlike sequential mode's partial mutations.
-type TaskStatus = 'succeeded' | 'failed' | 'skipped' | 'merge-failed' | 'integration-failed'
+// 'blocked' (both modes): the red test-writer returned a NAMED blocking
+// verdict — the task is NOT a failure to retry, it is a routable outcome
+// (see TddBlockingVerdict). The writer is told to clean up probe files
+// before blocking, so the tree is effectively unmutated; blocked tasks
+// never reach green, finalize, or merge.
+type TaskStatus = 'succeeded' | 'failed' | 'skipped' | 'merge-failed' | 'integration-failed' | 'blocked'
+
+// The three routable blocking verdicts of the RED stage. Deliberately a
+// LOCAL vocabulary, not an extension of @workflow-toolbox/patterns' claim-verification
+// `Verdict` ('confirmed'|'refuted'|…): these name STAGE outcomes for routing,
+// not claim truth values, and the patterns type is consumed exhaustively
+// (Record<ClaimVerdict, …>) by other workflows — polluting it would force
+// meaningless handling on every claim consumer.
+type TddBlockingVerdict = 'no-test-seam' | 'premise-falsified' | 'repro-hard'
+
+// Where each blocking verdict ROUTES — the report note teaches the corrective
+// path (the whole point of naming the exit): a blocked task must never be
+// answered with "relaunch and hope".
+const VERDICT_ROUTING: Record<TddBlockingVerdict, string> = {
+  'no-test-seam':
+    'a test seam here is a DESIGN decision — escalate to the plan owner; do not fabricate ' +
+    'a speculative abstraction to satisfy the pipeline',
+  'premise-falsified':
+    'the red stage proved the plan premise wrong — route back to planning (a corrective ' +
+    're-plan), not to re-coding against a falsified plan',
+  'repro-hard':
+    'designing the reproduction is an investigation of its own — route to a grounding/' +
+    'investigation pass before retrying the task',
+}
 
 interface ReportTask {
   id: string
@@ -401,8 +447,11 @@ interface ReportTask {
   evidence: string
   /** Failure/skip explanation — the input to the corrective re-run. */
   note?: string
-  /** Worktree mode, KEPT worktrees only (failed/merge-failed/integration-failed):
-   *  where the task's tree lives on disk for forensics/manual resume. */
+  /** Blocked tasks only: the red stage's named blocking verdict (the note
+   *  carries the writer's reason plus the verdict's routing). */
+  verdict?: TddBlockingVerdict
+  /** Worktree mode, KEPT worktrees only (failed/merge-failed/integration-failed/
+   *  blocked): where the task's tree lives on disk for forensics/manual resume. */
   worktreePath?: string
   /** Worktree mode, kept worktrees only: the task branch (wt-task/<id>). */
   branch?: string
@@ -414,10 +463,13 @@ interface DevImplementOutput {
   succeeded: number
   failed: number
   skipped: number
-  /** Worktree mode tallies (always present; 0 in sequential mode). The five
+  /** Worktree mode tallies (always present; 0 in sequential mode). The six
    *  counters sum to tasks.length. */
   mergeFailed: number
   integrationFailed: number
+  /** Tasks the red stage blocked with a named verdict (both modes) — routable
+   *  outcomes, deliberately NOT counted as failed. */
+  blocked: number
   /** Per-task loop envelope stats, keyed by task id. */
   stats: Record<string, PatternStats>
   /** Combined trail of every task's TDD loop (collectTrail, in task-run order).
@@ -870,6 +922,9 @@ interface TaskLoopState {
   green: boolean
   lastFailure: string
   evidence: string
+  /** Set when the red stage returns a named blocking verdict — ends the loop
+   *  immediately (done: true) with green still false. */
+  verdict: TddBlockingVerdict | null
 }
 
 /** What a finished TDD loop means for the report — mode-agnostic. */
@@ -879,6 +934,9 @@ interface TddOutcome {
   evidence: string
   lastFailure: string
   stoppedBy: string
+  /** Non-null iff the red stage blocked the task with a named verdict;
+   *  lastFailure then carries the writer's reason verbatim. */
+  verdict: TddBlockingVerdict | null
   /** The loopUntilDone trail for this task's TDD loop — collected by the
    *  caller into the composition's `envelope.trail` (collectTrail). */
   trail: TrailRecord[]
@@ -1001,7 +1059,7 @@ async function runTaskTddLoop(
   const checkTaskBlock = buildTaskBlock(artifact, task, workdir, false)
 
   const loopResult = await loopUntilDone<TaskLoopState>(rt, {
-    initial: { testsWritten: false, green: false, lastFailure: '', evidence: '' },
+    initial: { testsWritten: false, green: false, lastFailure: '', evidence: '', verdict: null },
     maxIterations: maxIterationsPerTask,
     body: async (rtBody, state, iteration) => {
       const next: TaskLoopState = { ...state }
@@ -1019,7 +1077,20 @@ async function runTaskTddLoop(
           `If the test plan says there is nothing to write (a docs-only or no-test task), that ` +
           `is a SUCCESS, not a failure: return written: true with an empty testFiles list and ` +
           `say so in the note — the done criteria will still be verified by the checker.\n` +
-          `Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was written>" }`,
+          `If you CANNOT deliver the failing tests, do NOT force it: return written: false ` +
+          `with the matching verdict — these are accepted first-class outcomes, not failures:\n` +
+          `- "no-test-seam": testing this requires introducing a new abstraction or refactor in ` +
+          `production code. That is a design decision — do NOT fabricate a speculative seam to ` +
+          `satisfy this pipeline; name the missing seam in the note.\n` +
+          `- "premise-falsified": what the code actually does CONTRADICTS the task's premise ` +
+          `(e.g. the behavior the test plan assumes does not exist or already differs) — put ` +
+          `the contradicting evidence in the note.\n` +
+          `- "repro-hard": reproducing the target behavior needs a real investigation beyond ` +
+          `this task — describe in the note what you tried and what the repro design requires.\n` +
+          `- "none" (or omit the field): any other, transient reason — the loop will retry.\n` +
+          `Before returning a blocking verdict, remove any probe files you created.\n` +
+          `Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was written>", ` +
+          `"verdict": "none|no-test-seam|premise-falsified|repro-hard" }`,
           {
             schema: RED_RESULT_SCHEMA,
             label: `dev-implement:red:${task.id}`,
@@ -1031,9 +1102,29 @@ async function runTaskTddLoop(
           warn(rtBody, warnings, `dev-implement: red (test-writer) agent died for task ${task.id} — retrying next iteration`)
           return { state: next, done: false }
         }
+        // Normalize: the field is optional (cached pre-verdict replays lack
+        // it) and 'none' is the explicit retry escape valve.
+        const verdict = red.verdict ?? 'none'
         if (!red.written) {
+          if (verdict !== 'none') {
+            // Named blocking verdict — a first-class ROUTABLE exit, never a
+            // retry: end the loop NOW (no iteration burn) with green false.
+            next.verdict = verdict
+            next.lastFailure = red.note
+            return { state: next, done: true }
+          }
           warn(rtBody, warnings, `dev-implement: test-writer could not write tests for task ${task.id}: ${red.note}`)
           return { state: next, done: false }
+        }
+        if (verdict !== 'none') {
+          // Contradiction: the tests exist, so the red state is real — the
+          // written flag WINS and the loop proceeds; surface, don't obey.
+          warn(
+            rtBody,
+            warnings,
+            `dev-implement: test-writer returned written: true with a contradictory blocking verdict ` +
+            `"${verdict}" for task ${task.id} — verdict ignored (the tests exist): ${red.note}`,
+          )
         }
         next.testsWritten = true
       }
@@ -1116,6 +1207,7 @@ async function runTaskTddLoop(
     evidence: outcome.state.evidence,
     lastFailure: outcome.state.lastFailure,
     stoppedBy: outcome.stoppedBy,
+    verdict: outcome.state.verdict,
     trail: loopResult.trail,
   }
 }
@@ -1126,22 +1218,59 @@ function failureNote(outcome: TddOutcome): string {
     : `failed — last check: ${outcome.lastFailure}`
 }
 
+// The blocked report note: the writer's reason verbatim, PLUS the verdict's
+// routing — so the report itself teaches the corrective path instead of
+// letting a blocked task read as one more failure to relaunch.
+function blockedNote(verdict: TddBlockingVerdict, reason: string): string {
+  return `blocked (${verdict}) — ${reason}. Routing: ${VERDICT_ROUTING[verdict]}.`
+}
+
+// The blocked ReportTask record — shared by both modes (worktree mode spreads
+// its kept-worktree fields on top).
+function blockedRecord(task: PlanTask, outcome: TddOutcome, verdict: TddBlockingVerdict): ReportTask {
+  return {
+    id: task.id,
+    title: task.title,
+    status: 'blocked',
+    iterations: outcome.iterations,
+    evidence: outcome.evidence,
+    verdict,
+    note: blockedNote(verdict, outcome.lastFailure),
+  }
+}
+
 function tally(reportTasks: ReportTask[]): {
   succeeded: number
   failed: number
   skipped: number
   mergeFailed: number
   integrationFailed: number
+  blocked: number
 } {
-  const t = { succeeded: 0, failed: 0, skipped: 0, mergeFailed: 0, integrationFailed: 0 }
+  const t = { succeeded: 0, failed: 0, skipped: 0, mergeFailed: 0, integrationFailed: 0, blocked: 0 }
   for (const task of reportTasks) {
     if (task.status === 'succeeded') t.succeeded++
     else if (task.status === 'failed') t.failed++
     else if (task.status === 'merge-failed') t.mergeFailed++
     else if (task.status === 'integration-failed') t.integrationFailed++
+    else if (task.status === 'blocked') t.blocked++
     else t.skipped++
   }
   return t
+}
+
+// One warning line per blocked task, verdict-first: routing must reach the
+// operator through warnings too, not only through the per-task notes.
+function warnBlocked(rt: WorkflowRuntime, warnings: string[], reportTasks: ReportTask[]): void {
+  for (const t of reportTasks) {
+    if (t.status !== 'blocked' || t.verdict === undefined) continue
+    warn(
+      rt,
+      warnings,
+      `dev-implement: task ${t.id} blocked with verdict "${t.verdict}" — do NOT relaunch as-is; ` +
+      `route it: ${VERDICT_ROUTING[t.verdict]}`,
+    )
+  }
 }
 
 function skippedRecord(task: PlanTask, blockedBy: string[]): ReportTask {
@@ -1295,6 +1424,11 @@ async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<De
         iterations: outcome.iterations,
         evidence: outcome.evidence,
       })
+    } else if (outcome.verdict !== null) {
+      // Named blocking verdict: a routable outcome, not a failure — dependents
+      // still skip (statusById is not 'succeeded').
+      statusById.set(task.id, 'blocked')
+      reportTasks.push(blockedRecord(task, outcome, outcome.verdict))
     } else {
       statusById.set(task.id, 'failed')
       reportTasks.push({
@@ -1324,6 +1458,7 @@ async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<De
       `the failure notes back into a corrective dev-plan run`,
     )
   }
+  warnBlocked(rt, warnings, reportTasks)
 
   return {
     goal: artifact.goal,
@@ -1603,6 +1738,11 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
           id: task.id, title: task.title, status: 'failed', iterations: 0, evidence: '',
           note: `failed — worktree setup command: ${result.note}`, ...kept,
         })
+      } else if (result.kind === 'tdd-failed' && result.outcome.verdict !== null) {
+        // Named blocking verdict — routable outcome; the worktree is kept
+        // exactly like a failed task's (forensics parity).
+        statusById.set(task.id, 'blocked')
+        reportTasks.push({ ...blockedRecord(task, result.outcome, result.outcome.verdict), ...kept })
       } else if (result.kind === 'tdd-failed') {
         statusById.set(task.id, 'failed')
         reportTasks.push({
@@ -1762,6 +1902,7 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
       `or feed the failure notes back into a corrective dev-plan run.`,
     )
   }
+  warnBlocked(rt, warnings, reportTasks)
 
   return {
     goal: artifact.goal,
@@ -1784,7 +1925,9 @@ export default defineWorkflow({
       'Execution half of the dev-workflow family: re-validates the approved PlanArtifact from ' +
       'dev-plan (the human may have edited it), runs each task through a bounded TDD loop ' +
       '(failing tests first, implement against the contracts, then an independent checker reads ' +
-      'the real test output), and reports a deterministic per-task tally with evidence. Two ' +
+      'the real test output), and reports a deterministic per-task tally with evidence. The ' +
+      'test-writer has three NAMED blocking verdicts (no-test-seam, premise-falsified, repro-hard) ' +
+      'that end the task as a routable "blocked" outcome instead of a silent retry-until-failed. Two ' +
       'mutation modes: "sequential" (default — one task at a time in dependency order, no git ' +
       'required) and "worktree" (git required — independent tasks run in parallel waves, each in ' +
       'an isolated git worktree, then merge sequentially with an integration check after every ' +
@@ -1810,7 +1953,7 @@ export default defineWorkflow({
       { title: 'Implement', detail: 'Per task: write failing tests, implement (TDD loop) — parallel within a wave in worktree mode' },
       { title: 'Check', detail: 'Independent fresh-evidence checker runs the real test command per iteration' },
       { title: 'Merge', detail: 'Worktree mode: sequential merges, integration check after EACH merge, revert on red' },
-      { title: 'Report', detail: 'Deterministic tally incl. merge-failed/integration-failed (in code, no agent)' },
+      { title: 'Report', detail: 'Deterministic tally incl. merge-failed/integration-failed/blocked (in code, no agent)' },
     ],
   },
   parseInput,
