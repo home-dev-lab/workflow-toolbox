@@ -3,7 +3,7 @@
 <!-- Extracted from SKILL.md (progressive disclosure) — loaded on demand via the stub that links here. -->
 
 
-The repository ships twenty-three built example compositions under `toolkit/workflows/`,
+The repository ships twenty-four built example compositions under `toolkit/workflows/`,
 and **all of them have their TypeScript sources bundled with this skill** for study at
 `assets/examples/toolkit/`. (Progressive disclosure means a bundled source costs no
 context until you actually Read it — so the skill ships the complete set, not a
@@ -38,6 +38,17 @@ The five core-pattern compositions:
 The **dev-workflow family** — the most advanced compositions (multi-artifact
 `rt.workflow()` composition, code gates replacing human gates, dual mutation modes):
 
+- `dev-ground.workflow.ts` — grounding-first precursor to the family: two parallel
+  arms (external research ∥ internal code analysis) check a card's premises against
+  reality, keyed and merged by premise id in code (never model-tallied). A PoC canary
+  sub-stage probes whichever external premises the arms leave unsettled — its five
+  named outcomes include `refused-by-classifier` and `source-unreachable` as
+  first-class, schema-valid, routable results, never errors. Every premise then goes
+  through `adversarialVerification` refute-first (the premise itself is the claim; the
+  arms' and PoC's proposals are material offered for refutation, not a competing
+  verdict). The final cancel / reframe / proceed recommendation is a pure, exported,
+  unit-tested function — never asked of a model — and an unverifiable premise can
+  never silently route to proceed.
 - `dev-plan.workflow.ts` — discovery → planner fan-out → adversarial plan critique
   (snippet-enriched task claims) → plan artifact.
 - `dev-implement.workflow.ts` — per-task red → green → check TDD loops over a plan

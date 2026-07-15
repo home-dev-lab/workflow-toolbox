@@ -35,7 +35,7 @@ The reference files carry the deep material — read them when a step points you
   tagged with its evidence tier (documented / observed / verified).
 - `references/patterns.md` — the nine orchestration patterns as copy-paste recipes.
 - `references/orchestrator-pipelines.md` — human-gated multi-workflow jobs (L3).
-- `references/shipped-compositions.md` — the 23 shipped compositions + operational lessons.
+- `references/shipped-compositions.md` — the 24 shipped compositions + operational lessons.
 - `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
 - `references/worked-example-pr-review.md` — the annotated pr-review walk-through.
 - `references/observing-runs.md` — how to **launch a run so you can watch it live** and read the
@@ -265,7 +265,7 @@ them.
 
 ### The shipped compositions to read as models
 
-Twenty-three shipped compositions cover every pattern in production shape. **Read
+Twenty-four shipped compositions cover every pattern in production shape. **Read
 [references/shipped-compositions.md](references/shipped-compositions.md) when
 picking a starting model to imitate** — each entry names the patterns it wires
 and why, and the file ends with the operational lessons from production runs of
@@ -441,6 +441,6 @@ review-like workflow.
   option, cap, and failure mode, each tagged documented / observed / verified.
 - `references/patterns.md` — the nine orchestration patterns as copy-paste recipes.
 - `references/orchestrator-pipelines.md` — human-gated multi-workflow jobs (L3).
-- `references/shipped-compositions.md` — the 23 shipped compositions + operational lessons.
+- `references/shipped-compositions.md` — the 24 shipped compositions + operational lessons.
 - `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
 - `references/worked-example-pr-review.md` — the annotated pr-review walk-through.

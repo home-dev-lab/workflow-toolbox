@@ -11,8 +11,8 @@ machine that ran them with `npx workflow-toolbox report <runId>`.
 **Workflow Toolbox** is a free Claude Code plugin plus the `@workflow-toolbox`
 npm packages: nine tested orchestration patterns for Claude Code's **Workflow
 tool** (research preview), skills to author, scaffold, and debug workflows, and
-twenty-three runnable example compositions — including a full dev pipeline
-(plan → implement → review-fix).
+twenty-four runnable example compositions — including a full dev pipeline
+(ground → plan → implement → review-fix).
 
 What the journals show:
 
@@ -236,14 +236,19 @@ what happened and whether resuming is safe.
   TypeScript composition into one self-contained `.js` the Workflow tool runs
   directly.
 
-Twenty-three example compositions live in `toolkit/examples/`; their built artifacts
+Twenty-four example compositions live in `toolkit/examples/`; their built artifacts
 (12–75 KB each) are committed under `toolkit/workflows/` and run as-is via
 `scriptPath` — no install, no build. Start with
 [toolkit/README.md](toolkit/README.md). The flagship set is the
 **dev-workflow family** (`dev-plan` → `dev-implement` → `dev-review-fix`, plus
 the autonomous `dev-full` chaining them) — a full development cycle the toolbox
 used to build itself, with the real run numbers:
-[docs/public/dev-workflow.md](docs/public/dev-workflow.md).
+[docs/public/dev-workflow.md](docs/public/dev-workflow.md). `dev-ground` is a
+standalone grounding-first precursor to the family: it checks a card's premises
+against reality — parallel external-research and internal-code-analysis arms, a
+PoC canary sub-stage for what the arms leave unsettled, refute-first
+verification — before any planning begins, and recommends cancel / reframe /
+proceed with a corrective path.
 
 ### The nine patterns at a glance
 
