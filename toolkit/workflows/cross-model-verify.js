@@ -59,6 +59,20 @@ var __wt = (() => {
     return `${DIGEST_PREFIX} ${JSON.stringify(body)}`;
   }
 
+  // ../packages/runtime/src/with-agent-defaults.ts
+  function withAgentDefaults(rt, defaults) {
+    const agent = (prompt, opts) => rt.agent(prompt, { ...defaults, ...opts });
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => rt.phase(title),
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
+  }
+
   // ../packages/runtime/src/prompt-tag.ts
   var PROMPT_TAG_PREFIX = "<!-- wt-meta ";
   function escapeValue(v) {
@@ -660,6 +674,13 @@ ${renderClaim(claim)}`;
         }
         votes = Math.floor(obj["votes"]);
       }
+      let refuteThreshold;
+      if (obj["refuteThreshold"] !== void 0) {
+        if (typeof obj["refuteThreshold"] !== "number" || obj["refuteThreshold"] < 1) {
+          throw new Error('cross-model-verify: "refuteThreshold" must be a number >= 1');
+        }
+        refuteThreshold = Math.floor(obj["refuteThreshold"]);
+      }
       let verifierModel;
       if (obj["verifierModel"] !== void 0) {
         if (typeof obj["verifierModel"] !== "string" || !MODEL_ALIASES.includes(obj["verifierModel"])) {
@@ -672,9 +693,11 @@ ${renderClaim(claim)}`;
       const cfg = parseConfig(obj);
       const effort = cfg.effort ?? null;
       const verifierType = cfg.agentTypes?.["verify"];
-      return { claims, sourceRefs, votes, verifierType, verifierModel, effort };
+      const perAgent = cfg.perAgent ?? null;
+      return { claims, sourceRefs, votes, refuteThreshold, verifierType, verifierModel, effort, perAgent };
     },
-    run: async (rt, input) => {
+    run: async (rt0, input) => {
+      const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0;
       const sourceBlock = renderSourceRefs(input.sourceRefs);
       let resolvedType;
       let probeInfo = null;
@@ -694,6 +717,7 @@ ${sourceBlock}
 CLAIM:
 ${untrusted("CLAIM", c)}`,
         votes: input.votes,
+        ...input.refuteThreshold !== void 0 ? { refuteThreshold: input.refuteThreshold } : {},
         effort: resolveVerifierEffort(input.effort?.["verify"], VERIFY_EFFORT_DEFAULT),
         ...resolvedType !== void 0 ? { verifierType: resolvedType } : {},
         ...input.verifierModel !== void 0 ? { model: input.verifierModel } : {},

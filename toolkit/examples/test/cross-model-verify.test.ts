@@ -156,3 +156,91 @@ describe('cross-model-verify — graceful fallback (probe unavailable)', () => {
     expect(result.confirmed.length).toBe(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// refuteThreshold — exposes adversarialVerification's own knob through the
+// workflow's input contract. Regression-locks the "votes:1 needs
+// refuteThreshold:1" guard interaction that blocked a live single-round-trip
+// smoke of the opencode cross-model bridge (adversarialVerification's default
+// refuteThreshold is 2, which is > a votes:1 config and throws synchronously).
+// ---------------------------------------------------------------------------
+
+describe('cross-model-verify — refuteThreshold', () => {
+  it('rejects a non-number / < 1 refuteThreshold at parseInput', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, { ...BASE_ARGS, refuteThreshold: 0 }),
+    ).rejects.toThrow(/"refuteThreshold" must be a number >= 1/)
+    await expect(
+      wf.run(rt, { ...BASE_ARGS, refuteThreshold: 'two' }),
+    ).rejects.toThrow(/"refuteThreshold" must be a number >= 1/)
+  })
+
+  it('propagates adversarialVerification\'s own guard when refuteThreshold defaults to 2 but votes:1 is requested (the exact shape that starved a live smoke)', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, { ...BASE_ARGS, votes: 1 }),
+    ).rejects.toThrow(/refuteThreshold \(2\) must not be > votes \(1\)/)
+  })
+
+  it('votes:1, refuteThreshold:1 — the cheapest single-round-trip config — runs and tallies a lone refute as REFUTED', async () => {
+    const rt = new FakeRuntime({
+      onAgent: () => ({ verdict: 'refuted', reason: 'counterexample found' }),
+    })
+    const result = (await wf.run(rt, {
+      claims: BASE_ARGS.claims,
+      votes: 1,
+      refuteThreshold: 1,
+    })) as WfResult & { refuted: string[] }
+    expect(result.refuted).toEqual(BASE_ARGS.claims)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// perAgent — Class-A blanket per-agent defaults, wired via withAgentDefaults.
+// This is the actual starvation fix: neither adversarialVerification nor
+// probeAgentType owns a stallMs knob of their own, so a CLI-backed bridge
+// (opencode) with a ~570-600s budget was silently killed by the sandbox's
+// 180s default agent stall timeout. perAgent.stallMs is the existing generic
+// channel (already proven in pr-review.workflow.ts) this workflow was simply
+// never wired to.
+// ---------------------------------------------------------------------------
+
+describe('cross-model-verify — perAgent (withAgentDefaults wiring)', () => {
+  it('threads perAgent.stallMs to the probe AND every verifier vote', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, {
+      ...BASE_ARGS,
+      agentTypes: { verify: 'workflow-toolbox:opencode-verifier' },
+      perAgent: { stallMs: 650000 },
+    })
+    const probe = rt.calls.find((c) => c.opts?.label === 'probeAgentType:probe')!
+    expect(probe.opts?.stallMs).toBe(650000)
+    const verifierCalls = rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:'))
+    expect(verifierCalls.length).toBeGreaterThan(0)
+    for (const c of verifierCalls) expect(c.opts?.stallMs).toBe(650000)
+  })
+
+  it('perAgent.model reaches the probe (it sets no model of its own) but NOT the verifier votes (adversarialVerification always sets its own resolved model — BEST_MODEL by default)', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, {
+      ...BASE_ARGS,
+      agentTypes: { verify: 'workflow-toolbox:opencode-verifier' },
+      perAgent: { model: 'sonnet' },
+    })
+    const probe = rt.calls.find((c) => c.opts?.label === 'probeAgentType:probe')!
+    expect(probe.opts?.model).toBe('sonnet')
+    const verifierCalls = rt.calls.filter((c) =>
+      c.opts?.label?.startsWith('adversarialVerification:verify:'),
+    )
+    expect(verifierCalls.length).toBeGreaterThan(0)
+    for (const c of verifierCalls) expect(c.opts?.model).toBe('opus')
+  })
+
+  it('rejects an unknown perAgent key via the shared parseConfig validation', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, { ...BASE_ARGS, perAgent: { bogus: 1 } }),
+    ).rejects.toThrow(/unknown perAgent key/)
+  })
+})

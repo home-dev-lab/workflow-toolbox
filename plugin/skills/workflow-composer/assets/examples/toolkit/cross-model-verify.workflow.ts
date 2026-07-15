@@ -32,8 +32,8 @@
 //  (4) UNTRUSTED EMBEDDING — caller claims/sources are data, never instructions.
 
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
-import { MODEL_ALIASES } from '@workflow-toolbox/runtime'
-import type { WorkflowRuntime, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
+import { MODEL_ALIASES, withAgentDefaults } from '@workflow-toolbox/runtime'
+import type { WorkflowRuntime, ModelAlias, EffortAlias, AgentDefaults } from '@workflow-toolbox/runtime'
 import { resolveVerifierEffort } from '@workflow-toolbox/std'
 import { adversarialVerification, collectTrail, probeAgentType } from '@workflow-toolbox/patterns'
 import type { VerifiedClaim, AgentTypeProbeReport } from '@workflow-toolbox/patterns'
@@ -58,6 +58,13 @@ export interface CrossModelVerifyInput {
   sourceRefs: string[]
   /** Verifier votes per claim. Default 3. */
   votes: number
+  /** Refutation threshold (refutes needed to kill a claim). undefined →
+   *  adversarialVerification's own default (2), clamped per claim to
+   *  min(refuteThreshold, votes) by the pattern. Must be >= 1; the pattern
+   *  itself rejects refuteThreshold > votes synchronously — pass a value <=
+   *  `votes` (e.g. `votes: 1, refuteThreshold: 1` for the cheapest possible
+   *  single-round-trip smoke of a cross-model bridge). */
+  refuteThreshold: number | undefined
   /** Subagent type to route EVERY verifier through — e.g. 'codex:codex-rescue'
    *  for a GPT cross-model verifier. undefined → the standard same-model verifier.
    *  Requested via the STRUCTURED config envelope: `args.agentTypes.verify`
@@ -74,6 +81,28 @@ export interface CrossModelVerifyInput {
    *  null = no override. Clamped to a 'high' floor via resolveVerifierEffort
    *  — an override may only RAISE it. */
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
+  /** Class-A blanket per-agent defaults (model/effort/agentType/isolation/
+   *  stallMs), parsed by the shared `parseConfig` from `args.perAgent` and
+   *  applied via `withAgentDefaults` to every agent this workflow spawns
+   *  (probe + cache-warm + every verifier vote). null = no override.
+   *
+   *  LOAD-BEARING for CLI-backed cross-model bridges (e.g.
+   *  `workflow-toolbox:opencode-verifier`, which shells out to the `opencode`
+   *  CLI with its own ~570-600s budget): the sandbox's own agent stall
+   *  timeout defaults to 180 000 ms (@workflow-toolbox/runtime AgentOptions.
+   *  stallMs doc), well under that CLI budget, so a slow bridge call is
+   *  killed by the SANDBOX before the CLI itself would time out — the vote
+   *  then resolves null ("unverifiable") even though the CLI ran correctly.
+   *  Neither adversarialVerification nor probeAgentType owns a bespoke
+   *  timeout knob of their own (ground-truthed: they only ever pass `model`/
+   *  `effort`/`agentType` to rt.agent(), never `stallMs`) — this workflow was
+   *  simply never wired to the EXISTING generic `perAgent`/withAgentDefaults
+   *  channel that every sibling workflow (pr-review, dev-plan, …) already
+   *  uses for exactly this class of override. Pass e.g.
+   *  `args: { claims, agentTypes: { verify: 'workflow-toolbox:opencode-verifier' },
+   *  perAgent: { stallMs: 650000 } }` when routing through a CLI-backed
+   *  bridge. */
+  perAgent: AgentDefaults | null
 }
 
 
@@ -135,6 +164,14 @@ export default defineWorkflow({
       votes = Math.floor(obj['votes'])
     }
 
+    let refuteThreshold: number | undefined
+    if (obj['refuteThreshold'] !== undefined) {
+      if (typeof obj['refuteThreshold'] !== 'number' || obj['refuteThreshold'] < 1) {
+        throw new Error('cross-model-verify: "refuteThreshold" must be a number >= 1')
+      }
+      refuteThreshold = Math.floor(obj['refuteThreshold'])
+    }
+
     let verifierModel: ModelAlias | undefined
     if (obj['verifierModel'] !== undefined) {
       if (
@@ -155,11 +192,21 @@ export default defineWorkflow({
     const cfg = parseConfig(obj)
     const effort = cfg.effort ?? null
     const verifierType = cfg.agentTypes?.['verify']
+    const perAgent = cfg.perAgent ?? null
 
-    return { claims, sourceRefs, votes, verifierType, verifierModel, effort }
+    return { claims, sourceRefs, votes, refuteThreshold, verifierType, verifierModel, effort, perAgent }
   },
 
-  run: async (rt: WorkflowRuntime, input: CrossModelVerifyInput) => {
+  run: async (rt0: WorkflowRuntime, input: CrossModelVerifyInput) => {
+    // Class-A blanket per-agent defaults (see CrossModelVerifyInput.perAgent
+    // doc comment) — reaches EVERY agent this workflow spawns downstream
+    // (probe + cache-warm + every verifier vote) since parallel()/pipeline()
+    // close over this wrapped rt's agent(). Per-call opts still win (e.g.
+    // adversarialVerification always sets `model` explicitly, so perAgent.model
+    // never overrides a verifier's resolved model — only knobs the callee does
+    // NOT set itself, like `stallMs`, actually flow through).
+    const rt: WorkflowRuntime = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0
+
     const sourceBlock = renderSourceRefs(input.sourceRefs)
 
     // Probe the external verifier ONCE before routing any verifier through it.
@@ -188,6 +235,7 @@ export default defineWorkflow({
         `\n\n${sourceBlock}\n\n` +
         `CLAIM:\n${untrusted('CLAIM', c)}`,
       votes: input.votes,
+      ...(input.refuteThreshold !== undefined ? { refuteThreshold: input.refuteThreshold } : {}),
       effort: resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT),
       ...(resolvedType !== undefined ? { verifierType: resolvedType } : {}),
       ...(input.verifierModel !== undefined ? { model: input.verifierModel } : {}),
