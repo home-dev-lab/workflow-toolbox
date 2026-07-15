@@ -183,6 +183,15 @@ These are the rules the library follows; follow them in your own `run` body:
    When it's not obvious which way a workflow should go, ASK: does latency or
    token/cache cost matter more here? Set `cacheWarm: false` on that call if the
    answer is latency.
+8. **Fence caller-supplied text as data, not instructions.** Wrap any caller text
+   embedded in a prompt with `untrusted(label, text)` (`@workflow-toolbox/patterns`)
+   rather than splicing it in raw — it mangles any `<<<UNTRUSTED`/`<<<END`/`>>>`
+   token already in the text so it cannot forge its own closing fence. Render a
+   caller's source-file list with `renderSourceRefs(refs, opts)` from the same
+   package; `opts.emptyNote`/`opts.leadIn` are your prompt's own wording, not the
+   helper's. Import it — every shipped composition that embeds caller text
+   (`independent-analysis`, `cross-model-verify`) does this at every embedding
+   site instead of hand-rolling a copy.
 
 ### Launch-time configuration — tune model/effort/agentType without editing source
 

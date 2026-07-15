@@ -666,7 +666,7 @@ before relying on a number:
    verbatim snippet per claim and embed it in `renderClaim` (−19% to −25%
    per verifier across two measured runs, exploratory tail gone; stacked
    with severity-gated votes the verification stage halved). Contracts:
-   untrusted-delimited at EVERY
+   fenced with `untrusted()` (`@workflow-toolbox/patterns`) at EVERY
    embedding site, capped in code, never a substitute for on-disk
    re-derivation, and required-with-empty rather than optional (models omit
    optional fields under output pressure).

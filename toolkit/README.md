@@ -392,6 +392,24 @@ what to do with an unmappable path (warn-and-keep, throw, pass through) stays
 a caller decision, which is exactly why three call sites with three different
 terminal policies share it.
 
+Untrusted-text embedding: `untrusted(label, text)` and `renderSourceRefs(refs, opts)`
+(`@workflow-toolbox/patterns`) are the fencing convention promoted from the same
+dev-workflow family. `untrusted()` wraps caller-supplied text in a labelled
+`<<<UNTRUSTED …>>>` / `<<<END …>>>` banner and mangles any embedded
+`<<<UNTRUSTED`, `<<<END`, or `>>>` token to `[delim]`, so quoted text can never
+forge its own closing fence — the reason it is a helper and not a template
+literal re-typed at every embedding site. `renderSourceRefs()` renders a
+caller's source-file list as a two-space-indented bullet list; its two prose
+strings — `opts.emptyNote` (the no-refs case) and `opts.leadIn` (the sentence
+above the bullets), typed as `RenderSourceRefsOptions` — are CALLER POLICY, not
+mechanism: `independent-analysis` grounds "every claim" while
+`cross-model-verify` grounds "the verdict", the same mechanism/policy split
+`relativizeUnder`'s null contract teaches above; both are the shipped worked
+examples for this helper. Note: `untrusted` already reads as ordinary English
+prose elsewhere in these docs, so that half of the docs-contract gate cannot by
+itself prove this paragraph exists — it is written for the reader, not the
+test; `renderSourceRefs` is the name the gate actually holds accountable.
+
 ## Trust no agent's self-report
 
 Agents can die mid-reasoning at their context limit — and their last
