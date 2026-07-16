@@ -34,6 +34,11 @@ The reference files carry the deep material — read them when a step points you
 - `references/api-reference.md` — every global, option, cap, and constant, each
   tagged with its evidence tier (documented / observed / verified).
 - `references/patterns.md` — the nine orchestration patterns as copy-paste recipes.
+- `references/premise-quality.md` — the authoring doctrine: how the quality of what
+  you feed your agents (evidence, framing, complete source listings, a named
+  "could-not-verify" out) caps what a fan-out can return, plus the failure modes that
+  silently degrade agent output. Read it before writing the prompts, schemas, or
+  `sourceRefs` for any analysis, audit, verification, or decision workflow.
 - `references/orchestrator-pipelines.md` — human-gated multi-workflow jobs (L3).
 - `references/shipped-compositions.md` — the 24 shipped compositions + operational lessons.
 - `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
@@ -426,7 +431,10 @@ Launch via the Workflow tool, then keep two non-negotiable habits:
    framing to kill plausible-but-wrong findings; (c) keep each agent's scope small
    enough to finish well inside its window — oversized scopes are the root cause of
    mid-reasoning death; (d) always check `WorkflowOutput.error` after launching, and
-   resume with `resumeFromRunId` instead of re-running finished work.
+   resume with `resumeFromRunId` instead of re-running finished work. See
+   `references/premise-quality.md` for the deeper doctrine — bounding every field
+   against the model's output ceiling, giving agents a named "could-not-verify" out,
+   and why premise quality (not agent count) caps what a fan-out can return.
 
 ## Worked example: the `pr-review` shape
 
@@ -440,6 +448,9 @@ review-like workflow.
 - `references/api-reference.md` — the evidence-tiered runtime reference: every global,
   option, cap, and failure mode, each tagged documented / observed / verified.
 - `references/patterns.md` — the nine orchestration patterns as copy-paste recipes.
+- `references/premise-quality.md` — premise quality caps the fan-out result: evidence,
+  complete source listings, neutral framing, named could-not-verify outs, and the
+  output failure modes to bound against.
 - `references/orchestrator-pipelines.md` — human-gated multi-workflow jobs (L3).
 - `references/shipped-compositions.md` — the 24 shipped compositions + operational lessons.
 - `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
