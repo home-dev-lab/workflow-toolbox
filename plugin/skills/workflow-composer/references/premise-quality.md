@@ -60,6 +60,13 @@ only reliable channel is what you put in the prompt: the task brief, `context`,
 for the agent's correctness, **write it into the prompt or pass the file** — never
 assume the agent "already knows" it.
 
+This bites hardest on a cross-family bridge (`codex:codex-rescue`,
+`workflow-toolbox:opencode-verifier`): it has no access to this project's `CLAUDE.md`,
+rules, or memory at all, ever — not even the reduced ambient text a same-family
+subagent gets. See `references/model-and-agent-routing.md`'s "Cross-family routing"
+section for what to forward to a bridge (and what to deliberately withhold, so it
+stays decorrelated).
+
 ## Failure modes that silently degrade agent output
 
 These are environment-independent and bite every fan-out. Defend against each by

@@ -144,6 +144,33 @@
       always falls back to Claude. The probe makes that safe and visible, but if the
       user WANTS the external verdict, tell them to launch via the in-session Workflow
       tool.
+    - **Brief the bridge like any other agent — it gets NO ambient context by
+      default, only what your prompt carries.** `codex:codex-rescue` is a thin
+      forwarding wrapper (`tools: Bash` only, explicitly instructed not to inspect the
+      repository itself) that shells out to the Codex companion runtime with your task
+      text passed through near-verbatim — it does not read `CLAUDE.md`, the rules
+      corpus, or the memory index, and neither the wrapper nor the companion script
+      injects any of that on your behalf. `workflow-toolbox:opencode-verifier` is the
+      same shape and already does this right: its own procedure inlines every
+      referenced file's full content into the task before invoking the CLI, because a
+      pointer the bridge "should go read" is unreliable (its own sandboxed CLI agent
+      cannot always reach an arbitrary repo path). So the *same* `sourceRefs` /
+      `context` / `assumptions` channel this reference already tells you to use for
+      any `agent()` call is the one and only lever here too — there is no
+      codex/opencode-specific injection mechanism to reach for beyond it.
+      **Resolve the decorrelation-vs-context tension at the CONTENT level, not the
+      routing level:** forward the narrow, task-load-bearing facts the bridge cannot
+      do the job without (the specific files/diff under review, the specific
+      invariant or spec the task must satisfy) — the exact "factual sub-question"
+      material this reference already tells you to ground via `sourceRefs` for any
+      agent. Do NOT bulk-forward the ambient project frame (the full `CLAUDE.md`,
+      the rules corpus, the memory index) — that re-correlates the bridge's judgment
+      with the launching session's own priors and erases the reason to route there
+      in the first place. A repo-root `AGENTS.md` that the external `codex` CLI would
+      discover natively (independent of any per-call prompt, the same way it reads
+      `CLAUDE.md`) is a separate, so-far-undecided lever — no such file exists in this
+      repo today, and deciding how much of the ambient frame it should mirror is a
+      standing scope call, not something a single call's brief resolves.
 - **`agentType` is ALSO a capability FENCE — and capability denial beats instruction.** A
   leaf `agent()` receives the FULL ambient context as injected TEXT (every rule + the memory
   index + the skill listing — verified), so a leaf that HAS `Write`/`Edit`/`Bash`/an MCP can
