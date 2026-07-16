@@ -2081,3 +2081,117 @@ describe('dev-implement Tier 0 in-band seam creation', () => {
     ).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Test: seam SNAPSHOT semantics — TEST-LOCKS from review round wf_191fd3ae-df6.
+// Each red call's `seams` array is the writer's FULL declaration of the seams
+// presently in the tree: a wider re-declaration REPLACES the stale entry (the
+// cap must see the growth), a dropped seam is RETRACTED (an honest
+// revert-then-block is not a contradiction), entries are keyed by `path`
+// (kind is a model-assigned label, not an identity), and an omitted field
+// (old cached replays) leaves the previous snapshot untouched.
+// ---------------------------------------------------------------------------
+
+describe('dev-implement Tier 0 seam snapshot semantics (review wf_191fd3ae-df6 locks)', () => {
+  it('TEST-LOCK: a seam honestly re-declared WIDER on retry updates the snapshot and trips the cap', async () => {
+    let calls = 0
+    const rt = makeRuntime({
+      red: (p) => {
+        if (!p.includes('Task T1:')) return { written: true, testFiles: ['test/cli.test.ts'], note: 'failing tests' }
+        calls++
+        return calls === 1
+          ? { written: false, testFiles: [], note: 'seam started, tests incomplete', seams: [SEAM] }
+          : {
+              written: true,
+              testFiles: ['test/validate.test.ts'],
+              note: 'found more callers on the second pass',
+              seams: [{ ...SEAM, filesTouched: ['src/cli.ts', 'src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'] }],
+            }
+      },
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('blocked')
+    expect(t1.verdict).toBe('no-test-seam')
+    expect(t1.note).toMatch(/exceed|cap|bound/i)
+    // The snapshot carries the WIDER declaration, never the stale first one.
+    expect(t1.seams![0]!.filesTouched).toHaveLength(5)
+  })
+
+  it('TEST-LOCK: an honest revert-then-block retracts the seam — no contradiction warning, no seams on the report', async () => {
+    let calls = 0
+    const rt = makeRuntime({
+      red: (p) => {
+        if (!p.includes('Task T1:')) return { written: true, testFiles: ['test/cli.test.ts'], note: 'failing tests' }
+        calls++
+        return calls === 1
+          ? { written: false, testFiles: [], note: 'seam attempt, still trying', seams: [SEAM] }
+          : {
+              written: false,
+              testFiles: [],
+              note: 'the seam is a judgment call after all — seam edits reverted',
+              verdict: 'no-test-seam',
+              seams: [],
+            }
+      },
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('blocked')
+    expect(t1.verdict).toBe('no-test-seam')
+    expect(t1.seams).toBeUndefined()
+    expect(result.seamsCreated).toBe(0)
+    expect(
+      result.warnings.some((w: string) => /leftover|must be reverted|reverted before blocking/i.test(w)),
+    ).toBe(false)
+  })
+
+  it('TEST-LOCK: two same-path declarations in ONE response merge into one seam with filesTouched unioned', async () => {
+    const rt = makeRuntime({
+      red: (p) =>
+        p.includes('Task T1:')
+          ? {
+              written: true,
+              testFiles: ['test/validate.test.ts'],
+              note: 'seam + tests',
+              seams: [
+                { ...SEAM, filesTouched: ['src/cli.ts'] },
+                { ...SEAM, kind: 'other-mechanical', filesTouched: ['src/main.ts'] },
+              ],
+            }
+          : { written: true, testFiles: ['test/cli.test.ts'], note: 'failing tests' },
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('succeeded')
+    expect(t1.seams).toHaveLength(1)
+    expect([...t1.seams![0]!.filesTouched].sort()).toEqual(['src/cli.ts', 'src/main.ts'])
+    expect(result.seamsCreated).toBe(1)
+  })
+
+  it('DRIFT-LOCK: the cap the prompt announces IS the cap the code enforces', async () => {
+    const probe = makeRuntime()
+    await wf.run(probe, JSON.stringify(VALID_INPUT))
+    const red = probe.calls.find((c) => c.opts?.label?.startsWith('dev-implement:red:'))!
+    const m = red.prompt.match(/at most (\d+) files/)
+    expect(m).not.toBeNull()
+    const cap = Number(m![1])
+
+    const files = (n: number) => Array.from({ length: n }, (_, i) => `src/f${i}.ts`)
+    const runWith = async (n: number) => {
+      const rt = makeRuntime({
+        red: (p) =>
+          p.includes('Task T1:')
+            ? { written: true, testFiles: ['test/validate.test.ts'], note: 'seam + tests', seams: [{ ...SEAM, filesTouched: files(n) }] }
+            : { written: true, testFiles: ['test/cli.test.ts'], note: 'failing tests' },
+      })
+      const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+      return result.tasks.find((t: { id: string }) => t.id === 'T1')!.status
+    }
+    expect(await runWith(cap)).toBe('succeeded')
+    expect(await runWith(cap + 1)).toBe('blocked')
+  })
+})

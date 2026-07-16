@@ -471,6 +471,21 @@ ${prompt}` : prompt;
     required: ["written", "testFiles", "note"],
     additionalProperties: false
   };
+  function mergeSeamSnapshot(prior, declared) {
+    if (declared === void 0) return prior;
+    const byPath = /* @__PURE__ */ new Map();
+    for (const s of declared) {
+      const existing = byPath.get(s.path);
+      byPath.set(
+        s.path,
+        existing === void 0 ? s : { ...s, filesTouched: [.../* @__PURE__ */ new Set([...existing.filesTouched, ...s.filesTouched])] }
+      );
+    }
+    return [...byPath.values()];
+  }
+  function seamFilesUnion(seams) {
+    return new Set(seams.flatMap((s) => s.filesTouched));
+  }
   var GREEN_RESULT_SCHEMA = {
     type: "object",
     properties: {
@@ -933,14 +948,14 @@ Done criteria: ${JSON.stringify(task.doneCriteria)}
             `You are the TDD test-writer for one task. Write the failing tests first \u2014 do NOT implement the task's production behavior (the ONLY allowed production edit is the bounded mechanical test seam described below).
 ` + taskBlock + `Create/extend the test files per the test plan and confirm the new tests FAIL for the right reason \u2014 when your test runner supports running a subset, confirm on just the new test files (cheaper feedback), then run ${ctx.testCommand} in full once before reporting (the rest of the suite must still collect and pass).
 If the test plan says there is nothing to write (a docs-only or no-test task), that is a SUCCESS, not a failure: return written: true with an empty testFiles list and say so in the note \u2014 the done criteria will still be verified by the checker.
-MECHANICAL seam escape valve: when writing the tests needs only a MECHANICAL, behavior-preserving seam in production code \u2014 extracting a value into a defaulted parameter, making a dependency injectable with the current behavior as the default \u2014 CREATE the seam yourself instead of blocking, under HARD bounds: touch at most 4 files in total (the seam file plus its callers), enumerate ALL callers with a search (grep/rg) and update every one, then re-run ${ctx.testCommand} in full to confirm the suite still passes. DECLARE every seam you created in the "seams" field \u2014 the exact search string you used to enumerate callers is part of the declaration; an undeclared seam is a review failure. If the seam would exceed 4 files, requires design judgment, or changes behavior, do NOT create it: return the "no-test-seam" verdict instead, and REVERT any seam edits you already made before returning it \u2014 declare only seams that REMAIN in the tree.
+MECHANICAL seam escape valve: when writing the tests needs only a MECHANICAL, behavior-preserving seam in production code \u2014 extracting a value into a defaulted parameter, making a dependency injectable with the current behavior as the default \u2014 CREATE the seam yourself instead of blocking, under HARD bounds: touch at most ${SEAM_FILES_CAP} files in total (the seam file plus its callers), enumerate ALL callers with a search (grep/rg) and update every one, then re-run ${ctx.testCommand} in full to confirm the suite still passes. DECLARE every seam you created in the "seams" field \u2014 the exact search string you used to enumerate callers is part of the declaration; an undeclared seam is a review failure. If the seam would exceed ${SEAM_FILES_CAP} files, requires design judgment, or changes behavior, do NOT create it: return the "no-test-seam" verdict instead, and REVERT any seam edits you already made before returning it \u2014 declare only seams that REMAIN in the tree.
 If you CANNOT deliver the failing tests, do NOT force it: return written: false with the matching verdict \u2014 these are accepted first-class outcomes, not failures:
 - "no-test-seam": testing this requires a NON-mechanical production change (a new abstraction, a judgment-call refactor, or a seam beyond the bounds above). That is a design decision \u2014 do NOT fabricate a speculative seam to satisfy this pipeline; name the missing seam in the note.
 - "premise-falsified": what the code actually does CONTRADICTS the task's premise (e.g. the behavior the test plan assumes does not exist or already differs) \u2014 put the contradicting evidence in the note.
 - "repro-hard": reproducing the target behavior needs a real investigation beyond this task \u2014 describe in the note what you tried and what the repro design requires.
 - "none" (or omit the field): any other, transient reason \u2014 the loop will retry.
 Before returning a blocking verdict, remove any probe files you created.
-Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was written>", "verdict": "none|no-test-seam|premise-falsified|repro-hard", "seams": [{ "kind": "parameter-extraction|default-injection|other-mechanical", "path": "<seam file>", "filesTouched": ["<every file edited for this seam>"], "callersSearch": "<the exact search used to enumerate callers>", "description": "<what the seam is and why it is behavior-preserving>" }] } \u2014 "seams" is [] (or omitted) when you created none`,
+Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was written>", "verdict": "none|no-test-seam|premise-falsified|repro-hard", "seams": [{ "kind": "parameter-extraction|default-injection|other-mechanical", "path": "<seam file>", "filesTouched": ["<every file edited for this seam>"], "callersSearch": "<the exact search used to enumerate callers>", "description": "<what the seam is and why it is behavior-preserving>" }] } \u2014 "seams" is your FULL current declaration: list EVERY seam presently in the tree (re-list ones you declared on an earlier attempt that remain, with their up-to-date filesTouched; drop ones you reverted); [] when none remain`,
             {
               schema: RED_RESULT_SCHEMA,
               label: `dev-implement:red:${task.id}`,
@@ -953,14 +968,7 @@ Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was writ
             return { state: next, done: false };
           }
           const verdict = red.verdict ?? "none";
-          const declared = red.seams ?? [];
-          if (declared.length > 0) {
-            const seen = new Set(next.seams.map((s) => `${s.kind}|${s.path}`));
-            next.seams = [
-              ...next.seams,
-              ...declared.filter((s) => !seen.has(`${s.kind}|${s.path}`))
-            ];
-          }
+          next.seams = mergeSeamSnapshot(next.seams, red.seams);
           if (!red.written && verdict !== "none") {
             if (next.seams.length > 0) {
               warn(
@@ -973,7 +981,7 @@ Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was writ
             next.lastFailure = red.note;
             return { state: next, done: true };
           }
-          const seamFiles = new Set(next.seams.flatMap((s) => s.filesTouched));
+          const seamFiles = seamFilesUnion(next.seams);
           if (seamFiles.size > SEAM_FILES_CAP) {
             next.verdict = "no-test-seam";
             next.lastFailure = `in-band seam creation exceeded the bounds: ${seamFiles.size} files touched > cap ${SEAM_FILES_CAP} (${[...seamFiles].join(", ")}) \u2014 a seam this wide is a design decision, not a mechanical edit`;
@@ -1074,7 +1082,7 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
       warn(
         rt,
         warnings,
-        `dev-implement: task ${t.id} created ${t.seams.length} in-band mechanical seam(s) \u2014 REVIEW them: verify each is behavior-preserving and that every caller was updated (${t.seams.map((s) => `${s.kind} in ${s.path}; callers via ${s.callersSearch}`).join(" | ")})`
+        `dev-implement: task ${t.id} created ${t.seams.length} in-band mechanical seam(s) \u2014 REVIEW them: the declaration is the writer's SELF-REPORT, so verify each seam is behavior-preserving, that every caller was updated, and that the actual diff matches the declared filesTouched (${t.seams.map((s) => `${s.kind} in ${s.path}; callers via ${s.callersSearch}`).join(" | ")})`
       );
     }
   }

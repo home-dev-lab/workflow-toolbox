@@ -59,7 +59,13 @@
 //   task. Bounds exceeded → the in-code guard falls back to the CLASSIC
 //   'no-test-seam' verdict (pre-feature behavior is the safe fallback).
 //   'no-test-seam' remains the verdict for JUDGMENT seams (new abstractions,
-//   design refactors) — those stay a plan-owner decision.
+//   design refactors) — those stay a plan-owner decision. The declaration
+//   uses SNAPSHOT semantics (mergeSeamSnapshot): each red call declares
+//   every seam presently in the tree — wider re-declarations replace stale
+//   entries, reverted seams are retracted, an omitted field keeps the prior
+//   snapshot (cached replays). The declaration is the writer's SELF-REPORT:
+//   the cap bounds what is declared, and the review lens is told to
+//   cross-check the actual diff against it.
 //
 //   Phase 'Report' — deterministic tallying IN CODE (no agent).
 //
@@ -289,6 +295,46 @@ type RedResult = FromSchema<typeof RED_RESULT_SCHEMA>
 
 /** One Tier 0 in-band mechanical seam declaration (see RED_RESULT_SCHEMA.seams). */
 type SeamDeclaration = NonNullable<RedResult['seams']>[number]
+
+// ---------------------------------------------------------------------------
+// Tier 0 seam bookkeeping — pure, so the semantics are testable directly.
+//
+// SNAPSHOT semantics (hardened after review round wf_191fd3ae-df6 refuted the
+// earlier accumulate-only shape): each red call's `seams` array is the
+// writer's FULL declaration of the seams presently in the tree —
+//   - a re-declaration of the same seam with a WIDER filesTouched REPLACES
+//     the stale entry, so the SEAM_FILES_CAP guard sees the growth;
+//   - a seam absent from the new declaration is RETRACTED (the prompt tells
+//     the writer to revert abandoned seams — an honest revert-then-block is
+//     NOT a contradiction and must not leave a phantom forensics record);
+//   - an OMITTED field (old cached replays, pre-feature stubs) leaves the
+//     previous snapshot untouched;
+//   - within one declaration, entries are keyed by `path` (the physical seam
+//     location — `kind` is a model-assigned label, not an identity) and
+//     duplicates merge by unioning filesTouched.
+// ---------------------------------------------------------------------------
+function mergeSeamSnapshot(
+  prior: SeamDeclaration[],
+  declared: SeamDeclaration[] | undefined,
+): SeamDeclaration[] {
+  if (declared === undefined) return prior
+  const byPath = new Map<string, SeamDeclaration>()
+  for (const s of declared) {
+    const existing = byPath.get(s.path)
+    byPath.set(
+      s.path,
+      existing === undefined
+        ? s
+        : { ...s, filesTouched: [...new Set([...existing.filesTouched, ...s.filesTouched])] },
+    )
+  }
+  return [...byPath.values()]
+}
+
+/** The union of files the declared seams touch — what SEAM_FILES_CAP bounds. */
+function seamFilesUnion(seams: SeamDeclaration[]): Set<string> {
+  return new Set(seams.flatMap((s) => s.filesTouched))
+}
 
 // Green stage output — the implementer's self-report (NEVER trusted for green)
 const GREEN_RESULT_SCHEMA = {
@@ -1161,14 +1207,14 @@ async function runTaskTddLoop(
           `behavior-preserving seam in production code — extracting a value into a defaulted ` +
           `parameter, making a dependency injectable with the current behavior as the default — ` +
           `CREATE the seam yourself instead of blocking, under HARD bounds: touch at most ` +
-          `4 files in total (the seam file plus its callers), enumerate ALL callers with a ` +
-          `search (grep/rg) and update every one, then re-run ${ctx.testCommand} in full to ` +
-          `confirm the suite still passes. DECLARE every seam you created in the "seams" ` +
-          `field — the exact search string you used to enumerate callers is part of the ` +
-          `declaration; an undeclared seam is a review failure. If the seam would exceed ` +
-          `4 files, requires design judgment, or changes behavior, do NOT create it: return ` +
-          `the "no-test-seam" verdict instead, and REVERT any seam edits you already made ` +
-          `before returning it — declare only seams that REMAIN in the tree.\n` +
+          `${SEAM_FILES_CAP} files in total (the seam file plus its callers), enumerate ALL ` +
+          `callers with a search (grep/rg) and update every one, then re-run ${ctx.testCommand} ` +
+          `in full to confirm the suite still passes. DECLARE every seam you created in the ` +
+          `"seams" field — the exact search string you used to enumerate callers is part of ` +
+          `the declaration; an undeclared seam is a review failure. If the seam would exceed ` +
+          `${SEAM_FILES_CAP} files, requires design judgment, or changes behavior, do NOT ` +
+          `create it: return the "no-test-seam" verdict instead, and REVERT any seam edits ` +
+          `you already made before returning it — declare only seams that REMAIN in the tree.\n` +
           `If you CANNOT deliver the failing tests, do NOT force it: return written: false ` +
           `with the matching verdict — these are accepted first-class outcomes, not failures:\n` +
           `- "no-test-seam": testing this requires a NON-mechanical production change (a new ` +
@@ -1187,7 +1233,9 @@ async function runTaskTddLoop(
           `"parameter-extraction|default-injection|other-mechanical", "path": "<seam file>", ` +
           `"filesTouched": ["<every file edited for this seam>"], "callersSearch": "<the exact ` +
           `search used to enumerate callers>", "description": "<what the seam is and why it is ` +
-          `behavior-preserving>" }] } — "seams" is [] (or omitted) when you created none`,
+          `behavior-preserving>" }] } — "seams" is your FULL current declaration: list EVERY ` +
+          `seam presently in the tree (re-list ones you declared on an earlier attempt that ` +
+          `remain, with their up-to-date filesTouched; drop ones you reverted); [] when none remain`,
           {
             schema: RED_RESULT_SCHEMA,
             label: `dev-implement:red:${task.id}`,
@@ -1202,25 +1250,19 @@ async function runTaskTddLoop(
         // Normalize: both fields are optional (cached pre-feature replays
         // lack them) and 'none' is the explicit retry escape valve.
         const verdict = red.verdict ?? 'none'
-        // Tier 0: accumulate seam declarations FIRST, on EVERY path — the
-        // tree already holds whatever the writer created whether or not the
-        // tests were finished, and a red retry may re-declare the seam it
-        // already made (dedup by kind|path).
-        const declared = red.seams ?? []
-        if (declared.length > 0) {
-          const seen = new Set(next.seams.map((s) => `${s.kind}|${s.path}`))
-          next.seams = [
-            ...next.seams,
-            ...declared.filter((s) => !seen.has(`${s.kind}|${s.path}`)),
-          ]
-        }
+        // Tier 0: apply this call's seam SNAPSHOT before any routing — the
+        // cap and the contradiction check must judge the tree as this call
+        // declared it (see mergeSeamSnapshot for the replace/retract rules).
+        next.seams = mergeSeamSnapshot(next.seams, red.seams)
         if (!red.written && verdict !== 'none') {
           // Named blocking verdict — a first-class ROUTABLE exit, never a
           // retry: end the loop NOW (no iteration burn) with green false.
           if (next.seams.length > 0) {
-            // Contradiction: the writer was told to REVERT seam edits before
-            // blocking and declare only seams that remain — surface it, keep
-            // the declarations for forensics (the tree may hold leftovers).
+            // GENUINE contradiction under snapshot semantics: the writer
+            // blocks while declaring seams still present in the tree — it
+            // was told to revert seam edits before blocking (an honest
+            // revert retracts them from the snapshot and does not warn).
+            // Surface it; keep the declarations for forensics.
             warn(
               rtBody,
               warnings,
@@ -1235,11 +1277,11 @@ async function runTaskTddLoop(
           return { state: next, done: true }
         }
         // Tier 0 bounds guard (IN CODE, deliberately not in the schema): the
-        // union of files across the task's accumulated seams must stay within
+        // union of files across the task's declared seams must stay within
         // SEAM_FILES_CAP. Exceeded → fall back to the CLASSIC 'no-test-seam'
         // verdict — a seam this wide is a design decision, and the
         // pre-feature behavior is the safe fallback.
-        const seamFiles = new Set(next.seams.flatMap((s) => s.filesTouched))
+        const seamFiles = seamFilesUnion(next.seams)
         if (seamFiles.size > SEAM_FILES_CAP) {
           next.verdict = 'no-test-seam'
           next.lastFailure =
@@ -1379,7 +1421,9 @@ function warnSeams(rt: WorkflowRuntime, warnings: string[], reportTasks: ReportT
       rt,
       warnings,
       `dev-implement: task ${t.id} created ${t.seams.length} in-band mechanical seam(s) — ` +
-      `REVIEW them: verify each is behavior-preserving and that every caller was updated ` +
+      `REVIEW them: the declaration is the writer's SELF-REPORT, so verify each seam is ` +
+      `behavior-preserving, that every caller was updated, and that the actual diff matches ` +
+      `the declared filesTouched ` +
       `(${t.seams.map((s) => `${s.kind} in ${s.path}; callers via ${s.callersSearch}`).join(' | ')})`,
     )
   }
