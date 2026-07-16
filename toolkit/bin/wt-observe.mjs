@@ -202,6 +202,15 @@ function clearAllLaunchEnableRecords(stateRoot) {
   }
 }
 
+// packages/debugger/src/launch-body.ts
+function buildLaunchBody(script, args, requesterCwd) {
+  return {
+    script,
+    ...args !== void 0 ? { args } : {},
+    ...requesterCwd.trim().length > 0 ? { requesterCwd } : {}
+  };
+}
+
 // packages/debugger/src/observe-identity.ts
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -959,7 +968,7 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
   const { prefix, label } = await resolveSourcePrefix(port, token, health, sourceFlag);
   if (label !== "") process.stderr.write(`launching under source ${label}
 `);
-  const res = await api(port, token, `${prefix}/api/launch`, { method: "POST", body: JSON.stringify({ script, ...args !== void 0 ? { args } : {} }) }, 3e4);
+  const res = await api(port, token, `${prefix}/api/launch`, { method: "POST", body: JSON.stringify(buildLaunchBody(script, args, process.cwd())) }, 3e4);
   const body = await res.json().catch(() => null);
   if (!res.ok) {
     const code = typeof body === "object" && body !== null ? body["code"] : void 0;

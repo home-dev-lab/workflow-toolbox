@@ -68,6 +68,7 @@ import {
   type ObservePidfile,
 } from './observe-lifecycle.js'
 import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
+import { buildLaunchBody } from './launch-body.js'
 import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
 import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
 import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode, AWAIT_SOURCE_UNRESOLVED_EXIT_CODE } from './observe-await.js'
@@ -793,7 +794,10 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
   const { port, token, health } = await requireOwnedServer(ctx)
   const { prefix, label } = await resolveSourcePrefix(port, token, health, sourceFlag)
   if (label !== '') process.stderr.write(`launching under source ${label}\n`)
-  const res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify({ script, ...(args !== undefined ? { args } : {}) }) }, 30_000)
+  // requesterCwd (card #1820589984604750931): the requesting process's cwd rides along so
+  // the server attributes the delegated run to THIS project's timeline bucket (old servers
+  // ignore the unknown field; buildLaunchBody omits a degenerate cwd — see launch-body.ts).
+  const res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify(buildLaunchBody(script, args, process.cwd())) }, 30_000)
   const body: unknown = await res.json().catch(() => null)
   if (!res.ok) {
     const code = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['code'] : undefined
