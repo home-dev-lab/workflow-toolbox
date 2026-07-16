@@ -55,6 +55,10 @@ The **dev-workflow family** — the most advanced compositions (multi-artifact
   artifact, sequential or worktree-parallel; the test-writer can end a task with a
   named blocking verdict (`no-test-seam` / `premise-falsified` / `repro-hard`) that
   reports as a routable `blocked` outcome instead of a silent retry-until-failed.
+  Mechanical, behavior-preserving seams (parameter extraction, default injection)
+  it creates ITSELF in-band under hard bounds (≤4 files, all callers enumerated and
+  updated) and declares structurally — per-task `seams` + a `seamsCreated` tally +
+  a REVIEW warning; beyond the bounds it falls back to `no-test-seam`.
 - `dev-full.workflow.ts` — chains the three children via `rt.workflow()` over their
   committed artifacts, converting human gates into code gates.
 

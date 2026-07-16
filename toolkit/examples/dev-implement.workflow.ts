@@ -47,6 +47,20 @@
 //   IMMEDIATELY (no iteration burn) and reports status 'blocked' with the
 //   verdict and a routing note.
 //
+//   TIER 0 — IN-BAND MECHANICAL SEAMS (bounded escape valve on 'no-test-seam'):
+//   when the missing seam is MECHANICAL and behavior-preserving (parameter
+//   extraction, default injection), the test-writer creates it ITSELF instead
+//   of blocking — the report→arbiter→re-plan→re-run round-trip on a mechanical
+//   seam wastes tokens and time. Hard bounds: at most SEAM_FILES_CAP files
+//   touched (the seam file plus its callers), ALL callers enumerated via a
+//   DECLARED search and updated, the full suite re-run, and a STRUCTURED
+//   declaration in the result ('seams') that flows into the report (per-task
+//   'seams' + the 'seamsCreated' tally) plus one REVIEW warning per creating
+//   task. Bounds exceeded → the in-code guard falls back to the CLASSIC
+//   'no-test-seam' verdict (pre-feature behavior is the safe fallback).
+//   'no-test-seam' remains the verdict for JUDGMENT seams (new abstractions,
+//   design refactors) — those stay a plan-owner decision.
+//
 //   Phase 'Report' — deterministic tallying IN CODE (no agent).
 //
 // RESUME HINT:
@@ -208,6 +222,17 @@ type ResolvedDevImplementInput = Omit<DevImplementInput, 'artifact' | 'artifactP
 // JSON Schemas (as-const + FromSchema for type safety at consumed boundaries)
 // ---------------------------------------------------------------------------
 
+// Hard bound on Tier 0 in-band seam creation: the union of files a task's
+// declared mechanical seams touch (the seam file plus every updated caller).
+// Beyond this the change is no longer "mechanical" enough to decide in-band —
+// the guard falls back to the classic 'no-test-seam' verdict (a design
+// decision for the plan owner), which is exactly the pre-feature behavior.
+// 4 = the seam's own file + a small caller set: a parameter extraction or
+// default injection whose callers spread over more files has a blast radius
+// that deserves the design review, not an in-band edit. Mirrored as the
+// literal "4" in the red prompt and meta.description — keep them in sync.
+const SEAM_FILES_CAP = 4
+
 // Red stage output — the test-writer's report. `verdict` is DELIBERATELY
 // optional (normalized to 'none' in code): resumed runs replay cached
 // pre-verdict results without the field, and a required enum would pressure
@@ -215,6 +240,15 @@ type ResolvedDevImplementInput = Omit<DevImplementInput, 'artifact' | 'artifactP
 // honest answer (the structured-output capitulation failure mode). 'none'
 // keeps written:false on the warn+retry path; the three named verdicts are
 // accepted first-class exits that STOP the task loop.
+//
+// `seams` (Tier 0, card #1820492803109553162) is optional for the SAME
+// replay reason and normalized to [] in code. Its per-field bounds are the
+// structured-output anti-capitulation defenses (short fields first in the
+// prompt template, min/maxLength so junk and runaways become actionable
+// rejections); the operative ≤SEAM_FILES_CAP files bound is enforced IN CODE,
+// not by the schema — a schema rejection here would pressure the writer to
+// UNDER-DECLARE files, while the code guard degrades safely to the classic
+// 'no-test-seam' verdict.
 const RED_RESULT_SCHEMA = {
   type: 'object',
   properties: {
@@ -222,12 +256,39 @@ const RED_RESULT_SCHEMA = {
     testFiles: { type: 'array', items: { type: 'string' } },
     note: { type: 'string' },
     verdict: { type: 'string', enum: ['none', 'no-test-seam', 'premise-falsified', 'repro-hard'] },
+    seams: {
+      type: 'array',
+      maxItems: 4,
+      items: {
+        type: 'object',
+        properties: {
+          kind: {
+            type: 'string',
+            enum: ['parameter-extraction', 'default-injection', 'other-mechanical'],
+          },
+          path: { type: 'string', minLength: 1, maxLength: 512 },
+          filesTouched: {
+            type: 'array',
+            items: { type: 'string', minLength: 1, maxLength: 512 },
+            minItems: 1,
+            maxItems: 16,
+          },
+          callersSearch: { type: 'string', minLength: 1, maxLength: 400 },
+          description: { type: 'string', minLength: 10, maxLength: 500 },
+        },
+        required: ['kind', 'path', 'filesTouched', 'callersSearch', 'description'],
+        additionalProperties: false,
+      },
+    },
   },
   required: ['written', 'testFiles', 'note'],
   additionalProperties: false,
 } as const satisfies JsonSchema
 
 type RedResult = FromSchema<typeof RED_RESULT_SCHEMA>
+
+/** One Tier 0 in-band mechanical seam declaration (see RED_RESULT_SCHEMA.seams). */
+type SeamDeclaration = NonNullable<RedResult['seams']>[number]
 
 // Green stage output — the implementer's self-report (NEVER trusted for green)
 const GREEN_RESULT_SCHEMA = {
@@ -450,6 +511,13 @@ interface ReportTask {
   /** Blocked tasks only: the red stage's named blocking verdict (the note
    *  carries the writer's reason plus the verdict's routing). */
   verdict?: TddBlockingVerdict
+  /** Tier 0 in-band seam creation: the mechanical seams the red test-writer
+   *  created (or left) in the tree and declared, on ANY status — a seam is a
+   *  production-code change beyond the plan's task intent, so it is a REVIEW
+   *  SURFACE: verify each is behavior-preserving and that every caller was
+   *  updated (callersSearch is the enumeration evidence). Present only when
+   *  non-empty. */
+  seams?: SeamDeclaration[]
   /** Worktree mode, KEPT worktrees only (failed/merge-failed/integration-failed/
    *  blocked): where the task's tree lives on disk for forensics/manual resume. */
   worktreePath?: string
@@ -470,6 +538,11 @@ interface DevImplementOutput {
   /** Tasks the red stage blocked with a named verdict (both modes) — routable
    *  outcomes, deliberately NOT counted as failed. */
   blocked: number
+  /** Total Tier 0 in-band mechanical seams declared across tasks. Non-zero
+   *  means production code changed beyond the plan's task intents — the
+   *  per-task `seams` records carry the details and each creating task also
+   *  emitted a REVIEW warning. */
+  seamsCreated: number
   /** Per-task loop envelope stats, keyed by task id. */
   stats: Record<string, PatternStats>
   /** Combined trail of every task's TDD loop (collectTrail, in task-run order).
@@ -925,6 +998,9 @@ interface TaskLoopState {
   /** Set when the red stage returns a named blocking verdict — ends the loop
    *  immediately (done: true) with green still false. */
   verdict: TddBlockingVerdict | null
+  /** Tier 0: seam declarations accumulated across red retries (deduped by
+   *  kind|path — a retry may re-declare the seam it already created). */
+  seams: SeamDeclaration[]
 }
 
 /** What a finished TDD loop means for the report — mode-agnostic. */
@@ -937,6 +1013,9 @@ interface TddOutcome {
   /** Non-null iff the red stage blocked the task with a named verdict;
    *  lastFailure then carries the writer's reason verbatim. */
   verdict: TddBlockingVerdict | null
+  /** Tier 0: the mechanical seams the red stage declared (deduped) — carried
+   *  onto the report record whatever the task's final status. */
+  seams: SeamDeclaration[]
   /** The loopUntilDone trail for this task's TDD loop — collected by the
    *  caller into the composition's `envelope.trail` (collectTrail). */
   trail: TrailRecord[]
@@ -1059,7 +1138,7 @@ async function runTaskTddLoop(
   const checkTaskBlock = buildTaskBlock(artifact, task, workdir, false)
 
   const loopResult = await loopUntilDone<TaskLoopState>(rt, {
-    initial: { testsWritten: false, green: false, lastFailure: '', evidence: '', verdict: null },
+    initial: { testsWritten: false, green: false, lastFailure: '', evidence: '', verdict: null, seams: [] },
     maxIterations: maxIterationsPerTask,
     body: async (rtBody, state, iteration) => {
       const next: TaskLoopState = { ...state }
@@ -1068,7 +1147,8 @@ async function runTaskTddLoop(
       if (!next.testsWritten) {
         const red = await rtBody.agent<RedResult>(
           `You are the TDD test-writer for one task. Write the failing tests first — ` +
-          `do NOT implement any production code.\n` +
+          `do NOT implement the task's production behavior (the ONLY allowed production ` +
+          `edit is the bounded mechanical test seam described below).\n` +
           taskBlock +
           `Create/extend the test files per the test plan and confirm the new tests FAIL for ` +
           `the right reason — when your test runner supports running a subset, confirm on just ` +
@@ -1077,11 +1157,24 @@ async function runTaskTddLoop(
           `If the test plan says there is nothing to write (a docs-only or no-test task), that ` +
           `is a SUCCESS, not a failure: return written: true with an empty testFiles list and ` +
           `say so in the note — the done criteria will still be verified by the checker.\n` +
+          `MECHANICAL seam escape valve: when writing the tests needs only a MECHANICAL, ` +
+          `behavior-preserving seam in production code — extracting a value into a defaulted ` +
+          `parameter, making a dependency injectable with the current behavior as the default — ` +
+          `CREATE the seam yourself instead of blocking, under HARD bounds: touch at most ` +
+          `4 files in total (the seam file plus its callers), enumerate ALL callers with a ` +
+          `search (grep/rg) and update every one, then re-run ${ctx.testCommand} in full to ` +
+          `confirm the suite still passes. DECLARE every seam you created in the "seams" ` +
+          `field — the exact search string you used to enumerate callers is part of the ` +
+          `declaration; an undeclared seam is a review failure. If the seam would exceed ` +
+          `4 files, requires design judgment, or changes behavior, do NOT create it: return ` +
+          `the "no-test-seam" verdict instead, and REVERT any seam edits you already made ` +
+          `before returning it — declare only seams that REMAIN in the tree.\n` +
           `If you CANNOT deliver the failing tests, do NOT force it: return written: false ` +
           `with the matching verdict — these are accepted first-class outcomes, not failures:\n` +
-          `- "no-test-seam": testing this requires introducing a new abstraction or refactor in ` +
-          `production code. That is a design decision — do NOT fabricate a speculative seam to ` +
-          `satisfy this pipeline; name the missing seam in the note.\n` +
+          `- "no-test-seam": testing this requires a NON-mechanical production change (a new ` +
+          `abstraction, a judgment-call refactor, or a seam beyond the bounds above). That is ` +
+          `a design decision — do NOT fabricate a speculative seam to satisfy this pipeline; ` +
+          `name the missing seam in the note.\n` +
           `- "premise-falsified": what the code actually does CONTRADICTS the task's premise ` +
           `(e.g. the behavior the test plan assumes does not exist or already differs) — put ` +
           `the contradicting evidence in the note.\n` +
@@ -1090,7 +1183,11 @@ async function runTaskTddLoop(
           `- "none" (or omit the field): any other, transient reason — the loop will retry.\n` +
           `Before returning a blocking verdict, remove any probe files you created.\n` +
           `Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was written>", ` +
-          `"verdict": "none|no-test-seam|premise-falsified|repro-hard" }`,
+          `"verdict": "none|no-test-seam|premise-falsified|repro-hard", "seams": [{ "kind": ` +
+          `"parameter-extraction|default-injection|other-mechanical", "path": "<seam file>", ` +
+          `"filesTouched": ["<every file edited for this seam>"], "callersSearch": "<the exact ` +
+          `search used to enumerate callers>", "description": "<what the seam is and why it is ` +
+          `behavior-preserving>" }] } — "seams" is [] (or omitted) when you created none`,
           {
             schema: RED_RESULT_SCHEMA,
             label: `dev-implement:red:${task.id}`,
@@ -1102,17 +1199,64 @@ async function runTaskTddLoop(
           warn(rtBody, warnings, `dev-implement: red (test-writer) agent died for task ${task.id} — retrying next iteration`)
           return { state: next, done: false }
         }
-        // Normalize: the field is optional (cached pre-verdict replays lack
-        // it) and 'none' is the explicit retry escape valve.
+        // Normalize: both fields are optional (cached pre-feature replays
+        // lack them) and 'none' is the explicit retry escape valve.
         const verdict = red.verdict ?? 'none'
-        if (!red.written) {
-          if (verdict !== 'none') {
-            // Named blocking verdict — a first-class ROUTABLE exit, never a
-            // retry: end the loop NOW (no iteration burn) with green false.
-            next.verdict = verdict
-            next.lastFailure = red.note
-            return { state: next, done: true }
+        // Tier 0: accumulate seam declarations FIRST, on EVERY path — the
+        // tree already holds whatever the writer created whether or not the
+        // tests were finished, and a red retry may re-declare the seam it
+        // already made (dedup by kind|path).
+        const declared = red.seams ?? []
+        if (declared.length > 0) {
+          const seen = new Set(next.seams.map((s) => `${s.kind}|${s.path}`))
+          next.seams = [
+            ...next.seams,
+            ...declared.filter((s) => !seen.has(`${s.kind}|${s.path}`)),
+          ]
+        }
+        if (!red.written && verdict !== 'none') {
+          // Named blocking verdict — a first-class ROUTABLE exit, never a
+          // retry: end the loop NOW (no iteration burn) with green false.
+          if (next.seams.length > 0) {
+            // Contradiction: the writer was told to REVERT seam edits before
+            // blocking and declare only seams that remain — surface it, keep
+            // the declarations for forensics (the tree may hold leftovers).
+            warn(
+              rtBody,
+              warnings,
+              `dev-implement: task ${task.id} returned blocking verdict "${verdict}" WITH ` +
+              `${next.seams.length} declared in-band seam(s) — seam edits must be reverted ` +
+              `before blocking; the tree may hold leftover seam edits (declarations kept in ` +
+              `the report for forensics)`,
+            )
           }
+          next.verdict = verdict
+          next.lastFailure = red.note
+          return { state: next, done: true }
+        }
+        // Tier 0 bounds guard (IN CODE, deliberately not in the schema): the
+        // union of files across the task's accumulated seams must stay within
+        // SEAM_FILES_CAP. Exceeded → fall back to the CLASSIC 'no-test-seam'
+        // verdict — a seam this wide is a design decision, and the
+        // pre-feature behavior is the safe fallback.
+        const seamFiles = new Set(next.seams.flatMap((s) => s.filesTouched))
+        if (seamFiles.size > SEAM_FILES_CAP) {
+          next.verdict = 'no-test-seam'
+          next.lastFailure =
+            `in-band seam creation exceeded the bounds: ${seamFiles.size} files touched > ` +
+            `cap ${SEAM_FILES_CAP} (${[...seamFiles].join(', ')}) — a seam this wide is a ` +
+            `design decision, not a mechanical edit`
+          warn(
+            rtBody,
+            warnings,
+            `dev-implement: task ${task.id} in-band seam exceeded the ${SEAM_FILES_CAP}-file ` +
+            `cap (${seamFiles.size} files) — task blocked with the classic "no-test-seam" ` +
+            `verdict; the working tree may still hold the oversized seam edits (see the ` +
+            `task's seams declaration for forensics)`,
+          )
+          return { state: next, done: true }
+        }
+        if (!red.written) {
           warn(rtBody, warnings, `dev-implement: test-writer could not write tests for task ${task.id}: ${red.note}`)
           return { state: next, done: false }
         }
@@ -1208,7 +1352,36 @@ async function runTaskTddLoop(
     lastFailure: outcome.state.lastFailure,
     stoppedBy: outcome.stoppedBy,
     verdict: outcome.state.verdict,
+    seams: outcome.state.seams,
     trail: loopResult.trail,
+  }
+}
+
+// Tier 0 seam declarations ride the report record of EVERY outcome-bearing
+// status: a seam the red stage created is in the tree (or was — forensics)
+// however the task ended, and the review lens needs it either way. Spread
+// this at every push site that has a TddOutcome in scope.
+function seamFields(outcome: TddOutcome): { seams?: SeamDeclaration[] } {
+  return outcome.seams.length > 0 ? { seams: outcome.seams } : {}
+}
+
+function countSeams(reportTasks: ReportTask[]): number {
+  return reportTasks.reduce((n, t) => n + (t.seams?.length ?? 0), 0)
+}
+
+// One warning line per seam-creating task — the REVIEW surfacing (same
+// posture as warnBlocked): in-band seams must reach the operator/reviewer
+// through warnings too, not only the per-task records.
+function warnSeams(rt: WorkflowRuntime, warnings: string[], reportTasks: ReportTask[]): void {
+  for (const t of reportTasks) {
+    if (t.seams === undefined || t.seams.length === 0) continue
+    warn(
+      rt,
+      warnings,
+      `dev-implement: task ${t.id} created ${t.seams.length} in-band mechanical seam(s) — ` +
+      `REVIEW them: verify each is behavior-preserving and that every caller was updated ` +
+      `(${t.seams.map((s) => `${s.kind} in ${s.path}; callers via ${s.callersSearch}`).join(' | ')})`,
+    )
   }
 }
 
@@ -1236,6 +1409,7 @@ function blockedRecord(task: PlanTask, outcome: TddOutcome, verdict: TddBlocking
     evidence: outcome.evidence,
     verdict,
     note: blockedNote(verdict, outcome.lastFailure),
+    ...seamFields(outcome),
   }
 }
 
@@ -1423,6 +1597,7 @@ async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<De
         status: 'succeeded',
         iterations: outcome.iterations,
         evidence: outcome.evidence,
+        ...seamFields(outcome),
       })
     } else if (outcome.verdict !== null) {
       // Named blocking verdict: a routable outcome, not a failure — dependents
@@ -1438,6 +1613,7 @@ async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<De
         iterations: outcome.iterations,
         evidence: outcome.evidence,
         note: failureNote(outcome),
+        ...seamFields(outcome),
       })
     }
   }
@@ -1459,11 +1635,13 @@ async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<De
     )
   }
   warnBlocked(rt, warnings, reportTasks)
+  warnSeams(rt, warnings, reportTasks)
 
   return {
     goal: artifact.goal,
     tasks: reportTasks,
     ...tallies,
+    seamsCreated: countSeams(reportTasks),
     stats,
     envelope: { trail: collectTrail(...taskTrails) },
     warnings,
@@ -1542,7 +1720,7 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
       evidence: '',
       note: 'skipped — worktree mode requires a git repository',
     }))
-    return { goal: artifact.goal, tasks: reportTasks, ...tally(reportTasks), stats, envelope: { trail: [] }, warnings }
+    return { goal: artifact.goal, tasks: reportTasks, ...tally(reportTasks), seamsCreated: 0, stats, envelope: { trail: [] }, warnings }
   }
 
   // Worktree geometry — derived from the GIT ROOT, not projectDir: a worktree
@@ -1748,14 +1926,14 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
         reportTasks.push({
           id: task.id, title: task.title, status: 'failed',
           iterations: result.outcome.iterations, evidence: result.outcome.evidence,
-          note: failureNote(result.outcome), ...kept,
+          note: failureNote(result.outcome), ...kept, ...seamFields(result.outcome),
         })
       } else if (result.kind === 'finalize-failed') {
         statusById.set(task.id, 'failed')
         reportTasks.push({
           id: task.id, title: task.title, status: 'failed',
           iterations: result.outcome.iterations, evidence: result.outcome.evidence,
-          note: `failed — task-branch commit: ${result.note}`, ...kept,
+          note: `failed — task-branch commit: ${result.note}`, ...kept, ...seamFields(result.outcome),
         })
       } else {
         toMerge.push({ task, outcome: result.outcome })
@@ -1784,6 +1962,7 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
           id: task.id, title: task.title, status: 'merge-failed',
           iterations: outcome.iterations, evidence: outcome.evidence,
           note: `merge-failed — ${merge === null ? 'merge agent died (branch not merged)' : merge.note}`, ...kept,
+          ...seamFields(outcome),
         })
         continue
       }
@@ -1797,7 +1976,7 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
           id: task.id, title: task.title, status: 'merge-failed',
           iterations: outcome.iterations, evidence: outcome.evidence,
           note: `merge-failed — merge agent reported merged without a preMergeSha (no revert target)`,
-          ...kept,
+          ...kept, ...seamFields(outcome),
         })
         warn(
           rt,
@@ -1848,7 +2027,7 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
           id: task.id, title: task.title, status: 'integration-failed',
           iterations: outcome.iterations, evidence: integ === null ? '' : integ.evidence,
           note: `integration-failed — ${integ === null ? 'integration checker died (conservative revert)' : integ.failureSummary}`,
-          ...kept,
+          ...kept, ...seamFields(outcome),
         })
         continue
       }
@@ -1857,6 +2036,7 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
       reportTasks.push({
         id: task.id, title: task.title, status: 'succeeded',
         iterations: outcome.iterations, evidence: integ.evidence,
+        ...seamFields(outcome),
       })
       merged.push({ id: task.id, path: wtPath(task.id), branch: wtBranch(task.id) })
     }
@@ -1903,11 +2083,13 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
     )
   }
   warnBlocked(rt, warnings, reportTasks)
+  warnSeams(rt, warnings, reportTasks)
 
   return {
     goal: artifact.goal,
     tasks: reportTasks,
     ...tallies,
+    seamsCreated: countSeams(reportTasks),
     stats,
     envelope: { trail: collectTrail(...taskTrails) },
     warnings,
@@ -1927,7 +2109,12 @@ export default defineWorkflow({
       '(failing tests first, implement against the contracts, then an independent checker reads ' +
       'the real test output), and reports a deterministic per-task tally with evidence. The ' +
       'test-writer has three NAMED blocking verdicts (no-test-seam, premise-falsified, repro-hard) ' +
-      'that end the task as a routable "blocked" outcome instead of a silent retry-until-failed. Two ' +
+      'that end the task as a routable "blocked" outcome instead of a silent retry-until-failed. ' +
+      'MECHANICAL test seams (parameter extraction, default injection) the test-writer creates ' +
+      'ITSELF in-band under hard bounds — at most 4 files touched, every caller enumerated and ' +
+      'updated — and declares structurally: the report carries per-task "seams" plus a ' +
+      '"seamsCreated" tally and a REVIEW warning per creating task; a seam beyond the bounds ' +
+      'falls back to the classic no-test-seam verdict. Two ' +
       'mutation modes: "sequential" (default — one task at a time in dependency order, no git ' +
       'required) and "worktree" (git required — independent tasks run in parallel waves, each in ' +
       'an isolated git worktree, then merge sequentially with an integration check after every ' +

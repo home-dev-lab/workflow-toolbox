@@ -1,6 +1,6 @@
 export const meta = {
   "name": "dev-implement",
-  "description": "Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. The test-writer has three NAMED blocking verdicts (no-test-seam, premise-falsified, repro-hard) that end the task as a routable \"blocked\" outcome instead of a silent retry-until-failed. Two mutation modes: \"sequential\" (default — one task at a time in dependency order, no git required) and \"worktree\" (git required — independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).",
+  "description": "Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. The test-writer has three NAMED blocking verdicts (no-test-seam, premise-falsified, repro-hard) that end the task as a routable \"blocked\" outcome instead of a silent retry-until-failed. MECHANICAL test seams (parameter extraction, default injection) the test-writer creates ITSELF in-band under hard bounds — at most 4 files touched, every caller enumerated and updated — and declares structurally: the report carries per-task \"seams\" plus a \"seamsCreated\" tally and a REVIEW warning per creating task; a seam beyond the bounds falls back to the classic no-test-seam verdict. Two mutation modes: \"sequential\" (default — one task at a time in dependency order, no git required) and \"worktree\" (git required — independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).",
   "whenToUse": "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass either { artifact } (the inline PlanArtifact) OR { artifactPath } (a path — ABSOLUTE recommended — to a JSON file holding it; use this when the artifact is large or was produced/edited on disk, to avoid inlining ~60 KB in the args; it is read from disk and validated identically). Plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits, as the workflow args. implementerModel tiers the per-iteration implementer (default \"sonnet\"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.",
   "phases": [
     {
@@ -435,13 +435,38 @@ ${prompt}` : prompt;
   var CHECK_EFFORT_DEFAULT = "high";
   var MECHANICAL_EFFORT = "low";
   var INTEGRATION_EFFORT_DEFAULT = "high";
+  var SEAM_FILES_CAP = 4;
   var RED_RESULT_SCHEMA = {
     type: "object",
     properties: {
       written: { type: "boolean" },
       testFiles: { type: "array", items: { type: "string" } },
       note: { type: "string" },
-      verdict: { type: "string", enum: ["none", "no-test-seam", "premise-falsified", "repro-hard"] }
+      verdict: { type: "string", enum: ["none", "no-test-seam", "premise-falsified", "repro-hard"] },
+      seams: {
+        type: "array",
+        maxItems: 4,
+        items: {
+          type: "object",
+          properties: {
+            kind: {
+              type: "string",
+              enum: ["parameter-extraction", "default-injection", "other-mechanical"]
+            },
+            path: { type: "string", minLength: 1, maxLength: 512 },
+            filesTouched: {
+              type: "array",
+              items: { type: "string", minLength: 1, maxLength: 512 },
+              minItems: 1,
+              maxItems: 16
+            },
+            callersSearch: { type: "string", minLength: 1, maxLength: 400 },
+            description: { type: "string", minLength: 10, maxLength: 500 }
+          },
+          required: ["kind", "path", "filesTouched", "callersSearch", "description"],
+          additionalProperties: false
+        }
+      }
     },
     required: ["written", "testFiles", "note"],
     additionalProperties: false
@@ -899,22 +924,23 @@ Done criteria: ${JSON.stringify(task.doneCriteria)}
     const taskBlock = buildTaskBlock(artifact, task, workdir, true);
     const checkTaskBlock = buildTaskBlock(artifact, task, workdir, false);
     const loopResult = await loopUntilDone(rt, {
-      initial: { testsWritten: false, green: false, lastFailure: "", evidence: "", verdict: null },
+      initial: { testsWritten: false, green: false, lastFailure: "", evidence: "", verdict: null, seams: [] },
       maxIterations: maxIterationsPerTask,
       body: async (rtBody, state, iteration) => {
         const next = { ...state };
         if (!next.testsWritten) {
           const red = await rtBody.agent(
-            `You are the TDD test-writer for one task. Write the failing tests first \u2014 do NOT implement any production code.
+            `You are the TDD test-writer for one task. Write the failing tests first \u2014 do NOT implement the task's production behavior (the ONLY allowed production edit is the bounded mechanical test seam described below).
 ` + taskBlock + `Create/extend the test files per the test plan and confirm the new tests FAIL for the right reason \u2014 when your test runner supports running a subset, confirm on just the new test files (cheaper feedback), then run ${ctx.testCommand} in full once before reporting (the rest of the suite must still collect and pass).
 If the test plan says there is nothing to write (a docs-only or no-test task), that is a SUCCESS, not a failure: return written: true with an empty testFiles list and say so in the note \u2014 the done criteria will still be verified by the checker.
+MECHANICAL seam escape valve: when writing the tests needs only a MECHANICAL, behavior-preserving seam in production code \u2014 extracting a value into a defaulted parameter, making a dependency injectable with the current behavior as the default \u2014 CREATE the seam yourself instead of blocking, under HARD bounds: touch at most 4 files in total (the seam file plus its callers), enumerate ALL callers with a search (grep/rg) and update every one, then re-run ${ctx.testCommand} in full to confirm the suite still passes. DECLARE every seam you created in the "seams" field \u2014 the exact search string you used to enumerate callers is part of the declaration; an undeclared seam is a review failure. If the seam would exceed 4 files, requires design judgment, or changes behavior, do NOT create it: return the "no-test-seam" verdict instead, and REVERT any seam edits you already made before returning it \u2014 declare only seams that REMAIN in the tree.
 If you CANNOT deliver the failing tests, do NOT force it: return written: false with the matching verdict \u2014 these are accepted first-class outcomes, not failures:
-- "no-test-seam": testing this requires introducing a new abstraction or refactor in production code. That is a design decision \u2014 do NOT fabricate a speculative seam to satisfy this pipeline; name the missing seam in the note.
+- "no-test-seam": testing this requires a NON-mechanical production change (a new abstraction, a judgment-call refactor, or a seam beyond the bounds above). That is a design decision \u2014 do NOT fabricate a speculative seam to satisfy this pipeline; name the missing seam in the note.
 - "premise-falsified": what the code actually does CONTRADICTS the task's premise (e.g. the behavior the test plan assumes does not exist or already differs) \u2014 put the contradicting evidence in the note.
 - "repro-hard": reproducing the target behavior needs a real investigation beyond this task \u2014 describe in the note what you tried and what the repro design requires.
 - "none" (or omit the field): any other, transient reason \u2014 the loop will retry.
 Before returning a blocking verdict, remove any probe files you created.
-Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was written>", "verdict": "none|no-test-seam|premise-falsified|repro-hard" }`,
+Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was written>", "verdict": "none|no-test-seam|premise-falsified|repro-hard", "seams": [{ "kind": "parameter-extraction|default-injection|other-mechanical", "path": "<seam file>", "filesTouched": ["<every file edited for this seam>"], "callersSearch": "<the exact search used to enumerate callers>", "description": "<what the seam is and why it is behavior-preserving>" }] } \u2014 "seams" is [] (or omitted) when you created none`,
             {
               schema: RED_RESULT_SCHEMA,
               label: `dev-implement:red:${task.id}`,
@@ -927,12 +953,38 @@ Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was writ
             return { state: next, done: false };
           }
           const verdict = red.verdict ?? "none";
-          if (!red.written) {
-            if (verdict !== "none") {
-              next.verdict = verdict;
-              next.lastFailure = red.note;
-              return { state: next, done: true };
+          const declared = red.seams ?? [];
+          if (declared.length > 0) {
+            const seen = new Set(next.seams.map((s) => `${s.kind}|${s.path}`));
+            next.seams = [
+              ...next.seams,
+              ...declared.filter((s) => !seen.has(`${s.kind}|${s.path}`))
+            ];
+          }
+          if (!red.written && verdict !== "none") {
+            if (next.seams.length > 0) {
+              warn(
+                rtBody,
+                warnings,
+                `dev-implement: task ${task.id} returned blocking verdict "${verdict}" WITH ${next.seams.length} declared in-band seam(s) \u2014 seam edits must be reverted before blocking; the tree may hold leftover seam edits (declarations kept in the report for forensics)`
+              );
             }
+            next.verdict = verdict;
+            next.lastFailure = red.note;
+            return { state: next, done: true };
+          }
+          const seamFiles = new Set(next.seams.flatMap((s) => s.filesTouched));
+          if (seamFiles.size > SEAM_FILES_CAP) {
+            next.verdict = "no-test-seam";
+            next.lastFailure = `in-band seam creation exceeded the bounds: ${seamFiles.size} files touched > cap ${SEAM_FILES_CAP} (${[...seamFiles].join(", ")}) \u2014 a seam this wide is a design decision, not a mechanical edit`;
+            warn(
+              rtBody,
+              warnings,
+              `dev-implement: task ${task.id} in-band seam exceeded the ${SEAM_FILES_CAP}-file cap (${seamFiles.size} files) \u2014 task blocked with the classic "no-test-seam" verdict; the working tree may still hold the oversized seam edits (see the task's seams declaration for forensics)`
+            );
+            return { state: next, done: true };
+          }
+          if (!red.written) {
             warn(rtBody, warnings, `dev-implement: test-writer could not write tests for task ${task.id}: ${red.note}`);
             return { state: next, done: false };
           }
@@ -1006,8 +1058,25 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
       lastFailure: outcome.state.lastFailure,
       stoppedBy: outcome.stoppedBy,
       verdict: outcome.state.verdict,
+      seams: outcome.state.seams,
       trail: loopResult.trail
     };
+  }
+  function seamFields(outcome) {
+    return outcome.seams.length > 0 ? { seams: outcome.seams } : {};
+  }
+  function countSeams(reportTasks) {
+    return reportTasks.reduce((n, t) => n + (t.seams?.length ?? 0), 0);
+  }
+  function warnSeams(rt, warnings, reportTasks) {
+    for (const t of reportTasks) {
+      if (t.seams === void 0 || t.seams.length === 0) continue;
+      warn(
+        rt,
+        warnings,
+        `dev-implement: task ${t.id} created ${t.seams.length} in-band mechanical seam(s) \u2014 REVIEW them: verify each is behavior-preserving and that every caller was updated (${t.seams.map((s) => `${s.kind} in ${s.path}; callers via ${s.callersSearch}`).join(" | ")})`
+      );
+    }
   }
   function failureNote(outcome) {
     return outcome.lastFailure === "" ? `failed \u2014 loop stopped by ${outcome.stoppedBy} before any check ran` : `failed \u2014 last check: ${outcome.lastFailure}`;
@@ -1023,7 +1092,8 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
       iterations: outcome.iterations,
       evidence: outcome.evidence,
       verdict,
-      note: blockedNote(verdict, outcome.lastFailure)
+      note: blockedNote(verdict, outcome.lastFailure),
+      ...seamFields(outcome)
     };
   }
   function tally(reportTasks) {
@@ -1138,7 +1208,8 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
           title: task.title,
           status: "succeeded",
           iterations: outcome.iterations,
-          evidence: outcome.evidence
+          evidence: outcome.evidence,
+          ...seamFields(outcome)
         });
       } else if (outcome.verdict !== null) {
         statusById.set(task.id, "blocked");
@@ -1151,7 +1222,8 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
           status: "failed",
           iterations: outcome.iterations,
           evidence: outcome.evidence,
-          note: failureNote(outcome)
+          note: failureNote(outcome),
+          ...seamFields(outcome)
         });
       }
     }
@@ -1165,10 +1237,12 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
       );
     }
     warnBlocked(rt, warnings, reportTasks);
+    warnSeams(rt, warnings, reportTasks);
     return {
       goal: artifact.goal,
       tasks: reportTasks,
       ...tallies,
+      seamsCreated: countSeams(reportTasks),
       stats,
       envelope: { trail: collectTrail(...taskTrails) },
       warnings
@@ -1210,7 +1284,7 @@ Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<abso
         evidence: "",
         note: "skipped \u2014 worktree mode requires a git repository"
       }));
-      return { goal: artifact.goal, tasks: reportTasks2, ...tally(reportTasks2), stats, envelope: { trail: [] }, warnings };
+      return { goal: artifact.goal, tasks: reportTasks2, ...tally(reportTasks2), seamsCreated: 0, stats, envelope: { trail: [] }, warnings };
     }
     const reportedGitRoot = setup.gitRoot.trim().replace(/\/+$/, "");
     const gitRoot = reportedGitRoot === "" ? ctx.projectDir : reportedGitRoot;
@@ -1374,7 +1448,8 @@ Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happen
             iterations: result.outcome.iterations,
             evidence: result.outcome.evidence,
             note: failureNote(result.outcome),
-            ...kept
+            ...kept,
+            ...seamFields(result.outcome)
           });
         } else if (result.kind === "finalize-failed") {
           statusById.set(task.id, "failed");
@@ -1385,7 +1460,8 @@ Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happen
             iterations: result.outcome.iterations,
             evidence: result.outcome.evidence,
             note: `failed \u2014 task-branch commit: ${result.note}`,
-            ...kept
+            ...kept,
+            ...seamFields(result.outcome)
           });
         } else {
           toMerge.push({ task, outcome: result.outcome });
@@ -1409,7 +1485,8 @@ Return { "merged": true|false, "conflict": true|false, "preMergeSha": "<sha>", "
             iterations: outcome.iterations,
             evidence: outcome.evidence,
             note: `merge-failed \u2014 ${merge === null ? "merge agent died (branch not merged)" : merge.note}`,
-            ...kept
+            ...kept,
+            ...seamFields(outcome)
           });
           continue;
         }
@@ -1422,7 +1499,8 @@ Return { "merged": true|false, "conflict": true|false, "preMergeSha": "<sha>", "
             iterations: outcome.iterations,
             evidence: outcome.evidence,
             note: `merge-failed \u2014 merge agent reported merged without a preMergeSha (no revert target)`,
-            ...kept
+            ...kept,
+            ...seamFields(outcome)
           });
           warn(
             rt,
@@ -1461,7 +1539,8 @@ Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }
             iterations: outcome.iterations,
             evidence: integ === null ? "" : integ.evidence,
             note: `integration-failed \u2014 ${integ === null ? "integration checker died (conservative revert)" : integ.failureSummary}`,
-            ...kept
+            ...kept,
+            ...seamFields(outcome)
           });
           continue;
         }
@@ -1471,7 +1550,8 @@ Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }
           title: task.title,
           status: "succeeded",
           iterations: outcome.iterations,
-          evidence: integ.evidence
+          evidence: integ.evidence,
+          ...seamFields(outcome)
         });
         merged.push({ id: task.id, path: wtPath(task.id), branch: wtBranch(task.id) });
       }
@@ -1501,10 +1581,12 @@ Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
       );
     }
     warnBlocked(rt, warnings, reportTasks);
+    warnSeams(rt, warnings, reportTasks);
     return {
       goal: artifact.goal,
       tasks: reportTasks,
       ...tallies,
+      seamsCreated: countSeams(reportTasks),
       stats,
       envelope: { trail: collectTrail(...taskTrails) },
       warnings
@@ -1513,7 +1595,7 @@ Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
   var dev_implement_workflow_default = defineWorkflow({
     meta: {
       name: "dev-implement",
-      description: 'Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. The test-writer has three NAMED blocking verdicts (no-test-seam, premise-falsified, repro-hard) that end the task as a routable "blocked" outcome instead of a silent retry-until-failed. Two mutation modes: "sequential" (default \u2014 one task at a time in dependency order, no git required) and "worktree" (git required \u2014 independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).',
+      description: 'Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. The test-writer has three NAMED blocking verdicts (no-test-seam, premise-falsified, repro-hard) that end the task as a routable "blocked" outcome instead of a silent retry-until-failed. MECHANICAL test seams (parameter extraction, default injection) the test-writer creates ITSELF in-band under hard bounds \u2014 at most 4 files touched, every caller enumerated and updated \u2014 and declares structurally: the report carries per-task "seams" plus a "seamsCreated" tally and a REVIEW warning per creating task; a seam beyond the bounds falls back to the classic no-test-seam verdict. Two mutation modes: "sequential" (default \u2014 one task at a time in dependency order, no git required) and "worktree" (git required \u2014 independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics).',
       whenToUse: 'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass either { artifact } (the inline PlanArtifact) OR { artifactPath } (a path \u2014 ABSOLUTE recommended \u2014 to a JSON file holding it; use this when the artifact is large or was produced/edited on disk, to avoid inlining ~60 KB in the args; it is read from disk and validated identically). Plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits, as the workflow args. implementerModel tiers the per-iteration implementer (default "sonnet"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.',
       phases: [
         { title: "Load", detail: "artifactPath mode: read the PlanArtifact JSON from disk via an agent (no-op when artifact is inline)" },

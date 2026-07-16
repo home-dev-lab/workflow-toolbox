@@ -1930,3 +1930,154 @@ describe('dev-implement implementerType knob', () => {
     ).rejects.toThrow(/implementerType/i)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Test: Tier 0 in-band MECHANICAL seam creation (card #1820492803109553162).
+// The red test-writer may CREATE a mechanical seam itself (parameter
+// extraction, default injection) under hard bounds instead of blocking with
+// no-test-seam. Every seam is DECLARED structurally in the result, flows into
+// the Report (per-task `seams` + the `seamsCreated` tally) and is surfaced by
+// a REVIEW warning. A seam exceeding the bounds falls back to the CLASSIC
+// no-test-seam verdict — current behavior is the safe fallback.
+// ---------------------------------------------------------------------------
+
+const SEAM = {
+  kind: 'parameter-extraction',
+  path: 'src/cli.ts',
+  filesTouched: ['src/cli.ts', 'src/main.ts'],
+  callersSearch: 'rg -n "dispatch\\(" src/',
+  description: 'extracted the clock into a defaulted parameter so tests can inject a fake',
+}
+
+describe('dev-implement Tier 0 in-band seam creation', () => {
+  it('a declared seam within bounds proceeds to green, lands on the report task and tallies seamsCreated', async () => {
+    const rt = makeRuntime({
+      red: (p) =>
+        p.includes('Task T1:')
+          ? { written: true, testFiles: ['test/validate.test.ts'], note: 'seam + failing tests', seams: [SEAM] }
+          : { written: true, testFiles: ['test/cli.test.ts'], note: 'failing tests' },
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('succeeded')
+    expect(t1.seams).toHaveLength(1)
+    expect(t1.seams![0]!.kind).toBe('parameter-extraction')
+    expect(t1.seams![0]!.path).toBe('src/cli.ts')
+    expect(result.seamsCreated).toBe(1)
+    // The review-lens surfacing: one warning naming the task and demanding review.
+    expect(
+      result.warnings.some((w: string) => /seam/i.test(w) && /review/i.test(w) && /T1/.test(w)),
+    ).toBe(true)
+  })
+
+  it('no seams declared (old caches / stock stubs) stays byte-compatible: zero tally, no seams key, no seam warning', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    expect(result.seamsCreated).toBe(0)
+    for (const t of result.tasks) expect(t.seams).toBeUndefined()
+    expect(result.warnings.some((w: string) => /seam/i.test(w))).toBe(false)
+  })
+
+  it('a seam exceeding the file cap falls back to the CLASSIC no-test-seam verdict (blocked, dependents skip, no green burn)', async () => {
+    const oversized = {
+      ...SEAM,
+      filesTouched: ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts'],
+    }
+    const rt = makeRuntime({
+      red: (p) =>
+        p.includes('Task T1:')
+          ? { written: true, testFiles: ['test/validate.test.ts'], note: 'big seam', seams: [oversized] }
+          : { written: true, testFiles: [], note: 'unreached' },
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('blocked')
+    expect(t1.verdict).toBe('no-test-seam')
+    expect(t1.note).toMatch(/exceed|cap|bound/i)
+    // The oversize declaration is KEPT for forensics (the tree may hold it).
+    expect(t1.seams).toHaveLength(1)
+    expect(result.blocked).toBe(1)
+    // Blocked at the red block: no green/check spend for T1.
+    expect(rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:green:T1')).length).toBe(0)
+    // Dependent skips exactly like any blocked task.
+    expect(result.tasks.find((t: { id: string }) => t.id === 'T2')!.status).toBe('skipped')
+    // Warning surfaces the fallback and the forensics risk.
+    expect(
+      result.warnings.some((w: string) => /seam/i.test(w) && /exceed|cap|bound/i.test(w)),
+    ).toBe(true)
+  })
+
+  it('a blocking verdict WITH declared seams is a surfaced contradiction (writer must revert first) — blocked, seams kept for forensics', async () => {
+    const rt = makeRuntime({
+      red: (p) =>
+        p.includes('Task T1:')
+          ? { written: false, testFiles: [], note: 'needs a judgment seam', verdict: 'no-test-seam', seams: [SEAM] }
+          : { written: true, testFiles: [], note: 'unreached' },
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('blocked')
+    expect(t1.verdict).toBe('no-test-seam')
+    expect(t1.seams).toHaveLength(1)
+    expect(
+      result.warnings.some((w: string) => /seam/i.test(w) && /revert|contradict/i.test(w)),
+    ).toBe(true)
+  })
+
+  it('the red prompt allows bounded mechanical seams: names the bounds, the caller enumeration and the seams field', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    const red = rt.calls.find((c) => c.opts?.label?.startsWith('dev-implement:red:'))!
+    expect(red.prompt).toMatch(/mechanical/i)
+    expect(red.prompt).toContain('"seams"')
+    expect(red.prompt).toMatch(/caller/i)
+    expect(red.prompt).toContain('4 files')
+    // The pre-existing contracts survive: verdicts, no fabrication, router phrase.
+    expect(red.prompt).toContain('no-test-seam')
+    expect(red.prompt).toMatch(/do not fabricate|never fabricate/i)
+    expect(red.prompt.toLowerCase()).toContain('write the failing tests first')
+  })
+
+  it('seams re-declared across red retries are deduped (kind|path), not double-counted', async () => {
+    let redCallsForT1 = 0
+    const rt = makeRuntime({
+      red: (p) => {
+        if (!p.includes('Task T1:')) return { written: true, testFiles: ['test/cli.test.ts'], note: 'failing tests' }
+        redCallsForT1++
+        return redCallsForT1 === 1
+          ? { written: false, testFiles: [], note: 'seam made, tests incomplete — retrying', seams: [SEAM] }
+          : { written: true, testFiles: ['test/validate.test.ts'], note: 'tests done', seams: [SEAM] }
+      },
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+
+    expect(redCallsForT1).toBe(2)
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('succeeded')
+    expect(t1.seams).toHaveLength(1)
+    expect(result.seamsCreated).toBe(1)
+  })
+
+  it('worktree mode: a declared seam survives merge and lands on the succeeded report task', async () => {
+    const rt = makeWtRuntime({
+      red: (p) =>
+        p.includes('Task T1:')
+          ? { written: true, testFiles: ['test/validate.test.ts'], note: 'seam + tests', seams: [SEAM] }
+          : { written: true, testFiles: ['test/x.test.ts'], note: 'failing tests written' },
+    })
+    const result = await wf.run(rt, JSON.stringify(WT_INPUT))
+
+    const t1 = result.tasks.find((t: { id: string }) => t.id === 'T1')!
+    expect(t1.status).toBe('succeeded')
+    expect(t1.seams).toHaveLength(1)
+    expect(result.seamsCreated).toBe(1)
+    expect(
+      result.warnings.some((w: string) => /seam/i.test(w) && /review/i.test(w) && /T1/.test(w)),
+    ).toBe(true)
+  })
+})
