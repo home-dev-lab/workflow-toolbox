@@ -853,7 +853,7 @@ ${renderClaim(claim)}`;
   var RISK_ORDER = { high: 0, medium: 1, low: 2 };
   var UNKNOWN_RISK_RANK = Object.keys(RISK_ORDER).length;
   function claimKey(c) {
-    return c.surface + "\0" + c.quote.toLowerCase().replace(/\s+/g, " ").trim();
+    return c.surface + " " + c.quote.toLowerCase().replace(/\s+/g, " ").trim();
   }
   function chunk(items, size) {
     const out = [];

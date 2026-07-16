@@ -223,7 +223,7 @@ const RISK_ORDER: Readonly<Record<string, number>> = { high: 0, medium: 1, low: 
 const UNKNOWN_RISK_RANK = Object.keys(RISK_ORDER).length
 
 function claimKey(c: AuditClaim): string {
-  return c.surface + ' ' + c.quote.toLowerCase().replace(/\s+/g, ' ').trim()
+  return c.surface + ' ' + c.quote.toLowerCase().replace(/\s+/g, ' ').trim()
 }
 
 function chunk<T>(items: readonly T[], size: number): T[][] {
