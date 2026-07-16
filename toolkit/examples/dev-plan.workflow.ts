@@ -222,7 +222,15 @@ type CandidateTask = CandidateTasksOutput['tasks'][number]
 // schema rejection the agent can retry shorter. The bounds live here and NOT on the
 // shared TASK_FILE_SCHEMA/ALTERNATIVE_SCHEMA consts: those participate in earlier
 // phases' agent calls, and changing them would invalidate the resume cache prefix.
-const PLAN_ARTIFACT_SCHEMA = {
+// Arbiter review finding (fix round, card #1819690698539009755): `files`,
+// `alternativesConsidered`, and `dependsOn` were the three unbounded arrays left
+// in this schema — same runaway-output risk the maxLength bounds above already
+// guard against, just on the array axis instead of the string axis. Capped
+// INLINE here (never on the shared items consts, per the same resume-cache
+// reasoning) — `dependsOn`'s item schema is already inline (not shared), so its
+// string also gets a maxLength, matching sibling `id`'s bound (task ids).
+// Exported for the schema-bounds test in dev-plan.test.ts.
+export const PLAN_ARTIFACT_SCHEMA = {
   type: 'object',
   properties: {
     goal: { type: 'string', maxLength: 8000 },
@@ -246,7 +254,7 @@ const PLAN_ARTIFACT_SCHEMA = {
           id: { type: 'string', maxLength: 12 },
           title: { type: 'string', maxLength: 200 },
           intent: { type: 'string', maxLength: 1600 },
-          files: { type: 'array', items: TASK_FILE_SCHEMA },
+          files: { type: 'array', maxItems: 12, items: TASK_FILE_SCHEMA },
           contracts: { type: 'string', maxLength: 3200 },
           testPlan: { type: 'string', maxLength: 3200 },
           doneCriteria: { type: 'array', maxItems: 12, items: { type: 'string', maxLength: 500 } },
@@ -263,8 +271,8 @@ const PLAN_ARTIFACT_SCHEMA = {
           // artifact passes its parse boundary unchanged) — the field's
           // consumer is the human gate reviewing the artifact, not the
           // downstream implementer.
-          alternativesConsidered: { type: 'array', minItems: 0, items: ALTERNATIVE_SCHEMA },
-          dependsOn: { type: 'array', items: { type: 'string' } },
+          alternativesConsidered: { type: 'array', minItems: 0, maxItems: 8, items: ALTERNATIVE_SCHEMA },
+          dependsOn: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 12 } },
         },
         required: [
           'id', 'title', 'intent', 'files', 'contracts', 'testPlan', 'doneCriteria', 'snippet',

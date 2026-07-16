@@ -43,6 +43,7 @@ var __wt = (() => {
   // dev-plan.workflow.ts
   var dev_plan_workflow_exports = {};
   __export(dev_plan_workflow_exports, {
+    PLAN_ARTIFACT_SCHEMA: () => PLAN_ARTIFACT_SCHEMA,
     default: () => dev_plan_workflow_default
   });
 
@@ -1000,7 +1001,7 @@ ${renderClaim(claim)}`;
             id: { type: "string", maxLength: 12 },
             title: { type: "string", maxLength: 200 },
             intent: { type: "string", maxLength: 1600 },
-            files: { type: "array", items: TASK_FILE_SCHEMA },
+            files: { type: "array", maxItems: 12, items: TASK_FILE_SCHEMA },
             contracts: { type: "string", maxLength: 3200 },
             testPlan: { type: "string", maxLength: 3200 },
             doneCriteria: { type: "array", maxItems: 12, items: { type: "string", maxLength: 500 } },
@@ -1017,8 +1018,8 @@ ${renderClaim(claim)}`;
             // artifact passes its parse boundary unchanged) — the field's
             // consumer is the human gate reviewing the artifact, not the
             // downstream implementer.
-            alternativesConsidered: { type: "array", minItems: 0, items: ALTERNATIVE_SCHEMA },
-            dependsOn: { type: "array", items: { type: "string" } }
+            alternativesConsidered: { type: "array", minItems: 0, maxItems: 8, items: ALTERNATIVE_SCHEMA },
+            dependsOn: { type: "array", maxItems: 16, items: { type: "string", maxLength: 12 } }
           },
           required: [
             "id",

@@ -4,7 +4,43 @@
 
 import { describe, it, expect } from 'vitest'
 import { FakeRuntime } from '@workflow-toolbox/runtime'
-import wf from '../dev-plan.workflow.js'
+import wf, { PLAN_ARTIFACT_SCHEMA } from '../dev-plan.workflow.js'
+
+// ---------------------------------------------------------------------------
+// PLAN_ARTIFACT_SCHEMA bounds (arbiter review finding, fix round, card
+// #1819690698539009755) — minimal, targeted sweep (not the full dev-ground-style
+// recursive walker): the finding named three specific arrays that were left
+// unbounded on the Synthesize output schema (files / alternativesConsidered /
+// dependsOn), the same output-token-runaway risk the maxLength bounds already
+// on this schema exist to guard against.
+// ---------------------------------------------------------------------------
+
+describe('dev-plan PLAN_ARTIFACT_SCHEMA bounds', () => {
+  it('tasks.items.files / alternativesConsidered / dependsOn arrays are capped, and dependsOn items are bounded', () => {
+    const schema = PLAN_ARTIFACT_SCHEMA as unknown as {
+      properties: {
+        tasks: {
+          items: {
+            properties: {
+              files: { maxItems?: number }
+              alternativesConsidered: { maxItems?: number }
+              dependsOn: { maxItems?: number; items: { maxLength?: number } }
+            }
+          }
+        }
+      }
+    }
+    const taskItemProps = schema.properties.tasks.items.properties
+    expect(taskItemProps.files.maxItems).toBeDefined()
+    expect(taskItemProps.files.maxItems).toBeGreaterThan(0)
+    expect(taskItemProps.alternativesConsidered.maxItems).toBeDefined()
+    expect(taskItemProps.alternativesConsidered.maxItems).toBeGreaterThan(0)
+    expect(taskItemProps.dependsOn.maxItems).toBeDefined()
+    expect(taskItemProps.dependsOn.maxItems).toBeGreaterThan(0)
+    expect(taskItemProps.dependsOn.items.maxLength).toBeDefined()
+    expect(taskItemProps.dependsOn.items.maxLength).toBeGreaterThan(0)
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Fixtures

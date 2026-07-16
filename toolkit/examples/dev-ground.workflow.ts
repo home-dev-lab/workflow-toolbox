@@ -416,14 +416,26 @@ export type GroundingRoute = 'cancel' | 'reframe' | 'proceed'
 // `cancel`'s sentence teaches BOTH of its causes (refuted-with-no-alternative
 // AND unsettled-with-no-alternative) — naming an exit without its corrective
 // path is the anti-pattern (dev-implement.workflow.ts:425-427 precedent).
+//
+// Arbiter review finding (fix round, card #1819690698539009755): the reframe
+// sentence previously claimed "an alternative … for EVERY blocking premise",
+// but `deriveRecommendation` routes to 'reframe' on `blockers.some(hasAlternative)`
+// — ANY blocking premise with an alternative, not all of them (KEPT semantics,
+// arbiter call — a genuinely mixed card, part fixable/part not, still deserves
+// the reframe path rather than a blanket cancel). The wording now matches the
+// code: it names the weaker, TRUE guarantee, and points the reader at `reasons`
+// (surfaced verbatim in `recommendationNote`/`summaryMarkdown`) for which
+// specific blockers still lack one.
 export const VERDICT_ROUTING: Record<GroundingRoute, string> = {
   cancel:
     'do not spend implementation budget — kill or park the card; if the block is an ' +
     'UNSETTLED premise rather than a refuted one, re-file it as an investigation with a ' +
     'raised grounding budget rather than re-running the same plan',
   reframe:
-    'a real alternative mechanism was surfaced for every blocking premise — replan against ' +
-    'the alternative rather than the falsified/unsettled original; a reframeSketch is required',
+    'at least one blocking premise surfaced a real alternative mechanism — replan against ' +
+    'it; any OTHER blocking premise without an alternative (named in the per-premise reasons ' +
+    'above) still blocks its own part of the plan and needs its own resolution before that ' +
+    'part proceeds; a reframeSketch is required',
   proceed:
     'every premise held (or was non-blocking) — implementation may start against the ' +
     'grounded premises',
@@ -582,11 +594,15 @@ export const POC_ROUTING: Record<PocOutcome, string> = {
     'evidence about the premise',
 }
 
-// Informational mapping ONLY (see the file-header CLAIM IDENTITY note): a PoC
+// Informational mapping (see the file-header CLAIM IDENTITY note): a PoC
 // outcome is material offered to Verify for refutation, never a verdict that
 // bypasses it. Kept exhaustive + typed so a sixth PocOutcome is a COMPILE
 // error here (mirrors the design's own "tally in code" discipline even for
-// an audit-only mapping).
+// an audit-only mapping). GENUINELY CONSULTED (fix round, card
+// #1819690698539009755): the Verify renderClaim below reads this mapping and
+// renders its output as one more offered-for-refutation hypothesis line — an
+// earlier revision exported this const but never actually referenced it,
+// which was dead code from run()'s own control-flow perspective.
 export const POC_VERDICT: Record<PocOutcome, ClaimVerdict> = {
   'ran-confirmed': 'confirmed',
   'ran-refuted': 'refuted',
@@ -678,6 +694,22 @@ export interface FinalPremiseResult {
   cardCorrection: CardCorrectionField | null
 }
 
+/** Structured, unverified card-correction proposal — see
+ *  FinalPremiseResult.cardCorrection for the "unverified, arm-authored"
+ *  caveat. `hypothesis` is what the card currently claims (bounded by the
+ *  source CardCorrectionField.field/current, ≤60+~205 chars); `correction`
+ *  is what it should say instead (bounded by CardCorrectionField.corrected,
+ *  ≤200 chars). Arbiter review finding (fix round, card
+ *  #1819690698539009755): STRUCTURED, not a pre-rendered prose string — so
+ *  renderSummaryMarkdown looks up the owning premise's verdict by
+ *  `premiseId` directly (no regex re-parse, no separator fragility — a
+ *  premiseId containing a space or dash no longer risks a mis-split). */
+export interface CardCorrectionEntry {
+  premiseId: string
+  hypothesis: string
+  correction: string
+}
+
 const NO_MATERIAL_COULD_NOT_VERIFY: CouldNotVerify = {
   status: 'nothing-verified',
   detail: 'no grounding arm or PoC canary produced any material for this premise',
@@ -697,6 +729,16 @@ const NO_MATERIAL_COULD_NOT_VERIFY: CouldNotVerify = {
 const SUMMARY_MARKDOWN_MAX_CHARS = 6000
 const SUMMARY_TRUNCATION_MARKER = '\n\n*(summary truncated at the character cap — see premiseResults for the full table)*'
 
+/** Neutralizes markdown table-breaking characters in a cell's rendered text —
+ *  a literal `|` would split the row, an embedded newline would break out of
+ *  it entirely. Arbiter review finding (fix round, card
+ *  #1819690698539009755): premise ids and evidence locators are caller- or
+ *  agent-supplied text, not guaranteed pipe/newline-free. `target`/`verdict`
+ *  are closed schema enums and never need this — only the free-text cells do. */
+function escapeTableCell(s: string): string {
+  return s.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
+}
+
 /** Renders the human-first summary: a premise-by-premise verdict table, the
  *  route + why in one paragraph, the card-correction list, and the
  *  prediction-check line. Capped at ~6000 chars, snapped to a line boundary
@@ -705,7 +747,7 @@ export function renderSummaryMarkdown(
   finalResults: readonly FinalPremiseResult[],
   recommendation: GroundingRecommendation,
   recommendationNote: string,
-  cardCorrections: readonly string[],
+  cardCorrections: readonly CardCorrectionEntry[],
   predictionCheck: readonly PredictionCheckItem[],
 ): string {
   const lines: string[] = []
@@ -720,24 +762,22 @@ export function renderSummaryMarkdown(
   for (const p of finalResults) {
     const ev = p.evidence[0]
     const evidenceCell = ev !== undefined ? `${ev.tier} @ ${ev.locator}` : p.pocRouting !== null ? `PoC: ${p.pocOutcome ?? '?'}` : '(none)'
-    lines.push(`| ${p.id} | ${p.target} | ${p.verdict} | ${evidenceCell} |`)
+    lines.push(`| ${escapeTableCell(p.id)} | ${p.target} | ${p.verdict} | ${escapeTableCell(evidenceCell)} |`)
   }
 
   if (cardCorrections.length > 0) {
     lines.push('')
     lines.push('## Card corrections (unverified proposals — arm-authored, not refute-first checked)')
     lines.push('')
-    // Correction lines are pre-rendered as `${premiseId} — …`; cross-reference
-    // the leading id against the VERIFIED table above so a contradiction
-    // between an unverified proposal and its own premise's verdict (see the
-    // fix-round finding at the cardCorrections computation site) is visible
-    // at a glance, without re-parsing the proposal itself.
+    // Structured entries (see CardCorrectionEntry) — direct premiseId lookup
+    // against the VERIFIED table above so a contradiction between an
+    // unverified proposal and its own premise's verdict is visible at a
+    // glance, with no re-parsing of a pre-rendered string.
     const verdictById = new Map(finalResults.map((p): [string, ClaimVerdict] => [p.id, p.verdict]))
     for (const c of cardCorrections) {
-      const idMatch = /^(\S+) — /.exec(c)
-      const verdict = idMatch !== null ? verdictById.get(idMatch[1]!) : undefined
+      const verdict = verdictById.get(c.premiseId)
       const annotation = verdict !== undefined ? ` [verdict for this premise: ${verdict}]` : ''
-      lines.push(`- ${c}${annotation}`)
+      lines.push(`- ${c.premiseId} — ${c.hypothesis} → "${c.correction}"${annotation}`)
     }
   }
 
@@ -1201,9 +1241,17 @@ export default defineWorkflow({
                 m.finding !== null
                   ? untrusted('ARM-PROPOSAL', JSON.stringify(m.finding.report))
                   : '(no arm proposal — grounding produced nothing for this premise)'
+              // Arbiter review finding (fix round): POC_VERDICT was exported
+              // but never actually CONSULTED by run() — genuinely dead from
+              // the control-flow's perspective, contradicting its own doc
+              // comment ("informational, audit-only"). Now wired in as ONE
+              // more offered-for-refutation hypothesis line, consistent with
+              // CLAIM IDENTITY (still never binding — the verifier's own
+              // tally, not this mapping, produces the final verdict).
               const pocBlock =
                 m.pocOutcome !== null
-                  ? untrusted('POC-OUTCOME', JSON.stringify(m.pocOutcome))
+                  ? untrusted('POC-OUTCOME', JSON.stringify(m.pocOutcome)) +
+                    `\nPoC-derived hypothesis verdict (offered for refutation, NOT binding): ${POC_VERDICT[m.pocOutcome.outcome]}`
                   : '(no PoC canary ran for this premise)'
               return (
                 `This premise was grounded by two independent arms (external research ∥ internal ` +
@@ -1272,9 +1320,20 @@ export default defineWorkflow({
     // is fast, cheap arm-authored suggestions) — but `renderSummaryMarkdown`
     // below labels the section honestly and annotates each line with the
     // premise's own verified verdict so a contradiction is visible at a glance.
-    const cardCorrections: string[] = finalResults
+    //
+    // STRUCTURED, not pre-rendered prose (fix round, card
+    // #1819690698539009755): `hypothesis` = what the card currently claims,
+    // `correction` = what it should say instead — both derived from the
+    // arm's own schema-bounded CardCorrectionField, so the artifact carries
+    // machine-readable fields instead of a string a consumer would have to
+    // re-parse.
+    const cardCorrections: CardCorrectionEntry[] = finalResults
       .filter((p) => (p.verdict === 'refuted' || p.verdict === 'partially-confirmed') && p.cardCorrection !== null)
-      .map((p) => `${p.id} — ${p.cardCorrection!.field}: "${p.cardCorrection!.current}" → "${p.cardCorrection!.corrected}"`)
+      .map((p) => ({
+        premiseId: p.id,
+        hypothesis: `${p.cardCorrection!.field}: "${p.cardCorrection!.current}"`,
+        correction: p.cardCorrection!.corrected,
+      }))
 
     // ---- Reframe (conditional agent, REQUIRED iff route === 'reframe') ----
     let reframeSketch: ReframeSketch | null = null

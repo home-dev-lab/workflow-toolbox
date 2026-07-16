@@ -38,7 +38,14 @@ import wf, {
   REFRAME_SCHEMA,
   PREDICT_SCHEMA,
 } from '../dev-ground.workflow.js'
-import type { PremiseOutcome, MergedPremise, Premise, PocOutcome, FinalPremiseResult } from '../dev-ground.workflow.js'
+import type {
+  PremiseOutcome,
+  MergedPremise,
+  Premise,
+  PocOutcome,
+  FinalPremiseResult,
+  CardCorrectionEntry,
+} from '../dev-ground.workflow.js'
 
 // ---------------------------------------------------------------------------
 // metadata
@@ -360,6 +367,23 @@ describe('VERDICT_ROUTING', () => {
     expect(text).toContain('proceed —')
     expect(text).toContain(VERDICT_ROUTING.proceed)
   })
+
+  it('fix-round finding: reframe wording never claims "every blocking premise" — the mixed case names the alternative-less blocker', () => {
+    // deriveRecommendation routes to 'reframe' on blockers.some(hasAlternative)
+    // — ANY blocker with an alternative, not all of them (KEPT semantics).
+    // The routing prose must not overclaim universality, and the per-premise
+    // reasons must still name which blocker has NO alternative.
+    const rec = deriveRecommendation([
+      outcome('P1', 'refuted', ['a real alternative mechanism']),
+      outcome('P2', 'unverifiable', []),
+    ])
+    expect(rec.route).toBe('reframe')
+    const note = formatRecommendation(rec)
+    expect(note).toContain('P2')
+    expect(note).toContain('no alternative mechanism surfaced')
+    expect(note.toLowerCase()).not.toContain('every blocking premise')
+    expect(VERDICT_ROUTING.reframe.toLowerCase()).not.toContain('every blocking premise')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -680,6 +704,18 @@ describe('dev-ground PoC canary sub-stage', () => {
     expect(p1?.pocOutcome).toBeNull()
     expect((result as { warnings: string[] }).warnings.some((w) => w.includes('died') && w.includes('unverifiable'))).toBe(true)
   })
+
+  it('fix-round finding: POC_VERDICT is genuinely CONSULTED — its mapped value reaches the verifier prompt as offered (non-binding) material', async () => {
+    const rt = makeRuntime({ premises: onePremise, armVerdict: 'unverifiable', pocOutcome: 'ran-refuted', verifierVerdict: 'refuted' })
+    await wf.run(rt, baseArgs(onePremise))
+    const verifierCalls = rt.calls.filter((c) => c.prompt.toLowerCase().includes('this premise was grounded by two independent arms'))
+    expect(verifierCalls.length).toBeGreaterThan(0)
+    for (const c of verifierCalls) {
+      expect(c.prompt).toContain('PoC-derived hypothesis verdict')
+      expect(c.prompt).toContain(POC_VERDICT['ran-refuted'])
+      expect(c.prompt.toLowerCase()).toContain('not binding')
+    }
+  })
 })
 
 describe('dev-ground Verify + final artifact', () => {
@@ -838,12 +874,13 @@ describe('dev-ground Verify + final artifact', () => {
     expect(raised.resolved['verify']?.effort).toBe('max')
   })
 
-  it('cardCorrections: a refuted premise with a proposed card correction surfaces it at the top level', async () => {
+  it('cardCorrections: a refuted premise with a proposed card correction surfaces it at the top level, STRUCTURED', async () => {
     const rt = makeRuntime({ premises: onePremise, armVerdict: 'refuted', armCardCorrection: true, verifierVerdict: 'refuted' })
-    const result = await wf.run(rt, baseArgs(onePremise)) as { cardCorrections: string[] }
+    const result = await wf.run(rt, baseArgs(onePremise)) as { cardCorrections: CardCorrectionEntry[] }
     expect(result.cardCorrections.length).toBe(1)
-    expect(result.cardCorrections[0]).toContain('500')
-    expect(result.cardCorrections[0]).toContain('409')
+    expect(result.cardCorrections[0]?.premiseId).toBe('P1')
+    expect(result.cardCorrections[0]?.hypothesis).toContain('500')
+    expect(result.cardCorrections[0]?.correction).toBe('409')
   })
 })
 
@@ -877,7 +914,7 @@ describe('renderSummaryMarkdown (pure, in-code, no agent call)', () => {
     ]
     const recommendation = { route: 'cancel' as const, reasons: ['P1: refuted — no alternative mechanism surfaced'] }
     const note = formatRecommendation(recommendation)
-    const cardCorrections = ['P1 — expectedStatus: "500" → "409"']
+    const cardCorrections: CardCorrectionEntry[] = [{ premiseId: 'P1', hypothesis: 'expectedStatus: "500"', correction: '409' }]
     const predictionCheck = [{ item: 'X will hold', outcome: 'broke' as const }]
 
     const md = renderSummaryMarkdown(results, recommendation, note, cardCorrections, predictionCheck)
@@ -904,7 +941,7 @@ describe('renderSummaryMarkdown (pure, in-code, no agent call)', () => {
     // (wf_ca96af60-02d) this fix locks against.
     const results = [finalResult({ id: 'P1', verdict: 'refuted' }), finalResult({ id: 'P2', verdict: 'confirmed' })]
     const recommendation = { route: 'cancel' as const, reasons: ['P1: refuted'] }
-    const cardCorrections = ['P1 — expectedStatus: "500" → "409"']
+    const cardCorrections: CardCorrectionEntry[] = [{ premiseId: 'P1', hypothesis: 'expectedStatus: "500"', correction: '409' }]
     const md = renderSummaryMarkdown(results, recommendation, formatRecommendation(recommendation), cardCorrections, [])
 
     expect(md).toContain('## Card corrections (unverified proposals — arm-authored, not refute-first checked)')
@@ -916,11 +953,23 @@ describe('renderSummaryMarkdown (pure, in-code, no agent call)', () => {
     const recommendation = { route: 'proceed' as const, reasons: ['P2: confirmed'] }
     // References a premise id ("P9") absent from `results` — must not throw
     // or invent a verdict for it.
-    const cardCorrections = ['P9 — someField: "old" → "new"']
+    const cardCorrections: CardCorrectionEntry[] = [{ premiseId: 'P9', hypothesis: 'someField: "old"', correction: 'new' }]
     const md = renderSummaryMarkdown(results, recommendation, formatRecommendation(recommendation), cardCorrections, [])
 
     expect(md).toContain('P9 — someField: "old" → "new"')
     expect(md).not.toContain('[verdict for this premise:')
+  })
+
+  it('fix-round finding: annotation is correct for a premiseId containing SPACES and DASHES (structured lookup, no regex re-parse)', () => {
+    const trickyId = 'P-1 special case'
+    const results = [finalResult({ id: trickyId, verdict: 'partially-confirmed' })]
+    const recommendation = { route: 'proceed' as const, reasons: [`${trickyId}: partially-confirmed`] }
+    const cardCorrections: CardCorrectionEntry[] = [
+      { premiseId: trickyId, hypothesis: 'expectedStatus: "500"', correction: '409' },
+    ]
+    const md = renderSummaryMarkdown(results, recommendation, formatRecommendation(recommendation), cardCorrections, [])
+
+    expect(md).toContain(`- ${trickyId} — expectedStatus: "500" → "409" [verdict for this premise: partially-confirmed]`)
   })
 
   it('caps at ~6000 chars, snapped to a line boundary, with a truncation marker', () => {
@@ -948,6 +997,27 @@ describe('renderSummaryMarkdown (pure, in-code, no agent call)', () => {
     )
     expect(md.length).toBeLessThan(6000)
     expect(md.toLowerCase()).not.toContain('truncated')
+  })
+
+  it('fix-round finding: a pipe or newline in evidence text is escaped, so the Premises table stays well-formed', () => {
+    const results = [
+      finalResult({
+        id: 'P1',
+        evidence: [{ premiseId: 'P1', tier: 'local-code', locator: '/repo/src/x.ts | grep foo\nsecond line', quote: 'q' }],
+      }),
+    ]
+    const recommendation = { route: 'proceed' as const, reasons: ['P1: confirmed'] }
+    const md = renderSummaryMarkdown(results, recommendation, formatRecommendation(recommendation), [], [])
+
+    // The raw `|` is escaped to `\|` (no longer splits the row into extra
+    // columns) and the embedded newline is replaced by a space (no longer
+    // breaks the row across two physical lines) — both land on ONE rendered
+    // line, verbatim.
+    expect(md).toContain('/repo/src/x.ts \\| grep foo second line')
+    // Exactly THREE table lines survive (header, separator, one data row) —
+    // an un-neutralized newline would have produced a stray fourth line.
+    const tableLines = md.split('\n').filter((l) => l.startsWith('|'))
+    expect(tableLines.length).toBe(3)
   })
 })
 

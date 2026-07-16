@@ -991,7 +991,7 @@ ${renderClaim(claim)}`;
   };
   var VERDICT_ROUTING = {
     cancel: "do not spend implementation budget \u2014 kill or park the card; if the block is an UNSETTLED premise rather than a refuted one, re-file it as an investigation with a raised grounding budget rather than re-running the same plan",
-    reframe: "a real alternative mechanism was surfaced for every blocking premise \u2014 replan against the alternative rather than the falsified/unsettled original; a reframeSketch is required",
+    reframe: "at least one blocking premise surfaced a real alternative mechanism \u2014 replan against it; any OTHER blocking premise without an alternative (named in the per-premise reasons above) still blocks its own part of the plan and needs its own resolution before that part proceeds; a reframeSketch is required",
     proceed: "every premise held (or was non-blocking) \u2014 implementation may start against the grounded premises"
   };
   function formatRecommendation(rec) {
@@ -1075,6 +1075,9 @@ ${renderClaim(claim)}`;
   };
   var SUMMARY_MARKDOWN_MAX_CHARS = 6e3;
   var SUMMARY_TRUNCATION_MARKER = "\n\n*(summary truncated at the character cap \u2014 see premiseResults for the full table)*";
+  function escapeTableCell(s) {
+    return s.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+  }
   function renderSummaryMarkdown(finalResults, recommendation, recommendationNote, cardCorrections, predictionCheck) {
     const lines = [];
     lines.push(`# Grounding result: ${recommendation.route.toUpperCase()}`);
@@ -1088,7 +1091,7 @@ ${renderClaim(claim)}`;
     for (const p of finalResults) {
       const ev = p.evidence[0];
       const evidenceCell = ev !== void 0 ? `${ev.tier} @ ${ev.locator}` : p.pocRouting !== null ? `PoC: ${p.pocOutcome ?? "?"}` : "(none)";
-      lines.push(`| ${p.id} | ${p.target} | ${p.verdict} | ${evidenceCell} |`);
+      lines.push(`| ${escapeTableCell(p.id)} | ${p.target} | ${p.verdict} | ${escapeTableCell(evidenceCell)} |`);
     }
     if (cardCorrections.length > 0) {
       lines.push("");
@@ -1096,10 +1099,9 @@ ${renderClaim(claim)}`;
       lines.push("");
       const verdictById = new Map(finalResults.map((p) => [p.id, p.verdict]));
       for (const c of cardCorrections) {
-        const idMatch = /^(\S+) — /.exec(c);
-        const verdict = idMatch !== null ? verdictById.get(idMatch[1]) : void 0;
+        const verdict = verdictById.get(c.premiseId);
         const annotation = verdict !== void 0 ? ` [verdict for this premise: ${verdict}]` : "";
-        lines.push(`- ${c}${annotation}`);
+        lines.push(`- ${c.premiseId} \u2014 ${c.hypothesis} \u2192 "${c.correction}"${annotation}`);
       }
     }
     if (predictionCheck.length > 0) {
@@ -1427,7 +1429,8 @@ Return { outcome, premiseId: "${p.id}", probe, observation, denialQuote, rationa
         claims: verifyClaims,
         renderClaim: (m) => {
           const findingBlock = m.finding !== null ? untrusted("ARM-PROPOSAL", JSON.stringify(m.finding.report)) : "(no arm proposal \u2014 grounding produced nothing for this premise)";
-          const pocBlock = m.pocOutcome !== null ? untrusted("POC-OUTCOME", JSON.stringify(m.pocOutcome)) : "(no PoC canary ran for this premise)";
+          const pocBlock = m.pocOutcome !== null ? untrusted("POC-OUTCOME", JSON.stringify(m.pocOutcome)) + `
+PoC-derived hypothesis verdict (offered for refutation, NOT binding): ${POC_VERDICT[m.pocOutcome.outcome]}` : "(no PoC canary ran for this premise)";
           return `This premise was grounded by two independent arms (external research \u2225 internal code analysis) plus an optional PoC canary. Actively try to REFUTE the premise; default to "unverifiable" under genuine uncertainty.
 
 PREMISE:
@@ -1472,7 +1475,11 @@ ${pocBlock}`;
       }));
       const recommendation = deriveRecommendation(premiseOutcomes);
       const recommendationNote = formatRecommendation(recommendation);
-      const cardCorrections = finalResults.filter((p) => (p.verdict === "refuted" || p.verdict === "partially-confirmed") && p.cardCorrection !== null).map((p) => `${p.id} \u2014 ${p.cardCorrection.field}: "${p.cardCorrection.current}" \u2192 "${p.cardCorrection.corrected}"`);
+      const cardCorrections = finalResults.filter((p) => (p.verdict === "refuted" || p.verdict === "partially-confirmed") && p.cardCorrection !== null).map((p) => ({
+        premiseId: p.id,
+        hypothesis: `${p.cardCorrection.field}: "${p.cardCorrection.current}"`,
+        correction: p.cardCorrection.corrected
+      }));
       let reframeSketch = null;
       if (recommendation.route === "reframe") {
         rt.phase("Reframe");
