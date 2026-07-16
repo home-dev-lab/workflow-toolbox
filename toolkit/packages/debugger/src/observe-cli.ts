@@ -71,6 +71,7 @@ import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
 import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
 import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
 import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode, AWAIT_SOURCE_UNRESOLVED_EXIT_CODE } from './observe-await.js'
+import { recoverExitCodeFor } from './observe-resume.js'
 import {
   resolveSource,
   localSourceKeys,
@@ -951,6 +952,51 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
   }
 }
 
+// ── resume: the sanctioned explicit recovery of a settled-FAILED run ────────────
+
+/** `wt-observe resume <runId> [--source <label|dir>]` — POST /api/runs/:runId/recover
+ *  (source-prefixed on a hub): EXPLICITLY relaunch a settled-FAILED run from its cached
+ *  agent work (card #1819953357465323377's incident: a dev-plan run died at its last step
+ *  with 39 agents / 92 minutes of cached work intact, and no sanctioned recovery path).
+ *  DISTINCT from the server's own pause-transport `/api/runs/:id/resume` (this verb never
+ *  touches that — see the server's app.ts for why the HTTP route is named /recover). Opt-in,
+ *  per-runId, never a sweep — an operator decides to recover ONE dead run at a time; the
+ *  server enforces its own anti-loop budget (max 2 explicit attempts) independently of this
+ *  CLI. Prints ONE JSON line and exits per recoverExitCodeFor (observe-resume.ts) / 5 on a
+ *  source-resolution failure (AWAIT_SOURCE_UNRESOLVED_EXIT_CODE, same as `await`). */
+async function cmdResume(ctx: Ctx, runId: string | undefined, sourceFlag: string | undefined): Promise<number> {
+  if (runId === undefined) throw new Error('usage: wt-observe resume <runId> [--source <label|dir>]')
+  const { port, token, health } = await requireOwnedServer(ctx)
+  let resolved: ResolvedSource
+  try {
+    resolved = await resolveSourcePrefix(port, token, health, sourceFlag)
+  } catch (err) {
+    if (err instanceof SourceResolutionError) {
+      // Same DISTINCT-from-"not found" outcome await's own source resolution carries (see
+      // its own doc) — the run's existence is UNKNOWN, never conflated with a genuine
+      // "no journal for this runId" (RECOVER_NOT_FOUND_EXIT_CODE below).
+      process.stdout.write(`${JSON.stringify({ runId, error: 'source-unresolved', message: err.message })}\n`)
+      return AWAIT_SOURCE_UNRESOLVED_EXIT_CODE
+    }
+    throw err
+  }
+  if (resolved.label !== '') process.stderr.write(`recovering under source ${resolved.label}\n`)
+  // 30s, same budget as cmdLaunch's own POST /api/launch call — the endpoint resolves as
+  // soon as the launch tool_result yields a runId (well before the recovered run itself
+  // completes), never waiting out the whole workflow.
+  const res = await api(port, token, `${resolved.prefix}/api/runs/${encodeURIComponent(runId)}/recover`, { method: 'POST' }, 30_000)
+  const body: unknown = await res.json().catch(() => null)
+  const record = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {}
+  const code = typeof record['code'] === 'string' ? record['code'] : undefined
+  if (res.ok) {
+    process.stdout.write(`${JSON.stringify(body)}\n`)
+  } else {
+    const errorMsg = typeof record['error'] === 'string' ? record['error'] : `http ${res.status}`
+    process.stdout.write(`${JSON.stringify({ runId, error: errorMsg, ...(code !== undefined ? { code } : {}) })}\n`)
+  }
+  return recoverExitCodeFor(res.status, res.ok, code)
+}
+
 // ── config verb: manage the persistent source list ──────────────────────────────
 
 /** `wt-observe config show` — the config-file path, its current sources, and what
@@ -1214,6 +1260,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       const timeoutS = Number(flagValue(argv, 'timeout-s') ?? AWAIT_DEFAULT_TIMEOUT_S) || AWAIT_DEFAULT_TIMEOUT_S
       const pollS = Number(flagValue(argv, 'poll-s') ?? AWAIT_DEFAULT_POLL_S) || AWAIT_DEFAULT_POLL_S
       return await cmdAwait(ctx, argv[1], timeoutS, pollS, flagValue(argv, 'source'))
+    } else if (cmd === 'resume') {
+      return await cmdResume(ctx, argv[1], flagValue(argv, 'source'))
     } else if (cmd === 'config') {
       const parsed = parseConfigAction(argv.slice(1))
       if (parsed.action === 'invalid') {
@@ -1229,6 +1277,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       process.stderr.write(
         'usage: wt-observe [start [--source <dir>]... [--watch] [--enable-launch]|stop|status|' +
           'launch <workflow.js> [--args <json>] [--source <label|dir>]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|' +
+          'resume <runId> [--source <label|dir>]|' +
           'config [show|add-source <dir>|remove-source <dir>|add-remote <url> [--token <t>|--token-file <p>] [--label <l>]|remove-remote <url>]]\n',
       )
       return 2

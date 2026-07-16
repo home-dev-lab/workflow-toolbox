@@ -375,6 +375,15 @@ function awaitExitCode(verdict) {
 }
 var AWAIT_SOURCE_UNRESOLVED_EXIT_CODE = 5;
 
+// packages/debugger/src/observe-resume.ts
+var RECOVER_REFUSED_EXIT_CODE = 2;
+var RECOVER_NOT_FOUND_EXIT_CODE = 4;
+function recoverExitCodeFor(status, ok, code) {
+  if (ok) return 0;
+  if (status === 404 && code === "not-found") return RECOVER_NOT_FOUND_EXIT_CODE;
+  return RECOVER_REFUSED_EXIT_CODE;
+}
+
 // packages/debugger/src/source-resolve.ts
 import { basename } from "node:path";
 var SourceResolutionError = class extends Error {
@@ -1066,6 +1075,36 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
     return awaitExitCode(verdict);
   }
 }
+async function cmdResume(ctx, runId, sourceFlag) {
+  if (runId === void 0) throw new Error("usage: wt-observe resume <runId> [--source <label|dir>]");
+  const { port, token, health } = await requireOwnedServer(ctx);
+  let resolved;
+  try {
+    resolved = await resolveSourcePrefix(port, token, health, sourceFlag);
+  } catch (err) {
+    if (err instanceof SourceResolutionError) {
+      process.stdout.write(`${JSON.stringify({ runId, error: "source-unresolved", message: err.message })}
+`);
+      return AWAIT_SOURCE_UNRESOLVED_EXIT_CODE;
+    }
+    throw err;
+  }
+  if (resolved.label !== "") process.stderr.write(`recovering under source ${resolved.label}
+`);
+  const res = await api(port, token, `${resolved.prefix}/api/runs/${encodeURIComponent(runId)}/recover`, { method: "POST" }, 3e4);
+  const body = await res.json().catch(() => null);
+  const record = typeof body === "object" && body !== null ? body : {};
+  const code = typeof record["code"] === "string" ? record["code"] : void 0;
+  if (res.ok) {
+    process.stdout.write(`${JSON.stringify(body)}
+`);
+  } else {
+    const errorMsg = typeof record["error"] === "string" ? record["error"] : `http ${res.status}`;
+    process.stdout.write(`${JSON.stringify({ runId, error: errorMsg, ...code !== void 0 ? { code } : {} })}
+`);
+  }
+  return recoverExitCodeFor(res.status, res.ok, code);
+}
 async function cmdConfigShow() {
   const configRoot = observeConfigRoot(process.env, homedir2(), process.platform);
   const configPath = join5(configRoot, "config.json");
@@ -1274,6 +1313,8 @@ async function main(argv = process.argv.slice(2)) {
       const timeoutS = Number(flagValue(argv, "timeout-s") ?? AWAIT_DEFAULT_TIMEOUT_S) || AWAIT_DEFAULT_TIMEOUT_S;
       const pollS = Number(flagValue(argv, "poll-s") ?? AWAIT_DEFAULT_POLL_S) || AWAIT_DEFAULT_POLL_S;
       return await cmdAwait(ctx, argv[1], timeoutS, pollS, flagValue(argv, "source"));
+    } else if (cmd === "resume") {
+      return await cmdResume(ctx, argv[1], flagValue(argv, "source"));
     } else if (cmd === "config") {
       const parsed = parseConfigAction(argv.slice(1));
       if (parsed.action === "invalid") {
@@ -1288,7 +1329,7 @@ async function main(argv = process.argv.slice(2)) {
       else await cmdConfigRemoveRemote(parsed.url);
     } else {
       process.stderr.write(
-        "usage: wt-observe [start [--source <dir>]... [--watch] [--enable-launch]|stop|status|launch <workflow.js> [--args <json>] [--source <label|dir>]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|config [show|add-source <dir>|remove-source <dir>|add-remote <url> [--token <t>|--token-file <p>] [--label <l>]|remove-remote <url>]]\n"
+        "usage: wt-observe [start [--source <dir>]... [--watch] [--enable-launch]|stop|status|launch <workflow.js> [--args <json>] [--source <label|dir>]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|resume <runId> [--source <label|dir>]|config [show|add-source <dir>|remove-source <dir>|add-remote <url> [--token <t>|--token-file <p>] [--label <l>]|remove-remote <url>]]\n"
       );
       return 2;
     }

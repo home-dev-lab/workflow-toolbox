@@ -595,6 +595,7 @@ The launcher is a thin lifecycle CLI (`node plugin/bin/wt-observe.mjs …`):
 | `wt-observe stop` | Stop the server this launcher owns (by its pidfile). |
 | `wt-observe launch <artifact> [--args <json>] [--source <label>]` | Run a workflow artifact through a delegated headless session (requires a server started with `--enable-launch`). |
 | `wt-observe await <runId> [--timeout-s N] [--poll-s N]` | Block until a launched run completes; the exit code mirrors the run outcome. |
+| `wt-observe resume <runId> [--source <label>]` | Explicitly relaunch a run that settled as failed, replaying its cached agent work (requires a server started with `--enable-launch`); bounded to a couple of attempts per run. |
 | `wt-observe prune` | Delete old run records — dry-run by default, `--yes` to apply. |
 | `wt-observe config show` | Show the persisted launcher config. |
 | `wt-observe config add-source <dir>` / `config remove-source <dir>` | Persist (or drop) a workflow source dir across restarts. |
