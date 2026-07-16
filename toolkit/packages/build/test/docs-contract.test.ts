@@ -42,6 +42,11 @@ const SURFACES = [
   'CLAUDE.md',
   'README.md',
   'toolkit/README.md',
+  // Published npm packages' own README.md — their npm registry page, and under
+  // contract like every other consumer-facing surface (card #1818564790587491673).
+  ...['std', 'patterns', 'runtime', 'build', 'pipeline-spec'].map(
+    (pkg) => `toolkit/packages/${pkg}/README.md`,
+  ),
   ...readdirSync(join(REPO_ROOT, 'docs/public'))
     .filter((f) => f.endsWith('.md'))
     .map((f) => `docs/public/${f}`),

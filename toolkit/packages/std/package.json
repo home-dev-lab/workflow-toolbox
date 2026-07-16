@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "license": "FSL-1.1-ALv2",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/home-dev-lab/workflow-toolbox.git",
+    "directory": "toolkit/packages/std"
+  },
   "exports": {
     ".": {
       "import": "./src/index.ts",
