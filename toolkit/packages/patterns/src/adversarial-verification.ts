@@ -22,6 +22,8 @@ import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias, PatternCount
 import { warn, applyCap, makeRecord, emitDigest } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { runCacheWarmup } from './cache-warm.js'
+import { agentWithSchemaSalvage } from './structured-salvage.js'
+import type { StructuredCallOutcome } from './structured-salvage.js'
 
 const STAGE = 'adversarialVerification'
 
@@ -353,12 +355,15 @@ export async function adversarialVerification<TClaim>(
   // non-deterministic under the real async runtime; indexed writes are not.
   const trailByClaim: TrailRecord[][] = []
 
+  // Per-claim salvage diagnostics, buffered the same way for the same reason.
+  const warningsByClaim: string[][] = []
+
   const verifiedKept: Array<VerifiedClaim<TClaim>> = await Promise.all(
     (keptClaims as readonly TClaim[]).map(async (claim, claimIndex) => {
       // keptClaims is a prefix of claims, so indices align with perClaimVotes.
       const claimVotes = perClaimVotes[claimIndex] ?? votesOpt
       const voteThunks = Array.from({ length: claimVotes }, (_: unknown, voteIndex: number) => {
-        return async (): Promise<VerifierVote | null> => {
+        return async (): Promise<StructuredCallOutcome<VerifierVote>> => {
           const lens = lenses !== undefined ? lenses[voteIndex] : undefined
           const prompt = buildVerifierPrompt(claim, lens)
 
@@ -378,15 +383,16 @@ export async function adversarialVerification<TClaim>(
             ...(verifierType !== undefined ? { agentType: verifierType } : {}),
           }
 
-          agentsSpawned++
-          return rt.agent<VerifierVote>(prompt, opts)
+          return agentWithSchemaSalvage<VerifierVote>(rt, prompt, opts)
         }
       })
 
       const rawVotes = await rt.parallel(voteThunks)
-      const votes: Array<VerifierVote | null> = rawVotes.map(
-        (v): VerifierVote | null => v as VerifierVote | null,
+      // A thunk that threw (budget) resolves to null — one spawn, no salvage.
+      const voteOuts: Array<StructuredCallOutcome<VerifierVote> | null> = rawVotes.map(
+        (v): StructuredCallOutcome<VerifierVote> | null => v as StructuredCallOutcome<VerifierVote> | null,
       )
+      const votes: Array<VerifierVote | null> = voteOuts.map((o) => o?.value ?? null)
 
       // Trail records built in vote-index order AFTER the rt.parallel barrier,
       // and stored by claim INDEX — pushing straight to `trail` from inside
@@ -398,8 +404,11 @@ export async function adversarialVerification<TClaim>(
       // argument, not an omission. This is the intentional model-sensitivity
       // audit behaviour for adversarialVerification.
       const claimRecords: TrailRecord[] = []
+      const claimWarnings: string[] = []
       for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
+        const out = voteOuts[voteIndex] ?? null
         const vote = votes[voteIndex] ?? null
+        agentsSpawned += out?.spawns ?? 1
         claimRecords.push(makeRecord(
           `${STAGE}:verify:${claimIndex}:${voteIndex}`,
           vote !== null,
@@ -409,8 +418,20 @@ export async function adversarialVerification<TClaim>(
             ...(vote !== null ? { decision: vote.verdict } : {}),
           },
         ))
+        if (out !== null && out.spawns === 2) {
+          claimRecords.push(makeRecord(
+            `${STAGE}:verify:${claimIndex}:${voteIndex}:salvage`,
+            out.salvaged,
+            {
+              model: effectiveModel,
+              ...(effort !== undefined ? { effort } : {}),
+            },
+          ))
+        }
+        for (const message of out?.warnings ?? []) claimWarnings.push(`${STAGE}: ${message}`)
       }
       trailByClaim[claimIndex] = claimRecords
+      warningsByClaim[claimIndex] = claimWarnings
 
       // -------------------------------------------------------------------
       // Deterministic tally in code — never trust the model to count votes.
@@ -454,6 +475,8 @@ export async function adversarialVerification<TClaim>(
   // Flatten per-claim records in claim-index order — deterministic regardless
   // of which claim group finished first. (.flat() also skips any hole safely.)
   trail.push(...trailByClaim.flat())
+  // Salvage diagnostics, in deterministic claim/vote order after the barrier.
+  for (const message of warningsByClaim.flat()) warn(rt, warnings, message)
 
   // -------------------------------------------------------------------------
   // Append truncated claims as 'unverified-by-cap' with empty votes (§8).

@@ -194,7 +194,10 @@ describe('adversarialVerification — partial null votes', () => {
   it('tallies only non-null votes, reports null count warning', async () => {
     let callCount = 0
     const rt = new FakeRuntime({
-      onAgent: () => {
+      onAgent: ({ opts }) => {
+        // This test scripts a REALLY dead vote: its structured-output salvage
+        // respawn must fail too (and must not shift callCount's modulo).
+        if (opts?.label?.endsWith(':salvage') === true) return null
         callCount++
         // vote index 1 (second vote per claim) returns null
         if (callCount % 3 === 2) return null
@@ -306,9 +309,11 @@ describe('adversarialVerification — cap-truncated vs all-verifiers-failed dist
     expect(result.stats.dropped).toBe(2)
 
     // Truncated claims get NO trail records: trail.length === agentsSpawned
-    // (2 kept claims × 2 votes = 4) and no stage references claim 2 or 3.
+    // (2 kept claims × 2 votes = 4, + 2 salvage respawns for c1's null votes —
+    // startsWith('…verify:1:') matches the ':salvage' labels too, so they fail
+    // as well) and no stage references claim 2 or 3.
     expect(result.trail).toHaveLength(result.stats.agentsSpawned)
-    expect(result.trail).toHaveLength(4)
+    expect(result.trail).toHaveLength(6)
     expect(result.trail!.some(r => r.stage.startsWith('adversarialVerification:verify:2:'))).toBe(false)
     expect(result.trail!.some(r => r.stage.startsWith('adversarialVerification:verify:3:'))).toBe(false)
 
@@ -738,7 +743,10 @@ describe('adversarialVerification — trail: null verifier records', () => {
   it('records outcome=null at correct index for null verifier, invariant holds', async () => {
     let callCount = 0
     const rt = new FakeRuntime({
-      onAgent: () => {
+      onAgent: ({ opts }) => {
+        // The dead vote's structured-output salvage respawn must fail too
+        // (and must not shift callCount).
+        if (opts?.label?.endsWith(':salvage') === true) return null
         callCount++
         if (callCount === 2) return null  // vote:1 of claim:0 returns null
         return confirmedVote
@@ -754,14 +762,16 @@ describe('adversarialVerification — trail: null verifier records', () => {
     expect(result.trail).toBeDefined()
     const trail = result.trail!
 
-    // invariant: 1 claim × 3 votes = 3
+    // invariant: 1 claim × 3 votes + 1 salvage respawn for the null vote = 4
     expect(trail).toHaveLength(result.stats.agentsSpawned)
-    expect(trail).toHaveLength(3)
+    expect(trail).toHaveLength(4)
 
     expect(trail[0]!.outcome).toBe('ok')
     expect(trail[1]!.outcome).toBe('null')   // vote index 1 was null
     expect(trail[1]!.decision).toBeUndefined()  // null agent → no decision
-    expect(trail[2]!.outcome).toBe('ok')
+    expect(trail[2]!.stage).toBe('adversarialVerification:verify:0:1:salvage')
+    expect(trail[2]!.outcome).toBe('null')
+    expect(trail[3]!.outcome).toBe('ok')
   })
 
   it('records outcome=null for all-null verifier agents (unverifiable claim), invariant holds', async () => {
@@ -777,9 +787,9 @@ describe('adversarialVerification — trail: null verifier records', () => {
     expect(result.trail).toBeDefined()
     const trail = result.trail!
 
-    // invariant: 1 claim × 3 votes = 3
+    // invariant: 1 claim × 3 votes + 3 salvage respawns (all null too) = 6
     expect(trail).toHaveLength(result.stats.agentsSpawned)
-    expect(trail).toHaveLength(3)
+    expect(trail).toHaveLength(6)
 
     for (const rec of trail) {
       expect(rec.outcome).toBe('null')
@@ -799,9 +809,15 @@ describe('adversarialVerification — trail: null verifier records', () => {
     }))
 
     const trail = result.trail!
-    expect(trail[0]!.stage).toBe('adversarialVerification:verify:0:0')
-    expect(trail[1]!.stage).toBe('adversarialVerification:verify:0:1')
-    expect(trail[2]!.stage).toBe('adversarialVerification:verify:0:2')
+    // Each null vote is followed by its (also-null) salvage respawn's record.
+    expect(trail.map(r => r.stage)).toEqual([
+      'adversarialVerification:verify:0:0',
+      'adversarialVerification:verify:0:0:salvage',
+      'adversarialVerification:verify:0:1',
+      'adversarialVerification:verify:0:1:salvage',
+      'adversarialVerification:verify:0:2',
+      'adversarialVerification:verify:0:2:salvage',
+    ])
   })
 })
 

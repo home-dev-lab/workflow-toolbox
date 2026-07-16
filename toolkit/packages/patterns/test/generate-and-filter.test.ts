@@ -498,13 +498,17 @@ describe('generateAndFilter — audit trail', () => {
     const result = await generateAndFilter(rt, makeOptions({ count: 3 }))
 
     const trail = result.trail!
-    // 3 generate + 3 filter = 6 agents, all spawned (filter null still spawned)
+    // 3 generate + 3 filter + 1 structured-output salvage respawn for the null
+    // filter (its answer, 'candidate', is not JSON → salvage fails too) = 7
     expect(trail).toHaveLength(result.stats.agentsSpawned)
-    expect(trail).toHaveLength(6)
+    expect(trail).toHaveLength(7)
 
     const filterRecord1 = trail.find(r => r.stage === 'generateAndFilter:filter:1')!
     expect(filterRecord1.outcome).toBe('null')
     expect(filterRecord1).not.toHaveProperty('decision')
+
+    const salvageRecord = trail.find(r => r.stage === 'generateAndFilter:filter:1:salvage')!
+    expect(salvageRecord.outcome).toBe('null')
   })
 
   it('filter pass=false: filter record outcome=ok, decision=fail', async () => {

@@ -22,6 +22,8 @@ import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@work
 import { warn, applyCap, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { parallelWithCacheWarm } from './cache-warm.js'
+import { agentWithSchemaSalvage } from './structured-salvage.js'
+import type { StructuredCallOutcome } from './structured-salvage.js'
 
 const STAGE = 'planAndExecute'
 
@@ -229,8 +231,20 @@ export async function planAndExecute<TWork = string, TOut = string>(
     ...(planType !== undefined ? { agentType: planType } : {}),
   }
 
-  agentsSpawned++
-  const plan = await rt.agent<{ subtasks: PlannedSubtask[] }>(planPrompt, planOpts)
+  const planOut = await agentWithSchemaSalvage<{ subtasks: PlannedSubtask[] }>(rt, planPrompt, planOpts)
+  agentsSpawned += planOut.spawns
+  for (const message of planOut.warnings) warn(rt, warnings, `${STAGE}: ${message}`)
+  const plan = planOut.value
+
+  // The planner's trail record(s) — the salvage respawn, when it fired, gets its own.
+  const pushPlanSalvageRecord = (): void => {
+    if (planOut.spawns === 2) {
+      trail.push(makeRecord(`${STAGE}:plan:salvage`, planOut.salvaged, {
+        ...(planModel !== undefined ? { model: planModel } : {}),
+        ...(planEffort !== undefined ? { effort: planEffort } : {}),
+      }))
+    }
+  }
 
   if (plan === null) {
     warn(rt, warnings, 'planAndExecute: planner returned null — nothing executed')
@@ -239,6 +253,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
       ...(planModel !== undefined ? { model: planModel } : {}),
       ...(planEffort !== undefined ? { effort: planEffort } : {}),
     }))
+    pushPlanSalvageRecord()
 
     const stats: PatternStats = {
       itemsIn: 0,
@@ -275,6 +290,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
     ...(planEffort !== undefined ? { effort: planEffort } : {}),
     decision: `subtasks=${keptSubtasks.length}`,
   }))
+  pushPlanSalvageRecord()
 
   // -------------------------------------------------------------------------
   // Stage 2 — Workers: rt.parallel over kept subtasks.
@@ -285,7 +301,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
 
   const keptArray = keptSubtasks as PlannedSubtask[]
 
-  const workerThunks = keptArray.map((subtask, i) => async (): Promise<TWork | null> => {
+  const workerThunks = keptArray.map((subtask, i) => async (): Promise<StructuredCallOutcome<TWork>> => {
     const opts: {
       label: string
       phase?: string
@@ -302,26 +318,36 @@ export async function planAndExecute<TWork = string, TOut = string>(
       ...(workerType !== undefined ? { agentType: workerType } : {}),
     }
 
-    agentsSpawned++
-    return rt.agent<TWork>(workerPrompt(subtask, i), opts)
+    return agentWithSchemaSalvage<TWork>(rt, workerPrompt(subtask, i), opts)
   })
 
   const rawWorkerResults = await parallelWithCacheWarm(rt, workerThunks, cacheWarm ?? true)
 
-  // Collect non-null results in index order, build worker trail records in index order
-  // after the parallel barrier (determinism: never completion order).
+  // Collect non-null results in index order, build worker trail records + spawn
+  // counts in index order after the parallel barrier (determinism: never
+  // completion order). A thunk that threw (budget) resolves to null — one
+  // spawn, no salvage.
   const successfulResults: TWork[] = []
   let droppedWorkers = 0
 
   for (let i = 0; i < rawWorkerResults.length; i++) {
-    const r = rawWorkerResults[i]
+    const out = rawWorkerResults[i] as StructuredCallOutcome<TWork> | null
+    const r = out?.value ?? null
+    agentsSpawned += out?.spawns ?? 1
     trail.push(makeRecord(`${STAGE}:work:${i}`, r !== null, {
       ...(workerModel !== undefined ? { model: workerModel } : {}),
       ...(workerEffort !== undefined ? { effort: workerEffort } : {}),
     }))
+    if (out !== null && out.spawns === 2) {
+      trail.push(makeRecord(`${STAGE}:work:${i}:salvage`, out.salvaged, {
+        ...(workerModel !== undefined ? { model: workerModel } : {}),
+        ...(workerEffort !== undefined ? { effort: workerEffort } : {}),
+      }))
+    }
+    for (const message of out?.warnings ?? []) warn(rt, warnings, `${STAGE}: ${message}`)
 
     if (r !== null) {
-      successfulResults.push(r as TWork)
+      successfulResults.push(r)
     } else {
       droppedWorkers++
     }
@@ -374,13 +400,21 @@ export async function planAndExecute<TWork = string, TOut = string>(
     ...(synthesisType !== undefined ? { agentType: synthesisType } : {}),
   }
 
-  agentsSpawned++
-  const synthesis = await rt.agent<TOut>(synthesisPrompt(successfulResults), synthOpts)
+  const synthOut = await agentWithSchemaSalvage<TOut>(rt, synthesisPrompt(successfulResults), synthOpts)
+  agentsSpawned += synthOut.spawns
+  const synthesis = synthOut.value
 
   trail.push(makeRecord(`${STAGE}:synthesize`, synthesis !== null, {
     ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
     ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
   }))
+  if (synthOut.spawns === 2) {
+    trail.push(makeRecord(`${STAGE}:synthesize:salvage`, synthOut.salvaged, {
+      ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
+      ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
+    }))
+  }
+  for (const message of synthOut.warnings) warn(rt, warnings, `${STAGE}: ${message}`)
 
   let value: TOut | null = null
 

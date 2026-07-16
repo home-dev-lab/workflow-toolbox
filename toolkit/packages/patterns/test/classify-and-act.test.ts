@@ -519,23 +519,32 @@ describe('classifyAndAct — audit trail', () => {
     const result = await classifyAndAct(rt, makeOptions({ items: ['item-0', 'item-1'] }))
 
     const trail = result.trail!
-    // item-0: 1 classify (null) → 1 agent. item-1: 1 classify + 1 act → 2 agents. total=3
+    // item-0: 1 classify (null) + 1 structured-output salvage respawn (its
+    // answer, 'action-result', is not JSON → salvage fails too) → 2 agents.
+    // item-1: 1 classify + 1 act → 2 agents. total=4
     expect(trail).toHaveLength(result.stats.agentsSpawned)
-    expect(trail).toHaveLength(3)
+    expect(trail).toHaveLength(4)
 
     // item-0 classify null record at index 0
     expect(trail.at(0)!.stage).toBe('classifyAndAct:classify:0')
     expect(trail.at(0)!.outcome).toBe('null')
     expect(trail.at(0)!).not.toHaveProperty('decision')
 
-    // item-1 classify ok at index 1
-    expect(trail.at(1)!.stage).toBe('classifyAndAct:classify:1')
-    expect(trail.at(1)!.outcome).toBe('ok')
-    expect(trail.at(1)!.decision).toBe('docs')
+    // item-0 salvage respawn record right after its stage's main record
+    expect(trail.at(1)!.stage).toBe('classifyAndAct:classify:0:salvage')
+    expect(trail.at(1)!.outcome).toBe('null')
 
-    // item-1 act ok at index 2
-    expect(trail.at(2)!.stage).toBe('classifyAndAct:act:docs:1')
+    // item-1 classify ok at index 2
+    expect(trail.at(2)!.stage).toBe('classifyAndAct:classify:1')
     expect(trail.at(2)!.outcome).toBe('ok')
+    expect(trail.at(2)!.decision).toBe('docs')
+
+    // item-1 act ok at index 3
+    expect(trail.at(3)!.stage).toBe('classifyAndAct:act:docs:1')
+    expect(trail.at(3)!.outcome).toBe('ok')
+
+    // The salvage failure is diagnosed, not silent
+    expect(result.warnings.join(' ')).toContain('salvage output is not a JSON object')
   })
 
   it('dropped-item (act null): outcome=null record present, trail.length === agentsSpawned', async () => {

@@ -271,10 +271,12 @@ describe('planAndExecute — planner null', () => {
     const result = await planAndExecute(rt, makeOptions())
 
     expect(result.value).toBeNull()
-    expect(result.stats.agentsSpawned).toBe(1)
-    // No worker or synthesis calls
+    // 1 native plan call + 1 structured-output salvage respawn (its answer,
+    // 'should-not-be-called', is not JSON → salvage fails too)
+    expect(result.stats.agentsSpawned).toBe(2)
+    // No worker or synthesis calls — the only non-planner call is the salvage
     const nonPlannerCalls = rt.calls.filter(c => c.opts?.label !== 'planAndExecute:plan')
-    expect(nonPlannerCalls).toHaveLength(0)
+    expect(nonPlannerCalls.map(c => c.opts?.label)).toEqual(['planAndExecute:plan:salvage'])
     expect(result.warnings.some(w => w.includes('planner') && w.includes('null'))).toBe(true)
     // itemsIn = 0 (nothing planned)
     expect(result.stats.itemsIn).toBe(0)
@@ -626,9 +628,14 @@ describe('planAndExecute — trail', () => {
 
     const result = await planAndExecute(rt, makeOptions()) as PlanAndExecuteResult<string, string>
 
-    expect(result.trail).toHaveLength(1)
+    // planner record + its failed structured-output salvage respawn's record
+    expect(result.trail).toHaveLength(2)
     expect(result.trail![0]).toEqual({
       stage: 'planAndExecute:plan',
+      outcome: 'null',
+    })
+    expect(result.trail![1]).toEqual({
+      stage: 'planAndExecute:plan:salvage',
       outcome: 'null',
     })
     // invariant: trail.length === agentsSpawned
@@ -930,6 +937,11 @@ describe('planAndExecute — cacheWarm=false (explicit opt-out)', () => {
     await Promise.resolve()
     await Promise.resolve()
     await Promise.resolve()
+    // Extra flushes: the structured-salvage wrapper adds an await layer on the
+    // plan call's critical path (agentWithSchemaSalvage awaits rt.agent).
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
 
     expect(laterWorkerStartedBeforeFirstResolved).toBe(true)
     resolveFirst('r0')
@@ -989,6 +1001,11 @@ describe('planAndExecute — cacheWarm omitted (defaults to TRUE)', () => {
     await Promise.resolve()
     await Promise.resolve()
     await Promise.resolve()
+    // Extra flushes: the structured-salvage wrapper adds an await layer on the
+    // plan call's critical path (agentWithSchemaSalvage awaits rt.agent).
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
 
     expect(laterWorkerStartedBeforeFirstResolved).toBe(false)
     resolveFirst('r0')
@@ -1020,6 +1037,11 @@ describe('planAndExecute — cacheWarm=true (staggered)', () => {
     const promise = planAndExecute(rt, makeOptions({ cacheWarm: true }))
     // Flush enough microtasks for the plan call (a real awaited agent() call)
     // to resolve and the worker fan-out to begin.
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    // Extra flushes: the structured-salvage wrapper adds an await layer on the
+    // plan call's critical path (agentWithSchemaSalvage awaits rt.agent).
     await Promise.resolve()
     await Promise.resolve()
     await Promise.resolve()

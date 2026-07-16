@@ -34,6 +34,8 @@ import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@work
 import { warn, applyCap, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { parallelWithCacheWarm } from './cache-warm.js'
+import { agentWithSchemaSalvage } from './structured-salvage.js'
+import type { StructuredCallOutcome } from './structured-salvage.js'
 
 const STAGE = 'chunkedAnalysis'
 
@@ -318,7 +320,7 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
 
   const keptArray = keptChunks as readonly string[]
 
-  const analyzeThunks = keptArray.map((chunk, i) => async (): Promise<TChunk | null> => {
+  const analyzeThunks = keptArray.map((chunk, i) => async (): Promise<StructuredCallOutcome<TChunk>> => {
     const opts: {
       label: string
       phase?: string
@@ -335,30 +337,40 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
       ...(analyzeType !== undefined ? { agentType: analyzeType } : {}),
     }
 
-    agentsSpawned++
-    return rt.agent<TChunk>(analyzePrompt(chunk, i, total), opts)
+    return agentWithSchemaSalvage<TChunk>(rt, analyzePrompt(chunk, i, total), opts)
   })
 
   const analyzeResults = await parallelWithCacheWarm(rt, analyzeThunks, cacheWarm ?? true)
 
   // -------------------------------------------------------------------------
-  // Collect non-null analyses and append trail records in chunk-index order
-  // AFTER the rt.parallel barrier (determinism: never completion order).
+  // Collect non-null analyses and append trail records + spawn counts in
+  // chunk-index order AFTER the rt.parallel barrier (determinism: never
+  // completion order). A thunk that threw (budget) resolves to null — one
+  // spawn, no salvage.
   // -------------------------------------------------------------------------
 
   const chunkResults: TChunk[] = []
   let dropped = 0
 
   for (let i = 0; i < analyzeResults.length; i++) {
-    const r = analyzeResults[i]
-    // One record per agentsSpawned++ in the map thunks above, in index order.
+    const out = analyzeResults[i] as StructuredCallOutcome<TChunk> | null
+    const r = out?.value ?? null
+    agentsSpawned += out?.spawns ?? 1
+    // One record per spawn, in index order (the salvage respawn gets its own).
     trail.push(makeRecord(`${STAGE}:chunk:${i}`, r !== null, {
       ...(analyzeModel !== undefined ? { model: analyzeModel } : {}),
       ...(analyzeEffort !== undefined ? { effort: analyzeEffort } : {}),
     }))
+    if (out !== null && out.spawns === 2) {
+      trail.push(makeRecord(`${STAGE}:chunk:${i}:salvage`, out.salvaged, {
+        ...(analyzeModel !== undefined ? { model: analyzeModel } : {}),
+        ...(analyzeEffort !== undefined ? { effort: analyzeEffort } : {}),
+      }))
+    }
+    for (const message of out?.warnings ?? []) warn(rt, warnings, `${STAGE}: ${message}`)
 
     if (r !== null) {
-      chunkResults.push(r as TChunk)
+      chunkResults.push(r)
     } else {
       dropped++
     }
@@ -396,14 +408,22 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
       ...(synthesizeType !== undefined ? { agentType: synthesizeType } : {}),
     }
 
-    agentsSpawned++
-    const synthesis = await rt.agent<TOut>(synthesizePrompt(chunkResults), synthOpts)
+    const synthOut = await agentWithSchemaSalvage<TOut>(rt, synthesizePrompt(chunkResults), synthOpts)
+    agentsSpawned += synthOut.spawns
+    const synthesis = synthOut.value
 
-    // Trail record for synthesis — adjacent to agentsSpawned++ above.
+    // Trail record for synthesis — adjacent to the spawn accounting above.
     trail.push(makeRecord(`${STAGE}:synthesize`, synthesis !== null, {
       ...(synthesizeModel !== undefined ? { model: synthesizeModel } : {}),
       ...(synthesizeEffort !== undefined ? { effort: synthesizeEffort } : {}),
     }))
+    if (synthOut.spawns === 2) {
+      trail.push(makeRecord(`${STAGE}:synthesize:salvage`, synthOut.salvaged, {
+        ...(synthesizeModel !== undefined ? { model: synthesizeModel } : {}),
+        ...(synthesizeEffort !== undefined ? { effort: synthesizeEffort } : {}),
+      }))
+    }
+    for (const message of synthOut.warnings) warn(rt, warnings, `${STAGE}: ${message}`)
 
     if (synthesis === null) {
       warn(rt, warnings, 'chunkedAnalysis: synthesis agent returned null')

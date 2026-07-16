@@ -35,6 +35,7 @@ import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@work
 import { warn, makeRecord, applyCap, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { parallelWithCacheWarm } from './cache-warm.js'
+import { agentWithSchemaSalvage } from './structured-salvage.js'
 
 const STAGE = 'scoreAndRank'
 
@@ -206,7 +207,13 @@ export async function scoreAndRank<TItem = string>(
 
   // Pending trail entries; sorted by a deterministic global order after the
   // parallel barrier (parallel completion order is non-deterministic).
+  // order +0.5 slots a structured-output salvage respawn's record right after
+  // its score cell's main record.
   const pendingTrail: Array<{ order: number; record: TrailRecord }> = []
+
+  // Pending salvage diagnostics — buffered and emitted after the barrier
+  // (sorted like the trail) so `warnings` stays deterministic.
+  const pendingWarnings: Array<{ order: number; message: string }> = []
 
   // -------------------------------------------------------------------------
   // Score stage — one independent agent per (item, dimension)
@@ -242,8 +249,19 @@ export async function scoreAndRank<TItem = string>(
 
     const order = t.itemIndex * dimensions.length + t.dimIndex
 
-    agentsSpawned++
-    const verdict = await rt.agent<{ score: number; reason: string }>(dim.prompt(item), opts)
+    const scoreOut = await agentWithSchemaSalvage<{ score: number; reason: string }>(rt, dim.prompt(item), opts)
+    agentsSpawned += scoreOut.spawns
+    for (const message of scoreOut.warnings) pendingWarnings.push({ order, message })
+    if (scoreOut.spawns === 2) {
+      pendingTrail.push({
+        order: order + 0.5,
+        record: makeRecord(`${label}:salvage`, scoreOut.salvaged, {
+          ...(model !== undefined ? { model } : {}),
+          ...(effort !== undefined ? { effort } : {}),
+        }),
+      })
+    }
+    const verdict = scoreOut.value
 
     if (verdict === null) {
       pendingTrail.push({
@@ -305,6 +323,10 @@ export async function scoreAndRank<TItem = string>(
     }
     scoredItems.push({ item, scores: [...scores], score: combined })
   }
+
+  // Salvage diagnostics first, in deterministic order.
+  pendingWarnings.sort((a, b) => a.order - b.order)
+  for (const entry of pendingWarnings) warn(rt, warnings, `${STAGE}: ${entry.message}`)
 
   if (dropped > 0) {
     warn(

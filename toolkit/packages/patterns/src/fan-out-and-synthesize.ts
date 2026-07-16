@@ -19,6 +19,8 @@ import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@work
 import { warn, applyCap, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { parallelWithCacheWarm } from './cache-warm.js'
+import { agentWithSchemaSalvage } from './structured-salvage.js'
+import type { StructuredCallOutcome } from './structured-salvage.js'
 
 const STAGE = 'fanOutAndSynthesize'
 
@@ -162,7 +164,7 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
 
   const keptArray = kept as readonly TTask[]
 
-  const taskThunks = keptArray.map((task, i) => async (): Promise<TPart | null> => {
+  const taskThunks = keptArray.map((task, i) => async (): Promise<StructuredCallOutcome<TPart>> => {
     const taskOpts: {
       label: string
       phase?: string
@@ -179,31 +181,41 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
       ...(taskType !== undefined ? { agentType: taskType } : {}),
     }
 
-    agentsSpawned++
-    return rt.agent<TPart>(taskPrompt(task, i), taskOpts)
+    return agentWithSchemaSalvage<TPart>(rt, taskPrompt(task, i), taskOpts)
   })
 
   const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? true)
 
   // -------------------------------------------------------------------------
-  // Collect non-null parts and append trail records in item-index order
-  // AFTER the rt.parallel barrier (determinism: never completion order).
+  // Collect non-null parts and append trail records + spawn counts in
+  // item-index order AFTER the rt.parallel barrier (determinism: never
+  // completion order). A thunk that threw (budget) resolves to null — that is
+  // one spawn, no salvage.
   // -------------------------------------------------------------------------
 
   const parts: TPart[] = []
   let dropped = 0
 
   for (let i = 0; i < taskResults.length; i++) {
-    const r = taskResults[i]
+    const out = taskResults[i] as StructuredCallOutcome<TPart> | null
+    const r = out?.value ?? null
+    agentsSpawned += out?.spawns ?? 1
     // Push trail record adjacent to the logical spawn site, in index order.
-    // invariant: one record per agentsSpawned++ in the fan-out thunks above.
+    // invariant: one record per spawn (the salvage respawn gets its own).
     trail.push(makeRecord(`${STAGE}:task:${i}`, r !== null, {
       ...(taskModel !== undefined ? { model: taskModel } : {}),
       ...(taskEffort !== undefined ? { effort: taskEffort } : {}),
     }))
+    if (out !== null && out.spawns === 2) {
+      trail.push(makeRecord(`${STAGE}:task:${i}:salvage`, out.salvaged, {
+        ...(taskModel !== undefined ? { model: taskModel } : {}),
+        ...(taskEffort !== undefined ? { effort: taskEffort } : {}),
+      }))
+    }
+    for (const message of out?.warnings ?? []) warn(rt, warnings, `${STAGE}: ${message}`)
 
     if (r !== null) {
-      parts.push(r as TPart)
+      parts.push(r)
     } else {
       dropped++
     }
@@ -241,14 +253,22 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
       ...(synthesisType !== undefined ? { agentType: synthesisType } : {}),
     }
 
-    agentsSpawned++
-    const synthesis = await rt.agent<TOut>(synthesisPrompt(parts), synthOpts)
+    const synthOut = await agentWithSchemaSalvage<TOut>(rt, synthesisPrompt(parts), synthOpts)
+    agentsSpawned += synthOut.spawns
+    const synthesis = synthOut.value
 
-    // Trail record for synthesis — adjacent to agentsSpawned++ above.
+    // Trail record for synthesis — adjacent to the spawn accounting above.
     trail.push(makeRecord(`${STAGE}:synthesize`, synthesis !== null, {
       ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
       ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
     }))
+    if (synthOut.spawns === 2) {
+      trail.push(makeRecord(`${STAGE}:synthesize:salvage`, synthOut.salvaged, {
+        ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
+        ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
+      }))
+    }
+    for (const message of synthOut.warnings) warn(rt, warnings, `${STAGE}: ${message}`)
 
     if (synthesis === null) {
       warn(rt, warnings, 'fanOutAndSynthesize: synthesis agent returned null')

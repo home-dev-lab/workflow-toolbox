@@ -328,6 +328,247 @@ ${prompt}` : prompt;
     }
   }
 
+  // ../packages/patterns/src/structured-salvage.ts
+  function describeNode(node) {
+    const parts = [];
+    if (node.enum !== void 0) {
+      parts.push(`one of: ${node.enum.map((v) => JSON.stringify(v)).join(" | ")}`);
+    } else if (node.type !== void 0) {
+      parts.push(node.type);
+    }
+    if (node.minLength !== void 0 && node.maxLength !== void 0) {
+      parts.push(`${node.minLength}-${node.maxLength} chars`);
+    } else if (node.maxLength !== void 0) {
+      parts.push(`at most ${node.maxLength} chars`);
+    } else if (node.minLength !== void 0) {
+      parts.push(`at least ${node.minLength} chars`);
+    }
+    if (node.maxItems !== void 0) parts.push(`at most ${node.maxItems} items`);
+    if (node.minItems !== void 0) parts.push(`at least ${node.minItems} items`);
+    if (node.type === "array" && node.items !== void 0) {
+      parts.push(`each item: ${describeNode(node.items)}`);
+    }
+    return parts.join(", ");
+  }
+  function describeSchemaConstraints(schema) {
+    const root = schema;
+    if (root.type !== "object" || root.properties === void 0) {
+      const line = describeNode(root);
+      return line === "" ? "" : `The answer must be: ${line}.`;
+    }
+    const required = new Set(root.required ?? []);
+    const lines = Object.entries(root.properties).map(([name, node]) => {
+      const desc = describeNode(node);
+      return `- "${name}" (${required.has(name) ? "REQUIRED" : "optional"})${desc === "" ? "" : `: ${desc}`}`;
+    });
+    const extras = root.additionalProperties === false ? "\nNo other properties are allowed." : "";
+    return `The JSON object must have exactly these properties:
+${lines.join("\n")}${extras}`;
+  }
+  function tryParseObject(text) {
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+    }
+    return void 0;
+  }
+  function extractJsonObject(text) {
+    const trimmed = text.trim();
+    const direct = tryParseObject(trimmed);
+    if (direct !== void 0) return direct;
+    const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(trimmed);
+    if (fence?.[1] !== void 0) {
+      const fenced = tryParseObject(fence[1].trim());
+      if (fenced !== void 0) return fenced;
+    }
+    const first = trimmed.indexOf("{");
+    const last = trimmed.lastIndexOf("}");
+    if (first !== -1 && last > first) {
+      return tryParseObject(trimmed.slice(first, last + 1));
+    }
+    return void 0;
+  }
+  function typeOf(value) {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "array";
+    return typeof value;
+  }
+  function validateNode(value, node, path, out) {
+    if (node.enum !== void 0) {
+      if (!node.enum.some((v) => v === value)) {
+        out.push({
+          path,
+          message: `${JSON.stringify(value)} is not one of ${node.enum.map((v) => JSON.stringify(v)).join(" | ")}`
+        });
+      }
+      return;
+    }
+    const t = node.type;
+    if (t === void 0) return;
+    const actual = typeOf(value);
+    if (t === "integer" ? !(actual === "number" && Number.isInteger(value)) : actual !== t) {
+      out.push({ path, message: `expected ${t}, got ${actual}` });
+      return;
+    }
+    if (t === "string") {
+      const s = value;
+      if (node.maxLength !== void 0 && s.length > node.maxLength) {
+        out.push({ path, message: `${s.length} chars exceeds maxLength ${node.maxLength}` });
+      }
+      if (node.minLength !== void 0 && s.length < node.minLength) {
+        out.push({ path, message: `${s.length} chars under minLength ${node.minLength}` });
+      }
+      return;
+    }
+    if (t === "array") {
+      const arr = value;
+      if (node.maxItems !== void 0 && arr.length > node.maxItems) {
+        out.push({ path, message: `${arr.length} items exceeds maxItems ${node.maxItems}` });
+      }
+      if (node.minItems !== void 0 && arr.length < node.minItems) {
+        out.push({ path, message: `${arr.length} items under minItems ${node.minItems}` });
+      }
+      if (node.items !== void 0) {
+        arr.forEach((item, i) => validateNode(item, node.items, `${path}[${i}]`, out));
+      }
+      return;
+    }
+    if (t === "object") {
+      const obj = value;
+      for (const req of node.required ?? []) {
+        if (!(req in obj)) out.push({ path: `${path}.${req}`, message: "required property missing" });
+      }
+      const props = node.properties ?? {};
+      for (const [key, child] of Object.entries(props)) {
+        if (key in obj) validateNode(obj[key], child, `${path}.${key}`, out);
+      }
+      if (node.additionalProperties === false) {
+        for (const key of Object.keys(obj)) {
+          if (!(key in props)) {
+            out.push({ path: `${path}.${key}`, message: "unexpected property (additionalProperties: false)" });
+          }
+        }
+      }
+    }
+  }
+  function validateAgainstSchema(value, schema) {
+    const out = [];
+    validateNode(value, schema, "$", out);
+    return out;
+  }
+  function repairNode(value, node, path, repairs) {
+    if (node.type === "string" && typeof value === "string") {
+      if (node.maxLength !== void 0 && value.length > node.maxLength) {
+        repairs.push(`${path}: truncated from ${value.length} to maxLength ${node.maxLength} chars`);
+        return value.slice(0, node.maxLength);
+      }
+      return value;
+    }
+    if (node.type === "array" && Array.isArray(value)) {
+      let arr = value;
+      if (node.maxItems !== void 0 && arr.length > node.maxItems) {
+        repairs.push(`${path}: sliced from ${arr.length} to maxItems ${node.maxItems} items`);
+        arr = arr.slice(0, node.maxItems);
+      }
+      return node.items !== void 0 ? arr.map((item, i) => repairNode(item, node.items, `${path}[${i}]`, repairs)) : arr;
+    }
+    if (node.type === "object" && typeOf(value) === "object") {
+      const obj = value;
+      const props = node.properties ?? {};
+      const result = {};
+      for (const [key, v] of Object.entries(obj)) {
+        if (key in props) {
+          result[key] = repairNode(v, props[key], `${path}.${key}`, repairs);
+        } else if (node.additionalProperties === false) {
+          repairs.push(`${path}.${key}: dropped unexpected property`);
+        } else {
+          result[key] = v;
+        }
+      }
+      return result;
+    }
+    return value;
+  }
+  function repairToSchema(value, schema) {
+    const repairs = [];
+    const repaired = repairNode(value, schema, "$", repairs);
+    return { value: repaired, repairs };
+  }
+  function salvagePrompt(prompt, schema) {
+    const constraints = describeSchemaConstraints(schema);
+    return `${prompt}
+
+STRUCTURED-OUTPUT SALVAGE: a previous schema-enforced attempt at this exact task failed validation repeatedly. Answer with ONLY one JSON object \u2014 no prose, no code fences, no explanation before or after.` + (constraints === "" ? "" : `
+${constraints}`) + `
+Never satisfy a constraint with placeholder values ("test", "a"); shorten real content instead of faking it.`;
+  }
+  async function agentWithSchemaSalvage(rt, prompt, opts) {
+    const schema = opts.schema;
+    if (schema === void 0) {
+      const plain = await rt.agent(prompt, opts);
+      return { value: plain, warnings: [], spawns: 1, salvaged: false };
+    }
+    const native = await rt.agent(prompt, opts);
+    if (native !== null) return { value: native, warnings: [], spawns: 1, salvaged: false };
+    const where = opts.label ?? "agent";
+    const salvageOpts = {
+      ...opts,
+      ...opts.label !== void 0 ? { label: `${opts.label}:salvage` } : {}
+    };
+    delete salvageOpts.schema;
+    const raw = await rt.agent(salvagePrompt(prompt, schema), salvageOpts);
+    if (raw === null) {
+      return {
+        value: null,
+        warnings: [`${where}: structured-output salvage respawn also returned null`],
+        spawns: 2,
+        salvaged: false
+      };
+    }
+    const candidate = typeof raw === "string" ? extractJsonObject(raw) : raw;
+    if (candidate === void 0) {
+      const head2 = typeof raw === "string" ? raw.trim().slice(0, 120) : String(raw);
+      return {
+        value: null,
+        warnings: [`${where}: salvage output is not a JSON object (starts: ${JSON.stringify(head2)})`],
+        spawns: 2,
+        salvaged: false
+      };
+    }
+    const preViolations = validateAgainstSchema(candidate, schema);
+    if (preViolations.length === 0) {
+      return {
+        value: candidate,
+        warnings: [`${where}: value salvaged after structured-output exhaustion (schema-less respawn)`],
+        spawns: 2,
+        salvaged: true
+      };
+    }
+    const { value: repaired, repairs } = repairToSchema(candidate, schema);
+    const postViolations = validateAgainstSchema(repaired, schema);
+    if (postViolations.length === 0) {
+      return {
+        value: repaired,
+        warnings: [
+          `${where}: value salvaged after structured-output exhaustion, with deterministic repairs \u2014 ${repairs.join("; ")}`
+        ],
+        spawns: 2,
+        salvaged: true
+      };
+    }
+    return {
+      value: null,
+      warnings: [
+        `${where}: salvage failed schema validation \u2014 ` + postViolations.map((v) => `${v.path}: ${v.message}`).join("; ") + (repairs.length > 0 ? ` (repairs attempted: ${repairs.join("; ")})` : "")
+      ],
+      spawns: 2,
+      salvaged: false
+    };
+  }
+
   // ../packages/patterns/src/probe-agent-type.ts
   var STAGE = "probeAgentType";
   var DEFAULT_PROBE_PROMPT = "Availability probe. This is a REAL task: execute your normal procedure end-to-end (availability gate, then run the task through your external CLI \u2014 do NOT answer from your own knowledge). Task: reply with exactly: PROBE_OK";
@@ -569,6 +810,7 @@ ${renderClaim(claim)}`;
       }));
     }
     const trailByClaim = [];
+    const warningsByClaim = [];
     const verifiedKept = await Promise.all(
       keptClaims.map(async (claim, claimIndex) => {
         const claimVotes = perClaimVotes[claimIndex] ?? votesOpt;
@@ -584,17 +826,20 @@ ${renderClaim(claim)}`;
               ...effort !== void 0 ? { effort } : {},
               ...verifierType !== void 0 ? { agentType: verifierType } : {}
             };
-            agentsSpawned++;
-            return rt.agent(prompt, opts);
+            return agentWithSchemaSalvage(rt, prompt, opts);
           };
         });
         const rawVotes = await rt.parallel(voteThunks);
-        const votes = rawVotes.map(
+        const voteOuts = rawVotes.map(
           (v) => v
         );
+        const votes = voteOuts.map((o) => o?.value ?? null);
         const claimRecords = [];
+        const claimWarnings = [];
         for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
+          const out = voteOuts[voteIndex] ?? null;
           const vote = votes[voteIndex] ?? null;
+          agentsSpawned += out?.spawns ?? 1;
           claimRecords.push(makeRecord(
             `${STAGE2}:verify:${claimIndex}:${voteIndex}`,
             vote !== null,
@@ -604,8 +849,20 @@ ${renderClaim(claim)}`;
               ...vote !== null ? { decision: vote.verdict } : {}
             }
           ));
+          if (out !== null && out.spawns === 2) {
+            claimRecords.push(makeRecord(
+              `${STAGE2}:verify:${claimIndex}:${voteIndex}:salvage`,
+              out.salvaged,
+              {
+                model: effectiveModel,
+                ...effort !== void 0 ? { effort } : {}
+              }
+            ));
+          }
+          for (const message of out?.warnings ?? []) claimWarnings.push(`${STAGE2}: ${message}`);
         }
         trailByClaim[claimIndex] = claimRecords;
+        warningsByClaim[claimIndex] = claimWarnings;
         const nonNull = votes.filter((v) => v !== null);
         const effectiveThreshold = Math.min(refuteThreshold, claimVotes);
         let verdict;
@@ -622,6 +879,7 @@ ${renderClaim(claim)}`;
       })
     );
     trail.push(...trailByClaim.flat());
+    for (const message of warningsByClaim.flat()) warn(rt, warnings, message);
     const truncatedClaims = claims.slice(keptClaims.length).map((claim) => ({ claim, verdict: "unverified-by-cap", votes: [] }));
     const value = [...verifiedKept, ...truncatedClaims];
     let nullVoteCount = 0;

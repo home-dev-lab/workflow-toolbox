@@ -296,6 +296,247 @@ ${prompt}` : prompt;
     }
   }
 
+  // ../packages/patterns/src/structured-salvage.ts
+  function describeNode(node) {
+    const parts = [];
+    if (node.enum !== void 0) {
+      parts.push(`one of: ${node.enum.map((v) => JSON.stringify(v)).join(" | ")}`);
+    } else if (node.type !== void 0) {
+      parts.push(node.type);
+    }
+    if (node.minLength !== void 0 && node.maxLength !== void 0) {
+      parts.push(`${node.minLength}-${node.maxLength} chars`);
+    } else if (node.maxLength !== void 0) {
+      parts.push(`at most ${node.maxLength} chars`);
+    } else if (node.minLength !== void 0) {
+      parts.push(`at least ${node.minLength} chars`);
+    }
+    if (node.maxItems !== void 0) parts.push(`at most ${node.maxItems} items`);
+    if (node.minItems !== void 0) parts.push(`at least ${node.minItems} items`);
+    if (node.type === "array" && node.items !== void 0) {
+      parts.push(`each item: ${describeNode(node.items)}`);
+    }
+    return parts.join(", ");
+  }
+  function describeSchemaConstraints(schema) {
+    const root = schema;
+    if (root.type !== "object" || root.properties === void 0) {
+      const line = describeNode(root);
+      return line === "" ? "" : `The answer must be: ${line}.`;
+    }
+    const required = new Set(root.required ?? []);
+    const lines = Object.entries(root.properties).map(([name, node]) => {
+      const desc = describeNode(node);
+      return `- "${name}" (${required.has(name) ? "REQUIRED" : "optional"})${desc === "" ? "" : `: ${desc}`}`;
+    });
+    const extras = root.additionalProperties === false ? "\nNo other properties are allowed." : "";
+    return `The JSON object must have exactly these properties:
+${lines.join("\n")}${extras}`;
+  }
+  function tryParseObject(text) {
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+    }
+    return void 0;
+  }
+  function extractJsonObject(text) {
+    const trimmed = text.trim();
+    const direct = tryParseObject(trimmed);
+    if (direct !== void 0) return direct;
+    const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(trimmed);
+    if (fence?.[1] !== void 0) {
+      const fenced = tryParseObject(fence[1].trim());
+      if (fenced !== void 0) return fenced;
+    }
+    const first = trimmed.indexOf("{");
+    const last = trimmed.lastIndexOf("}");
+    if (first !== -1 && last > first) {
+      return tryParseObject(trimmed.slice(first, last + 1));
+    }
+    return void 0;
+  }
+  function typeOf(value) {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "array";
+    return typeof value;
+  }
+  function validateNode(value, node, path, out) {
+    if (node.enum !== void 0) {
+      if (!node.enum.some((v) => v === value)) {
+        out.push({
+          path,
+          message: `${JSON.stringify(value)} is not one of ${node.enum.map((v) => JSON.stringify(v)).join(" | ")}`
+        });
+      }
+      return;
+    }
+    const t = node.type;
+    if (t === void 0) return;
+    const actual = typeOf(value);
+    if (t === "integer" ? !(actual === "number" && Number.isInteger(value)) : actual !== t) {
+      out.push({ path, message: `expected ${t}, got ${actual}` });
+      return;
+    }
+    if (t === "string") {
+      const s = value;
+      if (node.maxLength !== void 0 && s.length > node.maxLength) {
+        out.push({ path, message: `${s.length} chars exceeds maxLength ${node.maxLength}` });
+      }
+      if (node.minLength !== void 0 && s.length < node.minLength) {
+        out.push({ path, message: `${s.length} chars under minLength ${node.minLength}` });
+      }
+      return;
+    }
+    if (t === "array") {
+      const arr = value;
+      if (node.maxItems !== void 0 && arr.length > node.maxItems) {
+        out.push({ path, message: `${arr.length} items exceeds maxItems ${node.maxItems}` });
+      }
+      if (node.minItems !== void 0 && arr.length < node.minItems) {
+        out.push({ path, message: `${arr.length} items under minItems ${node.minItems}` });
+      }
+      if (node.items !== void 0) {
+        arr.forEach((item, i) => validateNode(item, node.items, `${path}[${i}]`, out));
+      }
+      return;
+    }
+    if (t === "object") {
+      const obj = value;
+      for (const req of node.required ?? []) {
+        if (!(req in obj)) out.push({ path: `${path}.${req}`, message: "required property missing" });
+      }
+      const props = node.properties ?? {};
+      for (const [key, child] of Object.entries(props)) {
+        if (key in obj) validateNode(obj[key], child, `${path}.${key}`, out);
+      }
+      if (node.additionalProperties === false) {
+        for (const key of Object.keys(obj)) {
+          if (!(key in props)) {
+            out.push({ path: `${path}.${key}`, message: "unexpected property (additionalProperties: false)" });
+          }
+        }
+      }
+    }
+  }
+  function validateAgainstSchema(value, schema) {
+    const out = [];
+    validateNode(value, schema, "$", out);
+    return out;
+  }
+  function repairNode(value, node, path, repairs) {
+    if (node.type === "string" && typeof value === "string") {
+      if (node.maxLength !== void 0 && value.length > node.maxLength) {
+        repairs.push(`${path}: truncated from ${value.length} to maxLength ${node.maxLength} chars`);
+        return value.slice(0, node.maxLength);
+      }
+      return value;
+    }
+    if (node.type === "array" && Array.isArray(value)) {
+      let arr = value;
+      if (node.maxItems !== void 0 && arr.length > node.maxItems) {
+        repairs.push(`${path}: sliced from ${arr.length} to maxItems ${node.maxItems} items`);
+        arr = arr.slice(0, node.maxItems);
+      }
+      return node.items !== void 0 ? arr.map((item, i) => repairNode(item, node.items, `${path}[${i}]`, repairs)) : arr;
+    }
+    if (node.type === "object" && typeOf(value) === "object") {
+      const obj = value;
+      const props = node.properties ?? {};
+      const result = {};
+      for (const [key, v] of Object.entries(obj)) {
+        if (key in props) {
+          result[key] = repairNode(v, props[key], `${path}.${key}`, repairs);
+        } else if (node.additionalProperties === false) {
+          repairs.push(`${path}.${key}: dropped unexpected property`);
+        } else {
+          result[key] = v;
+        }
+      }
+      return result;
+    }
+    return value;
+  }
+  function repairToSchema(value, schema) {
+    const repairs = [];
+    const repaired = repairNode(value, schema, "$", repairs);
+    return { value: repaired, repairs };
+  }
+  function salvagePrompt(prompt, schema) {
+    const constraints = describeSchemaConstraints(schema);
+    return `${prompt}
+
+STRUCTURED-OUTPUT SALVAGE: a previous schema-enforced attempt at this exact task failed validation repeatedly. Answer with ONLY one JSON object \u2014 no prose, no code fences, no explanation before or after.` + (constraints === "" ? "" : `
+${constraints}`) + `
+Never satisfy a constraint with placeholder values ("test", "a"); shorten real content instead of faking it.`;
+  }
+  async function agentWithSchemaSalvage(rt, prompt, opts) {
+    const schema = opts.schema;
+    if (schema === void 0) {
+      const plain = await rt.agent(prompt, opts);
+      return { value: plain, warnings: [], spawns: 1, salvaged: false };
+    }
+    const native = await rt.agent(prompt, opts);
+    if (native !== null) return { value: native, warnings: [], spawns: 1, salvaged: false };
+    const where = opts.label ?? "agent";
+    const salvageOpts = {
+      ...opts,
+      ...opts.label !== void 0 ? { label: `${opts.label}:salvage` } : {}
+    };
+    delete salvageOpts.schema;
+    const raw = await rt.agent(salvagePrompt(prompt, schema), salvageOpts);
+    if (raw === null) {
+      return {
+        value: null,
+        warnings: [`${where}: structured-output salvage respawn also returned null`],
+        spawns: 2,
+        salvaged: false
+      };
+    }
+    const candidate = typeof raw === "string" ? extractJsonObject(raw) : raw;
+    if (candidate === void 0) {
+      const head = typeof raw === "string" ? raw.trim().slice(0, 120) : String(raw);
+      return {
+        value: null,
+        warnings: [`${where}: salvage output is not a JSON object (starts: ${JSON.stringify(head)})`],
+        spawns: 2,
+        salvaged: false
+      };
+    }
+    const preViolations = validateAgainstSchema(candidate, schema);
+    if (preViolations.length === 0) {
+      return {
+        value: candidate,
+        warnings: [`${where}: value salvaged after structured-output exhaustion (schema-less respawn)`],
+        spawns: 2,
+        salvaged: true
+      };
+    }
+    const { value: repaired, repairs } = repairToSchema(candidate, schema);
+    const postViolations = validateAgainstSchema(repaired, schema);
+    if (postViolations.length === 0) {
+      return {
+        value: repaired,
+        warnings: [
+          `${where}: value salvaged after structured-output exhaustion, with deterministic repairs \u2014 ${repairs.join("; ")}`
+        ],
+        spawns: 2,
+        salvaged: true
+      };
+    }
+    return {
+      value: null,
+      warnings: [
+        `${where}: salvage failed schema validation \u2014 ` + postViolations.map((v) => `${v.path}: ${v.message}`).join("; ") + (repairs.length > 0 ? ` (repairs attempted: ${repairs.join("; ")})` : "")
+      ],
+      spawns: 2,
+      salvaged: false
+    };
+  }
+
   // ../packages/patterns/src/cache-warm.ts
   async function parallelWithCacheWarm(rt, thunks, enabled) {
     if (!enabled || thunks.length <= 1) {
@@ -352,6 +593,7 @@ ${prompt}` : prompt;
     let classifyFailures = 0;
     let actionFailures = 0;
     const warnings = [];
+    const pendingWarnings = [];
     const pendingTrail = [];
     if (truncated > 0) {
       warn(
@@ -378,8 +620,20 @@ ${prompt}` : prompt;
         ...classifyEffort !== void 0 ? { effort: classifyEffort } : {},
         ...classifyType !== void 0 ? { agentType: classifyType } : {}
       };
-      agentsSpawned++;
-      const classified = await rt.agent(classifyPrompt(item), classifyOpts);
+      const classifyOut = await agentWithSchemaSalvage(rt, classifyPrompt(item), classifyOpts);
+      agentsSpawned += classifyOut.spawns;
+      for (const message of classifyOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 0, message });
+      if (classifyOut.spawns === 2) {
+        pendingTrail.push({
+          itemIndex: index,
+          stageOrder: 0.5,
+          record: makeRecord(`${STAGE}:classify:${index}:salvage`, classifyOut.salvaged, {
+            ...classifyModel !== void 0 ? { model: classifyModel } : {},
+            ...classifyEffort !== void 0 ? { effort: classifyEffort } : {}
+          })
+        });
+      }
+      const classified = classifyOut.value;
       if (classified === null) {
         classifyFailures++;
         pendingTrail.push({
@@ -430,8 +684,20 @@ ${prompt}` : prompt;
         ...spec.effort !== void 0 ? { effort: spec.effort } : {},
         ...spec.agentType !== void 0 ? { agentType: spec.agentType } : {}
       };
-      agentsSpawned++;
-      const result = await rt.agent(spec.prompt(item), actOpts);
+      const actOut = await agentWithSchemaSalvage(rt, spec.prompt(item), actOpts);
+      agentsSpawned += actOut.spawns;
+      for (const message of actOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 1, message });
+      if (actOut.spawns === 2) {
+        pendingTrail.push({
+          itemIndex: index,
+          stageOrder: 1.5,
+          record: makeRecord(`${STAGE}:act:${category}:${index}:salvage`, actOut.salvaged, {
+            ...spec.model !== void 0 ? { model: spec.model } : {},
+            ...spec.effort !== void 0 ? { effort: spec.effort } : {}
+          })
+        });
+      }
+      const result = actOut.value;
       if (result === null) {
         actionFailures++;
         pendingTrail.push({
@@ -463,6 +729,10 @@ ${prompt}` : prompt;
     const value = rawResults.filter(
       (r) => r !== null
     );
+    pendingWarnings.sort(
+      (a, b) => a.itemIndex !== b.itemIndex ? a.itemIndex - b.itemIndex : a.stageOrder - b.stageOrder
+    );
+    for (const entry of pendingWarnings) warn(rt, warnings, `${STAGE}: ${entry.message}`);
     if (classifyFailures > 0) {
       warn(
         rt,
@@ -539,6 +809,7 @@ ${prompt}` : prompt;
     const warnings = [];
     const { kept: keptItems, truncated } = applyCap(items, maxItems);
     const pendingTrail = [];
+    const pendingWarnings = [];
     const tasks = [];
     for (let i = 0; i < keptItems.length; i++) {
       for (let d = 0; d < dimensions.length; d++) {
@@ -561,8 +832,19 @@ ${prompt}` : prompt;
         ...scoreType !== void 0 ? { agentType: scoreType } : {}
       };
       const order = t.itemIndex * dimensions.length + t.dimIndex;
-      agentsSpawned++;
-      const verdict = await rt.agent(dim.prompt(item), opts);
+      const scoreOut = await agentWithSchemaSalvage(rt, dim.prompt(item), opts);
+      agentsSpawned += scoreOut.spawns;
+      for (const message of scoreOut.warnings) pendingWarnings.push({ order, message });
+      if (scoreOut.spawns === 2) {
+        pendingTrail.push({
+          order: order + 0.5,
+          record: makeRecord(`${label}:salvage`, scoreOut.salvaged, {
+            ...model !== void 0 ? { model } : {},
+            ...effort !== void 0 ? { effort } : {}
+          })
+        });
+      }
+      const verdict = scoreOut.value;
       if (verdict === null) {
         pendingTrail.push({
           order,
@@ -607,6 +889,8 @@ ${prompt}` : prompt;
       }
       scoredItems.push({ item, scores: [...scores], score: combined });
     }
+    pendingWarnings.sort((a, b) => a.order - b.order);
+    for (const entry of pendingWarnings) warn(rt, warnings, `${STAGE2}: ${entry.message}`);
     if (dropped > 0) {
       warn(
         rt,

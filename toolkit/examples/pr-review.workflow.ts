@@ -187,7 +187,12 @@ const CHANGE_SUMMARY_SCHEMA = {
   type: 'object',
   properties: {
     summary: { type: 'string', minLength: 12, maxLength: 1200 },
-    riskAreas: { type: 'array', items: { type: 'string' } },
+    // Runaway bounds (card #1820561035728258107, lived: a long/dense target
+    // starved the REQUIRED riskAreas out of the JSON entirely — the unbounded
+    // long-array sibling is exactly what eats the budget first). Same posture
+    // as addedPublicSurface below: schema-level runaway bound, not a
+    // truncation license.
+    riskAreas: { type: 'array', items: { type: 'string', maxLength: 200 }, maxItems: 40 },
     // Repo-relative changed paths (`git diff --name-only <range>`). The
     // DECISION on this data is mechanical (deterministic path matching against
     // the committed docs-provenance manifest → docs-alignment lens on/off),
@@ -225,9 +230,9 @@ const CHANGE_SUMMARY_RULES =
   '`git diff --name-only <range>`, up to 200), then "addedPublicSurface" — ONLY the NEW public ' +
   'surface this change ADDS (new exports, HTTP routes, env vars, CLI verbs/flags, config knobs), ' +
   'one short entry each, e.g. "export: parsePipelineSpec" or "env var: SERVER_TTL"; an EMPTY array ' +
-  'when the change exposes nothing new — then "riskAreas", then "summary" — at most 500 characters ' +
-  '(the schema rejects longer). Never satisfy the schema with placeholder values ("test", "a"); ' +
-  'if a field is hard to fill, shorten it — do not fake it.'
+  'when the change exposes nothing new — then "riskAreas" (up to 40 short entries), then ' +
+  '"summary" — at most 500 characters (the schema rejects longer). Never satisfy the schema ' +
+  'with placeholder values ("test", "a"); if a field is hard to fill, shorten it — do not fake it.'
 
 type ChangeSummary = FromSchema<typeof CHANGE_SUMMARY_SCHEMA>
 

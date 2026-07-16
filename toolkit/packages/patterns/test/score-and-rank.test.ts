@@ -227,6 +227,9 @@ describe('scoreAndRank — fail-closed per item', () => {
   it('drops an item when any dimension score is null', async () => {
     const rt = new FakeRuntime({
       onAgent: ({ prompt, opts }) => {
+        // The structured-output salvage respawn for the dead dimension must
+        // fail too — this test scripts a dimension that is REALLY dead.
+        if (opts?.label?.endsWith(':salvage') === true) return null
         const dim = dimOf(opts?.label)
         const item = prompt.split(' ').at(-1) as string
         // item 'b' fails its 'opportunity' dimension
@@ -240,8 +243,9 @@ describe('scoreAndRank — fail-closed per item', () => {
     expect(result.value.map((s) => s.item).sort()).toEqual(['a', 'c'])
     expect(result.stats.dropped).toBe(1)
     expect(result.stats.itemsOut).toBe(2)
-    // both dimensions of 'b' still spawned (parallel — fail-closed is post-hoc)
-    expect(result.stats.agentsSpawned).toBe(6)
+    // both dimensions of 'b' still spawned (parallel — fail-closed is post-hoc),
+    // +1 salvage respawn for the dead score cell
+    expect(result.stats.agentsSpawned).toBe(7)
     expect(result.warnings.some((w) => w.includes('dropped'))).toBe(true)
     expect(rt.logs.some((l) => l.includes('dropped'))).toBe(true)
   })

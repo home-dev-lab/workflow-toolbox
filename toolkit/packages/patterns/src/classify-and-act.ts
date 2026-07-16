@@ -14,6 +14,7 @@ import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@work
 import { warn, applyCap, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { pipelineWithCacheWarm } from './cache-warm.js'
+import { agentWithSchemaSalvage } from './structured-salvage.js'
 
 const STAGE = 'classifyAndAct'
 
@@ -146,6 +147,12 @@ export async function classifyAndAct<TIn, TOut = string>(
   let actionFailures = 0
   const warnings: string[] = []
 
+  // Pending per-item warnings (structured-output salvage diagnostics) accumulated
+  // inside pipeline stage closures — buffered and emitted AFTER the pipeline
+  // barrier, sorted like the trail, so the warnings array stays deterministic
+  // despite concurrent per-item stages.
+  const pendingWarnings: Array<{ itemIndex: number; stageOrder: number; message: string }> = []
+
   // Pending trail entries accumulated inside pipeline stage closures.
   // Each entry carries (itemIndex, stageOrder) for deterministic sort after the pipeline barrier.
   // stageOrder: 0 = classify, 1 = act (within the same item).
@@ -221,8 +228,23 @@ export async function classifyAndAct<TIn, TOut = string>(
       ...(classifyType !== undefined ? { agentType: classifyType } : {}),
     }
 
-    agentsSpawned++
-    const classified = await rt.agent<{ category: string }>(classifyPrompt(item), classifyOpts)
+    const classifyOut = await agentWithSchemaSalvage<{ category: string }>(rt, classifyPrompt(item), classifyOpts)
+    agentsSpawned += classifyOut.spawns
+    for (const message of classifyOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 0, message })
+    if (classifyOut.spawns === 2) {
+      // The salvage respawn is a real spawn — it gets its own trail record
+      // (invariant: one record per agent spawned). stageOrder +0.5 slots it
+      // right after this stage's main record in the deterministic sort.
+      pendingTrail.push({
+        itemIndex: index,
+        stageOrder: 0.5,
+        record: makeRecord(`${STAGE}:classify:${index}:salvage`, classifyOut.salvaged, {
+          ...(classifyModel !== undefined ? { model: classifyModel } : {}),
+          ...(classifyEffort !== undefined ? { effort: classifyEffort } : {}),
+        }),
+      })
+    }
+    const classified = classifyOut.value
 
     if (classified === null) {
       classifyFailures++
@@ -298,8 +320,21 @@ export async function classifyAndAct<TIn, TOut = string>(
       ...(spec.agentType !== undefined ? { agentType: spec.agentType } : {}),
     }
 
-    agentsSpawned++
-    const result = await rt.agent<TOut>(spec.prompt(item), actOpts)
+    const actOut = await agentWithSchemaSalvage<TOut>(rt, spec.prompt(item), actOpts)
+    agentsSpawned += actOut.spawns
+    for (const message of actOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 1, message })
+    if (actOut.spawns === 2) {
+      // Salvage respawn trail record — see the classify stage's twin comment.
+      pendingTrail.push({
+        itemIndex: index,
+        stageOrder: 1.5,
+        record: makeRecord(`${STAGE}:act:${category}:${index}:salvage`, actOut.salvaged, {
+          ...(spec.model !== undefined ? { model: spec.model } : {}),
+          ...(spec.effort !== undefined ? { effort: spec.effort } : {}),
+        }),
+      })
+    }
+    const result = actOut.value
 
     if (result === null) {
       actionFailures++
@@ -341,6 +376,12 @@ export async function classifyAndAct<TIn, TOut = string>(
   // -------------------------------------------------------------------------
   // Post-pipeline warnings
   // -------------------------------------------------------------------------
+
+  // Salvage diagnostics first, in deterministic (itemIndex, stageOrder) order.
+  pendingWarnings.sort((a, b) =>
+    a.itemIndex !== b.itemIndex ? a.itemIndex - b.itemIndex : a.stageOrder - b.stageOrder,
+  )
+  for (const entry of pendingWarnings) warn(rt, warnings, `${STAGE}: ${entry.message}`)
 
   if (classifyFailures > 0) {
     warn(

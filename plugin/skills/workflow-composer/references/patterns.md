@@ -610,6 +610,35 @@ const FINDING_SCHEMA = {
 The schema does double duty: it constrains the agent's output **and** catches a
 truncated or mis-shaped result before the next line trusts it.
 
+**Bound every prose field and array** (`maxLength`, `maxItems`, plus `minLength`
+on required prose): an unbounded long field is what starves its required
+siblings out of the JSON, and bounds turn a runaway into an actionable "too
+long" rejection instead of a missing-property mystery.
+
+### Structured-output salvage (automatic in every pattern)
+
+The host's schema-retry loop lives inside the agent conversation; when it
+exhausts, the pattern used to see a bare `null` — the item died with zero
+diagnostics. Every pattern now routes schema-bearing calls through
+`agentWithSchemaSalvage`: on native exhaustion it respawns the agent ONCE
+without the host schema, states the schema's constraints in prose, parses the
+raw answer, validates it against the same schema, and deterministically repairs
+what repair can never fabricate — over-`maxLength` strings are truncated,
+over-`maxItems` arrays sliced, unexpected properties dropped. Missing required
+properties, wrong types, and enum violations are never invented: an
+unrepairable answer still degrades to `null`, now with the exact violations
+(field path + bound + received) in `warnings`. The salvage respawn is a real
+spawn: it appears in `stats.agentsSpawned` and gets its own `<stage>:salvage`
+trail record, so a rescued value is always auditable, never silent.
+
+The helpers are exported for workflow authors too: `describeSchemaConstraints`
+(embed a schema's bounds in your PRIMARY prompt as prevention),
+`validateAgainstSchema` / `repairToSchema` (the subset validator/repairer,
+returning `SchemaViolation` records — field path + constraint + received), and
+`extractJsonObject` (tolerant JSON extraction from prose/fenced answers).
+`agentWithSchemaSalvage` itself returns a `StructuredCallOutcome`: the value
+(or null), the specific warnings, the spawn count, and a `salvaged` flag.
+
 ---
 
 ## Honest reporting

@@ -337,6 +337,247 @@ ${prompt}` : prompt;
     }
   }
 
+  // ../packages/patterns/src/structured-salvage.ts
+  function describeNode(node) {
+    const parts = [];
+    if (node.enum !== void 0) {
+      parts.push(`one of: ${node.enum.map((v) => JSON.stringify(v)).join(" | ")}`);
+    } else if (node.type !== void 0) {
+      parts.push(node.type);
+    }
+    if (node.minLength !== void 0 && node.maxLength !== void 0) {
+      parts.push(`${node.minLength}-${node.maxLength} chars`);
+    } else if (node.maxLength !== void 0) {
+      parts.push(`at most ${node.maxLength} chars`);
+    } else if (node.minLength !== void 0) {
+      parts.push(`at least ${node.minLength} chars`);
+    }
+    if (node.maxItems !== void 0) parts.push(`at most ${node.maxItems} items`);
+    if (node.minItems !== void 0) parts.push(`at least ${node.minItems} items`);
+    if (node.type === "array" && node.items !== void 0) {
+      parts.push(`each item: ${describeNode(node.items)}`);
+    }
+    return parts.join(", ");
+  }
+  function describeSchemaConstraints(schema) {
+    const root = schema;
+    if (root.type !== "object" || root.properties === void 0) {
+      const line = describeNode(root);
+      return line === "" ? "" : `The answer must be: ${line}.`;
+    }
+    const required = new Set(root.required ?? []);
+    const lines = Object.entries(root.properties).map(([name, node]) => {
+      const desc = describeNode(node);
+      return `- "${name}" (${required.has(name) ? "REQUIRED" : "optional"})${desc === "" ? "" : `: ${desc}`}`;
+    });
+    const extras = root.additionalProperties === false ? "\nNo other properties are allowed." : "";
+    return `The JSON object must have exactly these properties:
+${lines.join("\n")}${extras}`;
+  }
+  function tryParseObject(text) {
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+    }
+    return void 0;
+  }
+  function extractJsonObject(text) {
+    const trimmed = text.trim();
+    const direct = tryParseObject(trimmed);
+    if (direct !== void 0) return direct;
+    const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(trimmed);
+    if (fence?.[1] !== void 0) {
+      const fenced = tryParseObject(fence[1].trim());
+      if (fenced !== void 0) return fenced;
+    }
+    const first = trimmed.indexOf("{");
+    const last = trimmed.lastIndexOf("}");
+    if (first !== -1 && last > first) {
+      return tryParseObject(trimmed.slice(first, last + 1));
+    }
+    return void 0;
+  }
+  function typeOf(value) {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "array";
+    return typeof value;
+  }
+  function validateNode(value, node, path, out) {
+    if (node.enum !== void 0) {
+      if (!node.enum.some((v) => v === value)) {
+        out.push({
+          path,
+          message: `${JSON.stringify(value)} is not one of ${node.enum.map((v) => JSON.stringify(v)).join(" | ")}`
+        });
+      }
+      return;
+    }
+    const t = node.type;
+    if (t === void 0) return;
+    const actual = typeOf(value);
+    if (t === "integer" ? !(actual === "number" && Number.isInteger(value)) : actual !== t) {
+      out.push({ path, message: `expected ${t}, got ${actual}` });
+      return;
+    }
+    if (t === "string") {
+      const s = value;
+      if (node.maxLength !== void 0 && s.length > node.maxLength) {
+        out.push({ path, message: `${s.length} chars exceeds maxLength ${node.maxLength}` });
+      }
+      if (node.minLength !== void 0 && s.length < node.minLength) {
+        out.push({ path, message: `${s.length} chars under minLength ${node.minLength}` });
+      }
+      return;
+    }
+    if (t === "array") {
+      const arr = value;
+      if (node.maxItems !== void 0 && arr.length > node.maxItems) {
+        out.push({ path, message: `${arr.length} items exceeds maxItems ${node.maxItems}` });
+      }
+      if (node.minItems !== void 0 && arr.length < node.minItems) {
+        out.push({ path, message: `${arr.length} items under minItems ${node.minItems}` });
+      }
+      if (node.items !== void 0) {
+        arr.forEach((item, i) => validateNode(item, node.items, `${path}[${i}]`, out));
+      }
+      return;
+    }
+    if (t === "object") {
+      const obj = value;
+      for (const req of node.required ?? []) {
+        if (!(req in obj)) out.push({ path: `${path}.${req}`, message: "required property missing" });
+      }
+      const props = node.properties ?? {};
+      for (const [key, child] of Object.entries(props)) {
+        if (key in obj) validateNode(obj[key], child, `${path}.${key}`, out);
+      }
+      if (node.additionalProperties === false) {
+        for (const key of Object.keys(obj)) {
+          if (!(key in props)) {
+            out.push({ path: `${path}.${key}`, message: "unexpected property (additionalProperties: false)" });
+          }
+        }
+      }
+    }
+  }
+  function validateAgainstSchema(value, schema) {
+    const out = [];
+    validateNode(value, schema, "$", out);
+    return out;
+  }
+  function repairNode(value, node, path, repairs) {
+    if (node.type === "string" && typeof value === "string") {
+      if (node.maxLength !== void 0 && value.length > node.maxLength) {
+        repairs.push(`${path}: truncated from ${value.length} to maxLength ${node.maxLength} chars`);
+        return value.slice(0, node.maxLength);
+      }
+      return value;
+    }
+    if (node.type === "array" && Array.isArray(value)) {
+      let arr = value;
+      if (node.maxItems !== void 0 && arr.length > node.maxItems) {
+        repairs.push(`${path}: sliced from ${arr.length} to maxItems ${node.maxItems} items`);
+        arr = arr.slice(0, node.maxItems);
+      }
+      return node.items !== void 0 ? arr.map((item, i) => repairNode(item, node.items, `${path}[${i}]`, repairs)) : arr;
+    }
+    if (node.type === "object" && typeOf(value) === "object") {
+      const obj = value;
+      const props = node.properties ?? {};
+      const result = {};
+      for (const [key, v] of Object.entries(obj)) {
+        if (key in props) {
+          result[key] = repairNode(v, props[key], `${path}.${key}`, repairs);
+        } else if (node.additionalProperties === false) {
+          repairs.push(`${path}.${key}: dropped unexpected property`);
+        } else {
+          result[key] = v;
+        }
+      }
+      return result;
+    }
+    return value;
+  }
+  function repairToSchema(value, schema) {
+    const repairs = [];
+    const repaired = repairNode(value, schema, "$", repairs);
+    return { value: repaired, repairs };
+  }
+  function salvagePrompt(prompt, schema) {
+    const constraints = describeSchemaConstraints(schema);
+    return `${prompt}
+
+STRUCTURED-OUTPUT SALVAGE: a previous schema-enforced attempt at this exact task failed validation repeatedly. Answer with ONLY one JSON object \u2014 no prose, no code fences, no explanation before or after.` + (constraints === "" ? "" : `
+${constraints}`) + `
+Never satisfy a constraint with placeholder values ("test", "a"); shorten real content instead of faking it.`;
+  }
+  async function agentWithSchemaSalvage(rt, prompt, opts) {
+    const schema = opts.schema;
+    if (schema === void 0) {
+      const plain = await rt.agent(prompt, opts);
+      return { value: plain, warnings: [], spawns: 1, salvaged: false };
+    }
+    const native = await rt.agent(prompt, opts);
+    if (native !== null) return { value: native, warnings: [], spawns: 1, salvaged: false };
+    const where = opts.label ?? "agent";
+    const salvageOpts = {
+      ...opts,
+      ...opts.label !== void 0 ? { label: `${opts.label}:salvage` } : {}
+    };
+    delete salvageOpts.schema;
+    const raw = await rt.agent(salvagePrompt(prompt, schema), salvageOpts);
+    if (raw === null) {
+      return {
+        value: null,
+        warnings: [`${where}: structured-output salvage respawn also returned null`],
+        spawns: 2,
+        salvaged: false
+      };
+    }
+    const candidate = typeof raw === "string" ? extractJsonObject(raw) : raw;
+    if (candidate === void 0) {
+      const head = typeof raw === "string" ? raw.trim().slice(0, 120) : String(raw);
+      return {
+        value: null,
+        warnings: [`${where}: salvage output is not a JSON object (starts: ${JSON.stringify(head)})`],
+        spawns: 2,
+        salvaged: false
+      };
+    }
+    const preViolations = validateAgainstSchema(candidate, schema);
+    if (preViolations.length === 0) {
+      return {
+        value: candidate,
+        warnings: [`${where}: value salvaged after structured-output exhaustion (schema-less respawn)`],
+        spawns: 2,
+        salvaged: true
+      };
+    }
+    const { value: repaired, repairs } = repairToSchema(candidate, schema);
+    const postViolations = validateAgainstSchema(repaired, schema);
+    if (postViolations.length === 0) {
+      return {
+        value: repaired,
+        warnings: [
+          `${where}: value salvaged after structured-output exhaustion, with deterministic repairs \u2014 ${repairs.join("; ")}`
+        ],
+        spawns: 2,
+        salvaged: true
+      };
+    }
+    return {
+      value: null,
+      warnings: [
+        `${where}: salvage failed schema validation \u2014 ` + postViolations.map((v) => `${v.path}: ${v.message}`).join("; ") + (repairs.length > 0 ? ` (repairs attempted: ${repairs.join("; ")})` : "")
+      ],
+      spawns: 2,
+      salvaged: false
+    };
+  }
+
   // ../packages/patterns/src/cache-warm.ts
   var WARMUP_PROMPT = "Reply with a single word: ready.";
   async function parallelWithCacheWarm(rt, thunks, enabled) {
@@ -415,6 +656,7 @@ ${prompt}` : prompt;
     let classifyFailures = 0;
     let actionFailures = 0;
     const warnings = [];
+    const pendingWarnings = [];
     const pendingTrail = [];
     if (truncated > 0) {
       warn(
@@ -441,8 +683,20 @@ ${prompt}` : prompt;
         ...classifyEffort !== void 0 ? { effort: classifyEffort } : {},
         ...classifyType !== void 0 ? { agentType: classifyType } : {}
       };
-      agentsSpawned++;
-      const classified = await rt.agent(classifyPrompt(item), classifyOpts);
+      const classifyOut = await agentWithSchemaSalvage(rt, classifyPrompt(item), classifyOpts);
+      agentsSpawned += classifyOut.spawns;
+      for (const message of classifyOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 0, message });
+      if (classifyOut.spawns === 2) {
+        pendingTrail.push({
+          itemIndex: index,
+          stageOrder: 0.5,
+          record: makeRecord(`${STAGE}:classify:${index}:salvage`, classifyOut.salvaged, {
+            ...classifyModel !== void 0 ? { model: classifyModel } : {},
+            ...classifyEffort !== void 0 ? { effort: classifyEffort } : {}
+          })
+        });
+      }
+      const classified = classifyOut.value;
       if (classified === null) {
         classifyFailures++;
         pendingTrail.push({
@@ -493,8 +747,20 @@ ${prompt}` : prompt;
         ...spec.effort !== void 0 ? { effort: spec.effort } : {},
         ...spec.agentType !== void 0 ? { agentType: spec.agentType } : {}
       };
-      agentsSpawned++;
-      const result = await rt.agent(spec.prompt(item), actOpts);
+      const actOut = await agentWithSchemaSalvage(rt, spec.prompt(item), actOpts);
+      agentsSpawned += actOut.spawns;
+      for (const message of actOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 1, message });
+      if (actOut.spawns === 2) {
+        pendingTrail.push({
+          itemIndex: index,
+          stageOrder: 1.5,
+          record: makeRecord(`${STAGE}:act:${category}:${index}:salvage`, actOut.salvaged, {
+            ...spec.model !== void 0 ? { model: spec.model } : {},
+            ...spec.effort !== void 0 ? { effort: spec.effort } : {}
+          })
+        });
+      }
+      const result = actOut.value;
       if (result === null) {
         actionFailures++;
         pendingTrail.push({
@@ -526,6 +792,10 @@ ${prompt}` : prompt;
     const value = rawResults.filter(
       (r) => r !== null
     );
+    pendingWarnings.sort(
+      (a, b) => a.itemIndex !== b.itemIndex ? a.itemIndex - b.itemIndex : a.stageOrder - b.stageOrder
+    );
+    for (const entry of pendingWarnings) warn(rt, warnings, `${STAGE}: ${entry.message}`);
     if (classifyFailures > 0) {
       warn(
         rt,
@@ -580,6 +850,7 @@ ${prompt}` : prompt;
     let filterFailures = 0;
     const warnings = [];
     const pendingTrail = [];
+    const pendingWarnings = [];
     const filterSchema = {
       type: "object",
       properties: {
@@ -598,8 +869,20 @@ ${prompt}` : prompt;
         ...generateEffort !== void 0 ? { effort: generateEffort } : {},
         ...generateType !== void 0 ? { agentType: generateType } : {}
       };
-      agentsSpawned++;
-      const candidate = await rt.agent(generatePrompt(index), genOpts);
+      const genOut = await agentWithSchemaSalvage(rt, generatePrompt(index), genOpts);
+      agentsSpawned += genOut.spawns;
+      for (const message of genOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 0, message });
+      if (genOut.spawns === 2) {
+        pendingTrail.push({
+          itemIndex: index,
+          stageOrder: 0.5,
+          record: makeRecord(`${STAGE2}:generate:${index}:salvage`, genOut.salvaged, {
+            ...generateModel !== void 0 ? { model: generateModel } : {},
+            ...generateEffort !== void 0 ? { effort: generateEffort } : {}
+          })
+        });
+      }
+      const candidate = genOut.value;
       if (candidate === null) {
         generateFailures++;
         pendingTrail.push({
@@ -632,11 +915,24 @@ ${prompt}` : prompt;
         ...filterEffort !== void 0 ? { effort: filterEffort } : {},
         ...filterType !== void 0 ? { agentType: filterType } : {}
       };
-      agentsSpawned++;
-      const verdict = await rt.agent(
+      const filterOut = await agentWithSchemaSalvage(
+        rt,
         filterPrompt(candidate),
         filterOpts
       );
+      agentsSpawned += filterOut.spawns;
+      for (const message of filterOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 1, message });
+      if (filterOut.spawns === 2) {
+        pendingTrail.push({
+          itemIndex: index,
+          stageOrder: 1.5,
+          record: makeRecord(`${STAGE2}:filter:${index}:salvage`, filterOut.salvaged, {
+            ...filterModel !== void 0 ? { model: filterModel } : {},
+            ...filterEffort !== void 0 ? { effort: filterEffort } : {}
+          })
+        });
+      }
+      const verdict = filterOut.value;
       if (verdict === null) {
         filterFailures++;
         pendingTrail.push({
@@ -676,6 +972,10 @@ ${prompt}` : prompt;
         value.push(r);
       }
     }
+    pendingWarnings.sort(
+      (a, b) => a.itemIndex !== b.itemIndex ? a.itemIndex - b.itemIndex : a.stageOrder - b.stageOrder
+    );
+    for (const entry of pendingWarnings) warn(rt, warnings, `${STAGE2}: ${entry.message}`);
     if (generateFailures > 0) {
       warn(
         rt,
@@ -765,18 +1065,26 @@ ${prompt}` : prompt;
         ...taskEffort !== void 0 ? { effort: taskEffort } : {},
         ...taskType !== void 0 ? { agentType: taskType } : {}
       };
-      agentsSpawned++;
-      return rt.agent(taskPrompt(task, i), taskOpts);
+      return agentWithSchemaSalvage(rt, taskPrompt(task, i), taskOpts);
     });
     const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? true);
     const parts = [];
     let dropped = 0;
     for (let i = 0; i < taskResults.length; i++) {
-      const r = taskResults[i];
+      const out = taskResults[i];
+      const r = out?.value ?? null;
+      agentsSpawned += out?.spawns ?? 1;
       trail.push(makeRecord(`${STAGE3}:task:${i}`, r !== null, {
         ...taskModel !== void 0 ? { model: taskModel } : {},
         ...taskEffort !== void 0 ? { effort: taskEffort } : {}
       }));
+      if (out !== null && out.spawns === 2) {
+        trail.push(makeRecord(`${STAGE3}:task:${i}:salvage`, out.salvaged, {
+          ...taskModel !== void 0 ? { model: taskModel } : {},
+          ...taskEffort !== void 0 ? { effort: taskEffort } : {}
+        }));
+      }
+      for (const message of out?.warnings ?? []) warn(rt, warnings, `${STAGE3}: ${message}`);
       if (r !== null) {
         parts.push(r);
       } else {
@@ -802,12 +1110,20 @@ ${prompt}` : prompt;
         ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {},
         ...synthesisType !== void 0 ? { agentType: synthesisType } : {}
       };
-      agentsSpawned++;
-      const synthesis = await rt.agent(synthesisPrompt(parts), synthOpts);
+      const synthOut = await agentWithSchemaSalvage(rt, synthesisPrompt(parts), synthOpts);
+      agentsSpawned += synthOut.spawns;
+      const synthesis = synthOut.value;
       trail.push(makeRecord(`${STAGE3}:synthesize`, synthesis !== null, {
         ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
         ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
       }));
+      if (synthOut.spawns === 2) {
+        trail.push(makeRecord(`${STAGE3}:synthesize:salvage`, synthOut.salvaged, {
+          ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
+          ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
+        }));
+      }
+      for (const message of synthOut.warnings) warn(rt, warnings, `${STAGE3}: ${message}`);
       if (synthesis === null) {
         warn(rt, warnings, "fanOutAndSynthesize: synthesis agent returned null");
       } else {
@@ -946,6 +1262,7 @@ ${renderClaim(claim)}`;
       }));
     }
     const trailByClaim = [];
+    const warningsByClaim = [];
     const verifiedKept = await Promise.all(
       keptClaims.map(async (claim, claimIndex) => {
         const claimVotes = perClaimVotes[claimIndex] ?? votesOpt;
@@ -961,17 +1278,20 @@ ${renderClaim(claim)}`;
               ...effort !== void 0 ? { effort } : {},
               ...verifierType !== void 0 ? { agentType: verifierType } : {}
             };
-            agentsSpawned++;
-            return rt.agent(prompt, opts);
+            return agentWithSchemaSalvage(rt, prompt, opts);
           };
         });
         const rawVotes = await rt.parallel(voteThunks);
-        const votes = rawVotes.map(
+        const voteOuts = rawVotes.map(
           (v) => v
         );
+        const votes = voteOuts.map((o) => o?.value ?? null);
         const claimRecords = [];
+        const claimWarnings = [];
         for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
+          const out = voteOuts[voteIndex] ?? null;
           const vote = votes[voteIndex] ?? null;
+          agentsSpawned += out?.spawns ?? 1;
           claimRecords.push(makeRecord(
             `${STAGE4}:verify:${claimIndex}:${voteIndex}`,
             vote !== null,
@@ -981,8 +1301,20 @@ ${renderClaim(claim)}`;
               ...vote !== null ? { decision: vote.verdict } : {}
             }
           ));
+          if (out !== null && out.spawns === 2) {
+            claimRecords.push(makeRecord(
+              `${STAGE4}:verify:${claimIndex}:${voteIndex}:salvage`,
+              out.salvaged,
+              {
+                model: effectiveModel,
+                ...effort !== void 0 ? { effort } : {}
+              }
+            ));
+          }
+          for (const message of out?.warnings ?? []) claimWarnings.push(`${STAGE4}: ${message}`);
         }
         trailByClaim[claimIndex] = claimRecords;
+        warningsByClaim[claimIndex] = claimWarnings;
         const nonNull = votes.filter((v) => v !== null);
         const effectiveThreshold = Math.min(refuteThreshold, claimVotes);
         let verdict;
@@ -999,6 +1331,7 @@ ${renderClaim(claim)}`;
       })
     );
     trail.push(...trailByClaim.flat());
+    for (const message of warningsByClaim.flat()) warn(rt, warnings, message);
     const truncatedClaims = claims.slice(keptClaims.length).map((claim) => ({ claim, verdict: "unverified-by-cap", votes: [] }));
     const value = [...verifiedKept, ...truncatedClaims];
     let nullVoteCount = 0;
@@ -1482,14 +1815,25 @@ ${renderClaim(claim)}`;
       ...planEffort !== void 0 ? { effort: planEffort } : {},
       ...planType !== void 0 ? { agentType: planType } : {}
     };
-    agentsSpawned++;
-    const plan = await rt.agent(planPrompt, planOpts);
+    const planOut = await agentWithSchemaSalvage(rt, planPrompt, planOpts);
+    agentsSpawned += planOut.spawns;
+    for (const message of planOut.warnings) warn(rt, warnings, `${STAGE7}: ${message}`);
+    const plan = planOut.value;
+    const pushPlanSalvageRecord = () => {
+      if (planOut.spawns === 2) {
+        trail.push(makeRecord(`${STAGE7}:plan:salvage`, planOut.salvaged, {
+          ...planModel !== void 0 ? { model: planModel } : {},
+          ...planEffort !== void 0 ? { effort: planEffort } : {}
+        }));
+      }
+    };
     if (plan === null) {
       warn(rt, warnings, "planAndExecute: planner returned null \u2014 nothing executed");
       trail.push(makeRecord(`${STAGE7}:plan`, false, {
         ...planModel !== void 0 ? { model: planModel } : {},
         ...planEffort !== void 0 ? { effort: planEffort } : {}
       }));
+      pushPlanSalvageRecord();
       const stats2 = {
         itemsIn: 0,
         itemsOut: 0,
@@ -1515,6 +1859,7 @@ ${renderClaim(claim)}`;
       ...planEffort !== void 0 ? { effort: planEffort } : {},
       decision: `subtasks=${keptSubtasks.length}`
     }));
+    pushPlanSalvageRecord();
     const keptArray = keptSubtasks;
     const workerThunks = keptArray.map((subtask, i) => async () => {
       const opts = {
@@ -1525,18 +1870,26 @@ ${renderClaim(claim)}`;
         ...workerEffort !== void 0 ? { effort: workerEffort } : {},
         ...workerType !== void 0 ? { agentType: workerType } : {}
       };
-      agentsSpawned++;
-      return rt.agent(workerPrompt(subtask, i), opts);
+      return agentWithSchemaSalvage(rt, workerPrompt(subtask, i), opts);
     });
     const rawWorkerResults = await parallelWithCacheWarm(rt, workerThunks, cacheWarm ?? true);
     const successfulResults = [];
     let droppedWorkers = 0;
     for (let i = 0; i < rawWorkerResults.length; i++) {
-      const r = rawWorkerResults[i];
+      const out = rawWorkerResults[i];
+      const r = out?.value ?? null;
+      agentsSpawned += out?.spawns ?? 1;
       trail.push(makeRecord(`${STAGE7}:work:${i}`, r !== null, {
         ...workerModel !== void 0 ? { model: workerModel } : {},
         ...workerEffort !== void 0 ? { effort: workerEffort } : {}
       }));
+      if (out !== null && out.spawns === 2) {
+        trail.push(makeRecord(`${STAGE7}:work:${i}:salvage`, out.salvaged, {
+          ...workerModel !== void 0 ? { model: workerModel } : {},
+          ...workerEffort !== void 0 ? { effort: workerEffort } : {}
+        }));
+      }
+      for (const message of out?.warnings ?? []) warn(rt, warnings, `${STAGE7}: ${message}`);
       if (r !== null) {
         successfulResults.push(r);
       } else {
@@ -1570,12 +1923,20 @@ ${renderClaim(claim)}`;
       ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {},
       ...synthesisType !== void 0 ? { agentType: synthesisType } : {}
     };
-    agentsSpawned++;
-    const synthesis = await rt.agent(synthesisPrompt(successfulResults), synthOpts);
+    const synthOut = await agentWithSchemaSalvage(rt, synthesisPrompt(successfulResults), synthOpts);
+    agentsSpawned += synthOut.spawns;
+    const synthesis = synthOut.value;
     trail.push(makeRecord(`${STAGE7}:synthesize`, synthesis !== null, {
       ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
       ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
     }));
+    if (synthOut.spawns === 2) {
+      trail.push(makeRecord(`${STAGE7}:synthesize:salvage`, synthOut.salvaged, {
+        ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
+        ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
+      }));
+    }
+    for (const message of synthOut.warnings) warn(rt, warnings, `${STAGE7}: ${message}`);
     let value = null;
     if (synthesis === null) {
       warn(rt, warnings, "planAndExecute: synthesis agent returned null");
@@ -1637,6 +1998,7 @@ ${renderClaim(claim)}`;
     const warnings = [];
     const { kept: keptItems, truncated } = applyCap(items, maxItems);
     const pendingTrail = [];
+    const pendingWarnings = [];
     const tasks = [];
     for (let i = 0; i < keptItems.length; i++) {
       for (let d = 0; d < dimensions.length; d++) {
@@ -1659,8 +2021,19 @@ ${renderClaim(claim)}`;
         ...scoreType !== void 0 ? { agentType: scoreType } : {}
       };
       const order = t.itemIndex * dimensions.length + t.dimIndex;
-      agentsSpawned++;
-      const verdict = await rt.agent(dim.prompt(item), opts);
+      const scoreOut = await agentWithSchemaSalvage(rt, dim.prompt(item), opts);
+      agentsSpawned += scoreOut.spawns;
+      for (const message of scoreOut.warnings) pendingWarnings.push({ order, message });
+      if (scoreOut.spawns === 2) {
+        pendingTrail.push({
+          order: order + 0.5,
+          record: makeRecord(`${label}:salvage`, scoreOut.salvaged, {
+            ...model !== void 0 ? { model } : {},
+            ...effort !== void 0 ? { effort } : {}
+          })
+        });
+      }
+      const verdict = scoreOut.value;
       if (verdict === null) {
         pendingTrail.push({
           order,
@@ -1705,6 +2078,8 @@ ${renderClaim(claim)}`;
       }
       scoredItems.push({ item, scores: [...scores], score: combined });
     }
+    pendingWarnings.sort((a, b) => a.order - b.order);
+    for (const entry of pendingWarnings) warn(rt, warnings, `${STAGE8}: ${entry.message}`);
     if (dropped > 0) {
       warn(
         rt,
@@ -1845,18 +2220,26 @@ ${renderClaim(claim)}`;
         ...analyzeEffort !== void 0 ? { effort: analyzeEffort } : {},
         ...analyzeType !== void 0 ? { agentType: analyzeType } : {}
       };
-      agentsSpawned++;
-      return rt.agent(analyzePrompt(chunk, i, total), opts);
+      return agentWithSchemaSalvage(rt, analyzePrompt(chunk, i, total), opts);
     });
     const analyzeResults = await parallelWithCacheWarm(rt, analyzeThunks, cacheWarm ?? true);
     const chunkResults = [];
     let dropped = 0;
     for (let i = 0; i < analyzeResults.length; i++) {
-      const r = analyzeResults[i];
+      const out = analyzeResults[i];
+      const r = out?.value ?? null;
+      agentsSpawned += out?.spawns ?? 1;
       trail.push(makeRecord(`${STAGE9}:chunk:${i}`, r !== null, {
         ...analyzeModel !== void 0 ? { model: analyzeModel } : {},
         ...analyzeEffort !== void 0 ? { effort: analyzeEffort } : {}
       }));
+      if (out !== null && out.spawns === 2) {
+        trail.push(makeRecord(`${STAGE9}:chunk:${i}:salvage`, out.salvaged, {
+          ...analyzeModel !== void 0 ? { model: analyzeModel } : {},
+          ...analyzeEffort !== void 0 ? { effort: analyzeEffort } : {}
+        }));
+      }
+      for (const message of out?.warnings ?? []) warn(rt, warnings, `${STAGE9}: ${message}`);
       if (r !== null) {
         chunkResults.push(r);
       } else {
@@ -1882,12 +2265,20 @@ ${renderClaim(claim)}`;
         ...synthesizeEffort !== void 0 ? { effort: synthesizeEffort } : {},
         ...synthesizeType !== void 0 ? { agentType: synthesizeType } : {}
       };
-      agentsSpawned++;
-      const synthesis = await rt.agent(synthesizePrompt(chunkResults), synthOpts);
+      const synthOut = await agentWithSchemaSalvage(rt, synthesizePrompt(chunkResults), synthOpts);
+      agentsSpawned += synthOut.spawns;
+      const synthesis = synthOut.value;
       trail.push(makeRecord(`${STAGE9}:synthesize`, synthesis !== null, {
         ...synthesizeModel !== void 0 ? { model: synthesizeModel } : {},
         ...synthesizeEffort !== void 0 ? { effort: synthesizeEffort } : {}
       }));
+      if (synthOut.spawns === 2) {
+        trail.push(makeRecord(`${STAGE9}:synthesize:salvage`, synthOut.salvaged, {
+          ...synthesizeModel !== void 0 ? { model: synthesizeModel } : {},
+          ...synthesizeEffort !== void 0 ? { effort: synthesizeEffort } : {}
+        }));
+      }
+      for (const message of synthOut.warnings) warn(rt, warnings, `${STAGE9}: ${message}`);
       if (synthesis === null) {
         warn(rt, warnings, "chunkedAnalysis: synthesis agent returned null");
       } else {

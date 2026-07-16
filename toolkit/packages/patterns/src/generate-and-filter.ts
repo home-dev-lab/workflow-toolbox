@@ -17,6 +17,7 @@ import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@work
 import { warn, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { pipelineWithCacheWarm } from './cache-warm.js'
+import { agentWithSchemaSalvage } from './structured-salvage.js'
 
 const STAGE = 'generateAndFilter'
 
@@ -132,8 +133,13 @@ export async function generateAndFilter<TCand = string>(
 
   // Pending trail entries accumulated inside pipeline stage closures.
   // Each entry carries (itemIndex, stageOrder) for deterministic sort after the pipeline barrier.
-  // stageOrder: 0 = generate, 1 = filter (within the same item).
+  // stageOrder: 0 = generate, 1 = filter (within the same item); +0.5 slots a
+  // structured-output salvage respawn's record right after its stage's main record.
   const pendingTrail: Array<{ itemIndex: number; stageOrder: number; record: TrailRecord }> = []
+
+  // Pending per-item salvage diagnostics — buffered and emitted after the
+  // pipeline barrier (sorted like the trail) so `warnings` stays deterministic.
+  const pendingWarnings: Array<{ itemIndex: number; stageOrder: number; message: string }> = []
 
   // -------------------------------------------------------------------------
   // Filter control schema — owned by the pattern.
@@ -175,8 +181,20 @@ export async function generateAndFilter<TCand = string>(
       ...(generateType !== undefined ? { agentType: generateType } : {}),
     }
 
-    agentsSpawned++
-    const candidate = await rt.agent<TCand>(generatePrompt(index), genOpts)
+    const genOut = await agentWithSchemaSalvage<TCand>(rt, generatePrompt(index), genOpts)
+    agentsSpawned += genOut.spawns
+    for (const message of genOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 0, message })
+    if (genOut.spawns === 2) {
+      pendingTrail.push({
+        itemIndex: index,
+        stageOrder: 0.5,
+        record: makeRecord(`${STAGE}:generate:${index}:salvage`, genOut.salvaged, {
+          ...(generateModel !== undefined ? { model: generateModel } : {}),
+          ...(generateEffort !== undefined ? { effort: generateEffort } : {}),
+        }),
+      })
+    }
+    const candidate = genOut.value
 
     if (candidate === null) {
       generateFailures++
@@ -226,11 +244,24 @@ export async function generateAndFilter<TCand = string>(
       ...(filterType !== undefined ? { agentType: filterType } : {}),
     }
 
-    agentsSpawned++
-    const verdict = await rt.agent<{ pass: boolean; reason: string }>(
+    const filterOut = await agentWithSchemaSalvage<{ pass: boolean; reason: string }>(
+      rt,
       filterPrompt(candidate),
       filterOpts,
     )
+    agentsSpawned += filterOut.spawns
+    for (const message of filterOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 1, message })
+    if (filterOut.spawns === 2) {
+      pendingTrail.push({
+        itemIndex: index,
+        stageOrder: 1.5,
+        record: makeRecord(`${STAGE}:filter:${index}:salvage`, filterOut.salvaged, {
+          ...(filterModel !== undefined ? { model: filterModel } : {}),
+          ...(filterEffort !== undefined ? { effort: filterEffort } : {}),
+        }),
+      })
+    }
+    const verdict = filterOut.value
 
     if (verdict === null) {
       // Fail-closed: a failed filter does NOT admit the candidate.
@@ -285,6 +316,12 @@ export async function generateAndFilter<TCand = string>(
   // -------------------------------------------------------------------------
   // Post-pipeline warnings
   // -------------------------------------------------------------------------
+
+  // Salvage diagnostics first, in deterministic (itemIndex, stageOrder) order.
+  pendingWarnings.sort((a, b) =>
+    a.itemIndex !== b.itemIndex ? a.itemIndex - b.itemIndex : a.stageOrder - b.stageOrder,
+  )
+  for (const entry of pendingWarnings) warn(rt, warnings, `${STAGE}: ${entry.message}`)
 
   if (generateFailures > 0) {
     warn(
