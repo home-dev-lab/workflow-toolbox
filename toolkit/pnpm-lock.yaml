@@ -83,6 +83,28 @@ importers:
         specifier: ^5.5.0
         version: 5.9.3
 
+  packages/comm:
+    dependencies:
+      '@workflow-toolbox/std':
+        specifier: workspace:*
+        version: link:../std
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.1
+      '@workflow-toolbox/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      json-schema-to-ts:
+        specifier: ^3.1.1
+        version: 3.1.1
+      tsx:
+        specifier: ^4.0.0
+        version: 4.22.4
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+
   packages/debugger:
     devDependencies:
       '@types/node':

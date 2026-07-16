@@ -141,6 +141,15 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'docs/public/dev-workflow.md',
     ],
   },
+  {
+    // wt-comm v0: the file-message protocol between escalating agents, the pilot, and
+    // the (v0 read-only) observer/relay.
+    sources: ['toolkit/packages/comm/src/'],
+    docs: [
+      'toolkit/packages/comm/README.md',
+      'toolkit/packages/comm/teaching/wt-comm-participant.md',
+    ],
+  },
 ]
 
 /** The doc surfaces mapped to any of `changedFiles` (repo-relative), deduped,

@@ -1014,6 +1014,15 @@ ${renderClaim(claim)}`;
         "plugin/skills/workflow-composer/references/shipped-compositions.md",
         "docs/public/dev-workflow.md"
       ]
+    },
+    {
+      // wt-comm v0: the file-message protocol between escalating agents, the pilot, and
+      // the (v0 read-only) observer/relay.
+      sources: ["toolkit/packages/comm/src/"],
+      docs: [
+        "toolkit/packages/comm/README.md",
+        "toolkit/packages/comm/teaching/wt-comm-participant.md"
+      ]
     }
   ];
   function docsForChangedFiles(changedFiles, manifest = DOCS_PROVENANCE) {
