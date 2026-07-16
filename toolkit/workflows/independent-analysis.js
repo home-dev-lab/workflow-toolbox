@@ -984,6 +984,16 @@ ${contextBlock}`,
         lensList = proposed.lenses;
       }
       rt.log(`independent-analysis: ${lensList.length} lenses (${lensList.map((l) => l.key).join(", ")})`);
+      if (input.sourceRefs.length === 0) {
+        const externalLens = lensList.find(
+          (l) => /\bdocs?\b|\bweb\b|verify against|official/i.test(`${l.key} ${l.focus}`)
+        );
+        if (externalLens !== void 0) {
+          rt.log(
+            `independent-analysis: lens "${externalLens.key}" implies external verification but no sourceRefs were provided \u2014 agents will reason from priors and external claims will be unverifiable. Attach the source via sourceRefs (Read is never network-gated), or ground it out-of-band and pass the conclusion as context.`
+          );
+        }
+      }
       const analysis = await fanOutAndSynthesize(rt, {
         tasks: lensList,
         taskPrompt: (lens) => `You are an independent analyst. Examine the subject ADVERSARIALLY through ONE lens only.

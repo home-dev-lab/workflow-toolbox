@@ -414,3 +414,44 @@ describe('independent-analysis empty synthesis', () => {
     expect(verifierCalls.length).toBe(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Network-independence nudge — a lens implying external/doc verification with
+// no sourceRefs gets a non-fatal log warning (network tools are silently
+// deniable per environment; sourceRefs/Read is the only never-gated channel).
+// ---------------------------------------------------------------------------
+
+describe('independent-analysis network-independence nudge', () => {
+  const NUDGE = 'implies external verification'
+
+  it('logs a nudge when a lens implies external verification but no sourceRefs are given', async () => {
+    const rt = makeRuntime()
+    await wf.run(
+      rt,
+      JSON.stringify({ subject: baseInput.subject, lenses: ['verify against the docs'], assumptions: [] }),
+    )
+    const nudge = rt.logs.find((l) => l.includes(NUDGE))
+    expect(nudge).toBeDefined()
+    expect(nudge).toContain('sourceRefs')
+  })
+
+  it('does not log the nudge when sourceRefs are provided for an external lens', async () => {
+    const rt = makeRuntime()
+    await wf.run(
+      rt,
+      JSON.stringify({
+        subject: baseInput.subject,
+        lenses: ['verify against the docs'],
+        sourceRefs: ['/abs/path/to/doc.md'],
+        assumptions: [],
+      }),
+    )
+    expect(rt.logs.some((l) => l.includes(NUDGE))).toBe(false)
+  })
+
+  it('does not log the nudge for internal lenses', async () => {
+    const rt = makeRuntime()
+    await wf.run(rt, JSON.stringify(baseInput))
+    expect(rt.logs.some((l) => l.includes(NUDGE))).toBe(false)
+  })
+})

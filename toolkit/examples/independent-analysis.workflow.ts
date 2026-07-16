@@ -353,6 +353,26 @@ export default defineWorkflow({
     }
     rt.log(`independent-analysis: ${lensList.length} lenses (${lensList.map((l) => l.key).join(', ')})`)
 
+    // Preventive nudge: a lens implying EXTERNAL verification (docs / web /
+    // "verify against" / official) can only be grounded by a network tool, which
+    // is silently deniable per environment. With no sourceRefs, the analyst
+    // reasons from priors and its external claims are unverifiable — warn (never
+    // fail) so the author attaches the source via sourceRefs (Read is never
+    // network-gated) or grounds it out-of-band and passes the conclusion as context.
+    if (input.sourceRefs.length === 0) {
+      const externalLens = lensList.find((l) =>
+        /\bdocs?\b|\bweb\b|verify against|official/i.test(`${l.key} ${l.focus}`),
+      )
+      if (externalLens !== undefined) {
+        rt.log(
+          `independent-analysis: lens "${externalLens.key}" implies external verification ` +
+            `but no sourceRefs were provided — agents will reason from priors and external ` +
+            `claims will be unverifiable. Attach the source via sourceRefs (Read is never ` +
+            `network-gated), or ground it out-of-band and pass the conclusion as context.`,
+        )
+      }
+    }
+
     // ---- Phases 2: fan out per lens, then synthesize a deduped candidate list ----
     const analysis = await fanOutAndSynthesize<Lens, AnglesOutput, CandidatesOutput>(rt, {
       tasks: lensList,

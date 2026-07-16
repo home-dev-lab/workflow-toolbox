@@ -93,6 +93,33 @@ construction, not by hoping.
    correctness. If your verifiers never overturn a finding, the stage is theatre — fix
    the framing (see neutral framing above) or drop it.
 
+## Never make correctness depend on a network tool
+
+A fan-out agent's correctness must not hinge on `WebFetch`, `WebSearch`, or any network
+access. Two reasons, both environment-driven:
+
+- **Availability is per-user.** Hooks, permissions, and sandboxes vary by environment; a
+  network tool your agent relies on may simply not be callable for the person running
+  your workflow.
+- **Denial is silent.** When a network fetch is blocked mid-run, the agent does not error
+  out — it answers the question *blind*, from priors, and its output is indistinguishable
+  from a grounded one. A doc-verification finding built on a denied fetch looks exactly as
+  confident as a real one.
+
+`Read` — and therefore `sourceRefs` — is the only grounding channel that is never
+network-gated. So for any factual or doc question the agent's answer depends on:
+
+1. **Pass the source as a file** via `sourceRefs`; the agent reads it with `Read`, which
+   no environment silently denies; or
+2. **Ground it out-of-band first** (e.g. the `deep-grounding` skill in the main loop) and
+   pass the settled conclusion into the workflow as `context` / `assumptions`.
+
+The honest limit: you cannot make an arbitrary user's `WebFetch` work, by design — so the
+portable path is *ground-then-pass*, with the run's own tool-denial reporting as the
+backstop that makes any residual silent denial visible after the fact. Prefer `sourceRefs`
+or out-of-band grounding for every load-bearing fact, and treat a lens or sub-task phrased
+as "verify against the docs / the web" as a bug unless it ships with the source attached.
+
 ## Why premises matter more than agent count
 
 Adding agents diversifies *framing*, not *priors*. On a reasoning error rooted in the

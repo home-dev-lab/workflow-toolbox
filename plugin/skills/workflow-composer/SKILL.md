@@ -435,6 +435,13 @@ Launch via the Workflow tool, then keep two non-negotiable habits:
    `references/premise-quality.md` for the deeper doctrine — bounding every field
    against the model's output ceiling, giving agents a named "could-not-verify" out,
    and why premise quality (not agent count) caps what a fan-out can return.
+9. **Never make correctness depend on a network tool.** A subagent's `WebFetch` /
+   `WebSearch` access is environment-specific and, when a hook or sandbox denies it,
+   fails **silently** — the agent answers blind from priors and its output looks
+   identical to a grounded one. Ground any factual or doc claim the result depends on
+   by passing the source as a file via `sourceRefs` (`Read` is never network-gated),
+   or ground it out-of-band first and pass the conclusion in as `context`. See
+   `references/premise-quality.md` (*Never make correctness depend on a network tool*).
 
 ## Worked example: the `pr-review` shape
 

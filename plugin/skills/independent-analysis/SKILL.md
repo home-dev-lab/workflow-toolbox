@@ -62,7 +62,12 @@ Knowing the difference is the difference between a real safety net and theatre.
    cannot rescue an impoverished prompt. So: pass the **real evidence** for any factual
    sub-question via `sourceRefs` (or tell agents to look it up), and give **open**
    lens-sets (`lenses: []` to auto-propose, or genuinely diverse angles) rather than a
-   menu that already encodes your assumptions.
+   menu that already encodes your assumptions. In particular, a lens that says "verify
+   against the docs / the web" can only be grounded by a network tool, which is
+   **silently deniable per environment** — attach the source via `sourceRefs` or ground
+   it out-of-band first, or the analyst answers blind from priors and its external
+   claims are unverifiable. The workflow logs a nudge when it detects an
+   external-verification lens with no `sourceRefs`.
 
 3. **It fires on the wrong distribution if you trigger on a feeling.** You reach for it
    loudest when you *already* doubt — and it stays silent exactly when you are
@@ -102,7 +107,7 @@ Workflow({
 | `context` | string | Background the analysts need (they can't see the chat). |
 | `assumptions` | string[] | What you already believe/know — findings are **deduped against these**, so analysts spend their effort on genuinely-new angles. |
 | `lenses` | string[] | Explicit analysis angles; `[]` → auto-propose `lensCount` diverse lenses. |
-| `sourceRefs` | string[] | Files the agents must READ to ground claims in real content. |
+| `sourceRefs` | string[] | Files the agents must READ to ground claims in real content — the only never-network-gated channel; required for any lens that implies external/doc verification. |
 | `lensCount` | number (default 5) | How many lenses to auto-propose when `lenses` is empty. |
 | `votes` | number (default 3) | Verifier votes per non-low candidate (low-severity → 1). |
 | `verifierModel` | alias | Verifier model override. **Leave unset** — see below. |
