@@ -898,6 +898,31 @@ describe('renderSummaryMarkdown (pure, in-code, no agent call)', () => {
     expect(md).toContain('broke')
   })
 
+  it('fix-round finding: the corrections section is labeled UNVERIFIED and annotates each line with its premise\'s own verified verdict', () => {
+    // P1 is REFUTED by Verify but still carries a correction proposal — the
+    // exact true-evidence/false-reach shape from the real e2e run
+    // (wf_ca96af60-02d) this fix locks against.
+    const results = [finalResult({ id: 'P1', verdict: 'refuted' }), finalResult({ id: 'P2', verdict: 'confirmed' })]
+    const recommendation = { route: 'cancel' as const, reasons: ['P1: refuted'] }
+    const cardCorrections = ['P1 — expectedStatus: "500" → "409"']
+    const md = renderSummaryMarkdown(results, recommendation, formatRecommendation(recommendation), cardCorrections, [])
+
+    expect(md).toContain('## Card corrections (unverified proposals — arm-authored, not refute-first checked)')
+    expect(md).toContain('P1 — expectedStatus: "500" → "409" [verdict for this premise: refuted]')
+  })
+
+  it('a correction for a premise with NO matching verdict in the table carries no annotation (never fabricates one)', () => {
+    const results = [finalResult({ id: 'P2', verdict: 'confirmed' })]
+    const recommendation = { route: 'proceed' as const, reasons: ['P2: confirmed'] }
+    // References a premise id ("P9") absent from `results` — must not throw
+    // or invent a verdict for it.
+    const cardCorrections = ['P9 — someField: "old" → "new"']
+    const md = renderSummaryMarkdown(results, recommendation, formatRecommendation(recommendation), cardCorrections, [])
+
+    expect(md).toContain('P9 — someField: "old" → "new"')
+    expect(md).not.toContain('[verdict for this premise:')
+  })
+
   it('caps at ~6000 chars, snapped to a line boundary, with a truncation marker', () => {
     const many = Array.from({ length: 200 }, (_, i) =>
       finalResult({

@@ -1092,9 +1092,15 @@ ${renderClaim(claim)}`;
     }
     if (cardCorrections.length > 0) {
       lines.push("");
-      lines.push("## Card corrections");
+      lines.push("## Card corrections (unverified proposals \u2014 arm-authored, not refute-first checked)");
       lines.push("");
-      for (const c of cardCorrections) lines.push(`- ${c}`);
+      const verdictById = new Map(finalResults.map((p) => [p.id, p.verdict]));
+      for (const c of cardCorrections) {
+        const idMatch = /^(\S+) — /.exec(c);
+        const verdict = idMatch !== null ? verdictById.get(idMatch[1]) : void 0;
+        const annotation = verdict !== void 0 ? ` [verdict for this premise: ${verdict}]` : "";
+        lines.push(`- ${c}${annotation}`);
+      }
     }
     if (predictionCheck.length > 0) {
       lines.push("");
@@ -1240,6 +1246,8 @@ ${arbiterHypothesesBlock}
 
 PRE-COMMITTED PREDICTION:
 ${predictionBlock}
+
+CARD-CORRECTION SCOPE DISCIPLINE: cardCorrection is an UNVERIFIED PROPOSAL \u2014 it does NOT get refute-first checked the way your verdict does. If you propose one, state EXACTLY where the evidence reaches (which surface/layer/call site) and do NOT generalize beyond the cited line \u2014 "this one call site skips validation" is checkable; "the CLI accepts any path" is a different, broader claim the same evidence does not prove.
 
 Return the premise-result shape: { premiseId: "${premise.id}", verdict, evidence, alternativeMechanisms, cardCorrection, couldNotVerify, reasoning }. (${roleLabel})`;
       const armThunks = [];

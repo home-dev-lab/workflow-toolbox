@@ -667,6 +667,14 @@ export interface FinalPremiseResult {
   /** The PoC routing sentence, when a canary ran for this premise — informational,
    *  audit-only (see the file-header CLAIM IDENTITY note). */
   pocRouting: string | null
+  /** UNVERIFIED PROPOSAL — arm-authored (the research/analysis agent's own
+   *  suggestion), and does NOT pass refute-first verification the way the
+   *  premise `verdict` above does. A correction can cite REAL evidence and
+   *  still overreach its scope (true-evidence/false-reach: e.g. a real line
+   *  proves ONE code path lacks validation, but the correction generalizes
+   *  that to "the CLI accepts any path" — a claim about a surface the cited
+   *  line does not cover). Treat as pilot input to weigh, never auto-apply;
+   *  cross-check against `verdict` before acting on it. */
   cardCorrection: CardCorrectionField | null
 }
 
@@ -717,9 +725,20 @@ export function renderSummaryMarkdown(
 
   if (cardCorrections.length > 0) {
     lines.push('')
-    lines.push('## Card corrections')
+    lines.push('## Card corrections (unverified proposals — arm-authored, not refute-first checked)')
     lines.push('')
-    for (const c of cardCorrections) lines.push(`- ${c}`)
+    // Correction lines are pre-rendered as `${premiseId} — …`; cross-reference
+    // the leading id against the VERIFIED table above so a contradiction
+    // between an unverified proposal and its own premise's verdict (see the
+    // fix-round finding at the cardCorrections computation site) is visible
+    // at a glance, without re-parsing the proposal itself.
+    const verdictById = new Map(finalResults.map((p): [string, ClaimVerdict] => [p.id, p.verdict]))
+    for (const c of cardCorrections) {
+      const idMatch = /^(\S+) — /.exec(c)
+      const verdict = idMatch !== null ? verdictById.get(idMatch[1]!) : undefined
+      const annotation = verdict !== undefined ? ` [verdict for this premise: ${verdict}]` : ''
+      lines.push(`- ${c}${annotation}`)
+    }
   }
 
   if (predictionCheck.length > 0) {
@@ -946,6 +965,11 @@ export default defineWorkflow({
       `CONTEXT:\n${contextBlock}\n\n` +
       `ARBITER HYPOTHESES:\n${arbiterHypothesesBlock}\n\n` +
       `PRE-COMMITTED PREDICTION:\n${predictionBlock}\n\n` +
+      `CARD-CORRECTION SCOPE DISCIPLINE: cardCorrection is an UNVERIFIED PROPOSAL — it does ` +
+      `NOT get refute-first checked the way your verdict does. If you propose one, state ` +
+      `EXACTLY where the evidence reaches (which surface/layer/call site) and do NOT ` +
+      `generalize beyond the cited line — "this one call site skips validation" is checkable; ` +
+      `"the CLI accepts any path" is a different, broader claim the same evidence does not prove.\n\n` +
       `Return the premise-result shape: { premiseId: "${premise.id}", verdict, evidence, ` +
       `alternativeMechanisms, cardCorrection, couldNotVerify, reasoning }. (${roleLabel})`
 
@@ -1236,6 +1260,18 @@ export default defineWorkflow({
     // case, cards #1819053659325990500 / #1819020803027502679): a correction
     // anchored to a CONFIRMED premise is noise, so only refuted/
     // partially-confirmed premises' corrections survive to the top level.
+    //
+    // UNVERIFIED PROPOSALS, BY DESIGN: unlike the premise `verdict` (which IS
+    // refute-first checked by adversarialVerification above), cardCorrections
+    // are the arm's own unrefuted suggestions — pilot input, never auto-
+    // applied. Fix-round finding (real e2e run wf_ca96af60-02d): an arm cited
+    // a genuine source line but overgeneralized its reach (a true-evidence/
+    // false-reach claim) — the correction survived because this channel is
+    // deliberately not verified. Kept that way (verifying every proposed
+    // correction would double the Verify fan for a channel whose whole point
+    // is fast, cheap arm-authored suggestions) — but `renderSummaryMarkdown`
+    // below labels the section honestly and annotates each line with the
+    // premise's own verified verdict so a contradiction is visible at a glance.
     const cardCorrections: string[] = finalResults
       .filter((p) => (p.verdict === 'refuted' || p.verdict === 'partially-confirmed') && p.cardCorrection !== null)
       .map((p) => `${p.id} — ${p.cardCorrection!.field}: "${p.cardCorrection!.current}" → "${p.cardCorrection!.corrected}"`)
