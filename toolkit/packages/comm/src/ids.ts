@@ -79,15 +79,22 @@ function foldSegment(s: string, maxLen: number, emptyPlaceholder: string): strin
 const RUN_SEGMENT_MAX = 40
 const STEP_SEGMENT_MAX = 32
 
+/** The shared `<foldedRunId>-<fnv1a32Hex>` run segment both mint functions build on —
+ *  ONE derivation site (review lock F11), so the injectivity recipe (hash width, fold
+ *  cap, placeholder) can never drift between question and digest ids. */
+function runSegmentWithHash(runId: string): string {
+  const runSegment = foldSegment(runId, RUN_SEGMENT_MAX, 'r')
+  const hash = fnv1a32(runId).toString(16).padStart(8, '0')
+  return `${runSegment}-${hash}`
+}
+
 /** `mintQuestionId(runId, stepKey) = q-<segment>-<stepKey>` where `<segment>` = the
  *  folded+truncated runId plus an 8-hex-char FNV-1a hash of the RAW runId (injectivity).
  *  Deterministic (a resumed run re-mints the SAME id) and always <=90 chars, matching
  *  BASE_ID_PATTERN — see README "Mint rule". */
 export function mintQuestionId(runId: string, stepKey: string): string {
-  const runSegment = foldSegment(runId, RUN_SEGMENT_MAX, 'r')
   const stepSegment = foldSegment(stepKey, STEP_SEGMENT_MAX, 's')
-  const hash = fnv1a32(runId).toString(16).padStart(8, '0')
-  return `q-${runSegment}-${hash}-${stepSegment}`
+  return `q-${runSegmentWithHash(runId)}-${stepSegment}`
 }
 
 /** `mintDigestId(runId, seq) = d-<segment>-<seq>` — same segment recipe as
@@ -95,8 +102,6 @@ export function mintQuestionId(runId: string, stepKey: string): string {
  *  degrade to 0) so a degenerate caller value can never inject a leading '-' or a
  *  non-[a-z0-9] character into the id. */
 export function mintDigestId(runId: string, seq: number): string {
-  const runSegment = foldSegment(runId, RUN_SEGMENT_MAX, 'r')
-  const hash = fnv1a32(runId).toString(16).padStart(8, '0')
   const safeSeq = Number.isFinite(seq) ? Math.max(0, Math.trunc(seq)) : 0
-  return `d-${runSegment}-${hash}-${safeSeq}`
+  return `d-${runSegmentWithHash(runId)}-${safeSeq}`
 }

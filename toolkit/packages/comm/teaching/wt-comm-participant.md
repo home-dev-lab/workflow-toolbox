@@ -27,8 +27,9 @@ Message id: DETERMINISTIC so a resumed run re-mints the same id. If your brief s
 ready-made question id, use it VERBATIM. Otherwise mint `q-<run>-<step>` where `<run>` is
 your `RUN_ID` lowercased with every character outside `a-z0-9` replaced by `-` (then
 collapse repeated dashes, trim edge dashes) and `<step>` names the escalation point.
-Ids match `^[a-z0-9][a-z0-9-]{0,95}$` (max 96 chars) and must NOT contain `--`
-(reserved for the decision suffix). Payload bounds (rejected otherwise): `kind` 1–64
+Truncate the folded run segment to 40 chars and the step name to 32 chars (the library's
+own caps) so the id always fits its grammar. Ids match `^[a-z0-9][a-z0-9-]{0,95}$`
+(max 96 chars) and must NOT contain `--` (reserved for the decision suffix). Payload bounds (rejected otherwise): `kind` 1–64
 chars · 2–8 `options` (`id` `^[a-z0-9-]{1,32}$`, `label` 3–200, `meaning` ≤400) ·
 `defaultOptionId` must be one of your option ids · `question` 20–2000 chars ·
 `evidence` ≤2000 · `context` ≤1000.
@@ -82,7 +83,9 @@ the marker is the commit point. If `ack-$ID.json` appears while you poll, the pi
 engaged: you MAY extend your deadline.
 
 Run this WHOLE recipe every time — whether the decision arrives or your deadline fires,
-you end up acting on the marker's `outcome`:
+you end up acting on the marker's `outcome`. First check your `AGENT_ID` contains no
+double quotes or backslashes (it should match `^[A-Za-z0-9._-]+$`); if it does not, use
+a stripped form — the hand-assembled claim JSON below is not escape-safe:
 
 ```bash
 MARKER="$WT_COMM_DIR/consumed-$ID.json"
@@ -90,14 +93,14 @@ DECISION="$WT_COMM_DIR/msg-$ID--decision.json"
 
 # 1. Poll until the marker PARSES (not merely exists), within your deadline.
 for i in $(seq 1 60); do
-  grep -q '"outcome"' "$MARKER" 2>/dev/null && break
+  grep -q '"outcome".*}' "$MARKER" 2>/dev/null && break
   sleep 10
 done
 
 # 2. Grace: if a decision file exists, the pilot is mid-commit — allow a few more ticks.
 if [ ! -f "$MARKER" ] && [ -f "$DECISION" ]; then
   for i in $(seq 1 6); do
-    grep -q '"outcome"' "$MARKER" 2>/dev/null && break
+    grep -q '"outcome".*}' "$MARKER" 2>/dev/null && break
     sleep 5
   done
 fi
@@ -108,7 +111,7 @@ CLAIM='{"id":"'$ID'","by":{"role":"agent","id":"'$AGENT_ID'"},"at":"'$(date -u +
 
 # 4. Read the marker back until it parses; act on ITS outcome.
 for i in $(seq 1 6); do
-  grep -q '"outcome"' "$MARKER" 2>/dev/null && break
+  grep -q '"outcome".*}' "$MARKER" 2>/dev/null && break
   sleep 2
 done
 ```

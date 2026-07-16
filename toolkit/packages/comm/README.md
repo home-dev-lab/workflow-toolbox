@@ -187,8 +187,15 @@ the next poll), and messages are small.
   settled and refuses an incoherent claim BEFORE writing (named outcome
   `invalid-claim`) — wrong role for the mode, outcome not in the question's options, or
   a `default-timeout` outcome differing from `defaultOptionId` are never persisted. The
-  same rules are re-checked at read (`validateSettlement`) for markers written by
-  non-library writers.
+  same rules are re-checked at READ time by `readSettlementFor(dir, message)` — the
+  reader every consumer holding the message should use: a hand-written marker that
+  forges a decision fails as `incoherent` instead of becoming authoritative.
+  A `claimSettlement` that loses to an EXISTING marker reads it back before answering:
+  a parseable marker is `already-settled`; an unparseable one (a torn prior claim) is
+  the named outcome `torn-settlement` — never a false `already-settled`. A torn marker
+  cannot be re-claimed (write-once, and its path is bound to the message id): recovery
+  is a deliberate, journaled pilot-housekeeping step — the pilot verifies the file is
+  unparseable and removes it by hand; the library ships no API for it.
 
 **The marker is the authority — it is the commit point of a decision.** The no-clobber
 claim deterministically arbitrates the race between a late decision and a timeout
@@ -205,11 +212,16 @@ the pilot is mid-commit: allow a few more ticks before defaulting) → claim the
 settlement with `default-timeout` → whatever the claim returned, RE-READ the marker and
 act on ITS `outcome`. The asker never acts on an in-memory default.
 
-**Pilot flow** (`respondToQuestion`): read the marker first (`already-settled`
-short-circuits without writing) → write the `decision.response` at the deterministic id
-(get-or-create for its own re-run) → claim the settlement with `mode: 'decision'`.
-Crash between the decision write and the claim: the marker is absent, so the asker's
-deadline default may win — safe by construction, and the stray decision stays advisory.
+**Pilot flow** (`respondToQuestion`): coherence-read the marker first
+(`already-settled` short-circuits without writing; a forged marker surfaces as
+`incoherent-settlement`, a torn one as `torn-settlement`) → write the
+`decision.response` at the deterministic id (get-or-create for its own re-run) → claim
+the settlement with `mode: 'decision'`. When the write ADOPTS an existing decision
+message (a prior call that crashed before claiming), the settlement is claimed with the
+ADOPTED message's decision — the durable message is the authority the marker commits,
+and a differing in-memory `args.decision` never contradicts it. Crash between the
+decision write and the claim: the marker is absent, so the asker's deadline default may
+win — safe by construction, and the stray decision stays advisory.
 
 Timeouts and polling cadence belong to CONSUMERS (the library has no clocks): the
 consumer defines the deadline; the protocol only makes whatever happened durable.
@@ -281,11 +293,15 @@ future watcher or the observer imports instead of re-deriving).
 **Filesystem lifecycle** — `writeMessage(dir, message)` → `WriteMessageResult`;
 `writeOrReadMessage(dir, message)` → `WriteOrReadMessageResult` (get-or-create);
 `writeAck(dir, ack)` → `WriteAckResult`; `claimSettlement(dir, message, claim)` →
-`ClaimSettlementResult` (coherence enforced before the write); `readSettlement(dir, id)`
-→ `ReadSettlementResult`; `readMessage(dir, id)` → `ReadMessageResult`;
-`listMessages(dir, filter?)` with `ListMessagesFilter` (`type`/`to`);
-`respondToQuestion(dir, question, args)` with `RespondToQuestionArgs` /
-`RespondToQuestionResult` (the composed pilot flow).
+`ClaimSettlementResult` (coherence enforced before the write; `torn-settlement` on an
+unparseable existing marker); `readSettlement(dir, id)` → `ReadSettlementResult`
+(shape-only — prefer the coherent variant when you hold the message);
+`readSettlementFor(dir, message)` → `ReadSettlementForResult` (the read-time coherence
+recheck: `incoherent` on a forged marker); `readMessage(dir, id)` →
+`ReadMessageResult`; `listMessages(dir, filter?)` with `ListMessagesFilter`
+(`type`/`to`); `respondToQuestion(dir, question, args)` with `RespondToQuestionArgs` /
+`RespondToQuestionResult` (the composed pilot flow, `incoherent-settlement` /
+`torn-settlement` surfaced as their own outcomes).
 
 ## Teaching pack
 

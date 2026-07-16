@@ -26,7 +26,7 @@ export const BASE_ID_PATTERN = /^(?!.*--)[a-z0-9][a-z0-9-]{0,95}$/
  *  This regex alone accepts a base containing an EXTRA "--" before the suffix
  *  (e.g. "ab--cd--decision") — `isValidDecisionId` (ids.ts) additionally enforces
  *  the "exactly one '--' occurrence" invariant the regex can't express. */
-export const DECISION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,105}--decision$/
+export const DECISION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,95}--decision$/
 
 /** Option ids inside an `escalation.question`'s `options[]` and every settlement
  *  `outcome` (always one of those option ids). */
