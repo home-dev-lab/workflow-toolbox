@@ -797,7 +797,15 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
   // requesterCwd (card #1820589984604750931): the requesting process's cwd rides along so
   // the server attributes the delegated run to THIS project's timeline bucket (old servers
   // ignore the unknown field; buildLaunchBody omits a degenerate cwd — see launch-body.ts).
-  const res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify(buildLaunchBody(script, args, process.cwd())) }, 30_000)
+  // process.cwd() can throw (deleted cwd) — degrade to '' (omitted), never a failed launch
+  // and NEVER an empty-string field (the server 400s it).
+  let requesterCwd = ''
+  try {
+    requesterCwd = process.cwd()
+  } catch {
+    // unresolvable cwd → field omitted; attribution falls back to the Delegated bucket
+  }
+  const res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, 30_000)
   const body: unknown = await res.json().catch(() => null)
   if (!res.ok) {
     const code = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['code'] : undefined
