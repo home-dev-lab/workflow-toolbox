@@ -70,7 +70,15 @@ import {
 import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
 import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
 import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
-import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode } from './observe-await.js'
+import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode, AWAIT_SOURCE_UNRESOLVED_EXIT_CODE } from './observe-await.js'
+import {
+  resolveSource,
+  localSourceKeys,
+  classifySourceSearch,
+  SourceResolutionError,
+  type ResolvedSource,
+  type SourcesListEntry,
+} from './source-resolve.js'
 import { resolveConfigDir, resolveDir } from './config-dir.js'
 import {
   selectRuns,
@@ -703,7 +711,7 @@ async function cmdStatus(ctx: Ctx): Promise<void> {
  *  satisfy without being the exact process we spawned. On platforms where identity is
  *  unavailable (non-Linux → nulls recorded) this degrades to REFUSING — the safe
  *  direction, consistent with stop's "never signal on a guess". */
-async function requireOwnedServer(ctx: Ctx): Promise<{ port: number; token: string }> {
+async function requireOwnedServer(ctx: Ctx): Promise<{ port: number; token: string; health: Health }> {
   const p = await probeFor(ctx)
   if (p.identity !== 'ours' || p.health === null) {
     throw new Error(`no owned observe-ui server (health on :${p.port} → ${p.identity}). Run \`wt-observe start\` first.`)
@@ -718,7 +726,10 @@ async function requireOwnedServer(ctx: Ctx): Promise<{ port: number; token: stri
   if (token === undefined) {
     throw new Error('owned server found but no token recorded in the pidfile — `wt-observe stop` then `start` to mint one.')
   }
-  return { port: p.health.port, token }
+  // Card #1819922556652619607 — the health payload probeFor() already fetched is handed
+  // back so resolveSourcePrefix can resolve the common cases (no --source, or --source
+  // naming a key/configDir) WITHOUT a second, failure-prone /api/sources round trip.
+  return { port: p.health.port, token, health: p.health }
 }
 
 async function api(port: number, token: string, path: string, init: RequestInit = {}, timeoutMs = HEALTH_TIMEOUT_MS): Promise<Response> {
@@ -736,32 +747,32 @@ async function api(port: number, token: string, path: string, init: RequestInit 
  *  path against a hub and got "unknown hub route" (and `await`'s unprefixed polls
  *  would read every hub run as missing). `wanted` matches a source by key, label,
  *  or configDir (exact or path-suffix); default = the FIRST source, echoed so a
- *  multi-source user sees which one was targeted. */
-async function resolveSourcePrefix(port: number, token: string, wanted: string | undefined): Promise<{ prefix: string; label: string }> {
-  const body: unknown = await api(port, token, '/api/sources', {}, 10_000)
-    .then((r) => (r.ok ? (r.json() as Promise<unknown>) : null))
-    .catch(() => null)
-  const raw = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['sources'] : undefined
-  // configDir is ABSENT on remote entries (hub federation) — every field access below
-  // must survive a partial entry (a .endsWith on undefined would kill launch/await against
-  // ANY federated hub, even when targeting a local source).
-  const sources = Array.isArray(raw) ? (raw as { key: string; label?: string; configDir?: string }[]) : null
-  if (sources === null || sources.length === 0) return { prefix: '', label: '' } // single-source server
-  const pick =
-    wanted === undefined
-      ? sources[0]
-      : sources.find(
-          (s) =>
-            s.key === wanted ||
-            s.label === wanted ||
-            (typeof s.configDir === 'string' && (s.configDir === wanted || s.configDir.endsWith(`/${wanted}`))),
-        )
-  if (pick === undefined) {
-    throw new Error(
-      `--source ${String(wanted)} matches no hub source — available: ${sources.map((s) => `${s.label ?? s.key} (${s.configDir ?? 'remote'})`).join(', ')}`,
-    )
-  }
-  return { prefix: `/s/${pick.key}`, label: pick.label ?? pick.key }
+ *  multi-source user sees which one was targeted.
+ *
+ *  Card #1819922556652619607 — the decision itself now lives in source-resolve.ts's
+ *  `resolveSource` (pure, unit-tested): this is just the thin I/O adapter, injecting the
+ *  real `/api/sources` fetch and a real `setTimeout` sleep for its bounded retry. The old
+ *  version made a ONE-SHOT `/api/sources` fetch and `.catch(() => null)`'d any failure
+ *  into "confirmed single-source" — a transient blip was indistinguishable from a real
+ *  single-source server, silently routing every subsequent call unprefixed into a hub's
+ *  deliberate ambiguity 404. `resolveSource` never latches that from a failure: it
+ *  resolves the common cases straight off the already-fetched health payload (zero extra
+ *  round trip), and only reaches this fetch for label-only matches — retried, and loud
+ *  (`SourceResolutionError`) on exhaustion, never silent. */
+async function resolveSourcePrefix(port: number, token: string, health: Health, wanted: string | undefined): Promise<ResolvedSource> {
+  return resolveSource(
+    health.sources,
+    wanted,
+    () =>
+      api(port, token, '/api/sources', {}, 10_000)
+        .then((r) => (r.ok ? (r.json() as Promise<unknown>) : null))
+        .catch(() => null)
+        .then((body) => {
+          const raw = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['sources'] : undefined
+          return Array.isArray(raw) ? (raw as SourcesListEntry[]) : null
+        }),
+    (ms) => new Promise((r) => setTimeout(r, ms)),
+  )
 }
 
 /** `wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]` — POST
@@ -778,8 +789,8 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
       throw new Error(`--args is not valid JSON: ${rawArgs}`)
     }
   }
-  const { port, token } = await requireOwnedServer(ctx)
-  const { prefix, label } = await resolveSourcePrefix(port, token, sourceFlag)
+  const { port, token, health } = await requireOwnedServer(ctx)
+  const { prefix, label } = await resolveSourcePrefix(port, token, health, sourceFlag)
   if (label !== '') process.stderr.write(`launching under source ${label}\n`)
   const res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify({ script, ...(args !== undefined ? { args } : {}) }) }, 30_000)
   const body: unknown = await res.json().catch(() => null)
@@ -820,17 +831,63 @@ async function fetchRecall(port: number, token: string, prefix: string, runId: s
     .catch(() => null)
 }
 
+/** Card #1819922556652619607 requirement 4 — a runId is globally unique across a hub's
+ *  LOCAL sources: search every LOCAL source (never remotes — a federated other hub is out
+ *  of scope here, no server-side changes in this fix) for a live-registry or recall hit.
+ *  Used by `await` ONLY when the run wasn't found under its (default-guessed) active
+ *  source, so the common already-correct case never pays this cost. */
+async function searchLocalSources(port: number, token: string, keys: readonly string[], runId: string) {
+  const hits: string[] = []
+  await Promise.all(
+    keys.map(async (key) => {
+      const p = `/s/${key}`
+      const live = await api(port, token, `${p}/api/runs/live`)
+        .then((r) => (r.ok ? (r.json() as Promise<{ runId: string }[]>) : []))
+        .catch(() => [] as { runId: string }[])
+      if (live.some((e) => e.runId === runId)) {
+        hits.push(key)
+        return
+      }
+      const recall = await fetchRecall(port, token, p, runId)
+      if (recall !== null) hits.push(key)
+    }),
+  )
+  return classifySourceSearch(hits)
+}
+
 /** `wt-observe await <runId>` — block until the run reaches a terminal state, then print
  *  ONE JSON line { runId, status, result } and exit 0 (completed) / 2 (other terminal) /
- *  3 (timeout) / 4 (never seen). Designed to be run with run_in_background from an agent
- *  session: the process EXIT is the completion notification (self-nudge), and the result
- *  tail arrives with it — no follow-up fetch needed. Polling (not SSE) on purpose: the
- *  poll is 2 cheap localhost GETs, survives server-side SSE hiccups, and the decision
+ *  3 (timeout) / 4 (never seen) / 5 (source resolution failed/ambiguous — see
+ *  AWAIT_SOURCE_UNRESOLVED_EXIT_CODE). Designed to be run with run_in_background from an
+ *  agent session: the process EXIT is the completion notification (self-nudge), and the
+ *  result tail arrives with it — no follow-up fetch needed. Polling (not SSE) on purpose:
+ *  the poll is 2 cheap localhost GETs, survives server-side SSE hiccups, and the decision
  *  logic stays pure/unit-tested (observe-await.ts). */
 async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, pollS: number, sourceFlag: string | undefined): Promise<number> {
   if (runId === undefined) throw new Error('usage: wt-observe await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]')
-  const { port, token } = await requireOwnedServer(ctx)
-  const { prefix } = await resolveSourcePrefix(port, token, sourceFlag)
+  const { port, token, health } = await requireOwnedServer(ctx)
+  let resolved: ResolvedSource
+  try {
+    resolved = await resolveSourcePrefix(port, token, health, sourceFlag)
+  } catch (err) {
+    if (err instanceof SourceResolutionError) {
+      // Card #1819922556652619607 requirement 3 — a DISTINCT, loud outcome: the run's
+      // existence is UNKNOWN (we could not even confirm which source to ask), never
+      // conflated with `missing` (which means a resolved, reachable source genuinely
+      // never saw this runId).
+      process.stdout.write(`${JSON.stringify({ runId, error: 'source-unresolved', message: err.message })}\n`)
+      return AWAIT_SOURCE_UNRESOLVED_EXIT_CODE
+    }
+    throw err
+  }
+  let prefix = resolved.prefix
+  let activeKey = resolved.key
+  // Only search when the caller didn't pin a source — an explicit --source is a promise
+  // to honor, not a guess to second-guess (non-goal: no behavior change for explicit
+  // --source). searchableKeys is [] for a confirmed single-source server too (nothing to
+  // disambiguate), so this never adds cost there.
+  const searchableKeys = sourceFlag === undefined ? localSourceKeys(health.sources) : []
+  let warnedAmbiguous = false
   const startedAt = Date.now()
   for (;;) {
     const live = await api(port, token, `${prefix}/api/runs/live`)
@@ -842,6 +899,21 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
     if (entry === null || entry.finished) {
       recall = await fetchRecall(port, token, prefix, runId)
       recallStatus = extractAwaitOutcome(recall).status
+    }
+    if (entry === null && recall === null && searchableKeys.length > 1) {
+      const search = await searchLocalSources(port, token, searchableKeys, runId)
+      if (search.kind === 'unique' && search.key !== activeKey) {
+        process.stderr.write(`[wt-observe await] "${runId}" found under source "${search.key}" (default was "${String(activeKey)}") — switching.\n`)
+        activeKey = search.key
+        prefix = `/s/${search.key}`
+        continue // re-tick immediately under the corrected prefix, no sleep burned
+      }
+      if (search.kind === 'ambiguous' && !warnedAmbiguous) {
+        warnedAmbiguous = true
+        process.stderr.write(
+          `[wt-observe await] "${runId}" ambiguously found under multiple sources (${search.keys.join(', ')}) — refusing to guess, staying on "${String(activeKey)}".\n`,
+        )
+      }
     }
     const verdict = classifyAwaitTick({
       live: entry === null ? null : { finished: entry.finished, status: entry.status },

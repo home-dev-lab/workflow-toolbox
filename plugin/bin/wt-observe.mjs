@@ -373,6 +373,66 @@ function awaitExitCode(verdict) {
   if (verdict.kind === "missing") return 4;
   return verdict.status === "completed" ? 0 : 2;
 }
+var AWAIT_SOURCE_UNRESOLVED_EXIT_CODE = 5;
+
+// packages/debugger/src/source-resolve.ts
+import { basename } from "node:path";
+var SourceResolutionError = class extends Error {
+};
+function hasConfigDir(s) {
+  return typeof s.configDir === "string";
+}
+function labelFor(s) {
+  return hasConfigDir(s) ? basename(s.configDir) : s.key;
+}
+function localSourceKeys(healthSources) {
+  if (!Array.isArray(healthSources)) return [];
+  return healthSources.filter(hasConfigDir).map((s) => s.key);
+}
+function matchHealthSource(healthSources, wanted) {
+  return healthSources.find((s) => s.key === wanted || hasConfigDir(s) && (s.configDir === wanted || s.configDir.endsWith(`/${wanted}`)));
+}
+function matchSourcesListEntry(list, wanted) {
+  return list.find((s) => s.key === wanted || s.label === wanted || typeof s.configDir === "string" && (s.configDir === wanted || s.configDir.endsWith(`/${wanted}`)));
+}
+function classifySourceSearch(hits) {
+  const unique = [...new Set(hits)];
+  if (unique.length === 1) return { kind: "unique", key: unique[0] };
+  if (unique.length === 0) return { kind: "none" };
+  return { kind: "ambiguous", keys: unique };
+}
+async function withRetry(attempt, opts) {
+  for (let i = 0; i < opts.attempts; i++) {
+    const value = await attempt();
+    if (value !== null) return { kind: "ok", value };
+    if (i < opts.attempts - 1) await opts.sleep(opts.delayMs(i));
+  }
+  return { kind: "exhausted" };
+}
+var SOURCE_PROBE_ATTEMPTS = 3;
+var sourceProbeDelayMs = (attemptIndex) => [300, 900][attemptIndex] ?? 900;
+async function resolveSource(healthSources, wanted, fetchSourcesList, sleep) {
+  if (!Array.isArray(healthSources) || healthSources.length === 0) return { prefix: "", key: null, label: "" };
+  if (wanted === void 0) {
+    const first = healthSources[0];
+    return { prefix: `/s/${first.key}`, key: first.key, label: labelFor(first) };
+  }
+  const bySource = matchHealthSource(healthSources, wanted);
+  if (bySource !== void 0) return { prefix: `/s/${bySource.key}`, key: bySource.key, label: labelFor(bySource) };
+  const outcome = await withRetry(fetchSourcesList, { attempts: SOURCE_PROBE_ATTEMPTS, delayMs: sourceProbeDelayMs, sleep });
+  if (outcome.kind === "exhausted") {
+    throw new SourceResolutionError(
+      `could not confirm hub sources after ${SOURCE_PROBE_ATTEMPTS} attempts (wanted "${wanted}") \u2014 refusing to guess. Run \`wt-observe status\` to check server health.`
+    );
+  }
+  const pick = matchSourcesListEntry(outcome.value, wanted);
+  if (pick === void 0) {
+    throw new SourceResolutionError(
+      `--source ${wanted} matches no hub source \u2014 available: ${outcome.value.map((s) => `${s.label} (${s.configDir ?? "remote"})`).join(", ")}`
+    );
+  }
+  return { prefix: `/s/${pick.key}`, key: pick.key, label: pick.label };
+}
 
 // packages/debugger/src/observe-prune.ts
 var DEFAULT_TEST_PREFIXES = ["probe-", "_probe-", "_test-"];
@@ -421,9 +481,9 @@ async function probeHealth(port, timeoutMs = HEALTH_TIMEOUT_MS) {
     if (h["app"] !== "observe-ui") return "not-ours";
     if (typeof h["pid"] !== "number" || typeof h["port"] !== "number") return "not-ours";
     if (typeof h["startedAt"] !== "string") return "not-ours";
-    const hasConfigDir = typeof h["configDir"] === "string";
+    const hasConfigDir2 = typeof h["configDir"] === "string";
     const hasSources = Array.isArray(h["sources"]);
-    if (!hasConfigDir && !hasSources) return "not-ours";
+    if (!hasConfigDir2 && !hasSources) return "not-ours";
     if (h["port"] !== port) return "not-ours";
     return h;
   } catch (err) {
@@ -856,7 +916,7 @@ async function requireOwnedServer(ctx) {
   if (token === void 0) {
     throw new Error("owned server found but no token recorded in the pidfile \u2014 `wt-observe stop` then `start` to mint one.");
   }
-  return { port: p.health.port, token };
+  return { port: p.health.port, token, health: p.health };
 }
 async function api(port, token, path, init = {}, timeoutMs = HEALTH_TIMEOUT_MS) {
   return fetch(`http://127.0.0.1:${port}${path}`, {
@@ -865,20 +925,16 @@ async function api(port, token, path, init = {}, timeoutMs = HEALTH_TIMEOUT_MS) 
     signal: AbortSignal.timeout(timeoutMs)
   });
 }
-async function resolveSourcePrefix(port, token, wanted) {
-  const body = await api(port, token, "/api/sources", {}, 1e4).then((r) => r.ok ? r.json() : null).catch(() => null);
-  const raw = typeof body === "object" && body !== null ? body["sources"] : void 0;
-  const sources = Array.isArray(raw) ? raw : null;
-  if (sources === null || sources.length === 0) return { prefix: "", label: "" };
-  const pick = wanted === void 0 ? sources[0] : sources.find(
-    (s) => s.key === wanted || s.label === wanted || typeof s.configDir === "string" && (s.configDir === wanted || s.configDir.endsWith(`/${wanted}`))
+async function resolveSourcePrefix(port, token, health, wanted) {
+  return resolveSource(
+    health.sources,
+    wanted,
+    () => api(port, token, "/api/sources", {}, 1e4).then((r) => r.ok ? r.json() : null).catch(() => null).then((body) => {
+      const raw = typeof body === "object" && body !== null ? body["sources"] : void 0;
+      return Array.isArray(raw) ? raw : null;
+    }),
+    (ms) => new Promise((r) => setTimeout(r, ms))
   );
-  if (pick === void 0) {
-    throw new Error(
-      `--source ${String(wanted)} matches no hub source \u2014 available: ${sources.map((s) => `${s.label ?? s.key} (${s.configDir ?? "remote"})`).join(", ")}`
-    );
-  }
-  return { prefix: `/s/${pick.key}`, label: pick.label ?? pick.key };
 }
 async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
   if (script === void 0) throw new Error("usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]");
@@ -890,8 +946,8 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
       throw new Error(`--args is not valid JSON: ${rawArgs}`);
     }
   }
-  const { port, token } = await requireOwnedServer(ctx);
-  const { prefix, label } = await resolveSourcePrefix(port, token, sourceFlag);
+  const { port, token, health } = await requireOwnedServer(ctx);
+  const { prefix, label } = await resolveSourcePrefix(port, token, health, sourceFlag);
   if (label !== "") process.stderr.write(`launching under source ${label}
 `);
   const res = await api(port, token, `${prefix}/api/launch`, { method: "POST", body: JSON.stringify({ script, ...args !== void 0 ? { args } : {} }) }, 3e4);
@@ -920,10 +976,40 @@ var AWAIT_SETTLE_INTERVAL_MS = 1e3;
 async function fetchRecall(port, token, prefix, runId) {
   return api(port, token, `${prefix}/api/runs/${encodeURIComponent(runId)}`, {}, 1e4).then((r) => r.ok ? r.json() : null).catch(() => null);
 }
+async function searchLocalSources(port, token, keys, runId) {
+  const hits = [];
+  await Promise.all(
+    keys.map(async (key) => {
+      const p = `/s/${key}`;
+      const live = await api(port, token, `${p}/api/runs/live`).then((r) => r.ok ? r.json() : []).catch(() => []);
+      if (live.some((e) => e.runId === runId)) {
+        hits.push(key);
+        return;
+      }
+      const recall = await fetchRecall(port, token, p, runId);
+      if (recall !== null) hits.push(key);
+    })
+  );
+  return classifySourceSearch(hits);
+}
 async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
   if (runId === void 0) throw new Error("usage: wt-observe await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]");
-  const { port, token } = await requireOwnedServer(ctx);
-  const { prefix } = await resolveSourcePrefix(port, token, sourceFlag);
+  const { port, token, health } = await requireOwnedServer(ctx);
+  let resolved;
+  try {
+    resolved = await resolveSourcePrefix(port, token, health, sourceFlag);
+  } catch (err) {
+    if (err instanceof SourceResolutionError) {
+      process.stdout.write(`${JSON.stringify({ runId, error: "source-unresolved", message: err.message })}
+`);
+      return AWAIT_SOURCE_UNRESOLVED_EXIT_CODE;
+    }
+    throw err;
+  }
+  let prefix = resolved.prefix;
+  let activeKey = resolved.key;
+  const searchableKeys = sourceFlag === void 0 ? localSourceKeys(health.sources) : [];
+  let warnedAmbiguous = false;
   const startedAt = Date.now();
   for (; ; ) {
     const live = await api(port, token, `${prefix}/api/runs/live`).then((r) => r.ok ? r.json() : []).catch(() => []);
@@ -933,6 +1019,23 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
     if (entry === null || entry.finished) {
       recall = await fetchRecall(port, token, prefix, runId);
       recallStatus = extractAwaitOutcome(recall).status;
+    }
+    if (entry === null && recall === null && searchableKeys.length > 1) {
+      const search = await searchLocalSources(port, token, searchableKeys, runId);
+      if (search.kind === "unique" && search.key !== activeKey) {
+        process.stderr.write(`[wt-observe await] "${runId}" found under source "${search.key}" (default was "${String(activeKey)}") \u2014 switching.
+`);
+        activeKey = search.key;
+        prefix = `/s/${search.key}`;
+        continue;
+      }
+      if (search.kind === "ambiguous" && !warnedAmbiguous) {
+        warnedAmbiguous = true;
+        process.stderr.write(
+          `[wt-observe await] "${runId}" ambiguously found under multiple sources (${search.keys.join(", ")}) \u2014 refusing to guess, staying on "${String(activeKey)}".
+`
+        );
+      }
     }
     const verdict = classifyAwaitTick({
       live: entry === null ? null : { finished: entry.finished, status: entry.status },

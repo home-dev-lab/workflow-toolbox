@@ -73,9 +73,19 @@ export function extractAwaitOutcome(recall: unknown): { status: string | null; r
 }
 
 /** Stable exit-code contract (documented in the CLI usage string): 0 = completed,
- *  2 = terminal but not completed (failed/stopped/unknown), 3 = timeout, 4 = never seen. */
+ *  2 = terminal but not completed (failed/stopped/unknown), 3 = timeout, 4 = never seen,
+ *  5 = source resolution failed/ambiguous (AWAIT_SOURCE_UNRESOLVED_EXIT_CODE). */
 export function awaitExitCode(verdict: Exclude<AwaitVerdict, { kind: 'pending' }>): number {
   if (verdict.kind === 'timeout') return 3
   if (verdict.kind === 'missing') return 4
   return verdict.status === 'completed' ? 0 : 2
 }
+
+/** Card #1819922556652619607 — DISTINCT from `missing` (exit 4): `missing` means a
+ *  resolved, reachable source genuinely never saw this runId (a real "not found"). This
+ *  code means the source itself could not be confirmed/matched in the first place — the
+ *  run's existence is UNKNOWN, not "confirmed absent". Thrown by source-resolve.ts's
+ *  `resolveSource` as a `SourceResolutionError`, caught by `cmdAwait` before the poll
+ *  loop even starts (never conflated with the polling verdicts above, which all assume
+ *  the source was already resolved). */
+export const AWAIT_SOURCE_UNRESOLVED_EXIT_CODE = 5
