@@ -66,15 +66,9 @@ pnpm test && pnpm typecheck && pnpm lint
 
 ## Editing workflow scripts (the sandbox contract)
 
-The Workflow tool runs a single `.js` in a sandbox with hard rules — the linter
-(`pnpm wt:check`, also `validate-workflow.mjs`) enforces them on the emitted
-artifact:
-
-- `export const meta = { name, description, ... }` must be the **first statement**
-  and a **pure literal** (no spreads, template literals, or calls inside it).
-- **No** `import`/`require`/Node APIs in the artifact; **no** non-determinism
-  (`Date.now()`, `Math.random()`, argless `new Date()`).
-- Scripts are capped at **512 KB**.
-
-Author in TypeScript against `@workflow-toolbox` and let `workflow-toolbox build` emit the compliant
-artifact — don't hand-write the bundled `.js`.
+The full sandbox contract (meta-first pure literal, no imports/Node APIs, no
+non-determinism, 512 KB cap) lives in the `workflow-composer` skill
+(`plugin/skills/workflow-composer/SKILL.md`) — the linter (`pnpm wt:check` /
+`validate-workflow.mjs`) enforces it on the emitted artifact. Author in
+TypeScript against `@workflow-toolbox` and let `workflow-toolbox build` emit the
+compliant artifact — don't hand-write the bundled `.js`.
