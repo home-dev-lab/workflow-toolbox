@@ -26,10 +26,11 @@ the live model out to every viewer.
   `phaseIndex` + `phaseTitle`, `tokens`, `state`, and the phase→agent **edges** — so you get the
   workflow's **true DAG**, phase titles included. Phase indices here are **1-based**
   (`phase('Generate')` → index 1).
-- **Constraint:** `script` must be a `.js` artifact discoverable in the allowlist —
-  `toolkit/workflows/` or a dir in `OBSERVE_WORKFLOWS_DIR`. So this is the path for **committed,
-  compiled** workflows (author in `.workflow.ts`, build, then launch the artifact). No
-  arbitrary-path exec.
+- **Constraint:** `script` must resolve inside the server's allowlisted workflow roots:
+  every dir listed in `OBSERVE_WORKFLOWS_DIR` (colon-separated — several dirs are allowed),
+  plus the app's own bundled `workflows/` root. So this is the path for **committed,
+  compiled** workflows (author in `.workflow.ts`, build, point `OBSERVE_WORKFLOWS_DIR` at
+  the output dir, then launch the artifact by name). No arbitrary-path exec.
 
 This is the only pathway that shows the genuine per-pattern structure *as it happens* — so it is
 the meaningful way to **watch** a pattern run. An **inline / non-compiled** fan-out you drive
@@ -50,6 +51,25 @@ what the runtime wrote at completion.
 Via the live SDK pathway (or disk replay of a finished run) each pattern shows its genuine
 structure — phases, edges, tokens — because that data comes from the SDK stream / journal, not a
 guess. That is the meaningful way to "see" a pattern run.
+
+## The two wire protocols observe parses
+
+Both live in `@workflow-toolbox/runtime` (sandbox-pure, bundled into artifacts), and
+each side — toolkit emit, observe parse — imports the same module, so the formats
+cannot drift apart silently:
+
+- **Phase digests** (`digest.ts`) — each pattern `log()`s one structured line per phase
+  (`formatDigest`/`parseDigest`; shapes `PhaseDigest`, plus the emit-side-typed
+  `TypedPhaseDigest` used by `emitDigest` so each pattern's counts vocabulary is checked
+  at the call site): the emitting pattern's `stage`, the phase title, branches
+  taken/notTaken, and per-pattern counts. Observers parse these to annotate each phase
+  with what the pattern actually did.
+- **Prompt tags** (`prompt-tag.ts`) — `defineWorkflow` wraps the runtime with
+  `withPromptTags`, prefixing every labeled/phased agent prompt with one HTML-comment
+  marker line (`<!-- wt-meta label="…" phase="…" -->`; `buildPromptTag`/`parsePromptTag`).
+  Mid-run, an attached run has label/phase on disk nowhere else — the tag is what lets a
+  live observer assign each agent to its phase column from the moment it spawns, instead
+  of waiting for the terminal journal.
 
 ## Quick recipes
 

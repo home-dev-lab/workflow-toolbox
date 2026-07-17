@@ -94,17 +94,27 @@ invoked by `/name`. [documented]
 
 ### Output (async launch)
 
-A launch returns immediately with an async-launch envelope carrying
-`status`, `taskId`, `runId`, `transcriptDir`, and `error`. [verified]
+A successful launch returns immediately with an async-launch envelope carrying
+`status: "async_launched"`, `taskId`, `taskType`, `workflowName`, `runId`,
+`summary`, `transcriptDir`, and (for `scriptPath` launches) `scriptPath` —
+and **no `error` field**. [verified]
 
-> **GOTCHA — always check `WorkflowOutput.error`.** A script that fails its
-> syntax check still returns `status: "async_launched"` **with `error` set**,
-> and then never runs. Silence is not success — read `error` on every launch.
-> [verified]
+> **GOTCHA — a launch can be rejected two ways, split by error CLASS, not by
+> launch mode (`scriptPath` and inline `script` behave identically).
+> [verified]**
 >
-> Note the asymmetry: a `scriptPath` whose `meta` is malformed is rejected
-> **synchronously at the tool layer** with a clear message, whereas a faulty
-> inline `script` takes the async-launched-with-`error` path above. [verified]
+> - A script that fails the **module parse** (broken syntax) or the
+>   **meta-first check** is rejected synchronously at the tool layer with an
+>   explicit error message — no envelope, no ids minted. [verified]
+> - A script that parses as a module but breaks the **sandbox dialect** (e.g.
+>   any `export` other than the leading `export const meta`) returns the
+>   envelope with `status: "async_launched"` and **`error` set** (and no
+>   `transcriptDir`). [verified]
+>
+> In both cases the tool result is flagged as an error and the script **never
+> runs** (no run record is written). Read `error` on every launch — and a
+> clean launch only means the run STARTED; completion (and any runtime
+> failure) arrives later via the task notification. [verified]
 
 ---
 
@@ -389,9 +399,13 @@ Lint a workflow file against the parser's hard rules **before** spending a run:
 node scripts/validate-workflow.mjs <path-to-workflow.js>
 ```
 
-It checks the 512 KB size limit, the `meta`-first / pure-literal rule, and the
-banned non-deterministic calls. Exit 0 = clean (warnings allowed); exit 1 =
-errors found. [verified]
+It checks the 512 KB size limit, the `meta`-first / pure-literal rule (including
+reserved prototype-chain keys in `meta` — `__proto__`/`constructor`/`prototype`
+are errors), and the banned non-deterministic calls; it warns on host APIs that
+do not exist in the sandbox (`require(`, `import … from`, `process.*`) and on
+eagerly-created promises inside `parallel([...])` (a bare `agent()` call where a
+thunk is required). Exit 0 = clean (warnings allowed); exit 1 = errors found.
+[verified]
 
 In a project with the `@workflow-toolbox` packages installed, `npx workflow-toolbox check
 <artifact.js>` runs the same rules (maintainers in the toolbox repo use the

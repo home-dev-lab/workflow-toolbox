@@ -77,9 +77,9 @@ npx workflow-toolbox report [runId|latest|<journal-path>] [--project <slug>] [--
 | Mode | Journal signal | What it means |
 |------|----------------|---------------|
 | `completed-ok` | status `completed`, every agent `done`, no retries | healthy — nothing to fix |
-| `script-throw` | status `failed` (or `async_launched`), no incomplete agents | the script threw — bad args, a syntax/`meta` error (`async_launched` = never even ran), or a runtime error in deterministic code |
+| `script-throw` | status `failed` (or `async_launched`), no incomplete agents | the script threw — bad args or a runtime error in deterministic code. (`async_launched` = never even ran; kept defensively — on the current runtime a rejected script writes **no journal at all**, so this status should not appear on disk) |
 | `agent-died` | an `agent()` event ended in a state other than `done` | a subagent died (`agent()` returned `null`); the run may show a partial result or a downstream throw on the hole |
-| `schema-retries` | an agent took `attempt > 1` | StructuredOutput rejected outputs and forced retries — wasted latency/tokens; tighten the schema. **Caveat:** on current CC this signal may never materialize — see the honesty section |
+| `schema-retries` | an agent took `attempt > 1` | StructuredOutput rejected outputs and forced retries — wasted latency/tokens; tighten the schema |
 | `in-progress` | no terminal status recorded | still running, aborted, or a **zombie** (a dead agent the web UI still lists as running) |
 
 The report also lists **secondary findings** regardless of the primary mode — e.g. a
@@ -110,14 +110,15 @@ live run** for `in-progress` (check the web UI for a zombie first).
 
 ## Honesty about what is observed vs inferred
 
-Across every real journal on disk, agents only ever end `done` and `attempt` is always
-`1`. So `agent-died` and journal-visible `schema-retries` are **inferred from the SDK
-contract, not observed** — they key off robust structural signals (a non-`done` state,
-`attempt > 1`); budget exhaustion stays an advisory text Finding (never a primary
-verdict, so a wording miss costs nothing). If a run exhibits one of these for real,
-treat the classification as a strong hint and confirm against the agent's transcript.
+Both journal signals ARE observed in real journals on disk: agents DO end in
+non-`done` states (`error`, plus `progress`/`start` frozen mid-flight on runs that
+died), and `attempt > 1` DOES occur (StructuredOutput schema retries recorded in
+real runs). They stay rare next to the healthy population — treat a classification
+built on them as a strong hint and confirm against the agent's transcript. Budget
+exhaustion stays an advisory text Finding (never a primary verdict, so a wording
+miss costs nothing).
 
-**One schema failure mode IS observed** (live probe, CC 2.1.170): give an agent an
+**A second schema failure shape is also observed** (live probe, CC 2.1.170): give an agent an
 unsatisfiable schema and `attempt` still never goes above 1 — the runtime nudges the
 SAME agent conversation to call StructuredOutput, and after 2 in-conversation nudges
 the `agent()` call **throws** `agent({schema}): subagent completed without calling
@@ -148,6 +149,33 @@ trigger (a degraded run is surfaced even when its journal says `completed-ok`), 
 `workflow-toolbox report` renders the same section. Caveat: a run that diagnoses as `in-progress`
 / killed is not scanned (the journal isn't conclusive), and a probe workflow that *intends* to
 hit a denial will honestly read as degraded — the human reads the report.
+
+## The `wt-observe` launcher CLI (ships in the same package)
+
+`@workflow-toolbox/debugger` also ships `wt-observe`, the lifecycle CLI for the
+Workflow Observatory companion app (the live run UI). `wt-debug` reads a run AFTER
+the fact; `wt-observe` manages the server that watches runs as they happen:
+
+| Verb | What it does |
+|------|--------------|
+| `start [--source <dir>]… [--watch] [--enable-launch]` | resolve the source set (`--source` flags > the persistent config list > auto-discovery of `~/.claude*` config dirs), then adopt a healthy running server or spawn a detached one; `--enable-launch` opts the instance into live launches |
+| `stop` | SIGTERM the owned server (identity-checked against the pidfile) and clear the pidfile |
+| `status` | pidfile + live health (sources served, launch opt-in), human-readable |
+| `launch <workflow> [--args <json>] [--source <label\|dir>]` | POST `/api/launch` a REGISTERED workflow by name — never an arbitrary path — and print `{ runId }` |
+| `await <runId>` | block until the run finishes and print `{ runId, status, result }`; its exit code is the outcome (pair it with a background shell — the exit IS the notification) |
+| `resume <runId> [--source <label\|dir>]` | the sanctioned explicit recovery of a settled-FAILED run (POST `/api/runs/:runId/recover`; distinct from the server's internal pause-transport resume) |
+| `prune` | delete test/probe run records so they stop lingering in the timeline; a still-running record (no terminal json yet) is invisible to prune — live runs can never be deleted |
+| `config show \| add-source <dir> \| remove-source <dir> \| add-remote <url> [--token\|--token-file\|--label] \| remove-remote <url>` | manage the persistent source list and remote-hub mounts (never auto-written by `start`; re-adding a remote's canonical URL is how you rotate its credentials) |
+
+Two mechanics worth knowing:
+
+- **Server resolution.** The spawn target is the Observatory checkout, located from
+  `$DWT_OBSERVE_ROOT` or by walking up from the current directory (interim posture,
+  pre-npm distribution of the app).
+- **Per-server API token + identity checks.** `start` generates a random token, hands
+  it to the server via env, and records it in the (0600) pidfile; every subsequent
+  `/api` action authenticates with that token AND identity-checks the pid first — a
+  foreign server that happens to sit on the same port is never commanded.
 
 ## How it works (for maintenance)
 

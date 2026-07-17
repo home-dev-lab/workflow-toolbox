@@ -137,7 +137,7 @@ export default defineWorkflow({
   meta: {
     name: 'my-workflow',                  // kebab-case, validated at call time
     description: 'One line, shown in the permission dialog',
-    phases: [{ title: 'Route' }, { title: 'Verify' }],
+    phases: [{ title: 'Route' }, { title: 'Verify' }], // per phase: title + optional detail, model
   },
   // Optional: validate/normalize the (JSON-decoded) args into typed input.
   // Throw with an actionable message on bad input — fail fast, before any agent.
@@ -215,10 +215,13 @@ Two complementary mechanisms, both sandbox-pure:
 - **Class B/C — per-role models/effort + sizing.** Patterns already expose per-role
   `<role>Model` / `<role>Effort` knobs (e.g. `judgeModel`, `judgeEffort`) and sizing
   knobs (`votes`, `judgeCount`, …). `parseConfig(raw)` (`@workflow-toolbox/build/define`)
-  validates the conventional envelope `{ perAgent, models, effort, agentTypes, sizing }`
-  into a typed `WorkflowConfig`; spread its role maps into the pattern options
-  (`judgeModel: cfg.models?.judge`). It ignores unrecognized top-level keys, so it
-  composes next to a workflow's bespoke args.
+  validates the conventional envelope `{ perAgent, models, effort, agentTypes, sizing,
+  messaging }` into a typed `WorkflowConfig`; spread its role maps into the pattern
+  options (`judgeModel: cfg.models?.judge`). It ignores unrecognized top-level keys, so
+  it composes next to a workflow's bespoke args. `messaging: true` is the blanket
+  opt-OUT of the toolkit's default leaf-agent fence (toolkit-spawned leaf/worker agents
+  deny `SendMessage` by default) — set it only when leaves genuinely need to coordinate;
+  the per-role escape hatch (`agentTypes.<role>`) covers a single role.
 
 Layering, outer-to-inner precedence: explicit pattern knob (e.g. `verifierModel`) >
 `withAgentDefaults` blanket default > session default. **`pr-review.workflow.ts` is
@@ -387,9 +390,13 @@ Launch via the Workflow tool, then keep two non-negotiable habits:
   not the filename) refreshes **lazily** mid-session and silently excludes files over
   512 KB, so a freshly written workflow may not be findable by name yet. Plugin-shipped
   workflows resolve as `plugin-name:workflow-name`.
-- **Always check `WorkflowOutput.error`.** A script that fails its syntax check still
-  returns `status: "async_launched"` with `error` set — and **never runs**. Silence is
-  not success. Watch live progress with `/workflows`.
+- **A rejected launch is loud — read the error, then treat the run as never started.**
+  A script that fails the module parse (or puts a statement before `meta`) is rejected
+  synchronously with an explicit tool error and no run ids; a script that parses but
+  breaks the sandbox dialect (e.g. any `export` beyond the leading `export const meta`)
+  returns `status: "async_launched"` with **`error` set**. Either way it **never runs**.
+  A successful launch's envelope carries no `error` — and launch acceptance is not run
+  success (completion arrives asynchronously). Watch live progress with `/workflows`.
 - **On partial failure, relaunch with `resumeFromRunId`.** Completed `agent()` calls
   replay from the journal cache (same session only); only missing or failed work
   re-runs — no redoing finished analysis.

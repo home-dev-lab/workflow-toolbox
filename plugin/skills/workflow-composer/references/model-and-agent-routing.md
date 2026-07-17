@@ -18,6 +18,9 @@
     policy; an alias that is not callable in the consumer's environment errors at
     runtime. The toolkit's `BEST_MODEL` tracks the strongest *reliably-callable* tier
     (currently `'opus'`), so the default is safe; the trap is only a hand-override.
+    Note `BEST_MODEL` is a VALUE inlined into bundled artifacts at build time —
+    changing it re-emits every committed artifact (the artifact-identity gate
+    enforces the regeneration).
   - **Validating a model-selection INPUT** (e.g. a `verifierModel` arg): check it
     against the runtime's exported `MODEL_ALIASES` allowlist — the closed set of
     user-passable aliases (deliberately stricter than the open `ModelAlias` type;
@@ -138,12 +141,16 @@
       `## External delegation` section that scans each routed agent's transcript for
       real external-CLI `tool_use` and flags agents that show none, and the observe-ui
       agent panel shows the same signal live (« delegated → CLI seen ✓ / NO CLI call ⚠ »).
-    - **Warn on headless launches.** Server-launched / headless-SDK runs do NOT load
-      plugin agents (verified live 2026-07-09: `workflow-toolbox:opencode-verifier` was
-      absent from a launched run's registry) — a cross-family request in that path
-      always falls back to Claude. The probe makes that safe and visible, but if the
-      user WANTS the external verdict, tell them to launch via the in-session Workflow
-      tool.
+    - **Check plugin-agent availability on headless launches.** A raw headless-SDK
+      launch does not load plugin agents unless the embedding passes them explicitly
+      (the SDK `plugins` option) — a cross-family request in that path falls back to
+      Claude. `wt-observe launch` closes this for its delegated runs: the launcher
+      hands the server an agents-only plugin bundle (`plugin/launch-agents/`) to load
+      into each delegated session, so plugin agentTypes resolve there — this needs a
+      current launcher AND server; on an older pair the fences degrade gracefully to
+      the Claude fallback. The probe makes either outcome safe and visible; when the
+      user WANTS the external verdict, verify the launch path provides it (an
+      in-session Workflow tool launch always does).
     - **Brief the bridge like any other agent — it gets NO ambient context by
       default, only what your prompt carries.** `codex:codex-rescue` is a thin
       forwarding wrapper (`tools: Bash` only, explicitly instructed not to inspect the
@@ -227,6 +234,14 @@
     `verifierType`) or an outer blanket `perAgent.agentType` still wins on conflict, and an
     environment where the agentType isn't registered (plugin not installed) degrades
     gracefully to the standard subagent, exactly like every other `probeAgentType` consumer.
+    The returned `report` (`LeafFenceReport`; mirrored by `withLeanRouting`'s
+    `LeanRoutingReport`) carries `resolvedAgentType` — null when routing was disabled or
+    the probe found the type unavailable and the run degraded — plus the raw probe
+    outcome: surface it in the workflow's result rather than assuming the fence held
+    (degradation is fail-open by design, the report is what keeps it loud). Both wrappers
+    also accept `agentType` (probe a differently-named minimal type, e.g. a private
+    plugin's own) and `perAgent` (so their internal probe call respects the workflow's
+    blanket model/effort defaults).
     Pass `{ disabled: true }` only when a workflow genuinely needs its leaves to coordinate —
     thread it from a launch-time `messaging: true` arg via the shared `parseConfig` (a
     recognized top-level slice, parsed to `WorkflowConfig.messaging`) so a LAUNCHER, not just

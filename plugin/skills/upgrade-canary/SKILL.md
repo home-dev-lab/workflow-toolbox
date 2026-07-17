@@ -30,7 +30,9 @@ change worth adopting — is surfaced here, deliberately.
 
 It is **version-triggered, not scheduled**. Claude Code updates almost daily; the
 canary first asks "did the runtime change since it last passed?" and only does the
-expensive work when the answer is yes (or you pass `--force`).
+expensive work when the answer is yes, when you pass `--force` — or when the last
+recorded verdict is a FAIL, which forces a re-run until green even with no version
+change (a real regression is never silently suppressed by an unchanged version).
 
 > **Maintainer tool.** Every command below runs from this repo's `toolkit/`
 > directory and drives the real runtime via the Agent SDK under your local Claude
@@ -81,7 +83,7 @@ cd toolkit && pnpm canary:version        # add --force to bypass the gate
 |------|---------|----|
 | `0`  | SKIP — `claude` CLI + SDK unchanged since the last PASS | report "runtime unchanged since `<version>` (last verified `<date>`), nothing to do" and **stop** |
 | `3`  | RUN — a version changed, the last run failed, or no marker | go to step 2 |
-| `2`  | error | surface it |
+| any other | the gate itself crashed (a thrown error — the gate only ever exits `0` or `3` deliberately) | surface it |
 
 `canary:version` is **read-only** (it never writes the marker). The gate skips only
 when both signals are unchanged AND the last run passed.
@@ -104,6 +106,22 @@ with toolbox-relevant lines — workflow/agent/tool/sdk — highlighted as drive
 fixes or features), and **records the marker itself** (it is the sole writer — there
 is no separate record step). Exit **0** = every check on every target passed,
 **1** = a check failed, **2** = fatal (auth/binary).
+
+### The full canary family
+
+`pnpm canary` runs the matrix; each member is individually runnable when you want
+to re-verify one claim (all from `toolkit/`):
+
+| Command | Re-verifies |
+|---|---|
+| `pnpm smoke` | a VALID committed artifact still launches and completes through the real runtime |
+| `pnpm canary:edge` | the runtime still REJECTS what it must (the 512 KB cap; a statement before `meta`) |
+| `pnpm canary:nesting` | `workflow()` composes one level deep — and still throws beyond that level |
+| `pnpm canary:budget` | budget semantics across two strictly-sequential orchestrator launches |
+| `pnpm canary:version` | the cheap gate above (CLI/SDK versions + last verdict vs the marker) — read-only |
+| `pnpm canary:agents` | which SDK agent-definition fields the runtime honors (feeds the tested least-privilege recipe builder in `smoke/src/least-privilege.ts`) |
+| `pnpm wt:calibrate` | records real-run token signals and derives a grounded `budgetFloor` estimate |
+| `tsx packages/smoke/src/capabilities-probe.ts` | the per-run capabilities channel (launch `args` → each agent's declared capabilities) end-to-end |
 
 ### 3 — Report and act
 

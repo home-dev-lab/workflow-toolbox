@@ -76,7 +76,10 @@ construction, not by hoping.
    can run into the model's hard output-token ceiling and die mid-emission — a fatal,
    unrecoverable truncation, not an error the orchestrator can catch. Put `maxLength`
    on every prose field and `maxItems` on every array in a result `schema`, plus a
-   `minLength` so a one-word capitulation does not validate. Bounds convert a fatal
+   `minLength` so a one-word capitulation does not validate. (The toolkit's own
+   example schemas apply these bounds only partially — treat this as the target
+   convention for YOUR schemas, not something every example uniformly
+   demonstrates.) Bounds convert a fatal
    runaway into an actionable "too long" rejection that the model simply retries
    shorter. Order the fields short/required-first in your `Return {…}` template, too:
    generation order, not schema order, decides which field starves when the budget

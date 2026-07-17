@@ -5,12 +5,14 @@
 // `agent-<id>.jsonl` transcripts are the documented FALLBACK "when no journal is
 // available" — so this debugger is journal-first, transcript-as-drill-down.)
 //
-// Schema verified against 59 real journals on disk (2026-06-08): every `status` is
-// "completed" | "failed". "async_launched" is documented (a pre-run syntax/meta
-// failure that never executes) but was not observed on disk. Likewise every observed
-// agent `state` is "done" and every `attempt` is 1 — so any other agent state, and
-// attempt > 1, are inferred from the SDK contract, not observed. Parsing therefore
-// stays deliberately tolerant: we never assume a field is present or well-typed.
+// Schema first verified against 59 real journals (2026-06-08), re-swept over 779
+// (2026-07-17): `status` is "completed" | "failed" (plus "killed" from reaped runs).
+// "async_launched" is documented (a pre-run syntax/meta failure that never executes)
+// but has never been observed on disk — current-runtime probes show a rejected script
+// writes NO run record at all, so the branch is defensive. Non-"done" agent states
+// ("error", plus "progress"/"start" frozen on dead runs) and attempt > 1
+// (StructuredOutput retries) ARE observed in real journals, rarely. Parsing stays
+// deliberately tolerant: we never assume a field is present or well-typed.
 
 export type WorkflowStatus = 'completed' | 'failed' | 'async_launched' | (string & {})
 
@@ -22,10 +24,13 @@ export interface WorkflowPhaseEvent {
 
 export interface WorkflowAgentEvent {
   type: 'workflow_agent'
-  /** Observed value is always "done"; any other terminal value means the agent did
-   * not complete (died → `agent()` returned null). Inferred, never observed on disk. */
+  /** Usually "done"; any other terminal value means the agent did not complete
+   * (died → `agent()` returned null). Non-"done" states ("error", plus
+   * "progress"/"start" frozen mid-flight) are observed in real journals of
+   * failed/killed runs. */
   state?: string
-  /** Observed value is always 1; > 1 means StructuredOutput schema retries. Inferred. */
+  /** Usually 1; > 1 means StructuredOutput schema retries — observed in real
+   * journals, rarely. */
   attempt?: number
   index?: number
   label?: string

@@ -144,9 +144,11 @@ workflow is usually two workflows with a checkpoint between them.
 
 Launch via the Workflow tool, then **two non-negotiable habits**:
 
-1. **Always check `WorkflowOutput.error`.** A script that fails its syntax
-   check still returns `status: "async_launched"` with `error` set — and never
-   runs. Silence is not success.
+1. **Read the launch error — a rejected script never runs.** A parse or
+   meta-first failure is rejected synchronously with an explicit tool error
+   (no run ids); a sandbox-dialect failure returns `status: "async_launched"`
+   with `error` set. A successful launch's envelope carries no `error` — and
+   launch acceptance is not run success (completion arrives asynchronously).
 2. **On partial failure, relaunch with `resumeFromRunId`.** Completed
    `agent()` calls replay from the journal cache (same session); only the
    missing or failed work re-runs — no redoing finished analysis.

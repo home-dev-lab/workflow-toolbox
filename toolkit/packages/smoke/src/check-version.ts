@@ -4,7 +4,7 @@
 // canary needs to run. It does NOT write the marker — `pnpm canary` (canary-all)
 // is the sole writer, recording the real verdict after the matrix runs.
 //
-//     pnpm canary:version            # decide: exit 0 = skip, 3 = run, 2 = error
+//     pnpm canary:version            # decide: exit 0 = skip, 3 = run (any other exit = the gate itself crashed)
 //     pnpm canary:version --force    # always decide "run"
 //
 // The bundled runtime ships with the SDK, so a sdkVersion change is its proxy at

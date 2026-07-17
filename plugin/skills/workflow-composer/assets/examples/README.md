@@ -104,9 +104,10 @@ and it returns a shape like:
    exit 1 = errors to fix before launching.
 
 2. **Launch** via the Workflow tool with `scriptPath`, e.g.
-   `Workflow({ scriptPath: ".../verify-findings.js" })`. Always check
-   `WorkflowOutput.error` — a script that fails its syntax check still returns
-   `status: "async_launched"` with `error` set and **never runs**.
+   `Workflow({ scriptPath: ".../verify-findings.js" })`. A rejected script is
+   loud: a parse/meta-first failure errors synchronously with no run ids, and
+   a sandbox-dialect failure returns `status: "async_launched"` with `error`
+   set — either way it **never runs**, so read the error on every launch.
 
 ## See also
 
