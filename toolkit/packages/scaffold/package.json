@@ -12,6 +12,10 @@
     "./spec-io": {
       "import": "./src/spec-io.ts",
       "types": "./src/spec-io.ts"
+    },
+    "./dispatch": {
+      "import": "./src/dispatch.ts",
+      "types": "./src/dispatch.ts"
     }
   },
   "scripts": {

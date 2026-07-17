@@ -36,7 +36,7 @@ import type { PipelineSpec } from '@workflow-toolbox/pipeline-spec'
 // The packages below are PRIVATE workspace devDependencies: tsup inlines them
 // into dist/cli.js (verified — no bare imports survive in the bundle), so the
 // published package stays self-contained without publishing them to npm.
-import { scaffoldWorkflow, scaffoldAgent, scaffoldObserver, observerLaunchHint, MINIMAL_TSCONFIG } from '@workflow-toolbox/scaffold'
+import { observerLaunchHint, MINIMAL_TSCONFIG } from '@workflow-toolbox/scaffold'
 import {
   parseJournal,
   agentEvents,
@@ -51,7 +51,7 @@ import {
   projectDirFor,
   transcriptDirFor,
 } from '@workflow-toolbox/debugger/source'
-import { loadSpec, loadAgentSpec, loadObserverSpec } from '@workflow-toolbox/scaffold/spec-io'
+import { renderScaffold, writeScaffoldArtifact } from '@workflow-toolbox/scaffold/dispatch'
 import { resolveLogDir, writeAuditFolder, scanTranscripts } from '@workflow-toolbox/debugger/audit-folder'
 import { parseDebugArgs, parseReportArgs } from '@workflow-toolbox/debugger/cli-args'
 
@@ -313,73 +313,50 @@ async function runScaffold(argv: string[]): Promise<void> {
 
   // `scaffold agent <spec.json>` emits a least-privilege agentType .md;
   // `scaffold observer <spec.json>` emits a workflow-owned <name>.observer.json;
-  // plain `scaffold <spec.json>` emits a .workflow.ts.
+  // plain `scaffold <spec.json>` emits a .workflow.ts. The per-mode load+render+
+  // filename mapping and the --stdout / no-clobber / mkdir / write mechanics are the
+  // shared @workflow-toolbox/scaffold/dispatch helpers; only this CLI's messaging,
+  // `next` hints and tsconfig emission stay here.
   const isAgent = positionals[0] === 'agent'
   const isObserver = positionals[0] === 'observer'
+  const mode = isObserver ? 'observer' : isAgent ? 'agent' : 'workflow'
   const specPath = positionals[isAgent || isObserver ? 1 : 0]
   if (specPath === undefined || specPath === '') {
     printUsage()
     throw new Error('workflow-toolbox scaffold: missing <spec.json> positional argument')
   }
 
-  if (isObserver) {
-    const observerSpec = loadObserverSpec(specPath)
-    const observerSource = scaffoldObserver(observerSpec)
-    if (values.stdout) {
-      process.stdout.write(observerSource)
-      return
-    }
-    const observerOutDir = path.resolve(values['out-dir'] ?? '.')
-    const observerOutFile = path.join(observerOutDir, `${observerSpec.name}.observer.json`)
-    if (fs.existsSync(observerOutFile) && !values.force) {
-      throw new Error(`workflow-toolbox scaffold observer: refusing to overwrite ${observerOutFile} — pass --force to replace it`)
-    }
-    fs.mkdirSync(observerOutDir, { recursive: true })
-    fs.writeFileSync(observerOutFile, observerSource, 'utf8')
-    console.log(`workflow-toolbox scaffold observer: wrote ${observerOutFile}`)
-    console.log(observerLaunchHint(observerSpec).trimEnd())
+  const rendered = renderScaffold(mode, specPath)
+  const outDir = path.resolve(values['out-dir'] ?? '.')
+  const result = writeScaffoldArtifact({
+    source: rendered.source,
+    outName: rendered.outName,
+    outDir,
+    stdout: values.stdout,
+    force: values.force,
+  })
+  if (result.kind === 'stdout') return
+
+  const label =
+    rendered.mode === 'observer' ? 'scaffold observer' : rendered.mode === 'agent' ? 'scaffold agent' : 'scaffold'
+  if (result.kind === 'refused') {
+    throw new Error(`workflow-toolbox ${label}: refusing to overwrite ${result.outFile} — pass --force to replace it`)
+  }
+  console.log(`workflow-toolbox ${label}: wrote ${result.outFile}`)
+
+  if (rendered.mode === 'observer') {
+    console.log(observerLaunchHint(rendered.spec).trimEnd())
     return
   }
 
-  if (isAgent) {
-    const agentSpec = loadAgentSpec(specPath)
-    const agentSource = scaffoldAgent(agentSpec)
-    if (values.stdout) {
-      process.stdout.write(agentSource)
-      return
-    }
-    const agentOutDir = path.resolve(values['out-dir'] ?? '.')
-    const agentOutFile = path.join(agentOutDir, `${agentSpec.name}.md`)
-    if (fs.existsSync(agentOutFile) && !values.force) {
-      throw new Error(`workflow-toolbox scaffold agent: refusing to overwrite ${agentOutFile} — pass --force to replace it`)
-    }
-    fs.mkdirSync(agentOutDir, { recursive: true })
-    fs.writeFileSync(agentOutFile, agentSource, 'utf8')
-    console.log(`workflow-toolbox scaffold agent: wrote ${agentOutFile}`)
+  if (rendered.mode === 'agent') {
     console.log(
-      `  next: put ${agentSpec.name}.md under ~/.claude/agents/ (or .claude/agents/), then reference it via agent(prompt, { agentType: '${agentSpec.name}' })`,
+      `  next: put ${rendered.spec.name}.md under ~/.claude/agents/ (or .claude/agents/), then reference it via agent(prompt, { agentType: '${rendered.spec.name}' })`,
     )
     return
   }
 
-  const spec = loadSpec(specPath)
-  const source = scaffoldWorkflow(spec)
-
-  if (values.stdout) {
-    process.stdout.write(source)
-    return
-  }
-
-  const outDir = path.resolve(values['out-dir'] ?? '.')
-  const outFile = path.join(outDir, `${spec.meta.name}.workflow.ts`)
-  if (fs.existsSync(outFile) && !values.force) {
-    throw new Error(`workflow-toolbox scaffold: refusing to overwrite ${outFile} — pass --force to replace it`)
-  }
-  fs.mkdirSync(outDir, { recursive: true })
-  fs.writeFileSync(outFile, source, 'utf8')
-  console.log(`workflow-toolbox scaffold: wrote ${outFile}`)
-
-  // Emit a minimal tsconfig.json ONLY when the target dir has none (never
+  // workflow: emit a minimal tsconfig.json ONLY when the target dir has none (never
   // overwrites; --no-tsconfig opts out) so --typecheck and editor type hints
   // work in a fresh consumer project.
   const tsconfigPath = path.join(outDir, 'tsconfig.json')
@@ -388,8 +365,8 @@ async function runScaffold(argv: string[]): Promise<void> {
     console.log(`workflow-toolbox scaffold: wrote ${tsconfigPath} (none existed — pass --no-tsconfig to skip)`)
   }
 
-  const rel = path.relative(process.cwd(), outFile)
-  console.log(`  next: npx workflow-toolbox build ${rel.startsWith('..') ? outFile : rel} --typecheck`)
+  const rel = path.relative(process.cwd(), result.outFile)
+  console.log(`  next: npx workflow-toolbox build ${rel.startsWith('..') ? result.outFile : rel} --typecheck`)
 }
 
 // ---------------------------------------------------------------------------

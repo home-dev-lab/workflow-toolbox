@@ -3,17 +3,19 @@
 // still typechecked by `tsc`. Maintainer/author:
 //   pnpm wt:scaffold <spec.json> [--out-dir <dir>] [--stdout]          # a .workflow.ts skeleton
 //   pnpm wt:scaffold agent <spec.json> [--out-dir <dir>] [--stdout]    # a least-privilege agentType .md
+//
+// The per-mode load+render+filename mapping and the --stdout / no-clobber / mkdir / write
+// mechanics are the shared ./dispatch helpers (the same ones the published `workflow-toolbox
+// scaffold` subcommand uses, so the two cannot drift); only this dev CLI's arg parsing,
+// messages and `next` hints live here.
 
-import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { scaffoldAgent, scaffoldObserver, scaffoldWorkflow, observerLaunchHint, PATTERN_NAMES } from './scaffold.js'
-import type { AgentScaffoldSpec, ObserverScaffoldSpec, ScaffoldSpec } from './scaffold.js'
-import { loadAgentSpec, loadObserverSpec, loadSpec } from './spec-io.js'
-
-type Mode = 'workflow' | 'agent' | 'observer'
+import { observerLaunchHint, PATTERN_NAMES } from './scaffold.js'
+import { renderScaffold, writeScaffoldArtifact } from './dispatch.js'
+import type { RenderedScaffold, ScaffoldMode, ScaffoldWriteResult } from './dispatch.js'
 
 interface CliArgs {
-  mode: Mode
+  mode: ScaffoldMode
   specPath: string | null
   outDir: string
   stdout: boolean
@@ -22,7 +24,7 @@ interface CliArgs {
 
 function parseArgs(argv: string[]): CliArgs {
   let rest = argv
-  let mode: Mode = 'workflow'
+  let mode: ScaffoldMode = 'workflow'
   if (rest[0] === 'agent') {
     mode = 'agent'
     rest = rest.slice(1)
@@ -73,35 +75,24 @@ function printHelp(): void {
   )
 }
 
-function emit(mode: Mode, specPath: string): { source: string; outName: string; next: string } {
-  if (mode === 'observer') {
-    const spec: ObserverScaffoldSpec = loadObserverSpec(specPath)
-    return {
-      source: scaffoldObserver(spec),
-      outName: `${spec.name}.observer.json`,
-      next: observerLaunchHint(spec),
-    }
+/** The per-mode "next" hint — mode-specific and deliberately distinct from the published
+ *  CLI's (this dev CLI points at the in-repo pnpm scripts). */
+function nextHint(rendered: RenderedScaffold): string {
+  if (rendered.mode === 'observer') {
+    return observerLaunchHint(rendered.spec)
   }
-  if (mode === 'agent') {
-    const spec: AgentScaffoldSpec = loadAgentSpec(specPath)
-    return {
-      source: scaffoldAgent(spec),
-      outName: `${spec.name}.md`,
-      next:
-        'Next — review the frontmatter fence, then register it as an agentType:\n' +
-        `  put ${spec.name}.md under ~/.claude/agents/ (user) or .claude/agents/ (project),\n` +
-        `  then reference it from a workflow via agent(prompt, { agentType: '${spec.name}' }).\n`,
-    }
+  if (rendered.mode === 'agent') {
+    return (
+      'Next — review the frontmatter fence, then register it as an agentType:\n' +
+      `  put ${rendered.spec.name}.md under ~/.claude/agents/ (user) or .claude/agents/ (project),\n` +
+      `  then reference it from a workflow via agent(prompt, { agentType: '${rendered.spec.name}' }).\n`
+    )
   }
-  const spec: ScaffoldSpec = loadSpec(specPath)
-  return {
-    source: scaffoldWorkflow(spec),
-    outName: `${spec.meta.name}.workflow.ts`,
-    next:
-      'Next — fill in the placeholder prompts/data, then build and check:\n' +
-      `  pnpm wt:build ${spec.meta.name}.workflow.ts\n` +
-      `  pnpm wt:check workflows/${spec.meta.name}.js\n`,
-  }
+  return (
+    'Next — fill in the placeholder prompts/data, then build and check:\n' +
+    `  pnpm wt:build ${rendered.spec.meta.name}.workflow.ts\n` +
+    `  pnpm wt:check workflows/${rendered.spec.meta.name}.js\n`
+  )
 }
 
 function main(): number {
@@ -112,35 +103,29 @@ function main(): number {
     return 1
   }
 
-  let source: string
-  let outName: string
-  let next: string
+  let rendered: RenderedScaffold
   try {
-    ;({ source, outName, next } = emit(mode, specPath))
+    rendered = renderScaffold(mode, specPath)
   } catch (err) {
     process.stderr.write(`${(err as Error).message}\n`)
     return 1
   }
 
-  if (stdout) {
-    process.stdout.write(source)
-    return 0
-  }
-
-  const outFile = path.join(outDir, outName)
-  if (fs.existsSync(path.resolve(outFile)) && !force) {
-    process.stderr.write(`wt-scaffold: refusing to overwrite ${outFile} — pass --force to replace it.\n`)
-    return 1
-  }
+  let result: ScaffoldWriteResult
   try {
-    fs.mkdirSync(path.resolve(outDir), { recursive: true })
-    fs.writeFileSync(path.resolve(outFile), source, 'utf8')
+    result = writeScaffoldArtifact({ source: rendered.source, outName: rendered.outName, outDir, stdout, force })
   } catch {
-    process.stderr.write(`wt-scaffold: cannot write "${outFile}".\n`)
+    process.stderr.write(`wt-scaffold: cannot write "${path.join(outDir, rendered.outName)}".\n`)
     return 1
   }
 
-  process.stdout.write(`wt-scaffold: wrote ${outFile}\n\n${next}`)
+  if (result.kind === 'stdout') return 0
+  if (result.kind === 'refused') {
+    process.stderr.write(`wt-scaffold: refusing to overwrite ${result.outFile} — pass --force to replace it.\n`)
+    return 1
+  }
+
+  process.stdout.write(`wt-scaffold: wrote ${result.outFile}\n\n${nextHint(rendered)}`)
   return 0
 }
 
