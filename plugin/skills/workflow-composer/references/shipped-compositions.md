@@ -65,7 +65,15 @@ The **dev-workflow family** — the most advanced compositions (multi-artifact
 - `dev-plan.workflow.ts` — discovery → planner fan-out → adversarial plan critique
   (snippet-enriched task claims) → plan artifact.
 - `dev-implement.workflow.ts` — per-task red → green → check TDD loops over a plan
-  artifact, sequential or worktree-parallel; the test-writer can end a task with a
+  artifact, sequential or worktree-parallel — or `mutation: "auto"`, which routes BY
+  PLAN STRUCTURE: it computes the connected components of the `dependsOn` graph and
+  runs independent components as parallel worktree LANES (one worktree per
+  component, tasks sequential inside it so context composes, merge + integration
+  check per lane) — but only when ≥2 lanes result (small components pool into one
+  residual lane, `autoLaneMinTasks`) AND the lanes' declared `files[]` are pairwise
+  disjoint after spelling canonicalization; any overlap, or a single component,
+  falls back to the plain sequential engine (the decision is reported in the
+  output's `routing` field). The test-writer can end a task with a
   named blocking verdict (`no-test-seam` / `premise-falsified` / `repro-hard`) that
   reports as a routable `blocked` outcome instead of a silent retry-until-failed.
   Mechanical, behavior-preserving seams (parameter extraction, default injection)

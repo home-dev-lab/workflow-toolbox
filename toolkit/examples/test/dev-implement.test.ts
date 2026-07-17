@@ -768,6 +768,7 @@ const WT_INPUT = { artifact: WT_ARTIFACT, mutation: 'worktree' }
 function makeWtRuntime(overrides?: {
   setup?: (prompt: string) => unknown
   create?: (prompt: string, wave: number) => unknown
+  lanesCreate?: (prompt: string) => unknown
   prepare?: (prompt: string) => unknown
   finalize?: (prompt: string) => unknown
   merge?: (prompt: string, index: number) => unknown
@@ -790,6 +791,15 @@ function makeWtRuntime(overrides?: {
         if (overrides?.create) return overrides.create(prompt, i)
         const ids = [...prompt.matchAll(/wt-task\/(T\d+)/g)].map((m) => m[1])
         return { created: [...new Set(ids)], failures: [], note: 'worktrees added' }
+      }
+      // mutation:'auto' lane provisioning — a distinct label prefix from the
+      // per-task 'worktrees:' branch above (critic finding E: the ONE truly
+      // new label needing its own handler; branches are wt-lane/<key>, not
+      // wt-task/<id>, so the existing default's regex would never match).
+      if (label.startsWith('dev-implement:lanes:')) {
+        if (overrides?.lanesCreate) return overrides.lanesCreate(prompt)
+        const keys = [...prompt.matchAll(/wt-lane\/(\S+)/g)].map((m) => m[1])
+        return { created: [...new Set(keys)], failures: [], note: 'lane worktrees added' }
       }
       if (label.startsWith('dev-implement:prepare:')) {
         if (overrides?.prepare) return overrides.prepare(prompt)
@@ -1248,6 +1258,374 @@ describe('dev-implement worktree failure policies', () => {
     for (const phrase of ['create the isolated git worktrees', 'merge the task branch', 'remove the merged worktrees', 'verify this is a git repository']) {
       expect(rt.calls.some((c) => c.prompt.includes(phrase))).toBe(false)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: mutation "auto" — per-connected-component routing (card
+// #1820484453298865160). Weakly-connected components of the dependsOn graph
+// become LANES: qualifying components (>= autoLaneMinTasks tasks) each get
+// their own isolated git worktree + branch (parallel across lanes,
+// SEQUENTIAL within a lane); non-qualifying components are pooled into ONE
+// residual lane. Resolves to "parallel-lanes" only when >=2 lanes AND their
+// files[] are pairwise disjoint (canonicalized — critic finding A); otherwise
+// falls back to the plain sequential engine. The routing DECISION is always
+// reported on the output (`routing`), for all three mutation modes.
+// ---------------------------------------------------------------------------
+
+// Single connected component (2 tasks, T2 depends on T1) — reuses ARTIFACT.
+const AUTO_SINGLE_INPUT = { artifact: ARTIFACT, mutation: 'auto' }
+
+// Two independent, disjoint, qualifying components (2 tasks each):
+// lane A = {A1, A2} (A2 depends on A1), lane B = {B1, B2} (B2 depends on B1).
+// Lane keys are the FIRST task of each component in ARTIFACT order: A1, B1.
+const AUTO_ARTIFACT = {
+  goal: 'Add two independent helper pairs',
+  context: {
+    projectDir: '/repo',
+    testCommand: 'pnpm test',
+    buildCommand: '',
+    conventions: 'TypeScript strict; vitest',
+  },
+  tasks: [
+    {
+      id: 'A1', title: 'Add helperA()', intent: 'Pure helper for lane A.',
+      files: [{ path: 'src/a1.ts', status: 'new', role: 'impl' }],
+      contracts: 'export function helperA(): boolean', testPlan: 'Failing unit test first.',
+      doneCriteria: ['unit tests pass'], dependsOn: [], snippet: '',
+    },
+    {
+      id: 'A2', title: 'Wire helperA() into moduleA', intent: 'Integration for lane A.',
+      files: [{ path: 'src/a2.ts', status: 'new', role: 'impl' }],
+      contracts: 'export function useHelperA(): boolean', testPlan: 'Failing unit test first.',
+      doneCriteria: ['unit tests pass'], dependsOn: ['A1'], snippet: '',
+    },
+    {
+      id: 'B1', title: 'Add helperB()', intent: 'Pure helper for lane B.',
+      files: [{ path: 'src/b1.ts', status: 'new', role: 'impl' }],
+      contracts: 'export function helperB(): boolean', testPlan: 'Failing unit test first.',
+      doneCriteria: ['unit tests pass'], dependsOn: [], snippet: '',
+    },
+    {
+      id: 'B2', title: 'Wire helperB() into moduleB', intent: 'Integration for lane B.',
+      files: [{ path: 'src/b2.ts', status: 'new', role: 'impl' }],
+      contracts: 'export function useHelperB(): boolean', testPlan: 'Failing unit test first.',
+      doneCriteria: ['unit tests pass'], dependsOn: ['B1'], snippet: '',
+    },
+  ],
+  risks: [],
+  outOfScope: [],
+}
+const AUTO_INPUT = { artifact: AUTO_ARTIFACT, mutation: 'auto' }
+
+// Two qualifying components sharing a file (exact same spelling) — must
+// resolve sequential with a warning naming the overlapping path.
+const AUTO_OVERLAP_ARTIFACT = {
+  goal: 'Two components sharing a file',
+  context: { projectDir: '.', testCommand: 'pnpm test', buildCommand: '', conventions: 'x' },
+  tasks: [
+    { id: 'C1', title: 'C1', intent: 'x', files: [{ path: 'src/shared.ts', status: 'existing', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: [], snippet: '' },
+    { id: 'C2', title: 'C2', intent: 'x', files: [{ path: 'src/c2.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: ['C1'], snippet: '' },
+    { id: 'D1', title: 'D1', intent: 'x', files: [{ path: 'src/shared.ts', status: 'existing', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: [], snippet: '' },
+    { id: 'D2', title: 'D2', intent: 'x', files: [{ path: 'src/d2.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: ['D1'], snippet: '' },
+  ],
+  risks: [], outOfScope: [],
+}
+
+// Same shape, but the overlap is only visible after canonicalizing relative
+// spellings ('./src/shared.ts' vs 'src/shared.ts') — critic finding A.
+const AUTO_OVERLAP_SPELLING_ARTIFACT = {
+  ...AUTO_OVERLAP_ARTIFACT,
+  tasks: AUTO_OVERLAP_ARTIFACT.tasks.map((t) =>
+    t.id === 'D1' ? { ...t, files: [{ path: './src/shared.ts', status: 'existing' as const, role: 'x' }] } : t,
+  ),
+}
+
+// Three independent single-task components — all below the default
+// autoLaneMinTasks (2) → pooled into ONE residual lane → sequential.
+const AUTO_RESIDUAL_ONLY_ARTIFACT = {
+  goal: 'Three independent single-task components',
+  context: { projectDir: '.', testCommand: 'pnpm test', buildCommand: '', conventions: 'x' },
+  tasks: [
+    { id: 'E1', title: 'E1', intent: 'x', files: [{ path: 'src/e1.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: [], snippet: '' },
+    { id: 'F1', title: 'F1', intent: 'x', files: [{ path: 'src/f1.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: [], snippet: '' },
+    { id: 'G1', title: 'G1', intent: 'x', files: [{ path: 'src/g1.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: [], snippet: '' },
+  ],
+  risks: [], outOfScope: [],
+}
+
+// One qualifying component (H1,H2) plus two independent singles (S1,S2,
+// pooled into the residual lane) — 2 lanes total.
+const AUTO_BIG_PLUS_SINGLES_ARTIFACT = {
+  goal: 'One qualifying component plus two singles',
+  context: { projectDir: '/repo2', testCommand: 'pnpm test', buildCommand: '', conventions: 'x' },
+  tasks: [
+    { id: 'H1', title: 'H1', intent: 'x', files: [{ path: 'src/h1.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: [], snippet: '' },
+    { id: 'H2', title: 'H2', intent: 'x', files: [{ path: 'src/h2.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: ['H1'], snippet: '' },
+    { id: 'S1', title: 'S1', intent: 'x', files: [{ path: 'src/s1.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: [], snippet: '' },
+    { id: 'S2', title: 'S2', intent: 'x', files: [{ path: 'src/s2.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: [], snippet: '' },
+  ],
+  risks: [], outOfScope: [],
+}
+
+// Lane A has THREE chained tasks (so a mid-lane failure leaves a genuine
+// "remaining tasks" tail); lane B is a clean independent pair.
+const AUTO_MIDLANE_ARTIFACT = {
+  goal: 'Lane A has three chained tasks; lane B is independent',
+  context: { projectDir: '/repo3', testCommand: 'pnpm test', buildCommand: '', conventions: 'x' },
+  tasks: [
+    { id: 'A1', title: 'A1', intent: 'x', files: [{ path: 'src/a1.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: [], snippet: '' },
+    { id: 'A2', title: 'A2', intent: 'x', files: [{ path: 'src/a2.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: ['A1'], snippet: '' },
+    { id: 'A3', title: 'A3', intent: 'x', files: [{ path: 'src/a3.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: ['A2'], snippet: '' },
+    { id: 'B1', title: 'B1', intent: 'x', files: [{ path: 'src/b1.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: [], snippet: '' },
+    { id: 'B2', title: 'B2', intent: 'x', files: [{ path: 'src/b2.ts', status: 'new', role: 'x' }], contracts: 'x', testPlan: 'x', doneCriteria: ['x'], dependsOn: ['B1'], snippet: '' },
+  ],
+  risks: [], outOfScope: [],
+}
+
+describe('dev-implement mutation "auto" parseInput', () => {
+  it('accepts mutation: "auto"', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify(AUTO_SINGLE_INPUT))
+    expect(result).toHaveProperty('succeeded')
+  })
+
+  it('still rejects an unknown mutation value, message unchanged', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ artifact: ARTIFACT, mutation: 'parallel' })),
+    ).rejects.toThrow(/mutation/i)
+  })
+
+  it('accepts the worktree-only knobs under "auto" (not rejected as a typo)', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(
+      rt,
+      JSON.stringify({ ...AUTO_SINGLE_INPUT, worktreeSetupCommand: 'pnpm install', worktreeRoot: '/scratch/wt', signCommits: true }),
+    )
+    expect(result).toHaveProperty('succeeded')
+  })
+
+  it('still rejects worktree-only knobs in sequential mode (predicate change did not widen the reject set)', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ artifact: ARTIFACT, worktreeSetupCommand: 'pnpm install' })),
+    ).rejects.toThrow(/worktree/i)
+  })
+
+  it('accepts autoLaneMinTasks as a positive integer, floors a fraction', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify({ ...AUTO_SINGLE_INPUT, autoLaneMinTasks: 3.9 }))
+    expect(result).toHaveProperty('succeeded')
+  })
+
+  it('rejects a non-number or sub-1 autoLaneMinTasks', async () => {
+    const rt = makeRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...AUTO_SINGLE_INPUT, autoLaneMinTasks: 0 })),
+    ).rejects.toThrow(/autoLaneMinTasks/i)
+    await expect(
+      wf.run(rt, JSON.stringify({ ...AUTO_SINGLE_INPUT, autoLaneMinTasks: 'two' })),
+    ).rejects.toThrow(/autoLaneMinTasks/i)
+  })
+})
+
+describe('dev-implement mutation "auto" — sequential fallback routing', () => {
+  it('(1) a single connected component resolves sequential, zero lane/worktree machinery, and names it in routing.reason', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify(AUTO_SINGLE_INPUT))
+
+    expect(result.succeeded).toBe(2)
+    expect(result.routing).toMatchObject({ requested: 'auto', resolved: 'sequential', components: 1, lanes: 1 })
+    expect(result.routing.reason).toMatch(/single.*component/i)
+    for (const phrase of ['create the isolated git worktrees', 'lane worktree', 'merge the task branch', 'verify this is a git repository', 'environment setup agent']) {
+      expect(rt.calls.some((c) => c.prompt.includes(phrase))).toBe(false)
+    }
+  })
+
+  it('(3) cross-component file overlap forces sequential fallback with a warning naming the path', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify({ artifact: AUTO_OVERLAP_ARTIFACT, mutation: 'auto' }))
+
+    expect(result.routing.resolved).toBe('sequential')
+    expect(result.routing.components).toBe(2)
+    expect(result.routing.lanes).toBe(2)
+    expect(result.routing.reason).toContain('src/shared.ts')
+    expect(result.warnings.some((w: string) => w.includes('src/shared.ts'))).toBe(true)
+    expect(result.succeeded).toBe(4)
+    expect(rt.calls.some((c) => c.prompt.includes('create the isolated git worktrees') || c.prompt.includes('lane worktree'))).toBe(false)
+  })
+
+  it('(3b) a relative-spelling overlap (./src/shared.ts vs src/shared.ts) is still caught — sequential, not a false disjoint', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify({ artifact: AUTO_OVERLAP_SPELLING_ARTIFACT, mutation: 'auto' }))
+
+    expect(result.routing.resolved).toBe('sequential')
+    expect(result.routing.reason).toMatch(/shared\.ts/)
+    expect(result.succeeded).toBe(4)
+  })
+
+  it('(4) every component below the threshold pools into ONE residual lane -> still <2 lanes -> sequential', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify({ artifact: AUTO_RESIDUAL_ONLY_ARTIFACT, mutation: 'auto' }))
+
+    expect(result.routing).toMatchObject({ resolved: 'sequential', components: 3, lanes: 1 })
+    expect(result.succeeded).toBe(3)
+    expect(rt.calls.some((c) => c.prompt.includes('create the isolated git worktrees') || c.prompt.includes('lane worktree'))).toBe(false)
+  })
+})
+
+describe('dev-implement mutation "auto" — parallel-lanes execution', () => {
+  it('(2) two disjoint qualifying components run as 2 parallel lanes, sequential within each, merged per lane', async () => {
+    const rt = makeWtRuntime()
+    const result = await wf.run(rt, JSON.stringify(AUTO_INPUT))
+
+    expect(result.succeeded).toBe(4)
+    expect(result.failed).toBe(0)
+    expect(result.routing).toMatchObject({ requested: 'auto', resolved: 'parallel-lanes', components: 2, lanes: 2 })
+
+    const laneCreate = rt.calls.find((c) => c.opts?.label === 'dev-implement:lanes:create')
+    expect(laneCreate?.prompt).toContain('wt-lane/A1')
+    expect(laneCreate?.prompt).toContain('wt-lane/B1')
+
+    // Sequential WITHIN a lane: A1's red must precede A2's red.
+    const redA1 = promptIndex(rt, 'Task A1:')
+    const redA2Calls = rt.calls.map((c, i) => ({ c, i })).filter(({ c }) => c.opts?.label?.startsWith('dev-implement:red:A2'))
+    expect(redA1).toBeGreaterThanOrEqual(0)
+    expect(redA2Calls[0]!.i).toBeGreaterThan(redA1)
+
+    // One merge + one integration check per lane.
+    const merges = rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:merge:'))
+    const integrations = rt.calls.filter((c) => c.opts?.label?.startsWith('dev-implement:integration:'))
+    expect(merges.length).toBe(2)
+    expect(integrations.length).toBe(2)
+    expect(rt.calls.some((c) => c.opts?.label === 'dev-implement:merge:A1')).toBe(true)
+    expect(rt.calls.some((c) => c.opts?.label === 'dev-implement:merge:B1')).toBe(true)
+
+    // ONE batched cleanup, both lanes.
+    const cleanups = rt.calls.filter((c) => c.opts?.label === 'dev-implement:cleanup')
+    expect(cleanups.length).toBe(1)
+    expect(cleanups[0]!.prompt).toContain('A1')
+    expect(cleanups[0]!.prompt).toContain('B1')
+  })
+
+  it('(5) one qualifying component plus two pooled singles resolves to 2 lanes', async () => {
+    const rt = makeWtRuntime()
+    const result = await wf.run(rt, JSON.stringify({ artifact: AUTO_BIG_PLUS_SINGLES_ARTIFACT, mutation: 'auto' }))
+
+    expect(result.succeeded).toBe(4)
+    expect(result.routing).toMatchObject({ resolved: 'parallel-lanes', components: 3, lanes: 2 })
+    const laneCreate = rt.calls.find((c) => c.opts?.label === 'dev-implement:lanes:create')
+    expect(laneCreate?.prompt).toContain('wt-lane/H1')
+    // Residual lane key = first residual task in ARTIFACT order (S1).
+    expect(laneCreate?.prompt).toContain('wt-lane/S1')
+  })
+
+  it('(6) mid-lane failure: dedicated abandonment note on the remaining tasks, prior success merged, worktree kept', async () => {
+    const rt = makeWtRuntime({
+      check: (prompt) => (prompt.includes('Task A2:') ? { green: false, evidence: 'red', failureSummary: 'A2 broke' } : { green: true, evidence: 'ok', failureSummary: '' }),
+    })
+    const result = await wf.run(rt, JSON.stringify({ artifact: AUTO_MIDLANE_ARTIFACT, mutation: 'auto' }))
+
+    const a1 = result.tasks.find((t: { id: string }) => t.id === 'A1')!
+    const a2 = result.tasks.find((t: { id: string }) => t.id === 'A2')!
+    const a3 = result.tasks.find((t: { id: string }) => t.id === 'A3')!
+    const b1 = result.tasks.find((t: { id: string }) => t.id === 'B1')!
+    const b2 = result.tasks.find((t: { id: string }) => t.id === 'B2')!
+
+    // A1's committed work still lands (merged) even though its lane sibling failed.
+    expect(a1.status).toBe('succeeded')
+    expect(a2.status).toBe('failed')
+    expect(a3.status).toBe('skipped')
+    // Dedicated note — NOT the dependency-skip wording (critic finding D).
+    expect(a3.note).toMatch(/lane abandoned/i)
+    expect(a3.note).not.toMatch(/depends on non-succeeded/i)
+    // Forensics: the failed task's worktree is kept and named.
+    expect(typeof a2.worktreePath).toBe('string')
+    expect(typeof a2.branch).toBe('string')
+    // Lane B is clean and unaffected.
+    expect(b1.status).toBe('succeeded')
+    expect(b2.status).toBe('succeeded')
+
+    // Lane A's worktree is NOT in the cleanup batch (kept for forensics)
+    // even though A1's work merged; lane B's IS.
+    const cleanup = rt.calls.find((c) => c.opts?.label === 'dev-implement:cleanup')
+    expect(cleanup?.prompt).not.toContain('wt-lane/A1')
+    expect(cleanup?.prompt).toContain('wt-lane/B1')
+
+    // Six tallies still sum to tasks.length.
+    const sum = result.succeeded + result.failed + result.skipped + result.mergeFailed + result.integrationFailed + result.blocked
+    expect(sum).toBe(AUTO_MIDLANE_ARTIFACT.tasks.length)
+  })
+
+  it('(6b) residual-lane co-tenancy: a pooled single failing skips the OTHER pooled component, qualifying lane unaffected (named v1 trade-off)', async () => {
+    // S1 and S2 are UNRELATED single-task components pooled into one residual
+    // lane; S1's failure abandons the shared lane worktree, so S2 skips even
+    // though it has no dependency on S1 — the documented co-tenancy trade-off.
+    const rt = makeWtRuntime({
+      check: (prompt) => (prompt.includes('Task S1:') ? { green: false, evidence: 'red', failureSummary: 'S1 broke' } : { green: true, evidence: 'ok', failureSummary: '' }),
+    })
+    const result = await wf.run(rt, JSON.stringify({ artifact: AUTO_BIG_PLUS_SINGLES_ARTIFACT, mutation: 'auto' }))
+
+    const s1 = result.tasks.find((t: { id: string }) => t.id === 'S1')!
+    const s2 = result.tasks.find((t: { id: string }) => t.id === 'S2')!
+    expect(s1.status).toBe('failed')
+    expect(s2.status).toBe('skipped')
+    expect(s2.note).toMatch(/lane abandoned/i)
+    expect(s2.note).not.toMatch(/depends on non-succeeded/i)
+    // The qualifying lane is untouched by the residual lane's failure.
+    expect(result.tasks.find((t: { id: string }) => t.id === 'H1')!.status).toBe('succeeded')
+    expect(result.tasks.find((t: { id: string }) => t.id === 'H2')!.status).toBe('succeeded')
+    const sum = result.succeeded + result.failed + result.skipped + result.mergeFailed + result.integrationFailed + result.blocked
+    expect(sum).toBe(AUTO_BIG_PLUS_SINGLES_ARTIFACT.tasks.length)
+  })
+
+  it('(8) non-git repository under a parallel-lanes resolution -> graceful all-skipped, no lane machinery beyond setup', async () => {
+    const rt = makeWtRuntime({ setup: () => ({ isGitRepo: false, headSha: '', gitRoot: '', note: 'not a repo' }) })
+    const result = await wf.run(rt, JSON.stringify(AUTO_INPUT))
+
+    expect(result.skipped).toBe(4)
+    expect(result.succeeded + result.failed + result.mergeFailed + result.integrationFailed).toBe(0)
+    expect(result.warnings.some((w: string) => /git repository/i.test(w))).toBe(true)
+    expect(rt.calls.some((c) => c.opts?.label === 'dev-implement:lanes:create')).toBe(false)
+    // The routing DECISION still ran (pure, no git needed) — only execution didn't.
+    expect(result.routing.resolved).toBe('parallel-lanes')
+  })
+
+  it('(9) explicit modes carry routing too, requested mirrors resolved, reason "explicit" — regression: sequential emits no worktree machinery', async () => {
+    const rtSeq = makeRuntime()
+    const seqResult = await wf.run(rtSeq, JSON.stringify(VALID_INPUT))
+    expect(seqResult.routing).toEqual({ requested: 'sequential', resolved: 'sequential', components: 0, lanes: 0, reason: 'explicit' })
+    expect(seqResult.mergeFailed).toBe(0)
+    expect(seqResult.integrationFailed).toBe(0)
+    for (const phrase of ['create the isolated git worktrees', 'merge the task branch', 'remove the merged worktrees', 'verify this is a git repository']) {
+      expect(rtSeq.calls.some((c) => c.prompt.includes(phrase))).toBe(false)
+    }
+
+    const rtWt = makeWtRuntime()
+    const wtResult = await wf.run(rtWt, JSON.stringify(WT_INPUT))
+    expect(wtResult.routing).toEqual({ requested: 'worktree', resolved: 'worktree', components: 0, lanes: 0, reason: 'explicit' })
+  })
+
+  it('(10) a lane merge failure pushes exactly ONE report row per task (no succeeded+merge-failed double-push)', async () => {
+    const rt = makeWtRuntime({
+      merge: (prompt) =>
+        prompt.includes('wt-lane/A1')
+          ? { merged: false, conflict: true, preMergeSha: 'preA', mergeSha: '', note: 'CONFLICT' }
+          : { merged: true, conflict: false, preMergeSha: 'preB', mergeSha: 'mrgB', note: 'merged' },
+    })
+    const result = await wf.run(rt, JSON.stringify(AUTO_INPUT))
+
+    const a1Rows = result.tasks.filter((t: { id: string }) => t.id === 'A1')
+    const a2Rows = result.tasks.filter((t: { id: string }) => t.id === 'A2')
+    expect(a1Rows).toHaveLength(1)
+    expect(a2Rows).toHaveLength(1)
+    expect(a1Rows[0]!.status).toBe('merge-failed')
+    expect(a2Rows[0]!.status).toBe('merge-failed')
+    expect(result.succeeded).toBe(2) // B1, B2 only
+    expect(result.mergeFailed).toBe(2)
+    const sum = result.succeeded + result.failed + result.skipped + result.mergeFailed + result.integrationFailed + result.blocked
+    expect(sum).toBe(AUTO_ARTIFACT.tasks.length)
   })
 })
 

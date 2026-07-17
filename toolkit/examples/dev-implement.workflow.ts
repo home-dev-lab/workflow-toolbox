@@ -162,9 +162,30 @@ export interface DevImplementInput {
    *  context.projectDir (which isn't known until the file is read). Prefer
    *  absolute to avoid depending on where the session was launched. */
   artifactPath: string | null
-  /** "sequential" (default, no git required) or "worktree" (parallel waves of
-   *  per-task git worktrees + a merge step; git repo REQUIRED). */
-  mutation: 'sequential' | 'worktree'
+  /** "sequential" (default, no git required), "worktree" (parallel waves of
+   *  per-task git worktrees + a merge step; git repo REQUIRED), or "auto"
+   *  (card #1820484453298865160 — routes PER weakly-connected COMPONENT of
+   *  the dependsOn graph): qualifying components (>= autoLaneMinTasks tasks)
+   *  each become a parallel LANE, one isolated git worktree per lane; tasks
+   *  WITHIN a lane still run SEQUENTIALLY, in topological order — "auto"
+   *  parallelism is COARSER than "worktree" (per-lane, not per-wave: a
+   *  component's own internal independent branches do NOT parallelize). A
+   *  SINGLE connected component (even with many tasks) has nothing to
+   *  parallelize against, so it runs on the plain sequential engine WITHOUT
+   *  paying the worktree tax — isolation only earns its cost when something
+   *  else runs concurrently. Non-qualifying components (< autoLaneMinTasks
+   *  tasks) are pooled into ONE residual lane (a named v1 trade-off: a
+   *  failure in one small component's task skips the OTHER pooled
+   *  components' tasks too, even though they are otherwise unrelated).
+   *  Resolves to parallel lanes only when >= 2 lanes result AND their
+   *  files[] are pairwise disjoint (path-canonicalized); any lane file
+   *  overlap, or fewer than 2 lanes, falls back to the plain sequential
+   *  engine. The routing DECISION is IN CODE (zero agent spend) and always
+   *  reported on the output's `routing` field, for all three mutation
+   *  modes. Requires a git repository only when it actually resolves to
+   *  parallel lanes (same requirement as "worktree"); degrades gracefully
+   *  otherwise. */
+  mutation: 'sequential' | 'worktree' | 'auto'
   /** TDD loop bound per task. */
   maxIterationsPerTask: number
   /** Model for the per-iteration GREEN (implementer) agent. Default 'sonnet':
@@ -200,6 +221,14 @@ export interface DevImplementInput {
    *  Default false: a locked signing agent mid-run would kill merges opaquely;
    *  the operator owns/squashes the final history. */
   signCommits: boolean
+  /** "auto" mode only (parsed and validated regardless of mode, like the
+   *  other non-worktree-only knobs — silently unused otherwise, never a
+   *  rejected typo): the minimum task count a weakly-connected component of
+   *  the dependsOn graph must have to become its OWN parallel lane;
+   *  components below this count are pooled into one residual lane instead.
+   *  Default 2 — a single-task component gains nothing from isolation. Must
+   *  be an integer >= 1. */
+  autoLaneMinTasks: number
   /** Warnings produced by task-file path normalization (which is pure and has
    *  no rt to log to) — surfaced via warn() at run start so they land in both
    *  rt.log and the report's warnings[]. In artifactPath mode normalization runs
@@ -528,6 +557,39 @@ type CleanupResult = FromSchema<typeof CLEANUP_RESULT_SCHEMA>
 // never reach green, finalize, or merge.
 type TaskStatus = 'succeeded' | 'failed' | 'skipped' | 'merge-failed' | 'integration-failed' | 'blocked'
 
+// The mutation "auto" routing decision — ALWAYS present on the output,
+// regardless of mode (card #1820484453298865160: "the observability of the
+// decision is the essence of the card"). For the two EXPLICIT modes
+// ('sequential'/'worktree') no component/lane computation ever runs:
+// `resolved` simply mirrors `requested`, `components`/`lanes` are 0, and
+// `reason` is the literal 'explicit'. For "auto", `resolved` is 'sequential'
+// (a single component, too few qualifying lanes, or a cross-lane file
+// overlap forced a conservative fallback) or 'parallel-lanes' (>= 2 disjoint
+// lanes actually ran); `components`/`lanes` count the computed
+// weakly-connected components / resulting lanes, and `reason` explains the
+// decision in one human-readable line.
+interface RoutingInfo {
+  requested: 'sequential' | 'worktree' | 'auto'
+  resolved: 'sequential' | 'worktree' | 'parallel-lanes'
+  components: number
+  lanes: number
+  reason: string
+}
+
+// mutation "auto" — one lane: either a qualifying connected component
+// (>= autoLaneMinTasks tasks) or the single pooled RESIDUAL lane bundling
+// every non-qualifying component. `key` is deterministic — the FIRST task in
+// ARTIFACT order within the lane's task set (before topological reordering)
+// — and becomes both the worktree directory name and the wt-lane/<key>
+// branch. `tasks` is already topologically ordered (execution order within
+// the lane); no dependsOn edge ever crosses a lane (a property of weakly
+// connected components), so no inter-lane gating is needed.
+interface Lane {
+  key: string
+  tasks: PlanTask[]
+  residual: boolean
+}
+
 // The three routable blocking verdicts of the RED stage. Deliberately a
 // LOCAL vocabulary, not an extension of @workflow-toolbox/patterns' claim-verification
 // `Verdict` ('confirmed'|'refuted'|…): these name STAGE outcomes for routing,
@@ -602,6 +664,12 @@ interface DevImplementOutput {
    *  Empty when no task's loop ran (e.g. worktree mode with no git repository). */
   envelope: { trail: TrailRecord[] }
   warnings: readonly string[]
+  /** How this run was routed — ALWAYS present, all three mutation modes (see
+   *  RoutingInfo). For "sequential"/"worktree" this is pure observability
+   *  (resolved mirrors requested, reason 'explicit'); for "auto" it is the
+   *  point of the mode — components/lanes counts plus the human-readable
+   *  reason for the sequential-vs-parallel-lanes decision. */
+  routing: RoutingInfo
 }
 
 // ---------------------------------------------------------------------------
@@ -887,19 +955,32 @@ function parseInput(raw: unknown): DevImplementInput {
     pathWarnings = validated.pathWarnings
   }
 
-  if (obj['mutation'] !== undefined && obj['mutation'] !== 'sequential' && obj['mutation'] !== 'worktree') {
+  if (
+    obj['mutation'] !== undefined &&
+    obj['mutation'] !== 'sequential' &&
+    obj['mutation'] !== 'worktree' &&
+    obj['mutation'] !== 'auto'
+  ) {
     throw new Error(
-      'dev-implement: "mutation" must be "sequential" (default, no git required) or "worktree" ' +
-      '(parallel per-task worktrees + a merge step — git repo required)',
+      'dev-implement: "mutation" must be "sequential" (default, no git required), "worktree" ' +
+      '(parallel per-task worktrees + a merge step — git repo required), or "auto" (routes per ' +
+      'connected component of the dependsOn graph into parallel lanes — git repo required only ' +
+      'when it resolves to parallel lanes)',
     )
   }
-  const mutation: 'sequential' | 'worktree' = obj['mutation'] === 'worktree' ? 'worktree' : 'sequential'
+  const mutation: 'sequential' | 'worktree' | 'auto' =
+    obj['mutation'] === 'worktree' ? 'worktree' : obj['mutation'] === 'auto' ? 'auto' : 'sequential'
 
   // Worktree-only knobs are rejected in sequential mode: silently ignoring
-  // them would hide a typo'd mutation value from the operator.
+  // them would hide a typo'd mutation value from the operator. "auto" is NOT
+  // sequential (it may resolve to parallel lanes, which reuse these same
+  // knobs — worktreeSetupCommand/worktreeRoot/signCommits), so it stays out
+  // of this rejection — a typo'd "auto" that never parallelizes just leaves
+  // the knobs unused, which is honest (not a hidden typo the way "sequential"
+  // + a worktree knob would be).
   for (const key of ['worktreeSetupCommand', 'worktreeRoot', 'signCommits'] as const) {
-    if (mutation !== 'worktree' && obj[key] !== undefined) {
-      throw new Error(`dev-implement: "${key}" is only valid with mutation "worktree"`)
+    if (mutation === 'sequential' && obj[key] !== undefined) {
+      throw new Error(`dev-implement: "${key}" is only valid with mutation "worktree" or "auto"`)
     }
   }
 
@@ -940,6 +1021,17 @@ function parseInput(raw: unknown): DevImplementInput {
       throw new Error('dev-implement: "maxIterationsPerTask" must be a number >= 1')
     }
     maxIterationsPerTask = Math.floor(obj['maxIterationsPerTask'])
+  }
+
+  // "auto" mode only in practice, but parsed/validated regardless of mode
+  // (same posture as maxIterationsPerTask above) — an unused-but-valid knob
+  // under "sequential"/"worktree" is honest, not a hidden typo.
+  let autoLaneMinTasks = 2
+  if (obj['autoLaneMinTasks'] !== undefined) {
+    if (typeof obj['autoLaneMinTasks'] !== 'number' || obj['autoLaneMinTasks'] < 1) {
+      throw new Error('dev-implement: "autoLaneMinTasks" must be a number >= 1')
+    }
+    autoLaneMinTasks = Math.floor(obj['autoLaneMinTasks'])
   }
 
   // The implementer (green) model tier. Default 'sonnet' — the high-volume
@@ -988,6 +1080,7 @@ function parseInput(raw: unknown): DevImplementInput {
     worktreeSetupCommand,
     worktreeRoot,
     signCommits,
+    autoLaneMinTasks,
     effort,
     pathWarnings,
   }
@@ -1037,6 +1130,189 @@ function waveLevels(tasks: PlanTask[]): PlanTask[][] {
     ;(waves[l] ??= []).push(task)
   }
   return waves
+}
+
+// ---------------------------------------------------------------------------
+// mutation "auto" — connected-component routing (card #1820484453298865160).
+//
+// computeComponents: weakly-connected components of the UNDIRECTED adjacency
+// built from dependsOn (a dependsOn edge never crosses a component boundary
+// by definition, which is exactly why no inter-lane gating is needed later).
+// Deterministic: components are ordered by the ARTIFACT index of their first
+// member, because we walk `tasks` in artifact order and only start a new BFS
+// from an unvisited task — the discovery order of components is therefore
+// exactly the order of each component's earliest-appearing task. Each
+// component's own member list preserves artifact order too (filtered from
+// `tasks`, not from BFS visitation order), which both the "first task in
+// artifact order" lane-key rule and topologicalOrder's stability depend on.
+// ---------------------------------------------------------------------------
+function computeComponents(tasks: PlanTask[]): PlanTask[][] {
+  const adjacency = new Map<string, Set<string>>()
+  for (const t of tasks) adjacency.set(t.id, new Set())
+  for (const t of tasks) {
+    for (const dep of t.dependsOn) {
+      adjacency.get(t.id)?.add(dep)
+      adjacency.get(dep)?.add(t.id)
+    }
+  }
+
+  const visited = new Set<string>()
+  const components: PlanTask[][] = []
+  for (const start of tasks) {
+    if (visited.has(start.id)) continue
+    const queue: string[] = [start.id]
+    visited.add(start.id)
+    const memberIds = new Set<string>()
+    while (queue.length > 0) {
+      const id = queue.shift() as string
+      memberIds.add(id)
+      for (const neighbor of adjacency.get(id) ?? []) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor)
+          queue.push(neighbor)
+        }
+      }
+    }
+    components.push(tasks.filter((t) => memberIds.has(t.id)))
+  }
+  return components
+}
+
+// Canonicalizes a RELATIVE task-file path FOR OVERLAP COMPARISON ONLY (the
+// mutation "auto" lane-disjointness gate) — collapses a leading './', '//',
+// and internal '.' segments so 'src/a.ts' and './src/a.ts' compare equal
+// (critic finding A: normalizeTaskFiles only canonicalizes ABSOLUTE paths;
+// relative spellings pass through untouched). A path that still contains
+// '..' after this pass is UNSAFE to compare with confidence (it may escape
+// outside the segment-wise comparison entirely) — the caller treats `unsafe`
+// as "cannot confirm disjoint", forcing the conservative sequential
+// fallback rather than risking a false "disjoint" that would let two lanes
+// silently edit the same physical file in separate worktrees.
+function canonicalizeForOverlap(path: string): { canonical: string; unsafe: boolean } {
+  const segments = path.split('/').filter((s) => s !== '' && s !== '.')
+  return { canonical: segments.join('/'), unsafe: segments.includes('..') }
+}
+
+// Builds mutation "auto" lanes from the computed components: qualifying
+// components (>= minTasks tasks) each become their OWN lane; every
+// non-qualifying component is pooled into ONE residual lane (the amortized
+// worktree-tax guard the card calls for). `key` is deterministic — the first
+// task in ARTIFACT order within the lane (for a qualifying lane that is
+// simply the component's own first member; for the residual lane it is the
+// first task, in artifact order, across ALL pooled components, computed via
+// an artifact-index sort since pooled components can interleave with
+// qualifying ones in the artifact). Each lane's `tasks` is topologically
+// ordered — well-defined even for the residual lane's interleaved chains,
+// since every task's own dependsOn stays within its own (pooled) component,
+// hence within the residual set already.
+function buildLanes(components: PlanTask[][], tasks: PlanTask[], minTasks: number): Lane[] {
+  const artifactIndex = new Map(tasks.map((t, i) => [t.id, i] as const))
+  const qualifying: PlanTask[][] = []
+  const residualComponents: PlanTask[][] = []
+  for (const c of components) {
+    if (c.length >= minTasks) qualifying.push(c)
+    else residualComponents.push(c)
+  }
+
+  const lanes: Lane[] = qualifying.map((c) => ({
+    key: (c[0] as PlanTask).id,
+    tasks: topologicalOrder(c),
+    residual: false,
+  }))
+
+  if (residualComponents.length > 0) {
+    const residualTasks = residualComponents
+      .flat()
+      .sort((a, b) => (artifactIndex.get(a.id) ?? 0) - (artifactIndex.get(b.id) ?? 0))
+    lanes.push({
+      key: (residualTasks[0] as PlanTask).id,
+      tasks: topologicalOrder(residualTasks),
+      residual: true,
+    })
+  }
+
+  return lanes
+}
+
+// Cross-lane file disjointness — the parallelism SAFETY gate (critic finding
+// A is precisely about this check). Same-lane repeats are normal (sequential
+// intra-lane tasks routinely touch the same file) and never flagged; only a
+// canonical path claimed by TWO DIFFERENT lanes — or any path that could not
+// be safely canonicalized — forces the conservative sequential fallback.
+function checkLaneFileDisjointness(lanes: Lane[]): { disjoint: boolean; overlapPath?: string } {
+  const owner = new Map<string, string>()
+  for (const lane of lanes) {
+    for (const task of lane.tasks) {
+      for (const file of task.files) {
+        const { canonical, unsafe } = canonicalizeForOverlap(file.path)
+        if (unsafe) return { disjoint: false, overlapPath: file.path }
+        const existingOwner = owner.get(canonical)
+        if (existingOwner !== undefined && existingOwner !== lane.key) {
+          return { disjoint: false, overlapPath: file.path }
+        }
+        owner.set(canonical, lane.key)
+      }
+    }
+  }
+  return { disjoint: true }
+}
+
+interface AutoRoutingDecision {
+  resolved: 'sequential' | 'parallel-lanes'
+  components: PlanTask[][]
+  lanes: Lane[]
+  reason: string
+  /** Set only for the FILE-OVERLAP fallback — the one case the design calls
+   *  out for an explicit operator-facing warning (not just the routing.reason
+   *  metadata): a routing decision that silently avoided a data hazard still
+   *  deserves surfacing through warnings[]. Absent for the other fallback
+   *  reasons (single component / too few qualifying lanes) — those are
+   *  ordinary, expected outcomes, not hazards avoided. */
+  warningMessage?: string
+}
+
+// The mutation "auto" routing decision — IN CODE, deterministic, zero agent
+// spend (the card's own framing: "the observability of the decision is the
+// essence of the card"). Resolves to 'parallel-lanes' iff >= 2 lanes result
+// AND their files[] are pairwise disjoint; otherwise 'sequential', with a
+// reason naming exactly why (single component, too-few qualifying lanes, or
+// the specific overlapping path).
+function decideAutoRouting(tasks: PlanTask[], autoLaneMinTasks: number): AutoRoutingDecision {
+  const components = computeComponents(tasks)
+  const lanes = buildLanes(components, tasks, autoLaneMinTasks)
+
+  if (lanes.length < 2) {
+    const reason =
+      components.length === 1
+        ? `single connected component (${tasks.length} task(s)) — nothing to parallelize against, ` +
+          `running sequentially without the worktree tax`
+        : `${components.length} component(s) grouped into only ${lanes.length} lane(s) under the ` +
+          `autoLaneMinTasks=${autoLaneMinTasks} threshold — nothing to parallelize`
+    return { resolved: 'sequential', components, lanes, reason }
+  }
+
+  const disjointness = checkLaneFileDisjointness(lanes)
+  if (!disjointness.disjoint) {
+    return {
+      resolved: 'sequential',
+      components,
+      lanes,
+      reason:
+        `lane file overlap detected at "${disjointness.overlapPath}" — falling back to sequential ` +
+        `to avoid two lanes editing the same physical file in separate worktrees`,
+      warningMessage:
+        `dev-implement: mutation "auto" detected a cross-lane file overlap at ` +
+        `"${disjointness.overlapPath}" — falling back to the sequential engine instead of risking ` +
+        `two lanes editing the same physical file in separate worktrees`,
+    }
+  }
+
+  return {
+    resolved: 'parallel-lanes',
+    components,
+    lanes,
+    reason: `${lanes.length} disjoint lane(s) across ${components.length} connected component(s) — routing to parallel lanes`,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1654,13 +1930,45 @@ async function resolveTaskEffortMap(
 
 async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<DevImplementOutput> {
   // Resolve the artifact first (a no-op in inline mode; a disk read via agent in
-  // artifactPath mode), so the rest of the body — and runWorktree — consume a
-  // guaranteed-non-null artifact (ResolvedDevImplementInput).
+  // artifactPath mode), so the rest of the body — and runWorktree/runAutoLanes —
+  // consume a guaranteed-non-null artifact (ResolvedDevImplementInput).
   const input = await resolveArtifactInput(rt, rawInput)
-  if (input.mutation === 'worktree') return runWorktree(rt, input)
 
+  // Dispatch — the ONLY place mutation mode is decided. Explicit modes carry
+  // trivial routing info (pure observability, `reason: 'explicit'`); "auto"
+  // computes the real routing decision IN CODE (zero agent spend) and picks
+  // the engine that matches it. Both explicit engines (runSequential,
+  // runWorktree) are otherwise UNCHANGED — this is the "minimal dispatch
+  // refactor" the design calls for, not a behavior change.
+  if (input.mutation === 'worktree') {
+    return runWorktree(rt, input, { requested: 'worktree', resolved: 'worktree', components: 0, lanes: 0, reason: 'explicit' })
+  }
+  if (input.mutation === 'auto') {
+    const decision = decideAutoRouting(input.artifact.tasks, input.autoLaneMinTasks)
+    const routing: RoutingInfo = {
+      requested: 'auto',
+      resolved: decision.resolved,
+      components: decision.components.length,
+      lanes: decision.lanes.length,
+      reason: decision.reason,
+    }
+    if (decision.resolved === 'parallel-lanes') {
+      return runAutoLanes(rt, input, routing, decision.lanes)
+    }
+    return runSequential(rt, input, routing, decision.warningMessage !== undefined ? [decision.warningMessage] : [])
+  }
+  return runSequential(rt, input, { requested: 'sequential', resolved: 'sequential', components: 0, lanes: 0, reason: 'explicit' }, [])
+}
+
+async function runSequential(
+  rt: WorkflowRuntime,
+  input: ResolvedDevImplementInput,
+  routing: RoutingInfo,
+  extraWarnings: string[],
+): Promise<DevImplementOutput> {
   const warnings: string[] = []
   for (const w of input.pathWarnings) warn(rt, warnings, w)
+  for (const w of extraWarnings) warn(rt, warnings, w)
   const stats: Record<string, PatternStats> = {}
   const { artifact, maxIterationsPerTask } = input
 
@@ -1766,6 +2074,7 @@ async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<De
     stats,
     envelope: { trail: collectTrail(...taskTrails) },
     warnings,
+    routing,
   }
 }
 
@@ -1786,7 +2095,11 @@ async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<De
 //   - sign machine commits unless signCommits is true.
 // ---------------------------------------------------------------------------
 
-async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput): Promise<DevImplementOutput> {
+async function runWorktree(
+  rt: WorkflowRuntime,
+  input: ResolvedDevImplementInput,
+  routing: RoutingInfo,
+): Promise<DevImplementOutput> {
   const warnings: string[] = []
   for (const w of input.pathWarnings) warn(rt, warnings, w)
   const stats: Record<string, PatternStats> = {}
@@ -1846,7 +2159,7 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
       output: `every task skipped — worktree mode requires a git repository at ${ctx.projectDir}`,
       counts: { ...earlyTallies },
     })
-    return { goal: artifact.goal, tasks: reportTasks, ...earlyTallies, seamsCreated: 0, stats, envelope: { trail: [] }, warnings }
+    return { goal: artifact.goal, tasks: reportTasks, ...earlyTallies, seamsCreated: 0, stats, envelope: { trail: [] }, warnings, routing }
   }
 
   // Worktree geometry — derived from the GIT ROOT, not projectDir: a worktree
@@ -2241,6 +2554,482 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
     stats,
     envelope: { trail: collectTrail(...taskTrails) },
     warnings,
+    routing,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// mutation "auto" — parallel-lanes engine (runAutoLanes). Only ever reached
+// when decideAutoRouting resolved 'parallel-lanes' (>= 2 lanes, files[]
+// pairwise disjoint). Setup/geometry mirrors runWorktree's (same
+// SETUP_RESULT_SCHEMA agent, same wtRoot-sibling/projectSub derivation) but
+// is a DELIBERATE, self-contained duplicate rather than a shared helper: the
+// design invariant is that runWorktree's own code paths stay unchanged
+// beyond the L1660-era dispatch (byte-identical behavior for the explicit
+// "worktree" mode, verified by its existing test suite) — extracting shared
+// internals out of it would touch code the invariant protects. A THIRD
+// occurrence of this shape would tip the Rule-of-Three balance toward
+// extracting a shared helper; today it is exactly two.
+//
+// No WAVES here (unlike runWorktree): a dependsOn edge never crosses a lane
+// (weakly-connected components, by construction), so all lanes are
+// independent from the start — no inter-lane gating is ever needed. Within
+// a lane, tasks run SEQUENTIALLY in topological order, sharing ONE worktree
+// (one lane = one worktree, not one task = one worktree).
+// ---------------------------------------------------------------------------
+
+async function runAutoLanes(
+  rt: WorkflowRuntime,
+  input: ResolvedDevImplementInput,
+  routing: RoutingInfo,
+  lanes: Lane[],
+): Promise<DevImplementOutput> {
+  const warnings: string[] = []
+  for (const w of input.pathWarnings) warn(rt, warnings, w)
+  const stats: Record<string, PatternStats> = {}
+  const { artifact, maxIterationsPerTask, worktreeSetupCommand, worktreeRoot, signCommits } = input
+  const ctx = artifact.context
+
+  const laneBranch = (key: string): string => `wt-lane/${key}`
+  const signFlag = signCommits ? '' : '-c commit.gpgsign=false '
+
+  const taskEffortOf = await resolveTaskEffortMap(rt, input, warnings)
+  const mechanicalEffort = resolveEffort(input.effort?.['mechanical'], MECHANICAL_EFFORT)
+  const integrationEffort = resolveVerifierEffort(input.effort?.['integration'], INTEGRATION_EFFORT_DEFAULT)
+
+  // -------------------------------------------------------------------------
+  // Phase 'Setup' — git availability + worktree geometry (same contract as
+  // runWorktree's own Setup: SETUP_RESULT_SCHEMA, gitRoot-relative sibling
+  // default, monorepo projectSub mapping, non-git graceful all-skipped exit).
+  // -------------------------------------------------------------------------
+  rt.phase('Setup')
+
+  const setup = await rt.agent<SetupResult>(
+    `You are the environment setup agent for a lane-mode (mutation "auto", resolved to parallel ` +
+    `lanes) dev-implement run. First verify this is a git repository: from ${ctx.projectDir} run ` +
+    `\`git rev-parse --is-inside-work-tree\`, then capture the current HEAD with ` +
+    `\`git rev-parse HEAD\` and the repository root with \`git rev-parse --show-toplevel\`.\n` +
+    `Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<absolute path or empty>", "note": "<what you saw>" }`,
+    { schema: SETUP_RESULT_SCHEMA, label: 'dev-implement:setup', phase: 'Setup', effort: mechanicalEffort },
+  )
+  if (setup === null || !setup.isGitRepo) {
+    warn(
+      rt,
+      warnings,
+      `dev-implement: lane mode (mutation "auto" resolved to parallel lanes) requires a git ` +
+      `repository at ${ctx.projectDir}` +
+      (setup === null ? ' (setup agent died)' : ` — ${setup.note}`) +
+      `; every task skipped. Use mutation "sequential" for non-git projects.`,
+    )
+    rt.phase('Report')
+    const reportTasks: ReportTask[] = artifact.tasks.map((task) => ({
+      id: task.id,
+      title: task.title,
+      status: 'skipped' as const,
+      iterations: 0,
+      evidence: '',
+      note: 'skipped — lane mode requires a git repository',
+    }))
+    const earlyTallies = tally(reportTasks)
+    emitDigest(rt, {
+      stage: 'dev-implement:report',
+      phase: 'Report',
+      output: `every task skipped — lane mode requires a git repository at ${ctx.projectDir}`,
+      counts: { ...earlyTallies },
+    })
+    return { goal: artifact.goal, tasks: reportTasks, ...earlyTallies, seamsCreated: 0, stats, envelope: { trail: [] }, warnings, routing }
+  }
+
+  const reportedGitRoot = setup.gitRoot.trim().replace(/\/+$/, '')
+  const gitRoot = reportedGitRoot === '' ? ctx.projectDir : reportedGitRoot
+  let projectSub = ''
+  if (ctx.projectDir !== gitRoot) {
+    if (ctx.projectDir.startsWith(gitRoot + '/')) {
+      projectSub = ctx.projectDir.slice(gitRoot.length)
+    } else {
+      warn(
+        rt,
+        warnings,
+        `dev-implement: projectDir ${ctx.projectDir} is not under the reported git root ` +
+        `${gitRoot} — TDD agents will work from the lane worktree root (check the setup ` +
+        `agent's gitRoot self-report if that is wrong)`,
+      )
+    }
+  }
+  const wtRoot = worktreeRoot ?? `${gitRoot}-worktrees`
+  const lanePath = (key: string): string => `${wtRoot}/${key}`
+  const laneWorkdir = (key: string): string => `${lanePath(key)}${projectSub}`
+
+  const statusById = new Map<string, TaskStatus>()
+  const reportTasks: ReportTask[] = []
+  const merged: Array<{ id: string; path: string; branch: string }> = []
+  const taskTrails: Array<{ trail: TrailRecord[] }> = []
+
+  // -------------------------------------------------------------------------
+  // Provision ALL lane worktrees in ONE agent, sequential shell commands (no
+  // waves needed — every lane is independent from the start).
+  // -------------------------------------------------------------------------
+  const create = await rt.agent<WtCreateResult>(
+    `You are the lane worktree provisioning agent — create the isolated git worktrees for each lane, ` +
+    `running the commands ONE AT A TIME from ${ctx.projectDir} (concurrent worktree adds race on git locks):\n` +
+    lanes.map((l) => `git worktree add ${lanePath(l.key)} -b ${laneBranch(l.key)}`).join('\n') +
+    `\nIf a path already exists, do NOT force or remove it — report that lane in "failures" ` +
+    `(a stale worktree from a previous run is the operator's call to delete).\n` +
+    `Return { "created": ["<laneKey>"], "failures": [{"id": "<laneKey>", "note": "<why>"}], "note": "<summary>" }`,
+    { schema: WT_CREATE_SCHEMA, label: 'dev-implement:lanes:create', phase: 'Setup', effort: mechanicalEffort },
+  )
+  if (create === null) {
+    warn(rt, warnings, `dev-implement: lane worktree provisioning agent died — every lane fails`)
+  }
+  const createdSet = new Set(create?.created ?? [])
+  const createFailures = new Map((create?.failures ?? []).map((f) => [f.id, f.note]))
+
+  const readyLanes: Lane[] = []
+  for (const lane of lanes) {
+    if (createdSet.has(lane.key)) {
+      readyLanes.push(lane)
+      continue
+    }
+    const note =
+      `failed — worktree creation: ${createFailures.get(lane.key) ?? (create === null ? 'provisioning agent died' : 'not reported as created')}`
+    for (const task of lane.tasks) {
+      statusById.set(task.id, 'failed')
+      reportTasks.push({ id: task.id, title: task.title, status: 'failed', iterations: 0, evidence: '', note })
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Per lane, in parallel: [prepare once] -> SEQUENTIAL per-task TDD+finalize.
+  // Mid-lane failure (TDD-failed / blocked / finalize-failed) ABANDONS the
+  // rest of that lane — remaining tasks get a dedicated abandonment note
+  // (NOT skippedRecord's dependency-skip wording — critic finding D, a lane
+  // sibling failing is not necessarily a dependsOn relationship). Green
+  // tasks are QUEUED (not pushed to reportTasks yet — critic finding C):
+  // exactly one report row per task, resolved once the lane's merge lands.
+  // -------------------------------------------------------------------------
+  type LaneTaskOutcome =
+    | { kind: 'succeeded-pending'; task: PlanTask; outcome: TddOutcome; sha: string }
+    | { kind: 'blocked'; task: PlanTask; outcome: TddOutcome }
+    | { kind: 'failed'; task: PlanTask; outcome: TddOutcome | null; note: string }
+    | { kind: 'skipped-abandoned'; task: PlanTask }
+
+  interface LaneChainResult {
+    taskOutcomes: LaneTaskOutcome[]
+    hadInternalFailure: boolean
+  }
+
+  const laneResults = await rt.parallel<LaneChainResult>(
+    readyLanes.map((lane) => async (): Promise<LaneChainResult> => {
+      const taskOutcomes: LaneTaskOutcome[] = []
+
+      // worktreeSetupCommand runs ONCE per lane (not per task): a lane is ONE
+      // shared worktree, unlike per-task worktree mode where every task gets
+      // its own fresh checkout.
+      if (worktreeSetupCommand !== null) {
+        const prep = await rt.agent<PrepareResult>(
+          `You are the lane worktree preparation agent — prepare the lane worktree for ${lane.key}: run ` +
+          `this VERBATIM setup command with ${laneWorkdir(lane.key)} as the working directory (fresh ` +
+          `worktrees lack installed dependencies; this makes the test command runnable):\n${worktreeSetupCommand}\n` +
+          `Return { "ok": true|false, "note": "<what happened>" }`,
+          { schema: PREPARE_RESULT_SCHEMA, label: `dev-implement:prepare:${lane.key}`, phase: 'Setup', effort: mechanicalEffort },
+        )
+        if (prep === null || !prep.ok) {
+          const note = `failed — lane worktree setup command: ${prep === null ? 'preparation agent died' : prep.note}`
+          for (const task of lane.tasks) taskOutcomes.push({ kind: 'failed', task, outcome: null, note })
+          return { taskOutcomes, hadInternalFailure: true }
+        }
+      }
+
+      let abandoned = false
+      let hadInternalFailure = false
+      for (const task of lane.tasks) {
+        if (abandoned) {
+          taskOutcomes.push({ kind: 'skipped-abandoned', task })
+          continue
+        }
+
+        const outcome = await runTaskTddLoop(
+          rt, artifact, task, laneWorkdir(lane.key), maxIterationsPerTask, input.implementerModel, input.implementerType, taskEffortOf(task), warnings, stats,
+        )
+
+        if (!outcome.green) {
+          abandoned = true
+          hadInternalFailure = true
+          if (outcome.verdict !== null) {
+            taskOutcomes.push({ kind: 'blocked', task, outcome })
+          } else {
+            taskOutcomes.push({ kind: 'failed', task, outcome, note: failureNote(outcome) })
+          }
+          continue
+        }
+
+        // Delimiter anti-spoofing (same class as runWorktree's finalize).
+        const safeTitle = task.title
+          .replace(/<<<MESSAGE/g, '<-<MESSAGE')
+          .replace(/MESSAGE>>>/g, 'MESSAGE>->')
+        const fin = await rt.agent<FinalizeResult>(
+          `You are the lane-branch committer — commit this task's changes on its lane's branch: with ` +
+          `${lanePath(lane.key)} as the working directory run \`git add -A\`, then commit with ` +
+          `\`git ${signFlag}commit\` and capture the sha (\`git rev-parse HEAD\`).\n` +
+          `The commit message is the LITERAL line between the markers below — quote/escape it ` +
+          `yourself when invoking git (titles may contain quotes or backticks; never let them ` +
+          `reach the shell unquoted):\n` +
+          `<<<MESSAGE\n${laneBranch(lane.key)}: ${safeTitle}\nMESSAGE>>>\n` +
+          `Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happened>" }`,
+          { schema: FINALIZE_RESULT_SCHEMA, label: `dev-implement:finalize:${task.id}`, phase: 'Implement', effort: mechanicalEffort },
+        )
+        if (fin === null || !fin.committed) {
+          abandoned = true
+          hadInternalFailure = true
+          taskOutcomes.push({
+            kind: 'failed', task, outcome,
+            note: `failed — lane-branch commit: ${fin === null ? 'finalize agent died' : fin.note}`,
+          })
+          continue
+        }
+        taskOutcomes.push({ kind: 'succeeded-pending', task, outcome, sha: fin.sha })
+      }
+
+      return { taskOutcomes, hadInternalFailure }
+    }),
+  )
+
+  // ---- Classify each lane's results (lane order); queue pending merges ----
+  const lanePending = new Map<string, Array<{ task: PlanTask; outcome: TddOutcome }>>()
+  const laneHadFailure = new Map<string, boolean>()
+
+  readyLanes.forEach((lane, i) => {
+    const kept = { worktreePath: lanePath(lane.key), branch: laneBranch(lane.key) }
+    const result = laneResults[i] ?? null
+    if (result === null) {
+      for (const task of lane.tasks) {
+        statusById.set(task.id, 'failed')
+        reportTasks.push({
+          id: task.id, title: task.title, status: 'failed', iterations: 0, evidence: '',
+          note: 'failed — lane chain crashed (an agent threw)', ...kept,
+        })
+      }
+      warn(rt, warnings, `dev-implement: lane chain crashed for lane ${lane.key} — worktree kept at ${lanePath(lane.key)}`)
+      return
+    }
+
+    const pending: Array<{ task: PlanTask; outcome: TddOutcome }> = []
+    for (const to of result.taskOutcomes) {
+      if (to.kind === 'succeeded-pending') {
+        taskTrails.push(to.outcome)
+        pending.push({ task: to.task, outcome: to.outcome })
+        continue
+      }
+      if (to.kind === 'blocked') {
+        taskTrails.push(to.outcome)
+        statusById.set(to.task.id, 'blocked')
+        reportTasks.push({ ...blockedRecord(to.task, to.outcome, to.outcome.verdict as TddBlockingVerdict), ...kept })
+        continue
+      }
+      if (to.kind === 'failed') {
+        if (to.outcome !== null) taskTrails.push(to.outcome)
+        statusById.set(to.task.id, 'failed')
+        reportTasks.push({
+          id: to.task.id, title: to.task.title, status: 'failed',
+          iterations: to.outcome?.iterations ?? 0, evidence: to.outcome?.evidence ?? '',
+          note: to.note, ...kept, ...(to.outcome !== null ? seamFields(to.outcome) : {}),
+        })
+        continue
+      }
+      // 'skipped-abandoned' — a dedicated note (critic finding D): the cause
+      // is a LANE SIBLING failing, which is not necessarily a dependsOn
+      // relationship, so skippedRecord's "depends on non-succeeded" wording
+      // would misreport the reason. No kept fields: this task never touched
+      // the worktree — the failed sibling's own report row already carries
+      // the forensics pointer.
+      statusById.set(to.task.id, 'skipped')
+      reportTasks.push({
+        id: to.task.id, title: to.task.title, status: 'skipped', iterations: 0, evidence: '',
+        note: 'skipped — lane abandoned after an earlier lane task failed',
+      })
+    }
+    if (pending.length > 0) lanePending.set(lane.key, pending)
+    laneHadFailure.set(lane.key, result.hadInternalFailure)
+  })
+
+  // -------------------------------------------------------------------------
+  // Phase 'Merge' — sequential per lane, integration-checked after EACH.
+  // Critic finding C: pending tasks are pushed to reportTasks HERE, exactly
+  // once, resolved to 'succeeded' | 'merge-failed' | 'integration-failed'
+  // together as a lane (never a per-task partial outcome at this stage).
+  // -------------------------------------------------------------------------
+  rt.phase('Merge')
+  if (lanePending.size === 0) {
+    emitDigest(rt, {
+      stage: 'dev-implement:merge',
+      phase: 'Merge',
+      output: 'no lane reached merge — every lane failed, was blocked, or died before any task committed',
+      counts: { candidates: 0 },
+    })
+  }
+  for (const lane of readyLanes) {
+    const pending = lanePending.get(lane.key)
+    if (pending === undefined || pending.length === 0) continue
+    const kept = { worktreePath: lanePath(lane.key), branch: laneBranch(lane.key) }
+
+    const merge = await rt.agent<MergeResult>(
+      `You are the lane merge agent — from ${ctx.projectDir} (the MAIN tree), merge the lane branch ` +
+      `${laneBranch(lane.key)} into the current branch: FIRST capture the pre-merge HEAD ` +
+      `(\`git rev-parse HEAD\`), then run \`git ${signFlag}merge --no-ff ${laneBranch(lane.key)}\`.\n` +
+      `On CONFLICT: run \`git merge --abort\` and report conflict: true — NEVER resolve conflicts ` +
+      `yourself. Evidence required: the pre-merge sha and the resulting sha (or '' if aborted).\n` +
+      `Return { "merged": true|false, "conflict": true|false, "preMergeSha": "<sha>", ` +
+      `"mergeSha": "<sha or empty>", "note": "<what git actually said>" }`,
+      { schema: MERGE_RESULT_SCHEMA, label: `dev-implement:merge:${lane.key}`, phase: 'Merge', effort: mechanicalEffort },
+    )
+    if (merge === null || merge.conflict || !merge.merged) {
+      for (const p of pending) {
+        statusById.set(p.task.id, 'merge-failed')
+        reportTasks.push({
+          id: p.task.id, title: p.task.title, status: 'merge-failed',
+          iterations: p.outcome.iterations, evidence: p.outcome.evidence,
+          note: `merge-failed — ${merge === null ? 'merge agent died (branch not merged)' : merge.note}`, ...kept,
+          ...seamFields(p.outcome),
+        })
+      }
+      continue
+    }
+    if (merge.preMergeSha.trim() === '') {
+      for (const p of pending) {
+        statusById.set(p.task.id, 'merge-failed')
+        reportTasks.push({
+          id: p.task.id, title: p.task.title, status: 'merge-failed',
+          iterations: p.outcome.iterations, evidence: p.outcome.evidence,
+          note: `merge-failed — merge agent reported merged without a preMergeSha (no revert target)`,
+          ...kept, ...seamFields(p.outcome),
+        })
+      }
+      warn(
+        rt,
+        warnings,
+        `dev-implement: merge agent for lane ${lane.key} reported merged: true with an empty ` +
+        `preMergeSha — no revert target exists, so the merge is treated as failed; the MAIN ` +
+        `tree may hold an unverified merge of ${laneBranch(lane.key)} (inspect git log manually)`,
+      )
+      continue
+    }
+
+    const integ = await rt.agent<CheckResult>(
+      `You are the independent integration checker — verify the integrated main tree: run ` +
+      `${ctx.testCommand} from ${ctx.projectDir} and read the ACTUAL output (the per-task checker ` +
+      `saw an isolated lane worktree; you are checking that the MERGED whole still passes).\n` +
+      `Return { "green": true|false, "evidence": "<what the run actually showed>", ` +
+      `"failureSummary": "<empty string if green, else the failures>" }`,
+      { schema: CHECK_RESULT_SCHEMA, label: `dev-implement:integration:${lane.key}`, phase: 'Merge', effort: integrationEffort },
+    )
+    if (integ === null || !integ.green) {
+      if (integ === null) {
+        warn(rt, warnings, `dev-implement: integration checker died for lane ${lane.key} — reverting conservatively without evidence`)
+      }
+      const revert = await rt.agent<RevertResult>(
+        `You are the merge revert agent — revert the failed merge: from ${ctx.projectDir} run ` +
+        `\`git reset --hard ${merge.preMergeSha}\` and confirm with \`git rev-parse HEAD\`.\n` +
+        `Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }`,
+        { schema: REVERT_RESULT_SCHEMA, label: `dev-implement:revert:${lane.key}`, phase: 'Merge', effort: mechanicalEffort },
+      )
+      if (revert === null || !revert.reverted || revert.headSha !== merge.preMergeSha) {
+        const how =
+          revert === null ? 'agent died'
+          : !revert.reverted ? 'failed'
+          : `reported HEAD ${revert.headSha} instead of the pre-merge sha`
+        warn(
+          rt,
+          warnings,
+          `dev-implement: revert ${how} for lane ${lane.key} — the MAIN tree may ` +
+          `still hold the bad merge; manual recovery: git reset --hard ${merge.preMergeSha}`,
+        )
+      }
+      for (const p of pending) {
+        statusById.set(p.task.id, 'integration-failed')
+        reportTasks.push({
+          id: p.task.id, title: p.task.title, status: 'integration-failed',
+          iterations: p.outcome.iterations, evidence: integ === null ? '' : integ.evidence,
+          note: `integration-failed — ${integ === null ? 'integration checker died (conservative revert)' : integ.failureSummary}`,
+          ...kept, ...seamFields(p.outcome),
+        })
+      }
+      continue
+    }
+
+    for (const p of pending) {
+      statusById.set(p.task.id, 'succeeded')
+      reportTasks.push({
+        id: p.task.id, title: p.task.title, status: 'succeeded',
+        iterations: p.outcome.iterations, evidence: integ.evidence,
+        ...seamFields(p.outcome),
+      })
+    }
+    // Cleanup eligibility: merged AND fully clean (no internal failure). A
+    // lane that merged its prior green work but was later abandoned by a
+    // sibling task's failure stays on disk for forensics even though part
+    // of its work already landed on main.
+    if (!(laneHadFailure.get(lane.key) ?? false)) {
+      merged.push({ id: lane.key, path: lanePath(lane.key), branch: laneBranch(lane.key) })
+    }
+  }
+
+  // ---- Batched cleanup of MERGED-AND-CLEAN lane worktrees only ----
+  if (merged.length > 0) {
+    const cleanup = await rt.agent<CleanupResult>(
+      `You are the cleanup agent — remove the merged lane worktrees and their lane branches. From ` +
+      `${ctx.projectDir}, for EACH entry run \`git worktree remove <path>\` FIRST and ` +
+      `\`git branch -d <branch>\` SECOND (a branch checked out in a live worktree cannot be deleted):\n` +
+      merged.map((m) => `${m.id}: ${m.path} (${m.branch})`).join('\n') +
+      `\nDo NOT touch any other worktree or branch.\n` +
+      `Return { "removed": ["<laneKey>"], "failures": [{"id": "<laneKey>", "note": "<why>"}], "note": "<summary>" }`,
+      { schema: CLEANUP_RESULT_SCHEMA, label: 'dev-implement:cleanup', phase: 'Merge', effort: mechanicalEffort },
+    )
+    if (cleanup === null) {
+      warn(rt, warnings, `dev-implement: cleanup agent died — merged lane worktrees left on disk under ${wtRoot} (manual: git worktree remove)`)
+    } else if (cleanup.failures.length > 0) {
+      warn(rt, warnings, `dev-implement: cleanup incomplete for lane(s) ${cleanup.failures.map((f) => f.id).join(', ')} — ${cleanup.note}`)
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Phase 'Report' — deterministic tallying IN CODE (no agent).
+  // -------------------------------------------------------------------------
+  rt.phase('Report')
+
+  const tallies = tally(reportTasks)
+  const keptWorktrees = reportTasks.filter((t) => t.worktreePath !== undefined)
+  emitDigest(rt, {
+    stage: 'dev-implement:report',
+    phase: 'Report',
+    output: `${tallies.succeeded}/${reportTasks.length} task(s) succeeded (deterministic tally, no agent)`,
+    counts: { ...tallies },
+  })
+  if (tallies.failed + tallies.mergeFailed + tallies.integrationFailed + tallies.skipped > 0) {
+    warn(
+      rt,
+      warnings,
+      `dev-implement: ${tallies.failed} task(s) failed, ${tallies.mergeFailed} merge-failed, ` +
+      `${tallies.integrationFailed} integration-failed, ${tallies.skipped} skipped — the MAIN tree only ` +
+      `contains the ${tallies.succeeded} merged task(s)` +
+      (keptWorktrees.length > 0
+        ? `; kept worktree(s) for forensics: ${keptWorktrees.map((t) => `${t.id} at ${t.worktreePath ?? ''}`).join(', ')}`
+        : '') +
+      `. Fix the root cause and re-run (worktree creation refuses stale paths — remove kept worktrees first), ` +
+      `or feed the failure notes back into a corrective dev-plan run.`,
+    )
+  }
+  warnBlocked(rt, warnings, reportTasks)
+  warnSeams(rt, warnings, reportTasks)
+
+  return {
+    goal: artifact.goal,
+    tasks: reportTasks,
+    ...tallies,
+    seamsCreated: countSeams(reportTasks),
+    stats,
+    envelope: { trail: collectTrail(...taskTrails) },
+    warnings,
+    routing,
   }
 }
 
@@ -2262,18 +3051,23 @@ export default defineWorkflow({
       'ITSELF in-band under hard bounds — at most 4 files touched, every caller enumerated and ' +
       'updated — and declares structurally: the report carries per-task "seams" plus a ' +
       '"seamsCreated" tally and a REVIEW warning per creating task; a seam beyond the bounds ' +
-      'falls back to the classic no-test-seam verdict. Two ' +
+      'falls back to the classic no-test-seam verdict. Three ' +
       'mutation modes: "sequential" (default — one task at a time in dependency order, no git ' +
-      'required) and "worktree" (git required — independent tasks run in parallel waves, each in ' +
+      'required), "worktree" (git required — independent tasks run in parallel waves, each in ' +
       'an isolated git worktree, then merge sequentially with an integration check after every ' +
-      'merge; conflicts abort conservatively and failure worktrees are kept for forensics).',
+      'merge; conflicts abort conservatively and failure worktrees are kept for forensics), and ' +
+      '"auto" (routes PER connected component of the dependsOn graph: qualifying components become ' +
+      'parallel lanes, each an isolated worktree, while tasks within a lane still run sequentially; ' +
+      'a single component runs on the plain sequential engine with no worktree tax; the routing ' +
+      'decision is always reported in the output).',
     whenToUse:
       'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass either ' +
       '{ artifact } (the inline PlanArtifact) OR { artifactPath } (a path — ABSOLUTE recommended — to ' +
       'a JSON file holding it; use this when the artifact is large or was produced/edited on disk, to ' +
       'avoid inlining ~60 KB in the args; it is read from disk and validated identically). Plus optional ' +
       'mutation/maxIterationsPerTask/implementerModel/implementerType, and ' +
-      'for worktree mode optional worktreeSetupCommand/worktreeRoot/signCommits, as the workflow args. ' +
+      'for worktree/auto mode optional worktreeSetupCommand/worktreeRoot/signCommits (plus ' +
+      'autoLaneMinTasks for "auto"), as the workflow args. ' +
       'implementerModel tiers the per-iteration implementer (default "sonnet"); the independent ' +
       'checker stays on the strongest tier regardless. implementerType (optional) routes the ' +
       'implementer to a SPECIALIST subagent type that must exist in your session registry (the ' +
