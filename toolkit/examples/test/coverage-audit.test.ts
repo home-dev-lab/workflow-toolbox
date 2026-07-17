@@ -88,6 +88,9 @@ function makeRuntime(opts: {
   /** capability-name substring (lowercased) → verdict for verifier votes
    *  (default 'confirmed' — the gap is real). */
   verdicts?: Record<string, string>
+  /** item id → 1-5 score for the autoEffort triage agent; null = the triage
+   *  call fails; undefined (absent) = triage prompts stay unrouted. */
+  triageScores?: Record<string, number> | null
 }): FakeRuntime {
   let extractCalls = 0
   return new FakeRuntime({
@@ -96,6 +99,15 @@ function makeRuntime(opts: {
 
       if (p.includes('availability probe')) return 'PROBE_OK'
       if (p.includes('reply with a single word')) return 'ready'
+
+      if (p.includes('triaging the difficulty')) {
+        if (opts.triageScores === null || opts.triageScores === undefined) return null
+        return {
+          scores: Object.entries(opts.triageScores)
+            .filter(([id]) => p.includes(id.toLowerCase()))
+            .map(([id, score]) => ({ id, score, reason: 'fake triage' })),
+        }
+      }
 
       if (p.includes('inventory the user-facing capabilities')) {
         if (opts.inventory === null) return null
@@ -394,8 +406,8 @@ describe('coverage-audit extraction loop', () => {
     expect(out.claimsSeen).toBe(2)
   })
 
-  it('drops claims whose entry is not in the audited manifest, with a warning', async () => {
-    const rogue = makeGap({ entry: 'src/rogue.ts', capability: 'rogueFn' })
+  it('drops claims whose entry AND sourcePath are both outside the audited manifest, with a warning', async () => {
+    const rogue = makeGap({ entry: 'src/rogue.ts', capability: 'rogueFn', sourcePath: 'src/rogue.ts' })
     const ok = makeGap({ entry: 'src/a.ts', capability: 'capOne' })
     const rt = makeRuntime({
       inventory: { 'src/a.ts': [makeCapability()] },
@@ -404,6 +416,334 @@ describe('coverage-audit extraction loop', () => {
     const out = await wf.run(rt, JSON.stringify(BASE_INPUT))
     expect(out.claimsSeen).toBe(1)
     expect(out.warnings.some((w) => w.includes('src/rogue.ts'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: entry attribution — alias resolution (quirk fix, card #1821093105403692296)
+// The lived failure: the bundled manifest's build entry lists THREE sources
+// (define-workflow.ts, bundle.ts, cli.ts); extractors naturally echo the file
+// they found the capability in — a NON-FIRST source path — and the old guard
+// (exact entryKey membership) silently dropped those valid claims.
+// ---------------------------------------------------------------------------
+
+const ENTRY_MULTI = {
+  sources: ['src/multi/first.ts', 'src/multi/second.ts', 'src/multi/third.ts'],
+  docs: ['docs/multi.md'],
+}
+const ENTRY_DIR = { sources: ['src/dir/'], docs: ['docs/dir.md'] }
+
+describe('coverage-audit entry attribution (alias resolution)', () => {
+  it('keeps an Extract claim citing a NON-FIRST source path of a manifest entry, attributed to the canonical key', async () => {
+    const aliased = makeGap({
+      entry: 'src/multi/second.ts', capability: 'aliasCap', sourcePath: 'src/multi/second.ts',
+    })
+    const rt = makeRuntime({
+      inventory: { 'src/multi/first.ts': [makeCapability({ sourcePath: 'src/multi/second.ts' })] },
+      extractRounds: [[aliased], [aliased]],
+    })
+    const out = await wf.run(rt, JSON.stringify({ repoRoot: '/repo', provenance: [ENTRY_MULTI] }))
+    expect(out.claimsSeen).toBe(1)
+    expect(out.findings).toHaveLength(1)
+    expect(out.findings[0]?.entry).toBe('src/multi/first.ts')
+    expect(out.findings[0]?.mappedDocs).toEqual(['docs/multi.md'])
+    expect(out.warnings.some((w) => w.includes('not in the audited provenance manifest'))).toBe(false)
+  })
+
+  it('keeps an Extract claim citing a path under a dir-prefix source, attributed to the dir entry', async () => {
+    const nested = makeGap({
+      entry: 'src/dir/inner/file.ts', capability: 'dirCap', sourcePath: 'src/dir/inner/file.ts',
+    })
+    const rt = makeRuntime({
+      inventory: { 'src/dir/': [makeCapability({ sourcePath: 'src/dir/inner/file.ts' })] },
+      extractRounds: [[nested], [nested]],
+    })
+    const out = await wf.run(rt, JSON.stringify({ repoRoot: '/repo', provenance: [ENTRY_DIR] }))
+    expect(out.claimsSeen).toBe(1)
+    expect(out.findings[0]?.entry).toBe('src/dir/')
+    expect(out.findings[0]?.mappedDocs).toEqual(['docs/dir.md'])
+  })
+
+  it('salvages an Extract claim with an unknown entry echo via its sourcePath', async () => {
+    const confused = makeGap({
+      entry: 'the build pipeline', capability: 'salvagedCap', sourcePath: 'src/multi/third.ts',
+    })
+    const rt = makeRuntime({
+      inventory: { 'src/multi/first.ts': [makeCapability()] },
+      extractRounds: [[confused], [confused]],
+    })
+    const out = await wf.run(rt, JSON.stringify({ repoRoot: '/repo', provenance: [ENTRY_MULTI] }))
+    expect(out.claimsSeen).toBe(1)
+    expect(out.findings[0]?.entry).toBe('src/multi/first.ts')
+  })
+
+  it('prefers the exact source-path owner over a dir-prefix owner on overlap', async () => {
+    // Mirrors the bundled manifest's real overlap: pr-review.workflow.ts is an
+    // EXACT source of one entry while toolkit/examples/ dir-prefixes another.
+    const exactEntry = { sources: ['src/over/special.ts'], docs: ['docs/special.md'] }
+    const dirEntry = { sources: ['src/over/'], docs: ['docs/over.md'] }
+    const toExact = makeGap({ entry: 'src/over/special.ts', capability: 'exactCap', sourcePath: 'src/over/special.ts' })
+    const toDir = makeGap({ entry: 'src/over/other.ts', capability: 'dirCap', sourcePath: 'src/over/other.ts' })
+    const rt = makeRuntime({
+      inventory: {},
+      extractRounds: [[toExact, toDir], [toExact, toDir]],
+    })
+    const out = await wf.run(
+      rt, JSON.stringify({ repoRoot: '/repo', provenance: [exactEntry, dirEntry] }),
+    )
+    expect(out.claimsSeen).toBe(2)
+    const byCap = new Map(out.findings.map((f) => [f.capability, f]))
+    expect(byCap.get('exactCap')?.entry).toBe('src/over/special.ts')
+    expect(byCap.get('exactCap')?.mappedDocs).toEqual(['docs/special.md'])
+    expect(byCap.get('dirCap')?.entry).toBe('src/over/')
+    expect(byCap.get('dirCap')?.mappedDocs).toEqual(['docs/over.md'])
+  })
+
+  it('attributes Inventory capabilities reported under a NON-FIRST source path, and MERGES split reports', async () => {
+    // One agent splits the SAME entry into two per-file objects (the alias
+    // mechanism applied to Inventory): both must land on the canonical entry,
+    // capabilities merged — the old code dropped the second object entirely.
+    const capFirst = makeCapability({ name: 'capFirst', sourcePath: 'src/multi/first.ts' })
+    const capSecond = makeCapability({ name: 'capSecond', sourcePath: 'src/multi/second.ts' })
+    const rt = makeRuntime({
+      inventory: {
+        'src/multi/first.ts': [capFirst],
+        'src/multi/second.ts': [capSecond],
+      },
+      extractRounds: [[]],
+    })
+    const out = await wf.run(rt, JSON.stringify({ repoRoot: '/repo', provenance: [ENTRY_MULTI] }))
+    expect(out.capabilitiesInventoried).toBe(2)
+    expect(out.warnings.some((w) => w.includes('more than once'))).toBe(false)
+    expect(out.warnings.some((w) => w.includes('not in the audited provenance manifest'))).toBe(false)
+  })
+
+  it('still merges duplicate Inventory capabilities (same name + sourcePath) without double-counting', async () => {
+    const cap = makeCapability({ name: 'sameCap', sourcePath: 'src/multi/first.ts' })
+    const rt = makeRuntime({
+      inventory: {
+        'src/multi/first.ts': [cap],
+        'src/multi/second.ts': [cap],
+      },
+      extractRounds: [[]],
+    })
+    const out = await wf.run(rt, JSON.stringify({ repoRoot: '/repo', provenance: [ENTRY_MULTI] }))
+    expect(out.capabilitiesInventoried).toBe(1)
+  })
+
+  it('attributes a duplicate NON-FIRST source path to the FIRST manifest entry (stated tie-break)', async () => {
+    // Only FIRST source paths are validated unique; a launch-time manifest may
+    // list the same non-first path in two entries. Manifest order wins.
+    const entryOne = { sources: ['src/one.ts', 'src/shared.ts'], docs: ['docs/one.md'] }
+    const entryTwo = { sources: ['src/two.ts', 'src/shared.ts'], docs: ['docs/two.md'] }
+    const gap = makeGap({ entry: 'src/shared.ts', capability: 'sharedCap', sourcePath: 'src/shared.ts' })
+    const rt = makeRuntime({
+      inventory: {},
+      extractRounds: [[gap], [gap]],
+    })
+    const out = await wf.run(
+      rt, JSON.stringify({ repoRoot: '/repo', provenance: [entryOne, entryTwo] }),
+    )
+    expect(out.findings[0]?.entry).toBe('src/one.ts')
+    expect(out.findings[0]?.mappedDocs).toEqual(['docs/one.md'])
+  })
+
+  it('re-attributes an Extract claim by its sourcePath when file-precise evidence beats a dir-entry echo', async () => {
+    // The real bundled-manifest overlap: an exact source of one entry lives
+    // under another entry's dir-prefix. A claim echoed under the DIR entry
+    // whose sourcePath is the exact file must follow the file.
+    const fileEntry = { sources: ['src/over/special.ts'], docs: ['docs/special.md'] }
+    const dirEntry = { sources: ['src/over/'], docs: ['docs/over.md'] }
+    const claim = makeGap({ entry: 'src/over/', capability: 'overlapCap', sourcePath: 'src/over/special.ts' })
+    const rt = makeRuntime({
+      inventory: {},
+      extractRounds: [[claim], [claim]],
+    })
+    const out = await wf.run(
+      rt, JSON.stringify({ repoRoot: '/repo', provenance: [fileEntry, dirEntry] }),
+    )
+    expect(out.findings[0]?.entry).toBe('src/over/special.ts')
+    expect(out.findings[0]?.mappedDocs).toEqual(['docs/special.md'])
+  })
+
+  it('re-attributes an Inventory capability by its sourcePath out of a dir-entry sweep', async () => {
+    const fileEntry = { sources: ['src/over/special.ts'], docs: ['docs/special.md'] }
+    const dirEntry = { sources: ['src/over/'], docs: ['docs/over.md'] }
+    const capOverlap = makeCapability({ name: 'overlapCap', sourcePath: 'src/over/special.ts' })
+    const capPlain = makeCapability({ name: 'plainCap', sourcePath: 'src/over/plain.ts' })
+    const rt = makeRuntime({
+      inventory: { 'src/over/': [capOverlap, capPlain] },
+      extractRounds: [[]],
+    })
+    const out = await wf.run(
+      rt, JSON.stringify({ repoRoot: '/repo', provenance: [fileEntry, dirEntry] }),
+    )
+    expect(out.capabilitiesInventoried).toBe(2)
+    // The overlap capability landed on the FILE entry: the Extract prompt for
+    // the file entry's group lists it.
+    const extracts = rt.calls.filter((c) =>
+      String(c.prompt).toLowerCase().includes('extract undocumented-capability claims'))
+    const forFileEntry = extracts.filter((c) => String(c.prompt).includes('Entry "src/over/special.ts"'))
+    expect(forFileEntry.length).toBeGreaterThan(0)
+    expect(String(forFileEntry[0]?.prompt)).toContain('overlapCap')
+  })
+
+  it('caps a MERGED entry at the per-entry schema bound with a warning, never silently', async () => {
+    const caps1 = Array.from({ length: 25 }, (_, i) =>
+      makeCapability({ name: `capA${i}`, sourcePath: 'src/multi/first.ts' }))
+    const caps2 = Array.from({ length: 25 }, (_, i) =>
+      makeCapability({ name: `capB${i}`, sourcePath: 'src/multi/second.ts' }))
+    const rt = makeRuntime({
+      inventory: {
+        'src/multi/first.ts': caps1,
+        'src/multi/second.ts': caps2,
+      },
+      extractRounds: [[]],
+    })
+    const out = await wf.run(rt, JSON.stringify({ repoRoot: '/repo', provenance: [ENTRY_MULTI] }))
+    expect(out.capabilitiesInventoried).toBe(40)
+    expect(out.warnings.some((w) => w.includes('merged capabilities'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: severity-tiered verification votes (card #1821093105403692296)
+// ---------------------------------------------------------------------------
+
+describe('coverage-audit tiered verification votes', () => {
+  const descriptive = makeGap({ entry: 'src/a.ts', capability: 'descriptiveKnob', kind: 'knob', risk: 'medium' })
+  const behavioral = makeGap({ entry: 'src/a.ts', capability: 'behavioralCap', kind: 'behavior', risk: 'medium' })
+  const highDescriptive = makeGap({ entry: 'src/a.ts', capability: 'highRiskFlag', kind: 'flag', risk: 'high' })
+  const rounds = [
+    [descriptive, behavioral, highDescriptive],
+    [descriptive, behavioral, highDescriptive],
+  ]
+
+  function verifyCallsFor(rt: FakeRuntime, needle: string): number {
+    return rt.calls.filter((c) => {
+      const p = String(c.prompt).toLowerCase()
+      return p.includes('verdict for one undocumented-capability claim') && p.includes(needle.toLowerCase())
+    }).length
+  }
+
+  it('spends full votes on behavioral and high-risk claims, ONE vote on descriptive ones (default)', async () => {
+    const rt = makeRuntime({
+      inventory: { 'src/a.ts': [makeCapability()] },
+      extractRounds: rounds,
+    })
+    await wf.run(rt, JSON.stringify({ repoRoot: '/repo', provenance: [ENTRY_A] }))
+    expect(verifyCallsFor(rt, 'descriptiveKnob')).toBe(1)
+    expect(verifyCallsFor(rt, 'behavioralCap')).toBe(3)
+    expect(verifyCallsFor(rt, 'highRiskFlag')).toBe(3)
+  })
+
+  it('keeps uniform votes on every claim when tieredVotes is false (the A/B lever)', async () => {
+    const rt = makeRuntime({
+      inventory: { 'src/a.ts': [makeCapability()] },
+      extractRounds: rounds,
+    })
+    await wf.run(rt, JSON.stringify({ repoRoot: '/repo', provenance: [ENTRY_A], tieredVotes: false }))
+    expect(verifyCallsFor(rt, 'descriptiveKnob')).toBe(3)
+    expect(verifyCallsFor(rt, 'behavioralCap')).toBe(3)
+    expect(verifyCallsFor(rt, 'highRiskFlag')).toBe(3)
+  })
+
+  it('decides a single-vote descriptive claim by its one vote (threshold clamped per claim)', async () => {
+    const rt = makeRuntime({
+      inventory: { 'src/a.ts': [makeCapability()] },
+      extractRounds: [[descriptive], [descriptive]],
+      verdicts: { descriptiveknob: 'refuted' },
+    })
+    const out = await wf.run(rt, JSON.stringify({ repoRoot: '/repo', provenance: [ENTRY_A] }))
+    expect(out.summary.documented).toBe(1)
+    expect(out.findings).toHaveLength(0)
+  })
+
+  it('throws when tieredVotes is not a boolean', async () => {
+    const rt = makeRuntime({ inventory: {}, extractRounds: [[]] })
+    await expect(
+      wf.run(rt, JSON.stringify({ ...BASE_INPUT, tieredVotes: 'yes' })),
+    ).rejects.toThrow(/tieredVotes/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: auto-effort routing on the audit WORKERS (card #1821093105403692296)
+// ---------------------------------------------------------------------------
+
+describe('coverage-audit auto-effort worker routing', () => {
+  function agentCallsFor(rt: FakeRuntime, phraseNeedle: string, groupNeedle: string) {
+    return rt.calls.filter((c) => {
+      const p = String(c.prompt).toLowerCase()
+      return p.includes(phraseNeedle) && p.includes(groupNeedle.toLowerCase())
+    })
+  }
+
+  it("routes 'auto' extract effort per group via ONE batched triage", async () => {
+    const rt = makeRuntime({
+      inventory: { 'src/a.ts': [makeCapability()], 'src/b.ts': [makeCapability({ sourcePath: 'src/b.ts' })] },
+      extractRounds: [[]],
+      triageScores: { 'extract:0': 5, 'extract:1': 1 },
+    })
+    await wf.run(rt, JSON.stringify({
+      ...BASE_INPUT, entriesPerAgent: 1, effort: { extract: 'auto' },
+    }))
+    const triage = rt.calls.filter((c) => String(c.prompt).toLowerCase().includes('triaging the difficulty'))
+    expect(triage).toHaveLength(1)
+    const g0 = agentCallsFor(rt, 'extract undocumented-capability claims', 'src/a.ts')
+    const g1 = agentCallsFor(rt, 'extract undocumented-capability claims', 'src/b.ts')
+    expect(g0.length).toBeGreaterThan(0)
+    expect(g1.length).toBeGreaterThan(0)
+    for (const c of g0) expect(c.opts?.effort).toBe('xhigh')
+    for (const c of g1) expect(c.opts?.effort).toBe('medium')
+    // Inventory did NOT opt in — stays on its static default.
+    const inv = rt.calls.filter((c) => String(c.prompt).toLowerCase().includes('inventory the user-facing capabilities'))
+    for (const c of inv) expect(c.opts?.effort).toBe('low')
+  })
+
+  it("routes 'auto' inventory effort per group too (inventory is a fleet here)", async () => {
+    const rt = makeRuntime({
+      inventory: { 'src/a.ts': [makeCapability()] },
+      extractRounds: [[]],
+      triageScores: { 'inventory:0': 4, 'inventory:1': 1 },
+    })
+    await wf.run(rt, JSON.stringify({
+      ...BASE_INPUT, entriesPerAgent: 1, effort: { inventory: 'auto' },
+    }))
+    const inv0 = agentCallsFor(rt, 'inventory the user-facing capabilities', 'src/a.ts')
+    const inv1 = agentCallsFor(rt, 'inventory the user-facing capabilities', 'src/b.ts')
+    for (const c of inv0) expect(c.opts?.effort).toBe('high')
+    for (const c of inv1) expect(c.opts?.effort).toBe('medium')
+  })
+
+  it('falls back to the static default with a warning when the triage call fails', async () => {
+    const rt = makeRuntime({
+      inventory: { 'src/a.ts': [makeCapability()] },
+      extractRounds: [[]],
+      triageScores: null,
+    })
+    const out = await wf.run(rt, JSON.stringify({
+      ...BASE_INPUT, entriesPerAgent: 1, effort: { extract: 'auto' },
+    }))
+    const ext = rt.calls.filter((c) => String(c.prompt).toLowerCase().includes('extract undocumented-capability claims'))
+    expect(ext.length).toBeGreaterThan(0)
+    for (const c of ext) expect(c.opts?.effort).toBe('medium')
+    expect(out.warnings.some((w) => w.toLowerCase().includes('autoeffort'))).toBe(true)
+  })
+
+  it("never auto-routes the verifiers — effort.verify 'auto' keeps the 'high' floor", async () => {
+    const gap = makeGap({ entry: 'src/a.ts', capability: 'flooredCap' })
+    const rt = makeRuntime({
+      inventory: { 'src/a.ts': [makeCapability()] },
+      extractRounds: [[gap], [gap]],
+    })
+    await wf.run(rt, JSON.stringify({
+      repoRoot: '/repo', provenance: [ENTRY_A], effort: { verify: 'auto' },
+    }))
+    const verify = rt.calls.filter((c) =>
+      String(c.prompt).toLowerCase().includes('verdict for one undocumented-capability claim'))
+    expect(verify.length).toBeGreaterThan(0)
+    for (const c of verify) expect(c.opts?.effort).toBe('high')
   })
 })
 

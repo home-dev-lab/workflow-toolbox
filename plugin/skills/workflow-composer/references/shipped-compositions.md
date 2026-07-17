@@ -111,10 +111,17 @@ Four standalone analysis/verification compositions:
   stale / partially-stale / unverifiable, plus the pattern's honest
   `unverified-by-cap`). Claims are risk-sorted BEFORE the verification cap so
   `maxVerifyClaims` cuts the cheapest-to-lose claims first — a zero-agent
-  substitute for a scoring stage. The semantic layer of a docs-drift defence:
-  mechanical anchors (symbol existence, value equalities) belong in compile-time
-  gates; this workflow judges the PROSE those gates cannot check. Run it before
-  a release; its findings are remediation input (e.g. for `doc-rewrite`).
+  substitute for a scoring stage. Verification votes are SEVERITY-TIERED by
+  default (`tieredVotes`, via the pattern's `votesPerClaim`): behavioral and
+  boundary claims and anything the extractor tagged high-risk get the full
+  `votes` quorum; descriptive claims get one refute-first verifier —
+  `tieredVotes: false` restores uniform votes (the A/B lever). `effort.extract
+  = 'auto'` routes each surface group's effort through one batched judgment
+  triage (`autoSelectEffort`); the verify role never auto-routes. The semantic
+  layer of a docs-drift defence: mechanical anchors (symbol existence, value
+  equalities) belong in compile-time gates; this workflow judges the PROSE
+  those gates cannot check. Run it before a release; its findings are
+  remediation input (e.g. for `doc-rewrite`).
 - `coverage-audit.workflow.ts` — the INVERSE of `docs-audit`: instead of checking
   whether doc claims are stale, it checks whether real code capabilities are
   documented AT ALL. Each `docs-provenance.ts` manifest entry is one unit of
@@ -124,11 +131,20 @@ Four standalone analysis/verification compositions:
   `docs`, reporting "undocumented" or "mentioned-only" gaps. Refute-first
   `adversarialVerification` closes the loop with an INVERTED filter versus
   `docs-audit`: `confirmed` means the gap is real (a finding), `refuted` means
-  the extractor was wrong and the docs do describe it (excluded). The
-  `provenance` input replaces the bundled dwt manifest for an external-repo
-  audit, mirroring `pr-review`'s `provenance` knob. Run it before a release
-  alongside `docs-audit`; its findings are remediation input (e.g. for
-  `doc-rewrite`).
+  the extractor was wrong and the docs do describe it (excluded). Agent-echoed
+  entry identifiers are alias-resolved script-side (exact source path or
+  dir-prefix membership, file-precise evidence winning over subtree
+  membership) — an extractor echoing a NON-FIRST source path of a multi-source
+  entry no longer loses the claim. Votes are severity-tiered by default like
+  `docs-audit` (`tieredVotes`; behavioral kinds + high risk get the full
+  quorum) — with one consequence worth knowing under the inverted polarity: a
+  single uncertain verifier defaults to 'refuted', which this audit EXCLUDES
+  from findings, so low/medium descriptive gaps are systematically
+  under-reported; zero low-risk findings is NOT proof that surface is well
+  documented. The `provenance` input replaces the bundled dwt manifest for an
+  external-repo audit, mirroring `pr-review`'s `provenance` knob. Run it
+  before a release alongside `docs-audit`; its findings are remediation input
+  (e.g. for `doc-rewrite`).
 
 And three demonstration compositions:
 

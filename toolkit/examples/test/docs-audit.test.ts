@@ -46,6 +46,9 @@ function makeRuntime(opts: {
   extractRounds: FakeClaim[][]
   /** quote substring → verdict for verifier votes (default 'confirmed'). */
   verdicts?: Record<string, string>
+  /** item id → 1-5 score for the autoEffort triage agent; null = the triage
+   *  call fails; undefined (absent) = triage prompts stay unrouted. */
+  triageScores?: Record<string, number> | null
 }): FakeRuntime {
   let extractCalls = 0
   return new FakeRuntime({
@@ -54,6 +57,15 @@ function makeRuntime(opts: {
 
       if (p.includes('availability probe')) return 'PROBE_OK'
       if (p.includes('reply with a single word')) return 'ready'
+
+      if (p.includes('triaging the difficulty')) {
+        if (opts.triageScores === null || opts.triageScores === undefined) return null
+        return {
+          scores: Object.entries(opts.triageScores)
+            .filter(([id]) => p.includes(id.toLowerCase()))
+            .map(([id, score]) => ({ id, score, reason: 'fake triage' })),
+        }
+      }
 
       if (p.includes('inventory the documentation surfaces')) {
         if (opts.inventory === null) return null
@@ -381,5 +393,108 @@ describe('docs-audit verification cap', () => {
     expect(capped).toHaveLength(1)
     expect(capped[0]?.quote).toBe('low-risk quote text')
     expect(out.warnings.some((w) => w.includes('maxVerifyClaims'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: severity-tiered verification votes (card #1821093105403692296)
+// ---------------------------------------------------------------------------
+
+describe('docs-audit tiered verification votes', () => {
+  const descriptive = makeClaim({
+    surface: 'docs/a.md', kind: 'instruction', risk: 'low', quote: 'run the setup command first',
+  })
+  const behavioral = makeClaim({
+    surface: 'docs/a.md', kind: 'behavior', risk: 'medium', quote: 'the loop resumes from cache',
+  })
+  const boundary = makeClaim({
+    surface: 'docs/a.md', kind: 'boundary', risk: 'medium', quote: 'the cap never destroys evidence',
+  })
+  const highCrossRef = makeClaim({
+    surface: 'docs/a.md', kind: 'cross-reference', risk: 'high', quote: 'see the security guide',
+  })
+  const rounds = [
+    [descriptive, behavioral, boundary, highCrossRef],
+    [descriptive, behavioral, boundary, highCrossRef],
+  ]
+
+  function verifyCallsFor(rt: FakeRuntime, needle: string): number {
+    return rt.calls.filter((c) => {
+      const p = String(c.prompt).toLowerCase()
+      return p.includes('adversarially verify the following claim') && p.includes(needle.toLowerCase())
+    }).length
+  }
+
+  it('spends full votes on behavior/boundary/high-risk claims, ONE vote on descriptive ones (default)', async () => {
+    const rt = makeRuntime({ extractRounds: rounds })
+    await wf.run(rt, JSON.stringify(BASE_INPUT))
+    expect(verifyCallsFor(rt, 'run the setup command first')).toBe(1)
+    expect(verifyCallsFor(rt, 'the loop resumes from cache')).toBe(3)
+    expect(verifyCallsFor(rt, 'the cap never destroys evidence')).toBe(3)
+    expect(verifyCallsFor(rt, 'see the security guide')).toBe(3)
+  })
+
+  it('keeps uniform votes on every claim when tieredVotes is false (the A/B lever)', async () => {
+    const rt = makeRuntime({ extractRounds: rounds })
+    await wf.run(rt, JSON.stringify({ ...BASE_INPUT, tieredVotes: false }))
+    expect(verifyCallsFor(rt, 'run the setup command first')).toBe(3)
+    expect(verifyCallsFor(rt, 'the loop resumes from cache')).toBe(3)
+  })
+
+  it('throws when tieredVotes is not a boolean', async () => {
+    const rt = makeRuntime({ extractRounds: [[]] })
+    await expect(
+      wf.run(rt, JSON.stringify({ ...BASE_INPUT, tieredVotes: 1 })),
+    ).rejects.toThrow(/tieredVotes/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: auto-effort routing on the extract WORKERS (card #1821093105403692296)
+// ---------------------------------------------------------------------------
+
+describe('docs-audit auto-effort worker routing', () => {
+  it("routes 'auto' extract effort per surface group via ONE batched triage", async () => {
+    const rt = makeRuntime({
+      extractRounds: [[]],
+      triageScores: { 'extract:0': 5, 'extract:1': 2 },
+    })
+    await wf.run(rt, JSON.stringify({
+      ...BASE_INPUT, surfacesPerAgent: 1, effort: { extract: 'auto' },
+    }))
+    const triage = rt.calls.filter((c) => String(c.prompt).toLowerCase().includes('triaging the difficulty'))
+    expect(triage).toHaveLength(1)
+    // The triage prompt EMBEDS the group briefs (which quote the extract
+    // phrasing + surface paths) — exclude it from the worker-call filters.
+    const g0 = rt.calls.filter((c) => {
+      const p = String(c.prompt).toLowerCase()
+      return p.includes('extract checkable claims') && p.includes('docs/a.md') &&
+        !p.includes('triaging the difficulty')
+    })
+    const g1 = rt.calls.filter((c) => {
+      const p = String(c.prompt).toLowerCase()
+      return p.includes('extract checkable claims') && p.includes('docs/b.md') &&
+        !p.includes('triaging the difficulty')
+    })
+    expect(g0.length).toBeGreaterThan(0)
+    expect(g1.length).toBeGreaterThan(0)
+    for (const c of g0) expect(c.opts?.effort).toBe('xhigh')
+    for (const c of g1) expect(c.opts?.effort).toBe('medium')
+  })
+
+  it("warns and keeps the static default when effort.inventory is 'auto' (single derivation agent)", async () => {
+    const rt = makeRuntime({
+      inventory: ['docs/a.md'],
+      extractRounds: [[]],
+    })
+    const out = await wf.run(rt, JSON.stringify({
+      repoRoot: '/repo', effort: { inventory: 'auto' },
+    }))
+    const triage = rt.calls.filter((c) => String(c.prompt).toLowerCase().includes('triaging the difficulty'))
+    expect(triage).toHaveLength(0)
+    const inv = rt.calls.filter((c) => String(c.prompt).toLowerCase().includes('inventory the documentation surfaces'))
+    expect(inv.length).toBeGreaterThan(0)
+    for (const c of inv) expect(c.opts?.effort).toBe('low')
+    expect(out.warnings.some((w) => w.includes("inventory") && w.includes('auto'))).toBe(true)
   })
 })

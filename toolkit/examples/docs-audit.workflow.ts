@@ -47,6 +47,7 @@ import type { WorkflowRuntime, JsonSchema, EffortAlias, ModelAlias, AgentDefault
 import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import {
   adversarialVerification,
+  autoSelectEffort,
   collectTrail,
   loopUntilDone,
   probeAgentType,
@@ -94,7 +95,10 @@ export interface DocsAuditInput {
   /** Free-text context threaded into extract AND verify prompts — e.g. where
    *  a doc↔source provenance map lives, or which subsystems moved recently. */
   hints: string | null
-  /** Extraction loop ceiling (loopUntilDone maxIterations). Default 3. */
+  /** Extraction loop ceiling (loopUntilDone maxIterations). Default 6 (two
+   *  full angle cycles — sized so a typical run ends by going DRY, i.e.
+   *  extractionComplete:true, instead of hitting the ceiling; raised from 3
+   *  with the severity-tiered votes retuning, card #1821093105403692296). */
   maxRounds: number
   /** Consecutive no-new-claims rounds that end extraction. Default 1. */
   dryRounds: number
@@ -104,11 +108,23 @@ export interface DocsAuditInput {
   surfacesPerAgent: number
   /** Verification cap (adversarialVerification maxVerifyClaims). Claims cut
    *  by the cap are KEPT as 'unverified-by-cap' findings — never destroyed.
-   *  Default 60. */
+   *  Default 250 (raised from 60 with the severity-tiered votes retuning:
+   *  at the observed claim mix the tiered average is ~1.3-1.6 votes/claim,
+   *  so 250 claims cost about twice the OLD worst case for >4x the
+   *  coverage — aim one COMPLETE pass, not repeated capped ones). */
   maxVerifyClaims: number
-  /** Verifier votes per claim. Default 3; the refute threshold is
-   *  min(2, votes) so a single-vote run is decided by its one vote. */
+  /** Verifier votes for FULL-quorum claims. Default 3; the refute threshold
+   *  is min(2, votes), clamped per claim so a single-vote claim is decided
+   *  by its one vote. See tieredVotes for which claims get the full quorum. */
   votes: number
+  /** Severity-tiered verification votes (default TRUE): behavioral claims
+   *  (kind 'behavior'), guarantee/invariant claims (kind 'boundary') and
+   *  high-risk claims (risk 'high') get the full `votes` quorum; descriptive
+   *  claims (instructions, cross-references, other at medium/low risk) get
+   *  ONE vote — an error on those is cheap and the single refute-first
+   *  verifier still catches it. false = uniform `votes` on every claim (the
+   *  measured A/B lever, and the pre-retuning shape). */
+  tieredVotes: boolean
   /** Verifier model override; null → adversarialVerification's BEST_MODEL
    *  (the pattern warns when a weaker model is chosen — §8 risk guardrail).
    *  Useful for routine (non-release) audits on a cheaper tier. Validated
@@ -116,7 +132,13 @@ export interface DocsAuditInput {
   verifierModel: ModelAlias | null
   /** Optional per-ROLE reasoning-effort overrides (Class B/C, parsed by the
    *  shared `parseConfig` helper from `args.effort`). Role keys: 'inventory',
-   *  'extract', 'verify'. 'verify' is floored at 'high'. null = no overrides. */
+   *  'extract', 'verify'. 'verify' is floored at 'high'. 'auto' on 'extract'
+   *  routes each surface GROUP's effort through ONE batched judgment triage
+   *  (autoSelectEffort) — note the triage call itself is pinned to BEST_MODEL
+   *  at effort 'high' and is NOT downgraded by `perAgent` (an explicit
+   *  per-call model wins over blanket defaults). 'auto' on 'inventory' is a
+   *  no-op with a warning (the inventory here is a SINGLE derivation agent —
+   *  nothing to route per group). null = no overrides. */
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
   /** Optional blanket per-agent defaults (model/effort/agentType/isolation),
    *  applied to every stage via one withAgentDefaults wrap. Per-call/pattern
@@ -367,16 +389,27 @@ function parseInput(raw: unknown): DocsAuditInput {
   // the shared parseConfig helper; it ignores this workflow's bespoke keys.
   const cfg = parseConfig(obj)
 
+  let tieredVotes = true
+  if (obj['tieredVotes'] !== undefined) {
+    if (typeof obj['tieredVotes'] !== 'boolean') {
+      throw new Error(
+        `docs-audit: "tieredVotes" must be a boolean when provided, got ${JSON.stringify(obj['tieredVotes'])}`,
+      )
+    }
+    tieredVotes = obj['tieredVotes']
+  }
+
   return {
     repoRoot,
     surfaces,
     surfaceRules: parseOptionalString(obj, 'surfaceRules'),
     hints: parseOptionalString(obj, 'hints'),
-    maxRounds: parsePositiveInt(obj, 'maxRounds', 3),
+    maxRounds: parsePositiveInt(obj, 'maxRounds', 6),
     dryRounds: parsePositiveInt(obj, 'dryRounds', 1),
     surfacesPerAgent: parsePositiveInt(obj, 'surfacesPerAgent', 4, 10),
-    maxVerifyClaims: parsePositiveInt(obj, 'maxVerifyClaims', 60),
+    maxVerifyClaims: parsePositiveInt(obj, 'maxVerifyClaims', 250),
     votes: parsePositiveInt(obj, 'votes', 3),
+    tieredVotes,
     verifierModel,
     effort: cfg.effort ?? null,
     perAgent: cfg.perAgent ?? null,
@@ -486,6 +519,26 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
   const extractEffort = resolveEffort(input.effort?.['extract'], EXTRACT_EFFORT)
   const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
 
+  // Opt-in per-group auto-effort on the extract WORKERS (card
+  // #1821093105403692296): effort.extract = 'auto' routes each surface
+  // group's effort through ONE batched judgment triage (autoSelectEffort;
+  // resolveEffort above already degraded 'auto' to the static default, which
+  // stays the fail-safe fallback). Groups are FIXED across extraction rounds,
+  // so the one selection is reused by every round — the triage is hoisted
+  // OUT of the loop. Honest scope: on a read-and-report role whose static
+  // default is 'medium' this is a QUALITY lever (upgrading heavy groups),
+  // more than a cost one. The verify role NEVER auto-routes
+  // (resolveVerifierEffort floors it at 'high'); the single inventory
+  // derivation agent has nothing to route per group.
+  const extractAuto = input.effort?.['extract'] === 'auto'
+  if (input.effort?.['inventory'] === 'auto') {
+    warn(
+      rt, warnings,
+      "docs-audit: effort.inventory='auto' has no effect — the inventory is a single " +
+      'derivation agent; using the static default',
+    )
+  }
+
   // Optional cross-model verifier — probed, never trusted blind: an
   // unavailable agentType degrades to the standard verifier with a report.
   let verifierProbe: DocsAuditOutput['verifierProbe'] = null
@@ -553,6 +606,22 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
   const surfaceSet = new Set(surfaces)
   const groups = chunk(surfaces, input.surfacesPerAgent)
 
+  let extractEffortByGroup: readonly EffortAlias[] | null = null
+  if (extractAuto) {
+    const sel = await autoSelectEffort(rt, groups.map((group, gi) => ({
+      id: `extract:${gi}`,
+      brief:
+        `Extract checkable claims from ${group.length} doc surface(s): ${group.join(', ')}`,
+      signals: {},
+    })), {
+      fallback: EXTRACT_EFFORT,
+      phase: 'Extract',
+      label: 'docs-audit:autoEffort:extract',
+    })
+    for (const w of sel.warnings) warn(rt, warnings, w)
+    extractEffortByGroup = groups.map((_, gi) => sel.efforts[`extract:${gi}`] ?? EXTRACT_EFFORT)
+  }
+
   const loopResult = await loopUntilDone<ExtractState>(rt, {
     maxIterations: input.maxRounds,
     dryRounds: input.dryRounds,
@@ -567,7 +636,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
             schema: EXTRACT_SCHEMA,
             label: `docs-audit:extract:${round}:${gi}`,
             phase: 'Extract',
-            effort: extractEffort,
+            effort: extractEffortByGroup?.[gi] ?? extractEffort,
           }),
         ),
       )
@@ -663,6 +732,21 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
       claims: sortedClaims,
       renderClaim: renderAuditClaim(input.repoRoot, input.hints),
       votes: input.votes,
+      // Severity-tiered votes (card #1821093105403692296): the full quorum
+      // only where an error is expensive — behavioral contracts, boundary
+      // guarantees and high-risk claims; descriptive claims (instructions,
+      // cross-references, other at medium/low risk) get one refute-first
+      // verifier. The pattern clamps the refute threshold per claim
+      // (min(refuteThreshold, claimVotes)), so a 1-vote claim is decided by
+      // its single vote.
+      ...(input.tieredVotes
+        ? {
+            votesPerClaim: (c: AuditClaim) =>
+              c.kind === 'behavior' || c.kind === 'boundary' || c.risk === 'high'
+                ? input.votes
+                : 1,
+          }
+        : {}),
       refuteThreshold: Math.min(2, input.votes),
       maxVerifyClaims: input.maxVerifyClaims,
       effort: verifyEffort,

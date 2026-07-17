@@ -58,6 +58,7 @@ import type { WorkflowRuntime, JsonSchema, EffortAlias, ModelAlias, AgentDefault
 import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import {
   adversarialVerification,
+  autoSelectEffort,
   collectTrail,
   loopUntilDone,
   probeAgentType,
@@ -173,6 +174,75 @@ function entryKey(e: ProvenanceEntry): string {
   return e.sources[0] ?? ''
 }
 
+/** A resolved entry attribution: the canonical key plus HOW it matched —
+ *  'file' (exact file-path evidence) or 'dir' (subtree membership). The class
+ *  feeds decideOwner's specificity rule below. */
+interface EntryMatch {
+  key: string
+  via: 'file' | 'dir'
+}
+
+/** Alias resolution for agent-reported entry identifiers (quirk fix, card
+ *  #1821093105403692296). Lived failure: the bundled manifest's build entry
+ *  lists THREE sources (define-workflow.ts, bundle.ts, cli.ts); agents
+ *  naturally echo the source path they actually READ — a NON-FIRST source
+ *  path, or a file under a dir-prefix source — and the old exact-entryKey
+ *  guard silently dropped those VALID reports as "not in the audited
+ *  provenance manifest". Deterministic precedence: (1) exact entry key;
+ *  (2) exact source-path membership (FIRST manifest entry wins on a duplicate
+ *  non-first path — only first paths are validated unique, so the tie-break
+ *  must be stated: manifest order); (3) LONGEST dir-prefix source match
+ *  (mirrors docsForChangedFiles' matching semantics: a source ending in "/"
+ *  covers its subtree; stable sort keeps manifest order on equal lengths).
+ *  Returns the canonical key + match class, or null for a genuinely unknown
+ *  identifier — the drop-with-warning path is reserved for true unknowns. */
+function buildEntryResolver(
+  provenance: readonly ProvenanceEntry[],
+): (reported: string) => EntryMatch | null {
+  const keys = new Set(provenance.map(entryKey))
+  const exactSource = new Map<string, string>()
+  const dirSources: Array<{ prefix: string; key: string }> = []
+  for (const e of provenance) {
+    const key = entryKey(e)
+    for (const s of e.sources) {
+      if (s.endsWith('/')) {
+        dirSources.push({ prefix: s, key })
+      } else if (!exactSource.has(s)) {
+        exactSource.set(s, key)
+      }
+    }
+  }
+  dirSources.sort((a, b) => b.prefix.length - a.prefix.length)
+  return (reported: string): EntryMatch | null => {
+    if (keys.has(reported)) {
+      return { key: reported, via: reported.endsWith('/') ? 'dir' : 'file' }
+    }
+    const exact = exactSource.get(reported)
+    if (exact !== undefined) return { key: exact, via: 'file' }
+    for (const d of dirSources) {
+      if (reported.startsWith(d.prefix)) return { key: d.key, via: 'dir' }
+    }
+    return null
+  }
+}
+
+/** Combine the two attribution signals a report carries — the ENTRY ECHO (the
+ *  assigned identifier the agent repeated) and the capability's own SOURCE
+ *  PATH — into one owner. Normally they agree. When they DISAGREE, exact-FILE
+ *  evidence beats subtree (dir) membership: the manifest maps source files to
+ *  docs, so a file-precise match decides which docs are SUPPOSED to describe
+ *  the capability (the real bundled-manifest overlap: probe-agent-type.ts is
+ *  an exact source of the routing entry while ALSO living under the patterns
+ *  dir-prefix entry — a capability read during the dir entry's sweep must
+ *  still be attributed to the routing entry, or it gets checked against the
+ *  WRONG doc surface). On equal specificity the assigned identifier wins. */
+function decideOwner(byEcho: EntryMatch | null, bySource: EntryMatch | null): string | null {
+  if (byEcho === null) return bySource?.key ?? null
+  if (bySource === null || bySource.key === byEcho.key) return byEcho.key
+  if (bySource.via === 'file' && byEcho.via === 'dir') return bySource.key
+  return byEcho.key
+}
+
 // ---------------------------------------------------------------------------
 // Input contract
 // ---------------------------------------------------------------------------
@@ -191,7 +261,10 @@ export interface CoverageAuditInput {
   provenance: readonly ProvenanceEntry[] | null
   /** Free-text context threaded into inventory, extract AND verify prompts. */
   hints: string | null
-  /** Extraction loop ceiling (loopUntilDone maxIterations). Default 3. */
+  /** Extraction loop ceiling (loopUntilDone maxIterations). Default 6 (two
+   *  full angle cycles — sized so a typical run ends by going DRY, i.e.
+   *  extractionComplete:true, instead of hitting the ceiling; raised from 3
+   *  with the severity-tiered votes retuning, card #1821093105403692296). */
   maxRounds: number
   /** Consecutive no-new-claims rounds that end extraction. Default 1. */
   dryRounds: number
@@ -201,17 +274,39 @@ export interface CoverageAuditInput {
   entriesPerAgent: number
   /** Verification cap (adversarialVerification maxVerifyClaims). Claims cut
    *  by the cap are KEPT as 'unverified-by-cap' findings — never destroyed.
-   *  Default 60. */
+   *  Default 250 (raised from 60 with the severity-tiered votes retuning:
+   *  at the observed claim mix the tiered average is ~1.3-1.6 votes/claim,
+   *  so 250 claims cost about twice the OLD worst case for >4x the
+   *  coverage — aim one COMPLETE pass, not repeated capped ones). */
   maxVerifyClaims: number
-  /** Verifier votes per claim. Default 3; the refute threshold is
-   *  min(2, votes) so a single-vote run is decided by its one vote. */
+  /** Verifier votes for FULL-quorum claims. Default 3; the refute threshold
+   *  is min(2, votes), clamped per claim so a single-vote claim is decided
+   *  by its one vote. See tieredVotes for which claims get the full quorum. */
   votes: number
+  /** Severity-tiered verification votes (default TRUE): behavioral claims
+   *  (kind 'behavior') and high-risk claims (risk 'high') get the full
+   *  `votes` quorum; descriptive claims (exports, knobs, flags at
+   *  medium/low risk) get ONE vote — an error on those is cheap and the
+   *  single refute-first verifier still catches it. false = uniform `votes`
+   *  on every claim (the measured A/B lever, and the pre-retuning shape).
+   *  CONSEQUENCE to know (inverted polarity × refute-first): a 1-vote
+   *  verifier that is merely UNCERTAIN defaults to 'refuted', and 'refuted'
+   *  is excluded from this audit's findings — so low/medium descriptive gaps
+   *  are systematically under-reported relative to the full-quorum tiers.
+   *  Zero low-risk findings is NOT proof the low-risk surface is well
+   *  documented. */
+  tieredVotes: boolean
   /** Verifier model override; null = adversarialVerification's BEST_MODEL.
    *  Validated against the runtime's MODEL_ALIASES allowlist. */
   verifierModel: ModelAlias | null
   /** Optional per-ROLE reasoning-effort overrides (Class B/C, parsed by the
    *  shared `parseConfig` helper from `args.effort`). Role keys: 'inventory',
-   *  'extract', 'verify'. 'verify' is floored at 'high'. null = no overrides. */
+   *  'extract', 'verify'. 'verify' is floored at 'high'. 'auto' on
+   *  'inventory'/'extract' routes each agent GROUP's effort through ONE
+   *  batched judgment triage (autoSelectEffort) — note the triage call
+   *  itself is pinned to BEST_MODEL at effort 'high' and is NOT downgraded
+   *  by `perAgent` (an explicit per-call model wins over blanket defaults).
+   *  null = no overrides. */
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
   /** Optional blanket per-agent defaults (model/effort/agentType/isolation),
    *  applied to every stage via one withAgentDefaults wrap. Per-call/pattern
@@ -234,6 +329,12 @@ export interface CoverageAuditInput {
 // ---------------------------------------------------------------------------
 
 const CAPABILITY_KINDS = ['export', 'behavior', 'knob', 'flag', 'other'] as const
+
+/** Per-entry capability ceiling — MUST track INVENTORY_SCHEMA's capabilities
+ *  maxItems below (the two move together): the schema bounds one AGENT's
+ *  report; this constant re-imposes the same bound after split reports are
+ *  MERGED onto one canonical entry (with a warning, never silently). */
+const MAX_CAPABILITIES_PER_ENTRY = 40
 
 const INVENTORY_SCHEMA = {
   type: 'object',
@@ -488,15 +589,26 @@ function parseInput(raw: unknown): CoverageAuditInput {
   // the shared parseConfig helper; it ignores this workflow's bespoke keys.
   const cfg = parseConfig(obj)
 
+  let tieredVotes = true
+  if (obj['tieredVotes'] !== undefined) {
+    if (typeof obj['tieredVotes'] !== 'boolean') {
+      throw new Error(
+        `coverage-audit: "tieredVotes" must be a boolean when provided, got ${JSON.stringify(obj['tieredVotes'])}`,
+      )
+    }
+    tieredVotes = obj['tieredVotes']
+  }
+
   return {
     repoRoot,
     provenance,
     hints: parseOptionalString(obj, 'hints'),
-    maxRounds: parsePositiveInt(obj, 'maxRounds', 3),
+    maxRounds: parsePositiveInt(obj, 'maxRounds', 6),
     dryRounds: parsePositiveInt(obj, 'dryRounds', 1),
     entriesPerAgent: parsePositiveInt(obj, 'entriesPerAgent', 4, 10),
-    maxVerifyClaims: parsePositiveInt(obj, 'maxVerifyClaims', 60),
+    maxVerifyClaims: parsePositiveInt(obj, 'maxVerifyClaims', 250),
     votes: parsePositiveInt(obj, 'votes', 3),
+    tieredVotes,
     verifierModel,
     effort: cfg.effort ?? null,
     perAgent: cfg.perAgent ?? null,
@@ -641,6 +753,18 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
   const extractEffort = resolveEffort(input.effort?.['extract'], EXTRACT_EFFORT)
   const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
 
+  // Opt-in per-group auto-effort on the WORKER roles (card
+  // #1821093105403692296): effort.inventory / effort.extract = 'auto' routes
+  // each group's effort through ONE batched judgment triage (autoSelectEffort;
+  // resolveEffort above already degraded 'auto' to the static default, which
+  // stays the fail-safe fallback). Groups are FIXED across extraction rounds,
+  // so extract's one selection is reused by every round. Honest scope: on
+  // read-and-report roles whose static defaults are low/medium this is a
+  // QUALITY lever (upgrading heavy groups), more than a cost one. The verify
+  // role NEVER auto-routes — resolveVerifierEffort floors it at 'high'.
+  const inventoryAuto = input.effort?.['inventory'] === 'auto'
+  const extractAuto = input.effort?.['extract'] === 'auto'
+
   // Optional cross-model verifier — probed, never trusted blind: an
   // unavailable agentType degrades to the standard verifier with a report.
   let verifierProbe: CoverageAuditOutput['verifierProbe'] = null
@@ -655,7 +779,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
   const provenanceSource: CoverageAuditOutput['provenanceSource'] =
     input.provenance !== null ? 'input' : 'bundled'
 
-  const entryKeySet = new Set(provenance.map(entryKey))
+  const resolveEntry = buildEntryResolver(provenance)
   const docsByEntry = new Map<string, readonly string[]>(provenance.map((e) => [entryKey(e), e.docs]))
   const groups = chunk(provenance, input.entriesPerAgent)
 
@@ -669,13 +793,31 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
 
   rt.phase('Inventory')
 
+  let inventoryEffortByGroup: readonly EffortAlias[] | null = null
+  if (inventoryAuto) {
+    const sel = await autoSelectEffort(rt, groups.map((group, gi) => ({
+      id: `inventory:${gi}`,
+      brief:
+        `Read-and-report capability inventory over ${group.length} manifest ` +
+        `entr${group.length === 1 ? 'y' : 'ies'}: ` +
+        group.map((e) => `${entryKey(e)} (${e.sources.length} source path(s))`).join('; '),
+      signals: {},
+    })), {
+      fallback: INVENTORY_EFFORT,
+      phase: 'Inventory',
+      label: 'coverage-audit:autoEffort:inventory',
+    })
+    for (const w of sel.warnings) warn(rt, warnings, w)
+    inventoryEffortByGroup = groups.map((_, gi) => sel.efforts[`inventory:${gi}`] ?? INVENTORY_EFFORT)
+  }
+
   const invResults = await rt.parallel(
     groups.map((group, gi) => () =>
       rt.agent<InventoryOutput>(inventoryPrompt(input, group), {
         schema: INVENTORY_SCHEMA,
         label: `coverage-audit:inventory:${gi}`,
         phase: 'Inventory',
-        effort: inventoryEffort,
+        effort: inventoryEffortByGroup?.[gi] ?? inventoryEffort,
       }),
     ),
   )
@@ -692,23 +834,43 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
       continue
     }
     for (const entryResult of res.entries) {
-      if (!entryKeySet.has(entryResult.entry)) {
+      // Alias-resolve the reported identifier (see buildEntryResolver /
+      // decideOwner), then attribute PER CAPABILITY: each capability's own
+      // sourcePath is manifest evidence too, and on a file-vs-dir
+      // disagreement the file decides (the subtree-overlap mis-attribution
+      // guard). Split reports landing on the same canonical entry are MERGED
+      // (dedup by name + sourcePath) — the old code dropped the duplicate
+      // object's capabilities entirely.
+      const byEcho = resolveEntry(entryResult.entry)
+      let attributed = 0
+      for (const cap of entryResult.capabilities) {
+        const owner = decideOwner(byEcho, resolveEntry(cap.sourcePath))
+        if (owner === null) continue
+        attributed++
+        const existing = capsByEntry.get(owner)
+        if (existing === undefined) {
+          capsByEntry.set(owner, [cap])
+        } else if (!existing.some((x) => x.name === cap.name && x.sourcePath === cap.sourcePath)) {
+          if (existing.length >= MAX_CAPABILITIES_PER_ENTRY) {
+            // Keep the per-entry schema bound (INVENTORY_SCHEMA maxItems)
+            // as a POST-MERGE invariant too — never silently.
+            warn(
+              rt, warnings,
+              `coverage-audit [Inventory]: entry "${owner}" exceeded ${MAX_CAPABILITIES_PER_ENTRY} ` +
+              `merged capabilities — dropping "${cap.name}"`,
+            )
+            continue
+          }
+          existing.push(cap)
+        }
+      }
+      if (attributed === 0 && entryResult.capabilities.length > 0) {
         warn(
           rt, warnings,
           `coverage-audit [Inventory]: dropped capabilities reported for "${entryResult.entry}" — ` +
           `not in the audited provenance manifest`,
         )
-        continue
       }
-      if (capsByEntry.has(entryResult.entry)) {
-        warn(
-          rt, warnings,
-          `coverage-audit [Inventory]: "${entryResult.entry}" was reported more than once — ` +
-          `keeping the first inventory and dropping the duplicate`,
-        )
-        continue
-      }
-      capsByEntry.set(entryResult.entry, entryResult.capabilities)
     }
   }
 
@@ -730,6 +892,24 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
 
   rt.phase('Extract')
 
+  let extractEffortByGroup: readonly EffortAlias[] | null = null
+  if (extractAuto) {
+    const sel = await autoSelectEffort(rt, groups.map((group, gi) => ({
+      id: `extract:${gi}`,
+      brief:
+        `Cross-check ${group.reduce((n, e) => n + (capsByEntry.get(entryKey(e))?.length ?? 0), 0)} ` +
+        `inventoried capabilities against their mapped docs for entries: ` +
+        group.map((e) => `${entryKey(e)} (docs: ${e.docs.join(', ')})`).join('; '),
+      signals: {},
+    })), {
+      fallback: EXTRACT_EFFORT,
+      phase: 'Extract',
+      label: 'coverage-audit:autoEffort:extract',
+    })
+    for (const w of sel.warnings) warn(rt, warnings, w)
+    extractEffortByGroup = groups.map((_, gi) => sel.efforts[`extract:${gi}`] ?? EXTRACT_EFFORT)
+  }
+
   const loopResult = await loopUntilDone<ExtractState>(rt, {
     maxIterations: input.maxRounds,
     dryRounds: input.dryRounds,
@@ -744,7 +924,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
             schema: EXTRACT_SCHEMA,
             label: `coverage-audit:extract:${round}:${gi}`,
             phase: 'Extract',
-            effort: extractEffort,
+            effort: extractEffortByGroup?.[gi] ?? extractEffort,
           }),
         ),
       )
@@ -764,10 +944,14 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
           continue
         }
         for (const claim of res.claims) {
-          if (!entryKeySet.has(claim.entry)) {
-            // Mechanical guard: an extractor may only report on the audited
-            // manifest — a claim pinned to an unknown entry is unusable
-            // (verification could not attribute it to mapped docs).
+          // Mechanical guard with alias resolution (see buildEntryResolver /
+          // decideOwner): a claim is attributable when its entry echo or its
+          // sourcePath resolves to a manifest entry — file-precise evidence
+          // beats subtree membership on disagreement. Only a claim with NO
+          // manifest evidence at all is unusable (verification could not
+          // attribute it to mapped docs) and dropped.
+          const canonical = decideOwner(resolveEntry(claim.entry), resolveEntry(claim.sourcePath))
+          if (canonical === null) {
             warn(
               rt, warnings,
               `coverage-audit [Extract]: dropped a claim citing entry "${claim.entry}" — not in the ` +
@@ -775,10 +959,14 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
             )
             continue
           }
-          const key = claimKey(claim)
+          // Rewrite to the canonical key so dedup, mappedDocs lookup and the
+          // final report all speak one identifier per entry.
+          const canonicalClaim: RawCoverageClaim =
+            claim.entry === canonical ? claim : { ...claim, entry: canonical }
+          const key = claimKey(canonicalClaim)
           if (seen.has(key)) continue
           seen.add(key)
-          freshClaims.push({ ...claim, mappedDocs: docsByEntry.get(claim.entry) ?? [] })
+          freshClaims.push({ ...canonicalClaim, mappedDocs: docsByEntry.get(canonical) ?? [] })
           freshKeys.push(key)
         }
       }
@@ -840,6 +1028,18 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
       claims: sortedClaims,
       renderClaim: renderCoverageClaim(input.repoRoot, input.hints),
       votes: input.votes,
+      // Severity-tiered votes (card #1821093105403692296): the full quorum
+      // only where an error is expensive — behavioral contracts and high-risk
+      // gaps; descriptive gaps (exports/knobs/flags at medium/low risk) get
+      // one refute-first verifier. The pattern clamps the refute threshold
+      // per claim (min(refuteThreshold, claimVotes)), so a 1-vote claim is
+      // decided by its single vote.
+      ...(input.tieredVotes
+        ? {
+            votesPerClaim: (c: CoverageClaim) =>
+              c.kind === 'behavior' || c.risk === 'high' ? input.votes : 1,
+          }
+        : {}),
       refuteThreshold: Math.min(2, input.votes),
       maxVerifyClaims: input.maxVerifyClaims,
       effort: verifyEffort,
