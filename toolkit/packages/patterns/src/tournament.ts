@@ -18,6 +18,25 @@
 // - Median computed in code, deterministically (not by model).
 // - Labels: tournament:attempt:<i>, tournament:judge:<attemptIdx>:<judgeIdx>,
 //           tournament:synthesize.
+//
+// NOT SALTED (card #1816036725248493168, amendment A1): every OTHER pattern
+// in this package gained a `stageKey?` option + a per-invocation auto salt
+// (a terminal ` #<n>`/` #<key>` suffix on every stage/label string) so
+// repeated invocations on the same rt no longer collide. tournament is
+// DELIBERATELY EXCLUDED from v1: its attempt index is TERMINAL in
+// `tournament:attempt:<i>` but NON-TERMINAL in `tournament:judge:<i>:<j>` (the
+// attempt index sits in the MIDDLE segment, with the judge index after it) —
+// a terminal salt on `attempt:<i>` would land after `<i>`, but the matching
+// `judge:<i>:<j>` label has no equivalent terminal position for that SAME
+// `<i>` to carry the salt without also touching `<j>` — breaking the fenced
+// observatory's attempt→judge edge join (pattern-topology.ts:292) and its
+// lost-attempt dimming against the bare digest `notTaken` values
+// (graph-spike.ts:617). Until observatory-side salt-awareness for this
+// non-terminal case ships (follow-up, card comment), tournament stays
+// UNSALTED — invoking it twice on the same rt reproduces today's collision
+// behavior (the reader-side conflict guard in packages/debugger/src/report.ts
+// still degrades that gracefully: colliding stages are dropped, not
+// misattributed).
 
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
 import { warn, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'

@@ -570,6 +570,36 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     return [firstResult, ...restResults];
   }
 
+  // ../packages/patterns/src/stage-instance.ts
+  var registry = /* @__PURE__ */ new WeakMap();
+  var STAGE_KEY_PATTERN = /^[A-Za-z0-9_.-]{1,32}$/;
+  function claimStageInstance(rt, pattern, stageKey) {
+    if (stageKey !== void 0) {
+      if (STAGE_KEY_PATTERN.test(stageKey)) {
+        return { salt: ` #${stageKey}` };
+      }
+      const fallback = claimAuto(rt, pattern);
+      return {
+        salt: fallback.salt,
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (must match ${STAGE_KEY_PATTERN.source}) \u2014 falling back to the auto instance counter`
+      };
+    }
+    return claimAuto(rt, pattern);
+  }
+  function claimAuto(rt, pattern) {
+    let byPattern = registry.get(rt);
+    if (byPattern === void 0) {
+      byPattern = /* @__PURE__ */ new Map();
+      registry.set(rt, byPattern);
+    }
+    const n = (byPattern.get(pattern) ?? 0) + 1;
+    byPattern.set(pattern, n);
+    return { salt: n === 1 ? "" : ` #${n}` };
+  }
+  function stageBuilder(stage, salt) {
+    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
+  }
+
   // ../packages/patterns/src/fan-out-and-synthesize.ts
   var STAGE = "fanOutAndSynthesize";
   async function fanOutAndSynthesize(rt, options) {
@@ -587,6 +617,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       synthesisType,
       phase,
       maxItems,
+      stageKey,
       cacheWarm
     } = options;
     if (tasks.length === 0) {
@@ -600,6 +631,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     let agentsSpawned = 0;
     const warnings = [];
     const trail = [];
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE, salt);
     if (truncated > 0) {
       warn(
         rt,
@@ -608,9 +642,10 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       );
     }
     const keptArray = kept;
+    const taskStages = keptArray.map((_, i) => stg(`task:${i}`));
     const taskThunks = keptArray.map((task, i) => async () => {
       const taskOpts = {
-        label: `${STAGE}:task:${i}`,
+        label: taskStages[i],
         ...phase !== void 0 ? { phase } : {},
         ...taskSchema !== void 0 ? { schema: taskSchema } : {},
         ...taskModel !== void 0 ? { model: taskModel } : {},
@@ -625,13 +660,14 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     for (let i = 0; i < taskResults.length; i++) {
       const out = taskResults[i];
       const r = out?.value ?? null;
+      const taskStage = taskStages[i];
       agentsSpawned += out?.spawns ?? 1;
-      trail.push(makeRecord(`${STAGE}:task:${i}`, r !== null, {
+      trail.push(makeRecord(taskStage, r !== null, {
         ...taskModel !== void 0 ? { model: taskModel } : {},
         ...taskEffort !== void 0 ? { effort: taskEffort } : {}
       }));
       if (out !== null && out.salvageAttempted) {
-        trail.push(makeRecord(`${STAGE}:task:${i}:salvage`, out.salvaged, {
+        trail.push(makeRecord(`${taskStage}:salvage`, out.salvaged, {
           ...taskModel !== void 0 ? { model: taskModel } : {},
           ...taskEffort !== void 0 ? { effort: taskEffort } : {}
         }));
@@ -654,8 +690,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     if (parts.length === 0) {
       warn(rt, warnings, "fanOutAndSynthesize: fan-out produced no parts; synthesis skipped");
     } else {
+      const synthesizeStage = stg("synthesize");
       const synthOpts = {
-        label: `${STAGE}:synthesize`,
+        label: synthesizeStage,
         ...phase !== void 0 ? { phase } : {},
         ...synthesisSchema !== void 0 ? { schema: synthesisSchema } : {},
         ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
@@ -665,12 +702,12 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       const synthOut = await agentWithSchemaSalvage(rt, synthesisPrompt(parts), synthOpts);
       agentsSpawned += synthOut.spawns;
       const synthesis = synthOut.value;
-      trail.push(makeRecord(`${STAGE}:synthesize`, synthesis !== null, {
+      trail.push(makeRecord(synthesizeStage, synthesis !== null, {
         ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
         ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
       }));
       if (synthOut.salvageAttempted) {
-        trail.push(makeRecord(`${STAGE}:synthesize:salvage`, synthOut.salvaged, {
+        trail.push(makeRecord(`${synthesizeStage}:salvage`, synthOut.salvaged, {
           ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
           ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
         }));

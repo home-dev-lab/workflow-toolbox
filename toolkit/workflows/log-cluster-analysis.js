@@ -559,6 +559,36 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     return [firstResult, ...restResults];
   }
 
+  // ../packages/patterns/src/stage-instance.ts
+  var registry = /* @__PURE__ */ new WeakMap();
+  var STAGE_KEY_PATTERN = /^[A-Za-z0-9_.-]{1,32}$/;
+  function claimStageInstance(rt, pattern, stageKey) {
+    if (stageKey !== void 0) {
+      if (STAGE_KEY_PATTERN.test(stageKey)) {
+        return { salt: ` #${stageKey}` };
+      }
+      const fallback = claimAuto(rt, pattern);
+      return {
+        salt: fallback.salt,
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (must match ${STAGE_KEY_PATTERN.source}) \u2014 falling back to the auto instance counter`
+      };
+    }
+    return claimAuto(rt, pattern);
+  }
+  function claimAuto(rt, pattern) {
+    let byPattern = registry.get(rt);
+    if (byPattern === void 0) {
+      byPattern = /* @__PURE__ */ new Map();
+      registry.set(rt, byPattern);
+    }
+    const n = (byPattern.get(pattern) ?? 0) + 1;
+    byPattern.set(pattern, n);
+    return { salt: n === 1 ? "" : ` #${n}` };
+  }
+  function stageBuilder(stage, salt) {
+    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
+  }
+
   // ../packages/patterns/src/chunked-analysis.ts
   var STAGE = "chunkedAnalysis";
   function chunkText(input, options) {
@@ -618,6 +648,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       synthesizeType,
       phase,
       maxChunks,
+      stageKey,
       cacheWarm
     } = options;
     assertAgentTypeOption(STAGE, "analyzeType", analyzeType);
@@ -639,6 +670,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     const trail = [];
     const { kept: keptChunks, truncated } = applyCap(chunks, maxChunks);
     const total = keptChunks.length;
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE, salt);
     if (truncated > 0) {
       warn(
         rt,
@@ -647,9 +681,10 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       );
     }
     const keptArray = keptChunks;
+    const chunkStages = keptArray.map((_, i) => stg(`chunk:${i}`));
     const analyzeThunks = keptArray.map((chunk, i) => async () => {
       const opts = {
-        label: `${STAGE}:chunk:${i}`,
+        label: chunkStages[i],
         ...phase !== void 0 ? { phase } : {},
         ...analyzeSchema !== void 0 ? { schema: analyzeSchema } : {},
         ...analyzeModel !== void 0 ? { model: analyzeModel } : {},
@@ -664,13 +699,14 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     for (let i = 0; i < analyzeResults.length; i++) {
       const out = analyzeResults[i];
       const r = out?.value ?? null;
+      const chunkStage = chunkStages[i];
       agentsSpawned += out?.spawns ?? 1;
-      trail.push(makeRecord(`${STAGE}:chunk:${i}`, r !== null, {
+      trail.push(makeRecord(chunkStage, r !== null, {
         ...analyzeModel !== void 0 ? { model: analyzeModel } : {},
         ...analyzeEffort !== void 0 ? { effort: analyzeEffort } : {}
       }));
       if (out !== null && out.salvageAttempted) {
-        trail.push(makeRecord(`${STAGE}:chunk:${i}:salvage`, out.salvaged, {
+        trail.push(makeRecord(`${chunkStage}:salvage`, out.salvaged, {
           ...analyzeModel !== void 0 ? { model: analyzeModel } : {},
           ...analyzeEffort !== void 0 ? { effort: analyzeEffort } : {}
         }));
@@ -693,8 +729,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     if (chunkResults.length === 0) {
       warn(rt, warnings, "chunkedAnalysis: every chunk analysis was null; synthesis skipped");
     } else {
+      const synthesizeStage = stg("synthesize");
       const synthOpts = {
-        label: `${STAGE}:synthesize`,
+        label: synthesizeStage,
         ...phase !== void 0 ? { phase } : {},
         ...synthesizeSchema !== void 0 ? { schema: synthesizeSchema } : {},
         ...synthesizeModel !== void 0 ? { model: synthesizeModel } : {},
@@ -704,12 +741,12 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       const synthOut = await agentWithSchemaSalvage(rt, synthesizePrompt(chunkResults), synthOpts);
       agentsSpawned += synthOut.spawns;
       const synthesis = synthOut.value;
-      trail.push(makeRecord(`${STAGE}:synthesize`, synthesis !== null, {
+      trail.push(makeRecord(synthesizeStage, synthesis !== null, {
         ...synthesizeModel !== void 0 ? { model: synthesizeModel } : {},
         ...synthesizeEffort !== void 0 ? { effort: synthesizeEffort } : {}
       }));
       if (synthOut.salvageAttempted) {
-        trail.push(makeRecord(`${STAGE}:synthesize:salvage`, synthOut.salvaged, {
+        trail.push(makeRecord(`${synthesizeStage}:salvage`, synthOut.salvaged, {
           ...synthesizeModel !== void 0 ? { model: synthesizeModel } : {},
           ...synthesizeEffort !== void 0 ? { effort: synthesizeEffort } : {}
         }));

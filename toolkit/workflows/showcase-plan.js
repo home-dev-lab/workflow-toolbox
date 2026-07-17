@@ -560,6 +560,36 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     return [firstResult, ...restResults];
   }
 
+  // ../packages/patterns/src/stage-instance.ts
+  var registry = /* @__PURE__ */ new WeakMap();
+  var STAGE_KEY_PATTERN = /^[A-Za-z0-9_.-]{1,32}$/;
+  function claimStageInstance(rt, pattern, stageKey) {
+    if (stageKey !== void 0) {
+      if (STAGE_KEY_PATTERN.test(stageKey)) {
+        return { salt: ` #${stageKey}` };
+      }
+      const fallback = claimAuto(rt, pattern);
+      return {
+        salt: fallback.salt,
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (must match ${STAGE_KEY_PATTERN.source}) \u2014 falling back to the auto instance counter`
+      };
+    }
+    return claimAuto(rt, pattern);
+  }
+  function claimAuto(rt, pattern) {
+    let byPattern = registry.get(rt);
+    if (byPattern === void 0) {
+      byPattern = /* @__PURE__ */ new Map();
+      registry.set(rt, byPattern);
+    }
+    const n = (byPattern.get(pattern) ?? 0) + 1;
+    byPattern.set(pattern, n);
+    return { salt: n === 1 ? "" : ` #${n}` };
+  }
+  function stageBuilder(stage, salt) {
+    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
+  }
+
   // ../packages/patterns/src/plan-and-execute.ts
   var STAGE = "planAndExecute";
   var PLAN_SCHEMA = {
@@ -599,6 +629,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       synthesisType,
       phase,
       maxSubtasks,
+      stageKey,
       cacheWarm
     } = options;
     if (planPrompt.trim().length === 0) {
@@ -617,9 +648,13 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     let agentsSpawned = 0;
     const warnings = [];
     const trail = [];
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE, salt);
+    const planStage = stg("plan");
     const planOpts = {
       schema: PLAN_SCHEMA,
-      label: `${STAGE}:plan`,
+      label: planStage,
       ...phase !== void 0 ? { phase } : {},
       ...planModel !== void 0 ? { model: planModel } : {},
       ...planEffort !== void 0 ? { effort: planEffort } : {},
@@ -631,7 +666,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     const plan = planOut.value;
     const pushPlanSalvageRecord = () => {
       if (planOut.salvageAttempted) {
-        trail.push(makeRecord(`${STAGE}:plan:salvage`, planOut.salvaged, {
+        trail.push(makeRecord(`${planStage}:salvage`, planOut.salvaged, {
           ...planModel !== void 0 ? { model: planModel } : {},
           ...planEffort !== void 0 ? { effort: planEffort } : {}
         }));
@@ -639,7 +674,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     };
     if (plan === null) {
       warn(rt, warnings, "planAndExecute: planner returned null \u2014 nothing executed");
-      trail.push(makeRecord(`${STAGE}:plan`, false, {
+      trail.push(makeRecord(planStage, false, {
         ...planModel !== void 0 ? { model: planModel } : {},
         ...planEffort !== void 0 ? { effort: planEffort } : {}
       }));
@@ -664,16 +699,17 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         `planAndExecute: ${truncated} of ${plannedCount} subtasks truncated by maxSubtasks=${maxSubtasks ?? "?"}`
       );
     }
-    trail.push(makeRecord(`${STAGE}:plan`, true, {
+    trail.push(makeRecord(planStage, true, {
       ...planModel !== void 0 ? { model: planModel } : {},
       ...planEffort !== void 0 ? { effort: planEffort } : {},
       decision: `subtasks=${keptSubtasks.length}`
     }));
     pushPlanSalvageRecord();
     const keptArray = keptSubtasks;
+    const workStages = keptArray.map((_, i) => stg(`work:${i}`));
     const workerThunks = keptArray.map((subtask, i) => async () => {
       const opts = {
-        label: `${STAGE}:work:${i}`,
+        label: workStages[i],
         ...phase !== void 0 ? { phase } : {},
         ...workerSchema !== void 0 ? { schema: workerSchema } : {},
         ...workerModel !== void 0 ? { model: workerModel } : {},
@@ -688,13 +724,14 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     for (let i = 0; i < rawWorkerResults.length; i++) {
       const out = rawWorkerResults[i];
       const r = out?.value ?? null;
+      const workStage = workStages[i];
       agentsSpawned += out?.spawns ?? 1;
-      trail.push(makeRecord(`${STAGE}:work:${i}`, r !== null, {
+      trail.push(makeRecord(workStage, r !== null, {
         ...workerModel !== void 0 ? { model: workerModel } : {},
         ...workerEffort !== void 0 ? { effort: workerEffort } : {}
       }));
       if (out !== null && out.salvageAttempted) {
-        trail.push(makeRecord(`${STAGE}:work:${i}:salvage`, out.salvaged, {
+        trail.push(makeRecord(`${workStage}:salvage`, out.salvaged, {
           ...workerModel !== void 0 ? { model: workerModel } : {},
           ...workerEffort !== void 0 ? { effort: workerEffort } : {}
         }));
@@ -725,8 +762,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       emitDigest(rt, { stage: STAGE, ...phase !== void 0 ? { phase } : {}, output: "synthesis: none", counts: { planned: plannedCount, executed: 0, dropped: droppedWorkers, truncated } });
       return { value: null, stats: stats2, warnings, workerResults: [], trail };
     }
+    const synthesizeStage = stg("synthesize");
     const synthOpts = {
-      label: `${STAGE}:synthesize`,
+      label: synthesizeStage,
       ...phase !== void 0 ? { phase } : {},
       ...synthesisSchema !== void 0 ? { schema: synthesisSchema } : {},
       ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
@@ -736,12 +774,12 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     const synthOut = await agentWithSchemaSalvage(rt, synthesisPrompt(successfulResults), synthOpts);
     agentsSpawned += synthOut.spawns;
     const synthesis = synthOut.value;
-    trail.push(makeRecord(`${STAGE}:synthesize`, synthesis !== null, {
+    trail.push(makeRecord(synthesizeStage, synthesis !== null, {
       ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
       ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
     }));
     if (synthOut.salvageAttempted) {
-      trail.push(makeRecord(`${STAGE}:synthesize:salvage`, synthOut.salvaged, {
+      trail.push(makeRecord(`${synthesizeStage}:salvage`, synthOut.salvaged, {
         ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
         ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
       }));

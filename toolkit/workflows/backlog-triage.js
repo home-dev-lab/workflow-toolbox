@@ -559,6 +559,36 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     return [firstResult, ...restResults];
   }
 
+  // ../packages/patterns/src/stage-instance.ts
+  var registry = /* @__PURE__ */ new WeakMap();
+  var STAGE_KEY_PATTERN = /^[A-Za-z0-9_.-]{1,32}$/;
+  function claimStageInstance(rt, pattern, stageKey) {
+    if (stageKey !== void 0) {
+      if (STAGE_KEY_PATTERN.test(stageKey)) {
+        return { salt: ` #${stageKey}` };
+      }
+      const fallback = claimAuto(rt, pattern);
+      return {
+        salt: fallback.salt,
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (must match ${STAGE_KEY_PATTERN.source}) \u2014 falling back to the auto instance counter`
+      };
+    }
+    return claimAuto(rt, pattern);
+  }
+  function claimAuto(rt, pattern) {
+    let byPattern = registry.get(rt);
+    if (byPattern === void 0) {
+      byPattern = /* @__PURE__ */ new Map();
+      registry.set(rt, byPattern);
+    }
+    const n = (byPattern.get(pattern) ?? 0) + 1;
+    byPattern.set(pattern, n);
+    return { salt: n === 1 ? "" : ` #${n}` };
+  }
+  function stageBuilder(stage, salt) {
+    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
+  }
+
   // ../packages/patterns/src/score-and-rank.ts
   var STAGE = "scoreAndRank";
   var scoreSchema = {
@@ -571,7 +601,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     additionalProperties: false
   };
   async function scoreAndRank(rt, options) {
-    const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase, cacheWarm } = options;
+    const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase, stageKey, cacheWarm } = options;
     const combine = options.combine ?? ((scores) => scores.reduce((a, b) => a * b, 1));
     if (items.length < 1) {
       throw new Error(`scoreAndRank: items must be a non-empty array \u2014 got length ${items.length}`);
@@ -597,6 +627,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     let dropped = 0;
     const warnings = [];
     const { kept: keptItems, truncated } = applyCap(items, maxItems);
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE, salt);
     const pendingTrail = [];
     const pendingWarnings = [];
     const tasks = [];
@@ -611,7 +644,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       if (dim === void 0 || item === void 0) return null;
       const model = dim.model ?? scoreModel;
       const effort = dim.effort ?? scoreEffort;
-      const label = `${STAGE}:score:${t.itemIndex}:${dim.name}`;
+      const label = stg(`score:${t.itemIndex}:${dim.name}`);
       const opts = {
         schema: scoreSchema,
         label,

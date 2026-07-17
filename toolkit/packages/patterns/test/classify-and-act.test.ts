@@ -969,3 +969,93 @@ describe('classifyAndAct — cacheWarm=true (staggered)', () => {
     expect(result.stats.agentsSpawned).toBe(2) // 1 classify + 1 act
   })
 })
+
+// ---------------------------------------------------------------------------
+// Stage salting (card #1816036725248493168) — per-invocation discriminator
+// ---------------------------------------------------------------------------
+
+describe('classifyAndAct — stage salting', () => {
+  const classifyOnAgentForSalting = ({ opts }: { opts?: { schema?: unknown } }): unknown => {
+    const schema = opts?.schema as { properties?: { category?: { enum?: unknown[] } } } | undefined
+    if (schema?.properties?.category?.enum !== undefined) return { category: 'docs' }
+    return 'action-result'
+  }
+
+  it('two invocations on the SAME rt: first bare, second salted " #2" on every label', async () => {
+    const rt = new FakeRuntime({ onAgent: classifyOnAgentForSalting })
+
+    await classifyAndAct(rt, makeOptions({ items: ['item-0'] }))
+    const firstLabels = rt.calls.map((c) => c.opts?.label)
+
+    await classifyAndAct(rt, makeOptions({ items: ['item-0'] }))
+    const secondLabels = rt.calls.slice(firstLabels.length).map((c) => c.opts?.label)
+
+    expect(firstLabels).toEqual(['classifyAndAct:classify:0', 'classifyAndAct:act:docs:0'])
+    expect(secondLabels).toEqual(['classifyAndAct:classify:0 #2', 'classifyAndAct:act:docs:0 #2'])
+  })
+
+  it('trail.stage === the rt.agent label for the same step, on the salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: classifyOnAgentForSalting })
+    await classifyAndAct(rt, makeOptions({ items: ['item-0'] }))
+    const result = await classifyAndAct(rt, makeOptions({ items: ['item-0'] }))
+
+    const secondCalls = rt.calls.slice(2) // the 2nd invocation's own agent calls
+    for (const record of result.trail) {
+      const match = secondCalls.find((c) => c.opts?.label === record.stage)
+      expect(match, `no rt.agent call found with label === trail.stage "${record.stage}"`).toBeDefined()
+    }
+    expect(result.trail.map((r) => r.stage)).toEqual([
+      'classifyAndAct:classify:0 #2',
+      'classifyAndAct:act:docs:0 #2',
+    ])
+  })
+
+  it('an explicit stageKey salts every stage/label of that invocation, including a salvage record', async () => {
+    // classify returns null once → structured-output salvage respawn fires,
+    // with its own answer also non-JSON ('action-result') so it fails too —
+    // both the primary and the salvage trail records get created.
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const schema = opts?.schema as { properties?: { category?: { enum?: unknown[] } } } | undefined
+        if (schema?.properties?.category?.enum !== undefined) return null
+        return 'action-result'
+      },
+    })
+
+    const result = await classifyAndAct(rt, makeOptions({ items: ['item-0'], stageKey: 'my-key' }))
+
+    expect(rt.calls.map((c) => c.opts?.label)).toEqual([
+      'classifyAndAct:classify:0 #my-key',
+      'classifyAndAct:classify:0 #my-key:salvage',
+    ])
+    expect(result.trail.map((r) => r.stage)).toEqual([
+      'classifyAndAct:classify:0 #my-key',
+      'classifyAndAct:classify:0 #my-key:salvage',
+    ])
+    // stageKey itself is valid — no "stageKey ... invalid" fallback warning
+    // (the warnings present are the unrelated classify-null/salvage-failure
+    // diagnostics, expected from this scenario's scripted null response).
+    expect(result.warnings.join(' ')).not.toMatch(/stageKey/)
+  })
+
+  it('distinct rt instances stay isolated — both get the bare first invocation', async () => {
+    const rt1 = new FakeRuntime({ onAgent: classifyOnAgentForSalting })
+    const rt2 = new FakeRuntime({ onAgent: classifyOnAgentForSalting })
+
+    await classifyAndAct(rt1, makeOptions({ items: ['item-0'] }))
+    await classifyAndAct(rt2, makeOptions({ items: ['item-0'] }))
+
+    expect(rt1.calls.map((c) => c.opts?.label)).toEqual(['classifyAndAct:classify:0', 'classifyAndAct:act:docs:0'])
+    expect(rt2.calls.map((c) => c.opts?.label)).toEqual(['classifyAndAct:classify:0', 'classifyAndAct:act:docs:0'])
+  })
+
+  it('digest.stage stays bare even on a salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: classifyOnAgentForSalting })
+    await classifyAndAct(rt, makeOptions({ items: ['item-0'] }))
+    await classifyAndAct(rt, makeOptions({ items: ['item-0'] }))
+
+    const digests = rt.logs.map(parseDigest).filter((d) => d?.stage === 'classifyAndAct')
+    expect(digests).toHaveLength(2)
+    for (const d of digests) expect(d?.stage).toBe('classifyAndAct')
+  })
+})

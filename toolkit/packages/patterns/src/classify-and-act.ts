@@ -15,6 +15,7 @@ import { warn, applyCap, makeRecord, emitDigest, assertAgentTypeOption } from '.
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { pipelineWithCacheWarm } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
+import { claimStageInstance, stageBuilder } from './stage-instance.js'
 
 const STAGE = 'classifyAndAct'
 
@@ -50,6 +51,18 @@ export interface ClassifyAndActOptions<TIn> {
   classifyType?: string
   phase?: string
   maxItems?: number
+  /** Per-invocation stage/label discriminator (card #1816036725248493168):
+   *  when this pattern is invoked more than once on the SAME rt object (e.g.
+   *  a caller re-invoking it per lens/category, or from inside a loop body),
+   *  each invocation's stage/label strings collide by default — this pins a
+   *  stable, author-meaningful suffix (` #<stageKey>`) instead of the
+   *  auto-assigned per-invocation counter. Must match `/^[A-Za-z0-9_.-]{1,32}$/`;
+   *  an invalid key is reported as a warning and the invocation falls back to
+   *  the auto counter (never throws). The auto counter is deterministic for
+   *  SEQUENTIALLY invoked patterns only — concurrent same-pattern invocations
+   *  (e.g. inside a caller's own rt.pipeline/rt.parallel) get completion-order
+   *  numbers, so pass stageKey there for a stable, resume-safe discriminator. */
+  stageKey?: string
   /** Stagger the per-item pipeline so item 0's classify call completes (and
    *  writes the shared system/tools prefix to the provider's prompt cache)
    *  BEFORE the remaining items' classify calls launch, instead of all N
@@ -101,7 +114,7 @@ export async function classifyAndAct<TIn, TOut = string>(
   rt: WorkflowRuntime,
   options: ClassifyAndActOptions<TIn>,
 ): Promise<PatternResult<Array<{ item: TIn; category: string; result: TOut }>>> {
-  const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems, cacheWarm } = options
+  const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems, stageKey, cacheWarm } = options
 
   // -------------------------------------------------------------------------
   // Synchronous validation — throw with actionable messages
@@ -146,6 +159,16 @@ export async function classifyAndAct<TIn, TOut = string>(
   let classifyFailures = 0
   let actionFailures = 0
   const warnings: string[] = []
+
+  // Claim this invocation's stage/label salt NOW — after every synchronous
+  // validation throw above (so a config-error call never consumes a counter
+  // slot) and before the first await (claim order = code order). `stg()`
+  // below is the shared per-call-site builder every stage in this function
+  // uses for BOTH its rt.agent label and its makeRecord stage (card
+  // #1816036725248493168, amendment A8).
+  const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey)
+  if (stageKeyWarning !== undefined) warn(rt, warnings, stageKeyWarning)
+  const stg = stageBuilder(STAGE, salt)
 
   // Pending per-item warnings (structured-output salvage diagnostics) accumulated
   // inside pipeline stage closures — buffered and emitted AFTER the pipeline
@@ -211,6 +234,10 @@ export async function classifyAndAct<TIn, TOut = string>(
     index: number,
   ): Promise<{ item: TIn; category: string }> => {
     const item = originalItem as TIn
+    // Built ONCE, used for both the rt.agent label and every makeRecord call
+    // below (card #1816036725248493168, amendment A8 — the label/stage
+    // coupling invariant).
+    const stage = stg(`classify:${index}`)
 
     const classifyOpts: {
       schema: JsonSchema
@@ -221,7 +248,7 @@ export async function classifyAndAct<TIn, TOut = string>(
       agentType?: string
     } = {
       schema: controlSchema,
-      label: `${STAGE}:classify:${index}`,
+      label: stage,
       ...(phase !== undefined ? { phase } : {}),
       ...(classifyModel !== undefined ? { model: classifyModel } : {}),
       ...(classifyEffort !== undefined ? { effort: classifyEffort } : {}),
@@ -238,7 +265,7 @@ export async function classifyAndAct<TIn, TOut = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0.5,
-        record: makeRecord(`${STAGE}:classify:${index}:salvage`, classifyOut.salvaged, {
+        record: makeRecord(`${stage}:salvage`, classifyOut.salvaged, {
           ...(classifyModel !== undefined ? { model: classifyModel } : {}),
           ...(classifyEffort !== undefined ? { effort: classifyEffort } : {}),
         }),
@@ -251,7 +278,7 @@ export async function classifyAndAct<TIn, TOut = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0,
-        record: makeRecord(`${STAGE}:classify:${index}`, false, {
+        record: makeRecord(stage, false, {
           ...(classifyModel !== undefined ? { model: classifyModel } : {}),
           ...(classifyEffort !== undefined ? { effort: classifyEffort } : {}),
         }),
@@ -266,7 +293,7 @@ export async function classifyAndAct<TIn, TOut = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0,
-        record: makeRecord(`${STAGE}:classify:${index}`, false, {
+        record: makeRecord(stage, false, {
           ...(classifyModel !== undefined ? { model: classifyModel } : {}),
           ...(classifyEffort !== undefined ? { effort: classifyEffort } : {}),
         }),
@@ -277,7 +304,7 @@ export async function classifyAndAct<TIn, TOut = string>(
     pendingTrail.push({
       itemIndex: index,
       stageOrder: 0,
-      record: makeRecord(`${STAGE}:classify:${index}`, true, {
+      record: makeRecord(stage, true, {
         ...(classifyModel !== undefined ? { model: classifyModel } : {}),
         ...(classifyEffort !== undefined ? { effort: classifyEffort } : {}),
         decision: classified.category,
@@ -304,6 +331,10 @@ export async function classifyAndAct<TIn, TOut = string>(
       throw new Error(`no action for category "${category}"`)
     }
 
+    // Built ONCE, used for both the rt.agent label and every makeRecord call
+    // below (card #1816036725248493168, amendment A8).
+    const stage = stg(`act:${category}:${index}`)
+
     const actOpts: {
       label: string
       phase?: string
@@ -312,7 +343,7 @@ export async function classifyAndAct<TIn, TOut = string>(
       effort?: EffortAlias
       agentType?: string
     } = {
-      label: `${STAGE}:act:${category}:${index}`,
+      label: stage,
       ...(phase !== undefined ? { phase } : {}),
       ...(spec.schema !== undefined ? { schema: spec.schema } : {}),
       ...(spec.model !== undefined ? { model: spec.model } : {}),
@@ -328,7 +359,7 @@ export async function classifyAndAct<TIn, TOut = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 1.5,
-        record: makeRecord(`${STAGE}:act:${category}:${index}:salvage`, actOut.salvaged, {
+        record: makeRecord(`${stage}:salvage`, actOut.salvaged, {
           ...(spec.model !== undefined ? { model: spec.model } : {}),
           ...(spec.effort !== undefined ? { effort: spec.effort } : {}),
         }),
@@ -341,7 +372,7 @@ export async function classifyAndAct<TIn, TOut = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 1,
-        record: makeRecord(`${STAGE}:act:${category}:${index}`, false, {
+        record: makeRecord(stage, false, {
           ...(spec.model !== undefined ? { model: spec.model } : {}),
           ...(spec.effort !== undefined ? { effort: spec.effort } : {}),
         }),
@@ -352,7 +383,7 @@ export async function classifyAndAct<TIn, TOut = string>(
     pendingTrail.push({
       itemIndex: index,
       stageOrder: 1,
-      record: makeRecord(`${STAGE}:act:${category}:${index}`, true, {
+      record: makeRecord(stage, true, {
         ...(spec.model !== undefined ? { model: spec.model } : {}),
         ...(spec.effort !== undefined ? { effort: spec.effort } : {}),
       }),

@@ -24,6 +24,7 @@ import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { parallelWithCacheWarm } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
 import type { StructuredCallOutcome } from './structured-salvage.js'
+import { claimStageInstance, stageBuilder } from './stage-instance.js'
 
 const STAGE = 'planAndExecute'
 
@@ -72,6 +73,17 @@ export interface PlanAndExecuteOptions<TWork> {
   synthesisType?: string
   phase?: string
   maxSubtasks?: number  // cap on planner output; truncation reported
+  /** Per-invocation stage/label discriminator (card #1816036725248493168):
+   *  when this pattern is invoked more than once on the SAME rt object, each
+   *  invocation's stage/label strings collide by default — this pins a
+   *  stable, author-meaningful suffix (` #<stageKey>`) instead of the
+   *  auto-assigned per-invocation counter. Must match `/^[A-Za-z0-9_.-]{1,32}$/`;
+   *  an invalid key is reported as a warning and the invocation falls back to
+   *  the auto counter (never throws). The auto counter is deterministic for
+   *  SEQUENTIALLY invoked patterns only — concurrent same-pattern invocations
+   *  (e.g. inside a caller's own rt.pipeline/rt.parallel) get completion-order
+   *  numbers, so pass stageKey there for a stable, resume-safe discriminator. */
+  stageKey?: string
   /** Stagger the worker fan-out so the first worker agent completes (and
    *  writes the shared system/tools prefix to the provider's prompt cache)
    *  BEFORE the remaining workers launch, instead of all N writing that
@@ -179,6 +191,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
     synthesisType,
     phase,
     maxSubtasks,
+    stageKey,
     cacheWarm,
   } = options
 
@@ -211,9 +224,20 @@ export async function planAndExecute<TWork = string, TOut = string>(
   const warnings: string[] = []
   const trail: TrailRecord[] = []
 
+  // Claim this invocation's stage/label salt NOW — after every synchronous
+  // validation throw above and before the first await (card
+  // #1816036725248493168, amendment A8).
+  const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey)
+  if (stageKeyWarning !== undefined) warn(rt, warnings, stageKeyWarning)
+  const stg = stageBuilder(STAGE, salt)
+
   // -------------------------------------------------------------------------
   // Stage 1 — Planner: single agent call to generate subtask decomposition
   // -------------------------------------------------------------------------
+
+  // Built ONCE, used for both the rt.agent label and every makeRecord call
+  // below (card #1816036725248493168, amendment A8).
+  const planStage = stg('plan')
 
   const planOpts: {
     schema: JsonSchema
@@ -224,7 +248,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
     agentType?: string
   } = {
     schema: PLAN_SCHEMA,
-    label: `${STAGE}:plan`,
+    label: planStage,
     ...(phase !== undefined ? { phase } : {}),
     ...(planModel !== undefined ? { model: planModel } : {}),
     ...(planEffort !== undefined ? { effort: planEffort } : {}),
@@ -239,7 +263,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
   // The planner's trail record(s) — the salvage respawn, when it fired, gets its own.
   const pushPlanSalvageRecord = (): void => {
     if (planOut.salvageAttempted) {
-      trail.push(makeRecord(`${STAGE}:plan:salvage`, planOut.salvaged, {
+      trail.push(makeRecord(`${planStage}:salvage`, planOut.salvaged, {
         ...(planModel !== undefined ? { model: planModel } : {}),
         ...(planEffort !== undefined ? { effort: planEffort } : {}),
       }))
@@ -249,7 +273,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
   if (plan === null) {
     warn(rt, warnings, 'planAndExecute: planner returned null — nothing executed')
 
-    trail.push(makeRecord(`${STAGE}:plan`, false, {
+    trail.push(makeRecord(planStage, false, {
       ...(planModel !== undefined ? { model: planModel } : {}),
       ...(planEffort !== undefined ? { effort: planEffort } : {}),
     }))
@@ -285,7 +309,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
   }
 
   // Planner succeeded — record it now that we know the post-cap subtask count.
-  trail.push(makeRecord(`${STAGE}:plan`, true, {
+  trail.push(makeRecord(planStage, true, {
     ...(planModel !== undefined ? { model: planModel } : {}),
     ...(planEffort !== undefined ? { effort: planEffort } : {}),
     decision: `subtasks=${keptSubtasks.length}`,
@@ -301,6 +325,11 @@ export async function planAndExecute<TWork = string, TOut = string>(
 
   const keptArray = keptSubtasks as PlannedSubtask[]
 
+  // Built ONCE per worker index, reused for BOTH the rt.agent label (in the
+  // thunk below) and makeRecord's stage (in the post-barrier collection loop)
+  // — card #1816036725248493168, amendment A8.
+  const workStages: string[] = keptArray.map((_, i) => stg(`work:${i}`))
+
   const workerThunks = keptArray.map((subtask, i) => async (): Promise<StructuredCallOutcome<TWork>> => {
     const opts: {
       label: string
@@ -310,7 +339,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
       effort?: EffortAlias
       agentType?: string
     } = {
-      label: `${STAGE}:work:${i}`,
+      label: workStages[i]!,
       ...(phase !== undefined ? { phase } : {}),
       ...(workerSchema !== undefined ? { schema: workerSchema } : {}),
       ...(workerModel !== undefined ? { model: workerModel } : {}),
@@ -333,13 +362,14 @@ export async function planAndExecute<TWork = string, TOut = string>(
   for (let i = 0; i < rawWorkerResults.length; i++) {
     const out = rawWorkerResults[i] as StructuredCallOutcome<TWork> | null
     const r = out?.value ?? null
+    const workStage = workStages[i]!
     agentsSpawned += out?.spawns ?? 1
-    trail.push(makeRecord(`${STAGE}:work:${i}`, r !== null, {
+    trail.push(makeRecord(workStage, r !== null, {
       ...(workerModel !== undefined ? { model: workerModel } : {}),
       ...(workerEffort !== undefined ? { effort: workerEffort } : {}),
     }))
     if (out !== null && out.salvageAttempted) {
-      trail.push(makeRecord(`${STAGE}:work:${i}:salvage`, out.salvaged, {
+      trail.push(makeRecord(`${workStage}:salvage`, out.salvaged, {
         ...(workerModel !== undefined ? { model: workerModel } : {}),
         ...(workerEffort !== undefined ? { effort: workerEffort } : {}),
       }))
@@ -384,6 +414,10 @@ export async function planAndExecute<TWork = string, TOut = string>(
   // Stage 3 — Synthesis over non-null worker results
   // -------------------------------------------------------------------------
 
+  // Built ONCE, used for both the rt.agent label and every makeRecord call
+  // below (card #1816036725248493168, amendment A8).
+  const synthesizeStage = stg('synthesize')
+
   const synthOpts: {
     label: string
     phase?: string
@@ -392,7 +426,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
     effort?: EffortAlias
     agentType?: string
   } = {
-    label: `${STAGE}:synthesize`,
+    label: synthesizeStage,
     ...(phase !== undefined ? { phase } : {}),
     ...(synthesisSchema !== undefined ? { schema: synthesisSchema } : {}),
     ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
@@ -404,12 +438,12 @@ export async function planAndExecute<TWork = string, TOut = string>(
   agentsSpawned += synthOut.spawns
   const synthesis = synthOut.value
 
-  trail.push(makeRecord(`${STAGE}:synthesize`, synthesis !== null, {
+  trail.push(makeRecord(synthesizeStage, synthesis !== null, {
     ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
     ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
   }))
   if (synthOut.salvageAttempted) {
-    trail.push(makeRecord(`${STAGE}:synthesize:salvage`, synthOut.salvaged, {
+    trail.push(makeRecord(`${synthesizeStage}:salvage`, synthOut.salvaged, {
       ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
       ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
     }))

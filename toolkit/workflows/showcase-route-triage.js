@@ -578,10 +578,40 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     return [...firstResult, ...restResults];
   }
 
+  // ../packages/patterns/src/stage-instance.ts
+  var registry = /* @__PURE__ */ new WeakMap();
+  var STAGE_KEY_PATTERN = /^[A-Za-z0-9_.-]{1,32}$/;
+  function claimStageInstance(rt, pattern, stageKey) {
+    if (stageKey !== void 0) {
+      if (STAGE_KEY_PATTERN.test(stageKey)) {
+        return { salt: ` #${stageKey}` };
+      }
+      const fallback = claimAuto(rt, pattern);
+      return {
+        salt: fallback.salt,
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (must match ${STAGE_KEY_PATTERN.source}) \u2014 falling back to the auto instance counter`
+      };
+    }
+    return claimAuto(rt, pattern);
+  }
+  function claimAuto(rt, pattern) {
+    let byPattern = registry.get(rt);
+    if (byPattern === void 0) {
+      byPattern = /* @__PURE__ */ new Map();
+      registry.set(rt, byPattern);
+    }
+    const n = (byPattern.get(pattern) ?? 0) + 1;
+    byPattern.set(pattern, n);
+    return { salt: n === 1 ? "" : ` #${n}` };
+  }
+  function stageBuilder(stage, salt) {
+    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
+  }
+
   // ../packages/patterns/src/classify-and-act.ts
   var STAGE = "classifyAndAct";
   async function classifyAndAct(rt, options) {
-    const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems, cacheWarm } = options;
+    const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems, stageKey, cacheWarm } = options;
     if (categories.length === 0) {
       throw new Error("classifyAndAct: categories must not be empty \u2014 provide at least one category");
     }
@@ -609,6 +639,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     let classifyFailures = 0;
     let actionFailures = 0;
     const warnings = [];
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE, salt);
     const pendingWarnings = [];
     const pendingTrail = [];
     if (truncated > 0) {
@@ -628,9 +661,10 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     };
     const classifyStage = async (_prev, originalItem, index) => {
       const item = originalItem;
+      const stage = stg(`classify:${index}`);
       const classifyOpts = {
         schema: controlSchema,
-        label: `${STAGE}:classify:${index}`,
+        label: stage,
         ...phase !== void 0 ? { phase } : {},
         ...classifyModel !== void 0 ? { model: classifyModel } : {},
         ...classifyEffort !== void 0 ? { effort: classifyEffort } : {},
@@ -643,7 +677,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0.5,
-          record: makeRecord(`${STAGE}:classify:${index}:salvage`, classifyOut.salvaged, {
+          record: makeRecord(`${stage}:salvage`, classifyOut.salvaged, {
             ...classifyModel !== void 0 ? { model: classifyModel } : {},
             ...classifyEffort !== void 0 ? { effort: classifyEffort } : {}
           })
@@ -655,7 +689,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0,
-          record: makeRecord(`${STAGE}:classify:${index}`, false, {
+          record: makeRecord(stage, false, {
             ...classifyModel !== void 0 ? { model: classifyModel } : {},
             ...classifyEffort !== void 0 ? { effort: classifyEffort } : {}
           })
@@ -667,7 +701,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0,
-          record: makeRecord(`${STAGE}:classify:${index}`, false, {
+          record: makeRecord(stage, false, {
             ...classifyModel !== void 0 ? { model: classifyModel } : {},
             ...classifyEffort !== void 0 ? { effort: classifyEffort } : {}
           })
@@ -677,7 +711,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0,
-        record: makeRecord(`${STAGE}:classify:${index}`, true, {
+        record: makeRecord(stage, true, {
           ...classifyModel !== void 0 ? { model: classifyModel } : {},
           ...classifyEffort !== void 0 ? { effort: classifyEffort } : {},
           decision: classified.category
@@ -692,8 +726,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         classifyFailures++;
         throw new Error(`no action for category "${category}"`);
       }
+      const stage = stg(`act:${category}:${index}`);
       const actOpts = {
-        label: `${STAGE}:act:${category}:${index}`,
+        label: stage,
         ...phase !== void 0 ? { phase } : {},
         ...spec.schema !== void 0 ? { schema: spec.schema } : {},
         ...spec.model !== void 0 ? { model: spec.model } : {},
@@ -707,7 +742,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 1.5,
-          record: makeRecord(`${STAGE}:act:${category}:${index}:salvage`, actOut.salvaged, {
+          record: makeRecord(`${stage}:salvage`, actOut.salvaged, {
             ...spec.model !== void 0 ? { model: spec.model } : {},
             ...spec.effort !== void 0 ? { effort: spec.effort } : {}
           })
@@ -719,7 +754,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 1,
-          record: makeRecord(`${STAGE}:act:${category}:${index}`, false, {
+          record: makeRecord(stage, false, {
             ...spec.model !== void 0 ? { model: spec.model } : {},
             ...spec.effort !== void 0 ? { effort: spec.effort } : {}
           })
@@ -729,7 +764,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 1,
-        record: makeRecord(`${STAGE}:act:${category}:${index}`, true, {
+        record: makeRecord(stage, true, {
           ...spec.model !== void 0 ? { model: spec.model } : {},
           ...spec.effort !== void 0 ? { effort: spec.effort } : {}
         })
@@ -798,7 +833,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     additionalProperties: false
   };
   async function scoreAndRank(rt, options) {
-    const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase, cacheWarm } = options;
+    const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase, stageKey, cacheWarm } = options;
     const combine = options.combine ?? ((scores) => scores.reduce((a, b) => a * b, 1));
     if (items.length < 1) {
       throw new Error(`scoreAndRank: items must be a non-empty array \u2014 got length ${items.length}`);
@@ -824,6 +859,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     let dropped = 0;
     const warnings = [];
     const { kept: keptItems, truncated } = applyCap(items, maxItems);
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE2, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE2, salt);
     const pendingTrail = [];
     const pendingWarnings = [];
     const tasks = [];
@@ -838,7 +876,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       if (dim === void 0 || item === void 0) return null;
       const model = dim.model ?? scoreModel;
       const effort = dim.effort ?? scoreEffort;
-      const label = `${STAGE2}:score:${t.itemIndex}:${dim.name}`;
+      const label = stg(`score:${t.itemIndex}:${dim.name}`);
       const opts = {
         schema: scoreSchema,
         label,

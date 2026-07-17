@@ -165,11 +165,21 @@ interface TrailEnrichment {
 }
 
 /** Index result.envelope.trail by `stage`, tolerant of any non-envelope result shape.
- *  CONFLICT-AWARE (same class as the observe-side effort-attribution HIGH): pattern stage
- *  strings carry no per-invocation salt, so a pattern invoked twice in one composition
- *  emits identical stages — the old unguarded set() enriched Decisions with the LAST
- *  call's entry. A stage recurring with DIFFERENT enrichment values is dropped entirely
- *  (ambiguous attribution — no enrichment beats a wrong one); recurring identically stays. */
+ *  CONFLICT-AWARE (same class as the observe-side effort-attribution HIGH): this guard
+ *  predates per-invocation stage salting (card #1816036725248493168) — at the time, pattern
+ *  stage strings carried no per-invocation discriminator, so a pattern invoked twice in one
+ *  composition on the SAME rt emitted IDENTICAL stages and the old unguarded set() enriched
+ *  Decisions with the LAST call's entry (silently wrong attribution for the earlier ones).
+ *  Salting HEALS this at the source for 7 of the 9 patterns (classifyAndAct,
+ *  generateAndFilter, adversarialVerification, planAndExecute, scoreAndRank,
+ *  fanOutAndSynthesize, chunkedAnalysis): each invocation's stage strings now carry a
+ *  terminal ` #<n>`/` #<key>` discriminator, so repeated invocations produce DISTINCT
+ *  stages and never collide here in the first place. tournament and loopUntilDone stay
+ *  unsalted (see their own JSDoc for why) — collisions from THOSE two, or from any journal
+ *  written before this card shipped (a legacy/resumed run), still land in this guard. Kept
+ *  as defense-in-depth, not redundant: a stage recurring with DIFFERENT enrichment values is
+ *  dropped entirely (ambiguous attribution — no enrichment beats a wrong one); recurring
+ *  identically stays. */
 function readEnvelopeTrail(result: unknown): Map<string, TrailEnrichment> {
   const map = new Map<string, TrailEnrichment>()
   const conflicted = new Set<string>()

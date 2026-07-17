@@ -562,3 +562,91 @@ describe('chunkedAnalysis — cacheWarm=true (staggered)', () => {
     expect(resultWarm.trail).toEqual(resultPlain.trail)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Stage salting (card #1816036725248493168) — per-invocation discriminator
+// ---------------------------------------------------------------------------
+
+describe('chunkedAnalysis — stage salting', () => {
+  const salterOnAgent = ({ opts }: { opts?: { label?: string } }): unknown =>
+    opts?.label?.includes(':synthesize') === true ? 'final' : 'a'
+
+  // A single-chunk input keeps the salted labels simple: one chunk (index 0)
+  // + one synthesis.
+  const singleChunkOpts = { input: 'only-one-chunk', maxChars: 100 }
+
+  it('two invocations on the SAME rt: first bare, second salted " #2" on every label', async () => {
+    const rt = new FakeRuntime({ onAgent: salterOnAgent })
+
+    await chunkedAnalysis(rt, makeOptions(singleChunkOpts))
+    const firstLabels = rt.calls.map((c) => c.opts?.label)
+
+    await chunkedAnalysis(rt, makeOptions(singleChunkOpts))
+    const secondLabels = rt.calls.slice(firstLabels.length).map((c) => c.opts?.label)
+
+    expect(firstLabels).toEqual(['chunkedAnalysis:chunk:0', 'chunkedAnalysis:synthesize'])
+    expect(secondLabels).toEqual(['chunkedAnalysis:chunk:0 #2', 'chunkedAnalysis:synthesize #2'])
+  })
+
+  it('trail.stage === the rt.agent label for the same step, on the salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: salterOnAgent })
+    await chunkedAnalysis(rt, makeOptions(singleChunkOpts))
+    const result = await chunkedAnalysis(rt, makeOptions(singleChunkOpts))
+
+    const secondCalls = rt.calls.slice(2)
+    for (const record of result.trail) {
+      const match = secondCalls.find((c) => c.opts?.label === record.stage)
+      expect(match, `no rt.agent call found with label === trail.stage "${record.stage}"`).toBeDefined()
+    }
+    expect(result.trail.map((r) => r.stage)).toEqual([
+      'chunkedAnalysis:chunk:0 #2',
+      'chunkedAnalysis:synthesize #2',
+    ])
+  })
+
+  it('an explicit stageKey salts every stage/label of that invocation, including a salvage record', async () => {
+    // the chunk call returns null once → structured-output salvage respawn
+    // fires (analyzeSchema forces the schema-bearing path so salvage is
+    // reachable, like fanOutAndSynthesize's twin test).
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => (opts?.label?.includes(':chunk:') === true ? null : 'not-json'),
+    })
+
+    const result = await chunkedAnalysis(rt, makeOptions({
+      ...singleChunkOpts,
+      analyzeSchema: { type: 'object', properties: { x: { type: 'string' } }, required: ['x'], additionalProperties: false },
+      stageKey: 'my-key',
+    }))
+
+    expect(rt.calls.map((c) => c.opts?.label)).toEqual([
+      'chunkedAnalysis:chunk:0 #my-key',
+      'chunkedAnalysis:chunk:0 #my-key:salvage',
+    ])
+    expect(result.trail.map((r) => r.stage)).toEqual([
+      'chunkedAnalysis:chunk:0 #my-key',
+      'chunkedAnalysis:chunk:0 #my-key:salvage',
+    ])
+    expect(result.warnings.join(' ')).not.toMatch(/stageKey/)
+  })
+
+  it('distinct rt instances stay isolated — both get the bare first invocation', async () => {
+    const rt1 = new FakeRuntime({ onAgent: salterOnAgent })
+    const rt2 = new FakeRuntime({ onAgent: salterOnAgent })
+
+    await chunkedAnalysis(rt1, makeOptions(singleChunkOpts))
+    await chunkedAnalysis(rt2, makeOptions(singleChunkOpts))
+
+    expect(rt1.calls.map((c) => c.opts?.label)).toEqual(['chunkedAnalysis:chunk:0', 'chunkedAnalysis:synthesize'])
+    expect(rt2.calls.map((c) => c.opts?.label)).toEqual(['chunkedAnalysis:chunk:0', 'chunkedAnalysis:synthesize'])
+  })
+
+  it('digest.stage stays bare even on a salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: salterOnAgent })
+    await chunkedAnalysis(rt, makeOptions(singleChunkOpts))
+    await chunkedAnalysis(rt, makeOptions(singleChunkOpts))
+
+    const digests = rt.logs.map(parseDigest).filter((d) => d?.stage === 'chunkedAnalysis')
+    expect(digests).toHaveLength(2)
+    for (const d of digests) expect(d?.stage).toBe('chunkedAnalysis')
+  })
+})

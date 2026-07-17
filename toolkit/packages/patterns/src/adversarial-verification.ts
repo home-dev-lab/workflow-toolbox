@@ -24,6 +24,7 @@ import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { runCacheWarmup } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
 import type { StructuredCallOutcome } from './structured-salvage.js'
+import { claimStageInstance, stageBuilder } from './stage-instance.js'
 
 const STAGE = 'adversarialVerification'
 
@@ -123,6 +124,22 @@ export interface AdversarialVerificationOptions<TClaim> {
    *  matters more than token/cache cost. See @workflow-toolbox/patterns'
    *  cache-warm.ts. */
   cacheWarm?: boolean
+  /** Per-invocation stage/label discriminator (card #1816036725248493168):
+   *  when this pattern is invoked more than once on the SAME rt object — the
+   *  flagship case is a caller running one adversarialVerification per lens
+   *  on a reused rt, e.g. pr-review's per-lens Verify stage — each
+   *  invocation's stage/label strings collide by default. This pins a
+   *  stable, author-meaningful suffix (` #<stageKey>`) instead of the
+   *  auto-assigned per-invocation counter, applied to every verifier label
+   *  AND the cache-warm label. Must match `/^[A-Za-z0-9_.-]{1,32}$/`; an
+   *  invalid key is reported as a warning and the invocation falls back to
+   *  the auto counter (never throws). The auto counter is deterministic for
+   *  SEQUENTIALLY invoked patterns only — concurrent same-pattern
+   *  invocations (e.g. inside a caller's own rt.pipeline/rt.parallel, one
+   *  lens per pipeline item with no barrier between items) get
+   *  completion-order numbers, so pass stageKey there for a stable,
+   *  resume-safe discriminator. */
+  stageKey?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +216,7 @@ export async function adversarialVerification<TClaim>(
     maxVerifyClaims,
     verifierType,
     cacheWarm,
+    stageKey,
   } = options
 
   const refuteThreshold = refuteThresholdOpt ?? 2
@@ -282,6 +300,13 @@ export async function adversarialVerification<TClaim>(
   const warnings: string[] = []
   const trail: TrailRecord[] = []
 
+  // Claim this invocation's stage/label salt NOW — after every synchronous
+  // validation throw above and before the first await (card
+  // #1816036725248493168, amendment A8).
+  const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey)
+  if (stageKeyWarning !== undefined) warn(rt, warnings, stageKeyWarning)
+  const stg = stageBuilder(STAGE, salt)
+
   // -------------------------------------------------------------------------
   // §8 Model-sensitivity guardrail: default BEST_MODEL; explicitly choosing
   // anything else → warning. Verification quality is model-sensitive: weaker
@@ -342,7 +367,10 @@ export async function adversarialVerification<TClaim>(
   // <vote>`, one level deeper).
   if (cacheWarm ?? true) {
     agentsSpawned++
-    trail.push(await runCacheWarmup(rt, warnings, `${STAGE}:warm`, STAGE, {
+    // A7: the warmup LABEL is salted (via the shared builder), but the 4th
+    // `patternName` arg stays the BARE STAGE — it is a prose prefix in
+    // runCacheWarmup's own warn() message, not a stage id.
+    trail.push(await runCacheWarmup(rt, warnings, stg('warm'), STAGE, {
       ...(phase !== undefined ? { phase } : {}),
       model: effectiveModel,
       ...(effort !== undefined ? { effort } : {}),
@@ -362,6 +390,13 @@ export async function adversarialVerification<TClaim>(
     (keptClaims as readonly TClaim[]).map(async (claim, claimIndex) => {
       // keptClaims is a prefix of claims, so indices align with perClaimVotes.
       const claimVotes = perClaimVotes[claimIndex] ?? votesOpt
+      // Built ONCE per (claimIndex, voteIndex) call site, reused for BOTH the
+      // rt.agent label (in the thunk below) and makeRecord's stage (in the
+      // post-barrier tally loop) — card #1816036725248493168, amendment A8.
+      const voteStages: string[] = Array.from(
+        { length: claimVotes },
+        (_: unknown, voteIndex: number) => stg(`verify:${claimIndex}:${voteIndex}`),
+      )
       const voteThunks = Array.from({ length: claimVotes }, (_: unknown, voteIndex: number) => {
         return async (): Promise<StructuredCallOutcome<VerifierVote>> => {
           const lens = lenses !== undefined ? lenses[voteIndex] : undefined
@@ -376,7 +411,7 @@ export async function adversarialVerification<TClaim>(
             agentType?: string
           } = {
             schema: VERIFIER_SCHEMA,
-            label: `${STAGE}:verify:${claimIndex}:${voteIndex}`,
+            label: voteStages[voteIndex]!,
             ...(phase !== undefined ? { phase } : {}),
             model: effectiveModel,
             ...(effort !== undefined ? { effort } : {}),
@@ -408,9 +443,10 @@ export async function adversarialVerification<TClaim>(
       for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
         const out = voteOuts[voteIndex] ?? null
         const vote = votes[voteIndex] ?? null
+        const stage = voteStages[voteIndex]!
         agentsSpawned += out?.spawns ?? 1
         claimRecords.push(makeRecord(
-          `${STAGE}:verify:${claimIndex}:${voteIndex}`,
+          stage,
           vote !== null,
           {
             model: effectiveModel,
@@ -420,7 +456,7 @@ export async function adversarialVerification<TClaim>(
         ))
         if (out !== null && out.salvageAttempted) {
           claimRecords.push(makeRecord(
-            `${STAGE}:verify:${claimIndex}:${voteIndex}:salvage`,
+            `${stage}:salvage`,
             out.salvaged,
             {
               model: effectiveModel,

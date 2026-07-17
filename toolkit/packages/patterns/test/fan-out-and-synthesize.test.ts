@@ -762,3 +762,91 @@ describe('fanOutAndSynthesize — trail: effort override', () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// Stage salting (card #1816036725248493168) — per-invocation discriminator
+// ---------------------------------------------------------------------------
+
+describe('fanOutAndSynthesize — stage salting', () => {
+  const salterOnAgent = ({ opts }: { opts?: { label?: string } }): unknown =>
+    opts?.label?.includes(':synthesize') === true ? 'synth' : 'part'
+
+  const singleTaskOpts = { tasks: ['task-0'] }
+
+  it('two invocations on the SAME rt: first bare, second salted " #2" on every label', async () => {
+    const rt = new FakeRuntime({ onAgent: salterOnAgent })
+
+    await fanOutAndSynthesize(rt, makeOptions(singleTaskOpts))
+    const firstLabels = rt.calls.map((c) => c.opts?.label)
+
+    await fanOutAndSynthesize(rt, makeOptions(singleTaskOpts))
+    const secondLabels = rt.calls.slice(firstLabels.length).map((c) => c.opts?.label)
+
+    expect(firstLabels).toEqual(['fanOutAndSynthesize:task:0', 'fanOutAndSynthesize:synthesize'])
+    expect(secondLabels).toEqual(['fanOutAndSynthesize:task:0 #2', 'fanOutAndSynthesize:synthesize #2'])
+  })
+
+  it('trail.stage === the rt.agent label for the same step, on the salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: salterOnAgent })
+    await fanOutAndSynthesize(rt, makeOptions(singleTaskOpts))
+    const result = await fanOutAndSynthesize(rt, makeOptions(singleTaskOpts))
+
+    const secondCalls = rt.calls.slice(2)
+    for (const record of result.trail) {
+      const match = secondCalls.find((c) => c.opts?.label === record.stage)
+      expect(match, `no rt.agent call found with label === trail.stage "${record.stage}"`).toBeDefined()
+    }
+    expect(result.trail.map((r) => r.stage)).toEqual([
+      'fanOutAndSynthesize:task:0 #2',
+      'fanOutAndSynthesize:synthesize #2',
+    ])
+  })
+
+  it('an explicit stageKey salts every stage/label of that invocation, including a salvage record', async () => {
+    // the task call returns null once → structured-output salvage respawn
+    // fires (fanOutAndSynthesize's task has no schema by default, so — like
+    // classifyAndAct's generate stage — the native call goes through the
+    // schema-less passthrough and salvage never fires there; use taskSchema
+    // to force the schema-bearing path).
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => (opts?.label?.includes(':task:') === true ? null : 'not-json'),
+    })
+
+    const result = await fanOutAndSynthesize(rt, makeOptions({
+      ...singleTaskOpts,
+      taskSchema: { type: 'object', properties: { x: { type: 'string' } }, required: ['x'], additionalProperties: false },
+      stageKey: 'my-key',
+    }))
+
+    expect(rt.calls.map((c) => c.opts?.label)).toEqual([
+      'fanOutAndSynthesize:task:0 #my-key',
+      'fanOutAndSynthesize:task:0 #my-key:salvage',
+    ])
+    expect(result.trail.map((r) => r.stage)).toEqual([
+      'fanOutAndSynthesize:task:0 #my-key',
+      'fanOutAndSynthesize:task:0 #my-key:salvage',
+    ])
+    expect(result.warnings.join(' ')).not.toMatch(/stageKey/)
+  })
+
+  it('distinct rt instances stay isolated — both get the bare first invocation', async () => {
+    const rt1 = new FakeRuntime({ onAgent: salterOnAgent })
+    const rt2 = new FakeRuntime({ onAgent: salterOnAgent })
+
+    await fanOutAndSynthesize(rt1, makeOptions(singleTaskOpts))
+    await fanOutAndSynthesize(rt2, makeOptions(singleTaskOpts))
+
+    expect(rt1.calls.map((c) => c.opts?.label)).toEqual(['fanOutAndSynthesize:task:0', 'fanOutAndSynthesize:synthesize'])
+    expect(rt2.calls.map((c) => c.opts?.label)).toEqual(['fanOutAndSynthesize:task:0', 'fanOutAndSynthesize:synthesize'])
+  })
+
+  it('digest.stage stays bare even on a salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: salterOnAgent })
+    await fanOutAndSynthesize(rt, makeOptions(singleTaskOpts))
+    await fanOutAndSynthesize(rt, makeOptions(singleTaskOpts))
+
+    const digests = rt.logs.map(parseDigest).filter((d) => d?.stage === 'fanOutAndSynthesize')
+    expect(digests).toHaveLength(2)
+    for (const d of digests) expect(d?.stage).toBe('fanOutAndSynthesize')
+  })
+})

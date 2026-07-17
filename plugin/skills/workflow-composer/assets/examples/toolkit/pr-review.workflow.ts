@@ -1062,6 +1062,16 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       // probe-resolved above. Omitted when null → the standard subagent (default,
       // also the graceful-fallback path when the requested type could not answer).
       ...(resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}),
+      // Per-lens stage/label discriminator (card #1816036725248493168,
+      // amendment A2 — the flagship remediation of the original finding, run
+      // wf_7b5bb844-368): this verifyStage runs once per lens via
+      // rt.pipeline's no-barrier per-item stages, all on the SAME `rt` — the
+      // auto salt counter would assign completion-order numbers (concurrent
+      // invocations), non-deterministic across resumeFromRunId replays. The
+      // lens name is a stable, author-meaningful key instead: every real lens
+      // (base categories, 'docs-alignment', 'docs-coverage', 'consolidated')
+      // matches the stageKey whitelist (`/^[A-Za-z0-9_.-]{1,32}$/`).
+      stageKey: lens,
       claims: findings,
       renderClaim: (finding) =>
         `## Claim to verify (lens: ${lens})\n` +

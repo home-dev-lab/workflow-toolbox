@@ -613,11 +613,41 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     });
   }
 
+  // ../packages/patterns/src/stage-instance.ts
+  var registry = /* @__PURE__ */ new WeakMap();
+  var STAGE_KEY_PATTERN = /^[A-Za-z0-9_.-]{1,32}$/;
+  function claimStageInstance(rt, pattern, stageKey) {
+    if (stageKey !== void 0) {
+      if (STAGE_KEY_PATTERN.test(stageKey)) {
+        return { salt: ` #${stageKey}` };
+      }
+      const fallback = claimAuto(rt, pattern);
+      return {
+        salt: fallback.salt,
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (must match ${STAGE_KEY_PATTERN.source}) \u2014 falling back to the auto instance counter`
+      };
+    }
+    return claimAuto(rt, pattern);
+  }
+  function claimAuto(rt, pattern) {
+    let byPattern = registry.get(rt);
+    if (byPattern === void 0) {
+      byPattern = /* @__PURE__ */ new Map();
+      registry.set(rt, byPattern);
+    }
+    const n = (byPattern.get(pattern) ?? 0) + 1;
+    byPattern.set(pattern, n);
+    return { salt: n === 1 ? "" : ` #${n}` };
+  }
+  function stageBuilder(stage, salt) {
+    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
+  }
+
   // ../packages/patterns/src/generate-and-filter.ts
   var STAGE = "generateAndFilter";
   var REJECTED = /* @__PURE__ */ Symbol("generate-and-filter:REJECTED");
   async function generateAndFilter(rt, options) {
-    const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase, cacheWarm } = options;
+    const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase, stageKey, cacheWarm } = options;
     if (count < 1) {
       throw new Error(
         `generateAndFilter: count must be >= 1, got ${count} \u2014 set count to a positive integer`
@@ -629,6 +659,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     let generateFailures = 0;
     let filterFailures = 0;
     const warnings = [];
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE, salt);
     const pendingTrail = [];
     const pendingWarnings = [];
     const filterSchema = {
@@ -641,8 +674,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       additionalProperties: false
     };
     const generateStage = async (_prev, _originalItem, index) => {
+      const stage = stg(`generate:${index}`);
       const genOpts = {
-        label: `${STAGE}:generate:${index}`,
+        label: stage,
         ...phase !== void 0 ? { phase } : {},
         ...generateSchema !== void 0 ? { schema: generateSchema } : {},
         ...generateModel !== void 0 ? { model: generateModel } : {},
@@ -656,7 +690,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0.5,
-          record: makeRecord(`${STAGE}:generate:${index}:salvage`, genOut.salvaged, {
+          record: makeRecord(`${stage}:salvage`, genOut.salvaged, {
             ...generateModel !== void 0 ? { model: generateModel } : {},
             ...generateEffort !== void 0 ? { effort: generateEffort } : {}
           })
@@ -668,7 +702,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0,
-          record: makeRecord(`${STAGE}:generate:${index}`, false, {
+          record: makeRecord(stage, false, {
             ...generateModel !== void 0 ? { model: generateModel } : {},
             ...generateEffort !== void 0 ? { effort: generateEffort } : {}
           })
@@ -678,7 +712,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0,
-        record: makeRecord(`${STAGE}:generate:${index}`, true, {
+        record: makeRecord(stage, true, {
           ...generateModel !== void 0 ? { model: generateModel } : {},
           ...generateEffort !== void 0 ? { effort: generateEffort } : {}
         })
@@ -687,9 +721,10 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     };
     const filterStage = async (prev, _originalItem, index) => {
       const candidate = prev;
+      const stage = stg(`filter:${index}`);
       const filterOpts = {
         schema: filterSchema,
-        label: `${STAGE}:filter:${index}`,
+        label: stage,
         ...phase !== void 0 ? { phase } : {},
         ...filterModel !== void 0 ? { model: filterModel } : {},
         ...filterEffort !== void 0 ? { effort: filterEffort } : {},
@@ -706,7 +741,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 1.5,
-          record: makeRecord(`${STAGE}:filter:${index}:salvage`, filterOut.salvaged, {
+          record: makeRecord(`${stage}:salvage`, filterOut.salvaged, {
             ...filterModel !== void 0 ? { model: filterModel } : {},
             ...filterEffort !== void 0 ? { effort: filterEffort } : {}
           })
@@ -718,7 +753,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 1,
-          record: makeRecord(`${STAGE}:filter:${index}`, false, {
+          record: makeRecord(stage, false, {
             ...filterModel !== void 0 ? { model: filterModel } : {},
             ...filterEffort !== void 0 ? { effort: filterEffort } : {}
           })
@@ -728,7 +763,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 1,
-        record: makeRecord(`${STAGE}:filter:${index}`, true, {
+        record: makeRecord(stage, true, {
           ...filterModel !== void 0 ? { model: filterModel } : {},
           ...filterEffort !== void 0 ? { effort: filterEffort } : {},
           decision: verdict.pass ? "pass" : "fail"
@@ -825,7 +860,8 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       phase,
       maxVerifyClaims,
       verifierType,
-      cacheWarm
+      cacheWarm,
+      stageKey
     } = options;
     const refuteThreshold = refuteThresholdOpt ?? 2;
     if (claims.length === 0) {
@@ -881,6 +917,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     let agentsSpawned = 0;
     const warnings = [];
     const trail = [];
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE2, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE2, salt);
     const effectiveModel = model ?? BEST_MODEL;
     if (model !== void 0 && model !== BEST_MODEL) {
       warn(
@@ -906,7 +945,7 @@ ${renderClaim(claim)}`;
     }
     if (cacheWarm ?? true) {
       agentsSpawned++;
-      trail.push(await runCacheWarmup(rt, warnings, `${STAGE2}:warm`, STAGE2, {
+      trail.push(await runCacheWarmup(rt, warnings, stg("warm"), STAGE2, {
         ...phase !== void 0 ? { phase } : {},
         model: effectiveModel,
         ...effort !== void 0 ? { effort } : {},
@@ -918,13 +957,17 @@ ${renderClaim(claim)}`;
     const verifiedKept = await Promise.all(
       keptClaims.map(async (claim, claimIndex) => {
         const claimVotes = perClaimVotes[claimIndex] ?? votesOpt;
+        const voteStages = Array.from(
+          { length: claimVotes },
+          (_, voteIndex) => stg(`verify:${claimIndex}:${voteIndex}`)
+        );
         const voteThunks = Array.from({ length: claimVotes }, (_, voteIndex) => {
           return async () => {
             const lens = lenses !== void 0 ? lenses[voteIndex] : void 0;
             const prompt = buildVerifierPrompt(claim, lens);
             const opts = {
               schema: VERIFIER_SCHEMA,
-              label: `${STAGE2}:verify:${claimIndex}:${voteIndex}`,
+              label: voteStages[voteIndex],
               ...phase !== void 0 ? { phase } : {},
               model: effectiveModel,
               ...effort !== void 0 ? { effort } : {},
@@ -943,9 +986,10 @@ ${renderClaim(claim)}`;
         for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
           const out = voteOuts[voteIndex] ?? null;
           const vote = votes[voteIndex] ?? null;
+          const stage = voteStages[voteIndex];
           agentsSpawned += out?.spawns ?? 1;
           claimRecords.push(makeRecord(
-            `${STAGE2}:verify:${claimIndex}:${voteIndex}`,
+            stage,
             vote !== null,
             {
               model: effectiveModel,
@@ -955,7 +999,7 @@ ${renderClaim(claim)}`;
           ));
           if (out !== null && out.salvageAttempted) {
             claimRecords.push(makeRecord(
-              `${STAGE2}:verify:${claimIndex}:${voteIndex}:salvage`,
+              `${stage}:salvage`,
               out.salvaged,
               {
                 model: effectiveModel,
@@ -1222,6 +1266,7 @@ ${renderClaim(claim)}`;
       synthesizeType,
       phase,
       maxChunks,
+      stageKey,
       cacheWarm
     } = options;
     assertAgentTypeOption(STAGE4, "analyzeType", analyzeType);
@@ -1243,6 +1288,9 @@ ${renderClaim(claim)}`;
     const trail = [];
     const { kept: keptChunks, truncated } = applyCap(chunks, maxChunks);
     const total = keptChunks.length;
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE4, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE4, salt);
     if (truncated > 0) {
       warn(
         rt,
@@ -1251,9 +1299,10 @@ ${renderClaim(claim)}`;
       );
     }
     const keptArray = keptChunks;
+    const chunkStages = keptArray.map((_, i) => stg(`chunk:${i}`));
     const analyzeThunks = keptArray.map((chunk, i) => async () => {
       const opts = {
-        label: `${STAGE4}:chunk:${i}`,
+        label: chunkStages[i],
         ...phase !== void 0 ? { phase } : {},
         ...analyzeSchema !== void 0 ? { schema: analyzeSchema } : {},
         ...analyzeModel !== void 0 ? { model: analyzeModel } : {},
@@ -1268,13 +1317,14 @@ ${renderClaim(claim)}`;
     for (let i = 0; i < analyzeResults.length; i++) {
       const out = analyzeResults[i];
       const r = out?.value ?? null;
+      const chunkStage = chunkStages[i];
       agentsSpawned += out?.spawns ?? 1;
-      trail.push(makeRecord(`${STAGE4}:chunk:${i}`, r !== null, {
+      trail.push(makeRecord(chunkStage, r !== null, {
         ...analyzeModel !== void 0 ? { model: analyzeModel } : {},
         ...analyzeEffort !== void 0 ? { effort: analyzeEffort } : {}
       }));
       if (out !== null && out.salvageAttempted) {
-        trail.push(makeRecord(`${STAGE4}:chunk:${i}:salvage`, out.salvaged, {
+        trail.push(makeRecord(`${chunkStage}:salvage`, out.salvaged, {
           ...analyzeModel !== void 0 ? { model: analyzeModel } : {},
           ...analyzeEffort !== void 0 ? { effort: analyzeEffort } : {}
         }));
@@ -1297,8 +1347,9 @@ ${renderClaim(claim)}`;
     if (chunkResults.length === 0) {
       warn(rt, warnings, "chunkedAnalysis: every chunk analysis was null; synthesis skipped");
     } else {
+      const synthesizeStage = stg("synthesize");
       const synthOpts = {
-        label: `${STAGE4}:synthesize`,
+        label: synthesizeStage,
         ...phase !== void 0 ? { phase } : {},
         ...synthesizeSchema !== void 0 ? { schema: synthesizeSchema } : {},
         ...synthesizeModel !== void 0 ? { model: synthesizeModel } : {},
@@ -1308,12 +1359,12 @@ ${renderClaim(claim)}`;
       const synthOut = await agentWithSchemaSalvage(rt, synthesizePrompt(chunkResults), synthOpts);
       agentsSpawned += synthOut.spawns;
       const synthesis = synthOut.value;
-      trail.push(makeRecord(`${STAGE4}:synthesize`, synthesis !== null, {
+      trail.push(makeRecord(synthesizeStage, synthesis !== null, {
         ...synthesizeModel !== void 0 ? { model: synthesizeModel } : {},
         ...synthesizeEffort !== void 0 ? { effort: synthesizeEffort } : {}
       }));
       if (synthOut.salvageAttempted) {
-        trail.push(makeRecord(`${STAGE4}:synthesize:salvage`, synthOut.salvaged, {
+        trail.push(makeRecord(`${synthesizeStage}:salvage`, synthOut.salvaged, {
           ...synthesizeModel !== void 0 ? { model: synthesizeModel } : {},
           ...synthesizeEffort !== void 0 ? { effort: synthesizeEffort } : {}
         }));

@@ -35,6 +35,32 @@
 // - Config errors throw synchronously at entry with actionable messages.
 // - Body throws propagate (programmer errors must not be swallowed).
 // - No phase option — the body's agents own their own phase context.
+//
+// NOT SALTED (card #1816036725248493168, amendment A1): 7 of the 9 patterns
+// gained a `stageKey?` option + a per-invocation auto salt (a terminal
+// ` #<n>`/` #<key>` suffix) so repeated invocations on the same rt no longer
+// collide. loopUntilDone itself is DELIBERATELY EXCLUDED: its unlabelled-body
+// form emits the exact label `loopUntilDone:iter:<n>`, exact-regex-parsed by
+// the fenced observatory's `loopIterOf` (`^loopUntilDone:iter:(\d+)$`,
+// digest.ts's `isLoopIterLabel` sibling) to group loop rounds — a salt would
+// break that match. Its trail semantics also differ from every other pattern
+// (per-ITERATION ticks, not per-agent-spawn records — see buildResult below),
+// so the collision this card targets does not really apply here the same way.
+//
+// INTERACTION with the SALTED patterns (informational, not a defect): a loop
+// body that invokes one of the 7 salted patterns (e.g. generateAndFilter,
+// scoreAndRank — see examples/loop-demo.workflow.ts's cross-phase loop) does
+// so on `countingRt`, the SAME wrapper object across every iteration of one
+// loopUntilDone call. From iteration 2 onward, that nested pattern now
+// SALTS — e.g. `generateAndFilter:generate:0 #2 ⟲2` (auto salt first, THEN
+// this loop's own ` ⟲<n>` marker appended, since the marker is always
+// terminal-after-the-label). This is the multi-invocation case the card
+// targets working exactly as designed, not a special case to guard: the
+// fenced observatory's topology join tolerates it (both sides of the
+// attempt/rest comparisons salt identically), and `isLoopIterLabel` still
+// finds the marker regardless of what precedes it. Iteration 1 stays bare
+// (`… ⟲1`), so any prior single-iteration illustration/doc referring to that
+// exact shape remains accurate.
 
 import type { AgentOptions, WorkflowRuntime } from '@workflow-toolbox/runtime'
 import { LOOP_STAGE, LOOP_ITER_MARKER } from '@workflow-toolbox/runtime'

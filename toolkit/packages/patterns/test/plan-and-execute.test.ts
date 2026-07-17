@@ -1075,3 +1075,100 @@ describe('planAndExecute — cacheWarm=true (staggered)', () => {
     expect(resultWarm.trail).toEqual(resultPlain.trail)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Stage salting (card #1816036725248493168) — per-invocation discriminator
+// ---------------------------------------------------------------------------
+
+describe('planAndExecute — stage salting', () => {
+  // Salt-agnostic routing: matches by SUBSTRING (never exact-equality), so a
+  // terminal ` #<n>`/` #<key>` suffix or a `:salvage` continuation never
+  // confuses the classification (amendment A4 — salt-safe test routing).
+  const saltingOnAgent = ({ opts }: { opts?: { label?: string } }): unknown => {
+    const label = opts?.label ?? ''
+    if (label.includes(':work:')) return 'r'
+    if (label.includes(':synthesize')) return 'done'
+    return makePlan(['s0']) // plan (and its :salvage respawn) fallback
+  }
+
+  it('two invocations on the SAME rt: first bare, second salted " #2" on every label', async () => {
+    const rt = new FakeRuntime({ onAgent: saltingOnAgent })
+
+    await planAndExecute(rt, makeOptions())
+    const firstLabels = rt.calls.map((c) => c.opts?.label)
+
+    await planAndExecute(rt, makeOptions())
+    const secondLabels = rt.calls.slice(firstLabels.length).map((c) => c.opts?.label)
+
+    expect(firstLabels).toEqual(['planAndExecute:plan', 'planAndExecute:work:0', 'planAndExecute:synthesize'])
+    expect(secondLabels).toEqual([
+      'planAndExecute:plan #2',
+      'planAndExecute:work:0 #2',
+      'planAndExecute:synthesize #2',
+    ])
+  })
+
+  it('trail.stage === the rt.agent label for the same step, on the salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: saltingOnAgent })
+    await planAndExecute(rt, makeOptions())
+    const result = await planAndExecute(rt, makeOptions())
+
+    const secondCalls = rt.calls.slice(3)
+    for (const record of result.trail) {
+      const match = secondCalls.find((c) => c.opts?.label === record.stage)
+      expect(match, `no rt.agent call found with label === trail.stage "${record.stage}"`).toBeDefined()
+    }
+    expect(result.trail.map((r) => r.stage)).toEqual([
+      'planAndExecute:plan #2',
+      'planAndExecute:work:0 #2',
+      'planAndExecute:synthesize #2',
+    ])
+  })
+
+  it('an explicit stageKey salts every stage/label of that invocation, including a salvage record', async () => {
+    // plan returns null once → structured-output salvage respawn fires; its
+    // schema-less answer ('r', not JSON) is also unparsable, so salvage fails
+    // too — both the primary plan and the salvage trail records get created,
+    // and everything downstream (work/synthesize never run) is absent.
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label.includes(':plan')) return null
+        return 'r'
+      },
+    })
+
+    const result = await planAndExecute(rt, makeOptions({ stageKey: 'my-key' }))
+
+    expect(rt.calls.map((c) => c.opts?.label)).toEqual([
+      'planAndExecute:plan #my-key',
+      'planAndExecute:plan #my-key:salvage',
+    ])
+    expect(result.trail.map((r) => r.stage)).toEqual([
+      'planAndExecute:plan #my-key',
+      'planAndExecute:plan #my-key:salvage',
+    ])
+    expect(result.warnings.join(' ')).not.toMatch(/stageKey/)
+  })
+
+  it('distinct rt instances stay isolated — both get the bare first invocation', async () => {
+    const rt1 = new FakeRuntime({ onAgent: saltingOnAgent })
+    const rt2 = new FakeRuntime({ onAgent: saltingOnAgent })
+
+    await planAndExecute(rt1, makeOptions())
+    await planAndExecute(rt2, makeOptions())
+
+    expect(rt1.calls.map((c) => c.opts?.label)).toEqual(['planAndExecute:plan', 'planAndExecute:work:0', 'planAndExecute:synthesize'])
+    expect(rt2.calls.map((c) => c.opts?.label)).toEqual(['planAndExecute:plan', 'planAndExecute:work:0', 'planAndExecute:synthesize'])
+  })
+
+  it('digest.stage stays bare even on a salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: saltingOnAgent })
+    await planAndExecute(rt, makeOptions())
+    await planAndExecute(rt, makeOptions())
+
+    const digests = rt.logs.map(parseDigest).filter((d) => d?.stage === 'planAndExecute')
+    expect(digests).toHaveLength(2)
+    for (const d of digests) expect(d?.stage).toBe('planAndExecute')
+  })
+})

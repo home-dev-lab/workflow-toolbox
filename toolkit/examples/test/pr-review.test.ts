@@ -202,6 +202,36 @@ describe('pr-review happy path', () => {
       ]).toContain(f.verdict)
     }
   })
+
+  // Card #1816036725248493168, amendment A2 — the flagship remediation: every
+  // lens's adversarialVerification call now passes an explicit `stageKey:
+  // lens`, so the 4 concurrent per-lens verify invocations (one rt.pipeline
+  // item each, no barrier between lenses — non-deterministic completion
+  // order) get a STABLE, resume-deterministic discriminator instead of the
+  // auto counter's completion-order numbers.
+  it('salts each lens\'s adversarialVerification calls with its OWN stageKey (never a shared/auto counter)', async () => {
+    const rt = makeHappyPathRuntime() // classify → 'bugfix' → 4 lenses
+    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+
+    const verifyLabels = rt.calls
+      .map((c) => c.opts?.label)
+      .filter((l): l is string => typeof l === 'string' && l.startsWith('adversarialVerification:verify:'))
+
+    expect(verifyLabels.length).toBeGreaterThan(0)
+    const BUGFIX_LENSES = ['root-cause', 'regression-risk', 'test-coverage', 'maintainability']
+    // Every verify label carries a TERMINAL ` #<lens>` suffix naming one of
+    // this category's own lenses — never bare, never a numeric auto-counter.
+    for (const label of verifyLabels) {
+      const suffixed = BUGFIX_LENSES.some((lens) => label.endsWith(` #${lens}`))
+      expect(suffixed, `label "${label}" does not end with " #<one of bugfix's lenses>"`).toBe(true)
+      expect(label).not.toMatch(/ #\d+$/) // never the numeric auto-counter form
+    }
+    // All 4 lenses are represented — none collapsed onto a shared salt.
+    const saltsUsed = new Set(
+      verifyLabels.map((l) => BUGFIX_LENSES.find((lens) => l.endsWith(` #${lens}`))).filter(Boolean),
+    )
+    expect(saltsUsed).toEqual(new Set(BUGFIX_LENSES))
+  })
 })
 
 // ---------------------------------------------------------------------------

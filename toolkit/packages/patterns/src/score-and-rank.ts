@@ -36,6 +36,7 @@ import { warn, makeRecord, applyCap, emitDigest, assertAgentTypeOption } from '.
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { parallelWithCacheWarm } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
+import { claimStageInstance, stageBuilder } from './stage-instance.js'
 
 const STAGE = 'scoreAndRank'
 
@@ -96,6 +97,17 @@ export interface ScoreAndRankOptions<TItem> {
    *  stats.truncated; the first `maxItems` items are kept, in input order). */
   maxItems?: number
   phase?: string
+  /** Per-invocation stage/label discriminator (card #1816036725248493168):
+   *  when this pattern is invoked more than once on the SAME rt object, each
+   *  invocation's stage/label strings collide by default — this pins a
+   *  stable, author-meaningful suffix (` #<stageKey>`) instead of the
+   *  auto-assigned per-invocation counter. Must match `/^[A-Za-z0-9_.-]{1,32}$/`;
+   *  an invalid key is reported as a warning and the invocation falls back to
+   *  the auto counter (never throws). The auto counter is deterministic for
+   *  SEQUENTIALLY invoked patterns only — concurrent same-pattern invocations
+   *  (e.g. inside a caller's own rt.pipeline/rt.parallel) get completion-order
+   *  numbers, so pass stageKey there for a stable, resume-safe discriminator. */
+  stageKey?: string
   /** Stagger the (item, dimension) score burst so the FIRST scoring agent
    *  completes (and writes the shared system/tools prefix to the provider's
    *  prompt cache) BEFORE the rest launch, instead of all of them writing
@@ -164,7 +176,7 @@ export async function scoreAndRank<TItem = string>(
   rt: WorkflowRuntime,
   options: ScoreAndRankOptions<TItem>,
 ): Promise<PatternResult<ScoredItem<TItem>[]>> {
-  const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase, cacheWarm } = options
+  const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase, stageKey, cacheWarm } = options
   const combine = options.combine ?? ((scores: number[]): number => scores.reduce((a, b) => a * b, 1))
 
   // -------------------------------------------------------------------------
@@ -203,7 +215,15 @@ export async function scoreAndRank<TItem = string>(
   let dropped = 0
   const warnings: string[] = []
 
+  // applyCap throws synchronously when maxItems < 1
   const { kept: keptItems, truncated } = applyCap(items, maxItems)
+
+  // Claim this invocation's stage/label salt NOW — after every synchronous
+  // validation throw above and before the first await (card
+  // #1816036725248493168, amendment A8).
+  const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey)
+  if (stageKeyWarning !== undefined) warn(rt, warnings, stageKeyWarning)
+  const stg = stageBuilder(STAGE, salt)
 
   // Pending trail entries; sorted by a deterministic global order after the
   // parallel barrier (parallel completion order is non-deterministic).
@@ -237,7 +257,7 @@ export async function scoreAndRank<TItem = string>(
 
     const model = dim.model ?? scoreModel
     const effort = dim.effort ?? scoreEffort
-    const label = `${STAGE}:score:${t.itemIndex}:${dim.name}`
+    const label = stg(`score:${t.itemIndex}:${dim.name}`)
     const opts: { schema: JsonSchema; label: string; phase?: string; model?: ModelAlias; effort?: EffortAlias; agentType?: string } = {
       schema: scoreSchema,
       label,
