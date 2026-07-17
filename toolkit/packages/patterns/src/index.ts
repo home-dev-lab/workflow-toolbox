@@ -24,6 +24,9 @@ export {
 } from './structured-salvage.js'
 export type { StructuredCallOutcome, SchemaViolation } from './structured-salvage.js'
 
+export { autoSelectEffort, deterministicEffortOf } from './auto-effort.js'
+export type { AutoSelectEffortOptions, AutoSelectEffortResult, EffortSignals, EffortWorkItem } from './auto-effort.js'
+
 export { probeAgentType } from './probe-agent-type.js'
 export type { AgentTypeProbe, AgentTypeProbeReport, ProbeAgentTypeOptions } from './probe-agent-type.js'
 

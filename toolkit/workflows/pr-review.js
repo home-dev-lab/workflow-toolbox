@@ -570,6 +570,138 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     };
   }
 
+  // ../packages/patterns/src/auto-effort.ts
+  var SMALL_MAX_FILES = 2;
+  var SMALL_MAX_DIFF_LINES = 40;
+  var SMALL_MAX_SPEC_CHARS = 600;
+  var LARGE_MIN_FILES = 8;
+  var LARGE_MIN_DIFF_LINES = 400;
+  function deterministicEffortOf(signals) {
+    const files = signals.filesTouched;
+    const diff = signals.diffLines;
+    const spec = signals.specChars;
+    if (files !== void 0 && files >= LARGE_MIN_FILES || diff !== void 0 && diff >= LARGE_MIN_DIFF_LINES) {
+      return "xhigh";
+    }
+    const filesSmall = files !== void 0 && files <= SMALL_MAX_FILES && (signals.newFiles ?? 0) === 0;
+    const diffSmall = diff === void 0 || diff <= SMALL_MAX_DIFF_LINES;
+    const specSmall = spec === void 0 || spec <= SMALL_MAX_SPEC_CHARS;
+    if (filesSmall && diffSmall && specSmall && (diff !== void 0 || spec !== void 0)) {
+      return "medium";
+    }
+    return null;
+  }
+  function effortOfScore(score) {
+    if (score <= 2) return "medium";
+    if (score <= 4) return "high";
+    return "xhigh";
+  }
+  var TRIAGE_SCHEMA = {
+    type: "object",
+    properties: {
+      scores: {
+        type: "array",
+        maxItems: 200,
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", maxLength: 120 },
+            score: { type: "integer" },
+            reason: { type: "string", maxLength: 160 }
+          },
+          required: ["id", "score", "reason"],
+          additionalProperties: false
+        }
+      }
+    },
+    required: ["scores"],
+    additionalProperties: false
+  };
+  function triagePrompt(items) {
+    const list = items.map((it) => {
+      const s = it.signals;
+      const sig = [
+        s.filesTouched !== void 0 ? `${s.filesTouched} file(s)` : null,
+        s.newFiles !== void 0 && s.newFiles > 0 ? `${s.newFiles} new` : null,
+        s.diffLines !== void 0 ? `${s.diffLines} diff lines` : null,
+        s.specChars !== void 0 ? `${s.specChars} spec chars` : null
+      ].filter((x) => x !== null).join(", ");
+      return `- id: ${JSON.stringify(it.id)}${sig === "" ? "" : `
+  signals: ${sig}`}
+  work: ${it.brief}`;
+    }).join("\n");
+    return `You are triaging the DIFFICULTY of code work items to route each one's reasoning effort. Score every item 1-5:
+1 = trivial/mechanical, 2 = simple and well-specified, 3 = ordinary implementation work, 4 = intricate (subtle invariants, cross-cutting edits), 5 = hard judgment (architecture, ambiguity, high blast radius).
+WHEN UNSURE, SCORE UP \u2014 an over-scored item only costs tokens; an under-scored one costs quality.
+Score ALL of these items (every id must appear exactly once):
+${list}
+Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... ] }. Echo each "id" EXACTLY as the quoted string above \u2014 never append signals or anything else to it. Keep each reason under 160 characters.`;
+  }
+  async function autoSelectEffort(rt, items, options) {
+    const { fallback, model, phase, label } = options;
+    const seen = /* @__PURE__ */ new Set();
+    for (const it of items) {
+      if (seen.has(it.id)) {
+        throw new Error(`autoSelectEffort: duplicate item id "${it.id}" \u2014 ids must be unique`);
+      }
+      seen.add(it.id);
+    }
+    const efforts = {};
+    const decidedBy = {};
+    const warnings = [];
+    const undecided = [];
+    for (const it of items) {
+      const det = deterministicEffortOf(it.signals);
+      if (det !== null) {
+        efforts[it.id] = det;
+        decidedBy[it.id] = "deterministic";
+      } else {
+        undecided.push(it);
+      }
+    }
+    if (undecided.length === 0) {
+      return { efforts, decidedBy, warnings, spawns: 0 };
+    }
+    const out = await agentWithSchemaSalvage(rt, triagePrompt(undecided), {
+      schema: TRIAGE_SCHEMA,
+      label: label ?? "autoEffort:triage",
+      model: model ?? BEST_MODEL,
+      effort: "high",
+      ...phase !== void 0 ? { phase } : {}
+    });
+    for (const w of out.warnings) warnings.push(`autoEffort: ${w}`);
+    const scored = /* @__PURE__ */ new Map();
+    if (out.value !== null) {
+      for (const entry of out.value.scores) {
+        if (!seen.has(entry.id) || entry.id in efforts || scored.has(entry.id)) {
+          warnings.push(`autoEffort: triage returned unknown or duplicate id "${entry.id}" \u2014 ignored`);
+          continue;
+        }
+        if (!Number.isInteger(entry.score) || entry.score < 1 || entry.score > 5) {
+          warnings.push(`autoEffort: triage score for "${entry.id}" out of range (${String(entry.score)}) \u2014 falling back to '${fallback}'`);
+          continue;
+        }
+        scored.set(entry.id, entry.score);
+      }
+    } else {
+      warnings.push(`autoEffort: batched triage call failed \u2014 all ${undecided.length} undecided item(s) fall back to '${fallback}'`);
+    }
+    for (const it of undecided) {
+      const score = scored.get(it.id);
+      if (score !== void 0) {
+        efforts[it.id] = effortOfScore(score);
+        decidedBy[it.id] = "triage";
+      } else {
+        if (out.value !== null && !scored.has(it.id)) {
+          warnings.push(`autoEffort: triage omitted item "${it.id}" \u2014 falling back to '${fallback}'`);
+        }
+        efforts[it.id] = fallback;
+        decidedBy[it.id] = "fallback";
+      }
+    }
+    return { efforts, decidedBy, warnings, spawns: out.spawns };
+  }
+
   // ../packages/patterns/src/probe-agent-type.ts
   var STAGE = "probeAgentType";
   var DEFAULT_PROBE_PROMPT = "Availability probe. This is a REAL task: execute your normal procedure end-to-end (availability gate, then run the task through your external CLI \u2014 do NOT answer from your own knowledge). Task: reply with exactly: PROBE_OK";
@@ -1538,7 +1670,7 @@ ${renderClaim(claim)}`;
     const lensTrails = [];
     const classifyEffort = resolveEffort(input.effort?.["classify"], CLASSIFY_EFFORT);
     const routeActEffort = resolveEffort(input.effort?.["route"], ROUTE_ACT_EFFORT);
-    const reviewEffort = resolveEffort(input.effort?.["review"], REVIEW_EFFORT);
+    let reviewEffort = resolveEffort(input.effort?.["review"], REVIEW_EFFORT);
     const verifyEffort = resolveVerifierEffort(input.effort?.["verify"], VERIFY_EFFORT_DEFAULT);
     const synthesizeEffort = resolveEffort(input.effort?.["synthesize"], SYNTHESIZE_EFFORT);
     let resolvedReviewerType = null;
@@ -1614,6 +1746,22 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     }
     const category = routedItem.category;
     const changeSummary = routedItem.result;
+    if (input.effort?.["review"] === "auto") {
+      const selection = await autoSelectEffort(rt, [{
+        id: "change",
+        brief: `${category} change: ${changeSummary.summary.slice(0, 400)}`,
+        signals: {
+          filesTouched: changeSummary.changedFiles.length,
+          specChars: changeSummary.summary.length
+        }
+      }], { fallback: REVIEW_EFFORT, phase: "Route", label: "pr-review:auto-effort" });
+      for (const w of selection.warnings) {
+        warnings.push(w);
+        rt.log(`\u26A0 ${w}`);
+      }
+      reviewEffort = selection.efforts["change"] ?? REVIEW_EFFORT;
+      rt.log(`pr-review: auto-effort selected '${reviewEffort}' for the review stage (${selection.decidedBy["change"] ?? "fallback"})`);
+    }
     const junkAreas = changeSummary.riskAreas.length > 0 && changeSummary.riskAreas.every((r) => r.trim().length <= 2);
     if (junkAreas || changeSummary.summary.trim().length < 12) {
       const w = `route: degenerate change summary from the ${category} act stage (summary="${changeSummary.summary.slice(0, 40)}", riskAreas=${JSON.stringify(changeSummary.riskAreas.slice(0, 4))}) \u2014 reviewer seeding lost; findings still re-derive from the actual diff`;

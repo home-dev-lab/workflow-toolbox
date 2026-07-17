@@ -33,6 +33,7 @@ import { withAgentDefaults } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias, AgentDefaults } from '@workflow-toolbox/runtime'
 import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import {
+  autoSelectEffort,
   classifyAndAct,
   adversarialVerification,
   collectTrail,
@@ -143,13 +144,19 @@ export interface PrReviewInput {
   /** Optional per-ROLE reasoning-effort overrides (Class B/C, parsed by the
    *  shared `parseConfig` helper from `args.effort`), e.g.
    *  `args: { target, effort: { review: 'xhigh' } }`. Role keys: 'classify',
-   *  'route', 'review', 'verify', 'synthesize'. A role's value may also be
-   *  the literal 'auto', meaning "keep THIS role's own committed default"
-   *  (useful for symmetry in an explicit map). null = no overrides — every
+   *  'route', 'review', 'verify', 'synthesize'. null = no overrides — every
    *  stage keeps its committed default. Resolved per-stage via resolveEffort
    *  (invalid/missing values degrade to the stage default, never throw); the
    *  'verify' role is additionally clamped to a 'high' floor via
-   *  resolveVerifierEffort — an override may only raise it. */
+   *  resolveVerifierEffort — an override may only raise it.
+   *
+   *  'auto' on the WORKER role 'review' (card #1809425610812949851) enables
+   *  change-difficulty effort auto-selection for the reviewer agents:
+   *  deterministic signals from the routed change summary (changed-file
+   *  count, summary size) decide the clear extremes in code, else ONE
+   *  best-model triage call scores the change ("when unsure, score UP").
+   *  The 'verify' role NEVER auto-routes (quality floor); 'auto' on any
+   *  other role keeps that role's committed default, as before. */
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
   /** Blanket opt-OUT of the default leaf-agent fence (withLeafFence): every agent
    *  this workflow spawns denies SendMessage by default. true = allow the standard
@@ -628,7 +635,9 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   // 'verify' is additionally floored at 'high' — see resolveVerifierEffort.
   const classifyEffort = resolveEffort(input.effort?.['classify'], CLASSIFY_EFFORT)
   const routeActEffort = resolveEffort(input.effort?.['route'], ROUTE_ACT_EFFORT)
-  const reviewEffort = resolveEffort(input.effort?.['review'], REVIEW_EFFORT)
+  // `let`: with effort.review === 'auto' this is re-resolved from the routed
+  // change summary once it exists (post-Route) — see the auto-effort block.
+  let reviewEffort = resolveEffort(input.effort?.['review'], REVIEW_EFFORT)
   const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
   const synthesizeEffort = resolveEffort(input.effort?.['synthesize'], SYNTHESIZE_EFFORT)
 
@@ -741,6 +750,29 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
 
   const category = routedItem.category
   const changeSummary = routedItem.result
+
+  // Auto-effort for the reviewer WORKERS (card #1809425610812949851, opt-in
+  // via effort.review === 'auto'): now that the routed change summary exists,
+  // deterministic signals (changed-file count, summary size) decide the clear
+  // extremes in code; otherwise ONE best-model triage call scores the change
+  // ("when unsure, score UP"). Fallback = the committed 'review' default.
+  // The verify fan's 'high' floor is untouched (resolveVerifierEffort).
+  if (input.effort?.['review'] === 'auto') {
+    const selection = await autoSelectEffort(rt, [{
+      id: 'change',
+      brief: `${category} change: ${changeSummary.summary.slice(0, 400)}`,
+      signals: {
+        filesTouched: changeSummary.changedFiles.length,
+        specChars: changeSummary.summary.length,
+      },
+    }], { fallback: REVIEW_EFFORT, phase: 'Route', label: 'pr-review:auto-effort' })
+    for (const w of selection.warnings) {
+      warnings.push(w)
+      rt.log(`⚠ ${w}`)
+    }
+    reviewEffort = selection.efforts['change'] ?? REVIEW_EFFORT
+    rt.log(`pr-review: auto-effort selected '${reviewEffort}' for the review stage (${selection.decidedBy['change'] ?? 'fallback'})`)
+  }
 
   // Degenerate-output guard (internal note): a schema-rejected agent can
   // capitulate into minimal junk that VALIDATES — the journal's `attempt` stays 1

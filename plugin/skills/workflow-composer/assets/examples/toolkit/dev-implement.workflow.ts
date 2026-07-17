@@ -76,7 +76,7 @@
 //   that is exactly the work that must be redone.)
 
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
-import { collectTrail, loopUntilDone, relativizeUnder, warn } from '@workflow-toolbox/patterns'
+import { autoSelectEffort, collectTrail, loopUntilDone, relativizeUnder, warn } from '@workflow-toolbox/patterns'
 import type { PatternStats, TrailRecord } from '@workflow-toolbox/patterns'
 import { BEST_MODEL } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
@@ -209,10 +209,17 @@ export interface DevImplementInput {
    *  shared `parseConfig` helper from `args.effort`), e.g.
    *  `args: { artifact, effort: { green: 'xhigh' } }`. Role keys: 'load', 'red',
    *  'green', 'check', 'mechanical' (setup/worktree-provisioning/prepare/
-   *  finalize/merge/revert/cleanup), 'integration'. A role's value may also be
-   *  the literal 'auto' (keep THIS role's own committed default). null = no
-   *  overrides. Resolved per-stage via resolveEffort; 'check'/'integration'
-   *  are additionally clamped to a 'high' floor via resolveVerifierEffort. */
+   *  finalize/merge/revert/cleanup), 'integration'. null = no overrides.
+   *  Resolved per-stage via resolveEffort; 'check'/'integration' are
+   *  additionally clamped to a 'high' floor via resolveVerifierEffort.
+   *
+   *  'auto' on the WORKER roles 'red'/'green' (card #1809425610812949851)
+   *  enables PER-TASK effort auto-selection: deterministic signals in code
+   *  (file counts, spec size) decide the clear extremes, then ONE batched
+   *  best-model triage call scores the remaining tasks ("when unsure, score
+   *  UP"); anything undecided falls back to the role's committed default.
+   *  Verifier roles ('check'/'integration') NEVER auto-route — 'auto' there
+   *  (and on any other role) keeps the role's committed default, as before. */
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
 }
 
@@ -1583,6 +1590,62 @@ async function resolveArtifactInput(
   return { ...input, artifact, pathWarnings: [...input.pathWarnings, ...pathWarnings] }
 }
 
+// ---------------------------------------------------------------------------
+// Per-task WORKER effort resolution (card #1809425610812949851)
+//
+// Returns a per-task resolver. Static case (no 'auto' on red/green): the same
+// object for every task, exactly the pre-auto behavior. Auto case: ONE
+// autoSelectEffort pass over the whole worklist (deterministic signals in code
+// first, then a single batched best-model triage — "when unsure, score UP"),
+// applied ONLY to the roles that opted in. 'check' NEVER auto-routes — the
+// verifier keeps its 'high' floor (resolveVerifierEffort), the quality net.
+// ---------------------------------------------------------------------------
+async function resolveTaskEffortMap(
+  rt: WorkflowRuntime,
+  input: ResolvedDevImplementInput,
+  warnings: string[],
+): Promise<(task: PlanTask) => { red: EffortAlias; green: EffortAlias; check: EffortAlias }> {
+  const staticEffort = {
+    red: resolveEffort(input.effort?.['red'], RED_EFFORT),
+    green: resolveEffort(input.effort?.['green'], GREEN_EFFORT),
+    check: resolveVerifierEffort(input.effort?.['check'], CHECK_EFFORT_DEFAULT),
+  }
+  const redAuto = input.effort?.['red'] === 'auto'
+  const greenAuto = input.effort?.['green'] === 'auto'
+  if (!redAuto && !greenAuto) return () => staticEffort
+
+  const tasks = input.artifact.tasks
+  const selection = await autoSelectEffort(
+    rt,
+    tasks.map((t) => ({
+      id: t.id,
+      brief: `${t.title} — ${t.intent}`,
+      signals: {
+        filesTouched: t.files.length,
+        newFiles: t.files.filter((f) => f.status === 'new').length,
+        specChars: t.contracts.length + t.testPlan.length,
+      },
+    })),
+    // Fallback is the ROLE default (fail-safe direction is UP, never below
+    // the committed worker tier).
+    { fallback: RED_EFFORT, phase: 'Load', label: 'dev-implement:auto-effort' },
+  )
+  for (const w of selection.warnings) warn(rt, warnings, `dev-implement: ${w}`)
+  rt.log(
+    `dev-implement: auto-effort selection (${redAuto ? 'red' : ''}${redAuto && greenAuto ? '+' : ''}${greenAuto ? 'green' : ''}): ` +
+    tasks.map((t) => `${t.id}=${selection.efforts[t.id] ?? RED_EFFORT} (${selection.decidedBy[t.id] ?? 'fallback'})`).join(', '),
+  )
+
+  return (task: PlanTask) => {
+    const auto = selection.efforts[task.id] ?? RED_EFFORT
+    return {
+      red: redAuto ? auto : staticEffort.red,
+      green: greenAuto ? auto : staticEffort.green,
+      check: staticEffort.check,
+    }
+  }
+}
+
 async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<DevImplementOutput> {
   // Resolve the artifact first (a no-op in inline mode; a disk read via agent in
   // artifactPath mode), so the rest of the body — and runWorktree — consume a
@@ -1595,14 +1658,9 @@ async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<De
   const stats: Record<string, PatternStats> = {}
   const { artifact, maxIterationsPerTask } = input
 
-  // Resolve the TDD loop's per-role effort ONCE: a launch-time `args.effort.<role>`
-  // override wins when valid, else the stage-class default. 'check' is
-  // additionally floored at 'high' — see resolveVerifierEffort.
-  const taskEffort = {
-    red: resolveEffort(input.effort?.['red'], RED_EFFORT),
-    green: resolveEffort(input.effort?.['green'], GREEN_EFFORT),
-    check: resolveVerifierEffort(input.effort?.['check'], CHECK_EFFORT_DEFAULT),
-  }
+  // Resolve the TDD loop's per-role effort ONCE — per task when a worker role
+  // opted into 'auto' (see resolveTaskEffortMap; 'check' keeps its floor).
+  const taskEffortOf = await resolveTaskEffortMap(rt, input, warnings)
 
   rt.phase('Implement')
   rt.phase('Check')
@@ -1630,7 +1688,7 @@ async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<De
     }
 
     const outcome = await runTaskTddLoop(
-      rt, artifact, task, artifact.context.projectDir, maxIterationsPerTask, input.implementerModel, input.implementerType, taskEffort, warnings, stats,
+      rt, artifact, task, artifact.context.projectDir, maxIterationsPerTask, input.implementerModel, input.implementerType, taskEffortOf(task), warnings, stats,
     )
     taskTrails.push(outcome)
     if (outcome.green) {
@@ -1721,16 +1779,12 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
   // would kill merges opaquely; the operator owns/squashes the final history.
   const signFlag = signCommits ? '' : '-c commit.gpgsign=false '
 
-  // Resolve per-role effort ONCE: a launch-time `args.effort.<role>` override
-  // wins when valid, else the stage-class default. 'check'/'integration' are
-  // additionally floored at 'high' — see resolveVerifierEffort. 'mechanical'
-  // covers every verbatim-command-runner agent below (setup, per-wave worktree
+  // Resolve per-role effort ONCE — per task when a worker role opted into
+  // 'auto' (see resolveTaskEffortMap; 'check'/'integration' keep their 'high'
+  // floor via resolveVerifierEffort). 'mechanical' covers every
+  // verbatim-command-runner agent below (setup, per-wave worktree
   // provisioning, prepare, finalize, merge, revert, cleanup).
-  const taskEffort = {
-    red: resolveEffort(input.effort?.['red'], RED_EFFORT),
-    green: resolveEffort(input.effort?.['green'], GREEN_EFFORT),
-    check: resolveVerifierEffort(input.effort?.['check'], CHECK_EFFORT_DEFAULT),
-  }
+  const taskEffortOf = await resolveTaskEffortMap(rt, input, warnings)
   const mechanicalEffort = resolveEffort(input.effort?.['mechanical'], MECHANICAL_EFFORT)
   const integrationEffort = resolveVerifierEffort(input.effort?.['integration'], INTEGRATION_EFFORT_DEFAULT)
 
@@ -1908,7 +1962,7 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
         }
 
         const outcome = await runTaskTddLoop(
-          rt, artifact, task, taskWorkdir(task.id), maxIterationsPerTask, input.implementerModel, input.implementerType, taskEffort, warnings, stats,
+          rt, artifact, task, taskWorkdir(task.id), maxIterationsPerTask, input.implementerModel, input.implementerType, taskEffortOf(task), warnings, stats,
         )
         if (!outcome.green) return { kind: 'tdd-failed', outcome }
 

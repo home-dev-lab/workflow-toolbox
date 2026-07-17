@@ -291,6 +291,379 @@ ${prompt}` : prompt;
     return rel;
   }
 
+  // ../packages/patterns/src/structured-salvage.ts
+  function describeNode(node) {
+    const parts = [];
+    if (node.enum !== void 0) {
+      parts.push(`one of: ${node.enum.map((v) => JSON.stringify(v)).join(" | ")}`);
+    } else if (node.type !== void 0) {
+      parts.push(node.type);
+    }
+    if (node.minLength !== void 0 && node.maxLength !== void 0) {
+      parts.push(`${node.minLength}-${node.maxLength} chars`);
+    } else if (node.maxLength !== void 0) {
+      parts.push(`at most ${node.maxLength} chars`);
+    } else if (node.minLength !== void 0) {
+      parts.push(`at least ${node.minLength} chars`);
+    }
+    if (node.maxItems !== void 0) parts.push(`at most ${node.maxItems} items`);
+    if (node.minItems !== void 0) parts.push(`at least ${node.minItems} items`);
+    if (node.type === "array" && node.items !== void 0) {
+      parts.push(`each item: ${describeNode(node.items)}`);
+    }
+    return parts.join(", ");
+  }
+  function describeSchemaConstraints(schema) {
+    const root = schema;
+    if (root.type !== "object" || root.properties === void 0) {
+      const line = describeNode(root);
+      return line === "" ? "" : `The answer must be: ${line}.`;
+    }
+    const required = new Set(root.required ?? []);
+    const lines = Object.entries(root.properties).map(([name, node]) => {
+      const desc = describeNode(node);
+      return `- "${name}" (${required.has(name) ? "REQUIRED" : "optional"})${desc === "" ? "" : `: ${desc}`}`;
+    });
+    const extras = root.additionalProperties === false ? "\nNo other properties are allowed." : "";
+    return `The JSON object must have exactly these properties:
+${lines.join("\n")}${extras}`;
+  }
+  function tryParseObject(text) {
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+    }
+    return void 0;
+  }
+  function extractJsonObject(text) {
+    const trimmed = text.trim();
+    const direct = tryParseObject(trimmed);
+    if (direct !== void 0) return direct;
+    const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(trimmed);
+    if (fence?.[1] !== void 0) {
+      const fenced = tryParseObject(fence[1].trim());
+      if (fenced !== void 0) return fenced;
+    }
+    const first = trimmed.indexOf("{");
+    const last = trimmed.lastIndexOf("}");
+    if (first !== -1 && last > first) {
+      return tryParseObject(trimmed.slice(first, last + 1));
+    }
+    return void 0;
+  }
+  function typeOf(value) {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "array";
+    return typeof value;
+  }
+  function validateNode(value, node, path, out) {
+    if (node.enum !== void 0) {
+      if (!node.enum.some((v) => v === value)) {
+        out.push({
+          path,
+          message: `${JSON.stringify(value)} is not one of ${node.enum.map((v) => JSON.stringify(v)).join(" | ")}`
+        });
+      }
+      return;
+    }
+    const t = node.type;
+    if (t === void 0) return;
+    const actual = typeOf(value);
+    if (t === "integer" ? !(actual === "number" && Number.isInteger(value)) : actual !== t) {
+      out.push({ path, message: `expected ${t}, got ${actual}` });
+      return;
+    }
+    if (t === "string") {
+      const s = value;
+      if (node.maxLength !== void 0 && s.length > node.maxLength) {
+        out.push({ path, message: `${s.length} chars exceeds maxLength ${node.maxLength}` });
+      }
+      if (node.minLength !== void 0 && s.length < node.minLength) {
+        out.push({ path, message: `${s.length} chars under minLength ${node.minLength}` });
+      }
+      return;
+    }
+    if (t === "array") {
+      const arr = value;
+      if (node.maxItems !== void 0 && arr.length > node.maxItems) {
+        out.push({ path, message: `${arr.length} items exceeds maxItems ${node.maxItems}` });
+      }
+      if (node.minItems !== void 0 && arr.length < node.minItems) {
+        out.push({ path, message: `${arr.length} items under minItems ${node.minItems}` });
+      }
+      if (node.items !== void 0) {
+        arr.forEach((item, i) => validateNode(item, node.items, `${path}[${i}]`, out));
+      }
+      return;
+    }
+    if (t === "object") {
+      const obj = value;
+      for (const req of node.required ?? []) {
+        if (!(req in obj)) out.push({ path: `${path}.${req}`, message: "required property missing" });
+      }
+      const props = node.properties ?? {};
+      for (const [key, child] of Object.entries(props)) {
+        if (key in obj) validateNode(obj[key], child, `${path}.${key}`, out);
+      }
+      if (node.additionalProperties === false) {
+        for (const key of Object.keys(obj)) {
+          if (!(key in props)) {
+            out.push({ path: `${path}.${key}`, message: "unexpected property (additionalProperties: false)" });
+          }
+        }
+      }
+    }
+  }
+  function validateAgainstSchema(value, schema) {
+    const out = [];
+    validateNode(value, schema, "$", out);
+    return out;
+  }
+  function repairNode(value, node, path, repairs) {
+    if (node.type === "string" && typeof value === "string") {
+      if (node.maxLength !== void 0 && value.length > node.maxLength) {
+        repairs.push(`${path}: truncated from ${value.length} to maxLength ${node.maxLength} chars`);
+        return value.slice(0, node.maxLength);
+      }
+      return value;
+    }
+    if (node.type === "array" && Array.isArray(value)) {
+      let arr = value;
+      if (node.maxItems !== void 0 && arr.length > node.maxItems) {
+        repairs.push(`${path}: sliced from ${arr.length} to maxItems ${node.maxItems} items`);
+        arr = arr.slice(0, node.maxItems);
+      }
+      return node.items !== void 0 ? arr.map((item, i) => repairNode(item, node.items, `${path}[${i}]`, repairs)) : arr;
+    }
+    if (node.type === "object" && typeOf(value) === "object") {
+      const obj = value;
+      const props = node.properties ?? {};
+      const result = {};
+      for (const [key, v] of Object.entries(obj)) {
+        if (key in props) {
+          result[key] = repairNode(v, props[key], `${path}.${key}`, repairs);
+        } else if (node.additionalProperties === false) {
+          repairs.push(`${path}.${key}: dropped unexpected property`);
+        } else {
+          result[key] = v;
+        }
+      }
+      return result;
+    }
+    return value;
+  }
+  function repairToSchema(value, schema) {
+    const repairs = [];
+    const repaired = repairNode(value, schema, "$", repairs);
+    return { value: repaired, repairs };
+  }
+  function salvagePrompt(prompt, schema) {
+    const constraints = describeSchemaConstraints(schema);
+    return `${prompt}
+
+STRUCTURED-OUTPUT SALVAGE: a previous schema-enforced attempt at this exact task failed validation repeatedly. Answer with ONLY one JSON object \u2014 no prose, no code fences, no explanation before or after.` + (constraints === "" ? "" : `
+${constraints}`) + `
+Never satisfy a constraint with placeholder values ("test", "a"); shorten real content instead of faking it.`;
+  }
+  async function agentWithSchemaSalvage(rt, prompt, opts) {
+    const schema = opts.schema;
+    if (schema === void 0) {
+      const plain = await rt.agent(prompt, opts);
+      return { value: plain, warnings: [], spawns: 1, salvaged: false };
+    }
+    const native = await rt.agent(prompt, opts);
+    if (native !== null) return { value: native, warnings: [], spawns: 1, salvaged: false };
+    const where = opts.label ?? "agent";
+    const salvageOpts = {
+      ...opts,
+      ...opts.label !== void 0 ? { label: `${opts.label}:salvage` } : {}
+    };
+    delete salvageOpts.schema;
+    const raw = await rt.agent(salvagePrompt(prompt, schema), salvageOpts);
+    if (raw === null) {
+      return {
+        value: null,
+        warnings: [`${where}: structured-output salvage respawn also returned null`],
+        spawns: 2,
+        salvaged: false
+      };
+    }
+    const candidate = typeof raw === "string" ? extractJsonObject(raw) : raw;
+    if (candidate === void 0) {
+      const head = typeof raw === "string" ? raw.trim().slice(0, 120) : String(raw);
+      return {
+        value: null,
+        warnings: [`${where}: salvage output is not a JSON object (starts: ${JSON.stringify(head)})`],
+        spawns: 2,
+        salvaged: false
+      };
+    }
+    const preViolations = validateAgainstSchema(candidate, schema);
+    if (preViolations.length === 0) {
+      return {
+        value: candidate,
+        warnings: [`${where}: value salvaged after structured-output exhaustion (schema-less respawn)`],
+        spawns: 2,
+        salvaged: true
+      };
+    }
+    const { value: repaired, repairs } = repairToSchema(candidate, schema);
+    const postViolations = validateAgainstSchema(repaired, schema);
+    if (postViolations.length === 0) {
+      return {
+        value: repaired,
+        warnings: [
+          `${where}: value salvaged after structured-output exhaustion, with deterministic repairs \u2014 ${repairs.join("; ")}`
+        ],
+        spawns: 2,
+        salvaged: true
+      };
+    }
+    return {
+      value: null,
+      warnings: [
+        `${where}: salvage failed schema validation \u2014 ` + postViolations.map((v) => `${v.path}: ${v.message}`).join("; ") + (repairs.length > 0 ? ` (repairs attempted: ${repairs.join("; ")})` : "")
+      ],
+      spawns: 2,
+      salvaged: false
+    };
+  }
+
+  // ../packages/patterns/src/auto-effort.ts
+  var SMALL_MAX_FILES = 2;
+  var SMALL_MAX_DIFF_LINES = 40;
+  var SMALL_MAX_SPEC_CHARS = 600;
+  var LARGE_MIN_FILES = 8;
+  var LARGE_MIN_DIFF_LINES = 400;
+  function deterministicEffortOf(signals) {
+    const files = signals.filesTouched;
+    const diff = signals.diffLines;
+    const spec = signals.specChars;
+    if (files !== void 0 && files >= LARGE_MIN_FILES || diff !== void 0 && diff >= LARGE_MIN_DIFF_LINES) {
+      return "xhigh";
+    }
+    const filesSmall = files !== void 0 && files <= SMALL_MAX_FILES && (signals.newFiles ?? 0) === 0;
+    const diffSmall = diff === void 0 || diff <= SMALL_MAX_DIFF_LINES;
+    const specSmall = spec === void 0 || spec <= SMALL_MAX_SPEC_CHARS;
+    if (filesSmall && diffSmall && specSmall && (diff !== void 0 || spec !== void 0)) {
+      return "medium";
+    }
+    return null;
+  }
+  function effortOfScore(score) {
+    if (score <= 2) return "medium";
+    if (score <= 4) return "high";
+    return "xhigh";
+  }
+  var TRIAGE_SCHEMA = {
+    type: "object",
+    properties: {
+      scores: {
+        type: "array",
+        maxItems: 200,
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", maxLength: 120 },
+            score: { type: "integer" },
+            reason: { type: "string", maxLength: 160 }
+          },
+          required: ["id", "score", "reason"],
+          additionalProperties: false
+        }
+      }
+    },
+    required: ["scores"],
+    additionalProperties: false
+  };
+  function triagePrompt(items) {
+    const list = items.map((it) => {
+      const s = it.signals;
+      const sig = [
+        s.filesTouched !== void 0 ? `${s.filesTouched} file(s)` : null,
+        s.newFiles !== void 0 && s.newFiles > 0 ? `${s.newFiles} new` : null,
+        s.diffLines !== void 0 ? `${s.diffLines} diff lines` : null,
+        s.specChars !== void 0 ? `${s.specChars} spec chars` : null
+      ].filter((x) => x !== null).join(", ");
+      return `- id: ${JSON.stringify(it.id)}${sig === "" ? "" : `
+  signals: ${sig}`}
+  work: ${it.brief}`;
+    }).join("\n");
+    return `You are triaging the DIFFICULTY of code work items to route each one's reasoning effort. Score every item 1-5:
+1 = trivial/mechanical, 2 = simple and well-specified, 3 = ordinary implementation work, 4 = intricate (subtle invariants, cross-cutting edits), 5 = hard judgment (architecture, ambiguity, high blast radius).
+WHEN UNSURE, SCORE UP \u2014 an over-scored item only costs tokens; an under-scored one costs quality.
+Score ALL of these items (every id must appear exactly once):
+${list}
+Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... ] }. Echo each "id" EXACTLY as the quoted string above \u2014 never append signals or anything else to it. Keep each reason under 160 characters.`;
+  }
+  async function autoSelectEffort(rt, items, options) {
+    const { fallback, model, phase, label } = options;
+    const seen = /* @__PURE__ */ new Set();
+    for (const it of items) {
+      if (seen.has(it.id)) {
+        throw new Error(`autoSelectEffort: duplicate item id "${it.id}" \u2014 ids must be unique`);
+      }
+      seen.add(it.id);
+    }
+    const efforts = {};
+    const decidedBy = {};
+    const warnings = [];
+    const undecided = [];
+    for (const it of items) {
+      const det = deterministicEffortOf(it.signals);
+      if (det !== null) {
+        efforts[it.id] = det;
+        decidedBy[it.id] = "deterministic";
+      } else {
+        undecided.push(it);
+      }
+    }
+    if (undecided.length === 0) {
+      return { efforts, decidedBy, warnings, spawns: 0 };
+    }
+    const out = await agentWithSchemaSalvage(rt, triagePrompt(undecided), {
+      schema: TRIAGE_SCHEMA,
+      label: label ?? "autoEffort:triage",
+      model: model ?? BEST_MODEL,
+      effort: "high",
+      ...phase !== void 0 ? { phase } : {}
+    });
+    for (const w of out.warnings) warnings.push(`autoEffort: ${w}`);
+    const scored = /* @__PURE__ */ new Map();
+    if (out.value !== null) {
+      for (const entry of out.value.scores) {
+        if (!seen.has(entry.id) || entry.id in efforts || scored.has(entry.id)) {
+          warnings.push(`autoEffort: triage returned unknown or duplicate id "${entry.id}" \u2014 ignored`);
+          continue;
+        }
+        if (!Number.isInteger(entry.score) || entry.score < 1 || entry.score > 5) {
+          warnings.push(`autoEffort: triage score for "${entry.id}" out of range (${String(entry.score)}) \u2014 falling back to '${fallback}'`);
+          continue;
+        }
+        scored.set(entry.id, entry.score);
+      }
+    } else {
+      warnings.push(`autoEffort: batched triage call failed \u2014 all ${undecided.length} undecided item(s) fall back to '${fallback}'`);
+    }
+    for (const it of undecided) {
+      const score = scored.get(it.id);
+      if (score !== void 0) {
+        efforts[it.id] = effortOfScore(score);
+        decidedBy[it.id] = "triage";
+      } else {
+        if (out.value !== null && !scored.has(it.id)) {
+          warnings.push(`autoEffort: triage omitted item "${it.id}" \u2014 falling back to '${fallback}'`);
+        }
+        efforts[it.id] = fallback;
+        decidedBy[it.id] = "fallback";
+      }
+    }
+    return { efforts, decidedBy, warnings, spawns: out.spawns };
+  }
+
   // ../packages/patterns/src/loop-until-done.ts
   var STAGE = LOOP_STAGE;
   async function loopUntilDone(rt, options) {
@@ -1171,6 +1544,44 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
     const { artifact, pathWarnings } = validateArtifact(parsed);
     return { ...input, artifact, pathWarnings: [...input.pathWarnings, ...pathWarnings] };
   }
+  async function resolveTaskEffortMap(rt, input, warnings) {
+    const staticEffort = {
+      red: resolveEffort(input.effort?.["red"], RED_EFFORT),
+      green: resolveEffort(input.effort?.["green"], GREEN_EFFORT),
+      check: resolveVerifierEffort(input.effort?.["check"], CHECK_EFFORT_DEFAULT)
+    };
+    const redAuto = input.effort?.["red"] === "auto";
+    const greenAuto = input.effort?.["green"] === "auto";
+    if (!redAuto && !greenAuto) return () => staticEffort;
+    const tasks = input.artifact.tasks;
+    const selection = await autoSelectEffort(
+      rt,
+      tasks.map((t) => ({
+        id: t.id,
+        brief: `${t.title} \u2014 ${t.intent}`,
+        signals: {
+          filesTouched: t.files.length,
+          newFiles: t.files.filter((f) => f.status === "new").length,
+          specChars: t.contracts.length + t.testPlan.length
+        }
+      })),
+      // Fallback is the ROLE default (fail-safe direction is UP, never below
+      // the committed worker tier).
+      { fallback: RED_EFFORT, phase: "Load", label: "dev-implement:auto-effort" }
+    );
+    for (const w of selection.warnings) warn(rt, warnings, `dev-implement: ${w}`);
+    rt.log(
+      `dev-implement: auto-effort selection (${redAuto ? "red" : ""}${redAuto && greenAuto ? "+" : ""}${greenAuto ? "green" : ""}): ` + tasks.map((t) => `${t.id}=${selection.efforts[t.id] ?? RED_EFFORT} (${selection.decidedBy[t.id] ?? "fallback"})`).join(", ")
+    );
+    return (task) => {
+      const auto = selection.efforts[task.id] ?? RED_EFFORT;
+      return {
+        red: redAuto ? auto : staticEffort.red,
+        green: greenAuto ? auto : staticEffort.green,
+        check: staticEffort.check
+      };
+    };
+  }
   async function run(rt, rawInput) {
     const input = await resolveArtifactInput(rt, rawInput);
     if (input.mutation === "worktree") return runWorktree(rt, input);
@@ -1178,11 +1589,7 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
     for (const w of input.pathWarnings) warn(rt, warnings, w);
     const stats = {};
     const { artifact, maxIterationsPerTask } = input;
-    const taskEffort = {
-      red: resolveEffort(input.effort?.["red"], RED_EFFORT),
-      green: resolveEffort(input.effort?.["green"], GREEN_EFFORT),
-      check: resolveVerifierEffort(input.effort?.["check"], CHECK_EFFORT_DEFAULT)
-    };
+    const taskEffortOf = await resolveTaskEffortMap(rt, input, warnings);
     rt.phase("Implement");
     rt.phase("Check");
     const ordered = topologicalOrder(artifact.tasks);
@@ -1204,7 +1611,7 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
         maxIterationsPerTask,
         input.implementerModel,
         input.implementerType,
-        taskEffort,
+        taskEffortOf(task),
         warnings,
         stats
       );
@@ -1264,11 +1671,7 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
     const ctx = artifact.context;
     const wtBranch = (id) => `wt-task/${id}`;
     const signFlag = signCommits ? "" : "-c commit.gpgsign=false ";
-    const taskEffort = {
-      red: resolveEffort(input.effort?.["red"], RED_EFFORT),
-      green: resolveEffort(input.effort?.["green"], GREEN_EFFORT),
-      check: resolveVerifierEffort(input.effort?.["check"], CHECK_EFFORT_DEFAULT)
-    };
+    const taskEffortOf = await resolveTaskEffortMap(rt, input, warnings);
     const mechanicalEffort = resolveEffort(input.effort?.["mechanical"], MECHANICAL_EFFORT);
     const integrationEffort = resolveVerifierEffort(input.effort?.["integration"], INTEGRATION_EFFORT_DEFAULT);
     rt.phase("Setup");
@@ -1393,7 +1796,7 @@ Return { "ok": true|false, "note": "<what happened>" }`,
             maxIterationsPerTask,
             input.implementerModel,
             input.implementerType,
-            taskEffort,
+            taskEffortOf(task),
             warnings,
             stats
           );

@@ -507,6 +507,26 @@ without touching its source — the natural home for an `args`-driven config:
   `args` config envelope so a workflow can accept launch-time tuning declaratively.
   `perAgent` feeds straight into `withAgentDefaults`.
 
+### Auto-selecting WORKER effort by task difficulty — `autoSelectEffort`
+
+Complexity triage of a code task is a JUDGMENT call, not a classification, so
+the decided form is three-tiered: **deterministic signals first, in script
+code** (`deterministicEffortOf` over `EffortSignals` — file counts, diff size,
+spec length — decides only the clear extremes: small-and-known → `medium`,
+clearly-large → `xhigh`); then **ONE batched best-model triage call** scoring
+every remaining `EffortWorkItem` at once with the standing instruction *"when
+unsure, score UP"*; and anything the triage failed to decide lands on the
+caller's `fallback` (`AutoSelectEffortOptions`) — the fail-safe direction is
+always UP, so auto-selection is a cost optimization, never a silent quality
+downgrade. The `AutoSelectEffortResult` reports per-item efforts, how each was
+decided (`deterministic` / `triage` / `fallback`), and diagnostics.
+
+**Routing applies to WORKERS only.** Verifier/checker roles keep their static
+`'high'` floor via `resolveVerifierEffort` — that boundary is the caller's to
+hold. Opt in per launch (`args.effort.<workerRole> = 'auto'` in the shipped
+dev-implement and pr-review), never as a blanket default: effort is
+task-relative, not identity- or project-relative.
+
 ## Cache-warm — staggering for a concurrent burst (on by default)
 
 `fanOutAndSynthesize`, `chunkedAnalysis`, `planAndExecute`, `scoreAndRank`,
