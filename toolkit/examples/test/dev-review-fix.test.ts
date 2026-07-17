@@ -3,7 +3,7 @@
 // TDD: written before the implementation (RED step).
 
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime, BEST_MODEL } from '@workflow-toolbox/runtime'
+import { FakeRuntime, BEST_MODEL, parseDigest } from '@workflow-toolbox/runtime'
 import wf from '../dev-review-fix.workflow.js'
 
 // ---------------------------------------------------------------------------
@@ -357,6 +357,17 @@ describe('dev-review-fix happy path', () => {
       expect(f.evidence).toBe('suite green: 12/12')
     }
     expect(Array.isArray(result.warnings)).toBe(true)
+  })
+
+  it('emits a [wt:digest] tier-2 digest for the deterministic Report phase (no agent)', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const reportDigest = digests.find((d) => d?.phase === 'Report')
+    expect(reportDigest).toBeDefined()
+    expect(reportDigest?.stage).toBe('dev-review-fix:report')
+    expect(reportDigest?.output).toBeTruthy()
+    expect(reportDigest?.counts).toMatchObject(result.tallies)
   })
 
   it('sorts findings by severity IN CODE before assigning ids (cap safety)', async () => {
@@ -1147,6 +1158,14 @@ describe('dev-review-fix degradation', () => {
     })
     // Only the 2 reviewers ran — no dedup, no verifiers, no fix loop.
     expect(rt.calls.length).toBe(2)
+
+    // The early-exit Report is still entered with zero agents — same digest
+    // contract as the full-loop Report.
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const reportDigest = digests.find((d) => d?.phase === 'Report')
+    expect(reportDigest).toBeDefined()
+    expect(reportDigest?.stage).toBe('dev-review-fix:report')
+    expect(reportDigest?.counts).toMatchObject({ findings: 0 })
   })
 })
 

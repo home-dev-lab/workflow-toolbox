@@ -46,6 +46,26 @@ var __wt = (() => {
     default: () => dev_full_workflow_default
   });
 
+  // ../packages/runtime/src/digest.ts
+  var DIGEST_PREFIX = "[wt:digest]";
+  function formatDigest(d) {
+    const body = { stage: d.stage };
+    if (d.phase !== void 0) body.phase = d.phase;
+    if (d.output !== void 0) body.output = d.output;
+    if (d.taken !== void 0) body.taken = d.taken;
+    if (d.notTaken !== void 0) body.notTaken = d.notTaken;
+    if (d.counts !== void 0) {
+      const counts = d.counts;
+      const sorted = {};
+      for (const k of Object.keys(counts).sort()) {
+        const v = counts[k];
+        if (v !== void 0) sorted[k] = v;
+      }
+      body.counts = sorted;
+    }
+    return `${DIGEST_PREFIX} ${JSON.stringify(body)}`;
+  }
+
   // ../packages/runtime/src/prompt-tag.ts
   var PROMPT_TAG_PREFIX = "<!-- wt-meta ";
   function escapeValue(v) {
@@ -224,6 +244,9 @@ ${prompt}` : prompt;
   function warn(rt, warnings, message) {
     warnings.push(message);
     rt.log(message);
+  }
+  function emitDigest(rt, d) {
+    rt.log(formatDigest(d));
   }
 
   // ../packages/patterns/src/paths.ts
@@ -631,9 +654,14 @@ ${statusLines.join("\n")}` + (changedFiles !== null ? "\n\nNote: the changed-fil
     stats.review = review.stats;
     for (const w of review.warnings) warnings.push(`review: ${w}`);
     rt.phase("Report");
-    rt.log(
-      `dev-full: completed \u2014 plan ${plan.artifact.tasks.length} tasks, implement ${implement.succeeded}/${implement.tasks.length} succeeded, review suiteGreen=${String(review.value["suiteGreen"] ?? "unknown")}`
-    );
+    const reportSummary = `dev-full: completed \u2014 plan ${plan.artifact.tasks.length} tasks, implement ${implement.succeeded}/${implement.tasks.length} succeeded, review suiteGreen=${String(review.value["suiteGreen"] ?? "unknown")}`;
+    rt.log(reportSummary);
+    emitDigest(rt, {
+      stage: "dev-full:report",
+      phase: "Report",
+      output: reportSummary,
+      counts: { planTasks: plan.artifact.tasks.length, implementSucceeded: implement.succeeded, implementTotal: implement.tasks.length }
+    });
     return finish("completed", null);
   }
   var dev_full_workflow_default = defineWorkflow({

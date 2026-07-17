@@ -349,7 +349,10 @@ its trail stays per-**iteration** (`trail.length === iterations`, not
 > bundled `demo-all-patterns` does exactly this (`rt.phase('Refine')` on the line
 > above its loop). The observe-ui graph names the loop's back-edge after that
 > phase — e.g. `↺ repeat Refine (ran 3×)` — so a missing `rt.phase` shows up
-> immediately as `↺ repeat (no phase)`.
+> immediately as `↺ repeat (no phase)`. Give that `meta.phases` entry a `detail`
+> string (see `api-reference.md`) and the otherwise-empty container shows that
+> text inline instead of a bare box — useful when a phase is legitimately agent-
+> less (e.g. deterministic setup/report stages).
 
 ---
 

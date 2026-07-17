@@ -1603,6 +1603,20 @@ ${renderClaim(claim)}`;
     additionalProperties: false
   };
   var READ_ONLY_GIT = "Inspect via READ-ONLY git only \u2014 `git show <sha>:<path>`, `git diff <range>`, `git log` \u2014 NEVER `git checkout` / `git reset` / `git restore` / `git clean` (they mutate the shared working tree and will be denied).";
+  function actPrompt(category, summaryAsk, extraTaskLine) {
+    return (target) => `You are reviewing a ${category} change.
+
+## Task
+- Inspect the actual change: ${target}.${extraTaskLine !== void 0 ? ` ${extraTaskLine}` : ""}
+- ${READ_ONLY_GIT}
+
+## What to report
+- **Risk areas**: the change's real risk areas, short entries.
+- **Summary**: ${summaryAsk}.
+
+## Output contract
+Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<...>" }. ${CHANGE_SUMMARY_RULES}`;
+  }
   var REVIEWER_LENSES = {
     bugfix: ["root-cause", "regression-risk", "test-coverage", "maintainability"],
     feature: ["correctness", "security", "api-design", "maintainability"],
@@ -1776,37 +1790,27 @@ Return { "category": "<one of the five categories>" }`,
       actions: {
         feature: {
           schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: (target) => `You are reviewing a FEATURE change. Inspect the actual change (${target}) and produce a focused summary.
-${READ_ONLY_GIT}
-Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what the feature does>" }. ${CHANGE_SUMMARY_RULES}`,
+          prompt: actPrompt("FEATURE", "what the feature does"),
           effort: routeActEffort
         },
         bugfix: {
           schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: (target) => `You are reviewing a BUGFIX change. Inspect the actual change (${target}) \u2014 re-derive from first principles.
-${READ_ONLY_GIT}
-Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was broken and how it is fixed>" }. ${CHANGE_SUMMARY_RULES}`,
+          prompt: actPrompt("BUGFIX", "what was broken and how it is fixed", "re-derive from first principles."),
           effort: routeActEffort
         },
         refactor: {
           schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: (target) => `You are reviewing a REFACTOR change. Inspect the actual change (${target}).
-${READ_ONLY_GIT}
-Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was refactored and why>" }. ${CHANGE_SUMMARY_RULES}`,
+          prompt: actPrompt("REFACTOR", "what was refactored and why"),
           effort: routeActEffort
         },
         config: {
           schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: (target) => `You are reviewing a CONFIG change. Inspect the actual change (${target}).
-${READ_ONLY_GIT}
-Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what config changed and its effect>" }. ${CHANGE_SUMMARY_RULES}`,
+          prompt: actPrompt("CONFIG", "what config changed and its effect"),
           effort: routeActEffort
         },
         docs: {
           schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: (target) => `You are reviewing a DOCS change. Inspect the actual change (${target}).
-${READ_ONLY_GIT}
-Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what documentation was updated>" }. ${CHANGE_SUMMARY_RULES}`,
+          prompt: actPrompt("DOCS", "what documentation was updated"),
           effort: routeActEffort
         }
       },

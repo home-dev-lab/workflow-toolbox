@@ -1712,6 +1712,12 @@ Refute the task if any claim is wrong.`,
       verifiedTasks = critiqueResult.value;
     } else {
       warn(rt, warnings, "Plan phase produced no candidate tasks \u2014 Critique phase skipped");
+      emitDigest(rt, {
+        stage: "dev-plan:critique",
+        phase: "Critique",
+        output: "Plan phase produced no candidate tasks \u2014 Critique skipped",
+        counts: { candidates: 0 }
+      });
     }
     const keptTasks = [];
     for (const vt of verifiedTasks) {

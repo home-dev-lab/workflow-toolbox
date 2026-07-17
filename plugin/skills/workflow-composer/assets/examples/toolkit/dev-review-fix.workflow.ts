@@ -61,7 +61,7 @@
 //   checked out locally.
 
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
-import { adversarialVerification, collectTrail, loopUntilDone, warn } from '@workflow-toolbox/patterns'
+import { adversarialVerification, collectTrail, emitDigest, loopUntilDone, warn } from '@workflow-toolbox/patterns'
 import type { PatternStats, TrailRecord, VerifiedClaim } from '@workflow-toolbox/patterns'
 import { BEST_MODEL } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
@@ -741,6 +741,17 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
   // consolidation, no verification, no fix agents.
   if (rawFindingCount === 0) {
     rt.phase('Report')
+    // Tier-2 skip-digest: this early exit enters Report with zero agents.
+    // Custom-stage naming convention: '<workflow-name>:<phase-lowercase>',
+    // matching this file's kebab-case agent-label prefix (e.g.
+    // 'dev-review-fix:review:<dimension>'). `phase` MUST equal the rt.phase()
+    // title exactly — the sole resolution hint for a zero-agent phase.
+    emitDigest(rt, {
+      stage: 'dev-review-fix:report',
+      phase: 'Report',
+      output: 'clean review — 0 findings, no verify/fix agents spawned',
+      counts: { findings: 0, confirmed: 0, rejected: 0, unverified: 0, fixed: 0, unfixed: 0 },
+    })
     return {
       goal: input.goal,
       suiteGreen: null,
@@ -1149,6 +1160,15 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
     fixed: reportFindings.filter((f) => f.status === 'fixed').length,
     unfixed: reportFindings.filter((f) => f.status === 'unfixed').length,
   }
+
+  // Tier-2 skip-digest: same contract as the clean-review early exit above —
+  // deterministic tallying IN CODE, zero agents.
+  emitDigest(rt, {
+    stage: 'dev-review-fix:report',
+    phase: 'Report',
+    output: `${tallies.fixed}/${tallies.confirmed} confirmed finding(s) fixed (deterministic tally, no agent)`,
+    counts: { ...tallies },
+  })
 
   if (tallies.unfixed > 0) {
     warn(

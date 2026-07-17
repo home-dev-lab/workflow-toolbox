@@ -1304,6 +1304,12 @@ Return { "findings": [{ "file": "<path>", "location": "<line range, e.g. "40-55"
     const rawFindingCount = parts.reduce((n, p) => n + p.findings.length, 0);
     if (rawFindingCount === 0) {
       rt.phase("Report");
+      emitDigest(rt, {
+        stage: "dev-review-fix:report",
+        phase: "Report",
+        output: "clean review \u2014 0 findings, no verify/fix agents spawned",
+        counts: { findings: 0, confirmed: 0, rejected: 0, unverified: 0, fixed: 0, unfixed: 0 }
+      });
       return {
         goal: input.goal,
         suiteGreen: null,
@@ -1574,6 +1580,12 @@ Return { "green": true|false (the test suite), "findings": [{ "id": "<F-id>", "f
       fixed: reportFindings.filter((f) => f.status === "fixed").length,
       unfixed: reportFindings.filter((f) => f.status === "unfixed").length
     };
+    emitDigest(rt, {
+      stage: "dev-review-fix:report",
+      phase: "Report",
+      output: `${tallies.fixed}/${tallies.confirmed} confirmed finding(s) fixed (deterministic tally, no agent)`,
+      counts: { ...tallies }
+    });
     if (tallies.unfixed > 0) {
       warn(
         rt,

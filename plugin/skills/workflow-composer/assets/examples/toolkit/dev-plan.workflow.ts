@@ -42,6 +42,7 @@ import type { WorkflowRuntime, JsonSchema, EffortAlias } from '@workflow-toolbox
 import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import {
   collectTrail,
+  emitDigest,
   fanOutAndSynthesize,
   planAndExecute,
   adversarialVerification,
@@ -852,6 +853,17 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
     verifiedTasks = critiqueResult.value
   } else {
     warn(rt, warnings, 'Plan phase produced no candidate tasks — Critique phase skipped')
+    // Tier-2 skip-digest: Critique is entered (rt.phase('Critique')) but
+    // adversarialVerification never runs when there are zero candidate tasks
+    // — zero agents spawn in this branch. Custom-stage naming convention:
+    // '<workflow-name>:<phase-lowercase>'. `phase` MUST equal the rt.phase()
+    // title exactly — the sole resolution hint for a zero-agent phase.
+    emitDigest(rt, {
+      stage: 'dev-plan:critique',
+      phase: 'Critique',
+      output: 'Plan phase produced no candidate tasks — Critique skipped',
+      counts: { candidates: 0 },
+    })
   }
 
   const keptTasks: CandidateTask[] = []

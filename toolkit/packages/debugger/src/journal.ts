@@ -76,7 +76,10 @@ export interface WorkflowJournal {
   scriptPath?: string
   /** The run's default model tier (e.g. "claude-opus-4-8[1m]"). */
   defaultModel?: string
-  phases?: { title?: string }[]
+  /** Static per-phase description from the workflow's `meta.phases`. Present on real
+   * journals (e.g. `phases:[{title,detail}]`); surfaced by observe as a phase-box tooltip
+   * and as inline text on an empty/skipped phase box. */
+  phases?: { title?: string; detail?: string }[]
   workflowProgress?: WorkflowProgressEvent[]
   /** Narrator lines emitted by `rt.log()` during the run, in call order. Real journals
    * carry these as BARE strings (e.g. "Evidence gathered: 3/4"); most runs have none, so

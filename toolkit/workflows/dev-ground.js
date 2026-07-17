@@ -1687,6 +1687,12 @@ Return { results: [...] }.`,
       let pocStats = null;
       if (pocEligible.length === 0) {
         warn(rt, warnings, "dev-ground: no external premise was left unsettled \u2014 PoC stage did not run (nothing qualified)");
+        emitDigest(rt, {
+          stage: "dev-ground:poc",
+          phase: "PoC",
+          output: "no external premise was left unsettled \u2014 PoC stage did not run (nothing qualified)",
+          counts: { eligible: 0 }
+        });
       } else {
         let pocAgentsSpawned = 0;
         let pocDropped = 0;
@@ -1760,6 +1766,12 @@ Return { outcome, premiseId: "${p.id}", probe, observation, denialQuote, rationa
       const verifyClaims = mergedPremises.filter((m) => m.finding !== null || m.pocOutcome !== null);
       const verification = verifyClaims.length === 0 ? (() => {
         warn(rt, warnings, "dev-ground: no premise records survived the grounding arms \u2014 nothing to verify");
+        emitDigest(rt, {
+          stage: "dev-ground:verify",
+          phase: "Verify",
+          output: "no premise records survived the grounding arms \u2014 nothing to verify",
+          counts: { claims: 0 }
+        });
         return null;
       })() : await adversarialVerification(rt, {
         claims: verifyClaims,

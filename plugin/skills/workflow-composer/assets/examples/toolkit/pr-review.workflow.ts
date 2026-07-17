@@ -293,6 +293,41 @@ const READ_ONLY_GIT =
   'NEVER `git checkout` / `git reset` / `git restore` / `git clean` (they mutate the shared working tree and will be denied).'
 
 // ---------------------------------------------------------------------------
+// classifyAndAct's `act` goal template — shared markdown builder for the five
+// per-category prompts below (feature/bugfix/refactor/config/docs). Markdown
+// (## sections + bullets) instead of one flat paragraph so observe's
+// markdown-rendering goal display (card #1820724046774404234, the UI side of
+// this fix) has real structure to render — the run wf_d55a5b96 witness showed
+// a flat `classifyAndAct:act:feature:0` goal with nothing for it to format.
+// Rule of Three: the five categories share this exact shape (task, what to
+// report, output contract) and differ only in the category label, the
+// "summary" ask, and an optional extra task line (bugfix's "re-derive from
+// first principles") — one builder, not five near-identical copies.
+//
+// ⚠ ANTI-CAPITULATION INVARIANT (do not reorder): the Output Contract section's
+// literal `Return {...}` field order — changedFiles, addedPublicSurface,
+// riskAreas, summary LAST — is load-bearing (see CHANGE_SUMMARY_RULES above,
+// run wf_4115390a-8a0). Restructuring into markdown must NOT touch this order.
+//
+// ⚠ TEST-COUPLED LITERAL (do not reword): "You are reviewing a <CATEGORY>
+// change." is matched case-insensitively by the test suite's prompt router
+// (`p.includes('you are reviewing a')`, examples/test/pr-review.test.ts) —
+// keep it as the opening line verbatim.
+function actPrompt(category: string, summaryAsk: string, extraTaskLine?: string): (target: string) => string {
+  return (target) =>
+    `You are reviewing a ${category} change.\n\n` +
+    `## Task\n` +
+    `- Inspect the actual change: ${target}.${extraTaskLine !== undefined ? ` ${extraTaskLine}` : ''}\n` +
+    `- ${READ_ONLY_GIT}\n\n` +
+    `## What to report\n` +
+    `- **Risk areas**: the change's real risk areas, short entries.\n` +
+    `- **Summary**: ${summaryAsk}.\n\n` +
+    `## Output contract\n` +
+    `Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], ` +
+    `"riskAreas": ["<risk1>", ...], "summary": "<...>" }. ${CHANGE_SUMMARY_RULES}`
+}
+
+// ---------------------------------------------------------------------------
 // Reviewer lenses per category
 // Each category gets specialized lenses: different failure modes, not redundant
 // coverage. Distinct lenses catch failures plain redundancy misses. Every CODE
@@ -695,42 +730,27 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     actions: {
       feature: {
         schema: CHANGE_SUMMARY_SCHEMA,
-        prompt: (target) =>
-          `You are reviewing a FEATURE change. Inspect the actual change (${target}) and produce a focused summary.\n` +
-          `${READ_ONLY_GIT}\n` +
-          `Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what the feature does>" }. ${CHANGE_SUMMARY_RULES}`,
+        prompt: actPrompt('FEATURE', 'what the feature does'),
         effort: routeActEffort,
       },
       bugfix: {
         schema: CHANGE_SUMMARY_SCHEMA,
-        prompt: (target) =>
-          `You are reviewing a BUGFIX change. Inspect the actual change (${target}) — re-derive from first principles.\n` +
-          `${READ_ONLY_GIT}\n` +
-          `Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was broken and how it is fixed>" }. ${CHANGE_SUMMARY_RULES}`,
+        prompt: actPrompt('BUGFIX', 'what was broken and how it is fixed', 're-derive from first principles.'),
         effort: routeActEffort,
       },
       refactor: {
         schema: CHANGE_SUMMARY_SCHEMA,
-        prompt: (target) =>
-          `You are reviewing a REFACTOR change. Inspect the actual change (${target}).\n` +
-          `${READ_ONLY_GIT}\n` +
-          `Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was refactored and why>" }. ${CHANGE_SUMMARY_RULES}`,
+        prompt: actPrompt('REFACTOR', 'what was refactored and why'),
         effort: routeActEffort,
       },
       config: {
         schema: CHANGE_SUMMARY_SCHEMA,
-        prompt: (target) =>
-          `You are reviewing a CONFIG change. Inspect the actual change (${target}).\n` +
-          `${READ_ONLY_GIT}\n` +
-          `Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what config changed and its effect>" }. ${CHANGE_SUMMARY_RULES}`,
+        prompt: actPrompt('CONFIG', 'what config changed and its effect'),
         effort: routeActEffort,
       },
       docs: {
         schema: CHANGE_SUMMARY_SCHEMA,
-        prompt: (target) =>
-          `You are reviewing a DOCS change. Inspect the actual change (${target}).\n` +
-          `${READ_ONLY_GIT}\n` +
-          `Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what documentation was updated>" }. ${CHANGE_SUMMARY_RULES}`,
+        prompt: actPrompt('DOCS', 'what documentation was updated'),
         effort: routeActEffort,
       },
     },

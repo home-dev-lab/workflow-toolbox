@@ -126,7 +126,7 @@ export const meta = {
   whenToUse: 'Before shipping a branch',  // optional — [observed]
   phases: [                      // optional — one entry per phase() call
     { title: 'Review' },
-    { title: 'Verify', model: 'haiku' },
+    { title: 'Verify', model: 'haiku', detail: 'Re-run the failing checks' },
   ],
 }
 ```
@@ -142,6 +142,13 @@ the carry-through value the build CLI consumes, never constructed by hand.
 - A `model` on a `phases[]` entry is a **label for the permission dialog only**
   — it does not set the runtime model. The model is set solely by the `model`
   option on the `agent()` call. [observed]
+- A `detail` on a `phases[]` entry is a **static per-phase description string**,
+  independent of any agent's live output. Observe surfaces it two ways: as a
+  **tooltip on the phase box** (every phase, once its title is known), and as
+  **inline text inside an empty/skipped phase box** — the case where a phase was
+  declared in `meta.phases` but never received an agent, which otherwise renders
+  as a bare empty container (see the `loopUntilDone` gotcha in `patterns.md`).
+  [observed]
 
 ### 2. The body — top-level async, returns the result
 
