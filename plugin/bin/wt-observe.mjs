@@ -204,11 +204,35 @@ function clearAllLaunchEnableRecords(stateRoot) {
 
 // packages/debugger/src/capabilities.ts
 var SECTION_KEYS = /* @__PURE__ */ new Set(["mcpServers", "agents", "skills"]);
+var FORBIDDEN_ENTRY_NAMES = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
+var AGENT_DEF_KEYS = /* @__PURE__ */ new Set([
+  "description",
+  "tools",
+  "disallowedTools",
+  "prompt",
+  "model",
+  "mcpServers",
+  "criticalSystemReminder_EXPERIMENTAL",
+  "skills",
+  "initialPrompt",
+  "maxTurns",
+  "background",
+  "memory",
+  "effort",
+  "permissionMode",
+  "observer",
+  "observerMessage"
+]);
 function isRecord2(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 function isStringArray(v) {
   return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+function checkEntryNames(map, path, errors) {
+  for (const name of Object.keys(map)) {
+    if (FORBIDDEN_ENTRY_NAMES.has(name)) errors.push(`${path}.${name} is a forbidden entry name (prototype-collision defence)`);
+  }
 }
 var MCP_ANCHOR_KEYS = ["command", "url", "type"];
 function validateMcpServers(v, errors) {
@@ -216,11 +240,17 @@ function validateMcpServers(v, errors) {
     errors.push("capabilities.mcpServers must be an object map of server-name \u2192 server config");
     return void 0;
   }
+  checkEntryNames(v, "capabilities.mcpServers", errors);
   for (const [name, cfg] of Object.entries(v)) {
     if (!isRecord2(cfg)) {
       errors.push(`capabilities.mcpServers.${name} must be an object (server config)`);
-    } else if (!MCP_ANCHOR_KEYS.some((k) => k in cfg)) {
+      continue;
+    }
+    if (!MCP_ANCHOR_KEYS.some((k) => k in cfg)) {
       errors.push(`capabilities.mcpServers.${name} lacks any of ${MCP_ANCHOR_KEYS.join("/")} \u2014 not a launchable server config`);
+    }
+    for (const k of MCP_ANCHOR_KEYS) {
+      if (k in cfg && typeof cfg[k] !== "string") errors.push(`capabilities.mcpServers.${name}.${k} must be a string`);
     }
   }
   return v;
@@ -230,21 +260,36 @@ function validateAgents(v, errors) {
     errors.push("capabilities.agents must be an object map of agent-name \u2192 agent definition");
     return void 0;
   }
+  checkEntryNames(v, "capabilities.agents", errors);
   for (const [name, def] of Object.entries(v)) {
+    if (FORBIDDEN_ENTRY_NAMES.has(name)) continue;
     if (!isRecord2(def)) {
       errors.push(`capabilities.agents.${name} must be an object (agent definition)`);
       continue;
+    }
+    for (const key of Object.keys(def)) {
+      if (!AGENT_DEF_KEYS.has(key)) errors.push(`capabilities.agents.${name}.${key} is not a known AgentDefinition field (typo?)`);
     }
     if (typeof def["description"] !== "string") errors.push(`capabilities.agents.${name} needs a string description`);
     if (typeof def["prompt"] !== "string") errors.push(`capabilities.agents.${name} needs a string prompt`);
     if ("tools" in def && !isStringArray(def["tools"])) errors.push(`capabilities.agents.${name}.tools must be a string array`);
     if ("disallowedTools" in def && !isStringArray(def["disallowedTools"])) errors.push(`capabilities.agents.${name}.disallowedTools must be a string array`);
+    if ("skills" in def && !isStringArray(def["skills"])) errors.push(`capabilities.agents.${name}.skills must be a string array`);
+    if ("model" in def && typeof def["model"] !== "string") errors.push(`capabilities.agents.${name}.model must be a string`);
+    if ("effort" in def && typeof def["effort"] !== "string" && typeof def["effort"] !== "number") errors.push(`capabilities.agents.${name}.effort must be a string or number`);
+    if ("maxTurns" in def && typeof def["maxTurns"] !== "number") errors.push(`capabilities.agents.${name}.maxTurns must be a number`);
+    if ("background" in def && typeof def["background"] !== "boolean") errors.push(`capabilities.agents.${name}.background must be a boolean`);
+    if ("mcpServers" in def && !Array.isArray(def["mcpServers"])) errors.push(`capabilities.agents.${name}.mcpServers must be an array (SDK AgentMcpServerSpec[])`);
+    for (const strField of ["memory", "permissionMode", "initialPrompt", "criticalSystemReminder_EXPERIMENTAL", "observer", "observerMessage"]) {
+      if (strField in def && typeof def[strField] !== "string") errors.push(`capabilities.agents.${name}.${strField} must be a string`);
+    }
   }
   return v;
 }
 function extractCapabilities(args) {
   if (!isRecord2(args) || !("capabilities" in args)) return { spec: null, errors: [] };
   const raw = args["capabilities"];
+  if (raw === null) return { spec: null, errors: [] };
   if (!isRecord2(raw)) return { spec: null, errors: ["capabilities must be an object ({ mcpServers?, agents?, skills? })"] };
   const errors = [];
   for (const key of Object.keys(raw)) {

@@ -65,34 +65,49 @@ export interface CapabilitiesProbeSpec {
   }
 }
 
-interface InstanceStats {
+export interface InstanceStats {
   subagentType: string
   toolUses: string[]
-  mcpErrors: number
+  /** tool_use_ids of is_error tool_results seen for this instance — resolved to
+   *  tool NAMES at expectation time via ProbeOutcome.toolUseNames, so an
+   *  unrelated Read error never fails an MCP-scoped expectation (review 2.1). */
+  errorToolUseIds: string[]
+  /** True when the message carried no string parent_tool_use_id — a shared
+   *  catch-all bucket (e.g. Task RESULT notifications), NOT a real concurrent
+   *  instance; excluded from minSubagentInstances (review 2.3). */
+  isFallback: boolean
   firstCacheCreation: number | null
   firstCacheRead: number | null
   outputTokens: number
   messageIds: Set<string>
 }
 
-interface ProbeOutcome {
+export interface ProbeOutcome {
   surface: Surface | null
   resultText: string | null
   sessionId: string | null
   resultCount: number
   instances: Map<string, InstanceStats>
+  /** tool_use id → tool name, collected from every tool_use block seen (any
+   *  message), so instance error ids can be attributed to a tool name. */
+  toolUseNames: Map<string, string>
   error: string | null
 }
 
-function instanceKey(subagentType: string, parentToolUseId: unknown): string {
-  return `${subagentType}#${typeof parentToolUseId === 'string' ? parentToolUseId.slice(-8) : 'main'}`
+export function emptyOutcome(): ProbeOutcome {
+  return { surface: null, resultText: null, sessionId: null, resultCount: 0, instances: new Map(), toolUseNames: new Map(), error: null }
+}
+
+function instanceKey(subagentType: string, parentToolUseId: unknown): { key: string; isFallback: boolean } {
+  const tagged = typeof parentToolUseId === 'string'
+  return { key: `${subagentType}#${tagged ? (parentToolUseId as string).slice(-8) : 'main'}`, isFallback: !tagged }
 }
 
 async function runCapabilitiesProbe(spec: CapabilitiesProbeSpec, repoRoot: string): Promise<ProbeOutcome> {
   const controller = new AbortController()
   const timeoutMs = spec.timeoutMs ?? 420_000
   const timer = setTimeout(() => controller.abort(), timeoutMs)
-  const out: ProbeOutcome = { surface: null, resultText: null, sessionId: null, resultCount: 0, instances: new Map(), error: null }
+  const out: ProbeOutcome = emptyOutcome()
 
   const options: QueryOptions = {
     permissionMode: 'bypassPermissions',
@@ -113,53 +128,7 @@ async function runCapabilitiesProbe(spec: CapabilitiesProbeSpec, repoRoot: strin
   const q = query({ prompt: spec.main.prompt, options })
   try {
     for await (const raw of q) {
-      const message: unknown = raw
-      if (out.surface === null) {
-        const s = readInitSurface(message)
-        if (s !== null) out.surface = s
-      }
-      if (out.sessionId === null && isRecord(message) && typeof message['session_id'] === 'string') {
-        out.sessionId = message['session_id']
-      }
-      if (isRecord(message) && typeof message['subagent_type'] === 'string') {
-        const key = instanceKey(message['subagent_type'], message['parent_tool_use_id'])
-        let stats = out.instances.get(key)
-        if (stats === undefined) {
-          stats = { subagentType: message['subagent_type'], toolUses: [], mcpErrors: 0, firstCacheCreation: null, firstCacheRead: null, outputTokens: 0, messageIds: new Set() }
-          out.instances.set(key, stats)
-        }
-        const inner = isRecord(message['message']) ? message['message'] : null
-        const innerId = inner && typeof inner['id'] === 'string' ? inner['id'] : null
-        const content = inner && Array.isArray(inner['content']) ? inner['content'] : []
-        if (message['type'] === 'assistant') {
-          for (const block of content) {
-            if (isRecord(block) && block['type'] === 'tool_use' && typeof block['name'] === 'string') stats.toolUses.push(block['name'])
-          }
-          const usage = inner && isRecord(inner['usage']) ? inner['usage'] : null
-          if (usage !== null && (innerId === null || !stats.messageIds.has(innerId))) {
-            if (innerId !== null) stats.messageIds.add(innerId)
-            const cc = typeof usage['cache_creation_input_tokens'] === 'number' ? usage['cache_creation_input_tokens'] : 0
-            if (stats.firstCacheCreation === null) stats.firstCacheCreation = cc
-            const cr = typeof usage['cache_read_input_tokens'] === 'number' ? usage['cache_read_input_tokens'] : 0
-            if (stats.firstCacheRead === null) stats.firstCacheRead = cr
-            stats.outputTokens += typeof usage['output_tokens'] === 'number' ? usage['output_tokens'] : 0
-          }
-        }
-        if (message['type'] === 'user') {
-          for (const block of content) {
-            if (isRecord(block) && block['type'] === 'tool_result' && block['is_error'] === true) stats.mcpErrors++
-          }
-        }
-      }
-      // Do NOT break on the first result: with ASYNC subagent spawns (observed on
-      // cc 2.1.205 — the Task tool returns a handle and the parent turn ends) the
-      // session continues when the subagent completes; keep reading to stream end
-      // and keep the LAST result text.
-      const text = readResultText(message)
-      if (text !== null) {
-        out.resultText = text
-        out.resultCount++
-      }
+      ingestProbeMessage(out, raw)
     }
   } catch (err) {
     if (isAbortError(err)) out.error = `timed out after ${timeoutMs} ms`
@@ -170,7 +139,71 @@ async function runCapabilitiesProbe(spec: CapabilitiesProbeSpec, repoRoot: strin
   return out
 }
 
-function checkExpectations(spec: CapabilitiesProbeSpec, out: ProbeOutcome): { pass: boolean; lines: string[] } {
+/** Fold ONE SDK stream message into the outcome — pure on its inputs, exported
+ *  so the parsing logic is unit-testable with synthetic messages (no launch). */
+export function ingestProbeMessage(out: ProbeOutcome, raw: unknown): void {
+  const message: unknown = raw
+  if (out.surface === null) {
+    const s = readInitSurface(message)
+    if (s !== null) out.surface = s
+  }
+  if (!isRecord(message)) return
+  if (out.sessionId === null && typeof message['session_id'] === 'string') {
+    out.sessionId = message['session_id']
+  }
+  const inner = isRecord(message['message']) ? message['message'] : null
+  const content = inner && Array.isArray(inner['content']) ? inner['content'] : []
+  // Collect tool_use id→name from EVERY message (main or subagent) so error
+  // tool_results can be attributed to a tool name at expectation time.
+  for (const block of content) {
+    if (isRecord(block) && block['type'] === 'tool_use' && typeof block['id'] === 'string' && typeof block['name'] === 'string') {
+      out.toolUseNames.set(block['id'], block['name'])
+    }
+  }
+  if (typeof message['subagent_type'] === 'string') {
+    const { key, isFallback } = instanceKey(message['subagent_type'], message['parent_tool_use_id'])
+    let stats = out.instances.get(key)
+    if (stats === undefined) {
+      stats = { subagentType: message['subagent_type'], toolUses: [], errorToolUseIds: [], isFallback, firstCacheCreation: null, firstCacheRead: null, outputTokens: 0, messageIds: new Set() }
+      out.instances.set(key, stats)
+    }
+    const innerId = inner && typeof inner['id'] === 'string' ? inner['id'] : null
+    if (message['type'] === 'assistant') {
+      for (const block of content) {
+        if (isRecord(block) && block['type'] === 'tool_use' && typeof block['name'] === 'string') stats.toolUses.push(block['name'])
+      }
+      const usage = inner && isRecord(inner['usage']) ? inner['usage'] : null
+      // Dedup by .message.id when present; an id-LESS assistant message is
+      // counted unconditionally (deliberate lenient default — usage stats are
+      // informational, never an expectation; review 2.2).
+      if (usage !== null && (innerId === null || !stats.messageIds.has(innerId))) {
+        if (innerId !== null) stats.messageIds.add(innerId)
+        const cc = typeof usage['cache_creation_input_tokens'] === 'number' ? usage['cache_creation_input_tokens'] : 0
+        if (stats.firstCacheCreation === null) stats.firstCacheCreation = cc
+        const cr = typeof usage['cache_read_input_tokens'] === 'number' ? usage['cache_read_input_tokens'] : 0
+        if (stats.firstCacheRead === null) stats.firstCacheRead = cr
+        stats.outputTokens += typeof usage['output_tokens'] === 'number' ? usage['output_tokens'] : 0
+      }
+    }
+    if (message['type'] === 'user') {
+      for (const block of content) {
+        if (isRecord(block) && block['type'] === 'tool_result' && block['is_error'] === true && typeof block['tool_use_id'] === 'string') {
+          stats.errorToolUseIds.push(block['tool_use_id'])
+        }
+      }
+    }
+  }
+  // Do NOT stop on the first result: with ASYNC subagent spawns (observed on
+  // cc 2.1.205 — the Task tool returns a handle and the parent turn ends) the
+  // session continues when the subagent completes; keep the LAST result text.
+  const text = readResultText(message)
+  if (text !== null) {
+    out.resultText = text
+    out.resultCount++
+  }
+}
+
+export function checkExpectations(spec: CapabilitiesProbeSpec, out: ProbeOutcome): { pass: boolean; lines: string[] } {
   const e = spec.expect ?? {}
   const lines: string[] = []
   let pass = true
@@ -198,11 +231,26 @@ function checkExpectations(spec: CapabilitiesProbeSpec, out: ProbeOutcome): { pa
     verdict(hits.length > 0, `subagent used ${e.subagentToolPrefix}*`, `${hits.length} matching tool_use (${[...new Set(hits)].slice(0, 6).join(', ') || 'none'})`)
   }
   if (e.minSubagentInstances !== undefined) {
-    verdict(out.instances.size >= e.minSubagentInstances, `>=${e.minSubagentInstances} subagent instances`, `observed ${out.instances.size}`)
+    // Fallback ('#main') buckets are catch-alls for messages without a
+    // parent_tool_use_id, not real concurrent instances — excluded (review 2.3).
+    const real = [...out.instances.values()].filter((s) => !s.isFallback).length
+    verdict(real >= e.minSubagentInstances, `>=${e.minSubagentInstances} subagent instances`, `observed ${real} keyed (+${out.instances.size - real} fallback bucket(s))`)
   }
   if (e.noMcpToolErrors === true) {
-    const errs = [...out.instances.values()].reduce((n, s) => n + s.mcpErrors, 0)
-    verdict(errs === 0, 'no subagent tool_result errors', `${errs} error result(s)`)
+    // Scope to the MCP tools the expectation is about (review 2.1): resolve each
+    // error's tool_use_id to its tool name; an unrelated Read/Bash error must not
+    // fail the MCP-composition check. Unresolvable ids are REPORTED, not failed.
+    const prefix = e.subagentToolPrefix ?? 'mcp__'
+    let scoped = 0
+    let unresolved = 0
+    for (const s of out.instances.values()) {
+      for (const id of s.errorToolUseIds) {
+        const name = out.toolUseNames.get(id)
+        if (name === undefined) unresolved++
+        else if (name.startsWith(prefix)) scoped++
+      }
+    }
+    verdict(scoped === 0, `no ${prefix}* tool_result errors`, `${scoped} scoped error(s)${unresolved > 0 ? `, ${unresolved} unresolved-id error(s) (reported, not failed)` : ''}`)
   }
   if (e.resultIncludes !== undefined) {
     for (const needle of e.resultIncludes) {
@@ -226,7 +274,8 @@ async function main(): Promise<number> {
   const s = out.surface
   console.log(s === null ? '(no init surface)' : `init: cc=${s.ccVersion} model=${s.model}\n  tools(${s.tools.length}): ${s.tools.join(', ')}\n  mcp(${s.mcpServers.length}): ${s.mcpServers.map((m) => `${m.name}:${m.status}`).join(', ') || '∅'}\n  agents(${s.agents.length}): ${s.agents.join(', ') || '∅'}`)
   for (const [key, st] of out.instances) {
-    console.log(`  instance ${key}: spawnCacheCreation=${st.firstCacheCreation ?? 'n/a'} spawnCacheRead=${st.firstCacheRead ?? 'n/a'} outputTokens=${st.outputTokens} mcpErrors=${st.mcpErrors}\n    tool_use: ${st.toolUses.join(', ') || '∅'}`)
+    const errNames = st.errorToolUseIds.map((id) => out.toolUseNames.get(id) ?? `?${id.slice(-8)}`)
+    console.log(`  instance ${key}${st.isFallback ? ' (fallback bucket)' : ''}: spawnCacheCreation=${st.firstCacheCreation ?? 'n/a'} spawnCacheRead=${st.firstCacheRead ?? 'n/a'} outputTokens=${st.outputTokens} toolErrors=${errNames.join(',') || '0'}\n    tool_use: ${st.toolUses.join(', ') || '∅'}`)
   }
   console.log(`  sessionId: ${out.sessionId ?? 'n/a'} (results seen: ${out.resultCount})`)
   console.log(`  result: ${JSON.stringify((out.resultText ?? '').slice(0, 400))}`)

@@ -43,6 +43,22 @@ export interface CapabilitiesSpec {
 
 const SECTION_KEYS = new Set(['mcpServers', 'agents', 'skills'])
 
+/** Entry names that collide with Object.prototype machinery. Our own code only
+ *  ever Object.entries()/spreads these maps (pollution-safe), but the composed
+ *  fragment is handed to the SDK whose internal merging we cannot audit —
+ *  reject them outright (defence-in-depth; no legitimate server/agent is named
+ *  `__proto__`). */
+const FORBIDDEN_ENTRY_NAMES = new Set(['__proto__', 'constructor', 'prototype'])
+
+/** The SDK AgentDefinition field set (0.3.205) — an unknown key inside an agent
+ *  definition is a TYPO until proven otherwise ("loud on typos"); when the SDK
+ *  grows a field, add it here in the same change that starts passing it. */
+const AGENT_DEF_KEYS = new Set([
+  'description', 'tools', 'disallowedTools', 'prompt', 'model', 'mcpServers',
+  'criticalSystemReminder_EXPERIMENTAL', 'skills', 'initialPrompt', 'maxTurns',
+  'background', 'memory', 'effort', 'permissionMode', 'observer', 'observerMessage',
+])
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
@@ -51,8 +67,16 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string')
 }
 
+function checkEntryNames(map: Record<string, unknown>, path: string, errors: string[]): void {
+  for (const name of Object.keys(map)) {
+    if (FORBIDDEN_ENTRY_NAMES.has(name)) errors.push(`${path}.${name} is a forbidden entry name (prototype-collision defence)`)
+  }
+}
+
 /** Keys any of which make an mcpServers entry launchable/connectable — the SDK
- *  validates the full config shape; we only reject the obviously-degenerate. */
+ *  validates the full config shape; we reject the obviously-degenerate AND
+ *  wrong-typed anchor values (a `command: null` would otherwise ride to the
+ *  server and die far from the operator). */
 const MCP_ANCHOR_KEYS = ['command', 'url', 'type']
 
 function validateMcpServers(v: unknown, errors: string[]): CapabilitiesSpec['mcpServers'] {
@@ -60,11 +84,17 @@ function validateMcpServers(v: unknown, errors: string[]): CapabilitiesSpec['mcp
     errors.push('capabilities.mcpServers must be an object map of server-name → server config')
     return undefined
   }
+  checkEntryNames(v, 'capabilities.mcpServers', errors)
   for (const [name, cfg] of Object.entries(v)) {
     if (!isRecord(cfg)) {
       errors.push(`capabilities.mcpServers.${name} must be an object (server config)`)
-    } else if (!MCP_ANCHOR_KEYS.some((k) => k in cfg)) {
+      continue
+    }
+    if (!MCP_ANCHOR_KEYS.some((k) => k in cfg)) {
       errors.push(`capabilities.mcpServers.${name} lacks any of ${MCP_ANCHOR_KEYS.join('/')} — not a launchable server config`)
+    }
+    for (const k of MCP_ANCHOR_KEYS) {
+      if (k in cfg && typeof cfg[k] !== 'string') errors.push(`capabilities.mcpServers.${name}.${k} must be a string`)
     }
   }
   return v as CapabilitiesSpec['mcpServers']
@@ -75,15 +105,29 @@ function validateAgents(v: unknown, errors: string[]): CapabilitiesSpec['agents'
     errors.push('capabilities.agents must be an object map of agent-name → agent definition')
     return undefined
   }
+  checkEntryNames(v, 'capabilities.agents', errors)
   for (const [name, def] of Object.entries(v)) {
+    if (FORBIDDEN_ENTRY_NAMES.has(name)) continue
     if (!isRecord(def)) {
       errors.push(`capabilities.agents.${name} must be an object (agent definition)`)
       continue
+    }
+    for (const key of Object.keys(def)) {
+      if (!AGENT_DEF_KEYS.has(key)) errors.push(`capabilities.agents.${name}.${key} is not a known AgentDefinition field (typo?)`)
     }
     if (typeof def['description'] !== 'string') errors.push(`capabilities.agents.${name} needs a string description`)
     if (typeof def['prompt'] !== 'string') errors.push(`capabilities.agents.${name} needs a string prompt`)
     if ('tools' in def && !isStringArray(def['tools'])) errors.push(`capabilities.agents.${name}.tools must be a string array`)
     if ('disallowedTools' in def && !isStringArray(def['disallowedTools'])) errors.push(`capabilities.agents.${name}.disallowedTools must be a string array`)
+    if ('skills' in def && !isStringArray(def['skills'])) errors.push(`capabilities.agents.${name}.skills must be a string array`)
+    if ('model' in def && typeof def['model'] !== 'string') errors.push(`capabilities.agents.${name}.model must be a string`)
+    if ('effort' in def && typeof def['effort'] !== 'string' && typeof def['effort'] !== 'number') errors.push(`capabilities.agents.${name}.effort must be a string or number`)
+    if ('maxTurns' in def && typeof def['maxTurns'] !== 'number') errors.push(`capabilities.agents.${name}.maxTurns must be a number`)
+    if ('background' in def && typeof def['background'] !== 'boolean') errors.push(`capabilities.agents.${name}.background must be a boolean`)
+    if ('mcpServers' in def && !Array.isArray(def['mcpServers'])) errors.push(`capabilities.agents.${name}.mcpServers must be an array (SDK AgentMcpServerSpec[])`)
+    for (const strField of ['memory', 'permissionMode', 'initialPrompt', 'criticalSystemReminder_EXPERIMENTAL', 'observer', 'observerMessage']) {
+      if (strField in def && typeof def[strField] !== 'string') errors.push(`capabilities.agents.${name}.${strField} must be a string`)
+    }
   }
   return v as CapabilitiesSpec['agents']
 }
@@ -95,6 +139,10 @@ function validateAgents(v: unknown, errors: string[]): CapabilitiesSpec['agents'
 export function extractCapabilities(args: unknown): { spec: CapabilitiesSpec | null; errors: string[] } {
   if (!isRecord(args) || !('capabilities' in args)) return { spec: null, errors: [] }
   const raw = args['capabilities']
+  // `capabilities: null` is the JSON idiom for an omitted key — treat as ABSENT,
+  // not malformed (a present-but-null section hard-failing the launch was a
+  // regression vs the pre-contract behavior; review finding 3.1).
+  if (raw === null) return { spec: null, errors: [] }
   if (!isRecord(raw)) return { spec: null, errors: ['capabilities must be an object ({ mcpServers?, agents?, skills? })'] }
   const errors: string[] = []
   for (const key of Object.keys(raw)) {

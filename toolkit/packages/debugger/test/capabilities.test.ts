@@ -31,6 +31,60 @@ describe('extractCapabilities', () => {
     expect(extractCapabilities('{"a":1}')).toEqual({ spec: null, errors: [] })
   })
 
+  it('treats capabilities: null as ABSENT (the JSON idiom for an omitted key) — review 3.1 lock', () => {
+    // Pre-contract behavior: {capabilities: null} launched fine (unknown args keys ignored).
+    // The section being null must NOT hard-fail the launch.
+    expect(extractCapabilities({ capabilities: null })).toEqual({ spec: null, errors: [] })
+  })
+
+  it('rejects wrong-typed optional agent fields (model/effort/maxTurns/mcpServers) — review 1.1 lock', () => {
+    const r = extractCapabilities({
+      capabilities: {
+        agents: { foo: { description: 'd', prompt: 'p', model: 42, effort: {}, maxTurns: 'ten', mcpServers: 'nope' } },
+      },
+    })
+    expect(r.spec).toBeNull()
+    for (const field of ['model', 'effort', 'maxTurns', 'mcpServers']) {
+      expect(r.errors.some((e) => e.includes('foo') && e.includes(field)), `expected an error for ${field}`).toBe(true)
+    }
+  })
+
+  it('accepts well-typed optional agent fields', () => {
+    const r = extractCapabilities({
+      capabilities: {
+        agents: {
+          ok: { description: 'd', prompt: 'p', model: 'haiku', effort: 'low', maxTurns: 3, background: false, skills: ['x'], mcpServers: [{ s: { command: 'uvx' } }] },
+        },
+      },
+    })
+    expect(r.errors).toEqual([])
+    expect(r.spec).not.toBeNull()
+  })
+
+  it('rejects unknown keys INSIDE an agent definition (typo defence, loud) — review 1.2 lock', () => {
+    const r = extractCapabilities({
+      capabilities: { agents: { a: { description: 'd', prompt: 'p', disalowedTools: ['Bash'] } } },
+    })
+    expect(r.spec).toBeNull()
+    expect(r.errors.some((e) => e.includes('a') && e.includes('disalowedTools'))).toBe(true)
+  })
+
+  it('rejects wrong-typed mcpServers anchor values (type: 123, command: null) — review 1.3 lock', () => {
+    const badType = extractCapabilities({ capabilities: { mcpServers: { s: { type: 123 } } } })
+    expect(badType.errors.some((e) => e.includes('s') && e.includes('type'))).toBe(true)
+    const badCmd = extractCapabilities({ capabilities: { mcpServers: { s: { command: null } } } })
+    expect(badCmd.errors.some((e) => e.includes('s') && e.includes('command'))).toBe(true)
+  })
+
+  it('rejects __proto__/constructor/prototype entry names in both maps — review 1.4 lock (defence-in-depth for the SDK layer)', () => {
+    const m = extractCapabilities({ capabilities: { mcpServers: JSON.parse('{"__proto__": {"command": "evil"}}') } })
+    expect(m.spec).toBeNull()
+    expect(m.errors.some((e) => e.includes('__proto__'))).toBe(true)
+    const a = extractCapabilities({ capabilities: { agents: { constructor: { description: 'd', prompt: 'p' } } } })
+    expect(a.spec).toBeNull()
+    expect(a.errors.some((e) => e.includes('constructor'))).toBe(true)
+  })
+
   it('rejects a non-object capabilities section', () => {
     const r = extractCapabilities({ capabilities: 'serena' })
     expect(r.spec).toBeNull()
