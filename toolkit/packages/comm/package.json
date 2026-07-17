@@ -3,6 +3,7 @@
   "version": "0.2.0",
   "license": "FSL-1.1-ALv2",
   "type": "module",
+  "sideEffects": false,
   "repository": {
     "type": "git",
     "url": "git+https://github.com/home-dev-lab/workflow-toolbox.git",

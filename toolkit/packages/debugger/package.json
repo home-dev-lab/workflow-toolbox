@@ -17,6 +17,10 @@
       "import": "./src/capabilities.ts",
       "types": "./src/capabilities.ts"
     },
+    "./observer-def": {
+      "import": "./src/observer-def.ts",
+      "types": "./src/observer-def.ts"
+    },
     "./audit-folder": {
       "import": "./src/audit-folder.ts",
       "types": "./src/audit-folder.ts"
@@ -59,6 +63,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@workflow-toolbox/comm": "workspace:*",
     "@workflow-toolbox/std": "workspace:*",
     "@types/node": "^24.0.0",
     "esbuild": "~0.28.1",

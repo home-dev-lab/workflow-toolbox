@@ -69,6 +69,7 @@ import {
 } from './observe-lifecycle.js'
 import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
 import { composeCapabilityOptions, extractCapabilities } from './capabilities.js'
+import { extractObservers } from './observer-def.js'
 import { buildLaunchBody, safeRequesterCwd } from './launch-body.js'
 import { awaitSpawnedServerReady } from './spawn-ready.js'
 import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
@@ -833,6 +834,19 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
   if (cap.spec !== null) {
     process.stderr.write(
       `capabilities section: ${Object.keys(composeCapabilityOptions(cap.spec)).join(', ') || '(empty)'} — needs a server with capabilities composition; older servers ignore it\n`,
+    )
+  }
+  // Observer definitions (observers-custom design): an args `observers` section is
+  // validated HERE so an invalid definition fails fast client-side with every violation
+  // listed — authoring/launch is the FAIL-LOUD regime. (Run-time attachment is the
+  // never-fail regime: that lives server-side.) The server validates the same section
+  // through the same shared module (observer-def.ts) and registers the targets.
+  const obs = extractObservers(args)
+  if (obs.errors.length > 0) throw new Error(`--args observers section invalid:\n  - ${obs.errors.join('\n  - ')}`)
+  if (obs.entries !== null && obs.entries.length > 0) {
+    const names = obs.entries.map((e) => ('definition' in e ? e.definition.name : e.definitionFile))
+    process.stderr.write(
+      `observers section: ${names.join(', ')} — needs a server with observer attachment; older servers ignore it\n`,
     )
   }
   const { port, token, health } = await requireOwnedServer(ctx)
