@@ -6,7 +6,7 @@
 // so both sides share one contract.
 
 import { describe, expect, it } from 'vitest'
-import { composeCapabilityOptions, extractCapabilities } from '../src/capabilities.js'
+import { BARE_SKILLS_SETTINGS, composeCapabilityOptions, extractCapabilities, mergeSkillSettings } from '../src/capabilities.js'
 
 const validMcp = {
   serena: { type: 'stdio', command: 'uvx', args: ['serena', 'start-mcp-server'] },
@@ -150,5 +150,125 @@ describe('composeCapabilityOptions', () => {
 
   it('passes skills through as the SDK enable-filter', () => {
     expect(composeCapabilityOptions({ skills: ['a'] })).toEqual({ skills: ['a'] })
+  })
+
+  // §6.3 — skill-settings layer emission (spec-only fragment; the SERVER deep-merges
+  // it over BARE_SKILLS_SETTINGS, so composeCapabilityOptions never carries the default).
+  it('emits a settings fragment from skillOverrides + disableBundledSkills', () => {
+    expect(
+      composeCapabilityOptions({ skillOverrides: { 'deep-research': 'off' }, disableBundledSkills: false }),
+    ).toEqual({ settings: { skillOverrides: { 'deep-research': 'off' }, disableBundledSkills: false } })
+  })
+
+  it('emits settings with only skillOverrides when disableBundledSkills is absent', () => {
+    expect(composeCapabilityOptions({ skillOverrides: { doctor: 'on' } })).toEqual({
+      settings: { skillOverrides: { doctor: 'on' } },
+    })
+  })
+
+  it('emits settings carrying disableBundledSkills:false (a present false is not dropped)', () => {
+    expect(composeCapabilityOptions({ disableBundledSkills: false })).toEqual({
+      settings: { disableBundledSkills: false },
+    })
+  })
+
+  it('empty spec stays {} — no settings invented (existing lock preserved)', () => {
+    expect(composeCapabilityOptions({})).toEqual({})
+  })
+})
+
+describe('extractCapabilities — skill-settings sections (§6.3)', () => {
+  it('accepts all four skillOverride modes + a boolean disableBundledSkills', () => {
+    const r = extractCapabilities({
+      capabilities: {
+        skillOverrides: { a: 'on', b: 'name-only', c: 'user-invocable-only', d: 'off' },
+        disableBundledSkills: true,
+      },
+    })
+    expect(r.errors).toEqual([])
+    expect(r.spec).toEqual({
+      skillOverrides: { a: 'on', b: 'name-only', c: 'user-invocable-only', d: 'off' },
+      disableBundledSkills: true,
+    })
+  })
+
+  it('rejects an unknown skillOverride mode (loud on typos)', () => {
+    const r = extractCapabilities({ capabilities: { skillOverrides: { deep: 'disabled' } } })
+    expect(r.spec).toBeNull()
+    expect(r.errors.some((e) => e.includes('deep') && e.includes('disabled'))).toBe(true)
+  })
+
+  it('rejects a non-object skillOverrides section', () => {
+    const r = extractCapabilities({ capabilities: { skillOverrides: 'off' } })
+    expect(r.spec).toBeNull()
+    expect(r.errors.some((e) => e.includes('skillOverrides'))).toBe(true)
+  })
+
+  it('rejects a non-boolean disableBundledSkills', () => {
+    const r = extractCapabilities({ capabilities: { disableBundledSkills: 'true' } })
+    expect(r.spec).toBeNull()
+    expect(r.errors.some((e) => e.includes('disableBundledSkills'))).toBe(true)
+  })
+
+  it('rejects __proto__ inside the skillOverrides map (prototype-collision defence)', () => {
+    const r = extractCapabilities({
+      capabilities: { skillOverrides: JSON.parse('{"__proto__": "off"}') },
+    })
+    expect(r.spec).toBeNull()
+    expect(r.errors.some((e) => e.includes('__proto__'))).toBe(true)
+  })
+})
+
+describe('extractCapabilities — $cap: placeholder rejection (§5.2 resolver bypass)', () => {
+  it('rejects an unexpanded $cap:<need> token in an agent tools allowlist', () => {
+    const r = extractCapabilities({
+      capabilities: {
+        agents: { a: { description: 'd', prompt: 'p', tools: ['Read', '$cap:code-intelligence'] } },
+      },
+    })
+    expect(r.spec).toBeNull()
+    expect(r.errors.some((e) => e.includes('a') && e.includes('$cap:code-intelligence'))).toBe(true)
+  })
+
+  it('accepts a normal (non-placeholder) tools allowlist', () => {
+    const r = extractCapabilities({
+      capabilities: { agents: { a: { description: 'd', prompt: 'p', tools: ['Read', 'mcp__serena__find_symbol'] } } },
+    })
+    expect(r.errors).toEqual([])
+    expect(r.spec).not.toBeNull()
+  })
+})
+
+describe('BARE_SKILLS_SETTINGS + mergeSkillSettings (§6.1/§6.3)', () => {
+  it('BARE_SKILLS_SETTINGS is the exact zero-skill default (doctor override belt-and-braces)', () => {
+    expect(BARE_SKILLS_SETTINGS).toEqual({ disableBundledSkills: true, skillOverrides: { doctor: 'off' } })
+  })
+
+  it('with no override returns the default settings (a delegated run WITHOUT capabilities is still zero-skill)', () => {
+    expect(mergeSkillSettings(BARE_SKILLS_SETTINGS)).toEqual({
+      disableBundledSkills: true,
+      skillOverrides: { doctor: 'off' },
+    })
+  })
+
+  it('deep-merges skillOverrides per skill — a spec override does NOT wipe the default doctor:off (naive-spread guard, MINOR-5)', () => {
+    expect(mergeSkillSettings(BARE_SKILLS_SETTINGS, { skillOverrides: { 'deep-research': 'off' } })).toEqual({
+      disableBundledSkills: true,
+      skillOverrides: { doctor: 'off', 'deep-research': 'off' },
+    })
+  })
+
+  it('spec wins per skill key — doctor:on overrides the default doctor:off', () => {
+    expect(mergeSkillSettings(BARE_SKILLS_SETTINGS, { skillOverrides: { doctor: 'on' } })).toEqual({
+      disableBundledSkills: true,
+      skillOverrides: { doctor: 'on' },
+    })
+  })
+
+  it('built-ins-declared regime — spec disableBundledSkills:false DROPS the default true (MINOR-6)', () => {
+    expect(mergeSkillSettings(BARE_SKILLS_SETTINGS, { disableBundledSkills: false })).toEqual({
+      disableBundledSkills: false,
+      skillOverrides: { doctor: 'off' },
+    })
   })
 })
