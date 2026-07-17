@@ -68,7 +68,7 @@ import {
   type ObservePidfile,
 } from './observe-lifecycle.js'
 import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
-import { buildLaunchBody } from './launch-body.js'
+import { buildLaunchBody, safeRequesterCwd } from './launch-body.js'
 import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
 import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
 import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode, AWAIT_SOURCE_UNRESOLVED_EXIT_CODE } from './observe-await.js'
@@ -797,14 +797,10 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
   // requesterCwd (card #1820589984604750931): the requesting process's cwd rides along so
   // the server attributes the delegated run to THIS project's timeline bucket (old servers
   // ignore the unknown field; buildLaunchBody omits a degenerate cwd — see launch-body.ts).
-  // process.cwd() can throw (deleted cwd) — degrade to '' (omitted), never a failed launch
-  // and NEVER an empty-string field (the server 400s it).
-  let requesterCwd = ''
-  try {
-    requesterCwd = process.cwd()
-  } catch {
-    // unresolvable cwd → field omitted; attribution falls back to the Delegated bucket
-  }
+  // safeRequesterCwd degrades LOUDLY on an unresolvable cwd (deleted directory): the field
+  // is omitted — never an empty string, never a failed launch — and the operator is told.
+  const { cwd: requesterCwd, note: cwdNote } = safeRequesterCwd(() => process.cwd())
+  if (cwdNote !== null) process.stderr.write(`${cwdNote}\n`)
   const res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, 30_000)
   const body: unknown = await res.json().catch(() => null)
   if (!res.ok) {

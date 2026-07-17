@@ -361,7 +361,7 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
       ...(analyzeModel !== undefined ? { model: analyzeModel } : {}),
       ...(analyzeEffort !== undefined ? { effort: analyzeEffort } : {}),
     }))
-    if (out !== null && out.spawns === 2) {
+    if (out !== null && out.salvageAttempted) {
       trail.push(makeRecord(`${STAGE}:chunk:${i}:salvage`, out.salvaged, {
         ...(analyzeModel !== undefined ? { model: analyzeModel } : {}),
         ...(analyzeEffort !== undefined ? { effort: analyzeEffort } : {}),
@@ -417,7 +417,7 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
       ...(synthesizeModel !== undefined ? { model: synthesizeModel } : {}),
       ...(synthesizeEffort !== undefined ? { effort: synthesizeEffort } : {}),
     }))
-    if (synthOut.spawns === 2) {
+    if (synthOut.salvageAttempted) {
       trail.push(makeRecord(`${STAGE}:synthesize:salvage`, synthOut.salvaged, {
         ...(synthesizeModel !== undefined ? { model: synthesizeModel } : {}),
         ...(synthesizeEffort !== undefined ? { effort: synthesizeEffort } : {}),

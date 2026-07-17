@@ -290,6 +290,13 @@ ${prompt}` : prompt;
     const parts = [];
     if (node.enum !== void 0) {
       parts.push(`one of: ${node.enum.map((v) => JSON.stringify(v)).join(" | ")}`);
+    } else if (node.type === "object" && node.properties !== void 0) {
+      const req = new Set(node.required ?? []);
+      const inner = Object.entries(node.properties).map(([name, child]) => {
+        const desc = describeNode(child);
+        return `"${name}" (${req.has(name) ? "REQUIRED" : "optional"})${desc === "" ? "" : `: ${desc}`}`;
+      }).join("; ");
+      parts.push(`object with properties: ${inner}`);
     } else if (node.type !== void 0) {
       parts.push(node.type);
     }
@@ -437,6 +444,10 @@ ${lines.join("\n")}${extras}`;
       const props = node.properties ?? {};
       const result = {};
       for (const [key, v] of Object.entries(obj)) {
+        if (key === "__proto__" || key === "constructor" || key === "prototype") {
+          repairs.push(`${path}.${key}: dropped prototype-polluting key`);
+          continue;
+        }
         if (key in props) {
           result[key] = repairNode(v, props[key], `${path}.${key}`, repairs);
         } else if (node.additionalProperties === false) {
@@ -466,10 +477,10 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     const schema = opts.schema;
     if (schema === void 0) {
       const plain = await rt.agent(prompt, opts);
-      return { value: plain, warnings: [], spawns: 1, salvaged: false };
+      return { value: plain, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false };
     }
     const native = await rt.agent(prompt, opts);
-    if (native !== null) return { value: native, warnings: [], spawns: 1, salvaged: false };
+    if (native !== null) return { value: native, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false };
     const where = opts.label ?? "agent";
     const salvageOpts = {
       ...opts,
@@ -482,6 +493,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         value: null,
         warnings: [`${where}: structured-output salvage respawn also returned null`],
         spawns: 2,
+        salvageAttempted: true,
         salvaged: false
       };
     }
@@ -492,6 +504,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         value: null,
         warnings: [`${where}: salvage output is not a JSON object (starts: ${JSON.stringify(head)})`],
         spawns: 2,
+        salvageAttempted: true,
         salvaged: false
       };
     }
@@ -501,6 +514,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         value: candidate,
         warnings: [`${where}: value salvaged after structured-output exhaustion (schema-less respawn)`],
         spawns: 2,
+        salvageAttempted: true,
         salvaged: true
       };
     }
@@ -513,6 +527,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
           `${where}: value salvaged after structured-output exhaustion, with deterministic repairs \u2014 ${repairs.join("; ")}`
         ],
         spawns: 2,
+        salvageAttempted: true,
         salvaged: true
       };
     }
@@ -522,6 +537,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         `${where}: salvage failed schema validation \u2014 ` + postViolations.map((v) => `${v.path}: ${v.message}`).join("; ") + (repairs.length > 0 ? ` (repairs attempted: ${repairs.join("; ")})` : "")
       ],
       spawns: 2,
+      salvageAttempted: true,
       salvaged: false
     };
   }
@@ -581,7 +597,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       const genOut = await agentWithSchemaSalvage(rt, generatePrompt(index), genOpts);
       agentsSpawned += genOut.spawns;
       for (const message of genOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 0, message });
-      if (genOut.spawns === 2) {
+      if (genOut.salvageAttempted) {
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0.5,
@@ -631,7 +647,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       );
       agentsSpawned += filterOut.spawns;
       for (const message of filterOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 1, message });
-      if (filterOut.spawns === 2) {
+      if (filterOut.salvageAttempted) {
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 1.5,

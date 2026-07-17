@@ -55,6 +55,11 @@ export interface StructuredCallOutcome<T> {
   warnings: string[]
   /** Agent spawns consumed: 1 for the native call, +1 when salvage fired. */
   spawns: number
+  /** True when the salvage respawn FIRED (native exhaustion) — regardless of
+   *  whether it succeeded. Consumers key their `:salvage` trail records on
+   *  this, never on the spawn count (bundle review: `spawns === 2` was an
+   *  implementation detail leaking into 13 call sites). */
+  salvageAttempted: boolean
   /** True when `value` came from the salvage pass rather than the native call. */
   salvaged: boolean
 }
@@ -83,6 +88,20 @@ function describeNode(node: SchemaNode): string {
   const parts: string[] = []
   if (node.enum !== undefined) {
     parts.push(`one of: ${node.enum.map((v) => JSON.stringify(v)).join(' | ')}`)
+  } else if (node.type === 'object' && node.properties !== undefined) {
+    // Nested object (typically an array's items) — recurse into its own
+    // properties (bundle review, confirmed medium: emitting the bare word
+    // "object" dropped every inner field/bound from the salvage prose for
+    // exactly the array-of-object schemas that need it most, e.g. a plan's
+    // subtasks or a triage's scores). Recursion is bounded by schema depth.
+    const req = new Set(node.required ?? [])
+    const inner = Object.entries(node.properties)
+      .map(([name, child]) => {
+        const desc = describeNode(child)
+        return `"${name}" (${req.has(name) ? 'REQUIRED' : 'optional'})${desc === '' ? '' : `: ${desc}`}`
+      })
+      .join('; ')
+    parts.push(`object with properties: ${inner}`)
   } else if (node.type !== undefined) {
     parts.push(node.type)
   }
@@ -265,6 +284,15 @@ function repairNode(value: unknown, node: SchemaNode, path: string, repairs: str
     const props = node.properties ?? {}
     const result: Record<string, unknown> = {}
     for (const [key, v] of Object.entries(obj)) {
+      // Prototype hygiene (bundle review): the candidate comes from JSON.parse
+      // of raw model output, where '__proto__' is an own key — but assigning it
+      // with bracket syntax onto a plain object would MUTATE the result's
+      // prototype instead of copying data. These keys are never legitimate
+      // schema fields; drop them loudly.
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+        repairs.push(`${path}.${key}: dropped prototype-polluting key`)
+        continue
+      }
       if (key in props) {
         result[key] = repairNode(v, props[key] as SchemaNode, `${path}.${key}`, repairs)
       } else if (node.additionalProperties === false) {
@@ -329,11 +357,11 @@ export async function agentWithSchemaSalvage<T>(
   const schema = opts.schema
   if (schema === undefined) {
     const plain = await rt.agent<T>(prompt, opts)
-    return { value: plain, warnings: [], spawns: 1, salvaged: false }
+    return { value: plain, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false }
   }
 
   const native = await rt.agent<T>(prompt, opts)
-  if (native !== null) return { value: native, warnings: [], spawns: 1, salvaged: false }
+  if (native !== null) return { value: native, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false }
 
   const where = opts.label ?? 'agent'
   const salvageOpts: AgentOptions = {
@@ -347,6 +375,7 @@ export async function agentWithSchemaSalvage<T>(
       value: null,
       warnings: [`${where}: structured-output salvage respawn also returned null`],
       spawns: 2,
+      salvageAttempted: true,
       salvaged: false,
     }
   }
@@ -360,6 +389,7 @@ export async function agentWithSchemaSalvage<T>(
       value: null,
       warnings: [`${where}: salvage output is not a JSON object (starts: ${JSON.stringify(head)})`],
       spawns: 2,
+      salvageAttempted: true,
       salvaged: false,
     }
   }
@@ -370,6 +400,7 @@ export async function agentWithSchemaSalvage<T>(
       value: candidate as T,
       warnings: [`${where}: value salvaged after structured-output exhaustion (schema-less respawn)`],
       spawns: 2,
+      salvageAttempted: true,
       salvaged: true,
     }
   }
@@ -383,6 +414,7 @@ export async function agentWithSchemaSalvage<T>(
         `${where}: value salvaged after structured-output exhaustion, with deterministic repairs — ${repairs.join('; ')}`,
       ],
       spawns: 2,
+      salvageAttempted: true,
       salvaged: true,
     }
   }
@@ -395,6 +427,7 @@ export async function agentWithSchemaSalvage<T>(
         (repairs.length > 0 ? ` (repairs attempted: ${repairs.join('; ')})` : ''),
     ],
     spawns: 2,
+    salvageAttempted: true,
     salvaged: false,
   }
 }

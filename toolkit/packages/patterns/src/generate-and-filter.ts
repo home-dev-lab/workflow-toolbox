@@ -184,7 +184,7 @@ export async function generateAndFilter<TCand = string>(
     const genOut = await agentWithSchemaSalvage<TCand>(rt, generatePrompt(index), genOpts)
     agentsSpawned += genOut.spawns
     for (const message of genOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 0, message })
-    if (genOut.spawns === 2) {
+    if (genOut.salvageAttempted) {
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0.5,
@@ -251,7 +251,7 @@ export async function generateAndFilter<TCand = string>(
     )
     agentsSpawned += filterOut.spawns
     for (const message of filterOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 1, message })
-    if (filterOut.spawns === 2) {
+    if (filterOut.salvageAttempted) {
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 1.5,

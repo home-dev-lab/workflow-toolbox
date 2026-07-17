@@ -252,7 +252,7 @@ export async function scoreAndRank<TItem = string>(
     const scoreOut = await agentWithSchemaSalvage<{ score: number; reason: string }>(rt, dim.prompt(item), opts)
     agentsSpawned += scoreOut.spawns
     for (const message of scoreOut.warnings) pendingWarnings.push({ order, message })
-    if (scoreOut.spawns === 2) {
+    if (scoreOut.salvageAttempted) {
       pendingTrail.push({
         order: order + 0.5,
         record: makeRecord(`${label}:salvage`, scoreOut.salvaged, {

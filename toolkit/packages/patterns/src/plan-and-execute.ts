@@ -238,7 +238,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
 
   // The planner's trail record(s) — the salvage respawn, when it fired, gets its own.
   const pushPlanSalvageRecord = (): void => {
-    if (planOut.spawns === 2) {
+    if (planOut.salvageAttempted) {
       trail.push(makeRecord(`${STAGE}:plan:salvage`, planOut.salvaged, {
         ...(planModel !== undefined ? { model: planModel } : {}),
         ...(planEffort !== undefined ? { effort: planEffort } : {}),
@@ -338,7 +338,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
       ...(workerModel !== undefined ? { model: workerModel } : {}),
       ...(workerEffort !== undefined ? { effort: workerEffort } : {}),
     }))
-    if (out !== null && out.spawns === 2) {
+    if (out !== null && out.salvageAttempted) {
       trail.push(makeRecord(`${STAGE}:work:${i}:salvage`, out.salvaged, {
         ...(workerModel !== undefined ? { model: workerModel } : {}),
         ...(workerEffort !== undefined ? { effort: workerEffort } : {}),
@@ -408,7 +408,7 @@ export async function planAndExecute<TWork = string, TOut = string>(
     ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
     ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
   }))
-  if (synthOut.spawns === 2) {
+  if (synthOut.salvageAttempted) {
     trail.push(makeRecord(`${STAGE}:synthesize:salvage`, synthOut.salvaged, {
       ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
       ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),

@@ -1626,21 +1626,27 @@ async function resolveTaskEffortMap(
         specChars: t.contracts.length + t.testPlan.length,
       },
     })),
-    // Fallback is the ROLE default (fail-safe direction is UP, never below
-    // the committed worker tier).
+    // The fallback ARG only labels the diagnostics; fallback-decided tasks are
+    // mapped to each opted-in ROLE's own static default in the closure below
+    // (fail-safe direction is UP, never below the committed worker tier).
     { fallback: RED_EFFORT, phase: 'Load', label: 'dev-implement:auto-effort' },
   )
   for (const w of selection.warnings) warn(rt, warnings, `dev-implement: ${w}`)
   rt.log(
     `dev-implement: auto-effort selection (${redAuto ? 'red' : ''}${redAuto && greenAuto ? '+' : ''}${greenAuto ? 'green' : ''}): ` +
-    tasks.map((t) => `${t.id}=${selection.efforts[t.id] ?? RED_EFFORT} (${selection.decidedBy[t.id] ?? 'fallback'})`).join(', '),
+    tasks.map((t) => `${t.id}=${selection.efforts[t.id] ?? 'fallback'} (${selection.decidedBy[t.id] ?? 'fallback'})`).join(', '),
   )
 
   return (task: PlanTask) => {
-    const auto = selection.efforts[task.id] ?? RED_EFFORT
+    // A fallback-decided task uses each opted-in ROLE's OWN static default
+    // (bundle review, confirmed medium: a single shared fallback value would
+    // silently cross role defaults if they ever diverge). Deterministic and
+    // triage decisions apply as selected.
+    const decided = selection.decidedBy[task.id]
+    const auto = decided === undefined || decided === 'fallback' ? null : selection.efforts[task.id] ?? null
     return {
-      red: redAuto ? auto : staticEffort.red,
-      green: greenAuto ? auto : staticEffort.green,
+      red: redAuto ? (auto ?? staticEffort.red) : staticEffort.red,
+      green: greenAuto ? (auto ?? staticEffort.green) : staticEffort.green,
       check: staticEffort.check,
     }
   }

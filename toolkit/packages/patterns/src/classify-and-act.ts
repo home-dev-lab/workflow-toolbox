@@ -231,7 +231,7 @@ export async function classifyAndAct<TIn, TOut = string>(
     const classifyOut = await agentWithSchemaSalvage<{ category: string }>(rt, classifyPrompt(item), classifyOpts)
     agentsSpawned += classifyOut.spawns
     for (const message of classifyOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 0, message })
-    if (classifyOut.spawns === 2) {
+    if (classifyOut.salvageAttempted) {
       // The salvage respawn is a real spawn — it gets its own trail record
       // (invariant: one record per agent spawned). stageOrder +0.5 slots it
       // right after this stage's main record in the deterministic sort.
@@ -323,7 +323,7 @@ export async function classifyAndAct<TIn, TOut = string>(
     const actOut = await agentWithSchemaSalvage<TOut>(rt, spec.prompt(item), actOpts)
     agentsSpawned += actOut.spawns
     for (const message of actOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 1, message })
-    if (actOut.spawns === 2) {
+    if (actOut.salvageAttempted) {
       // Salvage respawn trail record — see the classify stage's twin comment.
       pendingTrail.push({
         itemIndex: index,

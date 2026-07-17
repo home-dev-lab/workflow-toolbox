@@ -17,3 +17,21 @@ export function buildLaunchBody(script: string, args: unknown, requesterCwd: str
     ...(requesterCwd.trim().length > 0 ? { requesterCwd } : {}),
   }
 }
+
+/** Resolve the requester's cwd for launch attribution, degrading LOUDLY instead of
+ *  failing the launch: `cwdFn` (process.cwd in production, injectable for tests) can
+ *  throw when the working directory was deleted. On failure: `cwd` is '' (which
+ *  buildLaunchBody OMITS — the server 400s an empty string, and an empty-but-present
+ *  value would mis-group the run) and `note` carries the operator-facing diagnostic
+ *  (pr-review findings on 98d77bc: the silent fallback left runs in the Delegated
+ *  bucket with no explanation, and the throw branch had no executable coverage). */
+export function safeRequesterCwd(cwdFn: () => string): { cwd: string; note: string | null } {
+  try {
+    return { cwd: cwdFn(), note: null }
+  } catch {
+    return {
+      cwd: '',
+      note: 'requesterCwd unavailable (working directory unresolvable) — the run will appear under the Delegated bucket',
+    }
+  }
+}

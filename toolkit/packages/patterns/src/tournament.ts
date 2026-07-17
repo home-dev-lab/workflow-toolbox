@@ -23,6 +23,8 @@ import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@work
 import { warn, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { runCacheWarmup } from './cache-warm.js'
+import { agentWithSchemaSalvage } from './structured-salvage.js'
+import type { StructuredCallOutcome } from './structured-salvage.js'
 
 const STAGE = 'tournament'
 
@@ -241,7 +243,7 @@ export async function tournament<TAttempt = string, TOut = string>(
     }))
   }
 
-  const attemptThunks = angles.map((angle, i) => async (): Promise<TAttempt | null> => {
+  const attemptThunks = angles.map((angle, i) => async (): Promise<StructuredCallOutcome<TAttempt>> => {
     const opts: {
       label: string
       phase?: string
@@ -258,26 +260,35 @@ export async function tournament<TAttempt = string, TOut = string>(
       ...(attemptType !== undefined ? { agentType: attemptType } : {}),
     }
 
-    agentsSpawned++
-    return rt.agent<TAttempt>(attemptPrompt(angle, i), opts)
+    return agentWithSchemaSalvage<TAttempt>(rt, attemptPrompt(angle, i), opts)
   })
 
   const attemptResults = await rt.parallel(attemptThunks)
 
   // Collect surviving attempts with their angle mapping.
-  // Build attempt trail records in index order after the parallel barrier
-  // (determinism: never completion order).
+  // Build attempt trail records + spawn counts in index order after the
+  // parallel barrier (determinism: never completion order). A thunk that
+  // threw (budget) resolves to null — one spawn, no salvage.
   const survivingAttempts: Array<{ attempt: TAttempt; angle: string; originalIndex: number }> = []
 
   for (let i = 0; i < attemptResults.length; i++) {
-    const attempt = attemptResults[i]
+    const out = attemptResults[i] as StructuredCallOutcome<TAttempt> | null
+    const attempt = out?.value ?? null
+    agentsSpawned += out?.spawns ?? 1
     trail.push(makeRecord(`${STAGE}:attempt:${i}`, attempt !== null, {
       ...(attemptModel !== undefined ? { model: attemptModel } : {}),
       ...(attemptEffort !== undefined ? { effort: attemptEffort } : {}),
     }))
+    if (out !== null && out.salvageAttempted) {
+      trail.push(makeRecord(`${STAGE}:attempt:${i}:salvage`, out.salvaged, {
+        ...(attemptModel !== undefined ? { model: attemptModel } : {}),
+        ...(attemptEffort !== undefined ? { effort: attemptEffort } : {}),
+      }))
+    }
+    for (const message of out?.warnings ?? []) warn(rt, warnings, `${STAGE}: ${message}`)
 
     if (attempt !== null) {
-      survivingAttempts.push({ attempt: attempt as TAttempt, angle: angles[i]!, originalIndex: i })
+      survivingAttempts.push({ attempt, angle: angles[i]!, originalIndex: i })
     } else {
       droppedAttempts++
     }
@@ -339,7 +350,7 @@ export async function tournament<TAttempt = string, TOut = string>(
   const panels = await Promise.all(
     survivingAttempts.map(({ attempt, originalIndex }) => {
       const judgeThunks = Array.from({ length: judgeCountOpt }, (_: unknown, judgeIndex: number) => {
-        return async (): Promise<{ score: number; reason: string } | null> => {
+        return async (): Promise<StructuredCallOutcome<{ score: number; reason: string }>> => {
           const opts: {
             schema: JsonSchema
             label: string
@@ -356,8 +367,7 @@ export async function tournament<TAttempt = string, TOut = string>(
             ...(judgeType !== undefined ? { agentType: judgeType } : {}),
           }
 
-          agentsSpawned++
-          return rt.agent<{ score: number; reason: string }>(judgePrompt(attempt), opts)
+          return agentWithSchemaSalvage<{ score: number; reason: string }>(rt, judgePrompt(attempt), opts)
         }
       })
 
@@ -370,15 +380,28 @@ export async function tournament<TAttempt = string, TOut = string>(
   // Build judge trail records in index order over the full index space
   // (including null results — never completion order).
   survivingAttempts.forEach(({ attempt, angle, originalIndex }, i) => {
-    const judgeResults = panels[i] ?? []
+    const judgeOuts = (panels[i] ?? []).map(
+      (r): StructuredCallOutcome<{ score: number; reason: string }> | null =>
+        r as StructuredCallOutcome<{ score: number; reason: string }> | null,
+    )
+    const judgeResults: Array<{ score: number; reason: string } | null> = judgeOuts.map((o) => o?.value ?? null)
 
     for (let judgeIndex = 0; judgeIndex < judgeResults.length; judgeIndex++) {
+      const out = judgeOuts[judgeIndex] ?? null
       const judgeResult = judgeResults[judgeIndex] ?? null
+      agentsSpawned += out?.spawns ?? 1
       trail.push(makeRecord(`${STAGE}:judge:${originalIndex}:${judgeIndex}`, judgeResult !== null, {
         ...(judgeModel !== undefined ? { model: judgeModel } : {}),
         ...(judgeEffort !== undefined ? { effort: judgeEffort } : {}),
         ...(judgeResult !== null ? { decision: `score=${judgeResult.score}` } : {}),
       }))
+      if (out !== null && out.salvageAttempted) {
+        trail.push(makeRecord(`${STAGE}:judge:${originalIndex}:${judgeIndex}:salvage`, out.salvaged, {
+          ...(judgeModel !== undefined ? { model: judgeModel } : {}),
+          ...(judgeEffort !== undefined ? { effort: judgeEffort } : {}),
+        }))
+      }
+      for (const message of out?.warnings ?? []) warn(rt, warnings, `${STAGE}: ${message}`)
     }
 
     const validScores = judgeResults
@@ -456,8 +479,9 @@ export async function tournament<TAttempt = string, TOut = string>(
     ...(synthesisType !== undefined ? { agentType: synthesisType } : {}),
   }
 
-  agentsSpawned++
-  const synthesis = await rt.agent<TOut>(synthesisPrompt(ranked), synthOpts)
+  const synthOut = await agentWithSchemaSalvage<TOut>(rt, synthesisPrompt(ranked), synthOpts)
+  agentsSpawned += synthOut.spawns
+  const synthesis = synthOut.value
 
   // The winner is the first ranked entry after DESC sort — capture its originalIndex.
   const winnerOriginalIndex = ranked[0]?.originalIndex ?? 0
@@ -467,6 +491,13 @@ export async function tournament<TAttempt = string, TOut = string>(
     ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
     decision: `winner=${winnerOriginalIndex}`,
   }))
+  if (synthOut.salvageAttempted) {
+    trail.push(makeRecord(`${STAGE}:synthesize:salvage`, synthOut.salvaged, {
+      ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
+      ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
+    }))
+  }
+  for (const message of synthOut.warnings) warn(rt, warnings, `${STAGE}: ${message}`)
 
   let value: TOut | null = null
 

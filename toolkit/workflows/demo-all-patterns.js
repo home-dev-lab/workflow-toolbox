@@ -223,6 +223,13 @@ ${prompt}` : prompt;
     const parts = [];
     if (node.enum !== void 0) {
       parts.push(`one of: ${node.enum.map((v) => JSON.stringify(v)).join(" | ")}`);
+    } else if (node.type === "object" && node.properties !== void 0) {
+      const req = new Set(node.required ?? []);
+      const inner = Object.entries(node.properties).map(([name, child]) => {
+        const desc = describeNode(child);
+        return `"${name}" (${req.has(name) ? "REQUIRED" : "optional"})${desc === "" ? "" : `: ${desc}`}`;
+      }).join("; ");
+      parts.push(`object with properties: ${inner}`);
     } else if (node.type !== void 0) {
       parts.push(node.type);
     }
@@ -370,6 +377,10 @@ ${lines.join("\n")}${extras}`;
       const props = node.properties ?? {};
       const result = {};
       for (const [key, v] of Object.entries(obj)) {
+        if (key === "__proto__" || key === "constructor" || key === "prototype") {
+          repairs.push(`${path}.${key}: dropped prototype-polluting key`);
+          continue;
+        }
         if (key in props) {
           result[key] = repairNode(v, props[key], `${path}.${key}`, repairs);
         } else if (node.additionalProperties === false) {
@@ -399,10 +410,10 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     const schema = opts.schema;
     if (schema === void 0) {
       const plain = await rt.agent(prompt, opts);
-      return { value: plain, warnings: [], spawns: 1, salvaged: false };
+      return { value: plain, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false };
     }
     const native = await rt.agent(prompt, opts);
-    if (native !== null) return { value: native, warnings: [], spawns: 1, salvaged: false };
+    if (native !== null) return { value: native, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false };
     const where = opts.label ?? "agent";
     const salvageOpts = {
       ...opts,
@@ -415,6 +426,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         value: null,
         warnings: [`${where}: structured-output salvage respawn also returned null`],
         spawns: 2,
+        salvageAttempted: true,
         salvaged: false
       };
     }
@@ -425,6 +437,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         value: null,
         warnings: [`${where}: salvage output is not a JSON object (starts: ${JSON.stringify(head)})`],
         spawns: 2,
+        salvageAttempted: true,
         salvaged: false
       };
     }
@@ -434,6 +447,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         value: candidate,
         warnings: [`${where}: value salvaged after structured-output exhaustion (schema-less respawn)`],
         spawns: 2,
+        salvageAttempted: true,
         salvaged: true
       };
     }
@@ -446,6 +460,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
           `${where}: value salvaged after structured-output exhaustion, with deterministic repairs \u2014 ${repairs.join("; ")}`
         ],
         spawns: 2,
+        salvageAttempted: true,
         salvaged: true
       };
     }
@@ -455,6 +470,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         `${where}: salvage failed schema validation \u2014 ` + postViolations.map((v) => `${v.path}: ${v.message}`).join("; ") + (repairs.length > 0 ? ` (repairs attempted: ${repairs.join("; ")})` : "")
       ],
       spawns: 2,
+      salvageAttempted: true,
       salvaged: false
     };
   }
@@ -567,7 +583,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       const classifyOut = await agentWithSchemaSalvage(rt, classifyPrompt(item), classifyOpts);
       agentsSpawned += classifyOut.spawns;
       for (const message of classifyOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 0, message });
-      if (classifyOut.spawns === 2) {
+      if (classifyOut.salvageAttempted) {
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0.5,
@@ -631,7 +647,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       const actOut = await agentWithSchemaSalvage(rt, spec.prompt(item), actOpts);
       agentsSpawned += actOut.spawns;
       for (const message of actOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 1, message });
-      if (actOut.spawns === 2) {
+      if (actOut.salvageAttempted) {
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 1.5,
@@ -753,7 +769,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       const genOut = await agentWithSchemaSalvage(rt, generatePrompt(index), genOpts);
       agentsSpawned += genOut.spawns;
       for (const message of genOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 0, message });
-      if (genOut.spawns === 2) {
+      if (genOut.salvageAttempted) {
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0.5,
@@ -803,7 +819,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       );
       agentsSpawned += filterOut.spawns;
       for (const message of filterOut.warnings) pendingWarnings.push({ itemIndex: index, stageOrder: 1, message });
-      if (filterOut.spawns === 2) {
+      if (filterOut.salvageAttempted) {
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 1.5,
@@ -959,7 +975,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         ...taskModel !== void 0 ? { model: taskModel } : {},
         ...taskEffort !== void 0 ? { effort: taskEffort } : {}
       }));
-      if (out !== null && out.spawns === 2) {
+      if (out !== null && out.salvageAttempted) {
         trail.push(makeRecord(`${STAGE3}:task:${i}:salvage`, out.salvaged, {
           ...taskModel !== void 0 ? { model: taskModel } : {},
           ...taskEffort !== void 0 ? { effort: taskEffort } : {}
@@ -998,7 +1014,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
         ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
       }));
-      if (synthOut.spawns === 2) {
+      if (synthOut.salvageAttempted) {
         trail.push(makeRecord(`${STAGE3}:synthesize:salvage`, synthOut.salvaged, {
           ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
           ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
@@ -1182,7 +1198,7 @@ ${renderClaim(claim)}`;
               ...vote !== null ? { decision: vote.verdict } : {}
             }
           ));
-          if (out !== null && out.spawns === 2) {
+          if (out !== null && out.salvageAttempted) {
             claimRecords.push(makeRecord(
               `${STAGE4}:verify:${claimIndex}:${voteIndex}:salvage`,
               out.salvaged,
@@ -1356,17 +1372,25 @@ ${renderClaim(claim)}`;
         ...attemptEffort !== void 0 ? { effort: attemptEffort } : {},
         ...attemptType !== void 0 ? { agentType: attemptType } : {}
       };
-      agentsSpawned++;
-      return rt.agent(attemptPrompt(angle, i), opts);
+      return agentWithSchemaSalvage(rt, attemptPrompt(angle, i), opts);
     });
     const attemptResults = await rt.parallel(attemptThunks);
     const survivingAttempts = [];
     for (let i = 0; i < attemptResults.length; i++) {
-      const attempt = attemptResults[i];
+      const out = attemptResults[i];
+      const attempt = out?.value ?? null;
+      agentsSpawned += out?.spawns ?? 1;
       trail.push(makeRecord(`${STAGE5}:attempt:${i}`, attempt !== null, {
         ...attemptModel !== void 0 ? { model: attemptModel } : {},
         ...attemptEffort !== void 0 ? { effort: attemptEffort } : {}
       }));
+      if (out !== null && out.salvageAttempted) {
+        trail.push(makeRecord(`${STAGE5}:attempt:${i}:salvage`, out.salvaged, {
+          ...attemptModel !== void 0 ? { model: attemptModel } : {},
+          ...attemptEffort !== void 0 ? { effort: attemptEffort } : {}
+        }));
+      }
+      for (const message of out?.warnings ?? []) warn(rt, warnings, `${STAGE5}: ${message}`);
       if (attempt !== null) {
         survivingAttempts.push({ attempt, angle: angles[i], originalIndex: i });
       } else {
@@ -1415,22 +1439,33 @@ ${renderClaim(claim)}`;
               ...judgeEffort !== void 0 ? { effort: judgeEffort } : {},
               ...judgeType !== void 0 ? { agentType: judgeType } : {}
             };
-            agentsSpawned++;
-            return rt.agent(judgePrompt(attempt), opts);
+            return agentWithSchemaSalvage(rt, judgePrompt(attempt), opts);
           };
         });
         return rt.parallel(judgeThunks);
       })
     );
     survivingAttempts.forEach(({ attempt, angle, originalIndex }, i) => {
-      const judgeResults = panels[i] ?? [];
+      const judgeOuts = (panels[i] ?? []).map(
+        (r) => r
+      );
+      const judgeResults = judgeOuts.map((o) => o?.value ?? null);
       for (let judgeIndex = 0; judgeIndex < judgeResults.length; judgeIndex++) {
+        const out = judgeOuts[judgeIndex] ?? null;
         const judgeResult = judgeResults[judgeIndex] ?? null;
+        agentsSpawned += out?.spawns ?? 1;
         trail.push(makeRecord(`${STAGE5}:judge:${originalIndex}:${judgeIndex}`, judgeResult !== null, {
           ...judgeModel !== void 0 ? { model: judgeModel } : {},
           ...judgeEffort !== void 0 ? { effort: judgeEffort } : {},
           ...judgeResult !== null ? { decision: `score=${judgeResult.score}` } : {}
         }));
+        if (out !== null && out.salvageAttempted) {
+          trail.push(makeRecord(`${STAGE5}:judge:${originalIndex}:${judgeIndex}:salvage`, out.salvaged, {
+            ...judgeModel !== void 0 ? { model: judgeModel } : {},
+            ...judgeEffort !== void 0 ? { effort: judgeEffort } : {}
+          }));
+        }
+        for (const message of out?.warnings ?? []) warn(rt, warnings, `${STAGE5}: ${message}`);
       }
       const validScores = judgeResults.filter((r) => r !== null).map((r) => r.score);
       nullJudgeVoteCount += judgeResults.filter((r) => r === null).length;
@@ -1476,14 +1511,22 @@ ${renderClaim(claim)}`;
       ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {},
       ...synthesisType !== void 0 ? { agentType: synthesisType } : {}
     };
-    agentsSpawned++;
-    const synthesis = await rt.agent(synthesisPrompt(ranked), synthOpts);
+    const synthOut = await agentWithSchemaSalvage(rt, synthesisPrompt(ranked), synthOpts);
+    agentsSpawned += synthOut.spawns;
+    const synthesis = synthOut.value;
     const winnerOriginalIndex = ranked[0]?.originalIndex ?? 0;
     trail.push(makeRecord(`${STAGE5}:synthesize`, synthesis !== null, {
       ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
       ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {},
       decision: `winner=${winnerOriginalIndex}`
     }));
+    if (synthOut.salvageAttempted) {
+      trail.push(makeRecord(`${STAGE5}:synthesize:salvage`, synthOut.salvaged, {
+        ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
+        ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
+      }));
+    }
+    for (const message of synthOut.warnings) warn(rt, warnings, `${STAGE5}: ${message}`);
     let value = null;
     if (synthesis === null) {
       warn(rt, warnings, "tournament: synthesis agent returned null");
@@ -1701,7 +1744,7 @@ ${renderClaim(claim)}`;
     for (const message of planOut.warnings) warn(rt, warnings, `${STAGE7}: ${message}`);
     const plan = planOut.value;
     const pushPlanSalvageRecord = () => {
-      if (planOut.spawns === 2) {
+      if (planOut.salvageAttempted) {
         trail.push(makeRecord(`${STAGE7}:plan:salvage`, planOut.salvaged, {
           ...planModel !== void 0 ? { model: planModel } : {},
           ...planEffort !== void 0 ? { effort: planEffort } : {}
@@ -1764,7 +1807,7 @@ ${renderClaim(claim)}`;
         ...workerModel !== void 0 ? { model: workerModel } : {},
         ...workerEffort !== void 0 ? { effort: workerEffort } : {}
       }));
-      if (out !== null && out.spawns === 2) {
+      if (out !== null && out.salvageAttempted) {
         trail.push(makeRecord(`${STAGE7}:work:${i}:salvage`, out.salvaged, {
           ...workerModel !== void 0 ? { model: workerModel } : {},
           ...workerEffort !== void 0 ? { effort: workerEffort } : {}
@@ -1811,7 +1854,7 @@ ${renderClaim(claim)}`;
       ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
       ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
     }));
-    if (synthOut.spawns === 2) {
+    if (synthOut.salvageAttempted) {
       trail.push(makeRecord(`${STAGE7}:synthesize:salvage`, synthOut.salvaged, {
         ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
         ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
@@ -1905,7 +1948,7 @@ ${renderClaim(claim)}`;
       const scoreOut = await agentWithSchemaSalvage(rt, dim.prompt(item), opts);
       agentsSpawned += scoreOut.spawns;
       for (const message of scoreOut.warnings) pendingWarnings.push({ order, message });
-      if (scoreOut.spawns === 2) {
+      if (scoreOut.salvageAttempted) {
         pendingTrail.push({
           order: order + 0.5,
           record: makeRecord(`${label}:salvage`, scoreOut.salvaged, {

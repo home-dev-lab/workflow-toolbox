@@ -210,6 +210,16 @@ function buildLaunchBody(script, args, requesterCwd) {
     ...requesterCwd.trim().length > 0 ? { requesterCwd } : {}
   };
 }
+function safeRequesterCwd(cwdFn) {
+  try {
+    return { cwd: cwdFn(), note: null };
+  } catch {
+    return {
+      cwd: "",
+      note: "requesterCwd unavailable (working directory unresolvable) \u2014 the run will appear under the Delegated bucket"
+    };
+  }
+}
 
 // packages/debugger/src/observe-identity.ts
 import { execFileSync } from "node:child_process";
@@ -968,11 +978,9 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
   const { prefix, label } = await resolveSourcePrefix(port, token, health, sourceFlag);
   if (label !== "") process.stderr.write(`launching under source ${label}
 `);
-  let requesterCwd = "";
-  try {
-    requesterCwd = process.cwd();
-  } catch {
-  }
+  const { cwd: requesterCwd, note: cwdNote } = safeRequesterCwd(() => process.cwd());
+  if (cwdNote !== null) process.stderr.write(`${cwdNote}
+`);
   const res = await api(port, token, `${prefix}/api/launch`, { method: "POST", body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, 3e4);
   const body = await res.json().catch(() => null);
   if (!res.ok) {

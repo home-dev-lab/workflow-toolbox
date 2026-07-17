@@ -206,7 +206,7 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
       ...(taskModel !== undefined ? { model: taskModel } : {}),
       ...(taskEffort !== undefined ? { effort: taskEffort } : {}),
     }))
-    if (out !== null && out.spawns === 2) {
+    if (out !== null && out.salvageAttempted) {
       trail.push(makeRecord(`${STAGE}:task:${i}:salvage`, out.salvaged, {
         ...(taskModel !== undefined ? { model: taskModel } : {}),
         ...(taskEffort !== undefined ? { effort: taskEffort } : {}),
@@ -262,7 +262,7 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
       ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
       ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
     }))
-    if (synthOut.spawns === 2) {
+    if (synthOut.salvageAttempted) {
       trail.push(makeRecord(`${STAGE}:synthesize:salvage`, synthOut.salvaged, {
         ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
         ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),

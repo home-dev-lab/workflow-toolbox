@@ -28,6 +28,7 @@
 import { BEST_MODEL } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, EffortAlias, ModelAlias } from '@workflow-toolbox/runtime'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
+import { untrusted } from './untrusted.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -134,6 +135,11 @@ function effortOfScore(score: number): EffortAlias {
   return 'xhigh'
 }
 
+// One triage call scores at most this many items; larger worklists are split
+// into ceil(n/chunk) batched calls (matches TRIAGE_SCHEMA's maxItems — the two
+// must move together).
+const TRIAGE_CHUNK_SIZE = 200
+
 // Bounded per the capitulation defenses (fiche structured-output-capitulation):
 // short/required fields first, every prose field and array bounded.
 const TRIAGE_SCHEMA: JsonSchema = {
@@ -186,7 +192,10 @@ function triagePrompt(items: readonly EffortWorkItem[]): string {
     `4 = intricate (subtle invariants, cross-cutting edits), 5 = hard judgment (architecture, ` +
     `ambiguity, high blast radius).\n` +
     `WHEN UNSURE, SCORE UP — an over-scored item only costs tokens; an under-scored one costs quality.\n` +
-    `Score ALL of these items (every id must appear exactly once):\n${list}\n` +
+    `Score ALL of these items (every id must appear exactly once):\n` +
+    // Item briefs come from caller artifacts (plan tasks, change summaries) —
+    // attacker-influenceable text. Fence it as DATA per the repo convention.
+    `${untrusted('WORK-ITEMS', list)}\n` +
     `Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... ] }. ` +
     `Echo each "id" EXACTLY as the quoted string above — never append signals or anything else to it. ` +
     `Keep each reason under 160 characters.`
@@ -201,7 +210,9 @@ function triagePrompt(items: readonly EffortWorkItem[]): string {
  * Select a WORKER effort per work item: deterministic extremes in script code,
  * then ONE batched best-model triage call for everything else ("when unsure,
  * score UP"), with the caller's `fallback` (typically the role's static
- * default) for anything the triage failed to decide.
+ * default) for anything the triage failed to decide. Worklists beyond 200
+ * undecided items are triaged in batched chunks of 200 (one call per chunk —
+ * never one call per item; the schema bounds each answer at 200 scores).
  *
  * NEVER apply the result to verifier/checker roles — those keep their static
  * 'high' floor via resolveVerifierEffort. That boundary is the caller's to
@@ -252,18 +263,34 @@ export async function autoSelectEffort(
     return { efforts, decidedBy, warnings, spawns: 0 }
   }
 
-  // Tier 2 — ONE batched judgment call on the best model, salvage-wrapped.
-  const out = await agentWithSchemaSalvage<TriageAnswer>(rt, triagePrompt(undecided), {
-    schema: TRIAGE_SCHEMA,
-    label: label ?? 'autoEffort:triage',
-    model: model ?? BEST_MODEL,
-    effort: 'high',
-    ...(phase !== undefined ? { phase } : {}),
-  })
-  for (const w of out.warnings) warnings.push(`autoEffort: ${w}`)
-
+  // Tier 2 — one batched judgment call PER CHUNK on the best model,
+  // salvage-wrapped. TRIAGE_SCHEMA bounds the answer at TRIAGE_CHUNK_SIZE
+  // scores, so a larger worklist is split into ceil(n/chunk) calls — still
+  // batched (never one call per item), and the ceiling is part of the public
+  // contract instead of a silent schema rejection past 200 items.
   const scored = new Map<string, number>()
-  if (out.value !== null) {
+  // Ids already individually diagnosed (out-of-range score) — they fall back
+  // WITHOUT the misleading extra "omitted" warning.
+  const diagnosed = new Set<string>()
+  let spawns = 0
+  let anyTriageAnswered = false
+  for (let at = 0; at < undecided.length; at += TRIAGE_CHUNK_SIZE) {
+    const chunk = undecided.slice(at, at + TRIAGE_CHUNK_SIZE)
+    const out = await agentWithSchemaSalvage<TriageAnswer>(rt, triagePrompt(chunk), {
+      schema: TRIAGE_SCHEMA,
+      label: label ?? 'autoEffort:triage',
+      model: model ?? BEST_MODEL,
+      effort: 'high',
+      ...(phase !== undefined ? { phase } : {}),
+    })
+    spawns += out.spawns
+    for (const w of out.warnings) warnings.push(`autoEffort: ${w}`)
+
+    if (out.value === null) {
+      warnings.push(`autoEffort: batched triage call failed — ${chunk.length} undecided item(s) fall back to '${fallback}'`)
+      continue
+    }
+    anyTriageAnswered = true
     for (const entry of out.value.scores) {
       // Only known, not-yet-decided ids count; a hallucinated or duplicate id
       // is reported, never applied.
@@ -273,12 +300,11 @@ export async function autoSelectEffort(
       }
       if (!Number.isInteger(entry.score) || entry.score < 1 || entry.score > 5) {
         warnings.push(`autoEffort: triage score for "${entry.id}" out of range (${String(entry.score)}) — falling back to '${fallback}'`)
+        diagnosed.add(entry.id)
         continue
       }
       scored.set(entry.id, entry.score)
     }
-  } else {
-    warnings.push(`autoEffort: batched triage call failed — all ${undecided.length} undecided item(s) fall back to '${fallback}'`)
   }
 
   for (const it of undecided) {
@@ -287,7 +313,7 @@ export async function autoSelectEffort(
       efforts[it.id] = effortOfScore(score)
       decidedBy[it.id] = 'triage'
     } else {
-      if (out.value !== null && !scored.has(it.id)) {
+      if (anyTriageAnswered && !diagnosed.has(it.id)) {
         warnings.push(`autoEffort: triage omitted item "${it.id}" — falling back to '${fallback}'`)
       }
       efforts[it.id] = fallback
@@ -295,5 +321,5 @@ export async function autoSelectEffort(
     }
   }
 
-  return { efforts, decidedBy, warnings, spawns: out.spawns }
+  return { efforts, decidedBy, warnings, spawns }
 }

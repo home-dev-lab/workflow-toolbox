@@ -52,6 +52,31 @@ describe('describeSchemaConstraints', () => {
   it('returns empty for an unconstrained schema', () => {
     expect(describeSchemaConstraints({})).toBe('')
   })
+
+  it('recurses into array-of-object items — inner fields and bounds are stated (bundle review, medium)', () => {
+    const text = describeSchemaConstraints({
+      type: 'object',
+      properties: {
+        scores: {
+          type: 'array',
+          maxItems: 200,
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', maxLength: 120 },
+              score: { type: 'integer' },
+            },
+            required: ['id', 'score'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['scores'],
+    })
+    expect(text).toContain('at most 200 items')
+    expect(text).toContain('"id" (REQUIRED): string, at most 120 chars')
+    expect(text).toContain('"score" (REQUIRED): integer')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -152,6 +177,16 @@ describe('repairToSchema', () => {
     expect(value).toEqual({ summary: 42 })
     expect(repairs).toEqual([])
   })
+
+  it('drops prototype-polluting keys from salvage-parsed candidates (bundle review, hygiene)', () => {
+    const candidate: Record<string, unknown> = JSON.parse(
+      '{"summary": "a real, long-enough summary", "riskAreas": [], "__proto__": {"polluted": true}}',
+    ) as Record<string, unknown>
+    const { value, repairs } = repairToSchema(candidate, CHANGE_SUMMARY_SCHEMA)
+    expect(Object.getPrototypeOf(value)).toBe(Object.prototype)
+    expect(value).not.toHaveProperty('polluted')
+    expect(repairs).toEqual(['$.__proto__: dropped prototype-polluting key'])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -166,7 +201,7 @@ describe('agentWithSchemaSalvage', () => {
     const out = await agentWithSchemaSalvage(rt, 'task', opts)
     expect(out).toEqual({
       value: { summary: 'a real, long-enough summary', riskAreas: [] },
-      warnings: [], spawns: 1, salvaged: false,
+      warnings: [], spawns: 1, salvageAttempted: false, salvaged: false,
     })
     expect(rt.calls).toHaveLength(1)
     expect(rt.calls[0]?.opts?.schema).toBe(CHANGE_SUMMARY_SCHEMA)
@@ -175,7 +210,7 @@ describe('agentWithSchemaSalvage', () => {
   it('passes through plain calls when no schema is given (no salvage on null)', async () => {
     const rt = new FakeRuntime({ responses: [null] })
     const out = await agentWithSchemaSalvage(rt, 'task', { label: 'x' })
-    expect(out).toEqual({ value: null, warnings: [], spawns: 1, salvaged: false })
+    expect(out).toEqual({ value: null, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false })
     expect(rt.calls).toHaveLength(1)
   })
 
@@ -229,7 +264,7 @@ describe('agentWithSchemaSalvage', () => {
     expect(out).toEqual({
       value: null,
       warnings: ['classifyAndAct:act:feature:0: structured-output salvage respawn also returned null'],
-      spawns: 2, salvaged: false,
+      spawns: 2, salvageAttempted: true, salvaged: false,
     })
   })
 

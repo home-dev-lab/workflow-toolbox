@@ -418,7 +418,7 @@ export async function adversarialVerification<TClaim>(
             ...(vote !== null ? { decision: vote.verdict } : {}),
           },
         ))
-        if (out !== null && out.spawns === 2) {
+        if (out !== null && out.salvageAttempted) {
           claimRecords.push(makeRecord(
             `${STAGE}:verify:${claimIndex}:${voteIndex}:salvage`,
             out.salvaged,

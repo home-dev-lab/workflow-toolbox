@@ -82,6 +82,10 @@ describe('autoSelectEffort', () => {
     // scored item silently fell back to the fallback tier.
     expect(rt.calls[0]?.prompt).toContain('- id: "a"')
     expect(rt.calls[0]?.prompt).toContain('Echo each "id" EXACTLY')
+    // Item briefs are caller-artifact text — must ride inside the repo's
+    // untrusted() fence (bundle review, confirmed medium).
+    expect(rt.calls[0]?.prompt).toContain('<<<UNTRUSTED WORK-ITEMS')
+    expect(rt.calls[0]?.prompt).toContain('<<<END WORK-ITEMS>>>')
     expect(result.efforts).toEqual({ a: 'medium', b: 'high', c: 'xhigh' })
     expect(result.decidedBy['a']).toBe('triage')
     expect(result.spawns).toBe(1)
@@ -118,6 +122,26 @@ describe('autoSelectEffort', () => {
     expect(result.warnings.join(' ')).toContain('unknown or duplicate id "ghost"')
     expect(result.warnings.join(' ')).toContain('omitted item "omitted"')
     expect(result.warnings.join(' ')).toContain('out of range')
+    // An out-of-range item is diagnosed ONCE (bundle review, confirmed low):
+    // never the misleading extra "omitted" warning on top of "out of range".
+    expect(result.warnings.filter((w) => w.includes('"broken"'))).toHaveLength(1)
+  })
+
+  it('chunks worklists beyond the 200-item schema bound into multiple batched calls', async () => {
+    const many = Array.from({ length: 201 }, (_, i) => item(`t${i}`))
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }) => {
+        // Score every id present in THIS chunk's prompt (ids are JSON-quoted).
+        const ids = [...prompt.matchAll(/- id: "([^"]+)"/g)].map((m) => m[1] as string)
+        return { scores: ids.map((id) => ({ id, score: 3, reason: 'ok' })) }
+      },
+    })
+    const result = await autoSelectEffort(rt, many, { fallback: 'high' })
+
+    expect(rt.calls).toHaveLength(2) // ceil(201/200) — batched per chunk, never per item
+    expect(Object.keys(result.efforts)).toHaveLength(201)
+    expect(Object.values(result.decidedBy).every((d) => d === 'triage')).toBe(true)
+    expect(result.spawns).toBe(2)
   })
 
   it('fails UP when the triage call (and its salvage) dies entirely', async () => {

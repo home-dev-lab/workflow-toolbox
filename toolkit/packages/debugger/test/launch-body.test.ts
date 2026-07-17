@@ -8,7 +8,7 @@
 // build-freshness gate on the shipped bins.
 
 import { describe, expect, it } from 'vitest'
-import { buildLaunchBody } from '../src/launch-body.js'
+import { buildLaunchBody, safeRequesterCwd } from '../src/launch-body.js'
 
 describe('buildLaunchBody', () => {
   it('includes script and requesterCwd, omits args when undefined', () => {
@@ -34,5 +34,23 @@ describe('buildLaunchBody', () => {
 
   it('keeps a real cwd verbatim (no trimming of meaningful paths)', () => {
     expect(buildLaunchBody('wf.js', undefined, '/a b/c')).toEqual({ script: 'wf.js', requesterCwd: '/a b/c' })
+  })
+})
+
+// TEST-LOCK for the pr-review findings on 98d77bc (bundle review): the
+// cwd-throw branch must be executable in tests, and the degradation must be
+// LOUD (a diagnostic note), never silent.
+describe('safeRequesterCwd', () => {
+  it('passes a resolvable cwd through with no note', () => {
+    expect(safeRequesterCwd(() => '/home/user/proj')).toEqual({ cwd: '/home/user/proj', note: null })
+  })
+
+  it('degrades a throwing cwd to "" (omitted by buildLaunchBody) WITH a diagnostic note', () => {
+    const out = safeRequesterCwd(() => { throw new Error('ENOENT: deleted cwd') })
+    expect(out.cwd).toBe('')
+    expect(out.note).toContain('requesterCwd unavailable')
+    expect(out.note).toContain('Delegated bucket')
+    // and the composed body indeed omits the field
+    expect(buildLaunchBody('wf.js', undefined, out.cwd)).toEqual({ script: 'wf.js' })
   })
 })
