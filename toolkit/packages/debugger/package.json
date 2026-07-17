@@ -17,6 +17,10 @@
       "import": "./src/capabilities.ts",
       "types": "./src/capabilities.ts"
     },
+    "./capability-registry": {
+      "import": "./src/capability-registry.ts",
+      "types": "./src/capability-registry.ts"
+    },
     "./observer-def": {
       "import": "./src/observer-def.ts",
       "types": "./src/observer-def.ts"
