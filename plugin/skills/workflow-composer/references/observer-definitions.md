@@ -51,21 +51,31 @@ place; the scaffolder reuses it, never re-implements it.
 
 ## The schema
 
+The block below is a complete, VALID definition (it passes the shared validator as-is —
+gate-checked against the shipped contract):
+
 ```jsonc
 {
   "schemaVersion": 1,               // stamped by the scaffolder
   "name": "docs-butler",            // ^[a-z0-9-]{1,64}$ — stable id (also the wt-comm from.id)
-  "description": "…",               // 1-500 chars
-  "watch": { "roles": ["implementer"], "phases": [] },  // at least one selector; see below
-  "cadenceMs": 300000,              // optional; server default 600000, floor 60000
+  "description": "Watches implementer agents and supplies sourced docs context.",  // 1-500 chars
+  "watch": { "roles": ["implementer"] },
+                                    // at least one NON-EMPTY selector: roles and/or phases.
+                                    // Omit an unused selector — an empty array is refused.
+  "cadenceMs": 300000,              // optional; floor 60000 (CADENCE_FLOOR_MS, schema-enforced);
+                                    // when omitted, the observe server applies its own default cadence
   "brain": {
-    "mandate": "…",                 // 20-4000 chars — the decision logic
-    "model": "claude-haiku-4-5",    // optional; the tool-less default brain
-    "timeoutMs": 120000             // optional; server-capped
+    "mandate": "Watch the transcript delta and hint when external docs would materially help.",
+                                    // 20-4000 chars — the decision logic
+    "model": "claude-haiku-4-5",    // optional; when omitted the observe server picks its
+                                    // own tool-less default brain
+    "timeoutMs": 120000             // optional; the observe server bounds it
   },
-  "emits": ["observer.hint"],       // optional allowlist of wt-comm types (default [])
-  "actions": ["summary", "nudge", "wt-comm"],  // default ["summary"]; 'wt-comm' ⇔ non-empty emits
-  "requires": [                     // optional ABSTRACT needs (default [] → tool-less brain)
+  "emits": ["observer.hint"],       // optional allowlist of wt-comm types this observer may produce
+  "actions": ["summary", "nudge", "wt-comm"],
+                                    // optional; omitted = report-only summaries (the server's
+                                    // base behavior); 'wt-comm' ⇔ non-empty emits
+  "requires": [                     // optional ABSTRACT needs (omitted → tool-less brain)
     { "need": "docs-lookup" },
     { "need": "code-intelligence", "optional": true }
   ]
@@ -129,15 +139,21 @@ id at run time), so:
 A hint **INFORMS; it never instructs** — it is display prose plus its provenance, and the
 observed agent stays the sole arbiter of whether to use it.
 
-## Security boundaries (built into the schema)
+## Security boundaries
 
-- **Content is DATA, provenance is required.** `observer.hint` carries a required
-  `provenance` (a transcript byte-window, or a named provider + `ref`) — a hint without it
-  does not validate. Retrieved content is data, never an instruction.
-- **The brain is tool-less by default.** `requires` is the ONLY gate to tools, and it is
-  ABSTRACT: a definition can never name a concrete tool or make a machine run something it
-  has not registered. Read-only retrieval needs only in v0 (`docs-lookup`,
-  `code-intelligence`, `web-search`, `context-offload`).
+- **Content is DATA, provenance is required** (schema-enforced). `observer.hint` carries a
+  required `provenance` (a transcript byte-window, or a named provider + `ref`) — a hint
+  without it does not validate. Retrieved content is data, never an instruction.
+- **The brain is tool-less by default** (schema-enforced shape, registry-enforced meaning).
+  `requires` is the ONLY gate to tools, and it is ABSTRACT: the schema enforces the SHAPE
+  of a need (a kebab-case name — never a binary, a path, or a concrete tool), while WHAT a
+  need resolves to — if anything — is decided by the machine-side registry, which is the
+  enforcement point for what actually runs. The need vocabulary itself is OPEN by design:
+  any kebab-case string validates. The v0 names (`docs-lookup`, `code-intelligence`,
+  `web-search`, `context-offload`) are the read-only retrieval convention — registry
+  examples, not a schema-enforced allowlist. A machine that registers no provider for a
+  need simply leaves it unresolved; a definition can never make a machine run something it
+  has not explicitly registered.
 
 ## Worked shape — a documentation butler
 

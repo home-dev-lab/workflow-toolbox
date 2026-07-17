@@ -117,6 +117,68 @@ describe('cli main() — workflow-toolbox scaffold', () => {
 })
 
 // ---------------------------------------------------------------------------
+// workflow-toolbox scaffold observer — through main(), the path npm consumers
+// run (review lock, run wf_9f3dc111-f31: this branch previously had zero
+// coverage at the published-CLI level; the pure emitter tests live in the
+// scaffold package and never exercised this wiring).
+// ---------------------------------------------------------------------------
+
+const OBSERVER_SPEC = {
+  name: 'sub-test-observer',
+  description: 'Subcommand test observer.',
+  watch: { roles: ['implementer'] },
+  brain: { mandate: 'Watch the transcript delta and hint when external docs would help.' },
+  emits: ['observer.hint'],
+  actions: ['summary', 'wt-comm'],
+}
+
+function writeObserverSpec(dir: string): string {
+  const p = path.join(dir, 'observer-spec.json')
+  fs.writeFileSync(p, JSON.stringify(OBSERVER_SPEC), 'utf8')
+  return p
+}
+
+describe('cli main() — workflow-toolbox scaffold observer', () => {
+  it('writes <name>.observer.json into --out-dir, stamped and shaped', async () => {
+    const dir = makeTmpDir()
+    await main(['scaffold', 'observer', writeObserverSpec(dir), '--out-dir', dir])
+    const out = path.join(dir, 'sub-test-observer.observer.json')
+    expect(fs.existsSync(out)).toBe(true)
+    const parsed = JSON.parse(fs.readFileSync(out, 'utf8')) as Record<string, unknown>
+    expect(parsed['schemaVersion']).toBe(1)
+    expect(parsed['name']).toBe('sub-test-observer')
+  })
+
+  it('refuses to overwrite without --force, allows with it', async () => {
+    const dir = makeTmpDir()
+    const spec = writeObserverSpec(dir)
+    await main(['scaffold', 'observer', spec, '--out-dir', dir])
+    await expect(main(['scaffold', 'observer', spec, '--out-dir', dir])).rejects.toThrow(/--force/)
+    await main(['scaffold', 'observer', spec, '--out-dir', dir, '--force'])
+  })
+
+  it('--stdout prints the artifact instead of writing a file', async () => {
+    const dir = makeTmpDir()
+    const spec = writeObserverSpec(dir)
+    const writes: string[] = []
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      writes.push(String(chunk))
+      return true
+    })
+    await main(['scaffold', 'observer', spec, '--stdout'])
+    expect(writes.join('')).toContain('"schemaVersion": 1')
+    expect(fs.existsSync(path.join(dir, 'sub-test-observer.observer.json'))).toBe(false)
+  })
+
+  it('an invalid spec fails loud with the shared validator message', async () => {
+    const dir = makeTmpDir()
+    const bad = path.join(dir, 'bad-observer.json')
+    fs.writeFileSync(bad, JSON.stringify({ ...OBSERVER_SPEC, actions: ['summary'] }), 'utf8')
+    await expect(main(['scaffold', 'observer', bad])).rejects.toThrow(/actions lacks 'wt-comm'/)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // workflow-toolbox debug / workflow-toolbox report — literal journal-path mode
 // ---------------------------------------------------------------------------
 
