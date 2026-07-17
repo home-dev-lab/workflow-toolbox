@@ -179,6 +179,65 @@ describe('cli main() — workflow-toolbox scaffold observer', () => {
 })
 
 // ---------------------------------------------------------------------------
+// workflow-toolbox scaffold agent — through main(), the path npm consumers run.
+// The pure scaffoldAgent emitter is tested in the scaffold package; this locks
+// the published-CLI wiring of the `agent` branch (sibling of the observer
+// coverage above), card #1821306514896323997.
+// ---------------------------------------------------------------------------
+
+const AGENT_SPEC = {
+  name: 'sub-test-agent',
+  description: 'Subcommand test agent.',
+  prompt: 'You review code and report findings.',
+}
+
+function writeAgentSpec(dir: string): string {
+  const p = path.join(dir, 'agent-spec.json')
+  fs.writeFileSync(p, JSON.stringify(AGENT_SPEC), 'utf8')
+  return p
+}
+
+describe('cli main() — workflow-toolbox scaffold agent', () => {
+  it('writes <name>.md into --out-dir, with the agent frontmatter', async () => {
+    const dir = makeTmpDir()
+    await main(['scaffold', 'agent', writeAgentSpec(dir), '--out-dir', dir])
+    const out = path.join(dir, 'sub-test-agent.md')
+    expect(fs.existsSync(out)).toBe(true)
+    const md = fs.readFileSync(out, 'utf8')
+    expect(md).toContain('\nname: sub-test-agent\n')
+    expect(md).toContain('\ndescription: Subcommand test agent.\n')
+  })
+
+  it('refuses to overwrite without --force, allows with it', async () => {
+    const dir = makeTmpDir()
+    const spec = writeAgentSpec(dir)
+    await main(['scaffold', 'agent', spec, '--out-dir', dir])
+    await expect(main(['scaffold', 'agent', spec, '--out-dir', dir])).rejects.toThrow(/--force/)
+    await main(['scaffold', 'agent', spec, '--out-dir', dir, '--force'])
+  })
+
+  it('--stdout prints the source instead of writing a file', async () => {
+    const dir = makeTmpDir()
+    const spec = writeAgentSpec(dir)
+    const writes: string[] = []
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      writes.push(String(chunk))
+      return true
+    })
+    await main(['scaffold', 'agent', spec, '--stdout'])
+    expect(writes.join('')).toContain('\nname: sub-test-agent\n')
+    expect(fs.existsSync(path.join(dir, 'sub-test-agent.md'))).toBe(false)
+  })
+
+  it('an invalid spec (missing prompt) fails loud with the shared validator message', async () => {
+    const dir = makeTmpDir()
+    const bad = path.join(dir, 'bad-agent.json')
+    fs.writeFileSync(bad, JSON.stringify({ name: 'x', description: 'y' }), 'utf8')
+    await expect(main(['scaffold', 'agent', bad])).rejects.toThrow(/prompt must be a string/)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // workflow-toolbox debug / workflow-toolbox report — literal journal-path mode
 // ---------------------------------------------------------------------------
 
