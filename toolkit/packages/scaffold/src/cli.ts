@@ -6,11 +6,11 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { scaffoldAgent, scaffoldWorkflow, PATTERN_NAMES } from './scaffold.js'
-import type { AgentScaffoldSpec, ScaffoldSpec } from './scaffold.js'
-import { loadAgentSpec, loadSpec } from './spec-io.js'
+import { scaffoldAgent, scaffoldObserver, scaffoldWorkflow, observerLaunchHint, PATTERN_NAMES } from './scaffold.js'
+import type { AgentScaffoldSpec, ObserverScaffoldSpec, ScaffoldSpec } from './scaffold.js'
+import { loadAgentSpec, loadObserverSpec, loadSpec } from './spec-io.js'
 
-type Mode = 'workflow' | 'agent'
+type Mode = 'workflow' | 'agent' | 'observer'
 
 interface CliArgs {
   mode: Mode
@@ -25,6 +25,9 @@ function parseArgs(argv: string[]): CliArgs {
   let mode: Mode = 'workflow'
   if (rest[0] === 'agent') {
     mode = 'agent'
+    rest = rest.slice(1)
+  } else if (rest[0] === 'observer') {
+    mode = 'observer'
     rest = rest.slice(1)
   }
   let specPath: string | null = null
@@ -50,13 +53,17 @@ function printHelp(): void {
       'wt-scaffold — emit a build-clean skeleton from a spec',
       '',
       'Usage:',
-      '  wt:scaffold <spec.json> [--out-dir <dir>] [--stdout] [--force]         a .workflow.ts skeleton',
-      '  wt:scaffold agent <spec.json> [--out-dir <dir>] [--stdout] [--force]   a least-privilege agentType .md',
+      '  wt:scaffold <spec.json> [--out-dir <dir>] [--stdout] [--force]           a .workflow.ts skeleton',
+      '  wt:scaffold agent <spec.json> [--out-dir <dir>] [--stdout] [--force]     a least-privilege agentType .md',
+      '  wt:scaffold observer <spec.json> [--out-dir <dir>] [--stdout] [--force]  a workflow-owned <name>.observer.json',
       '',
       'Workflow spec: { "meta": { "name", "description" }, "steps": [ { "pattern", "phase" } ] }',
       `               pattern is one of: ${PATTERN_NAMES.join(', ')}`,
       'Agent spec:    { "name", "description", "prompt", "tools"?, "disallowedTools"?, "skills"?,',
       '                 "model"?, "effort"?, "nonGoals"? }  — `tools` is the capability fence.',
+      'Observer spec: { "name", "description", "watch": { "roles"?, "phases"? }, "brain": { "mandate" },',
+      '                 "cadenceMs"?, "emits"?, "actions"?, "requires"? }  — abstract needs only, no',
+      '                 concrete tool/machine path (validated by @workflow-toolbox/debugger observer-def).',
       '',
       '  --out-dir    directory to write the output into (default: current dir).',
       '  --stdout     print the source to stdout instead of writing a file.',
@@ -67,6 +74,14 @@ function printHelp(): void {
 }
 
 function emit(mode: Mode, specPath: string): { source: string; outName: string; next: string } {
+  if (mode === 'observer') {
+    const spec: ObserverScaffoldSpec = loadObserverSpec(specPath)
+    return {
+      source: scaffoldObserver(spec),
+      outName: `${spec.name}.observer.json`,
+      next: observerLaunchHint(spec),
+    }
+  }
   if (mode === 'agent') {
     const spec: AgentScaffoldSpec = loadAgentSpec(specPath)
     return {

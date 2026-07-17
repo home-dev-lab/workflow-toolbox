@@ -36,7 +36,7 @@ import type { PipelineSpec } from '@workflow-toolbox/pipeline-spec'
 // The packages below are PRIVATE workspace devDependencies: tsup inlines them
 // into dist/cli.js (verified — no bare imports survive in the bundle), so the
 // published package stays self-contained without publishing them to npm.
-import { scaffoldWorkflow, scaffoldAgent, MINIMAL_TSCONFIG } from '@workflow-toolbox/scaffold'
+import { scaffoldWorkflow, scaffoldAgent, scaffoldObserver, observerLaunchHint, MINIMAL_TSCONFIG } from '@workflow-toolbox/scaffold'
 import {
   parseJournal,
   agentEvents,
@@ -51,7 +51,7 @@ import {
   projectDirFor,
   transcriptDirFor,
 } from '@workflow-toolbox/debugger/source'
-import { loadSpec, loadAgentSpec } from '@workflow-toolbox/scaffold/spec-io'
+import { loadSpec, loadAgentSpec, loadObserverSpec } from '@workflow-toolbox/scaffold/spec-io'
 import { resolveLogDir, writeAuditFolder, scanTranscripts } from '@workflow-toolbox/debugger/audit-folder'
 import { parseDebugArgs, parseReportArgs } from '@workflow-toolbox/debugger/cli-args'
 
@@ -311,13 +311,34 @@ async function runScaffold(argv: string[]): Promise<void> {
     strict: true,
   })
 
-  // `scaffold agent <spec.json>` emits a least-privilege agentType .md; plain
-  // `scaffold <spec.json>` emits a .workflow.ts.
+  // `scaffold agent <spec.json>` emits a least-privilege agentType .md;
+  // `scaffold observer <spec.json>` emits a workflow-owned <name>.observer.json;
+  // plain `scaffold <spec.json>` emits a .workflow.ts.
   const isAgent = positionals[0] === 'agent'
-  const specPath = positionals[isAgent ? 1 : 0]
+  const isObserver = positionals[0] === 'observer'
+  const specPath = positionals[isAgent || isObserver ? 1 : 0]
   if (specPath === undefined || specPath === '') {
     printUsage()
     throw new Error('workflow-toolbox scaffold: missing <spec.json> positional argument')
+  }
+
+  if (isObserver) {
+    const observerSpec = loadObserverSpec(specPath)
+    const observerSource = scaffoldObserver(observerSpec)
+    if (values.stdout) {
+      process.stdout.write(observerSource)
+      return
+    }
+    const observerOutDir = path.resolve(values['out-dir'] ?? '.')
+    const observerOutFile = path.join(observerOutDir, `${observerSpec.name}.observer.json`)
+    if (fs.existsSync(observerOutFile) && !values.force) {
+      throw new Error(`workflow-toolbox scaffold observer: refusing to overwrite ${observerOutFile} — pass --force to replace it`)
+    }
+    fs.mkdirSync(observerOutDir, { recursive: true })
+    fs.writeFileSync(observerOutFile, observerSource, 'utf8')
+    console.log(`workflow-toolbox scaffold observer: wrote ${observerOutFile}`)
+    console.log(observerLaunchHint(observerSpec).trimEnd())
+    return
   }
 
   if (isAgent) {
@@ -520,6 +541,7 @@ workflow-toolbox — Workflow Toolbox CLI
 Usage (npm consumers: npx workflow-toolbox …  or  pnpm exec workflow-toolbox …; in this repo: pnpm wt:* scripts):
   workflow-toolbox scaffold <spec.json> [--out-dir <dir>] [--stdout] [--force] [--no-tsconfig]
   workflow-toolbox scaffold agent <spec.json> [--out-dir <dir>] [--stdout] [--force]
+  workflow-toolbox scaffold observer <spec.json> [--out-dir <dir>] [--stdout] [--force]
   workflow-toolbox build <entry.ts> [--out-dir <dir>] [--minify] [--typecheck]
   workflow-toolbox pipeline <entry.ts> [--out-dir <dir>] [--out <name>] [--minify] [--typecheck]
   workflow-toolbox check <file.js>
@@ -528,7 +550,11 @@ Usage (npm consumers: npx workflow-toolbox …  or  pnpm exec workflow-toolbox �
 
 Commands:
   scaffold  Emit a build-clean <name>.workflow.ts skeleton from a JSON spec
-            (or "scaffold agent <spec.json>" → a least-privilege agentType <name>.md)
+            (or "scaffold agent <spec.json>" → a least-privilege agentType <name>.md,
+            or "scaffold observer <spec.json>" → a workflow-owned <name>.observer.json,
+            an ObserverDefinition of ABSTRACT observation needs — validated by the shared
+            @workflow-toolbox/debugger observer-def contract, the same one the launch
+            bridge fails loud on)
             ({ "meta": { "name", "description" }, "steps": [{ "pattern", "phase" }] }).
             Also writes a minimal tsconfig.json when the target dir has none
             (--no-tsconfig to skip; an existing tsconfig is never touched).

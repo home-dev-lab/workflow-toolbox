@@ -6,8 +6,8 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { assertAgentSpecShape, assertSpecShape } from './scaffold.js'
-import type { AgentScaffoldSpec, ScaffoldSpec } from './scaffold.js'
+import { assertAgentSpecShape, assertObserverScaffoldSpec, assertSpecShape } from './scaffold.js'
+import type { AgentScaffoldSpec, ObserverScaffoldSpec, ScaffoldSpec } from './scaffold.js'
 
 /** Read + parse a spec file to raw JSON. Throws an actionable Error. Shared by
  *  the workflow + agent loaders so their read/parse error messages cannot drift. */
@@ -38,5 +38,14 @@ export function loadSpec(specPath: string): ScaffoldSpec {
 export function loadAgentSpec(specPath: string): AgentScaffoldSpec {
   const parsed = readSpecJson(specPath)
   assertAgentSpecShape(parsed)
+  return parsed
+}
+
+/** Read + parse + shape-narrow an OBSERVER spec file. Throws an actionable Error.
+ *  The field-level rules are enforced later by scaffoldObserver via the shared
+ *  validateObserverDefinition — this only guarantees an object was parsed. */
+export function loadObserverSpec(specPath: string): ObserverScaffoldSpec {
+  const parsed = readSpecJson(specPath)
+  assertObserverScaffoldSpec(parsed)
   return parsed
 }

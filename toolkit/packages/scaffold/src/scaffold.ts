@@ -20,6 +20,9 @@
 // The committed all-patterns golden fixture (test/fixtures/all-patterns.workflow.ts) is typechecked
 // by `pnpm typecheck` and linted by `pnpm lint`, so these invariants are gate-enforced.
 
+import { validateObserverDefinition } from '@workflow-toolbox/debugger/observer-def'
+import type { ObserverDefinition } from '@workflow-toolbox/debugger/observer-def'
+
 export const PATTERN_NAMES = [
   'classifyAndAct',
   'fanOutAndSynthesize',
@@ -366,6 +369,94 @@ export function assertAgentSpecShape(x: unknown): asserts x is AgentScaffoldSpec
   }
   for (const k of ['model', 'effort'] as const) {
     if (s[k] !== undefined && typeof s[k] !== 'string') fail(`spec.${k}, if present, must be a string.`)
+  }
+}
+
+// ── observer definition scaffolder ────────────────────────────────────────────
+// Emits a WORKFLOW-owned `<name>.observer.json` (an ObserverDefinition) from an
+// ABSTRACT declaration — the composer's authoring-time output (time 1 of the 3-time
+// model: composer → machine resolver → run), placed next to the workflow artifact.
+// Validation is REUSED from the shipped contract (@workflow-toolbox/debugger's
+// observer-def, the SAME module `wt-observe launch` + `POST /api/launch` fail-loud on),
+// never re-implemented here: an emitted definition the launch bridge would reject is an
+// authoring bug this scaffolder must catch early, with the SAME message the launch shows.
+
+/** Authoring spec for an observer definition — an ObserverDefinition minus its
+ *  `schemaVersion` (the scaffolder stamps `schemaVersion: 1`). Workflow-owned: NO
+ *  concrete tool and NO machine path may appear (the shared validator enforces both —
+ *  e.g. `watch.transcriptFile` and non-abstract `requires` are refused). */
+export type ObserverScaffoldSpec = Omit<ObserverDefinition, 'schemaVersion'>
+
+/**
+ * Emit a `<name>.observer.json` string for the given abstract declaration. Pure: same
+ * spec → byte-identical output, zero IO. The assembled definition is run back through
+ * the SHARED `validateObserverDefinition`; on any violation this throws an actionable
+ * Error listing EVERY problem (one pass) rather than ever emitting an invalid artifact.
+ */
+export function scaffoldObserver(spec: ObserverScaffoldSpec): string {
+  // schemaVersion leads (a version field belongs first in the emitted artifact) and `as
+  // const` keeps it the literal `1` type, not widened to `number`. The type omits
+  // schemaVersion, so a well-typed caller never sets it; a stray one in untrusted raw JSON
+  // spreads LAST and, if it is not 1, fails LOUD in the shared validator below — never
+  // silently coerced.
+  const definition = { schemaVersion: 1 as const, ...spec }
+  const errors: string[] = []
+  validateObserverDefinition(definition, 'observer', errors)
+  if (errors.length > 0) {
+    throw new Error(`workflow-toolbox scaffold observer: ${errors.join('; ')}`)
+  }
+  return JSON.stringify(definition, null, 2) + '\n'
+}
+
+/** The post-emission authoring guidance for an observer definition: the launch bridge
+ *  (`args.observers`, a SIBLING of `args.capabilities`), the load-bearing selector coupling
+ *  (`watch.roles`/`watch.phases` must equal the wt-meta LABEL segment the observed agents
+ *  emit, else the observer sits in no-match), and — when the definition may emit wt-comm
+ *  hints — the honest note that the observe-server RUNTIME briefs the matched roles with the
+ *  canonical observed-role consumer brief (shipped with @workflow-toolbox/comm; REFERENCED,
+ *  never copied — it is runtime-parameterized). Pure: same spec → same text. Shared by both
+ *  scaffold CLIs so the load-bearing reminders cannot drift between them. */
+export function observerLaunchHint(spec: ObserverScaffoldSpec): string {
+  const roles = spec.watch.roles ?? []
+  const phases = spec.watch.phases ?? []
+  const targets =
+    [
+      roles.length > 0 ? `role(s) ${roles.join(', ')}` : '',
+      phases.length > 0 ? `phase(s) ${phases.join(', ')}` : '',
+    ]
+      .filter((s) => s !== '')
+      .join(' + ') || 'the watched selectors'
+  const emitsWtComm = (spec.actions ?? []).includes('wt-comm')
+  const lines = [
+    'Next — reference it at launch as a SIBLING of args.capabilities:',
+    `  args.observers: [{ definitionFile: ${q(`${spec.name}.observer.json`)} }]   (or an inline { definition })`,
+    '',
+    `Label the observed agents so ${targets} matches their wt-meta label segment — toolkit`,
+    'patterns auto-label with their stage name; pass a stable `label` to a hand-rolled agent()',
+    'call. A selector with no matching label sits in no-match (never silent in the observer API).',
+  ]
+  if (emitsWtComm) {
+    lines.push(
+      '',
+      `This observer may emit wt-comm hints to ${targets}. When the observe-server runtime`,
+      'attaches it, the runtime briefs those roles with the canonical observed-role consumer',
+      'brief (@workflow-toolbox/comm: teaching/wt-comm-observer-consumer.md) — reference it,',
+      'never copy it (it is runtime-parameterized). Attachment + hint delivery ship with the',
+      'observatory runtime; authoring + args.observers validation are available now.',
+    )
+  }
+  return lines.join('\n') + '\n'
+}
+
+/** Narrow untrusted JSON to the observer-spec shape. MINIMAL by design: the field rules
+ *  live in the shared `validateObserverDefinition` (invoked by `scaffoldObserver`) and are
+ *  never duplicated here — this only guards the "not even an object" case so the spread in
+ *  `scaffoldObserver` is safe. Pure. */
+export function assertObserverScaffoldSpec(x: unknown): asserts x is ObserverScaffoldSpec {
+  if (typeof x !== 'object' || x === null || Array.isArray(x)) {
+    throw new Error(
+      'workflow-toolbox scaffold observer: spec must be a JSON object (an ObserverDefinition without schemaVersion).',
+    )
   }
 }
 

@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@workflow-toolbox/build": "workspace:*",
+    "@workflow-toolbox/debugger": "workspace:*",
     "@workflow-toolbox/patterns": "workspace:*",
     "@workflow-toolbox/runtime": "workspace:*",
     "@types/node": "^24.0.0",

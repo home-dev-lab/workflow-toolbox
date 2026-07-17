@@ -42,6 +42,8 @@ The reference files carry the deep material — read them when a step points you
 - `references/orchestrator-pipelines.md` — human-gated multi-workflow jobs (L3).
 - `references/shipped-compositions.md` — the 24 shipped compositions + operational lessons.
 - `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
+- `references/observer-definitions.md` — authoring an observer (`<name>.observer.json`), the
+  abstract-needs boundary, the selector/label coupling, and the `args.observers` launch bridge.
 - `references/worked-example-pr-review.md` — the annotated pr-review walk-through.
 - `references/observing-runs.md` — how to **launch a run so you can watch it live** and read the
   result with the dev-only `observe-ui` tool: the rich SDK pathway (compiled artifacts, live
@@ -232,6 +234,13 @@ resolved, one per stage), which still win over the blanket default. Type per-rol
 knobs as scalars today; they can widen to a per-instance
 selector (array/function) non-breaking when same-role model mixing lands (needs
 cross-model dispatch).
+
+A workflow can also declare an **observer** — a workflow-owned artifact
+(`<name>.observer.json`) the composer emits with `scaffold observer`, carried at launch in
+`args.observers` (a sibling of `args.capabilities`). **Read
+[references/observer-definitions.md](references/observer-definitions.md)** before authoring
+one — it covers the schema, the abstract-needs boundary, the `watch.roles` ⇔ agent-label
+coupling, and what ships at authoring time vs at the observe-server runtime.
 
 ### Orchestrator pipelines — human-gated, multi-workflow jobs
 
@@ -468,4 +477,6 @@ review-like workflow.
 - `references/orchestrator-pipelines.md` — human-gated multi-workflow jobs (L3).
 - `references/shipped-compositions.md` — the 24 shipped compositions + operational lessons.
 - `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
+- `references/observer-definitions.md` — authoring an observer (`<name>.observer.json`), the
+  abstract-needs boundary, the selector/label coupling, and the `args.observers` launch bridge.
 - `references/worked-example-pr-review.md` — the annotated pr-review walk-through.

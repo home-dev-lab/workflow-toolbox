@@ -4,7 +4,10 @@ export {
   assertSpecShape,
   scaffoldAgent,
   assertAgentSpecShape,
+  scaffoldObserver,
+  assertObserverScaffoldSpec,
+  observerLaunchHint,
   MINIMAL_TSCONFIG,
   PATTERN_NAMES,
 } from './scaffold.js'
-export type { ScaffoldSpec, ScaffoldStep, PatternName, AgentScaffoldSpec } from './scaffold.js'
+export type { ScaffoldSpec, ScaffoldStep, PatternName, AgentScaffoldSpec, ObserverScaffoldSpec } from './scaffold.js'
