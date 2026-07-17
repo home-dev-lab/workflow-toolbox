@@ -55,7 +55,10 @@ export interface FanOutAndSynthesizeOptions<TTask, TPart> {
    *  when this pattern is invoked more than once on the SAME rt object, each
    *  invocation's stage/label strings collide by default — this pins a
    *  stable, author-meaningful suffix (` #<stageKey>`) instead of the
-   *  auto-assigned per-invocation counter. Must match `/^[A-Za-z0-9_.-]{1,32}$/`;
+   *  auto-assigned per-invocation counter. Must match the charset/shape rule
+   *  claimStageInstance canonically enforces (letters, digits, underscore,
+   *  dot, hyphen, 1-32 chars, not purely numeric — see stage-instance.ts's
+   *  STAGE_KEY_PATTERN, the ONE source of truth for this rule);
    *  an invalid key is reported as a warning and the invocation falls back to
    *  the auto counter (never throws). The auto counter is deterministic for
    *  SEQUENTIALLY invoked patterns only — concurrent same-pattern invocations

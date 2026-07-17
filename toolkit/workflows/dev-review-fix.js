@@ -571,16 +571,17 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
 
   // ../packages/patterns/src/stage-instance.ts
   var registry = /* @__PURE__ */ new WeakMap();
-  var STAGE_KEY_PATTERN = /^[A-Za-z0-9_.-]{1,32}$/;
+  var STAGE_KEY_PATTERN = /^(?!\d+$)[A-Za-z0-9_.-]{1,32}$/;
   function claimStageInstance(rt, pattern, stageKey) {
     if (stageKey !== void 0) {
       if (STAGE_KEY_PATTERN.test(stageKey)) {
         return { salt: ` #${stageKey}` };
       }
       const fallback = claimAuto(rt, pattern);
+      const reason = /^\d+$/.test(stageKey) ? "purely-numeric keys are reserved for the auto instance counter's own ' #<n>' format (a numeric stageKey would be indistinguishable from an auto-salted invocation)" : `must match ${STAGE_KEY_PATTERN.source}`;
       return {
         salt: fallback.salt,
-        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (must match ${STAGE_KEY_PATTERN.source}) \u2014 falling back to the auto instance counter`
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (${reason}) \u2014 falling back to the auto instance counter`
       };
     }
     return claimAuto(rt, pattern);
@@ -1431,6 +1432,12 @@ IMPORTANT: Do NOT trust this finding. The quoted snippet (when present) is revie
         warnings,
         `dev-review-fix: ${findings.length} finding(s) but NONE reached the fix queue \u2014 ${rejectedCount} refuted, ${unverifiedCount} unverified (dead verifiers?). Nothing will be fixed.`
       );
+      emitDigest(rt, {
+        stage: "dev-review-fix:fix",
+        phase: "Fix",
+        output: `${findings.length} finding(s), none confirmed \u2014 nothing to fix (${rejectedCount} refuted, ${unverifiedCount} unverified)`,
+        counts: { queued: 0, rejected: rejectedCount, unverified: unverifiedCount }
+      });
     }
     rt.phase("Fix");
     let fixState = {

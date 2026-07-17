@@ -936,6 +936,24 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
       `dev-review-fix: ${findings.length} finding(s) but NONE reached the fix queue — ` +
       `${rejectedCount} refuted, ${unverifiedCount} unverified (dead verifiers?). Nothing will be fixed.`,
     )
+    // Tier-2 skip-digest: rt.phase('Fix') below is UNCONDITIONAL, but every
+    // fix-loop agent lives inside the `if (fixQueue.length > 0)` that follows
+    // it — on this reachable path Fix is entered with zero agents, and
+    // without a digest observe renders a guessed emptyReason. Same contract
+    // as the two Report digests in this file ('<workflow-name>:<phase-
+    // lowercase>'; `phase` byte-equal to the rt.phase() title). Emitted here
+    // (a few lines before the phase() call) on purpose: digest→phase
+    // resolution is title-based against the journal's workflow_phase events,
+    // independent of the log line's position, and this block already holds
+    // the counts the "rich why" needs.
+    emitDigest(rt, {
+      stage: 'dev-review-fix:fix',
+      phase: 'Fix',
+      output:
+        `${findings.length} finding(s), none confirmed — nothing to fix ` +
+        `(${rejectedCount} refuted, ${unverifiedCount} unverified)`,
+      counts: { queued: 0, rejected: rejectedCount, unverified: unverifiedCount },
+    })
   }
 
   // -------------------------------------------------------------------------

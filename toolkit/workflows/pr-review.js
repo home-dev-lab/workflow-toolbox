@@ -900,16 +900,17 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
 
   // ../packages/patterns/src/stage-instance.ts
   var registry = /* @__PURE__ */ new WeakMap();
-  var STAGE_KEY_PATTERN = /^[A-Za-z0-9_.-]{1,32}$/;
+  var STAGE_KEY_PATTERN = /^(?!\d+$)[A-Za-z0-9_.-]{1,32}$/;
   function claimStageInstance(rt, pattern, stageKey) {
     if (stageKey !== void 0) {
       if (STAGE_KEY_PATTERN.test(stageKey)) {
         return { salt: ` #${stageKey}` };
       }
       const fallback = claimAuto(rt, pattern);
+      const reason = /^\d+$/.test(stageKey) ? "purely-numeric keys are reserved for the auto instance counter's own ' #<n>' format (a numeric stageKey would be indistinguishable from an auto-salted invocation)" : `must match ${STAGE_KEY_PATTERN.source}`;
       return {
         salt: fallback.salt,
-        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (must match ${STAGE_KEY_PATTERN.source}) \u2014 falling back to the auto instance counter`
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (${reason}) \u2014 falling back to the auto instance counter`
       };
     }
     return claimAuto(rt, pattern);
@@ -2007,7 +2008,11 @@ Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'
         // invocations), non-deterministic across resumeFromRunId replays. The
         // lens name is a stable, author-meaningful key instead: every real lens
         // (base categories, 'docs-alignment', 'docs-coverage', 'consolidated')
-        // matches the stageKey whitelist (`/^[A-Za-z0-9_.-]{1,32}$/`).
+        // matches the stageKey charset/shape rule claimStageInstance canonically
+        // enforces (letters, digits, underscore, dot, hyphen, 1-32 chars, not
+        // purely numeric — see stage-instance.ts's STAGE_KEY_PATTERN, the ONE
+        // source of truth for this rule) — none of these lens names is purely
+        // numeric, so none collides with the auto counter's own ' #<n>' format.
         stageKey: lens,
         claims: findings,
         renderClaim: (finding) => `## Claim to verify (lens: ${lens})

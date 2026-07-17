@@ -137,6 +137,42 @@ describe('claimStageInstance — explicit stageKey', () => {
     const second = claimStageInstance(rt, 'planAndExecute', 'also:bad')
     expect(second.salt).toBe(' #2')
   })
+
+  // TEST-LOCK — review finding: a purely-numeric explicit stageKey (e.g. '2',
+  // a loop index passed as-is) produces salt ' #2', which is FORMAT-IDENTICAL
+  // to the auto counter's own ' #<n>' salt. A caller passing a numeric key can
+  // therefore silently collide with a later auto-salted invocation on the same
+  // rt/pattern — defeating the whole point of an explicit discriminator. Fix:
+  // reject pure-numeric keys the same way an invalid-charset key is rejected
+  // (warning + fallback to the auto counter, never throws).
+  it('rejects a purely-numeric stageKey ("2") — warns naming the numeric reservation and falls back to the auto counter', () => {
+    const rt = {}
+    const result = claimStageInstance(rt, 'planAndExecute', '2')
+    expect(result.salt).toBe('')
+    expect(result.warning).toMatch(/stageKey/)
+    expect(result.warning).toMatch(/numeric/i)
+  })
+
+  it('rejects a multi-digit purely-numeric stageKey ("42") the same way', () => {
+    const rt = {}
+    const result = claimStageInstance(rt, 'planAndExecute', '42')
+    expect(result.salt).toBe('')
+    expect(result.warning).toMatch(/numeric/i)
+  })
+
+  it('a rejected numeric stageKey still falls back through the auto counter (2nd rejected call gets " #2")', () => {
+    const rt = {}
+    claimStageInstance(rt, 'planAndExecute', '1')
+    const second = claimStageInstance(rt, 'planAndExecute', '2')
+    expect(second.salt).toBe(' #2')
+  })
+
+  it('does NOT reject a key that merely CONTAINS digits alongside other chars (only PURELY numeric is reserved)', () => {
+    const rt = {}
+    const result = claimStageInstance(rt, 'scoreAndRank', '2a')
+    expect(result.salt).toBe(' #2a')
+    expect(result.warning).toBeUndefined()
+  })
 })
 
 describe('stageBuilder', () => {

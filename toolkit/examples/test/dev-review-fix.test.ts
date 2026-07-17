@@ -485,6 +485,16 @@ describe('dev-review-fix verdict partition', () => {
     expect(rt.calls.some((c) => c.opts?.label?.startsWith('dev-review-fix:fix:'))).toBe(false)
     // Findings existed but none reached the fix queue — that must be LOUD.
     expect(result.warnings.some((w: string) => /fix queue/i.test(w))).toBe(true)
+
+    // Fix is still ENTERED (rt.phase('Fix') is unconditional) with zero agents
+    // when the queue is empty — a tier-2 digest reports the real why instead
+    // of a guessed emptyReason.
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const fixDigest = digests.find((d) => d?.phase === 'Fix')
+    expect(fixDigest).toBeDefined()
+    expect(fixDigest?.stage).toBe('dev-review-fix:fix')
+    expect(fixDigest?.output).toBeTruthy()
+    expect(fixDigest?.counts).toMatchObject({ queued: 0 })
   })
 
   it('marks cap-truncated findings unverified-by-cap and never fixes them', async () => {

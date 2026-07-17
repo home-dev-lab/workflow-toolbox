@@ -1090,7 +1090,11 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       // invocations), non-deterministic across resumeFromRunId replays. The
       // lens name is a stable, author-meaningful key instead: every real lens
       // (base categories, 'docs-alignment', 'docs-coverage', 'consolidated')
-      // matches the stageKey whitelist (`/^[A-Za-z0-9_.-]{1,32}$/`).
+      // matches the stageKey charset/shape rule claimStageInstance canonically
+      // enforces (letters, digits, underscore, dot, hyphen, 1-32 chars, not
+      // purely numeric — see stage-instance.ts's STAGE_KEY_PATTERN, the ONE
+      // source of truth for this rule) — none of these lens names is purely
+      // numeric, so none collides with the auto counter's own ' #<n>' format.
       stageKey: lens,
       claims: findings,
       renderClaim: (finding) =>

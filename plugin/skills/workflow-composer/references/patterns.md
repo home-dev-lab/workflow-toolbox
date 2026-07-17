@@ -576,6 +576,44 @@ wins, set `cacheWarm: false` on that pattern call. Default to leaving it on
 (`true`) when unclear — it costs nothing extra to ask, and the pattern is
 already inert-safe (bursts of 0-1 agents are always no-ops either way).
 
+## Per-invocation stage salting — `stageKey`
+
+`classifyAndAct`, `generateAndFilter`, `adversarialVerification`, `planAndExecute`,
+`scoreAndRank`, `fanOutAndSynthesize`, and `chunkedAnalysis` accept `stageKey?:
+string`. (`tournament` and `loopUntilDone` deliberately do NOT — see each
+pattern's own source comment for why.)
+
+**What it does:** claims a per-invocation discriminator and appends it
+TERMINALLY (` #<key>`) to every stage/label string that invocation's agents
+build — the same string used for both the agent's `label` and the result
+envelope's `stage`. Without it, every invocation of a pattern on the same `rt`
+builds IDENTICAL stage strings, which the debugger's trail-by-stage index and
+the observe effort bridge cannot tell apart (silently collided or dropped
+enrichment). With no `stageKey` given, a pattern falls back to an **auto
+counter**: bare on the first invocation, then ` #2`, ` #3`, … per (rt, pattern)
+pair.
+
+**When to use it:** whenever the SAME pattern is invoked more than once on the
+SAME `rt` — e.g. once per lens/category, or from inside a caller's own loop —
+and **especially for concurrent invocations** (multiple calls inside one
+`rt.pipeline`'s no-barrier per-item stages, or one `rt.parallel` burst). The
+auto counter is only deterministic for SEQUENTIALLY invoked patterns (claim
+order = code order); concurrent same-pattern invocations get
+completion-order numbers instead — not wrong, but not predictable from source
+order, and not stable across a `resumeFromRunId` replay. Pass an explicit,
+author-meaningful `stageKey` (e.g. the lens name, as pr-review's per-lens
+`adversarialVerification` calls do) for a stable, resume-safe discriminator.
+
+**Constraints:** letters, digits, underscore, dot, hyphen, 1-32 chars, and
+**not purely numeric** — a bare numeric key (e.g. a raw loop index passed
+as-is) would produce salt ` #2`, format-identical to the auto counter's own
+` #<n>` salt, silently colliding with a later auto-salted invocation and
+defeating the whole point of an explicit key; numeric keys are reserved for
+the auto counter's own format. An invalid `stageKey` (wrong charset, wrong
+length, or purely numeric) never throws — it is reported as a warning and the
+invocation falls back to (and advances) the auto counter, so it is never left
+unsalted-and-silent when a real invocation follows.
+
 ## Composition idioms (not patterns)
 
 These are how patterns and agents combine. They are deliberately **not**

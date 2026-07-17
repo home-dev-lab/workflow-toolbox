@@ -41,14 +41,24 @@
  *  collected too — no unbounded growth across a long-lived process. */
 const registry = new WeakMap<object, Map<string, number>>()
 
-/** Whitelist for an explicit stageKey (amendment A6): letters, digits,
- *  underscore, dot, hyphen, 1-32 chars. Deliberately excludes ':' (the
- *  segment separator every pattern's stage grammar uses) and whitespace
- *  (which would admit the loop marker ' ⟲' or a leading/trailing-space key
- *  that reads as accidental input) — anything outside this set is rejected,
- *  never sanitized/stripped, so a caller sees the warning and can fix the
- *  source instead of silently getting a mangled key. */
-const STAGE_KEY_PATTERN = /^[A-Za-z0-9_.-]{1,32}$/
+/** Whitelist for an explicit stageKey (amendment A6, refined by the
+ *  numeric-reservation review fix): letters, digits, underscore, dot,
+ *  hyphen, 1-32 chars, and NOT purely numeric. Deliberately excludes ':'
+ *  (the segment separator every pattern's stage grammar uses) and
+ *  whitespace (which would admit the loop marker ' ⟲' or a
+ *  leading/trailing-space key that reads as accidental input) — anything
+ *  outside this set is rejected, never sanitized/stripped, so a caller sees
+ *  the warning and can fix the source instead of silently getting a mangled
+ *  key. Purely-numeric keys (e.g. a raw loop index passed as `stageKey:
+ *  '2'`) are ALSO rejected: they'd produce salt ' #2', which is
+ *  FORMAT-IDENTICAL to the AUTO counter's own ' #<n>' salt, so a caller
+ *  could silently collide with a later auto-salted invocation on the same
+ *  rt/pattern — numeric keys are reserved for the auto counter's own
+ *  format, never assignable by a caller. This is the ONE canonical copy of
+ *  the charset/shape rule; every pattern's `stageKey` JSDoc references this
+ *  function in prose instead of repeating the regex literal, so a future
+ *  charset change has a single source of truth. */
+const STAGE_KEY_PATTERN = /^(?!\d+$)[A-Za-z0-9_.-]{1,32}$/
 
 export interface ClaimStageInstanceResult {
   /** Terminal suffix to append to EVERY stage/label string this invocation
@@ -91,11 +101,15 @@ export function claimStageInstance(
       return { salt: ` #${stageKey}` }
     }
     const fallback = claimAuto(rt, pattern)
+    const reason = /^\d+$/.test(stageKey)
+      ? 'purely-numeric keys are reserved for the auto instance counter\'s own \' #<n>\' format ' +
+        '(a numeric stageKey would be indistinguishable from an auto-salted invocation)'
+      : `must match ${STAGE_KEY_PATTERN.source}`
     return {
       salt: fallback.salt,
       warning:
         `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid ` +
-        `(must match ${STAGE_KEY_PATTERN.source}) — falling back to the auto instance counter`,
+        `(${reason}) — falling back to the auto instance counter`,
     }
   }
   return claimAuto(rt, pattern)
