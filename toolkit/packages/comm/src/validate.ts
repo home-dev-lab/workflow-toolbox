@@ -133,7 +133,7 @@ function validateNode(schema: JsonSchema, value: unknown): NodeResult {
 // parseMessage — the full envelope+payload read path, per ../README.md "Reading".
 // ===========================================================================
 
-export type ParseFailureReason = 'malformed' | 'unsupported-version' | 'provenance'
+export type ParseFailureReason = 'malformed' | 'unsupported-version' | 'provenance' | 'unknown-type'
 
 export type ParseMessageResult = { ok: true; message: WtCommMessage } | { ok: false; reason: ParseFailureReason }
 
@@ -167,9 +167,12 @@ export function parseMessage(text: string): ParseMessageResult {
   if (schemaVersionRaw < WT_COMM_SCHEMA_VERSION) return { ok: false, reason: 'malformed' }
 
   const typeRaw = parsed['type']
-  if (typeof typeRaw !== 'string' || !(typeRaw in WT_COMM_SCHEMAS)) {
-    return { ok: false, reason: 'malformed' }
-  }
+  if (typeof typeRaw !== 'string') return { ok: false, reason: 'malformed' }
+  // A STRING type this build does not know is its own named failure (v0.2, review lock
+  // F3): most likely a message from a NEWER protocol build — the version-coupling
+  // failure mode the README documents — and a consumer that can tell "reader too old"
+  // from "corrupt file" can surface the right remedy. Listings skip both the same way.
+  if (!(typeRaw in WT_COMM_SCHEMAS)) return { ok: false, reason: 'unknown-type' }
   const type = typeRaw as WtCommMessageType
 
   // inReplyTo: envelope-level, type-conditional — required+shaped on decision.response,

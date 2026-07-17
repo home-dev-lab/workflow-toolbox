@@ -186,7 +186,7 @@ export function readSettlementFor(dir: string, message: WtCommMessage): ReadSett
 
 export type ReadMessageResult =
   | { ok: true; message: WtCommMessage }
-  | { ok: false; reason: 'not-found' | 'malformed' | 'unsupported-version' | 'provenance' }
+  | { ok: false; reason: 'not-found' | 'malformed' | 'unsupported-version' | 'provenance' | 'unknown-type' }
 
 export function readMessage(dir: string, id: string): ReadMessageResult {
   let text: string

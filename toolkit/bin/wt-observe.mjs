@@ -202,9 +202,14 @@ function clearAllLaunchEnableRecords(stateRoot) {
   }
 }
 
+// packages/debugger/src/validator-shared.ts
+var FORBIDDEN_ENTRY_NAMES = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
+function isRecord2(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 // packages/debugger/src/capabilities.ts
 var SECTION_KEYS = /* @__PURE__ */ new Set(["mcpServers", "agents", "skills"]);
-var FORBIDDEN_ENTRY_NAMES = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
 var AGENT_DEF_KEYS = /* @__PURE__ */ new Set([
   "description",
   "tools",
@@ -223,9 +228,6 @@ var AGENT_DEF_KEYS = /* @__PURE__ */ new Set([
   "observer",
   "observerMessage"
 ]);
-function isRecord2(v) {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
 function isStringArray(v) {
   return Array.isArray(v) && v.every((x) => typeof x === "string");
 }
@@ -333,13 +335,9 @@ var WATCH_KEYS = /* @__PURE__ */ new Set(["roles", "phases"]);
 var BRAIN_KEYS = /* @__PURE__ */ new Set(["mandate", "model", "timeoutMs"]);
 var NEED_KEYS = /* @__PURE__ */ new Set(["need", "optional", "params"]);
 var ACTION_VALUES = /* @__PURE__ */ new Set(["summary", "nudge", "wt-comm"]);
-var FORBIDDEN_ENTRY_NAMES2 = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
-function isRecord3(v) {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
 function checkUnknownKeys(obj, known, path, errors) {
   for (const key of Object.keys(obj)) {
-    if (FORBIDDEN_ENTRY_NAMES2.has(key)) {
+    if (FORBIDDEN_ENTRY_NAMES.has(key)) {
       errors.push(`${path}.${key} is a forbidden key name (prototype-collision defence)`);
     } else if (!known.has(key)) {
       errors.push(`${path}.${key} is not a known field (typo?)`);
@@ -368,7 +366,7 @@ function validateSelectorArray(v, path, errors) {
   }
 }
 function validateWatch(v, path, errors) {
-  if (!isRecord3(v)) {
+  if (!isRecord2(v)) {
     errors.push(`${path} must be an object ({ roles?, phases? })`);
     return;
   }
@@ -386,7 +384,7 @@ function validateWatch(v, path, errors) {
   if (hasPhases) validateSelectorArray(v["phases"], `${path}.phases`, errors);
 }
 function validateBrain(v, path, errors) {
-  if (!isRecord3(v)) {
+  if (!isRecord2(v)) {
     errors.push(`${path} must be an object ({ mandate, model?, timeoutMs? })`);
     return;
   }
@@ -443,7 +441,7 @@ function validateRequires(v, path, errors) {
   }
   v.forEach((item, i) => {
     const itemPath = `${path}[${i}]`;
-    if (!isRecord3(item)) {
+    if (!isRecord2(item)) {
       errors.push(`${itemPath} must be an object ({ need, optional?, params? })`);
       return;
     }
@@ -454,14 +452,14 @@ function validateRequires(v, path, errors) {
     if ("optional" in item && typeof item["optional"] !== "boolean") errors.push(`${itemPath}.optional must be a boolean`);
     if ("params" in item) {
       const params = item["params"];
-      if (!isRecord3(params)) {
+      if (!isRecord2(params)) {
         errors.push(`${itemPath}.params must be an object map of string \u2192 string (abstract refinement only)`);
         return;
       }
       const keys = Object.keys(params);
       if (keys.length > MAX_PARAMS) errors.push(`${itemPath}.params must carry at most ${MAX_PARAMS} entries`);
       for (const key of keys) {
-        if (FORBIDDEN_ENTRY_NAMES2.has(key)) {
+        if (FORBIDDEN_ENTRY_NAMES.has(key)) {
           errors.push(`${itemPath}.params.${key} is a forbidden key name (prototype-collision defence)`);
           continue;
         }
@@ -471,7 +469,7 @@ function validateRequires(v, path, errors) {
   });
 }
 function validateObserverDefinition(v, path, errors) {
-  if (!isRecord3(v)) {
+  if (!isRecord2(v)) {
     errors.push(`${path} must be an object (an ObserverDefinition)`);
     return;
   }
@@ -514,7 +512,7 @@ function validateDefinitionFile(v, path, errors) {
   }
 }
 function extractObservers(args) {
-  if (!isRecord3(args) || !("observers" in args)) return { entries: null, errors: [] };
+  if (!isRecord2(args) || !("observers" in args)) return { entries: null, errors: [] };
   const raw = args["observers"];
   if (raw === null) return { entries: null, errors: [] };
   if (!Array.isArray(raw)) {
@@ -525,7 +523,7 @@ function extractObservers(args) {
   const seenNames = /* @__PURE__ */ new Set();
   raw.forEach((entry, i) => {
     const path = `observers[${i}]`;
-    if (!isRecord3(entry)) {
+    if (!isRecord2(entry)) {
       errors.push(`${path} must be an object ({ definition } or { definitionFile })`);
       return;
     }
@@ -544,7 +542,7 @@ function extractObservers(args) {
     }
     validateObserverDefinition(entry["definition"], `${path}.definition`, errors);
     const def = entry["definition"];
-    if (isRecord3(def) && typeof def["name"] === "string") {
+    if (isRecord2(def) && typeof def["name"] === "string") {
       if (seenNames.has(def["name"])) errors.push(`${path}.definition.name ${JSON.stringify(def["name"])} is declared twice \u2014 observer names must be unique per launch`);
       seenNames.add(def["name"]);
     }

@@ -242,13 +242,14 @@ describe('legality matrix — observer.* is observer-only, observer is observer.
     expect(r.ok).toBe(false)
   })
 
-  it('a type unknown to THIS build (e.g. a future observer.summary) -> malformed, never accepted', () => {
-    // This is the version-coupling behavior the README documents: a reader OLDER than a
-    // type classifies it malformed and listMessages skips it silently — producers and
-    // consumers of a new type must both be on a package version that knows it.
+  it('a type unknown to THIS build (e.g. a future observer.summary) -> unknown-type, never accepted', () => {
+    // The version-coupling behavior the README documents: a reader OLDER than a type
+    // cannot act on it — it names the failure 'unknown-type' (review lock F3) and
+    // listMessages skips it silently; producers and consumers of a new type must both
+    // be on a package version that knows it.
     const r = parseMessage(JSON.stringify(baseHint({ type: 'observer.summary' })))
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.reason).toBe('malformed')
+    if (!r.ok) expect(r.reason).toBe('unknown-type')
   })
 })
 

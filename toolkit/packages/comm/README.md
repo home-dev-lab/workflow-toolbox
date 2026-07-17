@@ -59,7 +59,7 @@ deliberate exception to write-once for that family only.
 
 Per-type id patterns (each type's schema pins its own):
 
-- **Base ids** (`escalation.question`, `status.digest`):
+- **Base ids** (`escalation.question`, `status.digest`, `observer.hint`):
   `^(?!.*--)[a-z0-9][a-z0-9-]{0,95}$` — 1–96 chars, lowercase alphanumerics and dashes,
   and NEVER `--` (the double dash is reserved as the derivation separator).
 - **Derived ids** (`decision.response`): `^[a-z0-9][a-z0-9-]{0,95}--decision$` with
@@ -76,10 +76,11 @@ re-mints the SAME id. Library minting (`mintQuestionId(runId, stepKey)` /
 `<segment>` = the runId lowercased with non-`[a-z0-9]` runs folded to single dashes PLUS
 a short FNV-1a hash of the RAW runId — the hash keeps the runId→segment map injective
 (two runIds differing only in case or punctuation cannot mint the same id), and
-`<observer>` = the folded observer definition name (capped at 20 chars — two observers
-watching the same run can never collide on a seq). Minted ids are guaranteed ≤90 chars
-(stepKey capped, long segments truncated before the hash), which leaves room for the
-retry suffix below. Sanitizing happens ONLY at mint time; once
+`<observer>` = the folded observer definition name PLUS its own FNV-1a hash of the raw
+name (same fold+hash recipe as the run segment — two observers watching the same run can
+never collide on a seq, even when their names share a fold/truncation prefix). Minted
+ids are guaranteed ≤90 chars (stepKey capped, long segments truncated before the hash),
+which leaves room for the retry suffix below. Sanitizing happens ONLY at mint time; once
 minted, an id is matched byte-for-byte forever. Shell participants (teaching pack) mint
 with the simpler fold recipe or use a brief-supplied id verbatim; the adopt-or-collision
 rule below absorbs the difference.
@@ -148,7 +149,9 @@ against an enum" is enforced per question, not against a global list.
 
 Proactive, SOURCED help toward an observed agent — context the observer believes would
 materially help, delivered out-of-band and consulted by the recipient at its own natural
-boundaries. A hint INFORMS; it never instructs.
+boundaries. A hint INFORMS; it never instructs. Addressing: observers select their
+targets by ROLE, so a hint's `to` is `{ role: 'agent', id: <the role name the observer
+matched> }` — the role name, not an individual agent id.
 
 | Field | Bounds | Meaning |
 |---|---|---|
@@ -264,7 +267,9 @@ single source of the bounds the validator applies.
 
 `readMessage` never throws on bad content: every failure is a named reason —
 `not-found`, `malformed` (parse/schema/bounds), `unsupported-version`
-(schemaVersion > 1), `provenance` (type illegal for `from.role`). `listMessages`
+(schemaVersion > 1), `unknown-type` (a string `type` this build does not know —
+typically a message from a NEWER protocol build; see "Versioning"), `provenance`
+(type illegal for `from.role`). `listMessages`
 tolerantly skips garbage, dotfiles, and foreign files, so one torn or alien file never
 hides the rest. `validateDecisionAgainstQuestion` and `validateSettlement` enforce the
 cross-message rules (option membership, default equality, marker-role legality) that
@@ -292,12 +297,14 @@ fields keep version 1; breaking changes bump it; a vN reader accepts 1..N.
 
 **Type-union coupling (normative).** The `type` union is CLOSED: adding a message type
 (as v0.2 did with `observer.hint`) is a CODE change, not a `schemaVersion` bump. A reader
-built BEFORE a type knows nothing of it — it classifies such messages `malformed` and
-`listMessages` silently skips them. That is safe for the reader (consumers filter by
-type), but it makes DELIVERY version-coupled: the producer of a type and every consumer
-expected to act on it must both run a package version that includes that type. Deploy
-readers at least as new as the newest type a tree's writers emit; a silent skip is the
-failure mode of getting this wrong, not an error message.
+built BEFORE a type knows nothing of it — it refuses such messages with the named reason
+`unknown-type` (builds older than v0.2 report them `malformed`) and `listMessages`
+silently skips them either way. That is safe for the reader (consumers filter by type),
+but it makes DELIVERY version-coupled: the producer of a type and every consumer expected
+to act on it must both run a package version that includes that type. Deploy readers at
+least as new as the newest type a tree's writers emit; on the read side, an
+`unknown-type` result is the "this reader is too old" diagnostic — a silent skip in a
+listing is the failure mode of never checking it.
 
 ## Library API
 

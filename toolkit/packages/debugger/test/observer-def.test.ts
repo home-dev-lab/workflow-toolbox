@@ -5,7 +5,8 @@
 // unknown keys and prototype-collision names are errors, never silent no-ops.
 
 import { describe, expect, it } from 'vitest'
-import { extractObservers, OBSERVER_EMITTABLE_TYPES } from '../src/observer-def.js'
+import { readFileSync } from 'node:fs'
+import { extractObservers, OBSERVER_EMITTABLE_TYPES, CADENCE_FLOOR_MS } from '../src/observer-def.js'
 import { WT_COMM_SCHEMAS } from '@workflow-toolbox/comm'
 
 /** The design's reference example (docs-butler, §7) — must validate as-is. */
@@ -271,6 +272,27 @@ describe('validate — requires (abstract capability needs)', () => {
       true,
     )
     expect(errorsFor({ ...minimal(), requires: Array.from({ length: 17 }, (_, i) => ({ need: `n-${i}` })) })).toHaveLength(1)
+  })
+
+  it('review lock F4: the proto-defence Set and isRecord live in ONE module, imported by both validators', () => {
+    // The bundle review flagged FORBIDDEN_ENTRY_NAMES/isRecord duplicated verbatim
+    // across capabilities.ts and observer-def.ts with no drift protection. Single
+    // definition site: validator-shared.ts defines them; both validators import.
+    const shared = readFileSync(new URL('../src/validator-shared.ts', import.meta.url), 'utf8')
+    const capabilities = readFileSync(new URL('../src/capabilities.ts', import.meta.url), 'utf8')
+    const observerDef = readFileSync(new URL('../src/observer-def.ts', import.meta.url), 'utf8')
+    expect(shared).toMatch(/const FORBIDDEN_ENTRY_NAMES = new Set/)
+    for (const src of [capabilities, observerDef]) {
+      expect(src).not.toMatch(/const FORBIDDEN_ENTRY_NAMES = new Set/)
+      expect(src).not.toMatch(/function isRecord\(/)
+      expect(src).toMatch(/from '\.\/validator-shared\.js'/)
+    }
+  })
+
+  it('review lock F5: CADENCE_FLOOR_MS is EXPORTED as the normative floor (60000) for the server to import', () => {
+    // Cross-repo drift protection by dependency inversion: the shared contract owns
+    // the floor; the companion server imports it instead of re-declaring it.
+    expect(CADENCE_FLOOR_MS).toBe(60000)
   })
 
   it('refuses prototype-collision params keys (raw JSON, where __proto__ is a real key)', () => {

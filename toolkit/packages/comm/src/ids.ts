@@ -79,13 +79,19 @@ function foldSegment(s: string, maxLen: number, emptyPlaceholder: string): strin
 const RUN_SEGMENT_MAX = 40
 const STEP_SEGMENT_MAX = 32
 
-/** The shared `<foldedRunId>-<fnv1a32Hex>` run segment both mint functions build on —
- *  ONE derivation site (review lock F11), so the injectivity recipe (hash width, fold
- *  cap, placeholder) can never drift between question and digest ids. */
+/** `<foldedInput>-<fnv1a32Hex>`: fold+truncate the input, then append an 8-hex-char
+ *  FNV-1a hash of the RAW input — the hash keeps the input→segment map INJECTIVE
+ *  (folding/truncation alone collapses distinct inputs). ONE derivation site for every
+ *  minted-id segment that must stay collision-free (review locks F11 and v0.2 F0: the
+ *  hint id's observer segment initially shipped as a bare fold+truncate, letting two
+ *  distinct observer names sharing a prefix mint the SAME id — silent hint loss). */
+function segmentWithHash(s: string, maxLen: number, emptyPlaceholder: string): string {
+  return `${foldSegment(s, maxLen, emptyPlaceholder)}-${fnv1a32(s).toString(16).padStart(8, '0')}`
+}
+
+/** The shared run segment both v0 mint functions build on. */
 function runSegmentWithHash(runId: string): string {
-  const runSegment = foldSegment(runId, RUN_SEGMENT_MAX, 'r')
-  const hash = fnv1a32(runId).toString(16).padStart(8, '0')
-  return `${runSegment}-${hash}`
+  return segmentWithHash(runId, RUN_SEGMENT_MAX, 'r')
 }
 
 /** `mintQuestionId(runId, stepKey) = q-<segment>-<stepKey>` where `<segment>` = the
@@ -107,17 +113,19 @@ export function mintDigestId(runId: string, seq: number): string {
 }
 
 /** Tighter than the run/step caps: the hint id carries run segment + hash + observer
- *  segment + seq, and the <=90-char mint guarantee must hold even for a 16-digit seq
- *  (2 + 49 + 1 + 20 + 1 + 16 = 89). Observer definition names are short by their own
- *  grammar (`^[a-z0-9-]{1,64}$`), so 20 chars keeps them recognizable. */
-const OBSERVER_SEGMENT_MAX = 20
+ *  segment + ITS hash + seq, and the <=90-char mint guarantee must hold even for a
+ *  16-digit seq (2 + 49 + 1 + (11+1+8) + 1 + 16 = 89). Observer definition names are
+ *  short by their own grammar (`^[a-z0-9-]{1,64}$`); the 11-char fold keeps a
+ *  recognizable prefix and the hash carries the injectivity. */
+const OBSERVER_SEGMENT_MAX = 11
 
-/** `mintHintId(runId, observerName, seq) = h-<segment>-<observer>-<seq>` (v0.2) — same
- *  run-segment recipe as the other mints (ONE derivation site, review lock F11), plus
- *  the folded observer-definition name so two observers watching the same run can never
- *  collide on a seq. Deterministic, always grammar-valid and <=90 chars. */
+/** `mintHintId(runId, observerName, seq) = h-<runSegment>-<observerSegment>-<seq>`
+ *  (v0.2) — BOTH variable segments use the shared fold+hash recipe (segmentWithHash,
+ *  ONE derivation site), so two observers watching the same run can never collide on a
+ *  seq even when their names share a fold/truncation prefix (review lock F0).
+ *  Deterministic, always grammar-valid and <=90 chars. */
 export function mintHintId(runId: string, observerName: string, seq: number): string {
-  const observerSegment = foldSegment(observerName, OBSERVER_SEGMENT_MAX, 'o')
+  const observerSegment = segmentWithHash(observerName, OBSERVER_SEGMENT_MAX, 'o')
   const safeSeq = Number.isFinite(seq) ? Math.max(0, Math.trunc(seq)) : 0
   return `h-${runSegmentWithHash(runId)}-${observerSegment}-${safeSeq}`
 }

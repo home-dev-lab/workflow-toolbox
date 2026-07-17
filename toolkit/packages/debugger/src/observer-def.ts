@@ -27,6 +27,8 @@
 // prototype-collision names are refused outright, every violation is collected in
 // ONE pass, and a section with any violation yields `entries: null` (all-or-nothing).
 
+import { FORBIDDEN_ENTRY_NAMES, isRecord } from './validator-shared.js'
+
 export interface ObserverWatch {
   roles?: string[]
   phases?: string[]
@@ -76,9 +78,13 @@ const NAME_PATTERN = /^[a-z0-9-]{1,64}$/
 const SELECTOR_ITEM_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
 const NEED_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 
-/** The existing server registration floor — a definition declaring a faster cadence
- *  is an authoring error, not something to silently clamp at run time. */
-const CADENCE_FLOOR_MS = 60_000
+/** The observer cadence floor — NORMATIVE for both sides of the contract (bundle
+ *  review lock F5): authoring validation refuses a faster declared cadence here, and
+ *  the companion server should IMPORT this const as its registration floor rather
+ *  than re-declaring the number (cross-repo drift protection by dependency
+ *  inversion). A definition declaring a faster cadence is an authoring error, not
+ *  something to silently clamp at run time. */
+export const CADENCE_FLOOR_MS = 60_000
 
 const MAX_OBSERVERS = 16
 const MAX_SELECTOR_ITEMS = 16
@@ -90,12 +96,6 @@ const WATCH_KEYS = new Set(['roles', 'phases'])
 const BRAIN_KEYS = new Set(['mandate', 'model', 'timeoutMs'])
 const NEED_KEYS = new Set(['need', 'optional', 'params'])
 const ACTION_VALUES = new Set<string>(['summary', 'nudge', 'wt-comm'])
-
-const FORBIDDEN_ENTRY_NAMES = new Set(['__proto__', 'constructor', 'prototype'])
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
 
 function checkUnknownKeys(obj: Record<string, unknown>, known: Set<string>, path: string, errors: string[]): void {
   for (const key of Object.keys(obj)) {

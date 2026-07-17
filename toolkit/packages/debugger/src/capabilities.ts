@@ -24,6 +24,8 @@
 // (bare session + composed mcpServers/agents → subagents see and call the MCP
 // tools; exact-name allowlists fence them).
 
+import { FORBIDDEN_ENTRY_NAMES, isRecord } from './validator-shared.js'
+
 export interface CapabilityAgentDef {
   description: string
   prompt: string
@@ -43,13 +45,6 @@ export interface CapabilitiesSpec {
 
 const SECTION_KEYS = new Set(['mcpServers', 'agents', 'skills'])
 
-/** Entry names that collide with Object.prototype machinery. Our own code only
- *  ever Object.entries()/spreads these maps (pollution-safe), but the composed
- *  fragment is handed to the SDK whose internal merging we cannot audit —
- *  reject them outright (defence-in-depth; no legitimate server/agent is named
- *  `__proto__`). */
-const FORBIDDEN_ENTRY_NAMES = new Set(['__proto__', 'constructor', 'prototype'])
-
 /** The SDK AgentDefinition field set (0.3.205) — an unknown key inside an agent
  *  definition is a TYPO until proven otherwise ("loud on typos"); when the SDK
  *  grows a field, add it here in the same change that starts passing it. */
@@ -58,10 +53,6 @@ const AGENT_DEF_KEYS = new Set([
   'criticalSystemReminder_EXPERIMENTAL', 'skills', 'initialPrompt', 'maxTurns',
   'background', 'memory', 'effort', 'permissionMode', 'observer', 'observerMessage',
 ])
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
 
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string')
