@@ -1436,7 +1436,7 @@ describe('dev-implement mutation "auto" — sequential fallback routing', () => 
     const result = await wf.run(rt, JSON.stringify(AUTO_SINGLE_INPUT))
 
     expect(result.succeeded).toBe(2)
-    expect(result.routing).toMatchObject({ requested: 'auto', resolved: 'sequential', components: 1, lanes: 1 })
+    expect(result.routing).toMatchObject({ requested: 'auto', resolved: 'sequential', components: 1, lanes: 1, cause: 'single-component' })
     expect(result.routing.reason).toMatch(/single.*component/i)
     for (const phrase of ['create the isolated git worktrees', 'lane worktree', 'merge the task branch', 'verify this is a git repository', 'environment setup agent']) {
       expect(rt.calls.some((c) => c.prompt.includes(phrase))).toBe(false)
@@ -1450,6 +1450,7 @@ describe('dev-implement mutation "auto" — sequential fallback routing', () => 
     expect(result.routing.resolved).toBe('sequential')
     expect(result.routing.components).toBe(2)
     expect(result.routing.lanes).toBe(2)
+    expect(result.routing.cause).toBe('file-overlap')
     expect(result.routing.reason).toContain('src/shared.ts')
     expect(result.warnings.some((w: string) => w.includes('src/shared.ts'))).toBe(true)
     expect(result.succeeded).toBe(4)
@@ -1469,7 +1470,7 @@ describe('dev-implement mutation "auto" — sequential fallback routing', () => 
     const rt = makeRuntime()
     const result = await wf.run(rt, JSON.stringify({ artifact: AUTO_RESIDUAL_ONLY_ARTIFACT, mutation: 'auto' }))
 
-    expect(result.routing).toMatchObject({ resolved: 'sequential', components: 3, lanes: 1 })
+    expect(result.routing).toMatchObject({ resolved: 'sequential', components: 3, lanes: 1, cause: 'below-threshold' })
     expect(result.succeeded).toBe(3)
     expect(rt.calls.some((c) => c.prompt.includes('create the isolated git worktrees') || c.prompt.includes('lane worktree'))).toBe(false)
   })
@@ -1482,7 +1483,7 @@ describe('dev-implement mutation "auto" — parallel-lanes execution', () => {
 
     expect(result.succeeded).toBe(4)
     expect(result.failed).toBe(0)
-    expect(result.routing).toMatchObject({ requested: 'auto', resolved: 'parallel-lanes', components: 2, lanes: 2 })
+    expect(result.routing).toMatchObject({ requested: 'auto', resolved: 'parallel-lanes', components: 2, lanes: 2, cause: 'parallel' })
 
     const laneCreate = rt.calls.find((c) => c.opts?.label === 'dev-implement:lanes:create')
     expect(laneCreate?.prompt).toContain('wt-lane/A1')
@@ -1595,7 +1596,7 @@ describe('dev-implement mutation "auto" — parallel-lanes execution', () => {
   it('(9) explicit modes carry routing too, requested mirrors resolved, reason "explicit" — regression: sequential emits no worktree machinery', async () => {
     const rtSeq = makeRuntime()
     const seqResult = await wf.run(rtSeq, JSON.stringify(VALID_INPUT))
-    expect(seqResult.routing).toEqual({ requested: 'sequential', resolved: 'sequential', components: 0, lanes: 0, reason: 'explicit' })
+    expect(seqResult.routing).toEqual({ requested: 'sequential', resolved: 'sequential', components: 0, lanes: 0, cause: 'explicit', reason: 'explicit' })
     expect(seqResult.mergeFailed).toBe(0)
     expect(seqResult.integrationFailed).toBe(0)
     for (const phrase of ['create the isolated git worktrees', 'merge the task branch', 'remove the merged worktrees', 'verify this is a git repository']) {
@@ -1604,7 +1605,7 @@ describe('dev-implement mutation "auto" — parallel-lanes execution', () => {
 
     const rtWt = makeWtRuntime()
     const wtResult = await wf.run(rtWt, JSON.stringify(WT_INPUT))
-    expect(wtResult.routing).toEqual({ requested: 'worktree', resolved: 'worktree', components: 0, lanes: 0, reason: 'explicit' })
+    expect(wtResult.routing).toEqual({ requested: 'worktree', resolved: 'worktree', components: 0, lanes: 0, cause: 'explicit', reason: 'explicit' })
   })
 
   it('(10) a lane merge failure pushes exactly ONE report row per task (no succeeded+merge-failed double-push)', async () => {

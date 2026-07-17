@@ -588,6 +588,38 @@ describe('coverage-audit entry attribution (alias resolution)', () => {
     expect(String(forFileEntry[0]?.prompt)).toContain('overlapCap')
   })
 
+  it('warns when SOME capabilities of a partially-attributable object are dropped (review F1 — no silent partial loss)', async () => {
+    // The object's entry echo is unrecognizable; one capability resolves via
+    // its sourcePath, the other does not — the resolvable one must be kept
+    // AND the dropped one must be NAMED in a warning (the old code only
+    // warned when the WHOLE object failed to attribute).
+    const capGood = makeCapability({ name: 'goodCap', sourcePath: 'src/multi/first.ts' })
+    const capBad = makeCapability({ name: 'lostCap', sourcePath: 'src/rogue.ts' })
+    const rt = makeRuntime({
+      inventory: { 'the build stuff': [capGood, capBad] },
+      extractRounds: [[]],
+    })
+    const out = await wf.run(rt, JSON.stringify({ repoRoot: '/repo', provenance: [ENTRY_MULTI] }))
+    expect(out.capabilitiesInventoried).toBe(1)
+    expect(out.warnings.some((w) => w.includes('lostCap'))).toBe(true)
+  })
+
+  it('warns on a file-vs-file attribution CONFLICT (entry echo and sourcePath both exact, different entries) while keeping the echo (review F2)', async () => {
+    const conflicted = makeGap({
+      entry: 'src/a.ts', capability: 'conflictCap', sourcePath: 'src/b.ts',
+    })
+    const rt = makeRuntime({
+      inventory: {},
+      extractRounds: [[conflicted], [conflicted]],
+    })
+    const out = await wf.run(rt, JSON.stringify(BASE_INPUT))
+    // Equal specificity: the assigned identifier (entry echo) wins…
+    expect(out.findings[0]?.entry).toBe('src/a.ts')
+    expect(out.findings[0]?.mappedDocs).toEqual(['docs/a.md'])
+    // …but the contradictory signals are SURFACED, never silent.
+    expect(out.warnings.some((w) => w.includes('conflictCap') && w.includes('src/b.ts'))).toBe(true)
+  })
+
   it('caps a MERGED entry at the per-entry schema bound with a warning, never silently', async () => {
     const caps1 = Array.from({ length: 25 }, (_, i) =>
       makeCapability({ name: `capA${i}`, sourcePath: 'src/multi/first.ts' }))

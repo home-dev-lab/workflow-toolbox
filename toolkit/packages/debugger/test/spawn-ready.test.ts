@@ -96,7 +96,7 @@ describe('awaitSpawnedServerReady', () => {
     expect(probed).not.toContain(0)
   })
 
-  it('kills the still-alive child EXACTLY ONCE on readiness timeout (test-lock 2)', async () => {
+  it('kills the still-alive child EXACTLY ONCE on readiness timeout (test-lock 2), claiming only a BEST-EFFORT reap', async () => {
     const { deps, kills } = makeDeps({
       requestedPort: 5174,
       probe: async (port: number) => {
@@ -105,7 +105,9 @@ describe('awaitSpawnedServerReady', () => {
       },
       isReady: (v: unknown): v is Ready => typeof v === 'object' && v !== null,
     })
-    await expect(awaitSpawnedServerReady(deps)).rejects.toThrow(/did not become healthy/)
+    // The message must not overclaim ("no orphan left") — the kill is one
+    // best-effort SIGTERM whose delivery is not verified (review finding).
+    await expect(awaitSpawnedServerReady(deps)).rejects.toThrow(/did not become healthy.*best-effort reap/s)
     expect(kills).toEqual([1])
   })
 
@@ -148,4 +150,31 @@ describe('awaitSpawnedServerReady', () => {
     expect(h.port).toBe(5174)
     expect(seen).toEqual([5174, 5174, 5174])
   })
+})
+
+// ---------------------------------------------------------------------------
+// Cross-repo banner contract — best-effort LOCAL drift gate (review finding:
+// the port-banner regex is coupled to the observatory's log format with only
+// a comment). The observatory is a SEPARATE private repo; its checkout is not
+// present in this repo's CI, so this gate runs wherever the sibling checkout
+// (or DWT_OBSERVE_ROOT) exists — exactly the machines where `wt-observe
+// start` actually runs — and skips elsewhere.
+// ---------------------------------------------------------------------------
+
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const OBSERVE_ROOT = process.env['DWT_OBSERVE_ROOT'] ??
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../workflow-observatory')
+const DEV_API = resolve(OBSERVE_ROOT, 'apps/observe-ui/server/dev-api.ts')
+
+describe('spawn-ready banner contract (cross-repo drift gate)', () => {
+  it.skipIf(!existsSync(DEV_API))(
+    'the observatory dev-api still prints the banner parseAnnouncedPort matches',
+    () => {
+      const src = readFileSync(DEV_API, 'utf8')
+      expect(src).toContain('app + run discovery on http://127.0.0.1:')
+    },
+  )
 })

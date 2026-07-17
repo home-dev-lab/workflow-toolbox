@@ -92,7 +92,10 @@ export async function awaitSpawnedServerReady<H>(deps: SpawnReadyDeps<H>): Promi
     }
     if (deps.now() > deadline) {
       // The child is alive (neither error nor exit observed) but never became
-      // healthy — reap it so a failed start leaves NO orphan server behind.
+      // healthy — reap it so a failed start does not leave an orphan server
+      // running unnoticed. The reap is BEST-EFFORT by design (review
+      // finding): the injected kill sends one SIGTERM and swallows signal
+      // errors; the message below claims exactly that, not a verified exit.
       deps.kill()
       const where =
         deps.requestedPort !== 0
@@ -101,7 +104,7 @@ export async function awaitSpawnedServerReady<H>(deps: SpawnReadyDeps<H>): Promi
             ? `:${port} (OS-assigned)`
             : 'its OS-assigned port (never announced in the log)'
       throw new Error(
-        `server did not become healthy on ${where} within ${deps.timeoutMs} ms — child killed (no orphan left).\n${deps.logTail()}`,
+        `server did not become healthy on ${where} within ${deps.timeoutMs} ms — SIGTERM sent to the child (best-effort reap).\n${deps.logTail()}`,
       )
     }
     await deps.sleep(POLL_INTERVAL_MS)

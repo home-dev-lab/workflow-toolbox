@@ -371,7 +371,7 @@ ${deps.logTail()}`
       deps.kill();
       const where = deps.requestedPort !== 0 ? `:${deps.requestedPort}` : port !== null ? `:${port} (OS-assigned)` : "its OS-assigned port (never announced in the log)";
       throw new Error(
-        `server did not become healthy on ${where} within ${deps.timeoutMs} ms \u2014 child killed (no orphan left).
+        `server did not become healthy on ${where} within ${deps.timeoutMs} ms \u2014 SIGTERM sent to the child (best-effort reap).
 ${deps.logTail()}`
       );
     }

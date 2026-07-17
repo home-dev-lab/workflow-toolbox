@@ -1479,13 +1479,12 @@ ${renderClaim(claim)}`;
     };
   }
   function decideOwner(byEcho, bySource) {
-    if (byEcho === null) return bySource?.key ?? null;
-    if (bySource === null || bySource.key === byEcho.key) return byEcho.key;
-    if (bySource.via === "file" && byEcho.via === "dir") return bySource.key;
-    return byEcho.key;
+    if (byEcho === null) return bySource === null ? null : { key: bySource.key, conflict: false };
+    if (bySource === null || bySource.key === byEcho.key) return { key: byEcho.key, conflict: false };
+    if (bySource.via === "file" && byEcho.via === "dir") return { key: bySource.key, conflict: false };
+    return { key: byEcho.key, conflict: true };
   }
   var CAPABILITY_KINDS = ["export", "behavior", "knob", "flag", "other"];
-  var MAX_CAPABILITIES_PER_ENTRY = 40;
   var INVENTORY_SCHEMA = {
     type: "object",
     properties: {
@@ -1521,6 +1520,7 @@ ${renderClaim(claim)}`;
     required: ["entries"],
     additionalProperties: false
   };
+  var MAX_CAPABILITIES_PER_ENTRY = INVENTORY_SCHEMA.properties.entries.items.properties.capabilities.maxItems;
   var EXTRACT_SCHEMA = {
     type: "object",
     properties: {
@@ -1779,31 +1779,42 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       }
       for (const entryResult of res.entries) {
         const byEcho = resolveEntry(entryResult.entry);
-        let attributed = 0;
+        const droppedNames = [];
+        let conflicts = 0;
         for (const cap of entryResult.capabilities) {
           const owner = decideOwner(byEcho, resolveEntry(cap.sourcePath));
-          if (owner === null) continue;
-          attributed++;
-          const existing = capsByEntry.get(owner);
+          if (owner === null) {
+            droppedNames.push(cap.name);
+            continue;
+          }
+          if (owner.conflict) conflicts++;
+          const existing = capsByEntry.get(owner.key);
           if (existing === void 0) {
-            capsByEntry.set(owner, [cap]);
+            capsByEntry.set(owner.key, [cap]);
           } else if (!existing.some((x) => x.name === cap.name && x.sourcePath === cap.sourcePath)) {
             if (existing.length >= MAX_CAPABILITIES_PER_ENTRY) {
               warn(
                 rt,
                 warnings,
-                `coverage-audit [Inventory]: entry "${owner}" exceeded ${MAX_CAPABILITIES_PER_ENTRY} merged capabilities \u2014 dropping "${cap.name}"`
+                `coverage-audit [Inventory]: entry "${owner.key}" exceeded ${MAX_CAPABILITIES_PER_ENTRY} merged capabilities \u2014 dropping "${cap.name}"`
               );
               continue;
             }
             existing.push(cap);
           }
         }
-        if (attributed === 0 && entryResult.capabilities.length > 0) {
+        if (droppedNames.length > 0) {
           warn(
             rt,
             warnings,
-            `coverage-audit [Inventory]: dropped capabilities reported for "${entryResult.entry}" \u2014 not in the audited provenance manifest`
+            `coverage-audit [Inventory]: dropped ${droppedNames.length} capabilit${droppedNames.length === 1 ? "y" : "ies"} (${droppedNames.join(", ")}) reported under "${entryResult.entry}" \u2014 not in the audited provenance manifest`
+          );
+        }
+        if (conflicts > 0) {
+          warn(
+            rt,
+            warnings,
+            `coverage-audit [Inventory]: ${conflicts} capability attribution conflict(s) under "${entryResult.entry}" \u2014 entry echo and sourcePath named DIFFERENT manifest entries at equal specificity; kept the entry echo`
           );
         }
       }
@@ -1858,8 +1869,8 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
             continue;
           }
           for (const claim of res.claims) {
-            const canonical = decideOwner(resolveEntry(claim.entry), resolveEntry(claim.sourcePath));
-            if (canonical === null) {
+            const owner = decideOwner(resolveEntry(claim.entry), resolveEntry(claim.sourcePath));
+            if (owner === null) {
               warn(
                 rt,
                 warnings,
@@ -1867,6 +1878,14 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
               );
               continue;
             }
+            if (owner.conflict) {
+              warn(
+                rt,
+                warnings,
+                `coverage-audit [Extract]: claim "${claim.capability}" carries conflicting attribution signals \u2014 entry echo "${claim.entry}" vs sourcePath "${claim.sourcePath}" name different manifest entries; kept the entry echo`
+              );
+            }
+            const canonical = owner.key;
             const canonicalClaim = claim.entry === canonical ? claim : { ...claim, entry: canonical };
             const key = claimKey(canonicalClaim);
             if (seen.has(key)) continue;

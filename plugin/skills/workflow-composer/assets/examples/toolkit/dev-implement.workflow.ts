@@ -573,6 +573,13 @@ interface RoutingInfo {
   resolved: 'sequential' | 'worktree' | 'parallel-lanes'
   components: number
   lanes: number
+  /** Machine-readable routing discriminant (review finding: `reason` is
+   *  human prose — a consumer branching on the routing outcome needs a
+   *  closed enum, not a string match): 'explicit' = the launcher chose the
+   *  engine; 'single-component' / 'below-threshold' / 'file-overlap' = the
+   *  three auto->sequential fallback causes; 'parallel' = auto resolved to
+   *  parallel lanes. */
+  cause: 'explicit' | 'single-component' | 'below-threshold' | 'file-overlap' | 'parallel'
   reason: string
 }
 
@@ -1261,6 +1268,8 @@ interface AutoRoutingDecision {
   resolved: 'sequential' | 'parallel-lanes'
   components: PlanTask[][]
   lanes: Lane[]
+  /** The machine-readable cause behind `resolved` (see RoutingInfo.cause). */
+  cause: 'single-component' | 'below-threshold' | 'file-overlap' | 'parallel'
   reason: string
   /** Set only for the FILE-OVERLAP fallback — the one case the design calls
    *  out for an explicit operator-facing warning (not just the routing.reason
@@ -1282,13 +1291,13 @@ function decideAutoRouting(tasks: PlanTask[], autoLaneMinTasks: number): AutoRou
   const lanes = buildLanes(components, tasks, autoLaneMinTasks)
 
   if (lanes.length < 2) {
-    const reason =
-      components.length === 1
-        ? `single connected component (${tasks.length} task(s)) — nothing to parallelize against, ` +
-          `running sequentially without the worktree tax`
-        : `${components.length} component(s) grouped into only ${lanes.length} lane(s) under the ` +
-          `autoLaneMinTasks=${autoLaneMinTasks} threshold — nothing to parallelize`
-    return { resolved: 'sequential', components, lanes, reason }
+    const single = components.length === 1
+    const reason = single
+      ? `single connected component (${tasks.length} task(s)) — nothing to parallelize against, ` +
+        `running sequentially without the worktree tax`
+      : `${components.length} component(s) grouped into only ${lanes.length} lane(s) under the ` +
+        `autoLaneMinTasks=${autoLaneMinTasks} threshold — nothing to parallelize`
+    return { resolved: 'sequential', components, lanes, cause: single ? 'single-component' : 'below-threshold', reason }
   }
 
   const disjointness = checkLaneFileDisjointness(lanes)
@@ -1297,6 +1306,7 @@ function decideAutoRouting(tasks: PlanTask[], autoLaneMinTasks: number): AutoRou
       resolved: 'sequential',
       components,
       lanes,
+      cause: 'file-overlap',
       reason:
         `lane file overlap detected at "${disjointness.overlapPath}" — falling back to sequential ` +
         `to avoid two lanes editing the same physical file in separate worktrees`,
@@ -1311,6 +1321,7 @@ function decideAutoRouting(tasks: PlanTask[], autoLaneMinTasks: number): AutoRou
     resolved: 'parallel-lanes',
     components,
     lanes,
+    cause: 'parallel',
     reason: `${lanes.length} disjoint lane(s) across ${components.length} connected component(s) — routing to parallel lanes`,
   }
 }
@@ -1941,7 +1952,7 @@ async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<De
   // runWorktree) are otherwise UNCHANGED — this is the "minimal dispatch
   // refactor" the design calls for, not a behavior change.
   if (input.mutation === 'worktree') {
-    return runWorktree(rt, input, { requested: 'worktree', resolved: 'worktree', components: 0, lanes: 0, reason: 'explicit' })
+    return runWorktree(rt, input, { requested: 'worktree', resolved: 'worktree', components: 0, lanes: 0, cause: 'explicit', reason: 'explicit' })
   }
   if (input.mutation === 'auto') {
     const decision = decideAutoRouting(input.artifact.tasks, input.autoLaneMinTasks)
@@ -1950,6 +1961,7 @@ async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<De
       resolved: decision.resolved,
       components: decision.components.length,
       lanes: decision.lanes.length,
+      cause: decision.cause,
       reason: decision.reason,
     }
     if (decision.resolved === 'parallel-lanes') {
@@ -1957,7 +1969,7 @@ async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<De
     }
     return runSequential(rt, input, routing, decision.warningMessage !== undefined ? [decision.warningMessage] : [])
   }
-  return runSequential(rt, input, { requested: 'sequential', resolved: 'sequential', components: 0, lanes: 0, reason: 'explicit' }, [])
+  return runSequential(rt, input, { requested: 'sequential', resolved: 'sequential', components: 0, lanes: 0, cause: 'explicit', reason: 'explicit' }, [])
 }
 
 async function runSequential(

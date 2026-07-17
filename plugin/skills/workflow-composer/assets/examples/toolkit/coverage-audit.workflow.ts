@@ -235,12 +235,19 @@ function buildEntryResolver(
  *  an exact source of the routing entry while ALSO living under the patterns
  *  dir-prefix entry — a capability read during the dir entry's sweep must
  *  still be attributed to the routing entry, or it gets checked against the
- *  WRONG doc surface). On equal specificity the assigned identifier wins. */
-function decideOwner(byEcho: EntryMatch | null, bySource: EntryMatch | null): string | null {
-  if (byEcho === null) return bySource?.key ?? null
-  if (bySource === null || bySource.key === byEcho.key) return byEcho.key
-  if (bySource.via === 'file' && byEcho.via === 'dir') return bySource.key
-  return byEcho.key
+ *  WRONG doc surface). On EQUAL specificity the assigned identifier wins —
+ *  and the contradiction is reported (`conflict: true`) so the caller can
+ *  surface it: two exact-file signals pointing at DIFFERENT entries mean the
+ *  extractor mis-echoed one of them, which is worth an operator's eye even
+ *  though the deterministic pick is safe (review finding F2). */
+function decideOwner(
+  byEcho: EntryMatch | null,
+  bySource: EntryMatch | null,
+): { key: string; conflict: boolean } | null {
+  if (byEcho === null) return bySource === null ? null : { key: bySource.key, conflict: false }
+  if (bySource === null || bySource.key === byEcho.key) return { key: byEcho.key, conflict: false }
+  if (bySource.via === 'file' && byEcho.via === 'dir') return { key: bySource.key, conflict: false }
+  return { key: byEcho.key, conflict: true }
 }
 
 // ---------------------------------------------------------------------------
@@ -330,12 +337,6 @@ export interface CoverageAuditInput {
 
 const CAPABILITY_KINDS = ['export', 'behavior', 'knob', 'flag', 'other'] as const
 
-/** Per-entry capability ceiling — MUST track INVENTORY_SCHEMA's capabilities
- *  maxItems below (the two move together): the schema bounds one AGENT's
- *  report; this constant re-imposes the same bound after split reports are
- *  MERGED onto one canonical entry (with a warning, never silently). */
-const MAX_CAPABILITIES_PER_ENTRY = 40
-
 const INVENTORY_SCHEMA = {
   type: 'object',
   properties: {
@@ -375,6 +376,14 @@ const INVENTORY_SCHEMA = {
 type InventoryOutput = FromSchema<typeof INVENTORY_SCHEMA>
 type EntryCapabilities = InventoryOutput['entries'][number]
 type Capability = EntryCapabilities['capabilities'][number]
+
+/** Per-entry capability ceiling, DERIVED from INVENTORY_SCHEMA's own
+ *  capabilities maxItems (single source — review finding: a bare literal
+ *  tied to the schema only by a comment WILL drift): the schema bounds one
+ *  AGENT's report; the same bound is re-imposed after split reports are
+ *  MERGED onto one canonical entry (with a warning, never silently). */
+const MAX_CAPABILITIES_PER_ENTRY: number =
+  INVENTORY_SCHEMA.properties.entries.items.properties.capabilities.maxItems
 
 const EXTRACT_SCHEMA = {
   type: 'object',
@@ -842,21 +851,27 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
       // (dedup by name + sourcePath) — the old code dropped the duplicate
       // object's capabilities entirely.
       const byEcho = resolveEntry(entryResult.entry)
-      let attributed = 0
+      const droppedNames: string[] = []
+      let conflicts = 0
       for (const cap of entryResult.capabilities) {
         const owner = decideOwner(byEcho, resolveEntry(cap.sourcePath))
-        if (owner === null) continue
-        attributed++
-        const existing = capsByEntry.get(owner)
+        if (owner === null) {
+          // Review F1: a PARTIALLY-attributable object must not lose its
+          // unattributable capabilities silently — collect and warn below.
+          droppedNames.push(cap.name)
+          continue
+        }
+        if (owner.conflict) conflicts++
+        const existing = capsByEntry.get(owner.key)
         if (existing === undefined) {
-          capsByEntry.set(owner, [cap])
+          capsByEntry.set(owner.key, [cap])
         } else if (!existing.some((x) => x.name === cap.name && x.sourcePath === cap.sourcePath)) {
           if (existing.length >= MAX_CAPABILITIES_PER_ENTRY) {
             // Keep the per-entry schema bound (INVENTORY_SCHEMA maxItems)
             // as a POST-MERGE invariant too — never silently.
             warn(
               rt, warnings,
-              `coverage-audit [Inventory]: entry "${owner}" exceeded ${MAX_CAPABILITIES_PER_ENTRY} ` +
+              `coverage-audit [Inventory]: entry "${owner.key}" exceeded ${MAX_CAPABILITIES_PER_ENTRY} ` +
               `merged capabilities — dropping "${cap.name}"`,
             )
             continue
@@ -864,11 +879,20 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
           existing.push(cap)
         }
       }
-      if (attributed === 0 && entryResult.capabilities.length > 0) {
+      if (droppedNames.length > 0) {
         warn(
           rt, warnings,
-          `coverage-audit [Inventory]: dropped capabilities reported for "${entryResult.entry}" — ` +
+          `coverage-audit [Inventory]: dropped ${droppedNames.length} capabilit${droppedNames.length === 1 ? 'y' : 'ies'} ` +
+          `(${droppedNames.join(', ')}) reported under "${entryResult.entry}" — ` +
           `not in the audited provenance manifest`,
+        )
+      }
+      if (conflicts > 0) {
+        warn(
+          rt, warnings,
+          `coverage-audit [Inventory]: ${conflicts} capability attribution conflict(s) under ` +
+          `"${entryResult.entry}" — entry echo and sourcePath named DIFFERENT manifest entries at ` +
+          `equal specificity; kept the entry echo`,
         )
       }
     }
@@ -950,8 +974,8 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
           // beats subtree membership on disagreement. Only a claim with NO
           // manifest evidence at all is unusable (verification could not
           // attribute it to mapped docs) and dropped.
-          const canonical = decideOwner(resolveEntry(claim.entry), resolveEntry(claim.sourcePath))
-          if (canonical === null) {
+          const owner = decideOwner(resolveEntry(claim.entry), resolveEntry(claim.sourcePath))
+          if (owner === null) {
             warn(
               rt, warnings,
               `coverage-audit [Extract]: dropped a claim citing entry "${claim.entry}" — not in the ` +
@@ -959,6 +983,17 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
             )
             continue
           }
+          if (owner.conflict) {
+            // Review F2: contradictory file-precise signals — the pick is
+            // deterministic (entry echo wins) but never silent.
+            warn(
+              rt, warnings,
+              `coverage-audit [Extract]: claim "${claim.capability}" carries conflicting attribution ` +
+              `signals — entry echo "${claim.entry}" vs sourcePath "${claim.sourcePath}" name ` +
+              `different manifest entries; kept the entry echo`,
+            )
+          }
+          const canonical = owner.key
           // Rewrite to the canonical key so dedup, mappedDocs lookup and the
           // final report all speak one identifier per entry.
           const canonicalClaim: RawCoverageClaim =

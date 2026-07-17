@@ -1390,8 +1390,9 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     const components = computeComponents(tasks);
     const lanes = buildLanes(components, tasks, autoLaneMinTasks);
     if (lanes.length < 2) {
-      const reason = components.length === 1 ? `single connected component (${tasks.length} task(s)) \u2014 nothing to parallelize against, running sequentially without the worktree tax` : `${components.length} component(s) grouped into only ${lanes.length} lane(s) under the autoLaneMinTasks=${autoLaneMinTasks} threshold \u2014 nothing to parallelize`;
-      return { resolved: "sequential", components, lanes, reason };
+      const single = components.length === 1;
+      const reason = single ? `single connected component (${tasks.length} task(s)) \u2014 nothing to parallelize against, running sequentially without the worktree tax` : `${components.length} component(s) grouped into only ${lanes.length} lane(s) under the autoLaneMinTasks=${autoLaneMinTasks} threshold \u2014 nothing to parallelize`;
+      return { resolved: "sequential", components, lanes, cause: single ? "single-component" : "below-threshold", reason };
     }
     const disjointness = checkLaneFileDisjointness(lanes);
     if (!disjointness.disjoint) {
@@ -1399,6 +1400,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
         resolved: "sequential",
         components,
         lanes,
+        cause: "file-overlap",
         reason: `lane file overlap detected at "${disjointness.overlapPath}" \u2014 falling back to sequential to avoid two lanes editing the same physical file in separate worktrees`,
         warningMessage: `dev-implement: mutation "auto" detected a cross-lane file overlap at "${disjointness.overlapPath}" \u2014 falling back to the sequential engine instead of risking two lanes editing the same physical file in separate worktrees`
       };
@@ -1407,6 +1409,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
       resolved: "parallel-lanes",
       components,
       lanes,
+      cause: "parallel",
       reason: `${lanes.length} disjoint lane(s) across ${components.length} connected component(s) \u2014 routing to parallel lanes`
     };
   }
@@ -1724,7 +1727,7 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
   async function run(rt, rawInput) {
     const input = await resolveArtifactInput(rt, rawInput);
     if (input.mutation === "worktree") {
-      return runWorktree(rt, input, { requested: "worktree", resolved: "worktree", components: 0, lanes: 0, reason: "explicit" });
+      return runWorktree(rt, input, { requested: "worktree", resolved: "worktree", components: 0, lanes: 0, cause: "explicit", reason: "explicit" });
     }
     if (input.mutation === "auto") {
       const decision = decideAutoRouting(input.artifact.tasks, input.autoLaneMinTasks);
@@ -1733,6 +1736,7 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
         resolved: decision.resolved,
         components: decision.components.length,
         lanes: decision.lanes.length,
+        cause: decision.cause,
         reason: decision.reason
       };
       if (decision.resolved === "parallel-lanes") {
@@ -1740,7 +1744,7 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
       }
       return runSequential(rt, input, routing, decision.warningMessage !== void 0 ? [decision.warningMessage] : []);
     }
-    return runSequential(rt, input, { requested: "sequential", resolved: "sequential", components: 0, lanes: 0, reason: "explicit" }, []);
+    return runSequential(rt, input, { requested: "sequential", resolved: "sequential", components: 0, lanes: 0, cause: "explicit", reason: "explicit" }, []);
   }
   async function runSequential(rt, input, routing, extraWarnings) {
     const warnings = [];
