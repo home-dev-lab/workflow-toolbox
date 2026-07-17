@@ -17,8 +17,8 @@
 //   3. Round-trip parsePipelineSpec: JSON.stringify → JSON.parse → parsePipelineSpec — the
 //      analogue of bundleWorkflow's serializeMeta JSON-purity walk, but reusing the SAME
 //      structural validator the observe-ui runner and the HTTP boundary use. This is STRONGER
-//      than a generic purity walk: definePipeline's own validateStageList only checks the
-//      STAGE LIST shape (not goal/projectDir/workspaceId's types), so a spec that bypassed
+//      than a generic purity walk: definePipeline's own validatePipelineSpec only checks the
+//      STAGE LIST + loop shape (not goal/projectDir/workspaceId's types), so a spec that bypassed
 //      TypeScript via a cast (`as PipelineSpec`) can pass definePipeline() yet still fail this
 //      round-trip — exactly the case this step exists to catch.
 //   4. Assembly: pretty-printed JSON. No glue, no sandbox globals — nothing RUNS; this is a

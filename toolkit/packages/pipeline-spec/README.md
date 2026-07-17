@@ -27,10 +27,16 @@ pnpm add @workflow-toolbox/pipeline-spec
   to `INPUT_REF_SOURCES` (`'artifactPath' | 'goal' | 'projectDir'`).
 - `ExtractorKey` — the named handoff-artifact extractor a stage selects, restricted to
   `EXTRACTOR_KEYS`.
-- `MAX_STAGES` (12) — hard cap on stages per spec, and `MAX_PIPELINE_DEPTH` (8) — hard cap
-  on nested-pipeline depth.
-- `validateStageList` / `parsePipelineSpec` — structural validation of a stage list, and
-  parsing/validating an untrusted `PipelineSpec` from JSON.
+- `PipelineLoopSpec` / `LoopUntil` — an optional spec-level `loop`: re-run the whole stage
+  list until a stop condition (`{ gate: true }` — a human loop gate at each iteration
+  boundary — or `{ criterion: '<key>' }`, a runner-evaluated predicate), hard-capped by
+  `maxIterations`.
+- `MAX_STAGES` (12) — hard cap on stages per spec, `MAX_PIPELINE_DEPTH` (8) — hard cap
+  on nested-pipeline depth, and `MAX_LOOP_ITERATIONS` (10) — hard cap on a loop's
+  `maxIterations`.
+- `validateStageList` / `validatePipelineSpec` / `parsePipelineSpec` — structural
+  validation of a stage list, the full-spec check (stage list + loop rules, all nesting
+  levels), and parsing/validating an untrusted `PipelineSpec` from JSON.
 
 ## Example
 

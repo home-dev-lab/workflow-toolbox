@@ -62,6 +62,36 @@ export interface StageSpecV2 {
   artifact?: { extract: ExtractorKey }
 }
 
+/** What decides "done" at each iteration boundary of a looped spec — a loop always names
+ *  its stop condition. Exactly one flavor:
+ *  - `{ gate: true }` — a human "loop gate" at EVERY iteration boundary (continue = run
+ *    another iteration, stop = settle the pipeline). Distinct from a stage's own
+ *    `gateAfter`, which re-arms every iteration INSIDE the body; the loop gate sits on top,
+ *    at the boundary. The literal is `true` — `gate: false` has no meaning and is rejected.
+ *  - `{ criterion: '<key>' }` — a named key into the RUNNER's predicate registry, evaluated
+ *    against the last stage's settled handoff artifact (e.g. the seed predicate
+ *    `artifact-empty`: stop when the handoff is empty — "no findings left"). Launch-time
+ *    validated by the runner, exactly like a workflow name against its allowlist — this
+ *    package checks SHAPE only (non-empty string), never key membership. */
+export type LoopUntil = { gate: true } | { criterion: string }
+
+/** Re-run the owning spec's WHOLE stage list until `until` says stop, hard-capped by
+ *  `maxIterations` — a SAME-MANIFEST re-entry at the iteration boundary (each iteration's
+ *  runs are new runs; stage-attempt history appends). Valid on the ROOT spec and on any
+ *  nested pipeline-stage's child spec (each level's loop is independent; a pipeline-stage
+ *  inside a looped body still mints a FRESH child pipeline per iteration — the existing
+ *  per-launch semantics, unchanged). The loop's execution lives in the Workflow Observatory
+ *  runner; a runner whose bundled parser predates this field silently drops it (the
+ *  pipeline runs once). */
+export interface PipelineLoopSpec {
+  /** What decides "done" at each iteration boundary (REQUIRED — see LoopUntil). */
+  until: LoopUntil
+  /** Hard iteration ceiling (REQUIRED safety net), integer 1..MAX_LOOP_ITERATIONS.
+   *  Hitting it settles the run (runner vocabulary: stoppedBy 'maxIterations', mirroring
+   *  the in-run loopUntilDone pattern). */
+  maxIterations: number
+}
+
 /** The full declarative pipeline definition — goal/projectDir/workspace once, then an
  *  ordered stage list. Persisted verbatim as manifest.spec so a recalled/resumed pipeline
  *  can be re-driven without the caller re-supplying it. */
@@ -82,6 +112,9 @@ export interface PipelineSpec {
    *  the companion app’s pipeline runner). */
   name?: string
   stages: StageSpecV2[]
+  /** Re-run the whole stage list until done (see PipelineLoopSpec). Absent = run once —
+   *  every pre-loop spec keeps today's behavior untouched. */
+  loop?: PipelineLoopSpec
 }
 
 /** Hard cap on stages per spec: one POST must not auto-chain an unbounded number of
@@ -99,6 +132,12 @@ export const MAX_STAGES = 12
  *  specs land — a shallow SUBMITTED spec could reference an externally, already-deeply-nested
  *  child that no static read of the current spec alone could see). */
 export const MAX_PIPELINE_DEPTH = 8
+
+/** Hard cap on a loop's `maxIterations` — same order of magnitude as the in-run
+ *  loopUntilDone pattern's defaults; a spec needing more iterations than this is a smell
+ *  (the work should move into the stages, not the loop count). Bounds EVERY loop, gated or
+ *  not — the gate exemption below only lifts the MAX_STAGES product cap, never this. */
+export const MAX_LOOP_ITERATIONS = 10
 
 /** The spec's OWN internal nesting depth, fully computable from its `stage.pipeline` chains
  *  alone — 0 for a spec with no pipeline-stages, N for one nested N levels deep. Deliberately
@@ -166,6 +205,107 @@ export function validateStageList(stages: readonly StageSpecV2[]): string | null
   return null
 }
 
+/** Total workflow LAUNCHES one pass over `stages` can trigger, loops expanded: a
+ *  workflow-stage counts 1; a pipeline-stage counts its child's own expanded total × the
+ *  child's loop ceiling (each parent pass launches a fresh child, and that child re-runs its
+ *  own list up to child.loop.maxIterations times). Static — fully computable from the
+ *  submitted spec alone, mirroring staticNestingDepth's recursion. */
+function expandedLaunches(stages: readonly StageSpecV2[]): number {
+  let total = 0
+  for (const stage of stages) {
+    if (stage.pipeline !== undefined) {
+      total += expandedLaunches(stage.pipeline.stages) * (stage.pipeline.loop?.maxIterations ?? 1)
+    } else {
+      total += 1
+    }
+  }
+  return total
+}
+
+/** True when a human is reachable ANYWHERE in this stage list's expanded subtree — a
+ *  stage-level `gateAfter` at any nesting level, or a nested child loop whose own `until`
+ *  is the gate flavor. This is what exempts a criterion-loop from the MAX_STAGES product
+ *  cap: the cap protects the "one POST must not auto-chain unbounded unattended launches"
+ *  property, and a gate anywhere in the subtree puts a human back in the loop. */
+function hasGateInSubtree(stages: readonly StageSpecV2[]): boolean {
+  for (const stage of stages) {
+    if (stage.gateAfter === true) return true
+    if (stage.pipeline !== undefined) {
+      const childLoop = stage.pipeline.loop
+      if (childLoop !== undefined && 'gate' in childLoop.until) return true
+      if (hasGateInSubtree(stage.pipeline.stages)) return true
+    }
+  }
+  return false
+}
+
+/** Validate ONE level's `loop` against its own stage list — until shape, maxIterations
+ *  bounds, and the ungated-criterion expanded budget. Shared by parsePipelineSpec (applied
+ *  to each level right after that level parses) and validatePipelineSpec (defense in depth
+ *  for a directly-constructed spec, where a cast can bypass TypeScript exactly like
+ *  everywhere else in this file — hence the runtime re-checks of typed fields). Returns a
+ *  human-readable reason, or null. */
+function validateLoop(spec: PipelineSpec): string | null {
+  const loop = spec.loop
+  if (loop === undefined) return null
+  const until = loop.until as unknown
+  let flavor: 'gate' | 'criterion' | null = null
+  if (typeof until === 'object' && until !== null) {
+    const u = until as Record<string, unknown>
+    const hasGate = u['gate'] !== undefined
+    const hasCriterion = u['criterion'] !== undefined
+    if (hasGate !== hasCriterion) {
+      if (hasGate && u['gate'] === true) flavor = 'gate'
+      if (hasCriterion && typeof u['criterion'] === 'string' && u['criterion'].length > 0) flavor = 'criterion'
+    }
+  }
+  if (flavor === null) {
+    return `a pipeline loop's "until" must be exactly one of { gate: true } or { criterion: "<key>" } — a loop always names its stop condition`
+  }
+  const max = loop.maxIterations
+  if (typeof max !== 'number' || !Number.isInteger(max) || max < 1 || max > MAX_LOOP_ITERATIONS) {
+    return `a pipeline loop's maxIterations must be an integer between 1 and MAX_LOOP_ITERATIONS (${MAX_LOOP_ITERATIONS}), got ${String(max)}`
+  }
+  if (flavor === 'criterion' && !hasGateInSubtree(spec.stages)) {
+    const perPass = expandedLaunches(spec.stages)
+    const product = perPass * max
+    if (product > MAX_STAGES) {
+      return (
+        `an ungated criterion-loop may auto-chain at most MAX_STAGES (${MAX_STAGES}) launches: this spec expands to ` +
+        `${perPass} launches per iteration × ${max} iterations = ${product} — add a human gate (a stage gateAfter, ` +
+        `or until: { gate: true }) or lower maxIterations`
+      )
+    }
+  }
+  return null
+}
+
+/** This level's loop plus, recursively, every nested pipeline-stage child's own loop —
+ *  the loop-side twin of validateStageList's per-level recursion. */
+function validateLoopsDeep(spec: PipelineSpec): string | null {
+  const own = validateLoop(spec)
+  if (own !== null) return own
+  for (const stage of spec.stages) {
+    if (stage.pipeline !== undefined) {
+      const nested = validateLoopsDeep(stage.pipeline)
+      if (nested !== null) return `stage "${stage.name}"'s nested pipeline is invalid: ${nested}`
+    }
+  }
+  return null
+}
+
+/** Full-spec structural validation: validateStageList over the stage list PLUS the loop
+ *  rules (this level's `loop` and, recursively, every nested pipeline-stage child's).
+ *  ADDITIVE — validateStageList's signature is shared with the Observatory runner's own
+ *  callers and deliberately unchanged; a caller holding a whole PipelineSpec (definePipeline,
+ *  a runner's start() defense-in-depth path) should prefer this entry point, since a bare
+ *  stage list cannot see the spec-level `loop`. Returns a human-readable reason, or null. */
+export function validatePipelineSpec(spec: PipelineSpec): string | null {
+  const stageError = validateStageList(spec.stages)
+  if (stageError !== null) return stageError
+  return validateLoopsDeep(spec)
+}
+
 // Derived from the single source of truth (INPUT_REF_SOURCES / EXTRACTOR_KEYS above) rather
 // than hand-duplicated — adding a member to either array is a one-place change the compiler
 // enforces (InputRef/ExtractorKey's types are themselves derived from these same arrays).
@@ -228,6 +368,33 @@ function parseStageSpecV2(v: unknown): StageSpecV2 | null {
   return stage
 }
 
+/** Parse an untrusted `loop` value into a PipelineLoopSpec, or null. SHAPE only (field
+ *  types + the exactly-one-flavor union) — bounds and the expanded budget are validateLoop's
+ *  job, applied by parsePipelineSpec right after the assignment. Rebuilds the object from
+ *  whitelisted keys (extra keys dropped, same posture as parseStageSpecV2). */
+function parseLoopSpec(v: unknown): PipelineLoopSpec | null {
+  if (typeof v !== 'object' || v === null) return null
+  const l = v as Record<string, unknown>
+  const rawUntil = l['until']
+  if (typeof rawUntil !== 'object' || rawUntil === null) return null
+  const u = rawUntil as Record<string, unknown>
+  const hasGate = u['gate'] !== undefined
+  const hasCriterion = u['criterion'] !== undefined
+  if (hasGate === hasCriterion) return null // neither, or both — the union is exactly one flavor
+  let until: LoopUntil
+  if (hasGate) {
+    if (u['gate'] !== true) return null // the union's literal is `true`; gate:false has no meaning
+    until = { gate: true }
+  } else {
+    const criterion = u['criterion']
+    if (typeof criterion !== 'string' || criterion.length === 0) return null
+    until = { criterion }
+  }
+  const maxIterations = l['maxIterations']
+  if (typeof maxIterations !== 'number') return null
+  return { until, maxIterations }
+}
+
 // MAINTAINER NOTE (pr-review I5, batch 6): this parser must stay in lockstep with
 // PipelineSpec/StageSpecV2 above — a field added to those types but not here still compiles
 // (TypeScript can't see this runtime check), but definePipeline() (@workflow-toolbox/build)
@@ -265,5 +432,18 @@ export function parsePipelineSpec(v: unknown): PipelineSpec | null {
     if (typeof s['name'] !== 'string' || s['name'].length === 0) return null
     spec.name = s['name']
   }
+  if (s['loop'] !== undefined) {
+    const loop = parseLoopSpec(s['loop'])
+    if (loop === null) return null
+    // The ASSIGNMENT is load-bearing: this parser rebuilds objects from whitelisted keys, so
+    // parsing without assigning would silently DROP `loop` from every round-tripped spec —
+    // and a mere not-null round-trip test would never catch it (hence the deep-equality
+    // tests). Key set only when defined (exactOptionalPropertyTypes idiom, same as above).
+    spec.loop = loop
+  }
+  // This level's loop rules (until shape re-check, maxIterations bounds, the ungated-
+  // criterion expanded budget). Nested children each ran this at their OWN parse (the
+  // parseStageSpecV2 → parsePipelineSpec recursion), so one level-local call covers the tree.
+  if (validateLoop(spec) !== null) return null
   return spec
 }

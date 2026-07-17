@@ -3,11 +3,14 @@ import {
   INPUT_REF_SOURCES,
   MAX_STAGES,
   MAX_PIPELINE_DEPTH,
+  MAX_LOOP_ITERATIONS,
   EXTRACTOR_KEYS,
   validateStageList,
+  validatePipelineSpec,
   parsePipelineSpec,
   type StageSpecV2,
   type PipelineSpec,
+  type PipelineLoopSpec,
 } from '../src/index.js'
 
 // Single source of truth for pipeline-spec authoring/validation, shared verbatim between
@@ -31,6 +34,10 @@ describe('constants', () => {
   it('MAX_STAGES and MAX_PIPELINE_DEPTH are the documented caps', () => {
     expect(MAX_STAGES).toBe(12)
     expect(MAX_PIPELINE_DEPTH).toBe(8)
+  })
+
+  it('MAX_LOOP_ITERATIONS is the documented loop ceiling', () => {
+    expect(MAX_LOOP_ITERATIONS).toBe(10)
   })
 })
 
@@ -219,5 +226,254 @@ describe('parsePipelineSpec', () => {
     it('rejects an empty-string name (would defeat the parent-type fallback chain)', () => {
       expect(parsePipelineSpec({ ...base, stages: [baseStage('a')], name: '' })).toBeNull()
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// loop — PipelineLoopSpec (card #1817782716268020812): re-run the owning spec's
+// WHOLE stage list until `until` says stop, hard-capped by maxIterations.
+// validatePipelineSpec is the ADDITIVE full-spec check (validateStageList's
+// signature is shared with the Observatory runner and deliberately unchanged).
+// ---------------------------------------------------------------------------
+
+const gateLoop = (maxIterations = 2): PipelineLoopSpec => ({ until: { gate: true }, maxIterations })
+const criterionLoop = (maxIterations = 2): PipelineLoopSpec => ({ until: { criterion: 'artifact-empty' }, maxIterations })
+const makeSpec = (stages: StageSpecV2[], loop?: PipelineLoopSpec): PipelineSpec => {
+  const s: PipelineSpec = { goal: 'g', projectDir: '/repo', stages }
+  if (loop !== undefined) s.loop = loop
+  return s
+}
+
+describe('validatePipelineSpec — stage-list rules (additive wrapper, back-compat lock)', () => {
+  it('returns null for a legacy no-loop spec (same acceptance as validateStageList)', () => {
+    expect(validatePipelineSpec(makeSpec([baseStage('a')]))).toBeNull()
+  })
+
+  it('surfaces validateStageList failures unchanged (empty stage list)', () => {
+    expect(validatePipelineSpec(makeSpec([]))).toMatch(/at least one stage/)
+  })
+
+  it('still rejects a trailing gateAfter on a LOOPED spec (the loop\'s own until owns the boundary)', () => {
+    expect(validatePipelineSpec(makeSpec([{ ...baseStage('a'), gateAfter: true }], gateLoop()))).toMatch(/LAST stage/)
+  })
+})
+
+describe('validatePipelineSpec — loop.until shape (a loop always names its stop condition)', () => {
+  it('accepts { gate: true }', () => {
+    expect(validatePipelineSpec(makeSpec([baseStage('a')], gateLoop()))).toBeNull()
+  })
+
+  it('accepts { criterion: "<key>" }', () => {
+    expect(validatePipelineSpec(makeSpec([baseStage('a')], criterionLoop()))).toBeNull()
+  })
+
+  it('rejects a loop with NO until', () => {
+    const loop = { maxIterations: 2 } as unknown as PipelineLoopSpec
+    expect(validatePipelineSpec(makeSpec([baseStage('a')], loop))).toMatch(/until/)
+  })
+
+  it('rejects until:{gate:false} (the union\'s literal is true — false has no meaning)', () => {
+    const loop = { until: { gate: false }, maxIterations: 2 } as unknown as PipelineLoopSpec
+    expect(validatePipelineSpec(makeSpec([baseStage('a')], loop))).toMatch(/until/)
+  })
+
+  it('rejects until with BOTH gate and criterion (exactly one flavor)', () => {
+    const loop = { until: { gate: true, criterion: 'artifact-empty' }, maxIterations: 2 } as unknown as PipelineLoopSpec
+    expect(validatePipelineSpec(makeSpec([baseStage('a')], loop))).toMatch(/until/)
+  })
+
+  it('rejects until with NEITHER gate nor criterion', () => {
+    const loop = { until: {}, maxIterations: 2 } as unknown as PipelineLoopSpec
+    expect(validatePipelineSpec(makeSpec([baseStage('a')], loop))).toMatch(/until/)
+  })
+
+  it('rejects an empty-string criterion', () => {
+    const loop = { until: { criterion: '' }, maxIterations: 2 } as unknown as PipelineLoopSpec
+    expect(validatePipelineSpec(makeSpec([baseStage('a')], loop))).toMatch(/until/)
+  })
+})
+
+describe('validatePipelineSpec — maxIterations bounds', () => {
+  const withMax = (maxIterations: number) => makeSpec([baseStage('a')], { until: { gate: true }, maxIterations })
+
+  it(`accepts 1 and MAX_LOOP_ITERATIONS (${MAX_LOOP_ITERATIONS})`, () => {
+    expect(validatePipelineSpec(withMax(1))).toBeNull()
+    expect(validatePipelineSpec(withMax(MAX_LOOP_ITERATIONS))).toBeNull()
+  })
+
+  it('rejects 0, negative, NaN, non-integer, and over-cap values', () => {
+    for (const bad of [0, -1, Number.NaN, 1.5, MAX_LOOP_ITERATIONS + 1]) {
+      expect(validatePipelineSpec(withMax(bad)), `maxIterations=${bad}`).toMatch(/maxIterations/)
+    }
+  })
+})
+
+describe('validatePipelineSpec — ungated-criterion expanded budget (the MAX_STAGES product cap)', () => {
+  it('accepts an ungated criterion loop at exactly the budget (3 stages × 4 = 12)', () => {
+    expect(validatePipelineSpec(makeSpec(['a', 'b', 'c'].map(baseStage), criterionLoop(4)))).toBeNull()
+  })
+
+  it('rejects an ungated criterion loop over the budget (3 stages × 5 = 15 > 12)', () => {
+    expect(validatePipelineSpec(makeSpec(['a', 'b', 'c'].map(baseStage), criterionLoop(5)))).toMatch(
+      new RegExp(`MAX_STAGES \\(${MAX_STAGES}\\)`),
+    )
+  })
+
+  it('a gateAfter ANYWHERE in the body exempts the loop from the product cap (ceiling still applies)', () => {
+    const stages = [{ ...baseStage('a'), gateAfter: true }, baseStage('b'), baseStage('c')]
+    expect(validatePipelineSpec(makeSpec(stages, criterionLoop(MAX_LOOP_ITERATIONS)))).toBeNull()
+  })
+
+  it('a nested child loop\'s until:{gate:true} also exempts the parent (a human is reachable)', () => {
+    const child = makeSpec([baseStage('x')], gateLoop(2))
+    const stages: StageSpecV2[] = [{ name: 'iterate', pipeline: child }, baseStage('b')]
+    // The ungated reading would be (1×2 + 1) × 10 = 30 > 12 — only the child's human gate admits it.
+    expect(validatePipelineSpec(makeSpec(stages, criterionLoop(MAX_LOOP_ITERATIONS)))).toBeNull()
+  })
+
+  it('expandedLaunches multiplies a nested child\'s own loop ceiling (2×3 per pass, × 3 = 18 > 12)', () => {
+    const child = makeSpec([baseStage('x'), baseStage('y')], criterionLoop(3)) // child's own budget: 2×3 = 6 ≤ 12
+    const stages: StageSpecV2[] = [{ name: 'iterate', pipeline: child }]
+    expect(validatePipelineSpec(makeSpec(stages, criterionLoop(3)))).toMatch(new RegExp(`MAX_STAGES \\(${MAX_STAGES}\\)`))
+    expect(validatePipelineSpec(makeSpec(stages, criterionLoop(2)))).toBeNull() // 6 × 2 = 12, at the cap
+  })
+
+  it('a gate-flavored loop is never product-capped (a human sits at every iteration boundary)', () => {
+    const stages = ['a', 'b', 'c', 'd'].map(baseStage)
+    expect(validatePipelineSpec(makeSpec(stages, gateLoop(MAX_LOOP_ITERATIONS)))).toBeNull() // 40 launches, all gated
+  })
+})
+
+describe('validatePipelineSpec — recursion into nested child specs\' loops', () => {
+  it('rejects a nested child whose OWN loop is invalid (maxIterations 0), naming the stage', () => {
+    const child = makeSpec([baseStage('x')], { until: { gate: true }, maxIterations: 0 })
+    const err = validatePipelineSpec(makeSpec([{ name: 'iterate', pipeline: child }]))
+    expect(err).toMatch(/stage "iterate"'s nested pipeline is invalid/)
+    expect(err).toMatch(/maxIterations/)
+  })
+
+  it('accepts a valid loop on a nested child while the ROOT has none (the subsequence idiom)', () => {
+    const child = makeSpec([baseStage('x')], gateLoop(3))
+    expect(validatePipelineSpec(makeSpec([{ name: 'iterate', pipeline: child }, baseStage('wrap')]))).toBeNull()
+  })
+})
+
+describe('parsePipelineSpec — loop (parse LOCKSTEP + round-trip)', () => {
+  const base = { goal: 'g', projectDir: '/repo' }
+  const stagesJson = [{ name: 'a', workflow: 'a.js' }]
+
+  it('round-trips a gate-flavored loop DEEP-EQUAL (the assignment is load-bearing)', () => {
+    const loop = { until: { gate: true }, maxIterations: 3 }
+    const parsed = parsePipelineSpec({ ...base, stages: stagesJson, loop })
+    expect(parsed?.loop).toEqual(loop)
+  })
+
+  it('round-trips a criterion-flavored loop DEEP-EQUAL', () => {
+    const loop = { until: { criterion: 'artifact-empty' }, maxIterations: 2 }
+    const parsed = parsePipelineSpec({ ...base, stages: stagesJson, loop })
+    expect(parsed?.loop).toEqual(loop)
+  })
+
+  it('omits the loop KEY entirely when absent (exactOptionalPropertyTypes idiom)', () => {
+    const parsed = parsePipelineSpec({ ...base, stages: stagesJson })
+    expect(parsed).not.toBeNull()
+    expect(Object.prototype.hasOwnProperty.call(parsed!, 'loop')).toBe(false)
+  })
+
+  it('rebuilds the loop from whitelisted keys only (extra keys dropped, same posture as parseStageSpecV2)', () => {
+    const parsed = parsePipelineSpec({
+      ...base,
+      stages: stagesJson,
+      loop: { until: { gate: true, note: 'extra' }, maxIterations: 2, bogus: 1 },
+    })
+    expect(parsed?.loop).toEqual({ until: { gate: true }, maxIterations: 2 })
+  })
+
+  it('returns null for a malformed loop shape', () => {
+    const cases: unknown[] = [
+      'nope', // non-object
+      { maxIterations: 2 }, // until missing
+      { until: 'gate', maxIterations: 2 }, // until non-object
+      { until: {}, maxIterations: 2 }, // neither flavor
+      { until: { gate: false }, maxIterations: 2 }, // gate:false — the union's literal is true
+      { until: { gate: true, criterion: 'artifact-empty' }, maxIterations: 2 }, // both flavors
+      { until: { criterion: 42 }, maxIterations: 2 }, // criterion wrong-typed
+      { until: { criterion: '' }, maxIterations: 2 }, // criterion empty
+      { until: { gate: true } }, // maxIterations missing
+      { until: { gate: true }, maxIterations: '3' }, // maxIterations wrong-typed
+    ]
+    for (const loop of cases) {
+      expect(parsePipelineSpec({ ...base, stages: stagesJson, loop }), JSON.stringify(loop)).toBeNull()
+    }
+  })
+
+  it('returns null for out-of-bounds maxIterations (0 / negative / NaN / non-integer / over-cap)', () => {
+    for (const bad of [0, -1, Number.NaN, 1.5, MAX_LOOP_ITERATIONS + 1]) {
+      expect(
+        parsePipelineSpec({ ...base, stages: stagesJson, loop: { until: { gate: true }, maxIterations: bad } }),
+        `maxIterations=${bad}`,
+      ).toBeNull()
+    }
+  })
+
+  it('enforces the ungated-criterion expanded budget at the parse boundary (2 × 7 = 14 > 12)', () => {
+    const stages = [{ name: 'a', workflow: 'a.js' }, { name: 'b', workflow: 'b.js' }]
+    expect(
+      parsePipelineSpec({ ...base, stages, loop: { until: { criterion: 'artifact-empty' }, maxIterations: 7 } }),
+    ).toBeNull()
+    expect(
+      parsePipelineSpec({ ...base, stages, loop: { until: { criterion: 'artifact-empty' }, maxIterations: 6 } }),
+    ).not.toBeNull()
+  })
+
+  it('a gate-flavored loop over the product is accepted at parse too (the exemption)', () => {
+    const stages = [{ name: 'a', workflow: 'a.js' }, { name: 'b', workflow: 'b.js' }]
+    expect(
+      parsePipelineSpec({ ...base, stages, loop: { until: { gate: true }, maxIterations: MAX_LOOP_ITERATIONS } }),
+    ).not.toBeNull()
+  })
+
+  it('round-trips a NESTED child spec\'s loop DEEP-EQUAL (the subsequence idiom)', () => {
+    const childLoop = { until: { criterion: 'artifact-empty' }, maxIterations: 2 }
+    const parsed = parsePipelineSpec({
+      ...base,
+      stages: [
+        {
+          name: 'iterate',
+          pipeline: { goal: 'child', projectDir: '/repo', stages: [{ name: 'x', workflow: 'x.js' }], loop: childLoop },
+        },
+        { name: 'wrap', workflow: 'wrap.js' },
+      ],
+    })
+    expect(parsed?.stages[0]?.pipeline?.loop).toEqual(childLoop)
+  })
+
+  it('returns null when a NESTED child spec\'s loop is malformed', () => {
+    expect(
+      parsePipelineSpec({
+        ...base,
+        stages: [
+          {
+            name: 'iterate',
+            pipeline: {
+              goal: 'child',
+              projectDir: '/repo',
+              stages: [{ name: 'x', workflow: 'x.js' }],
+              loop: { until: {}, maxIterations: 2 },
+            },
+          },
+        ],
+      }),
+    ).toBeNull()
+  })
+
+  it('still rejects a trailing gateAfter on a looped spec at the parse boundary', () => {
+    expect(
+      parsePipelineSpec({
+        ...base,
+        stages: [{ name: 'a', workflow: 'a.js', gateAfter: true }],
+        loop: { until: { gate: true }, maxIterations: 2 },
+      }),
+    ).toBeNull()
   })
 })

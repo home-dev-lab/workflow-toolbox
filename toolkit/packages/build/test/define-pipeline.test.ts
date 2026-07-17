@@ -93,6 +93,44 @@ describe('definePipeline — return value', () => {
   })
 })
 
+// card #1817782716268020812: definePipeline now funnels through validatePipelineSpec (the
+// additive full-spec entry point: validateStageList + the loop rules) instead of a bare
+// validateStageList — so a bad `loop` fails with the READABLE loop rule at the author's own
+// call site, not as a generic parsePipelineSpec round-trip mismatch further down.
+describe('definePipeline — loop validation (validatePipelineSpec switch)', () => {
+  it('accepts a valid looped spec (gate flavor) and returns the same reference', () => {
+    const spec = validSpec({ loop: { until: { gate: true }, maxIterations: 3 } })
+    expect(definePipeline(spec).spec).toBe(spec)
+  })
+
+  it('accepts a valid criterion loop within the expanded budget', () => {
+    const spec = validSpec({ loop: { until: { criterion: 'artifact-empty' }, maxIterations: 2 } })
+    expect(() => definePipeline(spec)).not.toThrow()
+  })
+
+  it('throws the READABLE maxIterations rule for a bad ceiling — not the generic round-trip message', () => {
+    const bad = validSpec({ loop: { until: { gate: true }, maxIterations: 0 } })
+    let message = ''
+    try {
+      definePipeline(bad)
+    } catch (e) {
+      message = (e as Error).message
+    }
+    expect(message).toMatch(/maxIterations/)
+    expect(message).not.toMatch(/round-trip/)
+  })
+
+  it('throws the READABLE budget rule for an ungated criterion loop over MAX_STAGES', () => {
+    const stages = [
+      { name: 'a', workflow: 'a.js' },
+      { name: 'b', workflow: 'b.js' },
+      { name: 'c', workflow: 'c.js' },
+    ]
+    const bad = validSpec({ stages, loop: { until: { criterion: 'artifact-empty' }, maxIterations: 5 } })
+    expect(() => definePipeline(bad)).toThrow(/MAX_STAGES/)
+  })
+})
+
 // batch 5 item 5: the doc's promise ("an authored spec and a live-launched spec are validated
 // by the exact same rules") used to be FALSE — validateStageList alone never checks goal/
 // projectDir's types, so a spec that bypassed TypeScript via a cast passed definePipeline()

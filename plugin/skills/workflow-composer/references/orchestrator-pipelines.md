@@ -81,9 +81,14 @@ The spec's validation contract is the standalone `@workflow-toolbox/pipeline-spe
   `PipelineSpec`; returns `null` when the shape is invalid.
 - `validateStageList(stages)` — the structural rules as one reusable check; returns an
   error string, or `null` when the list is valid.
+- `validatePipelineSpec(spec)` — the full-spec check: `validateStageList` over the stage
+  list PLUS the `loop` rules (this level's and, recursively, every nested child's — see
+  the loop section below). `definePipeline()` funnels through this; prefer it whenever you
+  hold a whole spec rather than a bare stage list.
 - `MAX_STAGES` (12) — hard cap on stages per spec; nested sub-specs are re-checked
   against the same cap.
 - `MAX_PIPELINE_DEPTH` (8) — hard cap on pipeline nesting depth.
+- `MAX_LOOP_ITERATIONS` (10) — hard cap on a loop's `maxIterations` (see below).
 - `EXTRACTOR_KEYS` (type `ExtractorKey`) — the legal `artifact.extract` values:
   `plan-artifact`, `raw`.
 - `INPUT_REF_SOURCES` — the legal `{ from: … }` sources an `input` template may
@@ -123,4 +128,91 @@ to a rebuild). A few things worth knowing before you write one:
   the spec types themselves ship here in `@workflow-toolbox/pipeline-spec`.
   Programmatically, `bundlePipeline` (from `@workflow-toolbox/build`) is the API twin of
   the `workflow-toolbox pipeline` CLI — same entry in, same emitted JSON out.
+
+#### Looping a pipeline — `loop` (re-run the stage list until done)
+
+A spec — the ROOT one, or any nested `pipeline`-stage's child spec — may carry a `loop`
+(shape `PipelineLoopSpec`): the runner re-runs the spec's WHOLE stage list until the stop
+condition says done.
+
+```ts
+export default definePipeline({
+  goal: 'Fix, review, repeat until the review comes back clean',
+  projectDir: '.',
+  loop: { until: { criterion: 'artifact-empty' }, maxIterations: 4 },
+  stages: [
+    { name: 'fix', workflow: 'dev-implement.js', input: { artifactPath: { from: 'artifactPath' } } },
+    { name: 'review', workflow: 'pr-review.js', input: { target: { from: 'artifactPath' } } },
+  ],
+})
+```
+
+- **`until` (required)** — type `LoopUntil`, exactly one flavor:
+  - `{ gate: true }` — a human **loop gate** at every iteration boundary: approve = run
+    another iteration, stop = settle the pipeline. Distinct from a stage's own `gateAfter`
+    (which gates INSIDE the body); the loop gate owns the boundary decision, which is also
+    why the last stage still cannot carry `gateAfter` on a looped spec.
+  - `{ criterion: '<key>' }` — a named predicate the RUNNER evaluates against the last
+    stage's settled handoff artifact. The key set is a runner-side registry; the seed
+    predicate is `artifact-empty` (stop when the last stage's handoff artifact is empty —
+    the canonical "no findings left" case). An unknown key is rejected at LAUNCH time,
+    exactly like an unknown workflow name — the spec package validates shape only.
+- **`maxIterations` (required)** — integer safety ceiling, 1..`MAX_LOOP_ITERATIONS` (10).
+  Hitting it settles the run (runner vocabulary: `stoppedBy` `'maxIterations'`, mirroring
+  the in-run `loopUntilDone` pattern).
+
+**Two granularities, one primitive.** Loop the whole pipeline by putting `loop` on the
+root spec. Loop a **subsequence** of stages by composition: wrap the subsequence in a
+nested `pipeline`-stage whose child spec carries the `loop` — there is no in-parent
+stage-range selector:
+
+```ts
+stages: [
+  { name: 'plan', workflow: 'dev-plan.js', gateAfter: true, artifact: { extract: 'plan-artifact' }, input: { goal: { from: 'goal' }, projectDir: { from: 'projectDir' } } },
+  { name: 'iterate', pipeline: { goal: 'fix until clean', projectDir: '.', loop: { until: { criterion: 'artifact-empty' }, maxIterations: 3 }, stages: [ /* fix, review */ ] } },
+  { name: 'wrap-up', workflow: 'independent-analysis.js', input: { subject: { from: 'artifactPath' } } },
+]
+```
+
+**Two v1 expressiveness losses of the composition idiom, stated plainly.** A looped
+subsequence inherits the `pipeline`-stage restrictions: (1) you cannot put `gateAfter`
+immediately after the looped block (partial compensation: a `{ gate: true }` loop's final
+"stop" IS a human touchpoint at that same boundary); (2) the looped block's outbound
+handoff is raw-only — no extractor runs at a `pipeline`-stage boundary. If either bites,
+that is the signal for an in-parent stage-range selector in a later version.
+
+**Safety cap.** An `until.criterion` loop with NO gate anywhere in its expanded subtree
+(no `gateAfter` at any nesting level, no nested `{ gate: true }` loop) must satisfy
+*expanded launches × maxIterations ≤ `MAX_STAGES` (12)* — where the expanded launch count
+multiplies nested children by their own loop ceilings (`expandedLaunches` in the spec
+package). This preserves the same property `MAX_STAGES` protects: one POST must not
+auto-chain an unbounded number of unattended launches. Loops with a human reachable
+anywhere in the subtree are exempt from the product cap but keep the `maxIterations`
+ceiling.
+
+**Runner semantics (the contract the Observatory runner implements):**
+
+- An iteration is a **same-manifest re-entry** of the owning spec's stage list — NOT a
+  fresh pipeline per iteration. Every iteration's runs are new runs; history is kept
+  (stage attempts append).
+- The manifest's `lastArtifactPath` threads CONTINUOUSLY across the iteration boundary:
+  iteration N's last-stage settled handoff resolves iteration N+1's first-stage
+  `{ from: 'artifactPath' }` refs. Iteration 1 keeps today's rules (a root spec's first
+  stage cannot reference `artifactPath` — there is nothing upstream yet).
+- Stage `gateAfter` **re-arms every iteration** (each launch is a new attempt with its own
+  gate); `until.gate` is the boundary gate on top of those.
+- "Fresh instance per iteration" applies ONLY to a `pipeline`-stage inside the body: each
+  iteration launches a fresh child run with its own manifest — the existing per-launch
+  semantics, unchanged. The child's own `loop`, if any, runs to ITS stop condition inside
+  each parent iteration.
+- Ceiling hit → the run settles with `stoppedBy` `'maxIterations'`; unknown `criterion`
+  keys are rejected at launch, before anything is minted.
+
+**Deploy skew — honesty notes.** A runner whose bundled copy of
+`@workflow-toolbox/pipeline-spec` predates `loop` silently drops the field (the pipeline
+runs ONCE, no error): until the Observatory runner ships loop support, `loop` is
+authorable but inert, and `criterion` keys additionally need the runner's predicate
+registry. The observe server loads the shared package at process start — picking up a new
+version requires a server restart — and the desktop app bundles its own copy, which
+requires a re-release.
 
