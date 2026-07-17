@@ -13,6 +13,10 @@
       "import": "./src/source.ts",
       "types": "./src/source.ts"
     },
+    "./capabilities": {
+      "import": "./src/capabilities.ts",
+      "types": "./src/capabilities.ts"
+    },
     "./audit-folder": {
       "import": "./src/audit-folder.ts",
       "types": "./src/audit-folder.ts"
