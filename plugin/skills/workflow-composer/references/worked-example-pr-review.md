@@ -117,3 +117,52 @@ if (synthesis === null) throw new Error('pr-review: synthesis failed — resume 
 Counting is a **code** responsibility, never the model's — tally
 succeeded/failed/dropped in JavaScript so the caller always knows when coverage shrank.
 
+## Tuning at launch — the launch-time knobs
+
+Every stage's effort, model, and messaging posture can be retuned per launch without
+touching the source, via `args`:
+
+**`effort.<role>`** — a per-role effort override (role keys: `classify`, `route`,
+`review`, `verify`, `synthesize`), e.g. `args: { target, effort: { review: 'xhigh' } }`.
+Each stage resolves its effort once at the top of the run via `resolveEffort(input.effort
+?.[role], <stage default>)`: a valid override wins, an invalid or missing one falls back
+to the stage's committed default (`classify` low, `route` medium, `review` high, `verify`
+high, `synthesize` medium). `verify` is additionally floored at `'high'` via
+`resolveVerifierEffort` — an override may only raise it, mirroring
+`adversarialVerification`'s own model-floor guardrail: a weaker effort on a refute-first
+verifier is exactly as risky as a weaker model there.
+
+`effort.review: 'auto'` is the one role with a special value: it enables
+change-difficulty auto-selection for the reviewer agents (`autoSelectEffort`) once the
+routed change summary exists — deterministic signals (changed-file count, summary length)
+decide the clear extremes in code, otherwise one best-model triage call scores the change
+("when unsure, score UP"), falling back to the committed `review` default on anything it
+can't decide. `verify` never auto-routes (its quality floor stays static); `'auto'` on any
+other role is simply a no-op that keeps that role's committed default.
+
+**`perAgent`** — a blanket per-agent default (`model` / `effort` / `agentType` /
+`isolation` / `stallMs`) applied to every agent in every stage via one
+`withAgentDefaults` wrap, e.g. `args: { target, perAgent: { model: 'sonnet' } }`.
+Per-call options always win over a blanket default: since every stage above already
+resolves and passes its own explicit `effort` (see `effort.<role>` above), `perAgent.effort`
+never actually reaches an agent in this workflow — only `perAgent.model` (and
+`perAgent.agentType`, on any stage whose own `agentTypes.*` routing didn't resolve) tunes
+agents that don't pin their own. The Verify fan's `verifierModel` (below) still overrides
+`perAgent.model` when both are set.
+
+**`verifierModel`** — an optional model override for the Verify fan
+(`adversarialVerification`) only, e.g. `args: { target, verifierModel: 'sonnet' }`. `null`
+(the default, whether omitted or explicit) keeps the pattern's own default (`BEST_MODEL`,
+currently `opus`). This verification is targeted and diff-grounded, so `'sonnet'` is a
+sound, cheaper choice for that one fan — the committed default stays `opus` so there is no
+implicit downgrade.
+
+**`messaging`** — a blanket opt-out of the default leaf-agent fence. By default
+(`null`/`false`) every agent this workflow spawns denies `SendMessage` (`withLeafFence`),
+and the pure Synthesize stage additionally runs under the minimal-ambient-context routing
+(`withLeanRouting`). `messaging: true` disables **both** fences at once — standing them
+down together is deliberate: the lean routing's empty tools allowlist also denies
+`SendMessage`, so honoring a run's request for messaging-capable agents while leaving lean
+routing on would silently re-deny `SendMessage` on the one stage this knob was meant to
+exempt. Set `messaging: true` only when the run genuinely needs its agents to coordinate.
+

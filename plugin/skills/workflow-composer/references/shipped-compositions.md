@@ -24,10 +24,23 @@ The five core-pattern compositions:
   bridge) while Verify/Synthesize stay exactly as they are — the ladder degrades
   the finder count, never the verification step. `'diff-read'`, the ladder's
   bottom rung, is deliberately not a mode this workflow accepts: it means don't
-  launch the workflow at all.
-- `monorepo-refactor-plan.workflow.ts` — fan out per area, classify, synthesize a plan.
-- `monorepo-refactor-execute.workflow.ts` — execute the plan with mutating agents
-  behind isolation.
+  launch the workflow at all. Further launch-time knobs — per-role `effort.<role>`
+  (including `review: 'auto'`), a blanket `perAgent` default, and a Verify-fan-only
+  `verifierModel` override — are documented in
+  [worked-example-pr-review.md](worked-example-pr-review.md#tuning-at-launch--the-launch-time-knobs).
+- `monorepo-refactor-plan.workflow.ts` — planning half of an L3 human-in-the-loop
+  plan → approve → execute pair: `planAndExecute` dynamically decomposes the refactor
+  goal into per-area change proposals, then `adversarialVerification` refute-first
+  reviews the proposed plan (weak proposals are excluded, not fixed), producing an
+  execution-plan artifact for human approval.
+- `monorepo-refactor-execute.workflow.ts` — execution half of the pair: takes the
+  *approved* plan artifact via `args`, re-validates it, then runs the now-known steps
+  with `rt.pipeline` directly (`planAndExecute` would be redundant — the subtasks are
+  no longer unknown). Each step's mutating agent runs under `isolation: 'worktree'`
+  (parallel mutation needs isolated working trees); a separate fresh-evidence agent
+  checks each step's claim. See
+  [orchestrator-pipelines.md](orchestrator-pipelines.md) for the general plan →
+  human-gate → execute pattern this pair models.
 - `doc-rewrite.workflow.ts` — generate-and-filter doc rewrites.
 - `dev-review-fix.workflow.ts` — review → consolidate → adversarially verify → fix →
   check loop over a change set. **The reference implementation of the cost-engineering
@@ -130,6 +143,25 @@ These `.ts` sources are **reading material** — they are built with `npx workfl
 not run directly as raw workflows. Their committed artifacts live under
 `toolkit/workflows/` (e.g. `toolkit/workflows/pr-review.js`) and run via
 `Workflow({ scriptPath: '…/pr-review.js' })`.
+
+### Two orchestrator-pipeline compositions (`definePipeline`, not `defineWorkflow`)
+
+Separate from the twenty-four `.workflow.ts` compositions above, `toolkit/examples/` also
+ships two `definePipeline()` sources — N whole workflow artifacts, optionally nested,
+optionally human-gated (see [orchestrator-pipelines.md](orchestrator-pipelines.md) for
+the authoring contract). They build via the `pipeline` CLI subcommand to
+`toolkit/pipelines/*.json`, not via `build` to `toolkit/workflows/`:
+
+- `feature-review.pipeline.ts` — the toolkit's own living documentation for
+  `definePipeline()`: a nested plan → gate → implement stage, then a gated review
+  stage, then a wrap-up stage (`[feature: plan --gate--> implement] → review --gate--> wrap-up`).
+  Read it alongside [orchestrator-pipelines.md](orchestrator-pipelines.md), which walks
+  through this exact file.
+- `demo-showcase-v2.pipeline.ts` — an all-nine-patterns orchestrator-pipeline showcase,
+  the render fixture the observe-ui pipeline runner exercises for features a single
+  workflow cannot show: three nested pipeline levels (root → L2 → L3) distributing all
+  nine patterns across their stage workflows, a real human gate after the first root
+  stage, and `loopUntilDone` used at both the outermost and innermost levels.
 
 ### Operational lessons (from production runs of the dev-workflow family)
 

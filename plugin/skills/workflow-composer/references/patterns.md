@@ -729,6 +729,29 @@ Counting is a **code** responsibility, never a model one: tally
 succeeded/failed/dropped in JavaScript. Spawning an agent to count is slower,
 non-deterministic, and adds a failure point for no gain.
 
+### Envelope helpers (`@workflow-toolbox/patterns`)
+
+Three small helpers back the envelope conventions above, exported for workflow and
+pattern authors who want the same guarantees in their own code, outside the nine patterns:
+
+- **`applyCap(items, cap)`** — the truncation-with-reporting primitive behind every
+  pattern's `maxItems`/`maxVerifyClaims`-style knob. `cap === undefined` is a no-op
+  (nothing withheld); `cap >= 1` keeps the first `cap` items and reports how many were
+  dropped; `cap < 1` throws synchronously with an actionable message instead of silently
+  returning nothing. Mirrors "no silent caps" above — reach for it whenever your own
+  workflow code truncates a list.
+- **`emitDigest(rt, digest)`** — logs one structured `rt.log` line per pattern run,
+  parsed back by observe on reload into a phase's output/choices and attributed to a
+  phase by matching `digest.stage`. Call it once per pattern invocation — including on
+  an early failure return, so a failed run still reports an outcome — with
+  `digest.stage` equal to the pattern-name prefix used by that invocation's agent
+  labels, or observe cannot resolve which phase it belongs to.
+- **`assertAgentTypeOption(stage, name, value)`** — validates an optional per-role
+  `agentType` routing input (the `<role>Type` knobs, e.g. `verifierType`): `undefined`
+  is fine (the standard subagent), but a defined, blank/whitespace-only string is a
+  config mistake — it throws synchronously at entry instead of spawning an agent with
+  an invalid empty `agentType`.
+
 ## Cost engineering
 
 Agent cost follows **tool-call count**, not prompt size — each turn re-reads

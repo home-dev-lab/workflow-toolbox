@@ -41,7 +41,7 @@ that is the judgment the L1 table below encodes.
    }
    ```
    `meta.name` must be non-empty kebab-case (same rule the build enforces). `pattern` is
-   one of the eight canonical names below; `phase` is the title shown in the `/workflows` UI.
+   one of the nine canonical names below; `phase` is the title shown in the `/workflows` UI.
 4. **Scaffold, then build + check** (see below).
 5. **Fill in the placeholders** — the emitted prompts, the `items`/`claims`/`tasks` data,
    and any `as const satisfies JsonSchema` schemas at consumed agent boundaries. Re-build.
@@ -58,6 +58,7 @@ that is the judgment the L1 table below encodes.
 | `loopUntilDone` | Clear evaluation criteria + iterative refinement adds value; or unknown-size discovery | No articulable feedback; or a fixed list is known up front (just map it) |
 | `planAndExecute` | Subtasks can't be predicted up front; a planner decomposes dynamically | Subtasks are known — use `fanOutAndSynthesize` (cheaper, more predictable) |
 | `scoreAndRank` | Many items, only a few worth an expensive next stage; a cheap model scores them on independent dimensions; you want a ranked cutoff to aim the premium model/human at the top | Few items (just act); scoring signal is garbage (GIGO); or a binary keep/drop suffices — use `generateAndFilter` |
+| `chunkedAnalysis` | Content too big for a single agent context (a large diff, a long log, a CSV); want a deterministic chunker + map-analyze-then-synthesize pass | Content fits one context — just `agent()` it, or `fanOutAndSynthesize` over sections you already have; or the per-chunk outputs ARE the answer and need no synthesis barrier — use `rt.pipeline` |
 
 Steps run in spec order. Repeating a `phase` across steps groups them under one phase entry.
 
