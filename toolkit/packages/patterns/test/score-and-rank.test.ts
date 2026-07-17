@@ -647,3 +647,79 @@ describe('scoreAndRank — cacheWarm=true (staggered)', () => {
     expect(result.stats.agentsSpawned).toBe(1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Stage salting (card #1816036725248493168) — per-invocation discriminator
+// ---------------------------------------------------------------------------
+
+describe('scoreAndRank — stage salting', () => {
+  const soloDims: Array<ScoreDimension<string>> = [{ name: 'impact', prompt: (f) => `impact of ${f}` }]
+  const soloOpts = { items: ['solo'], dimensions: soloDims, cutoff: { type: 'threshold' as const, min: 0 } }
+
+  it('two invocations on the SAME rt: first bare, second salted " #2" on every label', async () => {
+    const rt = new FakeRuntime({ onAgent: () => ({ score: 3, reason: 'r' }) })
+
+    await scoreAndRank(rt, makeOptions(soloOpts))
+    const firstLabels = rt.calls.map((c) => c.opts?.label)
+
+    await scoreAndRank(rt, makeOptions(soloOpts))
+    const secondLabels = rt.calls.slice(firstLabels.length).map((c) => c.opts?.label)
+
+    expect(firstLabels).toEqual(['scoreAndRank:score:0:impact'])
+    expect(secondLabels).toEqual(['scoreAndRank:score:0:impact #2'])
+  })
+
+  it('trail.stage === the rt.agent label for the same step, on the salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: () => ({ score: 3, reason: 'r' }) })
+    await scoreAndRank(rt, makeOptions(soloOpts))
+    const result = await scoreAndRank(rt, makeOptions(soloOpts))
+
+    const secondCalls = rt.calls.slice(1)
+    for (const record of result.trail) {
+      const match = secondCalls.find((c) => c.opts?.label === record.stage)
+      expect(match, `no rt.agent call found with label === trail.stage "${record.stage}"`).toBeDefined()
+    }
+    expect(result.trail.map((r) => r.stage)).toEqual(['scoreAndRank:score:0:impact #2'])
+  })
+
+  it('an explicit stageKey salts every stage/label of that invocation, including a salvage record', async () => {
+    // score returns null once → structured-output salvage respawn fires; its
+    // schema-less answer is also non-JSON, so salvage fails too.
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => (isScoreCall(opts) ? null : 'not-json'),
+    })
+
+    const result = await scoreAndRank(rt, makeOptions({ ...soloOpts, stageKey: 'my-key' }))
+
+    expect(rt.calls.map((c) => c.opts?.label)).toEqual([
+      'scoreAndRank:score:0:impact #my-key',
+      'scoreAndRank:score:0:impact #my-key:salvage',
+    ])
+    expect(result.trail.map((r) => r.stage)).toEqual([
+      'scoreAndRank:score:0:impact #my-key',
+      'scoreAndRank:score:0:impact #my-key:salvage',
+    ])
+    expect(result.warnings.join(' ')).not.toMatch(/stageKey/)
+  })
+
+  it('distinct rt instances stay isolated — both get the bare first invocation', async () => {
+    const rt1 = new FakeRuntime({ onAgent: () => ({ score: 3, reason: 'r' }) })
+    const rt2 = new FakeRuntime({ onAgent: () => ({ score: 3, reason: 'r' }) })
+
+    await scoreAndRank(rt1, makeOptions(soloOpts))
+    await scoreAndRank(rt2, makeOptions(soloOpts))
+
+    expect(rt1.calls.map((c) => c.opts?.label)).toEqual(['scoreAndRank:score:0:impact'])
+    expect(rt2.calls.map((c) => c.opts?.label)).toEqual(['scoreAndRank:score:0:impact'])
+  })
+
+  it('digest.stage stays bare even on a salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: () => ({ score: 3, reason: 'r' }) })
+    await scoreAndRank(rt, makeOptions(soloOpts))
+    await scoreAndRank(rt, makeOptions(soloOpts))
+
+    const digests = rt.logs.map(parseDigest).filter((d) => d?.stage === 'scoreAndRank')
+    expect(digests).toHaveLength(2)
+    for (const d of digests) expect(d?.stage).toBe('scoreAndRank')
+  })
+})

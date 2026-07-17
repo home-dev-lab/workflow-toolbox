@@ -729,6 +729,37 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     });
   }
 
+  // ../packages/patterns/src/stage-instance.ts
+  var registry = /* @__PURE__ */ new WeakMap();
+  var STAGE_KEY_PATTERN = /^(?!\d+$)[A-Za-z0-9_.-]{1,32}$/;
+  function claimStageInstance(rt, pattern, stageKey) {
+    if (stageKey !== void 0) {
+      if (STAGE_KEY_PATTERN.test(stageKey)) {
+        return { salt: ` #${stageKey}` };
+      }
+      const fallback = claimAuto(rt, pattern);
+      const reason = /^\d+$/.test(stageKey) ? "purely-numeric keys are reserved for the auto instance counter's own ' #<n>' format (a numeric stageKey would be indistinguishable from an auto-salted invocation)" : `must match ${STAGE_KEY_PATTERN.source}`;
+      return {
+        salt: fallback.salt,
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (${reason}) \u2014 falling back to the auto instance counter`
+      };
+    }
+    return claimAuto(rt, pattern);
+  }
+  function claimAuto(rt, pattern) {
+    let byPattern = registry.get(rt);
+    if (byPattern === void 0) {
+      byPattern = /* @__PURE__ */ new Map();
+      registry.set(rt, byPattern);
+    }
+    const n = (byPattern.get(pattern) ?? 0) + 1;
+    byPattern.set(pattern, n);
+    return { salt: n === 1 ? "" : ` #${n}` };
+  }
+  function stageBuilder(stage, salt) {
+    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
+  }
+
   // ../packages/patterns/src/fan-out-and-synthesize.ts
   var STAGE2 = "fanOutAndSynthesize";
   async function fanOutAndSynthesize(rt, options) {
@@ -746,6 +777,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       synthesisType,
       phase,
       maxItems,
+      stageKey,
       cacheWarm
     } = options;
     if (tasks.length === 0) {
@@ -759,6 +791,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     let agentsSpawned = 0;
     const warnings = [];
     const trail = [];
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE2, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE2, salt);
     if (truncated > 0) {
       warn(
         rt,
@@ -767,9 +802,10 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       );
     }
     const keptArray = kept;
+    const taskStages = keptArray.map((_, i) => stg(`task:${i}`));
     const taskThunks = keptArray.map((task, i) => async () => {
       const taskOpts = {
-        label: `${STAGE2}:task:${i}`,
+        label: taskStages[i],
         ...phase !== void 0 ? { phase } : {},
         ...taskSchema !== void 0 ? { schema: taskSchema } : {},
         ...taskModel !== void 0 ? { model: taskModel } : {},
@@ -784,13 +820,14 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     for (let i = 0; i < taskResults.length; i++) {
       const out = taskResults[i];
       const r = out?.value ?? null;
+      const taskStage = taskStages[i];
       agentsSpawned += out?.spawns ?? 1;
-      trail.push(makeRecord(`${STAGE2}:task:${i}`, r !== null, {
+      trail.push(makeRecord(taskStage, r !== null, {
         ...taskModel !== void 0 ? { model: taskModel } : {},
         ...taskEffort !== void 0 ? { effort: taskEffort } : {}
       }));
       if (out !== null && out.salvageAttempted) {
-        trail.push(makeRecord(`${STAGE2}:task:${i}:salvage`, out.salvaged, {
+        trail.push(makeRecord(`${taskStage}:salvage`, out.salvaged, {
           ...taskModel !== void 0 ? { model: taskModel } : {},
           ...taskEffort !== void 0 ? { effort: taskEffort } : {}
         }));
@@ -813,8 +850,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     if (parts.length === 0) {
       warn(rt, warnings, "fanOutAndSynthesize: fan-out produced no parts; synthesis skipped");
     } else {
+      const synthesizeStage = stg("synthesize");
       const synthOpts = {
-        label: `${STAGE2}:synthesize`,
+        label: synthesizeStage,
         ...phase !== void 0 ? { phase } : {},
         ...synthesisSchema !== void 0 ? { schema: synthesisSchema } : {},
         ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
@@ -824,12 +862,12 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       const synthOut = await agentWithSchemaSalvage(rt, synthesisPrompt(parts), synthOpts);
       agentsSpawned += synthOut.spawns;
       const synthesis = synthOut.value;
-      trail.push(makeRecord(`${STAGE2}:synthesize`, synthesis !== null, {
+      trail.push(makeRecord(synthesizeStage, synthesis !== null, {
         ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
         ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
       }));
       if (synthOut.salvageAttempted) {
-        trail.push(makeRecord(`${STAGE2}:synthesize:salvage`, synthOut.salvaged, {
+        trail.push(makeRecord(`${synthesizeStage}:salvage`, synthOut.salvaged, {
           ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
           ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
         }));
@@ -884,7 +922,8 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       phase,
       maxVerifyClaims,
       verifierType,
-      cacheWarm
+      cacheWarm,
+      stageKey
     } = options;
     const refuteThreshold = refuteThresholdOpt ?? 2;
     if (claims.length === 0) {
@@ -940,6 +979,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     let agentsSpawned = 0;
     const warnings = [];
     const trail = [];
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE3, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE3, salt);
     const effectiveModel = model ?? BEST_MODEL;
     if (model !== void 0 && model !== BEST_MODEL) {
       warn(
@@ -965,7 +1007,7 @@ ${renderClaim(claim)}`;
     }
     if (cacheWarm ?? true) {
       agentsSpawned++;
-      trail.push(await runCacheWarmup(rt, warnings, `${STAGE3}:warm`, STAGE3, {
+      trail.push(await runCacheWarmup(rt, warnings, stg("warm"), STAGE3, {
         ...phase !== void 0 ? { phase } : {},
         model: effectiveModel,
         ...effort !== void 0 ? { effort } : {},
@@ -977,13 +1019,17 @@ ${renderClaim(claim)}`;
     const verifiedKept = await Promise.all(
       keptClaims.map(async (claim, claimIndex) => {
         const claimVotes = perClaimVotes[claimIndex] ?? votesOpt;
+        const voteStages = Array.from(
+          { length: claimVotes },
+          (_, voteIndex) => stg(`verify:${claimIndex}:${voteIndex}`)
+        );
         const voteThunks = Array.from({ length: claimVotes }, (_, voteIndex) => {
           return async () => {
             const lens = lenses !== void 0 ? lenses[voteIndex] : void 0;
             const prompt = buildVerifierPrompt(claim, lens);
             const opts = {
               schema: VERIFIER_SCHEMA,
-              label: `${STAGE3}:verify:${claimIndex}:${voteIndex}`,
+              label: voteStages[voteIndex],
               ...phase !== void 0 ? { phase } : {},
               model: effectiveModel,
               ...effort !== void 0 ? { effort } : {},
@@ -1002,9 +1048,10 @@ ${renderClaim(claim)}`;
         for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
           const out = voteOuts[voteIndex] ?? null;
           const vote = votes[voteIndex] ?? null;
+          const stage = voteStages[voteIndex];
           agentsSpawned += out?.spawns ?? 1;
           claimRecords.push(makeRecord(
-            `${STAGE3}:verify:${claimIndex}:${voteIndex}`,
+            stage,
             vote !== null,
             {
               model: effectiveModel,
@@ -1014,7 +1061,7 @@ ${renderClaim(claim)}`;
           ));
           if (out !== null && out.salvageAttempted) {
             claimRecords.push(makeRecord(
-              `${STAGE3}:verify:${claimIndex}:${voteIndex}:salvage`,
+              `${stage}:salvage`,
               out.salvaged,
               {
                 model: effectiveModel,
@@ -1641,6 +1688,12 @@ Return { results: [...] }.`,
       let pocStats = null;
       if (pocEligible.length === 0) {
         warn(rt, warnings, "dev-ground: no external premise was left unsettled \u2014 PoC stage did not run (nothing qualified)");
+        emitDigest(rt, {
+          stage: "dev-ground:poc",
+          phase: "PoC",
+          output: "no external premise was left unsettled \u2014 PoC stage did not run (nothing qualified)",
+          counts: { eligible: 0 }
+        });
       } else {
         let pocAgentsSpawned = 0;
         let pocDropped = 0;
@@ -1714,6 +1767,12 @@ Return { outcome, premiseId: "${p.id}", probe, observation, denialQuote, rationa
       const verifyClaims = mergedPremises.filter((m) => m.finding !== null || m.pocOutcome !== null);
       const verification = verifyClaims.length === 0 ? (() => {
         warn(rt, warnings, "dev-ground: no premise records survived the grounding arms \u2014 nothing to verify");
+        emitDigest(rt, {
+          stage: "dev-ground:verify",
+          phase: "Verify",
+          output: "no premise records survived the grounding arms \u2014 nothing to verify",
+          counts: { claims: 0 }
+        });
         return null;
       })() : await adversarialVerification(rt, {
         claims: verifyClaims,

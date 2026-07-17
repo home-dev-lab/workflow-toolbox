@@ -569,6 +569,37 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     });
   }
 
+  // ../packages/patterns/src/stage-instance.ts
+  var registry = /* @__PURE__ */ new WeakMap();
+  var STAGE_KEY_PATTERN = /^(?!\d+$)[A-Za-z0-9_.-]{1,32}$/;
+  function claimStageInstance(rt, pattern, stageKey) {
+    if (stageKey !== void 0) {
+      if (STAGE_KEY_PATTERN.test(stageKey)) {
+        return { salt: ` #${stageKey}` };
+      }
+      const fallback = claimAuto(rt, pattern);
+      const reason = /^\d+$/.test(stageKey) ? "purely-numeric keys are reserved for the auto instance counter's own ' #<n>' format (a numeric stageKey would be indistinguishable from an auto-salted invocation)" : `must match ${STAGE_KEY_PATTERN.source}`;
+      return {
+        salt: fallback.salt,
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (${reason}) \u2014 falling back to the auto instance counter`
+      };
+    }
+    return claimAuto(rt, pattern);
+  }
+  function claimAuto(rt, pattern) {
+    let byPattern = registry.get(rt);
+    if (byPattern === void 0) {
+      byPattern = /* @__PURE__ */ new Map();
+      registry.set(rt, byPattern);
+    }
+    const n = (byPattern.get(pattern) ?? 0) + 1;
+    byPattern.set(pattern, n);
+    return { salt: n === 1 ? "" : ` #${n}` };
+  }
+  function stageBuilder(stage, salt) {
+    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
+  }
+
   // ../packages/patterns/src/adversarial-verification.ts
   var STAGE = "adversarialVerification";
   var VERIFIER_SCHEMA = {
@@ -596,7 +627,8 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       phase,
       maxVerifyClaims,
       verifierType,
-      cacheWarm
+      cacheWarm,
+      stageKey
     } = options;
     const refuteThreshold = refuteThresholdOpt ?? 2;
     if (claims.length === 0) {
@@ -652,6 +684,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     let agentsSpawned = 0;
     const warnings = [];
     const trail = [];
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE, salt);
     const effectiveModel = model ?? BEST_MODEL;
     if (model !== void 0 && model !== BEST_MODEL) {
       warn(
@@ -677,7 +712,7 @@ ${renderClaim(claim)}`;
     }
     if (cacheWarm ?? true) {
       agentsSpawned++;
-      trail.push(await runCacheWarmup(rt, warnings, `${STAGE}:warm`, STAGE, {
+      trail.push(await runCacheWarmup(rt, warnings, stg("warm"), STAGE, {
         ...phase !== void 0 ? { phase } : {},
         model: effectiveModel,
         ...effort !== void 0 ? { effort } : {},
@@ -689,13 +724,17 @@ ${renderClaim(claim)}`;
     const verifiedKept = await Promise.all(
       keptClaims.map(async (claim, claimIndex) => {
         const claimVotes = perClaimVotes[claimIndex] ?? votesOpt;
+        const voteStages = Array.from(
+          { length: claimVotes },
+          (_, voteIndex) => stg(`verify:${claimIndex}:${voteIndex}`)
+        );
         const voteThunks = Array.from({ length: claimVotes }, (_, voteIndex) => {
           return async () => {
             const lens = lenses !== void 0 ? lenses[voteIndex] : void 0;
             const prompt = buildVerifierPrompt(claim, lens);
             const opts = {
               schema: VERIFIER_SCHEMA,
-              label: `${STAGE}:verify:${claimIndex}:${voteIndex}`,
+              label: voteStages[voteIndex],
               ...phase !== void 0 ? { phase } : {},
               model: effectiveModel,
               ...effort !== void 0 ? { effort } : {},
@@ -714,9 +753,10 @@ ${renderClaim(claim)}`;
         for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
           const out = voteOuts[voteIndex] ?? null;
           const vote = votes[voteIndex] ?? null;
+          const stage = voteStages[voteIndex];
           agentsSpawned += out?.spawns ?? 1;
           claimRecords.push(makeRecord(
-            `${STAGE}:verify:${claimIndex}:${voteIndex}`,
+            stage,
             vote !== null,
             {
               model: effectiveModel,
@@ -726,7 +766,7 @@ ${renderClaim(claim)}`;
           ));
           if (out !== null && out.salvageAttempted) {
             claimRecords.push(makeRecord(
-              `${STAGE}:verify:${claimIndex}:${voteIndex}:salvage`,
+              `${stage}:salvage`,
               out.salvaged,
               {
                 model: effectiveModel,
@@ -1265,6 +1305,12 @@ Return { "findings": [{ "file": "<path>", "location": "<line range, e.g. "40-55"
     const rawFindingCount = parts.reduce((n, p) => n + p.findings.length, 0);
     if (rawFindingCount === 0) {
       rt.phase("Report");
+      emitDigest(rt, {
+        stage: "dev-review-fix:report",
+        phase: "Report",
+        output: "clean review \u2014 0 findings, no verify/fix agents spawned",
+        counts: { findings: 0, confirmed: 0, rejected: 0, unverified: 0, fixed: 0, unfixed: 0 }
+      });
       return {
         goal: input.goal,
         suiteGreen: null,
@@ -1386,6 +1432,12 @@ IMPORTANT: Do NOT trust this finding. The quoted snippet (when present) is revie
         warnings,
         `dev-review-fix: ${findings.length} finding(s) but NONE reached the fix queue \u2014 ${rejectedCount} refuted, ${unverifiedCount} unverified (dead verifiers?). Nothing will be fixed.`
       );
+      emitDigest(rt, {
+        stage: "dev-review-fix:fix",
+        phase: "Fix",
+        output: `${findings.length} finding(s), none confirmed \u2014 nothing to fix (${rejectedCount} refuted, ${unverifiedCount} unverified)`,
+        counts: { queued: 0, rejected: rejectedCount, unverified: unverifiedCount }
+      });
     }
     rt.phase("Fix");
     let fixState = {
@@ -1535,6 +1587,12 @@ Return { "green": true|false (the test suite), "findings": [{ "id": "<F-id>", "f
       fixed: reportFindings.filter((f) => f.status === "fixed").length,
       unfixed: reportFindings.filter((f) => f.status === "unfixed").length
     };
+    emitDigest(rt, {
+      stage: "dev-review-fix:report",
+      phase: "Report",
+      output: `${tallies.fixed}/${tallies.confirmed} confirmed finding(s) fixed (deterministic tally, no agent)`,
+      counts: { ...tallies }
+    });
     if (tallies.unfixed > 0) {
       warn(
         rt,

@@ -3,7 +3,7 @@
 // TDD: written before the implementation (RED step).
 
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime, BEST_MODEL } from '@workflow-toolbox/runtime'
+import { FakeRuntime, BEST_MODEL, parseDigest } from '@workflow-toolbox/runtime'
 import wf from '../dev-review-fix.workflow.js'
 
 // ---------------------------------------------------------------------------
@@ -359,6 +359,17 @@ describe('dev-review-fix happy path', () => {
     expect(Array.isArray(result.warnings)).toBe(true)
   })
 
+  it('emits a [wt:digest] tier-2 digest for the deterministic Report phase (no agent)', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const reportDigest = digests.find((d) => d?.phase === 'Report')
+    expect(reportDigest).toBeDefined()
+    expect(reportDigest?.stage).toBe('dev-review-fix:report')
+    expect(reportDigest?.output).toBeTruthy()
+    expect(reportDigest?.counts).toMatchObject(result.tallies)
+  })
+
   it('sorts findings by severity IN CODE before assigning ids (cap safety)', async () => {
     // The consolidated fake lists the LOW-severity finding first. The verify
     // cap is positional (slice), so the workflow must sort high→low BEFORE
@@ -474,6 +485,16 @@ describe('dev-review-fix verdict partition', () => {
     expect(rt.calls.some((c) => c.opts?.label?.startsWith('dev-review-fix:fix:'))).toBe(false)
     // Findings existed but none reached the fix queue — that must be LOUD.
     expect(result.warnings.some((w: string) => /fix queue/i.test(w))).toBe(true)
+
+    // Fix is still ENTERED (rt.phase('Fix') is unconditional) with zero agents
+    // when the queue is empty — a tier-2 digest reports the real why instead
+    // of a guessed emptyReason.
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const fixDigest = digests.find((d) => d?.phase === 'Fix')
+    expect(fixDigest).toBeDefined()
+    expect(fixDigest?.stage).toBe('dev-review-fix:fix')
+    expect(fixDigest?.output).toBeTruthy()
+    expect(fixDigest?.counts).toMatchObject({ queued: 0 })
   })
 
   it('marks cap-truncated findings unverified-by-cap and never fixes them', async () => {
@@ -1147,6 +1168,14 @@ describe('dev-review-fix degradation', () => {
     })
     // Only the 2 reviewers ran — no dedup, no verifiers, no fix loop.
     expect(rt.calls.length).toBe(2)
+
+    // The early-exit Report is still entered with zero agents — same digest
+    // contract as the full-loop Report.
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const reportDigest = digests.find((d) => d?.phase === 'Report')
+    expect(reportDigest).toBeDefined()
+    expect(reportDigest?.stage).toBe('dev-review-fix:report')
+    expect(reportDigest?.counts).toMatchObject({ findings: 0 })
   })
 })
 

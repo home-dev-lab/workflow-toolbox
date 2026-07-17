@@ -21,6 +21,7 @@ import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { parallelWithCacheWarm } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
 import type { StructuredCallOutcome } from './structured-salvage.js'
+import { claimStageInstance, stageBuilder } from './stage-instance.js'
 
 const STAGE = 'fanOutAndSynthesize'
 
@@ -50,6 +51,20 @@ export interface FanOutAndSynthesizeOptions<TTask, TPart> {
   synthesisType?: string
   phase?: string
   maxItems?: number
+  /** Per-invocation stage/label discriminator (card #1816036725248493168):
+   *  when this pattern is invoked more than once on the SAME rt object, each
+   *  invocation's stage/label strings collide by default — this pins a
+   *  stable, author-meaningful suffix (` #<stageKey>`) instead of the
+   *  auto-assigned per-invocation counter. Must match the charset/shape rule
+   *  claimStageInstance canonically enforces (letters, digits, underscore,
+   *  dot, hyphen, 1-32 chars, not purely numeric — see stage-instance.ts's
+   *  STAGE_KEY_PATTERN, the ONE source of truth for this rule);
+   *  an invalid key is reported as a warning and the invocation falls back to
+   *  the auto counter (never throws). The auto counter is deterministic for
+   *  SEQUENTIALLY invoked patterns only — concurrent same-pattern invocations
+   *  (e.g. inside a caller's own rt.pipeline/rt.parallel) get completion-order
+   *  numbers, so pass stageKey there for a stable, resume-safe discriminator. */
+  stageKey?: string
   /** Stagger the task fan-out so the first task agent completes (and writes
    *  the shared system/tools prefix to the provider's prompt cache) BEFORE
    *  the remaining tasks launch, instead of all N writing that prefix
@@ -119,6 +134,7 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
     synthesisType,
     phase,
     maxItems,
+    stageKey,
     cacheWarm,
   } = options
 
@@ -146,6 +162,13 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
   const warnings: string[] = []
   const trail: TrailRecord[] = []
 
+  // Claim this invocation's stage/label salt NOW — after every synchronous
+  // validation throw above and before the first await (card
+  // #1816036725248493168, amendment A8).
+  const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey)
+  if (stageKeyWarning !== undefined) warn(rt, warnings, stageKeyWarning)
+  const stg = stageBuilder(STAGE, salt)
+
   // -------------------------------------------------------------------------
   // Truncation warning
   // -------------------------------------------------------------------------
@@ -164,6 +187,11 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
 
   const keptArray = kept as readonly TTask[]
 
+  // Built ONCE per task index, reused for BOTH the rt.agent label (in the
+  // thunk below) and makeRecord's stage (in the post-barrier collection loop)
+  // — card #1816036725248493168, amendment A8.
+  const taskStages: string[] = keptArray.map((_, i) => stg(`task:${i}`))
+
   const taskThunks = keptArray.map((task, i) => async (): Promise<StructuredCallOutcome<TPart>> => {
     const taskOpts: {
       label: string
@@ -173,7 +201,7 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
       effort?: EffortAlias
       agentType?: string
     } = {
-      label: `${STAGE}:task:${i}`,
+      label: taskStages[i]!,
       ...(phase !== undefined ? { phase } : {}),
       ...(taskSchema !== undefined ? { schema: taskSchema } : {}),
       ...(taskModel !== undefined ? { model: taskModel } : {}),
@@ -199,15 +227,16 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
   for (let i = 0; i < taskResults.length; i++) {
     const out = taskResults[i] as StructuredCallOutcome<TPart> | null
     const r = out?.value ?? null
+    const taskStage = taskStages[i]!
     agentsSpawned += out?.spawns ?? 1
     // Push trail record adjacent to the logical spawn site, in index order.
     // invariant: one record per spawn (the salvage respawn gets its own).
-    trail.push(makeRecord(`${STAGE}:task:${i}`, r !== null, {
+    trail.push(makeRecord(taskStage, r !== null, {
       ...(taskModel !== undefined ? { model: taskModel } : {}),
       ...(taskEffort !== undefined ? { effort: taskEffort } : {}),
     }))
     if (out !== null && out.salvageAttempted) {
-      trail.push(makeRecord(`${STAGE}:task:${i}:salvage`, out.salvaged, {
+      trail.push(makeRecord(`${taskStage}:salvage`, out.salvaged, {
         ...(taskModel !== undefined ? { model: taskModel } : {}),
         ...(taskEffort !== undefined ? { effort: taskEffort } : {}),
       }))
@@ -237,6 +266,10 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
   if (parts.length === 0) {
     warn(rt, warnings, 'fanOutAndSynthesize: fan-out produced no parts; synthesis skipped')
   } else {
+    // Built ONCE, used for both the rt.agent label and every makeRecord call
+    // below (card #1816036725248493168, amendment A8).
+    const synthesizeStage = stg('synthesize')
+
     const synthOpts: {
       label: string
       phase?: string
@@ -245,7 +278,7 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
       effort?: EffortAlias
       agentType?: string
     } = {
-      label: `${STAGE}:synthesize`,
+      label: synthesizeStage,
       ...(phase !== undefined ? { phase } : {}),
       ...(synthesisSchema !== undefined ? { schema: synthesisSchema } : {}),
       ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
@@ -258,12 +291,12 @@ export async function fanOutAndSynthesize<TTask, TPart = string, TOut = string>(
     const synthesis = synthOut.value
 
     // Trail record for synthesis — adjacent to the spawn accounting above.
-    trail.push(makeRecord(`${STAGE}:synthesize`, synthesis !== null, {
+    trail.push(makeRecord(synthesizeStage, synthesis !== null, {
       ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
       ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
     }))
     if (synthOut.salvageAttempted) {
-      trail.push(makeRecord(`${STAGE}:synthesize:salvage`, synthOut.salvaged, {
+      trail.push(makeRecord(`${synthesizeStage}:salvage`, synthOut.salvaged, {
         ...(synthesisModel !== undefined ? { model: synthesisModel } : {}),
         ...(synthesisEffort !== undefined ? { effort: synthesisEffort } : {}),
       }))

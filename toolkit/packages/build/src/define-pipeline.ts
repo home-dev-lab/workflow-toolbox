@@ -14,8 +14,9 @@
 // a pipeline entry with `platform: 'node'`, so node:vm/esbuild resolve fine even when dragged
 // in transitively through this package's root export.
 //
-// Design: definePipeline() validates the spec SYNCHRONOUSLY at call time — validateStageList
-// (the STAGE LIST shape) PLUS a JSON.stringify → parsePipelineSpec round-trip (batch 5, item 5)
+// Design: definePipeline() validates the spec SYNCHRONOUSLY at call time — validatePipelineSpec
+// (the STAGE LIST shape plus the spec-level `loop` rules, at every nesting level — it wraps the
+// same validateStageList the runner shares) PLUS a JSON.stringify → parsePipelineSpec round-trip (batch 5, item 5)
 // — the exact same two checks bundlePipeline's own Step 2/3 apply to the BUNDLED output, now
 // ALSO run at the raw call site. This makes the claim below literally true: an authored spec
 // and a live-launched spec ARE validated by the exact same rules, so a bad spec fails at
@@ -30,7 +31,7 @@
 // an author who bypasses definePipeline() entirely (`export default { spec: badSpec }`,
 // skipping this function outright); see the dedicated bypass fixture/test.
 
-import { validateStageList, parsePipelineSpec, type PipelineSpec } from '@workflow-toolbox/pipeline-spec'
+import { validatePipelineSpec, parsePipelineSpec, type PipelineSpec } from '@workflow-toolbox/pipeline-spec'
 
 /** A declared pipeline: just the validated spec, wrapped so bundlePipeline's node:vm
  *  extraction has a stable, greppable shape to read — `export default definePipeline({...})`,
@@ -51,7 +52,7 @@ export interface DefinedPipeline {
  *  from the raw `default.spec` it reads, not from its own round-tripped copy either) rather
  *  than churning committed artifacts' diffs on a behavior-neutral internal reconstruction. */
 export function definePipeline(spec: PipelineSpec): DefinedPipeline {
-  const error = validateStageList(spec.stages)
+  const error = validatePipelineSpec(spec)
   if (error !== null) {
     throw new Error(`definePipeline: invalid spec — ${error}`)
   }

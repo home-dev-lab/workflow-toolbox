@@ -36,6 +36,7 @@ import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { parallelWithCacheWarm } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
 import type { StructuredCallOutcome } from './structured-salvage.js'
+import { claimStageInstance, stageBuilder } from './stage-instance.js'
 
 const STAGE = 'chunkedAnalysis'
 
@@ -183,6 +184,20 @@ export interface ChunkedAnalysisOptions<TChunk> {
    *  stats.truncated; the first `maxChunks` chunks are kept, in reading order).
    *  The guard against an unbounded fan-out on a huge input. */
   maxChunks?: number
+  /** Per-invocation stage/label discriminator (card #1816036725248493168):
+   *  when this pattern is invoked more than once on the SAME rt object, each
+   *  invocation's stage/label strings collide by default — this pins a
+   *  stable, author-meaningful suffix (` #<stageKey>`) instead of the
+   *  auto-assigned per-invocation counter. Must match the charset/shape rule
+   *  claimStageInstance canonically enforces (letters, digits, underscore,
+   *  dot, hyphen, 1-32 chars, not purely numeric — see stage-instance.ts's
+   *  STAGE_KEY_PATTERN, the ONE source of truth for this rule);
+   *  an invalid key is reported as a warning and the invocation falls back to
+   *  the auto counter (never throws). The auto counter is deterministic for
+   *  SEQUENTIALLY invoked patterns only — concurrent same-pattern invocations
+   *  (e.g. inside a caller's own rt.pipeline/rt.parallel) get completion-order
+   *  numbers, so pass stageKey there for a stable, resume-safe discriminator. */
+  stageKey?: string
   /** Stagger the chunk map stage so the first chunk agent completes (and
    *  writes the shared system/tools prefix to the provider's prompt cache)
    *  BEFORE the remaining chunks launch, instead of all N writing that
@@ -265,6 +280,7 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
     synthesizeType,
     phase,
     maxChunks,
+    stageKey,
     cacheWarm,
   } = options
 
@@ -306,6 +322,13 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
   const { kept: keptChunks, truncated } = applyCap(chunks, maxChunks)
   const total = keptChunks.length
 
+  // Claim this invocation's stage/label salt NOW — after every synchronous
+  // validation throw above (including chunkText's own and applyCap's) and
+  // before the first await (card #1816036725248493168, amendment A8).
+  const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey)
+  if (stageKeyWarning !== undefined) warn(rt, warnings, stageKeyWarning)
+  const stg = stageBuilder(STAGE, salt)
+
   if (truncated > 0) {
     warn(
       rt, warnings,
@@ -320,6 +343,11 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
 
   const keptArray = keptChunks as readonly string[]
 
+  // Built ONCE per chunk index, reused for BOTH the rt.agent label (in the
+  // thunk below) and makeRecord's stage (in the post-barrier collection loop)
+  // — card #1816036725248493168, amendment A8.
+  const chunkStages: string[] = keptArray.map((_, i) => stg(`chunk:${i}`))
+
   const analyzeThunks = keptArray.map((chunk, i) => async (): Promise<StructuredCallOutcome<TChunk>> => {
     const opts: {
       label: string
@@ -329,7 +357,7 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
       effort?: EffortAlias
       agentType?: string
     } = {
-      label: `${STAGE}:chunk:${i}`,
+      label: chunkStages[i]!,
       ...(phase !== undefined ? { phase } : {}),
       ...(analyzeSchema !== undefined ? { schema: analyzeSchema } : {}),
       ...(analyzeModel !== undefined ? { model: analyzeModel } : {}),
@@ -355,14 +383,15 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
   for (let i = 0; i < analyzeResults.length; i++) {
     const out = analyzeResults[i] as StructuredCallOutcome<TChunk> | null
     const r = out?.value ?? null
+    const chunkStage = chunkStages[i]!
     agentsSpawned += out?.spawns ?? 1
     // One record per spawn, in index order (the salvage respawn gets its own).
-    trail.push(makeRecord(`${STAGE}:chunk:${i}`, r !== null, {
+    trail.push(makeRecord(chunkStage, r !== null, {
       ...(analyzeModel !== undefined ? { model: analyzeModel } : {}),
       ...(analyzeEffort !== undefined ? { effort: analyzeEffort } : {}),
     }))
     if (out !== null && out.salvageAttempted) {
-      trail.push(makeRecord(`${STAGE}:chunk:${i}:salvage`, out.salvaged, {
+      trail.push(makeRecord(`${chunkStage}:salvage`, out.salvaged, {
         ...(analyzeModel !== undefined ? { model: analyzeModel } : {}),
         ...(analyzeEffort !== undefined ? { effort: analyzeEffort } : {}),
       }))
@@ -392,6 +421,10 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
   if (chunkResults.length === 0) {
     warn(rt, warnings, 'chunkedAnalysis: every chunk analysis was null; synthesis skipped')
   } else {
+    // Built ONCE, used for both the rt.agent label and every makeRecord call
+    // below (card #1816036725248493168, amendment A8).
+    const synthesizeStage = stg('synthesize')
+
     const synthOpts: {
       label: string
       phase?: string
@@ -400,7 +433,7 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
       effort?: EffortAlias
       agentType?: string
     } = {
-      label: `${STAGE}:synthesize`,
+      label: synthesizeStage,
       ...(phase !== undefined ? { phase } : {}),
       ...(synthesizeSchema !== undefined ? { schema: synthesizeSchema } : {}),
       ...(synthesizeModel !== undefined ? { model: synthesizeModel } : {}),
@@ -413,12 +446,12 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
     const synthesis = synthOut.value
 
     // Trail record for synthesis — adjacent to the spawn accounting above.
-    trail.push(makeRecord(`${STAGE}:synthesize`, synthesis !== null, {
+    trail.push(makeRecord(synthesizeStage, synthesis !== null, {
       ...(synthesizeModel !== undefined ? { model: synthesizeModel } : {}),
       ...(synthesizeEffort !== undefined ? { effort: synthesizeEffort } : {}),
     }))
     if (synthOut.salvageAttempted) {
-      trail.push(makeRecord(`${STAGE}:synthesize:salvage`, synthOut.salvaged, {
+      trail.push(makeRecord(`${synthesizeStage}:salvage`, synthOut.salvaged, {
         ...(synthesizeModel !== undefined ? { model: synthesizeModel } : {}),
         ...(synthesizeEffort !== undefined ? { effort: synthesizeEffort } : {}),
       }))

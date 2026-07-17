@@ -1677,6 +1677,12 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
     }
     rt.phase("Report");
     const tallies = tally(reportTasks);
+    emitDigest(rt, {
+      stage: "dev-implement:report",
+      phase: "Report",
+      output: `${tallies.succeeded}/${reportTasks.length} task(s) succeeded (deterministic tally, no agent)`,
+      counts: { ...tallies }
+    });
     if (tallies.failed > 0 || tallies.skipped > 0) {
       warn(
         rt,
@@ -1728,7 +1734,14 @@ Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<abso
         evidence: "",
         note: "skipped \u2014 worktree mode requires a git repository"
       }));
-      return { goal: artifact.goal, tasks: reportTasks2, ...tally(reportTasks2), seamsCreated: 0, stats, envelope: { trail: [] }, warnings };
+      const earlyTallies = tally(reportTasks2);
+      emitDigest(rt, {
+        stage: "dev-implement:report",
+        phase: "Report",
+        output: `every task skipped \u2014 worktree mode requires a git repository at ${ctx.projectDir}`,
+        counts: { ...earlyTallies }
+      });
+      return { goal: artifact.goal, tasks: reportTasks2, ...earlyTallies, seamsCreated: 0, stats, envelope: { trail: [] }, warnings };
     }
     const reportedGitRoot = setup.gitRoot.trim().replace(/\/+$/, "");
     const gitRoot = reportedGitRoot === "" ? ctx.projectDir : reportedGitRoot;
@@ -1912,6 +1925,14 @@ Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happen
         }
       });
       rt.phase("Merge");
+      if (toMerge.length === 0) {
+        emitDigest(rt, {
+          stage: "dev-implement:merge",
+          phase: "Merge",
+          output: "no task reached merge \u2014 every task failed, was blocked, or died before its branch commit",
+          counts: { candidates: 0 }
+        });
+      }
       for (const { task, outcome } of toMerge) {
         const kept = { worktreePath: wtPath(task.id), branch: wtBranch(task.id) };
         const merge = await rt.agent(
@@ -2017,6 +2038,12 @@ Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
     rt.phase("Report");
     const tallies = tally(reportTasks);
     const keptWorktrees = reportTasks.filter((t) => t.worktreePath !== void 0);
+    emitDigest(rt, {
+      stage: "dev-implement:report",
+      phase: "Report",
+      output: `${tallies.succeeded}/${reportTasks.length} task(s) succeeded (deterministic tally, no agent)`,
+      counts: { ...tallies }
+    });
     if (tallies.failed + tallies.mergeFailed + tallies.integrationFailed + tallies.skipped > 0) {
       warn(
         rt,

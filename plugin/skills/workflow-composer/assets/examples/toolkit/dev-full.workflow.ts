@@ -64,7 +64,7 @@
 //   for the failed step, feeding it the preserved section from this output.
 
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
-import { relativizeUnder, warn } from '@workflow-toolbox/patterns'
+import { emitDigest, relativizeUnder, warn } from '@workflow-toolbox/patterns'
 import type { WorkflowRuntime, EffortAlias } from '@workflow-toolbox/runtime'
 
 // ---------------------------------------------------------------------------
@@ -751,11 +751,23 @@ async function run(rt: WorkflowRuntime, input: DevFullInput): Promise<DevFullOut
   // Phase 'Report' — deterministic assembly IN CODE (no agent).
   // -------------------------------------------------------------------------
   rt.phase('Report')
-  rt.log(
+  const reportSummary =
     `dev-full: completed — plan ${plan.artifact.tasks.length} tasks, ` +
     `implement ${implement.succeeded}/${implement.tasks.length} succeeded, ` +
-    `review suiteGreen=${String(review.value['suiteGreen'] ?? 'unknown')}`,
-  )
+    `review suiteGreen=${String(review.value['suiteGreen'] ?? 'unknown')}`
+  rt.log(reportSummary)
+  // Tier-2 skip-digest: Report is entered only on the happy-path completion
+  // (every abort returns earlier from within Plan/Implement/Review & Fix) and
+  // never spawns an agent — deterministic assembly IN CODE. Custom-stage
+  // naming convention: '<workflow-name>:<phase-lowercase>', matching this
+  // family's kebab-case agent-label prefix elsewhere. `phase` MUST equal the
+  // rt.phase() title exactly — the sole resolution hint for a zero-agent phase.
+  emitDigest(rt, {
+    stage: 'dev-full:report',
+    phase: 'Report',
+    output: reportSummary,
+    counts: { planTasks: plan.artifact.tasks.length, implementSucceeded: implement.succeeded, implementTotal: implement.tasks.length },
+  })
   return finish('completed', null)
 }
 

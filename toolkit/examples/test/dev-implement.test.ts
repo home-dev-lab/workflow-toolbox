@@ -3,7 +3,7 @@
 // TDD: written before the implementation (RED step).
 
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime, BEST_MODEL } from '@workflow-toolbox/runtime'
+import { FakeRuntime, BEST_MODEL, parseDigest } from '@workflow-toolbox/runtime'
 import wf from '../dev-implement.workflow.js'
 // Cross-family contract: the REAL dev-plan workflow drives the chained
 // handoff test at the bottom of this file — a field-name or semantics drift
@@ -313,6 +313,21 @@ describe('dev-implement happy path', () => {
     expect(result.failed).toBe(0)
     expect(result.skipped).toBe(0)
     expect(Array.isArray(result.warnings)).toBe(true)
+  })
+
+  it('emits a [wt:digest] tier-2 digest for the deterministic Report phase (sequential mode, no agent)', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const reportDigest = digests.find((d) => d?.phase === 'Report')
+    expect(reportDigest).toBeDefined()
+    expect(reportDigest?.stage).toBe('dev-implement:report')
+    expect(reportDigest?.output).toBeTruthy()
+    expect(reportDigest?.counts).toMatchObject({
+      succeeded: result.succeeded,
+      failed: result.failed,
+      skipped: result.skipped,
+    })
   })
 
   it('executes tasks in dependency order, not list order (T1 before T2)', async () => {
@@ -904,6 +919,14 @@ describe('dev-implement worktree happy path (two waves)', () => {
     const cleanups = rt.calls.filter((c) => c.prompt.includes('remove the merged worktrees'))
     expect(cleanups.length).toBe(1)
     expect(cleanups[0]!.prompt).toContain('/repo-worktrees/T3')
+
+    // The final Report phase is always deterministic tallying IN CODE (no
+    // agent) — even here where Merge itself ran real agents.
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const reportDigest = digests.find((d) => d?.phase === 'Report')
+    expect(reportDigest).toBeDefined()
+    expect(reportDigest?.stage).toBe('dev-implement:report')
+    expect(reportDigest?.counts).toMatchObject({ succeeded: result.succeeded, mergeFailed: 0, integrationFailed: 0 })
   })
 
   it('honors signCommits: true (no unsign override in machine commits)', async () => {
@@ -1129,6 +1152,13 @@ describe('dev-implement worktree failure policies', () => {
     expect(result.succeeded + result.failed + result.mergeFailed + result.integrationFailed).toBe(0)
     expect(result.warnings.some((w: string) => /git repository/i.test(w))).toBe(true)
     expect(rt.calls.some((c) => c.prompt.includes('create the isolated git worktrees'))).toBe(false)
+
+    // The early-exit Report is entered with zero agents too — same digest contract.
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const reportDigest = digests.find((d) => d?.phase === 'Report')
+    expect(reportDigest).toBeDefined()
+    expect(reportDigest?.stage).toBe('dev-implement:report')
+    expect(reportDigest?.counts).toMatchObject({ skipped: 3 })
   })
 
   it('worktree-create failure for one task → that task failed without TDD spend, siblings proceed', async () => {
@@ -1161,6 +1191,15 @@ describe('dev-implement worktree failure policies', () => {
     expect(t1.worktreePath).toBe('/repo-worktrees/T1')
     // Nothing green → no merges at all, main untouched.
     expect(rt.calls.some((c) => c.prompt.includes('merge the task branch'))).toBe(false)
+
+    // The Merge phase is still ENTERED (rt.phase('Merge')) even with zero
+    // candidates — a tier-2 digest reports the real why instead of a bare
+    // empty container.
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const mergeDigest = digests.find((d) => d?.phase === 'Merge')
+    expect(mergeDigest).toBeDefined()
+    expect(mergeDigest?.stage).toBe('dev-implement:merge')
+    expect(mergeDigest?.output).toBeTruthy()
   })
 
   it('reports a thrown task chain as failed with the worktree kept, and warns', async () => {

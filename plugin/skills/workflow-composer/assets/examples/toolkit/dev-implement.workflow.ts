@@ -76,7 +76,7 @@
 //   that is exactly the work that must be redone.)
 
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
-import { autoSelectEffort, collectTrail, loopUntilDone, relativizeUnder, warn } from '@workflow-toolbox/patterns'
+import { autoSelectEffort, collectTrail, emitDigest, loopUntilDone, relativizeUnder, warn } from '@workflow-toolbox/patterns'
 import type { PatternStats, TrailRecord } from '@workflow-toolbox/patterns'
 import { BEST_MODEL } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
@@ -1733,6 +1733,19 @@ async function run(rt: WorkflowRuntime, rawInput: DevImplementInput): Promise<De
   rt.phase('Report')
 
   const tallies = tally(reportTasks)
+  // Tier-2 skip-digest: Report is entered but never spawns an agent — without
+  // this, observe's phase box would guess a generic emptyReason instead of
+  // showing the real tally. Custom-stage naming convention used across this
+  // file's digests: '<workflow-name>:<phase-lowercase>', matching the
+  // kebab-case prefix already used for this file's agent labels (e.g.
+  // 'dev-implement:setup'). `phase` MUST equal the rt.phase() title exactly —
+  // it is the sole resolution hint for a phase with zero agents.
+  emitDigest(rt, {
+    stage: 'dev-implement:report',
+    phase: 'Report',
+    output: `${tallies.succeeded}/${reportTasks.length} task(s) succeeded (deterministic tally, no agent)`,
+    counts: { ...tallies },
+  })
   if (tallies.failed > 0 || tallies.skipped > 0) {
     warn(
       rt,
@@ -1824,7 +1837,16 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
       evidence: '',
       note: 'skipped — worktree mode requires a git repository',
     }))
-    return { goal: artifact.goal, tasks: reportTasks, ...tally(reportTasks), seamsCreated: 0, stats, envelope: { trail: [] }, warnings }
+    const earlyTallies = tally(reportTasks)
+    // Tier-2 skip-digest: this early exit enters Report with zero agents too
+    // (same contract as the happy-path Report below).
+    emitDigest(rt, {
+      stage: 'dev-implement:report',
+      phase: 'Report',
+      output: `every task skipped — worktree mode requires a git repository at ${ctx.projectDir}`,
+      counts: { ...earlyTallies },
+    })
+    return { goal: artifact.goal, tasks: reportTasks, ...earlyTallies, seamsCreated: 0, stats, envelope: { trail: [] }, warnings }
   }
 
   // Worktree geometry — derived from the GIT ROOT, not projectDir: a worktree
@@ -2047,6 +2069,19 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
     // ---- Sequential merges, integration-checked after EACH merge ----
     // Per-merge (not per-wave) verification gives exact failure attribution.
     rt.phase('Merge')
+    // Tier-2 skip-digest: Merge is entered unconditionally once Setup + waves
+    // ran, but toMerge can be legitimately empty (every task failed/blocked/
+    // died before its branch commit) — zero agents spawn under this phase in
+    // that case. Only emitted when empty: a non-empty toMerge already
+    // populates the phase with real agent activity, so no digest is needed.
+    if (toMerge.length === 0) {
+      emitDigest(rt, {
+        stage: 'dev-implement:merge',
+        phase: 'Merge',
+        output: 'no task reached merge — every task failed, was blocked, or died before its branch commit',
+        counts: { candidates: 0 },
+      })
+    }
     for (const { task, outcome } of toMerge) {
       const kept = { worktreePath: wtPath(task.id), branch: wtBranch(task.id) }
 
@@ -2172,6 +2207,15 @@ async function runWorktree(rt: WorkflowRuntime, input: ResolvedDevImplementInput
 
   const tallies = tally(reportTasks)
   const keptWorktrees = reportTasks.filter((t) => t.worktreePath !== undefined)
+  // Tier-2 skip-digest: same contract as the sequential-mode Report above —
+  // deterministic tallying IN CODE, zero agents, regardless of whether Merge
+  // itself ran real agents.
+  emitDigest(rt, {
+    stage: 'dev-implement:report',
+    phase: 'Report',
+    output: `${tallies.succeeded}/${reportTasks.length} task(s) succeeded (deterministic tally, no agent)`,
+    counts: { ...tallies },
+  })
   if (tallies.failed + tallies.mergeFailed + tallies.integrationFailed + tallies.skipped > 0) {
     warn(
       rt,

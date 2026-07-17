@@ -863,3 +863,87 @@ describe('generateAndFilter — cacheWarm=true (staggered)', () => {
     expect(result.stats.agentsSpawned).toBe(2) // 1 generate + 1 filter
   })
 })
+
+// ---------------------------------------------------------------------------
+// Stage salting (card #1816036725248493168) — per-invocation discriminator
+// ---------------------------------------------------------------------------
+
+describe('generateAndFilter — stage salting', () => {
+  const salterOnAgent = ({ opts }: { opts?: unknown }): unknown =>
+    isFilterCall(opts) ? { pass: true, reason: 'ok' } : 'candidate'
+
+  it('two invocations on the SAME rt: first bare, second salted " #2" on every label', async () => {
+    const rt = new FakeRuntime({ onAgent: salterOnAgent })
+
+    await generateAndFilter(rt, makeOptions({ count: 1 }))
+    const firstLabels = rt.calls.map((c) => c.opts?.label)
+
+    await generateAndFilter(rt, makeOptions({ count: 1 }))
+    const secondLabels = rt.calls.slice(firstLabels.length).map((c) => c.opts?.label)
+
+    expect(firstLabels).toEqual(['generateAndFilter:generate:0', 'generateAndFilter:filter:0'])
+    expect(secondLabels).toEqual(['generateAndFilter:generate:0 #2', 'generateAndFilter:filter:0 #2'])
+  })
+
+  it('trail.stage === the rt.agent label for the same step, on the salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: salterOnAgent })
+    await generateAndFilter(rt, makeOptions({ count: 1 }))
+    const result = await generateAndFilter(rt, makeOptions({ count: 1 }))
+
+    const secondCalls = rt.calls.slice(2)
+    for (const record of result.trail) {
+      const match = secondCalls.find((c) => c.opts?.label === record.stage)
+      expect(match, `no rt.agent call found with label === trail.stage "${record.stage}"`).toBeDefined()
+    }
+    expect(result.trail.map((r) => r.stage)).toEqual([
+      'generateAndFilter:generate:0 #2',
+      'generateAndFilter:filter:0 #2',
+    ])
+  })
+
+  it('an explicit stageKey salts every stage/label of that invocation, including a salvage record', async () => {
+    // generate succeeds; filter returns null once (it always carries the
+    // pattern-owned schema, unlike generate by default) → structured-output
+    // salvage respawn fires. Its schema-less answer ('candidate', not JSON)
+    // is also unparsable, so salvage fails too — both the primary filter and
+    // the salvage trail records get created.
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => (isFilterCall(opts) ? null : 'candidate'),
+    })
+
+    const result = await generateAndFilter(rt, makeOptions({ count: 1, stageKey: 'my-key' }))
+
+    expect(rt.calls.map((c) => c.opts?.label)).toEqual([
+      'generateAndFilter:generate:0 #my-key',
+      'generateAndFilter:filter:0 #my-key',
+      'generateAndFilter:filter:0 #my-key:salvage',
+    ])
+    expect(result.trail.map((r) => r.stage)).toEqual([
+      'generateAndFilter:generate:0 #my-key',
+      'generateAndFilter:filter:0 #my-key',
+      'generateAndFilter:filter:0 #my-key:salvage',
+    ])
+    expect(result.warnings.join(' ')).not.toMatch(/stageKey/)
+  })
+
+  it('distinct rt instances stay isolated — both get the bare first invocation', async () => {
+    const rt1 = new FakeRuntime({ onAgent: salterOnAgent })
+    const rt2 = new FakeRuntime({ onAgent: salterOnAgent })
+
+    await generateAndFilter(rt1, makeOptions({ count: 1 }))
+    await generateAndFilter(rt2, makeOptions({ count: 1 }))
+
+    expect(rt1.calls.map((c) => c.opts?.label)).toEqual(['generateAndFilter:generate:0', 'generateAndFilter:filter:0'])
+    expect(rt2.calls.map((c) => c.opts?.label)).toEqual(['generateAndFilter:generate:0', 'generateAndFilter:filter:0'])
+  })
+
+  it('digest.stage stays bare even on a salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: salterOnAgent })
+    await generateAndFilter(rt, makeOptions({ count: 1 }))
+    await generateAndFilter(rt, makeOptions({ count: 1 }))
+
+    const digests = rt.logs.map(parseDigest).filter((d) => d?.stage === 'generateAndFilter')
+    expect(digests).toHaveLength(2)
+    for (const d of digests) expect(d?.stage).toBe('generateAndFilter')
+  })
+})

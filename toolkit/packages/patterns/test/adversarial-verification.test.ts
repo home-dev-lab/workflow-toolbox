@@ -1476,3 +1476,94 @@ describe('adversarialVerification — cacheWarm=true (warmup-agent)', () => {
     expect(result.stats.agentsSpawned).toBe(4)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Stage salting (card #1816036725248493168) — per-invocation discriminator
+// ---------------------------------------------------------------------------
+
+describe('adversarialVerification — stage salting', () => {
+  it('two invocations on the SAME rt: first bare, second salted " #2" on every label', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1 }))
+    const firstLabels = rt.calls.map((c) => c.opts?.label)
+
+    await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1 }))
+    const secondLabels = rt.calls.slice(firstLabels.length).map((c) => c.opts?.label)
+
+    expect(firstLabels).toEqual(['adversarialVerification:verify:0:0'])
+    expect(secondLabels).toEqual(['adversarialVerification:verify:0:0 #2'])
+  })
+
+  it('trail.stage === the rt.agent label for the same step, on the salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+    await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1 }))
+    const result = await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1 }))
+
+    const secondCalls = rt.calls.slice(1)
+    for (const record of result.trail) {
+      const match = secondCalls.find((c) => c.opts?.label === record.stage)
+      expect(match, `no rt.agent call found with label === trail.stage "${record.stage}"`).toBeDefined()
+    }
+    expect(result.trail.map((r) => r.stage)).toEqual(['adversarialVerification:verify:0:0 #2'])
+  })
+
+  it('the cache-warm label is salted (A7) — patternName arg (prose prefix) stays bare', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+    await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1, cacheWarm: true }))
+    await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1, cacheWarm: true }))
+
+    const warmLabels = rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:warm')).map((c) => c.opts?.label)
+    expect(warmLabels).toEqual(['adversarialVerification:warm', 'adversarialVerification:warm #2'])
+  })
+
+  it('an explicit stageKey salts every stage/label of that invocation, including a salvage record', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => (opts?.label?.endsWith(':salvage') === true ? null : null),
+    })
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 1, refuteThreshold: 1, stageKey: 'my-key',
+    }))
+
+    expect(rt.calls.map((c) => c.opts?.label)).toEqual([
+      'adversarialVerification:verify:0:0 #my-key',
+      'adversarialVerification:verify:0:0 #my-key:salvage',
+    ])
+    expect(result.trail.map((r) => r.stage)).toEqual([
+      'adversarialVerification:verify:0:0 #my-key',
+      'adversarialVerification:verify:0:0 #my-key:salvage',
+    ])
+    expect(result.warnings.join(' ')).not.toMatch(/stageKey/)
+  })
+
+  it('a valid stageKey applies to the cache-warm label too', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+    await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 1, refuteThreshold: 1, cacheWarm: true, stageKey: 'security',
+    }))
+    const warmCall = rt.calls.find((c) => c.opts?.label?.startsWith('adversarialVerification:warm'))
+    expect(warmCall?.opts?.label).toBe('adversarialVerification:warm #security')
+  })
+
+  it('distinct rt instances stay isolated — both get the bare first invocation', async () => {
+    const rt1 = new FakeRuntime({ onAgent: () => confirmedVote })
+    const rt2 = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    await adversarialVerification(rt1, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1 }))
+    await adversarialVerification(rt2, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1 }))
+
+    expect(rt1.calls.map((c) => c.opts?.label)).toEqual(['adversarialVerification:verify:0:0'])
+    expect(rt2.calls.map((c) => c.opts?.label)).toEqual(['adversarialVerification:verify:0:0'])
+  })
+
+  it('digest.stage stays bare even on a salted (2nd) invocation', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+    await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1 }))
+    await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1 }))
+
+    const digests = rt.logs.map(parseDigest).filter((d) => d?.stage === 'adversarialVerification')
+    expect(digests).toHaveLength(2)
+    for (const d of digests) expect(d?.stage).toBe('adversarialVerification')
+  })
+})

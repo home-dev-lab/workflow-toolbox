@@ -3,7 +3,7 @@
 // TDD: written before the implementation (RED step).
 
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
 import wf, { PLAN_ARTIFACT_SCHEMA } from '../dev-plan.workflow.js'
 
 // ---------------------------------------------------------------------------
@@ -422,6 +422,15 @@ describe('dev-plan with no candidate tasks', () => {
     expect(result.rejected).toEqual([])
     // The synthesize agent still ran (fake returns a valid artifact).
     expect(result.artifact.tasks.length).toBeGreaterThan(0)
+
+    // Critique is still ENTERED (rt.phase('Critique')) with zero agents when
+    // skipped — a tier-2 digest reports the real why instead of a bare empty
+    // container.
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const critiqueDigest = digests.find((d) => d?.phase === 'Critique')
+    expect(critiqueDigest).toBeDefined()
+    expect(critiqueDigest?.stage).toBe('dev-plan:critique')
+    expect(critiqueDigest?.output).toBeTruthy()
   })
 })
 

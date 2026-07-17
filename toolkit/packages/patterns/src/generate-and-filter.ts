@@ -18,6 +18,7 @@ import { warn, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { pipelineWithCacheWarm } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
+import { claimStageInstance, stageBuilder } from './stage-instance.js'
 
 const STAGE = 'generateAndFilter'
 
@@ -46,6 +47,20 @@ export interface GenerateAndFilterOptions<TCand> {
    *  for a cross-family model. Omit for the standard Claude subagent. */
   filterType?: string
   phase?: string
+  /** Per-invocation stage/label discriminator (card #1816036725248493168):
+   *  when this pattern is invoked more than once on the SAME rt object, each
+   *  invocation's stage/label strings collide by default — this pins a
+   *  stable, author-meaningful suffix (` #<stageKey>`) instead of the
+   *  auto-assigned per-invocation counter. Must match the charset/shape rule
+   *  claimStageInstance canonically enforces (letters, digits, underscore,
+   *  dot, hyphen, 1-32 chars, not purely numeric — see stage-instance.ts's
+   *  STAGE_KEY_PATTERN, the ONE source of truth for this rule);
+   *  an invalid key is reported as a warning and the invocation falls back to
+   *  the auto counter (never throws). The auto counter is deterministic for
+   *  SEQUENTIALLY invoked patterns only — concurrent same-pattern invocations
+   *  (e.g. inside a caller's own rt.pipeline/rt.parallel) get completion-order
+   *  numbers, so pass stageKey there for a stable, resume-safe discriminator. */
+  stageKey?: string
   /** Stagger the per-candidate pipeline so candidate 0's generate call
    *  completes (and writes the shared system/tools prefix to the provider's
    *  prompt cache) BEFORE the remaining candidates' generate calls launch,
@@ -107,7 +122,7 @@ export async function generateAndFilter<TCand = string>(
   rt: WorkflowRuntime,
   options: GenerateAndFilterOptions<TCand>,
 ): Promise<PatternResult<TCand[]>> {
-  const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase, cacheWarm } = options
+  const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase, stageKey, cacheWarm } = options
 
   // -------------------------------------------------------------------------
   // Synchronous validation
@@ -130,6 +145,13 @@ export async function generateAndFilter<TCand = string>(
   let generateFailures = 0
   let filterFailures = 0
   const warnings: string[] = []
+
+  // Claim this invocation's stage/label salt NOW — after every synchronous
+  // validation throw above and before the first await (card
+  // #1816036725248493168, amendment A8).
+  const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey)
+  if (stageKeyWarning !== undefined) warn(rt, warnings, stageKeyWarning)
+  const stg = stageBuilder(STAGE, salt)
 
   // Pending trail entries accumulated inside pipeline stage closures.
   // Each entry carries (itemIndex, stageOrder) for deterministic sort after the pipeline barrier.
@@ -165,6 +187,10 @@ export async function generateAndFilter<TCand = string>(
     _originalItem: unknown,
     index: number,
   ): Promise<TCand> => {
+    // Built ONCE, used for both the rt.agent label and every makeRecord call
+    // below (card #1816036725248493168, amendment A8).
+    const stage = stg(`generate:${index}`)
+
     const genOpts: {
       label: string
       phase?: string
@@ -173,7 +199,7 @@ export async function generateAndFilter<TCand = string>(
       effort?: EffortAlias
       agentType?: string
     } = {
-      label: `${STAGE}:generate:${index}`,
+      label: stage,
       ...(phase !== undefined ? { phase } : {}),
       ...(generateSchema !== undefined ? { schema: generateSchema } : {}),
       ...(generateModel !== undefined ? { model: generateModel } : {}),
@@ -188,7 +214,7 @@ export async function generateAndFilter<TCand = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0.5,
-        record: makeRecord(`${STAGE}:generate:${index}:salvage`, genOut.salvaged, {
+        record: makeRecord(`${stage}:salvage`, genOut.salvaged, {
           ...(generateModel !== undefined ? { model: generateModel } : {}),
           ...(generateEffort !== undefined ? { effort: generateEffort } : {}),
         }),
@@ -201,7 +227,7 @@ export async function generateAndFilter<TCand = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0,
-        record: makeRecord(`${STAGE}:generate:${index}`, false, {
+        record: makeRecord(stage, false, {
           ...(generateModel !== undefined ? { model: generateModel } : {}),
           ...(generateEffort !== undefined ? { effort: generateEffort } : {}),
         }),
@@ -212,7 +238,7 @@ export async function generateAndFilter<TCand = string>(
     pendingTrail.push({
       itemIndex: index,
       stageOrder: 0,
-      record: makeRecord(`${STAGE}:generate:${index}`, true, {
+      record: makeRecord(stage, true, {
         ...(generateModel !== undefined ? { model: generateModel } : {}),
         ...(generateEffort !== undefined ? { effort: generateEffort } : {}),
       }),
@@ -227,6 +253,9 @@ export async function generateAndFilter<TCand = string>(
     index: number,
   ): Promise<TCand | typeof REJECTED> => {
     const candidate = prev as TCand
+    // Built ONCE, used for both the rt.agent label and every makeRecord call
+    // below (card #1816036725248493168, amendment A8).
+    const stage = stg(`filter:${index}`)
 
     const filterOpts: {
       schema: JsonSchema
@@ -237,7 +266,7 @@ export async function generateAndFilter<TCand = string>(
       agentType?: string
     } = {
       schema: filterSchema,
-      label: `${STAGE}:filter:${index}`,
+      label: stage,
       ...(phase !== undefined ? { phase } : {}),
       ...(filterModel !== undefined ? { model: filterModel } : {}),
       ...(filterEffort !== undefined ? { effort: filterEffort } : {}),
@@ -255,7 +284,7 @@ export async function generateAndFilter<TCand = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 1.5,
-        record: makeRecord(`${STAGE}:filter:${index}:salvage`, filterOut.salvaged, {
+        record: makeRecord(`${stage}:salvage`, filterOut.salvaged, {
           ...(filterModel !== undefined ? { model: filterModel } : {}),
           ...(filterEffort !== undefined ? { effort: filterEffort } : {}),
         }),
@@ -271,7 +300,7 @@ export async function generateAndFilter<TCand = string>(
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 1,
-        record: makeRecord(`${STAGE}:filter:${index}`, false, {
+        record: makeRecord(stage, false, {
           ...(filterModel !== undefined ? { model: filterModel } : {}),
           ...(filterEffort !== undefined ? { effort: filterEffort } : {}),
         }),
@@ -283,7 +312,7 @@ export async function generateAndFilter<TCand = string>(
     pendingTrail.push({
       itemIndex: index,
       stageOrder: 1,
-      record: makeRecord(`${STAGE}:filter:${index}`, true, {
+      record: makeRecord(stage, true, {
         ...(filterModel !== undefined ? { model: filterModel } : {}),
         ...(filterEffort !== undefined ? { effort: filterEffort } : {}),
         decision: verdict.pass ? 'pass' : 'fail',

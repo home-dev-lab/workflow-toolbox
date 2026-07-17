@@ -4,7 +4,7 @@
 // TDD: written before the implementation (RED step).
 
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
 import wf from '../dev-full.workflow.js'
 
 // ---------------------------------------------------------------------------
@@ -264,6 +264,16 @@ describe('dev-full happy chain', () => {
     expect((out.plan as Record<string, unknown>).taskCount).toBe(2)
     expect(out.implement).not.toBeNull()
     expect((out.review as Record<string, unknown>).suiteGreen).toBe(true)
+  })
+
+  it('emits a [wt:digest] tier-2 digest for the deterministic Report phase (no agent)', async () => {
+    const { rt } = makeRuntime()
+    await run(rt, VALID_INPUT)
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const reportDigest = digests.find((d) => d?.phase === 'Report')
+    expect(reportDigest).toBeDefined()
+    expect(reportDigest?.stage).toBe('dev-full:report')
+    expect(reportDigest?.output).toBeTruthy()
   })
 
   it('sends the plan child exactly {goal, areas, projectDir}', async () => {

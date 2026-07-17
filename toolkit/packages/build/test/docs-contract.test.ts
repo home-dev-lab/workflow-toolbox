@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 
 import { LEAN_AGENT_TYPE, LEAF_AGENT_TYPE } from '@workflow-toolbox/patterns'
 import { PATTERN_NAMES } from '@workflow-toolbox/scaffold'
-import { MAX_STAGES, MAX_PIPELINE_DEPTH } from '@workflow-toolbox/pipeline-spec'
+import { MAX_STAGES, MAX_PIPELINE_DEPTH, MAX_LOOP_ITERATIONS } from '@workflow-toolbox/pipeline-spec'
 import { MAX_WORKFLOW_BYTES, lintWorkflowSource } from '../src/lint.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -124,6 +124,7 @@ const EXTERNAL_VOCABULARY = new Set([
 const COMPANION_VOCABULARY = new Set([
   'spikeDir', // observatory per-source pipeline/gate state dir (known-issues #4)
   'OBSERVE_WORKFLOWS_DIR', // env var the observatory server reads; launcher only forwards it
+  'lastArtifactPath', // observatory pipeline-manifest field the loop runner-contract threads across iterations (orchestrator-pipelines.md)
 ])
 
 /** Repo-relative path bases a doc may resolve from — its own dir, the repo
@@ -258,6 +259,7 @@ describe('docs-contract — value anchors (imported, never re-typed)', () => {
     const pipelinesDoc = read('plugin/skills/workflow-composer/references/orchestrator-pipelines.md')
     expect(pipelinesDoc).toContain(`\`MAX_STAGES\` (${MAX_STAGES})`)
     expect(pipelinesDoc).toContain(`\`MAX_PIPELINE_DEPTH\` (${MAX_PIPELINE_DEPTH})`)
+    expect(pipelinesDoc).toContain(`\`MAX_LOOP_ITERATIONS\` (${MAX_LOOP_ITERATIONS})`)
   })
 
   it('agentType constants match the shipped agent definitions and the routing doc', () => {

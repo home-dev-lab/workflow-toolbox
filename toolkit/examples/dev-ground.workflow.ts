@@ -103,6 +103,7 @@ import {
   untrusted,
   renderSourceRefs,
   collectTrail,
+  emitDigest,
   makeRecord,
   warn,
 } from '@workflow-toolbox/patterns'
@@ -1149,6 +1150,22 @@ export default defineWorkflow({
       // EMPTY-SET NO-OP: report what actually happened (nothing qualified),
       // never a generic "skipped" — an empty phase must not imply probes ran.
       warn(rt, warnings, 'dev-ground: no external premise was left unsettled — PoC stage did not run (nothing qualified)')
+      // Tier-2 skip-digest: PoC is entered (rt.phase('PoC')) but zero canaries
+      // spawn here — without this, observe's phase box would guess a generic
+      // emptyReason instead of showing the real "nothing qualified" why.
+      // Custom-stage naming convention: '<workflow-name>:<phase-lowercase>',
+      // matching this file's kebab-case agent-label prefix (e.g.
+      // 'dev-ground:poc:<premiseId>' below). `phase` MUST equal the
+      // rt.phase() title exactly — the sole resolution hint for a zero-agent
+      // phase; each of this workflow's eight phase titles is distinct so no
+      // digest ever collides with another under the same title (see the
+      // meta.phases comment above).
+      emitDigest(rt, {
+        stage: 'dev-ground:poc',
+        phase: 'PoC',
+        output: 'no external premise was left unsettled — PoC stage did not run (nothing qualified)',
+        counts: { eligible: 0 },
+      })
     } else {
       let pocAgentsSpawned = 0
       let pocDropped = 0
@@ -1232,6 +1249,16 @@ export default defineWorkflow({
       verifyClaims.length === 0
         ? (() => {
             warn(rt, warnings, 'dev-ground: no premise records survived the grounding arms — nothing to verify')
+            // Tier-2 skip-digest: Verify is entered but adversarialVerification
+            // never runs here (it emits its OWN digest on the normal path) —
+            // zero agents spawn in this branch. Same naming/attribution
+            // contract as the PoC digest above.
+            emitDigest(rt, {
+              stage: 'dev-ground:verify',
+              phase: 'Verify',
+              output: 'no premise records survived the grounding arms — nothing to verify',
+              counts: { claims: 0 },
+            })
             return null
           })()
         : await adversarialVerification<MergedPremise>(rt, {

@@ -20,7 +20,7 @@
 // discriminates — checked before the generic markers below it.
 
 import { describe, it, expect } from 'vitest'
-import { FakeRuntime } from '@workflow-toolbox/runtime'
+import { FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
 import { LEAF_AGENT_TYPE } from '@workflow-toolbox/patterns'
 import wf, {
   deriveRecommendation,
@@ -688,6 +688,14 @@ describe('dev-ground PoC canary sub-stage', () => {
     const pocCalls = rt.calls.filter((c) => c.prompt.toLowerCase().includes('you are the canary'))
     expect(pocCalls.length).toBe(0)
     expect((result as { warnings: string[] }).warnings.some((w) => w.includes('nothing qualified'))).toBe(true)
+
+    // PoC is still ENTERED (rt.phase('PoC')) with zero agents — a tier-2
+    // digest reports the real why instead of a bare empty container.
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const pocDigest = digests.find((d) => d?.phase === 'PoC')
+    expect(pocDigest).toBeDefined()
+    expect(pocDigest?.stage).toBe('dev-ground:poc')
+    expect(pocDigest?.output).toBeTruthy()
   })
 
   it('guards: an empty denialQuote on refused-by-classifier warns without throwing', async () => {
@@ -796,6 +804,15 @@ describe('dev-ground Verify + final artifact', () => {
     expect(verifierCalls.length).toBe(0)
     expect(result.stats.verify).toBeNull()
     expect(result.warnings.some((w) => /nothing to verify/.test(w))).toBe(true)
+
+    // Verify is still ENTERED (rt.phase('Verify')) with zero agents (the
+    // adversarialVerification pattern never ran) — a tier-2 digest reports
+    // the real why instead of a bare empty container.
+    const digests = rt.logs.map((l) => parseDigest(l)).filter((d) => d !== null)
+    const verifyDigest = digests.find((d) => d?.phase === 'Verify')
+    expect(verifyDigest).toBeDefined()
+    expect(verifyDigest?.stage).toBe('dev-ground:verify')
+    expect(verifyDigest?.output).toBeTruthy()
   })
 
   it('verifier-downgrade warning: verifierModel haiku triggers the pattern contract text; absent → no warning, model opus', async () => {

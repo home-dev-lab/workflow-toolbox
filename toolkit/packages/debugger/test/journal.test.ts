@@ -44,6 +44,12 @@ describe('parseJournal', () => {
     expect(j).not.toBeNull()
     expect(j?.status).toBeUndefined()
   })
+
+  it('phases[].detail survives parsing (real journals carry it on disk)', () => {
+    const j = parseJournal(fx('real-script-throw.json'))
+    expect(j?.phases?.[0]?.detail).toBe('collect the input items')
+    expect(j?.phases?.[1]?.detail).toBe('process each gathered item')
+  })
 })
 
 describe('agent accessors', () => {

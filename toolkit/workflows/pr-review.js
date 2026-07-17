@@ -898,10 +898,41 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     });
   }
 
+  // ../packages/patterns/src/stage-instance.ts
+  var registry = /* @__PURE__ */ new WeakMap();
+  var STAGE_KEY_PATTERN = /^(?!\d+$)[A-Za-z0-9_.-]{1,32}$/;
+  function claimStageInstance(rt, pattern, stageKey) {
+    if (stageKey !== void 0) {
+      if (STAGE_KEY_PATTERN.test(stageKey)) {
+        return { salt: ` #${stageKey}` };
+      }
+      const fallback = claimAuto(rt, pattern);
+      const reason = /^\d+$/.test(stageKey) ? "purely-numeric keys are reserved for the auto instance counter's own ' #<n>' format (a numeric stageKey would be indistinguishable from an auto-salted invocation)" : `must match ${STAGE_KEY_PATTERN.source}`;
+      return {
+        salt: fallback.salt,
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (${reason}) \u2014 falling back to the auto instance counter`
+      };
+    }
+    return claimAuto(rt, pattern);
+  }
+  function claimAuto(rt, pattern) {
+    let byPattern = registry.get(rt);
+    if (byPattern === void 0) {
+      byPattern = /* @__PURE__ */ new Map();
+      registry.set(rt, byPattern);
+    }
+    const n = (byPattern.get(pattern) ?? 0) + 1;
+    byPattern.set(pattern, n);
+    return { salt: n === 1 ? "" : ` #${n}` };
+  }
+  function stageBuilder(stage, salt) {
+    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
+  }
+
   // ../packages/patterns/src/classify-and-act.ts
   var STAGE2 = "classifyAndAct";
   async function classifyAndAct(rt, options) {
-    const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems, cacheWarm } = options;
+    const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems, stageKey, cacheWarm } = options;
     if (categories.length === 0) {
       throw new Error("classifyAndAct: categories must not be empty \u2014 provide at least one category");
     }
@@ -929,6 +960,9 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     let classifyFailures = 0;
     let actionFailures = 0;
     const warnings = [];
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE2, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE2, salt);
     const pendingWarnings = [];
     const pendingTrail = [];
     if (truncated > 0) {
@@ -948,9 +982,10 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     };
     const classifyStage = async (_prev, originalItem, index) => {
       const item = originalItem;
+      const stage = stg(`classify:${index}`);
       const classifyOpts = {
         schema: controlSchema,
-        label: `${STAGE2}:classify:${index}`,
+        label: stage,
         ...phase !== void 0 ? { phase } : {},
         ...classifyModel !== void 0 ? { model: classifyModel } : {},
         ...classifyEffort !== void 0 ? { effort: classifyEffort } : {},
@@ -963,7 +998,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0.5,
-          record: makeRecord(`${STAGE2}:classify:${index}:salvage`, classifyOut.salvaged, {
+          record: makeRecord(`${stage}:salvage`, classifyOut.salvaged, {
             ...classifyModel !== void 0 ? { model: classifyModel } : {},
             ...classifyEffort !== void 0 ? { effort: classifyEffort } : {}
           })
@@ -975,7 +1010,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0,
-          record: makeRecord(`${STAGE2}:classify:${index}`, false, {
+          record: makeRecord(stage, false, {
             ...classifyModel !== void 0 ? { model: classifyModel } : {},
             ...classifyEffort !== void 0 ? { effort: classifyEffort } : {}
           })
@@ -987,7 +1022,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0,
-          record: makeRecord(`${STAGE2}:classify:${index}`, false, {
+          record: makeRecord(stage, false, {
             ...classifyModel !== void 0 ? { model: classifyModel } : {},
             ...classifyEffort !== void 0 ? { effort: classifyEffort } : {}
           })
@@ -997,7 +1032,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0,
-        record: makeRecord(`${STAGE2}:classify:${index}`, true, {
+        record: makeRecord(stage, true, {
           ...classifyModel !== void 0 ? { model: classifyModel } : {},
           ...classifyEffort !== void 0 ? { effort: classifyEffort } : {},
           decision: classified.category
@@ -1012,8 +1047,9 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
         classifyFailures++;
         throw new Error(`no action for category "${category}"`);
       }
+      const stage = stg(`act:${category}:${index}`);
       const actOpts = {
-        label: `${STAGE2}:act:${category}:${index}`,
+        label: stage,
         ...phase !== void 0 ? { phase } : {},
         ...spec.schema !== void 0 ? { schema: spec.schema } : {},
         ...spec.model !== void 0 ? { model: spec.model } : {},
@@ -1027,7 +1063,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 1.5,
-          record: makeRecord(`${STAGE2}:act:${category}:${index}:salvage`, actOut.salvaged, {
+          record: makeRecord(`${stage}:salvage`, actOut.salvaged, {
             ...spec.model !== void 0 ? { model: spec.model } : {},
             ...spec.effort !== void 0 ? { effort: spec.effort } : {}
           })
@@ -1039,7 +1075,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 1,
-          record: makeRecord(`${STAGE2}:act:${category}:${index}`, false, {
+          record: makeRecord(stage, false, {
             ...spec.model !== void 0 ? { model: spec.model } : {},
             ...spec.effort !== void 0 ? { effort: spec.effort } : {}
           })
@@ -1049,7 +1085,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 1,
-        record: makeRecord(`${STAGE2}:act:${category}:${index}`, true, {
+        record: makeRecord(stage, true, {
           ...spec.model !== void 0 ? { model: spec.model } : {},
           ...spec.effort !== void 0 ? { effort: spec.effort } : {}
         })
@@ -1133,7 +1169,8 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
       phase,
       maxVerifyClaims,
       verifierType,
-      cacheWarm
+      cacheWarm,
+      stageKey
     } = options;
     const refuteThreshold = refuteThresholdOpt ?? 2;
     if (claims.length === 0) {
@@ -1189,6 +1226,9 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     let agentsSpawned = 0;
     const warnings = [];
     const trail = [];
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE3, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE3, salt);
     const effectiveModel = model ?? BEST_MODEL;
     if (model !== void 0 && model !== BEST_MODEL) {
       warn(
@@ -1214,7 +1254,7 @@ ${renderClaim(claim)}`;
     }
     if (cacheWarm ?? true) {
       agentsSpawned++;
-      trail.push(await runCacheWarmup(rt, warnings, `${STAGE3}:warm`, STAGE3, {
+      trail.push(await runCacheWarmup(rt, warnings, stg("warm"), STAGE3, {
         ...phase !== void 0 ? { phase } : {},
         model: effectiveModel,
         ...effort !== void 0 ? { effort } : {},
@@ -1226,13 +1266,17 @@ ${renderClaim(claim)}`;
     const verifiedKept = await Promise.all(
       keptClaims.map(async (claim, claimIndex) => {
         const claimVotes = perClaimVotes[claimIndex] ?? votesOpt;
+        const voteStages = Array.from(
+          { length: claimVotes },
+          (_, voteIndex) => stg(`verify:${claimIndex}:${voteIndex}`)
+        );
         const voteThunks = Array.from({ length: claimVotes }, (_, voteIndex) => {
           return async () => {
             const lens = lenses !== void 0 ? lenses[voteIndex] : void 0;
             const prompt = buildVerifierPrompt(claim, lens);
             const opts = {
               schema: VERIFIER_SCHEMA,
-              label: `${STAGE3}:verify:${claimIndex}:${voteIndex}`,
+              label: voteStages[voteIndex],
               ...phase !== void 0 ? { phase } : {},
               model: effectiveModel,
               ...effort !== void 0 ? { effort } : {},
@@ -1251,9 +1295,10 @@ ${renderClaim(claim)}`;
         for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
           const out = voteOuts[voteIndex] ?? null;
           const vote = votes[voteIndex] ?? null;
+          const stage = voteStages[voteIndex];
           agentsSpawned += out?.spawns ?? 1;
           claimRecords.push(makeRecord(
-            `${STAGE3}:verify:${claimIndex}:${voteIndex}`,
+            stage,
             vote !== null,
             {
               model: effectiveModel,
@@ -1263,7 +1308,7 @@ ${renderClaim(claim)}`;
           ));
           if (out !== null && out.salvageAttempted) {
             claimRecords.push(makeRecord(
-              `${STAGE3}:verify:${claimIndex}:${voteIndex}:salvage`,
+              `${stage}:salvage`,
               out.salvaged,
               {
                 model: effectiveModel,
@@ -1559,6 +1604,20 @@ ${renderClaim(claim)}`;
     additionalProperties: false
   };
   var READ_ONLY_GIT = "Inspect via READ-ONLY git only \u2014 `git show <sha>:<path>`, `git diff <range>`, `git log` \u2014 NEVER `git checkout` / `git reset` / `git restore` / `git clean` (they mutate the shared working tree and will be denied).";
+  function actPrompt(category, summaryAsk, extraTaskLine) {
+    return (target) => `You are reviewing a ${category} change.
+
+## Task
+- Inspect the actual change: ${target}.${extraTaskLine !== void 0 ? ` ${extraTaskLine}` : ""}
+- ${READ_ONLY_GIT}
+
+## What to report
+- **Risk areas**: the change's real risk areas, short entries.
+- **Summary**: ${summaryAsk}.
+
+## Output contract
+Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<...>" }. ${CHANGE_SUMMARY_RULES}`;
+  }
   var REVIEWER_LENSES = {
     bugfix: ["root-cause", "regression-risk", "test-coverage", "maintainability"],
     feature: ["correctness", "security", "api-design", "maintainability"],
@@ -1732,37 +1791,27 @@ Return { "category": "<one of the five categories>" }`,
       actions: {
         feature: {
           schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: (target) => `You are reviewing a FEATURE change. Inspect the actual change (${target}) and produce a focused summary.
-${READ_ONLY_GIT}
-Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what the feature does>" }. ${CHANGE_SUMMARY_RULES}`,
+          prompt: actPrompt("FEATURE", "what the feature does"),
           effort: routeActEffort
         },
         bugfix: {
           schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: (target) => `You are reviewing a BUGFIX change. Inspect the actual change (${target}) \u2014 re-derive from first principles.
-${READ_ONLY_GIT}
-Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was broken and how it is fixed>" }. ${CHANGE_SUMMARY_RULES}`,
+          prompt: actPrompt("BUGFIX", "what was broken and how it is fixed", "re-derive from first principles."),
           effort: routeActEffort
         },
         refactor: {
           schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: (target) => `You are reviewing a REFACTOR change. Inspect the actual change (${target}).
-${READ_ONLY_GIT}
-Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what was refactored and why>" }. ${CHANGE_SUMMARY_RULES}`,
+          prompt: actPrompt("REFACTOR", "what was refactored and why"),
           effort: routeActEffort
         },
         config: {
           schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: (target) => `You are reviewing a CONFIG change. Inspect the actual change (${target}).
-${READ_ONLY_GIT}
-Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what config changed and its effect>" }. ${CHANGE_SUMMARY_RULES}`,
+          prompt: actPrompt("CONFIG", "what config changed and its effect"),
           effort: routeActEffort
         },
         docs: {
           schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: (target) => `You are reviewing a DOCS change. Inspect the actual change (${target}).
-${READ_ONLY_GIT}
-Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<what documentation was updated>" }. ${CHANGE_SUMMARY_RULES}`,
+          prompt: actPrompt("DOCS", "what documentation was updated"),
           effort: routeActEffort
         }
       },
@@ -1951,6 +2000,20 @@ Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'
         // probe-resolved above. Omitted when null → the standard subagent (default,
         // also the graceful-fallback path when the requested type could not answer).
         ...resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {},
+        // Per-lens stage/label discriminator (card #1816036725248493168,
+        // amendment A2 — the flagship remediation of the original finding, run
+        // wf_7b5bb844-368): this verifyStage runs once per lens via
+        // rt.pipeline's no-barrier per-item stages, all on the SAME `rt` — the
+        // auto salt counter would assign completion-order numbers (concurrent
+        // invocations), non-deterministic across resumeFromRunId replays. The
+        // lens name is a stable, author-meaningful key instead: every real lens
+        // (base categories, 'docs-alignment', 'docs-coverage', 'consolidated')
+        // matches the stageKey charset/shape rule claimStageInstance canonically
+        // enforces (letters, digits, underscore, dot, hyphen, 1-32 chars, not
+        // purely numeric — see stage-instance.ts's STAGE_KEY_PATTERN, the ONE
+        // source of truth for this rule) — none of these lens names is purely
+        // numeric, so none collides with the auto counter's own ' #<n>' format.
+        stageKey: lens,
         claims: findings,
         renderClaim: (finding) => `## Claim to verify (lens: ${lens})
 **${finding.title}** \u2014 \`${finding.file}\` \xB7 severity: ${finding.severity}

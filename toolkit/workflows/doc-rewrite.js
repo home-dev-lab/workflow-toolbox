@@ -558,11 +558,42 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     return [...firstResult, ...restResults];
   }
 
+  // ../packages/patterns/src/stage-instance.ts
+  var registry = /* @__PURE__ */ new WeakMap();
+  var STAGE_KEY_PATTERN = /^(?!\d+$)[A-Za-z0-9_.-]{1,32}$/;
+  function claimStageInstance(rt, pattern, stageKey) {
+    if (stageKey !== void 0) {
+      if (STAGE_KEY_PATTERN.test(stageKey)) {
+        return { salt: ` #${stageKey}` };
+      }
+      const fallback = claimAuto(rt, pattern);
+      const reason = /^\d+$/.test(stageKey) ? "purely-numeric keys are reserved for the auto instance counter's own ' #<n>' format (a numeric stageKey would be indistinguishable from an auto-salted invocation)" : `must match ${STAGE_KEY_PATTERN.source}`;
+      return {
+        salt: fallback.salt,
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (${reason}) \u2014 falling back to the auto instance counter`
+      };
+    }
+    return claimAuto(rt, pattern);
+  }
+  function claimAuto(rt, pattern) {
+    let byPattern = registry.get(rt);
+    if (byPattern === void 0) {
+      byPattern = /* @__PURE__ */ new Map();
+      registry.set(rt, byPattern);
+    }
+    const n = (byPattern.get(pattern) ?? 0) + 1;
+    byPattern.set(pattern, n);
+    return { salt: n === 1 ? "" : ` #${n}` };
+  }
+  function stageBuilder(stage, salt) {
+    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
+  }
+
   // ../packages/patterns/src/generate-and-filter.ts
   var STAGE = "generateAndFilter";
   var REJECTED = /* @__PURE__ */ Symbol("generate-and-filter:REJECTED");
   async function generateAndFilter(rt, options) {
-    const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase, cacheWarm } = options;
+    const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase, stageKey, cacheWarm } = options;
     if (count < 1) {
       throw new Error(
         `generateAndFilter: count must be >= 1, got ${count} \u2014 set count to a positive integer`
@@ -574,6 +605,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     let generateFailures = 0;
     let filterFailures = 0;
     const warnings = [];
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE, salt);
     const pendingTrail = [];
     const pendingWarnings = [];
     const filterSchema = {
@@ -586,8 +620,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       additionalProperties: false
     };
     const generateStage = async (_prev, _originalItem, index) => {
+      const stage = stg(`generate:${index}`);
       const genOpts = {
-        label: `${STAGE}:generate:${index}`,
+        label: stage,
         ...phase !== void 0 ? { phase } : {},
         ...generateSchema !== void 0 ? { schema: generateSchema } : {},
         ...generateModel !== void 0 ? { model: generateModel } : {},
@@ -601,7 +636,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0.5,
-          record: makeRecord(`${STAGE}:generate:${index}:salvage`, genOut.salvaged, {
+          record: makeRecord(`${stage}:salvage`, genOut.salvaged, {
             ...generateModel !== void 0 ? { model: generateModel } : {},
             ...generateEffort !== void 0 ? { effort: generateEffort } : {}
           })
@@ -613,7 +648,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 0,
-          record: makeRecord(`${STAGE}:generate:${index}`, false, {
+          record: makeRecord(stage, false, {
             ...generateModel !== void 0 ? { model: generateModel } : {},
             ...generateEffort !== void 0 ? { effort: generateEffort } : {}
           })
@@ -623,7 +658,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 0,
-        record: makeRecord(`${STAGE}:generate:${index}`, true, {
+        record: makeRecord(stage, true, {
           ...generateModel !== void 0 ? { model: generateModel } : {},
           ...generateEffort !== void 0 ? { effort: generateEffort } : {}
         })
@@ -632,9 +667,10 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     };
     const filterStage = async (prev, _originalItem, index) => {
       const candidate = prev;
+      const stage = stg(`filter:${index}`);
       const filterOpts = {
         schema: filterSchema,
-        label: `${STAGE}:filter:${index}`,
+        label: stage,
         ...phase !== void 0 ? { phase } : {},
         ...filterModel !== void 0 ? { model: filterModel } : {},
         ...filterEffort !== void 0 ? { effort: filterEffort } : {},
@@ -651,7 +687,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 1.5,
-          record: makeRecord(`${STAGE}:filter:${index}:salvage`, filterOut.salvaged, {
+          record: makeRecord(`${stage}:salvage`, filterOut.salvaged, {
             ...filterModel !== void 0 ? { model: filterModel } : {},
             ...filterEffort !== void 0 ? { effort: filterEffort } : {}
           })
@@ -663,7 +699,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         pendingTrail.push({
           itemIndex: index,
           stageOrder: 1,
-          record: makeRecord(`${STAGE}:filter:${index}`, false, {
+          record: makeRecord(stage, false, {
             ...filterModel !== void 0 ? { model: filterModel } : {},
             ...filterEffort !== void 0 ? { effort: filterEffort } : {}
           })
@@ -673,7 +709,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       pendingTrail.push({
         itemIndex: index,
         stageOrder: 1,
-        record: makeRecord(`${STAGE}:filter:${index}`, true, {
+        record: makeRecord(stage, true, {
           ...filterModel !== void 0 ? { model: filterModel } : {},
           ...filterEffort !== void 0 ? { effort: filterEffort } : {},
           decision: verdict.pass ? "pass" : "fail"
