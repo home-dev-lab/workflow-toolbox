@@ -105,3 +105,19 @@ export function mintDigestId(runId: string, seq: number): string {
   const safeSeq = Number.isFinite(seq) ? Math.max(0, Math.trunc(seq)) : 0
   return `d-${runSegmentWithHash(runId)}-${safeSeq}`
 }
+
+/** Tighter than the run/step caps: the hint id carries run segment + hash + observer
+ *  segment + seq, and the <=90-char mint guarantee must hold even for a 16-digit seq
+ *  (2 + 49 + 1 + 20 + 1 + 16 = 89). Observer definition names are short by their own
+ *  grammar (`^[a-z0-9-]{1,64}$`), so 20 chars keeps them recognizable. */
+const OBSERVER_SEGMENT_MAX = 20
+
+/** `mintHintId(runId, observerName, seq) = h-<segment>-<observer>-<seq>` (v0.2) — same
+ *  run-segment recipe as the other mints (ONE derivation site, review lock F11), plus
+ *  the folded observer-definition name so two observers watching the same run can never
+ *  collide on a seq. Deterministic, always grammar-valid and <=90 chars. */
+export function mintHintId(runId: string, observerName: string, seq: number): string {
+  const observerSegment = foldSegment(observerName, OBSERVER_SEGMENT_MAX, 'o')
+  const safeSeq = Number.isFinite(seq) ? Math.max(0, Math.trunc(seq)) : 0
+  return `h-${runSegmentWithHash(runId)}-${observerSegment}-${safeSeq}`
+}

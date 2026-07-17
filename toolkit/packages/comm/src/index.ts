@@ -10,6 +10,7 @@ export {
   fold,
   mintQuestionId,
   mintDigestId,
+  mintHintId,
 } from './ids.js'
 export * from './schemas.js'
 export * from './paths.js'

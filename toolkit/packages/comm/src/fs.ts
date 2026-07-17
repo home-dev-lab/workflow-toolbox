@@ -206,7 +206,7 @@ export function readMessage(dir: string, id: string): ReadMessageResult {
 
 export interface ListMessagesFilter {
   type?: WtCommMessageType
-  to?: { role?: 'agent' | 'pilot'; id?: string }
+  to?: { role?: 'agent' | 'pilot' | 'observer'; id?: string }
 }
 
 export function listMessages(dir: string, filter: ListMessagesFilter = {}): WtCommMessage[] {

@@ -142,12 +142,13 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     ],
   },
   {
-    // wt-comm v0: the file-message protocol between escalating agents, the pilot, and
-    // the (v0 read-only) observer/relay.
+    // wt-comm: the file-message protocol between escalating agents, the pilot, and
+    // the observer/relay (hint producer since v0.2).
     sources: ['toolkit/packages/comm/src/'],
     docs: [
       'toolkit/packages/comm/README.md',
       'toolkit/packages/comm/teaching/wt-comm-participant.md',
+      'toolkit/packages/comm/teaching/wt-comm-observer-consumer.md',
     ],
   },
 ]

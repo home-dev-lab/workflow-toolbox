@@ -41,6 +41,18 @@ import { decisionIdFor, isValidDecisionId } from './ids.js'
 type NodeResult = { ok: true; value: unknown } | { ok: false }
 
 function validateNode(schema: JsonSchema, value: unknown): NodeResult {
+  // anyOf (v0.2, for the hint provenance union): first matching branch wins. Branches are
+  // discriminated by their own `source` enums, so the match is deterministic; the winning
+  // branch's canonical value (declared properties only) is what survives.
+  const anyOf = schema['anyOf'] as readonly JsonSchema[] | undefined
+  if (anyOf !== undefined) {
+    for (const branch of anyOf) {
+      const branchResult = validateNode(branch, value)
+      if (branchResult.ok) return branchResult
+    }
+    return { ok: false }
+  }
+
   const type = schema['type']
 
   if (type === 'object') {
@@ -128,6 +140,11 @@ export type ParseMessageResult = { ok: true; message: WtCommMessage } | { ok: fa
 function isProvenanceLegal(role: string, type: WtCommMessageType): boolean {
   if (role === 'agent') return type === 'escalation.question' || type === 'status.digest'
   if (role === 'pilot') return type === 'decision.response'
+  // v0.2: observers produce ONLY observer.* types — never decisions (observers don't
+  // decide) and never escalations (an observer that wants the pilot's attention goes
+  // through its own nudge channel, outside this tree). The agent/pilot branches above
+  // stay closed enumerations, so neither can ever produce an observer.* type.
+  if (role === 'observer') return type.startsWith('observer.')
   return false
 }
 
@@ -176,6 +193,16 @@ export function parseMessage(text: string): ParseMessageResult {
 
   if (message.type === 'decision.response' && !isValidDecisionId(message.id)) {
     return { ok: false, reason: 'malformed' }
+  }
+
+  // Cross-field (v0.2): a transcript provenance window is half-open [fromOffset,
+  // toOffset) and must be non-empty — an empty citation grounds nothing (design S1).
+  if (message.type === 'observer.hint') {
+    for (const p of message.payload.provenance) {
+      if (p.source === 'transcript' && p.toOffset <= p.fromOffset) {
+        return { ok: false, reason: 'malformed' }
+      }
+    }
   }
 
   if (!isProvenanceLegal(message.from.role, message.type)) return { ok: false, reason: 'provenance' }

@@ -36,7 +36,11 @@ export const OPTION_ID_PATTERN = /^[a-z0-9-]{1,32}$/
  *  `at` and by ack/settlement markers' own `at`. */
 export const AT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/
 
-const ROLE_ENUM = ['agent', 'pilot'] as const
+/** v0.2: 'observer' joins the envelope role union — for BOTH `from` and `to`. No v0.2
+ *  message type is ADDRESSED to an observer (hints go to agents), but the envelope
+ *  grammar admits it: forbidding it would buy nothing (write legality is the from-role
+ *  x type matrix, not the address) and would cost an asymmetric grammar. */
+const ROLE_ENUM = ['agent', 'pilot', 'observer'] as const
 
 // ===========================================================================
 // Shared envelope fragments
@@ -182,15 +186,93 @@ export const DIGEST_MESSAGE_SCHEMA = {
 
 export type DigestMessage = FromSchema<typeof DIGEST_MESSAGE_SCHEMA>
 
-export type WtCommMessage = QuestionMessage | DecisionMessage | DigestMessage
+// ===========================================================================
+// observer.hint (observer -> agent) — v0.2. Proactive, SOURCED help toward an
+// observed agent. `provenance` is REQUIRED (minItems 1): a hint without provenance
+// does not validate, writer-side or reader-side (design boundary S1 — hint content
+// is auditable DATA, never instruction). Payload property order follows the
+// package's generation-template convention: short structured fields first, the
+// long prose (`hint`) last.
+// ===========================================================================
+
+const PROVENANCE_TRANSCRIPT_SCHEMA = {
+  type: 'object',
+  properties: {
+    source: { type: 'string', enum: ['transcript'] },
+    file: { type: 'string', minLength: 1, maxLength: 512 },
+    fromOffset: { type: 'integer', minimum: 0 },
+    // The cited byte window is [fromOffset, toOffset) and must be NON-EMPTY: an empty
+    // window grounds nothing. minimum 1 here; the strict toOffset > fromOffset
+    // cross-field rule lives in parseMessage (plain JSON Schema can't express it).
+    toOffset: { type: 'integer', minimum: 1 },
+  },
+  required: ['source', 'file', 'fromOffset', 'toOffset'],
+  additionalProperties: false,
+} as const satisfies JsonSchema
+
+const PROVENANCE_CAPABILITY_SCHEMA = {
+  type: 'object',
+  properties: {
+    source: { type: 'string', enum: ['capability'] },
+    need: { type: 'string', minLength: 1, maxLength: 64 },
+    provider: { type: 'string', minLength: 1, maxLength: 128 },
+    /** URL / document identifier at the provider — auditable, not re-executable. */
+    ref: { type: 'string', minLength: 1, maxLength: 2048 },
+    retrievedAt: AT_SCHEMA,
+  },
+  required: ['source', 'need', 'provider', 'ref', 'retrievedAt'],
+  additionalProperties: false,
+} as const satisfies JsonSchema
+
+/** Discriminated by `source` — the interpreter's scoped anyOf support tries each
+ *  branch; the `source` enums make the match deterministic. */
+export const HINT_PROVENANCE_SCHEMA = {
+  anyOf: [PROVENANCE_TRANSCRIPT_SCHEMA, PROVENANCE_CAPABILITY_SCHEMA],
+} as const satisfies JsonSchema
+
+export const HINT_MESSAGE_SCHEMA = {
+  type: 'object',
+  properties: {
+    schemaVersion: { type: 'integer' },
+    id: { type: 'string', pattern: BASE_ID_PATTERN.source, minLength: 1, maxLength: 96 },
+    type: { type: 'string', enum: ['observer.hint'] },
+    from: FROM_SCHEMA,
+    to: TO_SCHEMA,
+    runId: RUN_ID_SCHEMA,
+    at: AT_SCHEMA,
+    payload: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', minLength: 1, maxLength: 64 },
+        confidence: { type: 'string', enum: ['low', 'medium', 'high'] },
+        provenance: { type: 'array', minItems: 1, maxItems: 8, items: HINT_PROVENANCE_SCHEMA },
+        hint: { type: 'string', minLength: 20, maxLength: 2000 },
+      },
+      required: ['kind', 'provenance', 'hint'],
+      additionalProperties: false,
+    },
+  },
+  required: ['schemaVersion', 'id', 'type', 'from', 'to', 'at', 'payload'],
+  additionalProperties: false,
+} as const satisfies JsonSchema
+
+export type HintMessage = FromSchema<typeof HINT_MESSAGE_SCHEMA>
+export type HintProvenance = HintMessage['payload']['provenance'][number]
+
+export type WtCommMessage = QuestionMessage | DecisionMessage | DigestMessage | HintMessage
 export type WtCommMessageType = WtCommMessage['type']
 
 /** Keyed by envelope `type` — the generic interpreter (validate.ts) selects the schema to
- *  walk from this single map rather than a hand-written switch duplicating the type strings. */
+ *  walk from this single map rather than a hand-written switch duplicating the type strings.
+ *  ⚠ Version coupling (normative, README "Versioning"): this union is CLOSED — adding a
+ *  type is a CODE change, and a reader built BEFORE a type classifies its messages as
+ *  `malformed` and silently skips them in listings. Producer and consumers of a type must
+ *  both run a package version that knows it. */
 export const WT_COMM_SCHEMAS = {
   'escalation.question': QUESTION_MESSAGE_SCHEMA,
   'decision.response': DECISION_MESSAGE_SCHEMA,
   'status.digest': DIGEST_MESSAGE_SCHEMA,
+  'observer.hint': HINT_MESSAGE_SCHEMA,
 } as const
 
 // ===========================================================================
