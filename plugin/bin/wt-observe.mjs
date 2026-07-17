@@ -202,6 +202,77 @@ function clearAllLaunchEnableRecords(stateRoot) {
   }
 }
 
+// packages/debugger/src/capabilities.ts
+var SECTION_KEYS = /* @__PURE__ */ new Set(["mcpServers", "agents", "skills"]);
+function isRecord2(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function isStringArray(v) {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+var MCP_ANCHOR_KEYS = ["command", "url", "type"];
+function validateMcpServers(v, errors) {
+  if (!isRecord2(v)) {
+    errors.push("capabilities.mcpServers must be an object map of server-name \u2192 server config");
+    return void 0;
+  }
+  for (const [name, cfg] of Object.entries(v)) {
+    if (!isRecord2(cfg)) {
+      errors.push(`capabilities.mcpServers.${name} must be an object (server config)`);
+    } else if (!MCP_ANCHOR_KEYS.some((k) => k in cfg)) {
+      errors.push(`capabilities.mcpServers.${name} lacks any of ${MCP_ANCHOR_KEYS.join("/")} \u2014 not a launchable server config`);
+    }
+  }
+  return v;
+}
+function validateAgents(v, errors) {
+  if (!isRecord2(v)) {
+    errors.push("capabilities.agents must be an object map of agent-name \u2192 agent definition");
+    return void 0;
+  }
+  for (const [name, def] of Object.entries(v)) {
+    if (!isRecord2(def)) {
+      errors.push(`capabilities.agents.${name} must be an object (agent definition)`);
+      continue;
+    }
+    if (typeof def["description"] !== "string") errors.push(`capabilities.agents.${name} needs a string description`);
+    if (typeof def["prompt"] !== "string") errors.push(`capabilities.agents.${name} needs a string prompt`);
+    if ("tools" in def && !isStringArray(def["tools"])) errors.push(`capabilities.agents.${name}.tools must be a string array`);
+    if ("disallowedTools" in def && !isStringArray(def["disallowedTools"])) errors.push(`capabilities.agents.${name}.disallowedTools must be a string array`);
+  }
+  return v;
+}
+function extractCapabilities(args) {
+  if (!isRecord2(args) || !("capabilities" in args)) return { spec: null, errors: [] };
+  const raw = args["capabilities"];
+  if (!isRecord2(raw)) return { spec: null, errors: ["capabilities must be an object ({ mcpServers?, agents?, skills? })"] };
+  const errors = [];
+  for (const key of Object.keys(raw)) {
+    if (!SECTION_KEYS.has(key)) errors.push(`capabilities.${key} is not a known section (known: ${[...SECTION_KEYS].join(", ")})`);
+  }
+  const spec = {};
+  if ("mcpServers" in raw) {
+    const m = validateMcpServers(raw["mcpServers"], errors);
+    if (m !== void 0) spec.mcpServers = m;
+  }
+  if ("agents" in raw) {
+    const a = validateAgents(raw["agents"], errors);
+    if (a !== void 0) spec.agents = a;
+  }
+  if ("skills" in raw) {
+    if (!isStringArray(raw["skills"])) errors.push("capabilities.skills must be a string array (SDK skill enable-filter)");
+    else spec.skills = raw["skills"];
+  }
+  return errors.length > 0 ? { spec: null, errors } : { spec, errors: [] };
+}
+function composeCapabilityOptions(spec) {
+  return {
+    ...spec.mcpServers !== void 0 ? { mcpServers: spec.mcpServers } : {},
+    ...spec.agents !== void 0 ? { agents: spec.agents } : {},
+    ...spec.skills !== void 0 ? { skills: spec.skills } : {}
+  };
+}
+
 // packages/debugger/src/launch-body.ts
 function buildLaunchBody(script, args, requesterCwd) {
   return {
@@ -973,6 +1044,15 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
     } catch {
       throw new Error(`--args is not valid JSON: ${rawArgs}`);
     }
+  }
+  const cap = extractCapabilities(args);
+  if (cap.errors.length > 0) throw new Error(`--args capabilities section invalid:
+  - ${cap.errors.join("\n  - ")}`);
+  if (cap.spec !== null) {
+    process.stderr.write(
+      `capabilities section: ${Object.keys(composeCapabilityOptions(cap.spec)).join(", ") || "(empty)"} \u2014 needs a server with capabilities composition; older servers ignore it
+`
+    );
   }
   const { port, token, health } = await requireOwnedServer(ctx);
   const { prefix, label } = await resolveSourcePrefix(port, token, health, sourceFlag);

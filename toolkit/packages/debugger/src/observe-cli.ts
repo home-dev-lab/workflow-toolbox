@@ -68,6 +68,7 @@ import {
   type ObservePidfile,
 } from './observe-lifecycle.js'
 import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
+import { composeCapabilityOptions, extractCapabilities } from './capabilities.js'
 import { buildLaunchBody, safeRequesterCwd } from './launch-body.js'
 import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
 import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
@@ -790,6 +791,17 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
     } catch {
       throw new Error(`--args is not valid JSON: ${rawArgs}`)
     }
+  }
+  // Per-run capabilities (card #1820698986697196666): an args `capabilities` section
+  // ({ mcpServers?, agents?, skills? }) is validated HERE so a malformed section fails
+  // fast client-side with every problem listed — the server composes the same section
+  // into the delegated run's query() options (see capabilities.ts, the shared contract).
+  const cap = extractCapabilities(args)
+  if (cap.errors.length > 0) throw new Error(`--args capabilities section invalid:\n  - ${cap.errors.join('\n  - ')}`)
+  if (cap.spec !== null) {
+    process.stderr.write(
+      `capabilities section: ${Object.keys(composeCapabilityOptions(cap.spec)).join(', ') || '(empty)'} — needs a server with capabilities composition; older servers ignore it\n`,
+    )
   }
   const { port, token, health } = await requireOwnedServer(ctx)
   const { prefix, label } = await resolveSourcePrefix(port, token, health, sourceFlag)

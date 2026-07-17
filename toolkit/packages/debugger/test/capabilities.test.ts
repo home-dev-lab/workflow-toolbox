@@ -1,0 +1,100 @@
+// capabilities.test.ts — the per-run CAPABILITIES section contract (card
+// #1820698986697196666): a launch's `--args` JSON may carry a `capabilities`
+// section ({ mcpServers, agents, skills }) that the delegated-run server
+// composes into the SDK query() options. The launcher validates it EARLY
+// (fail fast client-side, loud on typos); the server imports the same module
+// so both sides share one contract.
+
+import { describe, expect, it } from 'vitest'
+import { composeCapabilityOptions, extractCapabilities } from '../src/capabilities.js'
+
+const validMcp = {
+  serena: { type: 'stdio', command: 'uvx', args: ['serena', 'start-mcp-server'] },
+}
+const validAgents = {
+  'wt-check': {
+    description: 'Read-only code-intelligence checker.',
+    prompt: 'You are wt-check.',
+    tools: ['Read', 'mcp__serena__find_symbol'],
+    model: 'haiku',
+  },
+}
+
+describe('extractCapabilities', () => {
+  it('returns null spec (no errors) when args has no capabilities section', () => {
+    expect(extractCapabilities({ target: 'x' })).toEqual({ spec: null, errors: [] })
+  })
+
+  it('returns null spec for non-object args (undefined, null, string)', () => {
+    expect(extractCapabilities(undefined)).toEqual({ spec: null, errors: [] })
+    expect(extractCapabilities(null)).toEqual({ spec: null, errors: [] })
+    expect(extractCapabilities('{"a":1}')).toEqual({ spec: null, errors: [] })
+  })
+
+  it('rejects a non-object capabilities section', () => {
+    const r = extractCapabilities({ capabilities: 'serena' })
+    expect(r.spec).toBeNull()
+    expect(r.errors.some((e) => e.includes('capabilities'))).toBe(true)
+  })
+
+  it('accepts a full valid section and echoes it as the spec', () => {
+    const r = extractCapabilities({
+      capabilities: { mcpServers: validMcp, agents: validAgents, skills: ['playwright-cli'] },
+    })
+    expect(r.errors).toEqual([])
+    expect(r.spec).toEqual({ mcpServers: validMcp, agents: validAgents, skills: ['playwright-cli'] })
+  })
+
+  it('rejects unknown keys LOUDLY (typo defence: mcpServer vs mcpServers)', () => {
+    const r = extractCapabilities({ capabilities: { mcpServer: validMcp } })
+    expect(r.spec).toBeNull()
+    expect(r.errors.some((e) => e.includes('mcpServer'))).toBe(true)
+  })
+
+  it('rejects an mcpServers entry that is not an object or lacks any launch/connect field', () => {
+    const noShape = extractCapabilities({ capabilities: { mcpServers: { serena: 'uvx' } } })
+    expect(noShape.errors.length).toBeGreaterThan(0)
+    const empty = extractCapabilities({ capabilities: { mcpServers: { serena: {} } } })
+    expect(empty.errors.some((e) => e.includes('serena'))).toBe(true)
+  })
+
+  it('rejects an agents entry missing description or prompt', () => {
+    const r = extractCapabilities({ capabilities: { agents: { bad: { description: 'x' } } } })
+    expect(r.spec).toBeNull()
+    expect(r.errors.some((e) => e.includes('bad') && e.includes('prompt'))).toBe(true)
+  })
+
+  it('rejects agents tools that are not a string array', () => {
+    const r = extractCapabilities({
+      capabilities: { agents: { a: { description: 'd', prompt: 'p', tools: 'Read' } } },
+    })
+    expect(r.errors.some((e) => e.includes('tools'))).toBe(true)
+  })
+
+  it('rejects skills that are not a string array', () => {
+    const r = extractCapabilities({ capabilities: { skills: 'playwright-cli' } })
+    expect(r.errors.some((e) => e.includes('skills'))).toBe(true)
+  })
+
+  it('collects MULTIPLE errors in one pass instead of stopping at the first', () => {
+    const r = extractCapabilities({
+      capabilities: { skills: 42, agents: { a: { prompt: 'p' } }, bogus: true },
+    })
+    expect(r.errors.length).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe('composeCapabilityOptions', () => {
+  it('emits exactly the present sections as a query() options fragment', () => {
+    const frag = composeCapabilityOptions({ mcpServers: validMcp, agents: validAgents })
+    expect(frag).toEqual({ mcpServers: validMcp, agents: validAgents })
+  })
+
+  it('emits {} for an empty spec (nothing invented)', () => {
+    expect(composeCapabilityOptions({})).toEqual({})
+  })
+
+  it('passes skills through as the SDK enable-filter', () => {
+    expect(composeCapabilityOptions({ skills: ['a'] })).toEqual({ skills: ['a'] })
+  })
+})
