@@ -337,6 +337,48 @@ function safeRequesterCwd(cwdFn) {
   }
 }
 
+// packages/debugger/src/spawn-ready.ts
+var BANNER_RE = /app \+ run discovery on http:\/\/127\.0\.0\.1:(\d+)/g;
+function parseAnnouncedPort(logSlice) {
+  let last = null;
+  for (const m of logSlice.matchAll(BANNER_RE)) {
+    const n = Number(m[1]);
+    if (Number.isInteger(n) && n > 0 && n <= 65535) last = n;
+  }
+  return last;
+}
+var POLL_INTERVAL_MS = 500;
+async function awaitSpawnedServerReady(deps) {
+  const deadline = deps.now() + deps.timeoutMs;
+  for (; ; ) {
+    const st = deps.spawnState();
+    if (st.error !== null) {
+      throw new Error(`failed to spawn the server: ${st.error.message}`);
+    }
+    if (st.exited !== null) {
+      const e = st.exited;
+      throw new Error(
+        `server exited immediately (code ${e.code ?? "null"}${e.signal ? `, signal ${e.signal}` : ""}).
+${deps.logTail()}`
+      );
+    }
+    const port = deps.requestedPort !== 0 ? deps.requestedPort : parseAnnouncedPort(deps.readLogSlice());
+    if (port !== null) {
+      const h = await deps.probe(port);
+      if (deps.isReady(h)) return h;
+    }
+    if (deps.now() > deadline) {
+      deps.kill();
+      const where = deps.requestedPort !== 0 ? `:${deps.requestedPort}` : port !== null ? `:${port} (OS-assigned)` : "its OS-assigned port (never announced in the log)";
+      throw new Error(
+        `server did not become healthy on ${where} within ${deps.timeoutMs} ms \u2014 child killed (no orphan left).
+${deps.logTail()}`
+      );
+    }
+    await deps.sleep(POLL_INTERVAL_MS);
+  }
+}
+
 // packages/debugger/src/observe-identity.ts
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -799,6 +841,13 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
   }
   const logPath = observeServerLogPath(stateRoot);
   const log = openLogFileAt(logPath);
+  const logStartOffset = (() => {
+    try {
+      return statSync2(logPath).size;
+    } catch {
+      return 0;
+    }
+  })();
   const token = randomBytes(24).toString("hex");
   const launchAgentsDir = resolveLaunchAgentsDir();
   const tsxCli = (() => {
@@ -850,25 +899,34 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
     exited = { code, signal };
   });
   child.unref();
-  const deadline = Date.now() + SPAWN_READY_TIMEOUT_MS;
-  for (; ; ) {
-    if (spawnError !== null) {
-      throw new Error(`failed to spawn the server: ${spawnError.message}`);
-    }
-    if (exited !== null) {
-      const e = exited;
-      throw new Error(
-        `server exited immediately (code ${e.code ?? "null"}${e.signal ? `, signal ${e.signal}` : ""}).
-${logTail(logPath)}`
-      );
-    }
-    const h = await probeHealth(port);
-    if (typeof h === "object" && (Array.isArray(h.sources) || typeof h.configDir === "string")) return { health: h, token };
-    if (Date.now() > deadline) {
-      throw new Error(`server did not become healthy on :${port} within ${SPAWN_READY_TIMEOUT_MS} ms.
-${logTail(logPath)}`);
-    }
-    await new Promise((r) => setTimeout(r, 500));
+  const h = await awaitSpawnedServerReady({
+    requestedPort: port,
+    timeoutMs: SPAWN_READY_TIMEOUT_MS,
+    readLogSlice: () => readLogSliceFrom(logPath, logStartOffset),
+    probe: (p) => probeHealth(p),
+    // Accept EITHER health shape (the readiness poll must not assume cardinality).
+    isReady: (v) => typeof v === "object" && (Array.isArray(v.sources) || typeof v.configDir === "string"),
+    spawnState: () => ({ error: spawnError, exited }),
+    kill: () => {
+      if (typeof child.pid === "number") {
+        try {
+          process.kill(child.pid, "SIGTERM");
+        } catch {
+        }
+      }
+    },
+    now: Date.now,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    logTail: () => logTail(logPath)
+  });
+  return { health: h, token };
+}
+function readLogSliceFrom(path, offset) {
+  try {
+    const buf = readFileSync3(path);
+    return buf.subarray(Math.min(offset, buf.length)).toString("utf8");
+  } catch {
+    return "";
   }
 }
 function logTail(logPath, lines = 5) {

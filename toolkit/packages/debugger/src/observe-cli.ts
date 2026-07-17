@@ -70,6 +70,7 @@ import {
 import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
 import { composeCapabilityOptions, extractCapabilities } from './capabilities.js'
 import { buildLaunchBody, safeRequesterCwd } from './launch-body.js'
+import { awaitSpawnedServerReady } from './spawn-ready.js'
 import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
 import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
 import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode, AWAIT_SOURCE_UNRESOLVED_EXIT_CODE } from './observe-await.js'
@@ -421,6 +422,17 @@ async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly
   }
   const logPath = observeServerLogPath(stateRoot)
   const log = openLogFileAt(logPath)
+  // Size BEFORE the child writes anything: the port-banner parser must only
+  // see THIS spawn's output — the log is append-mode, and a stale banner from
+  // a previous server would otherwise announce the wrong port (card
+  // #1820935029484684499).
+  const logStartOffset = ((): number => {
+    try {
+      return statSync(logPath).size
+    } catch {
+      return 0
+    }
+  })()
   // Per-server API token (I8): generated here, handed to the server via env, kept
   // in the 0600 pidfile. The browser receives it through the served page only.
   const token = randomBytes(24).toString('hex')
@@ -492,24 +504,44 @@ async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly
 
   // The port bind is the mutex: wait for /api/health to answer OURS. A lost
   // concurrent-start race surfaces here as the WINNER's health — which we adopt.
-  const deadline = Date.now() + SPAWN_READY_TIMEOUT_MS
-  for (;;) {
-    if (spawnError !== null) {
-      throw new Error(`failed to spawn the server: ${(spawnError as Error).message}`)
-    }
-    if (exited !== null) {
-      const e = exited as { code: number | null; signal: NodeJS.Signals | null }
-      throw new Error(
-        `server exited immediately (code ${e.code ?? 'null'}${e.signal ? `, signal ${e.signal}` : ''}).\n${logTail(logPath)}`,
-      )
-    }
+  // The wait itself lives in spawn-ready.ts (injectable, test-locked — card
+  // #1820935029484684499): port 0 resolves the child's REAL OS-assigned port
+  // from its log banner (this spawn's slice only), and a readiness timeout
+  // REAPS the still-alive child by precise PID instead of leaving an orphan.
+  const h = await awaitSpawnedServerReady<Health>({
+    requestedPort: port,
+    timeoutMs: SPAWN_READY_TIMEOUT_MS,
+    readLogSlice: () => readLogSliceFrom(logPath, logStartOffset),
+    probe: (p) => probeHealth(p),
     // Accept EITHER health shape (the readiness poll must not assume cardinality).
-    const h = await probeHealth(port)
-    if (typeof h === 'object' && (Array.isArray(h.sources) || typeof h.configDir === 'string')) return { health: h, token }
-    if (Date.now() > deadline) {
-      throw new Error(`server did not become healthy on :${port} within ${SPAWN_READY_TIMEOUT_MS} ms.\n${logTail(logPath)}`)
-    }
-    await new Promise((r) => setTimeout(r, 500))
+    isReady: (v): v is Health =>
+      typeof v === 'object' && (Array.isArray((v as Health).sources) || typeof (v as Health).configDir === 'string'),
+    spawnState: () => ({ error: spawnError, exited }),
+    kill: () => {
+      if (typeof child.pid === 'number') {
+        try {
+          process.kill(child.pid, 'SIGTERM')
+        } catch {
+          // already gone — nothing to reap
+        }
+      }
+    },
+    now: Date.now,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    logTail: () => logTail(logPath),
+  })
+  return { health: h, token }
+}
+
+/** The log slice written after `offset` BYTES (append-mode log — earlier
+ *  content belongs to previous servers). Byte-accurate: slices the raw buffer,
+ *  not the decoded string. */
+function readLogSliceFrom(path: string, offset: number): string {
+  try {
+    const buf = readFileSync(path)
+    return buf.subarray(Math.min(offset, buf.length)).toString('utf8')
+  } catch {
+    return ''
   }
 }
 
