@@ -113,14 +113,9 @@ describe('observerLaunchHint — the args bridge + selector coupling + observer-
     expect(hint).toContain('role(s) implementer')
   })
 
-  // TEST-LOCK (cli2 H2 realignment): the wt-comm reminder points to the canonical teaching
-  // to REFERENCE (never copy) and is honest that briefing the observed roles is the AUTHOR's
-  // job TODAY. custom-observers-design.md §4.4 channel (a) attributes the briefing to the
-  // COMPOSER at authoring (inject the observer-consumer section into the observed roles) — and
-  // that composer emission is NOT yet wired; the runtime never briefs the roles. The prior
-  // "runtime briefs those roles" claim was doubly wrong (wrong actor + unbuilt) — see the
-  // known-issue and the real-mechanism card.
-  it('when the observer emits wt-comm, references the canonical teaching (never copy) and is honest that briefing the observed roles is the author job today (auto-injection not yet wired)', () => {
+  // TEST-LOCK: wt-comm observer scaffolding now describes the shipped auto-injection
+  // scope while preserving the canonical teaching-pack reference and residual caveats.
+  it('when the observer emits wt-comm, references the canonical teaching and says auto-injection is shipped for defineWorkflow inline observers', () => {
     const hint = observerLaunchHint({
       ...base,
       watch: { roles: ['implementer', 'fixer'] },
@@ -130,11 +125,14 @@ describe('observerLaunchHint — the args bridge + selector coupling + observer-
     expect(hint).toContain('teaching/wt-comm-observer-consumer.md')
     expect(hint).toContain('role(s) implementer, fixer')
     expect(hint).toMatch(/never copy it/)
-    // The honest claim: the AUTHOR briefs the OBSERVED roles today, and auto-injection is unbuilt.
-    expect(hint).toMatch(/NOT yet wired/)
-    expect(hint).toMatch(/OBSERVED roles'/)
-    // The old false "runtime briefs the roles" claim must be gone.
-    expect(hint).not.toMatch(/runtime briefs those roles/)
+    expect(hint).toMatch(/auto-injected|auto-injection is shipped/i)
+    expect(hint).toMatch(/defineWorkflow/)
+    expect(hint).toMatch(/inline/i)
+    expect(hint).toMatch(/WT_COMM_PARAMS/)
+    expect(hint).toMatch(/definitionFile/)
+    expect(hint).toContain('wt-observe launch --comm-root <dir>')
+    expect(hint).not.toMatch(/NOT yet wired/)
+    expect(hint).not.toMatch(/runtime never briefs/)
   })
 
   it('when the observer does NOT emit wt-comm, omits the observer-consumer reminder', () => {

@@ -219,6 +219,11 @@ Spawns one fresh-context subagent.
 > changes mean a `resumeFromRunId` across the introduction of this feature re-runs
 > previously-cached calls once. Untagged calls (no label, no phase) pass through
 > untouched. Parse side: `parsePromptTag(text)` from the same module.
+> Low-level observer helpers are exported for tests/tooling, not ordinary workflow
+> authors: `labelRole`, `matchesSelector`, `matchedRoleId`,
+> `extractObservedSelectors`, `observedBriefFor`, and `buildObservedRoleSection`;
+> their public types are `PromptTagFields`, `PromptTagOptions`, and
+> `ObservedSelector`.
 > Live COLUMN assignment additionally needs the tag's phase title to match a
 > `meta.phases` title **exactly** — the same by-title contract the sandbox itself
 > uses to group phases. A title not in `meta.phases` (or seeded ambiguously)

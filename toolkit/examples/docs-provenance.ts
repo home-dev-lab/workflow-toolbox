@@ -63,6 +63,22 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     ],
   },
   {
+    // Observed-role wt-comm brief auto-injection: tolerant observer extraction,
+    // prompt suffixing, defineWorkflow wiring, and scaffold/docs caveats.
+    sources: [
+      'toolkit/packages/runtime/src/observed-role-brief.ts',
+      'toolkit/packages/runtime/src/prompt-tag.ts',
+      'toolkit/packages/build/src/define-workflow.ts',
+      'toolkit/packages/scaffold/src/scaffold.ts',
+    ],
+    docs: [
+      'docs/public/known-issues.md',
+      'plugin/skills/workflow-composer/references/api-reference.md',
+      'plugin/skills/workflow-composer/references/observer-definitions.md',
+      'toolkit/packages/comm/README.md',
+    ],
+  },
+  {
     // Runtime contract: sandbox typings, model/effort aliases, BEST_MODEL.
     sources: [
       'toolkit/packages/runtime/src/types.ts',

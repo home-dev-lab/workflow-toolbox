@@ -20,7 +20,7 @@
 //   caller-supplied validator owns its error messages (fail-fast input guard).
 
 import type { WorkflowRuntime, ModelAlias, EffortAlias, AgentDefaults } from '@workflow-toolbox/runtime'
-import { withPromptTags } from '@workflow-toolbox/runtime'
+import { extractObservedSelectors, observedBriefFor, withPromptTags } from '@workflow-toolbox/runtime'
 
 // ---------------------------------------------------------------------------
 // WorkflowMeta — the static descriptor every workflow must declare
@@ -163,16 +163,31 @@ export function defineWorkflow<TInput = unknown, TOut = unknown>(def: {
       // Step 1: normalize (JSON-decode string args, pass others through)
       const normalized = normalizeArgs(rawArgs)
 
-      // Step 2: parse/validate input — parseInput errors propagate untouched
+      // Step 2: extract observer selectors from the normalized launch envelope.
+      // This intentionally runs before parseInput can narrow/drop args.observers.
+      const selectors = extractObservedSelectors(normalized)
+
+      // Step 3: parse/validate input — parseInput errors propagate untouched
       const input: TInput = def.parseInput !== undefined
         ? def.parseInput(normalized)
         : (normalized as TInput)
 
-      // Step 3: delegate to the workflow body. rt is wrapped with
+      // Step 4: delegate to the workflow body. rt is wrapped with
       // withPromptTags so every labeled/phased agent call carries the
       // observe-facing wt-meta marker line (live agent→phase assignment for
       // attached runs) — patterns and plain rt.agent() calls alike.
-      return def.run(withPromptTags(rt), input)
+      //
+      // Resume-cache note: adding/removing inline wt-comm observers changes the
+      // matched roles' prompt strings via the observed-role section, so the same
+      // workflow relaunched with vs without those observers correctly misses old
+      // resume-cache entries for those calls.
+      return def.run(
+        withPromptTags(
+          rt,
+          selectors.length > 0 ? { observedBrief: observedBriefFor(selectors) } : undefined,
+        ),
+        input,
+      )
     },
   }
 }

@@ -27,4 +27,14 @@ export { withAgentDefaults } from './with-agent-defaults.js'
 export type { AgentDefaults } from './with-agent-defaults.js'
 
 export { PROMPT_TAG_PREFIX, buildPromptTag, parsePromptTag, withPromptTags } from './prompt-tag.js'
-export type { PromptTagFields } from './prompt-tag.js'
+export type { PromptTagFields, PromptTagOptions } from './prompt-tag.js'
+
+export {
+  buildObservedRoleSection,
+  extractObservedSelectors,
+  labelRole,
+  matchedRoleId,
+  matchesSelector,
+  observedBriefFor,
+} from './observed-role-brief.js'
+export type { ObservedSelector } from './observed-role-brief.js'

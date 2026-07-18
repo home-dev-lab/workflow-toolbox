@@ -20,6 +20,20 @@ function makeValidMeta(overrides?: Partial<{ name: string; description: string }
   }
 }
 
+function wtCommObserverForRole(role: string) {
+  return {
+    definition: {
+      schemaVersion: 1,
+      name: 't',
+      description: 'd',
+      watch: { roles: [role] },
+      brain: { mandate: 'Watch the observed role and emit grounded hints only when useful.' },
+      actions: ['summary', 'wt-comm'],
+      emits: ['observer.hint'],
+    },
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Meta validation — throws synchronously at defineWorkflow() call time
 // ---------------------------------------------------------------------------
@@ -276,6 +290,49 @@ describe('defineWorkflow — run() pipeline', () => {
     await def.run(rt, obj)
     // Object is not a string so normalizeArgs returns it by reference
     expect(receivedInput).toBe(obj)
+  })
+
+  it('injects the observed-role brief into matching roles when launched with an inline wt-comm observer', async () => {
+    const rt = new FakeRuntime({ responses: ['ok'] })
+    const def = defineWorkflow({
+      meta: makeValidMeta(),
+      run: async (r) => r.agent('do X', { label: 'implementer' }),
+    })
+    await def.run(rt, { observers: [wtCommObserverForRole('implementer')] })
+    expect(rt.calls[0]!.prompt).toContain('OBSERVED ROLE BRIEF (auto-injected: an observer watches this run)')
+    expect(rt.calls[0]!.prompt).toContain('ROLE_ID: "implementer"')
+  })
+
+  it('does not inject the observed-role brief into non-matching labels', async () => {
+    const rt = new FakeRuntime({ responses: ['ok'] })
+    const def = defineWorkflow({
+      meta: makeValidMeta(),
+      run: async (r) => r.agent('do X', { label: 'reviewer' }),
+    })
+    await def.run(rt, { observers: [wtCommObserverForRole('implementer')] })
+    expect(rt.calls[0]!.prompt).not.toContain('OBSERVED ROLE BRIEF')
+  })
+
+  it('does not inject the observed-role brief for definitionFile observer entries', async () => {
+    const rt = new FakeRuntime({ responses: ['ok'] })
+    const def = defineWorkflow({
+      meta: makeValidMeta(),
+      run: async (r) => r.agent('do X', { label: 'implementer' }),
+    })
+    await def.run(rt, { observers: [{ definitionFile: 'docs-butler.observer.json' }] })
+    expect(rt.calls[0]!.prompt).not.toContain('OBSERVED ROLE BRIEF')
+  })
+
+  it('keeps prompts byte-identical when launch args have no valid observers', async () => {
+    const rtA = new FakeRuntime({ responses: ['ok'] })
+    const rtB = new FakeRuntime({ responses: ['ok'] })
+    const def = defineWorkflow({
+      meta: makeValidMeta(),
+      run: async (r) => r.agent('do X', { label: 'implementer' }),
+    })
+    await def.run(rtA, undefined)
+    await def.run(rtB, { observers: [{ definition: { watch: { roles: ['implementer'] }, actions: ['wt-comm'], emits: [] } }] })
+    expect(rtB.calls[0]!.prompt).toBe(rtA.calls[0]!.prompt)
   })
 })
 

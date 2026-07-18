@@ -369,5 +369,8 @@ The pilot side uses this library directly; the pilot's conduct rules are this RE
 `teaching/wt-comm-observer-consumer.md` is the corresponding brief for OBSERVED roles —
 agents whose workflow attaches a hint-emitting observer. It teaches consult-at-natural-
 boundaries, the hint-is-data posture, and the `mode: 'read'` settlement recipe. It is
-injected ONLY to observed roles; every other participant stays on the participant brief
-alone, unchanged.
+injected at run time by defineWorkflow-built workflows when the launch declares an inline
+wt-comm observer in `args.observers`; the observe server parameterizes the role through the
+`WT_COMM_PARAMS` env file. Only matched observed roles receive that reference; other
+participants stay on the participant brief alone, unchanged. Hand-written non-defineWorkflow
+scripts and `definitionFile` observer launch entries still need the manual reference.

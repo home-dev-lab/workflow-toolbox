@@ -2,10 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { FakeRuntime } from '../src/fake.js'
 import {
   PROMPT_TAG_PREFIX,
+  buildObservedRoleSection,
   buildPromptTag,
   parsePromptTag,
+  type PromptTagFields,
   withPromptTags,
-} from '../src/prompt-tag.js'
+} from '../src/index.js'
 
 // ---------------------------------------------------------------------------
 // buildPromptTag / parsePromptTag — the wire format (single source of truth
@@ -89,6 +91,54 @@ describe('withPromptTags', () => {
     const rt = new FakeRuntime({ responses: ['ok'] })
     await withPromptTags(rt).agent('bare prompt')
     expect(rt.calls[0]!.prompt).toBe('bare prompt')
+  })
+
+  it('appends an observed-role section after the prompt while keeping the tag on line 1', async () => {
+    const rt = new FakeRuntime({ responses: ['ok'] })
+    const section = buildObservedRoleSection('implementer')
+    await withPromptTags(rt, {
+      observedBrief: ({ label }) => label === 'implementer' ? section : null,
+    }).agent('do the thing', { label: 'implementer' })
+    const sent = rt.calls[0]!.prompt
+    expect(sent.split('\n')[0]).toBe(buildPromptTag({ label: 'implementer' }))
+    expect(sent).toBe(`${buildPromptTag({ label: 'implementer' })}\n\ndo the thing\n\n${section}`)
+  })
+
+  it('leaves the prompt byte-identical when the observed-role hook returns null', async () => {
+    const rtA = new FakeRuntime({ responses: ['ok'] })
+    const rtB = new FakeRuntime({ responses: ['ok'] })
+    await withPromptTags(rtA).agent('do the thing', { label: 'implementer' })
+    await withPromptTags(rtB, { observedBrief: () => null }).agent('do the thing', { label: 'implementer' })
+    expect(rtB.calls[0]!.prompt).toBe(rtA.calls[0]!.prompt)
+  })
+
+  it('does not append the same observed-role section twice under re-wrap', async () => {
+    const rt = new FakeRuntime({ responses: ['ok'] })
+    const section = buildObservedRoleSection('implementer')
+    const rt2 = withPromptTags(withPromptTags(rt, { observedBrief: () => section }), { observedBrief: () => section })
+    await rt2.agent('body', { label: 'implementer' })
+    const sent = rt.calls[0]!.prompt
+    expect(sent.indexOf(section)).toBe(sent.lastIndexOf(section))
+  })
+
+  it('passes the same resolved phase to the tag and observed-role hook', async () => {
+    const rt = new FakeRuntime({ responses: ['ok', 'ok'] })
+    const seen: PromptTagFields[] = []
+    const rt2 = withPromptTags(rt, {
+      observedBrief: (fields) => {
+        seen.push(fields)
+        return null
+      },
+    })
+    rt2.phase('Current')
+    await rt2.agent('uses current', { label: 'worker' })
+    await rt2.agent('uses opts', { label: 'worker', phase: 'Explicit' })
+    expect(seen).toEqual([
+      { label: 'worker', phase: 'Current' },
+      { label: 'worker', phase: 'Explicit' },
+    ])
+    expect(parsePromptTag(rt.calls[0]!.prompt)).toEqual(seen[0])
+    expect(parsePromptTag(rt.calls[1]!.prompt)).toEqual(seen[1])
   })
 
   it('does not double-tag an already-tagged prompt (idempotent under re-wrap)', async () => {

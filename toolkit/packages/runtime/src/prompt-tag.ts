@@ -84,6 +84,10 @@ export function parsePromptTag(text: string): PromptTagFields | null {
   return out.label !== undefined || out.phase !== undefined ? out : null
 }
 
+export interface PromptTagOptions {
+  observedBrief?: ((fields: PromptTagFields) => string | null) | undefined
+}
+
 /** Return a WorkflowRuntime whose agent() prefixes each prompt with the tag
  *  derived from the call's `label`/`phase` opts. When `opts.phase` is absent,
  *  the last `phase(title)` seen through THIS wrapper is used — mirroring the
@@ -94,18 +98,25 @@ export function parsePromptTag(text: string): PromptTagFields | null {
  *  compositions get tagging for free. Member forwarding uses arrow wrappers,
  *  never spread or .bind — see withAgentDefaults for why (host-provided
  *  runtime members lose `this`/`.bind` in the real sandbox). */
-export function withPromptTags(rt: WorkflowRuntime): WorkflowRuntime {
+export function withPromptTags(rt: WorkflowRuntime, wrapperOpts?: PromptTagOptions): WorkflowRuntime {
   let currentPhase: string | undefined
   const agent: AgentFn = <T = string>(prompt: string, opts?: AgentOptions): Promise<T | null> => {
-    const tag = buildPromptTag({ label: opts?.label, phase: opts?.phase ?? currentPhase })
+    const fields: PromptTagFields = { label: opts?.label, phase: opts?.phase ?? currentPhase }
+    const tag = buildPromptTag(fields)
     // Skip ONLY when the prompt already starts with the EXACT tag this call
     // would emit (the re-wrap case). A merely tag-shaped prefix — e.g. hostile
     // upstream content pasted at the front of the prompt — does NOT suppress
     // tagging: our tag is prepended above it, so the ingest side (which reads
     // the FIRST line only) always sees the wrapper's own truth, never a spoof.
-    const tagged = tag !== null && !prompt.startsWith(tag)
+    let tagged = tag !== null && !prompt.startsWith(tag)
       ? `${tag}\n\n${prompt}`
       : prompt
+    if (tag !== null) {
+      const section = wrapperOpts?.observedBrief?.(fields) ?? null
+      if (section !== null && !tagged.includes(section)) {
+        tagged = `${tagged}\n\n${section}`
+      }
+    }
     return rt.agent<T>(tagged, opts)
   }
   return {

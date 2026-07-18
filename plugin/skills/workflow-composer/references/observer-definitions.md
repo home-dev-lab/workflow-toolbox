@@ -185,22 +185,23 @@ in `docs/public/known-issues.md`.
 ## The observer-consumer side (when an observer emits `wt-comm`)
 
 An observer that emits `observer.hint` writes typed, sourced hints toward the roles it
-watches. The **observed agents** must be briefed to consult those hints at natural
-boundaries by referencing the canonical observed-role consumer section of the teaching pack
+watches. For workflows built through the toolkit composer (`defineWorkflow`), run-time
+auto-injection is shipped: when the launch declares an inline wt-comm observer in
+`args.observers`, the wrapper matches `watch.roles` / `watch.phases` against observed
+agent `label` / `phase` metadata and appends a short prompt section to the matched roles.
+That section references the canonical observed-role consumer section of the teaching pack
 (`toolkit/packages/comm/teaching/wt-comm-observer-consumer.md`, shipped with
-`@workflow-toolbox/comm`) in the observed roles' prompts. That brief is
-**parameterized** at run time (it is given the run's comm directory, the role id, and the
-run id), so:
+`@workflow-toolbox/comm`) and tells the role to read the `WT_COMM_PARAMS` env file for
+`commDir` and `runId`; the observe server writes that params file at attach.
 
 - **Reference the canonical brief; never copy it** into a workflow prompt — a copy drifts
   from the drift-locked source and cannot carry the run-time values.
-- **Today this briefing is the composer's (author's) job at authoring time** — reference
-  the section into the observed roles' prompts yourself. Automatic injection of the section
-  by the composer (to the roles matched by `watch.roles`), plus the runtime parameterization
-  it needs, is **not yet wired** (planned — see [known-issues](../../../../docs/public/known-issues.md));
-  the design attributes the briefing to the composer, never to the runtime. The wt-comm
-  hint-**delivery** channel itself ships — pass `wt-observe launch --comm-root <dir>` so the
-  runtime can write hints for the observed roles to consult.
+- The shipped auto-injection scope is inline observer definitions on defineWorkflow-built
+  scripts. A `definitionFile` launch entry is skipped by the sandbox-pure injector because
+  it has no filesystem, and a hand-written non-defineWorkflow script still needs the manual
+  reference. The wt-comm hint-**delivery** channel itself ships — pass
+  `wt-observe launch --comm-root <dir>` so the runtime can write hints for the observed
+  roles to consult.
 - The composer's other authoring responsibilities: (a) declare the observer, and (b) LABEL
   the observed roles so the selector matches them (above).
 
