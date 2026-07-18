@@ -11,7 +11,7 @@ machine that ran them with `npx workflow-toolbox report <runId>`.
 **Workflow Toolbox** is a free Claude Code plugin plus the `@workflow-toolbox`
 npm packages: nine tested orchestration patterns for Claude Code's **Workflow
 tool** (research preview), skills to author, scaffold, and debug workflows, and
-twenty-four runnable example compositions — including a full dev pipeline
+twenty-five runnable example compositions — including a full dev pipeline
 (ground → plan → implement → review-fix).
 
 What the journals show:
@@ -236,7 +236,7 @@ what happened and whether resuming is safe.
   TypeScript composition into one self-contained `.js` the Workflow tool runs
   directly.
 
-Twenty-four example compositions live in `toolkit/examples/`; their built artifacts
+Twenty-five example compositions live in `toolkit/examples/`; their built artifacts
 (12–75 KB each) are committed under `toolkit/workflows/` and run as-is via
 `scriptPath` — no install, no build. Start with
 [toolkit/README.md](toolkit/README.md). The flagship set is the

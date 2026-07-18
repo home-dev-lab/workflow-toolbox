@@ -146,7 +146,7 @@ workflow-toolbox/
     │   └── scaffold/                    # @workflow-toolbox/scaffold — spec → build-clean .workflow.ts skeleton
     │       ├── src/scaffold.ts          #   pure scaffoldWorkflow emitter (unit-tested) + impure CLI
     │       └── test/fixtures/           #   committed all-patterns golden (typechecked + linted by the gates)
-    ├── examples/                        # 24 compositions (.workflow.ts) + their tests
+    ├── examples/                        # 25 compositions (.workflow.ts) + their tests
     ├── bin/                             # wt-debug.mjs + wt-stop-hook.mjs — source-of-truth twins of plugin/bin
     └── workflows/                       # committed build artifacts (12–52 KB each)
 ```
@@ -204,7 +204,7 @@ Every pattern: takes `rt` + a typed options object (prompts as data, items, sche
 
 ### L2 — Compositions
 
-Plain async functions in workflow definition files that call several patterns in sequence/parallel. The twenty-four shipped examples live here (§6.3). Compositions are **examples and templates, not library API** — copying and editing one is the intended usage.
+Plain async functions in workflow definition files that call several patterns in sequence/parallel. The twenty-five shipped examples live here (§6.3). Compositions are **examples and templates, not library API** — copying and editing one is the intended usage.
 
 ### L3 — Checkpointed compositions (HITL)
 

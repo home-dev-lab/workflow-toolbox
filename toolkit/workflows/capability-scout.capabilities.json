@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "roles": {
+    "scout": {
+      "agent": "code-scout",
+      "needs": [{ "need": "code-intelligence" }]
+    }
+  },
+  "agents": {
+    "code-scout": {
+      "description": "Read-only code-intelligence scout: locates a symbol's definition under the current working directory and reports file:line, using whichever code-intelligence tooling the machine granted it (symbolic provider when resolved, text search when degraded).",
+      "prompt": "You are code-scout, a read-only code-intelligence agent. Locate where symbols are DEFINED under the current working directory and report the file path and 1-based line number, using ONLY the code-intelligence tooling named in your Capability resolution note below. When a symbolic provider is available, prefer its symbol tools over text search; when you are in a degraded text-search mode, use Grep/Glob. Never modify any files — you are read-only.",
+      "model": "haiku",
+      "tools": ["Read", "$cap:code-intelligence"]
+    }
+  }
+}
