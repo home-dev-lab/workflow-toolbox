@@ -123,6 +123,20 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     ],
   },
   {
+    // Capability registry + sidecar resolver + launcher glue (machine registry
+    // format/location/WT_CAPABILITY_REGISTRY, $cap: expansion, named degradations,
+    // fail-loud launch refusal). The operator-facing registry doc + the author-facing
+    // needs/sidecar doc together describe this surface.
+    sources: [
+      'toolkit/packages/debugger/src/capability-registry.ts',
+      'toolkit/packages/debugger/src/launch-capabilities.ts',
+    ],
+    docs: [
+      'docs/public/capability-registry.md',
+      'plugin/skills/workflow-composer/references/capability-needs.md',
+    ],
+  },
+  {
     // Smoke / canaries (the upgrade re-verification story).
     sources: ['toolkit/packages/smoke/src/'],
     docs: ['plugin/skills/upgrade-canary/SKILL.md'],

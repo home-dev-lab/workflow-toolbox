@@ -138,6 +138,10 @@ shipped sidecar or a coded default. A workflow with an abstract need runs on a b
 machine by degrading to the named fallback — that is the contract, and the companion note
 is only a "you'll get more if you also have X" hint.
 
+The registry itself — its file format, location, the `WT_CAPABILITY_REGISTRY` path
+override, and how an operator registers a provider — is the machine/operator side, out of
+scope for you as an author. It is documented in `docs/public/capability-registry.md`.
+
 ## Path A (in-session Workflow tool) — not covered by the sidecar
 
 The sidecar + resolver target the DELEGATED path (`wt-observe launch`). In an in-session

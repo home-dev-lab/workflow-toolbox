@@ -22,10 +22,15 @@ workflow never hard-codes a user's tools:
    definition is **workflow-owned and ABSTRACT**: role/phase selectors, the brain mandate,
    the message types it may emit, its permitted actions, and its abstract capability
    *needs*. No concrete tool and no machine path may appear.
-2. **Launch (user machine).** A machine-side resolver maps each abstract `need` to whatever
-   provider is registered on that machine; the concrete resolution travels in
-   `args.capabilities` (machine-owned), the definition(s) travel in `args.observers`
-   (workflow-owned) — sibling sections, never merged.
+2. **Launch (user machine).** The **launcher** maps each abstract `need` to whatever
+   provider is registered on that machine and embeds the concrete resolution back onto the
+   observer entry itself — a launcher-produced `resolution` field on each
+   `args.observers[i]`. The definition(s) travel in `args.observers` (workflow-owned) and
+   the observer's own resolution rides in that same entry — **not** in `args.capabilities`.
+   `args.capabilities` is the separate section for the workflow's own agent-role tools (the
+   sidecar path); it happens to reuse the same machine registry but is a different
+   mechanism. The server never resolves — at run time it only composes the stored
+   resolution into the brain.
 3. **Run (observe server).** The server registers the derived targets, ticks the brain
    (tool-equipped only when needs resolved), and routes outputs through the permitted
    channels.
@@ -106,20 +111,35 @@ non-toolkit or bare-prompt run degrades to a named `no-match`.
 ## The launch bridge — `args.observers`
 
 `args.observers` is a launch argument, a **sibling of `args.capabilities`**: `observers`
-say WHAT to observe (workflow-owned), `capabilities` say WITH WHAT (machine-owned).
+say WHAT to observe (workflow-owned), `capabilities` say WITH WHAT for the workflow's own
+agent roles (machine-owned). An observer's OWN capability resolution does not live in
+`args.capabilities` — the launcher writes it back onto the observer entry as a `resolution`
+field (see below).
 
 ```jsonc
 {
   "observers": [
     { "definitionFile": "docs-butler.observer.json" },  // relative to the workflows dir
     { "definition": { /* an inline ObserverDefinition */ } }
+    // the launcher adds a `resolution` field to an entry whose (inline) definition
+    // declares `requires` — e.g. { "definition": {…}, "resolution": [ /* NeedResolution[] */ ] }
   ],
-  "capabilities": { /* the machine-owned resolution — unchanged */ }
+  "capabilities": { /* the workflow's own agent-role capabilities — a separate mechanism */ }
 }
 ```
 
 Validation is fail-loud, exactly like `capabilities`: a malformed section returns every
 violation at once and the run is never launched; an absent section is unchanged behavior.
+
+**The launcher owns the `resolution` field.** You never write it yourself: the launcher
+resolves each need against the machine registry and stamps the result onto the entry, and
+any caller-supplied `resolution` is **stripped** before that happens (it is a trust
+boundary — a definition may not smuggle a concrete resolution past the registry). In v0 the
+launcher resolves an **inline** `definition` only; a `definitionFile` entry is passed
+through as-is, so an observer whose `requires` must resolve should be inlined. Because this
+field is validated by the shared observers contract (unknown keys fail loud), the launcher
+and the companion server must agree on that contract's version — see the version-skew note
+in `docs/public/known-issues.md`.
 
 ## The observer-consumer side (when an observer emits `wt-comm`)
 
