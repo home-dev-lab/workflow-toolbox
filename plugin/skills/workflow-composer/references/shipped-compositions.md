@@ -3,7 +3,7 @@
 <!-- Extracted from SKILL.md (progressive disclosure) — loaded on demand via the stub that links here. -->
 
 
-The repository ships twenty-four built example compositions under `toolkit/workflows/`,
+The repository ships twenty-five built example compositions under `toolkit/workflows/`,
 and **all of them have their TypeScript sources bundled with this skill** for study at
 `assets/examples/toolkit/`. (Progressive disclosure means a bundled source costs no
 context until you actually Read it — so the skill ships the complete set, not a
@@ -170,7 +170,7 @@ not run directly as raw workflows. Their committed artifacts live under
 
 ### Two orchestrator-pipeline compositions (`definePipeline`, not `defineWorkflow`)
 
-Separate from the twenty-four `.workflow.ts` compositions above, `toolkit/examples/` also
+Separate from the twenty-five `.workflow.ts` compositions above, `toolkit/examples/` also
 ships two `definePipeline()` sources — N whole workflow artifacts, optionally nested,
 optionally human-gated (see [orchestrator-pipelines.md](orchestrator-pipelines.md) for
 the authoring contract). They build via the `pipeline` CLI subcommand to
