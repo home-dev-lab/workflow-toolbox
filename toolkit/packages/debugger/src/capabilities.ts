@@ -32,7 +32,7 @@
 // (bare session + composed mcpServers/agents → subagents see and call the MCP
 // tools; exact-name allowlists fence them).
 
-import { FORBIDDEN_ENTRY_NAMES, isRecord } from './validator-shared.js'
+import { FORBIDDEN_ENTRY_NAMES, isRecord, isStringArray, validateMcpServersShape } from './validator-shared.js'
 
 export interface CapabilityAgentDef {
   description: string
@@ -83,41 +83,10 @@ const AGENT_DEF_KEYS = new Set([
   'background', 'memory', 'effort', 'permissionMode', 'observer', 'observerMessage',
 ])
 
-function isStringArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every((x) => typeof x === 'string')
-}
-
 function checkEntryNames(map: Record<string, unknown>, path: string, errors: string[]): void {
   for (const name of Object.keys(map)) {
     if (FORBIDDEN_ENTRY_NAMES.has(name)) errors.push(`${path}.${name} is a forbidden entry name (prototype-collision defence)`)
   }
-}
-
-/** Keys any of which make an mcpServers entry launchable/connectable — the SDK
- *  validates the full config shape; we reject the obviously-degenerate AND
- *  wrong-typed anchor values (a `command: null` would otherwise ride to the
- *  server and die far from the operator). */
-const MCP_ANCHOR_KEYS = ['command', 'url', 'type']
-
-function validateMcpServers(v: unknown, errors: string[]): CapabilitiesSpec['mcpServers'] {
-  if (!isRecord(v)) {
-    errors.push('capabilities.mcpServers must be an object map of server-name → server config')
-    return undefined
-  }
-  checkEntryNames(v, 'capabilities.mcpServers', errors)
-  for (const [name, cfg] of Object.entries(v)) {
-    if (!isRecord(cfg)) {
-      errors.push(`capabilities.mcpServers.${name} must be an object (server config)`)
-      continue
-    }
-    if (!MCP_ANCHOR_KEYS.some((k) => k in cfg)) {
-      errors.push(`capabilities.mcpServers.${name} lacks any of ${MCP_ANCHOR_KEYS.join('/')} — not a launchable server config`)
-    }
-    for (const k of MCP_ANCHOR_KEYS) {
-      if (k in cfg && typeof cfg[k] !== 'string') errors.push(`capabilities.mcpServers.${name}.${k} must be a string`)
-    }
-  }
-  return v as CapabilitiesSpec['mcpServers']
 }
 
 function validateAgents(v: unknown, errors: string[]): CapabilitiesSpec['agents'] {
@@ -198,8 +167,10 @@ export function extractCapabilities(args: unknown): { spec: CapabilitiesSpec | n
   }
   const spec: CapabilitiesSpec = {}
   if ('mcpServers' in raw) {
-    const m = validateMcpServers(raw['mcpServers'], errors)
-    if (m !== undefined) spec.mcpServers = m
+    // Shared shape validator (validator-shared.ts) — same rules the capability
+    // registry uses, keyed by our path so the error strings read `capabilities.mcpServers.…`.
+    validateMcpServersShape(raw['mcpServers'], 'capabilities.mcpServers', errors)
+    if (isRecord(raw['mcpServers'])) spec.mcpServers = raw['mcpServers'] as Record<string, Record<string, unknown>>
   }
   if ('agents' in raw) {
     const a = validateAgents(raw['agents'], errors)

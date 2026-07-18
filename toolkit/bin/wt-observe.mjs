@@ -207,6 +207,9 @@ var FORBIDDEN_ENTRY_NAMES = /* @__PURE__ */ new Set(["__proto__", "constructor",
 function isRecord2(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
+function isStringArray(v) {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
 var MCP_ANCHOR_KEYS = ["command", "url", "type"];
 function validateMcpServersShape(v, path, errors) {
   if (!isRecord2(v)) {
@@ -253,34 +256,10 @@ var AGENT_DEF_KEYS = /* @__PURE__ */ new Set([
   "observer",
   "observerMessage"
 ]);
-function isStringArray(v) {
-  return Array.isArray(v) && v.every((x) => typeof x === "string");
-}
 function checkEntryNames(map, path, errors) {
   for (const name of Object.keys(map)) {
     if (FORBIDDEN_ENTRY_NAMES.has(name)) errors.push(`${path}.${name} is a forbidden entry name (prototype-collision defence)`);
   }
-}
-var MCP_ANCHOR_KEYS2 = ["command", "url", "type"];
-function validateMcpServers(v, errors) {
-  if (!isRecord2(v)) {
-    errors.push("capabilities.mcpServers must be an object map of server-name \u2192 server config");
-    return void 0;
-  }
-  checkEntryNames(v, "capabilities.mcpServers", errors);
-  for (const [name, cfg] of Object.entries(v)) {
-    if (!isRecord2(cfg)) {
-      errors.push(`capabilities.mcpServers.${name} must be an object (server config)`);
-      continue;
-    }
-    if (!MCP_ANCHOR_KEYS2.some((k) => k in cfg)) {
-      errors.push(`capabilities.mcpServers.${name} lacks any of ${MCP_ANCHOR_KEYS2.join("/")} \u2014 not a launchable server config`);
-    }
-    for (const k of MCP_ANCHOR_KEYS2) {
-      if (k in cfg && typeof cfg[k] !== "string") errors.push(`capabilities.mcpServers.${name}.${k} must be a string`);
-    }
-  }
-  return v;
 }
 function validateAgents(v, errors) {
   if (!isRecord2(v)) {
@@ -343,8 +322,8 @@ function extractCapabilities(args) {
   }
   const spec = {};
   if ("mcpServers" in raw) {
-    const m = validateMcpServers(raw["mcpServers"], errors);
-    if (m !== void 0) spec.mcpServers = m;
+    validateMcpServersShape(raw["mcpServers"], "capabilities.mcpServers", errors);
+    if (isRecord2(raw["mcpServers"])) spec.mcpServers = raw["mcpServers"];
   }
   if ("agents" in raw) {
     const a = validateAgents(raw["agents"], errors);
@@ -498,9 +477,6 @@ async function probeProviders(registry, opts = {}) {
 }
 var PROVIDER_KEYS = /* @__PURE__ */ new Set(["name", "mcpServers", "tools", "protocolHint", "probe"]);
 var PROBE_KEYS = /* @__PURE__ */ new Set(["command", "timeoutMs"]);
-function isStringArray2(v) {
-  return Array.isArray(v) && v.every((x) => typeof x === "string");
-}
 function defaultRegistryPath() {
   const xdg = process.env.XDG_CONFIG_HOME;
   const base = xdg !== void 0 && xdg.length > 0 ? xdg : join4(homedir2(), ".config");
@@ -526,7 +502,7 @@ function validateProvider(v, path, errors) {
     if (!PROVIDER_KEYS.has(k)) errors.push(`${path}.${k} is not a known provider field (typo?)`);
   }
   if (typeof v["name"] !== "string" || v["name"].length === 0) errors.push(`${path}.name must be a non-empty string`);
-  if ("tools" in v && !isStringArray2(v["tools"])) errors.push(`${path}.tools must be a string array`);
+  if ("tools" in v && !isStringArray(v["tools"])) errors.push(`${path}.tools must be a string array`);
   if ("protocolHint" in v && typeof v["protocolHint"] !== "string") errors.push(`${path}.protocolHint must be a string`);
   if ("mcpServers" in v) validateMcpServersShape(v["mcpServers"], `${path}.mcpServers`, errors);
   if ("probe" in v) validateProbe(v["probe"], `${path}.probe`, errors);
@@ -632,7 +608,7 @@ function validateSidecarShape(sidecar) {
       }
       if (typeof def["description"] !== "string") errors.push(`sidecar.agents.${agentName}.description must be a string`);
       if (typeof def["prompt"] !== "string") errors.push(`sidecar.agents.${agentName}.prompt must be a string`);
-      if ("tools" in def && !isStringArray2(def["tools"])) errors.push(`sidecar.agents.${agentName}.tools must be a string array`);
+      if ("tools" in def && !isStringArray(def["tools"])) errors.push(`sidecar.agents.${agentName}.tools must be a string array`);
     }
   }
   return errors;
@@ -1073,9 +1049,6 @@ function validateDefinitionFile(v, path, errors) {
 var RESOLVED_RESOLUTION_KEYS = /* @__PURE__ */ new Set(["need", "provider", "mcpServers", "tools", "protocolHint"]);
 var UNRESOLVED_RESOLUTION_KEYS = /* @__PURE__ */ new Set(["need", "unresolved", "degradation", "tools"]);
 var MAX_RESOLUTION = 32;
-function isStringArray3(v) {
-  return Array.isArray(v) && v.every((x) => typeof x === "string");
-}
 function validateResolutionField(v, path, errors) {
   if (!Array.isArray(v)) {
     errors.push(`${path} must be an array of NeedResolution ({ need, provider, mcpServers, tools, protocolHint? } | { need, unresolved, degradation, tools })`);
@@ -1092,7 +1065,7 @@ function validateResolutionField(v, path, errors) {
       return;
     }
     if (typeof item["need"] !== "string" || item["need"].length === 0) errors.push(`${p}.need must be a non-empty string`);
-    if (!isStringArray3(item["tools"])) errors.push(`${p}.tools must be a string array`);
+    if (!isStringArray(item["tools"])) errors.push(`${p}.tools must be a string array`);
     if (item["unresolved"] === true) {
       checkUnknownKeys(item, UNRESOLVED_RESOLUTION_KEYS, p, errors);
       if (typeof item["degradation"] !== "string" || item["degradation"].length === 0) errors.push(`${p}.degradation must be a non-empty string (an unresolved resolution names its degradation)`);
@@ -1163,6 +1136,14 @@ function safeRequesterCwd(cwdFn) {
       note: "requesterCwd unavailable (working directory unresolvable) \u2014 the run will appear under the Delegated bucket"
     };
   }
+}
+var LAUNCH_DEFAULT_TIMEOUT_MS = 3e4;
+function resolveLaunchTimeoutMs(flagSeconds, envMs) {
+  const fromFlag = flagSeconds === void 0 ? NaN : Number(flagSeconds) * 1e3;
+  if (Number.isFinite(fromFlag) && fromFlag > 0) return fromFlag;
+  const fromEnv = envMs === void 0 ? NaN : Number(envMs);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+  return LAUNCH_DEFAULT_TIMEOUT_MS;
 }
 
 // packages/debugger/src/spawn-ready.ts
@@ -1363,6 +1344,7 @@ function classifyAwaitTick(obs) {
   }
   if (obs.elapsedMs > obs.timeoutMs) return { kind: "timeout" };
   if (obs.recallStatus !== null) return { kind: "pending" };
+  if (obs.sourcesUnprobed === true) return { kind: "pending" };
   return obs.elapsedMs > obs.missingGraceMs ? { kind: "missing" } : { kind: "pending" };
 }
 function extractAwaitOutcome(recall) {
@@ -2045,8 +2027,8 @@ async function applyObserverResolution(input) {
 `);
   return { ...args, observers: owned.observers };
 }
-async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
-  if (script === void 0) throw new Error("usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]");
+async function cmdLaunch(ctx, script, rawArgs, sourceFlag, launchTimeoutMs) {
+  if (script === void 0) throw new Error("usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>]");
   let args;
   if (rawArgs !== void 0) {
     try {
@@ -2095,7 +2077,18 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
 `
     );
   }
-  const res = await api(port, token, `${prefix}/api/launch`, { method: "POST", body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, 3e4);
+  let res;
+  try {
+    res = await api(port, token, `${prefix}/api/launch`, { method: "POST", body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, launchTimeoutMs);
+  } catch (err) {
+    const name = err instanceof Error ? err.name : "";
+    if (name === "TimeoutError" || name === "AbortError") {
+      throw new Error(
+        `launch request timed out after ${Math.round(launchTimeoutMs / 1e3)}s \u2014 the server did not accept the run in time (likely under concurrent load). From here the run's start is UNKNOWN: it may still be spawning. Retrying the SAME "${script}" with the SAME --args is safe \u2014 the server dedups an overlapping identical launch onto the one run (no double-launch). To wait longer, re-run with --launch-timeout-s <N> or set OBSERVE_LAUNCH_TIMEOUT_MS=<ms>. Check \`wt-observe status\` (or the UI) to see whether a run started.`
+      );
+    }
+    throw err;
+  }
   const body = await res.json().catch(() => null);
   if (!res.ok) {
     const code = typeof body === "object" && body !== null ? body["code"] : void 0;
@@ -2123,19 +2116,39 @@ async function fetchRecall(port, token, prefix, runId) {
 }
 async function searchLocalSources(port, token, keys, runId) {
   const hits = [];
+  const unprobed = [];
   await Promise.all(
     keys.map(async (key) => {
       const p = `/s/${key}`;
-      const live = await api(port, token, `${p}/api/runs/live`).then((r) => r.ok ? r.json() : []).catch(() => []);
-      if (live.some((e) => e.runId === runId)) {
+      let liveReached = false;
+      let inLive = false;
+      try {
+        const r = await api(port, token, `${p}/api/runs/live`);
+        if (r.ok) {
+          liveReached = true;
+          const list = await r.json().catch(() => null);
+          inLive = Array.isArray(list) && list.some((e) => e.runId === runId);
+        }
+      } catch {
+      }
+      if (inLive) {
         hits.push(key);
         return;
       }
-      const recall = await fetchRecall(port, token, p, runId);
-      if (recall !== null) hits.push(key);
+      let recallReached = false;
+      try {
+        const r = await api(port, token, `${p}/api/runs/${encodeURIComponent(runId)}`, {}, 1e4);
+        if (r.ok) {
+          hits.push(key);
+          return;
+        }
+        if (r.status === 404) recallReached = true;
+      } catch {
+      }
+      if (!(liveReached && recallReached)) unprobed.push(key);
     })
   );
-  return classifySourceSearch(hits);
+  return { found: classifySourceSearch(hits), unprobed };
 }
 async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
   if (runId === void 0) throw new Error("usage: wt-observe await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]");
@@ -2165,19 +2178,21 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
       recall = await fetchRecall(port, token, prefix, runId);
       recallStatus = extractAwaitOutcome(recall).status;
     }
+    let searchUnprobed = [];
     if (entry === null && recall === null && searchableKeys.length > 1) {
       const search = await searchLocalSources(port, token, searchableKeys, runId);
-      if (search.kind === "unique" && search.key !== activeKey) {
-        process.stderr.write(`[wt-observe await] "${runId}" found under source "${search.key}" (default was "${String(activeKey)}") \u2014 switching.
+      searchUnprobed = search.unprobed;
+      if (search.found.kind === "unique" && search.found.key !== activeKey) {
+        process.stderr.write(`[wt-observe await] "${runId}" found under source "${search.found.key}" (default was "${String(activeKey)}") \u2014 switching.
 `);
-        activeKey = search.key;
-        prefix = `/s/${search.key}`;
+        activeKey = search.found.key;
+        prefix = `/s/${search.found.key}`;
         continue;
       }
-      if (search.kind === "ambiguous" && !warnedAmbiguous) {
+      if (search.found.kind === "ambiguous" && !warnedAmbiguous) {
         warnedAmbiguous = true;
         process.stderr.write(
-          `[wt-observe await] "${runId}" ambiguously found under multiple sources (${search.keys.join(", ")}) \u2014 refusing to guess, staying on "${String(activeKey)}".
+          `[wt-observe await] "${runId}" ambiguously found under multiple sources (${search.found.keys.join(", ")}) \u2014 refusing to guess, staying on "${String(activeKey)}".
 `
         );
       }
@@ -2187,7 +2202,10 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
       recallStatus,
       elapsedMs: Date.now() - startedAt,
       timeoutMs: timeoutS * 1e3,
-      missingGraceMs: AWAIT_MISSING_GRACE_MS
+      missingGraceMs: AWAIT_MISSING_GRACE_MS,
+      // A run "visible nowhere" while a local source could not be reached this tick has an
+      // UNKNOWN absence — keeps the tick pending instead of a false `missing` (never-latch).
+      sourcesUnprobed: searchUnprobed.length > 0
     });
     if (verdict.kind === "pending") {
       await new Promise((r) => setTimeout(r, pollS * 1e3));
@@ -2209,8 +2227,17 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
 `);
       return awaitExitCode({ kind: "done", status });
     }
-    process.stdout.write(`${JSON.stringify({ runId, error: verdict.kind })}
+    if (searchUnprobed.length > 0) {
+      process.stderr.write(
+        `[wt-observe await] ${runId} ${verdict.kind}: could not probe source(s) ${searchUnprobed.join(", ")} \u2014 the run may be live under one of them (retry, or pass --source <label|dir>).
+`
+      );
+      process.stdout.write(`${JSON.stringify({ runId, error: verdict.kind, unprobedSources: searchUnprobed })}
 `);
+    } else {
+      process.stdout.write(`${JSON.stringify({ runId, error: verdict.kind })}
+`);
+    }
     return awaitExitCode(verdict);
   }
 }
@@ -2447,7 +2474,14 @@ async function main(argv = process.argv.slice(2)) {
     } else if (cmd === "stop") await cmdStop(ctx);
     else if (cmd === "status") await cmdStatus(ctx);
     else if (cmd === "prune") return await cmdPrune(argv);
-    else if (cmd === "launch") await cmdLaunch(ctx, argv[1], flagValue(argv, "args"), flagValue(argv, "source"));
+    else if (cmd === "launch")
+      await cmdLaunch(
+        ctx,
+        argv[1],
+        flagValue(argv, "args"),
+        flagValue(argv, "source"),
+        resolveLaunchTimeoutMs(flagValue(argv, "launch-timeout-s"), process.env["OBSERVE_LAUNCH_TIMEOUT_MS"])
+      );
     else if (cmd === "await") {
       const timeoutS = Number(flagValue(argv, "timeout-s") ?? AWAIT_DEFAULT_TIMEOUT_S) || AWAIT_DEFAULT_TIMEOUT_S;
       const pollS = Number(flagValue(argv, "poll-s") ?? AWAIT_DEFAULT_POLL_S) || AWAIT_DEFAULT_POLL_S;
@@ -2468,7 +2502,7 @@ async function main(argv = process.argv.slice(2)) {
       else await cmdConfigRemoveRemote(parsed.url);
     } else {
       process.stderr.write(
-        "usage: wt-observe [start [--source <dir>]... [--watch] [--enable-launch]|stop|status|launch <workflow.js> [--args <json>] [--source <label|dir>]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|resume <runId> [--source <label|dir>]|config [show|add-source <dir>|remove-source <dir>|add-remote <url> [--token <t>|--token-file <p>] [--label <l>]|remove-remote <url>]]\n"
+        "usage: wt-observe [start [--source <dir>]... [--watch] [--enable-launch]|stop|status|launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s N]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|resume <runId> [--source <label|dir>]|config [show|add-source <dir>|remove-source <dir>|add-remote <url> [--token <t>|--token-file <p>] [--label <l>]|remove-remote <url>]]\n"
       );
       return 2;
     }

@@ -40,7 +40,7 @@ import { spawn as nodeSpawn } from 'node:child_process'
 
 import type { CapabilitiesSpec, CapabilityAgentDef } from './capabilities.js'
 import type { CapabilityNeed } from './observer-def.js'
-import { FORBIDDEN_ENTRY_NAMES, isRecord, validateMcpServersShape } from './validator-shared.js'
+import { FORBIDDEN_ENTRY_NAMES, isRecord, isStringArray, validateMcpServersShape } from './validator-shared.js'
 
 // ------------------------------- types -------------------------------
 
@@ -259,10 +259,6 @@ export async function probeProviders(registry: CapabilityRegistry, opts: { spawn
 
 const PROVIDER_KEYS = new Set(['name', 'mcpServers', 'tools', 'protocolHint', 'probe'])
 const PROBE_KEYS = new Set(['command', 'timeoutMs'])
-
-function isStringArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every((x) => typeof x === 'string')
-}
 
 function defaultRegistryPath(): string {
   const xdg = process.env.XDG_CONFIG_HOME

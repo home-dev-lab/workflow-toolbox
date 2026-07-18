@@ -73,7 +73,7 @@ import { loadCapabilityRegistry, probeProviders, type CapabilityRegistry, type C
 import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, inlineObserverRequires, observerDefinitionFileWarnings, ownObserverResolutions, resolveObserverRequires, sidecarPathFor } from './launch-capabilities.js'
 import { isRecord } from './validator-shared.js'
 import { extractObservers } from './observer-def.js'
-import { buildLaunchBody, safeRequesterCwd } from './launch-body.js'
+import { buildLaunchBody, safeRequesterCwd, resolveLaunchTimeoutMs } from './launch-body.js'
 import { awaitSpawnedServerReady } from './spawn-ready.js'
 import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
 import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
@@ -86,6 +86,7 @@ import {
   SourceResolutionError,
   type ResolvedSource,
   type SourcesListEntry,
+  type SourceSearchResult,
 } from './source-resolve.js'
 import { resolveConfigDir, resolveDir } from './config-dir.js'
 import {
@@ -972,8 +973,8 @@ async function applyObserverResolution(input: { args: unknown; requesterCwd: str
  *  /api/launch (source-prefixed on a hub), print {runId}. The id is the workflow's
  *  filename under the server's allowlisted roots (GET /api/workflows lists them —
  *  echoed here on an unknown id). */
-async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string | undefined, sourceFlag: string | undefined): Promise<void> {
-  if (script === undefined) throw new Error('usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]')
+async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string | undefined, sourceFlag: string | undefined, launchTimeoutMs: number): Promise<void> {
+  if (script === undefined) throw new Error('usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>]')
   let args: unknown
   if (rawArgs !== undefined) {
     try {
@@ -1060,7 +1061,28 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
       `capabilities section: ${Object.keys(composeCapabilityOptions(finalCap.spec)).join(', ') || '(empty)'} — needs a server with capabilities composition; older servers ignore it\n`,
     )
   }
-  const res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, 30_000)
+  let res: Response
+  try {
+    res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, launchTimeoutMs)
+  } catch (err) {
+    // A slow server-side SDK session spawn (concurrent load) can exceed the request
+    // timeout: the fetch aborts (AbortSignal.timeout → TimeoutError) with the run's start
+    // UNKNOWN from here (card #1821667078139020890). Give the honest, actionable message
+    // instead of a raw abort. Retrying the SAME script+args is SAFE — the server's launch
+    // guard (observatory launch-guard.ts) dedups an overlapping identical launch onto the
+    // one run (acquire()/release() spans the whole run), so it never double-launches.
+    const name = err instanceof Error ? err.name : ''
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      throw new Error(
+        `launch request timed out after ${Math.round(launchTimeoutMs / 1000)}s — the server did not accept the run in time (likely under concurrent load). ` +
+          `From here the run's start is UNKNOWN: it may still be spawning. ` +
+          `Retrying the SAME "${script}" with the SAME --args is safe — the server dedups an overlapping identical launch onto the one run (no double-launch). ` +
+          `To wait longer, re-run with --launch-timeout-s <N> or set OBSERVE_LAUNCH_TIMEOUT_MS=<ms>. ` +
+          `Check \`wt-observe status\` (or the UI) to see whether a run started.`,
+      )
+    }
+    throw err
+  }
   const body: unknown = await res.json().catch(() => null)
   if (!res.ok) {
     const code = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['code'] : undefined
@@ -1104,23 +1126,57 @@ async function fetchRecall(port: number, token: string, prefix: string, runId: s
  *  of scope here, no server-side changes in this fix) for a live-registry or recall hit.
  *  Used by `await` ONLY when the run wasn't found under its (default-guessed) active
  *  source, so the common already-correct case never pays this cost. */
-async function searchLocalSources(port: number, token: string, keys: readonly string[], runId: string) {
+async function searchLocalSources(
+  port: number,
+  token: string,
+  keys: readonly string[],
+  runId: string,
+): Promise<{ found: SourceSearchResult; unprobed: string[] }> {
   const hits: string[] = []
+  const unprobed: string[] = []
   await Promise.all(
     keys.map(async (key) => {
       const p = `/s/${key}`
-      const live = await api(port, token, `${p}/api/runs/live`)
-        .then((r) => (r.ok ? (r.json() as Promise<{ runId: string }[]>) : []))
-        .catch(() => [] as { runId: string }[])
-      if (live.some((e) => e.runId === runId)) {
+      // Track whether each endpoint was actually REACHED. A timeout/5xx under concurrent
+      // load is UNKNOWN, never a confirmed "run not here" — conflating the two is the
+      // false-missing this fixes (card #1821784328170899045): the same never-latch
+      // discipline source-resolve.ts already applies to resolveSource.
+      let liveReached = false
+      let inLive = false
+      try {
+        const r = await api(port, token, `${p}/api/runs/live`)
+        if (r.ok) {
+          liveReached = true
+          const list = (await r.json().catch(() => null)) as { runId: string }[] | null
+          inLive = Array.isArray(list) && list.some((e) => e.runId === runId)
+        }
+      } catch {
+        /* unreachable — liveReached stays false */
+      }
+      if (inLive) {
         hits.push(key)
         return
       }
-      const recall = await fetchRecall(port, token, p, runId)
-      if (recall !== null) hits.push(key)
+      // Recall: 200 = the run has a record here (hit); 404 = a CONFIRMED miss; anything
+      // else (timeout/5xx) leaves the source unprobed.
+      let recallReached = false
+      try {
+        const r = await api(port, token, `${p}/api/runs/${encodeURIComponent(runId)}`, {}, 10_000)
+        if (r.ok) {
+          hits.push(key)
+          return
+        }
+        if (r.status === 404) recallReached = true
+      } catch {
+        /* unreachable — recallReached stays false */
+      }
+      // Not found here. Only a source whose BOTH endpoints gave a definitive answer is a
+      // confirmed miss; if either could not be reached, its status is UNKNOWN (unprobed),
+      // so the caller must not read a `none` search as "the run is nowhere".
+      if (!(liveReached && recallReached)) unprobed.push(key)
     }),
   )
-  return classifySourceSearch(hits)
+  return { found: classifySourceSearch(hits), unprobed }
 }
 
 /** `wt-observe await <runId>` — block until the run reaches a terminal state, then print
@@ -1168,18 +1224,20 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
       recall = await fetchRecall(port, token, prefix, runId)
       recallStatus = extractAwaitOutcome(recall).status
     }
+    let searchUnprobed: string[] = []
     if (entry === null && recall === null && searchableKeys.length > 1) {
       const search = await searchLocalSources(port, token, searchableKeys, runId)
-      if (search.kind === 'unique' && search.key !== activeKey) {
-        process.stderr.write(`[wt-observe await] "${runId}" found under source "${search.key}" (default was "${String(activeKey)}") — switching.\n`)
-        activeKey = search.key
-        prefix = `/s/${search.key}`
+      searchUnprobed = search.unprobed
+      if (search.found.kind === 'unique' && search.found.key !== activeKey) {
+        process.stderr.write(`[wt-observe await] "${runId}" found under source "${search.found.key}" (default was "${String(activeKey)}") — switching.\n`)
+        activeKey = search.found.key
+        prefix = `/s/${search.found.key}`
         continue // re-tick immediately under the corrected prefix, no sleep burned
       }
-      if (search.kind === 'ambiguous' && !warnedAmbiguous) {
+      if (search.found.kind === 'ambiguous' && !warnedAmbiguous) {
         warnedAmbiguous = true
         process.stderr.write(
-          `[wt-observe await] "${runId}" ambiguously found under multiple sources (${search.keys.join(', ')}) — refusing to guess, staying on "${String(activeKey)}".\n`,
+          `[wt-observe await] "${runId}" ambiguously found under multiple sources (${search.found.keys.join(', ')}) — refusing to guess, staying on "${String(activeKey)}".\n`,
         )
       }
     }
@@ -1189,6 +1247,9 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
       elapsedMs: Date.now() - startedAt,
       timeoutMs: timeoutS * 1000,
       missingGraceMs: AWAIT_MISSING_GRACE_MS,
+      // A run "visible nowhere" while a local source could not be reached this tick has an
+      // UNKNOWN absence — keeps the tick pending instead of a false `missing` (never-latch).
+      sourcesUnprobed: searchUnprobed.length > 0,
     })
     if (verdict.kind === 'pending') {
       await new Promise((r) => setTimeout(r, pollS * 1000))
@@ -1220,8 +1281,18 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
       if ('error' in reasonPart) process.stderr.write(`[wt-observe await] ${runId} ${status}: ${reasonPart.error}\n`)
       return awaitExitCode({ kind: 'done', status })
     }
-    // timeout / missing — one machine-readable error line, distinct exit codes.
-    process.stdout.write(`${JSON.stringify({ runId, error: verdict.kind })}\n`)
+    // timeout / missing — one machine-readable error line, distinct exit codes. When the
+    // multi-source search could not reach some local sources this tick, NAME them: the run
+    // may be live under one of them and the verdict is an "unknown", not a confident
+    // absence (card #1821784328170899045). Pass --source to target it directly, or retry.
+    if (searchUnprobed.length > 0) {
+      process.stderr.write(
+        `[wt-observe await] ${runId} ${verdict.kind}: could not probe source(s) ${searchUnprobed.join(', ')} — the run may be live under one of them (retry, or pass --source <label|dir>).\n`,
+      )
+      process.stdout.write(`${JSON.stringify({ runId, error: verdict.kind, unprobedSources: searchUnprobed })}\n`)
+    } else {
+      process.stdout.write(`${JSON.stringify({ runId, error: verdict.kind })}\n`)
+    }
     return awaitExitCode(verdict)
   }
 }
@@ -1529,7 +1600,14 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     } else if (cmd === 'stop') await cmdStop(ctx)
     else if (cmd === 'status') await cmdStatus(ctx)
     else if (cmd === 'prune') return await cmdPrune(argv)
-    else if (cmd === 'launch') await cmdLaunch(ctx, argv[1], flagValue(argv, 'args'), flagValue(argv, 'source'))
+    else if (cmd === 'launch')
+      await cmdLaunch(
+        ctx,
+        argv[1],
+        flagValue(argv, 'args'),
+        flagValue(argv, 'source'),
+        resolveLaunchTimeoutMs(flagValue(argv, 'launch-timeout-s'), process.env['OBSERVE_LAUNCH_TIMEOUT_MS']),
+      )
     else if (cmd === 'await') {
       const timeoutS = Number(flagValue(argv, 'timeout-s') ?? AWAIT_DEFAULT_TIMEOUT_S) || AWAIT_DEFAULT_TIMEOUT_S
       const pollS = Number(flagValue(argv, 'poll-s') ?? AWAIT_DEFAULT_POLL_S) || AWAIT_DEFAULT_POLL_S
@@ -1550,7 +1628,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     } else {
       process.stderr.write(
         'usage: wt-observe [start [--source <dir>]... [--watch] [--enable-launch]|stop|status|' +
-          'launch <workflow.js> [--args <json>] [--source <label|dir>]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|' +
+          'launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s N]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|' +
           'resume <runId> [--source <label|dir>]|' +
           'config [show|add-source <dir>|remove-source <dir>|add-remote <url> [--token <t>|--token-file <p>] [--label <l>]|remove-remote <url>]]\n',
       )

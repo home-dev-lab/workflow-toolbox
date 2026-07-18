@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { parseMessage } from '../src/validate.js'
 import { writeMessage, listMessages, claimSettlement, readSettlementFor } from '../src/fs.js'
 import { mintHintId } from '../src/ids.js'
-import { BASE_ID_PATTERN, HINT_MESSAGE_SCHEMA, WT_COMM_SCHEMAS, type HintMessage } from '../src/schemas.js'
+import { BASE_ID_PATTERN, HINT_ID_PATTERN, HINT_MESSAGE_SCHEMA, WT_COMM_SCHEMAS, type HintMessage } from '../src/schemas.js'
 
 const AT = '2026-07-17T10:00:00Z'
 
@@ -278,6 +278,52 @@ describe('mintHintId — deterministic, grammar-valid, <=90 chars (single deriva
     const degenerate = mintHintId('///', '///', Number.NaN)
     expect(BASE_ID_PATTERN.test(degenerate)).toBe(true)
     expect(degenerate.endsWith('-0')).toBe(true)
+  })
+
+  // Card #1821537133433718298 — the OPTIONAL 4th arg (agentId) adds a VISIBLE agent segment
+  // to disambiguate sibling transcripts of one multi-transcript target. Additive: the 3-arg
+  // form is untouched; the agent form gets the widened <=128 hint-id grammar.
+  it('omitting agentId (or passing empty) is byte-identical to the 3-arg form (backward-compat + crash-rewind determinism)', () => {
+    const threeArg = mintHintId('wf_run-1', 'docs-butler', 3)
+    expect(mintHintId('wf_run-1', 'docs-butler', 3, undefined)).toBe(threeArg)
+    expect(mintHintId('wf_run-1', 'docs-butler', 3, '')).toBe(threeArg)
+  })
+
+  it('a non-empty agentId inserts a VISIBLE agent segment before the seq (and changes the id)', () => {
+    const id = mintHintId('wf_run-1', 'docs-butler', 3, 'agent-alpha')
+    expect(id.startsWith('h-')).toBe(true)
+    expect(id).toContain('docs-butler')
+    expect(id).toContain('agent-alpha')
+    expect(id.endsWith('-3')).toBe(true)
+    expect(id).not.toBe(mintHintId('wf_run-1', 'docs-butler', 3))
+  })
+
+  it('is deterministic in agentId (same 4-tuple → same id; crash-rewind/adopt safe)', () => {
+    expect(mintHintId('wf_run-1', 'docs-butler', 3, 'agent-alpha')).toBe(mintHintId('wf_run-1', 'docs-butler', 3, 'agent-alpha'))
+  })
+
+  it('two SIBLING agents on the same run/observer/seq mint DISTINCT ids', () => {
+    expect(mintHintId('wf_run-1', 'docs-butler', 1, 'agent-alpha')).not.toBe(mintHintId('wf_run-1', 'docs-butler', 1, 'agent-beta'))
+  })
+
+  it('the agent segment carries its own injectivity hash — agent ids sharing a long prefix (or case/punctuation) disambiguate', () => {
+    const prefix = 'agent-with-a-very-long-shared-prefix'
+    expect(mintHintId('run-42', 'obs', 1, `${prefix}-alpha`)).not.toBe(mintHintId('run-42', 'obs', 1, `${prefix}-beta`))
+    expect(mintHintId('run-42', 'obs', 1, 'agent-x')).not.toBe(mintHintId('run-42', 'obs', 1, 'agent.x'))
+  })
+
+  it('stays <=128 and matches the widened hint-id grammar (never "--") under adversarial inputs', () => {
+    const worst = mintHintId('WF/'.repeat(80), 'a'.repeat(200), Number.MAX_SAFE_INTEGER, 'g'.repeat(200))
+    expect(worst.length).toBeLessThanOrEqual(128)
+    expect(HINT_ID_PATTERN.test(worst)).toBe(true)
+    expect(worst).not.toContain('--')
+  })
+
+  it('an agent-segment id over 96 chars still validates as a real observer.hint message (schema widened to <=128)', () => {
+    const id = mintHintId('WF/'.repeat(80), 'a'.repeat(200), Number.MAX_SAFE_INTEGER, 'g'.repeat(200))
+    expect(id.length).toBeGreaterThan(96) // proves the widening is actually exercised end-to-end
+    const r = parseMessage(JSON.stringify(baseHint({ id })))
+    expect(r.ok).toBe(true)
   })
 })
 

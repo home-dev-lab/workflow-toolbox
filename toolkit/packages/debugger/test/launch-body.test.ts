@@ -8,7 +8,7 @@
 // build-freshness gate on the shipped bins.
 
 import { describe, expect, it } from 'vitest'
-import { buildLaunchBody, safeRequesterCwd } from '../src/launch-body.js'
+import { buildLaunchBody, safeRequesterCwd, resolveLaunchTimeoutMs, LAUNCH_DEFAULT_TIMEOUT_MS } from '../src/launch-body.js'
 
 describe('buildLaunchBody', () => {
   it('includes script and requesterCwd, omits args when undefined', () => {
@@ -52,5 +52,34 @@ describe('safeRequesterCwd', () => {
     expect(out.note).toContain('Delegated bucket')
     // and the composed body indeed omits the field
     expect(buildLaunchBody('wf.js', undefined, out.cwd)).toEqual({ script: 'wf.js' })
+  })
+})
+
+// TEST-LOCK for card #1821667078139020890 — the hard 30s /api/launch cap left no knob, so
+// a slow server-side spawn under concurrent load aborted the request. The pure timeout
+// resolver is unit-tested here; the cmdLaunch wiring (flag/env at the call site + the
+// honest timeout message) is exercised by typecheck + the build-freshness gate on the bins.
+describe('resolveLaunchTimeoutMs', () => {
+  it('defaults to 30s when neither the flag nor the env is set', () => {
+    expect(resolveLaunchTimeoutMs(undefined, undefined)).toBe(LAUNCH_DEFAULT_TIMEOUT_MS)
+    expect(resolveLaunchTimeoutMs(undefined, undefined)).toBe(30_000)
+  })
+
+  it('the --launch-timeout-s flag (seconds) wins and is converted to ms', () => {
+    expect(resolveLaunchTimeoutMs('90', undefined)).toBe(90_000)
+    expect(resolveLaunchTimeoutMs('90', '5000')).toBe(90_000) // flag beats env
+  })
+
+  it('falls back to OBSERVE_LAUNCH_TIMEOUT_MS (ms) when there is no flag', () => {
+    expect(resolveLaunchTimeoutMs(undefined, '120000')).toBe(120_000)
+  })
+
+  it('ignores a non-positive or non-numeric value (never a 0/NaN that would abort instantly)', () => {
+    expect(resolveLaunchTimeoutMs('0', undefined)).toBe(30_000)
+    expect(resolveLaunchTimeoutMs('-5', undefined)).toBe(30_000)
+    expect(resolveLaunchTimeoutMs('abc', undefined)).toBe(30_000)
+    expect(resolveLaunchTimeoutMs('abc', '60000')).toBe(60_000) // a bad flag still lets the env through
+    expect(resolveLaunchTimeoutMs(undefined, '0')).toBe(30_000)
+    expect(resolveLaunchTimeoutMs(undefined, 'nope')).toBe(30_000)
   })
 })
