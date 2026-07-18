@@ -2028,7 +2028,7 @@ async function applyObserverResolution(input) {
   return { ...args, observers: owned.observers };
 }
 async function cmdLaunch(ctx, script, rawArgs, sourceFlag, launchTimeoutMs) {
-  if (script === void 0) throw new Error("usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>]");
+  if (script === void 0) throw new Error("usage: " + SYNOPSIS.launch);
   let args;
   if (rawArgs !== void 0) {
     try {
@@ -2151,7 +2151,7 @@ async function searchLocalSources(port, token, keys, runId) {
   return { found: classifySourceSearch(hits), unprobed };
 }
 async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
-  if (runId === void 0) throw new Error("usage: wt-observe await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]");
+  if (runId === void 0) throw new Error("usage: " + SYNOPSIS.await);
   const { port, token, health } = await requireOwnedServer(ctx);
   let resolved;
   try {
@@ -2242,7 +2242,7 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
   }
 }
 async function cmdResume(ctx, runId, sourceFlag) {
-  if (runId === void 0) throw new Error("usage: wt-observe resume <runId> [--source <label|dir>]");
+  if (runId === void 0) throw new Error("usage: " + SYNOPSIS.resume);
   const { port, token, health } = await requireOwnedServer(ctx);
   let resolved;
   try {
@@ -2463,8 +2463,45 @@ async function cmdPrune(argv) {
   if (!execute) process.stdout.write("(nothing deleted \u2014 re-run with --yes)\n");
   return 0;
 }
+var SYNOPSIS = {
+  start: "wt-observe start [--source <dir>]... [--watch] [--enable-launch]",
+  stop: "wt-observe stop",
+  status: "wt-observe status",
+  prune: "wt-observe prune [--run <id> | --name-prefix <p>]... [--older-than <dur>] [--yes]",
+  launch: "wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>]",
+  await: "wt-observe await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]",
+  resume: "wt-observe resume <runId> [--source <label|dir>]",
+  config: "wt-observe config [show | add-source <dir> | remove-source <dir> | add-remote <url> [--token <t> | --token-file <p>] [--label <l>] | remove-remote <url>]"
+};
+var HELP_DETAIL = {
+  launch: "  <workflow.js> is resolved by NAME against the server's OBSERVE_WORKFLOWS_DIR\n  (a registered artifact name, not an arbitrary path).\n  Capabilities: an adjacent <workflow>.capabilities.json sidecar is auto-detected\n  and its declared needs are resolved against the machine capability registry\n  (WT_CAPABILITY_REGISTRY, else the XDG default). --args may carry a capabilities\n  or observers section that composes over the sidecar resolution."
+};
+function usageText(verb) {
+  if (verb) {
+    const detail = HELP_DETAIL[verb];
+    return `usage: ${SYNOPSIS[verb]}
+` + (detail ? `${detail}
+` : "");
+  }
+  const verbs = Object.keys(SYNOPSIS).map((v) => `  ${SYNOPSIS[v]}`).join("\n");
+  return `usage: wt-observe <command> [options]
+
+Commands:
+${verbs}
+
+Run \`wt-observe <command> --help\` for command-specific help.
+`;
+}
 async function main(argv = process.argv.slice(2)) {
   const cmd = argv[0] ?? "status";
+  if (argv[0] === "--help" || argv[0] === "-h") {
+    process.stdout.write(usageText());
+    return 0;
+  }
+  if ((argv.includes("--help") || argv.includes("-h")) && cmd in SYNOPSIS) {
+    process.stdout.write(usageText(cmd));
+    return 0;
+  }
   const ctx = makeCtx();
   try {
     if (cmd === "start") {
@@ -2501,9 +2538,7 @@ async function main(argv = process.argv.slice(2)) {
       else if (parsed.action === "add-remote") await cmdConfigAddRemote(parsed);
       else await cmdConfigRemoveRemote(parsed.url);
     } else {
-      process.stderr.write(
-        "usage: wt-observe [start [--source <dir>]... [--watch] [--enable-launch]|stop|status|launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s N]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|resume <runId> [--source <label|dir>]|config [show|add-source <dir>|remove-source <dir>|add-remote <url> [--token <t>|--token-file <p>] [--label <l>]|remove-remote <url>]]\n"
-      );
+      process.stderr.write(usageText());
       return 2;
     }
     return 0;

@@ -590,6 +590,7 @@ The launcher is a thin lifecycle CLI (`node plugin/bin/wt-observe.mjs …`):
 
 | Verb | What it does |
 |---|---|
+| `wt-observe --help` / `wt-observe <verb> --help` | Print the top-level usage, or a single verb's usage, and exit 0. `launch --help` also documents the capability sidecar auto-detection and the `WT_CAPABILITY_REGISTRY` registry. `-h` is an alias. |
 | `wt-observe status` | Report whether a server is running, on which port, serving which sources. The default when no verb is given. |
 | `wt-observe start [--source <dir>]… [--watch] [--enable-launch]` | Start the server (or adopt one already running on the preferred port). `--enable-launch` opts into delegated workflow launches. |
 | `wt-observe stop` | Stop the server this launcher owns (by its pidfile). |

@@ -974,7 +974,7 @@ async function applyObserverResolution(input: { args: unknown; requesterCwd: str
  *  filename under the server's allowlisted roots (GET /api/workflows lists them —
  *  echoed here on an unknown id). */
 async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string | undefined, sourceFlag: string | undefined, launchTimeoutMs: number): Promise<void> {
-  if (script === undefined) throw new Error('usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>]')
+  if (script === undefined) throw new Error('usage: ' + SYNOPSIS.launch)
   let args: unknown
   if (rawArgs !== undefined) {
     try {
@@ -1188,7 +1188,7 @@ async function searchLocalSources(
  *  the poll is 2 cheap localhost GETs, survives server-side SSE hiccups, and the decision
  *  logic stays pure/unit-tested (observe-await.ts). */
 async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, pollS: number, sourceFlag: string | undefined): Promise<number> {
-  if (runId === undefined) throw new Error('usage: wt-observe await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]')
+  if (runId === undefined) throw new Error('usage: ' + SYNOPSIS.await)
   const { port, token, health } = await requireOwnedServer(ctx)
   let resolved: ResolvedSource
   try {
@@ -1310,7 +1310,7 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
  *  CLI. Prints ONE JSON line and exits per recoverExitCodeFor (observe-resume.ts) / 5 on a
  *  source-resolution failure (AWAIT_SOURCE_UNRESOLVED_EXIT_CODE, same as `await`). */
 async function cmdResume(ctx: Ctx, runId: string | undefined, sourceFlag: string | undefined): Promise<number> {
-  if (runId === undefined) throw new Error('usage: wt-observe resume <runId> [--source <label|dir>]')
+  if (runId === undefined) throw new Error('usage: ' + SYNOPSIS.resume)
   const { port, token, health } = await requireOwnedServer(ctx)
   let resolved: ResolvedSource
   try {
@@ -1589,8 +1589,67 @@ async function cmdPrune(argv: readonly string[]): Promise<number> {
 
 // ── entry ───────────────────────────────────────────────────────────────────────
 
+// ── usage / help ─────────────────────────────────────────────────────────────
+// ONE source of truth for every verb's synopsis: the per-verb missing-arg throws,
+// the top-level dispatch fallback, and the `--help` / `<verb> --help` handler all
+// read from here, so the synopsis a user is shown can never drift between them.
+const SYNOPSIS = {
+  start: 'wt-observe start [--source <dir>]... [--watch] [--enable-launch]',
+  stop: 'wt-observe stop',
+  status: 'wt-observe status',
+  prune: 'wt-observe prune [--run <id> | --name-prefix <p>]... [--older-than <dur>] [--yes]',
+  launch: 'wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>]',
+  await: 'wt-observe await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]',
+  resume: 'wt-observe resume <runId> [--source <label|dir>]',
+  config:
+    'wt-observe config [show | add-source <dir> | remove-source <dir> | ' +
+    'add-remote <url> [--token <t> | --token-file <p>] [--label <l>] | remove-remote <url>]',
+} as const
+type Verb = keyof typeof SYNOPSIS
+
+// Extended per-verb help, printed under the synopsis by `<verb> --help` only (the
+// terse missing-arg throw stays a single line). launch documents the capability
+// wiring the one-line synopsis cannot carry: the auto-detected sidecar + registry.
+const HELP_DETAIL: Partial<Record<Verb, string>> = {
+  launch:
+    "  <workflow.js> is resolved by NAME against the server's OBSERVE_WORKFLOWS_DIR\n" +
+    '  (a registered artifact name, not an arbitrary path).\n' +
+    '  Capabilities: an adjacent <workflow>.capabilities.json sidecar is auto-detected\n' +
+    '  and its declared needs are resolved against the machine capability registry\n' +
+    '  (WT_CAPABILITY_REGISTRY, else the XDG default). --args may carry a capabilities\n' +
+    '  or observers section that composes over the sidecar resolution.',
+}
+
+/** Usage text. No verb → the global multi-verb synopsis; a known verb → that verb's
+ *  synopsis plus any extended detail. The caller picks the stream + exit code
+ *  (stdout/0 for --help, stderr/2 for an unknown command). */
+function usageText(verb?: Verb): string {
+  if (verb) {
+    const detail = HELP_DETAIL[verb]
+    return `usage: ${SYNOPSIS[verb]}\n` + (detail ? `${detail}\n` : '')
+  }
+  const verbs = (Object.keys(SYNOPSIS) as Verb[]).map((v) => `  ${SYNOPSIS[v]}`).join('\n')
+  return (
+    'usage: wt-observe <command> [options]\n\n' +
+    `Commands:\n${verbs}\n\n` +
+    'Run `wt-observe <command> --help` for command-specific help.\n'
+  )
+}
+
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
   const cmd = argv[0] ?? 'status'
+  // `--help` / `-h`: global when it leads, per-verb when it follows a known verb.
+  // Detected as FLAGS (matched on argv, not as a dispatched verb) so they resolve
+  // BEFORE dispatch — `launch --help` must print usage, never attempt a launch — and
+  // so they do not register as pseudo-verbs in the docs-contract verb gate.
+  if (argv[0] === '--help' || argv[0] === '-h') {
+    process.stdout.write(usageText())
+    return 0
+  }
+  if ((argv.includes('--help') || argv.includes('-h')) && cmd in SYNOPSIS) {
+    process.stdout.write(usageText(cmd as Verb))
+    return 0
+  }
   const ctx = makeCtx()
   try {
     if (cmd === 'start') {
@@ -1626,12 +1685,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       else if (parsed.action === 'add-remote') await cmdConfigAddRemote(parsed)
       else await cmdConfigRemoveRemote(parsed.url)
     } else {
-      process.stderr.write(
-        'usage: wt-observe [start [--source <dir>]... [--watch] [--enable-launch]|stop|status|' +
-          'launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s N]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|' +
-          'resume <runId> [--source <label|dir>]|' +
-          'config [show|add-source <dir>|remove-source <dir>|add-remote <url> [--token <t>|--token-file <p>] [--label <l>]|remove-remote <url>]]\n',
-      )
+      process.stderr.write(usageText())
       return 2
     }
     return 0
