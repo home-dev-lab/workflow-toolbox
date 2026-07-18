@@ -445,11 +445,14 @@ export function observerLaunchHint(spec: ObserverScaffoldSpec): string {
   if (emitsWtComm) {
     lines.push(
       '',
-      `This observer may emit wt-comm hints to ${targets}. When the observe-server runtime`,
-      'attaches it, the runtime briefs those roles with the canonical observed-role consumer',
-      'brief (@workflow-toolbox/comm: teaching/wt-comm-observer-consumer.md) — reference it,',
-      'never copy it (it is runtime-parameterized). Attachment + hint delivery ship with the',
-      'observatory runtime; authoring + args.observers validation are available now.',
+      `This observer may emit wt-comm hints to ${targets}. To brief those roles TODAY you must`,
+      'reference the canonical observed-role consumer section of the teaching pack',
+      '(@workflow-toolbox/comm: teaching/wt-comm-observer-consumer.md) in the OBSERVED roles\'',
+      'prompts yourself — reference it, never copy it (it is parameterized with the run comm dir',
+      '+ role id at run time). Automatic injection of that brief by the composer is NOT yet wired',
+      '(planned — see known-issues); the runtime never briefs the roles. The wt-comm',
+      'hint-DELIVERY channel itself ships: pass `wt-observe launch --comm-root <dir>`.',
+      'Attachment + args.observers validation are available now.',
     )
   }
   return lines.join('\n') + '\n'

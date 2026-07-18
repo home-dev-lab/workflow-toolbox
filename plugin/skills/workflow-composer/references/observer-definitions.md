@@ -144,17 +144,24 @@ in `docs/public/known-issues.md`.
 ## The observer-consumer side (when an observer emits `wt-comm`)
 
 An observer that emits `observer.hint` writes typed, sourced hints toward the roles it
-watches. The **observed agents** are briefed to consult those hints at natural boundaries by
-the observe-server runtime — it appends the canonical observed-role consumer brief
+watches. The **observed agents** must be briefed to consult those hints at natural
+boundaries by referencing the canonical observed-role consumer section of the teaching pack
 (`toolkit/packages/comm/teaching/wt-comm-observer-consumer.md`, shipped with
-`@workflow-toolbox/comm`) when it attaches the observer. That brief is
-**runtime-parameterized** (it is given the run's comm directory, the role id, and the run
-id at run time), so:
+`@workflow-toolbox/comm`) in the observed roles' prompts. That brief is
+**parameterized** at run time (it is given the run's comm directory, the role id, and the
+run id), so:
 
 - **Reference the canonical brief; never copy it** into a workflow prompt — a copy drifts
-  from the drift-locked source and cannot carry the runtime values.
-- Delivery is the runtime's job. The composer's authoring responsibility is only to (a)
-  declare the observer, and (b) LABEL the observed roles so the selector matches them (above).
+  from the drift-locked source and cannot carry the run-time values.
+- **Today this briefing is the composer's (author's) job at authoring time** — reference
+  the section into the observed roles' prompts yourself. Automatic injection of the section
+  by the composer (to the roles matched by `watch.roles`), plus the runtime parameterization
+  it needs, is **not yet wired** (planned — see [known-issues](../../../../docs/public/known-issues.md));
+  the design attributes the briefing to the composer, never to the runtime. The wt-comm
+  hint-**delivery** channel itself ships — pass `wt-observe launch --comm-root <dir>` so the
+  runtime can write hints for the observed roles to consult.
+- The composer's other authoring responsibilities: (a) declare the observer, and (b) LABEL
+  the observed roles so the selector matches them (above).
 
 A hint **INFORMS; it never instructs** — it is display prose plus its provenance, and the
 observed agent stays the sole arbiter of whether to use it.
