@@ -207,6 +207,9 @@ var FORBIDDEN_ENTRY_NAMES = /* @__PURE__ */ new Set(["__proto__", "constructor",
 function isRecord2(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
+function isStringArray(v) {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
 var MCP_ANCHOR_KEYS = ["command", "url", "type"];
 function validateMcpServersShape(v, path, errors) {
   if (!isRecord2(v)) {
@@ -253,34 +256,10 @@ var AGENT_DEF_KEYS = /* @__PURE__ */ new Set([
   "observer",
   "observerMessage"
 ]);
-function isStringArray(v) {
-  return Array.isArray(v) && v.every((x) => typeof x === "string");
-}
 function checkEntryNames(map, path, errors) {
   for (const name of Object.keys(map)) {
     if (FORBIDDEN_ENTRY_NAMES.has(name)) errors.push(`${path}.${name} is a forbidden entry name (prototype-collision defence)`);
   }
-}
-var MCP_ANCHOR_KEYS2 = ["command", "url", "type"];
-function validateMcpServers(v, errors) {
-  if (!isRecord2(v)) {
-    errors.push("capabilities.mcpServers must be an object map of server-name \u2192 server config");
-    return void 0;
-  }
-  checkEntryNames(v, "capabilities.mcpServers", errors);
-  for (const [name, cfg] of Object.entries(v)) {
-    if (!isRecord2(cfg)) {
-      errors.push(`capabilities.mcpServers.${name} must be an object (server config)`);
-      continue;
-    }
-    if (!MCP_ANCHOR_KEYS2.some((k) => k in cfg)) {
-      errors.push(`capabilities.mcpServers.${name} lacks any of ${MCP_ANCHOR_KEYS2.join("/")} \u2014 not a launchable server config`);
-    }
-    for (const k of MCP_ANCHOR_KEYS2) {
-      if (k in cfg && typeof cfg[k] !== "string") errors.push(`capabilities.mcpServers.${name}.${k} must be a string`);
-    }
-  }
-  return v;
 }
 function validateAgents(v, errors) {
   if (!isRecord2(v)) {
@@ -343,8 +322,8 @@ function extractCapabilities(args) {
   }
   const spec = {};
   if ("mcpServers" in raw) {
-    const m = validateMcpServers(raw["mcpServers"], errors);
-    if (m !== void 0) spec.mcpServers = m;
+    validateMcpServersShape(raw["mcpServers"], "capabilities.mcpServers", errors);
+    if (isRecord2(raw["mcpServers"])) spec.mcpServers = raw["mcpServers"];
   }
   if ("agents" in raw) {
     const a = validateAgents(raw["agents"], errors);
@@ -498,9 +477,6 @@ async function probeProviders(registry, opts = {}) {
 }
 var PROVIDER_KEYS = /* @__PURE__ */ new Set(["name", "mcpServers", "tools", "protocolHint", "probe"]);
 var PROBE_KEYS = /* @__PURE__ */ new Set(["command", "timeoutMs"]);
-function isStringArray2(v) {
-  return Array.isArray(v) && v.every((x) => typeof x === "string");
-}
 function defaultRegistryPath() {
   const xdg = process.env.XDG_CONFIG_HOME;
   const base = xdg !== void 0 && xdg.length > 0 ? xdg : join4(homedir2(), ".config");
@@ -526,7 +502,7 @@ function validateProvider(v, path, errors) {
     if (!PROVIDER_KEYS.has(k)) errors.push(`${path}.${k} is not a known provider field (typo?)`);
   }
   if (typeof v["name"] !== "string" || v["name"].length === 0) errors.push(`${path}.name must be a non-empty string`);
-  if ("tools" in v && !isStringArray2(v["tools"])) errors.push(`${path}.tools must be a string array`);
+  if ("tools" in v && !isStringArray(v["tools"])) errors.push(`${path}.tools must be a string array`);
   if ("protocolHint" in v && typeof v["protocolHint"] !== "string") errors.push(`${path}.protocolHint must be a string`);
   if ("mcpServers" in v) validateMcpServersShape(v["mcpServers"], `${path}.mcpServers`, errors);
   if ("probe" in v) validateProbe(v["probe"], `${path}.probe`, errors);
@@ -632,7 +608,7 @@ function validateSidecarShape(sidecar) {
       }
       if (typeof def["description"] !== "string") errors.push(`sidecar.agents.${agentName}.description must be a string`);
       if (typeof def["prompt"] !== "string") errors.push(`sidecar.agents.${agentName}.prompt must be a string`);
-      if ("tools" in def && !isStringArray2(def["tools"])) errors.push(`sidecar.agents.${agentName}.tools must be a string array`);
+      if ("tools" in def && !isStringArray(def["tools"])) errors.push(`sidecar.agents.${agentName}.tools must be a string array`);
     }
   }
   return errors;
@@ -1073,9 +1049,6 @@ function validateDefinitionFile(v, path, errors) {
 var RESOLVED_RESOLUTION_KEYS = /* @__PURE__ */ new Set(["need", "provider", "mcpServers", "tools", "protocolHint"]);
 var UNRESOLVED_RESOLUTION_KEYS = /* @__PURE__ */ new Set(["need", "unresolved", "degradation", "tools"]);
 var MAX_RESOLUTION = 32;
-function isStringArray3(v) {
-  return Array.isArray(v) && v.every((x) => typeof x === "string");
-}
 function validateResolutionField(v, path, errors) {
   if (!Array.isArray(v)) {
     errors.push(`${path} must be an array of NeedResolution ({ need, provider, mcpServers, tools, protocolHint? } | { need, unresolved, degradation, tools })`);
@@ -1092,7 +1065,7 @@ function validateResolutionField(v, path, errors) {
       return;
     }
     if (typeof item["need"] !== "string" || item["need"].length === 0) errors.push(`${p}.need must be a non-empty string`);
-    if (!isStringArray3(item["tools"])) errors.push(`${p}.tools must be a string array`);
+    if (!isStringArray(item["tools"])) errors.push(`${p}.tools must be a string array`);
     if (item["unresolved"] === true) {
       checkUnknownKeys(item, UNRESOLVED_RESOLUTION_KEYS, p, errors);
       if (typeof item["degradation"] !== "string" || item["degradation"].length === 0) errors.push(`${p}.degradation must be a non-empty string (an unresolved resolution names its degradation)`);

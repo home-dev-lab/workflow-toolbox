@@ -14,6 +14,13 @@ export function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+/** True iff `v` is an array of strings. Shared by every launch-args validator
+ *  (capabilities.ts, capability-registry.ts, observer-def.ts) — single definition
+ *  site so the string-array guard cannot drift apart between the contracts. */
+export function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string')
+}
+
 /** Keys any of which make an mcpServers entry launchable/connectable — the SDK
  *  validates the full config shape; we reject the obviously-degenerate AND
  *  wrong-typed anchor values before they ride to the server and die far from
@@ -24,9 +31,10 @@ export const MCP_ANCHOR_KEYS = ['command', 'url', 'type'] as const
  *  the launch-args contract and the capability registry require: entry names are
  *  proto-collision-safe, each config is an object carrying at least one
  *  launch/connect anchor, and any present anchor is a string. Every problem is
- *  pushed into `errors` in one pass. (Single definition site: the two contracts'
- *  mcpServers validation may never drift apart — capabilities.ts's own private
- *  copy should be rewired onto this in a follow-up.) */
+ *  pushed into `errors` in one pass. (Single definition site: every consumer —
+ *  capabilities.ts (launch-args contract) and capability-registry.ts (machine
+ *  registry) — calls THIS, so the two contracts' mcpServers validation can never
+ *  drift apart.) */
 export function validateMcpServersShape(v: unknown, path: string, errors: string[]): void {
   if (!isRecord(v)) {
     errors.push(`${path} must be an object map of server-name → server config`)

@@ -27,7 +27,7 @@
 // prototype-collision names are refused outright, every violation is collected in
 // ONE pass, and a section with any violation yields `entries: null` (all-or-nothing).
 
-import { FORBIDDEN_ENTRY_NAMES, isRecord } from './validator-shared.js'
+import { FORBIDDEN_ENTRY_NAMES, isRecord, isStringArray } from './validator-shared.js'
 // Type-only (erased at bundle time — no runtime cycle): capability-registry.ts imports
 // CapabilityNeed FROM here, so NeedResolution's type comes back the other way for the
 // launcher-emitted `resolution` wire contract on ObserversEntry (card I3).
@@ -319,10 +319,6 @@ const UNRESOLVED_RESOLUTION_KEYS = new Set(['need', 'unresolved', 'degradation',
 // (requires = authoring input; resolution = the machine's resolved output relayed on the wire)
 // and are intentionally decoupled; 2× headroom absorbs a non-deduped hand-written resolution.
 const MAX_RESOLUTION = 32
-
-function isStringArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every((x) => typeof x === 'string')
-}
 
 /** Structural validation of the launcher-emitted `resolution` (NeedResolution[]) on an
  *  observers entry — the wire contract the launcher (I3) produces and the companion
