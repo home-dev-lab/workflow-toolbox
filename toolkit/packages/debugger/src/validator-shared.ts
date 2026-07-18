@@ -13,3 +13,40 @@ export const FORBIDDEN_ENTRY_NAMES = new Set(['__proto__', 'constructor', 'proto
 export function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
+
+/** Keys any of which make an mcpServers entry launchable/connectable — the SDK
+ *  validates the full config shape; we reject the obviously-degenerate AND
+ *  wrong-typed anchor values before they ride to the server and die far from
+ *  the operator. */
+export const MCP_ANCHOR_KEYS = ['command', 'url', 'type'] as const
+
+/** Validate an mcpServers map (server-name → server config) the same way BOTH
+ *  the launch-args contract and the capability registry require: entry names are
+ *  proto-collision-safe, each config is an object carrying at least one
+ *  launch/connect anchor, and any present anchor is a string. Every problem is
+ *  pushed into `errors` in one pass. (Single definition site: the two contracts'
+ *  mcpServers validation may never drift apart — capabilities.ts's own private
+ *  copy should be rewired onto this in a follow-up.) */
+export function validateMcpServersShape(v: unknown, path: string, errors: string[]): void {
+  if (!isRecord(v)) {
+    errors.push(`${path} must be an object map of server-name → server config`)
+    return
+  }
+  for (const name of Object.keys(v)) {
+    if (FORBIDDEN_ENTRY_NAMES.has(name)) {
+      errors.push(`${path}.${name} is a forbidden entry name (prototype-collision defence)`)
+      continue
+    }
+    const cfg = v[name]
+    if (!isRecord(cfg)) {
+      errors.push(`${path}.${name} must be an object (server config)`)
+      continue
+    }
+    if (!MCP_ANCHOR_KEYS.some((k) => k in cfg)) {
+      errors.push(`${path}.${name} lacks any of ${MCP_ANCHOR_KEYS.join('/')} — not a launchable server config`)
+    }
+    for (const k of MCP_ANCHOR_KEYS) {
+      if (k in cfg && typeof cfg[k] !== 'string') errors.push(`${path}.${name}.${k} must be a string`)
+    }
+  }
+}

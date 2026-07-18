@@ -137,6 +137,20 @@ describe('probeProviders', () => {
     const avail = await probeProviders(registry, { spawn })
     expect('context7' in avail).toBe(false)
   })
+
+  it('tokenizes a QUOTED probe argument into a single argv entry (no shell, path-with-space safe)', async () => {
+    const reg: CapabilityRegistry = {
+      version: 1,
+      providers: { x: [{ name: 'x', probe: { command: 'my-tool --path "a b/c" --flag' } }] },
+    }
+    let seen: string[] = []
+    const spawn: ProbeSpawn = (argv) => {
+      seen = argv
+      return Promise.resolve({ code: 0, timedOut: false })
+    }
+    await probeProviders(reg, { spawn })
+    expect(seen).toEqual(['my-tool', '--path', 'a b/c', '--flag'])
+  })
 })
 
 // ------------------------------- loadCapabilityRegistry -------------------------------
@@ -201,6 +215,12 @@ describe('loadCapabilityRegistry', () => {
     expect(r.errors).toEqual([])
     expect(r.registry).toEqual(registry)
   })
+
+  it('validates a provider mcpServers via the SHARED validator (no-anchor config rejected)', () => {
+    const p = write('mcp.json', JSON.stringify({ version: 1, providers: { 'code-intelligence': [{ name: 's', mcpServers: { srv: { port: 1 } } }] } }))
+    const r = loadCapabilityRegistry({ path: p })
+    expect(r.errors.some((e) => e.includes('srv') && e.includes('launchable'))).toBe(true)
+  })
 })
 
 // ------------------------------- sidecarToCapabilitiesSpec -------------------------------
@@ -221,10 +241,10 @@ describe('sidecarToCapabilitiesSpec', () => {
   it('expands $cap:<need> to the provider tools + mounts its mcpServers, appends a resolution note to the prompt', () => {
     const { spec, errors, report } = sidecarToCapabilitiesSpec(sidecar, resolvedServena())
     expect(errors).toEqual([])
-    expect(spec.agents?.['wf-reviewer']?.tools).toEqual(['Read', 'mcp__serena__*'])
-    expect(spec.mcpServers).toEqual({ serena: { command: 'uvx', args: ['serena', 'start-mcp-server', '--project', '$CWD'] } })
-    expect(spec.agents?.['wf-reviewer']?.prompt).toContain('## Capability resolution')
-    expect(spec.agents?.['wf-reviewer']?.prompt).toContain('serena')
+    expect(spec?.agents?.['wf-reviewer']?.tools).toEqual(['Read', 'mcp__serena__*'])
+    expect(spec?.mcpServers).toEqual({ serena: { command: 'uvx', args: ['serena', 'start-mcp-server', '--project', '$CWD'] } })
+    expect(spec?.agents?.['wf-reviewer']?.prompt).toContain('## Capability resolution')
+    expect(spec?.agents?.['wf-reviewer']?.prompt).toContain('serena')
     expect(report).toEqual(resolvedServena())
   })
 
@@ -232,9 +252,9 @@ describe('sidecarToCapabilitiesSpec', () => {
     const degraded = resolveCapabilities([{ need: 'code-intelligence' }], registry, { availability: { serena: false } })
     const { spec, errors } = sidecarToCapabilitiesSpec(sidecar, degraded)
     expect(errors).toEqual([])
-    expect(spec.agents?.['wf-reviewer']?.tools).toEqual(['Read', 'Grep', 'Glob'])
-    expect(spec.agents?.['wf-reviewer']?.prompt).toContain('DEGRADED: degraded:grep-glob')
-    expect(spec.mcpServers).toBeUndefined()
+    expect(spec?.agents?.['wf-reviewer']?.tools).toEqual(['Read', 'Grep', 'Glob'])
+    expect(spec?.agents?.['wf-reviewer']?.prompt).toContain('DEGRADED: degraded:grep-glob')
+    expect(spec?.mcpServers).toBeUndefined()
   })
 
   it('MAJOR-2 (a): rejects a concrete mcp__ tool in the sidecar and never leaks it into the spec', () => {
@@ -244,7 +264,7 @@ describe('sidecarToCapabilitiesSpec', () => {
     }
     const { spec, errors } = sidecarToCapabilitiesSpec(evil, resolvedServena())
     expect(errors.some((e) => e.includes('mcp__evil__exfil'))).toBe(true)
-    expect(spec.agents?.['wf-reviewer']?.tools).not.toContain('mcp__evil__exfil')
+    expect(spec).toBeNull() // null-on-error: an error case yields no launchable spec at all (nothing to leak)
   })
 
   it('MAJOR-2 (b): rejects an mcpServers field on a sidecar agent def', () => {
@@ -299,8 +319,41 @@ describe('sidecarToCapabilitiesSpec', () => {
       disableBundledSkills: false,
     }
     const { spec } = sidecarToCapabilitiesSpec(withSkills, resolvedServena())
-    expect('skillOverrides' in spec).toBe(false)
-    expect('disableBundledSkills' in spec).toBe(false)
+    expect(spec).not.toBeNull()
+    expect(Object.keys(spec ?? {})).not.toContain('skillOverrides')
+    expect(Object.keys(spec ?? {})).not.toContain('disableBundledSkills')
+  })
+
+  it('HIGH-lock: a sidecar agent that omits `tools` is a fail-loud error, never fail-open ambient inheritance', () => {
+    const noTools: CapabilitySidecar = {
+      version: 1,
+      roles: { r: { agent: 'a', needs: [] } },
+      agents: { a: { description: 'd', prompt: 'p' } }, // NO tools field
+    }
+    const { spec, errors } = sidecarToCapabilitiesSpec(noTools, [])
+    expect(errors.some((e) => e.includes("'a'") && e.includes('tools'))).toBe(true)
+    expect(spec).toBeNull()
+  })
+
+  it('HIGH-lock: fail-loud (no crash, no literal "undefined" prompt) on structurally malformed sidecars', () => {
+    const noPrompt = { version: 1, roles: {}, agents: { a: { description: 'd' } } } as unknown as CapabilitySidecar
+    const r1 = sidecarToCapabilitiesSpec(noPrompt, [])
+    expect(r1.spec).toBeNull()
+    expect(r1.errors.some((e) => e.includes('a') && e.includes('prompt'))).toBe(true)
+
+    const badRoles = { version: 1, roles: 'nope', agents: {} } as unknown as CapabilitySidecar
+    const r2 = sidecarToCapabilitiesSpec(badRoles, [])
+    expect(r2.spec).toBeNull()
+    expect(r2.errors.some((e) => e.includes('roles'))).toBe(true)
+
+    const badNeed = {
+      version: 1,
+      roles: { r: { agent: 'a', needs: ['code-intelligence'] } },
+      agents: { a: { description: 'd', prompt: 'p', tools: [] } },
+    } as unknown as CapabilitySidecar
+    const r3 = sidecarToCapabilitiesSpec(badNeed, [])
+    expect(r3.spec).toBeNull()
+    expect(r3.errors.some((e) => e.includes('needs'))).toBe(true)
   })
 })
 
@@ -325,5 +378,18 @@ describe('resolutionsToBrainOptions', () => {
     expect(brain.mcpServers).toEqual({})
     expect(brain.allowedTools).toEqual(['Grep', 'Glob', 'Read'])
     expect(brain.protocolHints).toEqual([])
+  })
+
+  it('MEDIUM-lock: never mounts a __proto__-named provider mcpServers key (proto-collision parity with the launch spec)', () => {
+    const res: NeedResolution[] = [
+      { need: 'x', provider: 'p', mcpServers: JSON.parse('{"__proto__":{"command":"evil"},"ok":{"command":"c"}}'), tools: ['mcp__ok__*'] },
+    ]
+    const brain = resolutionsToBrainOptions(res)
+    expect(brain.mcpServers).toEqual({ ok: { command: 'c' } })
+    // The real vulnerability is prototype pollution: `obj['__proto__'] = cfg`
+    // sets the PROTOTYPE (not an own key), so the guard is what keeps the result's
+    // prototype clean — assert that directly (an own-key check would pass either way).
+    expect(Object.getPrototypeOf(brain.mcpServers)).toBe(Object.prototype)
+    expect((brain.mcpServers as Record<string, unknown>)['command']).toBeUndefined()
   })
 })

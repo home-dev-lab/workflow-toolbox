@@ -14,10 +14,11 @@
 //                projects the sidecar into the shipped `capabilities` args
 //                section that the delegated-run server composes into query().
 //
-// This module ships the LAUNCH column (registry load + resolver + projections)
-// and the shared types (CapabilityNeed is adopted VERBATIM from the C5 observer
-// schema — this file is now its canonical source, design §1.8). It stays
-// dependency-light and structurally typed like `capabilities.ts` (no SDK import).
+// This module ships the LAUNCH column (registry load + resolver + projections).
+// CapabilityNeed is IMPORTED + re-exported from observer-def.ts (its pre-existing
+// shared home in this package; design §1.8's "canonical source here" is amended —
+// observer-def.ts predates this module, so one declaration, no drift). The module
+// stays dependency-light and structurally typed like `capabilities.ts` (no SDK import).
 //
 // The C5 tooled-observer brain (card #1821198087868122467) consumes
 // `resolveCapabilities` + `resolutionsToBrainOptions`; the launch path (I3)
@@ -38,21 +39,16 @@ import { join } from 'node:path'
 import { spawn as nodeSpawn } from 'node:child_process'
 
 import type { CapabilitiesSpec, CapabilityAgentDef } from './capabilities.js'
-import { FORBIDDEN_ENTRY_NAMES, isRecord } from './validator-shared.js'
+import type { CapabilityNeed } from './observer-def.js'
+import { FORBIDDEN_ENTRY_NAMES, isRecord, validateMcpServersShape } from './validator-shared.js'
 
 // ------------------------------- types -------------------------------
 
-/** A role's ABSTRACT need. Adopted verbatim from the C5 observer schema.
- *  Open vocabulary; v0 = READ-ONLY retrieval needs only ('docs-lookup',
- *  'code-intelligence', 'web-search', 'context-offload'). 'process-exec' is
- *  deferred until its command-allowlist spec exists. */
-export interface CapabilityNeed {
-  need: string
-  /** Default false. Required-and-unresolvable (degraded:none) => fail-loud at launch. */
-  optional?: boolean
-  /** Abstract refinement only (e.g. {language:'ts'}) — never a binary/path. */
-  params?: Record<string, string>
-}
+/** A role's ABSTRACT need — imported from observer-def.ts (its pre-existing home)
+ *  and re-exported so consumers can import it from either module without drift.
+ *  Shape: { need: string; optional?: boolean; params?: Record<string,string> }.
+ *  Open vocabulary; v0 = READ-ONLY retrieval needs only. */
+export type { CapabilityNeed }
 
 /** A concrete provider declared by the machine registry (never in a shipped
  *  artifact). `mcpServers` fragments are verbatim SDK server configs (same
@@ -89,12 +85,19 @@ export interface CapabilitySidecarRole {
   needs: CapabilityNeed[]
 }
 
+/** A sidecar agent def — the launch-time CapabilityAgentDef MINUS `mcpServers`:
+ *  a sidecar is machine-agnostic, so it may never carry a concrete server. The
+ *  runtime guard in sidecarToCapabilitiesSpec still rejects one that a
+ *  hand-written JSON sidecar smuggles in (types don't bind untrusted JSON); this
+ *  omission just makes the TS surface honest about what is accepted. */
+export type CapabilitySidecarAgent = Omit<CapabilityAgentDef, 'mcpServers'>
+
 /** The composer-emitted (or hand-written, design §3.2) declaration living beside
  *  a workflow artifact. Machine-agnostic by construction. */
 export interface CapabilitySidecar {
   version: 1
   roles: Record<string, CapabilitySidecarRole>
-  agents: Record<string, CapabilityAgentDef>
+  agents: Record<string, CapabilitySidecarAgent>
   /** Optional skills settings — READ by the launcher (I3), NOT projected here (SEAM). */
   skillOverrides?: Record<string, SkillOverrideMode>
   disableBundledSkills?: boolean
@@ -167,8 +170,14 @@ export function resolveCapabilities(needs: CapabilityNeed[], registry: Capabilit
 
 const DEFAULT_PROBE_TIMEOUT_MS = 5000
 
-/** Split a probe command into argv WITHOUT shell interpretation (basic quote
- *  handling; no metacharacter expansion). */
+/** Split a probe command into argv WITHOUT shell interpretation. The security
+ *  property is "no shell" (no metacharacter/glob/substitution expansion) — that
+ *  holds for ANY input. Quote handling is a v0 convenience for well-formed
+ *  quoting (a path with spaces): balanced `"…"`/`'…'` become one token.
+ *  Malformed quoting (an unterminated or mid-token quote) is tokenized literally
+ *  rather than raising — acceptable because the command comes from the
+ *  user-owned registry (the trust root), where a self-inflicted typo surfaces as
+ *  the probe simply failing (provider marked unavailable), not as an exploit. */
 function tokenizeCommand(command: string): string[] {
   const out: string[] = []
   const re = /"([^"]*)"|'([^']*)'|(\S+)/g
@@ -250,7 +259,6 @@ export async function probeProviders(registry: CapabilityRegistry, opts: { spawn
 
 const PROVIDER_KEYS = new Set(['name', 'mcpServers', 'tools', 'protocolHint', 'probe'])
 const PROBE_KEYS = new Set(['command', 'timeoutMs'])
-const MCP_ANCHOR_KEYS = ['command', 'url', 'type']
 
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string')
@@ -260,30 +268,6 @@ function defaultRegistryPath(): string {
   const xdg = process.env.XDG_CONFIG_HOME
   const base = xdg !== undefined && xdg.length > 0 ? xdg : join(homedir(), '.config')
   return join(base, 'workflow-toolbox', 'capability-registry.json')
-}
-
-function validateMcpServers(v: unknown, path: string, errors: string[]): void {
-  if (!isRecord(v)) {
-    errors.push(`${path} must be an object map of server-name → server config`)
-    return
-  }
-  for (const name of Object.keys(v)) {
-    if (FORBIDDEN_ENTRY_NAMES.has(name)) {
-      errors.push(`${path}.${name} is a forbidden entry name (prototype-collision defence)`)
-      continue
-    }
-    const cfg = v[name]
-    if (!isRecord(cfg)) {
-      errors.push(`${path}.${name} must be an object (server config)`)
-      continue
-    }
-    if (!MCP_ANCHOR_KEYS.some((k) => k in cfg)) {
-      errors.push(`${path}.${name} lacks any of ${MCP_ANCHOR_KEYS.join('/')} — not a launchable server config`)
-    }
-    for (const k of MCP_ANCHOR_KEYS) {
-      if (k in cfg && typeof cfg[k] !== 'string') errors.push(`${path}.${name}.${k} must be a string`)
-    }
-  }
 }
 
 function validateProbe(v: unknown, path: string, errors: string[]): void {
@@ -309,7 +293,7 @@ function validateProvider(v: unknown, path: string, errors: string[]): void {
   if (typeof v['name'] !== 'string' || v['name'].length === 0) errors.push(`${path}.name must be a non-empty string`)
   if ('tools' in v && !isStringArray(v['tools'])) errors.push(`${path}.tools must be a string array`)
   if ('protocolHint' in v && typeof v['protocolHint'] !== 'string') errors.push(`${path}.protocolHint must be a string`)
-  if ('mcpServers' in v) validateMcpServers(v['mcpServers'], `${path}.mcpServers`, errors)
+  if ('mcpServers' in v) validateMcpServersShape(v['mcpServers'], `${path}.mcpServers`, errors)
   if ('probe' in v) validateProbe(v['probe'], `${path}.probe`, errors)
 }
 
@@ -392,25 +376,79 @@ function buildResolutionNote(needs: CapabilityNeed[], resMap: Map<string, NeedRe
   return `\n\n## Capability resolution\n${lines.join('\n')}\nUse the resolved tools above to RETRIEVE; prefer them over generic text search.`
 }
 
+/** Structural validation of an UNTRUSTED sidecar (a hand-written JSON file is an
+ *  explicitly-supported input, design §3.2, and this function is documented as
+ *  its launch-time trust boundary). A TS type does not bind parsed JSON, so the
+ *  shape is checked at runtime BEFORE any field is trusted — otherwise a missing
+ *  `prompt` would ship a literal "undefined…" prompt and a non-object `roles`
+ *  would crash. Returns every structural problem in one pass. */
+function validateSidecarShape(sidecar: CapabilitySidecar): string[] {
+  const errors: string[] = []
+  if (!isRecord(sidecar)) return ['sidecar must be an object { version, roles, agents }']
+  if (!isRecord(sidecar.roles)) {
+    errors.push('sidecar.roles must be an object map of role-name → { agent, needs }')
+  } else {
+    for (const [roleName, role] of Object.entries(sidecar.roles)) {
+      if (!isRecord(role)) {
+        errors.push(`sidecar.roles.${roleName} must be an object { agent, needs }`)
+        continue
+      }
+      if (typeof role.agent !== 'string' || role.agent.length === 0) errors.push(`sidecar.roles.${roleName}.agent must be a non-empty string`)
+      if (!Array.isArray(role.needs)) {
+        errors.push(`sidecar.roles.${roleName}.needs must be an array of { need, optional?, params? }`)
+      } else {
+        role.needs.forEach((n: unknown, i: number) => {
+          if (!isRecord(n)) errors.push(`sidecar.roles.${roleName}.needs[${i}] must be an object`)
+          else if (typeof n['need'] !== 'string' || n['need'].length === 0) errors.push(`sidecar.roles.${roleName}.needs[${i}].need must be a non-empty string`)
+        })
+      }
+    }
+  }
+  if (!isRecord(sidecar.agents)) {
+    errors.push('sidecar.agents must be an object map of agent-name → { description, prompt, tools? }')
+  } else {
+    for (const [agentName, def] of Object.entries(sidecar.agents)) {
+      if (!isRecord(def)) {
+        errors.push(`sidecar.agents.${agentName} must be an object (agent definition)`)
+        continue
+      }
+      if (typeof def['description'] !== 'string') errors.push(`sidecar.agents.${agentName}.description must be a string`)
+      if (typeof def['prompt'] !== 'string') errors.push(`sidecar.agents.${agentName}.prompt must be a string`)
+      if ('tools' in def && !isStringArray(def['tools'])) errors.push(`sidecar.agents.${agentName}.tools must be a string array`)
+    }
+  }
+  return errors
+}
+
 /** Project a sidecar + its resolutions into the shipped `capabilities` spec:
  *  expand $cap:<need> placeholders in agent tool allowlists, mount resolved
  *  providers' mcpServers at session level, and append the resolution note to
  *  each tooled agent's prompt.
  *
- *  Launch-time GUARD (design §5.1/§9.1, MAJOR-2 — covers hand-written sidecars,
- *  §3.2): rejects (a) any CONCRETE `mcp__…` tool in a sidecar agent's allowlist
- *  (only `$cap:<need>` and non-MCP builtin tools are admitted — the registry is
- *  the sole provider source), and (b) any `mcpServers` on a sidecar agent def.
- *  Also fail-loud on: a `$cap:<need>` whose need is not declared by the role
- *  (typo, MINOR-7), a role referencing an unknown agent, and a REQUIRED
- *  (non-optional) need that resolves to `degraded:none` (§5.4).
+ *  Trust boundary (design §5.1/§9.1). Fail-loud on:
+ *   - malformed sidecar structure (validateSidecarShape — untrusted hand-written JSON);
+ *   - MAJOR-2: a CONCRETE `mcp__…` tool in a sidecar agent's allowlist (only
+ *     `$cap:<need>` and non-MCP builtin tools are admitted), or any `mcpServers`
+ *     on a sidecar agent def (the registry is the sole provider source);
+ *   - a sidecar agent that declares NO `tools` allowlist — an omitted allowlist
+ *     inherits ALL ambient tools (fail-open), which the design's "rien d'implicite"
+ *     (§9.2/§9.3) forbids;
+ *   - a `$cap:<need>` whose need is not declared by the role (typo, MINOR-7);
+ *   - a role referencing an unknown agent;
+ *   - a REQUIRED (non-optional) need resolving to `degraded:none` (§5.4).
  *
- *  `errors` non-empty ⇒ the launch MUST be refused; the returned spec is
- *  sanitized (rejected tokens never leak) but is not launch-safe. */
+ *  NULL-ON-ERROR (parity with extractCapabilities / loadCapabilityRegistry): when
+ *  `errors` is non-empty the returned `spec` is `null` — an unsafe spec is not
+ *  representable, so a caller that forgets to check `errors` cannot launch a
+ *  half-sanitized spec. The launch is refused; `report` still carries the
+ *  resolutions for auditing. */
 export function sidecarToCapabilitiesSpec(
   sidecar: CapabilitySidecar,
   resolutions: NeedResolution[],
-): { spec: CapabilitiesSpec; report: NeedResolution[]; errors: string[] } {
+): { spec: CapabilitiesSpec | null; report: NeedResolution[]; errors: string[] } {
+  const structuralErrors = validateSidecarShape(sidecar)
+  if (structuralErrors.length > 0) return { spec: null, report: resolutions, errors: structuralErrors }
+
   const errors: string[] = []
   const resMap = new Map<string, NeedResolution>()
   for (const r of resolutions) resMap.set(r.need, r)
@@ -444,8 +482,15 @@ export function sidecarToCapabilitiesSpec(
       errors.push(`agents.${agentName} is a forbidden entry name (prototype-collision defence)`)
       continue
     }
-    if ('mcpServers' in def && def.mcpServers !== undefined) {
+    const smuggledMcp = (def as { mcpServers?: unknown }).mcpServers
+    if (smuggledMcp !== undefined) {
       errors.push(`agent '${agentName}' must not declare mcpServers — the machine registry is the only provider source (a sidecar is machine-agnostic)`)
+    }
+    // A sidecar agent is a TOOLED role (lean/leaf roles are ABSENT from the
+    // sidecar, §3.2), so an omitted allowlist is an authoring error, not "no
+    // tools" — the SDK would grant the full ambient toolset (fail-open).
+    if (def.tools === undefined) {
+      errors.push(`agent '${agentName}' declares no tools allowlist — a sidecar agent must declare an EXACT allowlist (an omitted allowlist inherits ALL ambient tools; design §9.2/§9.3 'rien d'implicite')`)
     }
     const declared = new Set((agentNeeds.get(agentName) ?? []).map((n) => n.need))
     const expanded: string[] = []
@@ -477,16 +522,16 @@ export function sidecarToCapabilitiesSpec(
         expanded.push(tool)
       }
     }
-    const outDef: CapabilityAgentDef = { ...def, prompt: def.prompt + buildResolutionNote(agentNeeds.get(agentName) ?? [], resMap) }
+    const outDef: CapabilityAgentDef = { ...def, prompt: def.prompt + buildResolutionNote(agentNeeds.get(agentName) ?? [], resMap), tools: [...new Set(expanded)] }
     if ('mcpServers' in outDef) delete outDef.mcpServers
-    if (def.tools !== undefined || expanded.length > 0) outDef.tools = [...new Set(expanded)]
     outAgents[agentName] = outDef
   }
 
-  const spec: CapabilitiesSpec = {}
-  if (Object.keys(mountedMcp).length > 0) spec.mcpServers = mountedMcp
-  if (Object.keys(outAgents).length > 0) spec.agents = outAgents
-  return { spec, report: resolutions, errors: [...new Set(errors)] }
+  const built: CapabilitiesSpec = {}
+  if (Object.keys(mountedMcp).length > 0) built.mcpServers = mountedMcp
+  if (Object.keys(outAgents).length > 0) built.agents = outAgents
+  const deduped = [...new Set(errors)]
+  return { spec: deduped.length > 0 ? null : built, report: resolutions, errors: deduped }
 }
 
 // ------------------------------- resolutionsToBrainOptions (brain projection, C5) -------------------------------
@@ -504,7 +549,10 @@ export function resolutionsToBrainOptions(
   for (const r of resolutions) {
     for (const t of r.tools) allowedTools.push(t)
     if (!('unresolved' in r)) {
-      for (const [srv, cfg] of Object.entries(r.mcpServers)) mcpServers[srv] = cfg
+      for (const [srv, cfg] of Object.entries(r.mcpServers)) {
+        if (FORBIDDEN_ENTRY_NAMES.has(srv)) continue // proto-collision defence (parity with the launch-spec mount)
+        mcpServers[srv] = cfg
+      }
       if (r.protocolHint !== undefined) protocolHints.push(r.protocolHint)
     }
   }
