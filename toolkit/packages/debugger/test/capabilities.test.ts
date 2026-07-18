@@ -192,6 +192,15 @@ describe('extractCapabilities — skill-settings sections (§6.3)', () => {
     })
   })
 
+  it('extracts disableBundledSkills:false and KEEPS it (present-false not dropped at extraction — built-ins-declared regime)', () => {
+    // Locks the unconditional `else` in extractCapabilities: a truthy-check regression would
+    // silently drop a legitimate `false`, turning the built-ins-declared regime into a no-op,
+    // and every merge/compose test (which build the spec by hand) would still pass.
+    const r = extractCapabilities({ capabilities: { disableBundledSkills: false } })
+    expect(r.errors).toEqual([])
+    expect(r.spec).toEqual({ disableBundledSkills: false })
+  })
+
   it('rejects an unknown skillOverride mode (loud on typos)', () => {
     const r = extractCapabilities({ capabilities: { skillOverrides: { deep: 'disabled' } } })
     expect(r.spec).toBeNull()
@@ -270,5 +279,18 @@ describe('BARE_SKILLS_SETTINGS + mergeSkillSettings (§6.1/§6.3)', () => {
       disableBundledSkills: false,
       skillOverrides: { doctor: 'off' },
     })
+  })
+
+  it('never mutates its inputs — frozen base + override do not throw, and inputs stay unchanged', () => {
+    // BARE_SKILLS_SETTINGS is a SHARED exported mutable constant: a mutating merge would
+    // corrupt the zero-skill default for every future consumer. Freezing both inputs turns
+    // any accidental write (Object.assign onto base, a property write) into a thrown TypeError
+    // under ESM strict mode — so a green run proves the documented non-mutation guarantee.
+    const base = Object.freeze({ disableBundledSkills: true, skillOverrides: Object.freeze({ doctor: 'off' as const }) })
+    const override = Object.freeze({ skillOverrides: Object.freeze({ 'deep-research': 'off' as const }) })
+    const out = mergeSkillSettings(base, override)
+    expect(out).toEqual({ disableBundledSkills: true, skillOverrides: { doctor: 'off', 'deep-research': 'off' } })
+    expect(base.skillOverrides).toEqual({ doctor: 'off' })
+    expect(override.skillOverrides).toEqual({ 'deep-research': 'off' })
   })
 })

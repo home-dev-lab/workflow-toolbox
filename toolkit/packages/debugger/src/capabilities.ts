@@ -141,6 +141,11 @@ function validateAgents(v: unknown, errors: string[]): CapabilitiesSpec['agents'
     // A `$cap:<need>` token reaching the SERVER is a resolver bypass — the launcher's
     // capability resolver must expand every placeholder to concrete tools BEFORE the
     // args are composed (design §5.2). Fail loud, naming the offending token.
+    // Scope is DELIBERATELY `tools` only: §5.2 places placeholders exclusively in an
+    // agent's `tools` array, so that is the only field where an unexpanded `$cap:` is a
+    // real resolver bypass. The same token in `disallowedTools`/`skills` would be an inert
+    // literal (no resolver step, no such tool/skill) — intentionally NOT scanned here; if a
+    // future extension ever expands `$cap:` beyond `tools`, widen this scan to match.
     else if ('tools' in def && isStringArray(def['tools'])) {
       for (const t of def['tools']) {
         if (t.startsWith('$cap:')) errors.push(`capabilities.agents.${name}.tools contains an unresolved placeholder "${t}" — $cap:<need> tokens must be expanded by the launcher's resolver before reaching the server`)
