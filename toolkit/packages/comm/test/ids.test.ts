@@ -5,11 +5,12 @@ import {
   retryIdFor,
   mintQuestionId,
   mintDigestId,
+  mintHintId,
   isValidDecisionId,
   fold,
   fnv1a32,
 } from '../src/ids.js'
-import { BASE_ID_PATTERN, DECISION_ID_PATTERN } from '../src/schemas.js'
+import { BASE_ID_PATTERN, DECISION_ID_PATTERN, HINT_ID_PATTERN } from '../src/schemas.js'
 
 describe('BASE_ID_PATTERN grammar', () => {
   it('accepts a well-formed lowercase base id', () => {
@@ -175,5 +176,45 @@ describe('mintDigestId', () => {
     const id = mintDigestId('wf_run-1', -5)
     expect(BASE_ID_PATTERN.test(id)).toBe(true)
     expect(id.includes('--')).toBe(false)
+  })
+
+  // TEST-LOCK (card #1821947458553382634): a seq >= 1e21 stringifies in EXPONENTIAL
+  // notation ("1e+21"), injecting a '+' into the id and breaking BASE_ID_PATTERN. safeSeq
+  // must clamp the upper bound to Number.MAX_SAFE_INTEGER (16 plain digits) so any extreme
+  // seq stays grammar-conformant. Fails before the clamp, passes after.
+  it('clamps an extreme seq (>= 1e21) to Number.MAX_SAFE_INTEGER, staying pattern-conformant', () => {
+    const id = mintDigestId('wf_run-1', 1e21)
+    expect(BASE_ID_PATTERN.test(id)).toBe(true)
+    expect(id.endsWith(`-${Number.MAX_SAFE_INTEGER}`)).toBe(true)
+    expect(mintDigestId('wf_run-1', Number.MAX_VALUE)).toBe(id)
+  })
+
+  it('is deterministic for an extreme seq (same input -> same id) — crash-rewind stability', () => {
+    expect(mintDigestId('wf_run-1', 1e21)).toBe(mintDigestId('wf_run-1', 1e21))
+  })
+
+  it('leaves an in-range seq byte-identical (clamp is a no-op below MAX_SAFE_INTEGER)', () => {
+    expect(mintDigestId('wf_run-1', 3)).toBe('d-wf-run-1-a96e8604-3')
+  })
+})
+
+describe('mintHintId', () => {
+  it('is deterministic and matches the hint id pattern', () => {
+    const a = mintHintId('wf_run-1', 'obs', 3)
+    expect(a).toBe(mintHintId('wf_run-1', 'obs', 3))
+    expect(HINT_ID_PATTERN.test(a)).toBe(true)
+  })
+
+  // TEST-LOCK (card #1821947458553382634): assertSafeMessageId does NOT reject '+', so a
+  // buggy exponential-notation seq would pass the filesystem guard yet violate
+  // HINT_ID_PATTERN. Lock both the 3-arg and 4-arg (widest) forms.
+  it('clamps an extreme seq to MAX_SAFE_INTEGER in the 3-arg and 4-arg forms', () => {
+    const id3 = mintHintId('wf_run-1', 'obs', 1e21)
+    expect(HINT_ID_PATTERN.test(id3)).toBe(true)
+    expect(id3.endsWith(`-${Number.MAX_SAFE_INTEGER}`)).toBe(true)
+
+    const id4 = mintHintId('wf_run-1', 'obs', 1e21, 'agent-x')
+    expect(HINT_ID_PATTERN.test(id4)).toBe(true)
+    expect(id4.endsWith(`-${Number.MAX_SAFE_INTEGER}`)).toBe(true)
   })
 })

@@ -103,13 +103,25 @@ export function mintQuestionId(runId: string, stepKey: string): string {
   return `q-${runSegmentWithHash(runId)}-${stepSegment}`
 }
 
+/** Coerce a caller-supplied `seq` to a grammar-safe, deterministic segment value —
+ *  the ONE derivation site shared by mintDigestId and mintHintId. NaN/Infinity/negative
+ *  degrade to 0 and fractions truncate (so a degenerate value can never inject a leading
+ *  '-' or a non-[a-z0-9] char), and the upper bound is CLAMPED to Number.MAX_SAFE_INTEGER.
+ *  The upper clamp matters twice over: a seq >= 1e21 stringifies in EXPONENTIAL notation
+ *  ("1e+21" — a '+' that breaks the id grammar, and one assertSafeMessageId does NOT
+ *  catch), and past MAX_SAFE_INTEGER integer precision is lost (distinct seqs could
+ *  truncate to one value, breaking seq injectivity). MAX_SAFE_INTEGER is 16 plain digits,
+ *  matching the mint length budgets; the clamp is a no-op for any in-range seq, so ids
+ *  stay byte-identical (crash-rewind determinism: same input -> same id). */
+function safeSeq(seq: number): number {
+  return Number.isFinite(seq) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.trunc(seq))) : 0
+}
+
 /** `mintDigestId(runId, seq) = d-<segment>-<seq>` — same segment recipe as
- *  mintQuestionId. `seq` is coerced to a non-negative integer (NaN/Infinity/negative all
- *  degrade to 0) so a degenerate caller value can never inject a leading '-' or a
- *  non-[a-z0-9] character into the id. */
+ *  mintQuestionId. `seq` passes through `safeSeq` (degenerate values degrade to 0; an
+ *  extreme seq clamps to Number.MAX_SAFE_INTEGER) so the id is always grammar-valid. */
 export function mintDigestId(runId: string, seq: number): string {
-  const safeSeq = Number.isFinite(seq) ? Math.max(0, Math.trunc(seq)) : 0
-  return `d-${runSegmentWithHash(runId)}-${safeSeq}`
+  return `d-${runSegmentWithHash(runId)}-${safeSeq(seq)}`
 }
 
 /** Tighter than the run/step caps: the hint id carries run segment + hash + observer
@@ -140,13 +152,12 @@ const AGENT_SEGMENT_MAX = 16
  *  assertSafeMessageId's 128-char filesystem guard. */
 export function mintHintId(runId: string, observerName: string, seq: number, agentId?: string): string {
   const observerSegment = segmentWithHash(observerName, OBSERVER_SEGMENT_MAX, 'o')
-  const safeSeq = Number.isFinite(seq) ? Math.max(0, Math.trunc(seq)) : 0
   // Optional + ADDITIVE: absent/empty agentId reproduces the 3-arg id byte-for-byte; a
   // non-empty agentId inserts <agentSegment> (fold + injectivity hash — never a bare
   // fold+truncate, which would let two agent ids sharing a prefix mint the SAME id) before
   // the seq.
   const agentSegment = agentId !== undefined && agentId !== '' ? `${segmentWithHash(agentId, AGENT_SEGMENT_MAX, 'a')}-` : ''
-  const id = `h-${runSegmentWithHash(runId)}-${observerSegment}-${agentSegment}${safeSeq}`
+  const id = `h-${runSegmentWithHash(runId)}-${observerSegment}-${agentSegment}${safeSeq(seq)}`
   // The agent form can reach ~115 chars — past the 96-char base-id cap but within the
   // widened hint grammar; self-verify so a future segment-max regression fails loud here.
   assertSafeMessageId(id)
