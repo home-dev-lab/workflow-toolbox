@@ -443,6 +443,26 @@ describe('lintSidecarMachineAgnostic', () => {
     expect(errs.some((e) => e.includes("references unknown agent 'ghost'"))).toBe(true)
   })
 
+  // TEST-LOCK (review high): a concrete provider name in the DENYLIST channel is just
+  // as machine-specific as in the allowlist — both must be rejected.
+  it('reports a CONCRETE mcp__ in disallowedTools, not only in tools', () => {
+    const errs = lintSidecarMachineAgnostic({
+      ...sidecar,
+      agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: ['$cap:code-intelligence'], disallowedTools: ['Bash', 'mcp__acme-provider__run'] } },
+    })
+    expect(errs.some((e) => e.includes('mcp__acme-provider__run') && e.includes('disallowedTools') && e.includes('concrete MCP tool'))).toBe(true)
+  })
+
+  // TEST-LOCK (review high): the invariant is not enforced on two hardcoded keys only —
+  // any unmodelled field on an agent def is a smuggling channel and is rejected.
+  it('reports an unmodelled agent-def field (a channel beyond tools/mcpServers)', () => {
+    const errs = lintSidecarMachineAgnostic({
+      ...sidecar,
+      agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: ['$cap:code-intelligence'], command: 'uvx' } as never },
+    })
+    expect(errs.some((e) => e.includes("unexpected field 'command'"))).toBe(true)
+  })
+
   it('is resolution-INDEPENDENT: never reports the launch-only resolution errors on a clean sidecar', () => {
     // A required need with NO resolution is a LAUNCH error (sidecarToCapabilitiesSpec),
     // NOT an emission error — the registry does not exist at authoring time.
@@ -477,6 +497,22 @@ describe('lintSidecarMachineAgnostic ⊆ sidecarToCapabilitiesSpec (drift-lock)'
     {
       label: 'unknown agent',
       s: { version: 1, roles: { r: { agent: 'ghost', needs: [] } }, agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: [] } } },
+    },
+    {
+      label: 'concrete mcp__ in disallowedTools',
+      s: { ...sidecar, agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: ['$cap:code-intelligence'], disallowedTools: ['mcp__acme__x'] } } },
+    },
+    {
+      label: 'unmodelled agent-def field',
+      s: { ...sidecar, agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: ['$cap:code-intelligence'], command: 'uvx' } as never } },
+    },
+    {
+      label: 'no tools allowlist',
+      s: { ...sidecar, agents: { 'wf-reviewer': { description: 'd', prompt: 'p' } as never } },
+    },
+    {
+      label: 'forbidden agent entry name',
+      s: JSON.parse('{"version":1,"roles":{},"agents":{"__proto__":{"description":"d","prompt":"p","tools":[]}}}') as CapabilitySidecar,
     },
   ]
   for (const { label, s } of violations) {

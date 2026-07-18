@@ -431,23 +431,49 @@ function validateSidecarShape(sidecar: CapabilitySidecar): string[] {
  *  Machine-agnostic rules (all resolution-independent, so they run without a
  *  registry): structural shape (validateSidecarShape); a role referencing an unknown
  *  agent; a forbidden agent entry name (prototype-collision); an agent def carrying
- *  `mcpServers` (the machine registry is the sole provider source); an agent with NO
+ *  `mcpServers` (the machine registry is the sole provider source); an agent def
+ *  carrying ANY field beyond the known machine-agnostic surface (an unknown key could
+ *  smuggle a machine-specific value past the checked channels); an agent with NO
  *  `tools` allowlist (an omitted allowlist inherits ALL ambient tools — fail-open);
- *  a CONCRETE `mcp__…` tool (only `$cap:<need>` and non-MCP builtin tools are
- *  admitted); a `$cap:<need>` whose need is not declared in the role's needs (typo).
- *  The resolution-DEPENDENT checks (a need with no resolution; a required need that
- *  degrades to `degraded:none`) are NOT here — they belong to launch, when the
- *  registry exists. The drift-lock test asserts this function and
- *  `sidecarToCapabilitiesSpec` agree on every machine-agnostic violation. */
+ *  a CONCRETE `mcp__…` tool in EITHER tool channel (`tools` allowlist OR
+ *  `disallowedTools` denylist — a concrete provider name is machine-specific
+ *  wherever it appears); a `$cap:<need>` whose need is not declared in the role's
+ *  needs (typo). The resolution-DEPENDENT checks (a need with no resolution; a
+ *  required need that degrades to `degraded:none`) are NOT here — they belong to
+ *  launch, when the registry exists. `sidecarToCapabilitiesSpec` DELEGATES its
+ *  structural + machine-agnostic pass to this function (single source of truth), so
+ *  the emission courtesy and the launch enforcement can never drift. */
 export function lintSidecarMachineAgnostic(sidecar: CapabilitySidecar): string[] {
   const structuralErrors = validateSidecarShape(sidecar)
   if (structuralErrors.length > 0) return structuralErrors
 
   const errors: string[] = []
 
-  // role → agent → needs (also flags a role pointing at an unknown agent).
+  // The ONLY fields a machine-agnostic sidecar agent def may carry. `mcpServers` is
+  // deliberately absent (it names a concrete provider — rejected with its own message
+  // below); every other key is a smuggling surface and rejected.
+  const KNOWN_AGENT_KEYS = new Set(['description', 'prompt', 'tools', 'disallowedTools', 'model', 'effort', 'maxTurns'])
+
+  // A concrete `mcp__…` string names a provider — machine-specific in ANY tool list,
+  // allowlist or denylist. (`$cap:<need>` is the only admitted namespaced token.)
+  const scanConcreteMcp = (agentName: string, channel: string, list: unknown): void => {
+    if (!Array.isArray(list)) return
+    for (const tool of list) {
+      if (typeof tool === 'string' && !tool.startsWith(CAP_PREFIX) && tool.startsWith('mcp__')) {
+        errors.push(`agent '${agentName}' ${channel} '${tool}' is a concrete MCP tool; a sidecar may only use ${CAP_PREFIX}<need> and non-MCP builtin tools (the machine registry is the trust root)`)
+      }
+    }
+  }
+
+  // role → agent → needs (also flags an unknown-agent reference and any unmodelled
+  // field on the role object — the same "no arbitrary passthrough" surface as agent defs).
   const agentNeeds = new Map<string, CapabilityNeed[]>()
   for (const [roleName, role] of Object.entries(sidecar.roles)) {
+    for (const key of Object.keys(role)) {
+      if (key !== 'agent' && key !== 'needs') {
+        errors.push(`role '${roleName}' has unexpected field '${key}' — a sidecar role may only carry agent, needs`)
+      }
+    }
     if (!Object.hasOwn(sidecar.agents, role.agent)) {
       errors.push(`role '${roleName}' references unknown agent '${role.agent}'`)
     } else {
@@ -465,9 +491,18 @@ export function lintSidecarMachineAgnostic(sidecar: CapabilitySidecar): string[]
     if ((def as { mcpServers?: unknown }).mcpServers !== undefined) {
       errors.push(`agent '${agentName}' must not declare mcpServers — the machine registry is the only provider source (a sidecar is machine-agnostic)`)
     }
+    // Allowlist the agent-def surface: an unmodelled field is a smuggling channel
+    // (the machine-agnostic invariant must not be enforced only on two hardcoded keys).
+    for (const key of Object.keys(def)) {
+      if (key !== 'mcpServers' && !KNOWN_AGENT_KEYS.has(key)) {
+        errors.push(`agent '${agentName}' has unexpected field '${key}' — a machine-agnostic sidecar agent def may only carry ${[...KNOWN_AGENT_KEYS].join(', ')}`)
+      }
+    }
     if (def.tools === undefined) {
       errors.push(`agent '${agentName}' declares no tools allowlist — a sidecar agent must declare an EXACT allowlist (an omitted allowlist inherits ALL ambient tools; design §9.2/§9.3 'rien d'implicite')`)
     }
+    scanConcreteMcp(agentName, 'tool', def.tools)
+    scanConcreteMcp(agentName, 'disallowedTools entry', (def as { disallowedTools?: unknown }).disallowedTools)
     const declared = new Set((agentNeeds.get(agentName) ?? []).map((n) => n.need))
     for (const tool of def.tools ?? []) {
       if (tool.startsWith(CAP_PREFIX)) {
@@ -475,8 +510,6 @@ export function lintSidecarMachineAgnostic(sidecar: CapabilitySidecar): string[]
         if (!declared.has(need)) {
           errors.push(`agent '${agentName}' uses '${tool}' but need '${need}' is not declared in its role needs (typo?)`)
         }
-      } else if (tool.startsWith('mcp__')) {
-        errors.push(`agent '${agentName}' tool '${tool}' is a concrete MCP tool; a sidecar may only use ${CAP_PREFIX}<need> and non-MCP builtin tools (the machine registry is the trust root)`)
       }
     }
   }
@@ -488,17 +521,14 @@ export function lintSidecarMachineAgnostic(sidecar: CapabilitySidecar): string[]
  *  providers' mcpServers at session level, and append the resolution note to
  *  each tooled agent's prompt.
  *
- *  Trust boundary (design §5.1/§9.1). Fail-loud on:
- *   - malformed sidecar structure (validateSidecarShape — untrusted hand-written JSON);
- *   - MAJOR-2: a CONCRETE `mcp__…` tool in a sidecar agent's allowlist (only
- *     `$cap:<need>` and non-MCP builtin tools are admitted), or any `mcpServers`
- *     on a sidecar agent def (the registry is the sole provider source);
- *   - a sidecar agent that declares NO `tools` allowlist — an omitted allowlist
- *     inherits ALL ambient tools (fail-open), which the design's "rien d'implicite"
- *     (§9.2/§9.3) forbids;
- *   - a `$cap:<need>` whose need is not declared by the role (typo, MINOR-7);
- *   - a role referencing an unknown agent;
- *   - a REQUIRED (non-optional) need resolving to `degraded:none` (§5.4).
+ *  Trust boundary (design §5.1/§9.1). The structural + MACHINE-AGNOSTIC pass is
+ *  DELEGATED to `lintSidecarMachineAgnostic` (single source — the launch enforcement
+ *  and the emission courtesy cannot drift): malformed structure; a CONCRETE `mcp__…`
+ *  in EITHER tool channel (`tools` or `disallowedTools`); `mcpServers` or any other
+ *  unmodelled field on an agent def; an omitted `tools` allowlist (fail-open); a
+ *  `$cap:<need>` typo; a role referencing an unknown agent. This function then adds the
+ *  RESOLUTION-dependent fail-loud checks: a need with no resolution, and a REQUIRED
+ *  (non-optional) need resolving to `degraded:none` (§5.4).
  *
  *  NULL-ON-ERROR (parity with extractCapabilities / loadCapabilityRegistry): when
  *  `errors` is non-empty the returned `spec` is `null` — an unsafe spec is not
@@ -509,24 +539,26 @@ export function sidecarToCapabilitiesSpec(
   sidecar: CapabilitySidecar,
   resolutions: NeedResolution[],
 ): { spec: CapabilitiesSpec | null; report: NeedResolution[]; errors: string[] } {
-  const structuralErrors = validateSidecarShape(sidecar)
-  if (structuralErrors.length > 0) return { spec: null, report: resolutions, errors: structuralErrors }
+  // Structural + machine-agnostic gate: DELEGATED to lintSidecarMachineAgnostic so the
+  // launch ENFORCEMENT and the emission courtesy share ONE rule set — no drift, and no
+  // one-sided blind spot (the disallowedTools/arbitrary-field hole came from two hand-
+  // maintained copies checking only `tools`+`mcpServers`). On any machine-agnostic
+  // violation the launch is refused here; the sidecar never reaches expansion.
+  const machineAgnosticErrors = lintSidecarMachineAgnostic(sidecar)
+  if (machineAgnosticErrors.length > 0) return { spec: null, report: resolutions, errors: machineAgnosticErrors }
 
+  // From here the sidecar is machine-agnostic-valid (every role→agent resolves, no
+  // concrete provider in any tool channel, no smuggled field); only the RESOLUTION-
+  // dependent checks and the $cap expansion remain.
   const errors: string[] = []
   const resMap = new Map<string, NeedResolution>()
   for (const r of resolutions) resMap.set(r.need, r)
 
-  // Map each agent to the needs declared by the role(s) referencing it, and run
-  // the role-level guards (unknown agent, required-unresolvable).
   const agentNeeds = new Map<string, CapabilityNeed[]>()
   for (const [roleName, role] of Object.entries(sidecar.roles)) {
-    if (!Object.hasOwn(sidecar.agents, role.agent)) {
-      errors.push(`role '${roleName}' references unknown agent '${role.agent}'`)
-    } else {
-      const acc = agentNeeds.get(role.agent) ?? []
-      acc.push(...role.needs)
-      agentNeeds.set(role.agent, acc)
-    }
+    const acc = agentNeeds.get(role.agent) ?? []
+    acc.push(...role.needs)
+    agentNeeds.set(role.agent, acc)
     for (const need of role.needs) {
       const res = resMap.get(need.need)
       if (!res) {
@@ -541,29 +573,10 @@ export function sidecarToCapabilitiesSpec(
   const outAgents: Record<string, CapabilityAgentDef> = {}
 
   for (const [agentName, def] of Object.entries(sidecar.agents)) {
-    if (FORBIDDEN_ENTRY_NAMES.has(agentName)) {
-      errors.push(`agents.${agentName} is a forbidden entry name (prototype-collision defence)`)
-      continue
-    }
-    const smuggledMcp = (def as { mcpServers?: unknown }).mcpServers
-    if (smuggledMcp !== undefined) {
-      errors.push(`agent '${agentName}' must not declare mcpServers — the machine registry is the only provider source (a sidecar is machine-agnostic)`)
-    }
-    // A sidecar agent is a TOOLED role (lean/leaf roles are ABSENT from the
-    // sidecar, §3.2), so an omitted allowlist is an authoring error, not "no
-    // tools" — the SDK would grant the full ambient toolset (fail-open).
-    if (def.tools === undefined) {
-      errors.push(`agent '${agentName}' declares no tools allowlist — a sidecar agent must declare an EXACT allowlist (an omitted allowlist inherits ALL ambient tools; design §9.2/§9.3 'rien d'implicite')`)
-    }
-    const declared = new Set((agentNeeds.get(agentName) ?? []).map((n) => n.need))
     const expanded: string[] = []
     for (const tool of def.tools ?? []) {
       if (tool.startsWith(CAP_PREFIX)) {
         const need = tool.slice(CAP_PREFIX.length)
-        if (!declared.has(need)) {
-          errors.push(`agent '${agentName}' uses '${tool}' but need '${need}' is not declared in its role needs (typo?)`)
-          continue
-        }
         const res = resMap.get(need)
         if (!res) {
           errors.push(`agent '${agentName}' '${tool}': no resolution for need '${need}'`)
@@ -579,12 +592,13 @@ export function sidecarToCapabilitiesSpec(
             mountedMcp[srv] = cfg
           }
         }
-      } else if (tool.startsWith('mcp__')) {
-        errors.push(`agent '${agentName}' tool '${tool}' is a concrete MCP tool; a sidecar may only use ${CAP_PREFIX}<need> and non-MCP builtin tools (the machine registry is the trust root)`)
       } else {
         expanded.push(tool)
       }
     }
+    // `...def` carries the machine-agnostic-validated fields through (disallowedTools,
+    // model, effort…); mcpServers is impossible here (the lint rejected it) — the delete
+    // is a type-level belt for the Omit.
     const outDef: CapabilityAgentDef = { ...def, prompt: def.prompt + buildResolutionNote(agentNeeds.get(agentName) ?? [], resMap), tools: [...new Set(expanded)] }
     if ('mcpServers' in outDef) delete outDef.mcpServers
     outAgents[agentName] = outDef

@@ -487,7 +487,10 @@ export function assertObserverScaffoldSpec(x: unknown): asserts x is ObserverSca
  *  CapabilitySidecar has no `name` (unlike an ObserverDefinition). The remaining fields
  *  ARE the sidecar minus its stamped `version`. */
 export interface CapabilitiesScaffoldSpec {
-  /** kebab-case — MUST equal the workflow meta.name (drives the output filename only). */
+  /** kebab-case — drives the output filename only. It SHOULD equal the workflow's
+   *  meta.name so the sidecar sits beside `<name>.js`, but that cross-artifact match is
+   *  the author's responsibility: a standalone capabilities spec cannot see the workflow
+   *  spec, so only the kebab FORMAT is validated here. */
   name: string
   /** role-name → { agent, needs }. Lean/leaf roles are ABSENT (the bare default holds). */
   roles: Record<string, CapabilitySidecarRole>
@@ -501,21 +504,23 @@ export interface CapabilitiesScaffoldSpec {
 /**
  * Emit a `<name>.capabilities.json` string for the given abstract sidecar declaration.
  * Pure: same spec → byte-identical output, zero IO. `version: 1` is stamped and leads;
- * `name` is stripped (filename-only). Only the KNOWN sidecar keys are emitted (no
- * arbitrary passthrough — an unknown key could smuggle machine state past the lint).
- * The assembled sidecar is run through the SHARED `lintSidecarMachineAgnostic`; on any
- * violation this throws an actionable Error listing EVERY problem (one pass) rather than
- * ever emitting a machine-specific or malformed artifact.
+ * `name` is stripped (filename-only). The TOP-LEVEL object is assembled from known keys;
+ * the SHARED `lintSidecarMachineAgnostic` then rejects any unmodelled field NESTED in a
+ * role or agent def (fail-loud), so no arbitrary key smuggles machine state into the
+ * artifact through the by-reference roles/agents. On any violation this throws an
+ * actionable Error listing EVERY problem (one pass) rather than ever emitting a
+ * machine-specific or malformed artifact.
  */
 export function scaffoldCapabilities(spec: CapabilitiesScaffoldSpec): string {
   if (!KEBAB_RE.test(spec.name)) {
     throw new Error(
-      `scaffoldCapabilities: invalid name ${q(spec.name)} — must be non-empty kebab-case and equal the workflow meta.name (e.g. "pr-review").`,
+      `scaffoldCapabilities: invalid name ${q(spec.name)} — must be non-empty kebab-case (e.g. "pr-review"); it should also match the workflow's meta.name so the sidecar sits beside <name>.js (author-enforced, not checked here).`,
     )
   }
-  // Build the emitted object from KNOWN keys only (version leads); untrusted raw JSON
-  // may carry extras, but only these reach the artifact — the field-level rules are the
-  // shared lint's job, exactly as the observer scaffolder delegates to its validator.
+  // Assemble the top level from KNOWN keys (version leads). Nested role/agent fields
+  // ride through by reference but the shared lint below rejects any unmodelled one, so
+  // an untrusted spec cannot smuggle a machine-specific field into the artifact — the
+  // field-level rules are the lint's job, exactly as the observer scaffolder delegates.
   const sidecar: CapabilitySidecar = {
     version: 1,
     roles: spec.roles,

@@ -90,6 +90,24 @@ describe('scaffoldCapabilities — validation is REUSED from the shared launch l
     ).toThrow(/must not declare mcpServers/)
   })
 
+  it('throws on a CONCRETE mcp__ in disallowedTools (denylist channel, review high)', () => {
+    expect(() =>
+      scaffoldCapabilities({
+        ...base,
+        agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: ['$cap:code-intelligence'], disallowedTools: ['mcp__acme__x'] } },
+      }),
+    ).toThrow(/disallowedTools entry 'mcp__acme__x' is a concrete MCP tool/)
+  })
+
+  it('throws on an unmodelled agent-def field (a smuggling channel, review high)', () => {
+    expect(() =>
+      scaffoldCapabilities({
+        ...base,
+        agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: ['$cap:code-intelligence'], command: 'uvx' } as never },
+      }),
+    ).toThrow(/unexpected field 'command'/)
+  })
+
   it('throws on an omitted tools allowlist (fail-open guard, never silently accepted)', () => {
     expect(() =>
       scaffoldCapabilities({ ...base, agents: { 'wf-reviewer': { description: 'd', prompt: 'p' } as never } }),

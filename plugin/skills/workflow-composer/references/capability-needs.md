@@ -76,9 +76,11 @@ workflow-toolbox scaffold capabilities <spec.json>   # → <name>.capabilities.j
 (Programmatically, `scaffoldCapabilities(spec: CapabilitiesScaffoldSpec)` in
 `@workflow-toolbox/scaffold` returns the same string — same emitter the CLI drives.)
 
-The spec is the sidecar plus a `name` (which MUST equal the workflow's `meta.name` — it
-only names the output file so the sidecar sits beside the built `workflows/<name>.js`; the
-launcher finds it by that adjacency). Shape:
+The spec is the sidecar plus a `name` that only names the output file. Set it to the
+workflow's `meta.name` so the sidecar sits beside the built `workflows/<name>.js` (the
+launcher finds it by that adjacency) — the scaffolder validates the kebab format but
+cannot check the match to the workflow (the spec is standalone), so that coupling is
+yours to keep. Shape:
 
 ```jsonc
 {
@@ -99,12 +101,16 @@ launcher finds it by that adjacency). Shape:
 ```
 
 **Machine-agnostic is enforced, not just advised.** The emitter runs the SAME lint the
-launch resolver enforces, and refuses to write a sidecar that contains a concrete
-`mcp__…` tool, an `mcpServers` field on an agent def, a `$cap:<need>` whose need the role
-never declared (typo), or an agent with no `tools` allowlist at all (an omitted allowlist
-would inherit every ambient tool — the opposite of least privilege). If you hand-write the
-sidecar instead of scaffolding it, the launch applies the identical check, so a smuggled
-provider still fails loud — the emitter lint is just the earlier, friendlier copy.
+launch resolver enforces (the launch guard delegates its machine-agnostic pass to that one
+function — they cannot drift), and refuses to write a sidecar that carries a concrete
+`mcp__…` tool in EITHER tool channel (`tools` allowlist OR `disallowedTools` denylist), an
+`mcpServers` field or ANY other unmodelled field on an agent def (only
+`description`/`prompt`/`tools`/`disallowedTools`/`model`/`effort`/`maxTurns` are allowed —
+an unknown key is a smuggling channel), a `$cap:<need>` whose need the role never declared
+(typo), or an agent with no `tools` allowlist at all (an omitted allowlist would inherit
+every ambient tool — the opposite of least privilege). If you hand-write the sidecar
+instead of scaffolding it, the launch runs that identical check, so a smuggled provider
+still fails loud — the emitter lint is just the earlier, friendlier copy.
 
 ## Step 3 — make the role actually ADOPT the tool
 

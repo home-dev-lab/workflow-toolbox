@@ -248,9 +248,10 @@ coupling, and what ships at authoring time vs at the observe-server runtime.
 A role that needs **more than the bare default** (a reviewer that reads code symbolically,
 a researcher that looks up docs) declares an ABSTRACT need in a workflow-owned
 `<name>.capabilities.json` sidecar the composer emits with `scaffold capabilities`, carried
-at launch in `args.capabilities`. The sidecar names no tool — only `$cap:<need>`
-placeholders the user's machine resolves at launch (degrading to a named fallback when it
-can't). **Read [references/capability-needs.md](references/capability-needs.md)** before
+at launch in `args.capabilities`. The sidecar names no concrete provider or machine tool —
+its agent tool lists carry only `$cap:<need>` placeholders (plus plain built-in tools like
+`Read`) that the user's machine resolves at launch, degrading to a named fallback when it
+can't. **Read [references/capability-needs.md](references/capability-needs.md)** before
 adding one — it covers the per-role needs derivation, the machine-agnostic emission lint,
 and the adoption levers (remove the alternative + instruct at the task level).
 

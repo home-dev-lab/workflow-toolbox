@@ -179,6 +179,70 @@ describe('cli main() — workflow-toolbox scaffold observer', () => {
 })
 
 // ---------------------------------------------------------------------------
+// workflow-toolbox scaffold capabilities — through main(), the path npm consumers
+// run (review lock, run wf_5229b57d-4ca: the published-CLI wiring for this verb had
+// zero coverage — the pure emitter tests live in the scaffold package and never
+// exercised main()'s dispatch/help/next-hint here).
+// ---------------------------------------------------------------------------
+
+const CAPS_SPEC = {
+  name: 'sub-test-caps',
+  roles: { reviewer: { agent: 'wf-reviewer', needs: [{ need: 'code-intelligence' }] } },
+  agents: { 'wf-reviewer': { description: 'Subcommand test reviewer.', prompt: 'Review.', tools: ['Read', '$cap:code-intelligence'] } },
+}
+
+function writeCapsSpec(dir: string): string {
+  const p = path.join(dir, 'caps-spec.json')
+  fs.writeFileSync(p, JSON.stringify(CAPS_SPEC), 'utf8')
+  return p
+}
+
+describe('cli main() — workflow-toolbox scaffold capabilities', () => {
+  it('writes <name>.capabilities.json into --out-dir, versioned and machine-agnostic', async () => {
+    const dir = makeTmpDir()
+    await main(['scaffold', 'capabilities', writeCapsSpec(dir), '--out-dir', dir])
+    const out = path.join(dir, 'sub-test-caps.capabilities.json')
+    expect(fs.existsSync(out)).toBe(true)
+    const parsed = JSON.parse(fs.readFileSync(out, 'utf8')) as Record<string, unknown>
+    expect(parsed['version']).toBe(1)
+    expect(parsed['name']).toBeUndefined() // filename-only
+    expect(JSON.stringify(parsed)).toContain('$cap:code-intelligence')
+  })
+
+  it('refuses to overwrite without --force, allows with it', async () => {
+    const dir = makeTmpDir()
+    const spec = writeCapsSpec(dir)
+    await main(['scaffold', 'capabilities', spec, '--out-dir', dir])
+    await expect(main(['scaffold', 'capabilities', spec, '--out-dir', dir])).rejects.toThrow(/--force/)
+    await main(['scaffold', 'capabilities', spec, '--out-dir', dir, '--force'])
+  })
+
+  it('--stdout prints the artifact instead of writing a file', async () => {
+    const dir = makeTmpDir()
+    const spec = writeCapsSpec(dir)
+    const writes: string[] = []
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+      writes.push(String(chunk))
+      return true
+    })
+    await main(['scaffold', 'capabilities', spec, '--stdout'])
+    expect(writes.join('')).toContain('"version": 1')
+    expect(fs.existsSync(path.join(dir, 'sub-test-caps.capabilities.json'))).toBe(false)
+  })
+
+  it('a machine-specific spec fails loud with the shared lint message (no file written)', async () => {
+    const dir = makeTmpDir()
+    const bad = path.join(dir, 'bad-caps.json')
+    fs.writeFileSync(bad, JSON.stringify({
+      ...CAPS_SPEC,
+      agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: ['mcp__serena__find_symbol'] } },
+    }), 'utf8')
+    await expect(main(['scaffold', 'capabilities', bad, '--out-dir', dir])).rejects.toThrow(/concrete MCP tool/)
+    expect(fs.existsSync(path.join(dir, 'sub-test-caps.capabilities.json'))).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // workflow-toolbox scaffold agent — through main(), the path npm consumers run.
 // The pure scaffoldAgent emitter is tested in the scaffold package; this locks
 // the published-CLI wiring of the `agent` branch (sibling of the observer

@@ -637,14 +637,26 @@ function validateSidecarShape(sidecar) {
   }
   return errors;
 }
-function sidecarToCapabilitiesSpec(sidecar, resolutions) {
+function lintSidecarMachineAgnostic(sidecar) {
   const structuralErrors = validateSidecarShape(sidecar);
-  if (structuralErrors.length > 0) return { spec: null, report: resolutions, errors: structuralErrors };
+  if (structuralErrors.length > 0) return structuralErrors;
   const errors = [];
-  const resMap = /* @__PURE__ */ new Map();
-  for (const r of resolutions) resMap.set(r.need, r);
+  const KNOWN_AGENT_KEYS = /* @__PURE__ */ new Set(["description", "prompt", "tools", "disallowedTools", "model", "effort", "maxTurns"]);
+  const scanConcreteMcp = (agentName, channel, list) => {
+    if (!Array.isArray(list)) return;
+    for (const tool of list) {
+      if (typeof tool === "string" && !tool.startsWith(CAP_PREFIX) && tool.startsWith("mcp__")) {
+        errors.push(`agent '${agentName}' ${channel} '${tool}' is a concrete MCP tool; a sidecar may only use ${CAP_PREFIX}<need> and non-MCP builtin tools (the machine registry is the trust root)`);
+      }
+    }
+  };
   const agentNeeds = /* @__PURE__ */ new Map();
   for (const [roleName, role] of Object.entries(sidecar.roles)) {
+    for (const key of Object.keys(role)) {
+      if (key !== "agent" && key !== "needs") {
+        errors.push(`role '${roleName}' has unexpected field '${key}' \u2014 a sidecar role may only carry agent, needs`);
+      }
+    }
     if (!Object.hasOwn(sidecar.agents, role.agent)) {
       errors.push(`role '${roleName}' references unknown agent '${role.agent}'`);
     } else {
@@ -652,6 +664,48 @@ function sidecarToCapabilitiesSpec(sidecar, resolutions) {
       acc.push(...role.needs);
       agentNeeds.set(role.agent, acc);
     }
+  }
+  for (const [agentName, def] of Object.entries(sidecar.agents)) {
+    if (FORBIDDEN_ENTRY_NAMES.has(agentName)) {
+      errors.push(`agents.${agentName} is a forbidden entry name (prototype-collision defence)`);
+      continue;
+    }
+    if (def.mcpServers !== void 0) {
+      errors.push(`agent '${agentName}' must not declare mcpServers \u2014 the machine registry is the only provider source (a sidecar is machine-agnostic)`);
+    }
+    for (const key of Object.keys(def)) {
+      if (key !== "mcpServers" && !KNOWN_AGENT_KEYS.has(key)) {
+        errors.push(`agent '${agentName}' has unexpected field '${key}' \u2014 a machine-agnostic sidecar agent def may only carry ${[...KNOWN_AGENT_KEYS].join(", ")}`);
+      }
+    }
+    if (def.tools === void 0) {
+      errors.push(`agent '${agentName}' declares no tools allowlist \u2014 a sidecar agent must declare an EXACT allowlist (an omitted allowlist inherits ALL ambient tools; design \xA79.2/\xA79.3 'rien d'implicite')`);
+    }
+    scanConcreteMcp(agentName, "tool", def.tools);
+    scanConcreteMcp(agentName, "disallowedTools entry", def.disallowedTools);
+    const declared = new Set((agentNeeds.get(agentName) ?? []).map((n) => n.need));
+    for (const tool of def.tools ?? []) {
+      if (tool.startsWith(CAP_PREFIX)) {
+        const need = tool.slice(CAP_PREFIX.length);
+        if (!declared.has(need)) {
+          errors.push(`agent '${agentName}' uses '${tool}' but need '${need}' is not declared in its role needs (typo?)`);
+        }
+      }
+    }
+  }
+  return [...new Set(errors)];
+}
+function sidecarToCapabilitiesSpec(sidecar, resolutions) {
+  const machineAgnosticErrors = lintSidecarMachineAgnostic(sidecar);
+  if (machineAgnosticErrors.length > 0) return { spec: null, report: resolutions, errors: machineAgnosticErrors };
+  const errors = [];
+  const resMap = /* @__PURE__ */ new Map();
+  for (const r of resolutions) resMap.set(r.need, r);
+  const agentNeeds = /* @__PURE__ */ new Map();
+  for (const [roleName, role] of Object.entries(sidecar.roles)) {
+    const acc = agentNeeds.get(role.agent) ?? [];
+    acc.push(...role.needs);
+    agentNeeds.set(role.agent, acc);
     for (const need of role.needs) {
       const res = resMap.get(need.need);
       if (!res) {
@@ -664,26 +718,10 @@ function sidecarToCapabilitiesSpec(sidecar, resolutions) {
   const mountedMcp = {};
   const outAgents = {};
   for (const [agentName, def] of Object.entries(sidecar.agents)) {
-    if (FORBIDDEN_ENTRY_NAMES.has(agentName)) {
-      errors.push(`agents.${agentName} is a forbidden entry name (prototype-collision defence)`);
-      continue;
-    }
-    const smuggledMcp = def.mcpServers;
-    if (smuggledMcp !== void 0) {
-      errors.push(`agent '${agentName}' must not declare mcpServers \u2014 the machine registry is the only provider source (a sidecar is machine-agnostic)`);
-    }
-    if (def.tools === void 0) {
-      errors.push(`agent '${agentName}' declares no tools allowlist \u2014 a sidecar agent must declare an EXACT allowlist (an omitted allowlist inherits ALL ambient tools; design \xA79.2/\xA79.3 'rien d'implicite')`);
-    }
-    const declared = new Set((agentNeeds.get(agentName) ?? []).map((n) => n.need));
     const expanded = [];
     for (const tool of def.tools ?? []) {
       if (tool.startsWith(CAP_PREFIX)) {
         const need = tool.slice(CAP_PREFIX.length);
-        if (!declared.has(need)) {
-          errors.push(`agent '${agentName}' uses '${tool}' but need '${need}' is not declared in its role needs (typo?)`);
-          continue;
-        }
         const res = resMap.get(need);
         if (!res) {
           errors.push(`agent '${agentName}' '${tool}': no resolution for need '${need}'`);
@@ -699,8 +737,6 @@ function sidecarToCapabilitiesSpec(sidecar, resolutions) {
             mountedMcp[srv] = cfg;
           }
         }
-      } else if (tool.startsWith("mcp__")) {
-        errors.push(`agent '${agentName}' tool '${tool}' is a concrete MCP tool; a sidecar may only use ${CAP_PREFIX}<need> and non-MCP builtin tools (the machine registry is the trust root)`);
       } else {
         expanded.push(tool);
       }
