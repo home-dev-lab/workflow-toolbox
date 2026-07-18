@@ -46,6 +46,46 @@ function errorsFor(def: Record<string, unknown>): string[] {
   return extractObservers(argsWith(def)).errors
 }
 
+// The launcher-emitted `resolution` wire contract (card I3): observers entries may
+// carry a resolved NeedResolution[] (produced by wt-observe launch, read by the
+// companion server). extractObservers must ACCEPT + shape-validate it (loud-on-typos).
+const RESOLVED = { need: 'docs-lookup', provider: 'context7', mcpServers: { context7: { command: 'ctx' } }, tools: ['mcp__context7__*'], protocolHint: 'use it' }
+const UNRESOLVED = { need: 'web-search', unresolved: true, degradation: 'degraded:none', tools: [] }
+
+describe('extractObservers — resolution wire contract (card I3)', () => {
+  it('accepts an entry carrying a valid resolved+unresolved resolution', () => {
+    const r = extractObservers({ observers: [{ definition: minimal(), resolution: [RESOLVED, UNRESOLVED] }] })
+    expect(r.errors).toEqual([])
+    expect(r.entries).not.toBeNull()
+    expect((r.entries as Array<{ resolution?: unknown }>)[0]?.resolution).toEqual([RESOLVED, UNRESOLVED])
+  })
+
+  it('rejects a non-array resolution', () => {
+    const r = extractObservers({ observers: [{ definition: minimal(), resolution: 'nope' }] })
+    expect(r.errors.some((e) => e.includes('resolution') && e.includes('array'))).toBe(true)
+  })
+
+  it('rejects a resolution item missing need', () => {
+    const r = extractObservers({ observers: [{ definition: minimal(), resolution: [{ provider: 'p', mcpServers: {}, tools: [] }] }] })
+    expect(r.errors.some((e) => e.includes('.need'))).toBe(true)
+  })
+
+  it('rejects a resolution item that is neither resolved nor unresolved', () => {
+    const r = extractObservers({ observers: [{ definition: minimal(), resolution: [{ need: 'x', tools: [] }] }] })
+    expect(r.errors.some((e) => e.includes('provider') || e.includes('unresolved'))).toBe(true)
+  })
+
+  it('rejects an unknown key inside a resolution item (loud-on-typos)', () => {
+    const r = extractObservers({ observers: [{ definition: minimal(), resolution: [{ ...RESOLVED, bogus: 1 }] }] })
+    expect(r.errors.some((e) => e.includes('bogus'))).toBe(true)
+  })
+
+  it('still rejects an unknown TOP-LEVEL entry key (resolution did not widen the entry envelope)', () => {
+    const r = extractObservers({ observers: [{ definition: minimal(), bogusKey: 1 }] })
+    expect(r.errors.some((e) => e.includes('bogusKey'))).toBe(true)
+  })
+})
+
 describe('extractObservers — section presence', () => {
   it('returns null entries (no errors) when args has no observers section', () => {
     expect(extractObservers({ target: 'x' })).toEqual({ entries: null, errors: [] })

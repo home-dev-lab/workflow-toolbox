@@ -28,6 +28,10 @@
 // ONE pass, and a section with any violation yields `entries: null` (all-or-nothing).
 
 import { FORBIDDEN_ENTRY_NAMES, isRecord } from './validator-shared.js'
+// Type-only (erased at bundle time — no runtime cycle): capability-registry.ts imports
+// CapabilityNeed FROM here, so NeedResolution's type comes back the other way for the
+// launcher-emitted `resolution` wire contract on ObserversEntry (card I3).
+import type { NeedResolution } from './capability-registry.js'
 
 export interface ObserverWatch {
   roles?: string[]
@@ -63,7 +67,15 @@ export interface ObserverDefinition {
   requires?: CapabilityNeed[]
 }
 
-export type ObserversEntry = { definition: ObserverDefinition } | { definitionFile: string }
+/** A launch's observers entry. `resolution` is the launcher-emitted wire contract
+ *  (card I3): `wt-observe launch` resolves the definition's abstract `requires`
+ *  against the machine registry and rides the concrete NeedResolution[] here for the
+ *  companion server to store on the ObserverTarget and compose into the brain. It is
+ *  ACCEPTED + shape-validated here (the trusted producer is the launcher, but a
+ *  hand-crafted launch must still fail loud). Unlike a role capability, an unresolved
+ *  observer need never fails the launch — the resolution rides through, unresolved
+ *  entries and all, and the server decides "not attached + noisy record". */
+export type ObserversEntry = ({ definition: ObserverDefinition } | { definitionFile: string }) & { resolution?: NeedResolution[] }
 
 /** The wt-comm message types an observer may declare in `emits` — a LOCKED COPY of
  *  the observer-emittable (`observer.*`) subset of the comm package's closed type
@@ -299,6 +311,51 @@ function validateDefinitionFile(v: unknown, path: string, errors: string[]): voi
  *    non-object args) → `{ entries: null, errors: [] }`
  *  - a malformed section → `entries: null` and EVERY problem listed in `errors`
  *    (one pass, so the author fixes them all at once). */
+const RESOLVED_RESOLUTION_KEYS = new Set(['need', 'provider', 'mcpServers', 'tools', 'protocolHint'])
+const UNRESOLVED_RESOLUTION_KEYS = new Set(['need', 'unresolved', 'degradation', 'tools'])
+const MAX_RESOLUTION = 32
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string')
+}
+
+/** Structural validation of the launcher-emitted `resolution` (NeedResolution[]) on an
+ *  observers entry — the wire contract the launcher (I3) produces and the companion
+ *  server (C5) reads/stores/composes. Loud-on-typos parity with the rest of this module:
+ *  a malformed entry is a listed error, never a silent pass. Discriminated by shape — a
+ *  RESOLVED resolution carries `provider` + `mcpServers`, an UNRESOLVED one carries
+ *  `unresolved: true` + `degradation`; both carry `need` + `tools`. */
+function validateResolutionField(v: unknown, path: string, errors: string[]): void {
+  if (!Array.isArray(v)) {
+    errors.push(`${path} must be an array of NeedResolution ({ need, provider, mcpServers, tools, protocolHint? } | { need, unresolved, degradation, tools })`)
+    return
+  }
+  if (v.length > MAX_RESOLUTION) {
+    errors.push(`${path} must carry at most ${MAX_RESOLUTION} resolutions`)
+    return
+  }
+  v.forEach((item, i) => {
+    const p = `${path}[${i}]`
+    if (!isRecord(item)) {
+      errors.push(`${p} must be an object (NeedResolution)`)
+      return
+    }
+    if (typeof item['need'] !== 'string' || item['need'].length === 0) errors.push(`${p}.need must be a non-empty string`)
+    if (!isStringArray(item['tools'])) errors.push(`${p}.tools must be a string array`)
+    if (item['unresolved'] === true) {
+      checkUnknownKeys(item, UNRESOLVED_RESOLUTION_KEYS, p, errors)
+      if (typeof item['degradation'] !== 'string' || item['degradation'].length === 0) errors.push(`${p}.degradation must be a non-empty string (an unresolved resolution names its degradation)`)
+    } else if ('provider' in item) {
+      checkUnknownKeys(item, RESOLVED_RESOLUTION_KEYS, p, errors)
+      if (typeof item['provider'] !== 'string' || item['provider'].length === 0) errors.push(`${p}.provider must be a non-empty string`)
+      if (!isRecord(item['mcpServers'])) errors.push(`${p}.mcpServers must be an object map of server-name → config`)
+      if ('protocolHint' in item && typeof item['protocolHint'] !== 'string') errors.push(`${p}.protocolHint must be a string`)
+    } else {
+      errors.push(`${p} must be a RESOLVED resolution (with 'provider') or an UNRESOLVED one ('unresolved: true') — got neither`)
+    }
+  })
+}
+
 export function extractObservers(args: unknown): { entries: ObserversEntry[] | null; errors: string[] } {
   if (!isRecord(args) || !('observers' in args)) return { entries: null, errors: [] }
   const raw = args['observers']
@@ -319,8 +376,9 @@ export function extractObservers(args: unknown): { entries: ObserversEntry[] | n
     const hasDefinition = 'definition' in entry
     const hasFile = 'definitionFile' in entry
     for (const key of Object.keys(entry)) {
-      if (key !== 'definition' && key !== 'definitionFile') errors.push(`${path}.${key} is not a known field (typo?)`)
+      if (key !== 'definition' && key !== 'definitionFile' && key !== 'resolution') errors.push(`${path}.${key} is not a known field (typo?)`)
     }
+    if ('resolution' in entry) validateResolutionField(entry['resolution'], `${path}.resolution`, errors)
     if (hasDefinition === hasFile) {
       errors.push(`${path} must carry exactly ONE of definition | definitionFile`)
       return

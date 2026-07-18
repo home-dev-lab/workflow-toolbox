@@ -11,7 +11,7 @@
 // sidecar resolution < caller args). Fail-loud → capabilities null.
 
 import { describe, expect, it } from 'vitest'
-import { composeLaunchCapabilities, sidecarPathFor, substituteCwd } from '../src/launch-capabilities.js'
+import { composeLaunchCapabilities, resolveObserverRequires, sidecarPathFor, substituteCwd } from '../src/launch-capabilities.js'
 import type { CapabilityRegistry, CapabilitySidecar } from '../src/capability-registry.js'
 import type { CapabilitiesSpec } from '../src/capabilities.js'
 
@@ -144,6 +144,24 @@ describe('composeLaunchCapabilities — caller-args precedence (sidecar < caller
     // caller wins on deep-research; caller's 'other' added; disableBundledSkills caller wins
     expect(spec.skillOverrides).toEqual({ 'deep-research': 'on', 'other': 'off' })
     expect(spec.disableBundledSkills).toBe(true)
+  })
+})
+
+describe('resolveObserverRequires (observer wire contract, no refusal)', () => {
+  it('resolves a need to its provider with $CWD substituted', () => {
+    const [r] = resolveObserverRequires([{ need: 'code-intelligence' }], registry, { serena: true }, true, '/obs')
+    expect(r).toEqual({
+      need: 'code-intelligence',
+      provider: 'serena',
+      mcpServers: { serena: { command: 'uvx', args: ['serena', 'start-mcp-server', '--project', '/obs'] } },
+      tools: ['mcp__serena__*'],
+      protocolHint: 'Use the symbolic tools; do not fall back to text search.',
+    })
+  })
+
+  it('embeds an UNRESOLVED entry for a required need with no provider (NEVER throws/refuses)', () => {
+    const out = resolveObserverRequires([{ need: 'web-search' }], { version: 1, providers: {} }, {}, true, '/obs')
+    expect(out).toEqual([{ need: 'web-search', unresolved: true, degradation: 'degraded:none', tools: [] }])
   })
 })
 

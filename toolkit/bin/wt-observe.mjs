@@ -768,6 +768,10 @@ function mergeCapabilitiesSpecs(sidecarSpec, sidecarSkill, caller) {
   if (skill.skillOverrides !== void 0) merged.skillOverrides = skill.skillOverrides;
   return merged;
 }
+function resolveObserverRequires(requires, registry, availability, webAvailable, requesterCwd) {
+  const resolved = resolveCapabilities(requires, registry, { availability, webAvailable });
+  return resolved.map((r) => "unresolved" in r ? r : { ...r, mcpServers: substituteCwd(r.mcpServers, requesterCwd) });
+}
 function composeLaunchCapabilities(input) {
   const { sidecar, registry, availability, webAvailable, requesterCwd, callerCapabilities } = input;
   const errors = [];
@@ -982,6 +986,42 @@ function validateDefinitionFile(v, path, errors) {
     errors.push(`${path} must reference a composer observer artifact ('<name>.observer.json')`);
   }
 }
+var RESOLVED_RESOLUTION_KEYS = /* @__PURE__ */ new Set(["need", "provider", "mcpServers", "tools", "protocolHint"]);
+var UNRESOLVED_RESOLUTION_KEYS = /* @__PURE__ */ new Set(["need", "unresolved", "degradation", "tools"]);
+var MAX_RESOLUTION = 32;
+function isStringArray3(v) {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+function validateResolutionField(v, path, errors) {
+  if (!Array.isArray(v)) {
+    errors.push(`${path} must be an array of NeedResolution ({ need, provider, mcpServers, tools, protocolHint? } | { need, unresolved, degradation, tools })`);
+    return;
+  }
+  if (v.length > MAX_RESOLUTION) {
+    errors.push(`${path} must carry at most ${MAX_RESOLUTION} resolutions`);
+    return;
+  }
+  v.forEach((item, i) => {
+    const p = `${path}[${i}]`;
+    if (!isRecord2(item)) {
+      errors.push(`${p} must be an object (NeedResolution)`);
+      return;
+    }
+    if (typeof item["need"] !== "string" || item["need"].length === 0) errors.push(`${p}.need must be a non-empty string`);
+    if (!isStringArray3(item["tools"])) errors.push(`${p}.tools must be a string array`);
+    if (item["unresolved"] === true) {
+      checkUnknownKeys(item, UNRESOLVED_RESOLUTION_KEYS, p, errors);
+      if (typeof item["degradation"] !== "string" || item["degradation"].length === 0) errors.push(`${p}.degradation must be a non-empty string (an unresolved resolution names its degradation)`);
+    } else if ("provider" in item) {
+      checkUnknownKeys(item, RESOLVED_RESOLUTION_KEYS, p, errors);
+      if (typeof item["provider"] !== "string" || item["provider"].length === 0) errors.push(`${p}.provider must be a non-empty string`);
+      if (!isRecord2(item["mcpServers"])) errors.push(`${p}.mcpServers must be an object map of server-name \u2192 config`);
+      if ("protocolHint" in item && typeof item["protocolHint"] !== "string") errors.push(`${p}.protocolHint must be a string`);
+    } else {
+      errors.push(`${p} must be a RESOLVED resolution (with 'provider') or an UNRESOLVED one ('unresolved: true') \u2014 got neither`);
+    }
+  });
+}
 function extractObservers(args) {
   if (!isRecord2(args) || !("observers" in args)) return { entries: null, errors: [] };
   const raw = args["observers"];
@@ -1001,8 +1041,9 @@ function extractObservers(args) {
     const hasDefinition = "definition" in entry;
     const hasFile = "definitionFile" in entry;
     for (const key of Object.keys(entry)) {
-      if (key !== "definition" && key !== "definitionFile") errors.push(`${path}.${key} is not a known field (typo?)`);
+      if (key !== "definition" && key !== "definitionFile" && key !== "resolution") errors.push(`${path}.${key} is not a known field (typo?)`);
     }
+    if ("resolution" in entry) validateResolutionField(entry["resolution"], `${path}.resolution`, errors);
     if (hasDefinition === hasFile) {
       errors.push(`${path} must carry exactly ONE of definition | definitionFile`);
       return;
@@ -1874,10 +1915,7 @@ async function applySidecarCapabilities(input) {
   } catch (e) {
     throw new Error(`capability sidecar ${sidecarPath} is not valid JSON: ${e.message}`);
   }
-  const { registry, errors: regErrors } = loadCapabilityRegistry();
-  if (regErrors.length > 0) throw new Error(`capability registry invalid:
-  - ${regErrors.join("\n  - ")}`);
-  const availability = await probeProviders(registry);
+  const { registry, availability } = await input.loadCapContext();
   const composed = composeLaunchCapabilities({ sidecar, registry, availability, webAvailable: true, requesterCwd, callerCapabilities });
   if (composed.errors.length > 0) {
     throw new Error(`capability sidecar ${sidecarPath} cannot be resolved for launch:
@@ -1891,6 +1929,28 @@ async function applySidecarCapabilities(input) {
   process.stderr.write(`capability sidecar: resolved ${composed.report.length} need(s) across ${roleCount} role(s) from ${sidecarPath}
 `);
   return { ...base, capabilities: composed.capabilities, capabilitiesReport: composed.report };
+}
+function inlineObserverRequires(entry) {
+  if (!isRecord2(entry) || !isRecord2(entry["definition"])) return null;
+  const req = entry["definition"]["requires"];
+  return Array.isArray(req) && req.length > 0 ? req : null;
+}
+async function applyObserverResolution(input) {
+  const { args, requesterCwd, loadCapContext } = input;
+  if (!isRecord2(args) || !Array.isArray(args["observers"])) return args;
+  const observers = args["observers"];
+  if (!observers.some((e) => inlineObserverRequires(e) !== null)) return args;
+  const { registry, availability } = await loadCapContext();
+  let resolved = 0;
+  const out = observers.map((entry) => {
+    const requires = inlineObserverRequires(entry);
+    if (requires === null) return entry;
+    resolved++;
+    return { ...entry, resolution: resolveObserverRequires(requires, registry, availability, true, requesterCwd) };
+  });
+  process.stderr.write(`observer requires: resolved needs for ${resolved} inline observer definition(s)
+`);
+  return { ...args, observers: out };
 }
 async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
   if (script === void 0) throw new Error("usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]");
@@ -1922,7 +1982,18 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
   const { cwd: requesterCwd, note: cwdNote } = safeRequesterCwd(() => process.cwd());
   if (cwdNote !== null) process.stderr.write(`${cwdNote}
 `);
-  args = await applySidecarCapabilities({ port, token, prefix, script, args, callerCapabilities: cap.spec, requesterCwd });
+  let capContext = null;
+  const loadCapContext = async () => {
+    if (capContext === null) {
+      const { registry, errors } = loadCapabilityRegistry();
+      if (errors.length > 0) throw new Error(`capability registry invalid:
+  - ${errors.join("\n  - ")}`);
+      capContext = { registry, availability: await probeProviders(registry) };
+    }
+    return capContext;
+  };
+  args = await applySidecarCapabilities({ port, token, prefix, script, args, callerCapabilities: cap.spec, requesterCwd, loadCapContext });
+  args = await applyObserverResolution({ args, requesterCwd, loadCapContext });
   const finalCap = extractCapabilities(args);
   if (finalCap.spec !== null) {
     process.stderr.write(

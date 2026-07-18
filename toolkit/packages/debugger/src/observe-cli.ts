@@ -69,8 +69,8 @@ import {
 } from './observe-lifecycle.js'
 import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
 import { composeCapabilityOptions, extractCapabilities, type CapabilitiesSpec } from './capabilities.js'
-import { loadCapabilityRegistry, probeProviders, type CapabilitySidecar } from './capability-registry.js'
-import { composeLaunchCapabilities, sidecarPathFor } from './launch-capabilities.js'
+import { loadCapabilityRegistry, probeProviders, type CapabilityNeed, type CapabilityRegistry, type CapabilitySidecar } from './capability-registry.js'
+import { composeLaunchCapabilities, resolveObserverRequires, sidecarPathFor } from './launch-capabilities.js'
 import { isRecord } from './validator-shared.js'
 import { extractObservers } from './observer-def.js'
 import { buildLaunchBody, safeRequesterCwd } from './launch-body.js'
@@ -819,6 +819,11 @@ interface WorkflowListEntry {
   path?: string
 }
 
+/** The machine registry + probe results, loaded AT MOST ONCE per launch and shared by
+ *  the sidecar path and the observer-requires path (both resolve against the same
+ *  registry; probing twice would double-spawn the declared probe processes). */
+type CapContext = { registry: CapabilityRegistry; availability: Record<string, boolean> }
+
 /** Detect + resolve a workflow's capability sidecar (card I3, design §3.2/§5/§9),
  *  returning the args to send — AUGMENTED with the resolved `capabilities` section and a
  *  sibling `capabilitiesReport` (the audit trail). The sidecar is located via GET
@@ -840,6 +845,7 @@ async function applySidecarCapabilities(input: {
   args: unknown
   callerCapabilities: CapabilitiesSpec | null
   requesterCwd: string
+  loadCapContext: () => Promise<CapContext>
 }): Promise<unknown> {
   const { port, token, prefix, script, args, callerCapabilities, requesterCwd } = input
 
@@ -875,11 +881,9 @@ async function applySidecarCapabilities(input: {
     throw new Error(`capability sidecar ${sidecarPath} is not valid JSON: ${(e as Error).message}`)
   }
 
-  // Load the machine registry (fail-loud on an invalid one), probe the declared providers,
-  // then the PURE resolve → $CWD-substitute → project → merge (launch-capabilities.ts).
-  const { registry, errors: regErrors } = loadCapabilityRegistry()
-  if (regErrors.length > 0) throw new Error(`capability registry invalid:\n  - ${regErrors.join('\n  - ')}`)
-  const availability = await probeProviders(registry)
+  // Load the machine registry + probes (shared, fail-loud on an invalid registry), then
+  // the PURE resolve → $CWD-substitute → project → merge (launch-capabilities.ts).
+  const { registry, availability } = await input.loadCapContext()
   const composed = composeLaunchCapabilities({ sidecar, registry, availability, webAvailable: true, requesterCwd, callerCapabilities })
   if (composed.errors.length > 0) {
     throw new Error(`capability sidecar ${sidecarPath} cannot be resolved for launch:\n  - ${composed.errors.join('\n  - ')}`)
@@ -894,6 +898,39 @@ async function applySidecarCapabilities(input: {
   const roleCount = isRecord(sidecar) && isRecord(sidecar.roles) ? Object.keys(sidecar.roles).length : 0
   process.stderr.write(`capability sidecar: resolved ${composed.report.length} need(s) across ${roleCount} role(s) from ${sidecarPath}\n`)
   return { ...base, capabilities: composed.capabilities, capabilitiesReport: composed.report }
+}
+
+/** Read an observers entry's INLINE definition `requires` (card I3 scope extension).
+ *  v0 resolves requires for inline `{ definition }` entries only — a `{ definitionFile }`
+ *  entry's requires live in a file the SERVER resolves under the workflows roots, which
+ *  the launcher does not load (a documented boundary; those pass through unresolved). */
+function inlineObserverRequires(entry: unknown): CapabilityNeed[] | null {
+  if (!isRecord(entry) || !isRecord(entry['definition'])) return null
+  const req = (entry['definition'] as Record<string, unknown>)['requires']
+  return Array.isArray(req) && req.length > 0 ? (req as CapabilityNeed[]) : null
+}
+
+/** Resolve each inline observer definition's `requires` and embed the resulting
+ *  NeedResolution[] on the entry as `resolution` — the launcher-emitted wire contract
+ *  (card I3 scope extension) the companion server reads/stores/composes. NEVER fails the
+ *  launch: an unresolved required observer need rides through as an UNRESOLVED entry (the
+ *  server decides "not attached + noisy record"). A launch with no observers, or none
+ *  carrying requires, is returned byte-for-byte UNCHANGED. */
+async function applyObserverResolution(input: { args: unknown; requesterCwd: string; loadCapContext: () => Promise<CapContext> }): Promise<unknown> {
+  const { args, requesterCwd, loadCapContext } = input
+  if (!isRecord(args) || !Array.isArray(args['observers'])) return args
+  const observers = args['observers']
+  if (!observers.some((e) => inlineObserverRequires(e) !== null)) return args
+  const { registry, availability } = await loadCapContext()
+  let resolved = 0
+  const out = observers.map((entry) => {
+    const requires = inlineObserverRequires(entry)
+    if (requires === null) return entry
+    resolved++
+    return { ...(entry as Record<string, unknown>), resolution: resolveObserverRequires(requires, registry, availability, true, requesterCwd) }
+  })
+  process.stderr.write(`observer requires: resolved needs for ${resolved} inline observer definition(s)\n`)
+  return { ...args, observers: out }
 }
 
 /** `wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]` — POST
@@ -939,6 +976,18 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
   // is omitted — never an empty string, never a failed launch — and the operator is told.
   const { cwd: requesterCwd, note: cwdNote } = safeRequesterCwd(() => process.cwd())
   if (cwdNote !== null) process.stderr.write(`${cwdNote}\n`)
+  // The machine registry + probes, loaded AT MOST ONCE and shared by the sidecar path and
+  // the observer-requires path below (both resolve against the same registry; probing
+  // twice would double-spawn the declared probe processes). A plain launch never loads it.
+  let capContext: CapContext | null = null
+  const loadCapContext = async (): Promise<CapContext> => {
+    if (capContext === null) {
+      const { registry, errors } = loadCapabilityRegistry()
+      if (errors.length > 0) throw new Error(`capability registry invalid:\n  - ${errors.join('\n  - ')}`)
+      capContext = { registry, availability: await probeProviders(registry) }
+    }
+    return capContext
+  }
   // Capability sidecar (card I3, design §3.2/§5/§9): a `<artifact>.capabilities.json`
   // beside the resolved workflow declares each role's ABSTRACT needs. The launcher resolves
   // them against the machine registry (WT_CAPABILITY_REGISTRY / XDG default), runs the
@@ -947,7 +996,13 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
   // Absent/undetectable sidecar → the launch is byte-for-byte UNCHANGED (backward-compat);
   // a PRESENT sidecar whose required needs cannot be resolved → FAIL-LOUD launch refusal
   // (design §5.4 — a role capability is constitutive, not a peripheral observer).
-  args = await applySidecarCapabilities({ port, token, prefix, script, args, callerCapabilities: cap.spec, requesterCwd })
+  args = await applySidecarCapabilities({ port, token, prefix, script, args, callerCapabilities: cap.spec, requesterCwd, loadCapContext })
+  // Observer requires (card I3 scope extension, wire contract with the companion server):
+  // resolve each inline observer definition's abstract `requires` and embed the resulting
+  // NeedResolution[] as `resolution` on the entry. NEVER fails the launch — an observer is
+  // peripheral, so an unresolved required need rides through and the server decides
+  // "not attached + noisy record" (contrast the sidecar's constitutive fail-loud above).
+  args = await applyObserverResolution({ args, requesterCwd, loadCapContext })
   // The capabilities note reflects the FINAL (caller + sidecar) section the server composes.
   const finalCap = extractCapabilities(args)
   if (finalCap.spec !== null) {

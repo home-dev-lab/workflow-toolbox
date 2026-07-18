@@ -149,6 +149,26 @@ function mergeCapabilitiesSpecs(
   return merged
 }
 
+/** Resolve an observer definition's abstract `requires` against the machine registry
+ *  for the launcher-emitted `resolution` wire contract (card I3 scope extension). The
+ *  companion server stores this on the ObserverTarget and composes it into the brain.
+ *
+ *  Unlike the sidecar path there is NO refusal and NO error channel: a required observer
+ *  need that resolves to `degraded:none` rides through as an UNRESOLVED NeedResolution —
+ *  an observer is peripheral (design invariant: a missing observer never fails the run),
+ *  and the SERVER decides "not attached + noisy record". $CWD is substituted
+ *  launcher-side, exactly as the sidecar path (the delegated server's cwd is its own). */
+export function resolveObserverRequires(
+  requires: CapabilityNeed[],
+  registry: CapabilityRegistry,
+  availability: Record<string, boolean>,
+  webAvailable: boolean,
+  requesterCwd: string,
+): NeedResolution[] {
+  const resolved = resolveCapabilities(requires, registry, { availability, webAvailable })
+  return resolved.map((r) => ('unresolved' in r ? r : { ...r, mcpServers: substituteCwd(r.mcpServers, requesterCwd) }))
+}
+
 /** PURE (probes/registry/sidecar already read): resolve → $CWD-substitute → project
  *  → SEAM → merge caller. See the module header for the full contract. */
 export function composeLaunchCapabilities(input: LaunchCapabilitiesInput): LaunchCapabilitiesResult {
