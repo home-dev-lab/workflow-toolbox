@@ -1146,6 +1146,12 @@ function resolveLaunchTimeoutMs(flagSeconds, envMs) {
   if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
   return LAUNCH_DEFAULT_TIMEOUT_MS;
 }
+function resolveWebAvailable(raw) {
+  if (raw === void 0) return true;
+  const v = raw.trim().toLowerCase();
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+  return true;
+}
 
 // packages/debugger/src/spawn-ready.ts
 var BANNER_RE = /app \+ run discovery on http:\/\/127\.0\.0\.1:(\d+)/g;
@@ -1954,7 +1960,7 @@ async function resolveSourcePrefix(port, token, health, wanted) {
     (ms) => new Promise((r) => setTimeout(r, ms))
   );
 }
-var WEB_AVAILABLE_V0 = true;
+var WEB_AVAILABLE = resolveWebAvailable(process.env["OBSERVE_WEB_AVAILABLE"]);
 async function applySidecarCapabilities(input) {
   const { port, token, prefix, script, args, callerCapabilities, requesterCwd } = input;
   if (!input.sourceIsLocal) return args;
@@ -1987,7 +1993,7 @@ async function applySidecarCapabilities(input) {
   const ctx = await input.loadCapContext();
   if (ctx.registryErrors.length > 0) throw new Error(`capability registry invalid:
   - ${ctx.registryErrors.join("\n  - ")}`);
-  const composed = composeLaunchCapabilities({ sidecar, registry: ctx.registry, availability: ctx.availability, webAvailable: WEB_AVAILABLE_V0, requesterCwd, callerCapabilities });
+  const composed = composeLaunchCapabilities({ sidecar, registry: ctx.registry, availability: ctx.availability, webAvailable: WEB_AVAILABLE, requesterCwd, callerCapabilities });
   if (composed.errors.length > 0) {
     throw new Error(`capability sidecar ${sidecarPath} cannot be resolved for launch:
   - ${composed.errors.join("\n  - ")}`);
@@ -2018,7 +2024,7 @@ async function applyObserverResolution(input) {
 `);
   const owned = ownObserverResolutions(
     observers,
-    (requires) => ctx === null ? [] : resolveObserverRequires(requires, ctx.registry, ctx.availability, WEB_AVAILABLE_V0, requesterCwd)
+    (requires) => ctx === null ? [] : resolveObserverRequires(requires, ctx.registry, ctx.availability, WEB_AVAILABLE, requesterCwd)
   );
   if (owned.strippedCaller > 0) {
     process.stderr.write(`observer requires: dropped ${owned.strippedCaller} caller-supplied 'resolution' field(s) \u2014 the launcher is the sole resolver (a resolution is machine-produced, never a launch input)

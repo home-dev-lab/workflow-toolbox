@@ -612,7 +612,11 @@ the `wt-observe launch` request timeout in milliseconds (default 30000; the
 `WT_CAPABILITY_REGISTRY` overrides the path to the machine capability registry
 that `wt-observe launch` resolves capability sidecars against (default
 `~/.config/workflow-toolbox/capability-registry.json` — see
-[docs/public/capability-registry.md](docs/public/capability-registry.md)).
+[docs/public/capability-registry.md](docs/public/capability-registry.md));
+`OBSERVE_WEB_AVAILABLE` declares whether the delegated sessions have web tools
+(WebSearch/WebFetch) — set it to `false` on a machine without them so a
+`docs-lookup` capability that degrades names `degraded:none` rather than
+`degraded:web` (tools the session couldn't use); default: available.
 
 ## License
 

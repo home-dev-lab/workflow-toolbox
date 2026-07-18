@@ -73,7 +73,7 @@ import { loadCapabilityRegistry, probeProviders, type CapabilityRegistry, type C
 import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, inlineObserverRequires, observerDefinitionFileWarnings, ownObserverResolutions, resolveObserverRequires, sidecarPathFor } from './launch-capabilities.js'
 import { isRecord } from './validator-shared.js'
 import { extractObservers } from './observer-def.js'
-import { buildLaunchBody, safeRequesterCwd, resolveLaunchTimeoutMs } from './launch-body.js'
+import { buildLaunchBody, safeRequesterCwd, resolveLaunchTimeoutMs, resolveWebAvailable } from './launch-body.js'
 import { awaitSpawnedServerReady } from './spawn-ready.js'
 import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
 import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
@@ -829,14 +829,14 @@ interface WorkflowListEntry {
  *  never fails the launch). */
 type CapContext = { registry: CapabilityRegistry; availability: Record<string, boolean>; registryErrors: string[] }
 
-/** webAvailable for capability resolution — a v0 STUB fixed to `true`. The launcher cannot
- *  observe the DELEGATED (bare) session's actual WebSearch/WebFetch availability (that is a
- *  server-side property of the target run), so it assumes the shipped default. The only
- *  effect is the docs-lookup degradation branch (design §4.3): if the target genuinely
- *  lacks web tools, a docs-lookup that DEGRADES names `degraded:web` tools the session
- *  can't use — a benign over-statement, never a wrong resolution. Revisit if a
- *  launcher-visible signal for the target session's tool set ever appears. */
-const WEB_AVAILABLE_V0 = true
+/** webAvailable for capability resolution — an OPERATOR declaration via the
+ *  `OBSERVE_WEB_AVAILABLE` env (resolveWebAvailable, default true), NOT a probe: the launcher
+ *  runs outside the spawned bare session and cannot observe its actual WebSearch/WebFetch
+ *  grant (a server-side property of the target run). The only effect is the docs-lookup
+ *  degradation branch (design §4.3): on a machine whose delegated sessions lack web tools,
+ *  set `OBSERVE_WEB_AVAILABLE=false` so a docs-lookup that DEGRADES names `degraded:none`
+ *  (no phantom WebSearch/WebFetch the session can't use) instead of `degraded:web`. */
+const WEB_AVAILABLE = resolveWebAvailable(process.env['OBSERVE_WEB_AVAILABLE'])
 
 /** Detect + resolve a workflow's capability sidecar (card I3, design §3.2/§5/§9),
  *  returning the args to send — AUGMENTED with the resolved `capabilities` section and a
@@ -907,7 +907,7 @@ async function applySidecarCapabilities(input: {
   // $CWD-substitute → project → merge (launch-capabilities.ts).
   const ctx = await input.loadCapContext()
   if (ctx.registryErrors.length > 0) throw new Error(`capability registry invalid:\n  - ${ctx.registryErrors.join('\n  - ')}`)
-  const composed = composeLaunchCapabilities({ sidecar, registry: ctx.registry, availability: ctx.availability, webAvailable: WEB_AVAILABLE_V0, requesterCwd, callerCapabilities })
+  const composed = composeLaunchCapabilities({ sidecar, registry: ctx.registry, availability: ctx.availability, webAvailable: WEB_AVAILABLE, requesterCwd, callerCapabilities })
   if (composed.errors.length > 0) {
     throw new Error(`capability sidecar ${sidecarPath} cannot be resolved for launch:\n  - ${composed.errors.join('\n  - ')}`)
   }
@@ -960,7 +960,7 @@ async function applyObserverResolution(input: { args: unknown; requesterCwd: str
   // ownObserverResolutions. The resolve closure carries the loaded registry/availability
   // (ctx is non-null whenever an inline definition has requires, since that sets hasInline).
   const owned = ownObserverResolutions(observers, (requires) =>
-    ctx === null ? [] : resolveObserverRequires(requires, ctx.registry, ctx.availability, WEB_AVAILABLE_V0, requesterCwd),
+    ctx === null ? [] : resolveObserverRequires(requires, ctx.registry, ctx.availability, WEB_AVAILABLE, requesterCwd),
   )
   if (owned.strippedCaller > 0) {
     process.stderr.write(`observer requires: dropped ${owned.strippedCaller} caller-supplied 'resolution' field(s) — the launcher is the sole resolver (a resolution is machine-produced, never a launch input)\n`)

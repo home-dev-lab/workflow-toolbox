@@ -8,7 +8,7 @@
 // build-freshness gate on the shipped bins.
 
 import { describe, expect, it } from 'vitest'
-import { buildLaunchBody, safeRequesterCwd, resolveLaunchTimeoutMs, LAUNCH_DEFAULT_TIMEOUT_MS } from '../src/launch-body.js'
+import { buildLaunchBody, safeRequesterCwd, resolveLaunchTimeoutMs, resolveWebAvailable, LAUNCH_DEFAULT_TIMEOUT_MS } from '../src/launch-body.js'
 
 describe('buildLaunchBody', () => {
   it('includes script and requesterCwd, omits args when undefined', () => {
@@ -102,5 +102,27 @@ describe('resolveLaunchTimeoutMs', () => {
     expect(resolveLaunchTimeoutMs('abc', '60000')).toBe(60_000) // a bad flag still lets the env through
     expect(resolveLaunchTimeoutMs(undefined, '0')).toBe(30_000)
     expect(resolveLaunchTimeoutMs(undefined, 'nope')).toBe(30_000)
+  })
+})
+
+// TEST-LOCK for card #1821814620105475706 — the OBSERVE_WEB_AVAILABLE opt-out knob that
+// replaces the always-true webAvailable stub. False tokens make the launcher declare the
+// delegated session web-less, so a docs-lookup degrades to `degraded:none` (no phantom
+// WebSearch/WebFetch) instead of `degraded:web`.
+describe('resolveWebAvailable', () => {
+  it('defaults to true when unset (backward-compatible with the old always-true stub)', () => {
+    expect(resolveWebAvailable(undefined)).toBe(true)
+  })
+
+  it('recognizes the false tokens (case-insensitive, trimmed)', () => {
+    for (const raw of ['0', 'false', 'no', 'off', 'FALSE', ' Off ', 'No']) {
+      expect(resolveWebAvailable(raw), `"${raw}" should be false`).toBe(false)
+    }
+  })
+
+  it('treats explicit true tokens and any unrecognized value as true (a typo never disables web)', () => {
+    for (const raw of ['1', 'true', 'yes', 'on', 'TRUE', 'flase', 'maybe', '']) {
+      expect(resolveWebAvailable(raw), `"${raw}" should be true`).toBe(true)
+    }
   })
 })

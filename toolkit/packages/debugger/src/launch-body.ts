@@ -65,3 +65,18 @@ export function resolveLaunchTimeoutMs(flagSeconds: string | undefined, envMs: s
   if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv
   return LAUNCH_DEFAULT_TIMEOUT_MS
 }
+
+/** Whether the DELEGATED session has WebSearch/WebFetch, from the `OBSERVE_WEB_AVAILABLE`
+ *  env (card #1821814620105475706). This is an OPERATOR DECLARATION, not a probe: the
+ *  launcher runs outside the spawned bare session and cannot observe its actual tool grant,
+ *  so a machine whose delegated sessions lack web tools sets this to opt OUT — otherwise a
+ *  docs-lookup that degrades would name `degraded:web` (WebSearch/WebFetch) tools the session
+ *  cannot use (phantom tools). Opt-out contract: a FALSE token (`0`/`false`/`no`/`off`,
+ *  case-insensitive, trimmed) → false; UNSET or ANY other value → true (the shipped default,
+ *  so a typo never silently disables web). */
+export function resolveWebAvailable(raw: string | undefined): boolean {
+  if (raw === undefined) return true
+  const v = raw.trim().toLowerCase()
+  if (v === '0' || v === 'false' || v === 'no' || v === 'off') return false
+  return true
+}
