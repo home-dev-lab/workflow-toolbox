@@ -12,6 +12,47 @@ hint delivery ship with the Workflow Observatory server** — a definition valid
 travels today; whether a given run actually attaches an observer depends on the observe
 server that receives it (older servers ignore the `args.observers` section).
 
+## When to proactively propose an observer
+
+Deciding an observer belongs in a workflow is an **authoring-time judgment you make FOR the
+user, not one you wait to be asked for**. After you have derived the workflow's roles, their
+capability needs, and its shape (the per-role assessment in
+`references/capability-needs.md`), run this as an explicit pass over roles + needs + shape —
+it *consumes* that derivation and never rewrites it. If any trigger fires, **surface the
+suggestion**: name the trigger, say what the observer would watch and emit, and offer to
+scaffold one.
+
+**Triggers — propose an observer when the workflow has any of:**
+
+- **Long-running roles.** A role whose single agent works for many minutes (an implementer,
+  a fixer, a deep researcher) can drift, thrash against an unfamiliar API, or lose the plot
+  with no out-of-band correction. An observer tailing its transcript can nudge or supply
+  sourced context mid-flight — exactly the docs-butler shape below.
+- **Doc / spec surfaces to keep aligned.** When the run's output must stay consistent with
+  an external contract (an API surface, a schema, a style spec), an observer watching the
+  producing roles can flag drift the moment it appears instead of at review time.
+- **Drift risk across a fan-out.** Parallel agents on one task can diverge in convention or
+  interpretation; an observer watching the shared role catches the divergence early.
+- **A human gate in the loop.** An orchestrator pipeline that pauses for a human sign-off
+  makes each stage's returned artifact high-stakes — it is what the human approves, so drift
+  that slips into it is expensive to catch after the fact. Pairing an observer with the
+  producing stage surfaces that drift while the stage is still working, before the artifact
+  reaches the gate (the observer is a watcher on the producing role, not a channel into the
+  approval surface).
+
+**How to surface it (the affordance).** Never silently add an observer. Tell the user which
+trigger fired and what the observer would do, then point them at the concrete path: author
+an abstract spec and run `workflow-toolbox scaffold observer <spec.json>` (the schema and a
+complete worked spec are below; `toolkit/examples/docs-butler.spec.json` is the shipped
+starting point to copy). An observer is **optional and additive** — a workflow runs
+unchanged on a machine that attaches none — so proposing one is low-risk: a declined
+suggestion costs one sentence, a missing one costs undetected drift.
+
+**When NOT to propose.** A short, single-pass, fully-inline workflow (classify, score, vote —
+roles whose whole task arrives in the prompt and finish in one turn) has nothing to observe;
+suggesting an observer there is noise. The trigger is *sustained or drift-prone work a
+watcher could improve*, not every workflow.
+
 ## The three-time model
 
 An observer is a **configuration** of the shipped mechanism, resolved in three stages so a

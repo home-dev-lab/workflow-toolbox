@@ -48,10 +48,11 @@ Keep this assessment as a real intermediate you can read back — the sidecar is
 
 - a role whose whole task arrives inline (classify, score, vote, dedup, synthesize) needs
   NO entry — leave it out and it stays lean/leaf (the bare default holds);
-- the assessment is a **pluggable seam**. A future proactive step ("this workflow's shape
-  would benefit from an Observer") is designed to *consume* rolesneedsshape and
-  propose — it reads roles + needs + shape, it never rewrites your derivation. Author the
-  assessment as inspectable data and that step lands without reworking this one.
+- the assessment is a **pluggable seam**. The proactive observer-suggestion guidance
+  (`references/observer-definitions.md`, "When to proactively propose an observer") is an
+  authoring pass *you* run over exactly this — roles + needs + shape — to decide whether to
+  propose an observer; it reads your derivation, never rewrites it (it is skill guidance, not
+  an automated stage). Author the assessment as inspectable data and that pass has clean input.
 
 ### The v0 need vocabulary (open, but read-only retrieval only)
 

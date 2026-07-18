@@ -238,12 +238,14 @@ knobs as scalars today; they can widen to a per-instance
 selector (array/function) non-breaking when same-role model mixing lands (needs
 cross-model dispatch).
 
-A workflow can also declare an **observer** — a workflow-owned artifact
-(`<name>.observer.json`) the composer emits with `scaffold observer`, carried at launch in
-`args.observers` (a sibling of `args.capabilities`). **Read
-[references/observer-definitions.md](references/observer-definitions.md)** before authoring
-one — it covers the schema, the abstract-needs boundary, the `watch.roles` ⇔ agent-label
-coupling, and what ships at authoring time vs at the observe-server runtime.
+A workflow can also declare an **observer** — and the composer should **proactively propose
+one when the workflow's shape calls for it**: long-running roles, doc/spec surfaces to keep
+aligned, drift across a fan-out, or a human gate each benefit from an out-of-band watcher, so
+after deriving roles + needs + shape, run the suggestion check and surface it, don't wait to
+be asked. It is a workflow-owned artifact (`<name>.observer.json`) emitted with `scaffold
+observer` and carried at launch in `args.observers` (a sibling of `args.capabilities`). **Read
+[references/observer-definitions.md](references/observer-definitions.md)** for the trigger
+checklist and the authoring schema; `docs-butler` is the worked example.
 
 A role that needs **more than the bare default** (a reviewer that reads code symbolically,
 a researcher that looks up docs) declares an ABSTRACT need in a workflow-owned

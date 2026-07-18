@@ -66,4 +66,23 @@ describe('observer-definitions.md examples honor the shipped contract', () => {
   it('does not present the open need vocabulary as a schema-enforced allowlist', () => {
     expect(DOC).toContain('not a schema-enforced allowlist')
   })
+
+  // Anchor lock: the reference must carry the PROACTIVE observer-suggestion guidance (the
+  // composer detects, at authoring time, that a workflow's shape would benefit from an
+  // observer and proposes one). Drift-lock so the section can't be silently deleted — it is
+  // the always-consulted home of the trigger checklist the composer SKILL points at.
+  it('carries the proactive observer-suggestion guidance (trigger checklist)', () => {
+    expect(DOC).toContain('When to proactively propose an observer')
+    // The four trigger classes the composer keys on must all survive.
+    for (const trigger of ['Long-running roles', 'Doc / spec surfaces', 'Drift risk', 'human gate']) {
+      expect(DOC, `missing observer trigger anchor: ${trigger}`).toContain(trigger)
+    }
+    // Review lock H1: the human-gate trigger must NOT claim an observer feeds the approval
+    // surface — its grounded benefit is catching drift in the producing stage before the
+    // artifact reaches the gate. Anchored (whitespace-normalized, so line-rewrapping is
+    // fine) so a regression to the "approves on a digest / raw transcripts" overreach fails.
+    const flat = DOC.replace(/\s+/g, ' ')
+    expect(flat).toContain('before the artifact reaches the gate')
+    expect(flat, 'human-gate overreach regressed').not.toContain('rather than raw transcripts')
+  })
 })

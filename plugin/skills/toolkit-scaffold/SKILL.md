@@ -142,6 +142,13 @@ launch-time tuning without editing the source, wrap once with
 `withAgentDefaults(rt, defaults)` and/or parse an `args` config via `parseConfig`. See
 the **workflow-composer** skill's `references/patterns.md` ("Tuning at launch").
 
+**Consider an observer.** If the job has long-running roles, doc/spec surfaces to keep
+aligned, drift risk across a fan-out, or a human gate, the workflow may benefit from an
+out-of-band **observer** — propose one rather than wait to be asked, and emit it with
+`workflow-toolbox scaffold observer <spec.json>`. The **workflow-composer** skill's
+`references/observer-definitions.md` carries the trigger checklist and `docs-butler` as the
+worked example.
+
 ## How it works (for maintenance)
 
 The logic is a tested private package in the toolkit; there is no bundled plugin
