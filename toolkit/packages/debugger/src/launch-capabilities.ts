@@ -208,8 +208,12 @@ export function foldCapabilitiesIntoArgs(args: unknown, capabilities: Capabiliti
  *  Unlike the sidecar path there is NO refusal and NO error channel: a required observer
  *  need that resolves to `degraded:none` rides through as an UNRESOLVED NeedResolution —
  *  an observer is peripheral (design invariant: a missing observer never fails the run),
- *  and the SERVER decides "not attached + noisy record". $CWD is substituted
- *  launcher-side, exactly as the sidecar path (the delegated server's cwd is its own). */
+ *  and the SERVER decides "not attached + noisy record". $CWD is substituted launcher-side
+ *  (the delegated server's cwd is its own), with ONE observer-specific twist on the
+ *  degenerate case: where the sidecar REFUSES the launch when the requester cwd is
+ *  unresolvable ('') and a resolved provider still needs $CWD, the observer instead
+ *  DOWNGRADES that entry to UNRESOLVED — never fails the launch, and never ships a
+ *  blank-$CWD-substituted (corrupted) config mislabeled RESOLVED (review, high). */
 export function resolveObserverRequires(
   requires: CapabilityNeed[],
   registry: CapabilityRegistry,
@@ -218,7 +222,46 @@ export function resolveObserverRequires(
   requesterCwd: string,
 ): NeedResolution[] {
   const resolved = resolveCapabilities(requires, registry, { availability, webAvailable })
-  return resolved.map((r) => ('unresolved' in r ? r : { ...r, mcpServers: substituteCwd(r.mcpServers, requesterCwd) }))
+  return resolved.map((r) => {
+    if ('unresolved' in r) return r
+    if (requesterCwd.length === 0 && containsCwdToken(r.mcpServers)) {
+      return { need: r.need, unresolved: true, degradation: 'degraded:cwd-unresolvable', tools: [] }
+    }
+    return { ...r, mcpServers: substituteCwd(r.mcpServers, requesterCwd) }
+  })
+}
+
+/** An observers entry's INLINE definition `requires` (card I3 scope extension), or null.
+ *  v0 resolves requires for inline `{ definition }` entries only — a `{ definitionFile }`
+ *  entry's requires live in a file the SERVER resolves under the workflows roots, which the
+ *  launcher does not load (a documented boundary; those pass through unresolved). */
+export function inlineObserverRequires(entry: unknown): CapabilityNeed[] | null {
+  if (!isRecord(entry) || !isRecord(entry['definition'])) return null
+  const req = (entry['definition'] as Record<string, unknown>)['requires']
+  return Array.isArray(req) && req.length > 0 ? (req as CapabilityNeed[]) : null
+}
+
+/** Enforce "the launcher OWNS the `resolution` wire field" (design §5.3; review, high):
+ *  STRIP any caller-supplied `resolution` off EVERY observers entry, then set the
+ *  launcher-produced one ONLY on an inline definition carrying `requires` (via `resolve`).
+ *  This is why a caller cannot inject an unverified resolution the server would compose into
+ *  the brain. Pure — `resolve` is the (impure) resolver closure supplied by the launcher. */
+export function ownObserverResolutions(
+  observers: readonly unknown[],
+  resolve: (requires: CapabilityNeed[]) => NeedResolution[],
+): { observers: unknown[]; resolved: number; strippedCaller: number } {
+  let resolved = 0
+  let strippedCaller = 0
+  const out = observers.map((entry) => {
+    if (!isRecord(entry)) return entry
+    const { resolution: callerResolution, ...rest } = entry
+    if (callerResolution !== undefined) strippedCaller++
+    const requires = inlineObserverRequires(entry)
+    if (requires === null) return rest
+    resolved++
+    return { ...rest, resolution: resolve(requires) }
+  })
+  return { observers: out, resolved, strippedCaller }
 }
 
 /** PURE (probes/registry/sidecar already read): resolve → $CWD-substitute → project

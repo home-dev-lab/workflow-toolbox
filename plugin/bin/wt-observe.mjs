@@ -793,7 +793,32 @@ function foldCapabilitiesIntoArgs(args, capabilities, report, script) {
 }
 function resolveObserverRequires(requires, registry, availability, webAvailable, requesterCwd) {
   const resolved = resolveCapabilities(requires, registry, { availability, webAvailable });
-  return resolved.map((r) => "unresolved" in r ? r : { ...r, mcpServers: substituteCwd(r.mcpServers, requesterCwd) });
+  return resolved.map((r) => {
+    if ("unresolved" in r) return r;
+    if (requesterCwd.length === 0 && containsCwdToken(r.mcpServers)) {
+      return { need: r.need, unresolved: true, degradation: "degraded:cwd-unresolvable", tools: [] };
+    }
+    return { ...r, mcpServers: substituteCwd(r.mcpServers, requesterCwd) };
+  });
+}
+function inlineObserverRequires(entry) {
+  if (!isRecord2(entry) || !isRecord2(entry["definition"])) return null;
+  const req = entry["definition"]["requires"];
+  return Array.isArray(req) && req.length > 0 ? req : null;
+}
+function ownObserverResolutions(observers, resolve2) {
+  let resolved = 0;
+  let strippedCaller = 0;
+  const out = observers.map((entry) => {
+    if (!isRecord2(entry)) return entry;
+    const { resolution: callerResolution, ...rest } = entry;
+    if (callerResolution !== void 0) strippedCaller++;
+    const requires = inlineObserverRequires(entry);
+    if (requires === null) return rest;
+    resolved++;
+    return { ...rest, resolution: resolve2(requires) };
+  });
+  return { observers: out, resolved, strippedCaller };
 }
 function composeLaunchCapabilities(input) {
   const { sidecar, registry, availability, webAvailable, requesterCwd, callerCapabilities } = input;
@@ -1940,8 +1965,10 @@ async function applySidecarCapabilities(input) {
   } catch (e) {
     throw new Error(`capability sidecar ${sidecarPath} is not valid JSON: ${e.message}`);
   }
-  const { registry, availability } = await input.loadCapContext();
-  const composed = composeLaunchCapabilities({ sidecar, registry, availability, webAvailable: WEB_AVAILABLE_V0, requesterCwd, callerCapabilities });
+  const ctx = await input.loadCapContext();
+  if (ctx.registryErrors.length > 0) throw new Error(`capability registry invalid:
+  - ${ctx.registryErrors.join("\n  - ")}`);
+  const composed = composeLaunchCapabilities({ sidecar, registry: ctx.registry, availability: ctx.availability, webAvailable: WEB_AVAILABLE_V0, requesterCwd, callerCapabilities });
   if (composed.errors.length > 0) {
     throw new Error(`capability sidecar ${sidecarPath} cannot be resolved for launch:
   - ${composed.errors.join("\n  - ")}`);
@@ -1951,18 +1978,14 @@ async function applySidecarCapabilities(input) {
 `);
   return foldCapabilitiesIntoArgs(args, composed.capabilities, composed.report, script);
 }
-function inlineObserverRequires(entry) {
-  if (!isRecord2(entry) || !isRecord2(entry["definition"])) return null;
-  const req = entry["definition"]["requires"];
-  return Array.isArray(req) && req.length > 0 ? req : null;
-}
 async function applyObserverResolution(input) {
   const { args, requesterCwd, loadCapContext } = input;
   if (!isRecord2(args) || !Array.isArray(args["observers"])) return args;
   const observers = args["observers"];
   const hasInline = observers.some((e) => inlineObserverRequires(e) !== null);
   const hasDefinitionFile = observers.some((e) => isRecord2(e) && typeof e["definitionFile"] === "string");
-  if (!hasInline && !hasDefinitionFile) return args;
+  const hasCallerResolution = observers.some((e) => isRecord2(e) && "resolution" in e);
+  if (!hasInline && !hasDefinitionFile && !hasCallerResolution) return args;
   let ctx = null;
   let registryPresent = false;
   if (hasInline) {
@@ -1974,18 +1997,17 @@ async function applyObserverResolution(input) {
   }
   for (const w of observerDefinitionFileWarnings(observers, registryPresent)) process.stderr.write(`${w}
 `);
-  if (!hasInline || ctx === null) return args;
-  const { registry, availability } = ctx;
-  let resolved = 0;
-  const out = observers.map((entry) => {
-    const requires = inlineObserverRequires(entry);
-    if (requires === null) return entry;
-    resolved++;
-    return { ...entry, resolution: resolveObserverRequires(requires, registry, availability, WEB_AVAILABLE_V0, requesterCwd) };
-  });
-  process.stderr.write(`observer requires: resolved needs for ${resolved} inline observer definition(s)
+  const owned = ownObserverResolutions(
+    observers,
+    (requires) => ctx === null ? [] : resolveObserverRequires(requires, ctx.registry, ctx.availability, WEB_AVAILABLE_V0, requesterCwd)
+  );
+  if (owned.strippedCaller > 0) {
+    process.stderr.write(`observer requires: dropped ${owned.strippedCaller} caller-supplied 'resolution' field(s) \u2014 the launcher is the sole resolver (a resolution is machine-produced, never a launch input)
 `);
-  return { ...args, observers: out };
+  }
+  if (owned.resolved > 0) process.stderr.write(`observer requires: resolved needs for ${owned.resolved} inline observer definition(s)
+`);
+  return { ...args, observers: owned.observers };
 }
 async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
   if (script === void 0) throw new Error("usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]");
@@ -2022,9 +2044,7 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
   const loadCapContext = async () => {
     if (capContext === null) {
       const { registry, errors } = loadCapabilityRegistry();
-      if (errors.length > 0) throw new Error(`capability registry invalid:
-  - ${errors.join("\n  - ")}`);
-      capContext = { registry, availability: await probeProviders(registry) };
+      capContext = { registry, availability: await probeProviders(registry), registryErrors: errors };
     }
     return capContext;
   };

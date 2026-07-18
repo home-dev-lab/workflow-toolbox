@@ -313,6 +313,11 @@ function validateDefinitionFile(v: unknown, path: string, errors: string[]): voi
  *    (one pass, so the author fixes them all at once). */
 const RESOLVED_RESOLUTION_KEYS = new Set(['need', 'provider', 'mcpServers', 'tools', 'protocolHint'])
 const UNRESOLVED_RESOLUTION_KEYS = new Set(['need', 'unresolved', 'degradation', 'tools'])
+// A launcher-produced resolution has at most one entry per DISTINCT need (resolveCapabilities
+// dedupes), so ≤ MAX_REQUIRES (16) in practice. This structural cap is a generous ceiling on
+// the untrusted wire field, not a derivation of MAX_REQUIRES — the two bound different things
+// (requires = authoring input; resolution = the machine's resolved output relayed on the wire)
+// and are intentionally decoupled; 2× headroom absorbs a non-deduped hand-written resolution.
 const MAX_RESOLUTION = 32
 
 function isStringArray(v: unknown): v is string[] {

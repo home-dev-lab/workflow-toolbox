@@ -69,8 +69,8 @@ import {
 } from './observe-lifecycle.js'
 import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
 import { composeCapabilityOptions, extractCapabilities, type CapabilitiesSpec } from './capabilities.js'
-import { loadCapabilityRegistry, probeProviders, type CapabilityNeed, type CapabilityRegistry, type CapabilitySidecar } from './capability-registry.js'
-import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, observerDefinitionFileWarnings, resolveObserverRequires, sidecarPathFor } from './launch-capabilities.js'
+import { loadCapabilityRegistry, probeProviders, type CapabilityRegistry, type CapabilitySidecar } from './capability-registry.js'
+import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, inlineObserverRequires, observerDefinitionFileWarnings, ownObserverResolutions, resolveObserverRequires, sidecarPathFor } from './launch-capabilities.js'
 import { isRecord } from './validator-shared.js'
 import { extractObservers } from './observer-def.js'
 import { buildLaunchBody, safeRequesterCwd } from './launch-body.js'
@@ -821,8 +821,12 @@ interface WorkflowListEntry {
 
 /** The machine registry + probe results, loaded AT MOST ONCE per launch and shared by
  *  the sidecar path and the observer-requires path (both resolve against the same
- *  registry; probing twice would double-spawn the declared probe processes). */
-type CapContext = { registry: CapabilityRegistry; availability: Record<string, boolean> }
+ *  registry; probing twice would double-spawn the declared probe processes). Loading is
+ *  NON-throwing: an invalid registry yields an EMPTY registry + `registryErrors`, so the
+ *  two consumers can diverge — the SIDECAR fails loud on those errors (a role capability
+ *  is constitutive), the OBSERVER ignores them and degrades to unresolved (an observer
+ *  never fails the launch). */
+type CapContext = { registry: CapabilityRegistry; availability: Record<string, boolean>; registryErrors: string[] }
 
 /** webAvailable for capability resolution — a v0 STUB fixed to `true`. The launcher cannot
  *  observe the DELEGATED (bare) session's actual WebSearch/WebFetch availability (that is a
@@ -897,10 +901,12 @@ async function applySidecarCapabilities(input: {
     throw new Error(`capability sidecar ${sidecarPath} is not valid JSON: ${(e as Error).message}`)
   }
 
-  // Load the machine registry + probes (shared, fail-loud on an invalid registry), then
-  // the PURE resolve → $CWD-substitute → project → merge (launch-capabilities.ts).
-  const { registry, availability } = await input.loadCapContext()
-  const composed = composeLaunchCapabilities({ sidecar, registry, availability, webAvailable: WEB_AVAILABLE_V0, requesterCwd, callerCapabilities })
+  // Load the machine registry + probes (shared, non-throwing). The SIDECAR fails loud on an
+  // invalid registry — a role capability is constitutive — then the PURE resolve →
+  // $CWD-substitute → project → merge (launch-capabilities.ts).
+  const ctx = await input.loadCapContext()
+  if (ctx.registryErrors.length > 0) throw new Error(`capability registry invalid:\n  - ${ctx.registryErrors.join('\n  - ')}`)
+  const composed = composeLaunchCapabilities({ sidecar, registry: ctx.registry, availability: ctx.availability, webAvailable: WEB_AVAILABLE_V0, requesterCwd, callerCapabilities })
   if (composed.errors.length > 0) {
     throw new Error(`capability sidecar ${sidecarPath} cannot be resolved for launch:\n  - ${composed.errors.join('\n  - ')}`)
   }
@@ -911,16 +917,6 @@ async function applySidecarCapabilities(input: {
   const roleCount = isRecord(sidecar) && isRecord(sidecar.roles) ? Object.keys(sidecar.roles).length : 0
   process.stderr.write(`capability sidecar: resolved ${composed.report.length} need(s) across ${roleCount} role(s) from ${sidecarPath}\n`)
   return foldCapabilitiesIntoArgs(args, composed.capabilities, composed.report, script)
-}
-
-/** Read an observers entry's INLINE definition `requires` (card I3 scope extension).
- *  v0 resolves requires for inline `{ definition }` entries only — a `{ definitionFile }`
- *  entry's requires live in a file the SERVER resolves under the workflows roots, which
- *  the launcher does not load (a documented boundary; those pass through unresolved). */
-function inlineObserverRequires(entry: unknown): CapabilityNeed[] | null {
-  if (!isRecord(entry) || !isRecord(entry['definition'])) return null
-  const req = (entry['definition'] as Record<string, unknown>)['requires']
-  return Array.isArray(req) && req.length > 0 ? (req as CapabilityNeed[]) : null
 }
 
 /** Resolve each inline observer definition's `requires` and embed the resulting
@@ -935,14 +931,16 @@ async function applyObserverResolution(input: { args: unknown; requesterCwd: str
   const observers = args['observers']
   const hasInline = observers.some((e) => inlineObserverRequires(e) !== null)
   const hasDefinitionFile = observers.some((e) => isRecord(e) && typeof e['definitionFile'] === 'string')
-  if (!hasInline && !hasDefinitionFile) return args
+  const hasCallerResolution = observers.some((e) => isRecord(e) && 'resolution' in e)
+  // Nothing to do only if there is no requires to resolve, no definitionFile to warn about,
+  // AND no caller-supplied resolution to strip.
+  if (!hasInline && !hasDefinitionFile && !hasCallerResolution) return args
 
-  // Registry presence: reuse the shared context when we actually resolve (inline requires);
-  // otherwise a cheap registry READ (no probe) purely to decide whether the definitionFile
-  // warning is worth emitting. An invalid registry WITH inline requires fails loud inside
-  // loadCapContext; with ONLY definitionFile entries the registry is not needed to resolve
-  // anything, so a read error just suppresses the (best-effort, courtesy) warning rather
-  // than failing a launch that resolves nothing.
+  // Registry presence (for the definitionFile warning), best-effort + NON-throwing. When we
+  // actually resolve (inline requires) we reuse the shared context — whose registry is EMPTY
+  // on a broken registry file, so an observer degrades to unresolved rather than failing the
+  // launch (review, high: a broken registry must not defeat the observer never-fails
+  // invariant). With only definitionFile/caller-resolution entries a cheap read suffices.
   let ctx: CapContext | null = null
   let registryPresent = false
   if (hasInline) {
@@ -956,17 +954,18 @@ async function applyObserverResolution(input: { args: unknown; requesterCwd: str
   // warn the author at launch (only when a registry exists) instead of leaving it silent.
   for (const w of observerDefinitionFileWarnings(observers, registryPresent)) process.stderr.write(`${w}\n`)
 
-  if (!hasInline || ctx === null) return args
-  const { registry, availability } = ctx
-  let resolved = 0
-  const out = observers.map((entry) => {
-    const requires = inlineObserverRequires(entry)
-    if (requires === null) return entry
-    resolved++
-    return { ...(entry as Record<string, unknown>), resolution: resolveObserverRequires(requires, registry, availability, WEB_AVAILABLE_V0, requesterCwd) }
-  })
-  process.stderr.write(`observer requires: resolved needs for ${resolved} inline observer definition(s)\n`)
-  return { ...args, observers: out }
+  // The launcher is the SOLE producer of `resolution` (design §5.3; review, high) — strip
+  // caller-supplied ones, set the launcher-resolved one on inline-with-requires. See
+  // ownObserverResolutions. The resolve closure carries the loaded registry/availability
+  // (ctx is non-null whenever an inline definition has requires, since that sets hasInline).
+  const owned = ownObserverResolutions(observers, (requires) =>
+    ctx === null ? [] : resolveObserverRequires(requires, ctx.registry, ctx.availability, WEB_AVAILABLE_V0, requesterCwd),
+  )
+  if (owned.strippedCaller > 0) {
+    process.stderr.write(`observer requires: dropped ${owned.strippedCaller} caller-supplied 'resolution' field(s) — the launcher is the sole resolver (a resolution is machine-produced, never a launch input)\n`)
+  }
+  if (owned.resolved > 0) process.stderr.write(`observer requires: resolved needs for ${owned.resolved} inline observer definition(s)\n`)
+  return { ...args, observers: owned.observers }
 }
 
 /** `wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]` — POST
@@ -1026,9 +1025,11 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
   let capContext: CapContext | null = null
   const loadCapContext = async (): Promise<CapContext> => {
     if (capContext === null) {
+      // NON-throwing: an invalid registry yields an empty registry + errors. The sidecar
+      // path fails loud on `registryErrors`; the observer path degrades on the empty
+      // registry (never fails the launch). Probing an empty registry is a no-op ({}).
       const { registry, errors } = loadCapabilityRegistry()
-      if (errors.length > 0) throw new Error(`capability registry invalid:\n  - ${errors.join('\n  - ')}`)
-      capContext = { registry, availability: await probeProviders(registry) }
+      capContext = { registry, availability: await probeProviders(registry), registryErrors: errors }
     }
     return capContext
   }

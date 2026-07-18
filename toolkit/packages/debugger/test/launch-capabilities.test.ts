@@ -11,7 +11,8 @@
 // sidecar resolution < caller args). Fail-loud → capabilities null.
 
 import { describe, expect, it } from 'vitest'
-import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, observerDefinitionFileWarnings, resolveObserverRequires, sidecarPathFor, substituteCwd } from '../src/launch-capabilities.js'
+import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, observerDefinitionFileWarnings, ownObserverResolutions, resolveObserverRequires, sidecarPathFor, substituteCwd } from '../src/launch-capabilities.js'
+import type { CapabilityNeed, NeedResolution } from '../src/capability-registry.js'
 import type { CapabilityRegistry, CapabilitySidecar } from '../src/capability-registry.js'
 import type { CapabilitiesSpec } from '../src/capabilities.js'
 
@@ -196,6 +197,38 @@ describe('resolveObserverRequires (observer wire contract, no refusal)', () => {
   it('embeds an UNRESOLVED entry for a required need with no provider (NEVER throws/refuses)', () => {
     const out = resolveObserverRequires([{ need: 'web-search' }], { version: 1, providers: {} }, {}, true, '/obs')
     expect(out).toEqual([{ need: 'web-search', unresolved: true, degradation: 'degraded:none', tools: [] }])
+  })
+
+  it('DOWNGRADES to unresolved (never blank-substitutes $CWD) when requesterCwd is unresolvable', () => {
+    // requesterCwd '' + a resolved provider whose config needs $CWD → unresolved, not a
+    // corrupted blank-substituted RESOLVED entry (the observer analog of the sidecar refusal).
+    const [r] = resolveObserverRequires([{ need: 'code-intelligence' }], registry, { serena: true }, true, '')
+    expect(r).toEqual({ need: 'code-intelligence', unresolved: true, degradation: 'degraded:cwd-unresolvable', tools: [] })
+  })
+})
+
+describe('ownObserverResolutions (launcher owns the resolution wire field)', () => {
+  const resolve = (reqs: CapabilityNeed[]): NeedResolution[] => reqs.map((n) => ({ need: n.need, unresolved: true as const, degradation: 'degraded:none', tools: [] }))
+  const evil = [{ need: 'injected', provider: 'evil', mcpServers: { evil: { command: 'rm' } }, tools: ['mcp__evil__*'] }]
+
+  it('strips a caller-supplied resolution off a definitionFile entry (launcher never produced it)', () => {
+    const r = ownObserverResolutions([{ definitionFile: 'x.json', resolution: evil }], resolve)
+    expect(r.strippedCaller).toBe(1)
+    expect(r.observers[0]).toEqual({ definitionFile: 'x.json' })
+  })
+
+  it('strips a caller resolution off an inline-with-requires entry AND sets the launcher one', () => {
+    const r = ownObserverResolutions([{ definition: { requires: [{ need: 'docs-lookup' }] }, resolution: evil }], resolve)
+    expect(r.strippedCaller).toBe(1)
+    expect(r.resolved).toBe(1)
+    expect((r.observers[0] as { resolution: unknown }).resolution).toEqual([{ need: 'docs-lookup', unresolved: true, degradation: 'degraded:none', tools: [] }])
+  })
+
+  it('leaves a requires-less inline entry with NO resolution (caller one stripped, none set)', () => {
+    const r = ownObserverResolutions([{ definition: { name: 'x' }, resolution: evil }], resolve)
+    expect(r.strippedCaller).toBe(1)
+    expect(r.resolved).toBe(0)
+    expect('resolution' in (r.observers[0] as object)).toBe(false)
   })
 })
 
