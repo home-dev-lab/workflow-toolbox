@@ -78,4 +78,19 @@ describe('wt-observe <verb> --help (per-verb)', () => {
     expect(code).toBe(0)
     expect(stdout).toContain('usage: wt-observe resume')
   })
+
+  // Regression lock (review finding, run cli2): an Object.prototype key as the "verb" must
+  // NOT be treated as a known verb by the help guard. `cmd in SYNOPSIS` matched inherited
+  // keys ('constructor', 'toString', '__proto__', …) and printed the stringified native
+  // constructor with exit 0; the guard now uses Object.hasOwn, so these fall through to the
+  // exit-2 unknown-command path exactly like any other unknown verb.
+  it('a prototype-key "verb" + --help is an unknown command (exit 2), not garbage help (exit 0)', async () => {
+    for (const proto of ['constructor', 'toString', 'hasOwnProperty', '__proto__', 'valueOf']) {
+      const { code, stdout, fetchCalls } = await runCli([proto, '--help'])
+      expect(code, `${proto} --help should be unknown-command exit 2`).toBe(2)
+      // No stringified function / native code leaked to stdout, and no launch attempted.
+      expect(stdout).toBe('')
+      expect(fetchCalls).toBe(0)
+    }
+  })
 })

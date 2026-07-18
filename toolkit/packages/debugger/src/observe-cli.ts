@@ -1649,7 +1649,11 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     process.stdout.write(usageText())
     return 0
   }
-  if ((argv.includes('--help') || argv.includes('-h')) && cmd in SYNOPSIS) {
+  // Object.hasOwn, NOT `cmd in SYNOPSIS`: the `in` operator also matches inherited
+  // Object.prototype keys ('constructor', 'toString', '__proto__', …), so `constructor
+  // --help` would pass the guard and print the stringified Object constructor with exit 0
+  // instead of the exit-2 unknown-command path (review finding, run cli2).
+  if ((argv.includes('--help') || argv.includes('-h')) && Object.hasOwn(SYNOPSIS, cmd)) {
     process.stdout.write(usageText(cmd as Verb))
     return 0
   }

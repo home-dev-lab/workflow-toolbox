@@ -2505,7 +2505,7 @@ async function main(argv = process.argv.slice(2)) {
     process.stdout.write(usageText());
     return 0;
   }
-  if ((argv.includes("--help") || argv.includes("-h")) && cmd in SYNOPSIS) {
+  if ((argv.includes("--help") || argv.includes("-h")) && Object.hasOwn(SYNOPSIS, cmd)) {
     process.stdout.write(usageText(cmd));
     return 0;
   }
