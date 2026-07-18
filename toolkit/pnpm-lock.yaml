@@ -42,9 +42,15 @@ importers:
         specifier: workspace:*
         version: link:../packages/std
     devDependencies:
+      '@workflow-toolbox/debugger':
+        specifier: workspace:*
+        version: link:../packages/debugger
       '@workflow-toolbox/runtime':
         specifier: workspace:*
         version: link:../packages/runtime
+      '@workflow-toolbox/scaffold':
+        specifier: workspace:*
+        version: link:../packages/scaffold
       json-schema-to-ts:
         specifier: ^3.1.1
         version: 3.1.1
