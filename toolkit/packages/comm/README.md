@@ -59,9 +59,14 @@ deliberate exception to write-once for that family only.
 
 Per-type id patterns (each type's schema pins its own):
 
-- **Base ids** (`escalation.question`, `status.digest`, `observer.hint`):
+- **Base ids** (`escalation.question`, `status.digest`):
   `^(?!.*--)[a-z0-9][a-z0-9-]{0,95}$` — 1–96 chars, lowercase alphanumerics and dashes,
   and NEVER `--` (the double dash is reserved as the derivation separator).
+- **Hint ids** (`observer.hint`): the same shape widened to 1–128 chars
+  (`^(?!.*--)[a-z0-9][a-z0-9-]{0,127}$`) — a hint id may carry an optional agent segment
+  (see the Mint rule) whose fold + injectivity hash can push a fully-adversarial id past
+  the 96-char base cap, still within the filesystem guard. A hint id without an agent
+  segment is ≤96 and also base-id-valid.
 - **Derived ids** (`decision.response`): `^[a-z0-9][a-z0-9-]{0,95}--decision$` with
   exactly ONE `--` occurrence (the suffix) — always `decisionIdFor(qid) = qid +
   '--decision'` (≤106 chars). The pilot writes exactly one path and everyone else derives
@@ -71,16 +76,20 @@ Per-type id patterns (each type's schema pins its own):
 
 **Mint rule** (normative): ids are deterministic per originating step, so a resumed run
 re-mints the SAME id. Library minting (`mintQuestionId(runId, stepKey)` /
-`mintDigestId(runId, seq)` / `mintHintId(runId, observerName, seq)`) produces
-`q-<segment>-<stepKey>` / `d-<segment>-<seq>` / `h-<segment>-<observer>-<seq>` where
+`mintDigestId(runId, seq)` / `mintHintId(runId, observerName, seq, agentId?)`) produces
+`q-<segment>-<stepKey>` / `d-<segment>-<seq>` / `h-<segment>-<observer>[-<agent>]-<seq>` where
 `<segment>` = the runId lowercased with non-`[a-z0-9]` runs folded to single dashes PLUS
 a short FNV-1a hash of the RAW runId — the hash keeps the runId→segment map injective
 (two runIds differing only in case or punctuation cannot mint the same id), and
 `<observer>` = the folded observer definition name PLUS its own FNV-1a hash of the raw
 name (same fold+hash recipe as the run segment — two observers watching the same run can
-never collide on a seq, even when their names share a fold/truncation prefix). Minted
-ids are guaranteed ≤90 chars (stepKey capped, long segments truncated before the hash),
-which leaves room for the retry suffix below. Sanitizing happens ONLY at mint time; once
+never collide on a seq, even when their names share a fold/truncation prefix). The
+OPTIONAL `<agent>` segment (present only when `mintHintId` is called with `agentId`) uses
+that same fold+hash recipe to disambiguate sibling transcripts of one multi-transcript
+target — its own hash keeps two agent ids sharing a prefix distinct. Minted ids are
+guaranteed ≤90 chars WITHOUT an agent segment (stepKey capped, long segments truncated
+before the hash) and ≤128 WITH one (the widened hint-id cap above), which leaves room for
+the retry suffix below. Sanitizing happens ONLY at mint time; once
 minted, an id is matched byte-for-byte forever. Shell participants (teaching pack) mint
 with the simpler fold recipe or use a brief-supplied id verbatim; the adopt-or-collision
 rule below absorbs the difference.
@@ -321,8 +330,8 @@ stepKey)`, `mintDigestId(runId, seq)` and `mintHintId(runId, observerName, seq)`
 schemas: `QUESTION_MESSAGE_SCHEMA`, `DECISION_MESSAGE_SCHEMA`, `DIGEST_MESSAGE_SCHEMA`,
 `HINT_MESSAGE_SCHEMA`, `HINT_PROVENANCE_SCHEMA`, `ACK_MARKER_SCHEMA`,
 `SETTLEMENT_MARKER_SCHEMA`, the `WT_COMM_SCHEMAS` map keyed by message type, and the
-shared patterns `BASE_ID_PATTERN`, `DECISION_ID_PATTERN`, `OPTION_ID_PATTERN`,
-`AT_PATTERN`. Derived message types: `QuestionMessage`, `DecisionMessage`,
+shared patterns `BASE_ID_PATTERN`, `HINT_ID_PATTERN`, `DECISION_ID_PATTERN`,
+`OPTION_ID_PATTERN`, `AT_PATTERN`. Derived message types: `QuestionMessage`, `DecisionMessage`,
 `DigestMessage`, `HintMessage` (with `HintProvenance`), the `WtCommMessage` union and
 its `WtCommMessageType` discriminant, plus the marker shapes `AckMarker` and
 `SettlementMarker`.

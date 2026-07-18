@@ -76,9 +76,13 @@ describe('F7 (MED) — the observer-consumer brief addresses hints by ROLE, cohe
   })
 })
 
-describe('F8 (LOW) — README per-type id pattern list includes observer.hint in the base-id family', () => {
-  it('the Base ids bullet enumerates observer.hint', () => {
+describe('F8 (LOW) — README per-type id pattern list documents observer.hint (now its own hint-id family)', () => {
+  it('the Base ids bullet lists escalation.question + status.digest, and a Hint ids bullet documents observer.hint', () => {
     const readme = readFileSync(join(here, '../README.md'), 'utf8')
-    expect(readme).toMatch(/\*\*Base ids\*\* \(`escalation\.question`, `status\.digest`, `observer\.hint`\)/)
+    // observer.hint moved OUT of the base-id family (card #1821537133433718298): a hint id
+    // may carry an optional agent segment that exceeds the 96-char base cap, so it has its
+    // own 1-128 hint-id grammar. The README must document BOTH consistently with schemas.ts.
+    expect(readme).toMatch(/\*\*Base ids\*\* \(`escalation\.question`, `status\.digest`\)/)
+    expect(readme).toMatch(/\*\*Hint ids\*\* \(`observer\.hint`\)/)
   })
 })

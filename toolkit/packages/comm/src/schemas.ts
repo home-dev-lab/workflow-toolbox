@@ -22,6 +22,15 @@ export const WT_COMM_SCHEMA_VERSION = 1 as const
  *  separator) — the negative lookahead rejects "--" ANYWHERE in the id. */
 export const BASE_ID_PATTERN = /^(?!.*--)[a-z0-9][a-z0-9-]{0,95}$/
 
+/** Hint ids (`observer.hint`): the base-id shape widened to 1-128 chars. An
+ *  `observer.hint` id may carry an OPTIONAL agent segment (mintHintId's 4th arg) to
+ *  disambiguate sibling transcripts of ONE multi-transcript target — run + observer +
+ *  agent + seq segments, EACH with its own injectivity hash, can exceed the 96-char base
+ *  cap. Still NEVER "--" and always within assertSafeMessageId's 128-char filesystem guard.
+ *  A hint id WITHOUT an agent segment stays base-id-valid (<=96); only the agent form uses
+ *  the wider range. */
+export const HINT_ID_PATTERN = /^(?!.*--)[a-z0-9][a-z0-9-]{0,127}$/
+
 /** Derived decision ids: `decisionIdFor(qid) = qid + '--decision'`, <=106 chars.
  *  This regex alone accepts a base containing an EXTRA "--" before the suffix
  *  (e.g. "ab--cd--decision") — `isValidDecisionId` (ids.ts) additionally enforces
@@ -234,7 +243,7 @@ export const HINT_MESSAGE_SCHEMA = {
   type: 'object',
   properties: {
     schemaVersion: { type: 'integer' },
-    id: { type: 'string', pattern: BASE_ID_PATTERN.source, minLength: 1, maxLength: 96 },
+    id: { type: 'string', pattern: HINT_ID_PATTERN.source, minLength: 1, maxLength: 128 },
     type: { type: 'string', enum: ['observer.hint'] },
     from: FROM_SCHEMA,
     to: TO_SCHEMA,

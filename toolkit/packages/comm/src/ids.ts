@@ -113,19 +113,42 @@ export function mintDigestId(runId: string, seq: number): string {
 }
 
 /** Tighter than the run/step caps: the hint id carries run segment + hash + observer
- *  segment + ITS hash + seq, and the <=90-char mint guarantee must hold even for a
- *  16-digit seq (2 + 49 + 1 + (11+1+8) + 1 + 16 = 89). Observer definition names are
+ *  segment + ITS hash + seq, and the <=90-char mint guarantee (3-arg form) must hold even
+ *  for a 16-digit seq (2 + 49 + 1 + (11+1+8) + 1 + 16 = 89). Observer definition names are
  *  short by their own grammar (`^[a-z0-9-]{1,64}$`); the 11-char fold keeps a
  *  recognizable prefix and the hash carries the injectivity. */
 const OBSERVER_SEGMENT_MAX = 11
 
-/** `mintHintId(runId, observerName, seq) = h-<runSegment>-<observerSegment>-<seq>`
- *  (v0.2) — BOTH variable segments use the shared fold+hash recipe (segmentWithHash,
- *  ONE derivation site), so two observers watching the same run can never collide on a
- *  seq even when their names share a fold/truncation prefix (review lock F0).
- *  Deterministic, always grammar-valid and <=90 chars. */
-export function mintHintId(runId: string, observerName: string, seq: number): string {
+/** The OPTIONAL agent segment's fold cap (mintHintId's 4-arg form). Budget: the 3-arg 89
+ *  plus `<agentSegment>-` = 89 + (16 + 1 + 8) + 1 = 115 — past the 96-char base-id cap but
+ *  within the widened hint grammar (HINT_ID_PATTERN, <=128, schemas.ts) and assertSafeMessageId's
+ *  128-char guard. 16 keeps a recognizable agent prefix; the hash carries the injectivity. */
+const AGENT_SEGMENT_MAX = 16
+
+/** `mintHintId(runId, observerName, seq, agentId?)`:
+ *   - WITHOUT agentId → `h-<runSegment>-<observerSegment>-<seq>` (v0.2), BYTE-IDENTICAL to
+ *     the 3-arg form: existing callers and the crash-rewind/adopt determinism are unchanged
+ *     (same input → same id).
+ *   - WITH a non-empty agentId → `h-<runSegment>-<observerSegment>-<agentSegment>-<seq>`
+ *     (v0.3): the agent segment disambiguates SIBLING transcripts of ONE multi-transcript
+ *     target and makes the target agent VISIBLE in the id (card #1821537133433718298).
+ *  EVERY variable segment uses the shared fold+hash recipe (segmentWithHash, ONE derivation
+ *  site), so distinct runs / observers / agents can never collide on a seq even when their
+ *  names share a fold/truncation prefix (review lock F0 — now extended to the agent segment).
+ *  Deterministic and always grammar-valid: <=90 chars without an agent, <=115 with one —
+ *  within the observer.hint grammar (HINT_ID_PATTERN, <=128) and self-verified against
+ *  assertSafeMessageId's 128-char filesystem guard. */
+export function mintHintId(runId: string, observerName: string, seq: number, agentId?: string): string {
   const observerSegment = segmentWithHash(observerName, OBSERVER_SEGMENT_MAX, 'o')
   const safeSeq = Number.isFinite(seq) ? Math.max(0, Math.trunc(seq)) : 0
-  return `h-${runSegmentWithHash(runId)}-${observerSegment}-${safeSeq}`
+  // Optional + ADDITIVE: absent/empty agentId reproduces the 3-arg id byte-for-byte; a
+  // non-empty agentId inserts <agentSegment> (fold + injectivity hash — never a bare
+  // fold+truncate, which would let two agent ids sharing a prefix mint the SAME id) before
+  // the seq.
+  const agentSegment = agentId !== undefined && agentId !== '' ? `${segmentWithHash(agentId, AGENT_SEGMENT_MAX, 'a')}-` : ''
+  const id = `h-${runSegmentWithHash(runId)}-${observerSegment}-${agentSegment}${safeSeq}`
+  // The agent form can reach ~115 chars — past the 96-char base-id cap but within the
+  // widened hint grammar; self-verify so a future segment-max regression fails loud here.
+  assertSafeMessageId(id)
+  return id
 }
