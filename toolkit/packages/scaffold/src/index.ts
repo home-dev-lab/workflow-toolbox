@@ -7,7 +7,17 @@ export {
   scaffoldObserver,
   assertObserverScaffoldSpec,
   observerLaunchHint,
+  scaffoldCapabilities,
+  assertCapabilitiesScaffoldSpec,
+  capabilitiesLaunchHint,
   MINIMAL_TSCONFIG,
   PATTERN_NAMES,
 } from './scaffold.js'
-export type { ScaffoldSpec, ScaffoldStep, PatternName, AgentScaffoldSpec, ObserverScaffoldSpec } from './scaffold.js'
+export type {
+  ScaffoldSpec,
+  ScaffoldStep,
+  PatternName,
+  AgentScaffoldSpec,
+  ObserverScaffoldSpec,
+  CapabilitiesScaffoldSpec,
+} from './scaffold.js'

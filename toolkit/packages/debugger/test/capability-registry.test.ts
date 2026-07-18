@@ -12,6 +12,7 @@ import {
   resolveCapabilities,
   probeProviders,
   sidecarToCapabilitiesSpec,
+  lintSidecarMachineAgnostic,
   resolutionsToBrainOptions,
   type CapabilityRegistry,
   type CapabilitySidecar,
@@ -392,4 +393,100 @@ describe('resolutionsToBrainOptions', () => {
     expect(Object.getPrototypeOf(brain.mcpServers)).toBe(Object.prototype)
     expect((brain.mcpServers as Record<string, unknown>)['command']).toBeUndefined()
   })
+})
+
+// ------------------------------- lintSidecarMachineAgnostic (emission-time, card I4) -------------------------------
+
+describe('lintSidecarMachineAgnostic', () => {
+  it('returns [] for a machine-agnostic-clean sidecar (the base fixture)', () => {
+    expect(lintSidecarMachineAgnostic(sidecar)).toEqual([])
+  })
+
+  it('reports a CONCRETE mcp__ tool (never admitted in a sidecar)', () => {
+    const errs = lintSidecarMachineAgnostic({
+      ...sidecar,
+      agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: ['$cap:code-intelligence', 'mcp__evil__exfil'] } },
+    })
+    expect(errs.some((e) => e.includes('mcp__evil__exfil') && e.includes('concrete MCP tool'))).toBe(true)
+  })
+
+  it('reports an mcpServers field on an agent def', () => {
+    const errs = lintSidecarMachineAgnostic({
+      ...sidecar,
+      agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: [], mcpServers: [{ evil: { command: 'x' } }] } as never },
+    })
+    expect(errs.some((e) => e.includes('wf-reviewer') && e.includes('mcpServers'))).toBe(true)
+  })
+
+  it('reports an omitted tools allowlist (fail-open guard), never silently accepts it', () => {
+    const errs = lintSidecarMachineAgnostic({
+      ...sidecar,
+      agents: { 'wf-reviewer': { description: 'd', prompt: 'p' } as never },
+    })
+    expect(errs.some((e) => e.includes('no tools allowlist'))).toBe(true)
+  })
+
+  it('reports a $cap:<need> not declared in the role needs (typo)', () => {
+    const errs = lintSidecarMachineAgnostic({
+      ...sidecar,
+      agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: ['$cap:code-inteligence'] } },
+    })
+    expect(errs.some((e) => e.includes('code-inteligence') && e.includes('not declared'))).toBe(true)
+  })
+
+  it('reports a role referencing an unknown agent', () => {
+    const errs = lintSidecarMachineAgnostic({
+      version: 1,
+      roles: { reviewer: { agent: 'ghost', needs: [] } },
+      agents: {},
+    })
+    expect(errs.some((e) => e.includes("references unknown agent 'ghost'"))).toBe(true)
+  })
+
+  it('is resolution-INDEPENDENT: never reports the launch-only resolution errors on a clean sidecar', () => {
+    // A required need with NO resolution is a LAUNCH error (sidecarToCapabilitiesSpec),
+    // NOT an emission error — the registry does not exist at authoring time.
+    expect(lintSidecarMachineAgnostic(sidecar)).toEqual([])
+  })
+
+  it('short-circuits on structural malformation (parity with the guard, no crash)', () => {
+    const errs = lintSidecarMachineAgnostic({ version: 1, roles: 'nope', agents: {} } as never)
+    expect(errs.length).toBeGreaterThan(0)
+    expect(errs.some((e) => e.includes('sidecar.roles must be an object'))).toBe(true)
+  })
+})
+
+// DRIFT-LOCK: the emission-time lint must never flag something the launch-time guard
+// accepts — every machine-agnostic error the lint reports is ALSO reported by
+// sidecarToCapabilitiesSpec (resolutions supplied so no spurious resolution errors
+// mask the comparison). If a future edit tightens one path only, this fails.
+describe('lintSidecarMachineAgnostic ⊆ sidecarToCapabilitiesSpec (drift-lock)', () => {
+  const violations: Array<{ label: string; s: CapabilitySidecar }> = [
+    {
+      label: 'concrete mcp__ tool',
+      s: { ...sidecar, agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: ['$cap:code-intelligence', 'mcp__evil__exfil'] } } },
+    },
+    {
+      label: 'mcpServers on def',
+      s: { ...sidecar, agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: ['$cap:code-intelligence'], mcpServers: [{ e: { command: 'x' } }] } as never } },
+    },
+    {
+      label: '$cap typo',
+      s: { ...sidecar, agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: ['$cap:code-inteligence'] } } },
+    },
+    {
+      label: 'unknown agent',
+      s: { version: 1, roles: { r: { agent: 'ghost', needs: [] } }, agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: [] } } },
+    },
+  ]
+  for (const { label, s } of violations) {
+    it(`agrees on: ${label}`, () => {
+      const lintErrs = lintSidecarMachineAgnostic(s)
+      expect(lintErrs.length).toBeGreaterThan(0)
+      const guard = sidecarToCapabilitiesSpec(s, resolvedServena())
+      expect(guard.spec).toBeNull()
+      // Every emission-lint error is also a launch-guard error (the lint never lies).
+      for (const e of lintErrs) expect(guard.errors).toContain(e)
+    })
+  }
 })

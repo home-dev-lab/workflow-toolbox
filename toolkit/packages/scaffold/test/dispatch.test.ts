@@ -46,6 +46,11 @@ const OBSERVER_SPEC = {
   emits: ['observer.hint'],
   actions: ['summary', 'wt-comm'],
 }
+const CAPABILITIES_SPEC = {
+  name: 'disp-caps',
+  roles: { reviewer: { agent: 'wf-reviewer', needs: [{ need: 'code-intelligence' }] } },
+  agents: { 'wf-reviewer': { description: 'A reviewer.', prompt: 'Review.', tools: ['Read', '$cap:code-intelligence'] } },
+}
 
 // ---------------------------------------------------------------------------
 // renderScaffold — the mode->load+render+outName dispatch
@@ -78,6 +83,25 @@ describe('renderScaffold', () => {
     expect(r.outName).toBe('disp-observer.observer.json')
     expect(r.source).toContain('"schemaVersion": 1')
     expect(r.mode === 'observer' && r.spec.name).toBe('disp-observer')
+  })
+
+  it('capabilities: loads the spec, renders the .capabilities.json, derives <name>.capabilities.json', () => {
+    const dir = makeTmpDir()
+    const r = renderScaffold('capabilities', writeJson(dir, 'caps.json', CAPABILITIES_SPEC))
+    expect(r.mode).toBe('capabilities')
+    expect(r.outName).toBe('disp-caps.capabilities.json')
+    expect(r.source).toContain('"version": 1')
+    expect(r.source).toContain('$cap:code-intelligence')
+    expect(r.mode === 'capabilities' && r.spec.name).toBe('disp-caps')
+  })
+
+  it('propagates the emitter lint error for a machine-specific capabilities spec', () => {
+    const dir = makeTmpDir()
+    const bad = writeJson(dir, 'bad-caps.json', {
+      ...CAPABILITIES_SPEC,
+      agents: { 'wf-reviewer': { description: 'd', prompt: 'p', tools: ['mcp__serena__find_symbol'] } },
+    })
+    expect(() => renderScaffold('capabilities', bad)).toThrow(/concrete MCP tool/)
   })
 
   it('propagates the loader error for a malformed workflow spec', () => {

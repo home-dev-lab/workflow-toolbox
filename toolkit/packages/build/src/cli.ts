@@ -36,7 +36,7 @@ import type { PipelineSpec } from '@workflow-toolbox/pipeline-spec'
 // The packages below are PRIVATE workspace devDependencies: tsup inlines them
 // into dist/cli.js (verified — no bare imports survive in the bundle), so the
 // published package stays self-contained without publishing them to npm.
-import { observerLaunchHint, MINIMAL_TSCONFIG } from '@workflow-toolbox/scaffold'
+import { capabilitiesLaunchHint, observerLaunchHint, MINIMAL_TSCONFIG } from '@workflow-toolbox/scaffold'
 import {
   parseJournal,
   agentEvents,
@@ -313,14 +313,15 @@ async function runScaffold(argv: string[]): Promise<void> {
 
   // `scaffold agent <spec.json>` emits a least-privilege agentType .md;
   // `scaffold observer <spec.json>` emits a workflow-owned <name>.observer.json;
+  // `scaffold capabilities <spec.json>` emits a workflow-owned <name>.capabilities.json;
   // plain `scaffold <spec.json>` emits a .workflow.ts. The per-mode load+render+
   // filename mapping and the --stdout / no-clobber / mkdir / write mechanics are the
   // shared @workflow-toolbox/scaffold/dispatch helpers; only this CLI's messaging,
   // `next` hints and tsconfig emission stay here.
-  const isAgent = positionals[0] === 'agent'
-  const isObserver = positionals[0] === 'observer'
-  const mode = isObserver ? 'observer' : isAgent ? 'agent' : 'workflow'
-  const specPath = positionals[isAgent || isObserver ? 1 : 0]
+  const subVerbs = { agent: 'agent', observer: 'observer', capabilities: 'capabilities' } as const
+  const sub = (positionals[0] ?? '') as keyof typeof subVerbs
+  const mode = sub in subVerbs ? subVerbs[sub] : 'workflow'
+  const specPath = positionals[mode === 'workflow' ? 0 : 1]
   if (specPath === undefined || specPath === '') {
     printUsage()
     throw new Error('workflow-toolbox scaffold: missing <spec.json> positional argument')
@@ -337,12 +338,16 @@ async function runScaffold(argv: string[]): Promise<void> {
   })
   if (result.kind === 'stdout') return
 
-  const label =
-    rendered.mode === 'observer' ? 'scaffold observer' : rendered.mode === 'agent' ? 'scaffold agent' : 'scaffold'
+  const label = rendered.mode === 'workflow' ? 'scaffold' : `scaffold ${rendered.mode}`
   if (result.kind === 'refused') {
     throw new Error(`workflow-toolbox ${label}: refusing to overwrite ${result.outFile} — pass --force to replace it`)
   }
   console.log(`workflow-toolbox ${label}: wrote ${result.outFile}`)
+
+  if (rendered.mode === 'capabilities') {
+    console.log(capabilitiesLaunchHint(rendered.spec).trimEnd())
+    return
+  }
 
   if (rendered.mode === 'observer') {
     console.log(observerLaunchHint(rendered.spec).trimEnd())
@@ -519,6 +524,7 @@ Usage (npm consumers: npx workflow-toolbox …  or  pnpm exec workflow-toolbox �
   workflow-toolbox scaffold <spec.json> [--out-dir <dir>] [--stdout] [--force] [--no-tsconfig]
   workflow-toolbox scaffold agent <spec.json> [--out-dir <dir>] [--stdout] [--force]
   workflow-toolbox scaffold observer <spec.json> [--out-dir <dir>] [--stdout] [--force]
+  workflow-toolbox scaffold capabilities <spec.json> [--out-dir <dir>] [--stdout] [--force]
   workflow-toolbox build <entry.ts> [--out-dir <dir>] [--minify] [--typecheck]
   workflow-toolbox pipeline <entry.ts> [--out-dir <dir>] [--out <name>] [--minify] [--typecheck]
   workflow-toolbox check <file.js>
@@ -531,7 +537,11 @@ Commands:
             or "scaffold observer <spec.json>" → a workflow-owned <name>.observer.json,
             an ObserverDefinition of ABSTRACT observation needs — validated by the shared
             @workflow-toolbox/debugger observer-def contract, the same one the launch
-            bridge fails loud on)
+            bridge fails loud on,
+            or "scaffold capabilities <spec.json>" → a workflow-owned <name>.capabilities.json,
+            a machine-agnostic capability sidecar with $cap:<need> placeholders — validated by
+            the shared @workflow-toolbox/debugger capability-registry lint, the same rules the
+            launch resolver fails loud on)
             ({ "meta": { "name", "description" }, "steps": [{ "pattern", "phase" }] }).
             Also writes a minimal tsconfig.json when the target dir has none
             (--no-tsconfig to skip; an existing tsconfig is never touched).

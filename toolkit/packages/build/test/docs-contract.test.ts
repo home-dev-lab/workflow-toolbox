@@ -401,6 +401,8 @@ describe('docs-contract — public exports are documented', () => {
     ['assertAgentSpecShape', 'scaffold CLI plumbing (private package); the author surface is the documented scaffoldAgent'],
     ['assertObserverScaffoldSpec', 'scaffold CLI plumbing (private package); the author surface is the documented scaffoldObserver'],
     ['observerLaunchHint', 'scaffold CLI plumbing (private package): the launch guidance the CLI prints after `scaffold observer` (references/observer-definitions.md documents its content)'],
+    ['assertCapabilitiesScaffoldSpec', 'scaffold CLI plumbing (private package); the author surface is the documented scaffoldCapabilities'],
+    ['capabilitiesLaunchHint', 'scaffold CLI plumbing (private package): the launch guidance the CLI prints after `scaffold capabilities` (references/capability-needs.md documents its content)'],
     ['MINIMAL_TSCONFIG', 'scaffold CLI plumbing (private package): the tsconfig content the scaffolder writes'],
   ])
 

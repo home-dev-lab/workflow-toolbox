@@ -6,8 +6,8 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { assertAgentSpecShape, assertObserverScaffoldSpec, assertSpecShape } from './scaffold.js'
-import type { AgentScaffoldSpec, ObserverScaffoldSpec, ScaffoldSpec } from './scaffold.js'
+import { assertAgentSpecShape, assertCapabilitiesScaffoldSpec, assertObserverScaffoldSpec, assertSpecShape } from './scaffold.js'
+import type { AgentScaffoldSpec, CapabilitiesScaffoldSpec, ObserverScaffoldSpec, ScaffoldSpec } from './scaffold.js'
 
 /** Read + parse a spec file to raw JSON. Throws an actionable Error. Shared by
  *  the workflow + agent loaders so their read/parse error messages cannot drift. */
@@ -47,5 +47,14 @@ export function loadAgentSpec(specPath: string): AgentScaffoldSpec {
 export function loadObserverSpec(specPath: string): ObserverScaffoldSpec {
   const parsed = readSpecJson(specPath)
   assertObserverScaffoldSpec(parsed)
+  return parsed
+}
+
+/** Read + parse + shape-narrow a CAPABILITY-SIDECAR spec file. Throws an actionable
+ *  Error. The field-level rules are enforced later by scaffoldCapabilities via the
+ *  shared lintSidecarMachineAgnostic — this only guarantees an object with a `name`. */
+export function loadCapabilitiesSpec(specPath: string): CapabilitiesScaffoldSpec {
+  const parsed = readSpecJson(specPath)
+  assertCapabilitiesScaffoldSpec(parsed)
   return parsed
 }

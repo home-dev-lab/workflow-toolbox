@@ -22,6 +22,13 @@
 
 import { validateObserverDefinition } from '@workflow-toolbox/debugger/observer-def'
 import type { ObserverDefinition } from '@workflow-toolbox/debugger/observer-def'
+import { lintSidecarMachineAgnostic } from '@workflow-toolbox/debugger/capability-registry'
+import type {
+  CapabilitySidecar,
+  CapabilitySidecarRole,
+  CapabilitySidecarAgent,
+  SkillOverrideMode,
+} from '@workflow-toolbox/debugger/capability-registry'
 
 export const PATTERN_NAMES = [
   'classifyAndAct',
@@ -457,6 +464,112 @@ export function assertObserverScaffoldSpec(x: unknown): asserts x is ObserverSca
     throw new Error(
       'workflow-toolbox scaffold observer: spec must be a JSON object (an ObserverDefinition without schemaVersion).',
     )
+  }
+}
+
+// ── capability sidecar scaffolder ─────────────────────────────────────────────
+// Emits a WORKFLOW-owned `<name>.capabilities.json` (a CapabilitySidecar) from an
+// ABSTRACT declaration — the composer's authoring-time output (time 1 of the 3-time
+// model: composer → machine resolver → run, design §7). Machine-agnostic by
+// construction: per-role abstract `needs`, and agent tool allowlists that carry only
+// `$cap:<need>` placeholders + non-MCP builtin tools — NEVER a concrete provider or path.
+// Validation is REUSED from the shipped launch guard (@workflow-toolbox/debugger's
+// capability-registry `lintSidecarMachineAgnostic`, the resolution-independent subset of
+// the SAME rules `sidecarToCapabilitiesSpec` enforces at launch), never re-implemented
+// here — an emitted sidecar the launch would reject is an authoring bug this scaffolder
+// must catch early, with the SAME message the launch shows. (Exact parity with the
+// observer scaffolder reusing validateObserverDefinition above.)
+
+/** Authoring spec for a capability sidecar. `name` is FILENAME-ONLY: it must equal
+ *  the workflow's `meta.name` so the emitted `<name>.capabilities.json` sits beside the
+ *  built `workflows/<name>.js` (the launcher derives the sidecar path from the workflow
+ *  artifact path — `sidecarPathFor`). It is NOT part of the emitted JSON: a
+ *  CapabilitySidecar has no `name` (unlike an ObserverDefinition). The remaining fields
+ *  ARE the sidecar minus its stamped `version`. */
+export interface CapabilitiesScaffoldSpec {
+  /** kebab-case — MUST equal the workflow meta.name (drives the output filename only). */
+  name: string
+  /** role-name → { agent, needs }. Lean/leaf roles are ABSENT (the bare default holds). */
+  roles: Record<string, CapabilitySidecarRole>
+  /** agent-name → machine-agnostic def (tools use `$cap:<need>`, never a concrete server). */
+  agents: Record<string, CapabilitySidecarAgent>
+  /** Optional skills settings, read by the launcher (design §6). */
+  skillOverrides?: Record<string, SkillOverrideMode>
+  disableBundledSkills?: boolean
+}
+
+/**
+ * Emit a `<name>.capabilities.json` string for the given abstract sidecar declaration.
+ * Pure: same spec → byte-identical output, zero IO. `version: 1` is stamped and leads;
+ * `name` is stripped (filename-only). Only the KNOWN sidecar keys are emitted (no
+ * arbitrary passthrough — an unknown key could smuggle machine state past the lint).
+ * The assembled sidecar is run through the SHARED `lintSidecarMachineAgnostic`; on any
+ * violation this throws an actionable Error listing EVERY problem (one pass) rather than
+ * ever emitting a machine-specific or malformed artifact.
+ */
+export function scaffoldCapabilities(spec: CapabilitiesScaffoldSpec): string {
+  if (!KEBAB_RE.test(spec.name)) {
+    throw new Error(
+      `scaffoldCapabilities: invalid name ${q(spec.name)} — must be non-empty kebab-case and equal the workflow meta.name (e.g. "pr-review").`,
+    )
+  }
+  // Build the emitted object from KNOWN keys only (version leads); untrusted raw JSON
+  // may carry extras, but only these reach the artifact — the field-level rules are the
+  // shared lint's job, exactly as the observer scaffolder delegates to its validator.
+  const sidecar: CapabilitySidecar = {
+    version: 1,
+    roles: spec.roles,
+    agents: spec.agents,
+    ...(spec.skillOverrides !== undefined ? { skillOverrides: spec.skillOverrides } : {}),
+    ...(spec.disableBundledSkills !== undefined ? { disableBundledSkills: spec.disableBundledSkills } : {}),
+  }
+  const errors = lintSidecarMachineAgnostic(sidecar)
+  if (errors.length > 0) {
+    throw new Error(`workflow-toolbox scaffold capabilities: ${errors.join('; ')}`)
+  }
+  return JSON.stringify(sidecar, null, 2) + '\n'
+}
+
+/** The post-emission authoring guidance for a capability sidecar: place it beside the
+ *  built artifact (the launcher auto-detects `<name>.capabilities.json` by adjacency),
+ *  the `$cap:<need>` → machine-registry resolution at LAUNCH, the bare default for roles
+ *  with no entry, and the adoption discipline (design §5.2/§7.3 — provisioning a tool is
+ *  not adopting it: keep the alternative OUT of the allowlist and repeat the tooling
+ *  instruction in the TASK prompt). Pure: same spec → same text. */
+export function capabilitiesLaunchHint(spec: CapabilitiesScaffoldSpec): string {
+  const roleNames = Object.keys(spec.roles ?? {})
+  const rolesLabel = roleNames.length > 0 ? roleNames.join(', ') : '(none — the bare default already applies)'
+  const lines = [
+    `Next — place ${spec.name}.capabilities.json BESIDE the built workflow artifact (workflows/${spec.name}.js).`,
+    '`wt-observe launch` auto-detects <name>.capabilities.json by filename adjacency, resolves each',
+    '$cap:<need> against the MACHINE registry at launch, and composes the concrete tools into the',
+    'delegated run. The sidecar names NO provider or path — resolution is per-machine.',
+    '',
+    `Tooled role(s): ${rolesLabel}. A role with NO entry here stays bare (lean/leaf default = nothing).`,
+    '',
+    'Adoption (design §5.2/§7.3) — provisioning a tool is NOT adopting it:',
+    '  - keep the alternative OUT of the allowlist (removing grep/glob is the proven lever), and',
+    "  - repeat the tooling instruction in the role's TASK prompt, not only its system prompt.",
+    'The launcher appends a mechanical "## Capability resolution" note per resolved need.',
+  ]
+  return lines.join('\n') + '\n'
+}
+
+/** Narrow untrusted JSON to the capability-sidecar spec shape. MINIMAL by design: the
+ *  field rules live in the shared `lintSidecarMachineAgnostic` (invoked by
+ *  `scaffoldCapabilities`) and are never duplicated here — this only guards the "not even
+ *  an object" case and the filename-bearing `name`, so the assembly in
+ *  `scaffoldCapabilities` is safe. Pure. */
+export function assertCapabilitiesScaffoldSpec(x: unknown): asserts x is CapabilitiesScaffoldSpec {
+  const fail = (msg: string): never => {
+    throw new Error(`workflow-toolbox scaffold capabilities: ${msg}`)
+  }
+  if (typeof x !== 'object' || x === null || Array.isArray(x)) {
+    fail('spec must be a JSON object { name, roles, agents, ... }.')
+  }
+  const s = x as Record<string, unknown>
+  if (typeof s['name'] !== 'string') {
+    fail('spec.name must be a string — the workflow name that drives the <name>.capabilities.json filename.')
   }
 }
 

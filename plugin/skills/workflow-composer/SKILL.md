@@ -44,6 +44,9 @@ The reference files carry the deep material — read them when a step points you
 - `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
 - `references/observer-definitions.md` — authoring an observer (`<name>.observer.json`), the
   abstract-needs boundary, the selector/label coupling, and the `args.observers` launch bridge.
+- `references/capability-needs.md` — giving a role more than the bare default via a
+  workflow-owned `<name>.capabilities.json` sidecar of ABSTRACT needs (`$cap:<need>`),
+  resolved per-machine at launch; the derivation pass, the machine-agnostic lint, adoption.
 - `references/worked-example-pr-review.md` — the annotated pr-review walk-through.
 - `references/observing-runs.md` — how to **launch a run so you can watch it live** and read the
   result with the dev-only `observe-ui` tool: the rich SDK pathway (compiled artifacts, live
@@ -241,6 +244,15 @@ A workflow can also declare an **observer** — a workflow-owned artifact
 [references/observer-definitions.md](references/observer-definitions.md)** before authoring
 one — it covers the schema, the abstract-needs boundary, the `watch.roles` ⇔ agent-label
 coupling, and what ships at authoring time vs at the observe-server runtime.
+
+A role that needs **more than the bare default** (a reviewer that reads code symbolically,
+a researcher that looks up docs) declares an ABSTRACT need in a workflow-owned
+`<name>.capabilities.json` sidecar the composer emits with `scaffold capabilities`, carried
+at launch in `args.capabilities`. The sidecar names no tool — only `$cap:<need>`
+placeholders the user's machine resolves at launch (degrading to a named fallback when it
+can't). **Read [references/capability-needs.md](references/capability-needs.md)** before
+adding one — it covers the per-role needs derivation, the machine-agnostic emission lint,
+and the adoption levers (remove the alternative + instruct at the task level).
 
 ### Orchestrator pipelines — human-gated, multi-workflow jobs
 
@@ -479,4 +491,7 @@ review-like workflow.
 - `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
 - `references/observer-definitions.md` — authoring an observer (`<name>.observer.json`), the
   abstract-needs boundary, the selector/label coupling, and the `args.observers` launch bridge.
+- `references/capability-needs.md` — giving a role more than the bare default via a
+  workflow-owned `<name>.capabilities.json` sidecar of ABSTRACT needs (`$cap:<need>`),
+  resolved per-machine at launch; the derivation pass, the machine-agnostic lint, adoption.
 - `references/worked-example-pr-review.md` — the annotated pr-review walk-through.

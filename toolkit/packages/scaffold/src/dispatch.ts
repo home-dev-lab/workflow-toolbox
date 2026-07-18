@@ -12,11 +12,11 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { scaffoldAgent, scaffoldObserver, scaffoldWorkflow } from './scaffold.js'
-import type { AgentScaffoldSpec, ObserverScaffoldSpec, ScaffoldSpec } from './scaffold.js'
-import { loadAgentSpec, loadObserverSpec, loadSpec } from './spec-io.js'
+import { scaffoldAgent, scaffoldCapabilities, scaffoldObserver, scaffoldWorkflow } from './scaffold.js'
+import type { AgentScaffoldSpec, CapabilitiesScaffoldSpec, ObserverScaffoldSpec, ScaffoldSpec } from './scaffold.js'
+import { loadAgentSpec, loadCapabilitiesSpec, loadObserverSpec, loadSpec } from './spec-io.js'
 
-export type ScaffoldMode = 'workflow' | 'agent' | 'observer'
+export type ScaffoldMode = 'workflow' | 'agent' | 'observer' | 'capabilities'
 
 /** The loaded spec + rendered source + derived output filename for one mode.
  *  Discriminated on `mode` so a caller can narrow to the concrete spec type
@@ -25,12 +25,17 @@ export type RenderedScaffold =
   | { mode: 'workflow'; source: string; outName: string; spec: ScaffoldSpec }
   | { mode: 'agent'; source: string; outName: string; spec: AgentScaffoldSpec }
   | { mode: 'observer'; source: string; outName: string; spec: ObserverScaffoldSpec }
+  | { mode: 'capabilities'; source: string; outName: string; spec: CapabilitiesScaffoldSpec }
 
 /** Load the spec for `mode` from `specPath`, render its source, and derive the
  *  output filename. Loader / emitter validation errors propagate unchanged so
  *  both CLIs surface the same actionable messages. */
 export function renderScaffold(mode: ScaffoldMode, specPath: string): RenderedScaffold {
   switch (mode) {
+    case 'capabilities': {
+      const spec = loadCapabilitiesSpec(specPath)
+      return { mode, source: scaffoldCapabilities(spec), outName: `${spec.name}.capabilities.json`, spec }
+    }
     case 'observer': {
       const spec = loadObserverSpec(specPath)
       return { mode, source: scaffoldObserver(spec), outName: `${spec.name}.observer.json`, spec }

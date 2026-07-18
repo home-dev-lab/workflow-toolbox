@@ -105,11 +105,13 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['plugin/skills/workflow-composer/references/orchestrator-pipelines.md'],
   },
   {
-    // Scaffold emitter (what `wt:scaffold` generates, PATTERN_NAMES).
+    // Scaffold emitter (what `wt:scaffold` generates: workflow / agent / observer /
+    // capabilities-sidecar artifacts).
     sources: ['toolkit/packages/scaffold/src/'],
     docs: [
       'plugin/skills/toolkit-scaffold/SKILL.md',
       'plugin/skills/workflow-composer/SKILL.md',
+      'plugin/skills/workflow-composer/references/capability-needs.md',
     ],
   },
   {

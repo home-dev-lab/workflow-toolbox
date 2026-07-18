@@ -10,7 +10,7 @@
 // messages and `next` hints live here.
 
 import * as path from 'node:path'
-import { observerLaunchHint, PATTERN_NAMES } from './scaffold.js'
+import { capabilitiesLaunchHint, observerLaunchHint, PATTERN_NAMES } from './scaffold.js'
 import { renderScaffold, writeScaffoldArtifact } from './dispatch.js'
 import type { RenderedScaffold, ScaffoldMode, ScaffoldWriteResult } from './dispatch.js'
 
@@ -30,6 +30,9 @@ function parseArgs(argv: string[]): CliArgs {
     rest = rest.slice(1)
   } else if (rest[0] === 'observer') {
     mode = 'observer'
+    rest = rest.slice(1)
+  } else if (rest[0] === 'capabilities') {
+    mode = 'capabilities'
     rest = rest.slice(1)
   }
   let specPath: string | null = null
@@ -58,6 +61,7 @@ function printHelp(): void {
       '  wt:scaffold <spec.json> [--out-dir <dir>] [--stdout] [--force]           a .workflow.ts skeleton',
       '  wt:scaffold agent <spec.json> [--out-dir <dir>] [--stdout] [--force]     a least-privilege agentType .md',
       '  wt:scaffold observer <spec.json> [--out-dir <dir>] [--stdout] [--force]  a workflow-owned <name>.observer.json',
+      '  wt:scaffold capabilities <spec.json> [--out-dir <dir>] [--stdout] [--force]  a workflow-owned <name>.capabilities.json',
       '',
       'Workflow spec: { "meta": { "name", "description" }, "steps": [ { "pattern", "phase" } ] }',
       `               pattern is one of: ${PATTERN_NAMES.join(', ')}`,
@@ -66,6 +70,10 @@ function printHelp(): void {
       'Observer spec: { "name", "description", "watch": { "roles"?, "phases"? }, "brain": { "mandate" },',
       '                 "cadenceMs"?, "emits"?, "actions"?, "requires"? }  — abstract needs only, no',
       '                 concrete tool/machine path (validated by @workflow-toolbox/debugger observer-def).',
+      'Capabilities:  { "name", "roles": { <role>: { "agent", "needs": [ { "need" } ] } },',
+      '                 "agents": { <agent>: { "description", "prompt", "tools": ["$cap:<need>", ...] } },',
+      '                 "skillOverrides"?, "disableBundledSkills"? }  — `name` == the workflow meta.name;',
+      '                 tools use $cap:<need> placeholders only, no concrete mcp__ tool or mcpServers.',
       '',
       '  --out-dir    directory to write the output into (default: current dir).',
       '  --stdout     print the source to stdout instead of writing a file.',
@@ -78,6 +86,9 @@ function printHelp(): void {
 /** The per-mode "next" hint — mode-specific and deliberately distinct from the published
  *  CLI's (this dev CLI points at the in-repo pnpm scripts). */
 function nextHint(rendered: RenderedScaffold): string {
+  if (rendered.mode === 'capabilities') {
+    return capabilitiesLaunchHint(rendered.spec)
+  }
   if (rendered.mode === 'observer') {
     return observerLaunchHint(rendered.spec)
   }
