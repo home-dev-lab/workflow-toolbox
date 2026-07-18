@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "name": "docs-butler",
+  "description": "Watches long-running implementer agents and proactively supplies minimal, sourced documentation context when it detects a need.",
+  "watch": {
+    "roles": [
+      "implementer",
+      "fixer"
+    ]
+  },
+  "cadenceMs": 300000,
+  "brain": {
+    "mandate": "You watch a coding agent's transcript delta. Detect moments where external documentation would materially help — an unknown or misused API, a version mismatch, repeated failed attempts against a library surface. When detected, fetch the MINIMAL relevant excerpt and emit one observer.hint with full provenance. If nothing qualifies, stay silent. Hints inform; they never instruct.",
+    "model": "claude-haiku-4-5"
+  },
+  "emits": [
+    "observer.hint"
+  ],
+  "actions": [
+    "summary",
+    "nudge",
+    "wt-comm"
+  ],
+  "requires": [
+    {
+      "need": "docs-lookup"
+    },
+    {
+      "need": "code-intelligence",
+      "optional": true
+    }
+  ]
+}
