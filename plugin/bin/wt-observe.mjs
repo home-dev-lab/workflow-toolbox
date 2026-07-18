@@ -770,12 +770,17 @@ function classifyAwaitTick(obs) {
   return obs.elapsedMs > obs.missingGraceMs ? { kind: "missing" } : { kind: "pending" };
 }
 function extractAwaitOutcome(recall) {
-  if (typeof recall !== "object" || recall === null) return { status: null, result: null };
+  if (typeof recall !== "object" || recall === null) return { status: null, result: null, error: null };
   const r = recall;
   const status = typeof r["status"] === "string" ? r["status"] : null;
   const io = r["io"];
   const result = typeof io === "object" && io !== null ? io["result"] ?? null : null;
-  return { status, result };
+  const error = typeof r["error"] === "string" ? r["error"] : null;
+  return { status, result, error };
+}
+var AWAIT_ERROR_MAX_CHARS = 2e3;
+function truncateAwaitError(message, max = AWAIT_ERROR_MAX_CHARS) {
+  return message.length <= max ? message : `${message.slice(0, max)}\u2026 [truncated ${message.length - max} chars \u2014 full error in the run record]`;
 }
 function awaitExitCode(verdict) {
   if (verdict.kind === "timeout") return 3;
@@ -1513,7 +1518,10 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
         outcome = extractAwaitOutcome(recall);
       }
       const status = outcome.status ?? verdict.status;
-      process.stdout.write(`${JSON.stringify({ runId, status, result: outcome.result })}
+      const reasonPart = status !== "completed" && outcome.error !== null ? { error: truncateAwaitError(outcome.error) } : {};
+      process.stdout.write(`${JSON.stringify({ runId, status, result: outcome.result, ...reasonPart })}
+`);
+      if ("error" in reasonPart) process.stderr.write(`[wt-observe await] ${runId} ${status}: ${reasonPart.error}
 `);
       return awaitExitCode({ kind: "done", status });
     }

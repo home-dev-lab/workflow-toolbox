@@ -74,7 +74,7 @@ import { buildLaunchBody, safeRequesterCwd } from './launch-body.js'
 import { awaitSpawnedServerReady } from './spawn-ready.js'
 import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
 import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
-import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode, AWAIT_SOURCE_UNRESOLVED_EXIT_CODE } from './observe-await.js'
+import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode, truncateAwaitError, AWAIT_SOURCE_UNRESOLVED_EXIT_CODE } from './observe-await.js'
 import { recoverExitCodeFor } from './observe-resume.js'
 import {
   resolveSource,
@@ -1009,7 +1009,14 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
         outcome = extractAwaitOutcome(recall)
       }
       const status = outcome.status ?? verdict.status
-      process.stdout.write(`${JSON.stringify({ runId, status, result: outcome.result })}\n`)
+      // Card #1821485224316372412 — a non-completed run carries a failure REASON (recall
+      // `error` = journal.error). Relay it as an ADDITIVE stdout field (JSON shape preserved
+      // for machines) AND print it on stderr for the human, so `wt-observe await` no longer
+      // reports a bare "failed" with the "why" reachable only from the on-disk record —
+      // decisive for a boot/input failure that spawns zero agents (no transcript carries it).
+      const reasonPart = status !== 'completed' && outcome.error !== null ? { error: truncateAwaitError(outcome.error) } : {}
+      process.stdout.write(`${JSON.stringify({ runId, status, result: outcome.result, ...reasonPart })}\n`)
+      if ('error' in reasonPart) process.stderr.write(`[wt-observe await] ${runId} ${status}: ${reasonPart.error}\n`)
       return awaitExitCode({ kind: 'done', status })
     }
     // timeout / missing — one machine-readable error line, distinct exit codes.

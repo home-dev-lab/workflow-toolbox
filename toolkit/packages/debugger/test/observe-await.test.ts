@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode } from '../src/observe-await.js'
+import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode, truncateAwaitError, AWAIT_ERROR_MAX_CHARS } from '../src/observe-await.js'
 
 // observe-await.ts — the pure decision core of `wt-observe await <runId>` (launch-and-notify
 // card #1812476922312000519): one poll tick's observations in, one verdict out. The CLI shell
@@ -68,12 +68,41 @@ describe('classifyAwaitTick', () => {
 describe('extractAwaitOutcome', () => {
   it('pulls status and io.result from a recall payload', () => {
     const recall = { runId: 'wf_x', status: 'completed', io: { result: { verdict: 'approve' } } }
-    expect(extractAwaitOutcome(recall)).toEqual({ status: 'completed', result: { verdict: 'approve' } })
+    expect(extractAwaitOutcome(recall)).toEqual({ status: 'completed', result: { verdict: 'approve' }, error: null })
+  })
+
+  it('relays the top-level error reason for a failed run (0-agent boot failure has no other source)', () => {
+    const recall = {
+      runId: 'wf_x',
+      status: 'failed',
+      io: { result: null },
+      error: 'coverage-audit: "provenance" must be a NON-EMPTY array of { sources, docs } entries',
+    }
+    expect(extractAwaitOutcome(recall)).toEqual({
+      status: 'failed',
+      result: null,
+      error: 'coverage-audit: "provenance" must be a NON-EMPTY array of { sources, docs } entries',
+    })
   })
 
   it('degrades to nulls on a malformed payload (never throws)', () => {
-    expect(extractAwaitOutcome(null)).toEqual({ status: null, result: null })
-    expect(extractAwaitOutcome({ io: 'nope' })).toEqual({ status: null, result: null })
+    expect(extractAwaitOutcome(null)).toEqual({ status: null, result: null, error: null })
+    expect(extractAwaitOutcome({ io: 'nope' })).toEqual({ status: null, result: null, error: null })
+    expect(extractAwaitOutcome({ error: 123 })).toEqual({ status: null, result: null, error: null })
+  })
+})
+
+describe('truncateAwaitError', () => {
+  it('passes a short reason through unchanged', () => {
+    expect(truncateAwaitError('boom')).toBe('boom')
+  })
+
+  it('truncates an over-long reason (a full stack) and points at the durable record', () => {
+    const long = 'x'.repeat(AWAIT_ERROR_MAX_CHARS + 500)
+    const out = truncateAwaitError(long)
+    expect(out.length).toBeLessThan(long.length)
+    expect(out.startsWith('x'.repeat(AWAIT_ERROR_MAX_CHARS))).toBe(true)
+    expect(out).toContain('full error in the run record')
   })
 })
 
