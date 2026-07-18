@@ -575,6 +575,7 @@ describe('docs-contract — operator env vars are documented', () => {
     ['OBSERVE_LAUNCH_PLUGIN_DIRS', 'launcher→server plumbing: set BY wt-observe for the delegated session, never by an operator'],
     ['CANARY_CAPTURE', 'upgrade-canary fixture-capture knob — repo-dev tooling, not operator surface'],
     ['SDK_PROBE_SENTINEL_DIR', 'smoke-battery probe plumbing, set by the battery itself'],
+    ['WT_CAPABILITY_REGISTRY', 'machine capability-registry path override (capability-registry.ts, card I2); the operator-facing registry doc — format, location, examples — is the I6 deliverable (capability-registry-design.md §10). Remove this exemption when I6 documents it.'],
   ])
 
   /** Platform/harness-ambient vocabulary — someone else's surface, not ours. */
