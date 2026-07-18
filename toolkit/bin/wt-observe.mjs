@@ -1120,11 +1120,12 @@ function extractObservers(args) {
 }
 
 // packages/debugger/src/launch-body.ts
-function buildLaunchBody(script, args, requesterCwd) {
+function buildLaunchBody(script, args, requesterCwd, commRoot) {
   return {
     script,
     ...args !== void 0 ? { args } : {},
-    ...requesterCwd.trim().length > 0 ? { requesterCwd } : {}
+    ...requesterCwd.trim().length > 0 ? { requesterCwd } : {},
+    ...commRoot !== void 0 && commRoot.trim().length > 0 ? { commRoot } : {}
   };
 }
 function safeRequesterCwd(cwdFn) {
@@ -2027,7 +2028,7 @@ async function applyObserverResolution(input) {
 `);
   return { ...args, observers: owned.observers };
 }
-async function cmdLaunch(ctx, script, rawArgs, sourceFlag, launchTimeoutMs) {
+async function cmdLaunch(ctx, script, rawArgs, sourceFlag, launchTimeoutMs, commRoot) {
   if (script === void 0) throw new Error("usage: " + SYNOPSIS.launch);
   let args;
   if (rawArgs !== void 0) {
@@ -2079,7 +2080,7 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag, launchTimeoutMs) {
   }
   let res;
   try {
-    res = await api(port, token, `${prefix}/api/launch`, { method: "POST", body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, launchTimeoutMs);
+    res = await api(port, token, `${prefix}/api/launch`, { method: "POST", body: JSON.stringify(buildLaunchBody(script, args, requesterCwd, commRoot)) }, launchTimeoutMs);
   } catch (err) {
     const name = err instanceof Error ? err.name : "";
     if (name === "TimeoutError" || name === "AbortError") {
@@ -2468,13 +2469,13 @@ var SYNOPSIS = {
   stop: "wt-observe stop",
   status: "wt-observe status",
   prune: "wt-observe prune [--run <id> | --name-prefix <p>]... [--older-than <dur>] [--yes]",
-  launch: "wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>]",
+  launch: "wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>] [--comm-root <dir>]",
   await: "wt-observe await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]",
   resume: "wt-observe resume <runId> [--source <label|dir>]",
   config: "wt-observe config [show | add-source <dir> | remove-source <dir> | add-remote <url> [--token <t> | --token-file <p>] [--label <l>] | remove-remote <url>]"
 };
 var HELP_DETAIL = {
-  launch: "  <workflow.js> is resolved by NAME against the server's OBSERVE_WORKFLOWS_DIR\n  (a registered artifact name, not an arbitrary path).\n  Capabilities: an adjacent <workflow>.capabilities.json sidecar is auto-detected\n  and its declared needs are resolved against the machine capability registry\n  (WT_CAPABILITY_REGISTRY, else the XDG default). --args may carry a capabilities\n  or observers section that composes over the sidecar resolution."
+  launch: "  <workflow.js> is resolved by NAME against the server's OBSERVE_WORKFLOWS_DIR\n  (a registered artifact name, not an arbitrary path).\n  Capabilities: an adjacent <workflow>.capabilities.json sidecar is auto-detected\n  and its declared needs are resolved against the machine capability registry\n  (WT_CAPABILITY_REGISTRY, else the XDG default). --args may carry a capabilities\n  or observers section that composes over the sidecar resolution.\n  --comm-root <dir> sets the wt-comm ROOT for a hint-emitting observer (the server\n  appends the runId and validates the root against its OBSERVE_COMM_ALLOWED_ROOTS);\n  absent = wt-comm hint delivery is not enabled."
 };
 function usageText(verb) {
   if (verb) {
@@ -2517,7 +2518,8 @@ async function main(argv = process.argv.slice(2)) {
         argv[1],
         flagValue(argv, "args"),
         flagValue(argv, "source"),
-        resolveLaunchTimeoutMs(flagValue(argv, "launch-timeout-s"), process.env["OBSERVE_LAUNCH_TIMEOUT_MS"])
+        resolveLaunchTimeoutMs(flagValue(argv, "launch-timeout-s"), process.env["OBSERVE_LAUNCH_TIMEOUT_MS"]),
+        flagValue(argv, "comm-root")
       );
     else if (cmd === "await") {
       const timeoutS = Number(flagValue(argv, "timeout-s") ?? AWAIT_DEFAULT_TIMEOUT_S) || AWAIT_DEFAULT_TIMEOUT_S;

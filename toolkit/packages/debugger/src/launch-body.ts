@@ -7,14 +7,25 @@
 // old servers (unknown field ignored / never sent) and new ones (Delegated fallback).
 
 /** Body for `POST /api/launch`: `script` always, `args` only when the caller passed some
- *  (undefined = "no --args flag"; null/false are real JSON args and go through), and
+ *  (undefined = "no --args flag"; null/false are real JSON args and go through),
  *  `requesterCwd` only when it is a non-degenerate path (sent VERBATIM — the server owns
- *  slugging/normalization; trimming here would corrupt meaningful paths). */
-export function buildLaunchBody(script: string, args: unknown, requesterCwd: string): Record<string, unknown> {
+ *  slugging/normalization; trimming here would corrupt meaningful paths), and `commRoot`
+ *  (the `--comm-root` flag) only when non-empty. `commRoot` is the wt-comm ROOT under which
+ *  a hint-emitting observer's per-run arc dir lives; the SERVER appends the runId itself and
+ *  validates the root against its OBSERVE_COMM_ALLOWED_ROOTS allowlist (400 when outside it,
+ *  or a non-empty-string contract like requesterCwd) — so absent = wt-comm hint delivery is
+ *  simply not enabled, the compatible degrade. Sent VERBATIM for the same reason as cwd. */
+export function buildLaunchBody(
+  script: string,
+  args: unknown,
+  requesterCwd: string,
+  commRoot?: string,
+): Record<string, unknown> {
   return {
     script,
     ...(args !== undefined ? { args } : {}),
     ...(requesterCwd.trim().length > 0 ? { requesterCwd } : {}),
+    ...(commRoot !== undefined && commRoot.trim().length > 0 ? { commRoot } : {}),
   }
 }
 

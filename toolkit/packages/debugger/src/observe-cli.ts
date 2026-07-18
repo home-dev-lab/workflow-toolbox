@@ -973,7 +973,7 @@ async function applyObserverResolution(input: { args: unknown; requesterCwd: str
  *  /api/launch (source-prefixed on a hub), print {runId}. The id is the workflow's
  *  filename under the server's allowlisted roots (GET /api/workflows lists them —
  *  echoed here on an unknown id). */
-async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string | undefined, sourceFlag: string | undefined, launchTimeoutMs: number): Promise<void> {
+async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string | undefined, sourceFlag: string | undefined, launchTimeoutMs: number, commRoot: string | undefined): Promise<void> {
   if (script === undefined) throw new Error('usage: ' + SYNOPSIS.launch)
   let args: unknown
   if (rawArgs !== undefined) {
@@ -1063,7 +1063,7 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
   }
   let res: Response
   try {
-    res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, launchTimeoutMs)
+    res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify(buildLaunchBody(script, args, requesterCwd, commRoot)) }, launchTimeoutMs)
   } catch (err) {
     // A slow server-side SDK session spawn (concurrent load) can exceed the request
     // timeout: the fetch aborts (AbortSignal.timeout → TimeoutError) with the run's start
@@ -1598,7 +1598,7 @@ const SYNOPSIS = {
   stop: 'wt-observe stop',
   status: 'wt-observe status',
   prune: 'wt-observe prune [--run <id> | --name-prefix <p>]... [--older-than <dur>] [--yes]',
-  launch: 'wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>]',
+  launch: 'wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>] [--comm-root <dir>]',
   await: 'wt-observe await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]',
   resume: 'wt-observe resume <runId> [--source <label|dir>]',
   config:
@@ -1617,7 +1617,10 @@ const HELP_DETAIL: Partial<Record<Verb, string>> = {
     '  Capabilities: an adjacent <workflow>.capabilities.json sidecar is auto-detected\n' +
     '  and its declared needs are resolved against the machine capability registry\n' +
     '  (WT_CAPABILITY_REGISTRY, else the XDG default). --args may carry a capabilities\n' +
-    '  or observers section that composes over the sidecar resolution.',
+    '  or observers section that composes over the sidecar resolution.\n' +
+    '  --comm-root <dir> sets the wt-comm ROOT for a hint-emitting observer (the server\n' +
+    '  appends the runId and validates the root against its OBSERVE_COMM_ALLOWED_ROOTS);\n' +
+    '  absent = wt-comm hint delivery is not enabled.',
 }
 
 /** Usage text. No verb → the global multi-verb synopsis; a known verb → that verb's
@@ -1666,6 +1669,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         flagValue(argv, 'args'),
         flagValue(argv, 'source'),
         resolveLaunchTimeoutMs(flagValue(argv, 'launch-timeout-s'), process.env['OBSERVE_LAUNCH_TIMEOUT_MS']),
+        flagValue(argv, 'comm-root'),
       )
     else if (cmd === 'await') {
       const timeoutS = Number(flagValue(argv, 'timeout-s') ?? AWAIT_DEFAULT_TIMEOUT_S) || AWAIT_DEFAULT_TIMEOUT_S

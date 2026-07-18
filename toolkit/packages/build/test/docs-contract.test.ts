@@ -124,6 +124,7 @@ const EXTERNAL_VOCABULARY = new Set([
 const COMPANION_VOCABULARY = new Set([
   'spikeDir', // observatory per-source pipeline/gate state dir (known-issues #4)
   'OBSERVE_WORKFLOWS_DIR', // env var the observatory server reads; launcher only forwards it
+  'OBSERVE_COMM_ALLOWED_ROOTS', // env var the observatory server reads to allow/deny a launch `commRoot`; the launcher only passes the root, never reads this
   'lastArtifactPath', // observatory pipeline-manifest field the loop runner-contract threads across iterations (orchestrator-pipelines.md)
 ])
 

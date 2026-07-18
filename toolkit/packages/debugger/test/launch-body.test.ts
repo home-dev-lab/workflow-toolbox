@@ -35,6 +35,27 @@ describe('buildLaunchBody', () => {
   it('keeps a real cwd verbatim (no trimming of meaningful paths)', () => {
     expect(buildLaunchBody('wf.js', undefined, '/a b/c')).toEqual({ script: 'wf.js', requesterCwd: '/a b/c' })
   })
+
+  // commRoot (`--comm-root`, card #1821869519065319057): the wt-comm ROOT for a
+  // hint-emitting observer. Sent VERBATIM (server appends the runId + validates against
+  // OBSERVE_COMM_ALLOWED_ROOTS); absent/empty = wt-comm hint delivery not enabled.
+  it('omits commRoot when not passed (the 3-arg call is unchanged)', () => {
+    expect(buildLaunchBody('wf.js', undefined, '/p')).toEqual({ script: 'wf.js', requesterCwd: '/p' })
+    expect(buildLaunchBody('wf.js', undefined, '/p', undefined)).toEqual({ script: 'wf.js', requesterCwd: '/p' })
+  })
+
+  it('includes commRoot when a non-empty absolute root is passed (verbatim)', () => {
+    expect(buildLaunchBody('wf.js', undefined, '/p', '/home/u/.local/state/wt-observe/comm')).toEqual({
+      script: 'wf.js',
+      requesterCwd: '/p',
+      commRoot: '/home/u/.local/state/wt-observe/comm',
+    })
+  })
+
+  it('omits commRoot when empty or whitespace-only (server 400s an empty string — absent is the compatible degrade)', () => {
+    expect(buildLaunchBody('wf.js', undefined, '/p', '')).toEqual({ script: 'wf.js', requesterCwd: '/p' })
+    expect(buildLaunchBody('wf.js', undefined, '/p', '   ')).toEqual({ script: 'wf.js', requesterCwd: '/p' })
+  })
 })
 
 // TEST-LOCK for the pr-review findings on 98d77bc (bundle review): the
