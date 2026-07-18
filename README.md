@@ -593,7 +593,7 @@ The launcher is a thin lifecycle CLI (`node plugin/bin/wt-observe.mjs …`):
 | `wt-observe status` | Report whether a server is running, on which port, serving which sources. The default when no verb is given. |
 | `wt-observe start [--source <dir>]… [--watch] [--enable-launch]` | Start the server (or adopt one already running on the preferred port). `--enable-launch` opts into delegated workflow launches. |
 | `wt-observe stop` | Stop the server this launcher owns (by its pidfile). |
-| `wt-observe launch <artifact> [--args <json>] [--source <label>]` | Run a workflow artifact through a delegated headless session (requires a server started with `--enable-launch`). |
+| `wt-observe launch <artifact> [--args <json>] [--source <label>] [--launch-timeout-s N]` | Run a workflow artifact through a delegated headless session (requires a server started with `--enable-launch`). `--launch-timeout-s` raises the default 30s wait for the server to accept the run — useful when the server is under concurrent load. |
 | `wt-observe await <runId> [--timeout-s N] [--poll-s N]` | Block until a launched run completes; the exit code mirrors the run outcome. |
 | `wt-observe resume <runId> [--source <label>]` | Explicitly relaunch a run that settled as failed, replaying its cached agent work (requires a server started with `--enable-launch`); bounded to a couple of attempts per run. |
 | `wt-observe prune` | Delete old run records — dry-run by default, `--yes` to apply. |
@@ -605,7 +605,9 @@ Operator environment variables: `DWT_OBSERVE_ROOT` points the launcher at a
 specific Workflow Observatory checkout (default: sibling-resolve next to this
 repo, then the installed app); `OBSERVE_UI_SERVER_PORT` overrides the port the
 launcher probes and starts the server on; `OBSERVE_WORKFLOWS_DIR` adds workflow
-roots the server offers as launchable sources.
+roots the server offers as launchable sources; `OBSERVE_LAUNCH_TIMEOUT_MS` sets
+the `wt-observe launch` request timeout in milliseconds (default 30000; the
+`--launch-timeout-s` flag, in seconds, takes precedence).
 
 ## License
 

@@ -35,3 +35,22 @@ export function safeRequesterCwd(cwdFn: () => string): { cwd: string; note: stri
     }
   }
 }
+
+/** Default `POST /api/launch` request timeout (ms). The server's SDK session spawn can
+ *  exceed this under concurrent load — a timed-out request starts NO run (card
+ *  #1821667078139020890). The `--launch-timeout-s` flag / OBSERVE_LAUNCH_TIMEOUT_MS env
+ *  extend it. */
+export const LAUNCH_DEFAULT_TIMEOUT_MS = 30_000
+
+/** Effective `POST /api/launch` timeout in ms: the `--launch-timeout-s` flag (SECONDS)
+ *  wins over the OBSERVE_LAUNCH_TIMEOUT_MS env (MILLISECONDS), else the 30s default. A
+ *  non-numeric or non-positive value in EITHER channel is IGNORED (falls through) — never
+ *  a 0/NaN that would abort the request instantly (the same sanitize-both-layers posture
+ *  the server's own run-timeout knobs use). */
+export function resolveLaunchTimeoutMs(flagSeconds: string | undefined, envMs: string | undefined): number {
+  const fromFlag = flagSeconds === undefined ? NaN : Number(flagSeconds) * 1000
+  if (Number.isFinite(fromFlag) && fromFlag > 0) return fromFlag
+  const fromEnv = envMs === undefined ? NaN : Number(envMs)
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv
+  return LAUNCH_DEFAULT_TIMEOUT_MS
+}

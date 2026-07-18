@@ -1137,6 +1137,14 @@ function safeRequesterCwd(cwdFn) {
     };
   }
 }
+var LAUNCH_DEFAULT_TIMEOUT_MS = 3e4;
+function resolveLaunchTimeoutMs(flagSeconds, envMs) {
+  const fromFlag = flagSeconds === void 0 ? NaN : Number(flagSeconds) * 1e3;
+  if (Number.isFinite(fromFlag) && fromFlag > 0) return fromFlag;
+  const fromEnv = envMs === void 0 ? NaN : Number(envMs);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+  return LAUNCH_DEFAULT_TIMEOUT_MS;
+}
 
 // packages/debugger/src/spawn-ready.ts
 var BANNER_RE = /app \+ run discovery on http:\/\/127\.0\.0\.1:(\d+)/g;
@@ -2019,8 +2027,8 @@ async function applyObserverResolution(input) {
 `);
   return { ...args, observers: owned.observers };
 }
-async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
-  if (script === void 0) throw new Error("usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]");
+async function cmdLaunch(ctx, script, rawArgs, sourceFlag, launchTimeoutMs) {
+  if (script === void 0) throw new Error("usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>]");
   let args;
   if (rawArgs !== void 0) {
     try {
@@ -2069,7 +2077,18 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
 `
     );
   }
-  const res = await api(port, token, `${prefix}/api/launch`, { method: "POST", body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, 3e4);
+  let res;
+  try {
+    res = await api(port, token, `${prefix}/api/launch`, { method: "POST", body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, launchTimeoutMs);
+  } catch (err) {
+    const name = err instanceof Error ? err.name : "";
+    if (name === "TimeoutError" || name === "AbortError") {
+      throw new Error(
+        `launch request timed out after ${Math.round(launchTimeoutMs / 1e3)}s \u2014 the server did not accept the run in time (likely under concurrent load). From here the run's start is UNKNOWN: it may still be spawning. Retrying the SAME "${script}" with the SAME --args is safe \u2014 the server dedups an overlapping identical launch onto the one run (no double-launch). To wait longer, re-run with --launch-timeout-s <N> or set OBSERVE_LAUNCH_TIMEOUT_MS=<ms>. Check \`wt-observe status\` (or the UI) to see whether a run started.`
+      );
+    }
+    throw err;
+  }
   const body = await res.json().catch(() => null);
   if (!res.ok) {
     const code = typeof body === "object" && body !== null ? body["code"] : void 0;
@@ -2455,7 +2474,14 @@ async function main(argv = process.argv.slice(2)) {
     } else if (cmd === "stop") await cmdStop(ctx);
     else if (cmd === "status") await cmdStatus(ctx);
     else if (cmd === "prune") return await cmdPrune(argv);
-    else if (cmd === "launch") await cmdLaunch(ctx, argv[1], flagValue(argv, "args"), flagValue(argv, "source"));
+    else if (cmd === "launch")
+      await cmdLaunch(
+        ctx,
+        argv[1],
+        flagValue(argv, "args"),
+        flagValue(argv, "source"),
+        resolveLaunchTimeoutMs(flagValue(argv, "launch-timeout-s"), process.env["OBSERVE_LAUNCH_TIMEOUT_MS"])
+      );
     else if (cmd === "await") {
       const timeoutS = Number(flagValue(argv, "timeout-s") ?? AWAIT_DEFAULT_TIMEOUT_S) || AWAIT_DEFAULT_TIMEOUT_S;
       const pollS = Number(flagValue(argv, "poll-s") ?? AWAIT_DEFAULT_POLL_S) || AWAIT_DEFAULT_POLL_S;
@@ -2476,7 +2502,7 @@ async function main(argv = process.argv.slice(2)) {
       else await cmdConfigRemoveRemote(parsed.url);
     } else {
       process.stderr.write(
-        "usage: wt-observe [start [--source <dir>]... [--watch] [--enable-launch]|stop|status|launch <workflow.js> [--args <json>] [--source <label|dir>]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|resume <runId> [--source <label|dir>]|config [show|add-source <dir>|remove-source <dir>|add-remote <url> [--token <t>|--token-file <p>] [--label <l>]|remove-remote <url>]]\n"
+        "usage: wt-observe [start [--source <dir>]... [--watch] [--enable-launch]|stop|status|launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s N]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|resume <runId> [--source <label|dir>]|config [show|add-source <dir>|remove-source <dir>|add-remote <url> [--token <t>|--token-file <p>] [--label <l>]|remove-remote <url>]]\n"
       );
       return 2;
     }

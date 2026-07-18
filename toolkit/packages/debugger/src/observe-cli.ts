@@ -73,7 +73,7 @@ import { loadCapabilityRegistry, probeProviders, type CapabilityRegistry, type C
 import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, inlineObserverRequires, observerDefinitionFileWarnings, ownObserverResolutions, resolveObserverRequires, sidecarPathFor } from './launch-capabilities.js'
 import { isRecord } from './validator-shared.js'
 import { extractObservers } from './observer-def.js'
-import { buildLaunchBody, safeRequesterCwd } from './launch-body.js'
+import { buildLaunchBody, safeRequesterCwd, resolveLaunchTimeoutMs } from './launch-body.js'
 import { awaitSpawnedServerReady } from './spawn-ready.js'
 import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
 import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
@@ -973,8 +973,8 @@ async function applyObserverResolution(input: { args: unknown; requesterCwd: str
  *  /api/launch (source-prefixed on a hub), print {runId}. The id is the workflow's
  *  filename under the server's allowlisted roots (GET /api/workflows lists them —
  *  echoed here on an unknown id). */
-async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string | undefined, sourceFlag: string | undefined): Promise<void> {
-  if (script === undefined) throw new Error('usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]')
+async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string | undefined, sourceFlag: string | undefined, launchTimeoutMs: number): Promise<void> {
+  if (script === undefined) throw new Error('usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>]')
   let args: unknown
   if (rawArgs !== undefined) {
     try {
@@ -1061,7 +1061,28 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
       `capabilities section: ${Object.keys(composeCapabilityOptions(finalCap.spec)).join(', ') || '(empty)'} — needs a server with capabilities composition; older servers ignore it\n`,
     )
   }
-  const res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, 30_000)
+  let res: Response
+  try {
+    res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, launchTimeoutMs)
+  } catch (err) {
+    // A slow server-side SDK session spawn (concurrent load) can exceed the request
+    // timeout: the fetch aborts (AbortSignal.timeout → TimeoutError) with the run's start
+    // UNKNOWN from here (card #1821667078139020890). Give the honest, actionable message
+    // instead of a raw abort. Retrying the SAME script+args is SAFE — the server's launch
+    // guard (observatory launch-guard.ts) dedups an overlapping identical launch onto the
+    // one run (acquire()/release() spans the whole run), so it never double-launches.
+    const name = err instanceof Error ? err.name : ''
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      throw new Error(
+        `launch request timed out after ${Math.round(launchTimeoutMs / 1000)}s — the server did not accept the run in time (likely under concurrent load). ` +
+          `From here the run's start is UNKNOWN: it may still be spawning. ` +
+          `Retrying the SAME "${script}" with the SAME --args is safe — the server dedups an overlapping identical launch onto the one run (no double-launch). ` +
+          `To wait longer, re-run with --launch-timeout-s <N> or set OBSERVE_LAUNCH_TIMEOUT_MS=<ms>. ` +
+          `Check \`wt-observe status\` (or the UI) to see whether a run started.`,
+      )
+    }
+    throw err
+  }
   const body: unknown = await res.json().catch(() => null)
   if (!res.ok) {
     const code = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['code'] : undefined
@@ -1579,7 +1600,14 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     } else if (cmd === 'stop') await cmdStop(ctx)
     else if (cmd === 'status') await cmdStatus(ctx)
     else if (cmd === 'prune') return await cmdPrune(argv)
-    else if (cmd === 'launch') await cmdLaunch(ctx, argv[1], flagValue(argv, 'args'), flagValue(argv, 'source'))
+    else if (cmd === 'launch')
+      await cmdLaunch(
+        ctx,
+        argv[1],
+        flagValue(argv, 'args'),
+        flagValue(argv, 'source'),
+        resolveLaunchTimeoutMs(flagValue(argv, 'launch-timeout-s'), process.env['OBSERVE_LAUNCH_TIMEOUT_MS']),
+      )
     else if (cmd === 'await') {
       const timeoutS = Number(flagValue(argv, 'timeout-s') ?? AWAIT_DEFAULT_TIMEOUT_S) || AWAIT_DEFAULT_TIMEOUT_S
       const pollS = Number(flagValue(argv, 'poll-s') ?? AWAIT_DEFAULT_POLL_S) || AWAIT_DEFAULT_POLL_S
@@ -1600,7 +1628,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     } else {
       process.stderr.write(
         'usage: wt-observe [start [--source <dir>]... [--watch] [--enable-launch]|stop|status|' +
-          'launch <workflow.js> [--args <json>] [--source <label|dir>]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|' +
+          'launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s N]|await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]|' +
           'resume <runId> [--source <label|dir>]|' +
           'config [show|add-source <dir>|remove-source <dir>|add-remote <url> [--token <t>|--token-file <p>] [--label <l>]|remove-remote <url>]]\n',
       )
