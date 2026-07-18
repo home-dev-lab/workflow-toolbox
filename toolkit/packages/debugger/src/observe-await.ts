@@ -60,16 +60,32 @@ export function classifyAwaitTick(obs: AwaitObservation): AwaitVerdict {
   return obs.elapsedMs > obs.missingGraceMs ? { kind: 'missing' } : { kind: 'pending' }
 }
 
-/** Defensive pull of { status, io.result } from a GET /api/runs/:runId payload — the
- *  awaited run's verdict tail. Never throws: a malformed payload degrades to nulls (the
- *  CLI still reports the terminal STATE it detected, just without the result body). */
-export function extractAwaitOutcome(recall: unknown): { status: string | null; result: unknown } {
-  if (typeof recall !== 'object' || recall === null) return { status: null, result: null }
+/** Defensive pull of { status, io.result, error } from a GET /api/runs/:runId payload — the
+ *  awaited run's verdict tail. `error` is the run-level failure reason (journal.error, surfaced
+ *  by the recall endpoint since card #1821485224316372412) — the ONLY human-readable "why" for a
+ *  boot/input failure that spawns zero agents (no agent transcript ever carries it). Never throws:
+ *  a malformed payload degrades to nulls (the CLI still reports the terminal STATE it detected,
+ *  just without the result body or the reason). */
+export function extractAwaitOutcome(recall: unknown): { status: string | null; result: unknown; error: string | null } {
+  if (typeof recall !== 'object' || recall === null) return { status: null, result: null, error: null }
   const r = recall as Record<string, unknown>
   const status = typeof r['status'] === 'string' ? r['status'] : null
   const io = r['io']
   const result = typeof io === 'object' && io !== null ? ((io as Record<string, unknown>)['result'] ?? null) : null
-  return { status, result }
+  const error = typeof r['error'] === 'string' ? r['error'] : null
+  return { status, result, error }
+}
+
+/** Cap for the `error` reason echoed by `wt-observe await` (its stdout JSON field + the human
+ *  stderr line). The recall `error` carries the workflow's full failure string INCLUDING its
+ *  stack, which is unbounded — the CLI shows a bounded head and points at the run record for the
+ *  rest (the complete string, stack and all, always survives durably there). */
+export const AWAIT_ERROR_MAX_CHARS = 2000
+
+export function truncateAwaitError(message: string, max = AWAIT_ERROR_MAX_CHARS): string {
+  return message.length <= max
+    ? message
+    : `${message.slice(0, max)}… [truncated ${message.length - max} chars — full error in the run record]`
 }
 
 /** Stable exit-code contract (documented in the CLI usage string): 0 = completed,
