@@ -86,6 +86,7 @@ import {
   SourceResolutionError,
   type ResolvedSource,
   type SourcesListEntry,
+  type SourceSearchResult,
 } from './source-resolve.js'
 import { resolveConfigDir, resolveDir } from './config-dir.js'
 import {
@@ -1104,23 +1105,57 @@ async function fetchRecall(port: number, token: string, prefix: string, runId: s
  *  of scope here, no server-side changes in this fix) for a live-registry or recall hit.
  *  Used by `await` ONLY when the run wasn't found under its (default-guessed) active
  *  source, so the common already-correct case never pays this cost. */
-async function searchLocalSources(port: number, token: string, keys: readonly string[], runId: string) {
+async function searchLocalSources(
+  port: number,
+  token: string,
+  keys: readonly string[],
+  runId: string,
+): Promise<{ found: SourceSearchResult; unprobed: string[] }> {
   const hits: string[] = []
+  const unprobed: string[] = []
   await Promise.all(
     keys.map(async (key) => {
       const p = `/s/${key}`
-      const live = await api(port, token, `${p}/api/runs/live`)
-        .then((r) => (r.ok ? (r.json() as Promise<{ runId: string }[]>) : []))
-        .catch(() => [] as { runId: string }[])
-      if (live.some((e) => e.runId === runId)) {
+      // Track whether each endpoint was actually REACHED. A timeout/5xx under concurrent
+      // load is UNKNOWN, never a confirmed "run not here" — conflating the two is the
+      // false-missing this fixes (card #1821784328170899045): the same never-latch
+      // discipline source-resolve.ts already applies to resolveSource.
+      let liveReached = false
+      let inLive = false
+      try {
+        const r = await api(port, token, `${p}/api/runs/live`)
+        if (r.ok) {
+          liveReached = true
+          const list = (await r.json().catch(() => null)) as { runId: string }[] | null
+          inLive = Array.isArray(list) && list.some((e) => e.runId === runId)
+        }
+      } catch {
+        /* unreachable — liveReached stays false */
+      }
+      if (inLive) {
         hits.push(key)
         return
       }
-      const recall = await fetchRecall(port, token, p, runId)
-      if (recall !== null) hits.push(key)
+      // Recall: 200 = the run has a record here (hit); 404 = a CONFIRMED miss; anything
+      // else (timeout/5xx) leaves the source unprobed.
+      let recallReached = false
+      try {
+        const r = await api(port, token, `${p}/api/runs/${encodeURIComponent(runId)}`, {}, 10_000)
+        if (r.ok) {
+          hits.push(key)
+          return
+        }
+        if (r.status === 404) recallReached = true
+      } catch {
+        /* unreachable — recallReached stays false */
+      }
+      // Not found here. Only a source whose BOTH endpoints gave a definitive answer is a
+      // confirmed miss; if either could not be reached, its status is UNKNOWN (unprobed),
+      // so the caller must not read a `none` search as "the run is nowhere".
+      if (!(liveReached && recallReached)) unprobed.push(key)
     }),
   )
-  return classifySourceSearch(hits)
+  return { found: classifySourceSearch(hits), unprobed }
 }
 
 /** `wt-observe await <runId>` — block until the run reaches a terminal state, then print
@@ -1168,18 +1203,20 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
       recall = await fetchRecall(port, token, prefix, runId)
       recallStatus = extractAwaitOutcome(recall).status
     }
+    let searchUnprobed: string[] = []
     if (entry === null && recall === null && searchableKeys.length > 1) {
       const search = await searchLocalSources(port, token, searchableKeys, runId)
-      if (search.kind === 'unique' && search.key !== activeKey) {
-        process.stderr.write(`[wt-observe await] "${runId}" found under source "${search.key}" (default was "${String(activeKey)}") — switching.\n`)
-        activeKey = search.key
-        prefix = `/s/${search.key}`
+      searchUnprobed = search.unprobed
+      if (search.found.kind === 'unique' && search.found.key !== activeKey) {
+        process.stderr.write(`[wt-observe await] "${runId}" found under source "${search.found.key}" (default was "${String(activeKey)}") — switching.\n`)
+        activeKey = search.found.key
+        prefix = `/s/${search.found.key}`
         continue // re-tick immediately under the corrected prefix, no sleep burned
       }
-      if (search.kind === 'ambiguous' && !warnedAmbiguous) {
+      if (search.found.kind === 'ambiguous' && !warnedAmbiguous) {
         warnedAmbiguous = true
         process.stderr.write(
-          `[wt-observe await] "${runId}" ambiguously found under multiple sources (${search.keys.join(', ')}) — refusing to guess, staying on "${String(activeKey)}".\n`,
+          `[wt-observe await] "${runId}" ambiguously found under multiple sources (${search.found.keys.join(', ')}) — refusing to guess, staying on "${String(activeKey)}".\n`,
         )
       }
     }
@@ -1189,6 +1226,9 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
       elapsedMs: Date.now() - startedAt,
       timeoutMs: timeoutS * 1000,
       missingGraceMs: AWAIT_MISSING_GRACE_MS,
+      // A run "visible nowhere" while a local source could not be reached this tick has an
+      // UNKNOWN absence — keeps the tick pending instead of a false `missing` (never-latch).
+      sourcesUnprobed: searchUnprobed.length > 0,
     })
     if (verdict.kind === 'pending') {
       await new Promise((r) => setTimeout(r, pollS * 1000))
@@ -1220,8 +1260,18 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
       if ('error' in reasonPart) process.stderr.write(`[wt-observe await] ${runId} ${status}: ${reasonPart.error}\n`)
       return awaitExitCode({ kind: 'done', status })
     }
-    // timeout / missing — one machine-readable error line, distinct exit codes.
-    process.stdout.write(`${JSON.stringify({ runId, error: verdict.kind })}\n`)
+    // timeout / missing — one machine-readable error line, distinct exit codes. When the
+    // multi-source search could not reach some local sources this tick, NAME them: the run
+    // may be live under one of them and the verdict is an "unknown", not a confident
+    // absence (card #1821784328170899045). Pass --source to target it directly, or retry.
+    if (searchUnprobed.length > 0) {
+      process.stderr.write(
+        `[wt-observe await] ${runId} ${verdict.kind}: could not probe source(s) ${searchUnprobed.join(', ')} — the run may be live under one of them (retry, or pass --source <label|dir>).\n`,
+      )
+      process.stdout.write(`${JSON.stringify({ runId, error: verdict.kind, unprobedSources: searchUnprobed })}\n`)
+    } else {
+      process.stdout.write(`${JSON.stringify({ runId, error: verdict.kind })}\n`)
+    }
     return awaitExitCode(verdict)
   }
 }

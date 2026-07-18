@@ -1336,6 +1336,7 @@ function classifyAwaitTick(obs) {
   }
   if (obs.elapsedMs > obs.timeoutMs) return { kind: "timeout" };
   if (obs.recallStatus !== null) return { kind: "pending" };
+  if (obs.sourcesUnprobed === true) return { kind: "pending" };
   return obs.elapsedMs > obs.missingGraceMs ? { kind: "missing" } : { kind: "pending" };
 }
 function extractAwaitOutcome(recall) {
@@ -2096,19 +2097,39 @@ async function fetchRecall(port, token, prefix, runId) {
 }
 async function searchLocalSources(port, token, keys, runId) {
   const hits = [];
+  const unprobed = [];
   await Promise.all(
     keys.map(async (key) => {
       const p = `/s/${key}`;
-      const live = await api(port, token, `${p}/api/runs/live`).then((r) => r.ok ? r.json() : []).catch(() => []);
-      if (live.some((e) => e.runId === runId)) {
+      let liveReached = false;
+      let inLive = false;
+      try {
+        const r = await api(port, token, `${p}/api/runs/live`);
+        if (r.ok) {
+          liveReached = true;
+          const list = await r.json().catch(() => null);
+          inLive = Array.isArray(list) && list.some((e) => e.runId === runId);
+        }
+      } catch {
+      }
+      if (inLive) {
         hits.push(key);
         return;
       }
-      const recall = await fetchRecall(port, token, p, runId);
-      if (recall !== null) hits.push(key);
+      let recallReached = false;
+      try {
+        const r = await api(port, token, `${p}/api/runs/${encodeURIComponent(runId)}`, {}, 1e4);
+        if (r.ok) {
+          hits.push(key);
+          return;
+        }
+        if (r.status === 404) recallReached = true;
+      } catch {
+      }
+      if (!(liveReached && recallReached)) unprobed.push(key);
     })
   );
-  return classifySourceSearch(hits);
+  return { found: classifySourceSearch(hits), unprobed };
 }
 async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
   if (runId === void 0) throw new Error("usage: wt-observe await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]");
@@ -2138,19 +2159,21 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
       recall = await fetchRecall(port, token, prefix, runId);
       recallStatus = extractAwaitOutcome(recall).status;
     }
+    let searchUnprobed = [];
     if (entry === null && recall === null && searchableKeys.length > 1) {
       const search = await searchLocalSources(port, token, searchableKeys, runId);
-      if (search.kind === "unique" && search.key !== activeKey) {
-        process.stderr.write(`[wt-observe await] "${runId}" found under source "${search.key}" (default was "${String(activeKey)}") \u2014 switching.
+      searchUnprobed = search.unprobed;
+      if (search.found.kind === "unique" && search.found.key !== activeKey) {
+        process.stderr.write(`[wt-observe await] "${runId}" found under source "${search.found.key}" (default was "${String(activeKey)}") \u2014 switching.
 `);
-        activeKey = search.key;
-        prefix = `/s/${search.key}`;
+        activeKey = search.found.key;
+        prefix = `/s/${search.found.key}`;
         continue;
       }
-      if (search.kind === "ambiguous" && !warnedAmbiguous) {
+      if (search.found.kind === "ambiguous" && !warnedAmbiguous) {
         warnedAmbiguous = true;
         process.stderr.write(
-          `[wt-observe await] "${runId}" ambiguously found under multiple sources (${search.keys.join(", ")}) \u2014 refusing to guess, staying on "${String(activeKey)}".
+          `[wt-observe await] "${runId}" ambiguously found under multiple sources (${search.found.keys.join(", ")}) \u2014 refusing to guess, staying on "${String(activeKey)}".
 `
         );
       }
@@ -2160,7 +2183,10 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
       recallStatus,
       elapsedMs: Date.now() - startedAt,
       timeoutMs: timeoutS * 1e3,
-      missingGraceMs: AWAIT_MISSING_GRACE_MS
+      missingGraceMs: AWAIT_MISSING_GRACE_MS,
+      // A run "visible nowhere" while a local source could not be reached this tick has an
+      // UNKNOWN absence — keeps the tick pending instead of a false `missing` (never-latch).
+      sourcesUnprobed: searchUnprobed.length > 0
     });
     if (verdict.kind === "pending") {
       await new Promise((r) => setTimeout(r, pollS * 1e3));
@@ -2182,8 +2208,17 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
 `);
       return awaitExitCode({ kind: "done", status });
     }
-    process.stdout.write(`${JSON.stringify({ runId, error: verdict.kind })}
+    if (searchUnprobed.length > 0) {
+      process.stderr.write(
+        `[wt-observe await] ${runId} ${verdict.kind}: could not probe source(s) ${searchUnprobed.join(", ")} \u2014 the run may be live under one of them (retry, or pass --source <label|dir>).
+`
+      );
+      process.stdout.write(`${JSON.stringify({ runId, error: verdict.kind, unprobedSources: searchUnprobed })}
 `);
+    } else {
+      process.stdout.write(`${JSON.stringify({ runId, error: verdict.kind })}
+`);
+    }
     return awaitExitCode(verdict);
   }
 }

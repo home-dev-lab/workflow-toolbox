@@ -21,6 +21,14 @@ export interface AwaitObservation {
   elapsedMs: number
   timeoutMs: number
   missingGraceMs: number
+  /** True when this tick's multi-source runId search left ≥1 LOCAL source UNPROBED — an
+   *  I/O failure reaching it (timeout/5xx under load), NOT a confirmed "run not here".
+   *  A run "visible nowhere" while a source could not be reached has UNKNOWN absence, so
+   *  it must never read as a confident `missing` (the never-latch discipline
+   *  source-resolve.ts already applies to `resolveSource`, card #1821784328170899045).
+   *  Absent/false on single-source servers and whenever every source was reached, so the
+   *  existing missing behavior is unchanged there. */
+  sourcesUnprobed?: boolean
 }
 
 export type AwaitVerdict = { kind: 'pending' } | { kind: 'done'; status: string } | { kind: 'missing' } | { kind: 'timeout' }
@@ -57,6 +65,12 @@ export function classifyAwaitTick(obs: AwaitObservation): AwaitVerdict {
   }
   if (obs.elapsedMs > obs.timeoutMs) return { kind: 'timeout' }
   if (obs.recallStatus !== null) return { kind: 'pending' } // running/pending on disk
+  // Visible nowhere. If this tick's multi-source runId search left a source UNPROBED (an
+  // I/O failure reaching it, not a confirmed miss), the run's absence is UNKNOWN — keep
+  // polling rather than assert a confident `missing` (never-latch, card
+  // #1821784328170899045). The overall timeout above still bounds the wait, so a source
+  // that never recovers ends the await as `timeout` (exit 3), never a false `missing`.
+  if (obs.sourcesUnprobed === true) return { kind: 'pending' }
   return obs.elapsedMs > obs.missingGraceMs ? { kind: 'missing' } : { kind: 'pending' }
 }
 

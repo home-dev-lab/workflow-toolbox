@@ -63,6 +63,22 @@ describe('classifyAwaitTick', () => {
     expect(classifyAwaitTick({ ...base, elapsedMs: 29_000 })).toEqual({ kind: 'pending' })
     expect(classifyAwaitTick({ ...base, elapsedMs: 30_001 })).toEqual({ kind: 'missing' })
   })
+
+  // Card #1821784328170899045 — the false-"missing" on a live hub run. Under concurrent
+  // load the multi-source runId search timed out on the run's real source, so its absence
+  // was UNKNOWN, yet `await` reported a confident `missing` (exit 4) and settle-watches
+  // acted on it. A source left UNPROBED must keep the tick pending, never assert missing.
+  it('past the grace window, an UNPROBED source keeps the run pending — never a false missing', () => {
+    expect(classifyAwaitTick({ ...base, elapsedMs: 30_001, sourcesUnprobed: true })).toEqual({ kind: 'pending' })
+  })
+
+  it('with every source reached (none unprobed), a run visible nowhere past grace is still missing', () => {
+    expect(classifyAwaitTick({ ...base, elapsedMs: 30_001, sourcesUnprobed: false })).toEqual({ kind: 'missing' })
+  })
+
+  it('the overall timeout still WINS over an unprobed source (honest give-up = timeout exit 3, not missing)', () => {
+    expect(classifyAwaitTick({ ...base, elapsedMs: 60_001, sourcesUnprobed: true })).toEqual({ kind: 'timeout' })
+  })
 })
 
 describe('extractAwaitOutcome', () => {
