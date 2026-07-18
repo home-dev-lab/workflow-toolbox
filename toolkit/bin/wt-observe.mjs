@@ -738,6 +738,11 @@ function containsCwdToken(value) {
   if (value !== null && typeof value === "object") return Object.values(value).some(containsCwdToken);
   return false;
 }
+function redactResolutionsForReport(resolutions) {
+  return resolutions.map(
+    (r) => "unresolved" in r ? r : { need: r.need, provider: r.provider, servers: Object.keys(r.mcpServers), tools: r.tools, ...r.protocolHint !== void 0 ? { protocolHint: r.protocolHint } : {} }
+  );
+}
 function collectNeeds(sidecar) {
   const needs = [];
   const roles = isRecord2(sidecar) ? sidecar.roles : void 0;
@@ -768,6 +773,24 @@ function mergeCapabilitiesSpecs(sidecarSpec, sidecarSkill, caller) {
   if (skill.skillOverrides !== void 0) merged.skillOverrides = skill.skillOverrides;
   return merged;
 }
+function observerDefinitionFileWarnings(observers, registryPresent) {
+  if (!registryPresent) return [];
+  const out = [];
+  for (const e of observers) {
+    if (isRecord2(e) && typeof e["definitionFile"] === "string") {
+      out.push(
+        `observer requires: '${e["definitionFile"]}' is a definitionFile \u2014 its abstract requires are NOT resolved launcher-side (only inline observer definitions are; a definitionFile's requires are resolved by the server). An unresolved required need becomes a server-side not-attach, never a launch failure.`
+      );
+    }
+  }
+  return out;
+}
+function foldCapabilitiesIntoArgs(args, capabilities, report, script) {
+  if (args !== void 0 && !isRecord2(args)) {
+    throw new Error(`workflow "${script}" has a capability sidecar but --args is not a JSON object \u2014 capabilities require object args`);
+  }
+  return { ...args ?? {}, capabilities, capabilitiesReport: report };
+}
 function resolveObserverRequires(requires, registry, availability, webAvailable, requesterCwd) {
   const resolved = resolveCapabilities(requires, registry, { availability, webAvailable });
   return resolved.map((r) => "unresolved" in r ? r : { ...r, mcpServers: substituteCwd(r.mcpServers, requesterCwd) });
@@ -792,7 +815,7 @@ function composeLaunchCapabilities(input) {
     capabilities = mergeCapabilitiesSpecs(projected.spec, skillLayer(sidecar), callerCapabilities);
   }
   const deduped = [...new Set(errors)];
-  return { capabilities: deduped.length > 0 ? null : capabilities, report: projected.report, errors: deduped };
+  return { capabilities: deduped.length > 0 ? null : capabilities, report: redactResolutionsForReport(projected.report), errors: deduped };
 }
 
 // packages/debugger/src/observer-def.ts
@@ -1887,8 +1910,10 @@ async function resolveSourcePrefix(port, token, health, wanted) {
     (ms) => new Promise((r) => setTimeout(r, ms))
   );
 }
+var WEB_AVAILABLE_V0 = true;
 async function applySidecarCapabilities(input) {
   const { port, token, prefix, script, args, callerCapabilities, requesterCwd } = input;
+  if (!input.sourceIsLocal) return args;
   let workflowPath;
   try {
     const list = await api(port, token, `${prefix}/api/workflows`).then(
@@ -1916,19 +1941,15 @@ async function applySidecarCapabilities(input) {
     throw new Error(`capability sidecar ${sidecarPath} is not valid JSON: ${e.message}`);
   }
   const { registry, availability } = await input.loadCapContext();
-  const composed = composeLaunchCapabilities({ sidecar, registry, availability, webAvailable: true, requesterCwd, callerCapabilities });
+  const composed = composeLaunchCapabilities({ sidecar, registry, availability, webAvailable: WEB_AVAILABLE_V0, requesterCwd, callerCapabilities });
   if (composed.errors.length > 0) {
     throw new Error(`capability sidecar ${sidecarPath} cannot be resolved for launch:
   - ${composed.errors.join("\n  - ")}`);
   }
-  if (args !== void 0 && !isRecord2(args)) {
-    throw new Error(`workflow "${script}" has a capability sidecar but --args is not a JSON object \u2014 capabilities require object args`);
-  }
-  const base = isRecord2(args) ? args : {};
   const roleCount = isRecord2(sidecar) && isRecord2(sidecar.roles) ? Object.keys(sidecar.roles).length : 0;
   process.stderr.write(`capability sidecar: resolved ${composed.report.length} need(s) across ${roleCount} role(s) from ${sidecarPath}
 `);
-  return { ...base, capabilities: composed.capabilities, capabilitiesReport: composed.report };
+  return foldCapabilitiesIntoArgs(args, composed.capabilities, composed.report, script);
 }
 function inlineObserverRequires(entry) {
   if (!isRecord2(entry) || !isRecord2(entry["definition"])) return null;
@@ -1939,14 +1960,28 @@ async function applyObserverResolution(input) {
   const { args, requesterCwd, loadCapContext } = input;
   if (!isRecord2(args) || !Array.isArray(args["observers"])) return args;
   const observers = args["observers"];
-  if (!observers.some((e) => inlineObserverRequires(e) !== null)) return args;
-  const { registry, availability } = await loadCapContext();
+  const hasInline = observers.some((e) => inlineObserverRequires(e) !== null);
+  const hasDefinitionFile = observers.some((e) => isRecord2(e) && typeof e["definitionFile"] === "string");
+  if (!hasInline && !hasDefinitionFile) return args;
+  let ctx = null;
+  let registryPresent = false;
+  if (hasInline) {
+    ctx = await loadCapContext();
+    registryPresent = Object.keys(ctx.registry.providers).length > 0;
+  } else {
+    const probe = loadCapabilityRegistry();
+    registryPresent = probe.errors.length === 0 && Object.keys(probe.registry.providers).length > 0;
+  }
+  for (const w of observerDefinitionFileWarnings(observers, registryPresent)) process.stderr.write(`${w}
+`);
+  if (!hasInline || ctx === null) return args;
+  const { registry, availability } = ctx;
   let resolved = 0;
   const out = observers.map((entry) => {
     const requires = inlineObserverRequires(entry);
     if (requires === null) return entry;
     resolved++;
-    return { ...entry, resolution: resolveObserverRequires(requires, registry, availability, true, requesterCwd) };
+    return { ...entry, resolution: resolveObserverRequires(requires, registry, availability, WEB_AVAILABLE_V0, requesterCwd) };
   });
   process.stderr.write(`observer requires: resolved needs for ${resolved} inline observer definition(s)
 `);
@@ -1976,9 +2011,10 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
     );
   }
   const { port, token, health } = await requireOwnedServer(ctx);
-  const { prefix, label } = await resolveSourcePrefix(port, token, health, sourceFlag);
+  const { prefix, label, key: resolvedKey } = await resolveSourcePrefix(port, token, health, sourceFlag);
   if (label !== "") process.stderr.write(`launching under source ${label}
 `);
+  const sourceIsLocal = resolvedKey === null || localSourceKeys(health.sources).includes(resolvedKey);
   const { cwd: requesterCwd, note: cwdNote } = safeRequesterCwd(() => process.cwd());
   if (cwdNote !== null) process.stderr.write(`${cwdNote}
 `);
@@ -1992,9 +2028,11 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
     }
     return capContext;
   };
-  args = await applySidecarCapabilities({ port, token, prefix, script, args, callerCapabilities: cap.spec, requesterCwd, loadCapContext });
+  args = await applySidecarCapabilities({ port, token, prefix, script, args, callerCapabilities: cap.spec, requesterCwd, loadCapContext, sourceIsLocal });
   args = await applyObserverResolution({ args, requesterCwd, loadCapContext });
   const finalCap = extractCapabilities(args);
+  if (finalCap.errors.length > 0) throw new Error(`composed capabilities section invalid:
+  - ${finalCap.errors.join("\n  - ")}`);
   if (finalCap.spec !== null) {
     process.stderr.write(
       `capabilities section: ${Object.keys(composeCapabilityOptions(finalCap.spec)).join(", ") || "(empty)"} \u2014 needs a server with capabilities composition; older servers ignore it

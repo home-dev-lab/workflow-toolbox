@@ -70,7 +70,7 @@ import {
 import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
 import { composeCapabilityOptions, extractCapabilities, type CapabilitiesSpec } from './capabilities.js'
 import { loadCapabilityRegistry, probeProviders, type CapabilityNeed, type CapabilityRegistry, type CapabilitySidecar } from './capability-registry.js'
-import { composeLaunchCapabilities, resolveObserverRequires, sidecarPathFor } from './launch-capabilities.js'
+import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, observerDefinitionFileWarnings, resolveObserverRequires, sidecarPathFor } from './launch-capabilities.js'
 import { isRecord } from './validator-shared.js'
 import { extractObservers } from './observer-def.js'
 import { buildLaunchBody, safeRequesterCwd } from './launch-body.js'
@@ -824,6 +824,15 @@ interface WorkflowListEntry {
  *  registry; probing twice would double-spawn the declared probe processes). */
 type CapContext = { registry: CapabilityRegistry; availability: Record<string, boolean> }
 
+/** webAvailable for capability resolution — a v0 STUB fixed to `true`. The launcher cannot
+ *  observe the DELEGATED (bare) session's actual WebSearch/WebFetch availability (that is a
+ *  server-side property of the target run), so it assumes the shipped default. The only
+ *  effect is the docs-lookup degradation branch (design §4.3): if the target genuinely
+ *  lacks web tools, a docs-lookup that DEGRADES names `degraded:web` tools the session
+ *  can't use — a benign over-statement, never a wrong resolution. Revisit if a
+ *  launcher-visible signal for the target session's tool set ever appears. */
+const WEB_AVAILABLE_V0 = true
+
 /** Detect + resolve a workflow's capability sidecar (card I3, design §3.2/§5/§9),
  *  returning the args to send — AUGMENTED with the resolved `capabilities` section and a
  *  sibling `capabilitiesReport` (the audit trail). The sidecar is located via GET
@@ -846,8 +855,15 @@ async function applySidecarCapabilities(input: {
   callerCapabilities: CapabilitiesSpec | null
   requesterCwd: string
   loadCapContext: () => Promise<CapContext>
+  sourceIsLocal: boolean
 }): Promise<unknown> {
   const { port, token, prefix, script, args, callerCapabilities, requesterCwd } = input
+
+  // A sidecar sits beside the workflow on the server's filesystem; reading it only makes
+  // sense when that filesystem is THIS host's (review, high). A remote/federated source →
+  // no local sidecar detection (the launch is unchanged); v0 boundary, documented at the
+  // call site.
+  if (!input.sourceIsLocal) return args
 
   // Locate the resolved workflow path (the server's own allowlist). Any failure here means
   // "cannot locate a sidecar" → proceed unchanged, never breaking a plain launch.
@@ -884,20 +900,17 @@ async function applySidecarCapabilities(input: {
   // Load the machine registry + probes (shared, fail-loud on an invalid registry), then
   // the PURE resolve → $CWD-substitute → project → merge (launch-capabilities.ts).
   const { registry, availability } = await input.loadCapContext()
-  const composed = composeLaunchCapabilities({ sidecar, registry, availability, webAvailable: true, requesterCwd, callerCapabilities })
+  const composed = composeLaunchCapabilities({ sidecar, registry, availability, webAvailable: WEB_AVAILABLE_V0, requesterCwd, callerCapabilities })
   if (composed.errors.length > 0) {
     throw new Error(`capability sidecar ${sidecarPath} cannot be resolved for launch:\n  - ${composed.errors.join('\n  - ')}`)
   }
 
-  // Augment args with the resolved section + the audit report as a SIBLING key (the server
-  // persists the whole args object and ignores keys outside capabilities/observers).
-  if (args !== undefined && !isRecord(args)) {
-    throw new Error(`workflow "${script}" has a capability sidecar but --args is not a JSON object — capabilities require object args`)
-  }
-  const base = isRecord(args) ? args : {}
+  // Augment args with the resolved section + the redacted audit report (foldCapabilitiesIntoArgs
+  // — pure, unit-tested; fail-loud on non-object args). The I/O around it (GET /api/workflows,
+  // the sidecar read, loadCapContext's probes) is covered end-to-end against the real server.
   const roleCount = isRecord(sidecar) && isRecord(sidecar.roles) ? Object.keys(sidecar.roles).length : 0
   process.stderr.write(`capability sidecar: resolved ${composed.report.length} need(s) across ${roleCount} role(s) from ${sidecarPath}\n`)
-  return { ...base, capabilities: composed.capabilities, capabilitiesReport: composed.report }
+  return foldCapabilitiesIntoArgs(args, composed.capabilities, composed.report, script)
 }
 
 /** Read an observers entry's INLINE definition `requires` (card I3 scope extension).
@@ -920,14 +933,37 @@ async function applyObserverResolution(input: { args: unknown; requesterCwd: str
   const { args, requesterCwd, loadCapContext } = input
   if (!isRecord(args) || !Array.isArray(args['observers'])) return args
   const observers = args['observers']
-  if (!observers.some((e) => inlineObserverRequires(e) !== null)) return args
-  const { registry, availability } = await loadCapContext()
+  const hasInline = observers.some((e) => inlineObserverRequires(e) !== null)
+  const hasDefinitionFile = observers.some((e) => isRecord(e) && typeof e['definitionFile'] === 'string')
+  if (!hasInline && !hasDefinitionFile) return args
+
+  // Registry presence: reuse the shared context when we actually resolve (inline requires);
+  // otherwise a cheap registry READ (no probe) purely to decide whether the definitionFile
+  // warning is worth emitting. An invalid registry WITH inline requires fails loud inside
+  // loadCapContext; with ONLY definitionFile entries the registry is not needed to resolve
+  // anything, so a read error just suppresses the (best-effort, courtesy) warning rather
+  // than failing a launch that resolves nothing.
+  let ctx: CapContext | null = null
+  let registryPresent = false
+  if (hasInline) {
+    ctx = await loadCapContext()
+    registryPresent = Object.keys(ctx.registry.providers).length > 0
+  } else {
+    const probe = loadCapabilityRegistry()
+    registryPresent = probe.errors.length === 0 && Object.keys(probe.registry.providers).length > 0
+  }
+  // v0 boundary: a definitionFile's requires are resolved server-side, not launcher-side —
+  // warn the author at launch (only when a registry exists) instead of leaving it silent.
+  for (const w of observerDefinitionFileWarnings(observers, registryPresent)) process.stderr.write(`${w}\n`)
+
+  if (!hasInline || ctx === null) return args
+  const { registry, availability } = ctx
   let resolved = 0
   const out = observers.map((entry) => {
     const requires = inlineObserverRequires(entry)
     if (requires === null) return entry
     resolved++
-    return { ...(entry as Record<string, unknown>), resolution: resolveObserverRequires(requires, registry, availability, true, requesterCwd) }
+    return { ...(entry as Record<string, unknown>), resolution: resolveObserverRequires(requires, registry, availability, WEB_AVAILABLE_V0, requesterCwd) }
   })
   process.stderr.write(`observer requires: resolved needs for ${resolved} inline observer definition(s)\n`)
   return { ...args, observers: out }
@@ -967,8 +1003,16 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
     )
   }
   const { port, token, health } = await requireOwnedServer(ctx)
-  const { prefix, label } = await resolveSourcePrefix(port, token, health, sourceFlag)
+  const { prefix, label, key: resolvedKey } = await resolveSourcePrefix(port, token, health, sourceFlag)
   if (label !== '') process.stderr.write(`launching under source ${label}\n`)
+  // Is the resolved source LOCAL to this host? A confirmed single-source server (key null)
+  // is local; a hub source is local iff it carries a configDir (remotes report `remote:true`
+  // with no path). Sidecar detection reads `<artifact>.capabilities.json` off the server's
+  // OWN resolved path — only meaningful when that path is on THIS filesystem (review, high:
+  // a remote/federated source's path is the remote's, and could even collide with an
+  // unrelated local file). Observer resolution is unaffected (it reads no file — the local
+  // machine registry is the correct trust root regardless of the target source).
+  const sourceIsLocal = resolvedKey === null || localSourceKeys(health.sources).includes(resolvedKey)
   // requesterCwd (card #1820589984604750931): the requesting process's cwd rides along so
   // the server attributes the delegated run to THIS project's timeline bucket (old servers
   // ignore the unknown field; buildLaunchBody omits a degenerate cwd — see launch-body.ts).
@@ -996,7 +1040,7 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
   // Absent/undetectable sidecar → the launch is byte-for-byte UNCHANGED (backward-compat);
   // a PRESENT sidecar whose required needs cannot be resolved → FAIL-LOUD launch refusal
   // (design §5.4 — a role capability is constitutive, not a peripheral observer).
-  args = await applySidecarCapabilities({ port, token, prefix, script, args, callerCapabilities: cap.spec, requesterCwd, loadCapContext })
+  args = await applySidecarCapabilities({ port, token, prefix, script, args, callerCapabilities: cap.spec, requesterCwd, loadCapContext, sourceIsLocal })
   // Observer requires (card I3 scope extension, wire contract with the companion server):
   // resolve each inline observer definition's abstract `requires` and embed the resulting
   // NeedResolution[] as `resolution` on the entry. NEVER fails the launch — an observer is
@@ -1005,6 +1049,11 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
   args = await applyObserverResolution({ args, requesterCwd, loadCapContext })
   // The capabilities note reflects the FINAL (caller + sidecar) section the server composes.
   const finalCap = extractCapabilities(args)
+  // Fail-loud parity (review, medium): the re-validation of the MERGED section HONORS its
+  // errors — never computes-then-discards them. A composition that produced an invalid
+  // section (e.g. an unexpanded $cap: leaking through the resolver) refuses the launch here,
+  // client-side, instead of surfacing as a distant server 400.
+  if (finalCap.errors.length > 0) throw new Error(`composed capabilities section invalid:\n  - ${finalCap.errors.join('\n  - ')}`)
   if (finalCap.spec !== null) {
     process.stderr.write(
       `capabilities section: ${Object.keys(composeCapabilityOptions(finalCap.spec)).join(', ') || '(empty)'} — needs a server with capabilities composition; older servers ignore it\n`,
@@ -1016,7 +1065,7 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
     const code = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['code'] : undefined
     let hint = ''
     if (res.status === 404) {
-      const list = await api(port, token, `${prefix}/api/workflows`).then((r) => r.json() as Promise<{ id: string }[]>, () => [])
+      const list = await api(port, token, `${prefix}/api/workflows`).then((r) => r.json() as Promise<WorkflowListEntry[]>, () => [])
       if (list.length > 0) hint = `\navailable: ${list.map((w) => w.id).join(', ')}`
     }
     // 403 is TWO different refusals (pr-review round 3): the launch-disabled gate tags

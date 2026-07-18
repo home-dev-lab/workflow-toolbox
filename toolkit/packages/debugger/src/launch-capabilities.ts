@@ -88,11 +88,30 @@ export interface LaunchCapabilitiesInput {
   callerCapabilities: CapabilitiesSpec | null
 }
 
+/** The audit-report projection of a NeedResolution — the same outcome MINUS the provider
+ *  mcpServers CONFIG. The report is display/audit only (embedded as `capabilitiesReport`);
+ *  the ACTUAL mcpServers the server launches live, necessarily, in `args.capabilities`. So
+ *  the report keeps only the mounted server NAMES (`servers`), never the config values —
+ *  which can carry secrets (env tokens, command args). Reduces the redundant secret
+ *  surface (review finding, high). */
+export type ReportResolution =
+  | { need: string; provider: string; servers: string[]; tools: string[]; protocolHint?: string }
+  | { need: string; unresolved: true; degradation: string; tools: string[] }
+
+function redactResolutionsForReport(resolutions: NeedResolution[]): ReportResolution[] {
+  return resolutions.map((r) =>
+    'unresolved' in r
+      ? r
+      : { need: r.need, provider: r.provider, servers: Object.keys(r.mcpServers), tools: r.tools, ...(r.protocolHint !== undefined ? { protocolHint: r.protocolHint } : {}) },
+  )
+}
+
 export interface LaunchCapabilitiesResult {
   /** The merged spec to place in `args.capabilities`, or null on a launch refusal. */
   capabilities: CapabilitiesSpec | null
-  /** The resolution report (embedded as `args.capabilitiesReport` for auditing). */
-  report: NeedResolution[]
+  /** The REDACTED resolution report (embedded as `args.capabilitiesReport` for auditing —
+   *  provider mcpServers config stripped to server names, see ReportResolution). */
+  report: ReportResolution[]
   /** Every launch-refusal reason (one pass, deduped) — empty ⇒ launch proceeds. */
   errors: string[]
 }
@@ -149,6 +168,39 @@ function mergeCapabilitiesSpecs(
   return merged
 }
 
+/** Warning lines for the v0 boundary (card I3 scope extension): a `{ definitionFile }`
+ *  observer entry's abstract `requires` are NOT resolved launcher-side (they live in a
+ *  file the server resolves under the workflows roots). Emitted ONLY when a registry is
+ *  present — on a harness-only machine nothing would resolve anyway, so the warning would
+ *  be noise. The author sees it at launch, not by digging the run record. Kept internal-
+ *  ref-free (the message ships in the CLI bin): it states the limitation self-containedly,
+ *  no tracking id. `observers` is the raw args.observers array. */
+export function observerDefinitionFileWarnings(observers: readonly unknown[], registryPresent: boolean): string[] {
+  if (!registryPresent) return []
+  const out: string[] = []
+  for (const e of observers) {
+    if (isRecord(e) && typeof e['definitionFile'] === 'string') {
+      out.push(
+        `observer requires: '${e['definitionFile']}' is a definitionFile — its abstract requires are NOT resolved launcher-side (only inline observer definitions are; a definitionFile's requires are resolved by the server). An unresolved required need becomes a server-side not-attach, never a launch failure.`,
+      )
+    }
+  }
+  return out
+}
+
+/** Fold the resolved `capabilities` + the redacted audit `report` into the launch args
+ *  (pure — the I/O adapter's one non-I/O decision, extracted for unit coverage). Requires
+ *  OBJECT args: capabilities live at `args.capabilities`, so a workflow WITH a capability
+ *  sidecar but a non-object `--args` is a usage error, fail-loud with the script name. The
+ *  report rides as a SIBLING `capabilitiesReport` key (the server persists the whole args
+ *  object and ignores keys outside capabilities/observers). */
+export function foldCapabilitiesIntoArgs(args: unknown, capabilities: CapabilitiesSpec | null, report: ReportResolution[], script: string): Record<string, unknown> {
+  if (args !== undefined && !isRecord(args)) {
+    throw new Error(`workflow "${script}" has a capability sidecar but --args is not a JSON object — capabilities require object args`)
+  }
+  return { ...(args ?? {}), capabilities, capabilitiesReport: report }
+}
+
 /** Resolve an observer definition's abstract `requires` against the machine registry
  *  for the launcher-emitted `resolution` wire contract (card I3 scope extension). The
  *  companion server stores this on the ObserverTarget and composes it into the brain.
@@ -199,5 +251,5 @@ export function composeLaunchCapabilities(input: LaunchCapabilitiesInput): Launc
   }
 
   const deduped = [...new Set(errors)]
-  return { capabilities: deduped.length > 0 ? null : capabilities, report: projected.report, errors: deduped }
+  return { capabilities: deduped.length > 0 ? null : capabilities, report: redactResolutionsForReport(projected.report), errors: deduped }
 }

@@ -11,7 +11,7 @@
 // sidecar resolution < caller args). Fail-loud → capabilities null.
 
 import { describe, expect, it } from 'vitest'
-import { composeLaunchCapabilities, resolveObserverRequires, sidecarPathFor, substituteCwd } from '../src/launch-capabilities.js'
+import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, observerDefinitionFileWarnings, resolveObserverRequires, sidecarPathFor, substituteCwd } from '../src/launch-capabilities.js'
 import type { CapabilityRegistry, CapabilitySidecar } from '../src/capability-registry.js'
 import type { CapabilitiesSpec } from '../src/capabilities.js'
 
@@ -91,11 +91,45 @@ describe('composeLaunchCapabilities — resolved happy path', () => {
     expect(spec.disableBundledSkills).toBe(false)
   })
 
-  it('carries the resolution report for auditing', () => {
+  it('carries a REDACTED resolution report (server names only, no mcpServers config — no secrets)', () => {
     const r = composeLaunchCapabilities({ ...base, sidecar })
+    // The report keeps the outcome + mounted server NAMES, never the config values (secrets).
     expect(r.report).toEqual([
-      { need: 'code-intelligence', provider: 'serena', mcpServers: { serena: { command: 'uvx', args: ['serena', 'start-mcp-server', '--project', '/proj'] } }, tools: ['mcp__serena__*'], protocolHint: 'Use the symbolic tools; do not fall back to text search.' },
+      { need: 'code-intelligence', provider: 'serena', servers: ['serena'], tools: ['mcp__serena__*'], protocolHint: 'Use the symbolic tools; do not fall back to text search.' },
     ])
+    // the SPEC still carries the full config (the server needs it to launch) — proof the
+    // redaction is report-only, not a loss of the real mcpServers.
+    expect((r.capabilities as CapabilitiesSpec).mcpServers?.['serena']).toEqual({ command: 'uvx', args: ['serena', 'start-mcp-server', '--project', '/proj'] })
+  })
+})
+
+describe('foldCapabilitiesIntoArgs (adapter augmentation, pure)', () => {
+  const spec: CapabilitiesSpec = { agents: { a: { description: 'd', prompt: 'p', tools: ['Read'] } } }
+  const report = [{ need: 'code-intelligence', unresolved: true as const, degradation: 'degraded:grep-glob', tools: ['Grep'] }]
+  it('merges into object args, adding capabilities + sibling capabilitiesReport', () => {
+    expect(foldCapabilitiesIntoArgs({ foo: 1 }, spec, report, 'wf.js')).toEqual({ foo: 1, capabilities: spec, capabilitiesReport: report })
+  })
+  it('handles undefined args (no --args flag)', () => {
+    expect(foldCapabilitiesIntoArgs(undefined, spec, report, 'wf.js')).toEqual({ capabilities: spec, capabilitiesReport: report })
+  })
+  it('throws fail-loud on non-object args (a sidecar needs object args)', () => {
+    expect(() => foldCapabilitiesIntoArgs('str', spec, report, 'wf.js')).toThrow(/not a JSON object/)
+    expect(() => foldCapabilitiesIntoArgs([1, 2], spec, report, 'wf.js')).toThrow(/not a JSON object/)
+  })
+})
+
+describe('observerDefinitionFileWarnings (v0 boundary)', () => {
+  it('warns per definitionFile entry ONLY when a registry is present', () => {
+    const observers = [{ definitionFile: 'a.observer.json' }, { definition: {} }, { definitionFile: 'b.observer.json' }]
+    expect(observerDefinitionFileWarnings(observers, true)).toHaveLength(2)
+    expect(observerDefinitionFileWarnings(observers, true)[0]).toContain('a.observer.json')
+    // no registry → nothing would resolve anyway → no noise
+    expect(observerDefinitionFileWarnings(observers, false)).toEqual([])
+  })
+
+  it('does not reference an internal tracking id (ships in the CLI bin)', () => {
+    const [w] = observerDefinitionFileWarnings([{ definitionFile: 'x.json' }], true)
+    expect(w).not.toMatch(/card #\d|#18\d{16}/)
   })
 })
 
