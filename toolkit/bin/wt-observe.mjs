@@ -209,7 +209,8 @@ function isRecord2(v) {
 }
 
 // packages/debugger/src/capabilities.ts
-var SECTION_KEYS = /* @__PURE__ */ new Set(["mcpServers", "agents", "skills"]);
+var SECTION_KEYS = /* @__PURE__ */ new Set(["mcpServers", "agents", "skills", "skillOverrides", "disableBundledSkills"]);
+var SKILL_OVERRIDE_MODES = /* @__PURE__ */ new Set(["on", "name-only", "user-invocable-only", "off"]);
 var AGENT_DEF_KEYS = /* @__PURE__ */ new Set([
   "description",
   "tools",
@@ -275,6 +276,11 @@ function validateAgents(v, errors) {
     if (typeof def["description"] !== "string") errors.push(`capabilities.agents.${name} needs a string description`);
     if (typeof def["prompt"] !== "string") errors.push(`capabilities.agents.${name} needs a string prompt`);
     if ("tools" in def && !isStringArray(def["tools"])) errors.push(`capabilities.agents.${name}.tools must be a string array`);
+    else if ("tools" in def && isStringArray(def["tools"])) {
+      for (const t of def["tools"]) {
+        if (t.startsWith("$cap:")) errors.push(`capabilities.agents.${name}.tools contains an unresolved placeholder "${t}" \u2014 $cap:<need> tokens must be expanded by the launcher's resolver before reaching the server`);
+      }
+    }
     if ("disallowedTools" in def && !isStringArray(def["disallowedTools"])) errors.push(`capabilities.agents.${name}.disallowedTools must be a string array`);
     if ("skills" in def && !isStringArray(def["skills"])) errors.push(`capabilities.agents.${name}.skills must be a string array`);
     if ("model" in def && typeof def["model"] !== "string") errors.push(`capabilities.agents.${name}.model must be a string`);
@@ -288,11 +294,25 @@ function validateAgents(v, errors) {
   }
   return v;
 }
+function validateSkillOverrides(v, errors) {
+  if (!isRecord2(v)) {
+    errors.push(`capabilities.skillOverrides must be an object map of skill-name \u2192 mode (${[...SKILL_OVERRIDE_MODES].join("|")})`);
+    return void 0;
+  }
+  checkEntryNames(v, "capabilities.skillOverrides", errors);
+  for (const [skill, mode] of Object.entries(v)) {
+    if (FORBIDDEN_ENTRY_NAMES.has(skill)) continue;
+    if (typeof mode !== "string" || !SKILL_OVERRIDE_MODES.has(mode)) {
+      errors.push(`capabilities.skillOverrides.${skill} must be one of ${[...SKILL_OVERRIDE_MODES].join("|")} (got ${JSON.stringify(mode)})`);
+    }
+  }
+  return v;
+}
 function extractCapabilities(args) {
   if (!isRecord2(args) || !("capabilities" in args)) return { spec: null, errors: [] };
   const raw = args["capabilities"];
   if (raw === null) return { spec: null, errors: [] };
-  if (!isRecord2(raw)) return { spec: null, errors: ["capabilities must be an object ({ mcpServers?, agents?, skills? })"] };
+  if (!isRecord2(raw)) return { spec: null, errors: ["capabilities must be an object ({ mcpServers?, agents?, skills?, skillOverrides?, disableBundledSkills? })"] };
   const errors = [];
   for (const key of Object.keys(raw)) {
     if (!SECTION_KEYS.has(key)) errors.push(`capabilities.${key} is not a known section (known: ${[...SECTION_KEYS].join(", ")})`);
@@ -310,13 +330,25 @@ function extractCapabilities(args) {
     if (!isStringArray(raw["skills"])) errors.push("capabilities.skills must be a string array (SDK skill enable-filter)");
     else spec.skills = raw["skills"];
   }
+  if ("skillOverrides" in raw) {
+    const so = validateSkillOverrides(raw["skillOverrides"], errors);
+    if (so !== void 0) spec.skillOverrides = so;
+  }
+  if ("disableBundledSkills" in raw) {
+    if (typeof raw["disableBundledSkills"] !== "boolean") errors.push("capabilities.disableBundledSkills must be a boolean");
+    else spec.disableBundledSkills = raw["disableBundledSkills"];
+  }
   return errors.length > 0 ? { spec: null, errors } : { spec, errors: [] };
 }
 function composeCapabilityOptions(spec) {
+  const settings = {};
+  if (spec.skillOverrides !== void 0) settings.skillOverrides = spec.skillOverrides;
+  if (spec.disableBundledSkills !== void 0) settings.disableBundledSkills = spec.disableBundledSkills;
   return {
     ...spec.mcpServers !== void 0 ? { mcpServers: spec.mcpServers } : {},
     ...spec.agents !== void 0 ? { agents: spec.agents } : {},
-    ...spec.skills !== void 0 ? { skills: spec.skills } : {}
+    ...spec.skills !== void 0 ? { skills: spec.skills } : {},
+    ...Object.keys(settings).length > 0 ? { settings } : {}
   };
 }
 
