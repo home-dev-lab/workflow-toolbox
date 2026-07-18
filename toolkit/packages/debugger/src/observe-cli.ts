@@ -68,7 +68,10 @@ import {
   type ObservePidfile,
 } from './observe-lifecycle.js'
 import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
-import { composeCapabilityOptions, extractCapabilities } from './capabilities.js'
+import { composeCapabilityOptions, extractCapabilities, type CapabilitiesSpec } from './capabilities.js'
+import { loadCapabilityRegistry, probeProviders, type CapabilitySidecar } from './capability-registry.js'
+import { composeLaunchCapabilities, sidecarPathFor } from './launch-capabilities.js'
+import { isRecord } from './validator-shared.js'
 import { extractObservers } from './observer-def.js'
 import { buildLaunchBody, safeRequesterCwd } from './launch-body.js'
 import { awaitSpawnedServerReady } from './spawn-ready.js'
@@ -811,6 +814,88 @@ async function resolveSourcePrefix(port: number, token: string, health: Health, 
   )
 }
 
+interface WorkflowListEntry {
+  id: string
+  path?: string
+}
+
+/** Detect + resolve a workflow's capability sidecar (card I3, design §3.2/§5/§9),
+ *  returning the args to send — AUGMENTED with the resolved `capabilities` section and a
+ *  sibling `capabilitiesReport` (the audit trail). The sidecar is located via GET
+ *  /api/workflows, whose entries carry the server's OWN resolved absolute `path`
+ *  (allowlist-faithful — no root-guessing; wt-observe is loopback so the path is local).
+ *
+ *  FAILURE POSTURE (design §5.4). A sidecar that is ABSENT or cannot even be LOCATED (an
+ *  unknown script id, a transient /api/workflows failure) leaves `args` byte-for-byte
+ *  UNCHANGED — a plain launch must never break on capability plumbing. But once a sidecar
+ *  is FOUND, every failure from there on (unreadable/invalid JSON, an invalid registry, an
+ *  unresolvable required need, a $cap guard violation) is a FAIL-LOUD refusal: the sidecar
+ *  declares needs a constitutive role depends on, so launching without them would be a
+ *  lying run. */
+async function applySidecarCapabilities(input: {
+  port: number
+  token: string
+  prefix: string
+  script: string
+  args: unknown
+  callerCapabilities: CapabilitiesSpec | null
+  requesterCwd: string
+}): Promise<unknown> {
+  const { port, token, prefix, script, args, callerCapabilities, requesterCwd } = input
+
+  // Locate the resolved workflow path (the server's own allowlist). Any failure here means
+  // "cannot locate a sidecar" → proceed unchanged, never breaking a plain launch.
+  let workflowPath: string | undefined
+  try {
+    const list = await api(port, token, `${prefix}/api/workflows`).then(
+      (r) => (r.ok ? (r.json() as Promise<WorkflowListEntry[]>) : []),
+      () => [] as WorkflowListEntry[],
+    )
+    const entry = Array.isArray(list) ? list.find((w) => w.id === script) : undefined
+    if (entry !== undefined && typeof entry.path === 'string') workflowPath = entry.path
+  } catch {
+    workflowPath = undefined
+  }
+  if (workflowPath === undefined) return args
+
+  // Read the sidecar beside the artifact. ENOENT = no sidecar → unchanged. A present but
+  // unreadable/invalid sidecar is fail-loud (it exists, so it is meant to be honored).
+  const sidecarPath = sidecarPathFor(workflowPath)
+  let rawSidecar: string
+  try {
+    rawSidecar = readFileSync(sidecarPath, 'utf8')
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return args
+    throw new Error(`capability sidecar ${sidecarPath} is present but unreadable: ${String(e)}`)
+  }
+  let sidecar: CapabilitySidecar
+  try {
+    sidecar = JSON.parse(rawSidecar) as CapabilitySidecar
+  } catch (e) {
+    throw new Error(`capability sidecar ${sidecarPath} is not valid JSON: ${(e as Error).message}`)
+  }
+
+  // Load the machine registry (fail-loud on an invalid one), probe the declared providers,
+  // then the PURE resolve → $CWD-substitute → project → merge (launch-capabilities.ts).
+  const { registry, errors: regErrors } = loadCapabilityRegistry()
+  if (regErrors.length > 0) throw new Error(`capability registry invalid:\n  - ${regErrors.join('\n  - ')}`)
+  const availability = await probeProviders(registry)
+  const composed = composeLaunchCapabilities({ sidecar, registry, availability, webAvailable: true, requesterCwd, callerCapabilities })
+  if (composed.errors.length > 0) {
+    throw new Error(`capability sidecar ${sidecarPath} cannot be resolved for launch:\n  - ${composed.errors.join('\n  - ')}`)
+  }
+
+  // Augment args with the resolved section + the audit report as a SIBLING key (the server
+  // persists the whole args object and ignores keys outside capabilities/observers).
+  if (args !== undefined && !isRecord(args)) {
+    throw new Error(`workflow "${script}" has a capability sidecar but --args is not a JSON object — capabilities require object args`)
+  }
+  const base = isRecord(args) ? args : {}
+  const roleCount = isRecord(sidecar) && isRecord(sidecar.roles) ? Object.keys(sidecar.roles).length : 0
+  process.stderr.write(`capability sidecar: resolved ${composed.report.length} need(s) across ${roleCount} role(s) from ${sidecarPath}\n`)
+  return { ...base, capabilities: composed.capabilities, capabilitiesReport: composed.report }
+}
+
 /** `wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]` — POST
  *  /api/launch (source-prefixed on a hub), print {runId}. The id is the workflow's
  *  filename under the server's allowlisted roots (GET /api/workflows lists them —
@@ -831,11 +916,6 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
   // into the delegated run's query() options (see capabilities.ts, the shared contract).
   const cap = extractCapabilities(args)
   if (cap.errors.length > 0) throw new Error(`--args capabilities section invalid:\n  - ${cap.errors.join('\n  - ')}`)
-  if (cap.spec !== null) {
-    process.stderr.write(
-      `capabilities section: ${Object.keys(composeCapabilityOptions(cap.spec)).join(', ') || '(empty)'} — needs a server with capabilities composition; older servers ignore it\n`,
-    )
-  }
   // Observer definitions (observers-custom design): an args `observers` section is
   // validated HERE so an invalid definition fails fast client-side with every violation
   // listed — authoring/launch is the FAIL-LOUD regime. (Run-time attachment is the
@@ -859,6 +939,22 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
   // is omitted — never an empty string, never a failed launch — and the operator is told.
   const { cwd: requesterCwd, note: cwdNote } = safeRequesterCwd(() => process.cwd())
   if (cwdNote !== null) process.stderr.write(`${cwdNote}\n`)
+  // Capability sidecar (card I3, design §3.2/§5/§9): a `<artifact>.capabilities.json`
+  // beside the resolved workflow declares each role's ABSTRACT needs. The launcher resolves
+  // them against the machine registry (WT_CAPABILITY_REGISTRY / XDG default), runs the
+  // declared probes, expands the `$cap:<need>` placeholders, and folds the concrete
+  // tools/servers + a resolution report into `args` — which the server already composes.
+  // Absent/undetectable sidecar → the launch is byte-for-byte UNCHANGED (backward-compat);
+  // a PRESENT sidecar whose required needs cannot be resolved → FAIL-LOUD launch refusal
+  // (design §5.4 — a role capability is constitutive, not a peripheral observer).
+  args = await applySidecarCapabilities({ port, token, prefix, script, args, callerCapabilities: cap.spec, requesterCwd })
+  // The capabilities note reflects the FINAL (caller + sidecar) section the server composes.
+  const finalCap = extractCapabilities(args)
+  if (finalCap.spec !== null) {
+    process.stderr.write(
+      `capabilities section: ${Object.keys(composeCapabilityOptions(finalCap.spec)).join(', ') || '(empty)'} — needs a server with capabilities composition; older servers ignore it\n`,
+    )
+  }
   const res = await api(port, token, `${prefix}/api/launch`, { method: 'POST', body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, 30_000)
   const body: unknown = await res.json().catch(() => null)
   if (!res.ok) {

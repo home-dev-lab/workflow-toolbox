@@ -4,9 +4,9 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { randomBytes } from "node:crypto";
-import { existsSync as existsSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync3, readdirSync as readdirSync3, realpathSync as realpathSync2, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, openSync } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import { delimiter, dirname, join as join5, resolve as resolvePath } from "node:path";
+import { existsSync as existsSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync4, readdirSync as readdirSync3, realpathSync as realpathSync2, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, openSync } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import { delimiter, dirname, join as join6, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // packages/debugger/src/observe-lifecycle.ts
@@ -207,6 +207,30 @@ var FORBIDDEN_ENTRY_NAMES = /* @__PURE__ */ new Set(["__proto__", "constructor",
 function isRecord2(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
+var MCP_ANCHOR_KEYS = ["command", "url", "type"];
+function validateMcpServersShape(v, path, errors) {
+  if (!isRecord2(v)) {
+    errors.push(`${path} must be an object map of server-name \u2192 server config`);
+    return;
+  }
+  for (const name of Object.keys(v)) {
+    if (FORBIDDEN_ENTRY_NAMES.has(name)) {
+      errors.push(`${path}.${name} is a forbidden entry name (prototype-collision defence)`);
+      continue;
+    }
+    const cfg = v[name];
+    if (!isRecord2(cfg)) {
+      errors.push(`${path}.${name} must be an object (server config)`);
+      continue;
+    }
+    if (!MCP_ANCHOR_KEYS.some((k) => k in cfg)) {
+      errors.push(`${path}.${name} lacks any of ${MCP_ANCHOR_KEYS.join("/")} \u2014 not a launchable server config`);
+    }
+    for (const k of MCP_ANCHOR_KEYS) {
+      if (k in cfg && typeof cfg[k] !== "string") errors.push(`${path}.${name}.${k} must be a string`);
+    }
+  }
+}
 
 // packages/debugger/src/capabilities.ts
 var SECTION_KEYS = /* @__PURE__ */ new Set(["mcpServers", "agents", "skills", "skillOverrides", "disableBundledSkills"]);
@@ -237,7 +261,7 @@ function checkEntryNames(map, path, errors) {
     if (FORBIDDEN_ENTRY_NAMES.has(name)) errors.push(`${path}.${name} is a forbidden entry name (prototype-collision defence)`);
   }
 }
-var MCP_ANCHOR_KEYS = ["command", "url", "type"];
+var MCP_ANCHOR_KEYS2 = ["command", "url", "type"];
 function validateMcpServers(v, errors) {
   if (!isRecord2(v)) {
     errors.push("capabilities.mcpServers must be an object map of server-name \u2192 server config");
@@ -249,10 +273,10 @@ function validateMcpServers(v, errors) {
       errors.push(`capabilities.mcpServers.${name} must be an object (server config)`);
       continue;
     }
-    if (!MCP_ANCHOR_KEYS.some((k) => k in cfg)) {
-      errors.push(`capabilities.mcpServers.${name} lacks any of ${MCP_ANCHOR_KEYS.join("/")} \u2014 not a launchable server config`);
+    if (!MCP_ANCHOR_KEYS2.some((k) => k in cfg)) {
+      errors.push(`capabilities.mcpServers.${name} lacks any of ${MCP_ANCHOR_KEYS2.join("/")} \u2014 not a launchable server config`);
     }
-    for (const k of MCP_ANCHOR_KEYS) {
+    for (const k of MCP_ANCHOR_KEYS2) {
       if (k in cfg && typeof cfg[k] !== "string") errors.push(`capabilities.mcpServers.${name}.${k} must be a string`);
     }
   }
@@ -350,6 +374,421 @@ function composeCapabilityOptions(spec) {
     ...spec.skills !== void 0 ? { skills: spec.skills } : {},
     ...Object.keys(settings).length > 0 ? { settings } : {}
   };
+}
+function mergeSkillSettings(base, override) {
+  const merged = {};
+  const disable = override?.disableBundledSkills ?? base.disableBundledSkills;
+  if (disable !== void 0) merged.disableBundledSkills = disable;
+  const skillOverrides = { ...base.skillOverrides ?? {}, ...override?.skillOverrides ?? {} };
+  if (Object.keys(skillOverrides).length > 0) merged.skillOverrides = skillOverrides;
+  return merged;
+}
+
+// packages/debugger/src/capability-registry.ts
+import { readFileSync } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { join as join4 } from "node:path";
+import { spawn as nodeSpawn } from "node:child_process";
+var DEGRADATIONS = {
+  "code-intelligence": { degradation: "degraded:grep-glob", tools: ["Grep", "Glob", "Read"] },
+  "web-search": { degradation: "degraded:none", tools: [] },
+  "context-offload": { degradation: "degraded:inline", tools: [] }
+};
+function degradationFor(need, webAvailable) {
+  if (need === "docs-lookup") {
+    return webAvailable ? { degradation: "degraded:web", tools: ["WebSearch", "WebFetch"] } : { degradation: "degraded:none", tools: [] };
+  }
+  return DEGRADATIONS[need] ?? { degradation: "degraded:none", tools: [] };
+}
+function resolveCapabilities(needs, registry, opts = {}) {
+  const availability = opts.availability ?? {};
+  const webAvailable = opts.webAvailable ?? true;
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const n of needs) {
+    if (seen.has(n.need)) continue;
+    seen.add(n.need);
+    const providers = Object.hasOwn(registry.providers, n.need) ? registry.providers[n.need] ?? [] : [];
+    const provider = providers.find((p) => availability[p.name] ?? true);
+    if (provider) {
+      out.push({
+        need: n.need,
+        provider: provider.name,
+        mcpServers: provider.mcpServers ?? {},
+        tools: provider.tools ?? [],
+        ...provider.protocolHint !== void 0 ? { protocolHint: provider.protocolHint } : {}
+      });
+    } else {
+      const d = degradationFor(n.need, webAvailable);
+      out.push({ need: n.need, unresolved: true, degradation: d.degradation, tools: d.tools });
+    }
+  }
+  return out;
+}
+var DEFAULT_PROBE_TIMEOUT_MS = 5e3;
+function tokenizeCommand(command) {
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(command)) !== null) {
+    out.push(m[1] ?? m[2] ?? m[3] ?? "");
+  }
+  return out;
+}
+var defaultProbeSpawn = (argv, { timeoutMs }) => new Promise((resolve2) => {
+  let settled = false;
+  const finish = (o) => {
+    if (settled) return;
+    settled = true;
+    resolve2(o);
+  };
+  const cmd = argv[0];
+  if (cmd === void 0) {
+    finish({ code: null, timedOut: false, error: "empty probe command" });
+    return;
+  }
+  let child;
+  try {
+    child = nodeSpawn(cmd, argv.slice(1), { stdio: "ignore" });
+  } catch (e) {
+    finish({ code: null, timedOut: false, error: String(e) });
+    return;
+  }
+  const timer = setTimeout(() => {
+    child.kill("SIGKILL");
+    finish({ code: null, timedOut: true });
+  }, timeoutMs);
+  child.on("error", (e) => {
+    clearTimeout(timer);
+    finish({ code: null, timedOut: false, error: String(e) });
+  });
+  child.on("close", (code) => {
+    clearTimeout(timer);
+    finish({ code, timedOut: false });
+  });
+});
+async function probeProviders(registry, opts = {}) {
+  const spawn2 = opts.spawn ?? defaultProbeSpawn;
+  const seen = /* @__PURE__ */ new Set();
+  const jobs = [];
+  for (const providers of Object.values(registry.providers)) {
+    for (const p of providers) {
+      if (!p.probe || seen.has(p.name)) continue;
+      seen.add(p.name);
+      const timeoutMs = p.probe.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+      const argv = tokenizeCommand(p.probe.command);
+      const name = p.name;
+      jobs.push(
+        (async () => {
+          if (argv.length === 0) return [name, false];
+          try {
+            const r = await spawn2(argv, { timeoutMs });
+            return [name, !r.timedOut && r.error === void 0 && r.code === 0];
+          } catch {
+            return [name, false];
+          }
+        })()
+      );
+    }
+  }
+  const results = await Promise.all(jobs);
+  const out = {};
+  for (const [name, ok] of results) out[name] = ok;
+  return out;
+}
+var PROVIDER_KEYS = /* @__PURE__ */ new Set(["name", "mcpServers", "tools", "protocolHint", "probe"]);
+var PROBE_KEYS = /* @__PURE__ */ new Set(["command", "timeoutMs"]);
+function isStringArray2(v) {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+function defaultRegistryPath() {
+  const xdg = process.env.XDG_CONFIG_HOME;
+  const base = xdg !== void 0 && xdg.length > 0 ? xdg : join4(homedir2(), ".config");
+  return join4(base, "workflow-toolbox", "capability-registry.json");
+}
+function validateProbe(v, path, errors) {
+  if (!isRecord2(v)) {
+    errors.push(`${path} must be an object { command, timeoutMs? }`);
+    return;
+  }
+  for (const k of Object.keys(v)) {
+    if (!PROBE_KEYS.has(k)) errors.push(`${path}.${k} is not a known probe field (typo?)`);
+  }
+  if (typeof v["command"] !== "string" || v["command"].length === 0) errors.push(`${path}.command must be a non-empty string`);
+  if ("timeoutMs" in v && typeof v["timeoutMs"] !== "number") errors.push(`${path}.timeoutMs must be a number`);
+}
+function validateProvider(v, path, errors) {
+  if (!isRecord2(v)) {
+    errors.push(`${path} must be an object (provider)`);
+    return;
+  }
+  for (const k of Object.keys(v)) {
+    if (!PROVIDER_KEYS.has(k)) errors.push(`${path}.${k} is not a known provider field (typo?)`);
+  }
+  if (typeof v["name"] !== "string" || v["name"].length === 0) errors.push(`${path}.name must be a non-empty string`);
+  if ("tools" in v && !isStringArray2(v["tools"])) errors.push(`${path}.tools must be a string array`);
+  if ("protocolHint" in v && typeof v["protocolHint"] !== "string") errors.push(`${path}.protocolHint must be a string`);
+  if ("mcpServers" in v) validateMcpServersShape(v["mcpServers"], `${path}.mcpServers`, errors);
+  if ("probe" in v) validateProbe(v["probe"], `${path}.probe`, errors);
+}
+function validateRegistry(v, errors) {
+  if (!isRecord2(v)) {
+    errors.push("capability-registry must be a JSON object { version, providers }");
+    return { version: 1, providers: {} };
+  }
+  if (v["version"] !== 1) errors.push("capability-registry.version must be 1");
+  const providers = {};
+  const raw = v["providers"];
+  if (!isRecord2(raw)) {
+    errors.push("capability-registry.providers must be an object map of need \u2192 provider[]");
+  } else {
+    for (const need of Object.keys(raw)) {
+      if (FORBIDDEN_ENTRY_NAMES.has(need)) {
+        errors.push(`capability-registry.providers.${need} is a forbidden entry name (prototype-collision defence)`);
+        continue;
+      }
+      const arr = raw[need];
+      if (!Array.isArray(arr)) {
+        errors.push(`capability-registry.providers.${need} must be an array of providers`);
+        continue;
+      }
+      arr.forEach((p, i) => validateProvider(p, `capability-registry.providers.${need}[${i}]`, errors));
+      providers[need] = arr;
+    }
+  }
+  return { version: 1, providers };
+}
+function loadCapabilityRegistry(opts = {}) {
+  const path = opts.path ?? process.env.WT_CAPABILITY_REGISTRY ?? defaultRegistryPath();
+  let raw;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return { registry: { version: 1, providers: {} }, errors: [] };
+    return { registry: { version: 1, providers: {} }, errors: [`capability-registry: cannot read ${path}: ${String(e)}`] };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return { registry: { version: 1, providers: {} }, errors: [`capability-registry: invalid JSON at ${path}: ${e.message}`] };
+  }
+  const errors = [];
+  const registry = validateRegistry(parsed, errors);
+  return errors.length > 0 ? { registry: { version: 1, providers: {} }, errors } : { registry, errors: [] };
+}
+var CAP_PREFIX = "$cap:";
+function paramsNote(params) {
+  if (!params || Object.keys(params).length === 0) return "";
+  return ` [${Object.entries(params).map(([k, val]) => `${k}=${val}`).join(", ")}]`;
+}
+function buildResolutionNote(needs, resMap) {
+  const byNeed = /* @__PURE__ */ new Map();
+  for (const n of needs) if (!byNeed.has(n.need)) byNeed.set(n.need, n);
+  if (byNeed.size === 0) return "";
+  const lines = [];
+  for (const n of byNeed.values()) {
+    const res = resMap.get(n.need);
+    const p = paramsNote(n.params);
+    if (!res) lines.push(`- ${n.need}${p} \u2192 (unresolved)`);
+    else if ("unresolved" in res) lines.push(`- ${n.need}${p} \u2192 DEGRADED: ${res.degradation}`);
+    else lines.push(`- ${n.need}${p} \u2192 ${res.provider}${res.protocolHint !== void 0 ? ` \u2014 ${res.protocolHint}` : ""}`);
+  }
+  return `
+
+## Capability resolution
+${lines.join("\n")}
+Use the resolved tools above to RETRIEVE; prefer them over generic text search.`;
+}
+function validateSidecarShape(sidecar) {
+  const errors = [];
+  if (!isRecord2(sidecar)) return ["sidecar must be an object { version, roles, agents }"];
+  if (!isRecord2(sidecar.roles)) {
+    errors.push("sidecar.roles must be an object map of role-name \u2192 { agent, needs }");
+  } else {
+    for (const [roleName, role] of Object.entries(sidecar.roles)) {
+      if (!isRecord2(role)) {
+        errors.push(`sidecar.roles.${roleName} must be an object { agent, needs }`);
+        continue;
+      }
+      if (typeof role.agent !== "string" || role.agent.length === 0) errors.push(`sidecar.roles.${roleName}.agent must be a non-empty string`);
+      if (!Array.isArray(role.needs)) {
+        errors.push(`sidecar.roles.${roleName}.needs must be an array of { need, optional?, params? }`);
+      } else {
+        role.needs.forEach((n, i) => {
+          if (!isRecord2(n)) errors.push(`sidecar.roles.${roleName}.needs[${i}] must be an object`);
+          else if (typeof n["need"] !== "string" || n["need"].length === 0) errors.push(`sidecar.roles.${roleName}.needs[${i}].need must be a non-empty string`);
+        });
+      }
+    }
+  }
+  if (!isRecord2(sidecar.agents)) {
+    errors.push("sidecar.agents must be an object map of agent-name \u2192 { description, prompt, tools? }");
+  } else {
+    for (const [agentName, def] of Object.entries(sidecar.agents)) {
+      if (!isRecord2(def)) {
+        errors.push(`sidecar.agents.${agentName} must be an object (agent definition)`);
+        continue;
+      }
+      if (typeof def["description"] !== "string") errors.push(`sidecar.agents.${agentName}.description must be a string`);
+      if (typeof def["prompt"] !== "string") errors.push(`sidecar.agents.${agentName}.prompt must be a string`);
+      if ("tools" in def && !isStringArray2(def["tools"])) errors.push(`sidecar.agents.${agentName}.tools must be a string array`);
+    }
+  }
+  return errors;
+}
+function sidecarToCapabilitiesSpec(sidecar, resolutions) {
+  const structuralErrors = validateSidecarShape(sidecar);
+  if (structuralErrors.length > 0) return { spec: null, report: resolutions, errors: structuralErrors };
+  const errors = [];
+  const resMap = /* @__PURE__ */ new Map();
+  for (const r of resolutions) resMap.set(r.need, r);
+  const agentNeeds = /* @__PURE__ */ new Map();
+  for (const [roleName, role] of Object.entries(sidecar.roles)) {
+    if (!Object.hasOwn(sidecar.agents, role.agent)) {
+      errors.push(`role '${roleName}' references unknown agent '${role.agent}'`);
+    } else {
+      const acc = agentNeeds.get(role.agent) ?? [];
+      acc.push(...role.needs);
+      agentNeeds.set(role.agent, acc);
+    }
+    for (const need of role.needs) {
+      const res = resMap.get(need.need);
+      if (!res) {
+        errors.push(`role '${roleName}' need '${need.need}' has no resolution (resolve it before projecting)`);
+      } else if ("unresolved" in res && res.degradation === "degraded:none" && need.optional !== true) {
+        errors.push(`required capability '${need.need}' for role '${roleName}' is unresolvable (no provider and no fallback) \u2014 declare optional:true to run degraded`);
+      }
+    }
+  }
+  const mountedMcp = {};
+  const outAgents = {};
+  for (const [agentName, def] of Object.entries(sidecar.agents)) {
+    if (FORBIDDEN_ENTRY_NAMES.has(agentName)) {
+      errors.push(`agents.${agentName} is a forbidden entry name (prototype-collision defence)`);
+      continue;
+    }
+    const smuggledMcp = def.mcpServers;
+    if (smuggledMcp !== void 0) {
+      errors.push(`agent '${agentName}' must not declare mcpServers \u2014 the machine registry is the only provider source (a sidecar is machine-agnostic)`);
+    }
+    if (def.tools === void 0) {
+      errors.push(`agent '${agentName}' declares no tools allowlist \u2014 a sidecar agent must declare an EXACT allowlist (an omitted allowlist inherits ALL ambient tools; design \xA79.2/\xA79.3 'rien d'implicite')`);
+    }
+    const declared = new Set((agentNeeds.get(agentName) ?? []).map((n) => n.need));
+    const expanded = [];
+    for (const tool of def.tools ?? []) {
+      if (tool.startsWith(CAP_PREFIX)) {
+        const need = tool.slice(CAP_PREFIX.length);
+        if (!declared.has(need)) {
+          errors.push(`agent '${agentName}' uses '${tool}' but need '${need}' is not declared in its role needs (typo?)`);
+          continue;
+        }
+        const res = resMap.get(need);
+        if (!res) {
+          errors.push(`agent '${agentName}' '${tool}': no resolution for need '${need}'`);
+          continue;
+        }
+        for (const t of res.tools) expanded.push(t);
+        if (!("unresolved" in res)) {
+          for (const [srv, cfg] of Object.entries(res.mcpServers)) {
+            if (FORBIDDEN_ENTRY_NAMES.has(srv)) {
+              errors.push(`provider mcpServers key '${srv}' is a forbidden entry name (prototype-collision defence)`);
+              continue;
+            }
+            mountedMcp[srv] = cfg;
+          }
+        }
+      } else if (tool.startsWith("mcp__")) {
+        errors.push(`agent '${agentName}' tool '${tool}' is a concrete MCP tool; a sidecar may only use ${CAP_PREFIX}<need> and non-MCP builtin tools (the machine registry is the trust root)`);
+      } else {
+        expanded.push(tool);
+      }
+    }
+    const outDef = { ...def, prompt: def.prompt + buildResolutionNote(agentNeeds.get(agentName) ?? [], resMap), tools: [...new Set(expanded)] };
+    if ("mcpServers" in outDef) delete outDef.mcpServers;
+    outAgents[agentName] = outDef;
+  }
+  const built = {};
+  if (Object.keys(mountedMcp).length > 0) built.mcpServers = mountedMcp;
+  if (Object.keys(outAgents).length > 0) built.agents = outAgents;
+  const deduped = [...new Set(errors)];
+  return { spec: deduped.length > 0 ? null : built, report: resolutions, errors: deduped };
+}
+
+// packages/debugger/src/launch-capabilities.ts
+var CWD_TOKEN = "$CWD";
+function sidecarPathFor(workflowPath) {
+  const base = workflowPath.endsWith(".js") ? workflowPath.slice(0, -".js".length) : workflowPath;
+  return `${base}.capabilities.json`;
+}
+function substituteCwd(value, cwd) {
+  if (typeof value === "string") return value.split(CWD_TOKEN).join(cwd);
+  if (Array.isArray(value)) return value.map((v) => substituteCwd(v, cwd));
+  if (value !== null && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = substituteCwd(v, cwd);
+    return out;
+  }
+  return value;
+}
+function containsCwdToken(value) {
+  if (typeof value === "string") return value.includes(CWD_TOKEN);
+  if (Array.isArray(value)) return value.some(containsCwdToken);
+  if (value !== null && typeof value === "object") return Object.values(value).some(containsCwdToken);
+  return false;
+}
+function collectNeeds(sidecar) {
+  const needs = [];
+  const roles = isRecord2(sidecar) ? sidecar.roles : void 0;
+  if (!isRecord2(roles)) return needs;
+  for (const role of Object.values(roles)) {
+    if (isRecord2(role) && Array.isArray(role.needs)) {
+      for (const n of role.needs) if (isRecord2(n) && typeof n.need === "string") needs.push(n);
+    }
+  }
+  return needs;
+}
+function skillLayer(x) {
+  const out = {};
+  if (x?.disableBundledSkills !== void 0) out.disableBundledSkills = x.disableBundledSkills;
+  if (x?.skillOverrides !== void 0) out.skillOverrides = x.skillOverrides;
+  return out;
+}
+function mergeCapabilitiesSpecs(sidecarSpec, sidecarSkill, caller) {
+  const merged = {};
+  const mcpServers = { ...sidecarSpec.mcpServers ?? {}, ...caller?.mcpServers ?? {} };
+  if (Object.keys(mcpServers).length > 0) merged.mcpServers = mcpServers;
+  const agents = { ...sidecarSpec.agents ?? {}, ...caller?.agents ?? {} };
+  if (Object.keys(agents).length > 0) merged.agents = agents;
+  if (caller?.skills !== void 0) merged.skills = caller.skills;
+  else if (sidecarSpec.skills !== void 0) merged.skills = sidecarSpec.skills;
+  const skill = mergeSkillSettings(sidecarSkill, skillLayer(caller));
+  if (skill.disableBundledSkills !== void 0) merged.disableBundledSkills = skill.disableBundledSkills;
+  if (skill.skillOverrides !== void 0) merged.skillOverrides = skill.skillOverrides;
+  return merged;
+}
+function composeLaunchCapabilities(input) {
+  const { sidecar, registry, availability, webAvailable, requesterCwd, callerCapabilities } = input;
+  const errors = [];
+  const needs = collectNeeds(sidecar);
+  const resolved = resolveCapabilities(needs, registry, { availability, webAvailable });
+  const substituted = resolved.map((r) => {
+    if ("unresolved" in r) return r;
+    if (requesterCwd.length === 0 && containsCwdToken(r.mcpServers)) {
+      errors.push(`capability '${r.need}' provider '${r.provider}' uses ${CWD_TOKEN} but the requester cwd is unresolvable \u2014 launch from a resolvable directory`);
+      return r;
+    }
+    return { ...r, mcpServers: substituteCwd(r.mcpServers, requesterCwd) };
+  });
+  const projected = sidecarToCapabilitiesSpec(sidecar, substituted);
+  errors.push(...projected.errors);
+  let capabilities = null;
+  if (projected.spec !== null && errors.length === 0) {
+    capabilities = mergeCapabilitiesSpecs(projected.spec, skillLayer(sidecar), callerCapabilities);
+  }
+  const deduped = [...new Set(errors)];
+  return { capabilities: deduped.length > 0 ? null : capabilities, report: projected.report, errors: deduped };
 }
 
 // packages/debugger/src/observer-def.ts
@@ -645,7 +1084,7 @@ ${deps.logTail()}`
 
 // packages/debugger/src/observe-identity.ts
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync as readFileSync2 } from "node:fs";
 function probeExec(cmd, args) {
   try {
     return execFileSync(cmd, args, { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] });
@@ -670,7 +1109,7 @@ function readBootId() {
     return sec !== null ? `boottime-${String(sec)}` : null;
   }
   try {
-    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return readFileSync2("/proc/sys/kernel/random/boot_id", "utf8").trim();
   } catch {
     return null;
   }
@@ -690,7 +1129,7 @@ function readProcStartStamp(pid) {
     return out !== null ? parsePowershellInt(out) : null;
   }
   try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const stat = readFileSync2(`/proc/${pid}/stat`, "utf8");
     const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     const ticks = Number(rest[19]);
     return Number.isFinite(ticks) ? ticks : null;
@@ -716,13 +1155,13 @@ function pidState(pf) {
 }
 
 // packages/debugger/src/observe-config.ts
-import { mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync2, renameSync as renameSync2, statSync, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join4 } from "node:path";
+import { mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync3, renameSync as renameSync2, statSync, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join5 } from "node:path";
 var CONFIG_FILENAME = "config.json";
 function readObserveConfig(configRoot) {
   let raw;
   try {
-    raw = JSON.parse(readFileSync2(join4(configRoot, CONFIG_FILENAME), "utf8"));
+    raw = JSON.parse(readFileSync3(join5(configRoot, CONFIG_FILENAME), "utf8"));
   } catch {
     return { sources: [], remotes: [] };
   }
@@ -748,8 +1187,8 @@ function parseRemoteEntry(raw) {
 }
 function writeObserveConfig(configRoot, config) {
   mkdirSync2(configRoot, { recursive: true, mode: 448 });
-  const path = join4(configRoot, CONFIG_FILENAME);
-  const tmpPath = join4(configRoot, `.${CONFIG_FILENAME}.tmp-${process.pid}-${Date.now()}`);
+  const path = join5(configRoot, CONFIG_FILENAME);
+  const tmpPath = join5(configRoot, `.${CONFIG_FILENAME}.tmp-${process.pid}-${Date.now()}`);
   try {
     writeFileSync2(tmpPath, `${JSON.stringify(config, null, 2)}
 `, { mode: 384 });
@@ -765,7 +1204,7 @@ function writeObserveConfig(configRoot, config) {
 var CLAUDE_DIR_NAME = /^\.claude(-.+)?$/;
 function hasProjectsStore(candidate) {
   try {
-    return statSync(join4(candidate, "projects")).isDirectory();
+    return statSync(join5(candidate, "projects")).isDirectory();
   } catch {
     return false;
   }
@@ -776,9 +1215,9 @@ function discoverConfigDirCandidates(env, home) {
   if (explicit !== void 0 && explicit.length > 0) candidates.push(explicit);
   try {
     const siblings = readdirSync2(home, { withFileTypes: true }).filter((entry) => (entry.isDirectory() || entry.isSymbolicLink()) && CLAUDE_DIR_NAME.test(entry.name)).map((entry) => entry.name).sort();
-    for (const name of siblings) candidates.push(join4(home, name));
+    for (const name of siblings) candidates.push(join5(home, name));
   } catch {
-    candidates.push(join4(home, ".claude"));
+    candidates.push(join5(home, ".claude"));
   }
   return candidates.filter(hasProjectsStore);
 }
@@ -962,19 +1401,19 @@ async function probeFreePort() {
 function findObserveRoot(cwd, env) {
   const isObserveApp = (d) => {
     try {
-      const pkg = JSON.parse(readFileSync3(join5(d, "apps", "observe-ui", "package.json"), "utf8"));
+      const pkg = JSON.parse(readFileSync4(join6(d, "apps", "observe-ui", "package.json"), "utf8"));
       return typeof pkg === "object" && pkg !== null && pkg["name"] === "@workflow-toolbox/observe-ui";
     } catch {
       return false;
     }
   };
-  const hasServer = (d) => existsSync2(join5(d, "apps", "observe-ui", "server", "dev-api.ts")) && isObserveApp(d);
-  const probe = (d) => hasServer(d) ? d : hasServer(join5(d, "toolkit")) ? join5(d, "toolkit") : null;
+  const hasServer = (d) => existsSync2(join6(d, "apps", "observe-ui", "server", "dev-api.ts")) && isObserveApp(d);
+  const probe = (d) => hasServer(d) ? d : hasServer(join6(d, "toolkit")) ? join6(d, "toolkit") : null;
   const forced = env["DWT_OBSERVE_ROOT"];
   if (forced !== void 0 && forced.length > 0) return probe(forced);
   let dir = cwd;
   for (let depth = 0; depth < 64; depth++) {
-    const hit = probe(dir) ?? probe(join5(dir, "workflow-observatory"));
+    const hit = probe(dir) ?? probe(join6(dir, "workflow-observatory"));
     if (hit !== null) return hit;
     const parent = dirname(dir);
     if (parent === dir) return null;
@@ -994,7 +1433,7 @@ function openLogFileAt(path) {
 }
 function readPidfileAt(path) {
   try {
-    return parseObservePidfile(readFileSync3(path, "utf8"));
+    return parseObservePidfile(readFileSync4(path, "utf8"));
   } catch {
     return null;
   }
@@ -1011,7 +1450,7 @@ function clearPidfileAt(path) {
 }
 function clearLegacyHubPidfile(stateRoot) {
   try {
-    unlinkSync3(join5(stateRoot, "hub.json"));
+    unlinkSync3(join6(stateRoot, "hub.json"));
   } catch {
   }
 }
@@ -1038,7 +1477,7 @@ function pidfileFromHealth(h) {
   };
 }
 function makeCtx() {
-  const stateRoot = observeStateRoot(process.env, homedir2(), process.platform);
+  const stateRoot = observeStateRoot(process.env, homedir3(), process.platform);
   return { stateRoot, pidfilePath: observeServerPidfilePath(stateRoot) };
 }
 async function probeFor(ctx) {
@@ -1060,9 +1499,9 @@ function resolveStartSources(explicitRaw) {
   for (const [i, dir] of explicit.entries()) {
     if (!existsSync2(dir)) throw new Error(`--source ${explicitRaw[i]}: directory does not exist (resolved to ${dir})`);
   }
-  const configRoot = observeConfigRoot(process.env, homedir2(), process.platform);
+  const configRoot = observeConfigRoot(process.env, homedir3(), process.platform);
   const { sources: configSources } = readObserveConfig(configRoot);
-  const discoveryCandidates = discoverConfigDirCandidates(process.env, homedir2());
+  const discoveryCandidates = discoverConfigDirCandidates(process.env, homedir3());
   const resolved = resolveHubSources(explicit, configSources, discoveryCandidates, existsSync2, resolveDir);
   if (resolved.length > 0) return resolved;
   const fallback = resolveConfigDir();
@@ -1075,7 +1514,7 @@ function resolveStartSources(explicitRaw) {
   return [fallback];
 }
 function resolveStartRemotes() {
-  const configRoot = observeConfigRoot(process.env, homedir2(), process.platform);
+  const configRoot = observeConfigRoot(process.env, homedir3(), process.platform);
   const { remotes } = readObserveConfig(configRoot);
   const valid = [];
   for (const remote of remotes) {
@@ -1097,7 +1536,7 @@ function resolveLaunchAgentsDir() {
   }
   for (const rel of ["../launch-agents", "../../../../plugin/launch-agents"]) {
     const candidate = resolvePath(selfDir, rel);
-    if (existsSync2(join5(candidate, ".claude-plugin", "plugin.json"))) return candidate;
+    if (existsSync2(join6(candidate, ".claude-plugin", "plugin.json"))) return candidate;
   }
   return null;
 }
@@ -1121,7 +1560,7 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
   const launchAgentsDir = resolveLaunchAgentsDir();
   const tsxCli = (() => {
     try {
-      return createRequire(join5(base, "package.json")).resolve("tsx/cli");
+      return createRequire(join6(base, "package.json")).resolve("tsx/cli");
     } catch {
       throw new Error(`observe base ${base} has no resolvable 'tsx' \u2014 run pnpm install in ${base}`);
     }
@@ -1192,7 +1631,7 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
 }
 function readLogSliceFrom(path, offset) {
   try {
-    const buf = readFileSync3(path);
+    const buf = readFileSync4(path);
     return buf.subarray(Math.min(offset, buf.length)).toString("utf8");
   } catch {
     return "";
@@ -1200,7 +1639,7 @@ function readLogSliceFrom(path, offset) {
 }
 function logTail(logPath, lines = 5) {
   try {
-    const text = readFileSync3(logPath, "utf8");
+    const text = readFileSync4(logPath, "utf8");
     const tail = text.split("\n").filter(Boolean).slice(-lines).join("\n");
     return tail.length > 0 ? `log tail (${logPath}):
 ${tail}` : `log is empty (${logPath})`;
@@ -1407,6 +1846,52 @@ async function resolveSourcePrefix(port, token, health, wanted) {
     (ms) => new Promise((r) => setTimeout(r, ms))
   );
 }
+async function applySidecarCapabilities(input) {
+  const { port, token, prefix, script, args, callerCapabilities, requesterCwd } = input;
+  let workflowPath;
+  try {
+    const list = await api(port, token, `${prefix}/api/workflows`).then(
+      (r) => r.ok ? r.json() : [],
+      () => []
+    );
+    const entry = Array.isArray(list) ? list.find((w) => w.id === script) : void 0;
+    if (entry !== void 0 && typeof entry.path === "string") workflowPath = entry.path;
+  } catch {
+    workflowPath = void 0;
+  }
+  if (workflowPath === void 0) return args;
+  const sidecarPath = sidecarPathFor(workflowPath);
+  let rawSidecar;
+  try {
+    rawSidecar = readFileSync4(sidecarPath, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return args;
+    throw new Error(`capability sidecar ${sidecarPath} is present but unreadable: ${String(e)}`);
+  }
+  let sidecar;
+  try {
+    sidecar = JSON.parse(rawSidecar);
+  } catch (e) {
+    throw new Error(`capability sidecar ${sidecarPath} is not valid JSON: ${e.message}`);
+  }
+  const { registry, errors: regErrors } = loadCapabilityRegistry();
+  if (regErrors.length > 0) throw new Error(`capability registry invalid:
+  - ${regErrors.join("\n  - ")}`);
+  const availability = await probeProviders(registry);
+  const composed = composeLaunchCapabilities({ sidecar, registry, availability, webAvailable: true, requesterCwd, callerCapabilities });
+  if (composed.errors.length > 0) {
+    throw new Error(`capability sidecar ${sidecarPath} cannot be resolved for launch:
+  - ${composed.errors.join("\n  - ")}`);
+  }
+  if (args !== void 0 && !isRecord2(args)) {
+    throw new Error(`workflow "${script}" has a capability sidecar but --args is not a JSON object \u2014 capabilities require object args`);
+  }
+  const base = isRecord2(args) ? args : {};
+  const roleCount = isRecord2(sidecar) && isRecord2(sidecar.roles) ? Object.keys(sidecar.roles).length : 0;
+  process.stderr.write(`capability sidecar: resolved ${composed.report.length} need(s) across ${roleCount} role(s) from ${sidecarPath}
+`);
+  return { ...base, capabilities: composed.capabilities, capabilitiesReport: composed.report };
+}
 async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
   if (script === void 0) throw new Error("usage: wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>]");
   let args;
@@ -1420,12 +1905,6 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
   const cap = extractCapabilities(args);
   if (cap.errors.length > 0) throw new Error(`--args capabilities section invalid:
   - ${cap.errors.join("\n  - ")}`);
-  if (cap.spec !== null) {
-    process.stderr.write(
-      `capabilities section: ${Object.keys(composeCapabilityOptions(cap.spec)).join(", ") || "(empty)"} \u2014 needs a server with capabilities composition; older servers ignore it
-`
-    );
-  }
   const obs = extractObservers(args);
   if (obs.errors.length > 0) throw new Error(`--args observers section invalid:
   - ${obs.errors.join("\n  - ")}`);
@@ -1443,6 +1922,14 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag) {
   const { cwd: requesterCwd, note: cwdNote } = safeRequesterCwd(() => process.cwd());
   if (cwdNote !== null) process.stderr.write(`${cwdNote}
 `);
+  args = await applySidecarCapabilities({ port, token, prefix, script, args, callerCapabilities: cap.spec, requesterCwd });
+  const finalCap = extractCapabilities(args);
+  if (finalCap.spec !== null) {
+    process.stderr.write(
+      `capabilities section: ${Object.keys(composeCapabilityOptions(finalCap.spec)).join(", ") || "(empty)"} \u2014 needs a server with capabilities composition; older servers ignore it
+`
+    );
+  }
   const res = await api(port, token, `${prefix}/api/launch`, { method: "POST", body: JSON.stringify(buildLaunchBody(script, args, requesterCwd)) }, 3e4);
   const body = await res.json().catch(() => null);
   if (!res.ok) {
@@ -1593,10 +2080,10 @@ async function cmdResume(ctx, runId, sourceFlag) {
   return recoverExitCodeFor(res.status, res.ok, code);
 }
 async function cmdConfigShow() {
-  const configRoot = observeConfigRoot(process.env, homedir2(), process.platform);
-  const configPath = join5(configRoot, "config.json");
+  const configRoot = observeConfigRoot(process.env, homedir3(), process.platform);
+  const configPath = join6(configRoot, "config.json");
   const { sources, remotes } = readObserveConfig(configRoot);
-  const discovered = [...new Set(discoverConfigDirCandidates(process.env, homedir2()).map(resolveDir))];
+  const discovered = [...new Set(discoverConfigDirCandidates(process.env, homedir3()).map(resolveDir))];
   process.stdout.write(`config file : ${configPath}
 `);
   process.stdout.write(`configured  : ${sources.length > 0 ? sources.join(", ") : "(none \u2014 start falls through to auto-discovery)"}
@@ -1612,7 +2099,7 @@ async function cmdConfigShow() {
 async function cmdConfigAddSource(dirRaw) {
   const dir = resolveDir(dirRaw);
   if (!existsSync2(dir)) throw new Error(`config add-source ${dirRaw}: directory does not exist (resolved to ${dir})`);
-  const configRoot = observeConfigRoot(process.env, homedir2(), process.platform);
+  const configRoot = observeConfigRoot(process.env, homedir3(), process.platform);
   const config = readObserveConfig(configRoot);
   const already = config.sources.some((s) => resolveDir(s) === dir);
   const next = already ? config.sources : [...config.sources, dir];
@@ -1622,7 +2109,7 @@ async function cmdConfigAddSource(dirRaw) {
 }
 async function cmdConfigRemoveSource(dirRaw) {
   const dir = resolveDir(dirRaw);
-  const configRoot = observeConfigRoot(process.env, homedir2(), process.platform);
+  const configRoot = observeConfigRoot(process.env, homedir3(), process.platform);
   const config = readObserveConfig(configRoot);
   const next = config.sources.filter((s) => resolveDir(s) !== dir);
   writeObserveConfig(configRoot, { ...config, sources: next });
@@ -1637,7 +2124,7 @@ function describeRemote(remote) {
 async function cmdConfigAddRemote(remote) {
   const url = normalizeRemoteUrl(remote.url);
   if (url === null) throw new Error(`config add-remote ${remote.url}: not a usable http(s) URL`);
-  const configRoot = observeConfigRoot(process.env, homedir2(), process.platform);
+  const configRoot = observeConfigRoot(process.env, homedir3(), process.platform);
   const config = readObserveConfig(configRoot);
   if (remote.token !== void 0) {
     process.stderr.write(
@@ -1665,7 +2152,7 @@ async function cmdConfigAddRemote(remote) {
 async function cmdConfigRemoveRemote(urlRaw) {
   const url = normalizeRemoteUrl(urlRaw);
   if (url === null) throw new Error(`config remove-remote ${urlRaw}: not a usable http(s) URL`);
-  const configRoot = observeConfigRoot(process.env, homedir2(), process.platform);
+  const configRoot = observeConfigRoot(process.env, homedir3(), process.platform);
   const config = readObserveConfig(configRoot);
   const next = config.remotes.filter((r) => normalizeRemoteUrl(r.url) !== url);
   writeObserveConfig(configRoot, { ...config, remotes: next });
@@ -1703,25 +2190,25 @@ function scanRunsForPrune(configDirs) {
   const records = [];
   const seen = /* @__PURE__ */ new Set();
   for (const configDir of new Set(configDirs)) {
-    const projectsDir = join5(configDir, "projects");
+    const projectsDir = join6(configDir, "projects");
     const scriptByRun = /* @__PURE__ */ new Map();
     for (const slug of subdirs(projectsDir)) {
-      for (const session of subdirs(join5(projectsDir, slug))) {
-        const scriptsDir = join5(projectsDir, slug, session, "workflows", "scripts");
+      for (const session of subdirs(join6(projectsDir, slug))) {
+        const scriptsDir = join6(projectsDir, slug, session, "workflows", "scripts");
         for (const f of filesIn(scriptsDir)) {
           const m = RUNID_IN_SCRIPT.exec(f);
-          if (m) scriptByRun.set(m[1], { name: runNameFromScript(f, m[1]), scriptPath: join5(scriptsDir, f) });
+          if (m) scriptByRun.set(m[1], { name: runNameFromScript(f, m[1]), scriptPath: join6(scriptsDir, f) });
         }
       }
     }
     for (const slug of subdirs(projectsDir)) {
-      for (const session of subdirs(join5(projectsDir, slug))) {
-        const wfDir = join5(projectsDir, slug, session, "workflows");
+      for (const session of subdirs(join6(projectsDir, slug))) {
+        const wfDir = join6(projectsDir, slug, session, "workflows");
         for (const f of filesIn(wfDir)) {
           const m = RUN_JSON.exec(f);
           if (!m) continue;
           const runId = m[1];
-          const jsonPath = join5(wfDir, f);
+          const jsonPath = join6(wfDir, f);
           if (seen.has(jsonPath)) continue;
           seen.add(jsonPath);
           let mtimeMs;
@@ -1737,7 +2224,7 @@ function scanRunsForPrune(configDirs) {
             mtimeMs,
             jsonPath,
             scriptPath: sc?.scriptPath ?? null,
-            sidecarDir: join5(projectsDir, slug, session, "subagents", "workflows", runId)
+            sidecarDir: join6(projectsDir, slug, session, "subagents", "workflows", runId)
           });
         }
       }
@@ -1759,7 +2246,7 @@ async function cmdPrune(argv) {
       return 2;
     }
   }
-  const configDirs = [...new Set(discoverConfigDirCandidates(process.env, homedir2()).map(resolveDir))];
+  const configDirs = [...new Set(discoverConfigDirCandidates(process.env, homedir3()).map(resolveDir))];
   const records = scanRunsForPrune(configDirs);
   const selected = selectRuns(records, {
     runId: runId ?? null,
