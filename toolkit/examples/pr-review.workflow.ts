@@ -327,6 +327,16 @@ function actPrompt(category: string, summaryAsk: string, extraTaskLine?: string)
     `"riskAreas": ["<risk1>", ...], "summary": "<...>" }. ${CHANGE_SUMMARY_RULES}`
 }
 
+// Render a review target as its own fenced block, split from the surrounding
+// instruction prose. A target is user-supplied and — since targets conventionally
+// embed the repo path — is commonly a multi-line paragraph, not a short path or
+// git range. Inline-backtick-wrapping such a value renders as a single giant
+// inline-code span in transcript viewers; a fenced block renders cleanly at any
+// length and reads more clearly for the reviewing models too.
+function targetBlock(target: string): string {
+  return '```\n' + target + '\n```'
+}
+
 // ---------------------------------------------------------------------------
 // Reviewer lenses per category
 // Each category gets specialized lenses: different failure modes, not redundant
@@ -996,7 +1006,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         `You are reviewing this change in single-verifier mode: ONE consolidated pass ` +
         `covering every lens that would normally get its own reviewer (${lenses.join(', ')}).\n\n` +
         `## Change\n` +
-        `- **Target:** \`${input.target}\`\n\n` +
+        `**Target:**\n${targetBlock(input.target)}\n\n` +
         `### Summary (from the routing stage)\n${changeSummary.summary}\n\n` +
         `### Risk areas\n${changeSummary.riskAreas.map((r) => `- ${r}`).join('\n')}\n\n` +
         `## Instructions — cover EVERY lens below, in full\n${consolidatedInstructions}\n\n` +
@@ -1026,7 +1036,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       `## Role\n` +
       `You are a specialized code reviewer examining the **${lens}** aspect of this change.\n\n` +
       `## Change\n` +
-      `- **Target:** \`${input.target}\`\n\n` +
+      `**Target:**\n${targetBlock(input.target)}\n\n` +
       `### Summary (from the routing stage)\n${changeSummary.summary}\n\n` +
       `### Risk areas\n${changeSummary.riskAreas.map((r) => `- ${r}`).join('\n')}\n\n` +
       `## Instructions\n` +
@@ -1102,8 +1112,9 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         `**${finding.title}** — \`${finding.file}\` · severity: ${finding.severity}\n\n` +
         `${finding.detail}\n\n` +
         `## Instructions\n` +
-        `IMPORTANT: Do NOT trust the reviewer summary above. Open the actual diff at \`${input.target}\` ` +
-        `and re-derive whether this finding is genuine from first principles.\n` +
+        `IMPORTANT: Do NOT trust the reviewer summary above. Open the actual diff at the target below ` +
+        `and re-derive whether this finding is genuine from first principles.\n\n` +
+        `**Target:**\n${targetBlock(input.target)}\n\n` +
         `${READ_ONLY_GIT}`,
       lenses: ['correctness', 'security', 'does-it-reproduce'],
       votes: 3,
@@ -1187,7 +1198,8 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
 
   const synthesisPrompt =
     `## Task\n` +
-    `You are synthesizing a code review for the change \`${input.target}\` (category: ${category}).\n\n` +
+    `You are synthesizing a code review for the change below (category: ${category}).\n\n` +
+    `**Target:**\n${targetBlock(input.target)}\n\n` +
     `### Change summary\n${changeSummary.summary}\n\n` +
     `## Verified findings (non-refuted)\n` +
     '```json\n' + JSON.stringify(synthesisFindings, null, 2) + '\n```\n\n' +

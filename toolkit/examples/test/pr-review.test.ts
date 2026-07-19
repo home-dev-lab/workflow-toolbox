@@ -1630,3 +1630,83 @@ describe('pr-review mode ladder', () => {
     ).rejects.toThrow(/mode/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Test: target rendering — a multi-line target must be a FENCED block, never
+// inline-backtick-wrapped.
+//
+// Regression lock for the "giant inline-code span" defect: prompt templates
+// used to wrap the target in inline backticks (`- **Target:** `${target}``),
+// which was fine for a short path/range but — since targets conventionally
+// embed the repo path (a multi-line paragraph) — rendered as ONE giant
+// inline-code span in transcript viewers. The fix renders the target as its
+// own fenced block, split from the instruction prose, in every role that
+// embeds it (reviewer, verifier, synthesizer).
+// ---------------------------------------------------------------------------
+
+describe('pr-review target rendering — multi-line target is fenced, never inline-backtick-wrapped', () => {
+  it('fences a multi-line target in the reviewer, verifier and synthesizer prompts', async () => {
+    const prompts: string[] = []
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        prompts.push(prompt)
+        const p = prompt.toLowerCase()
+        if (p.includes('availability probe')) return 'PROBE_OK'
+        if (p.includes('adversarially verify')) {
+          return { verdict: 'confirmed', reason: 'Verified: null check is indeed missing' }
+        }
+        if (p.includes('synthesizing a code review')) {
+          return { verdict: 'request-changes', summary: 'Critical finding must be addressed' }
+        }
+        if (p.includes('you are a specialized code reviewer')) {
+          return {
+            findings: [
+              { title: 'Missing null check', file: 'src/payment.ts', severity: 'high', detail: 'no null check' },
+            ],
+          }
+        }
+        if (p.includes('you are reviewing a')) {
+          return { summary: 'Fixes null pointer', riskAreas: ['payment'], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
+        }
+        if (p.includes('classify it into exactly one category')) return { category: 'bugfix' }
+        return { summary: 'Change summary', riskAreas: [], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
+      },
+    })
+
+    // A Path-B style target: embeds the repo path → a multi-line paragraph,
+    // NOT a short git range. This is exactly the value that broke rendering.
+    const multiLineTarget =
+      'In the git repository at /abs/path (use git -C /abs/path for ALL git commands).\n' +
+      'Review HEAD~1..HEAD, the recent change set,\n' +
+      'with attention to the payment path and null handling.'
+
+    await wf.run(rt, JSON.stringify({ target: multiLineTarget }))
+
+    const inlineWrapped = '`' + multiLineTarget + '`'
+    const fenced = '```\n' + multiLineTarget + '\n```'
+
+    // The three roles that embed the target with an explicit **Target:** label
+    // (these are the prompts that used to inline-backtick-wrap it). The Route
+    // phase (classify / act) interpolates the target BARE — no backtick span —
+    // and is intentionally out of scope here.
+    const roles = [
+      'you are a specialized code reviewer',
+      'adversarially verify',
+      'synthesizing a code review',
+    ]
+
+    for (const role of roles) {
+      const rolePrompts = prompts.filter(
+        (p) => p.toLowerCase().includes(role) && p.includes(multiLineTarget),
+      )
+      // Sanity: this role really does embed the target.
+      expect(rolePrompts.length).toBeGreaterThan(0)
+      for (const p of rolePrompts) {
+        // REGRESSION LOCK: never inline-backtick-wrap a multi-line target.
+        expect(p.includes(inlineWrapped)).toBe(false)
+        // The target must be rendered as a fenced block instead.
+        expect(p.includes(fenced)).toBe(true)
+      }
+    }
+  })
+})

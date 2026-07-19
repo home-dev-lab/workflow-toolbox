@@ -1772,6 +1772,9 @@ ${renderClaim(claim)}`;
 ## Output contract
 Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<...>" }. ${CHANGE_SUMMARY_RULES}`;
   }
+  function targetBlock(target) {
+    return "```\n" + target + "\n```";
+  }
   var REVIEWER_LENSES = {
     bugfix: ["root-cause", "regression-risk", "test-coverage", "maintainability"],
     feature: ["correctness", "security", "api-design", "maintainability"],
@@ -2076,7 +2079,8 @@ ${lensInstructionsFor(l)}`).join("\n\n");
 You are reviewing this change in single-verifier mode: ONE consolidated pass covering every lens that would normally get its own reviewer (${lenses.join(", ")}).
 
 ## Change
-- **Target:** \`${input.target}\`
+**Target:**
+${targetBlock(input.target)}
 
 ### Summary (from the routing stage)
 ${changeSummary.summary}
@@ -2107,7 +2111,8 @@ Return your findings across ALL lenses combined. Each finding: \`{ title, file, 
 You are a specialized code reviewer examining the **${lens}** aspect of this change.
 
 ## Change
-- **Target:** \`${input.target}\`
+**Target:**
+${targetBlock(input.target)}
 
 ### Summary (from the routing stage)
 ${changeSummary.summary}
@@ -2175,7 +2180,11 @@ Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'
 ${finding.detail}
 
 ## Instructions
-IMPORTANT: Do NOT trust the reviewer summary above. Open the actual diff at \`${input.target}\` and re-derive whether this finding is genuine from first principles.
+IMPORTANT: Do NOT trust the reviewer summary above. Open the actual diff at the target below and re-derive whether this finding is genuine from first principles.
+
+**Target:**
+${targetBlock(input.target)}
+
 ${READ_ONLY_GIT}`,
         lenses: ["correctness", "security", "does-it-reproduce"],
         votes: 3,
@@ -2221,7 +2230,10 @@ ${READ_ONLY_GIT}`,
     }));
     rt.phase("Synthesize");
     const synthesisPrompt = `## Task
-You are synthesizing a code review for the change \`${input.target}\` (category: ${category}).
+You are synthesizing a code review for the change below (category: ${category}).
+
+**Target:**
+${targetBlock(input.target)}
 
 ### Change summary
 ${changeSummary.summary}
