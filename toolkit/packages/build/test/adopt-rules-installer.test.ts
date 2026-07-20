@@ -32,6 +32,13 @@ function run(args: string[], dir: string): string {
   const res = spawnSync(process.execPath, [SCRIPT, ...args, '--dir', dir], { encoding: 'utf8' })
   return (res.stdout ?? '') + (res.stderr ?? '')
 }
+// Run WITHOUT a forced --dir, at a chosen cwd, so the script uses each set's OWN
+// default dir (.claude/rules, .claude/agents) under that cwd — the only way to
+// exercise the `--set all` SUCCESS path, which rejects an explicit --dir.
+function runInCwd(args: string[], cwd: string): string {
+  const res = spawnSync(process.execPath, [SCRIPT, ...args], { cwd, encoding: 'utf8' })
+  return (res.stdout ?? '') + (res.stderr ?? '')
+}
 const rulePath = (dir: string) => join(dir, RULE)
 
 describe('adopt-rules installer — edit-safety contract (committed drift lock)', () => {
@@ -194,6 +201,33 @@ describe('adopt-rules installer — agent-copies set (--set agents; committed dr
     run(['--set', 'agents', '--check'], d)
     for (const f of AGENTS) expect(existsSync(agentPath(d, f))).toBe(false)
   })
+
+  it('old-format agent banner (version but NO fingerprint, after the frontmatter): conservative skip, --force overwrites', () => {
+    const d = mkDir()
+    // A managed-looking banner with NO `content sha256:`, placed AFTER the frontmatter —
+    // exercises bannerLine()'s agent-specific (frontmatter-relative) extraction path.
+    writeFileSync(
+      agentPath(d, 'pilot.md'),
+      '---\nname: pilot\ndescription: x\n---\n<!-- installed from workflow-toolbox v0.1.0 by the adopt-rules skill -->\n\nold body\n',
+    )
+    expect(run(['--set', 'agents', '--check'], d)).toMatch(/pilot\.md:.*pre-fingerprint/)
+    expect(run(['--set', 'agents', '--install'], d)).toContain('pilot.md: SKIPPED')
+    expect(run(['--set', 'agents', '--install', '--force'], d)).toMatch(/pilot\.md: OVERWROTE/)
+    expect(readFileSync(agentPath(d, 'pilot.md'), 'utf8')).toContain('content sha256:')
+  })
+
+  it('AHEAD (installed version > plugin, unedited): --install SKIPS it without --force', () => {
+    const d = mkDir()
+    run(['--set', 'agents', '--install'], d)
+    const p = agentPath(d, 'pilot.md')
+    // Raise ONLY the banner's version token above any real plugin version; fingerprint intact.
+    const before = readFileSync(p, 'utf8')
+    writeFileSync(p, before.replace(/(installed from workflow-toolbox )v\d+\.\d+\.\d+/, '$1v999.0.0'))
+    expect(run(['--set', 'agents', '--check'], d)).toContain('pilot.md: AHEAD')
+    expect(run(['--set', 'agents', '--install'], d)).toContain('pilot.md: SKIPPED')
+    // untouched by a plain --install (still AHEAD, still v999)
+    expect(readFileSync(p, 'utf8')).toContain('v999.0.0')
+  })
 })
 
 describe('adopt-rules installer — CLI surface for the two-set engine', () => {
@@ -206,5 +240,22 @@ describe('adopt-rules installer — CLI surface for the two-set engine', () => {
   it('an unknown --set value fails loudly', () => {
     const d = mkDir()
     expect(run(['--set', 'bogus', '--check'], d)).toMatch(/unknown --set/)
+  })
+
+  it('--set all SUCCESS path: one invocation installs BOTH sets into their own default dirs', () => {
+    const d = mkDir()
+    const out = runInCwd(['--set', 'all', '--install'], d)
+    // Both sets processed, each into its own default subdir under the cwd.
+    expect(out).toMatch(/\[rules\] target=.*[/\\]\.claude[/\\]rules/)
+    expect(out).toMatch(/\[agents\] target=.*[/\\]\.claude[/\\]agents/)
+    expect(out).toContain('wt-delegation-ladder.md: WROTE')
+    expect(out).toContain('pilot.md: WROTE')
+    expect(existsSync(join(d, '.claude/rules/wt-delegation-ladder.md'))).toBe(true)
+    for (const f of AGENTS) expect(existsSync(join(d, '.claude/agents', f))).toBe(true)
+    // A re-check sees every item in BOTH sets as UP-TO-DATE (the loop ran end to end).
+    const chk = runInCwd(['--set', 'all', '--check'], d)
+    expect(chk).toContain('wt-delegation-ladder.md: UP-TO-DATE')
+    expect(chk).toContain('pilot.md: UP-TO-DATE')
+    expect(chk).toContain('nothing to do')
   })
 })
