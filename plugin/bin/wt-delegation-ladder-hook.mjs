@@ -49,9 +49,18 @@ function hasDelegationMarkers(root) {
   return false
 }
 
-/** Is an executable named `bin` reachable on PATH? (cross-platform, no spawn.) */
+/** Is an executable named `bin` reachable — on PATH, or in the common rc-file install
+ *  dirs a non-login-shell PATH often misses? (Our own opencode-verifier documents this
+ *  exact PATH-miss for rc-file installs, so we scan the usual homes after PATH.)
+ *  cross-platform, no spawn. */
 function onPath(bin) {
-  const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean)
+  const fallbacks = [
+    path.join(os.homedir(), '.opencode', 'bin'),
+    path.join(os.homedir(), '.local', 'bin'),
+    '/usr/local/bin',
+    '/opt/homebrew/bin',
+  ]
+  const dirs = [...(process.env.PATH || '').split(path.delimiter).filter(Boolean), ...fallbacks]
   const exts = process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : ['']
   for (const dir of dirs) {
     for (const ext of exts) {
