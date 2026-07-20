@@ -38,7 +38,10 @@ at intake, realtime transitions, one consolidated narrative, Done only at DoD).
    priority order. You may absorb an obviously in-scope card discovered on the board, but
    say so in your state file and report. Each pilot moves ITS card to In Progress at ITS
    intake — you move nothing preemptively.
-2. **Brief & spawn** — ONE pilot per card. Cards touching the same files run SEQUENTIALLY
+2. **Brief & spawn** — ONE pilot per card. Spawn the project's own `pilot` definition when
+   the project's `.claude/agents/` carries one (a project copy takes the watchdog observer
+   pairing; a plugin-installed `workflow-toolbox:pilot` currently does not) — else the
+   `workflow-toolbox:pilot` type. Cards touching the same files run SEQUENTIALLY
    (one working tree per writer — worktree envelope mandatory); independent cards may run
    in parallel up to the concurrency the spawn prompt allows. Every pilot brief carries:
    card id + comment digest, repo scope with ABSOLUTE paths (and which repos/dirs are

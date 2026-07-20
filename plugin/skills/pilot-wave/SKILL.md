@@ -81,12 +81,17 @@ Agent tool's `model` parameter overrides the frontmatter, so pin the strongest m
 reliably call, falling back down the tiers if the top one is not available. Effort is pinned in
 the definitions and is universal — leave it unless you have a reason.
 
-One pairing caveat: current Claude Code versions do not honor the `observer:` frontmatter
-for plugin-installed agents, so a `workflow-toolbox:pilot` runs WITHOUT its `pilot-watchdog`
-observer attached (the spawn works; the pairing is silently skipped). If the user wants the
-watchdog's drift/boundary oversight, tell them to copy `pilot.md` + `pilot-watchdog.md` from
-the plugin's `agents/` directory into the project's `.claude/agents/` (bare names) — project
-definitions DO get the observer attached. The pilot's PreToolUse guard works either way.
+One pairing caveat, with a resolution rule: current Claude Code versions do not honor the
+`observer:` frontmatter for plugin-installed agents, so a `workflow-toolbox:pilot` runs
+WITHOUT its `pilot-watchdog` observer attached (the spawn works; the pairing is silently
+skipped). If the user wants the watchdog's drift/boundary oversight, tell them to copy
+`pilot.md` + `pilot-watchdog.md` from the plugin's `agents/` directory into the project's
+`.claude/agents/` (bare names) — project definitions DO get the observer attached.
+**Resolution rule for every spawn this skill composes: check the project's `.claude/agents/`
+first — if it carries a `pilot.md` (and, for a wave, a `pilot-orchestrator.md`), spawn the
+BARE names (`pilot`, `pilot-orchestrator`), because the project copies take the watchdog
+pairing; only when no project copy exists, spawn the namespaced `workflow-toolbox:*` types.**
+The mechanical PreToolUse guard recognizes both name forms and works either way.
 
 The spawn prompt must carry:
 
