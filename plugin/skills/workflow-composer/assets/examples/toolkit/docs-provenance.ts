@@ -41,6 +41,19 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     ],
   },
   {
+    // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer
+    // skill, which also documents the environment-brief contract. The whole
+    // plugin/agents/ subtree is mapped above to the routing docs (accurate for
+    // the leaf/lean/opencode-verifier agentTypes); this narrower entry adds the
+    // pilot-wave surface for the three pilot definitions specifically.
+    sources: [
+      'plugin/agents/pilot.md',
+      'plugin/agents/pilot-orchestrator.md',
+      'plugin/agents/pilot-watchdog.md',
+    ],
+    docs: ['plugin/skills/pilot-wave/SKILL.md'],
+  },
+  {
     // The nine patterns + the result envelope (options, caps, envelope shape,
     // pattern count claims).
     sources: ['toolkit/packages/patterns/src/'],

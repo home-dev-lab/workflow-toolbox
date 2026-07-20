@@ -2,13 +2,16 @@
 
 This repo has two halves that stand alone but work together:
 
-- **`plugin/`** — the Claude Code plugin. Ships **six skills** — `workflow-composer`
+- **`plugin/`** — the Claude Code plugin. Ships **seven skills** — `workflow-composer`
   (author), `toolkit-scaffold` (start), `workflow-debugger` (diagnose a run),
   `upgrade-canary` (re-verify the runtime after an upgrade), `independent-analysis`
   (trigger the bias-free analysis workflow when relevant), `deep-grounding`
-  (collect + verify evidence against the real sources before asserting/analyzing) —
-  plus a `Stop` hook that
-  auto-surfaces a finished run's audit report, and **one bundled workflow**:
+  (collect + verify evidence against the real sources before asserting/analyzing), and
+  `pilot-wave` (compose a delegated pilot/orchestrator wave over tracked cards) — the
+  **pilot agent suite** (`pilot`, `pilot-orchestrator`, `pilot-watchdog`) that skill drives,
+  a `Stop` hook that auto-surfaces a finished run's audit report, a `SessionStart` hook that
+  injects the generic delegation ladder where a project does tracked/delegated work, and
+  **one bundled workflow**:
   `independent-analysis` (domain-agnostic bias-free multi-lens analysis,
   invocable as `workflow-toolbox:independent-analysis`; a byte-identity mirror of the
   canonical `toolkit/workflows/` artifact — the workflow its same-named skill triggers).

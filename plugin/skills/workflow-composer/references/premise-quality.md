@@ -130,6 +130,25 @@ backstop that makes any residual silent denial visible after the fact. Prefer `s
 or out-of-band grounding for every load-bearing fact, and treat a lens or sub-task phrased
 as "verify against the docs / the web" as a bug unless it ships with the source attached.
 
+## Fire on your own reasoning only when it pays — and pre-commit a prediction
+
+Before you spend a fan-out on your OWN thinking — a plan, an analysis, a decision, a
+claim — gate it on two things at once: is being wrong actually costly (irreversible,
+outward-facing, touches money/security/data-loss, or you are about to declare "done"),
+AND can a fan-out actually reduce the error? A fan-out reduces coverage, attention, and
+checkable-against-evidence errors. It does NOT reduce a reasoning error rooted in shared
+model priors — a same-model panel misses those in lockstep (see the next section). When
+both hold, fire; when neither does, answer directly.
+
+Then write down, in one line, what you expect the run to change or find ("I expect this
+to surface X / overturn Y; if it comes back clean I treat the decision as ratified").
+That pre-committed prediction is the cheapest falsifiability you have: a string of
+predictions that never come true is a fan-out that is theatre, not verification — stop, or
+fix the framing. Watch the overturn rate informally too; runs that never change a decision
+are cost without behavior change. You stay the arbiter regardless: a verdict that
+contradicts your richer in-context read does not auto-win, because the agents have less
+context than you do.
+
 ## Why premises matter more than agent count
 
 Adding agents diversifies *framing*, not *priors*. On a reasoning error rooted in the
