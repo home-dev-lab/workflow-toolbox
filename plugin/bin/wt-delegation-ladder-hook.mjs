@@ -18,6 +18,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 
 /** Read the hook's JSON payload from stdin (fd 0); tolerate an empty/absent one. */
 function readInput() {
@@ -70,6 +71,22 @@ function onPath(bin) {
   return false
 }
 
+/** Has the user already adopted the ladder as an editable rule (project or global)?
+ *  If so, we suppress the one-line adopt-rules suggestion (suggest until adopted,
+ *  never nag past it). */
+function ladderAdopted(root) {
+  const rel = path.join('.claude', 'rules', 'wt-delegation-ladder.md')
+  const cfg = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+  for (const p of [path.join(root, rel), path.join(cfg, 'rules', 'wt-delegation-ladder.md')]) {
+    try {
+      if (fs.existsSync(p)) return true
+    } catch {
+      /* ignore */
+    }
+  }
+  return false
+}
+
 function buildLadder() {
   const bridges = ['codex', 'opencode'].filter(onPath)
   const laneLine =
@@ -100,11 +117,18 @@ function main() {
   const root = typeof input.cwd === 'string' && input.cwd ? input.cwd : null
   if (!root || !hasDelegationMarkers(root)) return // silent no-op where irrelevant
 
+  let context = buildLadder()
+  if (!ladderAdopted(root)) {
+    context +=
+      '\nPrefer an editable copy of this ladder as a rule? Run the ' +
+      'workflow-toolbox:adopt-rules skill (it writes it only on explicit request, never automatically).'
+  }
+
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
-        additionalContext: buildLadder(),
+        additionalContext: context,
       },
     }),
   )

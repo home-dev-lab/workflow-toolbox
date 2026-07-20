@@ -24,8 +24,8 @@ Given a verification / review task (it will be in your prompt, and may include a
    **The trailing `< /dev/null` is MANDATORY** — without a TTY, `opencode run` blocks
    indefinitely reading an open-but-empty stdin pipe (the exact shape of a harness Bash
    invocation) and produces ZERO bytes until the timeout; with stdin explicitly closed it
-   starts immediately (root-caused 2026-07-15: a full day of 570s hangs across ALL
-   providers came down to this one redirection).
+   starts immediately (root-caused: a class of 570s hangs across ALL providers came down
+   to this one redirection).
 6. **Return the result — with EXACTLY ONE 429/rate-limit retry.** Inspect the step 5 invocation's stdout AND stderr for a rate-limit signature (e.g. `429`, `rate limit`, `rate_limit_exceeded`, `Too Many Requests`, `RESOURCE_EXHAUSTED`, or an explicit CLI rate-limit error message).
    - **Not present (this includes every OTHER kind of failure — timeout, crash, malformed output, permission denial):** return the model's stdout VERBATIM as your result, or the error/timeout text verbatim on failure. Do NOT re-judge, soften, embellish, or add your own opinion. Do NOT retry.
    - **Present:** retry EXACTLY ONCE. Resolve the fallback model — a task line `OPENCODE_FALLBACK_MODEL: <provider/model>` if present (same `sourceRefs` delivery convention as step 4), else default `zai-coding-plan/glm-5.2` — then re-run the IDENTICAL step-5 shape (same task file, same `< /dev/null`, same `timeout 570` / Bash `timeout: 600000`) with `--model <fallback-model>` in place of the original `--model <chosen-model>`. Return THAT retry's stdout/error verbatim as your final result — still source (b)/(c) of the three-sources contract above; a retry is a second CLI invocation, not a new source. The retry budget is exactly one: if the retry ALSO 429s or otherwise fails, return ITS output verbatim — do not retry again.

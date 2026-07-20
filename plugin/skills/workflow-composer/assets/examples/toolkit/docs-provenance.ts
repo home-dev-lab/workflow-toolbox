@@ -54,6 +54,12 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['plugin/skills/pilot-wave/SKILL.md'],
   },
   {
+    // The adopt-rules opt-in installer (writes editable, versioned rule copies of
+    // the cross-cutting guardrails) is described by its own skill.
+    sources: ['plugin/skills/adopt-rules/scripts/'],
+    docs: ['plugin/skills/adopt-rules/SKILL.md'],
+  },
+  {
     // The nine patterns + the result envelope (options, caps, envelope shape,
     // pattern count claims).
     sources: ['toolkit/packages/patterns/src/'],
