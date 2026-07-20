@@ -20,11 +20,16 @@ config is a deliberate, user-initiated act.
 
 - **Opt-in, explicit only.** Write files ONLY when the user asked. A first-run suggestion (from
   the plugin's `SessionStart` hook) may POINT at this skill; it must never write on its own.
-- **Every written file is stamped and editable.** The first line is a banner
-  (`installed from workflow-toolbox v<version> …`). The body is the user's to edit afterward.
-- **Refresh is user-decided.** On re-invoke, report which copies are stale (installed version
-  behind the plugin) and let the user choose to refresh — refresh overwrites, so confirm when
-  the file may carry their edits. A hand-authored file with no toolbox banner is left untouched.
+- **Every written file is stamped, fingerprinted, and editable.** The first line is a banner
+  carrying the plugin version AND a content fingerprint
+  (`installed from workflow-toolbox v<version> · content sha256:<hex> …`). The body is the
+  user's to edit afterward — the fingerprint is how a later run distinguishes an edited copy
+  from a pristine one.
+- **Safe by construction, not by discipline.** `--install` NEVER overwrites a locally-edited
+  copy (its content no longer matches the stamped fingerprint) or a hand-authored file — it
+  refreshes only ABSENT or UNEDITED copies. Overwriting an edited copy takes an explicit
+  `--force`. So a user's edits cannot be silently destroyed by a refresh; the safety does not
+  depend on remembering to check.
 
 ## How to run it
 
@@ -32,7 +37,8 @@ The deterministic engine is `scripts/install-rules.mjs`. Orchestrate it, do not 
 its version/banner logic by hand:
 
 - **Check status (read-only, the default):** `node scripts/install-rules.mjs --check`
-- **Install / refresh:** `node scripts/install-rules.mjs --install`
+- **Install / refresh (absent + unedited only):** `node scripts/install-rules.mjs --install`
+- **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
 - **Target a specific dir:** add `--dir <rulesDir>`
 
 **Target dir — confirm scope with the user first.** The default is the PROJECT scope,
@@ -65,10 +71,14 @@ are not re-installed here.
 version:
 
 - **ABSENT** — not installed; `--install` writes it.
-- **UP-TO-DATE** — installed version equals the plugin's.
-- **STALE** — installed version is behind; `--install` refreshes it (overwrites — confirm if the
-  user edited it).
-- **hand-authored (no banner)** — a same-named file the user wrote themselves; left untouched.
+- **UP-TO-DATE** — installed, unedited, version equals the plugin's; `--install` is a no-op
+  (use `--force` to reset it to pristine).
+- **STALE** — installed, unedited, version behind; `--install` refreshes it (safe — no edits to lose).
+- **EDITED** — installed, but the content no longer matches its stamped fingerprint (the user
+  changed it); `--install` SKIPS it, `--install --force` overwrites.
+- **hand-authored / pre-fingerprint banner** — a same-named file with no toolbox banner (never
+  overwritten, even with `--force`), or an older managed banner with no fingerprint (treated as
+  possibly-edited: skipped unless `--force`).
 
 ## Non-goals
 

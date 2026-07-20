@@ -2,20 +2,24 @@
 // install-rules.mjs — the deterministic engine behind the adopt-rules skill.
 //
 // Writes EDITABLE copies of workflow-toolbox's cross-cutting guardrails into the
-// user's config as rule files, each stamped with a versioned banner so a later
-// re-invoke can detect a stale copy and offer a refresh. It writes ONLY when
-// asked (`--install`); the default `--check` mode is read-only. The skill (and any
-// first-run suggestion) may only SUGGEST adoption — never write silently.
+// user's config as rule files, each stamped with a versioned banner AND a content
+// fingerprint so a later run can tell (a) whether the copy is behind the plugin and
+// (b) whether the USER has edited it. It is safe BY CONSTRUCTION: `--install` never
+// overwrites a locally-edited (or hand-authored) file — that needs an explicit
+// `--force`. `--check` is always read-only. The skill (and any first-run suggestion)
+// may only SUGGEST adoption — never write silently.
 //
 // Usage (the skill orchestrates these; a human can run them directly too):
-//   node install-rules.mjs --check   [--dir <rulesDir>]   # report status, write nothing
-//   node install-rules.mjs --install [--dir <rulesDir>]   # write/refresh the rule files
+//   node install-rules.mjs --check           [--dir <rulesDir>]   # report status, write nothing
+//   node install-rules.mjs --install         [--dir <rulesDir>]   # write absent + refresh UNEDITED
+//   node install-rules.mjs --install --force [--dir <rulesDir>]   # also overwrite locally-edited copies
 //
 // Default target dir: <cwd>/.claude/rules (project-scoped, least invasive). Pass
 // --dir ~/.claude/rules (or $CLAUDE_CONFIG_DIR/rules) for a global install.
 
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
@@ -57,7 +61,10 @@ const MANAGED_RULES = [
   },
 ]
 
-const BANNER_RE = new RegExp(`installed from ${BANNER_TOOL} v(\\d+)\\.(\\d+)\\.(\\d+)`)
+// Match only against the banner (the file's first line), never the body — a body
+// mention of the phrase must not be read as a banner.
+const VERSION_RE = new RegExp(`installed from ${BANNER_TOOL} v(\\d+)\\.(\\d+)\\.(\\d+)`)
+const FP_RE = /content sha256:([0-9a-f]{12})/
 
 function fail(msg) {
   process.stdout.write(`adopt-rules: ${msg}\n`)
@@ -81,23 +88,52 @@ function currentVersion() {
   fail('could not locate the plugin manifest (.claude-plugin/plugin.json) above this script')
 }
 
-function banner(version) {
+/** The rule content BELOW the banner (title + body). The fingerprint is taken over
+ *  exactly this, so an unedited installed file reproduces its stamped fingerprint. */
+function renderedBody(rule) {
+  return `# ${rule.title}\n\n${rule.body}\n`
+}
+
+function fingerprint(body) {
+  return crypto.createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
+}
+
+function banner(version, fp) {
   return (
-    `<!-- installed from ${BANNER_TOOL} v${version} by the adopt-rules skill — editable copy. ` +
-    `Re-run the workflow-toolbox:adopt-rules skill to check for updates; your edits are ` +
-    `preserved unless you choose to overwrite on refresh. -->`
+    `<!-- installed from ${BANNER_TOOL} v${version} · content sha256:${fp} by the adopt-rules ` +
+    `skill — editable copy. Re-run the ${BANNER_TOOL}:adopt-rules skill to check for updates; ` +
+    `--install refreshes only an UNEDITED copy, --force overwrites your local edits. -->`
   )
 }
 
 function renderRule(rule, version) {
-  return `${banner(version)}\n\n# ${rule.title}\n\n${rule.body}\n`
+  const body = renderedBody(rule)
+  return `${banner(version, fingerprint(body))}\n\n${body}`
 }
 
-/** Parse the installed version from an existing rule file's banner. */
-function installedVersion(filePath) {
-  if (!fs.existsSync(filePath)) return null
-  const m = fs.readFileSync(filePath, 'utf8').match(BANNER_RE)
-  return m ? `${m[1]}.${m[2]}.${m[3]}` : 'unmanaged'
+/** Everything after the banner (first line), with the leading blank line removed —
+ *  reproduces `renderedBody` for an unedited file. */
+function stripBanner(text) {
+  const nl = text.indexOf('\n')
+  if (nl === -1) return ''
+  return text.slice(nl + 1).replace(/^\n+/, '')
+}
+
+/** Classify an installed file against the plugin: absent | hand-authored (no toolbox
+ *  banner) | edited-unknown (managed, pre-fingerprint banner — cannot verify) |
+ *  edited (managed, locally modified) | clean (managed, matches its fingerprint). */
+function classify(target, rule) {
+  if (!fs.existsSync(target)) return { state: 'absent' }
+  const content = fs.readFileSync(target, 'utf8')
+  const nl = content.indexOf('\n')
+  const firstLine = nl === -1 ? content : content.slice(0, nl)
+  const vm = VERSION_RE.exec(firstLine)
+  if (!vm) return { state: 'hand-authored' }
+  const installedVer = `${vm[1]}.${vm[2]}.${vm[3]}`
+  const fpm = FP_RE.exec(firstLine)
+  if (!fpm) return { state: 'edited-unknown', installedVer }
+  const clean = fingerprint(stripBanner(content)) === fpm[1]
+  return { state: clean ? 'clean' : 'edited', installedVer }
 }
 
 function cmp(a, b) {
@@ -110,13 +146,47 @@ function cmp(a, b) {
 }
 
 function parseArgs(argv) {
-  const args = { mode: 'check', dir: null }
+  const args = { mode: 'check', dir: null, force: false }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--install') args.mode = 'install'
     else if (argv[i] === '--check') args.mode = 'check'
+    else if (argv[i] === '--force') args.force = true
     else if (argv[i] === '--dir') args.dir = argv[++i]
   }
   return args
+}
+
+/** Decide the status label and (for --install) whether to write. `force` only ever
+ *  overrides a MANAGED file (edited / edited-unknown / clean); a hand-authored file
+ *  with no toolbox banner is NEVER overwritten — we won't clobber a file we never
+ *  stamped. */
+function plan(c, version, force) {
+  switch (c.state) {
+    case 'absent':
+      return { status: 'ABSENT', write: true }
+    case 'hand-authored':
+      return { status: 'PRESENT (no toolbox banner — hand-authored; left untouched)', write: false }
+    case 'edited':
+      return {
+        status: 'EDITED (managed, locally modified)' + (force ? '' : ' — re-run with --force to overwrite'),
+        write: force,
+      }
+    case 'edited-unknown':
+      return {
+        status:
+          'EDITED? (managed, pre-fingerprint banner — cannot verify; treated as edited)' +
+          (force ? '' : ' — re-run with --force to overwrite'),
+        write: force,
+      }
+    case 'clean': {
+      const c2 = cmp(c.installedVer, version)
+      if (c2 < 0) return { status: `STALE (installed v${c.installedVer} < v${version})`, write: true }
+      if (c2 > 0) return { status: `AHEAD (installed v${c.installedVer} > v${version})`, write: force }
+      return { status: `UP-TO-DATE (v${c.installedVer})`, write: force }
+    }
+    default:
+      return { status: `UNKNOWN (${c.state})`, write: false }
+  }
 }
 
 function main() {
@@ -125,43 +195,40 @@ function main() {
   const rulesDir = path.resolve(args.dir || path.join(process.cwd(), '.claude', 'rules'))
 
   process.stdout.write(
-    `adopt-rules: ${BANNER_TOOL} v${version} · mode=${args.mode} · target=${rulesDir}\n`,
+    `adopt-rules: ${BANNER_TOOL} v${version} · mode=${args.mode}` +
+      `${args.force ? ' --force' : ''} · target=${rulesDir}\n`,
   )
 
   if (args.mode === 'install') fs.mkdirSync(rulesDir, { recursive: true })
 
+  let anyAbsent = false
   let anyStale = false
-  let anyMissing = false
+  let anyEdited = false
   for (const rule of MANAGED_RULES) {
     const target = path.join(rulesDir, rule.file)
-    const inst = installedVersion(target)
-    let status
-    if (inst === null) {
-      status = 'ABSENT'
-      anyMissing = true
-    } else if (inst === 'unmanaged') {
-      status = 'PRESENT (no toolbox banner — hand-authored; left untouched)'
-    } else {
-      const c = cmp(inst, version)
-      status = c < 0 ? `STALE (installed v${inst} < v${version})` : c > 0 ? `AHEAD (v${inst})` : `UP-TO-DATE (v${inst})`
-      if (c < 0) anyStale = true
-    }
+    const c = classify(target, rule)
+    const p = plan(c, version, args.force)
+    if (c.state === 'absent') anyAbsent = true
+    if (c.state === 'clean' && cmp(c.installedVer, version) < 0) anyStale = true
+    if (c.state === 'edited' || c.state === 'edited-unknown') anyEdited = true
 
     if (args.mode === 'install') {
-      if (inst === 'unmanaged') {
-        process.stdout.write(`  ${rule.file}: SKIPPED — ${status}\n`)
-      } else {
+      if (p.write) {
         fs.writeFileSync(target, renderRule(rule, version))
-        process.stdout.write(`  ${rule.file}: WROTE v${version} → ${target}\n`)
+        const verb = c.state === 'absent' ? 'WROTE' : args.force && c.state !== 'clean' ? 'OVERWROTE (--force)' : 'REFRESHED'
+        process.stdout.write(`  ${rule.file}: ${verb} v${version} → ${target}\n`)
+      } else {
+        process.stdout.write(`  ${rule.file}: SKIPPED — ${p.status}\n`)
       }
     } else {
-      process.stdout.write(`  ${rule.file}: ${status}\n`)
+      process.stdout.write(`  ${rule.file}: ${p.status}\n`)
     }
   }
 
   if (args.mode === 'check') {
-    if (anyMissing) process.stdout.write('adopt-rules: run with --install to write the ABSENT rule(s).\n')
+    if (anyAbsent) process.stdout.write('adopt-rules: run with --install to write the ABSENT rule(s).\n')
     else if (anyStale) process.stdout.write('adopt-rules: run with --install to refresh the STALE rule(s).\n')
+    else if (anyEdited) process.stdout.write('adopt-rules: locally-edited rule(s) present — --install leaves them; --force overwrites.\n')
     else process.stdout.write('adopt-rules: nothing to do.\n')
   }
 }
