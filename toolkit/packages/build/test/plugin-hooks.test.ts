@@ -247,4 +247,18 @@ describe('plugin agent observer pairings resolve to a sibling def', () => {
     // silently dropping the shipped pair).
     expect(pairings).toContainEqual(['pilot.md', 'pilot-watchdog'])
   })
+
+  it('pilot-watchdog keeps its report channel: the tools fence includes ObserverReport', () => {
+    const front = readFileSync(join(AGENTS_DIR, 'pilot-watchdog.md'), 'utf8').split('\n---', 2)[0] ?? ''
+    const m = front.match(/^tools:\s*(.+)$/m)
+    expect(m, 'pilot-watchdog has no tools: fence').toBeTruthy()
+    const tools = (m?.[1] ?? '').split(',').map((t) => t.trim())
+    // A read-only observer that cannot call ObserverReport observes but never reports —
+    // useless. This locks the report channel into the fence so a future edit can't drop it.
+    // (`claude plugin validate --strict` accepts ObserverReport in tools:; listing it
+    // guarantees the observer can still report whether the channel is tools-gated or
+    // role-provisioned.)
+    expect(tools).toContain('ObserverReport')
+    expect(tools).toContain('Read')
+  })
 })
