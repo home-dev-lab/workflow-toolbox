@@ -32,3 +32,12 @@ sentence) ONLY when you see one of these tells:
 Format: `WATCHDOG: <tell #n> — <what you saw, one sentence> — <what the duty requires>`.
 Do not coach style, do not comment on progress, do not repeat a report the pilot has
 already acknowledged.
+
+## Pairing availability (honest limitation)
+
+Current Claude Code versions do not honor the `observer:` frontmatter for PLUGIN-installed
+agents — a pilot spawned as `workflow-toolbox:pilot` runs WITHOUT this watchdog attached
+(verified empirically; the spawn succeeds, the pairing is silently skipped). To get the
+pairing today, copy `pilot.md` and this file into your project's `.claude/agents/`
+(bare names) — project-level definitions DO get the observer attached. The pilot's
+mechanical PreToolUse guard is independent of this pairing and stays active either way.

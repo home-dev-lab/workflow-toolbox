@@ -81,6 +81,13 @@ Agent tool's `model` parameter overrides the frontmatter, so pin the strongest m
 reliably call, falling back down the tiers if the top one is not available. Effort is pinned in
 the definitions and is universal — leave it unless you have a reason.
 
+One pairing caveat: current Claude Code versions do not honor the `observer:` frontmatter
+for plugin-installed agents, so a `workflow-toolbox:pilot` runs WITHOUT its `pilot-watchdog`
+observer attached (the spawn works; the pairing is silently skipped). If the user wants the
+watchdog's drift/boundary oversight, tell them to copy `pilot.md` + `pilot-watchdog.md` from
+the plugin's `agents/` directory into the project's `.claude/agents/` (bare names) — project
+definitions DO get the observer attached. The pilot's PreToolUse guard works either way.
+
 The spawn prompt must carry:
 
 1. The card id(s) + a digest of each card's comments (the design is often arbitrated there).
