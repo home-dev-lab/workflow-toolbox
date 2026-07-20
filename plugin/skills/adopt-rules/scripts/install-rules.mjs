@@ -1,21 +1,38 @@
 #!/usr/bin/env node
 // install-rules.mjs — the deterministic engine behind the adopt-rules skill.
 //
-// Writes EDITABLE copies of workflow-toolbox's cross-cutting guardrails into the
-// user's config as rule files, each stamped with a versioned banner AND a content
-// fingerprint so a later run can tell (a) whether the copy is behind the plugin and
-// (b) whether the USER has edited it. It is safe BY CONSTRUCTION: `--install` never
-// overwrites a locally-edited (or hand-authored) file — that needs an explicit
-// `--force`. `--check` is always read-only. The skill (and any first-run suggestion)
-// may only SUGGEST adoption — never write silently.
+// Writes EDITABLE copies of workflow-toolbox's managed guardrails into the user's
+// config, each stamped with a versioned banner AND a content fingerprint so a later
+// run can tell (a) whether the copy is behind the plugin and (b) whether the USER has
+// edited it. Two managed SETS share one engine:
+//
+//   • rules  — the cross-cutting guardrail rule files (content INLINE below, the
+//              single source of the shipped rule text). Target: <cwd>/.claude/rules.
+//              Banner is line 1.
+//   • agents — editable copies of the pilot delegation-suite agent definitions
+//              (content SOURCED from the plugin's agents/ dir at run time — the agent
+//              defs are their own single source; inlining them here would drift).
+//              Target: <cwd>/.claude/agents. Banner is an HTML comment placed AFTER
+//              the YAML frontmatter, because an agent def MUST start with `---`.
+//              A project copy of pilot.md + pilot-watchdog.md (+ pilot-orchestrator.md)
+//              is what lets the watchdog `observer:` pairing attach (plugin-installed
+//              agents do not honor it), and the fingerprint is what makes a stale copy
+//              DETECTABLE after a plugin bump — the hazard a raw manual copy has no
+//              defence against.
+//
+// It is safe BY CONSTRUCTION: `--install` never overwrites a locally-edited (or
+// hand-authored) file — that needs an explicit `--force`. `--check` is always
+// read-only. The skill (and any first-run suggestion) may only SUGGEST adoption —
+// never write silently.
 //
 // Usage (the skill orchestrates these; a human can run them directly too):
-//   node install-rules.mjs --check           [--dir <rulesDir>]   # report status, write nothing
-//   node install-rules.mjs --install         [--dir <rulesDir>]   # write absent + refresh UNEDITED
-//   node install-rules.mjs --install --force [--dir <rulesDir>]   # also overwrite locally-edited copies
+//   node install-rules.mjs [--set rules|agents|all] --check   [--dir <dir>]   # report, write nothing
+//   node install-rules.mjs [--set rules|agents|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
+//   node install-rules.mjs [--set rules|agents|all] --install --force [--dir <dir>]  # also overwrite edited copies
 //
-// Default target dir: <cwd>/.claude/rules (project-scoped, least invasive). Pass
-// --dir ~/.claude/rules (or $CLAUDE_CONFIG_DIR/rules) for a global install.
+// Default --set is `rules` (backward-compatible with the original rules-only tool).
+// Each set targets its own default dir under <cwd>; `--dir` overrides the target and
+// therefore requires a SINGLE --set (with `--set all` each set keeps its own default).
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -30,8 +47,8 @@ process.stdout.on('error', (err) => {
 
 const BANNER_TOOL = 'workflow-toolbox'
 
-/** The guardrails this skill installs. Each is an editable rule file. Keep this the
- *  SINGLE source of the shipped rule text; the SessionStart hook injects the same
+/** The cross-cutting guardrails this skill installs as editable rule files. Keep this
+ *  the SINGLE source of the shipped rule text; the SessionStart hook injects the same
  *  PRINCIPLE ephemerally, but this is the persistent, user-editable copy. */
 const MANAGED_RULES = [
   {
@@ -61,26 +78,36 @@ const MANAGED_RULES = [
   },
 ]
 
-// Match only against the banner (the file's first line), never the body — a body
-// mention of the phrase must not be read as a banner.
+/** The pilot delegation suite, installed as editable project copies. Content is NOT
+ *  inlined — it is READ from the plugin's agents/ dir at run time (the agent defs are
+ *  their own single source). Each `file` is both the source basename under
+ *  <pluginRoot>/agents/ and the installed filename under <target>/.claude/agents. */
+const MANAGED_AGENTS = [{ file: 'pilot.md' }, { file: 'pilot-watchdog.md' }, { file: 'pilot-orchestrator.md' }]
+
+/** The two managed sets. `kind` drives banner placement + content sourcing. */
+const SETS = {
+  rules: { kind: 'rules', defaultDir: '.claude/rules', items: MANAGED_RULES },
+  agents: { kind: 'agents', defaultDir: '.claude/agents', items: MANAGED_AGENTS },
+}
+
+// Match only against the banner line, never the body — a body mention of the phrase
+// must not be read as a banner.
 const VERSION_RE = new RegExp(`installed from ${BANNER_TOOL} v(\\d+)\\.(\\d+)\\.(\\d+)`)
 const FP_RE = /content sha256:([0-9a-f]{12})/
+// The leading YAML frontmatter block of an agent def, incl. its trailing newline.
+const FRONTMATTER_RE = /^(---\r?\n[\s\S]*?\r?\n---\r?\n)/
 
 function fail(msg) {
   process.stdout.write(`adopt-rules: ${msg}\n`)
   process.exit(1)
 }
 
-/** Walk up from this script to the plugin manifest and read its version. */
-function currentVersion() {
+/** The plugin root (the dir holding .claude-plugin/plugin.json), walking up from this
+ *  script. Both the version and the agents/ source dir are resolved from it. */
+function pluginRoot() {
   let dir = path.dirname(fileURLToPath(import.meta.url))
   for (let i = 0; i < 8; i++) {
-    const manifest = path.join(dir, '.claude-plugin', 'plugin.json')
-    if (fs.existsSync(manifest)) {
-      const v = JSON.parse(fs.readFileSync(manifest, 'utf8')).version
-      if (typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v)) return v
-      fail(`plugin.json version is missing or malformed at ${manifest}`)
-    }
+    if (fs.existsSync(path.join(dir, '.claude-plugin', 'plugin.json'))) return dir
     const up = path.dirname(dir)
     if (up === dir) break
     dir = up
@@ -88,8 +115,14 @@ function currentVersion() {
   fail('could not locate the plugin manifest (.claude-plugin/plugin.json) above this script')
 }
 
-/** The rule content BELOW the banner (title + body). The fingerprint is taken over
- *  exactly this, so an unedited installed file reproduces its stamped fingerprint. */
+function currentVersion(root) {
+  const manifest = path.join(root, '.claude-plugin', 'plugin.json')
+  const v = JSON.parse(fs.readFileSync(manifest, 'utf8')).version
+  if (typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v)) return v
+  fail(`plugin.json version is missing or malformed at ${manifest}`)
+}
+
+/** The rule content BELOW the banner (title + body). */
 function renderedBody(rule) {
   return `# ${rule.title}\n\n${rule.body}\n`
 }
@@ -106,33 +139,86 @@ function banner(version, fp) {
   )
 }
 
-function renderRule(rule, version) {
-  const body = renderedBody(rule)
-  return `${banner(version, fingerprint(body))}\n\n${body}`
+/** The fingerprinted CONTENT of a managed item — exactly what the user may edit, so an
+ *  unedited installed file reproduces its stamped fingerprint. For a rule it is the
+ *  rendered title+body; for an agent it is the plugin's source agent def verbatim. */
+function itemContent(set, item, root) {
+  if (set.kind === 'rules') return renderedBody(item)
+  const src = path.join(root, 'agents', item.file)
+  if (!fs.existsSync(src)) fail(`agent source not found: ${src} — the managed agents list is out of sync with plugin/agents/`)
+  return fs.readFileSync(src, 'utf8')
 }
 
-/** Everything after the banner (first line), with the leading blank line removed —
- *  reproduces `renderedBody` for an unedited file. */
-function stripBanner(text) {
+/** Insert the banner right AFTER the YAML frontmatter (an agent def MUST start with
+ *  `---`, so the banner cannot be line 1). Verified empirically: the harness parses
+ *  and registers an agent def with an HTML comment as the first body line, and honors
+ *  the prompt below it. `stripAgentBanner` is the exact inverse. */
+function insertAgentBanner(source, b) {
+  const m = FRONTMATTER_RE.exec(source)
+  if (!m) fail('agent source is missing a leading YAML frontmatter block (must start with ---)')
+  const head = m[1]
+  return `${head}${b}\n\n${source.slice(head.length)}`
+}
+
+/** Recover the pre-banner content of an installed agent copy (inverse of insert): drop
+ *  the banner comment line that sits just after the frontmatter, plus the single blank
+ *  line the insert added — leaving the source's own body (incl. any blank line it had). */
+function stripAgentBanner(text) {
+  const m = FRONTMATTER_RE.exec(text)
+  if (!m) return text
+  const head = m[1]
+  let after = text.slice(head.length)
+  const nl = after.indexOf('\n')
+  const firstLine = nl === -1 ? after : after.slice(0, nl)
+  if (VERSION_RE.test(firstLine)) after = after.slice(nl + 1).replace(/^\n/, '')
+  return head + after
+}
+
+/** Recover the pre-banner content of an installed RULE (banner is line 1). */
+function stripRuleBanner(text) {
   const nl = text.indexOf('\n')
   if (nl === -1) return ''
   return text.slice(nl + 1).replace(/^\n+/, '')
 }
 
+/** The full installed file: content + a banner stamped with content's fingerprint. */
+function renderItem(set, item, version, root) {
+  const content = itemContent(set, item, root)
+  const b = banner(version, fingerprint(content))
+  return set.kind === 'rules' ? `${b}\n\n${content}` : insertAgentBanner(content, b)
+}
+
+/** The line carrying the banner: line 1 for a rule, the line after the frontmatter for
+ *  an agent (an agent's line 1 is always `---`). */
+function bannerLine(set, text) {
+  if (set.kind === 'agents') {
+    const m = FRONTMATTER_RE.exec(text)
+    if (!m) return ''
+    const after = text.slice(m[1].length)
+    const nl = after.indexOf('\n')
+    return nl === -1 ? after : after.slice(0, nl)
+  }
+  const nl = text.indexOf('\n')
+  return nl === -1 ? text : text.slice(0, nl)
+}
+
+function stripBannerFor(set, text) {
+  return set.kind === 'agents' ? stripAgentBanner(text) : stripRuleBanner(text)
+}
+
 /** Classify an installed file against the plugin: absent | hand-authored (no toolbox
  *  banner) | edited-unknown (managed, pre-fingerprint banner — cannot verify) |
  *  edited (managed, locally modified) | clean (managed, matches its fingerprint). */
-function classify(target, rule) {
+function classify(target, set) {
   if (!fs.existsSync(target)) return { state: 'absent' }
   const content = fs.readFileSync(target, 'utf8')
-  const nl = content.indexOf('\n')
-  const firstLine = nl === -1 ? content : content.slice(0, nl)
-  const vm = VERSION_RE.exec(firstLine)
+  const line = bannerLine(set, content)
+  const vm = VERSION_RE.exec(line)
   if (!vm) return { state: 'hand-authored' }
   const installedVer = `${vm[1]}.${vm[2]}.${vm[3]}`
-  const fpm = FP_RE.exec(firstLine)
+  const fpm = FP_RE.exec(line)
   if (!fpm) return { state: 'edited-unknown', installedVer }
-  const clean = fingerprint(stripBanner(content)) === fpm[1]
+  const clean = fingerprint(stripBannerFor(set, content)) === fpm[1]
   return { state: clean ? 'clean' : 'edited', installedVer }
 }
 
@@ -146,12 +232,13 @@ function cmp(a, b) {
 }
 
 function parseArgs(argv) {
-  const args = { mode: 'check', dir: null, force: false }
+  const args = { mode: 'check', dir: null, force: false, set: 'rules' }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--install') args.mode = 'install'
     else if (argv[i] === '--check') args.mode = 'check'
     else if (argv[i] === '--force') args.force = true
     else if (argv[i] === '--dir') args.dir = argv[++i]
+    else if (argv[i] === '--set') args.set = argv[++i]
   }
   return args
 }
@@ -189,24 +276,17 @@ function plan(c, version, force) {
   }
 }
 
-function main() {
-  const args = parseArgs(process.argv.slice(2))
-  const version = currentVersion()
-  const rulesDir = path.resolve(args.dir || path.join(process.cwd(), '.claude', 'rules'))
-
-  process.stdout.write(
-    `adopt-rules: ${BANNER_TOOL} v${version} · mode=${args.mode}` +
-      `${args.force ? ' --force' : ''} · target=${rulesDir}\n`,
-  )
-
-  if (args.mode === 'install') fs.mkdirSync(rulesDir, { recursive: true })
+/** Process one set into `dir`. Returns the aggregate flags for the check-mode hint. */
+function processSet(set, dir, args, version, root) {
+  if (args.mode === 'install') fs.mkdirSync(dir, { recursive: true })
+  process.stdout.write(`[${set.kind}] target=${dir}\n`)
 
   let anyAbsent = false
   let anyStale = false
   let anyEdited = false
-  for (const rule of MANAGED_RULES) {
-    const target = path.join(rulesDir, rule.file)
-    const c = classify(target, rule)
+  for (const item of set.items) {
+    const target = path.join(dir, item.file)
+    const c = classify(target, set)
     const p = plan(c, version, args.force)
     if (c.state === 'absent') anyAbsent = true
     if (c.state === 'clean' && cmp(c.installedVer, version) < 0) anyStale = true
@@ -214,21 +294,51 @@ function main() {
 
     if (args.mode === 'install') {
       if (p.write) {
-        fs.writeFileSync(target, renderRule(rule, version))
+        fs.writeFileSync(target, renderItem(set, item, version, root))
         const verb = c.state === 'absent' ? 'WROTE' : args.force && c.state !== 'clean' ? 'OVERWROTE (--force)' : 'REFRESHED'
-        process.stdout.write(`  ${rule.file}: ${verb} v${version} → ${target}\n`)
+        process.stdout.write(`  ${item.file}: ${verb} v${version} → ${target}\n`)
       } else {
-        process.stdout.write(`  ${rule.file}: SKIPPED — ${p.status}\n`)
+        process.stdout.write(`  ${item.file}: SKIPPED — ${p.status}\n`)
       }
     } else {
-      process.stdout.write(`  ${rule.file}: ${p.status}\n`)
+      process.stdout.write(`  ${item.file}: ${p.status}\n`)
     }
+  }
+  return { anyAbsent, anyStale, anyEdited }
+}
+
+function main() {
+  const args = parseArgs(process.argv.slice(2))
+  if (!['rules', 'agents', 'all'].includes(args.set)) {
+    fail(`unknown --set '${args.set}' (expected rules | agents | all)`)
+  }
+  const root = pluginRoot()
+  const version = currentVersion(root)
+  const chosen = args.set === 'all' ? ['rules', 'agents'] : [args.set]
+  if (args.dir && chosen.length > 1) {
+    fail('--dir requires a single --set (use --set rules or --set agents; with --set all each set uses its own default dir)')
+  }
+
+  process.stdout.write(
+    `adopt-rules: ${BANNER_TOOL} v${version} · mode=${args.mode}${args.force ? ' --force' : ''} · set=${args.set}\n`,
+  )
+
+  let anyAbsent = false
+  let anyStale = false
+  let anyEdited = false
+  for (const name of chosen) {
+    const set = SETS[name]
+    const dir = path.resolve(args.dir || path.join(process.cwd(), set.defaultDir))
+    const r = processSet(set, dir, args, version, root)
+    anyAbsent = anyAbsent || r.anyAbsent
+    anyStale = anyStale || r.anyStale
+    anyEdited = anyEdited || r.anyEdited
   }
 
   if (args.mode === 'check') {
-    if (anyAbsent) process.stdout.write('adopt-rules: run with --install to write the ABSENT rule(s).\n')
-    else if (anyStale) process.stdout.write('adopt-rules: run with --install to refresh the STALE rule(s).\n')
-    else if (anyEdited) process.stdout.write('adopt-rules: locally-edited rule(s) present — --install leaves them; --force overwrites.\n')
+    if (anyAbsent) process.stdout.write('adopt-rules: run with --install to write the ABSENT item(s).\n')
+    else if (anyStale) process.stdout.write('adopt-rules: run with --install to refresh the STALE item(s).\n')
+    else if (anyEdited) process.stdout.write('adopt-rules: locally-edited item(s) present — --install leaves them; --force overwrites.\n')
     else process.stdout.write('adopt-rules: nothing to do.\n')
   }
 }

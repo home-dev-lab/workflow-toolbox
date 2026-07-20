@@ -1,74 +1,107 @@
 ---
 name: adopt-rules
-description: Invoke ONLY when the user explicitly asks to install / adopt editable rule copies from workflow-toolbox into their config, or to check adopted rules for updates — e.g. "adopt the delegation rules", "install the workflow-toolbox rules as editable files", "keep an editable copy of the delegation ladder", "check my adopted workflow-toolbox rules for updates". Writes versioned, editable rule files ONLY on explicit request — never automatically. Re-invoke to detect stale copies (installed version behind the plugin) and refresh them. Not for authoring workflows (that is workflow-composer) or composing a pilot wave (pilot-wave).
+description: Invoke ONLY when the user explicitly asks to install / adopt editable copies from workflow-toolbox into their config, or to check adopted copies for updates. Two managed sets — the cross-cutting RULE files (the delegation ladder) and the pilot AGENT-definition copies (pilot / pilot-watchdog / pilot-orchestrator, whose project copies enable the watchdog observer pairing that plugin-installed agents can't). E.g. "adopt the delegation rules", "install the workflow-toolbox rules as editable files", "install project copies of the pilot agents", "adopt the pilot watchdog into this project", "check my adopted workflow-toolbox rules/agents for updates". Writes versioned, fingerprinted, editable files ONLY on explicit request — never automatically. Re-invoke to detect stale copies (installed version behind the plugin) and refresh them. Not for authoring workflows (workflow-composer) or composing a pilot wave (pilot-wave).
 ---
 
-# adopt-rules — install editable copies of workflow-toolbox's guardrails
+# adopt-rules — install editable copies of workflow-toolbox's guardrails and pilot agents
 
-The plugin already carries its cross-cutting guardrail — the delegation ladder — ambiently,
-via a `SessionStart` hook that injects it where a project does tracked/delegated work. That
-injection is ephemeral and version-locked to the plugin. This skill is the OPT-IN
-alternative: on explicit request, it writes the same guardrail into the user's config as an
-**editable rule file**, stamped with a versioned banner so a later run can tell whether the
-copy has fallen behind the plugin.
+This skill writes **editable, versioned copies** of workflow-toolbox material into the
+user's project, on explicit request only. It manages two sets:
 
-Use it ONLY when the user explicitly asks for editable rule copies, or to check/refresh ones
-they adopted earlier. Never run it as a side effect of other work — writing into a user's
-config is a deliberate, user-initiated act.
+- **rules** — the cross-cutting guardrail (the delegation ladder). The plugin already
+  injects this PRINCIPLE ambiently via a `SessionStart` hook where a project does
+  tracked/delegated work; that injection is ephemeral and version-locked. This set is the
+  OPT-IN persistent, editable alternative.
+- **agents** — project copies of the pilot delegation suite's agent definitions
+  (`pilot.md`, `pilot-watchdog.md`, `pilot-orchestrator.md`). A project copy matters because
+  current Claude Code versions do NOT honor the `observer:` frontmatter for plugin-installed
+  agents — so a pilot spawned as `workflow-toolbox:pilot` runs WITHOUT its watchdog. The
+  pairing works only when `pilot.md` + `pilot-watchdog.md` live in the project's
+  `.claude/agents/` under their bare names. Copying by hand works too, but a hand copy has
+  NO staleness detection: because project agent copies WIN over the plugin's own types, a
+  copy left behind after a plugin update keeps winning silently. This set closes that gap —
+  every copy carries a version banner + content fingerprint, so a later `--check` reports
+  when the plugin has moved ahead.
+
+Both sets are stamped, fingerprinted, and yours to edit afterward. Use this skill ONLY when
+the user explicitly asks for such copies, or to check/refresh ones they adopted earlier.
+Never run it as a side effect of other work — writing into a user's config is a deliberate,
+user-initiated act.
 
 ## The contract (do not violate)
 
-- **Opt-in, explicit only.** Write files ONLY when the user asked. A first-run suggestion (from
-  the plugin's `SessionStart` hook) may POINT at this skill; it must never write on its own.
-- **Every written file is stamped, fingerprinted, and editable.** The first line is a banner
-  carrying the plugin version AND a content fingerprint
-  (`installed from workflow-toolbox v<version> · content sha256:<hex> …`). The body is the
-  user's to edit afterward — the fingerprint is how a later run distinguishes an edited copy
-  from a pristine one.
+- **Opt-in, explicit only.** Write files ONLY when the user asked. A first-run suggestion
+  (from the plugin's `SessionStart` hook) or the `pilot-wave` skill may POINT at this skill;
+  it must never write on its own.
+- **Every written file is stamped, fingerprinted, and editable.** The banner carries the
+  plugin version AND a content fingerprint
+  (`installed from workflow-toolbox v<version> · content sha256:<hex> …`). For a rule it is
+  the file's first line; for an agent it is an HTML comment placed right AFTER the YAML
+  frontmatter, so the file still begins with `---` and the agent def parses and registers
+  normally. The fingerprint is how a later run distinguishes an edited copy from a pristine
+  one.
 - **Safe by construction, not by discipline.** `--install` NEVER overwrites a locally-edited
-  copy (its content no longer matches the stamped fingerprint) or a hand-authored file — it
-  refreshes only ABSENT or UNEDITED copies. Overwriting an edited copy takes an explicit
-  `--force`. So a user's edits cannot be silently destroyed by a refresh; the safety does not
-  depend on remembering to check.
+  copy (its content no longer matches the stamped fingerprint) or a hand-authored file with
+  no toolbox banner — it refreshes only ABSENT or UNEDITED copies. Overwriting an edited copy
+  takes an explicit `--force`. A user's edits cannot be silently destroyed by a refresh.
+- **Announce before writing.** Tell the user exactly WHICH files go WHERE before `--install`,
+  and report exactly what was written after. The answer to "will it copy my agents, and will
+  it tell me?" is: it copies only when asked, it names each file and target first, and the
+  copies are refresh-detectable thereafter.
 
 ## How to run it
 
 The deterministic engine is `scripts/install-rules.mjs`. Orchestrate it, do not re-implement
-its version/banner logic by hand:
+its version/banner logic by hand. `--set` picks which managed set (default `rules` for
+backward compatibility):
 
-- **Check status (read-only, the default):** `node scripts/install-rules.mjs --check`
-- **Install / refresh (absent + unedited only):** `node scripts/install-rules.mjs --install`
+- **Check status (read-only, the default):** `node scripts/install-rules.mjs --set <rules|agents|all> --check`
+- **Install / refresh (absent + unedited only):** `node scripts/install-rules.mjs --set <rules|agents|all> --install`
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
-- **Target a specific dir:** add `--dir <rulesDir>`
+- **Target a specific dir:** add `--dir <dir>` — requires a SINGLE `--set` (with `--set all`
+  each set uses its own default dir).
 
-**Target dir — confirm scope with the user first.** The default is the PROJECT scope,
-`.claude/rules/` under the current working directory (least invasive — the rules apply only in
-this project). For a machine-wide install, pass `--dir` pointing at the user's global rules dir
-(their `CLAUDE_CONFIG_DIR` rules dir, typically `~/.claude/rules/`). Ask which they want before
-`--install`; default to project scope when unsure.
+**Target dirs — confirm scope with the user first.** Each set has its own default under the
+current working directory: rules → `.claude/rules/`, agents → `.claude/agents/` (project
+scope, least invasive — they apply only in this project). For a machine-wide RULE install,
+pass `--set rules --dir <the user's global rules dir>` (their `CLAUDE_CONFIG_DIR` rules dir,
+typically `~/.claude/rules/`). Agent copies are almost always project-scoped (the watchdog
+pairing is a per-project concern) — the default `.claude/agents/` is normally right; ask
+before overriding it.
 
 Recommended flow:
-1. Run `--check` first and show the user the status (absent / up-to-date / stale / hand-edited).
+1. Run `--check` first (for the relevant set, or `--set all`) and show the user the status
+   (absent / up-to-date / stale / edited / hand-authored).
 2. If they want to proceed, confirm the target scope, then run `--install`.
 3. Report exactly which files were written and where.
 
 ## What gets installed
 
+**rules → `.claude/rules/`:**
+
 - **`wt-delegation-ladder.md`** — the delegation ladder: route each task to the lowest rung
   that fits, pin model + effort at every spawn, heavy work goes down / judgment stays up, and
   the non-delegable main-session duties (wake-ups, user-gates, memory writes, the Workflow
-  tool). It is cost-model-neutral — it carries the principle, not an account-specific model
-  table — and fully editable once written.
+  tool). Cost-model-neutral (the principle, not an account-specific model table), and fully
+  editable once written.
 
-The set is intentionally small: only the genuinely cross-cutting guardrail travels as an
-adopted rule. Role-specific discipline already lives inside the shipped agent definitions, and
-the workflow-authoring doctrine lives in the `workflow-toolbox:workflow-composer` skill — those
-are not re-installed here.
+**agents → `.claude/agents/`:**
+
+- **`pilot.md`**, **`pilot-watchdog.md`**, **`pilot-orchestrator.md`** — copied VERBATIM from
+  the plugin's `agents/` directory (their single source), each under a banner. Installing all
+  three is harmless: `pilot.md` + `pilot-watchdog.md` are what a single pilot needs for the
+  watchdog pairing; `pilot-orchestrator.md` is needed only for a wave and sits idle otherwise.
+  Once these project copies exist, spawn the BARE names (`pilot`, `pilot-orchestrator`) so the
+  watchdog pairing attaches.
+
+The rule set is intentionally small (only the genuinely cross-cutting guardrail travels as an
+adopted rule); the workflow-authoring doctrine lives in the `workflow-toolbox:workflow-composer`
+skill and is not re-installed here.
 
 ## Detecting and refreshing stale copies
 
 `--check` parses each installed file's banner version and compares it to the running plugin's
-version:
+version — for both sets:
 
 - **ABSENT** — not installed; `--install` writes it.
 - **UP-TO-DATE** — installed, unedited, version equals the plugin's; `--install` is a no-op
@@ -77,13 +110,16 @@ version:
 - **EDITED** — installed, but the content no longer matches its stamped fingerprint (the user
   changed it); `--install` SKIPS it, `--install --force` overwrites.
 - **hand-authored / pre-fingerprint banner** — a same-named file with no toolbox banner (never
-  overwritten, even with `--force`), or an older managed banner with no fingerprint (treated as
+  overwritten, even with `--force` — this protects a user's own `pilot.md` and any copy they
+  made by hand before this skill existed; to bring such a copy under management, remove it and
+  re-run `--install`), or an older managed banner with no fingerprint (treated as
   possibly-edited: skipped unless `--force`).
 
 ## Non-goals
 
 - It never writes without an explicit user request, and never touches anything but the managed
-  rule files in the chosen rules dir.
-- It does not install the role invariants (already inside the agent definitions) or the
-  authoring doctrine (in `workflow-toolbox:workflow-composer`).
-- It is not how you compose a pilot wave — that is the `workflow-toolbox:pilot-wave` skill.
+  files in the chosen set's dir.
+- It does not install the workflow-authoring doctrine (in `workflow-toolbox:workflow-composer`).
+- It is not how you compose a pilot wave — that is the `workflow-toolbox:pilot-wave` skill,
+  which PROPOSES the agent-copy install (via this skill) at the moment a spawn would otherwise
+  go out without the watchdog attached.

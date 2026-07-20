@@ -93,10 +93,15 @@ pairing; only when no project copy exists, spawn the namespaced `workflow-toolbo
 don't tell the user to go do it**: explain that without project copies the watchdog's
 drift/boundary oversight is skipped, name exactly what would be copied where (`pilot.md` +
 `pilot-watchdog.md` — plus `pilot-orchestrator.md` for a wave — from the plugin's `agents/`
-directory into the project's `.claude/agents/`, bare names, trivially reversible), and make
-the copy ONLY if the user accepts — then spawn the bare names. If they decline, proceed with
-the namespaced types and state plainly that the watchdog is not attached. Never copy
-silently. The mechanical PreToolUse guard recognizes both name forms and works either way.
+directory into the project's `.claude/agents/`, bare names, trivially reversible). Make the
+copy ONLY if the user accepts — and make it through the `workflow-toolbox:adopt-rules` skill
+(`--set agents --install`), NOT a raw file copy: adopt-rules stamps each copy with a version
+banner + content fingerprint, so a later `--check` DETECTS when the plugin has moved ahead of
+the copy (a hand copy has no staleness detection, and because project copies WIN over the
+plugin's own types, a stale hand copy keeps winning silently). Then spawn the bare names. If
+they decline, proceed with the namespaced types and state plainly that the watchdog is not
+attached. Never copy silently. The mechanical PreToolUse guard recognizes both name forms and
+works either way.
 
 The spawn prompt must carry:
 
