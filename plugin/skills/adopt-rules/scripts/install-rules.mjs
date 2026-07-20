@@ -206,6 +206,12 @@ function stripBannerFor(set, text) {
   return set.kind === 'agents' ? stripAgentBanner(text) : stripRuleBanner(text)
 }
 
+// Fingerprint scope (known limit, both kinds): an unedited copy is recognized by
+// re-hashing its content with the WHOLE banner line dropped. So an edit glued ONTO
+// the banner line itself (text after `-->`, no newline) is stripped along with the
+// banner and stays invisible — such a copy reads "clean" and a later refresh would
+// overwrite it. Editing the body (the normal case) is always detected; this narrow
+// blind spot predates the agents set (it is identical for the rules set).
 /** Classify an installed file against the plugin: absent | hand-authored (no toolbox
  *  banner) | edited-unknown (managed, pre-fingerprint banner — cannot verify) |
  *  edited (managed, locally modified) | clean (managed, matches its fingerprint). */
