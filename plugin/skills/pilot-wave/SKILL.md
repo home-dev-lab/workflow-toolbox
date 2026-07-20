@@ -84,14 +84,19 @@ the definitions and is universal — leave it unless you have a reason.
 One pairing caveat, with a resolution rule: current Claude Code versions do not honor the
 `observer:` frontmatter for plugin-installed agents, so a `workflow-toolbox:pilot` runs
 WITHOUT its `pilot-watchdog` observer attached (the spawn works; the pairing is silently
-skipped). If the user wants the watchdog's drift/boundary oversight, tell them to copy
-`pilot.md` + `pilot-watchdog.md` from the plugin's `agents/` directory into the project's
-`.claude/agents/` (bare names) — project definitions DO get the observer attached.
+skipped).
 **Resolution rule for every spawn this skill composes: check the project's `.claude/agents/`
 first — if it carries a `pilot.md` (and, for a wave, a `pilot-orchestrator.md`), spawn the
 BARE names (`pilot`, `pilot-orchestrator`), because the project copies take the watchdog
 pairing; only when no project copy exists, spawn the namespaced `workflow-toolbox:*` types.**
-The mechanical PreToolUse guard recognizes both name forms and works either way.
+**When the resolution lands on the namespaced fallback, PROPOSE the copy before spawning —
+don't tell the user to go do it**: explain that without project copies the watchdog's
+drift/boundary oversight is skipped, name exactly what would be copied where (`pilot.md` +
+`pilot-watchdog.md` — plus `pilot-orchestrator.md` for a wave — from the plugin's `agents/`
+directory into the project's `.claude/agents/`, bare names, trivially reversible), and make
+the copy ONLY if the user accepts — then spawn the bare names. If they decline, proceed with
+the namespaced types and state plainly that the watchdog is not attached. Never copy
+silently. The mechanical PreToolUse guard recognizes both name forms and works either way.
 
 The spawn prompt must carry:
 

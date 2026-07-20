@@ -37,7 +37,9 @@ already acknowledged.
 
 Current Claude Code versions do not honor the `observer:` frontmatter for PLUGIN-installed
 agents — a pilot spawned as `workflow-toolbox:pilot` runs WITHOUT this watchdog attached
-(verified empirically; the spawn succeeds, the pairing is silently skipped). To get the
-pairing today, copy `pilot.md` and this file into your project's `.claude/agents/`
-(bare names) — project-level definitions DO get the observer attached. The pilot's
-mechanical PreToolUse guard is independent of this pairing and stays active either way.
+(verified empirically; the spawn succeeds, the pairing is silently skipped). The pairing
+works when `pilot.md` and this file live in the project's `.claude/agents/` (bare names) —
+the `pilot-wave` skill PROPOSES that copy, with the why and the exact files, at the moment
+it matters (a spawn about to go out without project copies); it never copies without the
+user's yes. The pilot's mechanical PreToolUse guard is independent of this pairing and
+stays active either way.
