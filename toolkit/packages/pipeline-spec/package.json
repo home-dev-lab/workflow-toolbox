@@ -17,7 +17,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "tsup"
+    "build": "tsup",
+    "prepack": "pnpm run build"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

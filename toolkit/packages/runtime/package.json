@@ -31,6 +31,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "tsup"
+    "build": "tsup",
+    "prepack": "pnpm run build"
   }
 }

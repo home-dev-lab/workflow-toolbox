@@ -51,7 +51,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "tsup",
-    "wt": "tsx src/cli.ts"
+    "wt": "tsx src/cli.ts",
+    "prepack": "pnpm run build"
   },
   "dependencies": {
     "@workflow-toolbox/runtime": "workspace:*",
