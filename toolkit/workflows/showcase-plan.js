@@ -724,6 +724,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
   }
 
+  // ../packages/patterns/src/provenance-gate.ts
+  var SCANNER_RECENCY_MS = 30 * 60 * 1e3;
+
   // ../packages/patterns/src/plan-and-execute.ts
   var STAGE = "planAndExecute";
   var PLAN_SCHEMA = {

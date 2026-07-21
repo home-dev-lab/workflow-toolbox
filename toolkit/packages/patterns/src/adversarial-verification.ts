@@ -25,6 +25,12 @@ import { runCacheWarmup } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
 import type { StructuredCallOutcome } from './structured-salvage.js'
 import { claimStageInstance, stageBuilder } from './stage-instance.js'
+import {
+  externalGateExpectation,
+  deriveProvenanceNonce,
+  runProvenanceChecker,
+  PROVENANCE_CHECK_SUFFIX,
+} from './provenance-gate.js'
 
 const STAGE = 'adversarialVerification'
 
@@ -389,8 +395,21 @@ export async function adversarialVerification<TClaim>(
   // Per-claim salvage diagnostics, buffered the same way for the same reason.
   const warningsByClaim: string[][] = []
 
-  const verifiedKept: Array<VerifiedClaim<TClaim>> = await Promise.all(
-    (keptClaims as readonly TClaim[]).map(async (claim, claimIndex) => {
+  // Intermediate per-claim vote results collected in Phase A. The trail and the
+  // tally are DEFERRED to Phase C because the provenance gate (Phase B) may
+  // nullify votes between running them and counting them.
+  interface ClaimVotesRaw {
+    claim: TClaim
+    claimVotes: number
+    voteOuts: Array<StructuredCallOutcome<VerifierVote> | null>
+    votes: Array<VerifierVote | null>      // mutable — the gate nullifies in place
+    voteStages: string[]
+    provenanceDisqualified: boolean[]       // written by Phase B, read by Phase C's trail
+  }
+
+  // ---- Phase A: run every kept claim's votes concurrently; collect raw outcomes.
+  const perClaim: ClaimVotesRaw[] = await Promise.all(
+    (keptClaims as readonly TClaim[]).map(async (claim, claimIndex): Promise<ClaimVotesRaw> => {
       // keptClaims is a prefix of claims, so indices align with perClaimVotes.
       const claimVotes = perClaimVotes[claimIndex] ?? votesOpt
       // Built ONCE per (claimIndex, voteIndex) call site, reused for BOTH the
@@ -432,88 +451,165 @@ export async function adversarialVerification<TClaim>(
       )
       const votes: Array<VerifierVote | null> = voteOuts.map((o) => o?.value ?? null)
 
-      // Trail records built in vote-index order AFTER the rt.parallel barrier,
-      // and stored by claim INDEX — pushing straight to `trail` from inside
-      // this callback would interleave claims in completion order, which is
-      // non-deterministic under the real async runtime (FakeRuntime's
-      // synchronous resolution would mask it). One record per agentsSpawned++.
-      // NOTE: model is ALWAYS recorded here because effectiveModel is always
-      // passed explicitly to rt.agent — even the 'opus' default is an explicit
-      // argument, not an omission. This is the intentional model-sensitivity
-      // audit behaviour for adversarialVerification.
-      const claimRecords: TrailRecord[] = []
-      const claimWarnings: string[] = []
-      for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
-        const out = voteOuts[voteIndex] ?? null
-        const vote = votes[voteIndex] ?? null
-        const stage = voteStages[voteIndex]!
-        agentsSpawned += out?.spawns ?? 1
+      return {
+        claim,
+        claimVotes,
+        voteOuts,
+        votes,
+        voteStages,
+        provenanceDisqualified: new Array<boolean>(votes.length).fill(false),
+      }
+    }),
+  )
+
+  // ---- Phase B: provenance gate. Arms ONLY when the verifier was routed to a
+  // REGISTERED external agentType (opencode / codex) — `verifierType` routes
+  // EVERY verifier, so under an external type every vote is external and one
+  // global checker covers all vote labels; a plain Claude verifier is NEVER
+  // gated. A wrapper can silently SELF-ANSWER (emit a valid verdict without ever
+  // shelling out to the external CLI); the checker reads each vote's transcript
+  // and any vote with no proof of a real CLI invocation is DISQUALIFIED
+  // (nullified → the existing unverifiable/null path). Fail-CLOSED on undetermined
+  // provenance: an external verdict is never credited without provenance.
+  const gateExpectation = externalGateExpectation(verifierType)
+  let checkerRecord: TrailRecord | null = null
+  if (gateExpectation !== null) {
+    const allLabels = perClaim.flatMap((pc) => pc.voteStages)
+    if (allLabels.length > 0) {
+      agentsSpawned++
+      // Deliberately NOT under `:verify:` (like `:warm`) so a caller filtering
+      // real verifier calls by the `:verify:` prefix never sweeps the checker in.
+      const checkLabel = stg(PROVENANCE_CHECK_SUFFIX)
+      const { map: provMap, replyOk } = await runProvenanceChecker(rt, gateExpectation, allLabels, {
+        label: checkLabel,
+        ...(phase !== undefined ? { phase } : {}),
+        model: 'haiku',
+        effort: 'low',
+        // Fold rendered claim content into the nonce so two runs with the same vote SHAPE
+        // but different claims get different anchors (cross-family review 2026-07-21).
+        nonce: deriveProvenanceNonce(allLabels, perClaim.map((pc) => renderClaim(pc.claim)).join(' ')),
+      })
+      // One checker spawn → one trail record (outcome = a usable reply came back).
+      checkerRecord = makeRecord(checkLabel, replyOk, { model: 'haiku', effort: 'low' })
+
+      let disqualifiedCount = 0
+      let undeterminedCount = 0
+      for (const pc of perClaim) {
+        for (let voteIndex = 0; voteIndex < pc.votes.length; voteIndex++) {
+          if (pc.votes[voteIndex] === null) continue // already failed — nothing to gate
+          const provenance = provMap.get(pc.voteStages[voteIndex]!) ?? 'undetermined'
+          if (provenance === 'seen') continue // real CLI invocation — credited
+          pc.votes[voteIndex] = null           // disqualify → flows to the null/unverifiable path
+          pc.provenanceDisqualified[voteIndex] = true
+          if (provenance === 'absent') disqualifiedCount++
+          else undeterminedCount++
+        }
+      }
+      if (disqualifiedCount > 0) {
+        warn(rt, warnings,
+          `adversarialVerification: ${disqualifiedCount} external verifier votes DISQUALIFIED — ` +
+          `no ${gateExpectation.id} CLI invocation found in the vote transcript (possible self-answer); treated as null`)
+      }
+      if (undeterminedCount > 0) {
+        warn(rt, warnings,
+          `adversarialVerification: ${undeterminedCount} external verifier votes had UNDETERMINED provenance ` +
+          `(the checker ${replyOk ? 'did not resolve them' : 'failed'}); fail-closed, treated as null`)
+      }
+    }
+  }
+
+  // ---- Phase C: build trail records (post-gate outcome bits) and tally, in
+  // deterministic claim-index / vote-index order — independent of Phase A's
+  // completion order.
+  //
+  // NOTE: model is ALWAYS recorded here because effectiveModel is always passed
+  // explicitly to rt.agent — even the 'opus' default is an explicit argument, not
+  // an omission. This is the intentional model-sensitivity audit behaviour for
+  // adversarialVerification. One record per agentsSpawned++.
+  const verifiedKept: Array<VerifiedClaim<TClaim>> = perClaim.map((pc, claimIndex) => {
+    const claimRecords: TrailRecord[] = []
+    const claimWarnings: string[] = []
+    for (let voteIndex = 0; voteIndex < pc.votes.length; voteIndex++) {
+      const out = pc.voteOuts[voteIndex] ?? null
+      const vote = pc.votes[voteIndex] ?? null
+      const stage = pc.voteStages[voteIndex]!
+      agentsSpawned += out?.spawns ?? 1
+      claimRecords.push(makeRecord(
+        stage,
+        vote !== null,
+        {
+          model: effectiveModel,
+          ...(effort !== undefined ? { effort } : {}),
+          // A surviving vote records its verdict; a gate-nullified vote records the
+          // control reason (so the trail distinguishes a self-answer disqualification
+          // from a plain agent failure); a plain failure records neither.
+          ...(vote !== null
+            ? { decision: vote.verdict }
+            : pc.provenanceDisqualified[voteIndex]
+              ? { decision: 'disqualified-no-provenance' }
+              : {}),
+        },
+      ))
+      if (out !== null && out.salvageAttempted) {
         claimRecords.push(makeRecord(
-          stage,
-          vote !== null,
+          `${stage}:salvage`,
+          out.salvaged,
           {
             model: effectiveModel,
             ...(effort !== undefined ? { effort } : {}),
-            ...(vote !== null ? { decision: vote.verdict } : {}),
           },
         ))
-        if (out !== null && out.salvageAttempted) {
-          claimRecords.push(makeRecord(
-            `${stage}:salvage`,
-            out.salvaged,
-            {
-              model: effectiveModel,
-              ...(effort !== undefined ? { effort } : {}),
-            },
-          ))
-        }
-        for (const message of out?.warnings ?? []) claimWarnings.push(`${STAGE}: ${message}`)
       }
-      trailByClaim[claimIndex] = claimRecords
-      warningsByClaim[claimIndex] = claimWarnings
+      for (const message of out?.warnings ?? []) claimWarnings.push(`${STAGE}: ${message}`)
+    }
+    trailByClaim[claimIndex] = claimRecords
+    warningsByClaim[claimIndex] = claimWarnings
 
-      // -------------------------------------------------------------------
-      // Deterministic tally in code — never trust the model to count votes.
-      //
-      // nonNull = votes that returned an object
-      // - if nonNull.length === 0 → 'unverifiable'  (failed verifiers —
-      //     never drop the claim; failure is distinct from refutation)
-      // - else if count(verdict === 'refuted') >= refuteThreshold → 'refuted'
-      //     (adversarial kill — enough verifiers actively disproved it)
-      // - else if every nonNull vote is 'confirmed' → 'confirmed'
-      //     (unanimous confirmation — no dissent)
-      // - else → 'partially-confirmed'
-      //     (mixed evidence — some confirmed, some not, some uncertain)
-      // -------------------------------------------------------------------
+    // -------------------------------------------------------------------
+    // Deterministic tally in code — never trust the model to count votes.
+    // Runs on votes AFTER the provenance gate (disqualified votes are null).
+    //
+    // nonNull = votes that returned an object AND passed the provenance gate
+    // - if nonNull.length === 0 → 'unverifiable'  (failed/disqualified verifiers —
+    //     never drop the claim; failure is distinct from refutation)
+    // - else if count(verdict === 'refuted') >= refuteThreshold → 'refuted'
+    //     (adversarial kill — enough verifiers actively disproved it)
+    // - else if every nonNull vote is 'confirmed' → 'confirmed'
+    //     (unanimous confirmation — no dissent)
+    // - else → 'partially-confirmed'
+    //     (mixed evidence — some confirmed, some not, some uncertain)
+    // -------------------------------------------------------------------
 
-      const nonNull = votes.filter((v): v is VerifierVote => v !== null)
-      // The scalar threshold can exceed a low-vote claim's count — clamp per
-      // claim so a 1-vote claim is decided by its single vote. min(2,3)=2:
-      // identical to the scalar behavior at the defaults.
-      const effectiveThreshold = Math.min(refuteThreshold, claimVotes)
-      let verdict: Verdict
+    const nonNull = pc.votes.filter((v): v is VerifierVote => v !== null)
+    // The scalar threshold can exceed a low-vote claim's count — clamp per
+    // claim so a 1-vote claim is decided by its single vote. min(2,3)=2:
+    // identical to the scalar behavior at the defaults.
+    const effectiveThreshold = Math.min(refuteThreshold, pc.claimVotes)
+    let verdict: Verdict
 
-      if (nonNull.length === 0) {
-        // All verifiers failed — claim is unverifiable (not refuted)
-        verdict = 'unverifiable'
-      } else if (nonNull.filter(v => v.verdict === 'refuted').length >= effectiveThreshold) {
-        // Adversarial kill: refutation threshold reached
-        verdict = 'refuted'
-      } else if (nonNull.every(v => v.verdict === 'confirmed')) {
-        // Unanimous confirmation across all non-null verifiers
-        verdict = 'confirmed'
-      } else {
-        // Mixed: at least one non-confirmed, not enough refutations
-        verdict = 'partially-confirmed'
-      }
+    if (nonNull.length === 0) {
+      // All verifiers failed or were disqualified — claim is unverifiable (not refuted)
+      verdict = 'unverifiable'
+    } else if (nonNull.filter(v => v.verdict === 'refuted').length >= effectiveThreshold) {
+      // Adversarial kill: refutation threshold reached
+      verdict = 'refuted'
+    } else if (nonNull.every(v => v.verdict === 'confirmed')) {
+      // Unanimous confirmation across all non-null verifiers
+      verdict = 'confirmed'
+    } else {
+      // Mixed: at least one non-confirmed, not enough refutations
+      verdict = 'partially-confirmed'
+    }
 
-      return { claim, verdict, votes }
-    }),
-  )
+    return { claim: pc.claim, verdict, votes: pc.votes }
+  })
 
   // Flatten per-claim records in claim-index order — deterministic regardless
   // of which claim group finished first. (.flat() also skips any hole safely.)
   trail.push(...trailByClaim.flat())
+  // The provenance checker's own record (one spawn) sits after the vote records,
+  // matching its temporal order (it runs after the vote barrier).
+  if (checkerRecord !== null) trail.push(checkerRecord)
   // Salvage diagnostics, in deterministic claim/vote order after the barrier.
   for (const message of warningsByClaim.flat()) warn(rt, warnings, message)
 

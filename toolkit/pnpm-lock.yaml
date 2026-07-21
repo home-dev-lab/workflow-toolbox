@@ -137,6 +137,10 @@ importers:
       '@workflow-toolbox/runtime':
         specifier: workspace:*
         version: link:../runtime
+    devDependencies:
+      '@workflow-toolbox/debugger':
+        specifier: workspace:*
+        version: link:../debugger
 
   packages/pipeline-spec:
     devDependencies:

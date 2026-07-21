@@ -577,12 +577,19 @@ describe('dev-plan risk-aware votes', () => {
 
     // The prefix is 'adversarialVerification:' (not just '...:verify:') so it
     // also catches the pattern's own cache-warm agent, which mirrors the real
-    // verifiers' agentType/model by design (it primes their cache entry).
-    const verifyCalls = rt.calls.filter((c) =>
-      (c.opts?.label ?? '').startsWith('adversarialVerification:'),
-    )
+    // verifiers' agentType/model by design (it primes their cache entry). The
+    // provenance-gate checker is excluded — it is a PLAIN subagent (no agentType).
+    const verifyCalls = rt.calls.filter((c) => {
+      const l = c.opts?.label ?? ''
+      return l.startsWith('adversarialVerification:') && !l.includes(':provenance-check')
+    })
     expect(verifyCalls.length).toBeGreaterThan(0)
     expect(verifyCalls.every((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(true)
+
+    // The external route ARMS the provenance gate with a PLAIN-subagent checker.
+    const checkerCall = rt.calls.find((c) => (c.opts?.label ?? '').includes(':provenance-check'))
+    expect(checkerCall).toBeDefined()
+    expect(checkerCall!.opts?.agentType).toBeUndefined()
 
     // The load-bearing distinction vs withAgentDefaults: only the skeptic crosses
     // models — Discover/Plan/Synthesize producers carry no agentType override.

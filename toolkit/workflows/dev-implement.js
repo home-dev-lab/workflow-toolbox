@@ -828,6 +828,9 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     return { efforts, decidedBy, warnings, spawns };
   }
 
+  // ../packages/patterns/src/provenance-gate.ts
+  var SCANNER_RECENCY_MS = 30 * 60 * 1e3;
+
   // ../packages/patterns/src/loop-until-done.ts
   var STAGE = LOOP_STAGE;
   async function loopUntilDone(rt, options) {
