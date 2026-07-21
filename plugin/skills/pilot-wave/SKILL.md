@@ -26,6 +26,7 @@ let a delegate silently inherit the session's model**:
 | ONE card, full dev loop | a `workflow-toolbox:pilot` | strong model |
 | SEVERAL cards / a wave | a `workflow-toolbox:pilot-orchestrator` → pilots | strong model |
 | A heavy implementation increment of one card | the card's executor lane | cheap / cross-family |
+| A multi-agent fan-out inside a card's arc (a review, an audit) | a delegated run the pilot launches; the spawner arms the settle-watch (Step 4) | per-role pinned models |
 | Decorrelated verification of a checkable claim | a cross-family verifier | different family |
 
 The cost-model is deliberately NEUTRAL here: "heavy mechanical work goes DOWN to a cheaper
@@ -124,6 +125,17 @@ report files before acting. A settled-but-unprocessed report found on a wake was
 wake — process it. Pilots and the orchestrator message you by name when they hit a hard
 escalation or relay a non-gating concern; answer promptly (a reply may add a constraint they
 integrate without restarting).
+
+**Pilots launching delegated runs is a SUPPORTED seam — with the wake contract, not instead
+of it.** A pilot may launch a headless run mid-arc (a review fan-out, an audit) via the
+project's run launcher; only the in-session Workflow tool is main-loop-exclusive. What is
+unreliable is solely a dormant agent's own background wait, and the pilot definitions carry
+their half of the protocol: journal `awaiting <runId>`, send the spawner ONE line —
+"launched <runId>, awaiting — please wake me at settle" — keep a best-effort await, never
+depend on it. YOUR half, on receiving that line: arm the same disk/tick watcher on that
+run's settle signal and SendMessage the pilot when it fires (with an orchestrator in the
+middle, it relays the arm request up to you). Read the pilot's warning as this protocol,
+never as "pilots must not use workflows".
 
 ## The environment-brief contract (reference)
 
