@@ -1,6 +1,6 @@
 {
   "name": "@workflow-toolbox/build",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "license": "FSL-1.1-ALv2",
   "type": "module",
   "repository": {
@@ -66,5 +66,13 @@
     "@workflow-toolbox/debugger": "workspace:*",
     "@workflow-toolbox/std": "workspace:*",
     "@workflow-toolbox/pipeline-spec": "workspace:*"
+  },
+  "peerDependencies": {
+    "typescript": ">=5 <7"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
   }
 }
