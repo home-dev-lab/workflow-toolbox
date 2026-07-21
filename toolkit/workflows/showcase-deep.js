@@ -967,6 +967,161 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     return { value, stats, warnings, trail };
   }
 
+  // ../packages/patterns/src/provenance-gate.ts
+  var EXTERNAL_CLI_SIGNATURES = [
+    {
+      id: "opencode",
+      typeRe: /opencode/i,
+      commandRe: /(?:^|[\s;|&(=])(?:[^\s;|&"']*\/)?opencode(?:\.exe|\.cmd)?\s+run\b|(?:^|[\s;|&(=])["'](?:[^"']*\/)?opencode(?:\.exe|\.cmd)?["']\s+run\b|[A-Za-z_]*BIN=[^\n]*opencode[\s\S]*?"?\$\{?[A-Za-z_]*BIN\}?"?\s+run\b/im
+    },
+    {
+      id: "codex",
+      typeRe: /codex/i,
+      commandRe: /codex-companion\.mjs["']?\s+task\b|(?:^|[\s;|&(=])(?:[^\s;|&"']*\/)?codex(?:\.exe)?\s+exec\b|(?:^|[\s;|&(=])["'](?:[^"']*\/)?codex(?:\.exe)?["']\s+exec\b/im
+    }
+  ];
+  var PROVENANCE_CHECK_SUFFIX = "provenance-check";
+  var SCANNER_COMMAND_SCAN_MAX = 2e4;
+  var SCANNER_RECENCY_MS = 30 * 60 * 1e3;
+  function deriveProvenanceNonce(labels, claimSeed = "") {
+    let h = 2166136261;
+    const seed = `${labels.join(" ")}${claimSeed}`;
+    for (let i = 0; i < seed.length; i++) {
+      h ^= seed.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return `wtprov-${(h >>> 0).toString(16).padStart(8, "0")}`;
+  }
+  function externalGateExpectation(verifierType) {
+    if (verifierType === void 0) return null;
+    for (const sig of EXTERNAL_CLI_SIGNATURES) if (sig.typeRe.test(verifierType)) return sig;
+    return null;
+  }
+  function buildProvenanceScannerSource(expectation, nonce, labels) {
+    const reSource = JSON.stringify(expectation.commandRe.source);
+    const reFlags = JSON.stringify(expectation.commandRe.flags);
+    const nonceLit = JSON.stringify(nonce);
+    const labelsLit = JSON.stringify(labels);
+    return [
+      `'use strict';`,
+      `const fs=require('fs'),path=require('path'),os=require('os');`,
+      `const NONCE=${nonceLit},LABELS=${labelsLit};`,
+      `const RE=new RegExp(${reSource},${reFlags});`,
+      `const SCAN_MAX=${SCANNER_COMMAND_SCAN_MAX},RECENCY=${SCANNER_RECENCY_MS},now=Date.now();`,
+      // Candidate config roots: the running session's CLAUDE_CONFIG_DIR plus the standard pair.
+      `const roots=[process.env.CLAUDE_CONFIG_DIR,path.join(os.homedir(),'.claude'),path.join(os.homedir(),'.claude-work')].filter(Boolean);`,
+      `function ls(d){try{return fs.readdirSync(d)}catch(e){return[]}}`,
+      // Enumerate recent agent-*.jsonl under */projects/*/*/subagents/workflows/*/.
+      `function transcripts(){const out=[];for(const r of roots){const pj=path.join(r,'projects');for(const slug of ls(pj)){const sd=path.join(pj,slug);for(const sess of ls(sd)){const wf=path.join(sd,sess,'subagents','workflows');for(const run of ls(wf)){const rd=path.join(wf,run);for(const f of ls(rd)){if(f.indexOf('agent-')!==0||!f.endsWith('.jsonl'))continue;const fp=path.join(rd,f);let st;try{st=fs.statSync(fp)}catch(e){continue}if(now-st.mtimeMs>RECENCY)continue;out.push(fp)}}}}}return out}`,
+      `function read(fp){try{return fs.readFileSync(fp,'utf8')}catch(e){return''}}`,
+      // Anchor: run dir = dirname of the NEWEST transcript containing NONCE. Newest favors THIS
+      // run's live checker over any stale prior run that shared the (deterministic) nonce.
+      `const cands=transcripts();let runDir=null,best=-1;for(const fp of cands){if(read(fp).indexOf(NONCE)===-1)continue;let st;try{st=fs.statSync(fp)}catch(e){continue}if(st.mtimeMs>best){best=st.mtimeMs;runDir=path.dirname(fp)}}`,
+      `if(runDir===null){process.stdout.write(JSON.stringify({anchored:false,results:[]}));return}`,
+      // wt-meta label marker as it appears escaped inside the jsonl: label=\"<label>\".
+      `function labelMarker(l){return 'label=\\\\"'+l+'\\\\"'}`,
+      // Count real external-CLI invocations in one transcript's Bash tool_use commands.
+      `function cliCalls(text){let n=0;for(const raw of text.split('\\n')){const t=raw.trim();if(!t)continue;let o;try{o=JSON.parse(t)}catch(e){continue}const m=o&&o.message;if(!m||typeof m!=='object')continue;const c=m.content;if(!Array.isArray(c))continue;for(const b of c){if(!b||b.type!=='tool_use'||b.name!=='Bash')continue;const cmd=b.input&&b.input.command;if(typeof cmd!=='string')continue;const scan=cmd.length>SCAN_MAX?cmd.slice(0,SCAN_MAX):cmd;if(RE.test(scan))n++}}return n}`,
+      `const files=ls(runDir).filter(f=>f.indexOf('agent-')===0&&f.endsWith('.jsonl')).map(f=>path.join(runDir,f));`,
+      `const cache=new Map();function txt(fp){if(!cache.has(fp))cache.set(fp,read(fp));return cache.get(fp)}`,
+      `const results=LABELS.map(function(label){const marker=labelMarker(label);let seen=false,found=false;for(const fp of files){const tx=txt(fp);if(tx.indexOf(marker)===-1)continue;found=true;if(cliCalls(tx)>0){seen=true}break}return{label:label,cliSeen:found?seen:null}});`,
+      `process.stdout.write(JSON.stringify({anchored:true,results:results}));`
+    ].join("\n");
+  }
+  function buildProvenanceCheckerPrompt(expectation, nonce, labels) {
+    const scanner = buildProvenanceScannerSource(expectation, nonce, labels);
+    const command = `SCAN="$(mktemp --suffix=.cjs)"; cat > "$SCAN" <<'WT_PROVENANCE_EOF'
+${scanner}
+WT_PROVENANCE_EOF
+node "$SCAN"; RC=$?; rm -f "$SCAN"; exit $RC`;
+    return `PROVENANCE_ANCHOR: ${nonce}
+
+You are a mechanical provenance checker. Do exactly this, nothing else:
+
+1. Run this EXACT Bash command (it writes a temporary script, runs it, and removes it):
+
+\`\`\`bash
+` + command + `
+\`\`\`
+
+2. The command prints ONE line of JSON of the shape {"anchored":true,"results":[{"label":"\u2026","cliSeen":true|false|null}]}.
+Return that JSON line VERBATIM as your entire reply \u2014 no prose, no code fence, no edits. If the command prints nothing or errors, reply with exactly {"anchored":false,"results":[]}.
+
+Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason about the claims. Your only job is to run the command and relay its JSON output.`;
+  }
+  function parseProvenanceReply(reply, labels) {
+    const map = /* @__PURE__ */ new Map();
+    const perLabel = extractLabelSeen(reply);
+    for (const label of labels) {
+      const seen = perLabel.get(label);
+      map.set(label, seen === true ? "seen" : seen === false ? "absent" : "undetermined");
+    }
+    return map;
+  }
+  function extractLabelSeen(reply) {
+    const out = /* @__PURE__ */ new Map();
+    if (typeof reply !== "string") return out;
+    const obj = firstJsonObject(reply);
+    if (obj === null) return out;
+    const results = obj.results;
+    if (!Array.isArray(results)) return out;
+    for (const row of results) {
+      if (row === null || typeof row !== "object") continue;
+      const label = row.label;
+      const cliSeen = row.cliSeen;
+      if (typeof label === "string" && typeof cliSeen === "boolean") out.set(label, cliSeen);
+    }
+    return out;
+  }
+  function firstJsonObject(text) {
+    const start = text.indexOf("{");
+    if (start === -1) return null;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === "\\") esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          const slice = text.slice(start, i + 1);
+          try {
+            return JSON.parse(slice);
+          } catch {
+            return null;
+          }
+        }
+      }
+    }
+    return null;
+  }
+  async function runProvenanceChecker(rt, expectation, labels, opts) {
+    const prompt = buildProvenanceCheckerPrompt(expectation, opts.nonce, labels);
+    let reply = null;
+    try {
+      const raw = await rt.agent(prompt, {
+        label: opts.label,
+        ...opts.phase !== void 0 ? { phase: opts.phase } : {},
+        ...opts.model !== void 0 ? { model: opts.model } : {},
+        ...opts.effort !== void 0 ? { effort: opts.effort } : {}
+      });
+      reply = typeof raw === "string" ? raw : null;
+    } catch {
+      reply = null;
+    }
+    const map = parseProvenanceReply(reply, labels);
+    const replyOk = reply !== null && [...map.values()].some((p) => p !== "undetermined");
+    return { map, replyOk };
+  }
+
   // ../packages/patterns/src/adversarial-verification.ts
   var STAGE2 = "adversarialVerification";
   var VERIFIER_SCHEMA = {
@@ -1088,7 +1243,7 @@ ${renderClaim(claim)}`;
     }
     const trailByClaim = [];
     const warningsByClaim = [];
-    const verifiedKept = await Promise.all(
+    const perClaim = await Promise.all(
       keptClaims.map(async (claim, claimIndex) => {
         const claimVotes = perClaimVotes[claimIndex] ?? votesOpt;
         const voteStages = Array.from(
@@ -1115,52 +1270,112 @@ ${renderClaim(claim)}`;
           (v) => v
         );
         const votes = voteOuts.map((o) => o?.value ?? null);
-        const claimRecords = [];
-        const claimWarnings = [];
-        for (let voteIndex = 0; voteIndex < votes.length; voteIndex++) {
-          const out = voteOuts[voteIndex] ?? null;
-          const vote = votes[voteIndex] ?? null;
-          const stage = voteStages[voteIndex];
-          agentsSpawned += out?.spawns ?? 1;
-          claimRecords.push(makeRecord(
-            stage,
-            vote !== null,
-            {
-              model: effectiveModel,
-              ...effort !== void 0 ? { effort } : {},
-              ...vote !== null ? { decision: vote.verdict } : {}
-            }
-          ));
-          if (out !== null && out.salvageAttempted) {
-            claimRecords.push(makeRecord(
-              `${stage}:salvage`,
-              out.salvaged,
-              {
-                model: effectiveModel,
-                ...effort !== void 0 ? { effort } : {}
-              }
-            ));
-          }
-          for (const message of out?.warnings ?? []) claimWarnings.push(`${STAGE2}: ${message}`);
-        }
-        trailByClaim[claimIndex] = claimRecords;
-        warningsByClaim[claimIndex] = claimWarnings;
-        const nonNull = votes.filter((v) => v !== null);
-        const effectiveThreshold = Math.min(refuteThreshold, claimVotes);
-        let verdict;
-        if (nonNull.length === 0) {
-          verdict = "unverifiable";
-        } else if (nonNull.filter((v) => v.verdict === "refuted").length >= effectiveThreshold) {
-          verdict = "refuted";
-        } else if (nonNull.every((v) => v.verdict === "confirmed")) {
-          verdict = "confirmed";
-        } else {
-          verdict = "partially-confirmed";
-        }
-        return { claim, verdict, votes };
+        return {
+          claim,
+          claimVotes,
+          voteOuts,
+          votes,
+          voteStages,
+          provenanceDisqualified: new Array(votes.length).fill(false)
+        };
       })
     );
+    const gateExpectation = externalGateExpectation(verifierType);
+    let checkerRecord = null;
+    if (gateExpectation !== null) {
+      const allLabels = perClaim.flatMap((pc) => pc.voteStages);
+      if (allLabels.length > 0) {
+        agentsSpawned++;
+        const checkLabel = stg(PROVENANCE_CHECK_SUFFIX);
+        const { map: provMap, replyOk } = await runProvenanceChecker(rt, gateExpectation, allLabels, {
+          label: checkLabel,
+          ...phase !== void 0 ? { phase } : {},
+          model: "haiku",
+          effort: "low",
+          // Fold rendered claim content into the nonce so two runs with the same vote SHAPE
+          // but different claims get different anchors (cross-family review 2026-07-21).
+          nonce: deriveProvenanceNonce(allLabels, perClaim.map((pc) => renderClaim(pc.claim)).join(" "))
+        });
+        checkerRecord = makeRecord(checkLabel, replyOk, { model: "haiku", effort: "low" });
+        let disqualifiedCount = 0;
+        let undeterminedCount = 0;
+        for (const pc of perClaim) {
+          for (let voteIndex = 0; voteIndex < pc.votes.length; voteIndex++) {
+            if (pc.votes[voteIndex] === null) continue;
+            const provenance = provMap.get(pc.voteStages[voteIndex]) ?? "undetermined";
+            if (provenance === "seen") continue;
+            pc.votes[voteIndex] = null;
+            pc.provenanceDisqualified[voteIndex] = true;
+            if (provenance === "absent") disqualifiedCount++;
+            else undeterminedCount++;
+          }
+        }
+        if (disqualifiedCount > 0) {
+          warn(
+            rt,
+            warnings,
+            `adversarialVerification: ${disqualifiedCount} external verifier votes DISQUALIFIED \u2014 no ${gateExpectation.id} CLI invocation found in the vote transcript (possible self-answer); treated as null`
+          );
+        }
+        if (undeterminedCount > 0) {
+          warn(
+            rt,
+            warnings,
+            `adversarialVerification: ${undeterminedCount} external verifier votes had UNDETERMINED provenance (the checker ${replyOk ? "did not resolve them" : "failed"}); fail-closed, treated as null`
+          );
+        }
+      }
+    }
+    const verifiedKept = perClaim.map((pc, claimIndex) => {
+      const claimRecords = [];
+      const claimWarnings = [];
+      for (let voteIndex = 0; voteIndex < pc.votes.length; voteIndex++) {
+        const out = pc.voteOuts[voteIndex] ?? null;
+        const vote = pc.votes[voteIndex] ?? null;
+        const stage = pc.voteStages[voteIndex];
+        agentsSpawned += out?.spawns ?? 1;
+        claimRecords.push(makeRecord(
+          stage,
+          vote !== null,
+          {
+            model: effectiveModel,
+            ...effort !== void 0 ? { effort } : {},
+            // A surviving vote records its verdict; a gate-nullified vote records the
+            // control reason (so the trail distinguishes a self-answer disqualification
+            // from a plain agent failure); a plain failure records neither.
+            ...vote !== null ? { decision: vote.verdict } : pc.provenanceDisqualified[voteIndex] ? { decision: "disqualified-no-provenance" } : {}
+          }
+        ));
+        if (out !== null && out.salvageAttempted) {
+          claimRecords.push(makeRecord(
+            `${stage}:salvage`,
+            out.salvaged,
+            {
+              model: effectiveModel,
+              ...effort !== void 0 ? { effort } : {}
+            }
+          ));
+        }
+        for (const message of out?.warnings ?? []) claimWarnings.push(`${STAGE2}: ${message}`);
+      }
+      trailByClaim[claimIndex] = claimRecords;
+      warningsByClaim[claimIndex] = claimWarnings;
+      const nonNull = pc.votes.filter((v) => v !== null);
+      const effectiveThreshold = Math.min(refuteThreshold, pc.claimVotes);
+      let verdict;
+      if (nonNull.length === 0) {
+        verdict = "unverifiable";
+      } else if (nonNull.filter((v) => v.verdict === "refuted").length >= effectiveThreshold) {
+        verdict = "refuted";
+      } else if (nonNull.every((v) => v.verdict === "confirmed")) {
+        verdict = "confirmed";
+      } else {
+        verdict = "partially-confirmed";
+      }
+      return { claim: pc.claim, verdict, votes: pc.votes };
+    });
     trail.push(...trailByClaim.flat());
+    if (checkerRecord !== null) trail.push(checkerRecord);
     for (const message of warningsByClaim.flat()) warn(rt, warnings, message);
     const truncatedClaims = claims.slice(keptClaims.length).map((claim) => ({ claim, verdict: "unverified-by-cap", votes: [] }));
     const value = [...verifiedKept, ...truncatedClaims];

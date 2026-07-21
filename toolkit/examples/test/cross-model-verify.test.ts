@@ -98,8 +98,11 @@ describe('cross-model-verify — routed (probe available)', () => {
     })) as WfResult
 
     const probeCalls = rt.calls.filter((c) => c.opts?.label === 'probeAgentType:probe')
+    // Exclude the provenance-gate checker: it is a PLAIN subagent (no agentType),
+    // not a verifier, so it is not part of "every verifier carries the type".
     const verifierCalls = rt.calls.filter((c) =>
-      c.opts?.label?.startsWith('adversarialVerification:'),
+      c.opts?.label?.startsWith('adversarialVerification:') &&
+      !c.opts.label.includes(':provenance-check'),
     )
     expect(probeCalls.length).toBe(1)
     expect(probeCalls[0]!.opts?.agentType).toBe('workflow-toolbox:opencode-verifier')
@@ -107,6 +110,12 @@ describe('cross-model-verify — routed (probe available)', () => {
     expect(
       verifierCalls.every((c) => c.opts?.agentType === 'workflow-toolbox:opencode-verifier'),
     ).toBe(true)
+
+    // The external route ARMS the provenance gate: a checker runs, and it is a
+    // PLAIN subagent — never routed to the external CLI it is auditing.
+    const checkerCall = rt.calls.find((c) => (c.opts?.label ?? '').includes(':provenance-check'))
+    expect(checkerCall).toBeDefined()
+    expect(checkerCall!.opts?.agentType).toBeUndefined()
 
     expect(result.verifierType).toBe('workflow-toolbox:opencode-verifier')
     expect(result.probe).toEqual({

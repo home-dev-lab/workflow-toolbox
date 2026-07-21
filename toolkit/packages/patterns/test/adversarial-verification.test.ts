@@ -1567,3 +1567,126 @@ describe('adversarialVerification — stage salting', () => {
     for (const d of digests) expect(d?.stage).toBe('adversarialVerification')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Provenance gate — a verifier routed to a REGISTERED external agentType
+// (opencode / codex) can SELF-ANSWER (emit a valid verdict without invoking the
+// external CLI). After the vote burst, a checker reads each vote's transcript;
+// a vote with no real CLI invocation is DISQUALIFIED (nullified → the existing
+// unverifiable path). A plain Claude verifier is NEVER gated. (card #1823504956762621933)
+// ---------------------------------------------------------------------------
+describe('adversarialVerification — provenance gate (external verifierType)', () => {
+  const OPENCODE = 'workflow-toolbox:opencode-verifier'
+
+  /** Drive a run whose verifiers route to an external type. `provenance(label)` →
+   *  true (CLI seen) / false (self-answer) / null (checker omits it → undetermined).
+   *  `voteFor(label)` supplies each vote's verdict. The checker call (label contains
+   *  ':provenance-check') returns the assembled provenance JSON built from the vote
+   *  labels actually seen — robust to per-invocation label salting. */
+  function externalRun(
+    overrides: Partial<AdversarialVerificationOptions<string>>,
+    provenance: (label: string) => boolean | null,
+    voteFor: (label: string) => VerifierVote = () => confirmedVote,
+  ): { rt: FakeRuntime; run: Promise<Awaited<ReturnType<typeof adversarialVerification<string>>>> } {
+    const voteLabels: string[] = []
+    const rt = new FakeRuntime({
+      onAgent: (call) => {
+        const label = call.opts?.label ?? ''
+        if (label.includes(':provenance-check')) {
+          const results = voteLabels
+            .map((l) => ({ label: l, seen: provenance(l) }))
+            .filter((r) => r.seen !== null)
+            .map((r) => ({ label: r.label, cliSeen: r.seen as boolean }))
+          return JSON.stringify({ anchored: true, results })
+        }
+        if (label.includes(':verify:')) { voteLabels.push(label); return voteFor(label) }
+        return confirmedVote
+      },
+    })
+    return { rt, run: adversarialVerification(rt, makeOptions({ verifierType: OPENCODE, ...overrides })) }
+  }
+
+  it('credits an external vote WITH provenance (real CLI invocation seen)', async () => {
+    const { rt, run } = externalRun({ claims: ['c0'], votes: 2, refuteThreshold: 2 }, () => true)
+    const result = await run
+    expect(result.value[0]!.verdict).toBe('confirmed')
+    expect(result.value[0]!.votes.filter((v) => v !== null)).toHaveLength(2)
+    const checkerCalls = rt.calls.filter((c) => (c.opts?.label ?? '').includes(':provenance-check'))
+    expect(checkerCalls).toHaveLength(1)
+    expect(checkerCalls[0]!.opts?.model).toBe('haiku')
+    expect(result.warnings.some((w) => /DISQUALIFIED|UNDETERMINED/.test(w))).toBe(false)
+    // trail invariant holds WITH the checker record appended, last, not under :verify:.
+    expect(result.trail).toHaveLength(result.stats.agentsSpawned)
+    expect(result.trail.at(-1)!.stage).toContain(':provenance-check')
+    expect(result.trail.at(-1)!.outcome).toBe('ok')
+    expect(result.trail.filter((r) => r.stage.startsWith('adversarialVerification:verify:'))).toHaveLength(2)
+  })
+
+  it('DISQUALIFIES external votes WITHOUT provenance → null → unverifiable', async () => {
+    const { run } = externalRun({ claims: ['c0'], votes: 2, refuteThreshold: 2 }, () => false)
+    const result = await run
+    expect(result.value[0]!.verdict).toBe('unverifiable')
+    expect(result.value[0]!.votes).toEqual([null, null])
+    expect(result.warnings.some((w) => /2 external verifier votes DISQUALIFIED/.test(w))).toBe(true)
+  })
+
+  it('does NOT gate a registered NON-external verifierType (false-positive invariant)', async () => {
+    const rt = new FakeRuntime({
+      onAgent: (call) => {
+        if ((call.opts?.label ?? '').includes(':provenance-check')) throw new Error('gate must NOT arm for a Claude specialist')
+        return confirmedVote
+      },
+    })
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 2, refuteThreshold: 2, verifierType: 'magic-claude:ts-reviewer',
+    }))
+    expect(result.value[0]!.verdict).toBe('confirmed')
+    expect(rt.calls.some((c) => (c.opts?.label ?? '').includes(':provenance-check'))).toBe(false)
+  })
+
+  it('does NOT gate when verifierType is undefined (plain Claude verifier)', async () => {
+    const rt = new FakeRuntime({
+      onAgent: (call) => {
+        if ((call.opts?.label ?? '').includes(':provenance-check')) throw new Error('no gate without an external type')
+        return confirmedVote
+      },
+    })
+    const result = await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 2, refuteThreshold: 2 }))
+    expect(result.value[0]!.verdict).toBe('confirmed')
+    expect(rt.calls.some((c) => (c.opts?.label ?? '').includes(':provenance-check'))).toBe(false)
+  })
+
+  it('fails CLOSED when the checker cannot resolve provenance (undetermined → null)', async () => {
+    const rt = new FakeRuntime({
+      onAgent: (call) => {
+        const label = call.opts?.label ?? ''
+        if (label.includes(':provenance-check')) return 'sorry, could not read the transcripts' // non-JSON
+        return confirmedVote
+      },
+    })
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 2, refuteThreshold: 2, verifierType: OPENCODE,
+    }))
+    expect(result.value[0]!.verdict).toBe('unverifiable')
+    expect(result.warnings.some((w) => /UNDETERMINED provenance/.test(w))).toBe(true)
+    expect(result.trail.at(-1)!.stage).toContain(':provenance-check')
+    expect(result.trail.at(-1)!.outcome).toBe('null') // no usable reply
+  })
+
+  it('gates per-vote: one self-answered vote among provenanced ones changes the tally', async () => {
+    // 3 votes [confirmed, confirmed, refuted]; vote index 1 self-answered → disqualified.
+    // Survivors [confirmed, refuted]: 1 refuted < threshold 2, not all confirmed → partially-confirmed.
+    const byIndex: Record<string, VerifierVote> = { '0': confirmedVote, '1': confirmedVote, '2': refutedVote }
+    const { run } = externalRun(
+      { claims: ['c0'], votes: 3, refuteThreshold: 2 },
+      (label) => !label.endsWith(':1'),
+      (label) => byIndex[label.slice(-1)] ?? confirmedVote,
+    )
+    const result = await run
+    expect(result.value[0]!.verdict).toBe('partially-confirmed')
+    expect(result.value[0]!.votes[1]).toBeNull()
+    const v1 = result.trail.find((r) => r.stage.endsWith(':verify:0:1'))!
+    expect(v1.outcome).toBe('null')
+    expect(v1.decision).toBe('disqualified-no-provenance')
+  })
+})

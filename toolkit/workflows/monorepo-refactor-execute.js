@@ -346,6 +346,9 @@ unreadable channel never fails your task.`;
     rt.log(message);
   }
 
+  // ../packages/patterns/src/provenance-gate.ts
+  var SCANNER_RECENCY_MS = 30 * 60 * 1e3;
+
   // ../packages/std/src/resolve-effort.ts
   var EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
   function isEffortAlias(v) {

@@ -248,6 +248,9 @@ unreadable channel never fails your task.`;
     };
   }
 
+  // ../packages/patterns/src/provenance-gate.ts
+  var SCANNER_RECENCY_MS = 30 * 60 * 1e3;
+
   // capability-scout.workflow.ts
   var capability_scout_workflow_default = defineWorkflow({
     meta: {

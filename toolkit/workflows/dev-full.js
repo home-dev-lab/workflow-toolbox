@@ -382,6 +382,9 @@ unreadable channel never fails your task.`;
     return rel;
   }
 
+  // ../packages/patterns/src/provenance-gate.ts
+  var SCANNER_RECENCY_MS = 30 * 60 * 1e3;
+
   // dev-full.workflow.ts
   function isRecord3(v) {
     return typeof v === "object" && v !== null && !Array.isArray(v);

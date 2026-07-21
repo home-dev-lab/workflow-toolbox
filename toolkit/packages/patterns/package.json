@@ -35,5 +35,8 @@
   },
   "dependencies": {
     "@workflow-toolbox/runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@workflow-toolbox/debugger": "workspace:*"
   }
 }

@@ -885,6 +885,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     return { value, stats, warnings, trail };
   }
 
+  // ../packages/patterns/src/provenance-gate.ts
+  var SCANNER_RECENCY_MS = 30 * 60 * 1e3;
+
   // ../packages/patterns/src/tournament.ts
   var STAGE2 = "tournament";
   var JUDGE_SCHEMA = {
