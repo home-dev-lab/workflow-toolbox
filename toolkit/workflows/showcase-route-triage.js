@@ -605,13 +605,25 @@ STRUCTURED-OUTPUT SALVAGE: a previous schema-enforced attempt at this exact task
 ${constraints}`) + `
 Never satisfy a constraint with placeholder values ("test", "a"); shorten real content instead of faking it.`;
   }
+  function isNoStructuredOutputError(err) {
+    return err instanceof Error && err.message.includes("without calling StructuredOutput");
+  }
   async function agentWithSchemaSalvage(rt, prompt, opts) {
     const schema = opts.schema;
     if (schema === void 0) {
       const plain = await rt.agent(prompt, opts);
       return { value: plain, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false };
     }
-    const native = await rt.agent(prompt, opts);
+    let native;
+    try {
+      native = await rt.agent(prompt, opts);
+    } catch (err) {
+      if (isNoStructuredOutputError(err)) {
+        native = null;
+      } else {
+        throw err;
+      }
+    }
     if (native !== null) return { value: native, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false };
     const where = opts.label ?? "agent";
     const salvageOpts = {

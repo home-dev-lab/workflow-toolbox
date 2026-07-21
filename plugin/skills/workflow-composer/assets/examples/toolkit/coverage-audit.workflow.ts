@@ -58,6 +58,7 @@ import type { WorkflowRuntime, JsonSchema, EffortAlias, ModelAlias, AgentDefault
 import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import {
   adversarialVerification,
+  agentWithSchemaSalvage,
   autoSelectEffort,
   collectTrail,
   loopUntilDone,
@@ -821,14 +822,20 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
   }
 
   const invResults = await rt.parallel(
-    groups.map((group, gi) => () =>
-      rt.agent<InventoryOutput>(inventoryPrompt(input, group), {
-        schema: INVENTORY_SCHEMA,
-        label: `coverage-audit:inventory:${gi}`,
-        phase: 'Inventory',
-        effort: inventoryEffortByGroup?.[gi] ?? inventoryEffort,
-      }),
-    ),
+    groups.map((group, gi) => async () => {
+      const outcome = await agentWithSchemaSalvage<InventoryOutput>(
+        rt,
+        inventoryPrompt(input, group),
+        {
+          schema: INVENTORY_SCHEMA,
+          label: `coverage-audit:inventory:${gi}`,
+          phase: 'Inventory',
+          effort: inventoryEffortByGroup?.[gi] ?? inventoryEffort,
+        },
+      )
+      for (const w of outcome.warnings) warn(rt, warnings, w)
+      return outcome.value
+    }),
   )
 
   const capsByEntry = new Map<string, Capability[]>()
@@ -943,14 +950,20 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
       const angle = angleForRound(state.rounds)
 
       const results = await loopRt.parallel(
-        groups.map((group, gi) => () =>
-          loopRt.agent<ExtractOutput>(extractPrompt(input, group, capsByEntry, round, angle), {
-            schema: EXTRACT_SCHEMA,
-            label: `coverage-audit:extract:${round}:${gi}`,
-            phase: 'Extract',
-            effort: extractEffortByGroup?.[gi] ?? extractEffort,
-          }),
-        ),
+        groups.map((group, gi) => async () => {
+          const outcome = await agentWithSchemaSalvage<ExtractOutput>(
+            loopRt,
+            extractPrompt(input, group, capsByEntry, round, angle),
+            {
+              schema: EXTRACT_SCHEMA,
+              label: `coverage-audit:extract:${round}:${gi}`,
+              phase: 'Extract',
+              effort: extractEffortByGroup?.[gi] ?? extractEffort,
+            },
+          )
+          for (const w of outcome.warnings) warn(rt, warnings, w)
+          return outcome.value
+        }),
       )
 
       const seen = new Set(state.seenKeys)

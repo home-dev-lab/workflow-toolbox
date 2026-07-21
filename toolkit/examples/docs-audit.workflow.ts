@@ -47,6 +47,7 @@ import type { WorkflowRuntime, JsonSchema, EffortAlias, ModelAlias, AgentDefault
 import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import {
   adversarialVerification,
+  agentWithSchemaSalvage,
   autoSelectEffort,
   collectTrail,
   loopUntilDone,
@@ -568,16 +569,19 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     surfaces = input.surfaces
     inventorySource = 'input'
   } else {
-    const inv = await rt.agent<InventoryOutput>(inventoryPrompt(input), {
+    const invOutcome = await agentWithSchemaSalvage<InventoryOutput>(rt, inventoryPrompt(input), {
       schema: INVENTORY_SCHEMA,
       label: 'docs-audit:inventory',
       phase: 'Inventory',
       effort: inventoryEffort,
     })
+    for (const w of invOutcome.warnings) warn(rt, warnings, w)
+    const inv = invOutcome.value
     if (inv === null) {
       throw new Error(
-        'docs-audit: the inventory agent failed — relaunch with resumeFromRunId, or pass an ' +
-        'explicit "surfaces" array to skip inventory entirely',
+        'docs-audit: the inventory agent failed — structured-output salvage could not recover a ' +
+        'valid surface list (see warnings). Relaunch with resumeFromRunId, or pass an explicit ' +
+        '"surfaces" array to skip inventory entirely',
       )
     }
     const cleaned = [...new Set(inv.surfaces.map((s) => s.trim()).filter((s) => s.length > 0))]
@@ -631,14 +635,20 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
       const angle = angleForRound(state.rounds)
 
       const results = await loopRt.parallel(
-        groups.map((group, gi) => () =>
-          loopRt.agent<ExtractOutput>(extractPrompt(input, group, round, angle), {
-            schema: EXTRACT_SCHEMA,
-            label: `docs-audit:extract:${round}:${gi}`,
-            phase: 'Extract',
-            effort: extractEffortByGroup?.[gi] ?? extractEffort,
-          }),
-        ),
+        groups.map((group, gi) => async () => {
+          const outcome = await agentWithSchemaSalvage<ExtractOutput>(
+            loopRt,
+            extractPrompt(input, group, round, angle),
+            {
+              schema: EXTRACT_SCHEMA,
+              label: `docs-audit:extract:${round}:${gi}`,
+              phase: 'Extract',
+              effort: extractEffortByGroup?.[gi] ?? extractEffort,
+            },
+          )
+          for (const w of outcome.warnings) warn(rt, warnings, w)
+          return outcome.value
+        }),
       )
 
       const seen = new Set(state.seenKeys)

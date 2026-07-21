@@ -27,6 +27,14 @@
 // dead today, so any salvage success is a strict improvement. Repair never
 // invents content, so control schemas (enums, pass/fail verdicts) stay strict.
 //
+// The SAME salvage path also catches the THROW-shaped twin of the null-degrade:
+// when a schema-bearing subagent NEVER calls StructuredOutput (e.g. a bridge
+// agentType that degraded to plain text), the harness makes rt.agent() THROW
+// `subagent completed without calling StructuredOutput`, which used to propagate
+// and kill the whole run. The wrapper now catches that ONE error class
+// (isNoStructuredOutputError) on the native call and routes it into the identical
+// salvage path; every other throw (budget, abort) still propagates.
+//
 // Sandbox contract: pure, deterministic, zero imports beyond runtime types —
 // safe to bundle into committed workflow artifacts.
 
@@ -334,6 +342,16 @@ function salvagePrompt(prompt: string, schema: JsonSchema): string {
   )
 }
 
+/** Predicate for the harness's "subagent completed without calling
+ *  StructuredOutput" throw — the THROW-shaped twin of the null-degrade failure
+ *  that this wrapper routes into salvage instead of letting it kill the run.
+ *  Strict substring match: only this one error class is caught; every other
+ *  throw (budget, abort, a real bug) propagates unchanged. Exported so call
+ *  sites and tests assert the same predicate. */
+export function isNoStructuredOutputError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('without calling StructuredOutput')
+}
+
 /**
  * Run an agent call, salvaging schema-validation exhaustion deterministically.
  *
@@ -346,8 +364,15 @@ function salvagePrompt(prompt: string, schema: JsonSchema): string {
  *   deterministically possible, and re-validated. Unrepairable → null, with
  *   the specific violations in `warnings`.
  *
- * Budget errors (`rt.agent` throws) propagate unchanged — same contract as a
- * direct call. Only the null-degrade path gains behavior.
+ * Error contract: most throws propagate unchanged — same as a direct call
+ * (budget exhaustion, aborts, real bugs all surface). The ONE exception is the
+ * harness's "subagent completed without calling StructuredOutput" throw — the
+ * THROW-shaped twin of the null-degrade (a schema-bearing subagent that never
+ * called StructuredOutput at all, e.g. a bridge agentType that degraded to
+ * plain text). That single error class is caught on the NATIVE call
+ * (isNoStructuredOutputError) and routed into the SAME salvage path as a null
+ * return, so a degraded subagent can no longer kill the whole run. The salvage
+ * respawn is schema-less, so the throw cannot recur there — no catch needed.
  */
 export async function agentWithSchemaSalvage<T>(
   rt: WorkflowRuntime,
@@ -360,7 +385,20 @@ export async function agentWithSchemaSalvage<T>(
     return { value: plain, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false }
   }
 
-  const native = await rt.agent<T>(prompt, opts)
+  // Native schema-bearing call. Two failure shapes route into the salvage path
+  // below: the bare null (harness retry exhaustion) AND the no-StructuredOutput
+  // throw (a subagent that never called StructuredOutput at all — caught here,
+  // null-coerced). Every other throw (budget, abort) propagates unchanged.
+  let native: T | null
+  try {
+    native = await rt.agent<T>(prompt, opts)
+  } catch (err) {
+    if (isNoStructuredOutputError(err)) {
+      native = null
+    } else {
+      throw err
+    }
+  }
   if (native !== null) return { value: native, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false }
 
   const where = opts.label ?? 'agent'
