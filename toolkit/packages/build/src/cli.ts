@@ -26,7 +26,9 @@
 
 import { parseArgs } from 'node:util'
 import { createRequire } from 'node:module'
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { bundleWorkflow } from './bundle.js'
@@ -241,12 +243,58 @@ async function runPipeline(argv: string[]): Promise<void> {
 // typecheckEntry — `workflow-toolbox build --typecheck` support
 // ---------------------------------------------------------------------------
 
+type TsModule = typeof import('typescript')
+
+// The classic in-process compiler API (createProgram / getPreEmitDiagnostics /
+// sys.*) the programmatic typecheck path uses. TypeScript 7+ is the native (Go)
+// rewrite: `require('typescript')` resolves to version.cjs — `{ version }` only,
+// with NO `sys`/`createProgram` — so `ts.sys.fileExists` there throws
+// "Cannot read properties of undefined (reading 'fileExists')" (the reported
+// crash). Its batch compiler API moved to an experimental `typescript/unstable/*`
+// surface that spawns a subprocess anyway, so we route 7+ to the stable `tsc` CLI
+// instead. Capability detection (not a version-number check) so a future major
+// that keeps or restores the classic API still takes the in-process path.
+export function hasClassicCompilerApi(ts: {
+  createProgram?: unknown
+  getPreEmitDiagnostics?: unknown
+  findConfigFile?: unknown
+  sys?: { fileExists?: unknown } | undefined
+}): boolean {
+  // A representative probe across the three phases typecheckViaProgram uses —
+  // config read (findConfigFile + sys.fileExists), program build (createProgram)
+  // and diagnostics (getPreEmitDiagnostics). In a real `typescript` module these
+  // classic APIs all ship together, so this is representative, not exhaustive;
+  // the native rewrite (7+) exposes NONE of them (only `version`), which is the
+  // case that must route to the CLI.
+  return (
+    typeof ts.createProgram === 'function' &&
+    typeof ts.getPreEmitDiagnostics === 'function' &&
+    typeof ts.findConfigFile === 'function' &&
+    ts.sys != null &&
+    typeof ts.sys.fileExists === 'function'
+  )
+}
+
+// Walk up from `startDir` for the nearest tsconfig.json (fs-only — must work
+// without the TS API, which is absent under the native rewrite).
+export function findNearestTsconfig(startDir: string): string | undefined {
+  let dir = startDir
+  for (;;) {
+    const candidate = path.join(dir, 'tsconfig.json')
+    if (fs.existsSync(candidate)) return candidate
+    const parent = path.dirname(dir)
+    if (parent === dir) return undefined
+    dir = parent
+  }
+}
+
 async function typecheckEntry(absEntry: string): Promise<void> {
   // Resolve the CONSUMER's typescript from the entry's directory (NEVER a
   // bundled copy — versions must match the consumer's own toolchain).
+  let req: ReturnType<typeof createRequire>
   let tsPath: string
   try {
-    const req = createRequire(path.join(path.dirname(absEntry), 'package.json'))
+    req = createRequire(path.join(path.dirname(absEntry), 'package.json'))
     tsPath = req.resolve('typescript')
   } catch {
     console.warn(
@@ -256,10 +304,21 @@ async function typecheckEntry(absEntry: string): Promise<void> {
     return
   }
 
-  type TsModule = typeof import('typescript')
   const tsImport = (await import(pathToFileURL(tsPath).href)) as { default?: TsModule }
   const ts = tsImport.default ?? (tsImport as unknown as TsModule)
 
+  if (hasClassicCompilerApi(ts)) {
+    typecheckViaProgram(ts, absEntry)
+  } else {
+    // TypeScript 7+ (native rewrite): no in-process compiler API — shell out to
+    // the consumer's own `tsc` binary, the one stable cross-version contract.
+    typecheckViaCli(req, absEntry, ts.version)
+  }
+}
+
+// The in-process path for TypeScript < 7 (classic API). UNCHANGED from the
+// original typecheckEntry body — the shipped, tested ^5/^6 path.
+function typecheckViaProgram(ts: TsModule, absEntry: string): void {
   // Prefer the consumer's own tsconfig (nearest to the entry); fall back to the
   // SAME minimal options `workflow-toolbox scaffold` emits (single source — MINIMAL_TSCONFIG).
   // noEmit is always forced — this is a CHECK.
@@ -291,6 +350,70 @@ async function typecheckEntry(absEntry: string): Promise<void> {
     throw new Error(
       `workflow-toolbox build: typecheck failed with ${diagnostics.length} error(s) — artifact NOT written`,
     )
+  }
+}
+
+// The subprocess path for TypeScript 7+ (native rewrite). Runs the consumer's
+// own `tsc` on a temp tsconfig that inherits their nearest tsconfig options (or
+// the scaffold MINIMAL_TSCONFIG when none) but scopes the check to just the
+// entry — the same check `typecheckViaProgram` performs, via the stable CLI.
+// Exported for the TEST-LOCK (exercised with the dev toolchain's own tsc, since
+// TS7 isn't a devDependency; the CLI contract is version-stable by design).
+export function typecheckViaCli(
+  req: ReturnType<typeof createRequire>,
+  absEntry: string,
+  version: string,
+): void {
+  let tscBin: string
+  try {
+    const pkgJsonPath = req.resolve('typescript/package.json')
+    const pkgRoot = path.dirname(pkgJsonPath)
+    const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')) as {
+      bin?: string | Record<string, string>
+    }
+    const binRel = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.tsc
+    if (binRel === undefined) throw new Error('no tsc bin in typescript package.json')
+    tscBin = path.join(pkgRoot, binRel)
+  } catch {
+    console.warn(
+      `workflow-toolbox build: --typecheck skipped — could not locate the 'tsc' binary of typescript@${version}.\n` +
+        '  TypeScript 7+ (the native rewrite) is type-checked via its CLI; reinstall typescript to enable the check.',
+    )
+    return
+  }
+
+  // extends the consumer's nearest tsconfig for its options; `files:[entry]` +
+  // `include:[]` scope the file set to ONLY the entry (matching the in-process
+  // path's `[absEntry]` roots — a base `include` would otherwise widen it).
+  const nearest = findNearestTsconfig(path.dirname(absEntry))
+  const config =
+    nearest !== undefined
+      ? { extends: nearest, compilerOptions: { noEmit: true }, files: [absEntry], include: [] }
+      : {
+          compilerOptions: { ...MINIMAL_TSCONFIG.compilerOptions, noEmit: true },
+          files: [absEntry],
+          include: [],
+        }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-typecheck-'))
+  const tmpConfig = path.join(tmpDir, 'tsconfig.json')
+  try {
+    fs.writeFileSync(tmpConfig, JSON.stringify(config, null, 2) + '\n', 'utf8')
+    // `stdio: 'inherit'` lets tsc render its own diagnostics (with context) to
+    // the user's terminal; the exit code is the ground-truth pass/fail.
+    const result = spawnSync(process.execPath, [tscBin, '--project', tmpConfig], {
+      stdio: 'inherit',
+    })
+    if (result.error !== undefined) {
+      throw new Error(
+        `workflow-toolbox build: typecheck could not run tsc (${result.error.message}) — artifact NOT written`,
+      )
+    }
+    if (result.status !== 0) {
+      throw new Error('workflow-toolbox build: typecheck failed — artifact NOT written')
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
   }
 }
 

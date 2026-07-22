@@ -6,7 +6,8 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { main } from '../src/cli.js'
+import { createRequire } from 'node:module'
+import { main, hasClassicCompilerApi, findNearestTsconfig, typecheckViaCli } from '../src/cli.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURES = path.join(__dirname, 'fixtures')
@@ -354,6 +355,86 @@ describe('cli main() — workflow-toolbox build --typecheck', () => {
     const outDir = makeTmpDir()
     await main(['build', path.join(FIXTURES, 'hello.workflow.ts'), '--out-dir', outDir, '--typecheck'])
     expect(fs.existsSync(path.join(outDir, 'wt-fixture-hello.js'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// TS7 compatibility — card #1823971459928687753
+// The native (Go) rewrite ships `require('typescript')` = version.cjs only
+// (no `sys`/`createProgram`), so the old programmatic path crashed with
+// "Cannot read properties of undefined (reading 'fileExists')". These lock the
+// two halves of the fix: (1) capability detection routes 7+ away from the
+// crashing in-process path; (2) the CLI subprocess path passes/fails correctly.
+// TS7 isn't a devDependency, so the CLI path is exercised with the dev
+// toolchain's own tsc — the tsc CLI contract is version-stable by design.
+// ---------------------------------------------------------------------------
+
+describe('cli — TS7 typecheck compatibility (#1823971459928687753)', () => {
+  it('hasClassicCompilerApi: false for the TS7 native shape, true for the classic API', () => {
+    // TS7 native: require('typescript') === version.cjs — { version } only.
+    expect(hasClassicCompilerApi({ version: '7.0.2', versionMajorMinor: '7.0' } as never)).toBe(false)
+    // The exact crash shape: createProgram present but sys undefined.
+    expect(
+      hasClassicCompilerApi({ createProgram: () => {}, getPreEmitDiagnostics: () => {}, sys: undefined }),
+    ).toBe(false)
+    // A partial API (createProgram + diagnostics + sys but missing findConfigFile)
+    // must NOT be treated as classic — it would crash the in-process path.
+    expect(
+      hasClassicCompilerApi({
+        createProgram: () => {},
+        getPreEmitDiagnostics: () => {},
+        sys: { fileExists: () => true },
+      }),
+    ).toBe(false)
+    // Classic API (TS 5/6): all probed entry points present.
+    expect(
+      hasClassicCompilerApi({
+        createProgram: () => {},
+        getPreEmitDiagnostics: () => {},
+        findConfigFile: () => undefined,
+        sys: { fileExists: () => true },
+      }),
+    ).toBe(true)
+  })
+
+  it('findNearestTsconfig walks up to the nearest tsconfig.json, undefined when none', () => {
+    const root = makeTmpDir()
+    fs.writeFileSync(path.join(root, 'tsconfig.json'), '{}', 'utf8')
+    const nested = path.join(root, 'a', 'b')
+    fs.mkdirSync(nested, { recursive: true })
+    expect(findNearestTsconfig(nested)).toBe(path.join(root, 'tsconfig.json'))
+    // The walk terminates and returns undefined when no tsconfig.json exists up
+    // to the filesystem root (there is none at `/`), never looping forever.
+    expect(findNearestTsconfig(path.parse(process.cwd()).root)).toBeUndefined()
+  })
+
+  // The CLI path uses the CONSUMER's own tsc bin; here the dev toolchain's tsc.
+  const req = createRequire(import.meta.url)
+  const tsVersion = (JSON.parse(fs.readFileSync(req.resolve('typescript/package.json'), 'utf8')) as { version: string }).version
+
+  it('typecheckViaCli: resolves a clean entry (extends the nearest tsconfig)', () => {
+    const dir = makeTmpDir()
+    fs.writeFileSync(path.join(dir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true } }), 'utf8')
+    const entry = path.join(dir, 'clean.ts')
+    fs.writeFileSync(entry, 'const x: number = 42\nexport { x }\n', 'utf8')
+    expect(() => typecheckViaCli(req, entry, tsVersion)).not.toThrow()
+  })
+
+  it('typecheckViaCli: throws on a type error in the entry (fails the build)', () => {
+    const dir = makeTmpDir()
+    fs.writeFileSync(path.join(dir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true } }), 'utf8')
+    const entry = path.join(dir, 'bad.ts')
+    fs.writeFileSync(entry, 'const x: number = "nope"\nexport { x }\n', 'utf8')
+    expect(() => typecheckViaCli(req, entry, tsVersion)).toThrow(/typecheck/)
+  })
+
+  it('typecheckViaCli: works with no nearby tsconfig (MINIMAL_TSCONFIG fallback)', () => {
+    const dir = makeTmpDir()
+    const bad = path.join(dir, 'bad.ts')
+    fs.writeFileSync(bad, 'const x: number = "nope"\nexport { x }\n', 'utf8')
+    // findNearestTsconfig may still find an ancestor tsconfig above os.tmpdir in
+    // some environments; assert the error path regardless of which branch runs.
+    expect(() => typecheckViaCli(req, bad, tsVersion)).toThrow(/typecheck/)
   })
 })
 
