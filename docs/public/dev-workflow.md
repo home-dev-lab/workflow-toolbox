@@ -30,6 +30,42 @@ composition over their committed artifacts and converts the human gates into
 no interactive prompt); drift is mitigated by re-running with corrections
 appended to the goal.
 
+## Which rung — dev-workflow family or a pilot?
+
+This family and the `pilot-wave` skill's agents are two different **rungs of
+delegation**, not competing implementations of the same job — reaching for the
+wrong one either strands a tracked task with no owner watching it, or points
+agentic judgment at work a deterministic script already does better (and
+cheaper, and more repeatably).
+
+- **A tracked board/ticket card** — something with its own history, comments,
+  and a lifecycle to move through — belongs to a `pilot` agent (composed via
+  `plugin/skills/pilot-wave/SKILL.md`). The pilot owns the whole arc: intake,
+  re-grounding stale premises against the current tree, plan approval, TDD,
+  gates, review, commit/push discipline, and escalating to a human only at its
+  four named triggers (high-impact/irreversible, product preference, an
+  evidence gap it cannot close itself, or genuine indecision after exploring
+  the technical routes) — none of which a bare workflow run provides. A pilot
+  running its own card is free to launch any workflow in this family
+  **mid-arc**, as one step of a larger arc (a review fan-out, a grounding
+  pass): that is a supported seam with its own wake-up contract (see
+  `pilot-wave`'s "own the wake-ups" step) — it is not a prohibition on pilots
+  touching workflows.
+- **A scoped chantier, or a review of an existing change set**, run from a
+  session with a human present to read the produced artifact or report before
+  the next step happens, is a good fit for the family **directly** — split
+  mode above, stopping at each human-readable artifact. No pilot needed: the
+  human already IS the gate.
+- **`dev-full` is never the default choice for either case above.** Its own
+  `whenToUse` says so plainly: it has *no human gate from goal to tree
+  mutations*, the Full-mode trust boundary described above. Reach for it only
+  when an operator has explicitly accepted that whole-chain trust boundary for
+  this specific goal and repository (see "Trust boundary" under
+  [Operational lessons](#operational-lessons-learned-the-honest-way) below);
+  otherwise run the split workflows one artifact at a time, or hand the goal
+  to a pilot, which supplies its own human escalation points instead of
+  skipping them.
+
 ## The four workflows
 
 | Workflow | Phases | What the gates guarantee |

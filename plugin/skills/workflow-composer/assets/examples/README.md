@@ -4,6 +4,39 @@ Working material for the `workflow-composer` skill. Two of these files are
 complete, runnable raw `.js` workflows; the `toolkit/` subdir holds TypeScript
 sources you read rather than run.
 
+## Pick by usage — orientation table
+
+Not sure which example fits, start from what you want to **do**, not a file
+name — the two review workflows in particular get conflated because both read
+a change set:
+
+| I want to… | Reach for | Why |
+|---|---|---|
+| Review a change set and get a **report only** (nothing is fixed) | `toolkit/pr-review.workflow.ts` | Route → per-lens reviewers → adversarial verify → synthesis; report-only by design. |
+| Review a change set **and fix** the confirmed findings | `toolkit/dev-review-fix.workflow.ts` | Review → verify → fix → check loop; ends with a green tree. |
+| Plan a feature from a goal, for a human to read/edit before anything runs | `toolkit/dev-plan.workflow.ts` | Discovery → planner fan-out → adversarial critique → a plan artifact. |
+| Implement an approved plan artifact via TDD | `toolkit/dev-implement.workflow.ts` | Per-task red → green → check, sequential or worktree-parallel. |
+| Chain plan → implement → review-fix with **no human gate at all** | `toolkit/dev-full.workflow.ts` | ⚠ Only for a goal/repo you accept mutating end-to-end — see the routing guide linked below before reaching for this one. |
+| Ground a tracked card's premises before planning anything | `toolkit/dev-ground.workflow.ts` | External research ∥ internal analysis → cancel/reframe/proceed, never silently "proceed". |
+| Verify a short list of standalone claims against reality | `verify-findings.js` | Refute-first adversarial verification; unverifiable claims are kept and flagged, never dropped. |
+| Get a broad, coverage-counted read across a repo's areas | `repo-health-snapshot.js` | Fan-out readers + a synthesis barrier that counts dropped readers. |
+| Red-team / critique an existing design, plan, or decision | `toolkit/independent-analysis.workflow.ts` | Bias-free multi-lens review; also the bundled `workflow-toolbox:independent-analysis`. |
+| Verify claims with a genuinely different model family | `toolkit/cross-model-verify.workflow.ts` | Optional cross-family verifier for real decorrelation. |
+| Plan / execute a monorepo-wide refactor with a human approval gate | `toolkit/monorepo-refactor-plan.workflow.ts` + `-execute.workflow.ts` | The planning half proposes; the execute half only runs an *approved* artifact. |
+| Rewrite documentation from findings | `toolkit/doc-rewrite.workflow.ts` | Generate-and-filter doc rewrites. |
+| Pre-release: check doc claims against the current code | `toolkit/docs-audit.workflow.ts` | Extract checkable claims → refute-first verify against source. |
+| Pre-release: check code capabilities are documented at all | `toolkit/coverage-audit.workflow.ts` | The inverse of `docs-audit` — finds gaps, not staleness. |
+
+All `toolkit/…` entries are reading-material sources (see
+[The `toolkit/` subdir](#the-toolkit-subdir) below); the runnable artifact is
+the same-named file under `toolkit/workflows/` in the repo (e.g.
+`toolkit/workflows/pr-review.js`).
+
+Whether to run any of this **as a workflow at all**, versus handing the goal
+to a `pilot` agent instead, is a separate question — see the "Which rung —
+dev-workflow family or a pilot?" section of `docs/public/dev-workflow.md`
+(repo root) for that decision.
+
 ## Runnable raw examples
 
 - **`verify-findings.js`** — refute-first adversarial verification of claims

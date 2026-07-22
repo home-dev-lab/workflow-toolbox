@@ -185,11 +185,13 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     ],
   },
   {
-    // Every other shipped composition (the catalog doc + the dev-workflow story).
+    // Every other shipped composition (the catalog doc + the dev-workflow story
+    // + the bundled examples README, which now names per-workflow usage intent).
     sources: ['toolkit/examples/'],
     docs: [
       'plugin/skills/workflow-composer/references/shipped-compositions.md',
       'docs/public/dev-workflow.md',
+      'plugin/skills/workflow-composer/assets/examples/README.md',
     ],
   },
   {
