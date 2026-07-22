@@ -142,6 +142,16 @@ an explicit escape hatch. `workflow-toolbox build` warns from 400 KB (the cap is
 an oversized
 workflow is usually two workflows with a checkpoint between them.
 
+`workflow-toolbox build` is a thin CLI wrapper over `bundleWorkflow(opts)` (from
+`@workflow-toolbox/build`), the programmatic entry point for a caller embedding the build
+step (a custom CLI, a CI script). It resolves to a `BundleResult`: `code` (the full
+emitted artifact — meta statement + the bundled IIFE + the sandbox glue), `parts`
+(`metaStatement`/`iife`/`glue` split out, e.g. for tests that need the IIFE without a
+top-level `meta` statement in the way), `meta` (the extracted, validated `WorkflowMeta`),
+`bytes` (`Buffer.byteLength(code)`, precomputed for size-policy checks), and `warnings`
+(non-fatal size-approaching-the-cap notices — never includes the fatal >512 KB case,
+which `bundleWorkflow` throws on instead).
+
 Launch via the Workflow tool, then **two non-negotiable habits**:
 
 1. **Read the launch error — a rejected script never runs.** A parse or

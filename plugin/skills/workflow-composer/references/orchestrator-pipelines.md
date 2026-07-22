@@ -127,7 +127,11 @@ to a rebuild). A few things worth knowing before you write one:
   the Workflow Observatory docs (the closed-source companion that runs the pipeline);
   the spec types themselves ship here in `@workflow-toolbox/pipeline-spec`.
   Programmatically, `bundlePipeline` (from `@workflow-toolbox/build`) is the API twin of
-  the `workflow-toolbox pipeline` CLI — same entry in, same emitted JSON out.
+  the `workflow-toolbox pipeline` CLI — same entry in, same emitted JSON out. It resolves
+  to a `BundlePipelineResult`: `spec` (the validated, round-tripped `PipelineSpec` —
+  guaranteed to be exactly what `parsePipelineSpec` would accept back from disk, not just
+  what typechecked at the call site), `json` (the pretty-printed JSON, what gets written
+  to disk), and `bytes` (`Buffer.byteLength(json)`).
 
 #### Looping a pipeline — `loop` (re-run the stage list until done)
 

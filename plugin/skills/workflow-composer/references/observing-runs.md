@@ -64,6 +64,19 @@ cannot drift apart silently:
   at the call site): the emitting pattern's `stage`, the phase title, branches
   taken/notTaken, and per-pattern counts. Observers parse these to annotate each phase
   with what the pattern actually did.
+  - `parseDigest(line)` is **tolerant, never throws**: a non-string, a line without the
+    `[wt:digest]` prefix, non-JSON after the prefix, a non-object payload, or a
+    missing/empty `stage` all return `null`. A malformed optional field (wrong type)
+    simply does not populate its field rather than rejecting the whole line — `stage` is
+    the only required key. This is what lets an observer parse a growing, live run.log
+    without a single bad line breaking the read.
+  - `LOOP_STAGE` (`'loopUntilDone'`) is the digest `stage` the `loopUntilDone` pattern
+    emits, and `isLoopIterLabel(label)` recognizes its per-iteration agent-label marker
+    (an appended `<label> ⟲<n>`). Together they resolve which phase a loop's own digest
+    belongs to when the loop body relabels its agents (a nested pattern's own label
+    scheme) — the loop's digest then has no `loopUntilDone:`-prefixed agent to anchor to,
+    so an observer attributes it to the phase whose agents carry the `⟲<n>` marker
+    instead, deferring to any other digest that already claimed that phase.
 - **Prompt tags** (`prompt-tag.ts`) — `defineWorkflow` wraps the runtime with
   `withPromptTags`, prefixing every labeled/phased agent prompt with one HTML-comment
   marker line (`<!-- wt-meta label="…" phase="…" -->`; `buildPromptTag`/`parsePromptTag`).

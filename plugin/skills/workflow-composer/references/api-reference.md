@@ -53,6 +53,18 @@ spawned agent). [documented]
 > all downstream agents inherit `model`/`effort`/`agentType`/…) and
 > `parseConfig(args)` → `WorkflowConfig`. The raw-runtime primitives those build on
 > (`agentType`, `effort`, per-agent `model`) are documented below.
+>
+> **Scaffolding a workflow programmatically:** `scaffoldWorkflow(spec)` (from
+> `@workflow-toolbox/scaffold`, the emitter behind `workflow-toolbox scaffold` — see
+> the `toolkit-scaffold` skill for the authoring workflow) is a pure function —
+> same `ScaffoldSpec` in, byte-identical `.workflow.ts` source string out, zero IO.
+> `ScaffoldSpec` is `{ meta: { name, description }, steps: ScaffoldStep[] }`; each
+> `ScaffoldStep` is `{ pattern, phase }` — `pattern` one of the nine canonical
+> pattern names, `phase` the progress-group title the step's agents are grouped
+> under in `/workflows`. `scaffoldWorkflow` throws an actionable `Error` (never a
+> bare crash) on an empty `steps` array, a non-kebab-case `meta.name`, an empty
+> `meta.description`, or an unknown `pattern` — call it with an already-validated
+> spec.
 
 ### Research preview — availability and opt-in
 

@@ -195,7 +195,13 @@ message-parsing helpers), not in this skill:
   `canonicalizeReason` (strips volatile taskIds so wording-drift detection is
   signal, not noise). Unit-tested.
 - `lib.ts` — pure SDK message readers incl. `readInitVersion` (the measured CC
-  version of whatever binary a run drove). Unit-tested.
+  version of whatever binary a run drove). Also `resumePrompt(scriptPath, runId, args?)`
+  — the RESUME counterpart to `launchPrompt`: embeds `scriptPath` +
+  `resumeFromRunId: runId` (+ `args` when given) as one exact JSON literal so a live
+  runner can re-invoke the Workflow tool against an existing run and have completed
+  `agent()` calls replay from the journal cache instead of re-running. Used by a caller
+  that drives a resume round-trip (the resume-parity canary pins that an UNFORKED resume
+  of the original SDK session preserves this cache across a process kill). Unit-tested.
 - `changelog.ts` — pure changelog inspection: parse `## x.y.z` sections, extract the
   `(from, to]` range (numeric compare, gap-version-safe), highlight toolbox-relevant
   lines, and a single `buildChangelogReport` decision table. Unit-tested.
