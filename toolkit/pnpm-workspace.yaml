@@ -21,5 +21,19 @@ minimumReleaseAgeExclude:
 # pnpm >=11 home for overrides (package.json#pnpm.overrides is no longer read).
 # esbuild pin dates from when this workspace hosted the svelte observe app; kept
 # conservative for the build package until a newer esbuild is revalidated here.
+#
+# Targeted Dependabot remediations (mirrors workflow-observatory commit 3c36414):
+# - body-parser >=2.0.0 <2.3.0 -> 2.3.0: GHSA-v422-hmwv-36x6 / CVE-2026-12590 (low).
+#   DoS when an invalid limit value silently disables body-size enforcement.
+#   Transitive via express@5 <- @modelcontextprotocol/sdk <- @anthropic-ai/claude-agent-sdk
+#   (a devDependency of @workflow-toolbox/smoke's upgrade-canary tooling only — not
+#   part of `pnpm test`, not shipped/runtime-served).
+# - brace-expansion >=3.0.0 <5.0.7 -> 5.0.7: GHSA-3jxr-9vmj-r5cp / CVE-2026-13149
+#   (high, dev-only). DoS via exponential expansion of consecutive non-expanding {}
+#   groups. Transitive via minimatch@10 <- @typescript-eslint (lint tooling). The
+#   lower bound preserves the brace-expansion 1.1.x/2.1.x copies used by
+#   minimatch@3/@5 (outside the advisory range).
 overrides:
   esbuild: ~0.28.1
+  body-parser@>=2.0.0 <2.3.0: 2.3.0
+  brace-expansion@>=3.0.0 <5.0.7: 5.0.7
