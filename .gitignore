@@ -50,6 +50,12 @@ node_modules/
 # playwright-cli snapshots/screenshots (per-machine e2e artifacts, throwaway).
 .playwright-cli/
 
+# opencode-verifier bridge task file — written under the repo cwd (so opencode's
+# --agent plan gate can page through it without an external_directory rejection),
+# trap-cleaned in the same invocation. This is a belt-and-suspenders net for a hard
+# SIGKILL leftover; never source.
+.oc-verify-*.md
+
 # Python bytecode caches — regenerated whenever the observe-ui bezel generator
 # (apps/observe-ui/scripts/make-bezel-source.py) is imported/run; never source.
 __pycache__/
