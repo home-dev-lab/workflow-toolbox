@@ -1320,8 +1320,10 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
     if (typeof reply !== "string") return out;
     const obj = firstJsonObject(reply);
     if (obj === null) return out;
+    const anchored = obj.anchored;
     const results = obj.results;
     if (!Array.isArray(results)) return out;
+    if (anchored === false && results.length > 0) return out;
     for (const row of results) {
       if (row === null || typeof row !== "object") continue;
       const label = row.label;
@@ -1499,6 +1501,7 @@ ${renderClaim(claim)}`;
       }));
     }
     const trailByClaim = [];
+    const retryTrailByClaim = [];
     const warningsByClaim = [];
     const perClaim = await Promise.all(
       keptClaims.map(async (claim, claimIndex) => {
@@ -1533,14 +1536,24 @@ ${renderClaim(claim)}`;
           voteOuts,
           votes,
           voteStages,
-          provenanceDisqualified: new Array(votes.length).fill(false)
+          // A salvaged vote's credited value came from the `:salvage` respawn transcript —
+          // point the provenance checker THERE (card #1824029483854726303 fix round).
+          effectiveStages: voteStages.map(
+            (s, vi) => voteOuts[vi]?.salvaged === true ? `${s}:salvage` : s
+          ),
+          provenanceDisqualified: new Array(votes.length).fill(false),
+          retryStages: new Array(votes.length).fill(void 0),
+          retryEffectiveStages: new Array(votes.length).fill(void 0),
+          retryOuts: new Array(votes.length).fill(null),
+          retryVotes: new Array(votes.length).fill(null),
+          retryDisqualified: new Array(votes.length).fill(false)
         };
       })
     );
     const gateExpectation = externalGateExpectation(verifierType);
     let checkerRecord = null;
     if (gateExpectation !== null) {
-      const allLabels = perClaim.flatMap((pc) => pc.voteStages);
+      const allLabels = perClaim.flatMap((pc) => pc.effectiveStages);
       if (allLabels.length > 0) {
         agentsSpawned++;
         const checkLabel = stg(PROVENANCE_CHECK_SUFFIX);
@@ -1559,7 +1572,7 @@ ${renderClaim(claim)}`;
         for (const pc of perClaim) {
           for (let voteIndex = 0; voteIndex < pc.votes.length; voteIndex++) {
             if (pc.votes[voteIndex] === null) continue;
-            const provenance = provMap.get(pc.voteStages[voteIndex]) ?? "undetermined";
+            const provenance = provMap.get(pc.effectiveStages[voteIndex]) ?? "undetermined";
             if (provenance === "seen") continue;
             pc.votes[voteIndex] = null;
             pc.provenanceDisqualified[voteIndex] = true;
@@ -1583,8 +1596,87 @@ ${renderClaim(claim)}`;
         }
       }
     }
+    let retryCheckerRecord = null;
+    if (gateExpectation !== null) {
+      const retryTargets = [];
+      for (const pc of perClaim) {
+        for (let voteIndex = 0; voteIndex < pc.votes.length; voteIndex++) {
+          if (pc.provenanceDisqualified[voteIndex]) retryTargets.push({ pc, voteIndex });
+        }
+      }
+      if (retryTargets.length > 0) {
+        const retryThunks = retryTargets.map(({ pc, voteIndex }) => {
+          const stage = `${pc.voteStages[voteIndex]}:retry`;
+          pc.retryStages[voteIndex] = stage;
+          return async () => {
+            const lens = lenses !== void 0 ? lenses[voteIndex] : void 0;
+            const prompt = buildVerifierPrompt(pc.claim, lens);
+            const opts = {
+              schema: VERIFIER_SCHEMA,
+              label: stage,
+              ...phase !== void 0 ? { phase } : {},
+              model: effectiveModel,
+              ...effort !== void 0 ? { effort } : {},
+              ...verifierType !== void 0 ? { agentType: verifierType } : {}
+            };
+            return agentWithSchemaSalvage(rt, prompt, opts);
+          };
+        });
+        const retryRaw = await rt.parallel(retryThunks);
+        retryTargets.forEach((t, i) => {
+          const out = retryRaw[i] ?? null;
+          t.pc.retryOuts[t.voteIndex] = out;
+          const retryStage = t.pc.retryStages[t.voteIndex];
+          t.pc.retryEffectiveStages[t.voteIndex] = out?.salvaged === true ? `${retryStage}:salvage` : retryStage;
+        });
+        const retryLabels = retryTargets.map((t) => t.pc.retryEffectiveStages[t.voteIndex]);
+        agentsSpawned++;
+        const retryCheckLabel = stg(`${PROVENANCE_CHECK_SUFFIX}:retry`);
+        const { map: retryProvMap, replyOk: retryReplyOk } = await runProvenanceChecker(
+          rt,
+          gateExpectation,
+          retryLabels,
+          {
+            label: retryCheckLabel,
+            ...phase !== void 0 ? { phase } : {},
+            model: "haiku",
+            effort: "low",
+            nonce: deriveProvenanceNonce(retryLabels, perClaim.map((pc) => renderClaim(pc.claim)).join(" "))
+          }
+        );
+        retryCheckerRecord = makeRecord(retryCheckLabel, retryReplyOk, { model: "haiku", effort: "low" });
+        let recoveredCount = 0;
+        let unrecoveredCount = 0;
+        for (const { pc, voteIndex } of retryTargets) {
+          const retryVote = pc.retryOuts[voteIndex]?.value ?? null;
+          const provenance = retryProvMap.get(pc.retryEffectiveStages[voteIndex]) ?? "undetermined";
+          if (retryVote !== null && provenance === "seen") {
+            pc.retryVotes[voteIndex] = retryVote;
+            recoveredCount++;
+          } else {
+            if (retryVote !== null) pc.retryDisqualified[voteIndex] = true;
+            unrecoveredCount++;
+          }
+        }
+        if (recoveredCount > 0) {
+          warn(
+            rt,
+            warnings,
+            `adversarialVerification: ${recoveredCount} gate-nullified verifier votes RECOVERED after one retry (a real ${gateExpectation.id} CLI invocation found on the re-spawn)`
+          );
+        }
+        if (unrecoveredCount > 0) {
+          warn(
+            rt,
+            warnings,
+            `adversarialVerification: ${unrecoveredCount} gate-nullified verifier votes remained unrecovered after one retry`
+          );
+        }
+      }
+    }
     const verifiedKept = perClaim.map((pc, claimIndex) => {
       const claimRecords = [];
+      const claimRetryRecords = [];
       const claimWarnings = [];
       for (let voteIndex = 0; voteIndex < pc.votes.length; voteIndex++) {
         const out = pc.voteOuts[voteIndex] ?? null;
@@ -1599,7 +1691,10 @@ ${renderClaim(claim)}`;
             ...effort !== void 0 ? { effort } : {},
             // A surviving vote records its verdict; a gate-nullified vote records the
             // control reason (so the trail distinguishes a self-answer disqualification
-            // from a plain agent failure); a plain failure records neither.
+            // from a plain agent failure); a plain failure records neither. The ORIGINAL
+            // record ALWAYS reflects the first-pass outcome — a Phase B2 recovery does NOT
+            // rewrite it (the recovered vote is a separate `:retry` record below), so the
+            // disqualification stays auditable.
             ...vote !== null ? { decision: vote.verdict } : pc.provenanceDisqualified[voteIndex] ? { decision: "disqualified-no-provenance" } : {}
           }
         ));
@@ -1614,10 +1709,40 @@ ${renderClaim(claim)}`;
           ));
         }
         for (const message of out?.warnings ?? []) claimWarnings.push(`${STAGE4}: ${message}`);
+        const retryStage = pc.retryStages[voteIndex];
+        if (retryStage !== void 0) {
+          const retryOut = pc.retryOuts[voteIndex] ?? null;
+          const recovered = pc.retryVotes[voteIndex] ?? null;
+          agentsSpawned += retryOut?.spawns ?? 1;
+          claimRetryRecords.push(makeRecord(
+            retryStage,
+            recovered !== null,
+            {
+              model: effectiveModel,
+              ...effort !== void 0 ? { effort } : {},
+              ...recovered !== null ? { decision: "retried-after-disqualification" } : pc.retryDisqualified[voteIndex] ? { decision: "disqualified-no-provenance" } : {}
+            }
+          ));
+          if (retryOut !== null && retryOut.salvageAttempted) {
+            claimRetryRecords.push(makeRecord(
+              `${retryStage}:salvage`,
+              retryOut.salvaged,
+              {
+                model: effectiveModel,
+                ...effort !== void 0 ? { effort } : {}
+              }
+            ));
+          }
+          for (const message of retryOut?.warnings ?? []) claimWarnings.push(`${STAGE4}: ${message}`);
+        }
       }
       trailByClaim[claimIndex] = claimRecords;
+      retryTrailByClaim[claimIndex] = claimRetryRecords;
       warningsByClaim[claimIndex] = claimWarnings;
-      const nonNull = pc.votes.filter((v) => v !== null);
+      const mergedVotes = pc.votes.map(
+        (v, i) => v !== null ? v : pc.retryVotes[i] ?? null
+      );
+      const nonNull = mergedVotes.filter((v) => v !== null);
       const effectiveThreshold = Math.min(refuteThreshold, pc.claimVotes);
       let verdict;
       if (nonNull.length === 0) {
@@ -1629,10 +1754,12 @@ ${renderClaim(claim)}`;
       } else {
         verdict = "partially-confirmed";
       }
-      return { claim: pc.claim, verdict, votes: pc.votes };
+      return { claim: pc.claim, verdict, votes: mergedVotes };
     });
     trail.push(...trailByClaim.flat());
     if (checkerRecord !== null) trail.push(checkerRecord);
+    trail.push(...retryTrailByClaim.flat());
+    if (retryCheckerRecord !== null) trail.push(retryCheckerRecord);
     for (const message of warningsByClaim.flat()) warn(rt, warnings, message);
     const truncatedClaims = claims.slice(keptClaims.length).map((claim) => ({ claim, verdict: "unverified-by-cap", votes: [] }));
     const value = [...verifiedKept, ...truncatedClaims];

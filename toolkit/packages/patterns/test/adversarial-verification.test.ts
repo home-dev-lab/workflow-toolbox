@@ -1592,14 +1592,20 @@ describe('adversarialVerification — provenance gate (external verifierType)', 
     const rt = new FakeRuntime({
       onAgent: (call) => {
         const label = call.opts?.label ?? ''
+        // A retry re-spawn (Phase B2) carries a terminal ':retry' on its label; in
+        // these legacy gate tests a retry BEHAVES LIKE its base vote (same provenance
+        // + same verdict), so strip it to key both off the base label — a disqualified
+        // vote's retry then self-answers again and the vote stays null, preserving each
+        // test's first-gate intent. (No-op until the retry code exists.)
+        const base = (l: string): string => l.replace(/:retry$/, '')
         if (label.includes(':provenance-check')) {
           const results = voteLabels
-            .map((l) => ({ label: l, seen: provenance(l) }))
+            .map((l) => ({ label: l, seen: provenance(base(l)) }))
             .filter((r) => r.seen !== null)
             .map((r) => ({ label: r.label, cliSeen: r.seen as boolean }))
           return JSON.stringify({ anchored: true, results })
         }
-        if (label.includes(':verify:')) { voteLabels.push(label); return voteFor(label) }
+        if (label.includes(':verify:')) { voteLabels.push(label); return voteFor(base(label)) }
         return confirmedVote
       },
     })
@@ -1688,5 +1694,328 @@ describe('adversarialVerification — provenance gate (external verifierType)', 
     const v1 = result.trail.find((r) => r.stage.endsWith(':verify:0:1'))!
     expect(v1.outcome).toBe('null')
     expect(v1.decision).toBe('disqualified-no-provenance')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Retry disqualified-no-provenance votes ONCE (card #1824029483854726303).
+//
+// A vote nullified by the provenance gate (a possible self-answer, not a plain
+// agent failure) is re-spawned exactly ONCE before tallying; a SECOND checker
+// re-reads only the retried labels. A retry that returns a real vote WITH
+// provenance is RECOVERED (folded into the tally + the public votes); a retry
+// that self-answers again (or fails) leaves the vote null. Bounded: one retry
+// per disqualified vote, never a retry-of-a-retry.
+// ---------------------------------------------------------------------------
+describe('adversarialVerification — retry disqualified-no-provenance votes once', () => {
+  const OPENCODE = 'workflow-toolbox:opencode-verifier'
+
+  /** Drive an external-type run with SEPARATE control over the first-gate provenance
+   *  (`firstSeen(baseVoteLabel)`) and the retry-pass provenance (`retrySeen(retryLabel)`),
+   *  and separate vote suppliers for the original burst (`voteFor`) and the retry
+   *  re-spawns (`retryVoteFor`, may return null to model a plain agent failure). The two
+   *  checker calls are told apart by the terminal ':retry' on the second checker's label. */
+  function externalRetryRun(cfg: {
+    overrides?: Partial<AdversarialVerificationOptions<string>>
+    firstSeen: (voteLabel: string) => boolean | null
+    retrySeen: (retryLabel: string) => boolean | null
+    voteFor?: (voteLabel: string) => VerifierVote
+    retryVoteFor?: (retryLabel: string) => VerifierVote | null
+  }): { rt: FakeRuntime; run: Promise<Awaited<ReturnType<typeof adversarialVerification<string>>>> } {
+    const origLabels: string[] = []
+    const retryLabels: string[] = []
+    const rt = new FakeRuntime({
+      onAgent: (call) => {
+        const label = call.opts?.label ?? ''
+        if (label.includes(':provenance-check:retry')) {
+          const results = retryLabels
+            .map((l) => ({ label: l, seen: cfg.retrySeen(l) }))
+            .filter((r) => r.seen !== null)
+            .map((r) => ({ label: r.label, cliSeen: r.seen as boolean }))
+          return JSON.stringify({ anchored: true, results })
+        }
+        if (label.includes(':provenance-check')) {
+          const results = origLabels
+            .map((l) => ({ label: l, seen: cfg.firstSeen(l) }))
+            .filter((r) => r.seen !== null)
+            .map((r) => ({ label: r.label, cliSeen: r.seen as boolean }))
+          return JSON.stringify({ anchored: true, results })
+        }
+        if (label.includes(':verify:') && label.includes(':retry')) {
+          retryLabels.push(label)
+          return cfg.retryVoteFor ? cfg.retryVoteFor(label) : confirmedVote
+        }
+        if (label.includes(':verify:')) {
+          origLabels.push(label)
+          return cfg.voteFor ? cfg.voteFor(label) : confirmedVote
+        }
+        return confirmedVote
+      },
+    })
+    return {
+      rt,
+      run: adversarialVerification(rt, makeOptions({ verifierType: OPENCODE, cacheWarm: false, ...cfg.overrides })),
+    }
+  }
+
+  it('recovers a disqualified vote — credited in the tally AND the public votes', async () => {
+    const { run } = externalRetryRun({
+      overrides: { claims: ['c0'], votes: 3, refuteThreshold: 2 },
+      firstSeen: (l) => !l.endsWith(':1'), // vote index 1 self-answers → disqualified
+      retrySeen: () => true,               // its retry has real provenance
+      retryVoteFor: () => confirmedVote,
+    })
+    const result = await run
+
+    expect(result.value[0]!.verdict).toBe('confirmed')
+    // The recovered vote is folded into the PUBLIC votes array (no longer null).
+    expect(result.value[0]!.votes[1]).toEqual(confirmedVote)
+    expect(result.value[0]!.votes.filter((v) => v !== null)).toHaveLength(3)
+
+    // Original vote keeps its disqualification record; the retry is a SEPARATE record.
+    const orig = result.trail.find((r) => r.stage.endsWith(':verify:0:1'))!
+    expect(orig.outcome).toBe('null')
+    expect(orig.decision).toBe('disqualified-no-provenance')
+    const retry = result.trail.find((r) => r.stage.endsWith(':verify:0:1:retry'))!
+    expect(retry.outcome).toBe('ok')
+    expect(retry.decision).toBe('retried-after-disqualification')
+
+    // Two distinct checker records; the retry checker is haiku and NOT under :verify:.
+    const checkers = result.trail.filter((r) => r.stage.includes(':provenance-check'))
+    expect(checkers).toHaveLength(2)
+    expect(checkers.some((r) => r.stage.endsWith(':provenance-check'))).toBe(true)
+    expect(checkers.some((r) => r.stage.endsWith(':provenance-check:retry'))).toBe(true)
+
+    expect(result.warnings.some((w) => /RECOVERED after one retry/.test(w))).toBe(true)
+    // Trail invariant survives the retry path.
+    expect(result.trail).toHaveLength(result.stats.agentsSpawned)
+  })
+
+  it('a recovered vote can CHANGE the verdict (partially-confirmed → refuted)', async () => {
+    const byIndex: Record<string, VerifierVote> = { '0': refutedVote, '1': refutedVote, '2': confirmedVote }
+    const { run } = externalRetryRun({
+      overrides: { claims: ['c0'], votes: 3, refuteThreshold: 2 },
+      firstSeen: (l) => !l.endsWith(':1'),         // the 2nd refuted vote self-answers
+      retrySeen: () => true,
+      voteFor: (l) => byIndex[l.slice(-1)] ?? confirmedVote,
+      retryVoteFor: () => refutedVote,             // retry recovers the refutation
+    })
+    const result = await run
+
+    // First gate leaves [refuted, confirmed] → 1 refute < 2 → partially-confirmed;
+    // the recovered refutation makes it 2 refutes → refuted.
+    expect(result.value[0]!.verdict).toBe('refuted')
+    expect(result.value[0]!.votes[1]).toEqual(refutedVote)
+  })
+
+  it('a retry that self-answers AGAIN stays disqualified (vote stays null)', async () => {
+    const { run } = externalRetryRun({
+      overrides: { claims: ['c0'], votes: 2, refuteThreshold: 2 },
+      firstSeen: (l) => !l.endsWith(':1'),
+      retrySeen: () => false, // the retry also produced no CLI invocation
+      retryVoteFor: () => confirmedVote,
+    })
+    const result = await run
+
+    expect(result.value[0]!.votes[1]).toBeNull()
+    const retry = result.trail.find((r) => r.stage.endsWith(':verify:0:1:retry'))!
+    expect(retry.outcome).toBe('null')
+    expect(retry.decision).toBe('disqualified-no-provenance')
+    expect(result.warnings.some((w) => /remained unrecovered after one retry/.test(w))).toBe(true)
+    // 1 surviving confirmed vote → confirmed.
+    expect(result.value[0]!.verdict).toBe('confirmed')
+  })
+
+  it('retries each disqualified vote EXACTLY once — never a retry-of-a-retry', async () => {
+    const { rt, run } = externalRetryRun({
+      overrides: { claims: ['c0'], votes: 3, refuteThreshold: 2 },
+      firstSeen: (l) => l.endsWith(':1'), // only vote 1 seen; votes 0 and 2 disqualified
+      retrySeen: () => false,             // retries self-answer → not recovered
+    })
+    await run
+
+    const labels = rt.calls.map((c) => c.opts?.label ?? '')
+    const retryVoteCalls = labels.filter((l) => /:verify:0:\d:retry$/.test(l))
+    expect(retryVoteCalls.sort()).toEqual([
+      'adversarialVerification:verify:0:0:retry',
+      'adversarialVerification:verify:0:2:retry',
+    ])
+    // No label is ever retried twice.
+    expect(labels.some((l) => l.includes(':retry:retry'))).toBe(false)
+    // Exactly ONE retry-pass checker.
+    expect(labels.filter((l) => l.includes(':provenance-check:retry'))).toHaveLength(1)
+  })
+
+  it('a retry whose AGENT fails (null) leaves the vote null with no control decision', async () => {
+    const { run } = externalRetryRun({
+      overrides: { claims: ['c0'], votes: 2, refuteThreshold: 2 },
+      firstSeen: (l) => !l.endsWith(':1'),
+      retrySeen: () => true,        // provenance would be fine, but the agent returned null
+      retryVoteFor: () => null,
+    })
+    const result = await run
+
+    expect(result.value[0]!.votes[1]).toBeNull()
+    const retry = result.trail.find((r) => r.stage.endsWith(':verify:0:1:retry'))!
+    expect(retry.outcome).toBe('null')
+    // A plain agent failure on the retry is NOT a disqualification — no decision.
+    expect(retry).not.toHaveProperty('decision')
+    expect(result.value[0]!.verdict).toBe('confirmed')
+  })
+
+  it('does NOT retry (and fires no second checker) when every vote has provenance', async () => {
+    const { rt, run } = externalRetryRun({
+      overrides: { claims: ['c0'], votes: 2, refuteThreshold: 2 },
+      firstSeen: () => true, // all seen → nothing to retry
+      retrySeen: () => true,
+    })
+    const result = await run
+
+    const labels = rt.calls.map((c) => c.opts?.label ?? '')
+    expect(labels.some((l) => l.includes(':retry'))).toBe(false)
+    // The only checker record is the first pass — it stays the last trail record.
+    expect(result.trail.filter((r) => r.stage.includes(':provenance-check'))).toHaveLength(1)
+    expect(result.trail.at(-1)!.stage.endsWith(':provenance-check')).toBe(true)
+    expect(result.trail).toHaveLength(result.stats.agentsSpawned)
+    expect(result.value[0]!.verdict).toBe('confirmed')
+  })
+
+  it('keeps trail.length === agentsSpawned across recovery AND re-disqualification in one run', async () => {
+    const { run } = externalRetryRun({
+      overrides: { claims: ['c0', 'c1'], votes: 2, refuteThreshold: 2 },
+      firstSeen: (l) => !l.endsWith(':1'),         // vote 1 of BOTH claims disqualified
+      retrySeen: (l) => l.includes(':0:1:retry'),  // only c0's retry recovers
+    })
+    const result = await run
+
+    expect(result.trail).toHaveLength(result.stats.agentsSpawned)
+    // c0's vote 1 recovered; c1's did not.
+    expect(result.value[0]!.votes[1]).not.toBeNull()
+    expect(result.value[1]!.votes[1]).toBeNull()
+    expect(result.warnings.some((w) => /1 gate-nullified verifier votes RECOVERED/.test(w))).toBe(true)
+    expect(result.warnings.some((w) => /1 gate-nullified verifier votes remained unrecovered/.test(w))).toBe(true)
+  })
+
+  it('the retry re-spawn inherits the verifier model/effort/agentType; the retry checker is haiku', async () => {
+    const { rt, run } = externalRetryRun({
+      overrides: { claims: ['c0'], votes: 2, refuteThreshold: 2, effort: 'high' },
+      firstSeen: (l) => !l.endsWith(':1'),
+      retrySeen: () => true,
+    })
+    await run
+
+    const retryVote = rt.calls.find((c) => (c.opts?.label ?? '').endsWith(':verify:0:1:retry'))!
+    expect(retryVote.opts?.agentType).toBe(OPENCODE)
+    expect(retryVote.opts?.model).toBe(BEST_MODEL) // effectiveModel default
+    expect(retryVote.opts?.effort).toBe('high')
+
+    const retryChecker = rt.calls.find((c) => (c.opts?.label ?? '').includes(':provenance-check:retry'))!
+    expect(retryChecker.opts?.model).toBe('haiku')
+    expect((retryChecker.opts?.label ?? '').includes(':verify:')).toBe(false)
+  })
+
+  it('the retry re-spawn reuses the disqualified vote\'s lens', async () => {
+    const capturedRetryPrompts: string[] = []
+    const origLabels: string[] = []
+    const retryLabels: string[] = []
+    const rt = new FakeRuntime({
+      onAgent: (call) => {
+        const label = call.opts?.label ?? ''
+        if (label.includes(':provenance-check:retry')) {
+          const results = retryLabels.map((l) => ({ label: l, cliSeen: true }))
+          return JSON.stringify({ anchored: true, results })
+        }
+        if (label.includes(':provenance-check')) {
+          const results = origLabels.map((l) => ({ label: l, cliSeen: !l.endsWith(':1') }))
+          return JSON.stringify({ anchored: true, results })
+        }
+        if (label.includes(':verify:') && label.includes(':retry')) {
+          retryLabels.push(label)
+          capturedRetryPrompts.push(call.prompt)
+          return confirmedVote
+        }
+        if (label.includes(':verify:')) { origLabels.push(label); return confirmedVote }
+        return confirmedVote
+      },
+    })
+
+    await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 2, verifierType: OPENCODE, cacheWarm: false,
+      lenses: ['correctness', 'security'],
+    }))
+
+    // Vote index 1 (lens 'security') was disqualified and retried.
+    expect(capturedRetryPrompts).toHaveLength(1)
+    expect(capturedRetryPrompts[0]!).toContain('security')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Provenance gate — salvage-aware EFFECTIVE label (card #1824029483854726303 fix round).
+//
+// agentWithSchemaSalvage respawns a schema-failed call under `<label>:salvage`; the
+// credited value can come from EITHER transcript. The provenance checker must scan the
+// transcript that PRODUCED the credited value (the effective label), not always the
+// original — otherwise a self-answer in the salvage respawn is credited on the original's
+// CLI call (counterfeit) and, conversely, a genuine salvage CLI call is unjustly rejected.
+// ---------------------------------------------------------------------------
+describe('adversarialVerification — provenance gate: salvage-aware effective label', () => {
+  const OPENCODE = 'workflow-toolbox:opencode-verifier'
+
+  it('CREDITS a salvage-produced vote when the CLI ran in the SALVAGE transcript', async () => {
+    const rt = new FakeRuntime({
+      onAgent: (call) => {
+        const label = call.opts?.label ?? ''
+        if (label.includes(':provenance-check')) {
+          // Original had NO CLI (it failed pre-CLI); the salvage respawn DID invoke it.
+          return JSON.stringify({ anchored: true, results: [
+            { label: 'adversarialVerification:verify:0:0', cliSeen: false },
+            { label: 'adversarialVerification:verify:0:0:salvage', cliSeen: true },
+          ] })
+        }
+        if (label === 'adversarialVerification:verify:0:0:salvage') return confirmedVote // salvage produces the value
+        if (label === 'adversarialVerification:verify:0:0') return null                  // native fails → triggers salvage
+        return confirmedVote
+      },
+    })
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 1, refuteThreshold: 1, verifierType: OPENCODE, cacheWarm: false,
+    }))
+    // Real salvage-produced vote (CLI in the salvage transcript) → credited, not rejected.
+    expect(result.value[0]!.verdict).toBe('confirmed')
+    expect(result.value[0]!.votes[0]).toEqual(confirmedVote)
+    expect(result.warnings.some((w) => /DISQUALIFIED/.test(w))).toBe(false)
+  })
+
+  it('DISQUALIFIES a salvage-produced vote whose CLI ran only in the ORIGINAL (salvage self-answered)', async () => {
+    const rt = new FakeRuntime({
+      onAgent: (call) => {
+        const label = call.opts?.label ?? ''
+        if (label.includes(':provenance-check')) {
+          // Original DID invoke the CLI (then failed schema); the salvage respawn
+          // SELF-ANSWERED (no CLI). The CREDITED value came from the salvage → reject it.
+          return JSON.stringify({ anchored: true, results: [
+            { label: 'adversarialVerification:verify:0:0', cliSeen: true },
+            { label: 'adversarialVerification:verify:0:0:salvage', cliSeen: false },
+          ] })
+        }
+        if (label === 'adversarialVerification:verify:0:0:salvage') return confirmedVote
+        if (label === 'adversarialVerification:verify:0:0') return null
+        // The retry (fired because the vote is disqualified) plain-fails → no recovery.
+        if (label.startsWith('adversarialVerification:verify:0:0:retry')) return null
+        return confirmedVote
+      },
+    })
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 1, refuteThreshold: 1, verifierType: OPENCODE, cacheWarm: false,
+    }))
+    // Counterfeit salvage vote rejected (effective = the salvage transcript, no CLI);
+    // the retry did not recover → unverifiable. WITHOUT the effective-label fix the base
+    // transcript's CLI would credit the self-answer → confirmed (the bug).
+    expect(result.value[0]!.verdict).toBe('unverifiable')
+    const orig = result.trail.find((r) => r.stage === 'adversarialVerification:verify:0:0')!
+    expect(orig.outcome).toBe('null')
+    expect(orig.decision).toBe('disqualified-no-provenance')
+    expect(result.warnings.some((w) => /DISQUALIFIED/.test(w))).toBe(true)
   })
 })

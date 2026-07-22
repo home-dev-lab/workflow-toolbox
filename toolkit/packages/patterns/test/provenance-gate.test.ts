@@ -147,6 +147,19 @@ describe('parseProvenanceReply — tolerant, strict on cliSeen', () => {
     expect(m.get('v:0')).toBe('undetermined')
     expect(m.get('v:1')).toBe('undetermined')
   })
+  it('anchored:false WITH non-empty results is contradictory → all undetermined (fail closed)', () => {
+    // The scanner only emits results once it has anchored the run dir, so a reply that
+    // says anchored:false yet carries results is malformed/tampered — trust none of it.
+    const reply = JSON.stringify({ anchored: false, results: [{ label: 'v:0', cliSeen: true }, { label: 'v:1', cliSeen: false }] })
+    const m = parseProvenanceReply(reply, labels)
+    expect(m.get('v:0')).toBe('undetermined')
+    expect(m.get('v:1')).toBe('undetermined')
+    expect(m.get('v:2')).toBe('undetermined')
+  })
+  it('anchored:false with EMPTY results is the normal not-anchored case → all undetermined', () => {
+    const reply = JSON.stringify({ anchored: false, results: [] })
+    for (const p of parseProvenanceReply(reply, labels).values()) expect(p).toBe('undetermined')
+  })
 })
 
 describe('scanner e2e — drift-lock against the shipped signal', () => {

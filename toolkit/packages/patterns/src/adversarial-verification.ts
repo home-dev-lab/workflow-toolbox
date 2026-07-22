@@ -15,7 +15,8 @@
 // - Config errors throw synchronously at entry with actionable messages.
 // - Agent failures never throw out — they degrade to null, surfaced as warnings.
 // - opts.phase per-call, never rt.phase() (avoids global-state races).
-// - Labels: adversarialVerification:verify:<claimIndex>:<voteIndex>.
+// - Labels: adversarialVerification:verify:<claimIndex>:<voteIndex>; a Phase B2
+//   retry of a provenance-disqualified vote adds a terminal `:retry` to that label.
 
 import { BEST_MODEL } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias, PatternCounts } from '@workflow-toolbox/runtime'
@@ -392,6 +393,11 @@ export async function adversarialVerification<TClaim>(
   // non-deterministic under the real async runtime; indexed writes are not.
   const trailByClaim: TrailRecord[][] = []
 
+  // Per-claim RETRY trail records (Phase B2), buffered the same way. Kept separate from
+  // trailByClaim so the final trail stays temporally faithful: [warm?, votes, firstChecker?,
+  // retries, secondChecker?] — the retries run AFTER the first checker.
+  const retryTrailByClaim: TrailRecord[][] = []
+
   // Per-claim salvage diagnostics, buffered the same way for the same reason.
   const warningsByClaim: string[][] = []
 
@@ -404,7 +410,21 @@ export async function adversarialVerification<TClaim>(
     voteOuts: Array<StructuredCallOutcome<VerifierVote> | null>
     votes: Array<VerifierVote | null>      // mutable — the gate nullifies in place
     voteStages: string[]
+    // The transcript the CREDITED value actually came from: the base vote label, OR
+    // `${voteStage}:salvage` when the value was salvaged (agentWithSchemaSalvage respawns
+    // under a `:salvage` label — the CLI invocation, if any, is in THAT transcript). The
+    // provenance checker MUST scan this effective label, not the base one, or a self-answer
+    // in the salvage respawn is credited on the original's CLI call (and vice-versa).
+    effectiveStages: string[]
     provenanceDisqualified: boolean[]       // written by Phase B, read by Phase C's trail
+    // Phase B2 (retry) — parallel per-vote arrays, populated ONLY for gate-disqualified
+    // votes (never mutating `votes`/`voteOuts`, so the original disqualification stays
+    // recorded verbatim in Phase C). `retryStages[vi] !== undefined` marks a retried vote.
+    retryStages: Array<string | undefined>  // the `:retry` label of the re-spawn
+    retryEffectiveStages: Array<string | undefined> // the retry's effective (salvage-aware) label
+    retryOuts: Array<StructuredCallOutcome<VerifierVote> | null> // the re-spawn's outcome
+    retryVotes: Array<VerifierVote | null>  // recovered vote (real vote + provenance seen), else null
+    retryDisqualified: boolean[]            // the retry self-answered AGAIN (real vote, no provenance)
   }
 
   // ---- Phase A: run every kept claim's votes concurrently; collect raw outcomes.
@@ -457,7 +477,17 @@ export async function adversarialVerification<TClaim>(
         voteOuts,
         votes,
         voteStages,
+        // A salvaged vote's credited value came from the `:salvage` respawn transcript —
+        // point the provenance checker THERE (card #1824029483854726303 fix round).
+        effectiveStages: voteStages.map((s, vi) =>
+          voteOuts[vi]?.salvaged === true ? `${s}:salvage` : s,
+        ),
         provenanceDisqualified: new Array<boolean>(votes.length).fill(false),
+        retryStages: new Array<string | undefined>(votes.length).fill(undefined),
+        retryEffectiveStages: new Array<string | undefined>(votes.length).fill(undefined),
+        retryOuts: new Array<StructuredCallOutcome<VerifierVote> | null>(votes.length).fill(null),
+        retryVotes: new Array<VerifierVote | null>(votes.length).fill(null),
+        retryDisqualified: new Array<boolean>(votes.length).fill(false),
       }
     }),
   )
@@ -474,7 +504,10 @@ export async function adversarialVerification<TClaim>(
   const gateExpectation = externalGateExpectation(verifierType)
   let checkerRecord: TrailRecord | null = null
   if (gateExpectation !== null) {
-    const allLabels = perClaim.flatMap((pc) => pc.voteStages)
+    // Scan the EFFECTIVE label of each vote (the salvage transcript when the value was
+    // salvaged), so provenance is attributed to the transcript that actually produced the
+    // credited value — not the original's (card #1824029483854726303 fix round).
+    const allLabels = perClaim.flatMap((pc) => pc.effectiveStages)
     if (allLabels.length > 0) {
       agentsSpawned++
       // Deliberately NOT under `:verify:` (like `:warm`) so a caller filtering
@@ -497,7 +530,7 @@ export async function adversarialVerification<TClaim>(
       for (const pc of perClaim) {
         for (let voteIndex = 0; voteIndex < pc.votes.length; voteIndex++) {
           if (pc.votes[voteIndex] === null) continue // already failed — nothing to gate
-          const provenance = provMap.get(pc.voteStages[voteIndex]!) ?? 'undetermined'
+          const provenance = provMap.get(pc.effectiveStages[voteIndex]!) ?? 'undetermined'
           if (provenance === 'seen') continue // real CLI invocation — credited
           pc.votes[voteIndex] = null           // disqualify → flows to the null/unverifiable path
           pc.provenanceDisqualified[voteIndex] = true
@@ -518,6 +551,111 @@ export async function adversarialVerification<TClaim>(
     }
   }
 
+  // ---- Phase B2: retry gate-disqualified votes ONCE (card #1824029483854726303).
+  // A vote nullified by the provenance gate (absent OR undetermined provenance — a
+  // possible self-answer, NOT a plain agent failure) gets exactly ONE fresh re-spawn
+  // under the SAME claim/lens/verifier config; a SECOND provenance checker then re-reads
+  // ONLY the retried labels. A retry that returns a real vote WITH provenance is RECOVERED
+  // (folded into the tally + the public votes below); a retry that self-answers again (or
+  // fails) leaves the vote null. Bounded by construction: one retry per disqualified vote,
+  // never a retry-of-a-retry (retries ≤ disqualified ≤ total votes) — a per-vote bound, not
+  // an order-dependent global budget that could starve the all-null claims this feature
+  // exists to recover. Arms only under an external agentType (the sole source of
+  // disqualifications), so a plain-Claude run is byte-identical to pre-retry behaviour.
+  let retryCheckerRecord: TrailRecord | null = null
+  if (gateExpectation !== null) {
+    interface RetryTarget { pc: ClaimVotesRaw; voteIndex: number }
+    const retryTargets: RetryTarget[] = []
+    for (const pc of perClaim) {
+      for (let voteIndex = 0; voteIndex < pc.votes.length; voteIndex++) {
+        if (pc.provenanceDisqualified[voteIndex]) retryTargets.push({ pc, voteIndex })
+      }
+    }
+
+    if (retryTargets.length > 0) {
+      // One fresh verifier per disqualified vote, all concurrent. Same prompt/lens/schema/
+      // model/effort/agentType as the original vote — only the label differs (terminal
+      // `:retry`, so the checker scanner's trailing-quote label marker never confuses
+      // `…:<vi>` with `…:<vi>:retry`).
+      const retryThunks = retryTargets.map(({ pc, voteIndex }) => {
+        const stage = `${pc.voteStages[voteIndex]!}:retry`
+        pc.retryStages[voteIndex] = stage
+        return async (): Promise<StructuredCallOutcome<VerifierVote> | null> => {
+          const lens = lenses !== undefined ? lenses[voteIndex] : undefined
+          const prompt = buildVerifierPrompt(pc.claim, lens)
+          const opts: {
+            schema: JsonSchema
+            label: string
+            phase?: string
+            model?: ModelAlias
+            effort?: EffortAlias
+            agentType?: string
+          } = {
+            schema: VERIFIER_SCHEMA,
+            label: stage,
+            ...(phase !== undefined ? { phase } : {}),
+            model: effectiveModel,
+            ...(effort !== undefined ? { effort } : {}),
+            ...(verifierType !== undefined ? { agentType: verifierType } : {}),
+          }
+          return agentWithSchemaSalvage<VerifierVote>(rt, prompt, opts)
+        }
+      })
+
+      const retryRaw = await rt.parallel(retryThunks)
+      retryTargets.forEach((t, i) => {
+        const out = (retryRaw[i] as StructuredCallOutcome<VerifierVote> | null) ?? null
+        t.pc.retryOuts[t.voteIndex] = out
+        // Same salvage-aware effective label as the first pass: if the retry's credited
+        // value came from ITS `:salvage` respawn, scan that transcript, not the base retry.
+        const retryStage = t.pc.retryStages[t.voteIndex]!
+        t.pc.retryEffectiveStages[t.voteIndex] = out?.salvaged === true ? `${retryStage}:salvage` : retryStage
+      })
+
+      // Second checker over ONLY the retried labels — a distinct label (still NOT under
+      // `:verify:`) and a distinct nonce (retry labels differ from the first pass) so the
+      // two checker passes never collide in the transcript scan.
+      const retryLabels = retryTargets.map((t) => t.pc.retryEffectiveStages[t.voteIndex]!)
+      agentsSpawned++
+      const retryCheckLabel = stg(`${PROVENANCE_CHECK_SUFFIX}:retry`)
+      const { map: retryProvMap, replyOk: retryReplyOk } = await runProvenanceChecker(
+        rt, gateExpectation, retryLabels, {
+          label: retryCheckLabel,
+          ...(phase !== undefined ? { phase } : {}),
+          model: 'haiku',
+          effort: 'low',
+          nonce: deriveProvenanceNonce(retryLabels, perClaim.map((pc) => renderClaim(pc.claim)).join(' ')),
+        },
+      )
+      retryCheckerRecord = makeRecord(retryCheckLabel, retryReplyOk, { model: 'haiku', effort: 'low' })
+
+      // Apply recovery: a retried vote counts ONLY if it returned a real vote AND the
+      // second checker saw a real CLI invocation for it. Everything else stays null.
+      let recoveredCount = 0
+      let unrecoveredCount = 0
+      for (const { pc, voteIndex } of retryTargets) {
+        const retryVote = pc.retryOuts[voteIndex]?.value ?? null
+        const provenance = retryProvMap.get(pc.retryEffectiveStages[voteIndex]!) ?? 'undetermined'
+        if (retryVote !== null && provenance === 'seen') {
+          pc.retryVotes[voteIndex] = retryVote // recovered → folded into the tally + public votes
+          recoveredCount++
+        } else {
+          if (retryVote !== null) pc.retryDisqualified[voteIndex] = true // self-answered again
+          unrecoveredCount++
+        }
+      }
+      if (recoveredCount > 0) {
+        warn(rt, warnings,
+          `adversarialVerification: ${recoveredCount} gate-nullified verifier votes RECOVERED after one retry ` +
+          `(a real ${gateExpectation.id} CLI invocation found on the re-spawn)`)
+      }
+      if (unrecoveredCount > 0) {
+        warn(rt, warnings,
+          `adversarialVerification: ${unrecoveredCount} gate-nullified verifier votes remained unrecovered after one retry`)
+      }
+    }
+  }
+
   // ---- Phase C: build trail records (post-gate outcome bits) and tally, in
   // deterministic claim-index / vote-index order — independent of Phase A's
   // completion order.
@@ -528,6 +666,7 @@ export async function adversarialVerification<TClaim>(
   // adversarialVerification. One record per agentsSpawned++.
   const verifiedKept: Array<VerifiedClaim<TClaim>> = perClaim.map((pc, claimIndex) => {
     const claimRecords: TrailRecord[] = []
+    const claimRetryRecords: TrailRecord[] = []
     const claimWarnings: string[] = []
     for (let voteIndex = 0; voteIndex < pc.votes.length; voteIndex++) {
       const out = pc.voteOuts[voteIndex] ?? null
@@ -542,7 +681,10 @@ export async function adversarialVerification<TClaim>(
           ...(effort !== undefined ? { effort } : {}),
           // A surviving vote records its verdict; a gate-nullified vote records the
           // control reason (so the trail distinguishes a self-answer disqualification
-          // from a plain agent failure); a plain failure records neither.
+          // from a plain agent failure); a plain failure records neither. The ORIGINAL
+          // record ALWAYS reflects the first-pass outcome — a Phase B2 recovery does NOT
+          // rewrite it (the recovered vote is a separate `:retry` record below), so the
+          // disqualification stays auditable.
           ...(vote !== null
             ? { decision: vote.verdict }
             : pc.provenanceDisqualified[voteIndex]
@@ -561,9 +703,54 @@ export async function adversarialVerification<TClaim>(
         ))
       }
       for (const message of out?.warnings ?? []) claimWarnings.push(`${STAGE}: ${message}`)
+
+      // Phase B2 retry record for a gate-disqualified vote. `retried-after-disqualification`
+      // marks a RECOVERED retry (real vote + provenance); a retry that self-answered again
+      // carries `disqualified-no-provenance` (like any disqualification, its `:retry` stage
+      // suffix flags it as a retry attempt); a plain agent failure on the retry records
+      // neither. The recovered verdict itself lives in the public votes array (folded below).
+      const retryStage = pc.retryStages[voteIndex]
+      if (retryStage !== undefined) {
+        const retryOut = pc.retryOuts[voteIndex] ?? null
+        const recovered = pc.retryVotes[voteIndex] ?? null
+        agentsSpawned += retryOut?.spawns ?? 1
+        claimRetryRecords.push(makeRecord(
+          retryStage,
+          recovered !== null,
+          {
+            model: effectiveModel,
+            ...(effort !== undefined ? { effort } : {}),
+            ...(recovered !== null
+              ? { decision: 'retried-after-disqualification' }
+              : pc.retryDisqualified[voteIndex]
+                ? { decision: 'disqualified-no-provenance' }
+                : {}),
+          },
+        ))
+        if (retryOut !== null && retryOut.salvageAttempted) {
+          claimRetryRecords.push(makeRecord(
+            `${retryStage}:salvage`,
+            retryOut.salvaged,
+            {
+              model: effectiveModel,
+              ...(effort !== undefined ? { effort } : {}),
+            },
+          ))
+        }
+        for (const message of retryOut?.warnings ?? []) claimWarnings.push(`${STAGE}: ${message}`)
+      }
     }
     trailByClaim[claimIndex] = claimRecords
+    retryTrailByClaim[claimIndex] = claimRetryRecords
     warningsByClaim[claimIndex] = claimWarnings
+
+    // Fold recovered retry votes (Phase B2) into the vote set used for BOTH the tally and
+    // the public `votes` array: a disqualified slot that a retry recovered now carries the
+    // recovered vote; every other slot is unchanged. The ORIGINAL votes array is never
+    // mutated, so the disqualification trail above stays intact.
+    const mergedVotes: Array<VerifierVote | null> = pc.votes.map(
+      (v, i) => (v !== null ? v : pc.retryVotes[i] ?? null),
+    )
 
     // -------------------------------------------------------------------
     // Deterministic tally in code — never trust the model to count votes.
@@ -580,7 +767,7 @@ export async function adversarialVerification<TClaim>(
     //     (mixed evidence — some confirmed, some not, some uncertain)
     // -------------------------------------------------------------------
 
-    const nonNull = pc.votes.filter((v): v is VerifierVote => v !== null)
+    const nonNull = mergedVotes.filter((v): v is VerifierVote => v !== null)
     // The scalar threshold can exceed a low-vote claim's count — clamp per
     // claim so a 1-vote claim is decided by its single vote. min(2,3)=2:
     // identical to the scalar behavior at the defaults.
@@ -601,7 +788,7 @@ export async function adversarialVerification<TClaim>(
       verdict = 'partially-confirmed'
     }
 
-    return { claim: pc.claim, verdict, votes: pc.votes }
+    return { claim: pc.claim, verdict, votes: mergedVotes }
   })
 
   // Flatten per-claim records in claim-index order — deterministic regardless
@@ -610,6 +797,11 @@ export async function adversarialVerification<TClaim>(
   // The provenance checker's own record (one spawn) sits after the vote records,
   // matching its temporal order (it runs after the vote barrier).
   if (checkerRecord !== null) trail.push(checkerRecord)
+  // Phase B2 retry records, then the second checker's record — temporally after the
+  // first checker (the retries run once the first gate identified disqualified votes).
+  // Empty (both) when no vote was disqualified, so a no-retry run is byte-identical.
+  trail.push(...retryTrailByClaim.flat())
+  if (retryCheckerRecord !== null) trail.push(retryCheckerRecord)
   // Salvage diagnostics, in deterministic claim/vote order after the barrier.
   for (const message of warningsByClaim.flat()) warn(rt, warnings, message)
 

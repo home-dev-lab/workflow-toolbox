@@ -227,8 +227,13 @@ function extractLabelSeen(reply: string | null): Map<string, boolean> {
   if (typeof reply !== 'string') return out
   const obj = firstJsonObject(reply)
   if (obj === null) return out
+  const anchored = (obj as { anchored?: unknown }).anchored
   const results = (obj as { results?: unknown }).results
   if (!Array.isArray(results)) return out
+  // Contradiction guard: the scanner reports results ONLY when it anchored the run dir,
+  // so `anchored:false` with a non-empty `results` is malformed or tampered — trust NONE
+  // of it (every label falls through to 'undetermined' upstream, i.e. fail-closed).
+  if (anchored === false && results.length > 0) return out
   for (const row of results) {
     if (row === null || typeof row !== 'object') continue
     const label = (row as { label?: unknown }).label
