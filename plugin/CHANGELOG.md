@@ -5,6 +5,19 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-07-22
+
+### Added
+
+- This changelog, backfilled from 0.41.0.
+- Coverage-audit documentation pass over the shipped skills: `workflow-composer`'s
+  references now document `scaffoldWorkflow`/`ScaffoldSpec`/`ScaffoldStep` (programmatic
+  scaffolding), `parseDigest`'s tolerant-parsing contract plus the `LOOP_STAGE`/
+  `isLoopIterLabel` loop-attribution markers, and the `BundleResult`/
+  `BundlePipelineResult` return shapes of the programmatic build entry points;
+  `upgrade-canary` documents `resumePrompt` (the resume counterpart to
+  `launchPrompt`).
+
 ## [0.41.1] - 2026-07-21
 
 ### Added
