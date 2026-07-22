@@ -50,6 +50,14 @@ describe('opencode-verifier bridge — task file lives under the agent cwd, not 
       it('documents WHY (the external_directory gate) so the cwd rule is not lost', () => {
         expect(def).toContain('external_directory')
       })
+
+      it('makes the 429 retry a self-contained re-do that re-writes its own task file (the trap deletes the first one on exit)', () => {
+        // Guards the retry regression a trap-cleaned cwd file would otherwise cause: the
+        // step-6 retry must re-write the task content in its own invocation, not point at
+        // the already-deleted first file. The phrase appears in both step 3 and step 6.
+        const occurrences = def.split('re-write the SAME task content').length - 1
+        expect(occurrences).toBeGreaterThanOrEqual(2)
+      })
     })
   }
 })
