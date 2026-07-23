@@ -1698,6 +1698,114 @@ describe('adversarialVerification — provenance gate (external verifierType)', 
 })
 
 // ---------------------------------------------------------------------------
+// (b) External wrapper model default (card #1825163461588419933). An external
+// verifierType (opencode / codex) makes the wrapper a RELAY — its own model does
+// not drive verdict quality (the external CLI does), so the wrapper defaults to
+// 'haiku' (a self-answer failure is then ~10× cheaper) and NO model-downgrade
+// warning fires. A plain Claude verifier is unchanged (BEST_MODEL + downgrade warning).
+// ---------------------------------------------------------------------------
+describe('adversarialVerification — external wrapper model default (haiku)', () => {
+  const OPENCODE = 'workflow-toolbox:opencode-verifier'
+
+  /** onAgent that credits every external vote (real CLI provenance seen) so the run
+   *  completes cleanly and only the vote-call model is under test. */
+  function creditAll(): (call: { opts?: { label?: string } }) => unknown {
+    const voteLabels: string[] = []
+    return (call) => {
+      const label = call.opts?.label ?? ''
+      if (label.includes(':provenance-check')) {
+        return JSON.stringify({ anchored: true, results: voteLabels.map((l) => ({ label: l, cliSeen: true })) })
+      }
+      if (label.includes(':verify:')) { voteLabels.push(label); return confirmedVote }
+      return confirmedVote
+    }
+  }
+
+  it('defaults the wrapper model to haiku for an external verifierType', async () => {
+    const rt = new FakeRuntime({ onAgent: creditAll() })
+    await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 2, refuteThreshold: 2, verifierType: OPENCODE }))
+    const voteCalls = rt.calls.filter((c) => c.opts?.agentType === OPENCODE)
+    expect(voteCalls.length).toBe(2)
+    expect(voteCalls.every((c) => c.opts?.model === 'haiku')).toBe(true)
+  })
+
+  it('emits NO model-downgrade warning for an external verifier (the wrapper is a relay)', async () => {
+    const rt = new FakeRuntime({ onAgent: creditAll() })
+    const result = await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 1, refuteThreshold: 1, verifierType: OPENCODE }))
+    expect(result.warnings.some((w) => w.includes('downgraded'))).toBe(false)
+  })
+
+  it('honors an explicit wrapper model for an external verifier with NO downgrade warning', async () => {
+    const rt = new FakeRuntime({ onAgent: creditAll() })
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 1, refuteThreshold: 1, verifierType: OPENCODE, model: 'sonnet',
+    }))
+    const voteCalls = rt.calls.filter((c) => c.opts?.agentType === OPENCODE)
+    expect(voteCalls.every((c) => c.opts?.model === 'sonnet')).toBe(true)
+    expect(result.warnings.some((w) => w.includes('downgraded'))).toBe(false)
+  })
+
+  it('keeps BEST_MODEL for a non-external (Claude specialist) verifierType', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+    await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 1, refuteThreshold: 1, verifierType: 'magic-claude:ts-reviewer',
+    }))
+    const voteCalls = rt.calls.filter((c) => c.opts?.agentType === 'magic-claude:ts-reviewer')
+    expect(voteCalls.length).toBe(1)
+    expect(voteCalls.every((c) => c.opts?.model === BEST_MODEL)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// (c) Aggregated run-level self-answer toll (card #1825163461588419933). ONE
+// consolidated warning summarizing the self-answer cost: each first-pass external
+// vote with no credited CLI invocation spent the wrapper's full budget before the
+// post-hoc gate nullified it. Fires only under an external verifier with ≥1
+// unprovenanced first-pass vote.
+// ---------------------------------------------------------------------------
+describe('adversarialVerification — aggregated self-answer toll warning', () => {
+  const OPENCODE = 'workflow-toolbox:opencode-verifier'
+
+  /** onAgent driving an external run; `seen(baseVoteLabel)` sets each vote's provenance
+   *  (retries strip their ':retry' suffix and behave like their base — a self-answer
+   *  stays a self-answer, so nothing is recovered). */
+  function gate(seen: (label: string) => boolean): (call: { opts?: { label?: string } }) => unknown {
+    const voteLabels: string[] = []
+    const base = (l: string): string => l.replace(/:retry$/, '')
+    return (call) => {
+      const label = call.opts?.label ?? ''
+      if (label.includes(':provenance-check')) {
+        return JSON.stringify({ anchored: true, results: voteLabels.map((l) => ({ label: l, cliSeen: seen(base(l)) })) })
+      }
+      if (label.includes(':verify:')) { voteLabels.push(label); return confirmedVote }
+      return confirmedVote
+    }
+  }
+
+  it('emits an aggregated toll warning naming the wrapper model and counts when external votes self-answer', async () => {
+    const rt = new FakeRuntime({ onAgent: gate(() => false) }) // every vote (and its retry) self-answers
+    const result = await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 2, refuteThreshold: 2, verifierType: OPENCODE }))
+    const toll = result.warnings.find((w) => /SELF-ANSWER TOLL/.test(w))
+    expect(toll).toBeDefined()
+    expect(toll!).toMatch(/2 of 2/)                 // 2 of 2 external votes unprovenanced
+    expect(toll!).toMatch(/wrapper model=haiku/)    // names the (defaulted) wrapper model
+    expect(toll!).toMatch(/2 remain null/)          // none recovered on retry
+  })
+
+  it('emits NO toll warning when every external vote has real CLI provenance', async () => {
+    const rt = new FakeRuntime({ onAgent: gate(() => true) })
+    const result = await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 2, refuteThreshold: 2, verifierType: OPENCODE }))
+    expect(result.warnings.some((w) => /SELF-ANSWER TOLL/.test(w))).toBe(false)
+  })
+
+  it('emits NO toll warning for a plain Claude verifier (the gate never arms)', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+    const result = await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 2, refuteThreshold: 2 }))
+    expect(result.warnings.some((w) => /SELF-ANSWER TOLL/.test(w))).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Retry disqualified-no-provenance votes ONCE (card #1824029483854726303).
 //
 // A vote nullified by the provenance gate (a possible self-answer, not a plain
@@ -1913,7 +2021,10 @@ describe('adversarialVerification — retry disqualified-no-provenance votes onc
 
     const retryVote = rt.calls.find((c) => (c.opts?.label ?? '').endsWith(':verify:0:1:retry'))!
     expect(retryVote.opts?.agentType).toBe(OPENCODE)
-    expect(retryVote.opts?.model).toBe(BEST_MODEL) // effectiveModel default
+    // The retry inherits the burst's effectiveModel. OPENCODE is an EXTERNAL relay, so the
+    // wrapper default is 'haiku' (card #1825163461588419933), not BEST_MODEL — the retry
+    // re-spawns under that same wrapper model.
+    expect(retryVote.opts?.model).toBe('haiku')
     expect(retryVote.opts?.effort).toBe('high')
 
     const retryChecker = rt.calls.find((c) => (c.opts?.label ?? '').includes(':provenance-check:retry'))!

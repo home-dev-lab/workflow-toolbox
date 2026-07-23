@@ -24,6 +24,15 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-pilot-guard-hook.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "StructuredOutput",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-verifier-cli-guard-hook.mjs\""
+          }
+        ]
       }
     ],
     "SessionStart": [

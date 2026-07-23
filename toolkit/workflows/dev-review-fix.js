@@ -981,11 +981,16 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
     let agentsSpawned = 0;
     const warnings = [];
     const trail = [];
+    let selfAnswerCount = 0;
+    let undeterminedFirstPassCount = 0;
+    let recoveredAfterRetry = 0;
     const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey);
     if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
     const stg = stageBuilder(STAGE, salt);
-    const effectiveModel = model ?? BEST_MODEL;
-    if (model !== void 0 && model !== BEST_MODEL) {
+    const gateExpectation = externalGateExpectation(verifierType);
+    const isExternalVerifier = gateExpectation !== null;
+    const effectiveModel = model ?? (isExternalVerifier ? "haiku" : BEST_MODEL);
+    if (!isExternalVerifier && model !== void 0 && model !== BEST_MODEL) {
       warn(
         rt,
         warnings,
@@ -1066,7 +1071,6 @@ ${renderClaim(claim)}`;
         };
       })
     );
-    const gateExpectation = externalGateExpectation(verifierType);
     let checkerRecord = null;
     if (gateExpectation !== null) {
       const allLabels = perClaim.flatMap((pc) => pc.effectiveStages);
@@ -1110,6 +1114,8 @@ ${renderClaim(claim)}`;
             `adversarialVerification: ${undeterminedCount} external verifier votes had UNDETERMINED provenance (the checker ${replyOk ? "did not resolve them" : "failed"}); fail-closed, treated as null`
           );
         }
+        selfAnswerCount = disqualifiedCount;
+        undeterminedFirstPassCount = undeterminedCount;
       }
     }
     let retryCheckerRecord = null;
@@ -1188,6 +1194,19 @@ ${renderClaim(claim)}`;
             `adversarialVerification: ${unrecoveredCount} gate-nullified verifier votes remained unrecovered after one retry`
           );
         }
+        recoveredAfterRetry = recoveredCount;
+      }
+    }
+    if (gateExpectation !== null) {
+      const unprovenancedFirstPass = selfAnswerCount + undeterminedFirstPassCount;
+      if (unprovenancedFirstPass > 0) {
+        const totalExternalVotes = perClaim.reduce((n, pc) => n + pc.votes.length, 0);
+        const stillNull = unprovenancedFirstPass - recoveredAfterRetry;
+        warn(
+          rt,
+          warnings,
+          `adversarialVerification: SELF-ANSWER TOLL \u2014 ${unprovenancedFirstPass} of ${totalExternalVotes} external verifier votes returned a verdict with NO credited ${gateExpectation.id} CLI invocation (${selfAnswerCount} confirmed self-answer, ${undeterminedFirstPassCount} undetermined); each spent the wrapper's full budget (wrapper model=${effectiveModel}) before the provenance gate nullified it \u2014 ${recoveredAfterRetry} recovered on retry, ${stillNull} remain null. At audit scale keep the wrapper model 'haiku' to bound this cost.`
+        );
       }
     }
     let flooredCount = 0;

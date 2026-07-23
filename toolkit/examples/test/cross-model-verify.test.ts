@@ -230,7 +230,7 @@ describe('cross-model-verify — perAgent (withAgentDefaults wiring)', () => {
     for (const c of verifierCalls) expect(c.opts?.stallMs).toBe(650000)
   })
 
-  it('perAgent.model reaches the probe (it sets no model of its own) but NOT the verifier votes (adversarialVerification always sets its own resolved model — BEST_MODEL by default)', async () => {
+  it('perAgent.model reaches the probe (it sets no model of its own) but NOT the verifier votes (adversarialVerification sets its own resolved model — haiku for an external RELAY verifier)', async () => {
     const rt = makeRuntime()
     await wf.run(rt, {
       ...BASE_ARGS,
@@ -243,7 +243,11 @@ describe('cross-model-verify — perAgent (withAgentDefaults wiring)', () => {
       c.opts?.label?.startsWith('adversarialVerification:verify:'),
     )
     expect(verifierCalls.length).toBeGreaterThan(0)
-    for (const c of verifierCalls) expect(c.opts?.model).toBe('opus')
+    // perAgent.model (sonnet) does NOT reach the verifier votes — the pattern owns the vote
+    // model. Here verifierType routes to the EXTERNAL opencode relay, so the pattern defaults
+    // the wrapper to 'haiku' (card #1825163461588419933): the wrapper only shells out to the
+    // CLI, so a cheap relay model bounds a self-answer's cost. (Was 'opus'/BEST_MODEL before.)
+    for (const c of verifierCalls) expect(c.opts?.model).toBe('haiku')
   })
 
   it('rejects an unknown perAgent key via the shared parseConfig validation', async () => {

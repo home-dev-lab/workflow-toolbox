@@ -351,6 +351,14 @@ export async function adversarialVerification<TClaim>(
   const warnings: string[] = []
   const trail: TrailRecord[] = []
 
+  // Aggregated self-answer toll counters (card #1825163461588419933): captured in
+  // Phase B/B2 and consolidated into ONE run-level warning after the retry pass. A
+  // self-answer costs the wrapper's FULL budget before the post-hoc gate nullifies it,
+  // so this run-level surface is the cost the haiku default (below) exists to bound.
+  let selfAnswerCount = 0             // first-pass votes with ABSENT provenance (a real self-answer)
+  let undeterminedFirstPassCount = 0  // first-pass votes the checker could not resolve (fail-closed)
+  let recoveredAfterRetry = 0         // Phase B2 recoveries (real vote + provenance on the re-spawn)
+
   // Claim this invocation's stage/label salt NOW — after every synchronous
   // validation throw above and before the first await (card
   // #1816036725248493168, amendment A8).
@@ -359,13 +367,28 @@ export async function adversarialVerification<TClaim>(
   const stg = stageBuilder(STAGE, salt)
 
   // -------------------------------------------------------------------------
-  // §8 Model-sensitivity guardrail: default BEST_MODEL; explicitly choosing
-  // anything else → warning. Verification quality is model-sensitive: weaker
-  // models are less reliably adversarial and more likely to confirm by default.
+  // Resolve external routing ONCE (card #1825163461588419933). externalGateExpectation
+  // is non-null iff verifierType routes to a REGISTERED external CLI (opencode / codex).
+  // Reused by the model default below AND the provenance gate (Phase B / B2) — ONE
+  // source of truth for "is this verifier an external CLI relay?".
   // -------------------------------------------------------------------------
+  const gateExpectation = externalGateExpectation(verifierType)
+  const isExternalVerifier = gateExpectation !== null
 
-  const effectiveModel: ModelAlias = model ?? BEST_MODEL
-  if (model !== undefined && model !== BEST_MODEL) {
+  // -------------------------------------------------------------------------
+  // §8 Model guardrail — the wrapper model means TWO different things by routing:
+  //  • Plain Claude verifier: the model IS the reasoner → default BEST_MODEL, and an
+  //    explicit weaker model is a real quality downgrade (warn — verification quality
+  //    is model-sensitive).
+  //  • External verifier (opencode / codex): the wrapper is a RELAY — it shells out to
+  //    the external CLI, which does the reasoning; the wrapper's own model does NOT
+  //    drive verdict quality. So default it to 'haiku' (a self-answer failure is then
+  //    ~10× cheaper — card #1825163461588419933) and emit NO downgrade warning (the
+  //    "quality is model-sensitive" premise does not hold for a relay). A caller can
+  //    still pin any wrapper model explicitly.
+  // -------------------------------------------------------------------------
+  const effectiveModel: ModelAlias = model ?? (isExternalVerifier ? 'haiku' : BEST_MODEL)
+  if (!isExternalVerifier && model !== undefined && model !== BEST_MODEL) {
     warn(
       rt, warnings,
       `adversarialVerification: verifier model downgraded to "${model}" — verification quality is model-sensitive`,
@@ -542,7 +565,6 @@ export async function adversarialVerification<TClaim>(
   // and any vote with no proof of a real CLI invocation is DISQUALIFIED
   // (nullified → the existing unverifiable/null path). Fail-CLOSED on undetermined
   // provenance: an external verdict is never credited without provenance.
-  const gateExpectation = externalGateExpectation(verifierType)
   let checkerRecord: TrailRecord | null = null
   if (gateExpectation !== null) {
     // Scan the EFFECTIVE label of each vote (the salvage transcript when the value was
@@ -589,6 +611,9 @@ export async function adversarialVerification<TClaim>(
           `adversarialVerification: ${undeterminedCount} external verifier votes had UNDETERMINED provenance ` +
           `(the checker ${replyOk ? 'did not resolve them' : 'failed'}); fail-closed, treated as null`)
       }
+      // Feed the aggregated self-answer toll (card #1825163461588419933).
+      selfAnswerCount = disqualifiedCount
+      undeterminedFirstPassCount = undeterminedCount
     }
   }
 
@@ -694,6 +719,31 @@ export async function adversarialVerification<TClaim>(
         warn(rt, warnings,
           `adversarialVerification: ${unrecoveredCount} gate-nullified verifier votes remained unrecovered after one retry`)
       }
+      // Feed the aggregated self-answer toll (card #1825163461588419933).
+      recoveredAfterRetry = recoveredCount
+    }
+  }
+
+  // ---- Aggregated run-level self-answer toll (card #1825163461588419933). ONE
+  // consolidated control surface: each first-pass external vote that returned a verdict
+  // with no credited CLI invocation spent the wrapper's FULL budget before the post-hoc
+  // provenance gate nullified it (the gate protects the VERDICTS, not the TOKENS). This
+  // is the cost the haiku wrapper default bounds. Fires only under an external verifier
+  // with ≥1 unprovenanced first-pass vote (a plain-Claude run is byte-identical).
+  if (gateExpectation !== null) {
+    const unprovenancedFirstPass = selfAnswerCount + undeterminedFirstPassCount
+    if (unprovenancedFirstPass > 0) {
+      const totalExternalVotes = perClaim.reduce((n, pc) => n + pc.votes.length, 0)
+      const stillNull = unprovenancedFirstPass - recoveredAfterRetry
+      warn(
+        rt, warnings,
+        `adversarialVerification: SELF-ANSWER TOLL — ${unprovenancedFirstPass} of ${totalExternalVotes} external ` +
+        `verifier votes returned a verdict with NO credited ${gateExpectation.id} CLI invocation ` +
+        `(${selfAnswerCount} confirmed self-answer, ${undeterminedFirstPassCount} undetermined); each spent the ` +
+        `wrapper's full budget (wrapper model=${effectiveModel}) before the provenance gate nullified it — ` +
+        `${recoveredAfterRetry} recovered on retry, ${stillNull} remain null. ` +
+        `At audit scale keep the wrapper model 'haiku' to bound this cost.`,
+      )
     }
   }
 

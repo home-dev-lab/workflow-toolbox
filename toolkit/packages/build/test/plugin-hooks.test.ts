@@ -12,10 +12,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
+import { DELEGATION_EXPECTATIONS } from '@workflow-toolbox/debugger/external-delegation'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LADDER_HOOK = join(REPO_ROOT, 'plugin/bin/wt-delegation-ladder-hook.mjs')
 const GUARD_HOOK = join(REPO_ROOT, 'plugin/bin/wt-pilot-guard-hook.mjs')
+const VERIFIER_GUARD_HOOK = join(REPO_ROOT, 'plugin/bin/wt-verifier-cli-guard-hook.mjs')
 const AGENTS_DIR = join(REPO_ROOT, 'plugin/agents')
 
 const roots: string[] = []
@@ -226,6 +228,130 @@ describe('wt-delegation-ladder-hook — conditional injection + machine calibrat
     const r = runHook(LADDER_HOOK, start(f.proj), env)
     const ctx = (r.json?.['hookSpecificOutput'] as Record<string, string>)?.['additionalContext'] ?? ''
     expect(ctx).toContain('opencode')
+  })
+})
+
+// --------------------------------------------------------------------------
+// PreToolUse verifier-CLI guard (wt-verifier-cli-guard-hook.mjs) — card #1825163461588419933
+// Denies the terminal verdict tool (StructuredOutput) from an external cross-family verifier
+// wrapper (opencode-verifier / codex-rescue) until a REAL external-CLI invocation is present
+// in the wrapper's own transcript — killing a SELF-ANSWER before it can emit a verdict. Fail-OPEN
+// on every uncertainty (never a blanket deny). The real hook is driven as a child process (the
+// "closest to real" wiring test), with a synthetic transcript file on disk.
+// --------------------------------------------------------------------------
+describe('wt-verifier-cli-guard-hook — deny a self-answered verdict until the CLI ran', () => {
+  const bashTurn = (command: string): string =>
+    JSON.stringify({ message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } })
+
+  // A REAL opencode invocation (arm 1 of the signature: an absolute-path opencode `run`).
+  const OPENCODE_RUN = '/home/x/.opencode/bin/opencode run "verify the claim" -f "$TASKFILE" < /dev/null'
+  // A REAL codex invocation (codex-companion task).
+  const CODEX_TASK = 'node /home/x/plugins/codex/lib/codex-companion.mjs task --json'
+  // A SELF-ANSWER: probes the binary + greps the repo itself, never `opencode run`.
+  const SELF_ANSWER = 'BIN=/home/x/.opencode/bin/opencode; "$BIN" providers list; grep -rn foo src/'
+
+  function transcriptFile(tag: string, ...lines: string[]): string {
+    const dir = mkRoot(tag)
+    const p = join(dir, 'agent-verify.jsonl')
+    writeFileSync(p, lines.join('\n'))
+    return p
+  }
+  const soPayload = (agentType: string, transcriptPath?: string, agentId: string | undefined = 'a1b2c3d4') => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'StructuredOutput',
+    tool_input: { verdict: 'confirmed', reason: 'ok' },
+    ...(agentId !== undefined ? { agent_id: agentId } : {}),
+    agent_type: agentType,
+    ...(transcriptPath !== undefined ? { transcript_path: transcriptPath } : {}),
+  })
+  const decisionOf = (r: Run): string | undefined =>
+    (r.json?.['hookSpecificOutput'] as Record<string, unknown> | undefined)?.['permissionDecision'] as string | undefined
+
+  it('DENIES StructuredOutput from an opencode-verifier whose transcript shows NO CLI invocation (self-answer)', () => {
+    const tp = transcriptFile('selfanswer', bashTurn(SELF_ANSWER))
+    const r = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp))
+    expect(decisionOf(r)).toBe('deny')
+    const reason = (r.json?.['hookSpecificOutput'] as Record<string, string>)?.['permissionDecisionReason'] ?? ''
+    expect(reason).toContain('opencode')
+  })
+
+  it('ALLOWS (silent) when the transcript contains a real opencode run', () => {
+    const tp = transcriptFile('ocrun', bashTurn(OPENCODE_RUN))
+    const r = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp))
+    expect(r.stdout).toBe('')
+    expect(r.code).toBe(0)
+  })
+
+  it('ALLOWS (silent) a codex wrapper whose transcript contains a real codex-companion task', () => {
+    const tp = transcriptFile('codextask', bashTurn(CODEX_TASK))
+    const r = runHook(VERIFIER_GUARD_HOOK, soPayload('codex:codex-rescue', tp))
+    expect(r.stdout).toBe('')
+  })
+
+  it('NO-OPs (silent) for a non-StructuredOutput tool (Bash) from the verifier', () => {
+    const tp = transcriptFile('bashtool', bashTurn(SELF_ANSWER))
+    const r = runHook(VERIFIER_GUARD_HOOK, {
+      hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' },
+      agent_id: 'a1', agent_type: 'workflow-toolbox:opencode-verifier', transcript_path: tp,
+    })
+    expect(r.stdout).toBe('')
+  })
+
+  it('NO-OPs (silent) for the MAIN session (no agent_id) even with a self-answer transcript', () => {
+    const tp = transcriptFile('main', bashTurn(SELF_ANSWER))
+    // Build the payload WITHOUT agent_id (a main-session call carries neither agent_id nor
+    // agent_type) — a defaulted soPayload arg can't express "absent", so construct inline.
+    const r = runHook(VERIFIER_GUARD_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'StructuredOutput',
+      tool_input: { verdict: 'confirmed', reason: 'ok' },
+      agent_type: 'workflow-toolbox:opencode-verifier',
+      transcript_path: tp,
+    })
+    expect(r.stdout).toBe('')
+  })
+
+  it('NO-OPs (silent) for a non-external subagent (a pilot emitting StructuredOutput)', () => {
+    const tp = transcriptFile('pilot', bashTurn(SELF_ANSWER))
+    const r = runHook(VERIFIER_GUARD_HOOK, soPayload('pilot', tp))
+    expect(r.stdout).toBe('')
+  })
+
+  // ACCEPTANCE CRITERION (user, card #1825163461588419933): leaf/lean agents stay BARE — a
+  // non-wrapper agent's StructuredOutput call passes UNTOUCHED (silent exit 0, verdict emitted),
+  // and the script no-ops at the agent-type check BEFORE any transcript read. (The registration
+  // is ALSO matcher-narrowed to StructuredOutput so the hook never even spawns on other tools —
+  // asserted in launch-agents-identity.test.ts.)
+  for (const leaf of ['workflow-toolbox:leaf', 'workflow-toolbox:lean', 'leaf', 'lean']) {
+    it(`keeps a leaf/lean agent BARE: '${leaf}' StructuredOutput passes untouched (verdict emitted)`, () => {
+      const tp = transcriptFile('leafbare', bashTurn(SELF_ANSWER))
+      const r = runHook(VERIFIER_GUARD_HOOK, soPayload(leaf, tp))
+      expect(r.stdout).toBe('')
+      expect(r.code).toBe(0)
+    })
+  }
+
+  it('fails OPEN (silent) when transcript_path is missing', () => {
+    const r = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', undefined))
+    expect(r.stdout).toBe('')
+  })
+
+  it('fails OPEN (silent) when transcript_path points at a nonexistent file', () => {
+    const r = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', join(tmpdir(), 'wt-nonexistent-xyz.jsonl')))
+    expect(r.stdout).toBe('')
+  })
+
+  it('drift-lock: the hook embeds the canonical opencode+codex CLI signatures verbatim', () => {
+    const src = readFileSync(VERIFIER_GUARD_HOOK, 'utf8')
+    // The provenance gate + this hook + the shipped debugger registry must agree on the CLI
+    // signature. DELEGATION_EXPECTATIONS is the canonical source; assert each id's regex
+    // SOURCE appears verbatim in the hook file (it embeds them as /…/im literals), so any
+    // divergence from the canonical signal fails a gate here.
+    expect(DELEGATION_EXPECTATIONS.map((s) => s.id).sort()).toEqual(['codex', 'opencode'])
+    for (const sig of DELEGATION_EXPECTATIONS) {
+      expect(src, `${sig.id} typeRe drifted from the canonical registry`).toContain(sig.typeRe.source)
+      expect(src, `${sig.id} commandRe drifted from the canonical registry`).toContain(sig.commandRe.source)
+    }
   })
 })
 
