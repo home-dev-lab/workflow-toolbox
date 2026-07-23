@@ -1080,6 +1080,8 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
   var PROVENANCE_CHECK_SUFFIX = "provenance-check";
   var SCANNER_COMMAND_SCAN_MAX = 2e4;
   var SCANNER_RECENCY_MS = 30 * 60 * 1e3;
+  var SCANNER_POLL_DEADLINE_MS = 3e4;
+  var SCANNER_POLL_INTERVAL_MS = 500;
   function deriveProvenanceNonce(labels, claimSeed = "") {
     let h = 2166136261;
     const seed = `${labels.join(" ")}${claimSeed}`;
@@ -1100,7 +1102,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     const matcherDef = expectation.matchCommand ? `const matchesCmd=(${expectation.matchCommand.toString()});` : `const RE=new RegExp(${JSON.stringify(expectation.commandRe.source)},${JSON.stringify(expectation.commandRe.flags)}),SCAN_MAX=${SCANNER_COMMAND_SCAN_MAX};function matchesCmd(cmd){const scan=cmd.length>SCAN_MAX?cmd.slice(0,SCAN_MAX):cmd;return RE.test(scan)}`;
     return [
       `'use strict';`,
-      `const fs=require('fs'),path=require('path'),os=require('os');`,
+      `const fs=require('fs'),path=require('path'),os=require('os'),crypto=require('crypto');`,
       `const NONCE=${nonceLit},LABELS=${labelsLit};`,
       matcherDef,
       `const RECENCY=${SCANNER_RECENCY_MS},now=Date.now();`,
@@ -1118,9 +1120,35 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       `function labelMarker(l){return 'label=\\\\"'+l+'\\\\"'}`,
       // Count real external-CLI invocations in one transcript's Bash tool_use commands.
       `function cliCalls(text){let n=0;for(const raw of text.split('\\n')){const t=raw.trim();if(!t)continue;let o;try{o=JSON.parse(t)}catch(e){continue}const m=o&&o.message;if(!m||typeof m!=='object')continue;const c=m.content;if(!Array.isArray(c))continue;for(const b of c){if(!b||b.type!=='tool_use'||b.name!=='Bash')continue;const cmd=b.input&&b.input.command;if(typeof cmd!=='string')continue;if(matchesCmd(cmd))n++}}return n}`,
-      `const files=ls(runDir).filter(f=>f.indexOf('agent-')===0&&f.endsWith('.jsonl')).map(f=>path.join(runDir,f));`,
-      `const cache=new Map();function txt(fp){if(!cache.has(fp))cache.set(fp,read(fp));return cache.get(fp)}`,
-      `const results=LABELS.map(function(label){const marker=labelMarker(label);let seen=false,found=false;for(const fp of files){const tx=txt(fp);if(tx.indexOf(marker)===-1)continue;found=true;if(cliCalls(tx)>0){seen=true}break}return{label:label,cliSeen:found?seen:null}});`,
+      // step-3: flush-immune MARKER read (mirrors the guard hook's decidePreToolUse — marker PRIMARY,
+      // transcript scan SECONDARY) + a BOUNDED POLL. Marker dir + key are byte-identical to the hook's
+      // markerPathFor (sha1(transcript_path + ':' + agent_id)); the guard-hook subprocess parity test
+      // locks this. The marker is written at the CLI's PostToolUse — BEFORE the vote's own SO, hence
+      // before the checker runs — so for any real-CLI vote it is present by scan time even when the
+      // transcript's Bash line is not yet flushed.
+      `const MARKER_DIR=process.env.WT_VERIFIER_MARKER_DIR||os.tmpdir();`,
+      // Two candidate transcript_paths cover both spawn modes: Path B keys off the SHARED delegated-
+      // session transcript (dirname^3(runDir)+'.jsonl' — grounded byte-exact on re-probe wf_e1dbd48a-653);
+      // an interactive spawn keys off the agent's own per-agent transcript file. Either marker → seen.
+      `const SESS_TP=path.dirname(path.dirname(path.dirname(runDir)))+'.jsonl';`,
+      `function markerSeen(tp,aid){try{return fs.existsSync(path.join(MARKER_DIR,'wt-verifier-cli-seen-'+crypto.createHash('sha1').update(tp+':'+aid).digest('hex')))}catch(e){return false}}`,
+      // One scan pass: per label, find the vote transcript carrying its wt-meta marker, take agent_id
+      // from the `agent-<id>.jsonl` filename (present at spawn, flush-immune), then cliSeen = marker OR
+      // transcript CLI scan. A label with no matching transcript → null (unfound → the poll retries it).
+      `function computeResults(){const files=ls(runDir).filter(f=>f.indexOf('agent-')===0&&f.endsWith('.jsonl')).map(f=>path.join(runDir,f));const cache=new Map();function txt(fp){if(!cache.has(fp))cache.set(fp,read(fp));return cache.get(fp)}return LABELS.map(function(label){const marker=labelMarker(label);for(const fp of files){const tx=txt(fp);if(tx.indexOf(marker)===-1)continue;const aid=path.basename(fp).slice(6,-6);const cli=markerSeen(SESS_TP,aid)||markerSeen(fp,aid)||cliCalls(tx)>0;return{label:label,cliSeen:cli}}return{label:label,cliSeen:null}})}`,
+      // Blocking sleep, no deps/spin. SharedArrayBuffer is guaranteed in the checker's Node>=20
+      // runtime; the try/catch is defensive — even if it degraded to a no-op the loop stays BOUNDED by
+      // POLL_END below (a busy re-scan until the deadline), never a hang.
+      `function sleep(ms){try{Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,ms)}catch(e){}}`,
+      // Sanitize the operator knobs: reject NaN/Infinity/<=0 (an Infinity deadline would make POLL_END
+      // infinite → a never-terminating poll on a genuinely-unfound label) and fall back to the default.
+      `function num(v,d){v=Number(v);return Number.isFinite(v)&&v>0?v:d}`,
+      `const POLL_DEADLINE=num(process.env.WT_PROVENANCE_POLL_DEADLINE_MS,${SCANNER_POLL_DEADLINE_MS}),POLL_INTERVAL=num(process.env.WT_PROVENANCE_POLL_INTERVAL_MS,${SCANNER_POLL_INTERVAL_MS}),POLL_END=Date.now()+POLL_DEADLINE;`,
+      // Re-scan until every label is attributed (no null) or the deadline elapses. A found-but-absent
+      // label does NOT hold the poll: the marker is present by scan time for any real CLI, so absent =
+      // a genuine self-answer, not flush lag. Only unfound (null) labels — the flush-lagged ones — wait.
+      // The sleep is capped to the remaining budget so the poll never overshoots POLL_END by an interval.
+      `let results;for(;;){results=computeResults();if(!results.some(function(r){return r.cliSeen===null})||Date.now()>=POLL_END)break;sleep(Math.min(POLL_INTERVAL,POLL_END-Date.now()))}`,
       `process.stdout.write(JSON.stringify({anchored:true,results:results}));`
     ].join("\n");
   }

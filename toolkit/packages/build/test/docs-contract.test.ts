@@ -578,6 +578,9 @@ describe('docs-contract — operator env vars are documented', () => {
     ['OBSERVE_LAUNCH_PLUGIN_DIRS', 'launcher→server plumbing: set BY wt-observe for the delegated session, never by an operator'],
     ['CANARY_CAPTURE', 'upgrade-canary fixture-capture knob — repo-dev tooling, not operator surface'],
     ['SDK_PROBE_SENTINEL_DIR', 'smoke-battery probe plumbing, set by the battery itself'],
+    ['WT_VERIFIER_MARKER_DIR', "adversarialVerification provenance-checker ↔ verifier-CLI guard-hook internal contract: the cli-seen marker dir, kept in lockstep between the two (the hook that WRITES markers lives in plugin/bin, outside the scanned roots). Read here only to reconstruct the hook's marker key; test-isolation override, not operator surface"],
+    ['WT_PROVENANCE_POLL_DEADLINE_MS', 'provenance-checker embedded-scanner bounded-poll deadline (flush-lag recovery); internal tuning knob, default 30s, exercised by the drift-lock tests'],
+    ['WT_PROVENANCE_POLL_INTERVAL_MS', 'provenance-checker embedded-scanner bounded-poll interval; internal tuning knob, default 500ms, exercised by the drift-lock tests'],
   ])
 
   /** Platform/harness-ambient vocabulary — someone else's surface, not ours. */

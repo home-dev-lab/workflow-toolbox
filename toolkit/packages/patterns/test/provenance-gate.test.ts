@@ -8,10 +8,11 @@
 // embedded scanner and the canonical signal fails here.
 
 import { describe, it, expect } from 'vitest'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawn } from 'node:child_process'
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   expectationForAgentType,
   parseTranscriptExternalCalls,
@@ -78,13 +79,50 @@ function makeRunDir(nonce: string, posLabel: string, negLabel: string): { root: 
   return { root, posJsonl, negJsonl }
 }
 
+type ScanResult = { anchored: boolean; results: Array<{ label: string; cliSeen: boolean | null }> }
+
+/** The REAL shipped guard hook — the ONLY thing that writes the flush-immune cli-seen markers the
+ *  scanner reads. Driving it as a subprocess (as plugin-hooks.test.ts does) locks the scanner's
+ *  marker-key reconstruction to the hook's `markerPathFor` BY CONSTRUCTION (no formula copy). */
+const GUARD_HOOK = fileURLToPath(new URL('../../../../plugin/bin/wt-verifier-cli-guard-hook.mjs', import.meta.url))
+
+/** Default scanner env for tests: a SHORT poll deadline (so an intentionally-absent label does not
+ *  wait the production default) and an ISOLATED, empty marker dir (so a stray /tmp marker from a
+ *  real run never leaks into a fixture). Any key can be overridden per test via `extraEnv`. */
+function scannerEnv(configRoot: string, extraEnv: Record<string, string> = {}): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    CLAUDE_CONFIG_DIR: configRoot,
+    WT_PROVENANCE_POLL_DEADLINE_MS: '1500',
+    WT_PROVENANCE_POLL_INTERVAL_MS: '100',
+    WT_VERIFIER_MARKER_DIR: mkdtempSync(join(tmpdir(), 'prov-nomarker-')),
+    ...extraEnv,
+  }
+}
+
 /** Run the generated scanner as a real CommonJS file (top-level return needs the module
  *  wrapper — matches production, where the checker writes+runs it via a temp .cjs). */
-function runScanner(source: string, configRoot: string): { anchored: boolean; results: Array<{ label: string; cliSeen: boolean | null }> } {
+function runScanner(source: string, configRoot: string, extraEnv: Record<string, string> = {}): ScanResult {
   const scanFile = join(mkdtempSync(join(tmpdir(), 'prov-scan-')), 'scan.cjs')
   writeFileSync(scanFile, source)
-  const out = execFileSync('node', [scanFile], { env: { ...process.env, CLAUDE_CONFIG_DIR: configRoot }, encoding: 'utf8' })
+  // timeout guards against a scanner that fails to terminate (a pathological poll knob) hanging
+  // the whole suite — such a run throws here (ETIMEDOUT), surfacing as a test failure not a hang.
+  const out = execFileSync('node', [scanFile], { env: scannerEnv(configRoot, extraEnv), encoding: 'utf8', timeout: 20000 })
   return JSON.parse(out.trim())
+}
+
+/** Run the scanner as a NON-blocking child (for the poll test, which writes a vote transcript
+ *  AFTER the first scan pass and asserts the poll recovers it). */
+function spawnScanner(source: string, configRoot: string, extraEnv: Record<string, string> = {}): Promise<ScanResult> {
+  const scanFile = join(mkdtempSync(join(tmpdir(), 'prov-scan-')), 'scan.cjs')
+  writeFileSync(scanFile, source)
+  const child = spawn('node', [scanFile], { env: scannerEnv(configRoot, extraEnv) })
+  let out = ''
+  child.stdout.on('data', (d) => { out += String(d) })
+  return new Promise<ScanResult>((resolve, reject) => {
+    child.on('error', reject)
+    child.on('close', () => { try { resolve(JSON.parse(out.trim())) } catch (e) { reject(e) } })
+  })
 }
 
 // --------------------------------------------------------------------------
@@ -222,6 +260,125 @@ describe('scanner e2e — drift-lock against the shipped signal', () => {
     expect(new Map(out.results.map((r) => [r.label, r.cliSeen])).get(posLabel)).toBe(true)
     // The shipped classifier must AGREE on the full command (drift-lock).
     expect(parseTranscriptExternalCalls(jsonl, shipped).cliCalls > 0).toBe(true)
+  })
+})
+
+describe('scanner e2e — step-3: flush-immune marker read + bounded poll (Path B false-undetermined fix)', () => {
+  const opencode = externalGateExpectation('workflow-toolbox:opencode-verifier')!
+  const posLabel = 'adversarialVerification:verify:0:0'
+  const negLabel = 'adversarialVerification:verify:0:1'
+
+  it('MARKER: credits a vote via the flush-immune marker written by the REAL guard hook (scanner↔hook key parity)', () => {
+    // neg001's OWN transcript is a self-answer (NEG_COMMAND has no `run`) → the transcript scan
+    // ALONE yields cliSeen=false. But the REAL guard hook, driven here on a REAL opencode run,
+    // writes neg001's marker keyed by the SAME sha1(transcript_path + ':' + agent_id) the scanner
+    // reconstructs. RED before step-3 (no marker read): negLabel=false. GREEN after: negLabel=true.
+    const markerDir = mkdtempSync(join(tmpdir(), 'prov-marker-'))
+    const nonce = deriveProvenanceNonce([posLabel, negLabel])
+    const { root } = makeRunDir(nonce, posLabel, negLabel)
+    // Path B transcript_path the hook keyed by = the shared session transcript = dirname^3(runDir)+'.jsonl'.
+    const sessTp = join(root, 'projects', 'testslug', 'testsess') + '.jsonl'
+    execFileSync('node', [GUARD_HOOK], {
+      input: JSON.stringify({
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: POS_COMMAND },
+        agent_id: 'neg001',
+        agent_type: 'workflow-toolbox:opencode-verifier',
+        transcript_path: sessTp,
+      }),
+      env: { ...process.env, WT_VERIFIER_MARKER_DIR: markerDir },
+      encoding: 'utf8',
+    })
+    // The hook actually wrote exactly one marker (guards against a silent hook no-op masking a false RED).
+    expect(readdirSync(markerDir).length).toBe(1)
+    const source = buildProvenanceScannerSource(opencode, nonce, [posLabel, negLabel])
+    const out = runScanner(source, root, { WT_VERIFIER_MARKER_DIR: markerDir })
+    const byLabel = new Map(out.results.map((r) => [r.label, r.cliSeen]))
+    expect(byLabel.get(negLabel)).toBe(true) // credited by the hook-written marker (own transcript has no `run`)
+    expect(byLabel.get(posLabel)).toBe(true) // credited by its own transcript scan (has a real run)
+  })
+
+  it('MARKER: also keys off the per-agent transcript path (interactive-mode robustness)', () => {
+    const markerDir = mkdtempSync(join(tmpdir(), 'prov-marker2-'))
+    const nonce = deriveProvenanceNonce([posLabel, negLabel])
+    const { root } = makeRunDir(nonce, posLabel, negLabel)
+    const perAgentTp = join(root, 'projects', 'testslug', 'testsess', 'subagents', 'workflows', 'wf_test', 'agent-neg001.jsonl')
+    execFileSync('node', [GUARD_HOOK], {
+      input: JSON.stringify({
+        hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: POS_COMMAND },
+        agent_id: 'neg001', agent_type: 'workflow-toolbox:opencode-verifier', transcript_path: perAgentTp,
+      }),
+      env: { ...process.env, WT_VERIFIER_MARKER_DIR: markerDir }, encoding: 'utf8',
+    })
+    expect(readdirSync(markerDir).length).toBe(1)
+    const out = runScanner(buildProvenanceScannerSource(opencode, nonce, [negLabel]), root, { WT_VERIFIER_MARKER_DIR: markerDir })
+    expect(new Map(out.results.map((r) => [r.label, r.cliSeen])).get(negLabel)).toBe(true)
+  })
+
+  it('MARKER: absent marker + no CLI in transcript → still cliSeen=false (no false-positive, unchanged)', () => {
+    const nonce = deriveProvenanceNonce([negLabel])
+    const { root } = makeRunDir(nonce, posLabel, negLabel)
+    // No hook run → empty isolated marker dir (scannerEnv default) → the scan governs → self-answer = false.
+    const out = runScanner(buildProvenanceScannerSource(opencode, nonce, [negLabel]), root)
+    expect(new Map(out.results.map((r) => [r.label, r.cliSeen])).get(negLabel)).toBe(false)
+  })
+
+  it('POLL: recovers a vote transcript that only APPEARS after the first scan pass (flush-lag) — RED before the poll', async () => {
+    // At scan start only the checker's own nonce transcript exists (anchoring works); the vote
+    // transcript is written ~250ms in, simulating the per-subagent flush lag that drove the 32
+    // false-undetermined. The bounded poll re-scans and recovers it. RED before: single pass → null.
+    const nonce = deriveProvenanceNonce([posLabel])
+    const root = mkdtempSync(join(tmpdir(), 'prov-poll-'))
+    const runDir = join(root, 'projects', 'testslug', 'testsess', 'subagents', 'workflows', 'wf_poll')
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(
+      join(runDir, 'agent-checker9.jsonl'),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: `PROVENANCE_ANCHOR: ${nonce}\n` }] } }) + '\n',
+    )
+    const source = buildProvenanceScannerSource(opencode, nonce, [posLabel])
+    const done = spawnScanner(source, root, { WT_PROVENANCE_POLL_DEADLINE_MS: '5000', WT_PROVENANCE_POLL_INTERVAL_MS: '100' })
+    await new Promise((r) => setTimeout(r, 250))
+    const jsonl = [labeledUserTurn(posLabel, 'Adversarially verify.'), bashTurn(POS_COMMAND)].join('\n') + '\n'
+    writeFileSync(join(runDir, 'agent-pos001.jsonl'), jsonl)
+    const out = await done
+    expect(out.anchored).toBe(true)
+    expect(new Map(out.results.map((r) => [r.label, r.cliSeen])).get(posLabel)).toBe(true)
+  })
+
+  it('POLL: a genuinely-absent label returns null within the bounded deadline (never hangs)', () => {
+    const nonce = deriveProvenanceNonce([posLabel])
+    const { root } = makeRunDir(nonce, posLabel, negLabel)
+    const missing = 'adversarialVerification:verify:9:9'
+    const t0 = Date.now()
+    const out = runScanner(buildProvenanceScannerSource(opencode, nonce, [posLabel, missing]), root, {
+      WT_PROVENANCE_POLL_DEADLINE_MS: '600', WT_PROVENANCE_POLL_INTERVAL_MS: '100',
+    })
+    const dt = Date.now() - t0
+    const byLabel = new Map(out.results.map((r) => [r.label, r.cliSeen]))
+    expect(byLabel.get(posLabel)).toBe(true)
+    expect(byLabel.get(missing)).toBeNull() // fail-closed after the bounded poll gives up
+    expect(dt).toBeLessThan(5000) // bounded — the poll did not hang on the absent label
+  })
+
+  it('POLL: sanitizes pathological poll knobs — a huge or Infinity interval still terminates within the deadline (no overshoot, no hang)', () => {
+    // Review finding (cross-family, run codex gpt-5.6-terra): unvalidated poll env. Without the
+    // sleep cap a huge interval overshoots the deadline by ~one interval; without num() an Infinity
+    // interval/deadline never terminates on an unfound label. Both must stay bounded by the deadline.
+    const nonce = deriveProvenanceNonce([posLabel])
+    const { root } = makeRunDir(nonce, posLabel, negLabel)
+    const missing = 'adversarialVerification:verify:9:9'
+    const src = buildProvenanceScannerSource(opencode, nonce, [posLabel, missing])
+    // (a) interval >> deadline: the sleep must be capped to the remaining budget (RED: sleep 100s).
+    let t0 = Date.now()
+    let out = runScanner(src, root, { WT_PROVENANCE_POLL_DEADLINE_MS: '400', WT_PROVENANCE_POLL_INTERVAL_MS: '100000' })
+    expect(Date.now() - t0).toBeLessThan(6000)
+    expect(new Map(out.results.map((r) => [r.label, r.cliSeen])).get(missing)).toBeNull()
+    // (b) Infinity interval → sanitized to the default; still terminates at the deadline (RED: hang).
+    t0 = Date.now()
+    out = runScanner(src, root, { WT_PROVENANCE_POLL_DEADLINE_MS: '400', WT_PROVENANCE_POLL_INTERVAL_MS: 'Infinity' })
+    expect(Date.now() - t0).toBeLessThan(6000)
+    expect(new Map(out.results.map((r) => [r.label, r.cliSeen])).get(missing)).toBeNull()
   })
 })
 
