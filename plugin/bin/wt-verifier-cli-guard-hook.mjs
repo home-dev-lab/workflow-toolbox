@@ -56,13 +56,65 @@ import { pathToFileURL } from 'node:url'
 // @workflow-toolbox/patterns' provenance-gate EXTERNAL_CLI_SIGNATURES (itself a copy of the
 // shipped @workflow-toolbox/debugger registry). This hook is a plugin .mjs run by bare node
 // (no bundler, no TS), so it cannot import the TS registry; a drift-lock test asserts these
-// stay byte-identical (id + typeRe + commandRe source/flags) so any divergence fails a gate.
+// stay byte-identical (id + typeRe + commandRe source/flags, AND the matchesOpencodeRun body) so
+// any divergence fails a gate.
+
+// A two-step LINEAR opencode-run matcher — replaces the catastrophic single regex (its BIN= arm
+// `[\s\S]*?` backtracked ~30s on a 200KB opencode-but-no-run command) and the 20k scan cap (which
+// hid a real `run` past position 20k → the a50c1510/aafb024d false-refuse, cards
+// #1825363023930328542 + #1825347787861001678). head(20k)+tail(20k) bounds the work AND co-locates
+// a `BIN=` in the head with its `"$BIN" run` in the tail; the two-step scan is indexOf-based (no
+// `[\s\S]*?` bridge) → O(n). SELF-CONTAINED (helpers inlined) so the provenance checker's scanner
+// embeds its source verbatim via `.toString()`. indexOf('opencode')/('BIN=') are case-SENSITIVE
+// (the real binary + the wrapper's BIN= are exactly cased); a case-variant is not a real call.
+// Residual (documented, never observed): a `run` in the MIDDLE of a command longer than 2*WIN.
+// --- wt-drift-lock:matchesOpencodeRun START (byte-identical: debugger+patterns+hook) ---
+function matchesOpencodeRun(cmd = '') {
+  if (typeof cmd !== 'string' || cmd.length === 0) return false
+  const WIN = 20000
+  const s = cmd.length <= 2 * WIN ? cmd : cmd.slice(0, WIN) + '\n' + cmd.slice(-WIN)
+  const AFTER_QUOTED = /^(?:\.exe|\.cmd)?["']\s+run\b/
+  const AFTER_BARE = /^(?:\.exe|\.cmd)?\s+run\b/
+  const AFTER_BIN = /^["']?\s+run\b/
+  const BEFORE_OK = /[\s;|&(=/'"]/
+  for (let i = s.indexOf('opencode'); i !== -1; i = s.indexOf('opencode', i + 1)) {
+    const before = i === 0 ? '' : s[i - 1]
+    if (before && !BEFORE_OK.test(before)) continue
+    const after = s.slice(i + 8, i + 8 + 16)
+    // Case A — a real QUOTED invocation: a CLOSING quote right after the opencode token, then run
+    // (`"opencode" run`, `"/path/opencode" run`).
+    if (AFTER_QUOTED.test(after)) return true
+    // Case B — a real UNQUOTED invocation: run right after (no quote), and opencode was NOT opened
+    // by a quote — rejects the string arg `"opencode run"` (quote-before pairs with run inside).
+    if (before !== '"' && before !== "'" && AFTER_BARE.test(after)) return true
+  }
+  let hasBinOpencode = false
+  for (let i = s.indexOf('BIN='); i !== -1; i = s.indexOf('BIN=', i + 1)) {
+    const nl = s.indexOf('\n', i)
+    const end = Math.min(nl === -1 ? s.length : nl, i + 4 + 256)
+    if (s.slice(i + 4, end).indexOf('opencode') !== -1) {
+      hasBinOpencode = true
+      break
+    }
+  }
+  if (hasBinOpencode) {
+    for (const m of s.matchAll(/\$\{?[A-Za-z_]*BIN\}?/g)) {
+      const at = m.index ?? 0
+      const tok = m[0] ?? ''
+      if (AFTER_BIN.test(s.slice(at + tok.length, at + tok.length + 16))) return true
+    }
+  }
+  return false
+}
+// --- wt-drift-lock:matchesOpencodeRun END ---
+
 export const EXTERNAL_CLI_SIGNATURES = [
   {
     id: 'opencode',
     typeRe: /opencode/i,
     commandRe:
       /(?:^|[\s;|&(=])(?:[^\s;|&"']*\/)?opencode(?:\.exe|\.cmd)?\s+run\b|(?:^|[\s;|&(=])["'](?:[^"']*\/)?opencode(?:\.exe|\.cmd)?["']\s+run\b|[A-Za-z_]*BIN=[^\n]*opencode[\s\S]*?"?\$\{?[A-Za-z_]*BIN\}?"?\s+run\b/im,
+    matchCommand: matchesOpencodeRun,
   },
   {
     id: 'codex',
@@ -83,6 +135,16 @@ const COMMAND_SCAN_MAX = 20_000
 const MARKER_PREFIX = 'wt-verifier-cli-seen-'
 const MARKER_TTL_MS = 6 * 60 * 60 * 1000 // opportunistically reap markers older than this
 
+// Per-subagent DENY counter (card #1825363023930328542): a sibling file (SAME key family as the
+// cli-seen marker — sha1(transcript_path + ':' + agent_id)) holding how many verdicts THIS wrapper
+// has had refused with no CLI provenance. At DENY_TERMINAL_AT the refusal becomes TERMINAL (stop
+// retrying, return text). After the step-1 matcher fix a real-CLI vote is ALLOWED on its first
+// post-run StructuredOutput, so it never accrues a count — the counter only bites a PERSISTENT
+// no-CLI self-answer. Cap = 3 (aafb024d recovered on its 3rd attempt; a lower cap would cut
+// legitimate short-retry recoveries).
+const DENY_COUNTER_PREFIX = 'wt-verifier-denies-'
+const DENY_TERMINAL_AT = 3
+
 export function readInput() {
   try {
     const raw = fs.readFileSync(0, 'utf8')
@@ -101,18 +163,29 @@ export function signatureForAgentType(agentType) {
   return null
 }
 
-/** The first external-CLI signature whose commandRe matches this Bash command (a REAL
- *  invocation), or null. Command is capped like the transcript scanner. */
+/** Route one Bash command to the right matcher for `sig`: opencode's linear self-bounded
+ *  `matchCommand` given the FULL command (a pre-cap would drop the tail where a long-heredoc `run`
+ *  lives — the a50c1510/aafb024d false-refuse this fix removes); or a direct/linear signature's
+ *  capped `commandRe` (codex). */
+function matchesCli(command, sig) {
+  if (sig.matchCommand) return sig.matchCommand(command)
+  const scan = command.length > COMMAND_SCAN_MAX ? command.slice(0, COMMAND_SCAN_MAX) : command
+  return sig.commandRe.test(scan)
+}
+
+/** The first external-CLI signature whose matcher accepts this Bash command (a REAL invocation),
+ *  or null. */
 export function signatureForCommand(command) {
   if (typeof command !== 'string' || command.length === 0) return null
-  const scan = command.length > COMMAND_SCAN_MAX ? command.slice(0, COMMAND_SCAN_MAX) : command
-  for (const sig of EXTERNAL_CLI_SIGNATURES) if (sig.commandRe.test(scan)) return sig
+  for (const sig of EXTERNAL_CLI_SIGNATURES) if (matchesCli(command, sig)) return sig
   return null
 }
 
 /** Count REAL external-CLI invocations in one transcript's Bash tool_use commands (the flushed
- *  fallback signal). Mirrors the provenance gate's scanner (parseTranscriptExternalCalls shape). */
-export function countCliInvocations(transcriptText, commandRe) {
+ *  fallback signal). Mirrors the provenance gate's scanner (parseTranscriptExternalCalls shape).
+ *  Routes each command through `matchesCli(cmd, sig)` — the FULL command for opencode's linear
+ *  matcher, so a `run` past 20k in a long heredoc is still counted. */
+export function countCliInvocations(transcriptText, sig) {
   let n = 0
   for (const raw of transcriptText.split('\n')) {
     const t = raw.trim()
@@ -131,8 +204,7 @@ export function countCliInvocations(transcriptText, commandRe) {
       if (!b || b.type !== 'tool_use' || b.name !== 'Bash') continue
       const cmd = b.input && b.input.command
       if (typeof cmd !== 'string') continue
-      const scan = cmd.length > COMMAND_SCAN_MAX ? cmd.slice(0, COMMAND_SCAN_MAX) : cmd
-      if (commandRe.test(scan)) n++
+      if (matchesCli(cmd, sig)) n++
     }
   }
   return n
@@ -158,13 +230,25 @@ export function markerPathFor(transcriptPath, agentId) {
   return path.join(markerDir(), MARKER_PREFIX + key)
 }
 
+/** Per-subagent deny-counter path — SAME per-vote key as markerPathFor, different prefix, so a
+ *  wrapper's deny count and its cli-seen marker live side by side and never collide with a
+ *  sibling's. */
+export function denyCounterPathFor(transcriptPath, agentId) {
+  const key = crypto
+    .createHash('sha1')
+    .update(`${String(transcriptPath)}:${String(agentId)}`)
+    .digest('hex')
+    .slice(0, 40)
+  return path.join(markerDir(), DENY_COUNTER_PREFIX + key)
+}
+
 /** Opportunistic cleanup so markers don't accumulate forever (best-effort, never throws). */
 function reapOldMarkers() {
   try {
     const dir = markerDir()
     const now = Date.now()
     for (const f of fs.readdirSync(dir)) {
-      if (f.indexOf(MARKER_PREFIX) !== 0) continue
+      if (f.indexOf(MARKER_PREFIX) !== 0 && f.indexOf(DENY_COUNTER_PREFIX) !== 0) continue
       const fp = path.join(dir, f)
       try {
         if (now - fs.statSync(fp).mtimeMs > MARKER_TTL_MS) fs.rmSync(fp, { force: true })
@@ -214,6 +298,58 @@ function denyReason(sig) {
   )
 }
 
+/** Nudge appended to a non-terminal deny (denies 1..N-1): the model often just finished the CLI
+ *  and needs to re-emit its verdict rather than re-run. */
+function retryHintLine(sig) {
+  return ` If your ${sig.id} CLI just finished, re-emit StructuredOutput now — its result is what unblocks you.`
+}
+
+/** The TERMINAL refusal at DENY_TERMINAL_AT: stop retrying, return the CLI's own output as TEXT. A
+ *  PreToolUse deny is technically retryable by the model, so this is a strong MESSAGE (the ratified
+ *  mechanism (i)); the retry loop is bounded by maxTurns regardless. */
+function terminalDenyReason(sig, count) {
+  return (
+    `[workflow-toolbox verifier CLI guard] TERMINAL (refused ${count}×): no real ${sig.id} CLI ` +
+    `invocation has EVER been proven for this verifier. STOP retrying — further StructuredOutput ` +
+    `calls will keep being refused. Return your FINAL answer as TEXT now: the ${sig.id} CLI's ` +
+    `OPENCODE_UNAVAILABLE / error output verbatim if it failed or is unavailable, otherwise state ` +
+    `plainly that you could not run it. Do NOT emit a verdict from your own knowledge.`
+  )
+}
+
+/** Count THIS deny per-subagent and escalate to a TERMINAL refusal at the cap. Pure over injected
+ *  fs so unit tests can drive it; the child-process tests exercise the real files. Without a
+ *  per-vote key (no transcript_path / agent_id, or a non-wrapper agent_type) it cannot count and
+ *  returns the base reason unchanged — still a deny, just no escalation. */
+export function escalateDeny(
+  input,
+  baseReason,
+  readCount = (p) => fs.readFileSync(p, 'utf8'),
+  writeCount = (p, v) => fs.writeFileSync(p, v),
+) {
+  const sig = signatureForAgentType(input.agent_type)
+  const transcriptPath = input.transcript_path
+  const agentId = input.agent_id
+  if (sig === null || typeof transcriptPath !== 'string' || transcriptPath.length === 0 || !agentId) {
+    return baseReason
+  }
+  const counterPath = denyCounterPathFor(transcriptPath, agentId)
+  let count = 0
+  try {
+    const n = parseInt(readCount(counterPath), 10)
+    if (Number.isFinite(n) && n > 0) count = n
+  } catch {
+    /* no prior count on disk */
+  }
+  count += 1
+  try {
+    writeCount(counterPath, String(count))
+  } catch {
+    /* best-effort: a count we couldn't persist just doesn't escalate */
+  }
+  return count >= DENY_TERMINAL_AT ? terminalDenyReason(sig, count) : baseReason + retryHintLine(sig)
+}
+
 /** PreToolUse decision on a StructuredOutput call: deny-reason string, or null to ALLOW.
  *  Order matters (fixed after the re-probe bleed): the WRAPPER-SIG check is FIRST so a non-wrapper
  *  agent (leaf/lean, or the main session with no agent_type) is never guarded; then, for a wrapper,
@@ -258,7 +394,7 @@ export function decidePreToolUse(
   } catch {
     return null // unreadable ⇒ fail-OPEN
   }
-  if (typeof text === 'string' && text.length > 0 && countCliInvocations(text, sig.commandRe) > 0) {
+  if (typeof text === 'string' && text.length > 0 && countCliInvocations(text, sig) > 0) {
     return null // real CLI seen in the (flushed) transcript ⇒ allow
   }
   // Neither signal present: a verdict with NO real CLI invocation = a self-answer.
@@ -276,12 +412,14 @@ export function run() {
   }
   const reason = decidePreToolUse(input)
   if (!reason) return // allow: SILENT exit 0, so normal permission flow is untouched
+  // A deny was decided → count it per-subagent and escalate to a TERMINAL refusal at the cap.
+  const finalReason = escalateDeny(input, reason)
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: reason,
+        permissionDecisionReason: finalReason,
       },
     }),
   )

@@ -18,7 +18,21 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LADDER_HOOK = join(REPO_ROOT, 'plugin/bin/wt-delegation-ladder-hook.mjs')
 const GUARD_HOOK = join(REPO_ROOT, 'plugin/bin/wt-pilot-guard-hook.mjs')
 const VERIFIER_GUARD_HOOK = join(REPO_ROOT, 'plugin/bin/wt-verifier-cli-guard-hook.mjs')
+const DEBUGGER_DELEGATION_SRC = join(REPO_ROOT, 'toolkit/packages/debugger/src/external-delegation.ts')
 const AGENTS_DIR = join(REPO_ROOT, 'plugin/agents')
+
+/** Text STRICTLY between the matchesOpencodeRun drift-lock markers of a source file (FILE TEXT,
+ *  not `.toString()`, so it is immune to transpiler formatting). The three copies — debugger
+ *  (canonical), patterns, and the hook — must hold byte-identical source. */
+function matcherBodyOf(filePath: string): string {
+  const text = readFileSync(filePath, 'utf8')
+  const START = '// --- wt-drift-lock:matchesOpencodeRun START'
+  const END = '// --- wt-drift-lock:matchesOpencodeRun END ---'
+  const s = text.indexOf(START)
+  const e = text.indexOf(END)
+  if (s === -1 || e === -1) throw new Error(`matcher markers not found in ${filePath}`)
+  return text.slice(text.indexOf('\n', s) + 1, e)
+}
 
 const roots: string[] = []
 afterEach(() => {
@@ -401,6 +415,22 @@ describe('wt-verifier-cli-guard-hook — deny a self-answered verdict until the 
     expect(decisionOf(pre)).toBe('deny') // no real CLI ran → correctly refused
   })
 
+  // ── CARD #1825363023930328542: the a50c1510 false-refuse — the real `run` sat past the old 20k
+  // scan cap (a 33K heredoc precedes `"$BIN" run`), so signatureForCommand missed it, no marker was
+  // written, and the verdict was DENIED. The linear matcher scans the FULL command (head/tail
+  // window) → the tail `run` is seen → marker written → verdict ALLOWED. ───────────────────────────
+  it('a50c1510 SHAPE: a real opencode run whose `run` is FAR past 20k (33K heredoc) writes the marker → SO ALLOWED', () => {
+    const env = markerEnv('longrun')
+    const tp = transcriptFile('longrun') // empty (mid-flight, like the probe)
+    const longRun =
+      'BIN=/home/x/.opencode/bin/opencode\n' + 'x'.repeat(33_000) + '\ntimeout 570 "$BIN" run "verify" -f "$TASKFILE" < /dev/null'
+    const post = runHook(VERIFIER_GUARD_HOOK, postBash('workflow-toolbox:opencode-verifier', longRun, tp), env)
+    expect(post.stdout).toBe('') // PostToolUse records provenance, never decides
+    const pre = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp), env)
+    expect(pre.stdout).toBe('') // marker present → ALLOWED (was DENIED under the 20k cap)
+    expect(pre.code).toBe(0)
+  })
+
   it('REAL PROBE TRANSCRIPT replay: a verbatim opencode-run line is detected by the flushed-transcript fallback → ALLOW (no marker)', () => {
     const env = markerEnv('replayflush') // fresh empty marker dir → the marker path is NOT the reason
     // The FLUSHED transcript carries the REAL probe command form; the fallback scan must parse it.
@@ -455,6 +485,44 @@ describe('wt-verifier-cli-guard-hook — deny a self-answered verdict until the 
     expect(decisionOf(r)).toBe('deny')
   })
 
+  // ── CARD #1825363023930328542 (step 2): the deny-path TERMINAL counter. A persistent no-CLI
+  // self-answer is refused 1..2 with an actionable message, and its 3rd refusal is TERMINAL (stop
+  // retrying, return text). A real-CLI vote is ALLOWED on its first post-run SO (step-1 fix), so it
+  // never accrues a count — the cap only bites a true self-answer. ─────────────────────────────────
+  const reasonOf = (r: Run): string =>
+    ((r.json?.['hookSpecificOutput'] as Record<string, string> | undefined)?.['permissionDecisionReason'] ?? '')
+
+  it('DENY COUNTER: the 3rd consecutive no-CLI deny of the SAME agent is TERMINAL (1st/2nd are not)', () => {
+    const env = markerEnv('terminal') // shared counter+marker dir across the 3 calls of THIS test
+    const tp = transcriptFile('terminal-self') // empty — the CLI never ran
+    const so = () => runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp, 'CCCCCCCCCCCCCCCC'), env)
+    const r1 = so()
+    expect(decisionOf(r1)).toBe('deny')
+    expect(reasonOf(r1)).not.toContain('TERMINAL')
+    const r2 = so()
+    expect(decisionOf(r2)).toBe('deny')
+    expect(reasonOf(r2)).not.toContain('TERMINAL')
+    const r3 = so()
+    expect(decisionOf(r3)).toBe('deny')
+    expect(reasonOf(r3)).toContain('TERMINAL')
+    expect(reasonOf(r3)).toContain('STOP')
+  })
+
+  it('DENY COUNTER recovery (aafb024d): a real opencode run before the 3rd attempt → ALLOWED, never terminal', () => {
+    const env = markerEnv('recover')
+    const tp = transcriptFile('recover-self') // empty (mid-flight)
+    const aid = 'DDDDDDDDDDDDDDDD'
+    // Two mid-flight denies (the CLI has not run yet)…
+    expect(decisionOf(runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp, aid), env))).toBe('deny')
+    expect(decisionOf(runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp, aid), env))).toBe('deny')
+    // …then the wrapper actually runs opencode → PostToolUse writes the per-subagent marker…
+    runHook(VERIFIER_GUARD_HOOK, postBash('workflow-toolbox:opencode-verifier', PROBE_OPENCODE_RUN, tp, aid), env)
+    // …so its 3rd StructuredOutput is ALLOWED (a real-CLI vote never reaches the terminal cap).
+    const r3 = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp, aid), env)
+    expect(r3.stdout).toBe('')
+    expect(r3.code).toBe(0)
+  })
+
   it('drift-lock: the hook embeds the canonical opencode+codex CLI signatures verbatim', () => {
     const src = readFileSync(VERIFIER_GUARD_HOOK, 'utf8')
     // The provenance gate + this hook + the shipped debugger registry must agree on the CLI
@@ -466,6 +534,17 @@ describe('wt-verifier-cli-guard-hook — deny a self-answered verdict until the 
       expect(src, `${sig.id} typeRe drifted from the canonical registry`).toContain(sig.typeRe.source)
       expect(src, `${sig.id} commandRe drifted from the canonical registry`).toContain(sig.commandRe.source)
     }
+  })
+
+  it('drift-lock: the hook matchesOpencodeRun body is byte-identical to the canonical debugger copy', () => {
+    // opencode detection now runs through an EXECUTABLE linear matcher, not the (ReDoS-prone,
+    // display-only) commandRe. The commandRe drift-lock above no longer covers the real signal;
+    // this asserts the hook's matcher SOURCE matches the canonical debugger copy byte-for-byte
+    // (the same body patterns holds — chained via the patterns↔debugger drift-lock).
+    const hookBody = matcherBodyOf(VERIFIER_GUARD_HOOK)
+    const canonical = matcherBodyOf(DEBUGGER_DELEGATION_SRC)
+    expect(hookBody).toBe(canonical)
+    expect(hookBody).toContain('function matchesOpencodeRun(')
   })
 })
 

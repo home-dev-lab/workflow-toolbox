@@ -41,8 +41,14 @@ export interface DelegationExpectation {
   id: string
   /** Matches agentType names routed to this CLI. */
   typeRe: RegExp
-  /** Matches a REAL invocation inside one Bash command string (multiline-safe). */
+  /** DISPLAY/drift-anchor invocation shape. ⚠ For an entry with `matchCommand` (opencode) this
+   *  regex is NO LONGER executed on untrusted input (its BIN= arm is ReDoS-prone); `matchCommand`
+   *  is the safe executable path. Codex (no `matchCommand`) still tests this direct/linear regex. */
   commandRe: RegExp
+  /** Linear, ReDoS-safe executable matcher over ONE Bash command string. Self-contained so
+   *  `buildProvenanceScannerSource` embeds its source verbatim via `.toString()`. Given the FULL
+   *  command (it self-bounds via a head/tail window). Absent for direct/linear signatures (codex). */
+  matchCommand?: (command: string) => boolean
 }
 
 // The external-CLI signature registry. This is a DELIBERATE byte-identical COPY of
@@ -53,12 +59,63 @@ export interface DelegationExpectation {
 // so any divergence fails a gate. Root fix (out of scope for this card): hoist the registry
 // into a PUBLISHED shared package (@workflow-toolbox/std) that patterns, debugger, and the
 // cross-repo observe-ui panel all import — tracked as a follow-up.
+
+// A two-step LINEAR opencode-run matcher — replaces the catastrophic single regex (its BIN= arm
+// `[\s\S]*?` backtracked ~30s on a 200KB opencode-but-no-run command) and the 20k scan cap (which
+// hid a real `run` past position 20k → the a50c1510/aafb024d false-refuse, cards
+// #1825363023930328542 + #1825347787861001678). head(20k)+tail(20k) bounds the work AND co-locates
+// a `BIN=` in the head with its `"$BIN" run` in the tail; the two-step scan is indexOf-based (no
+// `[\s\S]*?` bridge) → O(n). SELF-CONTAINED (helpers inlined) so the provenance checker's scanner
+// embeds its source verbatim via `.toString()`. indexOf('opencode')/('BIN=') are case-SENSITIVE
+// (the real binary + the wrapper's BIN= are exactly cased); a case-variant is not a real call.
+// Residual (documented, never observed): a `run` in the MIDDLE of a command longer than 2*WIN.
+// --- wt-drift-lock:matchesOpencodeRun START (byte-identical: debugger+patterns+hook) ---
+function matchesOpencodeRun(cmd = '') {
+  if (typeof cmd !== 'string' || cmd.length === 0) return false
+  const WIN = 20000
+  const s = cmd.length <= 2 * WIN ? cmd : cmd.slice(0, WIN) + '\n' + cmd.slice(-WIN)
+  const AFTER_QUOTED = /^(?:\.exe|\.cmd)?["']\s+run\b/
+  const AFTER_BARE = /^(?:\.exe|\.cmd)?\s+run\b/
+  const AFTER_BIN = /^["']?\s+run\b/
+  const BEFORE_OK = /[\s;|&(=/'"]/
+  for (let i = s.indexOf('opencode'); i !== -1; i = s.indexOf('opencode', i + 1)) {
+    const before = i === 0 ? '' : s[i - 1]
+    if (before && !BEFORE_OK.test(before)) continue
+    const after = s.slice(i + 8, i + 8 + 16)
+    // Case A — a real QUOTED invocation: a CLOSING quote right after the opencode token, then run
+    // (`"opencode" run`, `"/path/opencode" run`).
+    if (AFTER_QUOTED.test(after)) return true
+    // Case B — a real UNQUOTED invocation: run right after (no quote), and opencode was NOT opened
+    // by a quote — rejects the string arg `"opencode run"` (quote-before pairs with run inside).
+    if (before !== '"' && before !== "'" && AFTER_BARE.test(after)) return true
+  }
+  let hasBinOpencode = false
+  for (let i = s.indexOf('BIN='); i !== -1; i = s.indexOf('BIN=', i + 1)) {
+    const nl = s.indexOf('\n', i)
+    const end = Math.min(nl === -1 ? s.length : nl, i + 4 + 256)
+    if (s.slice(i + 4, end).indexOf('opencode') !== -1) {
+      hasBinOpencode = true
+      break
+    }
+  }
+  if (hasBinOpencode) {
+    for (const m of s.matchAll(/\$\{?[A-Za-z_]*BIN\}?/g)) {
+      const at = m.index ?? 0
+      const tok = m[0] ?? ''
+      if (AFTER_BIN.test(s.slice(at + tok.length, at + tok.length + 16))) return true
+    }
+  }
+  return false
+}
+// --- wt-drift-lock:matchesOpencodeRun END ---
+
 export const EXTERNAL_CLI_SIGNATURES: readonly DelegationExpectation[] = [
   {
     id: 'opencode',
     typeRe: /opencode/i,
     commandRe:
       /(?:^|[\s;|&(=])(?:[^\s;|&"']*\/)?opencode(?:\.exe|\.cmd)?\s+run\b|(?:^|[\s;|&(=])["'](?:[^"']*\/)?opencode(?:\.exe|\.cmd)?["']\s+run\b|[A-Za-z_]*BIN=[^\n]*opencode[\s\S]*?"?\$\{?[A-Za-z_]*BIN\}?"?\s+run\b/im,
+    matchCommand: matchesOpencodeRun,
   },
   {
     id: 'codex',
@@ -133,19 +190,25 @@ export function buildProvenanceScannerSource(
   nonce: string,
   labels: readonly string[],
 ): string {
-  // JSON.stringify is the ONLY escaping needed — nonce/labels are safe-charset pattern
-  // strings and the regex source is embedded as a JS string literal reconstructed with
-  // new RegExp(...). Available in the checker's plain Node runtime.
-  const reSource = JSON.stringify(expectation.commandRe.source)
-  const reFlags = JSON.stringify(expectation.commandRe.flags)
+  // JSON.stringify is the ONLY escaping needed — nonce/labels are safe-charset pattern strings.
+  // The MATCHER is embedded verbatim: for a signature with a `matchCommand` (opencode) the
+  // SELF-CONTAINED linear function's source is inlined via `.toString()` and given the FULL
+  // command — a pre-cap here would be WRONG (it self-bounds via a head/tail window, so capping to
+  // SCAN_MAX would drop the tail where a long-heredoc `run` lives, re-introducing the false-refuse
+  // this fix removes). A direct/linear signature (codex, no `matchCommand`) falls back to the
+  // capped regex test. Both are executed in the checker's plain Node runtime.
   const nonceLit = JSON.stringify(nonce)
   const labelsLit = JSON.stringify(labels)
+  const matcherDef = expectation.matchCommand
+    ? `const matchesCmd=(${expectation.matchCommand.toString()});`
+    : `const RE=new RegExp(${JSON.stringify(expectation.commandRe.source)},${JSON.stringify(expectation.commandRe.flags)}),SCAN_MAX=${SCANNER_COMMAND_SCAN_MAX};` +
+      `function matchesCmd(cmd){const scan=cmd.length>SCAN_MAX?cmd.slice(0,SCAN_MAX):cmd;return RE.test(scan)}`
   return [
     `'use strict';`,
     `const fs=require('fs'),path=require('path'),os=require('os');`,
     `const NONCE=${nonceLit},LABELS=${labelsLit};`,
-    `const RE=new RegExp(${reSource},${reFlags});`,
-    `const SCAN_MAX=${SCANNER_COMMAND_SCAN_MAX},RECENCY=${SCANNER_RECENCY_MS},now=Date.now();`,
+    matcherDef,
+    `const RECENCY=${SCANNER_RECENCY_MS},now=Date.now();`,
     // Candidate config roots: the running session's CLAUDE_CONFIG_DIR plus the standard pair.
     `const roots=[process.env.CLAUDE_CONFIG_DIR,path.join(os.homedir(),'.claude'),path.join(os.homedir(),'.claude-work')].filter(Boolean);`,
     `function ls(d){try{return fs.readdirSync(d)}catch(e){return[]}}`,
@@ -159,7 +222,7 @@ export function buildProvenanceScannerSource(
     // wt-meta label marker as it appears escaped inside the jsonl: label=\"<label>\".
     `function labelMarker(l){return 'label=\\\\"'+l+'\\\\"'}`,
     // Count real external-CLI invocations in one transcript's Bash tool_use commands.
-    `function cliCalls(text){let n=0;for(const raw of text.split('\\n')){const t=raw.trim();if(!t)continue;let o;try{o=JSON.parse(t)}catch(e){continue}const m=o&&o.message;if(!m||typeof m!=='object')continue;const c=m.content;if(!Array.isArray(c))continue;for(const b of c){if(!b||b.type!=='tool_use'||b.name!=='Bash')continue;const cmd=b.input&&b.input.command;if(typeof cmd!=='string')continue;const scan=cmd.length>SCAN_MAX?cmd.slice(0,SCAN_MAX):cmd;if(RE.test(scan))n++}}return n}`,
+    `function cliCalls(text){let n=0;for(const raw of text.split('\\n')){const t=raw.trim();if(!t)continue;let o;try{o=JSON.parse(t)}catch(e){continue}const m=o&&o.message;if(!m||typeof m!=='object')continue;const c=m.content;if(!Array.isArray(c))continue;for(const b of c){if(!b||b.type!=='tool_use'||b.name!=='Bash')continue;const cmd=b.input&&b.input.command;if(typeof cmd!=='string')continue;if(matchesCmd(cmd))n++}}return n}`,
     `const files=ls(runDir).filter(f=>f.indexOf('agent-')===0&&f.endsWith('.jsonl')).map(f=>path.join(runDir,f));`,
     `const cache=new Map();function txt(fp){if(!cache.has(fp))cache.set(fp,read(fp));return cache.get(fp)}`,
     `const results=LABELS.map(function(label){const marker=labelMarker(label);let seen=false,found=false;for(const fp of files){const tx=txt(fp);if(tx.indexOf(marker)===-1)continue;found=true;if(cliCalls(tx)>0){seen=true}break}return{label:label,cliSeen:found?seen:null}});`,

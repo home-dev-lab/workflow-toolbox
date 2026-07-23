@@ -113,6 +113,49 @@ describe('isExternalCliCommand — grounded invocation shapes', () => {
   })
 })
 
+// The linear two-step matcher (cards #1825363023930328542 + #1825347787861001678) replaced the
+// single mega-regex whose BIN= arm backtracked ~30s on a 200KB opencode-but-no-run command, and
+// the 20k scan cap that hid a real `run` past position 20k (the a50c1510/aafb024d false-refuse).
+describe('matchesOpencodeRun (via isExternalCliCommand) — linear, ReDoS-safe, past-20k-run', () => {
+  /** Worst-of-3 wall time for one match, in ms. */
+  function matchMs(cmd: string): number {
+    let best = Infinity
+    for (let k = 0; k < 3; k++) {
+      const t0 = performance.now()
+      isExternalCliCommand(cmd, OPENCODE)
+      const dt = performance.now() - t0
+      if (dt < best) best = dt
+    }
+    return best
+  }
+
+  it('credits a real opencode run whose `run` sits FAR past the old 20k cap (a50c1510: 33K heredoc)', () => {
+    const cmd = 'BIN=/home/x/.opencode/bin/opencode\n' + 'x'.repeat(33_000) + '\ntimeout 570 "$BIN" run "verify" -f "$TASKFILE" < /dev/null'
+    expect(isExternalCliCommand(cmd, OPENCODE)).toBe(true)
+  })
+  it('credits a run captured by the TAIL window (aafb024d: run at ~69.5K)', () => {
+    const cmd = 'BIN=/home/x/.opencode/bin/opencode\n' + 'x'.repeat(69_500) + '\ntimeout 570 "$BIN" run "verify" -f "$T" < /dev/null'
+    expect(isExternalCliCommand(cmd, OPENCODE)).toBe(true)
+  })
+  it('KILLS the ReDoS: a 200KB opencode-but-no-run command is false AND completes < 50ms (old regex: ~30s)', () => {
+    const cmd = 'BIN=/home/x/.opencode/bin/opencode\n' + 'x'.repeat(200_000)
+    expect(isExternalCliCommand(cmd, OPENCODE)).toBe(false)
+    expect(matchMs(cmd)).toBeLessThan(50)
+  })
+  it('stays O(n) on 40K repeated `BIN=` tokens with no run (< 50ms — the arm-2 bound)', () => {
+    const cmd = 'BIN=/x/opencode\n'.repeat(2_500) // ~40K of repeated BIN= assignments, no run
+    expect(isExternalCliCommand(cmd, OPENCODE)).toBe(false)
+    expect(matchMs(cmd)).toBeLessThan(50)
+  })
+  it('does NOT credit `opencode providers list` (a self-answer probe, not a run)', () => {
+    expect(isExternalCliCommand('BIN=/home/x/.opencode/bin/opencode; "$BIN" providers list; grep -rn foo src/', OPENCODE)).toBe(false)
+  })
+  it('DOCUMENTED residual: a `run` in the MIDDLE of a >2*WIN command is missed (never observed)', () => {
+    const cmd = 'a'.repeat(25_000) + ' /x/opencode run "y" ' + 'b'.repeat(25_000)
+    expect(isExternalCliCommand(cmd, OPENCODE)).toBe(false)
+  })
+})
+
 describe('parseTranscriptExternalCalls — Bash tool_use only, tolerant', () => {
   it('counts matching Bash invocations and keeps a capped first-command preview', () => {
     const long = 'timeout 570 "$BIN" run "' + 'x'.repeat(300) + '"'

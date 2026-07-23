@@ -550,11 +550,45 @@ function recoveryVias(report) {
 }
 
 // packages/debugger/src/external-delegation.ts
+function matchesOpencodeRun(cmd = "") {
+  if (typeof cmd !== "string" || cmd.length === 0) return false;
+  const WIN = 2e4;
+  const s = cmd.length <= 2 * WIN ? cmd : cmd.slice(0, WIN) + "\n" + cmd.slice(-WIN);
+  const AFTER_QUOTED = /^(?:\.exe|\.cmd)?["']\s+run\b/;
+  const AFTER_BARE = /^(?:\.exe|\.cmd)?\s+run\b/;
+  const AFTER_BIN = /^["']?\s+run\b/;
+  const BEFORE_OK = /[\s;|&(=/'"]/;
+  for (let i = s.indexOf("opencode"); i !== -1; i = s.indexOf("opencode", i + 1)) {
+    const before = i === 0 ? "" : s[i - 1];
+    if (before && !BEFORE_OK.test(before)) continue;
+    const after = s.slice(i + 8, i + 8 + 16);
+    if (AFTER_QUOTED.test(after)) return true;
+    if (before !== '"' && before !== "'" && AFTER_BARE.test(after)) return true;
+  }
+  let hasBinOpencode = false;
+  for (let i = s.indexOf("BIN="); i !== -1; i = s.indexOf("BIN=", i + 1)) {
+    const nl = s.indexOf("\n", i);
+    const end = Math.min(nl === -1 ? s.length : nl, i + 4 + 256);
+    if (s.slice(i + 4, end).indexOf("opencode") !== -1) {
+      hasBinOpencode = true;
+      break;
+    }
+  }
+  if (hasBinOpencode) {
+    for (const m of s.matchAll(/\$\{?[A-Za-z_]*BIN\}?/g)) {
+      const at = m.index ?? 0;
+      const tok2 = m[0] ?? "";
+      if (AFTER_BIN.test(s.slice(at + tok2.length, at + tok2.length + 16))) return true;
+    }
+  }
+  return false;
+}
 var DELEGATION_EXPECTATIONS = [
   {
     id: "opencode",
     typeRe: /opencode/i,
-    commandRe: /(?:^|[\s;|&(=])(?:[^\s;|&"']*\/)?opencode(?:\.exe|\.cmd)?\s+run\b|(?:^|[\s;|&(=])["'](?:[^"']*\/)?opencode(?:\.exe|\.cmd)?["']\s+run\b|[A-Za-z_]*BIN=[^\n]*opencode[\s\S]*?"?\$\{?[A-Za-z_]*BIN\}?"?\s+run\b/im
+    commandRe: /(?:^|[\s;|&(=])(?:[^\s;|&"']*\/)?opencode(?:\.exe|\.cmd)?\s+run\b|(?:^|[\s;|&(=])["'](?:[^"']*\/)?opencode(?:\.exe|\.cmd)?["']\s+run\b|[A-Za-z_]*BIN=[^\n]*opencode[\s\S]*?"?\$\{?[A-Za-z_]*BIN\}?"?\s+run\b/im,
+    matchCommand: matchesOpencodeRun
   },
   {
     id: "codex",
@@ -572,6 +606,7 @@ function expectationForAgentType(agentType) {
 }
 var COMMAND_SCAN_MAX = 2e4;
 function isExternalCliCommand(command, expectation) {
+  if (expectation.matchCommand) return expectation.matchCommand(command);
   const text = command.length > COMMAND_SCAN_MAX ? command.slice(0, COMMAND_SCAN_MAX) : command;
   return expectation.commandRe.test(text);
 }
