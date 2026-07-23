@@ -160,6 +160,56 @@ describe('probeAgentType — unavailable', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Required routing — explicit user configuration fails fast when unavailable
+// ---------------------------------------------------------------------------
+
+describe('probeAgentType — required', () => {
+  it('rejects when the required agentType is unregistered', async () => {
+    const requestedType = 'workflow-toolbox:opencode-verifier'
+    const rt = new FakeRuntime({
+      onAgent: () => {
+        throw new Error(`agent type '${requestedType}' not found`)
+      },
+    })
+
+    await expect(probeAgentType(rt, requestedType, { required: true })).rejects.toThrow(
+      new RegExp(`required agentType '${requestedType}' is unavailable`),
+    )
+  })
+
+  it('rejects when the required agentType returns an unavailable marker', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'OPENCODE_UNAVAILABLE: provider down' })
+
+    await expect(
+      probeAgentType(rt, 'workflow-toolbox:opencode-verifier', { required: true }),
+    ).rejects.toThrow(/required agentType '.*' is unavailable/)
+  })
+
+  it('resolves to the requested agentType when the required probe is available', async () => {
+    const requestedType = 'workflow-toolbox:opencode-verifier'
+    const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
+
+    await expect(probeAgentType(rt, requestedType, { required: true })).resolves.toMatchObject({
+      agentType: requestedType,
+      available: true,
+    })
+  })
+
+  it('keeps graceful degrade as the default when the probe agent throws', async () => {
+    const rt = new FakeRuntime({
+      onAgent: () => {
+        throw new Error("agent type 'workflow-toolbox:opencode-verifier' not found")
+      },
+    })
+
+    await expect(probeAgentType(rt, 'workflow-toolbox:opencode-verifier')).resolves.toMatchObject({
+      agentType: undefined,
+      available: false,
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Options — custom probe prompt / expected token
 // ---------------------------------------------------------------------------
 

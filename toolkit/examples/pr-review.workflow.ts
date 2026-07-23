@@ -698,7 +698,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   let probeReport: AgentTypeProbeReport | null = null
   if (input.reviewerType !== null) {
     rt.phase('Probe')
-    const probe = await probeAgentType(rt, input.reviewerType, { phase: 'Probe' })
+    const probe = await probeAgentType(rt, input.reviewerType, { phase: 'Probe', required: true })
     resolvedReviewerType = probe.agentType ?? null
     probeReport = { requested: input.reviewerType, available: probe.available, reason: probe.reason }
   }
@@ -711,7 +711,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   let verifierProbeReport: AgentTypeProbeReport | null = null
   if (input.verifierType !== null) {
     rt.phase('Probe')
-    const probe = await probeAgentType(rt, input.verifierType, { phase: 'Probe' })
+    const probe = await probeAgentType(rt, input.verifierType, { phase: 'Probe', required: true })
     resolvedVerifierType = probe.agentType ?? null
     verifierProbeReport = { requested: input.verifierType, available: probe.available, reason: probe.reason }
   }

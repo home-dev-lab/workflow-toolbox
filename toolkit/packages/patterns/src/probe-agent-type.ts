@@ -92,6 +92,13 @@ export interface ProbeAgentTypeOptions {
   /** The affirmative token the probe reply must END with (after ANSI/banner
    *  stripping). Default 'PROBE_OK'. */
   expectedToken?: string
+  /** When true, an UNAVAILABLE probe THROWS an actionable error instead of
+   *  degrading to the standard subagent. For an agentType the USER explicitly
+   *  configured (e.g. agentTypes.verify) where the cross-family semantics ARE
+   *  the step's meaning — silently degrading betrays that intent and burns the
+   *  run's tokens on verdicts a downstream gate then voids. Default false =
+   *  graceful degrade (library default-routing / optional optimisation). */
+  required?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +157,7 @@ export async function probeAgentType(
   agentType: string,
   options: ProbeAgentTypeOptions = {},
 ): Promise<AgentTypeProbe> {
-  const { phase, probePrompt, expectedToken } = options
+  const { phase, probePrompt, expectedToken, required } = options
 
   // -------------------------------------------------------------------------
   // Synchronous validation
@@ -224,6 +231,20 @@ export async function probeAgentType(
   // -------------------------------------------------------------------------
   // Never silent — log + digest for both outcomes
   // -------------------------------------------------------------------------
+
+  if (!available && required === true) {
+    rt.log(
+      `${STAGE}: required '${agentType}' unavailable — refusing launch (${reason ?? 'unknown'})`,
+    )
+    emitDigest(rt, {
+      stage: STAGE,
+      ...(phase !== undefined ? { phase } : {}),
+      output: `required-unavailable: ${agentType}`,
+    })
+    throw new Error(
+      `${STAGE}: required agentType '${agentType}' is unavailable (${reason ?? 'unknown'}) — its explicit routing cannot be honored, so the run is refused at launch rather than silently degraded. Remedy: ensure the agentType is registered and its provider installed/authenticated, or remove the explicit routing (agentTypes.<role>) to allow the standard-subagent fallback.`,
+    )
+  }
 
   if (available) {
     rt.log(`${STAGE}: '${agentType}' available — routing externally`)

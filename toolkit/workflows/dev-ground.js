@@ -745,7 +745,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
   async function probeAgentType(rt, agentType, options = {}) {
-    const { phase, probePrompt, expectedToken } = options;
+    const { phase, probePrompt, expectedToken, required } = options;
     assertAgentTypeOption(STAGE, "agentType", agentType);
     if (expectedToken !== void 0 && expectedToken.trim().length === 0) {
       throw new Error(
@@ -783,6 +783,19 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       } else {
         reason = `unexpected probe reply: ${head(stripped)}`;
       }
+    }
+    if (!available && required === true) {
+      rt.log(
+        `${STAGE}: required '${agentType}' unavailable \u2014 refusing launch (${reason ?? "unknown"})`
+      );
+      emitDigest(rt, {
+        stage: STAGE,
+        ...phase !== void 0 ? { phase } : {},
+        output: `required-unavailable: ${agentType}`
+      });
+      throw new Error(
+        `${STAGE}: required agentType '${agentType}' is unavailable (${reason ?? "unknown"}) \u2014 its explicit routing cannot be honored, so the run is refused at launch rather than silently degraded. Remedy: ensure the agentType is registered and its provider installed/authenticated, or remove the explicit routing (agentTypes.<role>) to allow the standard-subagent fallback.`
+      );
     }
     if (available) {
       rt.log(`${STAGE}: '${agentType}' available \u2014 routing externally`);

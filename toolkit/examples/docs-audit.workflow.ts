@@ -545,7 +545,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
   let verifierProbe: DocsAuditOutput['verifierProbe'] = null
   let resolvedVerifierType: string | null = null
   if (input.verifierType !== null) {
-    const probe = await probeAgentType(rt, input.verifierType, { phase: 'Fence' })
+    const probe = await probeAgentType(rt, input.verifierType, { phase: 'Fence', required: true })
     resolvedVerifierType = probe.agentType ?? null
     verifierProbe = { requested: input.verifierType, available: probe.available, reason: probe.reason }
   }
