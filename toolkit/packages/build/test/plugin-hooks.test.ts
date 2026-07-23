@@ -267,6 +267,26 @@ describe('wt-verifier-cli-guard-hook — deny a self-answered verdict until the 
   const decisionOf = (r: Run): string | undefined =>
     (r.json?.['hookSpecificOutput'] as Record<string, unknown> | undefined)?.['permissionDecision'] as string | undefined
 
+  // A VERBATIM opencode-run command form from the real probe wf_0b6cfa3f-f7a (the BIN= arm the
+  // haiku wrappers actually used). Root cause of the probe's 20 false-refusals was flush timing:
+  // this ran successfully but its Bash tool_use line was not yet in the per-subagent transcript
+  // when the StructuredOutput PreToolUse fired. The fix is a PostToolUse marker (flush-immune).
+  const PROBE_OPENCODE_RUN =
+    'BIN="/home/doublefx/.opencode/bin/opencode"\nTASKFILE="$PWD/.oc-verify-$$.md"\n' +
+    "trap 'rm -f \"$TASKFILE\"' EXIT\ntimeout 570 \"$BIN\" run \"Adversarially verify the claim\" " +
+    '-f "$TASKFILE" --model openai/gpt-5.6-sol < /dev/null'
+  const postBash = (agentType: string, command: string, transcriptPath: string, agentId = 'a1b2c3d4') => ({
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Bash',
+    tool_input: { command },
+    agent_id: agentId,
+    agent_type: agentType,
+    transcript_path: transcriptPath,
+  })
+  // Fresh, ISOLATED marker dir per test so a PostToolUse write is seen by a later PreToolUse of
+  // the SAME test, and never leaks across tests (via WT_VERIFIER_MARKER_DIR).
+  const markerEnv = (tag: string): NodeJS.ProcessEnv => ({ ...process.env, WT_VERIFIER_MARKER_DIR: mkRoot(`marker-${tag}`) })
+
   it('DENIES StructuredOutput from an opencode-verifier whose transcript shows NO CLI invocation (self-answer)', () => {
     const tp = transcriptFile('selfanswer', bashTurn(SELF_ANSWER))
     const r = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp))
@@ -339,6 +359,46 @@ describe('wt-verifier-cli-guard-hook — deny a self-answered verdict until the 
   it('fails OPEN (silent) when transcript_path points at a nonexistent file', () => {
     const r = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', join(tmpdir(), 'wt-nonexistent-xyz.jsonl')))
     expect(r.stdout).toBe('')
+  })
+
+  // ── FIX ROUND 2 (probe wf_0b6cfa3f-f7a): the PostToolUse marker rescues the flush-timing
+  // false-refusal that voided the probe (20 real-CLI votes wrongly denied) ─────────────────
+  it('FAIL-BEFORE: a mid-flight transcript (CLI ran but its Bash line is NOT yet flushed) with NO marker → DENY (reproduces the probe false-refuse)', () => {
+    const env = markerEnv('failbefore')
+    // Empty transcript = the mid-flight state the probe hit: the opencode run completed but its
+    // tool_use line was not yet on disk when the SO PreToolUse fired.
+    const tp = transcriptFile('midflight1')
+    const r = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp), env)
+    expect(decisionOf(r)).toBe('deny')
+  })
+
+  it('PASS-AFTER: PostToolUse marks the real opencode run, so the SAME mid-flight StructuredOutput is ALLOWED (the fix)', () => {
+    const env = markerEnv('passafter') // shared marker dir across the two calls of THIS test
+    const tp = transcriptFile('midflight2') // still empty (unflushed) at SO time
+    // 1) the wrapper's opencode run completes → PostToolUse writes the flush-immune marker.
+    const post = runHook(VERIFIER_GUARD_HOOK, postBash('workflow-toolbox:opencode-verifier', PROBE_OPENCODE_RUN, tp), env)
+    expect(post.stdout).toBe('') // PostToolUse never emits a decision
+    // 2) the SAME wrapper emits its verdict while the transcript is still unflushed → ALLOW.
+    const pre = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp), env)
+    expect(pre.stdout).toBe('')
+    expect(pre.code).toBe(0)
+  })
+
+  it('PostToolUse does NOT mark a non-CLI Bash command (ls), so a mid-flight self-answer STAYS denied', () => {
+    const env = markerEnv('noncli')
+    const tp = transcriptFile('midflight3')
+    const post = runHook(VERIFIER_GUARD_HOOK, postBash('workflow-toolbox:opencode-verifier', 'ls -la "$PWD"', tp), env)
+    expect(post.stdout).toBe('')
+    const pre = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp), env)
+    expect(decisionOf(pre)).toBe('deny') // no real CLI ran → correctly refused
+  })
+
+  it('REAL PROBE TRANSCRIPT replay: a verbatim opencode-run line is detected by the flushed-transcript fallback → ALLOW (no marker)', () => {
+    const env = markerEnv('replayflush') // fresh empty marker dir → the marker path is NOT the reason
+    // The FLUSHED transcript carries the REAL probe command form; the fallback scan must parse it.
+    const tp = transcriptFile('flushed', bashTurn(PROBE_OPENCODE_RUN))
+    const r = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp), env)
+    expect(r.stdout).toBe('') // fallback scan finds the real invocation → allowed
   })
 
   it('drift-lock: the hook embeds the canonical opencode+codex CLI signatures verbatim', () => {

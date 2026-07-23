@@ -77,43 +77,52 @@ describe('plugin/launch-agents — agents-only shim plugin for delegated launche
     expect(entries).toEqual(['.claude-plugin', 'agents'])
   })
 
-  it('declares EXACTLY the verifier-CLI-guard PreToolUse hook, matcher-narrowed to StructuredOutput', () => {
+  it('declares EXACTLY the verifier-CLI-guard on two matcher-narrowed events (PreToolUse/StructuredOutput + PostToolUse/Bash)', () => {
     const manifest = JSON.parse(readFileSync(SHIM_MANIFEST, 'utf8')) as {
       hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ type?: string; command?: string }> }>>
     }
-    const events = Object.keys(manifest.hooks ?? {})
-    // ONLY PreToolUse — no SessionStart/Stop/etc. A matcher-narrowed PreToolUse `command` hook
-    // is PROCESS-side (spawns a node script only on the matched tool; ~ZERO prompt-token cost),
-    // so it violates the LETTER of the lean shim's "no hooks" but NOT its PURPOSE (the −32%/spawn
-    // token economy) — and AGENT-SCOPED: it can't even run for a leaf/lean agent except on that
-    // agent's own StructuredOutput call, which then no-ops. This is the ONE deliberate exception;
-    // a future edit adding any OTHER hook, a context-injecting surface, or an UN-narrowed matcher
-    // must NOT ride this allowance.
-    expect(events).toEqual(['PreToolUse'])
-    const groups = manifest.hooks?.['PreToolUse'] ?? []
-    expect(groups).toHaveLength(1)
-    // MATCHER-NARROWED to StructuredOutput — the hook never spawns on any other tool (leaf/lean
-    // agents stay bare). A dropped/widened matcher (session-broad hook) fails here.
-    expect(groups[0]!.matcher).toBe('StructuredOutput')
-    const commands = groups.flatMap((g) => g.hooks ?? []).map((h) => h.command ?? '')
-    expect(commands).toHaveLength(1)
-    // References the parent plugin's bin via ../bin (the guard has no copy in the shim),
-    // and is the CLI guard specifically — a rename/drop of the Path-B self-answer guard fails here.
-    expect(commands[0]).toContain('../bin/wt-verifier-cli-guard-hook.mjs')
+    const events = Object.keys(manifest.hooks ?? {}).sort()
+    // ONLY PreToolUse + PostToolUse — no SessionStart/Stop/etc. Both are matcher-narrowed
+    // PROCESS-side `command` hooks (a node script spawned only on the matched tool; ~ZERO
+    // prompt-token cost), so they violate the LETTER of the lean shim's "no hooks" but NOT its
+    // PURPOSE (the −32%/spawn token economy) — and stay AGENT-SCOPED: they only run on a
+    // StructuredOutput or Bash call, and no-op for any non-wrapper agent. PostToolUse/Bash writes
+    // the flush-immune CLI marker; PreToolUse/StructuredOutput enforces it. These are the ONE
+    // deliberate guard; a future edit adding any OTHER hook, a context-injecting surface, or an
+    // UN-narrowed matcher must NOT ride this allowance.
+    expect(events).toEqual(['PostToolUse', 'PreToolUse'])
+    const pre = manifest.hooks?.['PreToolUse'] ?? []
+    const post = manifest.hooks?.['PostToolUse'] ?? []
+    expect(pre).toHaveLength(1)
+    expect(post).toHaveLength(1)
+    // MATCHER-NARROWED — the hook never spawns except on its matched tool (leaf/lean stay bare).
+    // A dropped/widened matcher (session-broad hook) fails here.
+    expect(pre[0]!.matcher).toBe('StructuredOutput')
+    expect(post[0]!.matcher).toBe('Bash')
+    const commands = [...pre, ...post].flatMap((g) => g.hooks ?? []).map((h) => h.command ?? '')
+    expect(commands).toHaveLength(2)
+    // Both reference the parent plugin's bin via ../bin (the guard has no copy in the shim) — a
+    // rename/drop of the Path-B self-answer guard fails here.
+    for (const c of commands) expect(c).toContain('../bin/wt-verifier-cli-guard-hook.mjs')
     // Prove the referenced hook file actually exists at that resolved location.
     expect(existsSync(join(REPO_ROOT, 'plugin/bin/wt-verifier-cli-guard-hook.mjs'))).toBe(true)
   })
 
-  it('the INTERACTIVE plugin also registers the verifier-CLI-guard matcher-narrowed to StructuredOutput', () => {
+  it('the INTERACTIVE plugin registers the verifier-CLI-guard on BOTH events, each matcher-narrowed', () => {
     const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json'), 'utf8')) as {
-      hooks?: { PreToolUse?: Array<{ matcher?: string; hooks?: Array<{ command?: string }> }> }
+      hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>
     }
-    const groups = manifest.hooks?.PreToolUse ?? []
-    // The verifier-CLI-guard group must exist AND be matcher-narrowed to StructuredOutput, so a
-    // leaf/lean agent in an interactive session is equally bare (the hook never fires except on
-    // its own StructuredOutput call). The pilot-guard group stays matcher-LESS (it needs Bash).
-    const verifierGroup = groups.find((g) => (g.hooks ?? []).some((h) => (h.command ?? '').includes('wt-verifier-cli-guard-hook.mjs')))
-    expect(verifierGroup, 'verifier-CLI-guard not registered in interactive plugin.json').toBeTruthy()
-    expect(verifierGroup!.matcher).toBe('StructuredOutput')
+    const isGuard = (g: { hooks?: Array<{ command?: string }> }): boolean =>
+      (g.hooks ?? []).some((h) => (h.command ?? '').includes('wt-verifier-cli-guard-hook.mjs'))
+    // PreToolUse group matcher-narrowed to StructuredOutput (leaf/lean stay bare — the hook never
+    // fires except on their own StructuredOutput call). The pilot-guard group stays matcher-LESS
+    // (it needs Bash) — so a distinct verifier group must carry the StructuredOutput matcher.
+    const preGuard = (manifest.hooks?.['PreToolUse'] ?? []).find(isGuard)
+    expect(preGuard, 'verifier-CLI-guard PreToolUse not registered in interactive plugin.json').toBeTruthy()
+    expect(preGuard!.matcher).toBe('StructuredOutput')
+    // PostToolUse group matcher-narrowed to Bash (writes the flush-immune CLI marker).
+    const postGuard = (manifest.hooks?.['PostToolUse'] ?? []).find(isGuard)
+    expect(postGuard, 'verifier-CLI-guard PostToolUse not registered in interactive plugin.json').toBeTruthy()
+    expect(postGuard!.matcher).toBe('Bash')
   })
 })
