@@ -549,6 +549,66 @@ describe('wt-verifier-cli-guard-hook — deny a self-answered verdict until the 
 })
 
 // --------------------------------------------------------------------------
+// WT_VERIFIER_DEBUG env-gated logging (guard-debug task). The guard is a SHIPPED provenance
+// hook, so the CRITICAL invariant is ZERO side-effect when the env is unset; when set to a
+// logfile it appends one JSON line per decision, carrying the EXACT untruncated transcript_path
+// (the evidence that grounds the step-3 checker marker-key reconstruction) + the new
+// matcher_hit / deny_count / terminal fields.
+// --------------------------------------------------------------------------
+describe('wt-verifier-cli-guard-hook — WT_VERIFIER_DEBUG env-gated logging', () => {
+  const VERIFIER_GUARD_HOOK2 = join(REPO_ROOT, 'plugin/bin/wt-verifier-cli-guard-hook.mjs')
+  const soPay = (agentType: string, transcriptPath: string, agentId: string) => ({
+    hook_event_name: 'PreToolUse', tool_name: 'StructuredOutput', tool_input: { verdict: 'confirmed', reason: 'ok' },
+    agent_id: agentId, agent_type: agentType, transcript_path: transcriptPath,
+  })
+  const postBash2 = (agentType: string, command: string, transcriptPath: string, agentId: string) => ({
+    hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, agent_id: agentId, agent_type: agentType, transcript_path: transcriptPath,
+  })
+
+  it('INVARIANT: env UNSET ⇒ ZERO debug writes (a shipped guard has no default side-effect)', () => {
+    const dir = mkRoot('dbg-unset')
+    const logPath = join(dir, 'debug.jsonl') // where it WOULD write if the env were set
+    const tp = join(dir, 'agent.jsonl'); writeFileSync(tp, '')
+    const markers = join(dir, 'markers'); mkdirSync(markers, { recursive: true })
+    const env: NodeJS.ProcessEnv = { ...process.env, WT_VERIFIER_MARKER_DIR: markers }
+    delete env.WT_VERIFIER_DEBUG // ensure it is unset even if the parent shell has it
+    // Drive BOTH a deny and a real marker-write — the two hottest log points — with the env unset.
+    runHook(VERIFIER_GUARD_HOOK2, soPay('workflow-toolbox:opencode-verifier', tp, 'AIDX'), env)
+    runHook(VERIFIER_GUARD_HOOK2, postBash2('workflow-toolbox:opencode-verifier', '/x/opencode run "y"', tp, 'AIDX'), env)
+    expect(existsSync(logPath)).toBe(false) // nothing written anywhere the debug log would go
+  })
+
+  it('env SET ⇒ appends JSONL: marker-written (matcher_hit + exact transcript), allow-marker, deny (deny_count/terminal)', () => {
+    const dir = mkRoot('dbg-set')
+    const logPath = join(dir, 'debug.jsonl')
+    const markers = join(dir, 'markers'); mkdirSync(markers, { recursive: true })
+    const tp = join(dir, 'agent.jsonl'); writeFileSync(tp, '') // shared, empty (mid-flight)
+    const env: NodeJS.ProcessEnv = { ...process.env, WT_VERIFIER_MARKER_DIR: markers, WT_VERIFIER_DEBUG: logPath }
+    // 1) an a50c1510-shape run (33K heredoc, `run` past 20k) → marker-written, matcher_hit indirect-BIN
+    const longRun = 'BIN=/home/x/.opencode/bin/opencode\n' + 'x'.repeat(33_000) + '\ntimeout 570 "$BIN" run "verify" -f "$T" < /dev/null'
+    runHook(VERIFIER_GUARD_HOOK2, postBash2('workflow-toolbox:opencode-verifier', longRun, tp, 'AID1'), env)
+    // 2) that same agent's SO is ALLOWED via its marker → allow-marker
+    runHook(VERIFIER_GUARD_HOOK2, soPay('workflow-toolbox:opencode-verifier', tp, 'AID1'), env)
+    // 3) a DIFFERENT agent with no CLI → deny (count 1, not terminal)
+    runHook(VERIFIER_GUARD_HOOK2, soPay('workflow-toolbox:opencode-verifier', tp, 'AID2'), env)
+
+    const lines = readFileSync(logPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+    const written = lines.find((l) => l.decision === 'marker-written')
+    expect(written, 'marker-written line present').toBeTruthy()
+    expect(written!.matcher_hit).toBe('indirect-BIN')
+    expect(written!.transcript).toBe(tp) // EXACT transcript_path, untruncated (step-3 grounding evidence)
+    expect(written!.agent_id).toBe('AID1')
+    expect(typeof written!.markerPath).toBe('string')
+    expect(lines.some((l) => l.decision === 'allow-marker')).toBe(true)
+    const deny = lines.find((l) => l.decision === 'deny')
+    expect(deny, 'deny line present').toBeTruthy()
+    expect(deny!.deny_count).toBe(1)
+    expect(deny!.terminal).toBe(false)
+    expect(deny!.agent_id).toBe('AID2')
+  })
+})
+
+// --------------------------------------------------------------------------
 // Observer-pairing drift gate — item 7
 // --------------------------------------------------------------------------
 describe('plugin agent observer pairings resolve to a sibling def', () => {

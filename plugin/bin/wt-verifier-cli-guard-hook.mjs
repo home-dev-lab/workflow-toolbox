@@ -261,13 +261,92 @@ function reapOldMarkers() {
   }
 }
 
+/** DEBUG-ONLY instrumentation (gated by `WT_VERIFIER_DEBUG=<logfile>`) — appends one JSON line per
+ *  decision (marker-written / allow-marker / allow-scan / deny / deny-terminal / deny-no-agentid).
+ *  `transcript` is the EXACT `transcript_path` the hook received, UNTRUNCATED, at BOTH events — the
+ *  evidence that grounds the checker's marker-key reconstruction (step-3 follow-up). `extra` carries
+ *  the event-specific fields (`matcher_hit` on a write, `deny_count`/`terminal` on a deny). PURE
+ *  side-effect: never reads a return value, never alters a decision. Absent env ⇒ immediate no-op,
+ *  so a shipped provenance guard writes NOTHING in normal operation. */
+function dbg(event, input, decision, extra = {}) {
+  const p = process.env['WT_VERIFIER_DEBUG']
+  if (!p) return
+  try {
+    const tp = String((input && input.transcript_path) || '')
+    const aid = (input && input.agent_id) || ''
+    let transcriptLen = -1
+    try {
+      if (tp) transcriptLen = fs.statSync(tp).size
+    } catch {
+      /* transcript not yet on disk ⇒ -1 */
+    }
+    fs.appendFileSync(
+      p,
+      JSON.stringify({
+        ts: Date.now(),
+        event,
+        decision,
+        agent_type: (input && input.agent_type) || null,
+        agent_id: aid || null,
+        transcript: tp,
+        transcriptLen,
+        markerPath: tp && aid ? markerPathFor(tp, aid) : null,
+        ...extra,
+      }) + '\n',
+    )
+  } catch {
+    /* debug logging must NEVER affect the hook */
+  }
+}
+
+/** DEBUG-ONLY: which arm of the opencode matcher would hit — 'head' | 'tail' | 'indirect-BIN' | null
+ *  — purely to annotate the WT_VERIFIER_DEBUG log. A read-only MIRROR of matchesOpencodeRun that
+ *  NEVER feeds a decision (the guard always calls the drift-locked matchesOpencodeRun). Kept in sync
+ *  by hand: if the matcher's arms change, update this label helper. */
+function matcherHitArm(command) {
+  if (typeof command !== 'string' || command.length === 0) return null
+  const WIN = 20000
+  const windowed = command.length > 2 * WIN
+  const s = windowed ? command.slice(0, WIN) + '\n' + command.slice(-WIN) : command
+  const headEnd = windowed ? WIN : s.length
+  const AFTER_QUOTED = /^(?:\.exe|\.cmd)?["']\s+run\b/
+  const AFTER_BARE = /^(?:\.exe|\.cmd)?\s+run\b/
+  const BEFORE_OK = /[\s;|&(=/'"]/
+  for (let i = s.indexOf('opencode'); i !== -1; i = s.indexOf('opencode', i + 1)) {
+    const before = i === 0 ? '' : s[i - 1]
+    if (before && !BEFORE_OK.test(before)) continue
+    const after = s.slice(i + 8, i + 8 + 16)
+    if (AFTER_QUOTED.test(after) || (before !== '"' && before !== "'" && AFTER_BARE.test(after))) {
+      return i < headEnd ? 'head' : 'tail'
+    }
+  }
+  let hasBinOpencode = false
+  for (let i = s.indexOf('BIN='); i !== -1; i = s.indexOf('BIN=', i + 1)) {
+    const nl = s.indexOf('\n', i)
+    const end = Math.min(nl === -1 ? s.length : nl, i + 4 + 256)
+    if (s.slice(i + 4, end).indexOf('opencode') !== -1) {
+      hasBinOpencode = true
+      break
+    }
+  }
+  if (hasBinOpencode) {
+    for (const m of s.matchAll(/\$\{?[A-Za-z_]*BIN\}?/g)) {
+      const at = m.index ?? 0
+      const tok = m[0] ?? ''
+      if (/^["']?\s+run\b/.test(s.slice(at + tok.length, at + tok.length + 16))) return 'indirect-BIN'
+    }
+  }
+  return null
+}
+
 /** PostToolUse: when a real external-CLI invocation COMPLETES, write its per-transcript marker.
  *  Never denies/blocks — it only records provenance. Self-scoped by the command regex (only a
  *  real `opencode run`/`codex …` matches); an agent_type, if present, must be a wrapper. */
 export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p, String(Date.now()))) {
   if (input.tool_name !== 'Bash') return
   const command = input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : ''
-  if (signatureForCommand(command) === null) return // not a real external-CLI invocation
+  const sig = signatureForCommand(command)
+  if (sig === null) return // not a real external-CLI invocation
   // If agent_type IS present, only a wrapper marks (avoid stray markers); if absent (undocumented
   // in PostToolUse), the specific command regex above is the scope.
   if (input.agent_type !== undefined && signatureForAgentType(input.agent_type) === null) return
@@ -280,6 +359,7 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
   if (!agentId) return
   try {
     writeMarker(markerPathFor(transcriptPath, agentId))
+    dbg('PostToolUse', input, 'marker-written', { matcher_hit: sig.id === 'opencode' ? matcherHitArm(command) : null })
   } catch {
     /* best-effort: a marker we couldn't write just falls back to the transcript scan */
   }
@@ -331,6 +411,7 @@ export function escalateDeny(
   const transcriptPath = input.transcript_path
   const agentId = input.agent_id
   if (sig === null || typeof transcriptPath !== 'string' || transcriptPath.length === 0 || !agentId) {
+    dbg('PreToolUse', input, 'deny-no-agentid', { deny_count: null, terminal: false })
     return baseReason
   }
   const counterPath = denyCounterPathFor(transcriptPath, agentId)
@@ -347,7 +428,9 @@ export function escalateDeny(
   } catch {
     /* best-effort: a count we couldn't persist just doesn't escalate */
   }
-  return count >= DENY_TERMINAL_AT ? terminalDenyReason(sig, count) : baseReason + retryHintLine(sig)
+  const terminal = count >= DENY_TERMINAL_AT
+  dbg('PreToolUse', input, terminal ? 'deny-terminal' : 'deny', { deny_count: count, terminal })
+  return terminal ? terminalDenyReason(sig, count) : baseReason + retryHintLine(sig)
 }
 
 /** PreToolUse decision on a StructuredOutput call: deny-reason string, or null to ALLOW.
@@ -380,7 +463,10 @@ export function decidePreToolUse(
   if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return null
   // PRIMARY: flush-immune PER-SUBAGENT marker written by THIS subagent's own CLI PostToolUse.
   try {
-    if (markerExists(markerPathFor(transcriptPath, agentId))) return null // real CLI proven ⇒ allow
+    if (markerExists(markerPathFor(transcriptPath, agentId))) {
+      dbg('PreToolUse', input, 'allow-marker')
+      return null // real CLI proven ⇒ allow
+    }
   } catch {
     /* marker check failed ⇒ fall through to the transcript scan */
   }
@@ -395,6 +481,7 @@ export function decidePreToolUse(
     return null // unreadable ⇒ fail-OPEN
   }
   if (typeof text === 'string' && text.length > 0 && countCliInvocations(text, sig) > 0) {
+    dbg('PreToolUse', input, 'allow-scan')
     return null // real CLI seen in the (flushed) transcript ⇒ allow
   }
   // Neither signal present: a verdict with NO real CLI invocation = a self-answer.
