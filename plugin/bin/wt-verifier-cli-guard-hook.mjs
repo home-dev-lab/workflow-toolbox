@@ -142,10 +142,19 @@ function markerDir() {
   return process.env['WT_VERIFIER_MARKER_DIR'] || os.tmpdir()
 }
 
-/** Deterministic per-transcript marker path (safe filename via a hash of transcript_path). Both
- *  hook events derive the SAME path for the same subagent (same transcript_path). */
-export function markerPathFor(transcriptPath) {
-  const key = crypto.createHash('sha1').update(String(transcriptPath)).digest('hex').slice(0, 40)
+/** Deterministic PER-SUBAGENT marker path. Keyed by (transcript_path + agent_id): in Path B
+ *  transcript_path is the SHARED delegated-session transcript (re-probe wf: identical for all 66
+ *  agents), so transcript_path ALONE would be ONE run-global marker — a sibling's CLI run would
+ *  then allow-marker every self-answer (6 leaked in the re-probe). Folding agent_id in makes the
+ *  marker per-VOTE (and per-run). Both hook events derive the SAME path for the SAME subagent
+ *  (same transcript_path + same agent_id). agent_id is present in both events (re-probe census:
+ *  60 distinct agent_ids on marker-writes). */
+export function markerPathFor(transcriptPath, agentId) {
+  const key = crypto
+    .createHash('sha1')
+    .update(`${String(transcriptPath)}:${String(agentId)}`)
+    .digest('hex')
+    .slice(0, 40)
   return path.join(markerDir(), MARKER_PREFIX + key)
 }
 
@@ -179,36 +188,70 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
   // in PostToolUse), the specific command regex above is the scope.
   if (input.agent_type !== undefined && signatureForAgentType(input.agent_type) === null) return
   const transcriptPath = input.transcript_path
-  if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return // no per-vote key
+  const agentId = input.agent_id
+  // Need BOTH transcript_path AND agent_id to form the PER-SUBAGENT key. Without agent_id a marker
+  // would be run-global (the re-probe bleed) — so skip writing rather than write an unkeyed marker
+  // that a sibling self-answer could ride.
+  if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return
+  if (!agentId) return
   try {
-    writeMarker(markerPathFor(transcriptPath))
+    writeMarker(markerPathFor(transcriptPath, agentId))
   } catch {
     /* best-effort: a marker we couldn't write just falls back to the transcript scan */
   }
   reapOldMarkers()
 }
 
+/** The refusal reason for one wrapper signature. */
+function denyReason(sig) {
+  return (
+    `[workflow-toolbox verifier CLI guard] Refused to emit a verdict: no real ${sig.id} CLI ` +
+    `invocation is proven for this verifier yet. You are a RELAY — you must actually run the ` +
+    `${sig.id} CLI (e.g. \`${sig.id} run …\`) and transcribe ITS output, never answer from your ` +
+    `own knowledge. Invoke the CLI now, then emit the verdict from its result; if the CLI is ` +
+    `unavailable or failed, return its OPENCODE_UNAVAILABLE / error text verbatim (text mode) ` +
+    `instead of a fabricated verdict.`
+  )
+}
+
 /** PreToolUse decision on a StructuredOutput call: deny-reason string, or null to ALLOW.
- *  Fail-OPEN on every uncertainty. Allows on the flush-immune marker (primary) OR the flushed
- *  transcript scan (secondary); denies only when BOTH are absent. */
+ *  Order matters (fixed after the re-probe bleed): the WRAPPER-SIG check is FIRST so a non-wrapper
+ *  agent (leaf/lean, or the main session with no agent_type) is never guarded; then, for a wrapper,
+ *  a missing per-vote key must NEVER widen allow — an external wrapper with no agent_id is
+ *  DENIED (fail-CLOSED), because the marker is keyed per-subagent by agent_id and a shared/absent
+ *  key would let a self-answer ride a sibling's CLI run. Otherwise ALLOW on the flush-immune
+ *  per-subagent marker (primary) OR the flushed transcript scan (secondary); DENY when both absent. */
 export function decidePreToolUse(
   input,
   readTranscript = (p) => fs.readFileSync(p, 'utf8'),
   markerExists = (p) => fs.existsSync(p),
 ) {
   if (input.tool_name !== 'StructuredOutput') return null
-  if (!input.agent_id) return null // main session ⇒ not ours ⇒ allow
+  // Wrapper-sig FIRST: a non-wrapper agent (leaf/lean, or the main session which carries no
+  // agent_type) is NEVER guarded — its verdict passes untouched.
   const sig = signatureForAgentType(input.agent_type)
-  if (sig === null) return null // non-wrapper agent (leaf/lean/…) ⇒ allow, verdict untouched
+  if (sig === null) return null
+  // It IS an external verifier wrapper. A missing agent_id means no per-subagent key can be formed,
+  // and a shared/absent key would let a self-answer ride a sibling's marker (the re-probe bleed) →
+  // FAIL-CLOSED. (agent_id is present in both hook events in practice — re-probe census: 60 distinct.)
+  const agentId = input.agent_id
+  if (!agentId) return denyReason(sig)
   const transcriptPath = input.transcript_path
-  if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return null // fail-OPEN
-  // PRIMARY: flush-immune marker written by this wrapper's own CLI PostToolUse.
+  // No transcript_path ⇒ no key AND no scan possible. transcript_path is THE core hook field and is
+  // always present in practice; fail-OPEN here (rather than deny) so a hypothetical missing field
+  // never reincarnates the round-1 catastrophic deny-ALL. (agent_id, the undocumented field, is the
+  // one that fails CLOSED above.)
+  if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return null
+  // PRIMARY: flush-immune PER-SUBAGENT marker written by THIS subagent's own CLI PostToolUse.
   try {
-    if (markerExists(markerPathFor(transcriptPath))) return null // real CLI proven ⇒ allow
+    if (markerExists(markerPathFor(transcriptPath, agentId))) return null // real CLI proven ⇒ allow
   } catch {
     /* marker check failed ⇒ fall through to the transcript scan */
   }
-  // SECONDARY: the transcript scan (works once the CLI Bash line is flushed).
+  // SECONDARY: the transcript scan (works once the CLI Bash line is flushed). In Path B this reads
+  // the SHARED delegated-session transcript, which carries 0 opencode calls (the calls live in
+  // per-subagent files) — so it CANNOT false-allow there; in an interactive spawn transcript_path
+  // is the agent's own transcript, where it is per-agent-correct.
   let text
   try {
     text = readTranscript(transcriptPath)
@@ -219,14 +262,7 @@ export function decidePreToolUse(
     return null // real CLI seen in the (flushed) transcript ⇒ allow
   }
   // Neither signal present: a verdict with NO real CLI invocation = a self-answer.
-  return (
-    `[workflow-toolbox verifier CLI guard] Refused to emit a verdict: no real ${sig.id} CLI ` +
-    `invocation is present for this verifier yet. You are a RELAY — you must actually run the ` +
-    `${sig.id} CLI (e.g. \`${sig.id} run …\`) and transcribe ITS output, never answer from your ` +
-    `own knowledge. Invoke the CLI now, then emit the verdict from its result; if the CLI is ` +
-    `unavailable or failed, return its OPENCODE_UNAVAILABLE / error text verbatim (text mode) ` +
-    `instead of a fabricated verdict.`
-  )
+  return denyReason(sig)
 }
 
 /** Back-compat alias: the PreToolUse decision. */

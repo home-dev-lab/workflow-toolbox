@@ -317,15 +317,15 @@ describe('wt-verifier-cli-guard-hook — deny a self-answered verdict until the 
     expect(r.stdout).toBe('')
   })
 
-  it('NO-OPs (silent) for the MAIN session (no agent_id) even with a self-answer transcript', () => {
+  it('NO-OPs (silent) for the MAIN session (no agent_type AND no agent_id) even with a self-answer transcript', () => {
     const tp = transcriptFile('main', bashTurn(SELF_ANSWER))
-    // Build the payload WITHOUT agent_id (a main-session call carries neither agent_id nor
-    // agent_type) — a defaulted soPayload arg can't express "absent", so construct inline.
+    // A true main-session call carries NEITHER agent_type NOR agent_id → the wrapper-sig check
+    // (now FIRST) returns null → allow. (A wrapper agent_type WITHOUT agent_id is a different case:
+    // fail-CLOSED → deny — locked in the FAIL-CLOSED test below.)
     const r = runHook(VERIFIER_GUARD_HOOK, {
       hook_event_name: 'PreToolUse',
       tool_name: 'StructuredOutput',
       tool_input: { verdict: 'confirmed', reason: 'ok' },
-      agent_type: 'workflow-toolbox:opencode-verifier',
       transcript_path: tp,
     })
     expect(r.stdout).toBe('')
@@ -399,6 +399,52 @@ describe('wt-verifier-cli-guard-hook — deny a self-answered verdict until the 
     const tp = transcriptFile('flushed', bashTurn(PROBE_OPENCODE_RUN))
     const r = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp), env)
     expect(r.stdout).toBe('') // fallback scan finds the real invocation → allowed
+  })
+
+  // ── FIX ROUND 3 (re-probe): the marker MUST be keyed PER-SUBAGENT (agent_id), not just by
+  // transcript_path — which in Path B is the SHARED delegated-session transcript, so a
+  // transcript_path-only key is ONE run-global marker and a sibling's CLI run allow-markers
+  // every self-answer (6 leaked in the re-probe). ─────────────────────────────────────────────
+  it('BLEED GUARD: agent B self-answering is DENIED even after sibling agent A ran opencode (no cross-agent marker bleed)', () => {
+    const env = markerEnv('bleed') // one delegated session's marker dir, shared by ALL its agents
+    // In Path B transcript_path is the SHARED delegated-session transcript (re-probe census: 0
+    // opencode calls in it — the calls live in per-subagent files), so it is the SAME for A and B.
+    const sharedTp = transcriptFile('shared-delegated') // empty, like the real shared transcript
+    // Agent A runs opencode → its PostToolUse writes A's marker.
+    const postA = runHook(VERIFIER_GUARD_HOOK, postBash('workflow-toolbox:opencode-verifier', PROBE_OPENCODE_RUN, sharedTp, 'AAAAAAAAAAAAAAAA'), env)
+    expect(postA.stdout).toBe('')
+    // Agent B NEVER ran opencode; it emits a verdict with the SAME shared transcript_path but its
+    // OWN agent_id → must be DENIED. A transcript_path-only key would ALLOW it via A's marker.
+    const preB = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', sharedTp, 'BBBBBBBBBBBBBBBB'), env)
+    expect(decisionOf(preB)).toBe('deny')
+  })
+
+  it('SAME-AGENT ALLOW (anti-pendulum): agent A that ran opencode has its OWN StructuredOutput ALLOWED via its marker', () => {
+    const env = markerEnv('sameagent')
+    const sharedTp = transcriptFile('shared-delegated-2') // shared transcript, empty of opencode calls
+    // A runs opencode → PostToolUse writes A's marker (keyed by transcript_path + A).
+    const postA = runHook(VERIFIER_GUARD_HOOK, postBash('workflow-toolbox:opencode-verifier', PROBE_OPENCODE_RUN, sharedTp, 'AAAAAAAAAAAAAAAA'), env)
+    expect(postA.stdout).toBe('')
+    // A emits ITS OWN verdict (SAME agent_id) → ALLOW. Locks agent_id write<->read stability: if the
+    // write/read agent_id ever diverged for one subagent, credit would collapse to a round-1
+    // false-refuse-ALL. This is the positive path the census must still see (~credited preserved).
+    const preA = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', sharedTp, 'AAAAAAAAAAAAAAAA'), env)
+    expect(preA.stdout).toBe('')
+    expect(preA.code).toBe(0)
+  })
+
+  it('FAIL-CLOSED: a wrapper StructuredOutput with an agent_type but NO agent_id is DENIED (a missing per-vote key never widens allow)', () => {
+    const env = markerEnv('failclosed')
+    const tp = transcriptFile('noaid')
+    const r = runHook(VERIFIER_GUARD_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'StructuredOutput',
+      tool_input: { verdict: 'confirmed', reason: 'ok' },
+      agent_type: 'workflow-toolbox:opencode-verifier',
+      transcript_path: tp,
+      // NO agent_id → cannot establish a per-vote key → fail-CLOSED
+    }, env)
+    expect(decisionOf(r)).toBe('deny')
   })
 
   it('drift-lock: the hook embeds the canonical opencode+codex CLI signatures verbatim', () => {
