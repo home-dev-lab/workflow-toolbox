@@ -303,18 +303,27 @@ describe('coverage-audit per-role agentType routing', () => {
   })
 
   it('prepends the routed Extract role model before all other prompt text', async () => {
-    const rt = runtime()
+    const rt = makeRuntime({
+      inventory: { 'src/a.ts': [makeCapability()], 'src/b.ts': [] },
+      extractRounds: [[makeGap()], []],
+    })
     await wf.run(rt, JSON.stringify({
       ...BASE_INPUT,
       agentTypes: { extract: TYPE },
       opencodeModels: { extract: 'zai-coding-plan/glm-5.2' },
     }))
     const extract = stageCalls(rt, 'Extract', 'extract undocumented-capability claims')
+    const inventory = stageCalls(rt, 'Inventory', 'inventory the user-facing capabilities')
+    const verify = stageCalls(rt, 'Verify', 'verdict for one undocumented-capability claim')
     expect(extract.some((c) =>
       String(c.prompt)
         .replace(/^<!-- wt-meta [^\n]+ -->\n\n/, '')
         .startsWith('OPENCODE_MODEL: zai-coding-plan/glm-5.2\n\n'),
     )).toBe(true)
+    expect(inventory.length).toBeGreaterThan(0)
+    expect(inventory.every((c) => !String(c.prompt).includes('OPENCODE_MODEL: zai-coding-plan/glm-5.2'))).toBe(true)
+    expect(verify.length).toBeGreaterThan(0)
+    expect(verify.every((c) => !String(c.prompt).includes('OPENCODE_MODEL: zai-coding-plan/glm-5.2'))).toBe(true)
   })
 })
 

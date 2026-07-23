@@ -971,7 +971,7 @@ export default defineWorkflow({
     let groundProbe: AgentTypeProbeReport | null = null
     if (input.groundingType !== undefined) {
       rt.phase('Probe')
-      const probe = await probeAgentType(rt, input.groundingType, { phase: 'Probe' })
+      const probe = await probeAgentType(rt, input.groundingType, { phase: 'Probe', required: true })
       resolvedGroundingType = probe.agentType
       groundProbe = { requested: input.groundingType, available: probe.available, reason: probe.reason }
     }
@@ -980,7 +980,7 @@ export default defineWorkflow({
     let verifyProbe: AgentTypeProbeReport | null = null
     if (input.verifierType !== undefined) {
       rt.phase('Probe')
-      const probe = await probeAgentType(rt, input.verifierType, { phase: 'Probe' })
+      const probe = await probeAgentType(rt, input.verifierType, { phase: 'Probe', required: true })
       resolvedVerifierType = probe.agentType
       verifyProbe = { requested: input.verifierType, available: probe.available, reason: probe.reason }
     }

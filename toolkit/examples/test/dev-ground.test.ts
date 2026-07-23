@@ -857,7 +857,7 @@ describe('dev-ground Verify + final artifact', () => {
     for (const rec of nullVerifierRecords) expect('decision' in rec).toBe(false)
   })
 
-  it('verifierType routing + graceful fallback (sibling precedent)', async () => {
+  it('verifierType routing + fail-fast when the explicit type is unavailable', async () => {
     const affirming = makeRuntime({ premises: onePremise, verifierVerdict: 'confirmed', verifyProbeReply: 'PROBE_OK' })
     const routed = await wf.run(affirming, baseArgs(onePremise, { agentTypes: { verify: 'codex:codex-rescue' } })) as {
       probe: { available: boolean; reason: string | null }
@@ -868,14 +868,16 @@ describe('dev-ground Verify + final artifact', () => {
     expect(verifierCalls.every((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(true)
 
     const failing = makeRuntime({ premises: onePremise, verifierVerdict: 'confirmed', verifyProbeReply: 'OPENCODE_UNAVAILABLE: no binary' })
-    const fallback = await wf.run(failing, baseArgs(onePremise, { agentTypes: { verify: 'workflow-toolbox:opencode-verifier' } })) as {
-      probe: { available: boolean; reason: string | null }
-    }
-    expect(fallback.probe.available).toBe(false)
-    expect(fallback.probe.reason).toContain('OPENCODE_UNAVAILABLE')
-    const fallbackVerifierCalls = failing.calls.filter((c) => c.prompt.toLowerCase().includes('this premise was grounded by two independent arms'))
-    expect(fallbackVerifierCalls.length).toBeGreaterThan(0)
-    expect(fallbackVerifierCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+    await expect(
+      wf.run(failing, baseArgs(onePremise, { agentTypes: { verify: 'workflow-toolbox:opencode-verifier' } })),
+    ).rejects.toThrow(/required agentType .* is unavailable/)
+  })
+
+  it('groundingType fails fast when the explicit type is unavailable', async () => {
+    const failing = makeRuntime({ premises: onePremise, verifierVerdict: 'confirmed', groundProbeReply: 'OPENCODE_UNAVAILABLE: no binary' })
+    await expect(
+      wf.run(failing, baseArgs(onePremise, { agentTypes: { ground: 'workflow-toolbox:opencode-verifier' } })),
+    ).rejects.toThrow(/required agentType .* is unavailable/)
   })
 
   it("resolveVerifierEffort floors 'low' to 'high' but 'max' raises it", async () => {

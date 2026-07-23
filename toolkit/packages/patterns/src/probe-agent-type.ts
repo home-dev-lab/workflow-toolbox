@@ -129,11 +129,14 @@ function escapeRegExp(literal: string): string {
  * routing value for downstream `<role>Type` options: the requested type when
  * the bridge answered affirmatively, `undefined` (standard subagent) otherwise.
  *
- * Unavailable outcomes (all degrade, never throw): a reply containing
- * `UNAVAILABLE` (the `OPENCODE_UNAVAILABLE: <reason>`-style bridge contract),
- * a null return (opaque agent failure), or any reply that does not end with
- * the expected token (e.g. a verbatim CLI error). Config errors (blank
- * agentType / expectedToken) throw synchronously at entry.
+ * Unavailable outcomes: a reply containing `UNAVAILABLE` (the
+ * `OPENCODE_UNAVAILABLE: <reason>`-style bridge contract), a null return
+ * (opaque agent failure), or any reply that does not end with the expected
+ * token (e.g. a verbatim CLI error). By DEFAULT an unavailable outcome DEGRADES
+ * to the standard subagent (`agentType: undefined`); with `required: true` it
+ * instead THROWS an actionable error — the caller explicitly configured this
+ * agentType, so silently degrading would betray that intent. Config errors
+ * (blank agentType / expectedToken) throw synchronously at entry regardless.
  *
  * @example
  * ```ts
@@ -181,7 +184,10 @@ export async function probeAgentType(
   // in the session registry (observed live 2026-07-09 in a headless/server-
   // launched run, where plugin agents are not loaded) — the most common
   // unavailability mode for consumers without the bridge plugin installed.
-  // A probe failure must degrade to the standard subagent, never abort the run.
+  // A probe failure DEGRADES to the standard subagent by default (never aborts
+  // the run); with `required: true` it instead throws (see the classification
+  // block below) — an explicitly-configured agentType that is unavailable is a
+  // launch-time config error, not a silent fallback.
   // -------------------------------------------------------------------------
 
   let reply: string | null
