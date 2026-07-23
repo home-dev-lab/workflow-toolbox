@@ -28,11 +28,12 @@
     "canary:agents": "tsx packages/smoke/src/sdk-agent-probe.ts"
   },
   "devDependencies": {
-    "typescript-eslint": "^8.0.0",
+    "@changesets/cli": "^2.31.1",
     "eslint": "^9.0.0",
-    "tsx": "^4.0.0",
     "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
     "typescript": "^6.0.0",
+    "typescript-eslint": "^8.0.0",
     "vitest": "^3.2.6"
   },
   "packageManager": "pnpm@11.10.0"
