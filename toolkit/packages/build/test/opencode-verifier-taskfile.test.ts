@@ -58,6 +58,27 @@ describe('opencode-verifier bridge — task file lives under the agent cwd, not 
         const occurrences = def.split('re-write the SAME task content').length - 1
         expect(occurrences).toBeGreaterThanOrEqual(2)
       })
+
+      // TEST-LOCK — DIRECT-READS opt-in mode (card #1825742346935862950) and the
+      // cross-family-review coherence fixes (codex gpt-5.6-terra): F1 the inline
+      // fallback result is NOT "final", F2 a post-fallback 429 retry stays INLINE,
+      // F3 the external_directory refusal predicate is ILLUSTRATIVE (non-exhaustive).
+      it('carries the DIRECT-READS opt-in signal and its paths-first task-file heading', () => {
+        expect(def).toContain('OPENCODE_DIRECT_READS: yes')
+        expect(def).toContain('### files to read (read them yourself)')
+      })
+
+      it('routes a direct-reads permission refusal to a ONE-shot inline fallback that keeps the mode INLINE for any later 429 retry (review F2)', () => {
+        expect(def).toContain('INLINE mode for the remainder of this call')
+      })
+
+      it('does NOT declare the inline fallback result exempt from the 429 rule (review F1 — no "result is final" contradiction)', () => {
+        expect(def).not.toContain('after which its result is final')
+      })
+
+      it('specifies the external_directory refusal predicate as ILLUSTRATIVE, not an exact/ordered match (review F3)', () => {
+        expect(def).toMatch(/ILLUSTRATIVE, NOT a required exact match/)
+      })
     })
   }
 })
