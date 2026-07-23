@@ -3,6 +3,113 @@
        alt="Workflow Toolbox — build, run, and trust multi-agent workflows in Claude Code. The Lego metaphor: molded bricks (nine tested @workflow-toolbox orchestration patterns), instruction sheets (Claude Code skills to author, scaffold, and debug), and finished models (runnable workflows).">
 </h1>
 
+**Workflow Toolbox is the proportionate agent-orchestration scale for
+Claude Code.** Pick the right rung for the task in front of you — a single
+agent, a team of agents, a pilot, an orchestrator, or a deterministic
+workflow. Most tasks want a low rung; the toolbox exists for the work that
+genuinely earns a higher one.
+
+## The orchestration scale
+
+| Rung | What it is | Reach for it when |
+|------|------------|-------------------|
+| **Plain agent** | One Claude Code subagent, one context. | The task is self-contained. |
+| **A team of agents** | A few agents messaging each other. | The work splits into a couple of coordinated roles. |
+| **Pilot** | One agent drives a whole unit of work end-to-end — intake → plan → do → verify → report — escalating only when it must. | You want one card or ticket carried autonomously. |
+| **Orchestrator** | One agent spawns and arbitrates a wave of pilots. | Several coupled units must move at once. |
+| **Deterministic workflow** | A JavaScript script owns the loops, branches, and fan-out; only the leaf `agent()` calls think, each in a fresh context. | The work fans out, needs independent verification, or is too big for one context window. |
+
+The first two rungs are Claude Code's own native primitives — the toolbox
+does not reinvent them. What it adds is the higher rungs (the shipped pilot
+and orchestrator agents, and the deterministic Workflow-tool patterns) and
+the discipline to choose the right rung instead of always reaching for the
+biggest one.
+
+## You may already be orchestrating — without the scaffolding
+
+**The skill-chainer.** Your `.claude/commands/*.md` files or skills form a
+multi-step procedure that the model must re-read and faithfully re-obey on
+every run. Make the steps a `pipeline` in code and only the leaf calls
+think — no step is silently skipped under context pressure.
+
+**The Karpathy-style loop.** Make one change, run a check, keep it if a
+number improves else `git revert`, append a row to a TSV, repeat. In
+markdown the model re-interprets that loop every iteration; in
+`loopUntilDone` your existing verification command stays the external,
+deterministic oracle, the stop condition is typed, and the loop is code
+rather than prose.
+
+**The executor/supervisor graph.** An executor advances the work and
+rewrites a shared `ledger.md`; a fresh-context supervisor re-checks the
+claimed progress and appends one-way corrections to `directives.md`. The same
+split maps onto two shipped roles — a pilot that drives the work and a
+read-only watchdog that observes it — where the supervisor's fresh context is
+a property each new sub-agent has by construction, not a convention rebuilt on
+every tick, with a live DAG to watch if you want one.
+
+All three lean on the model faithfully re-obeying written prose on every
+invocation; making the orchestration deterministic code removes that whole
+class of drift.
+
+## Why explicit, code-driven orchestration
+
+Markdown loops and file-based graphs both ask the model to re-apply a
+written procedure at each invocation. When context grows or attention
+shifts, a step can quietly disappear without the procedure itself changing.
+Code-driven orchestration moves that control flow into JavaScript: the code
+drives fresh-context sub-agents, the model handles only the leaf judgment,
+and the loops, branches, barriers, and stop conditions keep their declared
+shape. The skipped-a-step drift class leaves the orchestration layer.
+
+The other payoffs follow from that structure:
+
+- A live phase → agent DAG in the **Workflow Observatory** companion, so a
+  run is inspectable while it moves.
+- Typed resume and cache state across process boundaries.
+- Per-role model and cost routing — cheap workers where they suffice, strong
+  judges where judgment matters.
+- Genuine cross-family decorrelation for verification: a different model
+  family, not merely a fresh context on the same model.
+
+The numbers behind these are
+[one click down](docs/public/cost-engineering.md), each with its scope and
+methodology attached.
+
+## It won't — and shouldn't — replace everything
+
+The frame is *the right rung*, never "replace everything."
+
+**Keep your skills exactly where they are the right tool.** A well-scoped
+skill or a single prompt is often the correct rung; wrapping it in a
+workflow is over-engineering.
+
+A **quest-shaped task** does not need a second orchestration loop either: one
+well-specified goal with a reproducible verifier is already served by a plain
+agent — or by your host's own goal primitive. Naming when *not* to
+orchestrate is part of the honesty.
+
+**Human judgment between steps stays yours.** Deterministic orchestration
+fixes the declared control flow; it does not decide which tradeoffs you
+should make.
+
+And if you ever do convert an implicit setup, that change is proposed and
+consent-based — never forced at install, the same shape as the shipped
+`adopt-rules` skill: detection → proposal → your consent → conversion.
+
+## Where to go from here
+
+The practitioner depth below is unchanged — here is the map:
+
+- [When should I use a workflow?](#when-should-i-use-a-workflow) — the
+  token/spawn honesty and the industry-agnostic shapes.
+- [Install the plugin](#install-the-plugin) and
+  [Quickstart](#quickstart) — running your first workflow.
+- [The nine patterns at a glance](#the-nine-patterns-at-a-glance) — the
+  molded bricks and when to use each.
+- [The dev-workflow family](docs/public/dev-workflow.md) and
+  [the architecture](docs/public/architecture.md) — the full development
+  cycle and the design principles, with the measured run numbers.
+
 **Measured, not promised.** Every claim in this section traces to a journaled
 production run on this repository or to a public commit — per-agent token and
 tool-call counts, dropped-item tallies — auditable after the fact on the
