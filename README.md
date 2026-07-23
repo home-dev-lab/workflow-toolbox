@@ -698,10 +698,11 @@ and per-seat commercial licensing. The bundled `wt-observe` launcher starts it
 when installed. Distribution is being set up — watch this README for the
 download link.
 
-![An observe workflow-replay view (Sandstone theme) of a demo-all-patterns run: the tune panel is open over the themed desert backdrop — sliders for backdrop alpha, parallax, pan, zoom, and frame shadow — and the right-hand panel shows a tournament judge's transcript, a 7-of-10 score with its written reasoning and the structured-output result.](docs/assets/outreach/observe-tune-sandstone.jpg)
-*The themed backdrops and the live tune panel (Sandstone), with a tournament
-judge's transcript open on the right — any agent's full input, output, and
-structured result is inspectable.*
+![An observe workflow-replay view (Ancient Alien Ruins theme) of a real pre-release coverage-audit run: the tune panel is open over the themed backdrop — sliders for backdrop alpha, parallax, pan, zoom, tilt, and frame shadow — the phase-to-agent DAG runs across the middle (a probe stage, an inventory stage, a loopUntilDone extract stage, a verify column, a provenance check, and a report), and the right-hand panel shows a cross-family verifier's transcript with a "CLI seen" provenance badge and its structured verdict, confirmed, from openai/gpt-5.6-sol.](docs/assets/outreach/observe-tune-cross-family-verify.jpg)
+*A real pre-release `coverage-audit` run replayed (Ancient Alien Ruins theme):
+the live tune panel open on the left and a cross-family verifier's transcript on
+the right — the wrapper's real opencode invocation and its provenance-checked
+structured verdict are visible.*
 
 The launcher is a thin lifecycle CLI (`node plugin/bin/wt-observe.mjs …`):
 
