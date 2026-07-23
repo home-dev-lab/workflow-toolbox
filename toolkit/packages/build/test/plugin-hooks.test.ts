@@ -477,6 +477,44 @@ describe('wt-verifier-cli-guard-hook — deny a self-answered verdict until the 
     expect(decisionOf(r)).toBe('deny')
   })
 
+  // ── CARD #1825363023930328542 (step 2): the deny-path TERMINAL counter. A persistent no-CLI
+  // self-answer is refused 1..2 with an actionable message, and its 3rd refusal is TERMINAL (stop
+  // retrying, return text). A real-CLI vote is ALLOWED on its first post-run SO (step-1 fix), so it
+  // never accrues a count — the cap only bites a true self-answer. ─────────────────────────────────
+  const reasonOf = (r: Run): string =>
+    ((r.json?.['hookSpecificOutput'] as Record<string, string> | undefined)?.['permissionDecisionReason'] ?? '')
+
+  it('DENY COUNTER: the 3rd consecutive no-CLI deny of the SAME agent is TERMINAL (1st/2nd are not)', () => {
+    const env = markerEnv('terminal') // shared counter+marker dir across the 3 calls of THIS test
+    const tp = transcriptFile('terminal-self') // empty — the CLI never ran
+    const so = () => runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp, 'CCCCCCCCCCCCCCCC'), env)
+    const r1 = so()
+    expect(decisionOf(r1)).toBe('deny')
+    expect(reasonOf(r1)).not.toContain('TERMINAL')
+    const r2 = so()
+    expect(decisionOf(r2)).toBe('deny')
+    expect(reasonOf(r2)).not.toContain('TERMINAL')
+    const r3 = so()
+    expect(decisionOf(r3)).toBe('deny')
+    expect(reasonOf(r3)).toContain('TERMINAL')
+    expect(reasonOf(r3)).toContain('STOP')
+  })
+
+  it('DENY COUNTER recovery (aafb024d): a real opencode run before the 3rd attempt → ALLOWED, never terminal', () => {
+    const env = markerEnv('recover')
+    const tp = transcriptFile('recover-self') // empty (mid-flight)
+    const aid = 'DDDDDDDDDDDDDDDD'
+    // Two mid-flight denies (the CLI has not run yet)…
+    expect(decisionOf(runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp, aid), env))).toBe('deny')
+    expect(decisionOf(runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp, aid), env))).toBe('deny')
+    // …then the wrapper actually runs opencode → PostToolUse writes the per-subagent marker…
+    runHook(VERIFIER_GUARD_HOOK, postBash('workflow-toolbox:opencode-verifier', PROBE_OPENCODE_RUN, tp, aid), env)
+    // …so its 3rd StructuredOutput is ALLOWED (a real-CLI vote never reaches the terminal cap).
+    const r3 = runHook(VERIFIER_GUARD_HOOK, soPayload('workflow-toolbox:opencode-verifier', tp, aid), env)
+    expect(r3.stdout).toBe('')
+    expect(r3.code).toBe(0)
+  })
+
   it('drift-lock: the hook embeds the canonical opencode+codex CLI signatures verbatim', () => {
     const src = readFileSync(VERIFIER_GUARD_HOOK, 'utf8')
     // The provenance gate + this hook + the shipped debugger registry must agree on the CLI

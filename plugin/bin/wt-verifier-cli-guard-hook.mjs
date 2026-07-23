@@ -135,6 +135,16 @@ const COMMAND_SCAN_MAX = 20_000
 const MARKER_PREFIX = 'wt-verifier-cli-seen-'
 const MARKER_TTL_MS = 6 * 60 * 60 * 1000 // opportunistically reap markers older than this
 
+// Per-subagent DENY counter (card #1825363023930328542): a sibling file (SAME key family as the
+// cli-seen marker — sha1(transcript_path + ':' + agent_id)) holding how many verdicts THIS wrapper
+// has had refused with no CLI provenance. At DENY_TERMINAL_AT the refusal becomes TERMINAL (stop
+// retrying, return text). After the step-1 matcher fix a real-CLI vote is ALLOWED on its first
+// post-run StructuredOutput, so it never accrues a count — the counter only bites a PERSISTENT
+// no-CLI self-answer. Cap = 3 (aafb024d recovered on its 3rd attempt; a lower cap would cut
+// legitimate short-retry recoveries).
+const DENY_COUNTER_PREFIX = 'wt-verifier-denies-'
+const DENY_TERMINAL_AT = 3
+
 export function readInput() {
   try {
     const raw = fs.readFileSync(0, 'utf8')
@@ -220,13 +230,25 @@ export function markerPathFor(transcriptPath, agentId) {
   return path.join(markerDir(), MARKER_PREFIX + key)
 }
 
+/** Per-subagent deny-counter path — SAME per-vote key as markerPathFor, different prefix, so a
+ *  wrapper's deny count and its cli-seen marker live side by side and never collide with a
+ *  sibling's. */
+export function denyCounterPathFor(transcriptPath, agentId) {
+  const key = crypto
+    .createHash('sha1')
+    .update(`${String(transcriptPath)}:${String(agentId)}`)
+    .digest('hex')
+    .slice(0, 40)
+  return path.join(markerDir(), DENY_COUNTER_PREFIX + key)
+}
+
 /** Opportunistic cleanup so markers don't accumulate forever (best-effort, never throws). */
 function reapOldMarkers() {
   try {
     const dir = markerDir()
     const now = Date.now()
     for (const f of fs.readdirSync(dir)) {
-      if (f.indexOf(MARKER_PREFIX) !== 0) continue
+      if (f.indexOf(MARKER_PREFIX) !== 0 && f.indexOf(DENY_COUNTER_PREFIX) !== 0) continue
       const fp = path.join(dir, f)
       try {
         if (now - fs.statSync(fp).mtimeMs > MARKER_TTL_MS) fs.rmSync(fp, { force: true })
@@ -274,6 +296,58 @@ function denyReason(sig) {
     `unavailable or failed, return its OPENCODE_UNAVAILABLE / error text verbatim (text mode) ` +
     `instead of a fabricated verdict.`
   )
+}
+
+/** Nudge appended to a non-terminal deny (denies 1..N-1): the model often just finished the CLI
+ *  and needs to re-emit its verdict rather than re-run. */
+function retryHintLine(sig) {
+  return ` If your ${sig.id} CLI just finished, re-emit StructuredOutput now — its result is what unblocks you.`
+}
+
+/** The TERMINAL refusal at DENY_TERMINAL_AT: stop retrying, return the CLI's own output as TEXT. A
+ *  PreToolUse deny is technically retryable by the model, so this is a strong MESSAGE (the ratified
+ *  mechanism (i)); the retry loop is bounded by maxTurns regardless. */
+function terminalDenyReason(sig, count) {
+  return (
+    `[workflow-toolbox verifier CLI guard] TERMINAL (refused ${count}×): no real ${sig.id} CLI ` +
+    `invocation has EVER been proven for this verifier. STOP retrying — further StructuredOutput ` +
+    `calls will keep being refused. Return your FINAL answer as TEXT now: the ${sig.id} CLI's ` +
+    `OPENCODE_UNAVAILABLE / error output verbatim if it failed or is unavailable, otherwise state ` +
+    `plainly that you could not run it. Do NOT emit a verdict from your own knowledge.`
+  )
+}
+
+/** Count THIS deny per-subagent and escalate to a TERMINAL refusal at the cap. Pure over injected
+ *  fs so unit tests can drive it; the child-process tests exercise the real files. Without a
+ *  per-vote key (no transcript_path / agent_id, or a non-wrapper agent_type) it cannot count and
+ *  returns the base reason unchanged — still a deny, just no escalation. */
+export function escalateDeny(
+  input,
+  baseReason,
+  readCount = (p) => fs.readFileSync(p, 'utf8'),
+  writeCount = (p, v) => fs.writeFileSync(p, v),
+) {
+  const sig = signatureForAgentType(input.agent_type)
+  const transcriptPath = input.transcript_path
+  const agentId = input.agent_id
+  if (sig === null || typeof transcriptPath !== 'string' || transcriptPath.length === 0 || !agentId) {
+    return baseReason
+  }
+  const counterPath = denyCounterPathFor(transcriptPath, agentId)
+  let count = 0
+  try {
+    const n = parseInt(readCount(counterPath), 10)
+    if (Number.isFinite(n) && n > 0) count = n
+  } catch {
+    /* no prior count on disk */
+  }
+  count += 1
+  try {
+    writeCount(counterPath, String(count))
+  } catch {
+    /* best-effort: a count we couldn't persist just doesn't escalate */
+  }
+  return count >= DENY_TERMINAL_AT ? terminalDenyReason(sig, count) : baseReason + retryHintLine(sig)
 }
 
 /** PreToolUse decision on a StructuredOutput call: deny-reason string, or null to ALLOW.
@@ -338,12 +412,14 @@ export function run() {
   }
   const reason = decidePreToolUse(input)
   if (!reason) return // allow: SILENT exit 0, so normal permission flow is untouched
+  // A deny was decided → count it per-subagent and escalate to a TERMINAL refusal at the cap.
+  const finalReason = escalateDeny(input, reason)
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: reason,
+        permissionDecisionReason: finalReason,
       },
     }),
   )
