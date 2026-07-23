@@ -555,7 +555,7 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
     expect(probe.reason).toBeNull()
   })
 
-  it('falls back to the standard subagent when the probe is non-affirmative, reporting the reason', async () => {
+  it('fails fast (refuses the launch) when the explicit reviewer probe is non-affirmative, reporting the reason', async () => {
     const rt = new FakeRuntime({
       onAgent: ({ prompt }: { prompt: string; index: number }) => {
         const p = prompt.toLowerCase()
@@ -577,24 +577,18 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
         return { summary: 'Change summary', riskAreas: [], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
       },
     })
-    const result = await wf.run(
-      rt,
-      JSON.stringify({
-        target: 'HEAD~1..HEAD',
-        agentTypes: { review: 'workflow-toolbox:opencode-verifier' },
-      }),
-    )
-    // Reviewers still ran — WITHOUT the agentType (graceful fallback)
-    const reviews = reviewCalls(rt)
-    expect(reviews.length).toBeGreaterThan(0)
-    for (const c of reviews) expect(c.opts?.agentType).toBeUndefined()
-    expect((result as { reviewerType: string | null }).reviewerType).toBeNull()
-    const probe = (result as {
-      probe: { requested: string; available: boolean; reason: string | null }
-    }).probe
-    expect(probe.requested).toBe('workflow-toolbox:opencode-verifier')
-    expect(probe.available).toBe(false)
-    expect(probe.reason).toContain('OPENCODE_UNAVAILABLE')
+    // An EXPLICITLY-configured reviewer type (agentTypes.review) that fails its
+    // probe must FAIL AT LAUNCH (required: true) — never silently degrade to the
+    // standard subagent. The refusal message reports the probe reason.
+    await expect(
+      wf.run(
+        rt,
+        JSON.stringify({
+          target: 'HEAD~1..HEAD',
+          agentTypes: { review: 'workflow-toolbox:opencode-verifier' },
+        }),
+      ),
+    ).rejects.toThrow(/required agentType 'workflow-toolbox:opencode-verifier' is unavailable \(OPENCODE_UNAVAILABLE/)
   })
 
   it('rejects a blank agentTypes.review via the shared parseConfig validation', async () => {
@@ -619,7 +613,8 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
 // ---------------------------------------------------------------------------
 // Test: Verify-fan routing via the STRUCTURED config channel `agentTypes.verify`
 // — mirrors the agentTypes.review block above exactly (same probe-then-resolve
-// shape, same graceful-fallback contract), but routes the ADVERSARIAL VERIFIER
+// shape, same fail-fast contract — an explicit type that fails its probe refuses
+// the launch, required: true), but routes the ADVERSARIAL VERIFIER
 // agents (adversarialVerification's own `verifierType` option) instead of the
 // lens reviewers. Reported in the result's `verifierType` / `verifierProbe`.
 // ---------------------------------------------------------------------------
@@ -674,7 +669,7 @@ describe('pr-review verifier routing (agentTypes.verify)', () => {
     expect(probe.reason).toBeNull()
   })
 
-  it('falls back to the standard subagent when the probe is non-affirmative, reporting the reason', async () => {
+  it('fails fast (refuses the launch) when the explicit verifier probe is non-affirmative, reporting the reason', async () => {
     const rt = new FakeRuntime({
       onAgent: ({ prompt }: { prompt: string; index: number }) => {
         const p = prompt.toLowerCase()
@@ -698,24 +693,18 @@ describe('pr-review verifier routing (agentTypes.verify)', () => {
         return { summary: 'Change summary here', riskAreas: [], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
       },
     })
-    const result = await wf.run(
-      rt,
-      JSON.stringify({
-        target: 'HEAD~1..HEAD',
-        agentTypes: { verify: 'workflow-toolbox:opencode-verifier' },
-      }),
-    )
-    // Verifiers still ran — WITHOUT the agentType (graceful fallback)
-    const verifies = verifyCalls(rt)
-    expect(verifies.length).toBeGreaterThan(0)
-    for (const c of verifies) expect(c.opts?.agentType).toBeUndefined()
-    expect((result as { verifierType: string | null }).verifierType).toBeNull()
-    const probe = (result as {
-      verifierProbe: { requested: string; available: boolean; reason: string | null }
-    }).verifierProbe
-    expect(probe.requested).toBe('workflow-toolbox:opencode-verifier')
-    expect(probe.available).toBe(false)
-    expect(probe.reason).toContain('OPENCODE_UNAVAILABLE')
+    // An EXPLICITLY-configured verifier type (agentTypes.verify) that fails its
+    // probe must FAIL AT LAUNCH (required: true) — never silently degrade to the
+    // standard subagent. The refusal message reports the probe reason.
+    await expect(
+      wf.run(
+        rt,
+        JSON.stringify({
+          target: 'HEAD~1..HEAD',
+          agentTypes: { verify: 'workflow-toolbox:opencode-verifier' },
+        }),
+      ),
+    ).rejects.toThrow(/required agentType 'workflow-toolbox:opencode-verifier' is unavailable \(OPENCODE_UNAVAILABLE/)
   })
 
   it('rejects a blank agentTypes.verify via the shared parseConfig validation', async () => {

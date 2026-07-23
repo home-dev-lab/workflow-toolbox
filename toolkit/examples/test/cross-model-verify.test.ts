@@ -127,42 +127,30 @@ describe('cross-model-verify — routed (probe available)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Fallback — probe fails, run COMPLETES on the standard verifier
+// Fail-fast — a requested verifier must be available
 // ---------------------------------------------------------------------------
 
-describe('cross-model-verify — graceful fallback (probe unavailable)', () => {
-  it('falls back to the standard verifier on the UNAVAILABLE marker, reporting the reason', async () => {
+describe('cross-model-verify — fails fast (probe unavailable)', () => {
+  it('refuses the launch on the UNAVAILABLE marker', async () => {
     const rt = makeRuntime({ probeReply: 'OPENCODE_UNAVAILABLE: no opencode binary on PATH' })
-    const result = (await wf.run(rt, {
-      ...BASE_ARGS,
-      agentTypes: { verify: 'workflow-toolbox:opencode-verifier' },
-    })) as WfResult
-
-    // Verification still ran — standard subagent (no agentType threaded)
-    const verifierCalls = rt.calls.filter((c) =>
-      c.opts?.label?.startsWith('adversarialVerification:'),
+    await expect(
+      wf.run(rt, {
+        ...BASE_ARGS,
+        agentTypes: { verify: 'workflow-toolbox:opencode-verifier' },
+      }),
+    ).rejects.toThrow(
+      /required agentType .* is unavailable/,
     )
-    expect(verifierCalls.length).toBeGreaterThan(0)
-    expect(verifierCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
-    expect(result.confirmed.length).toBe(1)
-
-    // Pure identifier stays null; the structured probe field carries the story
-    expect(result.verifierType).toBeNull()
-    expect(result.probe?.requested).toBe('workflow-toolbox:opencode-verifier')
-    expect(result.probe?.available).toBe(false)
-    expect(result.probe?.reason).toContain('OPENCODE_UNAVAILABLE: no opencode binary on PATH')
   })
 
-  it('falls back the same way when the probe agent returns null', async () => {
+  it('refuses the launch when the probe agent returns null', async () => {
     const rt = makeRuntime({ probeReply: null })
-    const result = (await wf.run(rt, {
-      ...BASE_ARGS,
-      agentTypes: { verify: 'codex:codex-rescue' },
-    })) as WfResult
-
-    expect(result.verifierType).toBeNull()
-    expect(result.probe?.available).toBe(false)
-    expect(result.confirmed.length).toBe(1)
+    await expect(
+      wf.run(rt, {
+        ...BASE_ARGS,
+        agentTypes: { verify: 'codex:codex-rescue' },
+      }),
+    ).rejects.toThrow(/required agentType .* is unavailable/)
   })
 })
 

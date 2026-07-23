@@ -92,6 +92,13 @@ export interface ProbeAgentTypeOptions {
   /** The affirmative token the probe reply must END with (after ANSI/banner
    *  stripping). Default 'PROBE_OK'. */
   expectedToken?: string
+  /** When true, an UNAVAILABLE probe THROWS an actionable error instead of
+   *  degrading to the standard subagent. For an agentType the USER explicitly
+   *  configured (e.g. agentTypes.verify) where the cross-family semantics ARE
+   *  the step's meaning — silently degrading betrays that intent and burns the
+   *  run's tokens on verdicts a downstream gate then voids. Default false =
+   *  graceful degrade (library default-routing / optional optimisation). */
+  required?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -122,11 +129,14 @@ function escapeRegExp(literal: string): string {
  * routing value for downstream `<role>Type` options: the requested type when
  * the bridge answered affirmatively, `undefined` (standard subagent) otherwise.
  *
- * Unavailable outcomes (all degrade, never throw): a reply containing
- * `UNAVAILABLE` (the `OPENCODE_UNAVAILABLE: <reason>`-style bridge contract),
- * a null return (opaque agent failure), or any reply that does not end with
- * the expected token (e.g. a verbatim CLI error). Config errors (blank
- * agentType / expectedToken) throw synchronously at entry.
+ * Unavailable outcomes: a reply containing `UNAVAILABLE` (the
+ * `OPENCODE_UNAVAILABLE: <reason>`-style bridge contract), a null return
+ * (opaque agent failure), or any reply that does not end with the expected
+ * token (e.g. a verbatim CLI error). By DEFAULT an unavailable outcome DEGRADES
+ * to the standard subagent (`agentType: undefined`); with `required: true` it
+ * instead THROWS an actionable error — the caller explicitly configured this
+ * agentType, so silently degrading would betray that intent. Config errors
+ * (blank agentType / expectedToken) throw synchronously at entry regardless.
  *
  * @example
  * ```ts
@@ -150,7 +160,7 @@ export async function probeAgentType(
   agentType: string,
   options: ProbeAgentTypeOptions = {},
 ): Promise<AgentTypeProbe> {
-  const { phase, probePrompt, expectedToken } = options
+  const { phase, probePrompt, expectedToken, required } = options
 
   // -------------------------------------------------------------------------
   // Synchronous validation
@@ -174,7 +184,10 @@ export async function probeAgentType(
   // in the session registry (observed live 2026-07-09 in a headless/server-
   // launched run, where plugin agents are not loaded) — the most common
   // unavailability mode for consumers without the bridge plugin installed.
-  // A probe failure must degrade to the standard subagent, never abort the run.
+  // A probe failure DEGRADES to the standard subagent by default (never aborts
+  // the run); with `required: true` it instead throws (see the classification
+  // block below) — an explicitly-configured agentType that is unavailable is a
+  // launch-time config error, not a silent fallback.
   // -------------------------------------------------------------------------
 
   let reply: string | null
@@ -224,6 +237,20 @@ export async function probeAgentType(
   // -------------------------------------------------------------------------
   // Never silent — log + digest for both outcomes
   // -------------------------------------------------------------------------
+
+  if (!available && required === true) {
+    rt.log(
+      `${STAGE}: required '${agentType}' unavailable — refusing launch (${reason ?? 'unknown'})`,
+    )
+    emitDigest(rt, {
+      stage: STAGE,
+      ...(phase !== undefined ? { phase } : {}),
+      output: `required-unavailable: ${agentType}`,
+    })
+    throw new Error(
+      `${STAGE}: required agentType '${agentType}' is unavailable (${reason ?? 'unknown'}) — its explicit routing cannot be honored, so the run is refused at launch rather than silently degraded. Remedy: ensure the agentType is registered and its provider installed/authenticated, or remove the explicit routing (agentTypes.<role>) to allow the standard-subagent fallback.`,
+    )
+  }
 
   if (available) {
     rt.log(`${STAGE}: '${agentType}' available — routing externally`)

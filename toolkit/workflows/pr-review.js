@@ -883,7 +883,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
   async function probeAgentType(rt, agentType, options = {}) {
-    const { phase, probePrompt, expectedToken } = options;
+    const { phase, probePrompt, expectedToken, required } = options;
     assertAgentTypeOption(STAGE, "agentType", agentType);
     if (expectedToken !== void 0 && expectedToken.trim().length === 0) {
       throw new Error(
@@ -921,6 +921,19 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
       } else {
         reason = `unexpected probe reply: ${head(stripped)}`;
       }
+    }
+    if (!available && required === true) {
+      rt.log(
+        `${STAGE}: required '${agentType}' unavailable \u2014 refusing launch (${reason ?? "unknown"})`
+      );
+      emitDigest(rt, {
+        stage: STAGE,
+        ...phase !== void 0 ? { phase } : {},
+        output: `required-unavailable: ${agentType}`
+      });
+      throw new Error(
+        `${STAGE}: required agentType '${agentType}' is unavailable (${reason ?? "unknown"}) \u2014 its explicit routing cannot be honored, so the run is refused at launch rather than silently degraded. Remedy: ensure the agentType is registered and its provider installed/authenticated, or remove the explicit routing (agentTypes.<role>) to allow the standard-subagent fallback.`
+      );
     }
     if (available) {
       rt.log(`${STAGE}: '${agentType}' available \u2014 routing externally`);
@@ -1973,7 +1986,13 @@ ${renderClaim(claim)}`;
       // The adopt-rules opt-in installer (writes editable, versioned rule copies of
       // the cross-cutting guardrails) is described by its own skill.
       sources: ["plugin/skills/adopt-rules/scripts/"],
-      docs: ["plugin/skills/adopt-rules/SKILL.md"]
+      docs: ["plugin/skills/adopt-rules/SKILL.md", "README.md"]
+    },
+    {
+      // The bundled cross-cutting rule files (the delegation ladder + companions)
+      // that adopt-rules installs; described by their own README and the repo README.
+      sources: ["plugin/rules/"],
+      docs: ["plugin/rules/README.md", "README.md"]
     },
     {
       // The nine patterns + the result envelope (options, caps, envelope shape,
@@ -2371,7 +2390,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     let probeReport = null;
     if (input.reviewerType !== null) {
       rt.phase("Probe");
-      const probe = await probeAgentType(rt, input.reviewerType, { phase: "Probe" });
+      const probe = await probeAgentType(rt, input.reviewerType, { phase: "Probe", required: true });
       resolvedReviewerType = probe.agentType ?? null;
       probeReport = { requested: input.reviewerType, available: probe.available, reason: probe.reason };
     }
@@ -2379,7 +2398,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     let verifierProbeReport = null;
     if (input.verifierType !== null) {
       rt.phase("Probe");
-      const probe = await probeAgentType(rt, input.verifierType, { phase: "Probe" });
+      const probe = await probeAgentType(rt, input.verifierType, { phase: "Probe", required: true });
       resolvedVerifierType = probe.agentType ?? null;
       verifierProbeReport = { requested: input.verifierType, available: probe.available, reason: probe.reason };
     }

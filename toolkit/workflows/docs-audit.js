@@ -882,7 +882,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
   async function probeAgentType(rt, agentType, options = {}) {
-    const { phase, probePrompt, expectedToken } = options;
+    const { phase, probePrompt, expectedToken, required } = options;
     assertAgentTypeOption(STAGE, "agentType", agentType);
     if (expectedToken !== void 0 && expectedToken.trim().length === 0) {
       throw new Error(
@@ -920,6 +920,19 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
       } else {
         reason = `unexpected probe reply: ${head(stripped)}`;
       }
+    }
+    if (!available && required === true) {
+      rt.log(
+        `${STAGE}: required '${agentType}' unavailable \u2014 refusing launch (${reason ?? "unknown"})`
+      );
+      emitDigest(rt, {
+        stage: STAGE,
+        ...phase !== void 0 ? { phase } : {},
+        output: `required-unavailable: ${agentType}`
+      });
+      throw new Error(
+        `${STAGE}: required agentType '${agentType}' is unavailable (${reason ?? "unknown"}) \u2014 its explicit routing cannot be honored, so the run is refused at launch rather than silently degraded. Remedy: ensure the agentType is registered and its provider installed/authenticated, or remove the explicit routing (agentTypes.<role>) to allow the standard-subagent fallback.`
+      );
     }
     if (available) {
       rt.log(`${STAGE}: '${agentType}' available \u2014 routing externally`);
@@ -1887,6 +1900,33 @@ ${renderClaim(claim)}`;
     }
     return raw;
   }
+  var AGENT_TYPE_ROLES = ["inventory", "extract", "verify"];
+  var OPENCODE_MODEL_ROLES = ["inventory", "extract", "verify"];
+  function parseOpencodeModels(raw) {
+    if (raw === void 0 || raw === null) return null;
+    if (typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error('docs-audit: "opencodeModels" must be an object when provided');
+    }
+    const obj = raw;
+    const unknown = Object.keys(obj).filter(
+      (key) => !OPENCODE_MODEL_ROLES.includes(key)
+    );
+    if (unknown.length > 0) {
+      throw new Error(
+        `docs-audit: "opencodeModels" has unknown key(s): ${unknown.join(", ")}; accepted keys: ${OPENCODE_MODEL_ROLES.join(", ")}`
+      );
+    }
+    const parsed = {};
+    for (const role of OPENCODE_MODEL_ROLES) {
+      const value = obj[role];
+      if (value === void 0) continue;
+      if (typeof value !== "string" || value.trim().length === 0) {
+        throw new Error(`docs-audit: "opencodeModels.${role}" must be a non-empty string when provided`);
+      }
+      parsed[role] = value;
+    }
+    return parsed;
+  }
   function parseInput(raw) {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
       throw new Error(
@@ -1953,12 +1993,20 @@ ${renderClaim(claim)}`;
       verifierModel,
       effort: cfg.effort ?? null,
       perAgent: cfg.perAgent ?? null,
+      inventoryType: cfg.agentTypes?.["inventory"] ?? null,
+      extractType: cfg.agentTypes?.["extract"] ?? null,
       verifierType: cfg.agentTypes?.["verify"] ?? null,
+      opencodeModels: parseOpencodeModels(obj["opencodeModels"]),
+      unknownAgentTypeKeys: Object.keys(cfg.agentTypes ?? {}).filter(
+        (key) => !AGENT_TYPE_ROLES.includes(key)
+      ),
       messaging: cfg.messaging === true
     };
   }
-  function inventoryPrompt(input) {
-    return `Inventory the documentation surfaces of the repository at ${input.repoRoot}.
+  function inventoryPrompt(input, opencodeModel) {
+    return (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
+
+` : "") + `Inventory the documentation surfaces of the repository at ${input.repoRoot}.
 
 Rules for what counts as a surface:
 ${input.surfaceRules ?? DEFAULT_SURFACE_RULES}
@@ -1969,8 +2017,10 @@ ${input.hints}
 ` : "") + `List the actual directories to find every matching file that EXISTS \u2014 never guess a path.
 Return { "surfaces": ["<repo-relative path>", ...] } using forward slashes, relative to ${input.repoRoot}.`;
   }
-  function extractPrompt(input, group, round, angle) {
-    return `Extract checkable claims from documentation \u2014 extraction round ${round}.
+  function extractPrompt(input, group, round, angle, opencodeModel) {
+    return (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
+
+` : "") + `Extract checkable claims from documentation \u2014 extraction round ${round}.
 Repository root: ${input.repoRoot} (all surface paths below are relative to it; read the files from this root).
 
 Doc surfaces assigned to YOU in this task:
@@ -1993,8 +2043,10 @@ Where to look first: ${c.checkHint}`.replace(/-{5} (BEGIN|END) AUDITED DOC CLAIM
 ` + body + `
 ----- END AUDITED DOC CLAIM -----`;
   }
-  function renderAuditClaim(repoRoot, hints) {
-    return (c) => `Documentation-drift audit \u2014 verdict for ONE documentation claim.
+  function renderAuditClaim(repoRoot, hints, opencodeModel) {
+    return (c) => (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
+
+` : "") + `Documentation-drift audit \u2014 verdict for ONE documentation claim.
 Repository root: ${repoRoot}.
 ` + renderUntrustedClaimBlock(c) + "\n" + (hints !== null ? `Extra context:
 ${hints}
@@ -2013,6 +2065,13 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
     });
     const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0;
     const warnings = [];
+    if (input.unknownAgentTypeKeys.length > 0) {
+      warn(
+        rt,
+        warnings,
+        `docs-audit: unknown agentTypes key(s) ignored: ${input.unknownAgentTypeKeys.join(", ")}; accepted keys: ${AGENT_TYPE_ROLES.join(", ")}`
+      );
+    }
     const inventoryEffort = resolveEffort(input.effort?.["inventory"], INVENTORY_EFFORT);
     const extractEffort = resolveEffort(input.effort?.["extract"], EXTRACT_EFFORT);
     const verifyEffort = resolveVerifierEffort(input.effort?.["verify"], VERIFY_EFFORT_DEFAULT);
@@ -2024,10 +2083,20 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         "docs-audit: effort.inventory='auto' has no effect \u2014 the inventory is a single derivation agent; using the static default"
       );
     }
+    let resolvedInventoryType = null;
+    if (input.inventoryType !== null) {
+      const probe = await probeAgentType(rt, input.inventoryType, { phase: "Fence", required: true });
+      resolvedInventoryType = probe.agentType ?? null;
+    }
+    let resolvedExtractType = null;
+    if (input.extractType !== null) {
+      const probe = await probeAgentType(rt, input.extractType, { phase: "Fence", required: true });
+      resolvedExtractType = probe.agentType ?? null;
+    }
     let verifierProbe = null;
     let resolvedVerifierType = null;
     if (input.verifierType !== null) {
-      const probe = await probeAgentType(rt, input.verifierType, { phase: "Fence" });
+      const probe = await probeAgentType(rt, input.verifierType, { phase: "Fence", required: true });
       resolvedVerifierType = probe.agentType ?? null;
       verifierProbe = { requested: input.verifierType, available: probe.available, reason: probe.reason };
     }
@@ -2038,11 +2107,15 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       surfaces = input.surfaces;
       inventorySource = "input";
     } else {
-      const invOutcome = await agentWithSchemaSalvage(rt, inventoryPrompt(input), {
+      const invOutcome = await agentWithSchemaSalvage(rt, inventoryPrompt(
+        input,
+        resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null
+      ), {
         schema: INVENTORY_SCHEMA,
         label: "docs-audit:inventory",
         phase: "Inventory",
-        effort: inventoryEffort
+        effort: inventoryEffort,
+        ...resolvedInventoryType !== null ? { agentType: resolvedInventoryType } : {}
       });
       for (const w of invOutcome.warnings) warn(rt, warnings, w);
       const inv = invOutcome.value;
@@ -2088,12 +2161,19 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
           groups.map((group, gi) => async () => {
             const outcome = await agentWithSchemaSalvage(
               loopRt,
-              extractPrompt(input, group, round, angle),
+              extractPrompt(
+                input,
+                group,
+                round,
+                angle,
+                resolvedExtractType !== null ? input.opencodeModels?.extract ?? null : null
+              ),
               {
                 schema: EXTRACT_SCHEMA,
                 label: `docs-audit:extract:${round}:${gi}`,
                 phase: "Extract",
-                effort: extractEffortByGroup?.[gi] ?? extractEffort
+                effort: extractEffortByGroup?.[gi] ?? extractEffort,
+                ...resolvedExtractType !== null ? { agentType: resolvedExtractType } : {}
               }
             );
             for (const w of outcome.warnings) warn(rt, warnings, w);
@@ -2164,7 +2244,11 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
     } else {
       const verifyResult = await adversarialVerification(rt, {
         claims: sortedClaims,
-        renderClaim: renderAuditClaim(input.repoRoot, input.hints),
+        renderClaim: renderAuditClaim(
+          input.repoRoot,
+          input.hints,
+          resolvedVerifierType !== null ? input.opencodeModels?.verify ?? null : null
+        ),
         votes: input.votes,
         // Severity-tiered votes (card #1821093105403692296): the full quorum
         // only where an error is expensive — behavioral contracts, boundary

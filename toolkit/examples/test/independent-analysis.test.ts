@@ -185,7 +185,7 @@ describe('independent-analysis parseInput', () => {
     expect(verifierCalls.every((c) => c.opts?.agentType === 'codex:codex-rescue')).toBe(true)
   })
 
-  it('falls back to the standard verifier when the probe is non-affirmative', async () => {
+  it('fails fast and refuses the launch when the probe is non-affirmative', async () => {
     // Mirrors makeRuntime's prompt-routing, with a FAILING probe branch.
     const failing = new FakeRuntime({
       onAgent: ({ prompt }: { prompt: string; index: number }) => {
@@ -211,20 +211,12 @@ describe('independent-analysis parseInput', () => {
         return { lenses: ['correctness'] }
       },
     })
-    const result = await wf.run(
-      failing,
-      JSON.stringify({ ...baseInput, agentTypes: { verify: 'workflow-toolbox:opencode-verifier' } }),
-    )
-    expect(result).toHaveProperty('verifierType', null)
-    const probeField = (result as { probe: { available: boolean; reason: string | null } }).probe
-    expect(probeField.available).toBe(false)
-    expect(probeField.reason).toContain('OPENCODE_UNAVAILABLE')
-    // Verifiers ran WITHOUT the agentType (graceful fallback).
-    const verifierCalls = failing.calls.filter((c) =>
-      c.prompt.toLowerCase().includes('an independent multi-lens sweep proposes'),
-    )
-    expect(verifierCalls.length).toBeGreaterThan(0)
-    expect(verifierCalls.every((c) => c.opts?.agentType === undefined)).toBe(true)
+    await expect(
+      wf.run(
+        failing,
+        JSON.stringify({ ...baseInput, agentTypes: { verify: 'workflow-toolbox:opencode-verifier' } }),
+      ),
+    ).rejects.toThrow(/required agentType .* is unavailable/)
   })
 })
 
