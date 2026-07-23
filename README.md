@@ -19,6 +19,13 @@ genuinely earns a higher one.
 | **Orchestrator** | One agent spawns and arbitrates a wave of pilots. | Several coupled units must move at once. |
 | **Deterministic workflow** | A JavaScript script owns the loops, branches, and fan-out; only the leaf `agent()` calls think, each in a fresh context. | The work fans out, needs independent verification, or is too big for one context window. |
 
+**You don't write any of this by hand.** You ask Claude in plain language, and
+the shipped skills compose the right rung for you — describe a process in a
+sentence and the `workflow-composer` skill writes the workflow; ask to drive a
+card end-to-end and the `pilot-wave` skill composes the briefed pilot. What
+comes back is plain JavaScript you can read, keep, and edit — a starting point,
+not a black box.
+
 The first two rungs are Claude Code's own native primitives — the toolbox
 does not reinvent them. What it adds is the higher rungs (the shipped pilot
 and orchestrator agents, and the deterministic Workflow-tool patterns) and
