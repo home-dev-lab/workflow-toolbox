@@ -178,24 +178,41 @@
       `CLAUDE.md`) is a separate, so-far-undecided lever — no such file exists in this
       repo today, and deciding how much of the ambient frame it should mirror is a
       standing scope call, not something a single call's brief resolves.
-    - **`opencode-verifier` can SKIP the inlining when the user opts in — the
-      `OPENCODE_DIRECT_READS` recipe.** The inlining described just above is the
-      PORTABLE default (the wrapper reads each referenced file and pastes its content
-      into the task file, so opencode never has to reach a repo path). When the user's
-      `opencode` config grants `permission.external_directory` for the audited paths —
-      a per-project `~/.config/opencode/opencode.jsonc` with e.g.
-      `permission: { external_directory: { "*": "ask", "/abs/repo/**": "allow" } }`
-      (⚠ the LAST matching rule wins, so the `"*"` catch-all must come FIRST or it
-      overrides the allow) — you can pass an OPT-IN line `OPENCODE_DIRECT_READS: yes`
-      through the SAME trusted channel as `OPENCODE_MODEL:` (`hints` for
-      `docs-audit`/`coverage-audit`, a `sourceRefs` entry for `cross-model-verify`).
-      The wrapper then lists the referenced paths for opencode to read ITSELF instead
-      of pre-reading them — dividing the wrapper's token cost and shrinking the task
-      file. It is safe by construction: if opencode is refused (an
+    - **`opencode-verifier` LISTS paths instead of inlining whenever opencode can
+      reach them — prefer the `OPENCODE_WORKDIR` redirect (no config needed).** The
+      inlining described just above is the PORTABLE fallback (the wrapper reads each
+      file and pastes its content, so opencode never has to reach a repo path). But
+      opencode reads any file UNDER its working directory NATIVELY, with NO permission
+      config — so the wrapper prefers to LIST a path (relative) and let opencode read it
+      whenever it can. Three ways, in order of preference:
+      - **`OPENCODE_WORKDIR: <absolute path>` (recommended).** Pass this line through the
+        SAME trusted channel as `OPENCODE_MODEL:` (`hints` for
+        `docs-audit`/`coverage-audit`, a `sourceRefs` entry for `cross-model-verify`);
+        the wrapper `cd`s into that directory before running opencode, so files under it
+        are listed RELATIVE and read natively — this divides the wrapper's token cost and
+        shrinks the task file with ZERO opencode config. A git WORKTREE path works too
+        (opencode reads the worktree as its project root) — this closes the old "the
+        bridge can't reach an isolated worktree" gap. For the audits set it to the
+        `repoRoot` you already pass; for `cross-model-verify`, the repo under review.
+      - **AUTO (no signal).** With NO `OPENCODE_WORKDIR`, any referenced file already
+        under the wrapper's own `$PWD` is listed relative automatically — no line needed.
+        (An explicit `OPENCODE_WORKDIR` SUPERSEDES `$PWD` as the SOLE effective directory,
+        so AUTO applies only when no workdir is given.) In Path B the wrapper's `$PWD` is
+        the server's cwd, usually NOT the audited repo, which is exactly why
+        `OPENCODE_WORKDIR` exists.
+      - **`OPENCODE_DIRECT_READS: yes` (secondary, config-dependent).** Only for files
+        not covered by one working directory AND when the user's `opencode` config grants
+        `permission.external_directory` for them — a per-project
+        `~/.config/opencode/opencode.jsonc` with e.g.
+        `permission: { external_directory: { "*": "ask", "/abs/repo/**": "allow" } }`
+        (⚠ the LAST matching rule wins, so the `"*"` catch-all must come FIRST or it
+        overrides the allow). Then the wrapper lists ABSOLUTE paths. Prefer
+        `OPENCODE_WORKDIR` (no config) over this whenever possible.
+      All three are safe by construction: if opencode is refused a listed read (an
       `external_directory … auto-rejecting` line in its output), the wrapper falls back
-      ONCE to full inlining for that call, so a machine WITHOUT the config simply runs
-      the portable default. Leave the line OFF (the default) for any run that must stay
-      portable across machines — direct-reads is never automatic.
+      ONCE to full inlining for that call, so a machine without the setup simply runs the
+      portable default. Nothing beyond the sub-`$PWD` AUTO case is ever automatic — pass
+      the line to opt in.
 - **`agentType` is ALSO a capability FENCE — and capability denial beats instruction.** A
   leaf `agent()` receives the FULL ambient context as injected TEXT (every rule + the memory
   index + the skill listing — verified), so a leaf that HAS `Write`/`Edit`/`Bash`/an MCP can

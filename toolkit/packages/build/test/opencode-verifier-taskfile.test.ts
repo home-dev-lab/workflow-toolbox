@@ -79,6 +79,29 @@ describe('opencode-verifier bridge — task file lives under the agent cwd, not 
       it('specifies the external_directory refusal predicate as ILLUSTRATIVE, not an exact/ordered match (review F3)', () => {
         expect(def).toMatch(/ILLUSTRATIVE, NOT a required exact match/)
       })
+
+      // TEST-LOCK — revised 3-tier design (card #1825742346935862950): native reads are
+      // PREFERRED (cd into the target makes it opencode's workspace, no config needed);
+      // OPENCODE_WORKDIR is the primary redirect, AUTO sub-$PWD the default, DIRECT_READS
+      // the config-dependent secondary. Closes the 16/07 worktree-blind failure class.
+      it('carries the OPENCODE_WORKDIR primary redirect and the AUTO sub-$PWD default', () => {
+        expect(def).toContain('OPENCODE_WORKDIR')
+        expect(def).toContain('safe, no-signal default')
+      })
+
+      it('runs the OPENCODE_WORKDIR cd chained-first as the safe `cd -- "$WORKDIR" &&`, with TASKFILE resolved AFTER it', () => {
+        // Safe form (review v2 M3): single-quoted assignment + `cd -- "$WORKDIR" &&`
+        // (`--` guards a leading-dash path, quotes guard spaces, `&&` aborts on failure).
+        // TASKFILE ($PWD/.oc-verify-$$.md) resolves AFTER the cd so it lands in the workdir.
+        expect(def).toContain('cd -- "$WORKDIR" &&')
+        expect(def).toContain('resolve `TASKFILE` AFTER it')
+      })
+
+      it('fixes ONE effective working directory that OPENCODE_WORKDIR supersedes, and classifies by resolving to absolute first (review v2 M1/M2)', () => {
+        expect(def).toContain('SINGLE effective working directory')
+        expect(def).toContain('SUPERSEDES your inherited')
+        expect(def).toContain('resolve the path to an ABSOLUTE path first')
+      })
     })
   }
 })
