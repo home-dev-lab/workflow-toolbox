@@ -9,7 +9,7 @@
 // pattern as plugin-hooks.test.ts) so the contract is locked against future drift.
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, lstatSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -257,5 +257,104 @@ describe('adopt-rules installer — CLI surface for the two-set engine', () => {
     expect(chk).toContain('wt-delegation-ladder.md: UP-TO-DATE')
     expect(chk).toContain('pilot.md: UP-TO-DATE')
     expect(chk).toContain('nothing to do')
+  })
+})
+
+// The rules set no longer INLINES its content: like the agents set it reads each managed
+// file VERBATIM from a bundle dir (plugin/rules/) at run time, discovering every *.md there
+// EXCEPT README.md, and banners it at line 1 (rule files carry no YAML frontmatter). These
+// lock the content-source relationship so a revert to an inline body — or a discovery that
+// swallows README.md as a rule — fails a gate here.
+const RULES_SRC_DIR = join(REPO_ROOT, 'plugin/rules')
+
+// Independent re-derivation of stripRuleBanner (NOT importing the engine): drop line 1
+// (the banner) plus any leading blank lines, leaving the source's own body.
+function stripInstalledRuleBanner(text: string): string {
+  const nl = text.indexOf('\n')
+  if (nl === -1) return ''
+  return text.slice(nl + 1).replace(/^\n+/, '')
+}
+
+describe('adopt-rules installer — rules set sourced from the plugin/rules bundle', () => {
+  it('the installed rule copy carries the plugin/rules bundle source VERBATIM under its banner (strip === source)', () => {
+    const d = mkDir()
+    run(['--set', 'rules', '--install'], d)
+    const installed = readFileSync(rulePath(d), 'utf8')
+    const source = readFileSync(join(RULES_SRC_DIR, RULE), 'utf8')
+    expect(stripInstalledRuleBanner(installed), 'stripped rule copy must equal the plugin/rules bundle source').toBe(source)
+  })
+
+  it('discovers every *.md rule in the bundle but EXCLUDES README.md', () => {
+    const d = mkDir()
+    const chk = run(['--set', 'rules', '--check'], d)
+    expect(chk).toContain(`${RULE}: ABSENT`)
+    expect(chk, 'README.md is documentation, never a managed rule').not.toContain('README.md')
+  })
+})
+
+// SYMLINK-AWARENESS: a target <config-dir>/rules/<name>.md that is a symlink (e.g. a config
+// dir whose rules are symlinked from another one) must NEVER be written THROUGH — a naive
+// writeFileSync follows the link and clobbers the REAL file it points at. The installer
+// reports the symlink, leaves it (and its target) untouched on a plain --install, and only
+// replaces it under --replace-symlinks (unlink the link, then write a regular managed file
+// in its place — the former target preserved).
+describe('adopt-rules installer — symlink-aware install (never write through a symlink)', () => {
+  const CANON = 'CANONICAL ORIGINAL — MUST STAY UNTOUCHED\n'
+  // A symlink whose target is a plain hand-authored file.
+  function handAuthoredSymlink(): { dir: string; canonical: string } {
+    const dir = mkDir() // the rules TARGET dir (holds the symlink)
+    const canonDir = mkDir() // a separate "other config dir" the link points into
+    const canonical = join(canonDir, RULE)
+    writeFileSync(canonical, CANON)
+    symlinkSync(canonical, rulePath(dir)) // dir/RULE -> canonDir/RULE
+    return { dir, canonical }
+  }
+  // A symlink whose target is a CLEAN-but-STALE managed copy: a write-through engine would
+  // "refresh" it and thereby clobber the target — the genuinely dangerous case.
+  function staleManagedSymlink(): { dir: string; canonical: string } {
+    const dir = mkDir()
+    const canonDir = mkDir()
+    const canonical = join(canonDir, RULE)
+    run(['--set', 'rules', '--install'], canonDir) // canonDir/RULE = clean managed copy
+    // lower ONLY the banner version → clean-but-stale (would be REFRESHED through the link)
+    writeFileSync(canonical, readFileSync(canonical, 'utf8').replace(/ v\d+\.\d+\.\d+ /, ' v0.0.1 '))
+    symlinkSync(canonical, rulePath(dir))
+    return { dir, canonical }
+  }
+
+  it('--check reports a SYMLINK and points at --replace-symlinks', () => {
+    const { dir } = handAuthoredSymlink()
+    const chk = run(['--set', 'rules', '--check'], dir)
+    expect(chk).toContain('SYMLINK')
+    expect(chk).toContain('--replace-symlinks')
+  })
+
+  it('--check --replace-symlinks previews the replacement and drops the contradictory "pass the flag" nag (still read-only)', () => {
+    const { dir } = handAuthoredSymlink()
+    const chk = run(['--set', 'rules', '--check', '--replace-symlinks'], dir)
+    expect(chk).toContain('SYMLINK')
+    expect(chk).toContain('will be replaced')
+    expect(chk, 'must not tell the user to pass a flag they already passed').not.toContain('pass --replace-symlinks')
+    expect(lstatSync(rulePath(dir)).isSymbolicLink(), '--check must never mutate the symlink').toBe(true)
+  })
+
+  it('a plain --install NEVER writes through a symlink, even when the target is a STALE managed copy that would otherwise be refreshed', () => {
+    const { dir, canonical } = staleManagedSymlink()
+    const before = readFileSync(canonical, 'utf8')
+    const out = run(['--set', 'rules', '--install'], dir)
+    expect(out, 'a symlinked target must not be refreshed through the link').not.toMatch(/REFRESHED/)
+    expect(lstatSync(rulePath(dir)).isSymbolicLink(), 'the symlink must remain a symlink').toBe(true)
+    expect(readFileSync(canonical, 'utf8'), 'the symlink target must be byte-for-byte unchanged').toBe(before)
+  })
+
+  it('--replace-symlinks replaces the link with a managed copy IN PLACE, leaving the original target untouched', () => {
+    const { dir, canonical } = handAuthoredSymlink()
+    const out = run(['--set', 'rules', '--install', '--replace-symlinks'], dir)
+    expect(out).toMatch(/REPLACED/)
+    expect(lstatSync(rulePath(dir)).isSymbolicLink(), 'the symlink must be replaced by a regular file').toBe(false)
+    const body = readFileSync(rulePath(dir), 'utf8')
+    expect(body).toMatch(/installed from workflow-toolbox v\d+\.\d+\.\d+/)
+    expect(body).toMatch(/content sha256:[0-9a-f]{12}/)
+    expect(readFileSync(canonical, 'utf8'), 'replacing the symlink must not touch its former target').toBe(CANON)
   })
 })

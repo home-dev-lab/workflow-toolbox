@@ -6,9 +6,11 @@
 // run can tell (a) whether the copy is behind the plugin and (b) whether the USER has
 // edited it. Two managed SETS share one engine:
 //
-//   • rules  — the cross-cutting guardrail rule files (content INLINE below, the
-//              single source of the shipped rule text). Target: <cwd>/.claude/rules.
-//              Banner is line 1.
+//   • rules  — the cross-cutting guardrail rule files (content SOURCED from the
+//              plugin's rules/ dir at run time — every *.md there except README.md,
+//              the single source of the shipped rule text; this mirrors how the agents
+//              set sources plugin/agents/). Target: <cwd>/.claude/rules. Banner is
+//              line 1 (rule files carry no YAML frontmatter).
 //   • agents — editable copies of the pilot delegation-suite agent definitions
 //              (content SOURCED from the plugin's agents/ dir at run time — the agent
 //              defs are their own single source; inlining them here would drift).
@@ -29,10 +31,17 @@
 //   node install-rules.mjs [--set rules|agents|all] --check   [--dir <dir>]   # report, write nothing
 //   node install-rules.mjs [--set rules|agents|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
 //   node install-rules.mjs [--set rules|agents|all] --install --force [--dir <dir>]  # also overwrite edited copies
+//   node install-rules.mjs [--set …] --install --replace-symlinks [--dir <dir>]      # replace a SYMLINKED target with a managed copy in place
 //
 // Default --set is `rules` (backward-compatible with the original rules-only tool).
 // Each set targets its own default dir under <cwd>; `--dir` overrides the target and
 // therefore requires a SINGLE --set (with `--set all` each set keeps its own default).
+//
+// SYMLINK SAFETY: if a target file is a symlink (e.g. a config dir whose rules are
+// symlinked from another one), the engine NEVER writes through it — it reports the
+// symlink and leaves it (and its target) untouched. `--replace-symlinks` opts in to
+// unlinking the symlink and writing a regular managed file in its place (the former
+// target is preserved). This is never silent: a plain --install SKIPS a symlink.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -47,36 +56,25 @@ process.stdout.on('error', (err) => {
 
 const BANNER_TOOL = 'workflow-toolbox'
 
-/** The cross-cutting guardrails this skill installs as editable rule files. Keep this
- *  the SINGLE source of the shipped rule text; the SessionStart hook injects the same
- *  PRINCIPLE ephemerally, but this is the persistent, user-editable copy. */
-const MANAGED_RULES = [
-  {
-    file: 'wt-delegation-ladder.md',
-    title: 'Delegation ladder (workflow-toolbox)',
-    body: [
-      'Route each task to the LOWEST rung that fits, and PIN model + effort at EVERY',
-      'spawn — never let a delegate inherit the session model silently. Heavy mechanical',
-      'work goes DOWN to a cheaper executor; judgment stays UP with you as the arbiter.',
-      '',
-      '- A question / analysis / arbitration → answer inline, no delegation.',
-      '- One isolated mechanical chore → one throwaway sub-agent (cheap model).',
-      '- One tracked card, full dev loop → a `workflow-toolbox:pilot`.',
-      '- Several cards / a wave → a `workflow-toolbox:pilot-orchestrator` → pilots.',
-      '- A heavy implementation increment of one card → the card’s executor lane.',
-      '- Decorrelated verification of a checkable claim → a genuinely different model family.',
-      '',
-      'Compose a pilot/orchestrator spawn (environment brief + model elevation) via the',
-      '`workflow-toolbox:pilot-wave` skill. The duties that stay non-delegable with your',
-      'main session: owning wake-ups (a delegate’s background wait does not reliably',
-      're-wake it — an inbound message does), user-gates (publish / deploy / destructive /',
-      'business preference), memory writes, and the Workflow tool.',
-      '',
-      'This is a cost-model-neutral PRINCIPLE: which concrete model each rung maps to is',
-      'your account’s business — pin it at spawn. Edit this file freely; it is yours.',
-    ].join('\n'),
-  },
-]
+/** The rule files this skill installs as editable copies — DISCOVERED from the plugin's
+ *  rules/ dir at run time (every *.md except README.md), so the shipped set is exactly
+ *  what the bundle contains and grows without editing this engine. Content is NOT inlined:
+ *  each file is its own single source, read verbatim under a banner — the mirror of how the
+ *  agents set sources plugin/agents/. The SessionStart hook injects the delegation-ladder
+ *  PRINCIPLE ephemerally; these are the persistent, user-editable copies. */
+function discoverRuleItems(root) {
+  const dir = path.join(root, 'rules')
+  let entries
+  try {
+    entries = fs.readdirSync(dir)
+  } catch {
+    return [] // no bundle dir → nothing to manage (graceful)
+  }
+  return entries
+    .filter((f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md')
+    .sort()
+    .map((file) => ({ file }))
+}
 
 /** The pilot delegation suite, installed as editable project copies. Content is NOT
  *  inlined — it is READ from the plugin's agents/ dir at run time (the agent defs are
@@ -84,10 +82,12 @@ const MANAGED_RULES = [
  *  <pluginRoot>/agents/ and the installed filename under <target>/.claude/agents. */
 const MANAGED_AGENTS = [{ file: 'pilot.md' }, { file: 'pilot-watchdog.md' }, { file: 'pilot-orchestrator.md' }]
 
-/** The two managed sets. `kind` drives banner placement + content sourcing. */
+/** The two managed sets. `kind` drives banner placement; `srcDir` is the plugin bundle
+ *  dir each set reads its files from; `resolveItems(root)` lists the managed files (the
+ *  rules set discovers them from the bundle; the agents set is a fixed suite). */
 const SETS = {
-  rules: { kind: 'rules', defaultDir: '.claude/rules', items: MANAGED_RULES },
-  agents: { kind: 'agents', defaultDir: '.claude/agents', items: MANAGED_AGENTS },
+  rules: { kind: 'rules', srcDir: 'rules', defaultDir: '.claude/rules', resolveItems: discoverRuleItems },
+  agents: { kind: 'agents', srcDir: 'agents', defaultDir: '.claude/agents', resolveItems: () => MANAGED_AGENTS },
 }
 
 // Match only against the banner line, never the body — a body mention of the phrase
@@ -122,11 +122,6 @@ function currentVersion(root) {
   fail(`plugin.json version is missing or malformed at ${manifest}`)
 }
 
-/** The rule content BELOW the banner (title + body). */
-function renderedBody(rule) {
-  return `# ${rule.title}\n\n${rule.body}\n`
-}
-
 function fingerprint(body) {
   return crypto.createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
 }
@@ -140,12 +135,12 @@ function banner(version, fp) {
 }
 
 /** The fingerprinted CONTENT of a managed item — exactly what the user may edit, so an
- *  unedited installed file reproduces its stamped fingerprint. For a rule it is the
- *  rendered title+body; for an agent it is the plugin's source agent def verbatim. */
+ *  unedited installed file reproduces its stamped fingerprint. BOTH sets read the file
+ *  verbatim from their plugin bundle dir (rules/ or agents/); each file is its own
+ *  single source. */
 function itemContent(set, item, root) {
-  if (set.kind === 'rules') return renderedBody(item)
-  const src = path.join(root, 'agents', item.file)
-  if (!fs.existsSync(src)) fail(`agent source not found: ${src} — the managed agents list is out of sync with plugin/agents/`)
+  const src = path.join(root, set.srcDir, item.file)
+  if (!fs.existsSync(src)) fail(`${set.kind} source not found: ${src} — the ${set.kind} bundle (plugin/${set.srcDir}/) is out of sync`)
   return fs.readFileSync(src, 'utf8')
 }
 
@@ -212,11 +207,28 @@ function stripBannerFor(set, text) {
 // banner and stays invisible — such a copy reads "clean" and a later refresh would
 // overwrite it. Editing the body (the normal case) is always detected; this narrow
 // blind spot predates the agents set (it is identical for the rules set).
-/** Classify an installed file against the plugin: absent | hand-authored (no toolbox
- *  banner) | edited-unknown (managed, pre-fingerprint banner — cannot verify) |
- *  edited (managed, locally modified) | clean (managed, matches its fingerprint). */
+/** Classify an installed file against the plugin: absent | symlink (a link we must NOT
+ *  write through) | hand-authored (no toolbox banner) | edited-unknown (managed,
+ *  pre-fingerprint banner — cannot verify) | edited (managed, locally modified) |
+ *  clean (managed, matches its fingerprint). The symlink check is FIRST and uses lstat
+ *  (never follows the link) — existsSync/readFileSync would silently resolve THROUGH a
+ *  symlink and a later write would clobber its real target. */
 function classify(target, set) {
-  if (!fs.existsSync(target)) return { state: 'absent' }
+  let lst
+  try {
+    lst = fs.lstatSync(target)
+  } catch {
+    return { state: 'absent' } // nothing at this path
+  }
+  if (lst.isSymbolicLink()) {
+    let linkTarget = ''
+    try {
+      linkTarget = fs.readlinkSync(target)
+    } catch {
+      /* an unreadable link is still a link we must not write through */
+    }
+    return { state: 'symlink', linkTarget }
+  }
   const content = fs.readFileSync(target, 'utf8')
   const line = bannerLine(set, content)
   const vm = VERSION_RE.exec(line)
@@ -238,11 +250,12 @@ function cmp(a, b) {
 }
 
 function parseArgs(argv) {
-  const args = { mode: 'check', dir: null, force: false, set: 'rules' }
+  const args = { mode: 'check', dir: null, force: false, set: 'rules', replaceSymlinks: false }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--install') args.mode = 'install'
     else if (argv[i] === '--check') args.mode = 'check'
     else if (argv[i] === '--force') args.force = true
+    else if (argv[i] === '--replace-symlinks') args.replaceSymlinks = true
     else if (argv[i] === '--dir') args.dir = argv[++i]
     else if (argv[i] === '--set') args.set = argv[++i]
   }
@@ -252,11 +265,22 @@ function parseArgs(argv) {
 /** Decide the status label and (for --install) whether to write. `force` only ever
  *  overrides a MANAGED file (edited / edited-unknown / clean); a hand-authored file
  *  with no toolbox banner is NEVER overwritten — we won't clobber a file we never
- *  stamped. */
-function plan(c, version, force) {
+ *  stamped. A symlink is never written THROUGH: it writes only under `replaceSymlinks`
+ *  (and then processSet unlinks the link first, preserving its target). */
+function plan(c, version, force, replaceSymlinks) {
   switch (c.state) {
     case 'absent':
       return { status: 'ABSENT', write: true }
+    case 'symlink':
+      return {
+        status:
+          `SYMLINK (→ ${c.linkTarget || '?'})` +
+          (replaceSymlinks
+            ? ' — will be replaced with a managed copy in place'
+            : ' — left untouched; pass --replace-symlinks to replace it with a managed copy'),
+        write: replaceSymlinks,
+        symlink: true,
+      }
     case 'hand-authored':
       return { status: 'PRESENT (no toolbox banner — hand-authored; left untouched)', write: false }
     case 'edited':
@@ -290,18 +314,30 @@ function processSet(set, dir, args, version, root) {
   let anyAbsent = false
   let anyStale = false
   let anyEdited = false
-  for (const item of set.items) {
+  let anySymlink = false
+  for (const item of set.resolveItems(root)) {
     const target = path.join(dir, item.file)
     const c = classify(target, set)
-    const p = plan(c, version, args.force)
+    const p = plan(c, version, args.force, args.replaceSymlinks)
     if (c.state === 'absent') anyAbsent = true
     if (c.state === 'clean' && cmp(c.installedVer, version) < 0) anyStale = true
     if (c.state === 'edited' || c.state === 'edited-unknown') anyEdited = true
+    if (c.state === 'symlink') anySymlink = true
 
     if (args.mode === 'install') {
       if (p.write) {
+        // A symlink is REPLACED, never written THROUGH: unlink the link first (its real
+        // target is left untouched), then write a regular managed file in its place.
+        if (c.state === 'symlink') fs.rmSync(target, { force: true })
         fs.writeFileSync(target, renderItem(set, item, version, root))
-        const verb = c.state === 'absent' ? 'WROTE' : args.force && c.state !== 'clean' ? 'OVERWROTE (--force)' : 'REFRESHED'
+        const verb =
+          c.state === 'absent'
+            ? 'WROTE'
+            : c.state === 'symlink'
+              ? 'REPLACED symlink with'
+              : args.force && c.state !== 'clean'
+                ? 'OVERWROTE (--force)'
+                : 'REFRESHED'
         process.stdout.write(`  ${item.file}: ${verb} v${version} → ${target}\n`)
       } else {
         process.stdout.write(`  ${item.file}: SKIPPED — ${p.status}\n`)
@@ -310,7 +346,7 @@ function processSet(set, dir, args, version, root) {
       process.stdout.write(`  ${item.file}: ${p.status}\n`)
     }
   }
-  return { anyAbsent, anyStale, anyEdited }
+  return { anyAbsent, anyStale, anyEdited, anySymlink }
 }
 
 function main() {
@@ -332,6 +368,7 @@ function main() {
   let anyAbsent = false
   let anyStale = false
   let anyEdited = false
+  let anySymlink = false
   for (const name of chosen) {
     const set = SETS[name]
     const dir = path.resolve(args.dir || path.join(process.cwd(), set.defaultDir))
@@ -339,6 +376,7 @@ function main() {
     anyAbsent = anyAbsent || r.anyAbsent
     anyStale = anyStale || r.anyStale
     anyEdited = anyEdited || r.anyEdited
+    anySymlink = anySymlink || r.anySymlink
   }
 
   if (args.mode === 'check') {
@@ -346,6 +384,13 @@ function main() {
     else if (anyStale) process.stdout.write('adopt-rules: run with --install to refresh the STALE item(s).\n')
     else if (anyEdited) process.stdout.write('adopt-rules: locally-edited item(s) present — --install leaves them; --force overwrites.\n')
     else process.stdout.write('adopt-rules: nothing to do.\n')
+    // Symlinks are an independent advisory (they can coexist with absent/stale items).
+    // Suppressed when --replace-symlinks is already set — no point telling the user to
+    // pass a flag they passed (the per-item line then previews the replacement).
+    if (anySymlink && !args.replaceSymlinks)
+      process.stdout.write(
+        'adopt-rules: symlinked target(s) present — left untouched; pass --replace-symlinks to replace them with managed copies.\n',
+      )
   }
 }
 

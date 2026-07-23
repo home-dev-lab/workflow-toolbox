@@ -129,8 +129,9 @@ function main() {
   let context = buildLadder()
   if (!ladderAdopted(root)) {
     context +=
-      '\nPrefer an editable copy of this ladder as a rule? Run the ' +
-      'workflow-toolbox:adopt-rules skill (it writes it only on explicit request, never automatically).'
+      '\nPrefer editable copies of the workflow-toolbox rule set (this delegation ladder plus the ' +
+      'other shipped guardrails)? Run the workflow-toolbox:adopt-rules skill with --set rules (it ' +
+      'writes only on explicit request, never automatically).'
   }
 
   process.stdout.write(

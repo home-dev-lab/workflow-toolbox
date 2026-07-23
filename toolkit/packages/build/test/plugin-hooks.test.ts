@@ -197,6 +197,14 @@ describe('wt-delegation-ladder-hook — conditional injection + machine calibrat
     expect(ctx).toContain('adopt-rules')
   })
 
+  it('the suggestion offers the FULL rule set (--set rules), not just the ladder', () => {
+    const f = fixture('fullset')
+    const r = runHook(LADDER_HOOK, start(f.proj), f.env)
+    const ctx = (r.json?.['hookSpecificOutput'] as Record<string, string>)?.['additionalContext'] ?? ''
+    expect(ctx).toContain('--set rules')
+    expect(ctx.toLowerCase()).toContain('rule set')
+  })
+
   it('SUPPRESSES the adopt-rules suggestion once adopted (ladder still injected)', () => {
     const f = fixture('adopted', { adopted: true })
     const r = runHook(LADDER_HOOK, start(f.proj), f.env)

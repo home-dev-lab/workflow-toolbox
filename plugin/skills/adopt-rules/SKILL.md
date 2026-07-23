@@ -8,10 +8,12 @@ description: Invoke ONLY when the user explicitly asks to install / adopt editab
 This skill writes **editable, versioned copies** of workflow-toolbox material into the
 user's project, on explicit request only. It manages two sets:
 
-- **rules** — the cross-cutting guardrail (the delegation ladder). The plugin already
-  injects this PRINCIPLE ambiently via a `SessionStart` hook where a project does
-  tracked/delegated work; that injection is ephemeral and version-locked. This set is the
-  OPT-IN persistent, editable alternative.
+- **rules** — the cross-cutting guardrail rule files, SOURCED from the plugin's `rules/`
+  bundle (every `*.md` there except `README.md` — currently the delegation ladder; the set
+  is exactly what the plugin bundles and grows with it, the mirror of how the agents set
+  sources `agents/`). The plugin already injects the delegation-ladder PRINCIPLE ambiently
+  via a `SessionStart` hook where a project does tracked/delegated work; that injection is
+  ephemeral and version-locked. This set is the OPT-IN persistent, editable alternative.
 - **agents** — project copies of the pilot delegation suite's agent definitions
   (`pilot.md`, `pilot-watchdog.md`, `pilot-orchestrator.md`). A project copy matters because
   current Claude Code versions do NOT honor the `observer:` frontmatter for plugin-installed
@@ -44,6 +46,11 @@ user-initiated act.
   copy (its content no longer matches the stamped fingerprint) or a hand-authored file with
   no toolbox banner — it refreshes only ABSENT or UNEDITED copies. Overwriting an edited copy
   takes an explicit `--force`. A user's edits cannot be silently destroyed by a refresh.
+- **Never write THROUGH a symlink.** If a target `<dir>/<name>.md` is a symlink (e.g. a
+  config dir whose rules are symlinked from another one), `--install` does NOT follow it —
+  following it would clobber the link's real target. The symlink is reported and left
+  untouched; replacing it with a managed copy in place is an explicit opt-in
+  (`--replace-symlinks`), never silent, and a refusal is an announced skip.
 - **Announce before writing.** Tell the user exactly WHICH files go WHERE before `--install`,
   and report exactly what was written after. The answer to "will it copy my agents, and will
   it tell me?" is: it copies only when asked, it names each file and target first, and the
@@ -58,6 +65,9 @@ backward compatibility):
 - **Check status (read-only, the default):** `node scripts/install-rules.mjs --set <rules|agents|all> --check`
 - **Install / refresh (absent + unedited only):** `node scripts/install-rules.mjs --set <rules|agents|all> --install`
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
+- **Replace a symlinked target (deliberate):** add `--replace-symlinks` to `--install` — a
+  symlinked target is otherwise reported and SKIPPED (never written through); this unlinks
+  the symlink and writes a managed copy in its place, leaving the former target untouched.
 - **Target a specific dir:** add `--dir <dir>` — requires a SINGLE `--set` (with `--set all`
   each set uses its own default dir).
 
@@ -79,11 +89,14 @@ Recommended flow:
 
 **rules → `.claude/rules/`:**
 
-- **`wt-delegation-ladder.md`** — the delegation ladder: route each task to the lowest rung
-  that fits, pin model + effort at every spawn, heavy work goes down / judgment stays up, and
-  the non-delegable main-session duties (wake-ups, user-gates, memory writes, the Workflow
-  tool). Cost-model-neutral (the principle, not an account-specific model table), and fully
-  editable once written.
+- Every `*.md` in the plugin's `rules/` bundle (its single source) except `README.md`,
+  copied VERBATIM under a line-1 banner. Currently **`wt-delegation-ladder.md`** — the
+  delegation ladder: route each task to the lowest rung that fits, pin model + effort at
+  every spawn, heavy work goes down / judgment stays up, and the non-delegable main-session
+  duties (wake-ups, user-gates, memory writes, the Workflow tool). Cost-model-neutral (the
+  principle, not an account-specific model table), and fully editable once written. The set
+  is whatever the plugin bundles, so it grows as guardrails are added — no per-rule change
+  to the installer.
 
 **agents → `.claude/agents/`:**
 
@@ -94,9 +107,9 @@ Recommended flow:
   Once these project copies exist, spawn the BARE names (`pilot`, `pilot-orchestrator`) so the
   watchdog pairing attaches.
 
-The rule set is intentionally small (only the genuinely cross-cutting guardrail travels as an
-adopted rule); the workflow-authoring doctrine lives in the `workflow-toolbox:workflow-composer`
-skill and is not re-installed here.
+The rule set is the plugin's shipped, project-agnostic guardrails (pure directives — no
+environment-specific narrative); the workflow-authoring doctrine lives in the
+`workflow-toolbox:workflow-composer` skill and is not re-installed here.
 
 ## Detecting and refreshing stale copies
 
@@ -104,6 +117,9 @@ skill and is not re-installed here.
 version — for both sets:
 
 - **ABSENT** — not installed; `--install` writes it.
+- **SYMLINK** — the target is a symlink; `--install` reports it and leaves it (and its real
+  target) untouched. `--install --replace-symlinks` replaces the link with a managed copy in
+  place (the former target preserved).
 - **UP-TO-DATE** — installed, unedited, version equals the plugin's; `--install` is a no-op
   (use `--force` to reset it to pristine).
 - **STALE** — installed, unedited, version behind; `--install` refreshes it (safe — no edits to lose).
