@@ -255,6 +255,69 @@ describe('coverage-audit provenance resolution', () => {
   })
 })
 
+describe('coverage-audit per-role agentType routing', () => {
+  const TYPE = 'workflow-toolbox:opencode-verifier'
+  const runtime = () => makeRuntime({
+    inventory: { 'src/a.ts': [makeCapability()], 'src/b.ts': [] },
+    extractRounds: [[], []],
+  })
+  const stageCalls = (rt: FakeRuntime, phase: string, phrase: string) =>
+    rt.calls.filter((c) => c.phase === phase && String(c.prompt).toLowerCase().includes(phrase))
+
+  it('routes only Inventory through agentTypes.inventory after an affirmative required probe', async () => {
+    const rt = runtime()
+    await wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { inventory: TYPE } }))
+    const inventory = stageCalls(rt, 'Inventory', 'inventory the user-facing capabilities')
+    const extract = stageCalls(rt, 'Extract', 'extract undocumented-capability claims')
+    expect(inventory.length).toBeGreaterThan(0)
+    expect(inventory.every((c) => c.opts?.agentType === TYPE)).toBe(true)
+    expect(extract.length).toBeGreaterThan(0)
+    expect(extract.every((c) => c.opts?.agentType !== TYPE)).toBe(true)
+  })
+
+  it('routes only Extract through agentTypes.extract after an affirmative required probe', async () => {
+    const rt = runtime()
+    await wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { extract: TYPE } }))
+    const extract = stageCalls(rt, 'Extract', 'extract undocumented-capability claims')
+    const inventory = stageCalls(rt, 'Inventory', 'inventory the user-facing capabilities')
+    expect(extract.length).toBeGreaterThan(0)
+    expect(extract.every((c) => c.opts?.agentType === TYPE)).toBe(true)
+    expect(inventory.length).toBeGreaterThan(0)
+    expect(inventory.every((c) => c.opts?.agentType !== TYPE)).toBe(true)
+  })
+
+  it('fails fast when the explicitly requested Extract agentType is unavailable', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string }) =>
+        prompt.toLowerCase().includes('availability probe') ? 'OPENCODE_UNAVAILABLE' : 'unrouted',
+    })
+    await expect(
+      wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { extract: TYPE } })),
+    ).rejects.toThrow(/required agentType .* is unavailable/)
+  })
+
+  it('warns about unknown agentTypes keys and continues', async () => {
+    const rt = runtime()
+    const out = await wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { bogusKey: 'x' } }))
+    expect(out.warnings.some((w) => w.includes('bogusKey'))).toBe(true)
+  })
+
+  it('prepends the routed Extract role model before all other prompt text', async () => {
+    const rt = runtime()
+    await wf.run(rt, JSON.stringify({
+      ...BASE_INPUT,
+      agentTypes: { extract: TYPE },
+      opencodeModels: { extract: 'zai-coding-plan/glm-5.2' },
+    }))
+    const extract = stageCalls(rt, 'Extract', 'extract undocumented-capability claims')
+    expect(extract.some((c) =>
+      String(c.prompt)
+        .replace(/^<!-- wt-meta [^\n]+ -->\n\n/, '')
+        .startsWith('OPENCODE_MODEL: zai-coding-plan/glm-5.2\n\n'),
+    )).toBe(true)
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Test: happy path
 // ---------------------------------------------------------------------------

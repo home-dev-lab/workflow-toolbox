@@ -146,11 +146,22 @@ export interface DocsAuditInput {
    *  opts still win — the verifiers' explicit BEST_MODEL is not downgraded.
    *  Parsed from `args.perAgent` by the shared `parseConfig` helper. */
   perAgent: AgentDefaults | null
+  /** Optional cross-model Inventory agentType, parsed from
+   *  `args.agentTypes.inventory` and required to pass its entry probe. */
+  inventoryType: string | null
+  /** Optional cross-model Extract agentType, parsed from
+   *  `args.agentTypes.extract` and required to pass its entry probe. */
+  extractType: string | null
   /** Optional cross-model verifier agentType (e.g. an MCP→GPT bridge), parsed
    *  from `args.agentTypes.verify`. PROBED at run entry (probeAgentType):
-   *  unavailable → graceful degrade to the standard verifier, reported in the
-   *  result's `verifierProbe`, never silent. */
+   *  unavailable → fail fast; the outcome is reported in the result's
+   *  `verifierProbe` on success. */
   verifierType: string | null
+  /** Optional provider/model override injected at the head of each routed
+   *  role's prompt for the opencode-verifier wrapper. */
+  opencodeModels: Readonly<{ inventory?: string; extract?: string; verify?: string }> | null
+  /** Unknown agentTypes keys retained so run() can surface, not ignore, them. */
+  unknownAgentTypeKeys: readonly string[]
   /** Blanket opt-OUT of the default leaf-agent fence (withLeafFence). Parsed
    *  from `args.messaging`. */
   messaging: boolean
@@ -334,6 +345,38 @@ function parseOptionalString(obj: Record<string, unknown>, field: string): strin
   return raw
 }
 
+const AGENT_TYPE_ROLES = ['inventory', 'extract', 'verify'] as const
+const OPENCODE_MODEL_ROLES = ['inventory', 'extract', 'verify'] as const
+
+function parseOpencodeModels(
+  raw: unknown,
+): Readonly<{ inventory?: string; extract?: string; verify?: string }> | null {
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('docs-audit: "opencodeModels" must be an object when provided')
+  }
+  const obj = raw as Record<string, unknown>
+  const unknown = Object.keys(obj).filter(
+    (key) => !(OPENCODE_MODEL_ROLES as readonly string[]).includes(key),
+  )
+  if (unknown.length > 0) {
+    throw new Error(
+      `docs-audit: "opencodeModels" has unknown key(s): ${unknown.join(', ')}; ` +
+      `accepted keys: ${OPENCODE_MODEL_ROLES.join(', ')}`,
+    )
+  }
+  const parsed: { inventory?: string; extract?: string; verify?: string } = {}
+  for (const role of OPENCODE_MODEL_ROLES) {
+    const value = obj[role]
+    if (value === undefined) continue
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      throw new Error(`docs-audit: "opencodeModels.${role}" must be a non-empty string when provided`)
+    }
+    parsed[role] = value
+  }
+  return parsed
+}
+
 function parseInput(raw: unknown): DocsAuditInput {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error(
@@ -414,7 +457,13 @@ function parseInput(raw: unknown): DocsAuditInput {
     verifierModel,
     effort: cfg.effort ?? null,
     perAgent: cfg.perAgent ?? null,
+    inventoryType: cfg.agentTypes?.['inventory'] ?? null,
+    extractType: cfg.agentTypes?.['extract'] ?? null,
     verifierType: cfg.agentTypes?.['verify'] ?? null,
+    opencodeModels: parseOpencodeModels(obj['opencodeModels']),
+    unknownAgentTypeKeys: Object.keys(cfg.agentTypes ?? {}).filter(
+      (key) => !(AGENT_TYPE_ROLES as readonly string[]).includes(key),
+    ),
     messaging: cfg.messaging === true,
   }
 }
@@ -423,8 +472,9 @@ function parseInput(raw: unknown): DocsAuditInput {
 // Prompts
 // ---------------------------------------------------------------------------
 
-function inventoryPrompt(input: DocsAuditInput): string {
+function inventoryPrompt(input: DocsAuditInput, opencodeModel: string | null): string {
   return (
+    (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}\n\n` : '') +
     `Inventory the documentation surfaces of the repository at ${input.repoRoot}.\n\n` +
     `Rules for what counts as a surface:\n${input.surfaceRules ?? DEFAULT_SURFACE_RULES}\n\n` +
     (input.hints !== null ? `Extra context:\n${input.hints}\n\n` : '') +
@@ -438,8 +488,10 @@ function extractPrompt(
   group: readonly string[],
   round: number,
   angle: string,
+  opencodeModel: string | null,
 ): string {
   return (
+    (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}\n\n` : '') +
     `Extract checkable claims from documentation — extraction round ${round}.\n` +
     `Repository root: ${input.repoRoot} (all surface paths below are relative to it; read the files from this root).\n\n` +
     `Doc surfaces assigned to YOU in this task:\n` +
@@ -481,8 +533,13 @@ function renderUntrustedClaimBlock(c: AuditClaim): string {
   )
 }
 
-function renderAuditClaim(repoRoot: string, hints: string | null): (c: AuditClaim) => string {
+function renderAuditClaim(
+  repoRoot: string,
+  hints: string | null,
+  opencodeModel: string | null,
+): (c: AuditClaim) => string {
   return (c) =>
+    (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}\n\n` : '') +
     `Documentation-drift audit — verdict for ONE documentation claim.\n` +
     `Repository root: ${repoRoot}.\n` +
     renderUntrustedClaimBlock(c) + '\n' +
@@ -516,6 +573,14 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
 
   const warnings: string[] = []
 
+  if (input.unknownAgentTypeKeys.length > 0) {
+    warn(
+      rt, warnings,
+      `docs-audit: unknown agentTypes key(s) ignored: ${input.unknownAgentTypeKeys.join(', ')}; ` +
+      `accepted keys: ${AGENT_TYPE_ROLES.join(', ')}`,
+    )
+  }
+
   const inventoryEffort = resolveEffort(input.effort?.['inventory'], INVENTORY_EFFORT)
   const extractEffort = resolveEffort(input.effort?.['extract'], EXTRACT_EFFORT)
   const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
@@ -540,8 +605,18 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     )
   }
 
-  // Optional cross-model verifier — probed, never trusted blind: an
-  // unavailable agentType degrades to the standard verifier with a report.
+  let resolvedInventoryType: string | null = null
+  if (input.inventoryType !== null) {
+    const probe = await probeAgentType(rt, input.inventoryType, { phase: 'Fence', required: true })
+    resolvedInventoryType = probe.agentType ?? null
+  }
+  let resolvedExtractType: string | null = null
+  if (input.extractType !== null) {
+    const probe = await probeAgentType(rt, input.extractType, { phase: 'Fence', required: true })
+    resolvedExtractType = probe.agentType ?? null
+  }
+
+  // Optional cross-model verifier — probed, never trusted blind.
   let verifierProbe: DocsAuditOutput['verifierProbe'] = null
   let resolvedVerifierType: string | null = null
   if (input.verifierType !== null) {
@@ -569,11 +644,15 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     surfaces = input.surfaces
     inventorySource = 'input'
   } else {
-    const invOutcome = await agentWithSchemaSalvage<InventoryOutput>(rt, inventoryPrompt(input), {
+    const invOutcome = await agentWithSchemaSalvage<InventoryOutput>(rt, inventoryPrompt(
+      input,
+      resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
+    ), {
       schema: INVENTORY_SCHEMA,
       label: 'docs-audit:inventory',
       phase: 'Inventory',
       effort: inventoryEffort,
+      ...(resolvedInventoryType !== null ? { agentType: resolvedInventoryType } : {}),
     })
     for (const w of invOutcome.warnings) warn(rt, warnings, w)
     const inv = invOutcome.value
@@ -638,12 +717,19 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
         groups.map((group, gi) => async () => {
           const outcome = await agentWithSchemaSalvage<ExtractOutput>(
             loopRt,
-            extractPrompt(input, group, round, angle),
+            extractPrompt(
+              input,
+              group,
+              round,
+              angle,
+              resolvedExtractType !== null ? input.opencodeModels?.extract ?? null : null,
+            ),
             {
               schema: EXTRACT_SCHEMA,
               label: `docs-audit:extract:${round}:${gi}`,
               phase: 'Extract',
               effort: extractEffortByGroup?.[gi] ?? extractEffort,
+              ...(resolvedExtractType !== null ? { agentType: resolvedExtractType } : {}),
             },
           )
           for (const w of outcome.warnings) warn(rt, warnings, w)
@@ -740,7 +826,11 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
   } else {
     const verifyResult = await adversarialVerification<AuditClaim>(rt, {
       claims: sortedClaims,
-      renderClaim: renderAuditClaim(input.repoRoot, input.hints),
+      renderClaim: renderAuditClaim(
+        input.repoRoot,
+        input.hints,
+        resolvedVerifierType !== null ? input.opencodeModels?.verify ?? null : null,
+      ),
       votes: input.votes,
       // Severity-tiered votes (card #1821093105403692296): the full quorum
       // only where an error is expensive — behavioral contracts, boundary

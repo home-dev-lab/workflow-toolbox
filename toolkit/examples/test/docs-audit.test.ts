@@ -162,6 +162,61 @@ describe('docs-audit parseInput', () => {
   })
 })
 
+describe('docs-audit per-role agentType routing', () => {
+  const TYPE = 'workflow-toolbox:opencode-verifier'
+  const stageCalls = (rt: FakeRuntime, phase: string, phrase: string) =>
+    rt.calls.filter((c) => c.phase === phase && String(c.prompt).toLowerCase().includes(phrase))
+
+  it('routes the derived Inventory stage through agentTypes.inventory', async () => {
+    const rt = makeRuntime({ inventory: ['docs/a.md'], extractRounds: [[], []] })
+    await wf.run(rt, JSON.stringify({ repoRoot: '/repo', agentTypes: { inventory: TYPE } }))
+    const inventory = stageCalls(rt, 'Inventory', 'inventory the documentation surfaces')
+    const extract = stageCalls(rt, 'Extract', 'extract checkable claims')
+    expect(inventory.length).toBeGreaterThan(0)
+    expect(inventory.every((c) => c.opts?.agentType === TYPE)).toBe(true)
+    expect(extract.length).toBeGreaterThan(0)
+    expect(extract.every((c) => c.opts?.agentType !== TYPE)).toBe(true)
+  })
+
+  it('routes only Extract through agentTypes.extract', async () => {
+    const rt = makeRuntime({ extractRounds: [[], []] })
+    await wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { extract: TYPE } }))
+    const extract = stageCalls(rt, 'Extract', 'extract checkable claims')
+    expect(extract.length).toBeGreaterThan(0)
+    expect(extract.every((c) => c.opts?.agentType === TYPE)).toBe(true)
+  })
+
+  it('fails fast when the explicitly requested Extract agentType is unavailable', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string }) =>
+        prompt.toLowerCase().includes('availability probe') ? 'OPENCODE_UNAVAILABLE' : 'unrouted',
+    })
+    await expect(
+      wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { extract: TYPE } })),
+    ).rejects.toThrow(/required agentType .* is unavailable/)
+  })
+
+  it('warns about unknown agentTypes keys and continues', async () => {
+    const rt = makeRuntime({ extractRounds: [[], []] })
+    const out = await wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { bogusKey: 'x' } }))
+    expect(out.warnings.some((w) => w.includes('bogusKey'))).toBe(true)
+  })
+
+  it('prepends the routed Extract role model before all other prompt text', async () => {
+    const rt = makeRuntime({ extractRounds: [[], []] })
+    await wf.run(rt, JSON.stringify({
+      ...BASE_INPUT,
+      agentTypes: { extract: TYPE },
+      opencodeModels: { extract: 'zai-coding-plan/glm-5.2' },
+    }))
+    expect(stageCalls(rt, 'Extract', 'extract checkable claims').some((c) =>
+      String(c.prompt)
+        .replace(/^<!-- wt-meta [^\n]+ -->\n\n/, '')
+        .startsWith('OPENCODE_MODEL: zai-coding-plan/glm-5.2\n\n'),
+    )).toBe(true)
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Test: happy path (surfaces provided — no inventory agent)
 // ---------------------------------------------------------------------------
