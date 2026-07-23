@@ -2,12 +2,13 @@
 
 This repo has two halves that stand alone but work together:
 
-- **`plugin/`** — the Claude Code plugin. Ships **seven skills** — `workflow-composer`
+- **`plugin/`** — the Claude Code plugin. Ships **eight skills** — `workflow-composer`
   (author), `toolkit-scaffold` (start), `workflow-debugger` (diagnose a run),
   `upgrade-canary` (re-verify the runtime after an upgrade), `independent-analysis`
   (trigger the bias-free analysis workflow when relevant), `deep-grounding`
-  (collect + verify evidence against the real sources before asserting/analyzing), and
-  `pilot-wave` (compose a delegated pilot/orchestrator wave over tracked cards) — the
+  (collect + verify evidence against the real sources before asserting/analyzing),
+  `pilot-wave` (compose a delegated pilot/orchestrator wave over tracked cards), and
+  `adopt-rules` (install editable, versioned copies of the bundled rules) — the
   **pilot agent suite** (`pilot`, `pilot-orchestrator`, `pilot-watchdog`) that skill drives,
   a `Stop` hook that auto-surfaces a finished run's audit report, a `SessionStart` hook that
   injects the generic delegation ladder where a project does tracked/delegated work, and
