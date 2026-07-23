@@ -43,8 +43,18 @@ export interface DelegationExpectation {
   id: string
   /** Matches agentType names routed to this CLI (e.g. anything containing "opencode"). */
   typeRe: RegExp
-  /** Matches a REAL invocation inside one Bash `input.command` (multiline-safe). */
+  /** The invocation SHAPE, kept for DISPLAY (the observe-ui panel label) and as the drift-lock
+   *  anchor. ⚠ For an entry that also carries `matchCommand` (opencode), this regex is NO LONGER
+   *  executed on untrusted input — its BIN= arm is ReDoS-prone (~30s on a 200KB opencode-but-no-run
+   *  command); `matchCommand` is the safe executable path. Codex (no `matchCommand`) still tests
+   *  this regex, which is direct/linear. */
   commandRe: RegExp
+  /** Linear, ReDoS-safe executable matcher over ONE Bash `input.command`. Present where the
+   *  `commandRe` alone is unsafe or insufficient (opencode: a real `run` can sit past 20k AND the
+   *  BIN= arm backtracks catastrophically); absent for direct/linear signatures (codex) whose
+   *  `commandRe` is tested safely. Self-contained so the provenance checker's embedded scanner can
+   *  inline its source verbatim via `.toString()`. Given the FULL command (it self-bounds). */
+  matchCommand?: (command: string) => boolean
 }
 
 /** The closed registry. Adding a new external bridge = adding one grounded entry here;
@@ -62,12 +72,63 @@ export interface DelegationExpectation {
 //     the `"$BIN" run` call (a bare mention on an earlier line no longer arms it).
 // Residual, accepted: text that embeds the exact invocation shape (`echo "opencode run"`)
 // still matches — that is the deliberate-spoof case the header rules out of scope.
+
+// A two-step LINEAR opencode-run matcher — replaces the catastrophic single regex (its BIN= arm
+// `[\s\S]*?` backtracked ~30s on a 200KB opencode-but-no-run command) and the 20k scan cap (which
+// hid a real `run` past position 20k → the a50c1510/aafb024d false-refuse, cards
+// #1825363023930328542 + #1825347787861001678). head(20k)+tail(20k) bounds the work AND co-locates
+// a `BIN=` in the head with its `"$BIN" run` in the tail; the two-step scan is indexOf-based (no
+// `[\s\S]*?` bridge) → O(n). SELF-CONTAINED (helpers inlined) so the provenance checker's scanner
+// embeds its source verbatim via `.toString()`. indexOf('opencode')/('BIN=') are case-SENSITIVE
+// (the real binary + the wrapper's BIN= are exactly cased); a case-variant is not a real call.
+// Residual (documented, never observed): a `run` in the MIDDLE of a command longer than 2*WIN.
+// --- wt-drift-lock:matchesOpencodeRun START (byte-identical: debugger+patterns+hook) ---
+function matchesOpencodeRun(cmd = '') {
+  if (typeof cmd !== 'string' || cmd.length === 0) return false
+  const WIN = 20000
+  const s = cmd.length <= 2 * WIN ? cmd : cmd.slice(0, WIN) + '\n' + cmd.slice(-WIN)
+  const AFTER_QUOTED = /^(?:\.exe|\.cmd)?["']\s+run\b/
+  const AFTER_BARE = /^(?:\.exe|\.cmd)?\s+run\b/
+  const AFTER_BIN = /^["']?\s+run\b/
+  const BEFORE_OK = /[\s;|&(=/'"]/
+  for (let i = s.indexOf('opencode'); i !== -1; i = s.indexOf('opencode', i + 1)) {
+    const before = i === 0 ? '' : s[i - 1]
+    if (before && !BEFORE_OK.test(before)) continue
+    const after = s.slice(i + 8, i + 8 + 16)
+    // Case A — a real QUOTED invocation: a CLOSING quote right after the opencode token, then run
+    // (`"opencode" run`, `"/path/opencode" run`).
+    if (AFTER_QUOTED.test(after)) return true
+    // Case B — a real UNQUOTED invocation: run right after (no quote), and opencode was NOT opened
+    // by a quote — rejects the string arg `"opencode run"` (quote-before pairs with run inside).
+    if (before !== '"' && before !== "'" && AFTER_BARE.test(after)) return true
+  }
+  let hasBinOpencode = false
+  for (let i = s.indexOf('BIN='); i !== -1; i = s.indexOf('BIN=', i + 1)) {
+    const nl = s.indexOf('\n', i)
+    const end = Math.min(nl === -1 ? s.length : nl, i + 4 + 256)
+    if (s.slice(i + 4, end).indexOf('opencode') !== -1) {
+      hasBinOpencode = true
+      break
+    }
+  }
+  if (hasBinOpencode) {
+    for (const m of s.matchAll(/\$\{?[A-Za-z_]*BIN\}?/g)) {
+      const at = m.index ?? 0
+      const tok = m[0] ?? ''
+      if (AFTER_BIN.test(s.slice(at + tok.length, at + tok.length + 16))) return true
+    }
+  }
+  return false
+}
+// --- wt-drift-lock:matchesOpencodeRun END ---
+
 export const DELEGATION_EXPECTATIONS: readonly DelegationExpectation[] = [
   {
     id: 'opencode',
     typeRe: /opencode/i,
     commandRe:
       /(?:^|[\s;|&(=])(?:[^\s;|&"']*\/)?opencode(?:\.exe|\.cmd)?\s+run\b|(?:^|[\s;|&(=])["'](?:[^"']*\/)?opencode(?:\.exe|\.cmd)?["']\s+run\b|[A-Za-z_]*BIN=[^\n]*opencode[\s\S]*?"?\$\{?[A-Za-z_]*BIN\}?"?\s+run\b/im,
+    matchCommand: matchesOpencodeRun,
   },
   {
     id: 'codex',
@@ -107,6 +168,10 @@ const COMMAND_SCAN_MAX = 20_000
  *  Exposed for the observe-ui panel, which scans already-parsed ToolInteractions
  *  (it never re-parses the raw transcript). */
 export function isExternalCliCommand(command: string, expectation: DelegationExpectation): boolean {
+  // opencode routes to the linear self-bounded matcher, given the FULL command (it head/tail
+  // windows internally, so a real `run` past 20k is still seen); codex tests its direct/linear
+  // regex, capped as before (COMMAND_SCAN_MAX).
+  if (expectation.matchCommand) return expectation.matchCommand(command)
   const text = command.length > COMMAND_SCAN_MAX ? command.slice(0, COMMAND_SCAN_MAX) : command
   return expectation.commandRe.test(text)
 }

@@ -7,9 +7,24 @@
 // legitimate signature change, port the change to BOTH, or (better) hoist the registry into a
 // shared published package.
 
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
 import { DELEGATION_EXPECTATIONS } from '@workflow-toolbox/debugger/external-delegation'
 import { EXTERNAL_CLI_SIGNATURES } from '../src/provenance-gate.js'
+
+/** Extract the text STRICTLY between the matchesOpencodeRun drift-lock markers of a source file.
+ *  Compares FILE TEXT (not `.toString()`) so it is immune to transpiler formatting — the three
+ *  copies (debugger, patterns, hook) must hold byte-identical source. */
+function extractMatcherBody(relUrl: string): string {
+  const text = readFileSync(fileURLToPath(new URL(relUrl, import.meta.url)), 'utf8')
+  const START = '// --- wt-drift-lock:matchesOpencodeRun START'
+  const END = '// --- wt-drift-lock:matchesOpencodeRun END ---'
+  const s = text.indexOf(START)
+  const e = text.indexOf(END)
+  if (s === -1 || e === -1) throw new Error(`matcher markers not found in ${relUrl}`)
+  return text.slice(text.indexOf('\n', s) + 1, e)
+}
 
 describe('external-CLI signature registry drift-lock', () => {
   it('the local copy is byte-identical to the shipped registry (same entries, same regexes)', () => {
@@ -30,5 +45,18 @@ describe('external-CLI signature registry drift-lock', () => {
     // Same count (catches a new external bridge added upstream but not copied here) AND same
     // per-entry regexes (catches a signature edit on either side).
     expect(local).toEqual(shipped)
+  })
+
+  it('the matchesOpencodeRun body is byte-identical to the shipped debugger copy', () => {
+    // The opencode signature now carries an EXECUTABLE linear matcher (matchCommand). Its source
+    // must stay byte-identical across debugger (canonical) + patterns (this copy) + the hook —
+    // the checker's embedded scanner inlines this exact body via `.toString()`. A regex-only
+    // drift-lock would miss a divergence in the matcher's logic, so assert the source region too.
+    const canonical = extractMatcherBody('../../debugger/src/external-delegation.ts')
+    const copy = extractMatcherBody('../src/provenance-gate.ts')
+    expect(copy).toBe(canonical)
+    expect(copy).toContain('function matchesOpencodeRun(')
+    // The registry entry actually wires the matcher (not a dangling function).
+    expect(EXTERNAL_CLI_SIGNATURES.find((e) => e.id === 'opencode')?.matchCommand).toBeTypeOf('function')
   })
 })

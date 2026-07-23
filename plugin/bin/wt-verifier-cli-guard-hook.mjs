@@ -56,13 +56,65 @@ import { pathToFileURL } from 'node:url'
 // @workflow-toolbox/patterns' provenance-gate EXTERNAL_CLI_SIGNATURES (itself a copy of the
 // shipped @workflow-toolbox/debugger registry). This hook is a plugin .mjs run by bare node
 // (no bundler, no TS), so it cannot import the TS registry; a drift-lock test asserts these
-// stay byte-identical (id + typeRe + commandRe source/flags) so any divergence fails a gate.
+// stay byte-identical (id + typeRe + commandRe source/flags, AND the matchesOpencodeRun body) so
+// any divergence fails a gate.
+
+// A two-step LINEAR opencode-run matcher — replaces the catastrophic single regex (its BIN= arm
+// `[\s\S]*?` backtracked ~30s on a 200KB opencode-but-no-run command) and the 20k scan cap (which
+// hid a real `run` past position 20k → the a50c1510/aafb024d false-refuse, cards
+// #1825363023930328542 + #1825347787861001678). head(20k)+tail(20k) bounds the work AND co-locates
+// a `BIN=` in the head with its `"$BIN" run` in the tail; the two-step scan is indexOf-based (no
+// `[\s\S]*?` bridge) → O(n). SELF-CONTAINED (helpers inlined) so the provenance checker's scanner
+// embeds its source verbatim via `.toString()`. indexOf('opencode')/('BIN=') are case-SENSITIVE
+// (the real binary + the wrapper's BIN= are exactly cased); a case-variant is not a real call.
+// Residual (documented, never observed): a `run` in the MIDDLE of a command longer than 2*WIN.
+// --- wt-drift-lock:matchesOpencodeRun START (byte-identical: debugger+patterns+hook) ---
+function matchesOpencodeRun(cmd = '') {
+  if (typeof cmd !== 'string' || cmd.length === 0) return false
+  const WIN = 20000
+  const s = cmd.length <= 2 * WIN ? cmd : cmd.slice(0, WIN) + '\n' + cmd.slice(-WIN)
+  const AFTER_QUOTED = /^(?:\.exe|\.cmd)?["']\s+run\b/
+  const AFTER_BARE = /^(?:\.exe|\.cmd)?\s+run\b/
+  const AFTER_BIN = /^["']?\s+run\b/
+  const BEFORE_OK = /[\s;|&(=/'"]/
+  for (let i = s.indexOf('opencode'); i !== -1; i = s.indexOf('opencode', i + 1)) {
+    const before = i === 0 ? '' : s[i - 1]
+    if (before && !BEFORE_OK.test(before)) continue
+    const after = s.slice(i + 8, i + 8 + 16)
+    // Case A — a real QUOTED invocation: a CLOSING quote right after the opencode token, then run
+    // (`"opencode" run`, `"/path/opencode" run`).
+    if (AFTER_QUOTED.test(after)) return true
+    // Case B — a real UNQUOTED invocation: run right after (no quote), and opencode was NOT opened
+    // by a quote — rejects the string arg `"opencode run"` (quote-before pairs with run inside).
+    if (before !== '"' && before !== "'" && AFTER_BARE.test(after)) return true
+  }
+  let hasBinOpencode = false
+  for (let i = s.indexOf('BIN='); i !== -1; i = s.indexOf('BIN=', i + 1)) {
+    const nl = s.indexOf('\n', i)
+    const end = Math.min(nl === -1 ? s.length : nl, i + 4 + 256)
+    if (s.slice(i + 4, end).indexOf('opencode') !== -1) {
+      hasBinOpencode = true
+      break
+    }
+  }
+  if (hasBinOpencode) {
+    for (const m of s.matchAll(/\$\{?[A-Za-z_]*BIN\}?/g)) {
+      const at = m.index ?? 0
+      const tok = m[0] ?? ''
+      if (AFTER_BIN.test(s.slice(at + tok.length, at + tok.length + 16))) return true
+    }
+  }
+  return false
+}
+// --- wt-drift-lock:matchesOpencodeRun END ---
+
 export const EXTERNAL_CLI_SIGNATURES = [
   {
     id: 'opencode',
     typeRe: /opencode/i,
     commandRe:
       /(?:^|[\s;|&(=])(?:[^\s;|&"']*\/)?opencode(?:\.exe|\.cmd)?\s+run\b|(?:^|[\s;|&(=])["'](?:[^"']*\/)?opencode(?:\.exe|\.cmd)?["']\s+run\b|[A-Za-z_]*BIN=[^\n]*opencode[\s\S]*?"?\$\{?[A-Za-z_]*BIN\}?"?\s+run\b/im,
+    matchCommand: matchesOpencodeRun,
   },
   {
     id: 'codex',
@@ -101,18 +153,29 @@ export function signatureForAgentType(agentType) {
   return null
 }
 
-/** The first external-CLI signature whose commandRe matches this Bash command (a REAL
- *  invocation), or null. Command is capped like the transcript scanner. */
+/** Route one Bash command to the right matcher for `sig`: opencode's linear self-bounded
+ *  `matchCommand` given the FULL command (a pre-cap would drop the tail where a long-heredoc `run`
+ *  lives — the a50c1510/aafb024d false-refuse this fix removes); or a direct/linear signature's
+ *  capped `commandRe` (codex). */
+function matchesCli(command, sig) {
+  if (sig.matchCommand) return sig.matchCommand(command)
+  const scan = command.length > COMMAND_SCAN_MAX ? command.slice(0, COMMAND_SCAN_MAX) : command
+  return sig.commandRe.test(scan)
+}
+
+/** The first external-CLI signature whose matcher accepts this Bash command (a REAL invocation),
+ *  or null. */
 export function signatureForCommand(command) {
   if (typeof command !== 'string' || command.length === 0) return null
-  const scan = command.length > COMMAND_SCAN_MAX ? command.slice(0, COMMAND_SCAN_MAX) : command
-  for (const sig of EXTERNAL_CLI_SIGNATURES) if (sig.commandRe.test(scan)) return sig
+  for (const sig of EXTERNAL_CLI_SIGNATURES) if (matchesCli(command, sig)) return sig
   return null
 }
 
 /** Count REAL external-CLI invocations in one transcript's Bash tool_use commands (the flushed
- *  fallback signal). Mirrors the provenance gate's scanner (parseTranscriptExternalCalls shape). */
-export function countCliInvocations(transcriptText, commandRe) {
+ *  fallback signal). Mirrors the provenance gate's scanner (parseTranscriptExternalCalls shape).
+ *  Routes each command through `matchesCli(cmd, sig)` — the FULL command for opencode's linear
+ *  matcher, so a `run` past 20k in a long heredoc is still counted. */
+export function countCliInvocations(transcriptText, sig) {
   let n = 0
   for (const raw of transcriptText.split('\n')) {
     const t = raw.trim()
@@ -131,8 +194,7 @@ export function countCliInvocations(transcriptText, commandRe) {
       if (!b || b.type !== 'tool_use' || b.name !== 'Bash') continue
       const cmd = b.input && b.input.command
       if (typeof cmd !== 'string') continue
-      const scan = cmd.length > COMMAND_SCAN_MAX ? cmd.slice(0, COMMAND_SCAN_MAX) : cmd
-      if (commandRe.test(scan)) n++
+      if (matchesCli(cmd, sig)) n++
     }
   }
   return n
@@ -258,7 +320,7 @@ export function decidePreToolUse(
   } catch {
     return null // unreadable ⇒ fail-OPEN
   }
-  if (typeof text === 'string' && text.length > 0 && countCliInvocations(text, sig.commandRe) > 0) {
+  if (typeof text === 'string' && text.length > 0 && countCliInvocations(text, sig) > 0) {
     return null // real CLI seen in the (flushed) transcript ⇒ allow
   }
   // Neither signal present: a verdict with NO real CLI invocation = a self-answer.

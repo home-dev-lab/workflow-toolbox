@@ -199,6 +199,30 @@ describe('scanner e2e — drift-lock against the shipped signal', () => {
     expect(byLabel.get(posLabel)).toBe(true)
     expect(byLabel.get('adversarialVerification:verify:9:9')).toBeNull()
   })
+
+  it('credits a run whose `run` sits FAR past the old 20k cap (a50c1510: 33K heredoc) — RED before the linear matcher', () => {
+    // The embedded scanner used to pre-cap each command to SCAN_MAX (20k) then test the capped
+    // slice, so a `run` past 20k in a long heredoc was missed → the false-refuse this card fixes.
+    // The linear matcher gets the FULL command (head/tail window) → the tail `run` is credited.
+    const nonce = deriveProvenanceNonce([posLabel])
+    const root = mkdtempSync(join(tmpdir(), 'prov-longrun-'))
+    const runDir = join(root, 'projects', 'testslug', 'testsess', 'subagents', 'workflows', 'wf_long')
+    mkdirSync(runDir, { recursive: true })
+    const longRun =
+      'BIN=/home/x/.opencode/bin/opencode\n' + 'x'.repeat(33_000) + '\ntimeout 570 "$BIN" run "verify" -f "$TASKFILE" < /dev/null'
+    const jsonl = [labeledUserTurn(posLabel, 'Adversarially verify.'), bashTurn(longRun)].join('\n') + '\n'
+    writeFileSync(join(runDir, 'agent-long001.jsonl'), jsonl)
+    writeFileSync(
+      join(runDir, 'agent-checker9.jsonl'),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: `PROVENANCE_ANCHOR: ${nonce}\n` }] } }) + '\n',
+    )
+    const source = buildProvenanceScannerSource(opencode, nonce, [posLabel])
+    const out = runScanner(source, root)
+    expect(out.anchored).toBe(true)
+    expect(new Map(out.results.map((r) => [r.label, r.cliSeen])).get(posLabel)).toBe(true)
+    // The shipped classifier must AGREE on the full command (drift-lock).
+    expect(parseTranscriptExternalCalls(jsonl, shipped).cliCalls > 0).toBe(true)
+  })
 })
 
 describe('runProvenanceChecker (FakeRuntime) — one checker call, fail-closed on failure', () => {
