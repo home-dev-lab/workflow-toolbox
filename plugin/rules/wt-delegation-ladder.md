@@ -63,3 +63,18 @@ so try resuming a dead agent before respawning a replacement — and never spawn
 into the same worktree before the predecessor's death is confirmed (two writers corrupt one
 tree). Before assuming an agent is stuck, check observable state (git status, file mtimes,
 HEAD) rather than nudging blindly.
+
+## Three prohibitions that sharpen the ladder
+
+1. **Executing a fully-specified design is executor-lane work, not inline work on a strong
+   model.** A design that is 100% specified and ratified is the IDEAL profile for the cheapest
+   capable executor — a brief that says "implement it inline" on a strong model is a deviation
+   even when the design is done. The pilot arbitrates, gates, and reviews; the executor codes.
+2. **ONE full re-gate per delivery: the integrating arbiter's, on the real tree.** The
+   implementer gates its own worktree (its definition of done); any intermediate coordinator
+   does a diff-read plus targeted checks — never an additional independent full suite. A triple
+   gate is quality-theatre at full price.
+3. **A delegation wrapper never pre-reads the sources.** It hands paths and instructions to the
+   executor, which reads for itself — a wrapper that reads everything first burns the
+   coordinator-tier budget on work the executor repeats anyway, the same leak family as a
+   wrapper answering in the executor's place.
