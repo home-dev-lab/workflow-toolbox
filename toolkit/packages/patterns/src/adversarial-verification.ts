@@ -85,6 +85,33 @@ export interface AdversarialVerificationOptions<TClaim> {
    *  default of 3). Cannot be combined with `lenses` (lenses require one
    *  fixed vote count). */
   votesPerClaim?: (claim: TClaim) => number
+  /** Confidence floor — the minimum number of surviving VALID (non-null,
+   *  provenance-passed, after any Phase B2 retry recovery) votes required to
+   *  return a confident `confirmed` or `refuted` verdict. When a claim's tally
+   *  WOULD be `confirmed`/`refuted` but fewer than this many valid votes remain,
+   *  the verdict is DEMOTED to `partially-confirmed` — the existing
+   *  low-confidence marker; no new verdict value is introduced, so the digest
+   *  bucket contract is unchanged. `unverifiable` (zero valid votes) and an
+   *  already-mixed `partially-confirmed` are never touched.
+   *
+   *  Default **2** (quality-first): a single surviving valid vote — e.g. a
+   *  3-vote claim whose other two votes failed or were provenance-disqualified,
+   *  the thin-majority case the retry feature (card #1824029483854726303) left
+   *  open — is NOT enough to confirm/refute on its own; it demotes. Set
+   *  `minValidVotes: 1` to opt OUT: a confident verdict then needs only one
+   *  valid vote, which is byte-identical to the pre-floor behaviour (with
+   *  minValidVotes:1 the floor can never fire, because a `confirmed`/`refuted`
+   *  verdict already implies >= 1 valid vote).
+   *
+   *  Clamped per claim to `min(minValidVotes, claimVotes)` — exactly like
+   *  `refuteThreshold` — so a claim DELIBERATELY run with fewer votes (a
+   *  `votesPerClaim` low-stakes claim, or `votes: 1`) stays decided by the votes
+   *  it was given rather than being made permanently unconfirmable: a 1-vote
+   *  claim's effective floor is 1. The floor only bites when ATTRITION
+   *  (verifier failures / provenance disqualifications) drops a MULTI-vote claim
+   *  below it. Must be an integer >= 1; NOT validated against `votes` (a value
+   *  above the vote count simply clamps per claim to "all valid votes required"). */
+  minValidVotes?: number
   model?: ModelAlias       // default BEST_MODEL ('opus')
   /** Per-verifier reasoning effort. Omit to inherit the session effort. */
   effort?: EffortAlias
@@ -220,6 +247,7 @@ export async function adversarialVerification<TClaim>(
     refuteThreshold: refuteThresholdOpt,
     lenses,
     votesPerClaim,
+    minValidVotes: minValidVotesOpt,
     model,
     effort,
     phase,
@@ -230,6 +258,9 @@ export async function adversarialVerification<TClaim>(
   } = options
 
   const refuteThreshold = refuteThresholdOpt ?? 2
+  // Confidence floor (card #1825041559779804478): min surviving valid votes for a
+  // confident confirmed/refuted verdict. Default 2 (quality-first); 1 = off (legacy).
+  const minValidVotes = minValidVotesOpt ?? 2
 
   // -------------------------------------------------------------------------
   // Synchronous validation — throw with actionable messages
@@ -260,6 +291,16 @@ export async function adversarialVerification<TClaim>(
   if (votesPerClaim === undefined && refuteThreshold > votesOpt) {
     throw new Error(
       `adversarialVerification: refuteThreshold (${refuteThreshold}) must not be > votes (${votesOpt})`,
+    )
+  }
+
+  // Confidence floor: must be an integer >= 1. NOT validated against votes — a
+  // value above the vote count is legal and clamps per claim (min(minValidVotes,
+  // claimVotes) = "all valid votes required"), exactly like refuteThreshold under
+  // votesPerClaim. minValidVotes:1 is the opt-out (floor can never fire).
+  if (!Number.isInteger(minValidVotes) || minValidVotes < 1) {
+    throw new Error(
+      `adversarialVerification: minValidVotes must be an integer >= 1, got ${String(minValidVotesOpt)}`,
     )
   }
 
@@ -664,6 +705,9 @@ export async function adversarialVerification<TClaim>(
   // explicitly to rt.agent — even the 'opus' default is an explicit argument, not
   // an omission. This is the intentional model-sensitivity audit behaviour for
   // adversarialVerification. One record per agentsSpawned++.
+  // Confidence-floor demotions counted across all claims (deterministic: the map
+  // below runs synchronously in claim-index order over an already-resolved array).
+  let flooredCount = 0
   const verifiedKept: Array<VerifiedClaim<TClaim>> = perClaim.map((pc, claimIndex) => {
     const claimRecords: TrailRecord[] = []
     const claimRetryRecords: TrailRecord[] = []
@@ -772,6 +816,11 @@ export async function adversarialVerification<TClaim>(
     // claim so a 1-vote claim is decided by its single vote. min(2,3)=2:
     // identical to the scalar behavior at the defaults.
     const effectiveThreshold = Math.min(refuteThreshold, pc.claimVotes)
+    // Confidence floor, clamped per claim just like the refute threshold: a
+    // deliberately low-vote claim (votesPerClaim / votes:1) keeps its floor at
+    // its own vote count, so it is never made permanently unconfirmable; the
+    // floor only bites when attrition drops a multi-vote claim below it.
+    const effectiveFloor = Math.min(minValidVotes, pc.claimVotes)
     let verdict: Verdict
 
     if (nonNull.length === 0) {
@@ -786,6 +835,19 @@ export async function adversarialVerification<TClaim>(
     } else {
       // Mixed: at least one non-confirmed, not enough refutations
       verdict = 'partially-confirmed'
+    }
+
+    // Confidence-floor demotion: a confident verdict (confirmed/refuted) decided
+    // on fewer than effectiveFloor valid votes is a thin majority — demote it to
+    // the low-confidence marker. partially-confirmed / unverifiable are untouched.
+    // With minValidVotes:1 (opt-out) effectiveFloor is 1 and this never fires,
+    // because confirmed/refuted already implies nonNull.length >= 1.
+    if (
+      (verdict === 'confirmed' || verdict === 'refuted') &&
+      nonNull.length < effectiveFloor
+    ) {
+      verdict = 'partially-confirmed'
+      flooredCount++
     }
 
     return { claim: pc.claim, verdict, votes: mergedVotes }
@@ -847,6 +909,14 @@ export async function adversarialVerification<TClaim>(
     warn(
       rt, warnings,
       `adversarialVerification: ${allNullClaimsCount} claims left unverifiable (all verifiers failed)`,
+    )
+  }
+
+  if (flooredCount > 0) {
+    warn(
+      rt, warnings,
+      `adversarialVerification: ${flooredCount} claims demoted to partially-confirmed by the confidence floor ` +
+      `(fewer than minValidVotes=${minValidVotes} surviving valid votes) — set minValidVotes:1 to disable`,
     )
   }
 

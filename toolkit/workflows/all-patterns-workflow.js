@@ -1522,6 +1522,7 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
       refuteThreshold: refuteThresholdOpt,
       lenses,
       votesPerClaim,
+      minValidVotes: minValidVotesOpt,
       model,
       effort,
       phase,
@@ -1531,6 +1532,7 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
       stageKey
     } = options;
     const refuteThreshold = refuteThresholdOpt ?? 2;
+    const minValidVotes = minValidVotesOpt ?? 2;
     if (claims.length === 0) {
       throw new Error(
         "adversarialVerification: empty claims \u2014 provide at least one claim to verify"
@@ -1549,6 +1551,11 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
     if (votesPerClaim === void 0 && refuteThreshold > votesOpt) {
       throw new Error(
         `adversarialVerification: refuteThreshold (${refuteThreshold}) must not be > votes (${votesOpt})`
+      );
+    }
+    if (!Number.isInteger(minValidVotes) || minValidVotes < 1) {
+      throw new Error(
+        `adversarialVerification: minValidVotes must be an integer >= 1, got ${String(minValidVotesOpt)}`
       );
     }
     if (lenses !== void 0 && lenses.length !== votesOpt) {
@@ -1793,6 +1800,7 @@ ${renderClaim(claim)}`;
         }
       }
     }
+    let flooredCount = 0;
     const verifiedKept = perClaim.map((pc, claimIndex) => {
       const claimRecords = [];
       const claimRetryRecords = [];
@@ -1863,6 +1871,7 @@ ${renderClaim(claim)}`;
       );
       const nonNull = mergedVotes.filter((v) => v !== null);
       const effectiveThreshold = Math.min(refuteThreshold, pc.claimVotes);
+      const effectiveFloor = Math.min(minValidVotes, pc.claimVotes);
       let verdict;
       if (nonNull.length === 0) {
         verdict = "unverifiable";
@@ -1872,6 +1881,10 @@ ${renderClaim(claim)}`;
         verdict = "confirmed";
       } else {
         verdict = "partially-confirmed";
+      }
+      if ((verdict === "confirmed" || verdict === "refuted") && nonNull.length < effectiveFloor) {
+        verdict = "partially-confirmed";
+        flooredCount++;
       }
       return { claim: pc.claim, verdict, votes: mergedVotes };
     });
@@ -1903,6 +1916,13 @@ ${renderClaim(claim)}`;
         rt,
         warnings,
         `adversarialVerification: ${allNullClaimsCount} claims left unverifiable (all verifiers failed)`
+      );
+    }
+    if (flooredCount > 0) {
+      warn(
+        rt,
+        warnings,
+        `adversarialVerification: ${flooredCount} claims demoted to partially-confirmed by the confidence floor (fewer than minValidVotes=${minValidVotes} surviving valid votes) \u2014 set minValidVotes:1 to disable`
       );
     }
     const stats = {

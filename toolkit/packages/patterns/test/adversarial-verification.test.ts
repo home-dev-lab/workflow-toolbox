@@ -1810,7 +1810,11 @@ describe('adversarialVerification — retry disqualified-no-provenance votes onc
 
   it('a retry that self-answers AGAIN stays disqualified (vote stays null)', async () => {
     const { run } = externalRetryRun({
-      overrides: { claims: ['c0'], votes: 2, refuteThreshold: 2 },
+      // minValidVotes:1 opts out of the default confidence floor so this test
+      // stays about RETRY mechanics: a single surviving valid vote here means
+      // 'confirmed' (pre-floor tally). The floor's effect on this exact
+      // single-survivor shape is TEST-LOCKED in the confidence-floor block.
+      overrides: { claims: ['c0'], votes: 2, refuteThreshold: 2, minValidVotes: 1 },
       firstSeen: (l) => !l.endsWith(':1'),
       retrySeen: () => false, // the retry also produced no CLI invocation
       retryVoteFor: () => confirmedVote,
@@ -1848,7 +1852,10 @@ describe('adversarialVerification — retry disqualified-no-provenance votes onc
 
   it('a retry whose AGENT fails (null) leaves the vote null with no control decision', async () => {
     const { run } = externalRetryRun({
-      overrides: { claims: ['c0'], votes: 2, refuteThreshold: 2 },
+      // minValidVotes:1 opts out of the default floor: this test is about a
+      // retry whose AGENT fails (null); the surviving single valid vote must
+      // read as the pre-floor 'confirmed', decoupled from the floor demotion.
+      overrides: { claims: ['c0'], votes: 2, refuteThreshold: 2, minValidVotes: 1 },
       firstSeen: (l) => !l.endsWith(':1'),
       retrySeen: () => true,        // provenance would be fine, but the agent returned null
       retryVoteFor: () => null,
@@ -2017,5 +2024,123 @@ describe('adversarialVerification — provenance gate: salvage-aware effective l
     expect(orig.outcome).toBe('null')
     expect(orig.decision).toBe('disqualified-no-provenance')
     expect(result.warnings.some((w) => /DISQUALIFIED/.test(w))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Confidence floor (minValidVotes) — TEST-LOCK for card #1825041559779804478.
+//
+// A confident confirmed/refuted verdict needs >= minValidVotes surviving VALID
+// (non-null, provenance-passed, retry-recovered) votes; a thinner majority
+// demotes to partially-confirmed (the existing low-confidence marker — no new
+// verdict). Default 2 (quality-first). Clamped per claim to
+// min(minValidVotes, claimVotes), symmetric with refuteThreshold, so a
+// deliberately low-vote claim is never made permanently unconfirmable.
+// ---------------------------------------------------------------------------
+describe('adversarialVerification — confidence floor (minValidVotes)', () => {
+  // Route votes by label; a dead vote's :salvage respawn must ALSO fail so the
+  // vote stays null (same technique as the partial-null test above). The floor
+  // reacts only to the FINAL surviving-valid count, so plain null attrition
+  // reproduces the exact thin-majority shape the retry path leaves open.
+  function votesByLabel(map: (voteLabel: string) => VerifierVote | null): FakeRuntime {
+    return new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label.endsWith(':salvage')) return null
+        if (label.includes(':verify:')) return map(label)
+        return confirmedVote
+      },
+    })
+  }
+
+  it('DEFAULT (option omitted) is ON at 2 — a single surviving valid vote demotes confirmed → partially-confirmed', async () => {
+    // 3 votes: only index 0 survives (1 & 2 fail) → 1 valid confirmed vote.
+    const rt = votesByLabel((l) => (l.endsWith(':0') ? confirmedVote : null))
+    const result = await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 3 }))
+    // Pre-floor tally would be 'confirmed'; the default floor of 2 demotes the
+    // thin single-vote majority. The surviving vote is still exposed unchanged.
+    expect(result.value[0]!.verdict).toBe('partially-confirmed')
+    expect(result.value[0]!.votes.filter((v) => v !== null)).toHaveLength(1)
+  })
+
+  it('>= 2 surviving valid votes → confirmed (floor satisfied at the boundary)', async () => {
+    // 3 votes: 0 & 1 confirmed, 2 fails → 2 surviving valid votes == floor.
+    const rt = votesByLabel((l) => (l.endsWith(':2') ? null : confirmedVote))
+    const result = await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 3 }))
+    expect(result.value[0]!.verdict).toBe('confirmed')
+  })
+
+  it('demotes a thin REFUTED too — a single valid refuted vote → partially-confirmed', async () => {
+    // refuteThreshold 1 so one refute would refute; only vote 0 survives.
+    const rt = votesByLabel((l) => (l.endsWith(':0') ? refutedVote : null))
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 3, refuteThreshold: 1,
+    }))
+    expect(result.value[0]!.verdict).toBe('partially-confirmed')
+  })
+
+  it('minValidVotes:1 (opt-out) restores legacy behaviour — a single valid vote confirms', async () => {
+    const rt = votesByLabel((l) => (l.endsWith(':0') ? confirmedVote : null))
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 3, minValidVotes: 1,
+    }))
+    expect(result.value[0]!.verdict).toBe('confirmed')
+    expect(result.warnings.some((w) => /confidence floor/.test(w))).toBe(false)
+  })
+
+  it('emits an aggregated warning naming the demotion count and minValidVotes', async () => {
+    const rt = votesByLabel((l) => (l.endsWith(':0') ? confirmedVote : null))
+    const result = await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 3 }))
+    expect(result.warnings.some((w) =>
+      /1 claims demoted to partially-confirmed by the confidence floor/.test(w) &&
+      w.includes('minValidVotes=2'))).toBe(true)
+  })
+
+  it('clamps per claim: a deliberately 1-vote claim is decided by its single vote (never demoted)', async () => {
+    // votesPerClaim:()=>1 → claimVotes 1 → effectiveFloor min(2,1)=1 → the one
+    // valid vote satisfies the floor even though the default minValidVotes is 2.
+    const rt = new FakeRuntime({ responses: [confirmedVote] })
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c'], votesPerClaim: () => 1,
+    }))
+    expect(result.value[0]!.verdict).toBe('confirmed')
+    expect(result.warnings.some((w) => /confidence floor/.test(w))).toBe(false)
+  })
+
+  it('never demotes an already partially-confirmed or unverifiable verdict', async () => {
+    // claim 0: all null → unverifiable (0 valid). claim 1: 1 confirmed + 1
+    // refuted survivor → partially-confirmed. The floor touches neither.
+    const rt = votesByLabel((l) => {
+      if (l.startsWith('adversarialVerification:verify:0:')) return null
+      if (l.endsWith(':1:0')) return confirmedVote
+      return refutedVote
+    })
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0', 'c1'], votes: 2, refuteThreshold: 2,
+    }))
+    expect(result.value[0]!.verdict).toBe('unverifiable')
+    expect(result.value[1]!.verdict).toBe('partially-confirmed')
+    expect(result.warnings.some((w) => /confidence floor/.test(w))).toBe(false)
+  })
+
+  it('a floored demotion lands in the digest partiallyConfirmed bucket, not confirmed', async () => {
+    const rt = votesByLabel((l) => (l.endsWith(':0') ? confirmedVote : null))
+    await adversarialVerification(rt, makeOptions({ claims: ['c0'], votes: 3, phase: 'p' }))
+    const line = rt.logs.find((l) => l.startsWith('[wt:digest]'))
+    const counts = parseDigest(line!)?.counts
+    expect(counts?.confirmed).toBe(0)
+    expect(counts?.partiallyConfirmed).toBe(1)
+  })
+
+  it('rejects minValidVotes < 1', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+    await expect(adversarialVerification(rt, makeOptions({ minValidVotes: 0 })))
+      .rejects.toThrow(/minValidVotes must be an integer >= 1/)
+  })
+
+  it('rejects a non-integer minValidVotes', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+    await expect(adversarialVerification(rt, makeOptions({ minValidVotes: 1.5 })))
+      .rejects.toThrow(/minValidVotes must be an integer >= 1/)
   })
 })
