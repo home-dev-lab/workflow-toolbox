@@ -90,13 +90,14 @@ Recommended flow:
 **rules → `.claude/rules/`:**
 
 - Every `*.md` in the plugin's `rules/` bundle (its single source) except `README.md`,
-  copied VERBATIM under a line-1 banner. Currently **`wt-delegation-ladder.md`** — the
-  delegation ladder: route each task to the lowest rung that fits, pin model + effort at
-  every spawn, heavy work goes down / judgment stays up, and the non-delegable main-session
-  duties (wake-ups, user-gates, memory writes, the Workflow tool). Cost-model-neutral (the
-  principle, not an account-specific model table), and fully editable once written. The set
-  is whatever the plugin bundles, so it grows as guardrails are added — no per-rule change
-  to the installer.
+  copied VERBATIM under a line-1 banner. The shipped set is the plugin's cross-cutting,
+  project-agnostic guardrails — the delegation ladder (`wt-delegation-ladder.md`: route each
+  task to the lowest rung, pin model + effort at every spawn, heavy work goes down / judgment
+  stays up, plus the non-delegable main-session duties) alongside companion rules for
+  verification, decision-making, grounding, and tracked-work hygiene. All are
+  cost-model-neutral principles (no account-specific model tables), machine-free, and fully
+  editable once written. The set is whatever the plugin bundles, so it grows as guardrails
+  are added — no per-rule change to the installer.
 
 **agents → `.claude/agents/`:**
 
