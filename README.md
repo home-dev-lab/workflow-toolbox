@@ -71,6 +71,11 @@ The other payoffs follow from that structure:
 - Genuine cross-family decorrelation for verification: a different model
   family, not merely a fresh context on the same model.
 
+![An observe workflow-replay view (Permafrost theme) of a real coverage-audit run: the phase-to-agent DAG on the left — a probe stage, an inventory stage, a loopUntilDone Extract stage, and a column of adversarial verify votes — and a right-hand panel showing claim 24's refute-first vote, 3 of 3 verifiers complete and all confirmed, above a run token counter reading 5,209,191.](docs/assets/outreach/observe-replay-coverage-audit-permafrost.jpg)
+*A real `coverage-audit` run replayed in Workflow Observatory (Permafrost theme):
+the phase-to-agent DAG on the left, and claim 24's refute-first adversarial vote —
+3 of 3 verifiers confirmed — on the right.*
+
 The numbers behind these are
 [one click down](docs/public/cost-engineering.md), each with its scope and
 methodology attached.
@@ -692,6 +697,11 @@ a separate closed-source companion app with a free tier for noncommercial use
 and per-seat commercial licensing. The bundled `wt-observe` launcher starts it
 when installed. Distribution is being set up — watch this README for the
 download link.
+
+![An observe workflow-replay view (Sandstone theme) of a demo-all-patterns run: the tune panel is open over the themed desert backdrop — sliders for backdrop alpha, parallax, pan, zoom, and frame shadow — and the right-hand panel shows a tournament judge's transcript, a 7-of-10 score with its written reasoning and the structured-output result.](docs/assets/outreach/observe-tune-sandstone.jpg)
+*The themed backdrops and the live tune panel (Sandstone), with a tournament
+judge's transcript open on the right — any agent's full input, output, and
+structured result is inspectable.*
 
 The launcher is a thin lifecycle CLI (`node plugin/bin/wt-observe.mjs …`):
 
