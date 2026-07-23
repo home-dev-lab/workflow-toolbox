@@ -1854,7 +1854,7 @@ ${renderClaim(claim)}`;
       let probeInfo = null;
       if (input.verifierType !== void 0) {
         rt.phase("Probe");
-        const probe = await probeAgentType(rt, input.verifierType, { phase: "Probe" });
+        const probe = await probeAgentType(rt, input.verifierType, { phase: "Probe", required: true });
         resolvedVerifierType = probe.agentType;
         probeInfo = { requested: input.verifierType, available: probe.available, reason: probe.reason };
       }
