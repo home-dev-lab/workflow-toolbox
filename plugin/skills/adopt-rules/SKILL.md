@@ -62,6 +62,9 @@ The deterministic engine is `scripts/install-rules.mjs`. Orchestrate it, do not 
 its version/banner logic by hand. `--set` picks which managed set (default `rules` for
 backward compatibility):
 
+When adopting into a project that already has rules, reconcile first — see the
+"Reconciling your existing project rules" section in `../../rules/README.md`.
+
 - **Check status (read-only, the default):** `node scripts/install-rules.mjs --set <rules|agents|all> --check`
 - **Install / refresh (absent + unedited only):** `node scripts/install-rules.mjs --set <rules|agents|all> --install`
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`

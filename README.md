@@ -370,7 +370,8 @@ also install project copies of the pilot agent definitions, which are needed
 because current Claude Code does not honor `observer:` frontmatter for
 plugin-installed agents. See [plugin/rules/README.md](plugin/rules/README.md)
 and the [adopt-rules skill](plugin/skills/adopt-rules/SKILL.md) for the full
-contract.
+contract — including how to **reconcile existing project rules** before adopting,
+so you don't end up with duplicate, drifting concerns.
 
 ## The toolkit
 
