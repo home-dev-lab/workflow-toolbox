@@ -215,6 +215,41 @@ what happened and whether resuming is safe.
 | `skills/toolkit-scaffold` | **Start** a new composition: generates a build-clean `.workflow.ts` skeleton wired to the chosen `@workflow-toolbox` pattern, so you fill in prompts instead of boilerplate. | Automatically, or `/workflow-toolbox:toolkit-scaffold` |
 | `skills/workflow-debugger` | **Diagnose** a finished or failed run from its journal: why an agent died, whether schema retries fired, whether resuming is safe. | Automatically, or `/workflow-toolbox:workflow-debugger` |
 | `skills/upgrade-canary` | **Re-verify** the Workflow runtime still behaves the way the toolkit depends on after a Claude Code (or SDK) upgrade, and report what changed. | Automatically, or `/workflow-toolbox:upgrade-canary` |
+| `skills/adopt-rules` | **Adopt** editable, versioned copies of the plugin's cross-cutting rule files (and the pilot agent definitions) into your project or config — on explicit request only, never automatically; each copy is fingerprinted so a later `--check` detects when the plugin has moved ahead. | Automatically when you ask, or `/workflow-toolbox:adopt-rules` |
+
+### Bundled rules & the delegation ladder
+
+The plugin bundles cross-cutting **rule files** in `plugin/rules/`: the
+**delegation ladder** and companion guardrails for verification by ground
+truth, proactive decision-making, step-back architectural grounding,
+proportionate verification, tracked-work hygiene, and concurrent-session
+worktrees. Each is a pure, project-agnostic directive: what to do and the
+invariant that makes it right, without environment-specific narrative.
+
+These rules can live at three layers:
+
+1. **Plugin-provided, ambient, and ephemeral** — where a project does tracked
+   or delegated work, a `SessionStart` hook injects the delegation-ladder
+   principle. The injection is version-locked and ephemeral: it only proposes
+   adopting persistent copies and never writes to your config.
+2. **Adopted machine-wide** — editable copies in the rules directory under
+   `CLAUDE_CONFIG_DIR` (typically `~/.claude/rules/`), applying across all your
+   projects.
+3. **Adopted per-project** — editable copies in the project's
+   `.claude/rules/`, the default and least-invasive scope.
+
+Adoption is handled by the `workflow-toolbox:adopt-rules` skill, on explicit
+request only. It writes versioned, fingerprinted, editable copies. `--check`
+(the default) writes nothing and reports each target as absent, up-to-date,
+stale, edited, symlinked, or hand-authored; `--install` writes absent copies
+and refreshes unedited ones; `--force` explicitly overwrites a copy you have
+edited; and `--replace-symlinks` replaces a symlinked target in place. The
+skill never writes through a symlink or silently destroys your edits. It can
+also install project copies of the pilot agent definitions, which are needed
+because current Claude Code does not honor `observer:` frontmatter for
+plugin-installed agents. See [plugin/rules/README.md](plugin/rules/README.md)
+and the [adopt-rules skill](plugin/skills/adopt-rules/SKILL.md) for the full
+contract.
 
 ## The toolkit
 

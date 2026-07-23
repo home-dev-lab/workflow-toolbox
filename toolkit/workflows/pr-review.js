@@ -1986,7 +1986,13 @@ ${renderClaim(claim)}`;
       // The adopt-rules opt-in installer (writes editable, versioned rule copies of
       // the cross-cutting guardrails) is described by its own skill.
       sources: ["plugin/skills/adopt-rules/scripts/"],
-      docs: ["plugin/skills/adopt-rules/SKILL.md"]
+      docs: ["plugin/skills/adopt-rules/SKILL.md", "README.md"]
+    },
+    {
+      // The bundled cross-cutting rule files (the delegation ladder + companions)
+      // that adopt-rules installs; described by their own README and the repo README.
+      sources: ["plugin/rules/"],
+      docs: ["plugin/rules/README.md", "README.md"]
     },
     {
       // The nine patterns + the result envelope (options, caps, envelope shape,
