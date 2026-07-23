@@ -324,6 +324,41 @@ describe('scanner e2e — step-3: flush-immune marker read + bounded poll (Path 
     expect(new Map(out.results.map((r) => [r.label, r.cliSeen])).get(negLabel)).toBe(false)
   })
 
+  it('MARKER PER-UNIT (producer side): the REAL hook writes ONE marker for ONE agent; a sibling self-answer is NOT credited (no run-global leak)', () => {
+    // The re-probe bleed the hook exists to prevent: a marker keyed by transcript_path ALONE is
+    // run-GLOBAL (shared session transcript in Path B) → a sibling self-answer rides it. The hook
+    // folds agent_id in; the scanner MUST reconstruct the SAME per-agent key. Two self-answer votes
+    // (NEG_COMMAND: no `run`); the REAL producer (guard hook PostToolUse) writes a marker for ONLY
+    // agent B. Invariant (per-unit): distinct markers ↔ distinct units. Locks the fix against a
+    // regression to a run-global key (which would credit A too → labelA true → this test fails).
+    const markerDir = mkdtempSync(join(tmpdir(), 'prov-perunit-'))
+    const labelA = 'adversarialVerification:verify:0:0'
+    const labelB = 'adversarialVerification:verify:0:1'
+    const nonce = deriveProvenanceNonce([labelA, labelB])
+    const root = mkdtempSync(join(tmpdir(), 'prov-perunit-root-'))
+    const runDir = join(root, 'projects', 'testslug', 'testsess', 'subagents', 'workflows', 'wf_pu')
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(join(runDir, 'agent-aaa.jsonl'), [labeledUserTurn(labelA, 'verify.'), bashTurn(NEG_COMMAND)].join('\n') + '\n')
+    writeFileSync(join(runDir, 'agent-bbb.jsonl'), [labeledUserTurn(labelB, 'verify.'), bashTurn(NEG_COMMAND)].join('\n') + '\n')
+    writeFileSync(
+      join(runDir, 'agent-checker9.jsonl'),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: `PROVENANCE_ANCHOR: ${nonce}\n` }] } }) + '\n',
+    )
+    const sessTp = join(root, 'projects', 'testslug', 'testsess') + '.jsonl'
+    execFileSync('node', [GUARD_HOOK], {
+      input: JSON.stringify({
+        hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: POS_COMMAND },
+        agent_id: 'bbb', agent_type: 'workflow-toolbox:opencode-verifier', transcript_path: sessTp,
+      }),
+      env: { ...process.env, WT_VERIFIER_MARKER_DIR: markerDir }, encoding: 'utf8',
+    })
+    expect(readdirSync(markerDir).length).toBe(1) // the producer wrote exactly ONE marker (per unit)
+    const out = runScanner(buildProvenanceScannerSource(opencode, nonce, [labelA, labelB]), root, { WT_VERIFIER_MARKER_DIR: markerDir })
+    const byLabel = new Map(out.results.map((r) => [r.label, r.cliSeen]))
+    expect(byLabel.get(labelB)).toBe(true) // credited by ITS OWN producer-written marker
+    expect(byLabel.get(labelA)).toBe(false) // NOT credited — no marker for A, no CLI: the marker is per-unit
+  })
+
   it('POLL: recovers a vote transcript that only APPEARS after the first scan pass (flush-lag) — RED before the poll', async () => {
     // At scan start only the checker's own nonce transcript exists (anchoring works); the vote
     // transcript is written ~250ms in, simulating the per-subagent flush lag that drove the 32
