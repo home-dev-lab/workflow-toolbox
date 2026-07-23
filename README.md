@@ -40,19 +40,21 @@ every run. Make the steps a `pipeline` in code and only the leaf calls
 think — no step is silently skipped under context pressure.
 
 **The Karpathy-style loop.** Make one change, run a check, keep it if a
-number improves else `git revert`, append a row to a TSV, repeat. In
-markdown the model re-interprets that loop every iteration; in
-`loopUntilDone` your existing verification command stays the external,
-deterministic oracle, the stop condition is typed, and the loop is code
-rather than prose.
+number improves else `git revert`, append a row to a TSV, repeat. A `/loop`
+command or a shell `while` can drive the re-invocation — but the body of
+each iteration (what to change, what to keep, when to stop) is still prose
+the model re-obeys every time. In `loopUntilDone` your existing verification
+command stays the external, deterministic oracle, the stop condition is
+typed, and the whole body is code, not just the trigger.
 
 **The executor/supervisor graph.** An executor advances the work and
 rewrites a shared `ledger.md`; a fresh-context supervisor re-checks the
 claimed progress and appends one-way corrections to `directives.md`. The same
 split maps onto two shipped roles — a pilot that drives the work and a
 read-only watchdog that observes it — where the supervisor's fresh context is
-a property each new sub-agent has by construction, not a convention rebuilt on
-every tick, with a live DAG to watch if you want one.
+a property each new sub-agent has by construction, and the watchdog's
+read-only stance is a tool fence rather than an instruction it must keep
+choosing to obey, with a live DAG to watch if you want one.
 
 All three lean on the model faithfully re-obeying written prose on every
 invocation; making the orchestration deterministic code removes that whole
