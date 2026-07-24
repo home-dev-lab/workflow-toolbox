@@ -388,9 +388,11 @@ reviewers (each role independently probed and routed; the same role key as
 `dev-review-fix` Verify, orchestrated by `dev-full`) still takes a bespoke
 `verifierType` input.
 The plugin also ships **`workflow-toolbox:opencode-verifier`**, a second
-cross-family verifier that routes to any `opencode` model (default GLM 5.2 /
-zai-coding-plan — a *different* family again) and degrades gracefully to a Claude
-fallback (`OPENCODE_UNAVAILABLE`) when opencode isn't installed or no provider is
+cross-family verifier that routes to any `opencode` model (`openai/gpt-5.4` by
+default; pick any other provider in `opencode models`, e.g. `zai-coding-plan` or
+`amazon-bedrock`, via `OPENCODE_MODEL` for a family distinct from both Claude and
+codex-rescue's GPT) and degrades gracefully to a Claude fallback
+(`OPENCODE_UNAVAILABLE`) when opencode isn't installed or no provider is
 authenticated. Caveat: both `codex-rescue` and `opencode-verifier` are
 local-machine-only (each needs its own setup + login) and opt-in; for a fully
 portable endpoint prefer an MCP→model bridge.

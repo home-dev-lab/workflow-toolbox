@@ -116,10 +116,12 @@
     - **Decorrelate by FAMILY, per role-pair.** The value is a producer and its verifier
       on UNRELATED model families. Fixed families: `codex:codex-rescue` = GPT/OpenAI;
       the standard subagent = Claude/Anthropic. The opencode bridge's family is
-      *configured, not fixed* — it runs whatever `OPENCODE_MODEL:` selects (default GLM
-      5.2 / `zai-coding-plan`; discover with `opencode models`) — so state WHICH model
-      the proposal assumes. Routing producer AND verifier to the SAME external family
-      buys nothing.
+      *configured, not fixed* — it runs whatever `OPENCODE_MODEL:` selects (`openai/gpt-5.4`
+      when unspecified — the SAME family as `codex:codex-rescue`, so a caller pairing the
+      two for decorrelation MUST set `OPENCODE_MODEL` to a non-OpenAI provider, e.g.
+      `zai-coding-plan` or `amazon-bedrock`; discover with `opencode models`) — so state
+      WHICH model the proposal assumes. Routing producer AND verifier to the SAME
+      external family buys nothing.
     - **Tune the external model's reasoning effort with `OPENCODE_VARIANT`, orthogonal to
       model choice.** A task line `OPENCODE_VARIANT: <name>` travels the same trusted
       channel as `OPENCODE_MODEL:` (`hints` for the audits, a `sourceRefs` entry for

@@ -207,7 +207,7 @@ describe('docs-audit per-role agentType routing', () => {
     await wf.run(rt, JSON.stringify({
       repoRoot: '/repo',
       agentTypes: { extract: TYPE },
-      opencodeModels: { extract: 'zai-coding-plan/glm-5.2' },
+      opencodeModels: { extract: 'openai/gpt-5.4' },
     }))
     const extract = stageCalls(rt, 'Extract', 'extract checkable claims')
     const inventory = stageCalls(rt, 'Inventory', 'inventory the documentation surfaces')
@@ -215,12 +215,12 @@ describe('docs-audit per-role agentType routing', () => {
     expect(extract.some((c) =>
       String(c.prompt)
         .replace(/^<!-- wt-meta [^\n]+ -->\n\n/, '')
-        .startsWith('OPENCODE_MODEL: zai-coding-plan/glm-5.2\n\n'),
+        .startsWith('OPENCODE_MODEL: openai/gpt-5.4\n\n'),
     )).toBe(true)
     expect(inventory.length).toBeGreaterThan(0)
-    expect(inventory.every((c) => !String(c.prompt).includes('OPENCODE_MODEL: zai-coding-plan/glm-5.2'))).toBe(true)
+    expect(inventory.every((c) => !String(c.prompt).includes('OPENCODE_MODEL: openai/gpt-5.4'))).toBe(true)
     expect(verify.length).toBeGreaterThan(0)
-    expect(verify.every((c) => !String(c.prompt).includes('OPENCODE_MODEL: zai-coding-plan/glm-5.2'))).toBe(true)
+    expect(verify.every((c) => !String(c.prompt).includes('OPENCODE_MODEL: openai/gpt-5.4'))).toBe(true)
   })
 })
 

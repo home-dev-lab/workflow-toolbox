@@ -101,8 +101,8 @@ Four standalone analysis/verification compositions:
   `{ agentTypes: { verify: 'codex:codex-rescue' } }` for a GPT verifier, or the
   same envelope with `{ agentTypes: { verify: 'workflow-toolbox:opencode-verifier' } }`
   (a subagent **bundled with this plugin** — no separate install) to route to any
-  opencode model (default GLM 5.2 / `zai-coding-plan`, a genuinely different
-  family). The value always travels inside `agentTypes.<role>` — a bare top-level
+  opencode model (`openai/gpt-5.4` by default; any other `opencode models` provider
+  via `OPENCODE_MODEL` for a genuinely different family). The value always travels inside `agentTypes.<role>` — a bare top-level
   key is silently ignored by parseConfig. Both are **OPT-IN and
   PROBE-RESOLVED**: one schema-less `probeAgentType` call at entry checks the bridge
   actually answers (unregistered type, `OPENCODE_UNAVAILABLE` gate marker, error text

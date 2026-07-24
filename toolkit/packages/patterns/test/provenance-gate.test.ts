@@ -55,7 +55,7 @@ function labeledUserTurn(label: string, extra = ''): string {
 const POS_COMMAND =
   'TASKFILE="/tmp/oc-verify-$$.md" BIN="/home/x/.opencode/bin/opencode" ' +
   'cat > "$TASKFILE" <<WTX\n--- a/foo\n+++ b/foo\n@@ -1 +1 @@\nWTX\n' +
-  'timeout 570 "$BIN" run "Verify the claim" -f "$TASKFILE" --model zai-coding-plan/glm-5.2 < /dev/null'
+  'timeout 570 "$BIN" run "Verify the claim" -f "$TASKFILE" --model openai/gpt-5.4 < /dev/null'
 
 // A SELF-ANSWER shape: probes for the binary + lists providers (NOT `run`), then greps the repo itself.
 const NEG_COMMAND =

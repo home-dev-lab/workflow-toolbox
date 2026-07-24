@@ -63,7 +63,7 @@ describe('isExternalCliCommand — grounded invocation shapes', () => {
   it('matches the two-line resolver shape (the false-negative-under-`.` case)', () => {
     const cmd =
       'BIN=$(command -v opencode || echo ~/.opencode/bin/opencode)\n' +
-      'timeout 570 "$BIN" run "verify the claim" --agent plan --model zai-coding-plan/glm-5.2'
+      'timeout 570 "$BIN" run "verify the claim" --agent plan --model openai/gpt-5.4'
     expect(isExternalCliCommand(cmd, OPENCODE)).toBe(true)
   })
   it('matches the codex companion wrapper and direct codex exec', () => {

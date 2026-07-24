@@ -1,6 +1,6 @@
 export const meta = {
   "name": "cross-model-verify",
-  "description": "Refute-first verification of caller claims, with an optional cross-model (e.g. codex/GPT, opencode/GLM) verifier for genuine decorrelation via adversarialVerification verifierType — probed at entry, graceful Claude fallback when unavailable.",
+  "description": "Refute-first verification of caller claims, with an optional cross-model (e.g. codex/GPT, opencode/<any model>) verifier for genuine decorrelation via adversarialVerification verifierType — probed at entry, graceful Claude fallback when unavailable.",
   "phases": [
     {
       "title": "Probe"
@@ -1583,7 +1583,7 @@ ${renderClaim(claim)}`;
   var cross_model_verify_workflow_default = defineWorkflow({
     meta: {
       name: "cross-model-verify",
-      description: "Refute-first verification of caller claims, with an optional cross-model (e.g. codex/GPT, opencode/GLM) verifier for genuine decorrelation via adversarialVerification verifierType \u2014 probed at entry, graceful Claude fallback when unavailable.",
+      description: "Refute-first verification of caller claims, with an optional cross-model (e.g. codex/GPT, opencode/<any model>) verifier for genuine decorrelation via adversarialVerification verifierType \u2014 probed at entry, graceful Claude fallback when unavailable.",
       phases: [{ title: "Probe" }, { title: "Verify" }]
     },
     parseInput: (raw) => {

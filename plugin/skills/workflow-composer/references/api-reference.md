@@ -47,8 +47,9 @@ spawned agent). [documented]
 > per-role `<role>Model`/`<role>Effort`/`<role>Type` knobs on every pattern (the
 > `<role>Type` routes that role to a subagent type — the cross-family lever); the
 > `adversarialVerification` **`verifierType`** option for a cross-family (e.g.
-> `codex:codex-rescue` (GPT), or `workflow-toolbox:opencode-verifier` (GLM 5.2 /
-> zai-coding-plan)) verifier — genuine decorrelation; and the two
+> `codex:codex-rescue` (GPT), or `workflow-toolbox:opencode-verifier` (any
+> `opencode` model, `openai/gpt-5.4` by default — pick a non-GPT provider via
+> `OPENCODE_MODEL` for genuine third-family decorrelation)) verifier; and the two
 > launch-time config helpers, `withAgentDefaults(rt, defaults)` (wrap `rt` once →
 > all downstream agents inherit `model`/`effort`/`agentType`/…) and
 > `parseConfig(args)` → `WorkflowConfig`. The raw-runtime primitives those build on

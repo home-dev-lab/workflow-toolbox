@@ -197,8 +197,9 @@ weakly informative for reasoning errors — the one real lever is a verifier on 
 non-Claude (GPT) model — and it honors this pattern's structured verdict schema
 (proven from inside a workflow). This plugin also ships
 `workflow-toolbox:opencode-verifier` — a second cross-family option that routes to
-any `opencode` model (default GLM 5.2 / zai-coding-plan, a *different* family
-again) and emits `OPENCODE_UNAVAILABLE` when opencode isn't installed or no
+any `opencode` model (`openai/gpt-5.4` by default; pick any other provider via
+`OPENCODE_MODEL` for a family distinct from both Claude and codex-rescue's GPT)
+and emits `OPENCODE_UNAVAILABLE` when opencode isn't installed or no
 provider is authenticated. Whether that degrades to a Claude fallback or refuses
 the launch depends on the probe mode the caller chose: `probeAgentType`'s default
 degrades gracefully, but `required: true` throws instead — and the shipped
