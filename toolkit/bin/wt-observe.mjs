@@ -1388,7 +1388,10 @@ function awaitExitCode(verdict) {
 var AWAIT_SOURCE_UNRESOLVED_EXIT_CODE = 5;
 function classifyRecallProbe(outcome) {
   if (outcome.kind === "network-error") return { reached: false, recall: null };
-  if (outcome.ok) return { reached: true, recall: outcome.body };
+  if (outcome.ok) {
+    if (typeof outcome.body !== "object" || outcome.body === null) return { reached: false, recall: null };
+    return { reached: true, recall: outcome.body };
+  }
   if (outcome.status === 404) {
     const code = typeof outcome.body === "object" && outcome.body !== null ? outcome.body["code"] : void 0;
     if (code === "launch-record-present") return { reached: false, recall: null };
@@ -2158,7 +2161,12 @@ async function fetchRecall(port, token, prefix, runId) {
   try {
     const r = await api(port, token, `${prefix}/api/runs/${encodeURIComponent(runId)}`, {}, 1e4);
     if (r.ok) return classifyRecallProbe({ kind: "response", ok: true, status: r.status, body: await r.json() });
-    const body = await r.json().catch(() => null);
+    let body;
+    try {
+      body = await r.json();
+    } catch {
+      return classifyRecallProbe({ kind: "network-error" });
+    }
     return classifyRecallProbe({ kind: "response", ok: false, status: r.status, body });
   } catch {
     return classifyRecallProbe({ kind: "network-error" });
@@ -2224,8 +2232,13 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
     let live = [];
     try {
       const r = await api(port, token, `${prefix}/api/runs/live`);
-      if (r.ok) live = await r.json();
-      else liveReached = false;
+      if (r.ok) {
+        const parsed = await r.json();
+        if (Array.isArray(parsed)) live = parsed;
+        else liveReached = false;
+      } else {
+        liveReached = false;
+      }
     } catch {
       liveReached = false;
     }

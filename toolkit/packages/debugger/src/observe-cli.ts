@@ -1173,7 +1173,17 @@ async function fetchRecall(port: number, token: string, prefix: string, runId: s
   try {
     const r = await api(port, token, `${prefix}/api/runs/${encodeURIComponent(runId)}`, {}, 10_000)
     if (r.ok) return classifyRecallProbe({ kind: 'response', ok: true, status: r.status, body: await r.json() })
-    const body: unknown = await r.json().catch(() => null)
+    // Review finding (codex) — a non-ok body that FAILS TO PARSE is not the same as a body
+    // that parsed to `null`/has-no-`code`: a parse failure (truncated/corrupted response)
+    // cannot rule out a `code:'launch-record-present'` tag that never made it through, so it
+    // must route through the SAME network-error path as an unreachable server, not be treated
+    // as a confirmed plain 404.
+    let body: unknown
+    try {
+      body = await r.json()
+    } catch {
+      return classifyRecallProbe({ kind: 'network-error' })
+    }
     return classifyRecallProbe({ kind: 'response', ok: false, status: r.status, body })
   } catch {
     return classifyRecallProbe({ kind: 'network-error' })
@@ -1280,8 +1290,17 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
     let live: { runId: string; finished: boolean; status: string | null }[] = []
     try {
       const r = await api(port, token, `${prefix}/api/runs/live`)
-      if (r.ok) live = (await r.json()) as { runId: string; finished: boolean; status: string | null }[]
-      else liveReached = false
+      if (r.ok) {
+        const parsed: unknown = await r.json()
+        // Review finding (codex) — a 200 whose body is not actually an array (a malformed
+        // response) must not be trusted as a confirmed empty list: `.find` on a non-array
+        // would throw, and even a caught/defaulted `[]` would silently masquerade as a real
+        // "not live" answer. Treat it exactly like an unreached probe.
+        if (Array.isArray(parsed)) live = parsed as { runId: string; finished: boolean; status: string | null }[]
+        else liveReached = false
+      } else {
+        liveReached = false
+      }
     } catch {
       liveReached = false
     }

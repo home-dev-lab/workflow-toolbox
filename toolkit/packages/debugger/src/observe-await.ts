@@ -147,10 +147,21 @@ export interface RecallProbeResult {
  *   (c) network-error, or any other non-200/404 status (5xx, timeout) — no trustworthy answer
  *       was obtained at all → reached: false
  *  Never throws — a malformed body degrades to `recall: null` with whatever `reached` the
- *  status alone implies. */
+ *  status alone implies.
+ *
+ *  Review finding (codex, card #1825812079798388423) — a body that IS present but is not a
+ *  well-formed object can never be trusted, on EITHER status: a malformed 200 (this endpoint
+ *  always returns a real object on success — a non-object body means something is badly wrong
+ *  in transit, not a confirmed answer) degrades to reached: false instead of a false confirmed
+ *  presence; a 404 whose body the caller could not even PARSE (see observe-cli.ts's fetchRecall,
+ *  which routes that case through `network-error`) can never rule out a truncated
+ *  `code:'launch-record-present'` tag, so it must not be treated as a confirmed absence either. */
 export function classifyRecallProbe(outcome: RecallHttpOutcome): RecallProbeResult {
   if (outcome.kind === 'network-error') return { reached: false, recall: null }
-  if (outcome.ok) return { reached: true, recall: outcome.body }
+  if (outcome.ok) {
+    if (typeof outcome.body !== 'object' || outcome.body === null) return { reached: false, recall: null }
+    return { reached: true, recall: outcome.body }
+  }
   if (outcome.status === 404) {
     const code = typeof outcome.body === 'object' && outcome.body !== null ? (outcome.body as Record<string, unknown>)['code'] : undefined
     if (code === 'launch-record-present') return { reached: false, recall: null }

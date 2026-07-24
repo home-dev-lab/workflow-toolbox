@@ -157,6 +157,15 @@ describe('classifyRecallProbe', () => {
     const body = { runId: 'wf_x', status: 'running' }
     expect(classifyRecallProbe({ kind: 'response', ok: true, status: 200, body })).toEqual({ reached: true, recall: body })
   })
+
+  // Review finding (codex, card #1825812079798388423) — a malformed 200 body must never be
+  // trusted as a confirmed answer: this endpoint always returns a real object on success, so a
+  // non-object body means something went wrong in transit, not a genuine empty/absent signal.
+  it('a 200 whose body is NOT an object (null, a primitive) is unreached, never a confirmed answer', () => {
+    expect(classifyRecallProbe({ kind: 'response', ok: true, status: 200, body: null })).toEqual({ reached: false, recall: null })
+    expect(classifyRecallProbe({ kind: 'response', ok: true, status: 200, body: 'not-an-object' })).toEqual({ reached: false, recall: null })
+    expect(classifyRecallProbe({ kind: 'response', ok: true, status: 200, body: 42 })).toEqual({ reached: false, recall: null })
+  })
 })
 
 describe('awaitExitCode', () => {
