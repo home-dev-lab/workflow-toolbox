@@ -842,205 +842,6 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     };
   }
 
-  // ../packages/patterns/src/cache-warm.ts
-  var WARMUP_PROMPT = "Reply with a single word: ready.";
-  async function parallelWithCacheWarm(rt, thunks, enabled) {
-    if (!enabled || thunks.length <= 1) {
-      return rt.parallel(thunks);
-    }
-    const [first, ...rest] = thunks;
-    const firstResult = await Promise.resolve().then(() => first()).then((v) => v).catch(() => null);
-    const restResults = await rt.parallel(rest);
-    return [firstResult, ...restResults];
-  }
-  async function runCacheWarmup(rt, warnings, label, patternName, opts) {
-    const agentOpts = {
-      label,
-      ...opts.phase !== void 0 ? { phase: opts.phase } : {},
-      ...opts.model !== void 0 ? { model: opts.model } : {},
-      ...opts.effort !== void 0 ? { effort: opts.effort } : {},
-      ...opts.agentType !== void 0 ? { agentType: opts.agentType } : {}
-    };
-    const result = await rt.agent(WARMUP_PROMPT, agentOpts);
-    if (result === null) {
-      warn(
-        rt,
-        warnings,
-        `${patternName}: cache-warm agent (${label}) returned null \u2014 proceeding without a warmed cache`
-      );
-    }
-    return makeRecord(label, result !== null, {
-      ...opts.model !== void 0 ? { model: opts.model } : {},
-      ...opts.effort !== void 0 ? { effort: opts.effort } : {}
-    });
-  }
-
-  // ../packages/patterns/src/stage-instance.ts
-  var registry = /* @__PURE__ */ new WeakMap();
-  var STAGE_KEY_PATTERN = /^(?!\d+$)[A-Za-z0-9_.-]{1,32}$/;
-  function claimStageInstance(rt, pattern, stageKey) {
-    if (stageKey !== void 0) {
-      if (STAGE_KEY_PATTERN.test(stageKey)) {
-        return { salt: ` #${stageKey}` };
-      }
-      const fallback = claimAuto(rt, pattern);
-      const reason = /^\d+$/.test(stageKey) ? "purely-numeric keys are reserved for the auto instance counter's own ' #<n>' format (a numeric stageKey would be indistinguishable from an auto-salted invocation)" : `must match ${STAGE_KEY_PATTERN.source}`;
-      return {
-        salt: fallback.salt,
-        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (${reason}) \u2014 falling back to the auto instance counter`
-      };
-    }
-    return claimAuto(rt, pattern);
-  }
-  function claimAuto(rt, pattern) {
-    let byPattern = registry.get(rt);
-    if (byPattern === void 0) {
-      byPattern = /* @__PURE__ */ new Map();
-      registry.set(rt, byPattern);
-    }
-    const n = (byPattern.get(pattern) ?? 0) + 1;
-    byPattern.set(pattern, n);
-    return { salt: n === 1 ? "" : ` #${n}` };
-  }
-  function stageBuilder(stage, salt) {
-    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
-  }
-
-  // ../packages/patterns/src/fan-out-and-synthesize.ts
-  var STAGE2 = "fanOutAndSynthesize";
-  async function fanOutAndSynthesize(rt, options) {
-    const {
-      tasks,
-      taskPrompt,
-      taskSchema,
-      taskModel,
-      taskEffort,
-      taskType,
-      synthesisPrompt,
-      synthesisSchema,
-      synthesisModel,
-      synthesisEffort,
-      synthesisType,
-      phase,
-      maxItems,
-      stageKey,
-      cacheWarm
-    } = options;
-    if (tasks.length === 0) {
-      throw new Error(
-        "fanOutAndSynthesize: tasks must not be empty \u2014 nothing to fan out"
-      );
-    }
-    assertAgentTypeOption(STAGE2, "taskType", taskType);
-    assertAgentTypeOption(STAGE2, "synthesisType", synthesisType);
-    const { kept, truncated } = applyCap(tasks, maxItems);
-    let agentsSpawned = 0;
-    const warnings = [];
-    const trail = [];
-    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE2, stageKey);
-    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
-    const stg = stageBuilder(STAGE2, salt);
-    if (truncated > 0) {
-      warn(
-        rt,
-        warnings,
-        `fanOutAndSynthesize: ${truncated} of ${tasks.length} tasks truncated by maxItems=${maxItems ?? "?"}`
-      );
-    }
-    const keptArray = kept;
-    const taskStages = keptArray.map((_, i) => stg(`task:${i}`));
-    const taskThunks = keptArray.map((task, i) => async () => {
-      const taskOpts = {
-        label: taskStages[i],
-        ...phase !== void 0 ? { phase } : {},
-        ...taskSchema !== void 0 ? { schema: taskSchema } : {},
-        ...taskModel !== void 0 ? { model: taskModel } : {},
-        ...taskEffort !== void 0 ? { effort: taskEffort } : {},
-        ...taskType !== void 0 ? { agentType: taskType } : {}
-      };
-      return agentWithSchemaSalvage(rt, taskPrompt(task, i), taskOpts);
-    });
-    const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? true);
-    const parts = [];
-    let dropped = 0;
-    for (let i = 0; i < taskResults.length; i++) {
-      const out = taskResults[i];
-      const r = out?.value ?? null;
-      const taskStage = taskStages[i];
-      agentsSpawned += out?.spawns ?? 1;
-      trail.push(makeRecord(taskStage, r !== null, {
-        ...taskModel !== void 0 ? { model: taskModel } : {},
-        ...taskEffort !== void 0 ? { effort: taskEffort } : {}
-      }));
-      if (out !== null && out.salvageAttempted) {
-        trail.push(makeRecord(`${taskStage}:salvage`, out.salvaged, {
-          ...taskModel !== void 0 ? { model: taskModel } : {},
-          ...taskEffort !== void 0 ? { effort: taskEffort } : {}
-        }));
-      }
-      for (const message of out?.warnings ?? []) warn(rt, warnings, `${STAGE2}: ${message}`);
-      if (r !== null) {
-        parts.push(r);
-      } else {
-        dropped++;
-      }
-    }
-    if (dropped > 0) {
-      warn(
-        rt,
-        warnings,
-        `fanOutAndSynthesize: ${dropped} of ${keptArray.length} fan-out agents returned null`
-      );
-    }
-    let value = null;
-    if (parts.length === 0) {
-      warn(rt, warnings, "fanOutAndSynthesize: fan-out produced no parts; synthesis skipped");
-    } else {
-      const synthesizeStage = stg("synthesize");
-      const synthOpts = {
-        label: synthesizeStage,
-        ...phase !== void 0 ? { phase } : {},
-        ...synthesisSchema !== void 0 ? { schema: synthesisSchema } : {},
-        ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
-        ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {},
-        ...synthesisType !== void 0 ? { agentType: synthesisType } : {}
-      };
-      const synthOut = await agentWithSchemaSalvage(rt, synthesisPrompt(parts), synthOpts);
-      agentsSpawned += synthOut.spawns;
-      const synthesis = synthOut.value;
-      trail.push(makeRecord(synthesizeStage, synthesis !== null, {
-        ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
-        ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
-      }));
-      if (synthOut.salvageAttempted) {
-        trail.push(makeRecord(`${synthesizeStage}:salvage`, synthOut.salvaged, {
-          ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
-          ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
-        }));
-      }
-      for (const message of synthOut.warnings) warn(rt, warnings, `${STAGE2}: ${message}`);
-      if (synthesis === null) {
-        warn(rt, warnings, "fanOutAndSynthesize: synthesis agent returned null");
-      } else {
-        value = synthesis;
-      }
-    }
-    const stats = {
-      itemsIn: tasks.length,
-      itemsOut: parts.length,
-      agentsSpawned,
-      dropped,
-      truncated
-    };
-    emitDigest(rt, {
-      stage: STAGE2,
-      ...phase !== void 0 ? { phase } : {},
-      output: value === null ? "synthesis: none" : `synthesis from ${parts.length}/${tasks.length} tasks`,
-      counts: { tasks: tasks.length, completed: parts.length }
-    });
-    return { value, stats, warnings, trail };
-  }
-
   // ../packages/patterns/src/provenance-gate.ts
   function matchesOpencodeRun(cmd = "") {
     if (typeof cmd !== "string" || cmd.length === 0) return false;
@@ -1257,6 +1058,232 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
     const map = parseProvenanceReply(reply, labels);
     const replyOk = reply !== null && [...map.values()].some((p) => p !== "undetermined");
     return { map, replyOk };
+  }
+
+  // ../packages/patterns/src/cache-warm.ts
+  var WARMUP_PROMPT = "Reply with a single word: ready.";
+  function cliProofPrompt(cli) {
+    return `You are being warmed on the "${cli}" external CLI lane. Run \`${cli} --version\` in the shell and reply with its EXACT stdout, then on a new line state the modelID you are running as. Do not answer from memory or guess. A reply without the real \`${cli} --version\` output does not count.`;
+  }
+  function hasPlausibleVersion(reply) {
+    return /\b\d+\.\d+\.\d+\b/.test(reply);
+  }
+  async function parallelWithCacheWarm(rt, thunks, enabled) {
+    if (!enabled || thunks.length <= 1) {
+      return rt.parallel(thunks);
+    }
+    const [first, ...rest] = thunks;
+    const firstResult = await Promise.resolve().then(() => first()).then((v) => v).catch(() => null);
+    const restResults = await rt.parallel(rest);
+    return [firstResult, ...restResults];
+  }
+  async function runCacheWarmup(rt, warnings, label, patternName, opts) {
+    const agentOpts = {
+      label,
+      ...opts.phase !== void 0 ? { phase: opts.phase } : {},
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {},
+      ...opts.agentType !== void 0 ? { agentType: opts.agentType } : {}
+    };
+    const lane = externalGateExpectation(opts.agentType);
+    if (lane === null) {
+      const result = await rt.agent(WARMUP_PROMPT, agentOpts);
+      if (result === null) {
+        warn(
+          rt,
+          warnings,
+          `${patternName}: cache-warm agent (${label}) returned null \u2014 proceeding without a warmed cache`
+        );
+      }
+      return makeRecord(label, result !== null, {
+        ...opts.model !== void 0 ? { model: opts.model } : {},
+        ...opts.effort !== void 0 ? { effort: opts.effort } : {}
+      });
+    }
+    const prompt = cliProofPrompt(lane.id);
+    let reply = await rt.agent(prompt, agentOpts);
+    let proven = typeof reply === "string" && hasPlausibleVersion(reply);
+    if (!proven) {
+      reply = await rt.agent(prompt, agentOpts);
+      proven = typeof reply === "string" && hasPlausibleVersion(reply);
+    }
+    if (!proven) {
+      warn(
+        rt,
+        warnings,
+        `${patternName}: cache-warm ${lane.id} lane (${label}) SKIPPED \u2014 no real ${lane.id} --version came back after one retry (self-answer or CLI unavailable); proceeding without a warmed/proven lane`
+      );
+    }
+    return makeRecord(label, proven, {
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {}
+    });
+  }
+
+  // ../packages/patterns/src/stage-instance.ts
+  var registry = /* @__PURE__ */ new WeakMap();
+  var STAGE_KEY_PATTERN = /^(?!\d+$)[A-Za-z0-9_.-]{1,32}$/;
+  function claimStageInstance(rt, pattern, stageKey) {
+    if (stageKey !== void 0) {
+      if (STAGE_KEY_PATTERN.test(stageKey)) {
+        return { salt: ` #${stageKey}` };
+      }
+      const fallback = claimAuto(rt, pattern);
+      const reason = /^\d+$/.test(stageKey) ? "purely-numeric keys are reserved for the auto instance counter's own ' #<n>' format (a numeric stageKey would be indistinguishable from an auto-salted invocation)" : `must match ${STAGE_KEY_PATTERN.source}`;
+      return {
+        salt: fallback.salt,
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (${reason}) \u2014 falling back to the auto instance counter`
+      };
+    }
+    return claimAuto(rt, pattern);
+  }
+  function claimAuto(rt, pattern) {
+    let byPattern = registry.get(rt);
+    if (byPattern === void 0) {
+      byPattern = /* @__PURE__ */ new Map();
+      registry.set(rt, byPattern);
+    }
+    const n = (byPattern.get(pattern) ?? 0) + 1;
+    byPattern.set(pattern, n);
+    return { salt: n === 1 ? "" : ` #${n}` };
+  }
+  function stageBuilder(stage, salt) {
+    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
+  }
+
+  // ../packages/patterns/src/fan-out-and-synthesize.ts
+  var STAGE2 = "fanOutAndSynthesize";
+  async function fanOutAndSynthesize(rt, options) {
+    const {
+      tasks,
+      taskPrompt,
+      taskSchema,
+      taskModel,
+      taskEffort,
+      taskType,
+      synthesisPrompt,
+      synthesisSchema,
+      synthesisModel,
+      synthesisEffort,
+      synthesisType,
+      phase,
+      maxItems,
+      stageKey,
+      cacheWarm
+    } = options;
+    if (tasks.length === 0) {
+      throw new Error(
+        "fanOutAndSynthesize: tasks must not be empty \u2014 nothing to fan out"
+      );
+    }
+    assertAgentTypeOption(STAGE2, "taskType", taskType);
+    assertAgentTypeOption(STAGE2, "synthesisType", synthesisType);
+    const { kept, truncated } = applyCap(tasks, maxItems);
+    let agentsSpawned = 0;
+    const warnings = [];
+    const trail = [];
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE2, stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stg = stageBuilder(STAGE2, salt);
+    if (truncated > 0) {
+      warn(
+        rt,
+        warnings,
+        `fanOutAndSynthesize: ${truncated} of ${tasks.length} tasks truncated by maxItems=${maxItems ?? "?"}`
+      );
+    }
+    const keptArray = kept;
+    const taskStages = keptArray.map((_, i) => stg(`task:${i}`));
+    const taskThunks = keptArray.map((task, i) => async () => {
+      const taskOpts = {
+        label: taskStages[i],
+        ...phase !== void 0 ? { phase } : {},
+        ...taskSchema !== void 0 ? { schema: taskSchema } : {},
+        ...taskModel !== void 0 ? { model: taskModel } : {},
+        ...taskEffort !== void 0 ? { effort: taskEffort } : {},
+        ...taskType !== void 0 ? { agentType: taskType } : {}
+      };
+      return agentWithSchemaSalvage(rt, taskPrompt(task, i), taskOpts);
+    });
+    const taskResults = await parallelWithCacheWarm(rt, taskThunks, cacheWarm ?? true);
+    const parts = [];
+    let dropped = 0;
+    for (let i = 0; i < taskResults.length; i++) {
+      const out = taskResults[i];
+      const r = out?.value ?? null;
+      const taskStage = taskStages[i];
+      agentsSpawned += out?.spawns ?? 1;
+      trail.push(makeRecord(taskStage, r !== null, {
+        ...taskModel !== void 0 ? { model: taskModel } : {},
+        ...taskEffort !== void 0 ? { effort: taskEffort } : {}
+      }));
+      if (out !== null && out.salvageAttempted) {
+        trail.push(makeRecord(`${taskStage}:salvage`, out.salvaged, {
+          ...taskModel !== void 0 ? { model: taskModel } : {},
+          ...taskEffort !== void 0 ? { effort: taskEffort } : {}
+        }));
+      }
+      for (const message of out?.warnings ?? []) warn(rt, warnings, `${STAGE2}: ${message}`);
+      if (r !== null) {
+        parts.push(r);
+      } else {
+        dropped++;
+      }
+    }
+    if (dropped > 0) {
+      warn(
+        rt,
+        warnings,
+        `fanOutAndSynthesize: ${dropped} of ${keptArray.length} fan-out agents returned null`
+      );
+    }
+    let value = null;
+    if (parts.length === 0) {
+      warn(rt, warnings, "fanOutAndSynthesize: fan-out produced no parts; synthesis skipped");
+    } else {
+      const synthesizeStage = stg("synthesize");
+      const synthOpts = {
+        label: synthesizeStage,
+        ...phase !== void 0 ? { phase } : {},
+        ...synthesisSchema !== void 0 ? { schema: synthesisSchema } : {},
+        ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
+        ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {},
+        ...synthesisType !== void 0 ? { agentType: synthesisType } : {}
+      };
+      const synthOut = await agentWithSchemaSalvage(rt, synthesisPrompt(parts), synthOpts);
+      agentsSpawned += synthOut.spawns;
+      const synthesis = synthOut.value;
+      trail.push(makeRecord(synthesizeStage, synthesis !== null, {
+        ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
+        ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
+      }));
+      if (synthOut.salvageAttempted) {
+        trail.push(makeRecord(`${synthesizeStage}:salvage`, synthOut.salvaged, {
+          ...synthesisModel !== void 0 ? { model: synthesisModel } : {},
+          ...synthesisEffort !== void 0 ? { effort: synthesisEffort } : {}
+        }));
+      }
+      for (const message of synthOut.warnings) warn(rt, warnings, `${STAGE2}: ${message}`);
+      if (synthesis === null) {
+        warn(rt, warnings, "fanOutAndSynthesize: synthesis agent returned null");
+      } else {
+        value = synthesis;
+      }
+    }
+    const stats = {
+      itemsIn: tasks.length,
+      itemsOut: parts.length,
+      agentsSpawned,
+      dropped,
+      truncated
+    };
+    emitDigest(rt, {
+      stage: STAGE2,
+      ...phase !== void 0 ? { phase } : {},
+      output: value === null ? "synthesis: none" : `synthesis from ${parts.length}/${tasks.length} tasks`,
+      counts: { tasks: tasks.length, completed: parts.length }
+    });
+    return { value, stats, warnings, trail };
   }
 
   // ../packages/patterns/src/adversarial-verification.ts
