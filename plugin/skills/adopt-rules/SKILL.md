@@ -78,6 +78,22 @@ When adopting into a project that already has rules, reconcile first — see the
   the symlink and writes a managed copy in its place, leaving the former target untouched.
 - **Target a specific dir:** add `--dir <dir>` — requires a SINGLE `--set` (with `--set all`
   each set uses its own default dir).
+- **Audit overlap (read-only):** `node scripts/install-rules.mjs --audit-overlap --user-dir <dir>`
+  compares the user rules directory mechanically with the plugin's shipped rules bundle.
+  Use `--pairs-file <path>` to provide an editable JSON array of user/shipped basename pairs;
+  otherwise the bundled `scripts/rule-pairs.json` is used. A concern permanently excluded from
+  the swap by policy (its shipped counterpart is never meant to be installed for it — e.g. a
+  machine-specific rule that will never converge with a generic shipped one) should NOT be a
+  declared pair at all: leave it out so it reports as `UNMAPPED` like any other machine-only
+  rule, rather than as permanent, noisy `DRIFT`. It reports `DOUBLON` when both
+  layers contain a paired file, `DRIFT` for user lines absent from the shipped file,
+  `CLEAN` when no such difference is found, and `ABSENT` when a declared user file is not
+  present. It also reports unpaired Markdown files as `UNMAPPED`; none of these findings is
+  auto-classified or auto-ported. A pair marked `"partial": true` in the pairs file (a
+  deliberate, bounded, accepted overlap — e.g. machine bindings that intentionally coexist
+  with their generic shipped counterpart) reports `DOUBLON`/`DRIFT` informationally instead of
+  as a failing finding. The command exits 1 when any non-partial `DOUBLON` or `DRIFT` is
+  found, and 0 otherwise.
 
 **Target dirs — confirm scope with the user first.** Each set has its own default under the
 current working directory: rules → `.claude/rules/`, agents → `.claude/agents/` (project
