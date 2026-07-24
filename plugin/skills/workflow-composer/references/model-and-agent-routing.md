@@ -120,6 +120,20 @@
       5.2 / `zai-coding-plan`; discover with `opencode models`) — so state WHICH model
       the proposal assumes. Routing producer AND verifier to the SAME external family
       buys nothing.
+    - **Tune the external model's reasoning effort with `OPENCODE_VARIANT`, orthogonal to
+      model choice.** A task line `OPENCODE_VARIANT: <name>` travels the same trusted
+      channel as `OPENCODE_MODEL:` (`hints` for the audits, a `sourceRefs` entry for
+      `cross-model-verify`) and makes the bridge pass `--variant <name>` to opencode,
+      controlling the external model's reasoning effort per task. Valid names are per-model
+      and version-dependent: as of opencode 1.18.4, `openai/gpt-5.4` accepts `none`…`xhigh`,
+      `openai/gpt-5.6-terra` / `openai/gpt-5.6-sol` accept `none`…`max`, and
+      `zai-coding-plan/glm-5.2` accepts only `high` or `max` (no off) — confirm against your
+      own opencode. ⚠ An out-of-list name is IGNORED: the bridge emits
+      `OPENCODE_VARIANT_IGNORED:` and proceeds on the model default, deliberately avoiding
+      opencode's own silent fallback; after a model fallback (e.g. onto
+      `OPENCODE_FALLBACK_MODEL`), the variant is re-validated against the fallback model's
+      own list. Pick the minimal effort that suffices: the low end for high-volume/simple
+      work, `medium`/`high` for a standard review, `xhigh`/`max` only for a demanding verify.
     - **The user can PRE-DECIDE via config — then don't re-ask.** A standing
       `agentTypes.<role>` entry in the user's launch config / project instructions is
       the structured, deterministic pre-decision channel; respect it silently (the
