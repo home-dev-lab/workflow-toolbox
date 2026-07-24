@@ -30,6 +30,18 @@ export type { AutoSelectEffortOptions, AutoSelectEffortResult, EffortSignals, Ef
 export { probeAgentType } from './probe-agent-type.js'
 export type { AgentTypeProbe, AgentTypeProbeReport, ProbeAgentTypeOptions } from './probe-agent-type.js'
 
+// isExternalBridgeType is the SINGLE source of truth for "is this agentType
+// an external CLI bridge (opencode/codex family), not a Claude specialist" —
+// adversarialVerification's own haiku-vs-BEST_MODEL fan decision already
+// keys off the SAME registry (adversarial-verification.ts:376,390, via the
+// richer `externalGateExpectation`, kept un-exported here — its expectation
+// record is provenance-gate's own internal contract, not a public
+// commitment). Exported at the package root (card #1826112535493871358) so a
+// composition author outside this package can reuse the SAME discriminator
+// instead of hand-rolling a second, driftable registry of bridge names —
+// deliberately the narrow boolean, minimal public surface.
+export { isExternalBridgeType } from './provenance-gate.js'
+
 export { withLeafFence, LEAF_AGENT_TYPE } from './leaf-fence.js'
 export type { WithLeafFenceOptions, LeafFenceReport } from './leaf-fence.js'
 

@@ -41,11 +41,16 @@ const PLUGIN_WORKFLOWS = join(REPO_ROOT, 'plugin/workflows')
 
 // Study-bundled files: every composition source, PLUS the non-workflow support
 // modules the compositions import and the skill bundles for study (today:
-// docs-provenance.ts, imported by pr-review). The examples-root .pipeline.ts
-// specs are deliberately NOT bundled — a different family, not workflow study
-// material. A support module bundled without appearing here would silently
-// escape the byte-identity gate (review finding, run wf_8c882e9f-54e).
-const isStudyFile = (f: string): boolean => f.endsWith('.workflow.ts') || f === 'docs-provenance.ts'
+// docs-provenance.ts, imported by coverage-audit + pr-review; opencode-
+// routing.ts, the shared bridge-routing doctrine imported by coverage-audit +
+// docs-audit + pr-review — card #1826112535493871358). The examples-root
+// .pipeline.ts specs are deliberately NOT bundled — a different family, not
+// workflow study material. A support module bundled without appearing here
+// would silently escape the byte-identity gate (review finding, run
+// wf_8c882e9f-54e).
+const NON_WORKFLOW_SUPPORT_MODULES = ['docs-provenance.ts', 'opencode-routing.ts']
+const isStudyFile = (f: string): boolean =>
+  f.endsWith('.workflow.ts') || NON_WORKFLOW_SUPPORT_MODULES.includes(f)
 
 const sources = readdirSync(EXAMPLES_DIR)
   .filter(isStudyFile)

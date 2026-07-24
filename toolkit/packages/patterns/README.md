@@ -25,7 +25,11 @@ rather than duplicating it here.
 Also included: `withLeafFence` / `withLeanRouting` (agent-default wrappers that route
 fresh-context worker/reasoning-only roles to a minimal-ambient-context agent type),
 `probeAgentType` (check whether a named agent type is actually callable before routing to
-it), and small envelope helpers (`collectTrail`, `applyCap`, `warn`, `emitDigest`).
+it), `isExternalBridgeType` (the SAME registry `adversarialVerification` uses to decide
+whether a routed `verifierType` is an external CLI relay — opencode/codex — vs a Claude
+specialist, exposed as a narrow boolean so a composition author can reuse it for their own
+wrapper-model gating instead of re-deriving the answer), and small envelope helpers
+(`collectTrail`, `applyCap`, `warn`, `emitDigest`).
 
 ## Example
 

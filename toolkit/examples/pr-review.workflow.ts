@@ -29,7 +29,7 @@
 //    reviewers to produce a coherent overall verdict.
 
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
-import { withAgentDefaults } from '@workflow-toolbox/runtime'
+import { withAgentDefaults, MODEL_ALIASES } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias, AgentDefaults } from '@workflow-toolbox/runtime'
 import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import {
@@ -52,6 +52,7 @@ import type {
 import type { FromSchema } from 'json-schema-to-ts'
 import { docsForChangedFiles } from './docs-provenance.js'
 import type { ProvenanceEntry } from './docs-provenance.js'
+import { isBridgeAgentType, parseRoleStringMap, resolveWrapperModel } from './opencode-routing.js'
 
 // ---------------------------------------------------------------------------
 // Per-stage effort defaults (Class B/C launch-time tuning — see parseConfig).
@@ -133,6 +134,20 @@ export interface PrReviewInput {
    *  default. A specialist reviewer is more thorough but noisier; the
    *  refute-first Verify stage filters the extra false positives. */
   reviewerType: string | null
+  /** Optional per-ROLE Claude model for the WRAPPER agent itself (key
+   *  'review'), validated against MODEL_ALIASES. A review lens routed to a
+   *  NAME-RECOGNIZED external bridge agentType (isBridgeAgentType,
+   *  opencode-routing.ts — e.g. 'workflow-toolbox:opencode-verifier') is a
+   *  THIN RELAY, so the wrapper defaults to 'haiku' and the run-global
+   *  `perAgent.model` deliberately does NOT reach it (residual leak fixed by
+   *  card #1826112535493871358). A CLAUDE review lens — no agentType routed,
+   *  OR a specialist agentType not on the bridge allowlist (e.g.
+   *  'magic-claude:ts-reviewer') — KEEPS its normal tier, never forced to
+   *  haiku (fail-safe: an unrecognized agentType is assumed Claude-family,
+   *  never assumed a bridge). An explicit `models.review` always wins either
+   *  direction. null = no override. Requested via the bespoke top-level
+   *  `models` key (parseConfig ignores it, like `provenance`/`mode` above). */
+  models: Readonly<{ review?: ModelAlias }> | null
   /** Optional Class-A blanket per-agent defaults, applied to EVERY agent in EVERY
    *  stage via one withAgentDefaults wrap (model/effort/agentType/isolation/stallMs).
    *  null = no blanket default. Parsed from `args.perAgent` by the shared
@@ -514,6 +529,18 @@ function parseProvenance(raw: unknown): readonly ProvenanceEntry[] | null {
   })
 }
 
+// pr-review routes only ONE role (`review`) through the shared bridge-routing
+// doctrine — unlike coverage-audit/docs-audit's 3-role map (inventory/
+// extract/verify). Same convention (parseRoleStringMap from opencode-
+// routing.ts, see its header comment for the Rule-of-Three rationale), scoped
+// to pr-review's own role set.
+const MODELS_ROLE_KEYS = ['review'] as const
+
+function parseModels(raw: unknown): Readonly<{ review?: ModelAlias }> | null {
+  return parseRoleStringMap(raw, 'models', MODEL_ALIASES, MODELS_ROLE_KEYS, 'pr-review') as
+    Readonly<{ review?: ModelAlias }> | null
+}
+
 // Proportionate-review ladder rungs this workflow accepts as `mode`.
 // 'diff-read' — the ladder's bottom rung — is DELIBERATELY EXCLUDED: it means
 // "do not invoke this workflow at all" (the arbiter reads the diff directly),
@@ -551,6 +578,7 @@ function parseInput(raw: unknown): PrReviewInput {
       target: raw,
       mode: 'full',
       reviewerType: null,
+      models: null,
       verifierModel: null,
       verifierType: null,
       perAgent: null,
@@ -616,7 +644,11 @@ function parseInput(raw: unknown): PrReviewInput {
   // the proportionate-review ladder rung. undefined → 'full'.
   const mode = parseMode(obj['mode'])
 
-  return { target: obj['target'], mode, reviewerType, verifierModel, verifierType, perAgent, effort, messaging, provenance }
+  // Bespoke pr-review key (parseConfig ignores it, like provenance/mode
+  // above): the wrapper-model gate for the review lens (card #1826112535493871358).
+  const models = parseModels(obj['models'])
+
+  return { target: obj['target'], mode, reviewerType, models, verifierModel, verifierType, perAgent, effort, messaging, provenance }
 }
 
 // ---------------------------------------------------------------------------
@@ -702,6 +734,20 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     resolvedReviewerType = probe.agentType ?? null
     probeReport = { requested: input.reviewerType, available: probe.available, reason: probe.reason }
   }
+
+  // Wrapper-role Claude model for the review lens (card #1826112535493871358,
+  // GATED doctrine adapted from coverage-audit/docs-audit's `models`, commit
+  // 340437f). UNLIKE those two workflows, `agentTypes.review` here is
+  // documented DUAL-PURPOSE (a same-family Claude specialist OR a
+  // cross-family bridge) — so "agentType resolved" is NOT a valid bridge
+  // proxy: a name-based discriminator decides instead (isBridgeAgentType,
+  // arbiter ruling "Option B"). A bridge-routed review lens (e.g.
+  // workflow-toolbox:opencode-verifier) defaults to 'haiku' (perAgent.model
+  // does NOT reach it); a CLAUDE review lens — no agentType routed, OR a
+  // specialist agentType not on the bridge allowlist (e.g.
+  // magic-claude:ts-reviewer) — KEEPS its normal tier, fail-safe toward
+  // quality. `models.review` always wins when supplied, either direction.
+  const reviewModel = resolveWrapperModel(isBridgeAgentType(resolvedReviewerType), input.models?.review)
 
   // Same probe-then-resolve treatment for the Verify fan's routing request
   // (agentTypes.verify) — mirrors the reviewerType block above exactly, so an
@@ -1020,6 +1066,10 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
           // Same agentTypes.review routing as the per-lens path — this is
           // precisely the shape a cross-family/quota-degraded verifier wants.
           ...(resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {}),
+          // Wrapper-model gate (card #1826112535493871358): haiku by default
+          // when bridge-routed, models.review override, or the Claude tier
+          // unchanged when not bridge-routed (undefined → omitted).
+          ...(reviewModel !== undefined ? { model: reviewModel } : {}),
         },
       )
 
@@ -1053,6 +1103,10 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         // graceful-fallback path when the requested type could not answer).
         // Routes the lens reviewers ONLY; verifiers and synthesizer stay generic.
         ...(resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {}),
+        // Wrapper-model gate (card #1826112535493871358): haiku by default
+        // when bridge-routed, models.review override, or the Claude tier
+        // unchanged when not bridge-routed (undefined → omitted).
+        ...(reviewModel !== undefined ? { model: reviewModel } : {}),
       },
     )
 
