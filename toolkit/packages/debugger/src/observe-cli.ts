@@ -43,7 +43,7 @@
 // or by walking up from cwd — the same interim posture as the card's
 // "Distribution" item (build-from-repo until @workflow-toolbox/observe-ui ships).
 
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, openSync } from 'node:fs'
@@ -75,9 +75,10 @@ import { isRecord } from './validator-shared.js'
 import { extractObservers } from './observer-def.js'
 import { buildLaunchBody, safeRequesterCwd, resolveLaunchTimeoutMs, resolveWebAvailable } from './launch-body.js'
 import { awaitSpawnedServerReady } from './spawn-ready.js'
+import { retryCanonicalPort } from './port-retry.js'
 import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
 import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
-import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode, truncateAwaitError, AWAIT_SOURCE_UNRESOLVED_EXIT_CODE } from './observe-await.js'
+import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode, truncateAwaitError, classifyRecallProbe, AWAIT_SOURCE_UNRESOLVED_EXIT_CODE } from './observe-await.js'
 import { recoverExitCodeFor } from './observe-resume.js'
 import {
   resolveSource,
@@ -167,18 +168,26 @@ async function probeHealth(port: number, timeoutMs = HEALTH_TIMEOUT_MS): Promise
   }
 }
 
-/** Ask the OS for a free port: listen(0), read it back, close. */
-async function probeFreePort(): Promise<number> {
-  const { createServer } = await import('node:net')
-  return new Promise((resolvePort, reject) => {
-    const srv = createServer()
-    srv.once('error', reject)
-    srv.listen(0, '127.0.0.1', () => {
-      const addr = srv.address()
-      const port = typeof addr === 'object' && addr !== null ? addr.port : 0
-      srv.close(() => (port > 0 ? resolvePort(port) : reject(new Error('no port assigned'))))
-    })
-  })
+// Card #1826418086278858660 — how long `wt-observe start` gives the CANONICAL port to free
+// up (the common trigger: a stop→start race, the just-stopped process's socket not yet fully
+// closed) before conceding and failing loud instead of silently substituting an ephemeral one.
+const PORT_RETRY_TIMEOUT_MS = 5_000
+const PORT_RETRY_INTERVAL_MS = 500
+
+/** Best-effort "who's on this port" for the fail-loud message — `lsof` is common on
+ *  Linux/macOS (this project's actual targets) but never assumed present: any failure
+ *  (missing binary, permissions, unsupported platform) degrades to an empty list, never
+ *  throws. Diagnostic sugar only — the retry-then-fail decision above never depends on it. */
+function bestEffortPortHolders(port: number): number[] {
+  try {
+    const out = execFileSync('lsof', ['-t', '-i', `:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8', timeout: 2_000 })
+    return out
+      .split('\n')
+      .map((line) => Number(line.trim()))
+      .filter((n) => Number.isInteger(n) && n > 0)
+  } catch {
+    return []
+  }
 }
 
 // ── spawn target (interim: a local checkout) ────────────────────────────────────
@@ -658,7 +667,37 @@ async function cmdStart(ctx: Ctx, sourceDirs: readonly string[], remotes: readon
           'Retry shortly, or run `wt-observe stop` then `start` to force-restart it.',
       )
     }
-    const port = d.action === 'start-free-port' ? await probeFreePort() : p.port
+    if (d.action === 'start-free-port') {
+      // Card #1826418086278858660 — reaching here means NO pidfile is owned AND the
+      // canonical port answered foreign/inconclusive to a probe the CLI made with no
+      // explicit port override. (An explicit `OBSERVE_UI_SERVER_PORT=0` ask never lands
+      // here at all: probeFor() reads that env var as the candidate port whenever no
+      // pidfile exists, and probing literal port 0 always resolves 'unreachable', so
+      // decideStart returns `{action:'start'}` directly, bypassing this branch and its
+      // retry/fail-loud entirely. That pre-existing mechanism IS the "explicit ask" the
+      // ephemeral fallback stays legitimate under — see probeFor above.)
+      // Give the canonical port a short, bounded chance to free up (the common real
+      // trigger is a stop→start race — the just-stopped process's socket has not
+      // finished closing yet) before conceding. Conceding is LOUD: this used to fall
+      // straight through to a random OS-assigned port with no warning at all (observed
+      // :5174 → 44807).
+      const retry = await retryCanonicalPort({
+        probe: async () => classifyHealth(await probeHealth(p.port)),
+        now: Date.now,
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        timeoutMs: PORT_RETRY_TIMEOUT_MS,
+        intervalMs: PORT_RETRY_INTERVAL_MS,
+      })
+      if (retry.outcome === 'free') continue // re-probe + re-decide fresh (now likely 'start' or 'adopt')
+      const holders = bestEffortPortHolders(p.port)
+      const holderNote = holders.length > 0 ? `; held by pid ${holders.join(', ')}` : '; holder pid could not be determined'
+      throw new Error(
+        `port ${p.port} is still occupied after a ${PORT_RETRY_TIMEOUT_MS}ms retry (${retry.identity}${holderNote}) — ` +
+          'refusing to silently fall back to a random port. Free the port, or run ' +
+          '`OBSERVE_UI_SERVER_PORT=0 wt-observe start` to explicitly opt into an ephemeral one.',
+      )
+    }
+    const port = p.port
     const { health: h, token } = await spawnServer(ctx.stateRoot, port, sourceDirs, remotes, flags)
     writePidfileAt(ctx.pidfilePath, { ...pidfileFromHealth(h), token })
     const notes = [flags.watch ? ' with the vite build watcher (--watch)' : '', flags.enableLaunch ? ' with live launches ENABLED (--enable-launch)' : ''].join('')
@@ -1113,12 +1152,42 @@ const AWAIT_MISSING_GRACE_MS = 30_000
 const AWAIT_SETTLE_TRIES = 10
 const AWAIT_SETTLE_INTERVAL_MS = 1_000
 
-/** GET /api/runs/:runId as parsed JSON, null on any failure — the recall read both the
- *  main poll loop and the settle window share. `prefix` = hub source mount ('' single-source). */
-async function fetchRecall(port: number, token: string, prefix: string, runId: string): Promise<unknown> {
-  return api(port, token, `${prefix}/api/runs/${encodeURIComponent(runId)}`, {}, 10_000)
-    .then((r) => (r.ok ? (r.json() as Promise<unknown>) : null))
-    .catch(() => null)
+/** GET /api/runs/:runId — the recall read both the main poll loop and the settle window
+ *  share. `prefix` = hub source mount ('' single-source).
+ *
+ *  Card #1826344878393526139 / #1825812079798388423 (the await→missing bug) — `reached`
+ *  distinguishes a TRUSTWORTHY answer from an UNKNOWN one: `recall` alone used to collapse
+ *  three very different outcomes into the same "null", indistinguishable to the caller —
+ *    (a) a genuine 404 with no launch record anywhere (confirmed: never existed)
+ *    (b) a 404 the server tagged `code:'launch-record-present'` (own on-disk launch record
+ *        says this run WAS launched and not yet reaped, but the in-memory registry lookup
+ *        that would confirm it live came up momentarily empty — a registry gap, not an
+ *        absence)
+ *    (c) a network failure/timeout/5xx (the call never got a trustworthy answer at all)
+ *  `reached: false` covers (b) and (c) uniformly — both mean "this tick cannot confirm
+ *  absence", which the caller feeds into the SAME never-latch `sourcesUnprobed` gate the
+ *  cross-source search already uses (source-resolve.ts's discipline, card
+ *  #1821784328170899045) instead of a hard `missing`. Only (a) sets `reached: true` with a
+ *  null recall — a genuinely confirmed "not found anywhere". */
+async function fetchRecall(port: number, token: string, prefix: string, runId: string): Promise<{ reached: boolean; recall: unknown }> {
+  try {
+    const r = await api(port, token, `${prefix}/api/runs/${encodeURIComponent(runId)}`, {}, 10_000)
+    if (r.ok) return classifyRecallProbe({ kind: 'response', ok: true, status: r.status, body: await r.json() })
+    // Review finding (codex) — a non-ok body that FAILS TO PARSE is not the same as a body
+    // that parsed to `null`/has-no-`code`: a parse failure (truncated/corrupted response)
+    // cannot rule out a `code:'launch-record-present'` tag that never made it through, so it
+    // must route through the SAME network-error path as an unreachable server, not be treated
+    // as a confirmed plain 404.
+    let body: unknown
+    try {
+      body = await r.json()
+    } catch {
+      return classifyRecallProbe({ kind: 'network-error' })
+    }
+    return classifyRecallProbe({ kind: 'response', ok: false, status: r.status, body })
+  } catch {
+    return classifyRecallProbe({ kind: 'network-error' })
+  }
 }
 
 /** Card #1819922556652619607 requirement 4 — a runId is globally unique across a hub's
@@ -1214,16 +1283,42 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
   let warnedAmbiguous = false
   const startedAt = Date.now()
   for (;;) {
-    const live = await api(port, token, `${prefix}/api/runs/live`)
-      .then((r) => (r.ok ? (r.json() as Promise<{ runId: string; finished: boolean; status: string | null }[]>) : []))
-      .catch(() => [] as { runId: string; finished: boolean; status: string | null }[])
+    // Card #1825812079798388423 — track REACHED separately from "empty": a live-list fetch
+    // that times out / errors used to collapse to the same `[]` an actually-empty list
+    // produces, so `entry` alone could not tell "the run isn't live" from "we don't know".
+    let liveReached = true
+    let live: { runId: string; finished: boolean; status: string | null }[] = []
+    try {
+      const r = await api(port, token, `${prefix}/api/runs/live`)
+      if (r.ok) {
+        const parsed: unknown = await r.json()
+        // Review finding (codex) — a 200 whose body is not actually an array (a malformed
+        // response) must not be trusted as a confirmed empty list: `.find` on a non-array
+        // would throw, and even a caught/defaulted `[]` would silently masquerade as a real
+        // "not live" answer. Treat it exactly like an unreached probe.
+        if (Array.isArray(parsed)) live = parsed as { runId: string; finished: boolean; status: string | null }[]
+        else liveReached = false
+      } else {
+        liveReached = false
+      }
+    } catch {
+      liveReached = false
+    }
     const entry = live.find((e) => e.runId === runId) ?? null
     let recallStatus: string | null = null
     let recall: unknown = null
+    let recallReached = true // unattempted this tick — trivially not the source of any doubt
     if (entry === null || entry.finished) {
-      recall = await fetchRecall(port, token, prefix, runId)
+      const r = await fetchRecall(port, token, prefix, runId)
+      recall = r.recall
+      recallReached = r.reached
       recallStatus = extractAwaitOutcome(recall).status
     }
+    // Card #1825812079798388423 — the ACTIVE source's own primary probes (not just the
+    // cross-source search below) can fail to reach the server this tick. That is an UNKNOWN
+    // absence, not a confirmed one: feed it into the SAME never-latch flag the multi-source
+    // search already uses, so classifyAwaitTick treats it as pending, never a hard `missing`.
+    const primaryUnreached = !liveReached || !recallReached
     let searchUnprobed: string[] = []
     if (entry === null && recall === null && searchableKeys.length > 1) {
       const search = await searchLocalSources(port, token, searchableKeys, runId)
@@ -1247,9 +1342,11 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
       elapsedMs: Date.now() - startedAt,
       timeoutMs: timeoutS * 1000,
       missingGraceMs: AWAIT_MISSING_GRACE_MS,
-      // A run "visible nowhere" while a local source could not be reached this tick has an
-      // UNKNOWN absence — keeps the tick pending instead of a false `missing` (never-latch).
-      sourcesUnprobed: searchUnprobed.length > 0,
+      // A run "visible nowhere" while a local source (INCLUDING the active one's own primary
+      // probes) could not be reached this tick has an UNKNOWN absence — keeps the tick
+      // pending instead of a false `missing` (never-latch, cards #1821784328170899045 and
+      // #1825812079798388423).
+      sourcesUnprobed: primaryUnreached || searchUnprobed.length > 0,
     })
     if (verdict.kind === 'pending') {
       await new Promise((r) => setTimeout(r, pollS * 1000))
@@ -1267,7 +1364,7 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
       const resultRuledOut = (s: string | null): boolean => s !== null && s !== 'completed' && s !== 'unknown'
       for (let i = 0; i < AWAIT_SETTLE_TRIES && outcome.result === null && !resultRuledOut(outcome.status); i++) {
         await new Promise((r) => setTimeout(r, AWAIT_SETTLE_INTERVAL_MS))
-        recall = await fetchRecall(port, token, prefix, runId)
+        recall = (await fetchRecall(port, token, prefix, runId)).recall
         outcome = extractAwaitOutcome(recall)
       }
       const status = outcome.status ?? verdict.status

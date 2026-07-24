@@ -119,3 +119,53 @@ export function awaitExitCode(verdict: Exclude<AwaitVerdict, { kind: 'pending' }
  *  loop even starts (never conflated with the polling verdicts above, which all assume
  *  the source was already resolved). */
 export const AWAIT_SOURCE_UNRESOLVED_EXIT_CODE = 5
+
+// ── recall-probe classification (card #1825812079798388423 — the await→missing bug) ────────
+
+/** One GET /api/runs/:runId HTTP outcome, abstracted away from fetch/JSON-parsing (the CLI
+ *  shell owns those — see fetchRecall in observe-cli.ts) so the classification stays pure and
+ *  unit-tested like the rest of this module. `network-error` covers a thrown fetch (timeout,
+ *  connection reset, or a malformed 200 body that failed to parse). */
+export type RecallHttpOutcome = { kind: 'response'; ok: boolean; status: number; body: unknown } | { kind: 'network-error' }
+
+export interface RecallProbeResult {
+  /** True when this tick's answer is TRUSTWORTHY enough to treat as a confirmed observation
+   *  (a real 200 body, or a real 404 with no launch record anywhere). False means the run's
+   *  absence from this source is UNKNOWN this tick — the caller must feed it into the
+   *  never-latch `sourcesUnprobed` gate (classifyAwaitTick), never a confident `missing`. */
+  reached: boolean
+  recall: unknown
+}
+
+/** Turn one recall HTTP outcome into a {reached, recall} verdict. Three outcomes collapse to
+ *  the SAME `recall: null` but are NOT equivalent to the caller:
+ *   (a) ok 404, no `code` — a genuine, confirmed "no record anywhere" → reached: true
+ *   (b) ok 404 with `code: 'launch-record-present'` — the server's OWN on-disk launch record
+ *       says this run WAS launched and not yet reaped, but the in-memory registry lookup that
+ *       would confirm it live came up momentarily empty (a registry gap, not an absence) →
+ *       reached: false
+ *   (c) network-error, or any other non-200/404 status (5xx, timeout) — no trustworthy answer
+ *       was obtained at all → reached: false
+ *  Never throws — a malformed body degrades to `recall: null` with whatever `reached` the
+ *  status alone implies.
+ *
+ *  Review finding (codex, card #1825812079798388423) — a body that IS present but is not a
+ *  well-formed object can never be trusted, on EITHER status: a malformed 200 (this endpoint
+ *  always returns a real object on success — a non-object body means something is badly wrong
+ *  in transit, not a confirmed answer) degrades to reached: false instead of a false confirmed
+ *  presence; a 404 whose body the caller could not even PARSE (see observe-cli.ts's fetchRecall,
+ *  which routes that case through `network-error`) can never rule out a truncated
+ *  `code:'launch-record-present'` tag, so it must not be treated as a confirmed absence either. */
+export function classifyRecallProbe(outcome: RecallHttpOutcome): RecallProbeResult {
+  if (outcome.kind === 'network-error') return { reached: false, recall: null }
+  if (outcome.ok) {
+    if (typeof outcome.body !== 'object' || outcome.body === null) return { reached: false, recall: null }
+    return { reached: true, recall: outcome.body }
+  }
+  if (outcome.status === 404) {
+    const code = typeof outcome.body === 'object' && outcome.body !== null ? (outcome.body as Record<string, unknown>)['code'] : undefined
+    if (code === 'launch-record-present') return { reached: false, recall: null }
+    return { reached: true, recall: null }
+  }
+  return { reached: false, recall: null }
+}
