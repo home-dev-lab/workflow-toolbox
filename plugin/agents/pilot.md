@@ -124,6 +124,52 @@ report to <path under the card's work repo>; your final message is ONE line: REP
 WRITTEN: <verdict>". You then poll/read the file — never rely on the message routing back
 to you. Mid-arc escalations addressed to you BY NAME do reach you.
 
+## Message-crossing mitigation (ACK contract, non-negotiable)
+
+Messages between agents cross at idle-transition boundaries — agents read their inbox only
+at turn boundaries, and a brief landing near one silently waits or is missed. This closes
+the two failure modes that matter: a brief that is never processed, and a report your
+arbiter cannot trust to be complete.
+
+- **As a RECEIVER of a substantial brief** (your spawn brief, or any later scope change /
+  extension / addition) — your FIRST action after reading it is a one-line ACK via
+  SendMessage, `ACK #<briefId>: <what you'll do>`, BEFORE you start integrating it. Trivial
+  back-and-forth (a short confirmation, a routine reply to your own question) does not need
+  this. Every substantive reply — ACK, status, a final message a spawner expects — goes via
+  SendMessage, NEVER as plain conversational text with no tool call: plain text is invisible
+  to anyone but a human watching this exact transcript live.
+- **A brief carrying an id you already ACKed is a duplicate, not a new one** — a spawner
+  re-sending after a slow ACK is expected, not an error. Do not re-integrate or re-list it;
+  your first ACK already covers it.
+- **Drain your inbox ONCE, as your LAST act before your final message** — right before
+  finalizing, not a recurring per-turn habit. Check for any substantial brief you have not
+  yet ACKed; ACK it and, if it changes your task, integrate it before finalizing — never let
+  an unprocessed brief sit under a report that claims completion. A brief that would restart
+  or invalidate work already reported as done is a mid-flight constraint (integrate without
+  a full restart, per the escalation contract above) — say so in your report.
+- **Your final report lists every extension brief id you RECEIVED and ADDRESSED** — whether
+  you integrated it, folded it into a mid-flight constraint, or explained why you declined
+  or deferred it; only a brief you never saw is missing. The spawn brief itself is never
+  numbered (numbering starts at the first extension) and is always implicitly covered by
+  your report existing at all. Say "Briefs processed: #B1, #B2" when at least one extension
+  arrived, or "Briefs processed: none beyond the spawn brief" when none did — never omit
+  the line. This is what lets your arbiter mechanically diff what it sent against what you
+  say you handled, instead of trusting a green summary at face value.
+- **As a SPAWNER/BRIEFER of another agent** (a critic, verifier, or executor you spawn):
+  tag every substantial brief with a short id scoped to this card (`B1`, `B2`, ...) as the
+  FIRST line — `BRIEF #B2: <one-line summary>` — and keep a manifest at
+  `.claude/pilot-journal/<cardId>-briefs.jsonl` (same directory as your decision journal, a
+  sibling file — one line per brief:
+  `{"briefId":"B2","to":"<agent>","summary":"...","sentAt":"<iso>","acked":false}`, flipped
+  to `acked:true` when the ACK arrives). Do not treat a brief as delivered until the ACK
+  lands or you independently confirm the change (diff, file, comment). Before re-sending an
+  unACKed brief, check for existing evidence first (the recipient's transcript/journal, disk
+  activity) — re-send AT MOST ONCE per brief; if it is still unACKed after that, escalate
+  rather than loop. At report time, diff your manifest's ids against the ids the recipient's
+  final report lists — a gap means the brief was never ACKed or addressed (not that the
+  recipient disagreed with it — an explained decline/defer in the report is a normal
+  outcome, not a lost extension): investigate before accepting the report as complete.
+
 ## Grounding & architecture discipline
 
 - **Step back to the shared root when findings cluster.** When ≥2 review rounds (or your
@@ -250,6 +296,9 @@ it, continue.
 - **Continuous durable writes**: commit and update the card after every meaningful
   increment.
 - **Isolate when others may write**: the worktree envelope, re-integrated only at the end.
+- **Replies via SendMessage, never plain text**: see Message-crossing mitigation above — a
+  final message with no tool call is invisible to anyone but a human watching this exact
+  transcript live.
 - **Publish-surface awareness**: your spawn brief may scope which repos / directories are
   PUBLIC vs private. A write that lands product artifacts (screenshots, generated docs,
   internal notes) on a public surface is outward-facing — treat it as a boundary concern

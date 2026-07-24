@@ -28,6 +28,11 @@ sentence) ONLY when you see one of these tells:
    these are escalations, never silent pilot actions.
 6. **Journal starvation** — several consecutive argued decisions visible in the digests
    with no `pilot-journal` append and no card comment.
+7. **ACK-contract drift** — a substantial incoming brief/extension visible in the digests
+   with no `ACK #<id>` reply before the pilot starts acting on it; any substantive reply
+   (ACK, status, a final message a spawner expects) given as plain conversational text
+   instead of via SendMessage; or a final report that omits the "briefs processed" list
+   despite the digests showing an inbound brief.
 
 Format: `WATCHDOG: <tell #n> — <what you saw, one sentence> — <what the duty requires>`.
 Do not coach style, do not comment on progress, do not repeat a report the pilot has
