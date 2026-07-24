@@ -250,7 +250,7 @@ function cmp(a, b) {
 }
 
 function parseArgs(argv) {
-  const args = { mode: 'check', dir: null, force: false, set: 'rules', replaceSymlinks: false }
+  const args = { mode: 'check', dir: null, force: false, set: 'rules', replaceSymlinks: false, userDir: null, pairsFile: null }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--install') args.mode = 'install'
     else if (argv[i] === '--check') args.mode = 'check'
@@ -258,8 +258,95 @@ function parseArgs(argv) {
     else if (argv[i] === '--replace-symlinks') args.replaceSymlinks = true
     else if (argv[i] === '--dir') args.dir = argv[++i]
     else if (argv[i] === '--set') args.set = argv[++i]
+    else if (argv[i] === '--audit-overlap') args.mode = 'audit-overlap'
+    else if (argv[i] === '--user-dir') args.userDir = argv[++i]
+    else if (argv[i] === '--pairs-file') args.pairsFile = argv[++i]
   }
   return args
+}
+
+// Follows symlinks deliberately (unlike classify()'s lstat-first write-safety check): this
+// mode never writes, and a VALID symlink still means the concern is genuinely loaded from
+// this path — e.g. the exact pre-2026-07-23 work-side shape (a symlinked original alongside
+// a newly-installed wt-* copy) must count as a real double-load, not read as absent. A
+// dangling symlink throws in statSync and is correctly treated as absent.
+function realFile(target) {
+  try {
+    return fs.statSync(target).isFile()
+  } catch {
+    return false
+  }
+}
+
+function normalizedLines(text) {
+  return text.split(/\r?\n/).map((line) => line.replace(/[ \t]+$/, ''))
+}
+
+function auditOverlap(userDir, root, pairsFile) {
+  let entries
+  try {
+    entries = fs.readdirSync(userDir)
+  } catch {
+    fail(`user directory does not exist: ${userDir}`)
+  }
+  const pairsPath = path.resolve(pairsFile || path.join(path.dirname(fileURLToPath(import.meta.url)), 'rule-pairs.json'))
+  const pairs = JSON.parse(fs.readFileSync(pairsPath, 'utf8'))
+  const shippedDir = path.join(root, SETS.rules.srcDir)
+  const declaredUsers = new Set(pairs.map((pair) => pair.user))
+  // The shipped-side basename of a declared pair is never itself a candidate for UNMAPPED:
+  // it is either explained by DUPLICATE (both present), ABSENT (only the user side missing —
+  // the shipped-only file just isn't examined by that branch), or the correct target end
+  // state (user side removed, shipped copy installed) — never "no known counterpart".
+  const declaredShipped = new Set(pairs.map((pair) => pair.shipped))
+  let duplicate = 0
+  let drift = 0
+  let unmapped = 0
+
+  for (const pair of pairs) {
+    const userPath = path.join(userDir, pair.user)
+    const shippedPath = path.join(shippedDir, pair.shipped)
+    const userExists = realFile(userPath)
+    const shippedInUserPath = path.join(userDir, pair.shipped)
+    if (!userExists) {
+      process.stdout.write(`ABSENT ${pair.user}: ABSENT (declared pair, no user file present)\n`)
+      continue
+    }
+    if (realFile(shippedInUserPath)) {
+      // A `partial` pair (e.g. delegation-lanes.md / wt-delegation-ladder.md) is a DELIBERATE,
+      // accepted, bounded coexistence — both files are MEANT to be present together. Flagging
+      // it as a hard DUPLICATE would fail the guard on the documented target state itself.
+      const partial = pair.partial === true
+      if (!partial) duplicate++
+      const label = partial ? 'DUPLICATE (partial, informational)' : 'DUPLICATE'
+      process.stdout.write(`${label} ${userPath} + ${shippedInUserPath}\n`)
+      continue
+    }
+    if (!realFile(shippedPath)) {
+      process.stdout.write(`CLEAN ${pair.user}: no shipped comparison file\n`)
+      continue
+    }
+    const userLines = normalizedLines(fs.readFileSync(userPath, 'utf8'))
+    const shippedLines = new Set(normalizedLines(stripRuleBanner(fs.readFileSync(shippedPath, 'utf8'))))
+    const extras = [...new Set(userLines.filter((line) => line !== '' && !shippedLines.has(line)))]
+    if (extras.length === 0) {
+      process.stdout.write(`CLEAN ${pair.user}\n`)
+    } else {
+      const partial = pair.partial === true
+      if (!partial) drift++
+      const label = partial ? 'DRIFT (partial, informational)' : 'DRIFT'
+      process.stdout.write(`${label} ${pair.user}\n`)
+      for (const line of extras.slice(0, 40)) process.stdout.write(`${label} ${pair.user}: ${line}\n`)
+      if (extras.length > 40) process.stdout.write(`${label} ${pair.user}: +${extras.length - 40} more\n`)
+    }
+  }
+  for (const file of entries.filter((f) => f.endsWith('.md')).sort()) {
+    if (!declaredUsers.has(file) && !declaredShipped.has(file) && realFile(path.join(userDir, file))) {
+      unmapped++
+      process.stdout.write(`UNMAPPED ${path.join(userDir, file)}\n`)
+    }
+  }
+  process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${unmapped} unmapped\n`)
+  if (duplicate || drift) process.exitCode = 1
 }
 
 /** Decide the status label and (for --install) whether to write. `force` only ever
@@ -351,6 +438,12 @@ function processSet(set, dir, args, version, root) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2))
+  if (args.mode === 'audit-overlap') {
+    if (!args.userDir) fail('--user-dir is required with --audit-overlap')
+    const root = pluginRoot()
+    auditOverlap(path.resolve(args.userDir), root, args.pairsFile)
+    return
+  }
   if (!['rules', 'agents', 'all'].includes(args.set)) {
     fail(`unknown --set '${args.set}' (expected rules | agents | all)`)
   }
