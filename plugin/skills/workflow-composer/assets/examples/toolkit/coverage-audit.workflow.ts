@@ -78,6 +78,7 @@ import type {
 import type { FromSchema } from 'json-schema-to-ts'
 import { DOCS_PROVENANCE } from './docs-provenance.js'
 import type { ProvenanceEntry } from './docs-provenance.js'
+import { opencodeWorkdirLine, parseRoleStringMap, resolveWrapperModel } from './opencode-routing.js'
 
 // ---------------------------------------------------------------------------
 // Per-stage effort defaults (Class B/C launch-time tuning — see parseConfig).
@@ -592,58 +593,17 @@ function parseOptionalString(obj: Record<string, unknown>, field: string): strin
 const AGENT_TYPE_ROLES = ['inventory', 'extract', 'verify'] as const
 const ROLE_MAP_KEYS = ['inventory', 'extract', 'verify'] as const
 
-// Wrapper-role Claude model. A role routed to an external bridge agentType
-// (agentTypes.<role>) is a THIN RELAY — the external model reasons, the wrapper
-// only plumbs the CLI call — so it defaults to 'haiku' and the run-global
-// perAgent.model deliberately does NOT reach it. An explicit models.<role>
-// always wins (bridge or not). Returns undefined for a non-bridge role with no
-// override, so the blanket perAgent / pattern default still applies.
-function resolveWrapperModel(
-  routesToWrapper: boolean,
-  explicit: ModelAlias | undefined,
-): ModelAlias | undefined {
-  if (explicit !== undefined) return explicit
-  return routesToWrapper ? 'haiku' : undefined
-}
-
-// Parse a per-role string map ({ inventory?, extract?, verify? }) — the shared
-// shape of opencodeModels (external provider/model), models (the wrapper's own
-// Claude model) and opencodeVariants (the opencode --variant). When `allowed`
-// is non-null every value is validated against it (models → MODEL_ALIASES);
-// otherwise any non-empty string is accepted (the def validates variant names
-// per-model; opencode model ids are free-form).
-function parseRoleStringMap(
+// Bridge-routing doctrine (OPENCODE_WORKDIR auto-injection, the wrapper-model
+// gate, and the per-role string-map parser) is SHARED across coverage-audit,
+// docs-audit and pr-review — see opencode-routing.ts's header comment for the
+// Rule-of-Three rationale and the build evidence that justified extracting it.
+function parseRoleStringMapLocal(
   raw: unknown,
   key: string,
   allowed: readonly string[] | null,
 ): Readonly<{ inventory?: string; extract?: string; verify?: string }> | null {
-  if (raw === undefined || raw === null) return null
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new Error(`coverage-audit: "${key}" must be an object when provided`)
-  }
-  const obj = raw as Record<string, unknown>
-  const unknown = Object.keys(obj).filter(
-    (k) => !(ROLE_MAP_KEYS as readonly string[]).includes(k),
-  )
-  if (unknown.length > 0) {
-    throw new Error(
-      `coverage-audit: "${key}" has unknown key(s): ${unknown.join(', ')}; ` +
-      `accepted keys: ${ROLE_MAP_KEYS.join(', ')}`,
-    )
-  }
-  const parsed: { inventory?: string; extract?: string; verify?: string } = {}
-  for (const role of ROLE_MAP_KEYS) {
-    const value = obj[role]
-    if (value === undefined) continue
-    if (typeof value !== 'string' || value.trim().length === 0) {
-      throw new Error(`coverage-audit: "${key}.${role}" must be a non-empty string when provided`)
-    }
-    if (allowed !== null && !allowed.includes(value)) {
-      throw new Error(`coverage-audit: "${key}.${role}" must be one of ${allowed.join(', ')}`)
-    }
-    parsed[role] = value
-  }
-  return parsed
+  return parseRoleStringMap(raw, key, allowed, ROLE_MAP_KEYS, 'coverage-audit') as
+    Readonly<{ inventory?: string; extract?: string; verify?: string }> | null
 }
 
 function parseInput(raw: unknown): CoverageAuditInput {
@@ -712,10 +672,10 @@ function parseInput(raw: unknown): CoverageAuditInput {
     inventoryType: cfg.agentTypes?.['inventory'] ?? null,
     extractType: cfg.agentTypes?.['extract'] ?? null,
     verifierType: cfg.agentTypes?.['verify'] ?? null,
-    opencodeModels: parseRoleStringMap(obj['opencodeModels'], 'opencodeModels', null),
-    models: parseRoleStringMap(obj['models'], 'models', MODEL_ALIASES) as
+    opencodeModels: parseRoleStringMapLocal(obj['opencodeModels'], 'opencodeModels', null),
+    models: parseRoleStringMapLocal(obj['models'], 'models', MODEL_ALIASES) as
       Readonly<{ inventory?: ModelAlias; extract?: ModelAlias; verify?: ModelAlias }> | null,
-    opencodeVariants: parseRoleStringMap(obj['opencodeVariants'], 'opencodeVariants', null),
+    opencodeVariants: parseRoleStringMapLocal(obj['opencodeVariants'], 'opencodeVariants', null),
     unknownAgentTypeKeys: Object.keys(cfg.agentTypes ?? {}).filter(
       (key) => !(AGENT_TYPE_ROLES as readonly string[]).includes(key),
     ),
@@ -730,10 +690,12 @@ function parseInput(raw: unknown): CoverageAuditInput {
 function inventoryPrompt(
   input: CoverageAuditInput,
   group: readonly ProvenanceEntry[],
+  resolvedInventoryType: string | null,
   opencodeModel: string | null,
   opencodeVariant: string | null,
 ): string {
   return (
+    opencodeWorkdirLine(resolvedInventoryType, input.repoRoot) +
     (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}\n\n` : '') +
     (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}\n\n` : '') +
     `Inventory the user-facing capabilities of the following source modules — this is the ` +
@@ -764,6 +726,7 @@ function extractPrompt(
   capsByEntry: ReadonlyMap<string, readonly Capability[]>,
   round: number,
   angle: string,
+  resolvedExtractType: string | null,
   opencodeModel: string | null,
   opencodeVariant: string | null,
 ): string {
@@ -782,6 +745,7 @@ function extractPrompt(
   }).join('\n\n')
 
   return (
+    opencodeWorkdirLine(resolvedExtractType, input.repoRoot) +
     (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}\n\n` : '') +
     (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}\n\n` : '') +
     `Extract undocumented-capability claims — documentation-coverage audit, extraction round ${round}.\n` +
@@ -832,10 +796,12 @@ function renderUntrustedCapabilityBlock(c: CoverageClaim): string {
 function renderCoverageClaim(
   repoRoot: string,
   hints: string | null,
+  resolvedVerifierType: string | null,
   opencodeModel: string | null,
   opencodeVariant: string | null,
 ): (c: CoverageClaim) => string {
   return (c) =>
+    opencodeWorkdirLine(resolvedVerifierType, repoRoot) +
     (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}\n\n` : '') +
     (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}\n\n` : '') +
     `Documentation-coverage audit — verdict for ONE undocumented-capability claim.\n` +
@@ -962,6 +928,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
         inventoryPrompt(
           input,
           group,
+          resolvedInventoryType,
           resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
           resolvedInventoryType !== null ? input.opencodeVariants?.inventory ?? null : null,
         ),
@@ -1100,6 +1067,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
               capsByEntry,
               round,
               angle,
+              resolvedExtractType,
               resolvedExtractType !== null ? input.opencodeModels?.extract ?? null : null,
               resolvedExtractType !== null ? input.opencodeVariants?.extract ?? null : null,
             ),
@@ -1233,6 +1201,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
       renderClaim: renderCoverageClaim(
         input.repoRoot,
         input.hints,
+        resolvedVerifierType,
         resolvedVerifierType !== null ? input.opencodeModels?.verify ?? null : null,
         resolvedVerifierType !== null ? input.opencodeVariants?.verify ?? null : null,
       ),

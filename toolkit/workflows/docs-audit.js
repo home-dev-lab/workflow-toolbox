@@ -953,32 +953,6 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     };
   }
 
-  // ../packages/patterns/src/leaf-fence.ts
-  var LEAF_AGENT_TYPE = "workflow-toolbox:leaf";
-  var FENCE_UNAVAILABLE_MESSAGE = "fence UNAVAILABLE \u2014 leaves run with SendMessage enabled this run";
-  async function withLeafFence(rt, options = {}) {
-    const { phase, agentType = LEAF_AGENT_TYPE, disabled = false, perAgent } = options;
-    if (disabled) {
-      return { rt, report: { resolvedAgentType: null, probe: null } };
-    }
-    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
-    const probe = await probeAgentType(probeRt, agentType, {
-      probePrompt: LOCAL_AGENT_PROBE_PROMPT,
-      ...phase !== void 0 ? { phase } : {}
-    });
-    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
-    if (probe.agentType === void 0) {
-      rt.log(`[leaf-fence] \u26A0 ${FENCE_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
-    }
-    return {
-      rt: withAgentDefaults(rt, defaults),
-      report: {
-        resolvedAgentType: probe.agentType ?? null,
-        probe: { requested: agentType, available: probe.available, reason: probe.reason }
-      }
-    };
-  }
-
   // ../packages/patterns/src/provenance-gate.ts
   function matchesOpencodeRun(cmd = "") {
     if (typeof cmd !== "string" || cmd.length === 0) return false;
@@ -1195,6 +1169,32 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
     const map = parseProvenanceReply(reply, labels);
     const replyOk = reply !== null && [...map.values()].some((p) => p !== "undetermined");
     return { map, replyOk };
+  }
+
+  // ../packages/patterns/src/leaf-fence.ts
+  var LEAF_AGENT_TYPE = "workflow-toolbox:leaf";
+  var FENCE_UNAVAILABLE_MESSAGE = "fence UNAVAILABLE \u2014 leaves run with SendMessage enabled this run";
+  async function withLeafFence(rt, options = {}) {
+    const { phase, agentType = LEAF_AGENT_TYPE, disabled = false, perAgent } = options;
+    if (disabled) {
+      return { rt, report: { resolvedAgentType: null, probe: null } };
+    }
+    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
+    const probe = await probeAgentType(probeRt, agentType, {
+      probePrompt: LOCAL_AGENT_PROBE_PROMPT,
+      ...phase !== void 0 ? { phase } : {}
+    });
+    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
+    if (probe.agentType === void 0) {
+      rt.log(`[leaf-fence] \u26A0 ${FENCE_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
+    }
+    return {
+      rt: withAgentDefaults(rt, defaults),
+      report: {
+        resolvedAgentType: probe.agentType ?? null,
+        probe: { requested: agentType, available: probe.available, reason: probe.reason }
+      }
+    };
   }
 
   // ../packages/patterns/src/cache-warm.ts
@@ -1877,6 +1877,44 @@ ${renderClaim(claim)}`;
     };
   }
 
+  // opencode-routing.ts
+  var OPENCODE_VERIFIER_AGENT_TYPE = "workflow-toolbox:opencode-verifier";
+  function opencodeWorkdirLine(resolvedType, repoRoot) {
+    return resolvedType === OPENCODE_VERIFIER_AGENT_TYPE ? `OPENCODE_WORKDIR: ${repoRoot}
+
+` : "";
+  }
+  function resolveWrapperModel(routesToWrapper, explicit) {
+    if (explicit !== void 0) return explicit;
+    return routesToWrapper ? "haiku" : void 0;
+  }
+  function parseRoleStringMap(raw, key, allowed, roleKeys, errorPrefix) {
+    if (raw === void 0 || raw === null) return null;
+    if (typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(`${errorPrefix}: "${key}" must be an object when provided`);
+    }
+    const obj = raw;
+    const unknown = Object.keys(obj).filter((k) => !roleKeys.includes(k));
+    if (unknown.length > 0) {
+      throw new Error(
+        `${errorPrefix}: "${key}" has unknown key(s): ${unknown.join(", ")}; accepted keys: ${roleKeys.join(", ")}`
+      );
+    }
+    const parsed = {};
+    for (const role of roleKeys) {
+      const value = obj[role];
+      if (value === void 0) continue;
+      if (typeof value !== "string" || value.trim().length === 0) {
+        throw new Error(`${errorPrefix}: "${key}.${role}" must be a non-empty string when provided`);
+      }
+      if (allowed !== null && !allowed.includes(value)) {
+        throw new Error(`${errorPrefix}: "${key}.${role}" must be one of ${allowed.join(", ")}`);
+      }
+      parsed[role] = value;
+    }
+    return parsed;
+  }
+
   // docs-audit.workflow.ts
   var INVENTORY_EFFORT = "low";
   var EXTRACT_EFFORT = "medium";
@@ -1957,37 +1995,8 @@ ${renderClaim(claim)}`;
   }
   var AGENT_TYPE_ROLES = ["inventory", "extract", "verify"];
   var ROLE_MAP_KEYS = ["inventory", "extract", "verify"];
-  function resolveWrapperModel(routesToWrapper, explicit) {
-    if (explicit !== void 0) return explicit;
-    return routesToWrapper ? "haiku" : void 0;
-  }
-  function parseRoleStringMap(raw, key, allowed) {
-    if (raw === void 0 || raw === null) return null;
-    if (typeof raw !== "object" || Array.isArray(raw)) {
-      throw new Error(`docs-audit: "${key}" must be an object when provided`);
-    }
-    const obj = raw;
-    const unknown = Object.keys(obj).filter(
-      (k) => !ROLE_MAP_KEYS.includes(k)
-    );
-    if (unknown.length > 0) {
-      throw new Error(
-        `docs-audit: "${key}" has unknown key(s): ${unknown.join(", ")}; accepted keys: ${ROLE_MAP_KEYS.join(", ")}`
-      );
-    }
-    const parsed = {};
-    for (const role of ROLE_MAP_KEYS) {
-      const value = obj[role];
-      if (value === void 0) continue;
-      if (typeof value !== "string" || value.trim().length === 0) {
-        throw new Error(`docs-audit: "${key}.${role}" must be a non-empty string when provided`);
-      }
-      if (allowed !== null && !allowed.includes(value)) {
-        throw new Error(`docs-audit: "${key}.${role}" must be one of ${allowed.join(", ")}`);
-      }
-      parsed[role] = value;
-    }
-    return parsed;
+  function parseRoleStringMapLocal(raw, key, allowed) {
+    return parseRoleStringMap(raw, key, allowed, ROLE_MAP_KEYS, "docs-audit");
   }
   function parseInput(raw) {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
@@ -2058,17 +2067,17 @@ ${renderClaim(claim)}`;
       inventoryType: cfg.agentTypes?.["inventory"] ?? null,
       extractType: cfg.agentTypes?.["extract"] ?? null,
       verifierType: cfg.agentTypes?.["verify"] ?? null,
-      opencodeModels: parseRoleStringMap(obj["opencodeModels"], "opencodeModels", null),
-      models: parseRoleStringMap(obj["models"], "models", MODEL_ALIASES),
-      opencodeVariants: parseRoleStringMap(obj["opencodeVariants"], "opencodeVariants", null),
+      opencodeModels: parseRoleStringMapLocal(obj["opencodeModels"], "opencodeModels", null),
+      models: parseRoleStringMapLocal(obj["models"], "models", MODEL_ALIASES),
+      opencodeVariants: parseRoleStringMapLocal(obj["opencodeVariants"], "opencodeVariants", null),
       unknownAgentTypeKeys: Object.keys(cfg.agentTypes ?? {}).filter(
         (key) => !AGENT_TYPE_ROLES.includes(key)
       ),
       messaging: cfg.messaging === true
     };
   }
-  function inventoryPrompt(input, opencodeModel, opencodeVariant) {
-    return (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
+  function inventoryPrompt(input, resolvedInventoryType, opencodeModel, opencodeVariant) {
+    return opencodeWorkdirLine(resolvedInventoryType, input.repoRoot) + (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
 
 ` : "") + (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}
 
@@ -2083,8 +2092,8 @@ ${input.hints}
 ` : "") + `List the actual directories to find every matching file that EXISTS \u2014 never guess a path.
 Return { "surfaces": ["<repo-relative path>", ...] } using forward slashes, relative to ${input.repoRoot}.`;
   }
-  function extractPrompt(input, group, round, angle, opencodeModel, opencodeVariant) {
-    return (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
+  function extractPrompt(input, group, round, angle, resolvedExtractType, opencodeModel, opencodeVariant) {
+    return opencodeWorkdirLine(resolvedExtractType, input.repoRoot) + (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
 
 ` : "") + (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}
 
@@ -2111,8 +2120,8 @@ Where to look first: ${c.checkHint}`.replace(/-{5} (BEGIN|END) AUDITED DOC CLAIM
 ` + body + `
 ----- END AUDITED DOC CLAIM -----`;
   }
-  function renderAuditClaim(repoRoot, hints, opencodeModel, opencodeVariant) {
-    return (c) => (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
+  function renderAuditClaim(repoRoot, hints, resolvedVerifierType, opencodeModel, opencodeVariant) {
+    return (c) => opencodeWorkdirLine(resolvedVerifierType, repoRoot) + (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
 
 ` : "") + (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}
 
@@ -2180,6 +2189,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory);
       const invOutcome = await agentWithSchemaSalvage(rt, inventoryPrompt(
         input,
+        resolvedInventoryType,
         resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
         resolvedInventoryType !== null ? input.opencodeVariants?.inventory ?? null : null
       ), {
@@ -2240,6 +2250,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
                 group,
                 round,
                 angle,
+                resolvedExtractType,
                 resolvedExtractType !== null ? input.opencodeModels?.extract ?? null : null,
                 resolvedExtractType !== null ? input.opencodeVariants?.extract ?? null : null
               ),
@@ -2324,6 +2335,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         renderClaim: renderAuditClaim(
           input.repoRoot,
           input.hints,
+          resolvedVerifierType,
           resolvedVerifierType !== null ? input.opencodeModels?.verify ?? null : null,
           resolvedVerifierType !== null ? input.opencodeVariants?.verify ?? null : null
         ),

@@ -255,6 +255,78 @@ describe('coverage-audit provenance resolution', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// Test: OPENCODE_WORKDIR auto-injection (card #1825784696588469957) — the
+// cd-to-target token economy stops depending on a hand-passed hint: any role
+// resolved to EXACTLY the opencode-verifier bridge gets `OPENCODE_WORKDIR:
+// <repoRoot>` for free, with NO caller recipe (no hints, no opencodeModels).
+// ---------------------------------------------------------------------------
+
+describe('coverage-audit OPENCODE_WORKDIR auto-injection', () => {
+  const TYPE = 'workflow-toolbox:opencode-verifier'
+  const OTHER_TYPE = 'workflow-toolbox:leaf'
+  const runtime = () => makeRuntime({
+    inventory: { 'src/a.ts': [makeCapability()], 'src/b.ts': [] },
+    extractRounds: [[makeGap()], []],
+  })
+  const stageCalls = (rt: FakeRuntime, phase: string, phrase: string) =>
+    rt.calls.filter((c) => c.phase === phase && String(c.prompt).toLowerCase().includes(phrase))
+  const stripMeta = (p: unknown) => String(p).replace(/^<!-- wt-meta [^\n]+ -->\n\n/, '')
+
+  it('auto-injects OPENCODE_WORKDIR for Inventory when routed to opencode-verifier — NO manual hint needed', async () => {
+    const rt = runtime()
+    await wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { inventory: TYPE } }))
+    const inventory = stageCalls(rt, 'Inventory', 'inventory the user-facing capabilities')
+    expect(inventory.length).toBeGreaterThan(0)
+    expect(inventory.every((c) =>
+      stripMeta(c.prompt).startsWith(`OPENCODE_WORKDIR: ${BASE_INPUT.repoRoot}\n\n`),
+    )).toBe(true)
+  })
+
+  it('auto-injects OPENCODE_WORKDIR for Extract when routed to opencode-verifier', async () => {
+    const rt = runtime()
+    await wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { extract: TYPE } }))
+    const extract = stageCalls(rt, 'Extract', 'extract undocumented-capability claims')
+    expect(extract.length).toBeGreaterThan(0)
+    expect(extract.every((c) =>
+      stripMeta(c.prompt).startsWith(`OPENCODE_WORKDIR: ${BASE_INPUT.repoRoot}\n\n`),
+    )).toBe(true)
+  })
+
+  it('auto-injects OPENCODE_WORKDIR for the Verify fan when routed to opencode-verifier', async () => {
+    const rt = runtime()
+    await wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { verify: TYPE } }))
+    const verify = stageCalls(rt, 'Verify', 'verdict for one undocumented-capability claim')
+    expect(verify.length).toBeGreaterThan(0)
+    // adversarialVerification embeds renderClaim's own output after its own
+    // "\nClaim:\n" preamble (patterns/src/adversarial-verification.ts:425),
+    // not at the very start of the final verifier prompt — so the injected
+    // line is checked at ITS embedding point, not via .startsWith().
+    expect(verify.every((c) =>
+      stripMeta(c.prompt).includes(`\nClaim:\nOPENCODE_WORKDIR: ${BASE_INPUT.repoRoot}\n\n`),
+    )).toBe(true)
+  })
+
+  it('does NOT inject OPENCODE_WORKDIR when no agentType is routed (standard subagent — directive would be meaningless)', async () => {
+    const rt = runtime()
+    await wf.run(rt, JSON.stringify({ ...BASE_INPUT }))
+    const extract = stageCalls(rt, 'Extract', 'extract undocumented-capability claims')
+    expect(extract.length).toBeGreaterThan(0)
+    expect(extract.every((c) => !String(c.prompt).includes('OPENCODE_WORKDIR'))).toBe(true)
+  })
+
+  it('does NOT inject OPENCODE_WORKDIR when routed to a DIFFERENT agentType (gated on the exact opencode-verifier string)', async () => {
+    const rt = makeRuntime({
+      inventory: { 'src/a.ts': [makeCapability()], 'src/b.ts': [] },
+      extractRounds: [[], []],
+    })
+    await wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { extract: OTHER_TYPE } }))
+    const extract = stageCalls(rt, 'Extract', 'extract undocumented-capability claims')
+    expect(extract.length).toBeGreaterThan(0)
+    expect(extract.every((c) => !String(c.prompt).includes('OPENCODE_WORKDIR'))).toBe(true)
+  })
+})
+
 describe('coverage-audit per-role agentType routing', () => {
   const TYPE = 'workflow-toolbox:opencode-verifier'
   const runtime = () => makeRuntime({
@@ -315,10 +387,13 @@ describe('coverage-audit per-role agentType routing', () => {
     const extract = stageCalls(rt, 'Extract', 'extract undocumented-capability claims')
     const inventory = stageCalls(rt, 'Inventory', 'inventory the user-facing capabilities')
     const verify = stageCalls(rt, 'Verify', 'verdict for one undocumented-capability claim')
+    // OPENCODE_WORKDIR auto-injects FIRST (card #1825784696588469957 — the
+    // role resolved to the opencode-verifier bridge, so repoRoot is prepended
+    // with no caller recipe), THEN the opt-in OPENCODE_MODEL directive.
     expect(extract.some((c) =>
       String(c.prompt)
         .replace(/^<!-- wt-meta [^\n]+ -->\n\n/, '')
-        .startsWith('OPENCODE_MODEL: openai/gpt-5.4\n\n'),
+        .startsWith(`OPENCODE_WORKDIR: ${BASE_INPUT.repoRoot}\n\nOPENCODE_MODEL: openai/gpt-5.4\n\n`),
     )).toBe(true)
     expect(inventory.length).toBeGreaterThan(0)
     expect(inventory.every((c) => !String(c.prompt).includes('OPENCODE_MODEL: openai/gpt-5.4'))).toBe(true)

@@ -56,6 +56,7 @@ var __wt = (() => {
 
   // ../packages/runtime/src/constants.ts
   var BEST_MODEL = "opus";
+  var MODEL_ALIASES = ["opus", "sonnet", "haiku", "fable"];
 
   // ../packages/runtime/src/digest.ts
   var DIGEST_PREFIX = "[wt:digest]";
@@ -954,58 +955,6 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     };
   }
 
-  // ../packages/patterns/src/leaf-fence.ts
-  var LEAF_AGENT_TYPE = "workflow-toolbox:leaf";
-  var FENCE_UNAVAILABLE_MESSAGE = "fence UNAVAILABLE \u2014 leaves run with SendMessage enabled this run";
-  async function withLeafFence(rt, options = {}) {
-    const { phase, agentType = LEAF_AGENT_TYPE, disabled = false, perAgent } = options;
-    if (disabled) {
-      return { rt, report: { resolvedAgentType: null, probe: null } };
-    }
-    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
-    const probe = await probeAgentType(probeRt, agentType, {
-      probePrompt: LOCAL_AGENT_PROBE_PROMPT,
-      ...phase !== void 0 ? { phase } : {}
-    });
-    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
-    if (probe.agentType === void 0) {
-      rt.log(`[leaf-fence] \u26A0 ${FENCE_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
-    }
-    return {
-      rt: withAgentDefaults(rt, defaults),
-      report: {
-        resolvedAgentType: probe.agentType ?? null,
-        probe: { requested: agentType, available: probe.available, reason: probe.reason }
-      }
-    };
-  }
-
-  // ../packages/patterns/src/lean-routing.ts
-  var LEAN_AGENT_TYPE = "workflow-toolbox:lean";
-  var ROUTING_UNAVAILABLE_MESSAGE = "routing UNAVAILABLE \u2014 calls through this runtime keep the FULL ambient context this run (no lean savings)";
-  async function withLeanRouting(rt, options = {}) {
-    const { phase, agentType = LEAN_AGENT_TYPE, disabled = false, perAgent } = options;
-    if (disabled) {
-      return { rt, report: { resolvedAgentType: null, probe: null } };
-    }
-    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
-    const probe = await probeAgentType(probeRt, agentType, {
-      probePrompt: LOCAL_AGENT_PROBE_PROMPT,
-      ...phase !== void 0 ? { phase } : {}
-    });
-    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
-    if (probe.agentType === void 0) {
-      rt.log(`[lean-routing] \u26A0 ${ROUTING_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
-    }
-    return {
-      rt: withAgentDefaults(rt, defaults),
-      report: {
-        resolvedAgentType: probe.agentType ?? null,
-        probe: { requested: agentType, available: probe.available, reason: probe.reason }
-      }
-    };
-  }
-
   // ../packages/patterns/src/provenance-gate.ts
   function matchesOpencodeRun(cmd = "") {
     if (typeof cmd !== "string" || cmd.length === 0) return false;
@@ -1071,6 +1020,9 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     if (verifierType === void 0) return null;
     for (const sig of EXTERNAL_CLI_SIGNATURES) if (sig.typeRe.test(verifierType)) return sig;
     return null;
+  }
+  function isExternalBridgeType(agentType) {
+    return externalGateExpectation(agentType ?? void 0) !== null;
   }
   function buildProvenanceScannerSource(expectation, nonce, labels) {
     const nonceLit = JSON.stringify(nonce);
@@ -1222,6 +1174,58 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
     const map = parseProvenanceReply(reply, labels);
     const replyOk = reply !== null && [...map.values()].some((p) => p !== "undetermined");
     return { map, replyOk };
+  }
+
+  // ../packages/patterns/src/leaf-fence.ts
+  var LEAF_AGENT_TYPE = "workflow-toolbox:leaf";
+  var FENCE_UNAVAILABLE_MESSAGE = "fence UNAVAILABLE \u2014 leaves run with SendMessage enabled this run";
+  async function withLeafFence(rt, options = {}) {
+    const { phase, agentType = LEAF_AGENT_TYPE, disabled = false, perAgent } = options;
+    if (disabled) {
+      return { rt, report: { resolvedAgentType: null, probe: null } };
+    }
+    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
+    const probe = await probeAgentType(probeRt, agentType, {
+      probePrompt: LOCAL_AGENT_PROBE_PROMPT,
+      ...phase !== void 0 ? { phase } : {}
+    });
+    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
+    if (probe.agentType === void 0) {
+      rt.log(`[leaf-fence] \u26A0 ${FENCE_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
+    }
+    return {
+      rt: withAgentDefaults(rt, defaults),
+      report: {
+        resolvedAgentType: probe.agentType ?? null,
+        probe: { requested: agentType, available: probe.available, reason: probe.reason }
+      }
+    };
+  }
+
+  // ../packages/patterns/src/lean-routing.ts
+  var LEAN_AGENT_TYPE = "workflow-toolbox:lean";
+  var ROUTING_UNAVAILABLE_MESSAGE = "routing UNAVAILABLE \u2014 calls through this runtime keep the FULL ambient context this run (no lean savings)";
+  async function withLeanRouting(rt, options = {}) {
+    const { phase, agentType = LEAN_AGENT_TYPE, disabled = false, perAgent } = options;
+    if (disabled) {
+      return { rt, report: { resolvedAgentType: null, probe: null } };
+    }
+    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
+    const probe = await probeAgentType(probeRt, agentType, {
+      probePrompt: LOCAL_AGENT_PROBE_PROMPT,
+      ...phase !== void 0 ? { phase } : {}
+    });
+    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
+    if (probe.agentType === void 0) {
+      rt.log(`[lean-routing] \u26A0 ${ROUTING_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
+    }
+    return {
+      rt: withAgentDefaults(rt, defaults),
+      report: {
+        resolvedAgentType: probe.agentType ?? null,
+        probe: { requested: agentType, available: probe.available, reason: probe.reason }
+      }
+    };
   }
 
   // ../packages/patterns/src/cache-warm.ts
@@ -2209,6 +2213,41 @@ ${renderClaim(claim)}`;
     return out;
   }
 
+  // opencode-routing.ts
+  function isBridgeAgentType(resolvedType) {
+    return isExternalBridgeType(resolvedType);
+  }
+  function resolveWrapperModel(routesToWrapper, explicit) {
+    if (explicit !== void 0) return explicit;
+    return routesToWrapper ? "haiku" : void 0;
+  }
+  function parseRoleStringMap(raw, key, allowed, roleKeys, errorPrefix) {
+    if (raw === void 0 || raw === null) return null;
+    if (typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(`${errorPrefix}: "${key}" must be an object when provided`);
+    }
+    const obj = raw;
+    const unknown = Object.keys(obj).filter((k) => !roleKeys.includes(k));
+    if (unknown.length > 0) {
+      throw new Error(
+        `${errorPrefix}: "${key}" has unknown key(s): ${unknown.join(", ")}; accepted keys: ${roleKeys.join(", ")}`
+      );
+    }
+    const parsed = {};
+    for (const role of roleKeys) {
+      const value = obj[role];
+      if (value === void 0) continue;
+      if (typeof value !== "string" || value.trim().length === 0) {
+        throw new Error(`${errorPrefix}: "${key}.${role}" must be a non-empty string when provided`);
+      }
+      if (allowed !== null && !allowed.includes(value)) {
+        throw new Error(`${errorPrefix}: "${key}.${role}" must be one of ${allowed.join(", ")}`);
+      }
+      parsed[role] = value;
+    }
+    return parsed;
+  }
+
   // pr-review.workflow.ts
   var CLASSIFY_EFFORT = "low";
   var ROUTE_ACT_EFFORT = "medium";
@@ -2351,6 +2390,10 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       return { sources: e["sources"], docs: e["docs"] };
     });
   }
+  var MODELS_ROLE_KEYS = ["review"];
+  function parseModels(raw) {
+    return parseRoleStringMap(raw, "models", MODEL_ALIASES, MODELS_ROLE_KEYS, "pr-review");
+  }
   var ALLOWED_MODES = ["full", "single-verifier"];
   function parseMode(raw) {
     if (raw === void 0 || raw === null) return "full";
@@ -2372,6 +2415,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
         target: raw,
         mode: "full",
         reviewerType: null,
+        models: null,
         verifierModel: null,
         verifierType: null,
         perAgent: null,
@@ -2413,7 +2457,8 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     const messaging = cfg.messaging ?? null;
     const provenance = parseProvenance(obj["provenance"]);
     const mode = parseMode(obj["mode"]);
-    return { target: obj["target"], mode, reviewerType, verifierModel, verifierType, perAgent, effort, messaging, provenance };
+    const models = parseModels(obj["models"]);
+    return { target: obj["target"], mode, reviewerType, models, verifierModel, verifierType, perAgent, effort, messaging, provenance };
   }
   async function run(rt00, input) {
     rt00.phase("Fence");
@@ -2449,6 +2494,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       resolvedReviewerType = probe.agentType ?? null;
       probeReport = { requested: input.reviewerType, available: probe.available, reason: probe.reason };
     }
+    const reviewModel = resolveWrapperModel(isBridgeAgentType(resolvedReviewerType), input.models?.review);
     let resolvedVerifierType = null;
     let verifierProbeReport = null;
     if (input.verifierType !== null) {
@@ -2621,7 +2667,11 @@ Return your findings across ALL lenses combined. Each finding: \`{ title, file, 
             effort: reviewEffort,
             // Same agentTypes.review routing as the per-lens path — this is
             // precisely the shape a cross-family/quota-degraded verifier wants.
-            ...resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {}
+            ...resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {},
+            // Wrapper-model gate (card #1826112535493871358): haiku by default
+            // when bridge-routed, models.review override, or the Claude tier
+            // unchanged when not bridge-routed (undefined → omitted).
+            ...reviewModel !== void 0 ? { model: reviewModel } : {}
           }
         );
         return result2;
@@ -2655,7 +2705,11 @@ Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'
           // run entry. Omitted when null → standard subagent (default; also the
           // graceful-fallback path when the requested type could not answer).
           // Routes the lens reviewers ONLY; verifiers and synthesizer stay generic.
-          ...resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {}
+          ...resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {},
+          // Wrapper-model gate (card #1826112535493871358): haiku by default
+          // when bridge-routed, models.review override, or the Claude tier
+          // unchanged when not bridge-routed (undefined → omitted).
+          ...reviewModel !== void 0 ? { model: reviewModel } : {}
         }
       );
       return result;

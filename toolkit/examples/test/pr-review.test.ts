@@ -611,6 +611,217 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Test: review-lens wrapper Claude model — GATED haiku doctrine (card
+// #1826112535493871358, same convention as coverage-audit/docs-audit's
+// `models`, commit 340437f, reusing the shared parseRoleStringMap/
+// resolveWrapperModel from opencode-routing.ts). A bridge-routed review lens
+// (agentTypes.review resolves non-null) is a THIN RELAY → defaults to
+// 'haiku', perAgent.model does NOT reach it. A CLAUDE review lens (no
+// agentType routed) KEEPS its normal tier — never forced to haiku. An
+// explicit `models.review` always wins, bridge or not.
+// ---------------------------------------------------------------------------
+describe('pr-review review-lens wrapper model (haiku doctrine)', () => {
+  const TYPE = 'workflow-toolbox:opencode-verifier'
+  const reviewCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('pr-review:reviewer:'))
+
+  it('spawns a bridge-routed review lens as haiku by default — perAgent.model does NOT reach it', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      agentTypes: { review: TYPE },
+      perAgent: { model: 'sonnet' },
+    }))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    expect(reviews.every((c) => c.opts?.model === 'haiku')).toBe(true)
+  })
+
+  it('spawns a codex-family bridge-routed review lens as haiku too (a KNOWN bridge type, not just opencode-verifier)', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      agentTypes: { review: 'codex:codex-rescue' },
+      perAgent: { model: 'sonnet' },
+    }))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    expect(reviews.every((c) => c.opts?.model === 'haiku')).toBe(true)
+  })
+
+  // TEST-LOCK — the whole argument for DELEGATING to isExternalBridgeType
+  // (@workflow-toolbox/patterns) instead of a hand-written allowlist: a
+  // BRIDGE VARIANT name that appears on NO hand-written list anywhere in this
+  // file (nor in EXTERNAL_CLI_SIGNATURES's own tests) still classifies as a
+  // bridge, because the registry matches by REGEX FAMILY
+  // (provenance-gate.ts's `typeRe: /opencode/i` / `/codex/i`), not exact
+  // name. An allowlist approach would have missed this and silently kept a
+  // thin relay at a paid reasoning tier — the exact regression this reuse
+  // exists to prevent.
+  it('classifies an UNLISTED bridge VARIANT name as a bridge too (regex-family match proves delegation, not an allowlist)', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      agentTypes: { review: 'some-namespace:opencode-experimental-v3' },
+      perAgent: { model: 'sonnet' },
+    }))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    expect(reviews.every((c) => c.opts?.model === 'haiku')).toBe(true)
+  })
+
+  // TEST-LOCK (arbiter ruling "Option B", card #1826112535493871358): the
+  // finding that made the original "any resolved agentType = haiku" gate a
+  // silent bug — pr-review's OWN reviewerType doc comment documents a
+  // specialist CLAUDE reviewer as a first-class case (distinct from a
+  // cross-family bridge), and this exact agentType string is already
+  // exercised elsewhere in this file (pr-review reviewer routing describe
+  // block) as such a specialist. It must NOT be silently downgraded to haiku
+  // — a Claude reviewer reasoning over a real diff is quality-critical.
+  it('KEEPS the Claude-specialist reviewer at its normal tier — magic-claude:ts-reviewer is NOT a recognized bridge', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      agentTypes: { review: 'magic-claude:ts-reviewer' },
+      perAgent: { model: 'sonnet' },
+    }))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    expect(reviews.every((c) => c.opts?.model !== 'haiku')).toBe(true)
+    // NOT overridden at all — reviewModel resolves to `undefined` (not a
+    // bridge, no models.review override), so the review call omits its own
+    // `model` opt entirely and perAgent.model ('sonnet') reaches it through
+    // the withAgentDefaults wrap, unlike the bridge case above where an
+    // explicit per-call 'haiku' wins over perAgent regardless.
+    expect(reviews.every((c) => c.opts?.model === 'sonnet')).toBe(true)
+  })
+
+  // TEST-LOCK: an UNRECOGNIZED/custom agentType (neither opencode nor codex
+  // family) is fail-safe — treated as Claude-family, never assumed a bridge,
+  // so an unknown future agentType can never be silently downgraded.
+  it('KEEPS an UNRECOGNIZED custom agentType at its normal tier (fail-safe toward quality)', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      agentTypes: { review: 'my-org:strict-security-reviewer' },
+      perAgent: { model: 'sonnet' },
+    }))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    expect(reviews.every((c) => c.opts?.model !== 'haiku')).toBe(true)
+    // Same reasoning as the specialist-reviewer case above: reviewModel is
+    // `undefined` (not on the bridge allowlist, no override), so perAgent's
+    // blanket 'sonnet' reaches this call unopposed.
+    expect(reviews.every((c) => c.opts?.model === 'sonnet')).toBe(true)
+  })
+
+  it('lets models.review override the haiku wrapper default (bridge role)', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      agentTypes: { review: TYPE },
+      perAgent: { model: 'sonnet' },
+      models: { review: 'opus' },
+    }))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    expect(reviews.every((c) => c.opts?.model === 'opus')).toBe(true)
+  })
+
+  it('lets models.review override the KEPT tier on a specialist Claude reviewer too (explicit always wins, either direction)', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      agentTypes: { review: 'magic-claude:ts-reviewer' },
+      models: { review: 'opus' },
+    }))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    expect(reviews.every((c) => c.opts?.model === 'opus')).toBe(true)
+  })
+
+  it('forces NO model on a NON-bridge review lens (no agentType routed) — the doctrine touches wrappers only', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD' }))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    expect(reviews.every((c) => c.opts?.model === undefined)).toBe(true)
+  })
+
+  it('lets models.review override a NON-bridge review lens too (explicit always wins, bridge or not)', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      models: { review: 'opus' },
+    }))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    expect(reviews.every((c) => c.opts?.model === 'opus')).toBe(true)
+  })
+
+  it('applies the same haiku default to the single-verifier consolidated reviewer', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      mode: 'single-verifier',
+      agentTypes: { review: TYPE },
+      perAgent: { model: 'sonnet' },
+    }))
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBe(1)
+    expect(reviews[0]?.opts?.model).toBe('haiku')
+  })
+
+  it('does NOT force a model on the Verify fan (this doctrine routes the review lens ONLY)', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      agentTypes: { review: TYPE },
+    }))
+    const verify = rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
+    expect(verify.length).toBeGreaterThan(0)
+    // adversarialVerification ALWAYS sets an explicit `model` on every agent()
+    // call it makes (toolkit/packages/patterns/src/adversarial-verification.ts:390,
+    // `effectiveModel = model ?? (isExternalVerifier ? 'haiku' : BEST_MODEL)`) —
+    // it never leaves `model` undefined. Here agentTypes.verify was NOT routed
+    // (only agentTypes.review was), so isExternalVerifier is false
+    // (externalGateExpectation(undefined) === null, provenance-gate.ts:183) and
+    // the pattern falls through to its own BEST_MODEL default ('opus'). This
+    // asserts the review lens's C6 haiku default does not leak into Verify —
+    // 'opus', not 'undefined', is the grounded expected value for this path.
+    expect(verify.every((c) => c.opts?.model === 'opus')).toBe(true)
+  })
+
+  it('rejects a models value that is not a known model alias', async () => {
+    const rt = makeHappyPathRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', models: { review: 'gpt-9' } })),
+    ).rejects.toThrow(/models/)
+  })
+
+  it('rejects an unknown models role key (pr-review only routes "review")', async () => {
+    const rt = makeHappyPathRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', models: { verify: 'sonnet' } })),
+    ).rejects.toThrow(/models/)
+  })
+
+  it('rejects models that is not an object', async () => {
+    const rt = makeHappyPathRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', models: 'haiku' })),
+    ).rejects.toThrow(/models/)
+  })
+
+  it('rejects a blank models.review string', async () => {
+    const rt = makeHappyPathRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', models: { review: '  ' } })),
+    ).rejects.toThrow(/models/)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Test: Verify-fan routing via the STRUCTURED config channel `agentTypes.verify`
 // — mirrors the agentTypes.review block above exactly (same probe-then-resolve
 // shape, same fail-fast contract — an explicit type that fails its probe refuses

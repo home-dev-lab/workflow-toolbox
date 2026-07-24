@@ -805,32 +805,6 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     };
   }
 
-  // ../packages/patterns/src/leaf-fence.ts
-  var LEAF_AGENT_TYPE = "workflow-toolbox:leaf";
-  var FENCE_UNAVAILABLE_MESSAGE = "fence UNAVAILABLE \u2014 leaves run with SendMessage enabled this run";
-  async function withLeafFence(rt, options = {}) {
-    const { phase, agentType = LEAF_AGENT_TYPE, disabled = false, perAgent } = options;
-    if (disabled) {
-      return { rt, report: { resolvedAgentType: null, probe: null } };
-    }
-    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
-    const probe = await probeAgentType(probeRt, agentType, {
-      probePrompt: LOCAL_AGENT_PROBE_PROMPT,
-      ...phase !== void 0 ? { phase } : {}
-    });
-    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
-    if (probe.agentType === void 0) {
-      rt.log(`[leaf-fence] \u26A0 ${FENCE_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
-    }
-    return {
-      rt: withAgentDefaults(rt, defaults),
-      report: {
-        resolvedAgentType: probe.agentType ?? null,
-        probe: { requested: agentType, available: probe.available, reason: probe.reason }
-      }
-    };
-  }
-
   // ../packages/patterns/src/provenance-gate.ts
   function matchesOpencodeRun(cmd = "") {
     if (typeof cmd !== "string" || cmd.length === 0) return false;
@@ -1047,6 +1021,32 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
     const map = parseProvenanceReply(reply, labels);
     const replyOk = reply !== null && [...map.values()].some((p) => p !== "undetermined");
     return { map, replyOk };
+  }
+
+  // ../packages/patterns/src/leaf-fence.ts
+  var LEAF_AGENT_TYPE = "workflow-toolbox:leaf";
+  var FENCE_UNAVAILABLE_MESSAGE = "fence UNAVAILABLE \u2014 leaves run with SendMessage enabled this run";
+  async function withLeafFence(rt, options = {}) {
+    const { phase, agentType = LEAF_AGENT_TYPE, disabled = false, perAgent } = options;
+    if (disabled) {
+      return { rt, report: { resolvedAgentType: null, probe: null } };
+    }
+    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
+    const probe = await probeAgentType(probeRt, agentType, {
+      probePrompt: LOCAL_AGENT_PROBE_PROMPT,
+      ...phase !== void 0 ? { phase } : {}
+    });
+    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
+    if (probe.agentType === void 0) {
+      rt.log(`[leaf-fence] \u26A0 ${FENCE_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
+    }
+    return {
+      rt: withAgentDefaults(rt, defaults),
+      report: {
+        resolvedAgentType: probe.agentType ?? null,
+        probe: { requested: agentType, available: probe.available, reason: probe.reason }
+      }
+    };
   }
 
   // ../packages/patterns/src/cache-warm.ts

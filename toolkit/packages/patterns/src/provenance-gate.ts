@@ -185,6 +185,23 @@ export function externalGateExpectation(verifierType: string | undefined): Deleg
   return null
 }
 
+/** true only when `agentType` matches a REGISTERED external-CLI bridge
+ *  signature (EXTERNAL_CLI_SIGNATURES above — today: opencode, codex).
+ *  undefined/null and any unrecognized/custom agentType (e.g. a specialist
+ *  Claude subagent type) both return false — FAIL-SAFE: an agentType this
+ *  registry has never heard of is assumed Claude-family, never assumed a
+ *  bridge. The narrow boolean surface a caller outside this package's own
+ *  provenance-gate machinery needs — see `externalGateExpectation` above for
+ *  the full expectation record (kept un-exported at the package root: that
+ *  richer shape is provenance-gate's own internal contract, not a public
+ *  commitment). Card #1826112535493871358 — reused by pr-review's wrapper-
+ *  model doctrine so "is this agentType a bridge" has exactly ONE registry
+ *  for both the provenance gate and every wrapper-model gate that needs the
+ *  same answer. */
+export function isExternalBridgeType(agentType: string | null | undefined): boolean {
+  return externalGateExpectation(agentType ?? undefined) !== null
+}
+
 /** Build the self-contained CommonJS scanner the checker agent runs. It:
  *   1. anchors on `nonce` (present in the checker's own prompt) to find THIS run's transcript
  *      dir among recent `subagents/workflows/<runId>/` dirs — no dependence on knowing the
