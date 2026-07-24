@@ -126,6 +126,14 @@
       entry IS the decision). Availability still resolves at run time: every migrated
       workflow probes the requested type once (`probeAgentType`) and degrades to the
       standard subagent with the reason reported in the result's `probe` field.
+      - **`required: true` turns the graceful probe fallback into a launch fence.** By DEFAULT
+        `probeAgentType` degrades an unavailable type to the standard (Claude) subagent —
+        correct for library default-routing / an optional optimisation. Passing
+        `{ required: true }` makes an unavailable but explicitly-configured `agentType` throw an
+        actionable error instead: when an author-set `agentTypes.<role>` makes the cross-family
+        semantics the step's meaning, silently degrading to the same family betrays that intent
+        and burns the run's tokens on verdicts a downstream gate then voids. Config errors
+        (blank `agentType` / `expectedToken`) still throw synchronously regardless of `required`.
     - **The probe validates AVAILABILITY, not per-call COMPLIANCE.** A bridge whose
       no-self-answer discipline lives only in prompt/skill text can be overridden by the
       routed task's own instructions — a verification prompt that says "READ these files
@@ -141,6 +149,15 @@
       `## External delegation` section that scans each routed agent's transcript for
       real external-CLI `tool_use` and flags agents that show none, and the observe-ui
       agent panel shows the same signal live (« delegated → CLI seen ✓ / NO CLI call ⚠ »).
+      - **The shipped `workflow-toolbox:opencode-verifier` adds a MECHANICAL backstop beyond
+        prompt/skill discipline.** A matcher-narrowed `PreToolUse` hook
+        (`wt-verifier-cli-guard-hook.mjs`), registered in the plugin MANIFEST — deliberately NOT
+        in the agent's own frontmatter, because a plugin-installed agent's `hooks:` frontmatter
+        is ignored — DENIES the verifier's `StructuredOutput` verdict until a real external-CLI
+        invocation is present in its transcript, so a self-answer literally cannot emit a verdict
+        (fail-fast enforcement of the same three-sources rule). Copying the agent OUT of the
+        plugin into a standalone `~/.claude/agents/` file loses the manifest hook — such a copy
+        must carry its own `hooks:` frontmatter block to keep the guard.
     - **Check plugin-agent availability on headless launches.** A raw headless-SDK
       launch does not load plugin agents unless the embedding passes them explicitly
       (the SDK `plugins` option) — a cross-family request in that path falls back to

@@ -137,6 +137,15 @@ run's settle signal and SendMessage the pilot when it fires (with an orchestrato
 middle, it relays the arm request up to you). Read the pilot's warning as this protocol,
 never as "pilots must not use workflows".
 
+**Harvest each pilot's mandatory memory lessons into the knowledge base.** Every pilot and
+orchestrator final report ends with a **"Lessons for the memory"** section — the reusable
+gotchas, corrected premises, and day-one facts the arc surfaced (an empty section says "none"
+explicitly). The agents are READ-ONLY on the knowledge base (single-writer discipline — they
+never edit the session's memory themselves), so YOUR main session is what persists those lessons
+into the knowledge base at its own checkpoint. On integrate, harvest each report's section — an
+unharvested lesson effectively never happened for future sessions, because the run journal
+records decisions, not transferable lessons.
+
 ## The environment-brief contract (reference)
 
 This is the plugin-side contract the agents honor. A spawner fills the blocks; an agent

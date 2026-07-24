@@ -108,9 +108,14 @@ to a rebuild). A few things worth knowing before you write one:
   stage list) and on the **last** stage of any spec (an orchestrator pipeline always ends
   by *running* its last stage, never by pausing on one — see
   `docs/public/adr/0008-pipeline-authoring-surface-vocabulary.md`).
-- **There is no `name` field on the spec itself** — the CLI derives the output filename
-  from the entry file (`foo.pipeline.ts` → `pipelines/foo.json`; `--out` overrides it).
-  The server mints its own pipeline id at launch time.
+- **`name` is an OPTIONAL field on the spec (`PipelineSpec.name`)** — the pipeline's pattern
+  name, symmetric to a workflow's own `meta.name`; `definePipeline()` lets an author set it
+  explicitly, and that always wins. When omitted, `workflow-toolbox pipeline` injects a `name`
+  derived from the entry filename (`foo.pipeline.ts` → `name: "foo"`) into the emitted JSON, so
+  the runner can recognize the pipeline by its pattern TYPE, not only by its one-off `goal`
+  string. The output FILENAME is derived separately from the same entry file; `--out` overrides
+  only the filename, never the injected `name`. The server still mints its own pipeline id at
+  launch, regardless of `name`.
 - **A stage receives ONLY what its `input` template maps; an omitted `input` means EMPTY
   args** — there is no implicit inheritance from a prior stage or from the pipeline's own
   `goal`/`projectDir`. The legacy launch path wires `goal`/`projectDir` into its first stage
