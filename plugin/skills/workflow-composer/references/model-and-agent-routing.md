@@ -376,10 +376,13 @@
     it into a false positive). A locally-registered type must do the OPPOSITE: a tool-less
     `lean` agent honestly refuses that instruction, so under the bridge prompt the probe
     reads a perfectly available type as unavailable. `withLeafFence` and `withLeanRouting`
-    already pass the right prompt internally; if you call `probeAgentType` yourself for a
-    locally-registered type (e.g. your own fenced `.md`), pass
-    `{ probePrompt: LOCAL_AGENT_PROBE_PROMPT }` (exported by `@workflow-toolbox/patterns`)
-    and keep the default only for external bridges.
+    already pass the right prompt internally. `LOCAL_AGENT_PROBE_PROMPT` is defined in
+    `@workflow-toolbox/patterns`'s internal `probe-agent-type.js` module but is **not**
+    re-exported from the package root, so it cannot currently be imported as
+    `{ probePrompt: LOCAL_AGENT_PROBE_PROMPT } from '@workflow-toolbox/patterns'`. Prefer
+    routing through `withLeafFence`/`withLeanRouting` (which already pass it) instead of
+    calling `probeAgentType` directly for a locally-registered type; keep the default
+    probe prompt only for external bridges.
   - **Cross-family verifier** (`codex:codex-rescue`, `workflow-toolbox:opencode-verifier`) —
     opt-in decorrelation for a review/verify role, covered in its own bullets above. Not a
     default; a per-workflow proposal.

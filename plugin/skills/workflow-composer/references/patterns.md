@@ -54,9 +54,12 @@ manual.
 
 ## Conventions used in every snippet
 
-- An agent call returns `null` when the agent fails, skips, or runs out of
-  budget. Never assume a result is present — `.filter(Boolean)` it out, or count
-  it as dropped. Failures degrade; they never throw.
+- An agent call returns `null` when the agent fails or skips — never assume a
+  result is present, `.filter(Boolean)` it out or count it as dropped. That
+  degrade path does NOT cover the shared token budget: once it is exhausted,
+  `agent()` **throws** (`WorkflowBudgetExceededError`) instead of returning
+  null — guard on `budget.total`/`remaining()` before a budget-driven loop
+  rather than relying on a null result to signal exhaustion.
 - Parallel work is expressed as **thunks** (`() => agent(...)`) handed to
   `parallel(...)`, so the runtime owns concurrency. Do not `await` inside the
   array literal.
@@ -195,10 +198,14 @@ non-Claude (GPT) model — and it honors this pattern's structured verdict schem
 (proven from inside a workflow). This plugin also ships
 `workflow-toolbox:opencode-verifier` — a second cross-family option that routes to
 any `opencode` model (default GLM 5.2 / zai-coding-plan, a *different* family
-again) and degrades to a Claude fallback (`OPENCODE_UNAVAILABLE`) when opencode
-isn't installed or no provider is authenticated. Caveat: both depend on a local
-setup + login and are NOT portable; for a SHIPPED workflow prefer an MCP→model
-endpoint as the cross-model verifier. This is distinct from (and stronger than) the discouraged
+again) and emits `OPENCODE_UNAVAILABLE` when opencode isn't installed or no
+provider is authenticated. Whether that degrades to a Claude fallback or refuses
+the launch depends on the probe mode the caller chose: `probeAgentType`'s default
+degrades gracefully, but `required: true` throws instead — and the shipped
+`cross-model-verify` workflow passes `required: true` when `verifierType` is set,
+so an unavailable bridge there refuses the run rather than silently falling back.
+Caveat: both depend on a local setup + login and are NOT portable; for a SHIPPED
+workflow prefer an MCP→model endpoint as the cross-model verifier. This is distinct from (and stronger than) the discouraged
 "specialist reviewer" use — "specialize the producer, not the skeptic" still holds
 for *same-model* specialization. Launch-time exposure: on `cross-model-verify` and
 `independent-analysis` the request travels in the STRUCTURED config envelope —
@@ -736,10 +743,12 @@ pattern authors who want the same guarantees in their own code, outside the nine
 
 - **`applyCap(items, cap)`** — the truncation-with-reporting primitive behind every
   pattern's `maxItems`/`maxVerifyClaims`-style knob. `cap === undefined` is a no-op
-  (nothing withheld); `cap >= 1` keeps the first `cap` items and reports how many were
-  dropped; `cap < 1` throws synchronously with an actionable message instead of silently
-  returning nothing. Mirrors "no silent caps" above — reach for it whenever your own
-  workflow code truncates a list.
+  (nothing withheld); a positive-integer `cap >= 1` keeps the first `cap` items and
+  reports how many were dropped; `cap < 1` throws synchronously with an actionable
+  message instead of silently returning nothing. Pass a positive integer — the `cap < 1`
+  guard doesn't catch `NaN` or fractional values, which can slice unexpectedly and report
+  a truncation count that doesn't match. Mirrors "no silent caps" above — reach for it
+  whenever your own workflow code truncates a list.
 - **`emitDigest(rt, digest)`** — logs one structured `rt.log` line per pattern run,
   parsed back by observe on reload into a phase's output/choices and attributed to a
   phase by matching `digest.stage`. Call it once per pattern invocation — including on

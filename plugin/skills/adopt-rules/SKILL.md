@@ -46,6 +46,11 @@ user-initiated act.
   copy (its content no longer matches the stamped fingerprint) or a hand-authored file with
   no toolbox banner — it refreshes only ABSENT or UNEDITED copies. Overwriting an edited copy
   takes an explicit `--force`. A user's edits cannot be silently destroyed by a refresh.
+  **Known fingerprint blind spot:** the banner line is stripped in full before hashing, so an
+  edit glued directly onto the banner line itself (text appended after the closing marker,
+  no newline) is stripped along with it and reads as clean — a later refresh can overwrite
+  that narrow case without `--force`. Editing the file body (the normal case) is always
+  detected.
 - **Never write THROUGH a symlink.** If a target `<dir>/<name>.md` is a symlink (e.g. a
   config dir whose rules are symlinked from another one), `--install` does NOT follow it —
   following it would clobber the link's real target. The symlink is reported and left

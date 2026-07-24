@@ -118,7 +118,9 @@ to a rebuild). A few things worth knowing before you write one:
   launch, regardless of `name`.
 - **A stage receives ONLY what its `input` template maps; an omitted `input` means EMPTY
   args** — there is no implicit inheritance from a prior stage or from the pipeline's own
-  `goal`/`projectDir`. The legacy launch path wires `goal`/`projectDir` into its first stage
+  `goal`/`projectDir`. (This resolution step runs in the Workflow Observatory pipeline
+  runner, the closed-source companion that launches the spec — this repo owns the shared
+  spec shape and its structural validation, not the argument-construction runtime.) The legacy launch path wires `goal`/`projectDir` into its first stage
   explicitly; an authored spec's first stage must do the same (`input: { goal: { from: 'goal'
   }, projectDir: { from: 'projectDir' } }`) — there is no upstream stage to inherit them
   from. An unwired required field throws at the WORKFLOW's own `parseInput` boundary (a real

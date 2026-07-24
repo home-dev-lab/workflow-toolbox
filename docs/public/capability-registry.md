@@ -136,7 +136,7 @@ When you run `wt-observe launch <workflow>`, the launcher looks for a
 present it reads this registry, probes providers, resolves the sidecar's needs, expands the
 `$cap:<need>` placeholders in each role's tool allowlist into the resolved provider's tools
 (or the named degradation), and composes the result into the delegated run. A resolution
-report rides alongside the launch for auditing — **redacted to provider and server names
-only**, never the raw `mcpServers` config (which can carry command arguments, paths, or
-tokens). No sidecar means no capability resolution happens and the launch proceeds
-unchanged.
+report rides alongside the launch for auditing — it keeps the need, resolved provider,
+mounted server **names**, tools, and optional `protocolHint`, but **never the raw
+`mcpServers` config** (which can carry command arguments, paths, or tokens). No sidecar
+means no capability resolution happens and the launch proceeds unchanged.

@@ -49,7 +49,7 @@ toolkit/
 │   │               #   coupling point to Claude Code; unstable-surface firewall)
 │   ├── patterns/   # @workflow-toolbox/patterns — the 9 patterns + result envelope
 │   └── build/      # @workflow-toolbox/build    — defineWorkflow + the `workflow-toolbox` CLI (build/check)
-├── examples/       # @workflow-toolbox/examples — 9 teaching workflows (*.workflow.ts; the
+├── examples/       # @workflow-toolbox/examples — 25 teaching workflows (*.workflow.ts; the
 │                   #   monorepo-refactor pair and the dev-workflow family are
 │                   #   multi-workflow L3 compositions — see docs/public/dev-workflow.md)
 └── workflows/      # committed build artifacts (.js) — the runnable deliverable
@@ -105,12 +105,19 @@ export default defineWorkflow({
 })
 ```
 
-`defineWorkflow` does exactly three things: build-time `meta`
-extraction/serialization, `args` normalization (string args arrive
-JSON-encoded — the normalizer is a proven necessity) + fail-fast input
-validation, and binding the ambient sandbox globals into the typed `rt`
-parameter ([ADR 0004](../docs/public/adr/0004-explicit-runtime-parameter.md)).
-No lifecycle hooks, no middleware.
+`defineWorkflow` validates `meta` at definition time (build tooling
+extracts/serializes it separately). At call time its `run` wrapper does four
+things, in order: `args` normalization (string args arrive JSON-encoded —
+the normalizer is a proven necessity), observer-selector extraction from the
+launch envelope (before `parseInput` can narrow/drop `args.observers`),
+fail-fast input validation via `parseInput`, and wrapping `rt` with
+`withPromptTags` so every labeled/phased `agent()` call carries the
+observe-facing `wt-meta` marker automatically. Binding the ambient sandbox
+globals into `rt` itself is a *separate* step done once, in the glue
+epilogue `workflow-toolbox build` emits around the bundle
+([ADR 0004](../docs/public/adr/0004-explicit-runtime-parameter.md)) —
+`defineWorkflow` only ever receives `rt` as an explicit parameter. No
+user-registrable lifecycle hooks or plugin middleware.
 
 > **⚠ Import `defineWorkflow` from `@workflow-toolbox/build/define`, never `@workflow-toolbox/build`.**
 > The package root re-exports the bundler (node:vm, esbuild) and breaks the
@@ -310,10 +317,15 @@ direct-spawn patterns emit one record per agent (`trail.length === stats.agentsS
 whereas `loopUntilDone` records loop **iterations** (stage
 `loopUntilDone:tick:<i>`) while `stats.agentsSpawned` counts the body's
 `agent()` calls through the `rt` it receives (including via
-`rt.parallel`/`rt.pipeline` thunks) — so `trail.length === iterations` and
-`trail.length !== agentsSpawned` for that pattern.
+`rt.parallel`/`rt.pipeline` thunks) — so `trail.length === iterations` always
+holds for that pattern, but `agentsSpawned` is counted independently and can
+equal `iterations` too (e.g. a body that calls exactly one agent per tick) —
+don't assume the two diverge, just that they're tracking different things.
 
-No silent caps, ever: every `max*` option reports what it cut. For
+No silent caps, ever, for any positive-integer cap: every `max*` option
+reports what it cut. (`applyCap` only rejects `cap < 1`; a non-integer or
+`NaN` cap slips past that guard and can silently drop items without a
+`truncated > 0` warning firing — pass a positive integer.) For
 `adversarialVerification`, a cap never destroys evidence: claims cut by
 `maxVerifyClaims` stay in the output (`itemsIn === itemsOut`) and carry the
 distinct claim verdict `'unverified-by-cap'` (`votes: []`, no trail records —
@@ -468,11 +480,15 @@ are cheap, so its tokens-per-agent is a **lower bound**; real best-model
 verifiers cost far more, which is exactly why the floor carries a safety margin.
 
 Model tiering: mechanical high-volume leaf work → `'haiku'`; judgment work →
-inherit the session model. Verification quality is model-sensitive — verifiers
+inherit the session model. Verification quality is model-sensitive — plain-Claude verifiers
 default to `BEST_MODEL` (a constant exported by `@workflow-toolbox/runtime`,
 currently `'opus'` — the constant names the strongest *reliably-callable* tier,
 not merely the newest; top-tier alias availability varies by plan and over time),
-and explicitly passing anything weaker logs a warning.
+and explicitly passing anything weaker logs a warning. External/relay verifiers
+(`codex:codex-rescue`, `workflow-toolbox:opencode-verifier`) are the deliberate
+exception: their wrapper model doesn't drive verdict quality (the external CLI
+does the reasoning), so they default to `'haiku'` instead and emit no downgrade
+warning — a caller can still pin any wrapper model explicitly.
 In-repo adopter: dev-review-fix routes its consolidation agent (a mechanical
 dedup/merge, ~44k tokens measured) to `'sonnet'` — safe because the merge is
 triple-netted (in-code concat fallback, integrity guards, downstream
@@ -510,8 +526,9 @@ turns one journal into a **cost + traceability audit report**: run identity
 **reconciled** against the run's total token count, the decision trail, and
 best-effort links to each agent's transcript.
 
-The report **always prints to stdout** — the data is never withheld, so the
-session always has it. Setting `$DWT_WORKFLOW_LOG_DIR` (or passing `--out <dir>`)
+The report **always prints to stdout unless `--quiet`** — the data is never
+silently withheld, so the session always has it by default. Setting
+`$DWT_WORKFLOW_LOG_DIR` (or passing `--out <dir>`)
 **additionally** writes a persistent audit folder
 `<dir>/<runId>/{ report.md, journal.json, transcripts/agent-<id>.jsonl }`
 for enterprise audit trails — off by default, so individuals get zero disk
@@ -529,9 +546,12 @@ empirically), so the report is journal-driven.
 (`plugin/bin/wt-stop-hook.mjs`). It detects a finished background workflow by
 diffing the `Stop` payload's `background_tasks[]` across firings, maps the task
 to its journal by `taskId`, and surfaces the report **hybrid-style**: always a
-one-line notice to you, plus — only when the run looks like trouble (failed /
-agent-died / schema-retries) — it grabs the session with a compact report so you
-act on it. Healthy runs stay quiet. The audit folder is still written only when
+one-line notice to you, plus — when the run needs attention (failed /
+agent-died / schema-retries **or** silently-denied tool calls **or** an
+external-delegation lane that looks self-answered) — it grabs the session with
+a compact report so you act on it. Healthy runs stay quiet. (A `stopHookActive`
+re-entrant firing forces every surface non-blocking, so the compact report
+never loops.) The audit folder is still written only when
 `$DWT_WORKFLOW_LOG_DIR` is set, and the hook never breaks the session.
 
 Sibling tool: **`pnpm wt:debug [runId|latest]`** reads the same journal for the

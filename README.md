@@ -321,8 +321,9 @@ spec.json` for a build-clean skeleton, `npx workflow-toolbox build my-flow.workf
 --typecheck` to emit the sandbox-compliant artifact, `npx workflow-toolbox check` to lint it,
 then — after a run — `npx workflow-toolbox debug` / `npx workflow-toolbox report` to diagnose or audit it.
 One convention to know: `workflow-toolbox build` names the artifact from the workflow's
-`meta.name`, **not** the entry filename — it writes `workflows/<meta.name>.js`,
-so the follow-up is `npx workflow-toolbox check workflows/<name>.js`.
+`meta.name`, **not** the entry filename — it writes `workflows/<meta.name>.js`
+(`workflows/` is the default output directory; `--out-dir` overrides it), so the
+follow-up is `npx workflow-toolbox check workflows/<name>.js`.
 
 **When a run misbehaves** — an agent that finished with nothing, a schema that
 kept retrying — point the `workflow-debugger` skill at the run's journal to see
@@ -634,7 +635,7 @@ workflow-toolbox/
 │   │   ├── scaffold/           # @workflow-toolbox/scaffold — .workflow.ts skeleton emitter (private; bundled into the CLI)
 │   │   ├── smoke/              # @workflow-toolbox/smoke    — headless upgrade-canary harness (private; maintainer-only)
 │   │   └── std/                # @workflow-toolbox/std      — zero-dep narrowing helpers (private; bundled)
-│   ├── examples/               # 10 teaching compositions (*.workflow.ts)
+│   ├── examples/               # 25 teaching compositions (*.workflow.ts)
 │   └── workflows/              # committed build artifacts — runnable as-is
 ├── docs/
 │   └── public/                 # architecture, known issues, ADRs

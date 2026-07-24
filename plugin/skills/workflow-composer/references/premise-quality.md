@@ -117,7 +117,9 @@ access. Two reasons, both environment-driven:
   confident as a real one.
 
 `Read` — and therefore `sourceRefs` — is the only grounding channel that is never
-network-gated. So for any factual or doc question the agent's answer depends on:
+network-gated (a deliberately tool-fenced agent, e.g. `workflow-toolbox:lean`'s
+`tools: []`, is a separate, explicit author choice, not a silent environment
+denial). So for any factual or doc question the agent's answer depends on:
 
 1. **Pass the source as a file** via `sourceRefs`; the agent reads it with `Read`, which
    no environment silently denies; or
