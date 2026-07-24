@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // packages/debugger/src/observe-cli.ts
-import { spawn } from "node:child_process";
+import { spawn, execFileSync as execFileSync2 } from "node:child_process";
 import { createRequire } from "node:module";
 import { randomBytes } from "node:crypto";
 import { existsSync as existsSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync4, readdirSync as readdirSync3, realpathSync as realpathSync2, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, openSync } from "node:fs";
@@ -1195,6 +1195,19 @@ ${deps.logTail()}`
   }
 }
 
+// packages/debugger/src/port-retry.ts
+async function retryCanonicalPort(deps) {
+  const deadline = deps.now() + deps.timeoutMs;
+  let last = "inconclusive";
+  for (; ; ) {
+    const identity = await deps.probe();
+    if (identity === "unreachable" || identity === "ours") return { outcome: "free" };
+    last = identity;
+    if (deps.now() > deadline) return { outcome: "still-occupied", identity: last };
+    await deps.sleep(deps.intervalMs);
+  }
+}
+
 // packages/debugger/src/observe-identity.ts
 import { execFileSync } from "node:child_process";
 import { readFileSync as readFileSync2 } from "node:fs";
@@ -1373,6 +1386,16 @@ function awaitExitCode(verdict) {
   return verdict.status === "completed" ? 0 : 2;
 }
 var AWAIT_SOURCE_UNRESOLVED_EXIT_CODE = 5;
+function classifyRecallProbe(outcome) {
+  if (outcome.kind === "network-error") return { reached: false, recall: null };
+  if (outcome.ok) return { reached: true, recall: outcome.body };
+  if (outcome.status === 404) {
+    const code = typeof outcome.body === "object" && outcome.body !== null ? outcome.body["code"] : void 0;
+    if (code === "launch-record-present") return { reached: false, recall: null };
+    return { reached: true, recall: null };
+  }
+  return { reached: false, recall: null };
+}
 
 // packages/debugger/src/observe-resume.ts
 var RECOVER_REFUSED_EXIT_CODE = 2;
@@ -1500,17 +1523,15 @@ async function probeHealth(port, timeoutMs = HEALTH_TIMEOUT_MS) {
     return cause?.code === "ECONNREFUSED" ? "no-listener" : "not-ours";
   }
 }
-async function probeFreePort() {
-  const { createServer } = await import("node:net");
-  return new Promise((resolvePort, reject) => {
-    const srv = createServer();
-    srv.once("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const addr = srv.address();
-      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
-      srv.close(() => port > 0 ? resolvePort(port) : reject(new Error("no port assigned")));
-    });
-  });
+var PORT_RETRY_TIMEOUT_MS = 5e3;
+var PORT_RETRY_INTERVAL_MS = 500;
+function bestEffortPortHolders(port) {
+  try {
+    const out = execFileSync2("lsof", ["-t", "-i", `:${port}`, "-sTCP:LISTEN"], { encoding: "utf8", timeout: 2e3 });
+    return out.split("\n").map((line) => Number(line.trim())).filter((n) => Number.isInteger(n) && n > 0);
+  } catch {
+    return [];
+  }
 }
 function findObserveRoot(cwd, env) {
   const isObserveApp = (d) => {
@@ -1842,7 +1863,22 @@ URL: http://127.0.0.1:${h2.port}/
         `owned server (pid ${p.pf?.pid ?? "?"}) is alive but not answering /api/health on :${p.port} \u2014 busy or wedged. Retry shortly, or run \`wt-observe stop\` then \`start\` to force-restart it.`
       );
     }
-    const port = d.action === "start-free-port" ? await probeFreePort() : p.port;
+    if (d.action === "start-free-port") {
+      const retry = await retryCanonicalPort({
+        probe: async () => classifyHealth(await probeHealth(p.port)),
+        now: Date.now,
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        timeoutMs: PORT_RETRY_TIMEOUT_MS,
+        intervalMs: PORT_RETRY_INTERVAL_MS
+      });
+      if (retry.outcome === "free") continue;
+      const holders = bestEffortPortHolders(p.port);
+      const holderNote = holders.length > 0 ? `; held by pid ${holders.join(", ")}` : "; holder pid could not be determined";
+      throw new Error(
+        `port ${p.port} is still occupied after a ${PORT_RETRY_TIMEOUT_MS}ms retry (${retry.identity}${holderNote}) \u2014 refusing to silently fall back to a random port. Free the port, or run \`OBSERVE_UI_SERVER_PORT=0 wt-observe start\` to explicitly opt into an ephemeral one.`
+      );
+    }
+    const port = p.port;
     const { health: h, token } = await spawnServer(ctx.stateRoot, port, sourceDirs, remotes, flags);
     writePidfileAt(ctx.pidfilePath, { ...pidfileFromHealth(h), token });
     const notes = [flags.watch ? " with the vite build watcher (--watch)" : "", flags.enableLaunch ? " with live launches ENABLED (--enable-launch)" : ""].join("");
@@ -2119,7 +2155,14 @@ var AWAIT_MISSING_GRACE_MS = 3e4;
 var AWAIT_SETTLE_TRIES = 10;
 var AWAIT_SETTLE_INTERVAL_MS = 1e3;
 async function fetchRecall(port, token, prefix, runId) {
-  return api(port, token, `${prefix}/api/runs/${encodeURIComponent(runId)}`, {}, 1e4).then((r) => r.ok ? r.json() : null).catch(() => null);
+  try {
+    const r = await api(port, token, `${prefix}/api/runs/${encodeURIComponent(runId)}`, {}, 1e4);
+    if (r.ok) return classifyRecallProbe({ kind: "response", ok: true, status: r.status, body: await r.json() });
+    const body = await r.json().catch(() => null);
+    return classifyRecallProbe({ kind: "response", ok: false, status: r.status, body });
+  } catch {
+    return classifyRecallProbe({ kind: "network-error" });
+  }
 }
 async function searchLocalSources(port, token, keys, runId) {
   const hits = [];
@@ -2177,14 +2220,26 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
   let warnedAmbiguous = false;
   const startedAt = Date.now();
   for (; ; ) {
-    const live = await api(port, token, `${prefix}/api/runs/live`).then((r) => r.ok ? r.json() : []).catch(() => []);
+    let liveReached = true;
+    let live = [];
+    try {
+      const r = await api(port, token, `${prefix}/api/runs/live`);
+      if (r.ok) live = await r.json();
+      else liveReached = false;
+    } catch {
+      liveReached = false;
+    }
     const entry = live.find((e) => e.runId === runId) ?? null;
     let recallStatus = null;
     let recall = null;
+    let recallReached = true;
     if (entry === null || entry.finished) {
-      recall = await fetchRecall(port, token, prefix, runId);
+      const r = await fetchRecall(port, token, prefix, runId);
+      recall = r.recall;
+      recallReached = r.reached;
       recallStatus = extractAwaitOutcome(recall).status;
     }
+    const primaryUnreached = !liveReached || !recallReached;
     let searchUnprobed = [];
     if (entry === null && recall === null && searchableKeys.length > 1) {
       const search = await searchLocalSources(port, token, searchableKeys, runId);
@@ -2210,9 +2265,11 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
       elapsedMs: Date.now() - startedAt,
       timeoutMs: timeoutS * 1e3,
       missingGraceMs: AWAIT_MISSING_GRACE_MS,
-      // A run "visible nowhere" while a local source could not be reached this tick has an
-      // UNKNOWN absence — keeps the tick pending instead of a false `missing` (never-latch).
-      sourcesUnprobed: searchUnprobed.length > 0
+      // A run "visible nowhere" while a local source (INCLUDING the active one's own primary
+      // probes) could not be reached this tick has an UNKNOWN absence — keeps the tick
+      // pending instead of a false `missing` (never-latch, cards #1821784328170899045 and
+      // #1825812079798388423).
+      sourcesUnprobed: primaryUnreached || searchUnprobed.length > 0
     });
     if (verdict.kind === "pending") {
       await new Promise((r) => setTimeout(r, pollS * 1e3));
@@ -2223,7 +2280,7 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
       const resultRuledOut = (s) => s !== null && s !== "completed" && s !== "unknown";
       for (let i = 0; i < AWAIT_SETTLE_TRIES && outcome.result === null && !resultRuledOut(outcome.status); i++) {
         await new Promise((r) => setTimeout(r, AWAIT_SETTLE_INTERVAL_MS));
-        recall = await fetchRecall(port, token, prefix, runId);
+        recall = (await fetchRecall(port, token, prefix, runId)).recall;
         outcome = extractAwaitOutcome(recall);
       }
       const status = outcome.status ?? verdict.status;

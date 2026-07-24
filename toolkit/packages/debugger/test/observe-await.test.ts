@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode, truncateAwaitError, AWAIT_ERROR_MAX_CHARS } from '../src/observe-await.js'
+import { classifyAwaitTick, extractAwaitOutcome, awaitExitCode, truncateAwaitError, classifyRecallProbe, AWAIT_ERROR_MAX_CHARS } from '../src/observe-await.js'
 
 // observe-await.ts — the pure decision core of `wt-observe await <runId>` (launch-and-notify
 // card #1812476922312000519): one poll tick's observations in, one verdict out. The CLI shell
@@ -119,6 +119,43 @@ describe('truncateAwaitError', () => {
     expect(out.length).toBeLessThan(long.length)
     expect(out.startsWith('x'.repeat(AWAIT_ERROR_MAX_CHARS))).toBe(true)
     expect(out).toContain('full error in the run record')
+  })
+})
+
+describe('classifyRecallProbe', () => {
+  // Card #1825812079798388423 — the await→missing bug: a live run's `wt-observe await`
+  // reported `missing` (exit 4) while the run's transcripts/journal were actively growing.
+  // Root cause: a network blip / timeout on the recall probe collapsed to the SAME `null`
+  // signal a genuine "not found" produces, and nothing downstream distinguished them.
+
+  it('a genuine 404 with no code is a CONFIRMED absence (reached: true, recall: null)', () => {
+    expect(classifyRecallProbe({ kind: 'response', ok: false, status: 404, body: { error: 'run not found: wf_x' } })).toEqual({
+      reached: true,
+      recall: null,
+    })
+  })
+
+  it('a 404 with no body at all is still a confirmed absence', () => {
+    expect(classifyRecallProbe({ kind: 'response', ok: false, status: 404, body: null })).toEqual({ reached: true, recall: null })
+  })
+
+  it('a 404 tagged code:launch-record-present is a REGISTRY GAP, not a confirmed absence', () => {
+    expect(
+      classifyRecallProbe({ kind: 'response', ok: false, status: 404, body: { error: 'run not found: wf_x', code: 'launch-record-present' } }),
+    ).toEqual({ reached: false, recall: null })
+  })
+
+  it('a network error (timeout / connection reset / unparseable 200) is never a confirmed absence', () => {
+    expect(classifyRecallProbe({ kind: 'network-error' })).toEqual({ reached: false, recall: null })
+  })
+
+  it('a non-404 error status (5xx) is unreached — unknown, not confirmed absent', () => {
+    expect(classifyRecallProbe({ kind: 'response', ok: false, status: 503, body: null })).toEqual({ reached: false, recall: null })
+  })
+
+  it('a real 200 is reached and carries the parsed body through', () => {
+    const body = { runId: 'wf_x', status: 'running' }
+    expect(classifyRecallProbe({ kind: 'response', ok: true, status: 200, body })).toEqual({ reached: true, recall: body })
   })
 })
 
