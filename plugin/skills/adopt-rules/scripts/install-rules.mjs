@@ -294,11 +294,11 @@ function auditOverlap(userDir, root, pairsFile) {
   const shippedDir = path.join(root, SETS.rules.srcDir)
   const declaredUsers = new Set(pairs.map((pair) => pair.user))
   // The shipped-side basename of a declared pair is never itself a candidate for UNMAPPED:
-  // it is either explained by DOUBLON (both present), ABSENT (only the user side missing —
+  // it is either explained by DUPLICATE (both present), ABSENT (only the user side missing —
   // the shipped-only file just isn't examined by that branch), or the correct target end
   // state (user side removed, shipped copy installed) — never "no known counterpart".
   const declaredShipped = new Set(pairs.map((pair) => pair.shipped))
-  let doublon = 0
+  let duplicate = 0
   let drift = 0
   let unmapped = 0
 
@@ -314,10 +314,10 @@ function auditOverlap(userDir, root, pairsFile) {
     if (realFile(shippedInUserPath)) {
       // A `partial` pair (e.g. delegation-lanes.md / wt-delegation-ladder.md) is a DELIBERATE,
       // accepted, bounded coexistence — both files are MEANT to be present together. Flagging
-      // it as a hard DOUBLON would fail the guard on the documented target state itself.
+      // it as a hard DUPLICATE would fail the guard on the documented target state itself.
       const partial = pair.partial === true
-      if (!partial) doublon++
-      const label = partial ? 'DOUBLON (partial, informational)' : 'DOUBLON'
+      if (!partial) duplicate++
+      const label = partial ? 'DUPLICATE (partial, informational)' : 'DUPLICATE'
       process.stdout.write(`${label} ${userPath} + ${shippedInUserPath}\n`)
       continue
     }
@@ -345,8 +345,8 @@ function auditOverlap(userDir, root, pairsFile) {
       process.stdout.write(`UNMAPPED ${path.join(userDir, file)}\n`)
     }
   }
-  process.stdout.write(`audit-overlap: ${doublon} doublon, ${drift} drift, ${unmapped} unmapped\n`)
-  if (doublon || drift) process.exitCode = 1
+  process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${unmapped} unmapped\n`)
+  if (duplicate || drift) process.exitCode = 1
 }
 
 /** Decide the status label and (for --install) whether to write. `force` only ever

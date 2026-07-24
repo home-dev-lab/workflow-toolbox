@@ -85,14 +85,14 @@ When adopting into a project that already has rules, reconcile first — see the
   the swap by policy (its shipped counterpart is never meant to be installed for it — e.g. a
   machine-specific rule that will never converge with a generic shipped one) should NOT be a
   declared pair at all: leave it out so it reports as `UNMAPPED` like any other machine-only
-  rule, rather than as permanent, noisy `DRIFT`. It reports `DOUBLON` when both
+  rule, rather than as permanent, noisy `DRIFT`. It reports `DUPLICATE` when both
   layers contain a paired file, `DRIFT` for user lines absent from the shipped file,
   `CLEAN` when no such difference is found, and `ABSENT` when a declared user file is not
   present. It also reports unpaired Markdown files as `UNMAPPED`; none of these findings is
   auto-classified or auto-ported. A pair marked `"partial": true` in the pairs file (a
   deliberate, bounded, accepted overlap — e.g. machine bindings that intentionally coexist
-  with their generic shipped counterpart) reports `DOUBLON`/`DRIFT` informationally instead of
-  as a failing finding. The command exits 1 when any non-partial `DOUBLON` or `DRIFT` is
+  with their generic shipped counterpart) reports `DUPLICATE`/`DRIFT` informationally instead of
+  as a failing finding. The command exits 1 when any non-partial `DUPLICATE` or `DRIFT` is
   found, and 0 otherwise.
 
 **Target dirs — confirm scope with the user first.** Each set has its own default under the

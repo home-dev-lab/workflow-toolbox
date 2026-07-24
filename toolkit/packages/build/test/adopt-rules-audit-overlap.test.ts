@@ -31,27 +31,27 @@ describe('adopt-rules audit-overlap', () => {
     expect(res.status).toBe(1); expect(res.stdout).toContain('DRIFT step-back-architectural.md')
     expect(res.stdout).toContain('DRIFT step-back-architectural.md: # extra')
   })
-  it('reports DOUBLON with both paths', () => {
+  it('reports DUPLICATE with both paths', () => {
     const d = mkDir(); writeFileSync(join(d, 'step-back-architectural.md'), 'x\n'); writeFileSync(join(d, 'wt-step-back-architectural.md'), 'y\n')
     const res = run(d)
-    expect(res.status).toBe(1); expect(res.stdout).toMatch(/DOUBLON.*step-back-architectural\.md.*wt-step-back-architectural\.md/)
+    expect(res.status).toBe(1); expect(res.stdout).toMatch(/DUPLICATE.*step-back-architectural\.md.*wt-step-back-architectural\.md/)
   })
   it('reports partial drift informationally, and UNMAPPED', () => {
     const d = mkDir(); writeFileSync(join(d, 'delegation-lanes.md'), '# unique partial edit\n'); writeFileSync(join(d, 'some-other-rule.md'), 'x\n')
     const res = run(d)
     expect(res.status).toBe(0); expect(res.stdout).toContain('DRIFT (partial, informational) delegation-lanes.md')
-    // UNMAPPED prints the full joined path (consistent with DOUBLON's own convention), not
+    // UNMAPPED prints the full joined path (consistent with DUPLICATE's own convention), not
     // the bare basename — an operator can act on the printed path directly.
     expect(res.stdout).toContain(`UNMAPPED ${join(d, 'some-other-rule.md')}`)
   })
-  it('reports a partial pair with BOTH files present as informational DOUBLON, not a failing one (the real deployed work-side shape: delegation-lanes.md + wt-delegation-ladder.md deliberately coexist)', () => {
+  it('reports a partial pair with BOTH files present as informational DUPLICATE, not a failing one (the real deployed work-side shape: delegation-lanes.md + wt-delegation-ladder.md deliberately coexist)', () => {
     const d = mkDir()
     writeFileSync(join(d, 'delegation-lanes.md'), 'machine bindings\n')
     writeFileSync(join(d, 'wt-delegation-ladder.md'), 'generic ladder\n')
     const res = run(d)
     expect(res.status).toBe(0)
-    expect(res.stdout).toContain(`DOUBLON (partial, informational) ${join(d, 'delegation-lanes.md')} + ${join(d, 'wt-delegation-ladder.md')}`)
-    expect(res.stdout).toContain('audit-overlap: 0 doublon')
+    expect(res.stdout).toContain(`DUPLICATE (partial, informational) ${join(d, 'delegation-lanes.md')} + ${join(d, 'wt-delegation-ladder.md')}`)
+    expect(res.stdout).toContain('audit-overlap: 0 duplicate')
   })
   it('fails clearly when --user-dir is missing', () => {
     const res = spawnSync(process.execPath, [SCRIPT, '--audit-overlap'], { encoding: 'utf8' })
@@ -65,7 +65,7 @@ describe('adopt-rules audit-overlap', () => {
     expect(res.stdout).toContain('ABSENT step-back-architectural.md')
     expect(res.stdout).not.toContain('UNMAPPED')
   })
-  it('detects DOUBLON when the user-side file is a valid symlink, not just a plain file (the pre-2026-07-23 work-side shape)', () => {
+  it('detects DUPLICATE when the user-side file is a valid symlink, not just a plain file (the pre-2026-07-23 work-side shape)', () => {
     const d = mkDir()
     const target = join(d, 'real-original.md')
     writeFileSync(target, 'original content\n')
@@ -73,6 +73,6 @@ describe('adopt-rules audit-overlap', () => {
     writeFileSync(join(d, 'wt-step-back-architectural.md'), 'installed copy\n')
     const res = run(d)
     expect(res.status).toBe(1)
-    expect(res.stdout).toMatch(/DOUBLON.*step-back-architectural\.md.*wt-step-back-architectural\.md/)
+    expect(res.stdout).toMatch(/DUPLICATE.*step-back-architectural\.md.*wt-step-back-architectural\.md/)
   })
 })
