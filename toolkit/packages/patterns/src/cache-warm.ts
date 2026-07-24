@@ -50,10 +50,26 @@ import type {
 } from '@workflow-toolbox/runtime'
 import { warn, makeRecord } from './envelope.js'
 import type { TrailRecord } from './envelope.js'
+import { externalGateExpectation } from './provenance-gate.js'
 
 /** Trivial, cheap-to-answer prompt — the response is discarded; only the
  *  provider-side cache write from the shared system/tools prefix matters. */
 const WARMUP_PROMPT = 'Reply with a single word: ready.'
+
+/** External lanes need CLI output so a wrapper cannot claim a warmup without invoking it. */
+function cliProofPrompt(cli: string): string {
+  return (
+    `You are being warmed on the "${cli}" external CLI lane. Run \`${cli} --version\` in the shell ` +
+    `and reply with its EXACT stdout, then on a new line state the modelID you are running as. ` +
+    `Do not answer from memory or guess. A reply without the real \`${cli} --version\` output does not count.`
+  )
+}
+
+/** Reject self-answers while keeping this check independent of CLI-specific version formats. */
+function hasPlausibleVersion(reply: string): boolean {
+  // A self-answer carries no version string and fails; shape-only is deliberate (defeats the trivial self-answer, not a motivated forgery — accepted residual).
+  return /\b\d+\.\d+\.\d+\b/.test(reply)
+}
 
 // ---------------------------------------------------------------------------
 // Mechanism (a) — first-completes-then-burst, over rt.parallel
@@ -175,16 +191,40 @@ export async function runCacheWarmup(
     ...(opts.agentType !== undefined ? { agentType: opts.agentType } : {}),
   }
 
-  const result = await rt.agent(WARMUP_PROMPT, agentOpts)
+  const lane = externalGateExpectation(opts.agentType)
 
-  if (result === null) {
+  if (lane === null) {
+    const result = await rt.agent(WARMUP_PROMPT, agentOpts)
+
+    if (result === null) {
+      warn(
+        rt, warnings,
+        `${patternName}: cache-warm agent (${label}) returned null — proceeding without a warmed cache`,
+      )
+    }
+
+    return makeRecord(label, result !== null, {
+      ...(opts.model !== undefined ? { model: opts.model } : {}),
+      ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
+    })
+  }
+
+  const prompt = cliProofPrompt(lane.id)
+  let reply = await rt.agent(prompt, agentOpts)
+  let proven = typeof reply === 'string' && hasPlausibleVersion(reply)
+  if (!proven) {
+    reply = await rt.agent(prompt, agentOpts)
+    proven = typeof reply === 'string' && hasPlausibleVersion(reply)
+  }
+
+  if (!proven) {
     warn(
       rt, warnings,
-      `${patternName}: cache-warm agent (${label}) returned null — proceeding without a warmed cache`,
+      `${patternName}: cache-warm ${lane.id} lane (${label}) SKIPPED — no real ${lane.id} --version came back after one retry (self-answer or CLI unavailable); proceeding without a warmed/proven lane`,
     )
   }
 
-  return makeRecord(label, result !== null, {
+  return makeRecord(label, proven, {
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
   })

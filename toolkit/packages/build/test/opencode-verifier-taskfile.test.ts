@@ -102,6 +102,40 @@ describe('opencode-verifier bridge — task file lives under the agent cwd, not 
         expect(def).toContain('SUPERSEDES your inherited')
         expect(def).toContain('resolve the path to an ABSOLUTE path first')
       })
+
+      // TEST-LOCK — OPENCODE_VARIANT effort-variant hint (card #1825779562886203067, phase 1).
+      // A validated variant appends `--variant` to the step-5 command; an unknown variant is
+      // dropped LOUDLY (OPENCODE_VARIANT_IGNORED) because opencode silently defaults on an
+      // unknown name; the directive is never collected as a file; the 429 fallback re-validates
+      // against the fallback model's (per-model) list.
+      it('appends --variant to the prescribed opencode run command shape when a variant is valid', () => {
+        expect(def).toContain('[--variant <variant>]')
+      })
+
+      it('drops an unknown variant LOUDLY (OPENCODE_VARIANT_IGNORED), never silently defaulting', () => {
+        expect(def).toContain('OPENCODE_VARIANT_IGNORED:')
+        expect(def).toContain('SILENTLY falls back to the model default')
+      })
+
+      it('treats OPENCODE_VARIANT as a directive, never a file to read', () => {
+        expect(def).toContain('WORKDIR/DIRECT_READS/VARIANT lines as mode directives')
+      })
+
+      it('re-validates the variant against the FALLBACK model on the 429 retry (lists are per-model)', () => {
+        expect(def).toContain('RE-VALIDATE any `OPENCODE_VARIANT` against the FALLBACK model')
+      })
+
+      it('grounds the per-model variant lists so strict validation is not guesswork', () => {
+        expect(def).toMatch(/glm-5\.2` → `high` · `max`/)
+        expect(def).toMatch(/gpt-5\.6-terra.*`xhigh` · `max`/)
+      })
+
+      it('scopes the IGNORED warning to the model that produced the RETURNED output (fallback decision supersedes step 4)', () => {
+        // Closes the cross-family review MED: a variant rejected by the chosen model but
+        // ACCEPTED by the 429 fallback must return cleanly (honored), not carry a stale warning.
+        expect(def).toContain('SUPERSEDES step 4')
+        expect(def).toContain('describes the model that produced the RETURNED output')
+      })
     })
   }
 })

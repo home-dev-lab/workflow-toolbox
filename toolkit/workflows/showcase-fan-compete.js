@@ -686,8 +686,68 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     };
   }
 
+  // ../packages/patterns/src/provenance-gate.ts
+  function matchesOpencodeRun(cmd = "") {
+    if (typeof cmd !== "string" || cmd.length === 0) return false;
+    const WIN = 2e4;
+    const s = cmd.length <= 2 * WIN ? cmd : cmd.slice(0, WIN) + "\n" + cmd.slice(-WIN);
+    const AFTER_QUOTED = /^(?:\.exe|\.cmd)?["']\s+run\b/;
+    const AFTER_BARE = /^(?:\.exe|\.cmd)?\s+run\b/;
+    const AFTER_BIN = /^["']?\s+run\b/;
+    const BEFORE_OK = /[\s;|&(=/'"]/;
+    for (let i = s.indexOf("opencode"); i !== -1; i = s.indexOf("opencode", i + 1)) {
+      const before = i === 0 ? "" : s[i - 1];
+      if (before && !BEFORE_OK.test(before)) continue;
+      const after = s.slice(i + 8, i + 8 + 16);
+      if (AFTER_QUOTED.test(after)) return true;
+      if (before !== '"' && before !== "'" && AFTER_BARE.test(after)) return true;
+    }
+    let hasBinOpencode = false;
+    for (let i = s.indexOf("BIN="); i !== -1; i = s.indexOf("BIN=", i + 1)) {
+      const nl = s.indexOf("\n", i);
+      const end = Math.min(nl === -1 ? s.length : nl, i + 4 + 256);
+      if (s.slice(i + 4, end).indexOf("opencode") !== -1) {
+        hasBinOpencode = true;
+        break;
+      }
+    }
+    if (hasBinOpencode) {
+      for (const m of s.matchAll(/\$\{?[A-Za-z_]*BIN\}?/g)) {
+        const at = m.index ?? 0;
+        const tok = m[0] ?? "";
+        if (AFTER_BIN.test(s.slice(at + tok.length, at + tok.length + 16))) return true;
+      }
+    }
+    return false;
+  }
+  var EXTERNAL_CLI_SIGNATURES = [
+    {
+      id: "opencode",
+      typeRe: /opencode/i,
+      commandRe: /(?:^|[\s;|&(=])(?:[^\s;|&"']*\/)?opencode(?:\.exe|\.cmd)?\s+run\b|(?:^|[\s;|&(=])["'](?:[^"']*\/)?opencode(?:\.exe|\.cmd)?["']\s+run\b|[A-Za-z_]*BIN=[^\n]*opencode[\s\S]*?"?\$\{?[A-Za-z_]*BIN\}?"?\s+run\b/im,
+      matchCommand: matchesOpencodeRun
+    },
+    {
+      id: "codex",
+      typeRe: /codex/i,
+      commandRe: /codex-companion\.mjs["']?\s+task\b|(?:^|[\s;|&(=])(?:[^\s;|&"']*\/)?codex(?:\.exe)?\s+exec\b|(?:^|[\s;|&(=])["'](?:[^"']*\/)?codex(?:\.exe)?["']\s+exec\b/im
+    }
+  ];
+  var SCANNER_RECENCY_MS = 30 * 60 * 1e3;
+  function externalGateExpectation(verifierType) {
+    if (verifierType === void 0) return null;
+    for (const sig of EXTERNAL_CLI_SIGNATURES) if (sig.typeRe.test(verifierType)) return sig;
+    return null;
+  }
+
   // ../packages/patterns/src/cache-warm.ts
   var WARMUP_PROMPT = "Reply with a single word: ready.";
+  function cliProofPrompt(cli) {
+    return `You are being warmed on the "${cli}" external CLI lane. Run \`${cli} --version\` in the shell and reply with its EXACT stdout, then on a new line state the modelID you are running as. Do not answer from memory or guess. A reply without the real \`${cli} --version\` output does not count.`;
+  }
+  function hasPlausibleVersion(reply) {
+    return /\b\d+\.\d+\.\d+\b/.test(reply);
+  }
   async function parallelWithCacheWarm(rt, thunks, enabled) {
     if (!enabled || thunks.length <= 1) {
       return rt.parallel(thunks);
@@ -705,15 +765,36 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       ...opts.effort !== void 0 ? { effort: opts.effort } : {},
       ...opts.agentType !== void 0 ? { agentType: opts.agentType } : {}
     };
-    const result = await rt.agent(WARMUP_PROMPT, agentOpts);
-    if (result === null) {
+    const lane = externalGateExpectation(opts.agentType);
+    if (lane === null) {
+      const result = await rt.agent(WARMUP_PROMPT, agentOpts);
+      if (result === null) {
+        warn(
+          rt,
+          warnings,
+          `${patternName}: cache-warm agent (${label}) returned null \u2014 proceeding without a warmed cache`
+        );
+      }
+      return makeRecord(label, result !== null, {
+        ...opts.model !== void 0 ? { model: opts.model } : {},
+        ...opts.effort !== void 0 ? { effort: opts.effort } : {}
+      });
+    }
+    const prompt = cliProofPrompt(lane.id);
+    let reply = await rt.agent(prompt, agentOpts);
+    let proven = typeof reply === "string" && hasPlausibleVersion(reply);
+    if (!proven) {
+      reply = await rt.agent(prompt, agentOpts);
+      proven = typeof reply === "string" && hasPlausibleVersion(reply);
+    }
+    if (!proven) {
       warn(
         rt,
         warnings,
-        `${patternName}: cache-warm agent (${label}) returned null \u2014 proceeding without a warmed cache`
+        `${patternName}: cache-warm ${lane.id} lane (${label}) SKIPPED \u2014 no real ${lane.id} --version came back after one retry (self-answer or CLI unavailable); proceeding without a warmed/proven lane`
       );
     }
-    return makeRecord(label, result !== null, {
+    return makeRecord(label, proven, {
       ...opts.model !== void 0 ? { model: opts.model } : {},
       ...opts.effort !== void 0 ? { effort: opts.effort } : {}
     });
@@ -884,9 +965,6 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     });
     return { value, stats, warnings, trail };
   }
-
-  // ../packages/patterns/src/provenance-gate.ts
-  var SCANNER_RECENCY_MS = 30 * 60 * 1e3;
 
   // ../packages/patterns/src/tournament.ts
   var STAGE2 = "tournament";

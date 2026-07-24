@@ -678,61 +678,6 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     };
   }
 
-  // ../packages/patterns/src/cache-warm.ts
-  var WARMUP_PROMPT = "Reply with a single word: ready.";
-  async function runCacheWarmup(rt, warnings, label, patternName, opts) {
-    const agentOpts = {
-      label,
-      ...opts.phase !== void 0 ? { phase: opts.phase } : {},
-      ...opts.model !== void 0 ? { model: opts.model } : {},
-      ...opts.effort !== void 0 ? { effort: opts.effort } : {},
-      ...opts.agentType !== void 0 ? { agentType: opts.agentType } : {}
-    };
-    const result = await rt.agent(WARMUP_PROMPT, agentOpts);
-    if (result === null) {
-      warn(
-        rt,
-        warnings,
-        `${patternName}: cache-warm agent (${label}) returned null \u2014 proceeding without a warmed cache`
-      );
-    }
-    return makeRecord(label, result !== null, {
-      ...opts.model !== void 0 ? { model: opts.model } : {},
-      ...opts.effort !== void 0 ? { effort: opts.effort } : {}
-    });
-  }
-
-  // ../packages/patterns/src/stage-instance.ts
-  var registry = /* @__PURE__ */ new WeakMap();
-  var STAGE_KEY_PATTERN = /^(?!\d+$)[A-Za-z0-9_.-]{1,32}$/;
-  function claimStageInstance(rt, pattern, stageKey) {
-    if (stageKey !== void 0) {
-      if (STAGE_KEY_PATTERN.test(stageKey)) {
-        return { salt: ` #${stageKey}` };
-      }
-      const fallback = claimAuto(rt, pattern);
-      const reason = /^\d+$/.test(stageKey) ? "purely-numeric keys are reserved for the auto instance counter's own ' #<n>' format (a numeric stageKey would be indistinguishable from an auto-salted invocation)" : `must match ${STAGE_KEY_PATTERN.source}`;
-      return {
-        salt: fallback.salt,
-        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (${reason}) \u2014 falling back to the auto instance counter`
-      };
-    }
-    return claimAuto(rt, pattern);
-  }
-  function claimAuto(rt, pattern) {
-    let byPattern = registry.get(rt);
-    if (byPattern === void 0) {
-      byPattern = /* @__PURE__ */ new Map();
-      registry.set(rt, byPattern);
-    }
-    const n = (byPattern.get(pattern) ?? 0) + 1;
-    byPattern.set(pattern, n);
-    return { salt: n === 1 ? "" : ` #${n}` };
-  }
-  function stageBuilder(stage, salt) {
-    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
-  }
-
   // ../packages/patterns/src/provenance-gate.ts
   function matchesOpencodeRun(cmd = "") {
     if (typeof cmd !== "string" || cmd.length === 0) return false;
@@ -949,6 +894,88 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
     const map = parseProvenanceReply(reply, labels);
     const replyOk = reply !== null && [...map.values()].some((p) => p !== "undetermined");
     return { map, replyOk };
+  }
+
+  // ../packages/patterns/src/cache-warm.ts
+  var WARMUP_PROMPT = "Reply with a single word: ready.";
+  function cliProofPrompt(cli) {
+    return `You are being warmed on the "${cli}" external CLI lane. Run \`${cli} --version\` in the shell and reply with its EXACT stdout, then on a new line state the modelID you are running as. Do not answer from memory or guess. A reply without the real \`${cli} --version\` output does not count.`;
+  }
+  function hasPlausibleVersion(reply) {
+    return /\b\d+\.\d+\.\d+\b/.test(reply);
+  }
+  async function runCacheWarmup(rt, warnings, label, patternName, opts) {
+    const agentOpts = {
+      label,
+      ...opts.phase !== void 0 ? { phase: opts.phase } : {},
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {},
+      ...opts.agentType !== void 0 ? { agentType: opts.agentType } : {}
+    };
+    const lane = externalGateExpectation(opts.agentType);
+    if (lane === null) {
+      const result = await rt.agent(WARMUP_PROMPT, agentOpts);
+      if (result === null) {
+        warn(
+          rt,
+          warnings,
+          `${patternName}: cache-warm agent (${label}) returned null \u2014 proceeding without a warmed cache`
+        );
+      }
+      return makeRecord(label, result !== null, {
+        ...opts.model !== void 0 ? { model: opts.model } : {},
+        ...opts.effort !== void 0 ? { effort: opts.effort } : {}
+      });
+    }
+    const prompt = cliProofPrompt(lane.id);
+    let reply = await rt.agent(prompt, agentOpts);
+    let proven = typeof reply === "string" && hasPlausibleVersion(reply);
+    if (!proven) {
+      reply = await rt.agent(prompt, agentOpts);
+      proven = typeof reply === "string" && hasPlausibleVersion(reply);
+    }
+    if (!proven) {
+      warn(
+        rt,
+        warnings,
+        `${patternName}: cache-warm ${lane.id} lane (${label}) SKIPPED \u2014 no real ${lane.id} --version came back after one retry (self-answer or CLI unavailable); proceeding without a warmed/proven lane`
+      );
+    }
+    return makeRecord(label, proven, {
+      ...opts.model !== void 0 ? { model: opts.model } : {},
+      ...opts.effort !== void 0 ? { effort: opts.effort } : {}
+    });
+  }
+
+  // ../packages/patterns/src/stage-instance.ts
+  var registry = /* @__PURE__ */ new WeakMap();
+  var STAGE_KEY_PATTERN = /^(?!\d+$)[A-Za-z0-9_.-]{1,32}$/;
+  function claimStageInstance(rt, pattern, stageKey) {
+    if (stageKey !== void 0) {
+      if (STAGE_KEY_PATTERN.test(stageKey)) {
+        return { salt: ` #${stageKey}` };
+      }
+      const fallback = claimAuto(rt, pattern);
+      const reason = /^\d+$/.test(stageKey) ? "purely-numeric keys are reserved for the auto instance counter's own ' #<n>' format (a numeric stageKey would be indistinguishable from an auto-salted invocation)" : `must match ${STAGE_KEY_PATTERN.source}`;
+      return {
+        salt: fallback.salt,
+        warning: `${pattern}: stageKey ${JSON.stringify(stageKey)} is invalid (${reason}) \u2014 falling back to the auto instance counter`
+      };
+    }
+    return claimAuto(rt, pattern);
+  }
+  function claimAuto(rt, pattern) {
+    let byPattern = registry.get(rt);
+    if (byPattern === void 0) {
+      byPattern = /* @__PURE__ */ new Map();
+      registry.set(rt, byPattern);
+    }
+    const n = (byPattern.get(pattern) ?? 0) + 1;
+    byPattern.set(pattern, n);
+    return { salt: n === 1 ? "" : ` #${n}` };
+  }
+  function stageBuilder(stage, salt) {
+    return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
   }
 
   // ../packages/patterns/src/adversarial-verification.ts

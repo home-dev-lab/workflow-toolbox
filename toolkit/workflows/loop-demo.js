@@ -589,6 +589,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     };
   }
 
+  // ../packages/patterns/src/provenance-gate.ts
+  var SCANNER_RECENCY_MS = 30 * 60 * 1e3;
+
   // ../packages/patterns/src/cache-warm.ts
   async function parallelWithCacheWarm(rt, thunks, enabled) {
     if (!enabled || thunks.length <= 1) {
@@ -834,9 +837,6 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     });
     return { value, stats, warnings, trail };
   }
-
-  // ../packages/patterns/src/provenance-gate.ts
-  var SCANNER_RECENCY_MS = 30 * 60 * 1e3;
 
   // ../packages/patterns/src/loop-until-done.ts
   var STAGE2 = LOOP_STAGE;

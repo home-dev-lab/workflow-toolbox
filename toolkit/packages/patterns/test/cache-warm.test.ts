@@ -225,16 +225,17 @@ describe('runCacheWarmup', () => {
     const record = await runCacheWarmup(rt, warnings, 'myStage:warm', 'myStage', {
       model: 'opus',
       effort: 'low',
-      agentType: 'codex:codex-rescue',
+      agentType: 'magic-claude:ts-reviewer',
       phase: 'my-phase',
     })
 
     expect(rt.calls).toHaveLength(1)
     const call = rt.calls[0]!
+    expect(call.prompt).toBe('Reply with a single word: ready.')
     expect(call.opts?.label).toBe('myStage:warm')
     expect(call.opts?.model).toBe('opus')
     expect(call.opts?.effort).toBe('low')
-    expect(call.opts?.agentType).toBe('codex:codex-rescue')
+    expect(call.opts?.agentType).toBe('magic-claude:ts-reviewer')
     expect(call.phase).toBe('my-phase')
 
     expect(record).toEqual({ stage: 'myStage:warm', outcome: 'ok', model: 'opus', effort: 'low' })
@@ -252,6 +253,77 @@ describe('runCacheWarmup', () => {
     expect(opts).not.toHaveProperty('effort')
     expect(opts).not.toHaveProperty('agentType')
     expect(opts).not.toHaveProperty('phase')
+  })
+
+  it('keeps plain warmups unchanged without an agentType', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'ready' })
+    const warnings: string[] = []
+
+    const record = await runCacheWarmup(rt, warnings, 'myStage:warm', 'myStage', {})
+
+    expect(rt.calls).toHaveLength(1)
+    expect(rt.calls[0]!.prompt).toBe('Reply with a single word: ready.')
+    expect(record.outcome).toBe('ok')
+  })
+
+  it('skips an external opencode lane that self-answers', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'ready.' })
+    const warnings: string[] = []
+
+    const record = await runCacheWarmup(rt, warnings, 'myStage:warm', 'myStage', {
+      agentType: 'workflow-toolbox:opencode-verifier',
+    })
+
+    expect(rt.calls).toHaveLength(2)
+    expect(record.outcome).toBe('null')
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('SKIPPED')
+    expect(warnings[0]).toContain('opencode')
+  })
+
+  it('accepts an external opencode lane proven on the first try', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'opencode 1.18.4' })
+    const warnings: string[] = []
+
+    const record = await runCacheWarmup(rt, warnings, 'myStage:warm', 'myStage', {
+      agentType: 'workflow-toolbox:opencode-verifier',
+    })
+
+    expect(rt.calls).toHaveLength(1)
+    expect(record.outcome).toBe('ok')
+    expect(warnings).toHaveLength(0)
+    expect(rt.calls[0]!.prompt).toContain('opencode --version')
+  })
+
+  it('retries an external opencode lane once before accepting proof', async () => {
+    let calls = 0
+    const rt = new FakeRuntime({
+      onAgent: () => {
+        calls++
+        return calls === 1 ? 'ready.' : 'opencode 1.18.4'
+      },
+    })
+    const warnings: string[] = []
+
+    const record = await runCacheWarmup(rt, warnings, 'myStage:warm', 'myStage', {
+      agentType: 'workflow-toolbox:opencode-verifier',
+    })
+
+    expect(rt.calls).toHaveLength(2)
+    expect(record.outcome).toBe('ok')
+    expect(warnings).toHaveLength(0)
+  })
+
+  it('derives codex --version for an external codex lane', async () => {
+    const rt = new FakeRuntime({ onAgent: () => 'ready.' })
+    const warnings: string[] = []
+
+    const record = await runCacheWarmup(rt, warnings, 'myStage:warm', 'myStage', {
+      agentType: 'codex:codex-rescue',
+    })
+
+    expect(rt.calls[0]!.prompt).toContain('codex --version')
+    expect(record.outcome).toBe('null')
   })
 
   it('degrades gracefully on a null (failed) warmup: warns, still returns an outcome=null record', async () => {
