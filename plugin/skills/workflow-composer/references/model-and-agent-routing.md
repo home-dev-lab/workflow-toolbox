@@ -134,6 +134,22 @@
       `OPENCODE_FALLBACK_MODEL`), the variant is re-validated against the fallback model's
       own list. Pick the minimal effort that suffices: the low end for high-volume/simple
       work, `medium`/`high` for a standard review, `xhigh`/`max` only for a demanding verify.
+    - **Per-role structured knobs on the audits (`models`, `opencodeVariants`) — a typed
+      alternative to hand-written `hints`.** `docs-audit` and `coverage-audit` accept two
+      per-role maps keyed `inventory` / `extract` / `verify`:
+      `opencodeVariants: { verify: 'high' }` relays the `OPENCODE_VARIANT` line for that role
+      without hand-editing `hints`; it renders at the prompt HEAD, so a per-role variant wins
+      over any global `OPENCODE_VARIANT` a caller placed in `hints`. `models` pins the
+      WRAPPER's own Claude model per role, validated against the runtime model aliases.
+      **Doctrine — a role routed to an external bridge (`agentTypes.<role>`) is a THIN RELAY,
+      so its wrapper DEFAULTS to `haiku` and the run-global `perAgent.model` deliberately does
+      NOT reach it** (the external model does the reasoning; the wrapper only plumbs the CLI
+      call, and a `haiku` wrapper makes a self-answer failure far cheaper to absorb). An
+      explicit `models.<role>` overrides that default; on the verify role `models.verify` wins
+      over the legacy `verifierModel`. The Claude-side judgment stages (dedup, synthesis) keep
+      their own tier — the doctrine touches only the bridge-routed roles. (The verify fan gets
+      the same `haiku` default from `adversarialVerification` itself when its `verifierType`
+      routes to a registered external CLI, so this default is consistent across all three roles.)
     - **The user can PRE-DECIDE via config — then don't re-ask.** A standing
       `agentTypes.<role>` entry in the user's launch config / project instructions is
       the structured, deterministic pre-decision channel; respect it silently (the

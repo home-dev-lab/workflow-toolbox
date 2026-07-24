@@ -1956,27 +1956,34 @@ ${renderClaim(claim)}`;
     return raw;
   }
   var AGENT_TYPE_ROLES = ["inventory", "extract", "verify"];
-  var OPENCODE_MODEL_ROLES = ["inventory", "extract", "verify"];
-  function parseOpencodeModels(raw) {
+  var ROLE_MAP_KEYS = ["inventory", "extract", "verify"];
+  function resolveWrapperModel(routesToWrapper, explicit) {
+    if (explicit !== void 0) return explicit;
+    return routesToWrapper ? "haiku" : void 0;
+  }
+  function parseRoleStringMap(raw, key, allowed) {
     if (raw === void 0 || raw === null) return null;
     if (typeof raw !== "object" || Array.isArray(raw)) {
-      throw new Error('docs-audit: "opencodeModels" must be an object when provided');
+      throw new Error(`docs-audit: "${key}" must be an object when provided`);
     }
     const obj = raw;
     const unknown = Object.keys(obj).filter(
-      (key) => !OPENCODE_MODEL_ROLES.includes(key)
+      (k) => !ROLE_MAP_KEYS.includes(k)
     );
     if (unknown.length > 0) {
       throw new Error(
-        `docs-audit: "opencodeModels" has unknown key(s): ${unknown.join(", ")}; accepted keys: ${OPENCODE_MODEL_ROLES.join(", ")}`
+        `docs-audit: "${key}" has unknown key(s): ${unknown.join(", ")}; accepted keys: ${ROLE_MAP_KEYS.join(", ")}`
       );
     }
     const parsed = {};
-    for (const role of OPENCODE_MODEL_ROLES) {
+    for (const role of ROLE_MAP_KEYS) {
       const value = obj[role];
       if (value === void 0) continue;
       if (typeof value !== "string" || value.trim().length === 0) {
-        throw new Error(`docs-audit: "opencodeModels.${role}" must be a non-empty string when provided`);
+        throw new Error(`docs-audit: "${key}.${role}" must be a non-empty string when provided`);
+      }
+      if (allowed !== null && !allowed.includes(value)) {
+        throw new Error(`docs-audit: "${key}.${role}" must be one of ${allowed.join(", ")}`);
       }
       parsed[role] = value;
     }
@@ -2051,15 +2058,19 @@ ${renderClaim(claim)}`;
       inventoryType: cfg.agentTypes?.["inventory"] ?? null,
       extractType: cfg.agentTypes?.["extract"] ?? null,
       verifierType: cfg.agentTypes?.["verify"] ?? null,
-      opencodeModels: parseOpencodeModels(obj["opencodeModels"]),
+      opencodeModels: parseRoleStringMap(obj["opencodeModels"], "opencodeModels", null),
+      models: parseRoleStringMap(obj["models"], "models", MODEL_ALIASES),
+      opencodeVariants: parseRoleStringMap(obj["opencodeVariants"], "opencodeVariants", null),
       unknownAgentTypeKeys: Object.keys(cfg.agentTypes ?? {}).filter(
         (key) => !AGENT_TYPE_ROLES.includes(key)
       ),
       messaging: cfg.messaging === true
     };
   }
-  function inventoryPrompt(input, opencodeModel) {
+  function inventoryPrompt(input, opencodeModel, opencodeVariant) {
     return (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
+
+` : "") + (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}
 
 ` : "") + `Inventory the documentation surfaces of the repository at ${input.repoRoot}.
 
@@ -2072,8 +2083,10 @@ ${input.hints}
 ` : "") + `List the actual directories to find every matching file that EXISTS \u2014 never guess a path.
 Return { "surfaces": ["<repo-relative path>", ...] } using forward slashes, relative to ${input.repoRoot}.`;
   }
-  function extractPrompt(input, group, round, angle, opencodeModel) {
+  function extractPrompt(input, group, round, angle, opencodeModel, opencodeVariant) {
     return (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
+
+` : "") + (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}
 
 ` : "") + `Extract checkable claims from documentation \u2014 extraction round ${round}.
 Repository root: ${input.repoRoot} (all surface paths below are relative to it; read the files from this root).
@@ -2098,8 +2111,10 @@ Where to look first: ${c.checkHint}`.replace(/-{5} (BEGIN|END) AUDITED DOC CLAIM
 ` + body + `
 ----- END AUDITED DOC CLAIM -----`;
   }
-  function renderAuditClaim(repoRoot, hints, opencodeModel) {
+  function renderAuditClaim(repoRoot, hints, opencodeModel, opencodeVariant) {
     return (c) => (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
+
+` : "") + (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}
 
 ` : "") + `Documentation-drift audit \u2014 verdict for ONE documentation claim.
 Repository root: ${repoRoot}.
@@ -2162,15 +2177,18 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       surfaces = input.surfaces;
       inventorySource = "input";
     } else {
+      const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory);
       const invOutcome = await agentWithSchemaSalvage(rt, inventoryPrompt(
         input,
-        resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null
+        resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
+        resolvedInventoryType !== null ? input.opencodeVariants?.inventory ?? null : null
       ), {
         schema: INVENTORY_SCHEMA,
         label: "docs-audit:inventory",
         phase: "Inventory",
         effort: inventoryEffort,
-        ...resolvedInventoryType !== null ? { agentType: resolvedInventoryType } : {}
+        ...resolvedInventoryType !== null ? { agentType: resolvedInventoryType } : {},
+        ...inventoryModel !== void 0 ? { model: inventoryModel } : {}
       });
       for (const w of invOutcome.warnings) warn(rt, warnings, w);
       const inv = invOutcome.value;
@@ -2191,6 +2209,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
     rt.phase("Extract");
     const surfaceSet = new Set(surfaces);
     const groups = chunk(surfaces, input.surfacesPerAgent);
+    const extractModel = resolveWrapperModel(resolvedExtractType !== null, input.models?.extract);
     let extractEffortByGroup = null;
     if (extractAuto) {
       const sel = await autoSelectEffort(rt, groups.map((group, gi) => ({
@@ -2221,14 +2240,16 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
                 group,
                 round,
                 angle,
-                resolvedExtractType !== null ? input.opencodeModels?.extract ?? null : null
+                resolvedExtractType !== null ? input.opencodeModels?.extract ?? null : null,
+                resolvedExtractType !== null ? input.opencodeVariants?.extract ?? null : null
               ),
               {
                 schema: EXTRACT_SCHEMA,
                 label: `docs-audit:extract:${round}:${gi}`,
                 phase: "Extract",
                 effort: extractEffortByGroup?.[gi] ?? extractEffort,
-                ...resolvedExtractType !== null ? { agentType: resolvedExtractType } : {}
+                ...resolvedExtractType !== null ? { agentType: resolvedExtractType } : {},
+                ...extractModel !== void 0 ? { model: extractModel } : {}
               }
             );
             for (const w of outcome.warnings) warn(rt, warnings, w);
@@ -2297,12 +2318,14 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         "docs-audit [Verify]: no checkable claims were extracted from the audited surfaces \u2014 nothing to verify. This can be legitimate (trivial surfaces) or an extraction problem (review the Extract warnings above)."
       );
     } else {
+      const verifyModel = input.models?.verify ?? input.verifierModel ?? null;
       const verifyResult = await adversarialVerification(rt, {
         claims: sortedClaims,
         renderClaim: renderAuditClaim(
           input.repoRoot,
           input.hints,
-          resolvedVerifierType !== null ? input.opencodeModels?.verify ?? null : null
+          resolvedVerifierType !== null ? input.opencodeModels?.verify ?? null : null,
+          resolvedVerifierType !== null ? input.opencodeVariants?.verify ?? null : null
         ),
         votes: input.votes,
         // Severity-tiered votes (card #1821093105403692296): the full quorum
@@ -2319,7 +2342,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         maxVerifyClaims: input.maxVerifyClaims,
         effort: verifyEffort,
         phase: "Verify",
-        ...input.verifierModel !== null ? { model: input.verifierModel } : {},
+        ...verifyModel !== null ? { model: verifyModel } : {},
         ...resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}
       });
       for (const w of verifyResult.warnings) warnings.push(w);

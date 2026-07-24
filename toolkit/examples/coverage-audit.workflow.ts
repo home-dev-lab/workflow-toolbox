@@ -334,6 +334,25 @@ export interface CoverageAuditInput {
   /** Optional provider/model override injected at the head of each routed
    *  role's prompt for the opencode-verifier wrapper. */
   opencodeModels: Readonly<{ inventory?: string; extract?: string; verify?: string }> | null
+  /** Optional per-ROLE Claude model for the WRAPPER agent itself (keys
+   *  inventory/extract/verify), validated against MODEL_ALIASES. A role routed
+   *  to an external bridge agentType (agentTypes.<role>) is a THIN RELAY — the
+   *  external model does the reasoning, so the wrapper defaults to 'haiku' and
+   *  the run-global `perAgent.model` deliberately does NOT reach it. An explicit
+   *  `models.<role>` always wins (over the haiku default for a bridge role, or
+   *  over perAgent for a non-bridge role). null = no overrides. Note: a role is
+   *  treated as a bridge when `agentTypes.<role>` routed it; routing a role to a
+   *  NON-bridge Claude agentType and wanting a stronger model needs an explicit
+   *  `models.<role>`. */
+  models: Readonly<{ inventory?: ModelAlias; extract?: ModelAlias; verify?: ModelAlias }> | null
+  /** Optional per-ROLE opencode reasoning-effort variant (keys
+   *  inventory/extract/verify), relayed to the wrapper as an
+   *  `OPENCODE_VARIANT: <name>` directive line at the HEAD of the routed role's
+   *  prompt (same channel as opencodeModels). The def validates <name> against
+   *  the chosen model's per-model list. Composes with `hints`: the per-role line
+   *  sits at the prompt head, ahead of any global OPENCODE_VARIANT a caller
+   *  placed in hints, so the per-role variant wins. null = no overrides. */
+  opencodeVariants: Readonly<{ inventory?: string; extract?: string; verify?: string }> | null
   /** Unknown agentTypes keys retained so run() can surface, not ignore, them. */
   unknownAgentTypeKeys: readonly string[]
   /** Blanket opt-OUT of the default leaf-agent fence (withLeafFence). Parsed
@@ -571,31 +590,56 @@ function parseOptionalString(obj: Record<string, unknown>, field: string): strin
 }
 
 const AGENT_TYPE_ROLES = ['inventory', 'extract', 'verify'] as const
-const OPENCODE_MODEL_ROLES = ['inventory', 'extract', 'verify'] as const
+const ROLE_MAP_KEYS = ['inventory', 'extract', 'verify'] as const
 
-function parseOpencodeModels(
+// Wrapper-role Claude model. A role routed to an external bridge agentType
+// (agentTypes.<role>) is a THIN RELAY — the external model reasons, the wrapper
+// only plumbs the CLI call — so it defaults to 'haiku' and the run-global
+// perAgent.model deliberately does NOT reach it. An explicit models.<role>
+// always wins (bridge or not). Returns undefined for a non-bridge role with no
+// override, so the blanket perAgent / pattern default still applies.
+function resolveWrapperModel(
+  routesToWrapper: boolean,
+  explicit: ModelAlias | undefined,
+): ModelAlias | undefined {
+  if (explicit !== undefined) return explicit
+  return routesToWrapper ? 'haiku' : undefined
+}
+
+// Parse a per-role string map ({ inventory?, extract?, verify? }) — the shared
+// shape of opencodeModels (external provider/model), models (the wrapper's own
+// Claude model) and opencodeVariants (the opencode --variant). When `allowed`
+// is non-null every value is validated against it (models → MODEL_ALIASES);
+// otherwise any non-empty string is accepted (the def validates variant names
+// per-model; opencode model ids are free-form).
+function parseRoleStringMap(
   raw: unknown,
+  key: string,
+  allowed: readonly string[] | null,
 ): Readonly<{ inventory?: string; extract?: string; verify?: string }> | null {
   if (raw === undefined || raw === null) return null
   if (typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new Error('coverage-audit: "opencodeModels" must be an object when provided')
+    throw new Error(`coverage-audit: "${key}" must be an object when provided`)
   }
   const obj = raw as Record<string, unknown>
   const unknown = Object.keys(obj).filter(
-    (key) => !(OPENCODE_MODEL_ROLES as readonly string[]).includes(key),
+    (k) => !(ROLE_MAP_KEYS as readonly string[]).includes(k),
   )
   if (unknown.length > 0) {
     throw new Error(
-      `coverage-audit: "opencodeModels" has unknown key(s): ${unknown.join(', ')}; ` +
-      `accepted keys: ${OPENCODE_MODEL_ROLES.join(', ')}`,
+      `coverage-audit: "${key}" has unknown key(s): ${unknown.join(', ')}; ` +
+      `accepted keys: ${ROLE_MAP_KEYS.join(', ')}`,
     )
   }
   const parsed: { inventory?: string; extract?: string; verify?: string } = {}
-  for (const role of OPENCODE_MODEL_ROLES) {
+  for (const role of ROLE_MAP_KEYS) {
     const value = obj[role]
     if (value === undefined) continue
     if (typeof value !== 'string' || value.trim().length === 0) {
-      throw new Error(`coverage-audit: "opencodeModels.${role}" must be a non-empty string when provided`)
+      throw new Error(`coverage-audit: "${key}.${role}" must be a non-empty string when provided`)
+    }
+    if (allowed !== null && !allowed.includes(value)) {
+      throw new Error(`coverage-audit: "${key}.${role}" must be one of ${allowed.join(', ')}`)
     }
     parsed[role] = value
   }
@@ -668,7 +712,10 @@ function parseInput(raw: unknown): CoverageAuditInput {
     inventoryType: cfg.agentTypes?.['inventory'] ?? null,
     extractType: cfg.agentTypes?.['extract'] ?? null,
     verifierType: cfg.agentTypes?.['verify'] ?? null,
-    opencodeModels: parseOpencodeModels(obj['opencodeModels']),
+    opencodeModels: parseRoleStringMap(obj['opencodeModels'], 'opencodeModels', null),
+    models: parseRoleStringMap(obj['models'], 'models', MODEL_ALIASES) as
+      Readonly<{ inventory?: ModelAlias; extract?: ModelAlias; verify?: ModelAlias }> | null,
+    opencodeVariants: parseRoleStringMap(obj['opencodeVariants'], 'opencodeVariants', null),
     unknownAgentTypeKeys: Object.keys(cfg.agentTypes ?? {}).filter(
       (key) => !(AGENT_TYPE_ROLES as readonly string[]).includes(key),
     ),
@@ -684,9 +731,11 @@ function inventoryPrompt(
   input: CoverageAuditInput,
   group: readonly ProvenanceEntry[],
   opencodeModel: string | null,
+  opencodeVariant: string | null,
 ): string {
   return (
     (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}\n\n` : '') +
+    (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}\n\n` : '') +
     `Inventory the user-facing capabilities of the following source modules — this is the ` +
     `enumeration phase of a documentation-coverage audit (the inverse of a staleness audit: we ` +
     `are not checking whether the docs are ACCURATE, we are checking whether the code has real ` +
@@ -716,6 +765,7 @@ function extractPrompt(
   round: number,
   angle: string,
   opencodeModel: string | null,
+  opencodeVariant: string | null,
 ): string {
   const body = group.map((e) => {
     const key = entryKey(e)
@@ -733,6 +783,7 @@ function extractPrompt(
 
   return (
     (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}\n\n` : '') +
+    (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}\n\n` : '') +
     `Extract undocumented-capability claims — documentation-coverage audit, extraction round ${round}.\n` +
     `Repository root: ${input.repoRoot} (read files from this root).\n\n` +
     `Entries assigned to YOU in this task, each with its previously inventoried capabilities and ` +
@@ -782,9 +833,11 @@ function renderCoverageClaim(
   repoRoot: string,
   hints: string | null,
   opencodeModel: string | null,
+  opencodeVariant: string | null,
 ): (c: CoverageClaim) => string {
   return (c) =>
     (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}\n\n` : '') +
+    (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}\n\n` : '') +
     `Documentation-coverage audit — verdict for ONE undocumented-capability claim.\n` +
     `Repository root: ${repoRoot}.\n` +
     `Mapped doc surface(s) for this entry: ${c.mappedDocs.length > 0 ? c.mappedDocs.join(', ') : '(none mapped)'}\n` +
@@ -871,6 +924,8 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
   const resolveEntry = buildEntryResolver(provenance)
   const docsByEntry = new Map<string, readonly string[]>(provenance.map((e) => [entryKey(e), e.docs]))
   const groups = chunk(provenance, input.entriesPerAgent)
+  const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory)
+  const extractModel = resolveWrapperModel(resolvedExtractType !== null, input.models?.extract)
 
   // -------------------------------------------------------------------------
   // Phase 'Inventory' — one read-and-report agent per entriesPerAgent-batched
@@ -908,6 +963,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
           input,
           group,
           resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
+          resolvedInventoryType !== null ? input.opencodeVariants?.inventory ?? null : null,
         ),
         {
           schema: INVENTORY_SCHEMA,
@@ -915,6 +971,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
           phase: 'Inventory',
           effort: inventoryEffortByGroup?.[gi] ?? inventoryEffort,
           ...(resolvedInventoryType !== null ? { agentType: resolvedInventoryType } : {}),
+          ...(inventoryModel !== undefined ? { model: inventoryModel } : {}),
         },
       )
       for (const w of outcome.warnings) warn(rt, warnings, w)
@@ -1044,6 +1101,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
               round,
               angle,
               resolvedExtractType !== null ? input.opencodeModels?.extract ?? null : null,
+              resolvedExtractType !== null ? input.opencodeVariants?.extract ?? null : null,
             ),
             {
               schema: EXTRACT_SCHEMA,
@@ -1051,6 +1109,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
               phase: 'Extract',
               effort: extractEffortByGroup?.[gi] ?? extractEffort,
               ...(resolvedExtractType !== null ? { agentType: resolvedExtractType } : {}),
+              ...(extractModel !== undefined ? { model: extractModel } : {}),
             },
           )
           for (const w of outcome.warnings) warn(rt, warnings, w)
@@ -1164,12 +1223,18 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
       'extraction problem (review the Extract warnings above).',
     )
   } else {
+    // Verify wrapper model: models.verify wins over the legacy verifierModel;
+    // when both are absent adversarialVerification supplies the default itself
+    // ('haiku' for an external relay via externalGateExpectation, BEST_MODEL for
+    // a plain Claude verifier) — so we pass NOTHING rather than force a model.
+    const verifyModel: ModelAlias | null = input.models?.verify ?? input.verifierModel ?? null
     const verifyResult = await adversarialVerification<CoverageClaim>(rt, {
       claims: sortedClaims,
       renderClaim: renderCoverageClaim(
         input.repoRoot,
         input.hints,
         resolvedVerifierType !== null ? input.opencodeModels?.verify ?? null : null,
+        resolvedVerifierType !== null ? input.opencodeVariants?.verify ?? null : null,
       ),
       votes: input.votes,
       // Severity-tiered votes (card #1821093105403692296): the full quorum
@@ -1188,7 +1253,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
       maxVerifyClaims: input.maxVerifyClaims,
       effort: verifyEffort,
       phase: 'Verify',
-      ...(input.verifierModel !== null ? { model: input.verifierModel } : {}),
+      ...(verifyModel !== null ? { model: verifyModel } : {}),
       ...(resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}),
     })
     for (const w of verifyResult.warnings) warnings.push(w)

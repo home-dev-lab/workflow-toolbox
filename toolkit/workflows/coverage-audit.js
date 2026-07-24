@@ -2271,27 +2271,34 @@ ${renderClaim(claim)}`;
     return raw;
   }
   var AGENT_TYPE_ROLES = ["inventory", "extract", "verify"];
-  var OPENCODE_MODEL_ROLES = ["inventory", "extract", "verify"];
-  function parseOpencodeModels(raw) {
+  var ROLE_MAP_KEYS = ["inventory", "extract", "verify"];
+  function resolveWrapperModel(routesToWrapper, explicit) {
+    if (explicit !== void 0) return explicit;
+    return routesToWrapper ? "haiku" : void 0;
+  }
+  function parseRoleStringMap(raw, key, allowed) {
     if (raw === void 0 || raw === null) return null;
     if (typeof raw !== "object" || Array.isArray(raw)) {
-      throw new Error('coverage-audit: "opencodeModels" must be an object when provided');
+      throw new Error(`coverage-audit: "${key}" must be an object when provided`);
     }
     const obj = raw;
     const unknown = Object.keys(obj).filter(
-      (key) => !OPENCODE_MODEL_ROLES.includes(key)
+      (k) => !ROLE_MAP_KEYS.includes(k)
     );
     if (unknown.length > 0) {
       throw new Error(
-        `coverage-audit: "opencodeModels" has unknown key(s): ${unknown.join(", ")}; accepted keys: ${OPENCODE_MODEL_ROLES.join(", ")}`
+        `coverage-audit: "${key}" has unknown key(s): ${unknown.join(", ")}; accepted keys: ${ROLE_MAP_KEYS.join(", ")}`
       );
     }
     const parsed = {};
-    for (const role of OPENCODE_MODEL_ROLES) {
+    for (const role of ROLE_MAP_KEYS) {
       const value = obj[role];
       if (value === void 0) continue;
       if (typeof value !== "string" || value.trim().length === 0) {
-        throw new Error(`coverage-audit: "opencodeModels.${role}" must be a non-empty string when provided`);
+        throw new Error(`coverage-audit: "${key}.${role}" must be a non-empty string when provided`);
+      }
+      if (allowed !== null && !allowed.includes(value)) {
+        throw new Error(`coverage-audit: "${key}.${role}" must be one of ${allowed.join(", ")}`);
       }
       parsed[role] = value;
     }
@@ -2351,15 +2358,19 @@ ${renderClaim(claim)}`;
       inventoryType: cfg.agentTypes?.["inventory"] ?? null,
       extractType: cfg.agentTypes?.["extract"] ?? null,
       verifierType: cfg.agentTypes?.["verify"] ?? null,
-      opencodeModels: parseOpencodeModels(obj["opencodeModels"]),
+      opencodeModels: parseRoleStringMap(obj["opencodeModels"], "opencodeModels", null),
+      models: parseRoleStringMap(obj["models"], "models", MODEL_ALIASES),
+      opencodeVariants: parseRoleStringMap(obj["opencodeVariants"], "opencodeVariants", null),
       unknownAgentTypeKeys: Object.keys(cfg.agentTypes ?? {}).filter(
         (key) => !AGENT_TYPE_ROLES.includes(key)
       ),
       messaging: cfg.messaging === true
     };
   }
-  function inventoryPrompt(input, group, opencodeModel) {
+  function inventoryPrompt(input, group, opencodeModel, opencodeVariant) {
     return (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
+
+` : "") + (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}
 
 ` : "") + `Inventory the user-facing capabilities of the following source modules \u2014 this is the enumeration phase of a documentation-coverage audit (the inverse of a staleness audit: we are not checking whether the docs are ACCURATE, we are checking whether the code has real capabilities the docs never mention at all).
 Repository root: ${input.repoRoot} (read the files from this root; every path below is relative to it).
@@ -2373,7 +2384,7 @@ ${input.hints}
 For each capability return: name, kind, sourcePath (the exact file it lives in), sourceExcerpt (a short verbatim quote \u2014 a signature, a doc comment, a config line \u2014 that establishes the capability), description (what it does, in your own words).
 Return { "entries": [{ "entry": "<one of the assigned entry identifiers above, EXACT>", "capabilities": [...] }, ...] } \u2014 one object per assigned entry, at most 40 capabilities each.`;
   }
-  function extractPrompt(input, group, capsByEntry, round, angle, opencodeModel) {
+  function extractPrompt(input, group, capsByEntry, round, angle, opencodeModel, opencodeVariant) {
     const body = group.map((e) => {
       const key = entryKey(e);
       const caps = capsByEntry.get(key) ?? [];
@@ -2385,6 +2396,8 @@ Return { "entries": [{ "entry": "<one of the assigned entry identifiers above, E
 ${capLines}`;
     }).join("\n\n");
     return (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
+
+` : "") + (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}
 
 ` : "") + `Extract undocumented-capability claims \u2014 documentation-coverage audit, extraction round ${round}.
 Repository root: ${input.repoRoot} (read files from this root).
@@ -2415,8 +2428,10 @@ Doc quote found by the extractor (verbatim, empty when nothing was found): "${c.
 ` + body + `
 ----- END AUDITED CAPABILITY CLAIM -----`;
   }
-  function renderCoverageClaim(repoRoot, hints, opencodeModel) {
+  function renderCoverageClaim(repoRoot, hints, opencodeModel, opencodeVariant) {
     return (c) => (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
+
+` : "") + (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}
 
 ` : "") + `Documentation-coverage audit \u2014 verdict for ONE undocumented-capability claim.
 Repository root: ${repoRoot}.
@@ -2472,6 +2487,8 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
     const resolveEntry = buildEntryResolver(provenance);
     const docsByEntry = new Map(provenance.map((e) => [entryKey(e), e.docs]));
     const groups = chunk(provenance, input.entriesPerAgent);
+    const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory);
+    const extractModel = resolveWrapperModel(resolvedExtractType !== null, input.models?.extract);
     rt.phase("Inventory");
     let inventoryEffortByGroup = null;
     if (inventoryAuto) {
@@ -2494,14 +2511,16 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
           inventoryPrompt(
             input,
             group,
-            resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null
+            resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
+            resolvedInventoryType !== null ? input.opencodeVariants?.inventory ?? null : null
           ),
           {
             schema: INVENTORY_SCHEMA,
             label: `coverage-audit:inventory:${gi}`,
             phase: "Inventory",
             effort: inventoryEffortByGroup?.[gi] ?? inventoryEffort,
-            ...resolvedInventoryType !== null ? { agentType: resolvedInventoryType } : {}
+            ...resolvedInventoryType !== null ? { agentType: resolvedInventoryType } : {},
+            ...inventoryModel !== void 0 ? { model: inventoryModel } : {}
           }
         );
         for (const w of outcome.warnings) warn(rt, warnings, w);
@@ -2597,14 +2616,16 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
                 capsByEntry,
                 round,
                 angle,
-                resolvedExtractType !== null ? input.opencodeModels?.extract ?? null : null
+                resolvedExtractType !== null ? input.opencodeModels?.extract ?? null : null,
+                resolvedExtractType !== null ? input.opencodeVariants?.extract ?? null : null
               ),
               {
                 schema: EXTRACT_SCHEMA,
                 label: `coverage-audit:extract:${round}:${gi}`,
                 phase: "Extract",
                 effort: extractEffortByGroup?.[gi] ?? extractEffort,
-                ...resolvedExtractType !== null ? { agentType: resolvedExtractType } : {}
+                ...resolvedExtractType !== null ? { agentType: resolvedExtractType } : {},
+                ...extractModel !== void 0 ? { model: extractModel } : {}
               }
             );
             for (const w of outcome.warnings) warn(rt, warnings, w);
@@ -2683,12 +2704,14 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         "coverage-audit [Verify]: no undocumented-capability claims were extracted \u2014 nothing to verify. This can be legitimate (every inventoried capability is well documented) or an extraction problem (review the Extract warnings above)."
       );
     } else {
+      const verifyModel = input.models?.verify ?? input.verifierModel ?? null;
       const verifyResult = await adversarialVerification(rt, {
         claims: sortedClaims,
         renderClaim: renderCoverageClaim(
           input.repoRoot,
           input.hints,
-          resolvedVerifierType !== null ? input.opencodeModels?.verify ?? null : null
+          resolvedVerifierType !== null ? input.opencodeModels?.verify ?? null : null,
+          resolvedVerifierType !== null ? input.opencodeVariants?.verify ?? null : null
         ),
         votes: input.votes,
         // Severity-tiered votes (card #1821093105403692296): the full quorum
@@ -2704,7 +2727,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         maxVerifyClaims: input.maxVerifyClaims,
         effort: verifyEffort,
         phase: "Verify",
-        ...input.verifierModel !== null ? { model: input.verifierModel } : {},
+        ...verifyModel !== null ? { model: verifyModel } : {},
         ...resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}
       });
       for (const w of verifyResult.warnings) warnings.push(w);

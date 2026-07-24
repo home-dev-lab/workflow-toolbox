@@ -225,6 +225,133 @@ describe('docs-audit per-role agentType routing', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Test: per-role wrapper Claude model (doctrine "wrapper → haiku") + the
+// per-role `models` override, and the `opencodeVariants` relay.
+// ---------------------------------------------------------------------------
+
+describe('docs-audit per-role wrapper model + opencodeVariants', () => {
+  const TYPE = 'workflow-toolbox:opencode-verifier'
+  const stageCalls = (rt: FakeRuntime, phase: string, phrase: string) =>
+    rt.calls.filter((c) => c.phase === phase && String(c.prompt).toLowerCase().includes(phrase))
+  const stripMeta = (p: unknown) => String(p).replace(/^<!-- wt-meta [^\n]+ -->\n\n/, '')
+
+  it('spawns wrapper-routed inventory/extract as haiku by default — perAgent.model does NOT reach them', async () => {
+    const rt = makeRuntime({ inventory: ['docs/a.md'], extractRounds: [[makeClaim()], []] })
+    await wf.run(rt, JSON.stringify({
+      repoRoot: '/repo',
+      agentTypes: { inventory: TYPE, extract: TYPE },
+      perAgent: { model: 'sonnet' },
+    }))
+    const inventory = stageCalls(rt, 'Inventory', 'inventory the documentation surfaces')
+    const extract = stageCalls(rt, 'Extract', 'extract checkable claims')
+    expect(inventory.length).toBeGreaterThan(0)
+    expect(inventory.every((c) => c.opts?.model === 'haiku')).toBe(true)
+    expect(extract.length).toBeGreaterThan(0)
+    expect(extract.every((c) => c.opts?.model === 'haiku')).toBe(true)
+  })
+
+  it('lets models.<role> override the haiku wrapper default (bridge role)', async () => {
+    const rt = makeRuntime({ inventory: ['docs/a.md'], extractRounds: [[makeClaim()], []] })
+    await wf.run(rt, JSON.stringify({
+      repoRoot: '/repo',
+      agentTypes: { inventory: TYPE, extract: TYPE },
+      perAgent: { model: 'sonnet' },
+      models: { inventory: 'sonnet', extract: 'opus' },
+    }))
+    const inventory = stageCalls(rt, 'Inventory', 'inventory the documentation surfaces')
+    const extract = stageCalls(rt, 'Extract', 'extract checkable claims')
+    expect(inventory.every((c) => c.opts?.model === 'sonnet')).toBe(true)
+    expect(extract.every((c) => c.opts?.model === 'opus')).toBe(true)
+  })
+
+  it('forces NO model on a NON-wrapper role (no agentType routed) — the doctrine touches wrappers only', async () => {
+    const rt = makeRuntime({ inventory: ['docs/a.md'], extractRounds: [[makeClaim()], []] })
+    await wf.run(rt, JSON.stringify({ repoRoot: '/repo' }))
+    const extract = stageCalls(rt, 'Extract', 'extract checkable claims')
+    expect(extract.length).toBeGreaterThan(0)
+    expect(extract.every((c) => c.opts?.model === undefined)).toBe(true)
+  })
+
+  it('spawns the wrapper-routed verify fan as haiku by default (external-relay pattern default)', async () => {
+    const rt = makeRuntime({ inventory: ['docs/a.md'], extractRounds: [[makeClaim()], []] })
+    await wf.run(rt, JSON.stringify({
+      repoRoot: '/repo',
+      surfaces: ['docs/a.md'],
+      agentTypes: { verify: TYPE },
+      perAgent: { model: 'sonnet' },
+    }))
+    const verify = stageCalls(rt, 'Verify', 'adversarially verify the following claim')
+    expect(verify.length).toBeGreaterThan(0)
+    expect(verify.every((c) => c.opts?.model === 'haiku')).toBe(true)
+  })
+
+  it('models.verify overrides verifierModel for the verify fan', async () => {
+    const rt = makeRuntime({ inventory: ['docs/a.md'], extractRounds: [[makeClaim()], []] })
+    await wf.run(rt, JSON.stringify({
+      repoRoot: '/repo',
+      surfaces: ['docs/a.md'],
+      agentTypes: { verify: TYPE },
+      verifierModel: 'haiku',
+      models: { verify: 'sonnet' },
+    }))
+    const verify = stageCalls(rt, 'Verify', 'adversarially verify the following claim')
+    expect(verify.length).toBeGreaterThan(0)
+    expect(verify.every((c) => c.opts?.model === 'sonnet')).toBe(true)
+  })
+
+  it('relays opencodeVariants.<role> as an OPENCODE_VARIANT head line on the wrapper prompt only', async () => {
+    const rt = makeRuntime({ inventory: ['docs/a.md', 'docs/b.md'], extractRounds: [[makeClaim()], []] })
+    await wf.run(rt, JSON.stringify({
+      repoRoot: '/repo',
+      agentTypes: { extract: TYPE },
+      opencodeVariants: { extract: 'xhigh' },
+    }))
+    const extract = stageCalls(rt, 'Extract', 'extract checkable claims')
+    const inventory = stageCalls(rt, 'Inventory', 'inventory the documentation surfaces')
+    expect(extract.some((c) => stripMeta(c.prompt).includes('OPENCODE_VARIANT: xhigh\n\n'))).toBe(true)
+    expect(inventory.length).toBeGreaterThan(0)
+    expect(inventory.every((c) => !String(c.prompt).includes('OPENCODE_VARIANT: xhigh'))).toBe(true)
+  })
+
+  it('places a per-role OPENCODE_VARIANT ahead of a global one carried in hints (per-role wins)', async () => {
+    const rt = makeRuntime({ inventory: ['docs/a.md'], extractRounds: [[makeClaim()], []] })
+    await wf.run(rt, JSON.stringify({
+      repoRoot: '/repo',
+      surfaces: ['docs/a.md'],
+      agentTypes: { verify: TYPE },
+      opencodeVariants: { verify: 'high' },
+      hints: 'OPENCODE_VARIANT: xhigh',
+    }))
+    const verify = stageCalls(rt, 'Verify', 'adversarially verify the following claim')
+    expect(verify.length).toBeGreaterThan(0)
+    expect(verify.every((c) => {
+      const p = stripMeta(c.prompt)
+      const perRole = p.indexOf('OPENCODE_VARIANT: high')
+      const global = p.indexOf('OPENCODE_VARIANT: xhigh')
+      return perRole >= 0 && global >= 0 && perRole < global
+    })).toBe(true)
+  })
+
+  it('rejects opencodeVariants that is not an object', async () => {
+    await expect(
+      wf.run(makeRuntime({ extractRounds: [[]] }), JSON.stringify({ ...BASE_INPUT, opencodeVariants: 'xhigh' })),
+    ).rejects.toThrow(/opencodeVariants/)
+  })
+
+  it('rejects an unknown opencodeVariants role key', async () => {
+    await expect(
+      wf.run(makeRuntime({ extractRounds: [[]] }), JSON.stringify({ ...BASE_INPUT, opencodeVariants: { bogus: 'x' } })),
+    ).rejects.toThrow(/opencodeVariants/)
+  })
+
+  it('rejects a models value that is not a known model alias', async () => {
+    await expect(
+      wf.run(makeRuntime({ extractRounds: [[]] }), JSON.stringify({ ...BASE_INPUT, models: { verify: 'gpt-9' } })),
+    ).rejects.toThrow(/models/)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Test: happy path (surfaces provided — no inventory agent)
 // ---------------------------------------------------------------------------
 
