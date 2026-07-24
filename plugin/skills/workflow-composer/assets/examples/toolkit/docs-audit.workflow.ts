@@ -561,7 +561,11 @@ function extractPrompt(
     `For each claim return: surface (the repo-relative doc path it came from — one of the assigned ` +
     `surfaces above), kind, risk (impact if the claim turned out stale: would a reader be misled ` +
     `into broken usage?), quote (EXACT substring copied from the doc), claim (the checkable ` +
-    `assertion in your own words), checkHint (where in the sources to verify it).\n` +
+    `assertion in your own words), checkHint (a CONCRETE repo-relative FILE PATH — e.g. ` +
+    `"toolkit/packages/foo/src/bar.ts" — pointing at the source most likely to hold the code this ` +
+    `claim describes; a specific file, not a vague area description. The verify agent reads this ` +
+    `path directly and must never have to search the repository to find it — get as close to the ` +
+    `real file as you can from what you already know of the repo).\n` +
     `Return at most 25 claims — the HIGHEST-risk ones you found.`
   )
 }
@@ -587,6 +591,19 @@ function renderUntrustedClaimBlock(c: AuditClaim): string {
   )
 }
 
+// Resolve a claim's checkHint against repoRoot into ONE concrete path the
+// verify wrapper can read directly — no repository exploration required.
+// Pure string join (the sandbox forbids Node's `path` module): tolerant of
+// either side carrying, or lacking, a leading/trailing slash. checkHint is
+// extractor-authored guidance, not a schema-guaranteed valid path — the
+// prompt using this still tells the wrapper to fall back to search if the
+// exact path is wrong, so a bad hint degrades gracefully instead of misleading.
+function joinRepoPath(repoRoot: string, rel: string): string {
+  const root = repoRoot.replace(/\/+$/, '')
+  const trimmed = rel.trim().replace(/^\/+/, '')
+  return `${root}/${trimmed}`
+}
+
 function renderAuditClaim(
   repoRoot: string,
   hints: string | null,
@@ -598,6 +615,16 @@ function renderAuditClaim(
     (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}\n\n` : '') +
     `Documentation-drift audit — verdict for ONE documentation claim.\n` +
     `Repository root: ${repoRoot}.\n` +
+    // Card #1826399286049376144 (forensics wf_dd8c0300-c59): 107/750 verify
+    // wrappers died BEFORE calling opencode because this prompt named the
+    // claim but never its concrete source file — the wrapper burned its turn
+    // budget on ls/find/grep exploration to locate it. checkHint is ALREADY
+    // the extractor's best-guess concrete path; resolve + surface it here,
+    // OUTSIDE the untrusted block, as a direct read instruction.
+    `Concrete source path for THIS claim (read this file FIRST, directly — the extractor already ` +
+    `located it; do NOT run ls/find/grep to rediscover it): ${joinRepoPath(repoRoot, c.checkHint)}\n` +
+    `If — and only if — that exact path does not exist or does not contain the relevant code, ` +
+    `THEN search the repository, using checkHint below as a description rather than a literal path.\n` +
     renderUntrustedClaimBlock(c) + '\n' +
     (hints !== null ? `Extra context:\n${hints}\n` : '') +
     `Read the ACTUAL current sources under the repository root (grep/read files; use git read-only ` +

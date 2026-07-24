@@ -420,6 +420,38 @@ describe('docs-audit happy path', () => {
     for (const c of verify) expect(String(c.prompt)).toContain('/repo')
   })
 
+  // Regression lock for card #1826399286049376144 (forensics on wf_dd8c0300-c59):
+  // 107/750 verify wrappers died BEFORE ever calling opencode because the
+  // prompt named the claim but not its concrete source file, so the haiku
+  // wrapper went exploring the repo (ls/find/grep) to locate it and exhausted
+  // its turn budget. Each claim's checkHint is ALREADY a concrete repo-relative
+  // path (see makeClaim/staleClaim fixtures) — the fix is to resolve it against
+  // repoRoot and embed it, per-claim, so the wrapper never has to search.
+  it("embeds each claim's OWN concrete source path (checkHint resolved against " +
+    'repoRoot) in the verify prompt — distinct claims get distinct resolved paths, ' +
+    'no repo exploration required', async () => {
+    const { rt } = await runHappy()
+    const verify = rt.calls.filter(c =>
+      String(c.prompt).toLowerCase().includes('adversarially verify the following claim'))
+    expect(verify.length).toBeGreaterThan(0)
+
+    const good = verify.find(c =>
+      String(c.prompt).includes('the loop stops after two dry rounds'))
+    const stale = verify.find(c =>
+      String(c.prompt).includes('the cap silently drops extra claims'))
+    expect(good).toBeTruthy()
+    expect(stale).toBeTruthy()
+
+    // goodClaim.checkHint = 'packages/patterns/src/loop-until-done.ts'
+    expect(String(good?.prompt)).toContain('/repo/packages/patterns/src/loop-until-done.ts')
+    // staleClaim.checkHint = 'packages/patterns/src/envelope.ts'
+    expect(String(stale?.prompt)).toContain('/repo/packages/patterns/src/envelope.ts')
+
+    // Not just present anywhere — explicitly framed as a direct-read instruction
+    // (the whole point: never "search", always "read this file").
+    expect(String(good?.prompt)).toMatch(/read this file (first|directly)/i)
+  })
+
   it('exposes the envelope trail and the leaf-fence report', async () => {
     const { out } = await runHappy()
     expect(Array.isArray(out.envelope.trail)).toBe(true)

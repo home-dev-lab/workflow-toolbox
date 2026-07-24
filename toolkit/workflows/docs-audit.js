@@ -2099,7 +2099,7 @@ ${input.hints}
 
 Angle emphasis for THIS round: ${angle}.
 
-For each claim return: surface (the repo-relative doc path it came from \u2014 one of the assigned surfaces above), kind, risk (impact if the claim turned out stale: would a reader be misled into broken usage?), quote (EXACT substring copied from the doc), claim (the checkable assertion in your own words), checkHint (where in the sources to verify it).
+For each claim return: surface (the repo-relative doc path it came from \u2014 one of the assigned surfaces above), kind, risk (impact if the claim turned out stale: would a reader be misled into broken usage?), quote (EXACT substring copied from the doc), claim (the checkable assertion in your own words), checkHint (a CONCRETE repo-relative FILE PATH \u2014 e.g. "toolkit/packages/foo/src/bar.ts" \u2014 pointing at the source most likely to hold the code this claim describes; a specific file, not a vague area description. The verify agent reads this path directly and must never have to search the repository to find it \u2014 get as close to the real file as you can from what you already know of the repo).
 Return at most 25 claims \u2014 the HIGHEST-risk ones you found.`;
   }
   function renderUntrustedClaimBlock(c) {
@@ -2111,6 +2111,11 @@ Where to look first: ${c.checkHint}`.replace(/-{5} (BEGIN|END) AUDITED DOC CLAIM
 ` + body + `
 ----- END AUDITED DOC CLAIM -----`;
   }
+  function joinRepoPath(repoRoot, rel) {
+    const root = repoRoot.replace(/\/+$/, "");
+    const trimmed = rel.trim().replace(/^\/+/, "");
+    return `${root}/${trimmed}`;
+  }
   function renderAuditClaim(repoRoot, hints, opencodeModel, opencodeVariant) {
     return (c) => (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
 
@@ -2118,6 +2123,8 @@ Where to look first: ${c.checkHint}`.replace(/-{5} (BEGIN|END) AUDITED DOC CLAIM
 
 ` : "") + `Documentation-drift audit \u2014 verdict for ONE documentation claim.
 Repository root: ${repoRoot}.
+Concrete source path for THIS claim (read this file FIRST, directly \u2014 the extractor already located it; do NOT run ls/find/grep to rediscover it): ${joinRepoPath(repoRoot, c.checkHint)}
+If \u2014 and only if \u2014 that exact path does not exist or does not contain the relevant code, THEN search the repository, using checkHint below as a description rather than a literal path.
 ` + renderUntrustedClaimBlock(c) + "\n" + (hints !== null ? `Extra context:
 ${hints}
 ` : "") + `Read the ACTUAL current sources under the repository root (grep/read files; use git read-only if helpful) and decide:
