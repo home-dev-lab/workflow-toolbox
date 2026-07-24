@@ -20,6 +20,12 @@ cross-family model is available, route that one pass to it — as INPUT, filtere
 
 Premise quality caps the result: give agents evidence access and OPEN option sets (not closed
 menus that hand them your blind spot), frame neutrally, and require them to state what they
-could NOT verify. Pre-commit a one-line prediction before firing (theatre shows up as unmet
-predictions). You stay the arbiter — a fan-out's verdict does not override your richer
+could NOT verify. The SOURCE LIST handed to the agents is itself a premise: for
+enumeration/coverage tasks, give COMPLETE listings of the relevant directories or source
+families and let agents pick within them — a hand-curated selection silently caps coverage at
+what it happened to include. Pre-commit a one-line prediction before firing (theatre shows up
+as unmet predictions). You stay the arbiter — a fan-out's verdict does not override your richer
 in-context read, nor license skipping an escalation.
+
+Watch the overturn rate informally: if fan-out runs never change a decision or retract a
+claim, they are cost without behaviour change — stop firing them, or fix the framing.
