@@ -1,7 +1,7 @@
 export const meta = {
   "name": "coverage-audit",
   "description": "Pre-release documentation-COVERAGE audit — the inverse of docs-audit: inventories the user-facing capabilities of the code mapped by the docs-provenance manifest, then refute-first verifies which of them are NOT properly described in their mapped docs (undocumented, or merely mentioned).",
-  "whenToUse": "Use BEFORE a release (npm publish, plugin version bump) alongside docs-audit to catch the OTHER direction of drift: real capabilities the docs never mention at all, not just stale prose. Pass repoRoot (absolute); optionally provenance (defaults to the bundled dwt manifest — pass an external repo manifest to run it there), hints, and sizing knobs. Findings are remediation input, e.g. for doc-rewrite.",
+  "whenToUse": "Use BEFORE a release (npm publish, plugin version bump) alongside docs-audit to catch the OTHER direction of drift: real capabilities the docs never mention at all, not just stale prose. Pass repoRoot (absolute); optionally provenance (defaults to the bundled dwt manifest — pass an external repo manifest to run it there), hints, and sizing knobs. scope defaults to \"public\" (excludes internal support-package entries — scaffold, smoke, debugger, the examples/ catch-all — whose exports the public docs deliberately do not catalogue in depth); pass scope:\"all\" for the full, noisier picture. Findings are remediation input, e.g. for doc-rewrite.",
   "phases": [
     {
       "title": "Fence",
@@ -2164,6 +2164,19 @@ ${renderClaim(claim)}`;
   function entryKey(e) {
     return e.sources[0] ?? "";
   }
+  var INTERNAL_SUPPORT_ENTRY_KEYS = /* @__PURE__ */ new Set([
+    "toolkit/packages/scaffold/src/",
+    "toolkit/packages/smoke/src/",
+    "toolkit/packages/debugger/src/",
+    "toolkit/examples/"
+  ]);
+  function isInternalSupportKey(key) {
+    return INTERNAL_SUPPORT_ENTRY_KEYS.has(key);
+  }
+  function toRepoRelative(repoRoot, path) {
+    const prefix = repoRoot.endsWith("/") ? repoRoot : repoRoot + "/";
+    return path.startsWith(prefix) ? path.slice(prefix.length) : path;
+  }
   function buildEntryResolver(provenance) {
     const keys = new Set(provenance.map(entryKey));
     const exactSource = /* @__PURE__ */ new Map();
@@ -2181,21 +2194,25 @@ ${renderClaim(claim)}`;
     dirSources.sort((a, b) => b.prefix.length - a.prefix.length);
     return (reported) => {
       if (keys.has(reported)) {
-        return { key: reported, via: reported.endsWith("/") ? "dir" : "file" };
+        return { key: reported, via: reported.endsWith("/") ? "dir" : "file", altKey: null };
       }
       const exact = exactSource.get(reported);
-      if (exact !== void 0) return { key: exact, via: "file" };
-      for (const d of dirSources) {
-        if (reported.startsWith(d.prefix)) return { key: d.key, via: "dir" };
-      }
+      const dirMatch = dirSources.find((d) => reported.startsWith(d.prefix) && d.key !== exact);
+      if (exact !== void 0) return { key: exact, via: "file", altKey: dirMatch?.key ?? null };
+      if (dirMatch !== void 0) return { key: dirMatch.key, via: "dir", altKey: null };
       return null;
     };
   }
   function decideOwner(byEcho, bySource) {
-    if (byEcho === null) return bySource === null ? null : { key: bySource.key, conflict: false };
-    if (bySource === null || bySource.key === byEcho.key) return { key: byEcho.key, conflict: false };
-    if (bySource.via === "file" && byEcho.via === "dir") return { key: bySource.key, conflict: false };
-    return { key: byEcho.key, conflict: true };
+    if (byEcho === null) {
+      return bySource === null ? null : { key: bySource.key, conflict: false, altKey: bySource.altKey };
+    }
+    if (bySource === null) return { key: byEcho.key, conflict: false, altKey: byEcho.altKey };
+    if (bySource.key === byEcho.key) {
+      return { key: byEcho.key, conflict: false, altKey: bySource.altKey ?? byEcho.altKey };
+    }
+    if (bySource.via === "file" && byEcho.via === "dir") return { key: bySource.key, conflict: false, altKey: null };
+    return { key: byEcho.key, conflict: true, altKey: null };
   }
   var CAPABILITY_KINDS = ["export", "behavior", "knob", "flag", "other"];
   var INVENTORY_SCHEMA = {
@@ -2351,9 +2368,19 @@ ${renderClaim(claim)}`;
       }
       tieredVotes = obj["tieredVotes"];
     }
+    let scope = "public";
+    if (obj["scope"] !== void 0) {
+      if (obj["scope"] !== "public" && obj["scope"] !== "all") {
+        throw new Error(
+          `coverage-audit: "scope" must be "public" or "all", got ${JSON.stringify(obj["scope"])}`
+        );
+      }
+      scope = obj["scope"];
+    }
     return {
       repoRoot,
       provenance,
+      scope,
       hints: parseOptionalString(obj, "hints"),
       maxRounds: parsePositiveInt(obj, "maxRounds", 6),
       dryRounds: parsePositiveInt(obj, "dryRounds", 1),
@@ -2454,6 +2481,14 @@ ${hints}
 - unverifiable: you could not locate relevant evidence either way (say what you looked for).
 Cite the file paths (and line numbers where possible) your verdict rests on in "reason".`;
   }
+  function consolidateEvidence(verdict, votes) {
+    const agreeing = votes.find(
+      (v) => v !== null && v.verdict === verdict && v.reason.trim().length > 0
+    );
+    if (agreeing !== void 0) return agreeing.reason;
+    const any = votes.find((v) => v !== null && v.reason.trim().length > 0);
+    return any !== void 0 ? any.reason : "";
+  }
   async function run(rt00, input) {
     const { rt: rt0, report: leafFence } = await withLeafFence(rt00, {
       phase: "Fence",
@@ -2491,10 +2526,15 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       resolvedVerifierType = probe.agentType ?? null;
       verifierProbe = { requested: input.verifierType, available: probe.available, reason: probe.reason };
     }
-    const provenance = input.provenance ?? DOCS_PROVENANCE;
+    const fullProvenance = input.provenance ?? DOCS_PROVENANCE;
     const provenanceSource = input.provenance !== null ? "input" : "bundled";
-    const resolveEntry = buildEntryResolver(provenance);
-    const docsByEntry = new Map(provenance.map((e) => [entryKey(e), e.docs]));
+    const scopedOutEntryKeys = new Set(
+      fullProvenance.filter((e) => isInternalSupportKey(entryKey(e))).map(entryKey)
+    );
+    const provenance = input.scope === "all" ? fullProvenance : fullProvenance.filter((e) => !scopedOutEntryKeys.has(entryKey(e)));
+    let scopedOutFindingsCount = 0;
+    const resolveEntry = buildEntryResolver(fullProvenance);
+    const docsByEntry = new Map(fullProvenance.map((e) => [entryKey(e), e.docs]));
     const groups = chunk(provenance, input.entriesPerAgent);
     const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory);
     const extractModel = resolveWrapperModel(resolvedExtractType !== null, input.models?.extract);
@@ -2551,11 +2591,17 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       for (const entryResult of res.entries) {
         const byEcho = resolveEntry(entryResult.entry);
         const droppedNames = [];
+        const droppedScopedOut = [];
         let conflicts = 0;
         for (const cap of entryResult.capabilities) {
-          const owner = decideOwner(byEcho, resolveEntry(cap.sourcePath));
+          const owner = decideOwner(byEcho, resolveEntry(toRepoRelative(input.repoRoot, cap.sourcePath)));
           if (owner === null) {
             droppedNames.push(cap.name);
+            continue;
+          }
+          if (input.scope === "public" && scopedOutEntryKeys.has(owner.key)) {
+            droppedScopedOut.push(cap.name);
+            scopedOutFindingsCount++;
             continue;
           }
           if (owner.conflict) conflicts++;
@@ -2579,6 +2625,13 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
             rt,
             warnings,
             `coverage-audit [Inventory]: dropped ${droppedNames.length} capabilit${droppedNames.length === 1 ? "y" : "ies"} (${droppedNames.join(", ")}) reported under "${entryResult.entry}" \u2014 not in the audited provenance manifest`
+          );
+        }
+        if (droppedScopedOut.length > 0) {
+          warn(
+            rt,
+            warnings,
+            `coverage-audit [Inventory]: dropped ${droppedScopedOut.length} capabilit${droppedScopedOut.length === 1 ? "y" : "ies"} (${droppedScopedOut.join(", ")}) reported under "${entryResult.entry}" \u2014 resolved to an entry excluded by scope:'public'; pass scope:'all' to include it`
           );
         }
         if (conflicts > 0) {
@@ -2657,13 +2710,25 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
             continue;
           }
           for (const claim of res.claims) {
-            const owner = decideOwner(resolveEntry(claim.entry), resolveEntry(claim.sourcePath));
+            const owner = decideOwner(
+              resolveEntry(claim.entry),
+              resolveEntry(toRepoRelative(input.repoRoot, claim.sourcePath))
+            );
             if (owner === null) {
               warn(
                 rt,
                 warnings,
                 `coverage-audit [Extract]: dropped a claim citing entry "${claim.entry}" \u2014 not in the audited provenance manifest`
               );
+              continue;
+            }
+            if (input.scope === "public" && scopedOutEntryKeys.has(owner.key)) {
+              warn(
+                rt,
+                warnings,
+                `coverage-audit [Extract]: dropped claim "${claim.capability}" citing entry "${claim.entry}" \u2014 resolved to an entry excluded by scope:'public'; pass scope:'all' to include it`
+              );
+              scopedOutFindingsCount++;
               continue;
             }
             if (owner.conflict) {
@@ -2678,7 +2743,19 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
             const key = claimKey(canonicalClaim);
             if (seen.has(key)) continue;
             seen.add(key);
-            freshClaims.push({ ...canonicalClaim, mappedDocs: docsByEntry.get(canonical) ?? [] });
+            const mappedDocs = owner.altKey !== null ? [.../* @__PURE__ */ new Set([...docsByEntry.get(canonical) ?? [], ...docsByEntry.get(owner.altKey) ?? []])] : docsByEntry.get(canonical) ?? [];
+            if (owner.altKey !== null) {
+              warn(
+                rt,
+                warnings,
+                `coverage-audit [Extract]: claim "${claim.capability}" sourcePath "${claim.sourcePath}" is dual-mapped (also covered by entry "${owner.altKey}") \u2014 checking BOTH entries' docs before deciding 'undocumented'`
+              );
+            }
+            freshClaims.push({
+              ...canonicalClaim,
+              mappedDocs,
+              attributionAmbiguous: owner.altKey !== null
+            });
             freshKeys.push(key);
           }
         }
@@ -2748,7 +2825,12 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
     }
     rt.phase("Report");
     const verdictCount = (v) => verified.filter((r) => r.verdict === v).length;
-    const findings = verified.filter((r) => r.verdict !== "refuted").map((r) => ({ ...r.claim, verdict: r.verdict, votes: r.votes }));
+    const findings = verified.filter((r) => r.verdict !== "refuted").map((r) => ({
+      ...r.claim,
+      verdict: r.verdict,
+      votes: r.votes,
+      evidence: consolidateEvidence(r.verdict, r.votes)
+    }));
     const summary = {
       total: verified.length,
       undocumented: verdictCount("confirmed"),
@@ -2764,6 +2846,13 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       repoRoot: input.repoRoot,
       entries: provenance.map(entryKey),
       provenanceSource,
+      scope: input.scope,
+      // Empty when scope is 'all': scopedOutEntryKeys is always computed from
+      // the manifest, but nothing is actually EXCLUDED this run unless
+      // scope:'public' filtered `provenance` down from it — match the doc
+      // comment on CoverageAuditOutput, not the raw classification set.
+      scopedOutEntries: input.scope === "all" ? [] : [...scopedOutEntryKeys],
+      scopedOutFindingsCount,
       capabilitiesInventoried,
       rounds: finalState.rounds,
       // HONEST: complete only when a full sweep found nothing new — a
@@ -2783,7 +2872,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
     meta: {
       name: "coverage-audit",
       description: "Pre-release documentation-COVERAGE audit \u2014 the inverse of docs-audit: inventories the user-facing capabilities of the code mapped by the docs-provenance manifest, then refute-first verifies which of them are NOT properly described in their mapped docs (undocumented, or merely mentioned).",
-      whenToUse: "Use BEFORE a release (npm publish, plugin version bump) alongside docs-audit to catch the OTHER direction of drift: real capabilities the docs never mention at all, not just stale prose. Pass repoRoot (absolute); optionally provenance (defaults to the bundled dwt manifest \u2014 pass an external repo manifest to run it there), hints, and sizing knobs. Findings are remediation input, e.g. for doc-rewrite.",
+      whenToUse: 'Use BEFORE a release (npm publish, plugin version bump) alongside docs-audit to catch the OTHER direction of drift: real capabilities the docs never mention at all, not just stale prose. Pass repoRoot (absolute); optionally provenance (defaults to the bundled dwt manifest \u2014 pass an external repo manifest to run it there), hints, and sizing knobs. scope defaults to "public" (excludes internal support-package entries \u2014 scaffold, smoke, debugger, the examples/ catch-all \u2014 whose exports the public docs deliberately do not catalogue in depth); pass scope:"all" for the full, noisier picture. Findings are remediation input, e.g. for doc-rewrite.',
       phases: [
         { title: "Fence", detail: "Leaf-fence + optional cross-model verifier probe" },
         { title: "Inventory", detail: "Enumerate the capabilities of each provenance entry source" },
