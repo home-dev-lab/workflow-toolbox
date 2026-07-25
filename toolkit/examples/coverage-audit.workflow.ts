@@ -176,12 +176,61 @@ function entryKey(e: ProvenanceEntry): string {
   return e.sources[0] ?? ''
 }
 
+// ---------------------------------------------------------------------------
+// Scope filter (card #1826055113500788444 defect 3) — matched by ENTRY KEY
+// (first source path), never a loose path-prefix test: a sibling entry that
+// happens to share a directory root but carries its OWN richer, dedicated doc
+// surface (pr-review.workflow.ts's worked-example doc; the capability-registry
+// entry's dedicated doc) must never be swept in by accident. These four are
+// exactly the bundled DOCS_PROVENANCE entries whose mapped docs are a catalog/
+// summary level, not an export-by-export description — the ones the run
+// wf_36c11615-367 arbitration found accounted for the bulk of confirmed
+// findings (support-package internals the public docs deliberately don't
+// enumerate). An external `provenance` manifest has none of these keys, so the
+// filter is a no-op there regardless of `scope`.
+// ---------------------------------------------------------------------------
+const INTERNAL_SUPPORT_ENTRY_KEYS: ReadonlySet<string> = new Set([
+  'toolkit/packages/scaffold/src/',
+  'toolkit/packages/smoke/src/',
+  'toolkit/packages/debugger/src/',
+  'toolkit/examples/',
+])
+
+function isInternalSupportKey(key: string): boolean {
+  return INTERNAL_SUPPORT_ENTRY_KEYS.has(key)
+}
+
+/** Normalize a possibly-ABSOLUTE reported path to repo-relative before
+ *  attribution (card #1826055113500788444 defect 2, gap found reviewing the
+ *  actual run wf_36c11615-367 data): resolveEntry only matches repo-relative
+ *  manifest prefixes, but agents reading a real repoRoot with Bash/Read
+ *  routinely echo the ABSOLUTE path they actually saw — 7 of the 21 real
+ *  scaffold.ts misattributions in that run used an absolute sourcePath, which
+ *  would otherwise resolve to null (no manifest evidence at all) and fall
+ *  back to trusting the entry echo alone, silently skipping this fix. A path
+ *  that does not start with repoRoot passes through unchanged (already
+ *  relative, or from an unrelated root — resolveEntry's own null-handling
+ *  covers that case). */
+function toRepoRelative(repoRoot: string, path: string): string {
+  const prefix = repoRoot.endsWith('/') ? repoRoot : repoRoot + '/'
+  return path.startsWith(prefix) ? path.slice(prefix.length) : path
+}
+
 /** A resolved entry attribution: the canonical key plus HOW it matched —
  *  'file' (exact file-path evidence) or 'dir' (subtree membership). The class
- *  feeds decideOwner's specificity rule below. */
+ *  feeds decideOwner's specificity rule below. `altKey` is a HIDDEN second
+ *  candidate: the resolved string is simultaneously an EXACT source of `key`
+ *  AND falls under a DIFFERENT entry's dir-prefix — the exact match wins the
+ *  primary resolution (buildEntryResolver checks exact sources before dir
+ *  prefixes), so without this the alternate entry would never surface at all
+ *  (card #1826055113500788444 defect 2: `scaffold.ts` is an exact source of
+ *  the observed-role-brief entry AND lives under the scaffold-emitter entry's
+ *  directory prefix — every scaffold.ts capability silently checked ONLY the
+ *  former's narrower docs). null when there is no such hidden alternative. */
 interface EntryMatch {
   key: string
   via: 'file' | 'dir'
+  altKey: string | null
 }
 
 /** Alias resolution for agent-reported entry identifiers (quirk fix, card
@@ -217,13 +266,32 @@ function buildEntryResolver(
   dirSources.sort((a, b) => b.prefix.length - a.prefix.length)
   return (reported: string): EntryMatch | null => {
     if (keys.has(reported)) {
-      return { key: reported, via: reported.endsWith('/') ? 'dir' : 'file' }
+      // KNOWN BOUNDARY (review finding, card #1826055113500788444 defect 2):
+      // altKey is deliberately NOT computed here, so a reported string that IS
+      // itself an entry's FIRST source (its entryKey) never surfaces a hidden
+      // dir-prefix alternative, even when one exists (e.g. probe-agent-type.ts
+      // is both its own entry's key AND under the patterns/src/ dir entry;
+      // pr-review.workflow.ts is both its own key AND under the examples/
+      // catch-all). Checked against the real run wf_36c11615-367: this class
+      // hits 6 confirmed findings, all under entries with their OWN dedicated,
+      // richer docs already listed first — unioning the broader entry's docs
+      // would not have flipped any of those verdicts, and doing so blanket
+      // risks the OPPOSITE failure (a loose mention in the broader doc masking
+      // a real gap) for the probe-agent-type.ts case a prior review round
+      // (17/07, commit 6e406a3) deliberately decided should stay narrow. Left
+      // as a named, evidence-checked deferral, not a silent gap — revisit with
+      // a per-case judgment if a future run's misalignment findings land here.
+      return { key: reported, via: reported.endsWith('/') ? 'dir' : 'file', altKey: null }
     }
     const exact = exactSource.get(reported)
-    if (exact !== undefined) return { key: exact, via: 'file' }
-    for (const d of dirSources) {
-      if (reported.startsWith(d.prefix)) return { key: d.key, via: 'dir' }
-    }
+    // A HIDDEN second candidate: the reported string is simultaneously an
+    // EXACT source of `exact` (if found) and falls under a DIFFERENT entry's
+    // dir prefix. The exact match still wins the PRIMARY resolution (checked
+    // first, as before) — but the alternate is surfaced via altKey rather
+    // than silently discarded (defect 2, see EntryMatch's doc comment).
+    const dirMatch = dirSources.find((d) => reported.startsWith(d.prefix) && d.key !== exact)
+    if (exact !== undefined) return { key: exact, via: 'file', altKey: dirMatch?.key ?? null }
+    if (dirMatch !== undefined) return { key: dirMatch.key, via: 'dir', altKey: null }
     return null
   }
 }
@@ -245,11 +313,24 @@ function buildEntryResolver(
 function decideOwner(
   byEcho: EntryMatch | null,
   bySource: EntryMatch | null,
-): { key: string; conflict: boolean } | null {
-  if (byEcho === null) return bySource === null ? null : { key: bySource.key, conflict: false }
-  if (bySource === null || bySource.key === byEcho.key) return { key: byEcho.key, conflict: false }
-  if (bySource.via === 'file' && byEcho.via === 'dir') return { key: bySource.key, conflict: false }
-  return { key: byEcho.key, conflict: true }
+): { key: string; conflict: boolean; altKey: string | null } | null {
+  if (byEcho === null) {
+    return bySource === null ? null : { key: bySource.key, conflict: false, altKey: bySource.altKey }
+  }
+  if (bySource === null) return { key: byEcho.key, conflict: false, altKey: byEcho.altKey }
+  if (bySource.key === byEcho.key) {
+    // Echo and sourcePath already AGREE on the canonical owner — but either
+    // side may carry its own hidden altKey (defect 2: a source string that is
+    // an exact source of THIS entry while also living under a DIFFERENT
+    // entry's dir prefix, which buildEntryResolver's exact-first lookup would
+    // otherwise hide completely). Deliberately NOT threaded through the two
+    // disagreement branches below (file-beats-dir, equal-specificity
+    // conflict) — those already have a deterministic, tested resolution
+    // (review F1/F2) that this defect-2 fix must not disturb.
+    return { key: byEcho.key, conflict: false, altKey: bySource.altKey ?? byEcho.altKey }
+  }
+  if (bySource.via === 'file' && byEcho.via === 'dir') return { key: bySource.key, conflict: false, altKey: null }
+  return { key: byEcho.key, conflict: true, altKey: null }
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +349,16 @@ export interface CoverageAuditInput {
    *  `provenance` knob. Each entry maps `sources` (implementation) to `docs`
    *  (the surfaces that are SUPPOSED to describe it). */
   provenance: readonly ProvenanceEntry[] | null
+  /** Which provenance entries this run actually audits (card
+   *  #1826055113500788444 defect 3). Default 'public': excludes the fixed
+   *  INTERNAL_SUPPORT_ENTRY_KEYS (support packages the public docs
+   *  deliberately do not catalogue export-by-export — scaffold, smoke,
+   *  debugger, and the catch-all examples/ entry) — on run wf_36c11615-367
+   *  these accounted for the large majority of confirmed findings, noise that
+   *  drowned the small number of real public-surface gaps. 'all' audits every
+   *  manifest entry (pre-filter behavior, unchanged). Excluded entries are
+   *  named in the output's `scopedOutEntries`, never silently dropped. */
+  scope: 'public' | 'all'
   /** Free-text context threaded into inventory, extract AND verify prompts. */
   hints: string | null
   /** Extraction loop ceiling (loopUntilDone maxIterations). Default 6 (two
@@ -457,6 +548,11 @@ type RawCoverageClaim = ExtractOutput['claims'][number]
  *  trustworthy even if an extractor mis-echoes it). */
 interface CoverageClaim extends RawCoverageClaim {
   mappedDocs: readonly string[]
+  /** true when decideOwner found a hidden altKey (defect 2): mappedDocs above
+   *  is the UNION of the canonical entry's docs AND the alternate entry's
+   *  docs, rather than a single silently-picked surface — so Verify checks
+   *  the fuller doc surface instead of risking a false "undocumented" gap. */
+  attributionAmbiguous: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -516,6 +612,18 @@ export interface CoverageAuditFinding {
   mappedDocs: readonly string[]
   verdict: ClaimVerdict
   votes: ReadonlyArray<VerifierVote | null>
+  /** Consolidated verifier reasoning (card #1826055113500788444 defect 1) —
+   *  every verifier vote already carries a `reason` (VERIFIER_SCHEMA requires
+   *  it), but it lived ONLY inside `votes[]`, forcing an arbiter to reopen
+   *  transcripts to judge a finding. Derived by consolidateEvidence: the
+   *  first vote whose OWN verdict agrees with the decided verdict, or the
+   *  first available reason otherwise; '' only when there is truly no vote to
+   *  draw from (an 'unverified-by-cap' finding — votes is empty by design). */
+  evidence: string
+  /** true when this finding's entry attribution was AMBIGUOUS (defect 2) —
+   *  mappedDocs is the union of two candidate entries' docs, not a single
+   *  silent pick. See CoverageClaim.attributionAmbiguous. */
+  attributionAmbiguous: boolean
 }
 
 export interface CoverageAuditOutput {
@@ -527,6 +635,20 @@ export interface CoverageAuditOutput {
    *  `provenance` knob (external-repo audit), 'bundled' = the committed dwt
    *  manifest (default). */
   provenanceSource: 'input' | 'bundled'
+  /** Echoes input.scope (defect 3). */
+  scope: 'public' | 'all'
+  /** Entry keys excluded from THIS run because scope is 'public' (empty when
+   *  scope is 'all', or when none of the resolved manifest's keys match
+   *  INTERNAL_SUPPORT_ENTRY_KEYS — e.g. an external `provenance` manifest).
+   *  Never a silent drop: named here so a caller can see exactly what a
+   *  'public'-scoped run chose not to look at. */
+  scopedOutEntries: readonly string[]
+  /** Count of claims/capabilities dropped DURING Inventory/Extract because
+   *  they resolved (by entry echo or sourcePath) to a scoped-out entry despite
+   *  that entry never being assigned to an agent this run — the "freelance
+   *  report" edge case. Kept separate from `summary` (whose 6-key shape is a
+   *  stable contract) rather than added as a 7th key there. */
+  scopedOutFindingsCount: number
   /** Total capabilities enumerated across all entries in Inventory. */
   capabilitiesInventoried: number
   /** Extraction rounds actually run. */
@@ -656,9 +778,20 @@ function parseInput(raw: unknown): CoverageAuditInput {
     tieredVotes = obj['tieredVotes']
   }
 
+  let scope: 'public' | 'all' = 'public'
+  if (obj['scope'] !== undefined) {
+    if (obj['scope'] !== 'public' && obj['scope'] !== 'all') {
+      throw new Error(
+        `coverage-audit: "scope" must be "public" or "all", got ${JSON.stringify(obj['scope'])}`,
+      )
+    }
+    scope = obj['scope']
+  }
+
   return {
     repoRoot,
     provenance,
+    scope,
     hints: parseOptionalString(obj, 'hints'),
     maxRounds: parsePositiveInt(obj, 'maxRounds', 6),
     dryRounds: parsePositiveInt(obj, 'dryRounds', 1),
@@ -820,6 +953,26 @@ function renderCoverageClaim(
     `Cite the file paths (and line numbers where possible) your verdict rests on in "reason".`
 }
 
+/** Derive ONE canonical evidence string for a finding from its raw verifier
+ *  votes (card #1826055113500788444 defect 1 — see CoverageAuditFinding's doc
+ *  comment for why this exists). Prefers a vote that AGREES with the decided
+ *  verdict (the reasoning that actually drove the tally); falls back to the
+ *  first available reason when none agrees (e.g. a demoted
+ *  partially-confirmed, or a verdict the aggregate overruled); '' when every
+ *  vote is null/blank (an all-failed verifier burst, already surfaced by the
+ *  pattern's own warnings — never fabricated here). */
+function consolidateEvidence(
+  verdict: ClaimVerdict,
+  votes: ReadonlyArray<VerifierVote | null>,
+): string {
+  const agreeing = votes.find(
+    (v): v is VerifierVote => v !== null && v.verdict === verdict && v.reason.trim().length > 0,
+  )
+  if (agreeing !== undefined) return agreeing.reason
+  const any = votes.find((v): v is VerifierVote => v !== null && v.reason.trim().length > 0)
+  return any !== undefined ? any.reason : ''
+}
+
 // ---------------------------------------------------------------------------
 // Workflow body
 // ---------------------------------------------------------------------------
@@ -883,12 +1036,24 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
     verifierProbe = { requested: input.verifierType, available: probe.available, reason: probe.reason }
   }
 
-  const provenance: readonly ProvenanceEntry[] = input.provenance ?? DOCS_PROVENANCE
+  // fullProvenance is the COMPLETE resolved manifest — used for attribution
+  // (resolveEntry/docsByEntry) so an out-of-scope entry a "freelancing" agent
+  // happens to cite still resolves correctly (and can be explicitly dropped as
+  // scoped-out, see below) rather than falling through as "unknown". Only the
+  // AUDITED subset (post scope filter) gets its own Inventory/Extract group.
+  const fullProvenance: readonly ProvenanceEntry[] = input.provenance ?? DOCS_PROVENANCE
   const provenanceSource: CoverageAuditOutput['provenanceSource'] =
     input.provenance !== null ? 'input' : 'bundled'
 
-  const resolveEntry = buildEntryResolver(provenance)
-  const docsByEntry = new Map<string, readonly string[]>(provenance.map((e) => [entryKey(e), e.docs]))
+  const scopedOutEntryKeys = new Set(
+    fullProvenance.filter((e) => isInternalSupportKey(entryKey(e))).map(entryKey),
+  )
+  const provenance: readonly ProvenanceEntry[] =
+    input.scope === 'all' ? fullProvenance : fullProvenance.filter((e) => !scopedOutEntryKeys.has(entryKey(e)))
+  let scopedOutFindingsCount = 0
+
+  const resolveEntry = buildEntryResolver(fullProvenance)
+  const docsByEntry = new Map<string, readonly string[]>(fullProvenance.map((e) => [entryKey(e), e.docs]))
   const groups = chunk(provenance, input.entriesPerAgent)
   const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory)
   const extractModel = resolveWrapperModel(resolvedExtractType !== null, input.models?.extract)
@@ -967,13 +1132,23 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
       // object's capabilities entirely.
       const byEcho = resolveEntry(entryResult.entry)
       const droppedNames: string[] = []
+      const droppedScopedOut: string[] = []
       let conflicts = 0
       for (const cap of entryResult.capabilities) {
-        const owner = decideOwner(byEcho, resolveEntry(cap.sourcePath))
+        const owner = decideOwner(byEcho, resolveEntry(toRepoRelative(input.repoRoot, cap.sourcePath)))
         if (owner === null) {
           // Review F1: a PARTIALLY-attributable object must not lose its
           // unattributable capabilities silently — collect and warn below.
           droppedNames.push(cap.name)
+          continue
+        }
+        if (input.scope === 'public' && scopedOutEntryKeys.has(owner.key)) {
+          // Defect 3: an agent "freelanced" onto an entry that was never
+          // assigned this run (scope excluded it) but still resolves —
+          // dropped, never silently (distinct from the "not in manifest"
+          // warning above), and counted so a caller can see the exclusion.
+          droppedScopedOut.push(cap.name)
+          scopedOutFindingsCount++
           continue
         }
         if (owner.conflict) conflicts++
@@ -1000,6 +1175,14 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
           `coverage-audit [Inventory]: dropped ${droppedNames.length} capabilit${droppedNames.length === 1 ? 'y' : 'ies'} ` +
           `(${droppedNames.join(', ')}) reported under "${entryResult.entry}" — ` +
           `not in the audited provenance manifest`,
+        )
+      }
+      if (droppedScopedOut.length > 0) {
+        warn(
+          rt, warnings,
+          `coverage-audit [Inventory]: dropped ${droppedScopedOut.length} capabilit${droppedScopedOut.length === 1 ? 'y' : 'ies'} ` +
+          `(${droppedScopedOut.join(', ')}) reported under "${entryResult.entry}" — resolved to an entry ` +
+          `excluded by scope:'public'; pass scope:'all' to include it`,
         )
       }
       if (conflicts > 0) {
@@ -1106,13 +1289,26 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
           // beats subtree membership on disagreement. Only a claim with NO
           // manifest evidence at all is unusable (verification could not
           // attribute it to mapped docs) and dropped.
-          const owner = decideOwner(resolveEntry(claim.entry), resolveEntry(claim.sourcePath))
+          const owner = decideOwner(
+            resolveEntry(claim.entry),
+            resolveEntry(toRepoRelative(input.repoRoot, claim.sourcePath)),
+          )
           if (owner === null) {
             warn(
               rt, warnings,
               `coverage-audit [Extract]: dropped a claim citing entry "${claim.entry}" — not in the ` +
               `audited provenance manifest`,
             )
+            continue
+          }
+          if (input.scope === 'public' && scopedOutEntryKeys.has(owner.key)) {
+            // Defect 3: same freelance-drop as Inventory, at Extract time.
+            warn(
+              rt, warnings,
+              `coverage-audit [Extract]: dropped claim "${claim.capability}" citing entry "${claim.entry}" ` +
+              `— resolved to an entry excluded by scope:'public'; pass scope:'all' to include it`,
+            )
+            scopedOutFindingsCount++
             continue
           }
           if (owner.conflict) {
@@ -1133,7 +1329,26 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
           const key = claimKey(canonicalClaim)
           if (seen.has(key)) continue
           seen.add(key)
-          freshClaims.push({ ...canonicalClaim, mappedDocs: docsByEntry.get(canonical) ?? [] })
+          // Defect 2: on a hidden altKey, check BOTH candidate entries' docs
+          // (union, deduped) rather than silently picking one — the safer
+          // mechanical widening of ground truth over a live corrective
+          // re-ask (see decideOwner's doc comment for why).
+          const mappedDocs = owner.altKey !== null
+            ? [...new Set([...(docsByEntry.get(canonical) ?? []), ...(docsByEntry.get(owner.altKey) ?? [])])]
+            : (docsByEntry.get(canonical) ?? [])
+          if (owner.altKey !== null) {
+            warn(
+              rt, warnings,
+              `coverage-audit [Extract]: claim "${claim.capability}" sourcePath "${claim.sourcePath}" is ` +
+              `dual-mapped (also covered by entry "${owner.altKey}") — checking BOTH entries' docs before ` +
+              `deciding 'undocumented'`,
+            )
+          }
+          freshClaims.push({
+            ...canonicalClaim,
+            mappedDocs,
+            attributionAmbiguous: owner.altKey !== null,
+          })
           freshKeys.push(key)
         }
       }
@@ -1248,7 +1463,12 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
 
   const findings: CoverageAuditFinding[] = verified
     .filter((r) => r.verdict !== 'refuted')
-    .map((r) => ({ ...r.claim, verdict: r.verdict, votes: r.votes }))
+    .map((r) => ({
+      ...r.claim,
+      verdict: r.verdict,
+      votes: r.votes,
+      evidence: consolidateEvidence(r.verdict, r.votes),
+    }))
 
   const summary: CoverageAuditOutput['summary'] = {
     total: verified.length,
@@ -1269,6 +1489,13 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
     repoRoot: input.repoRoot,
     entries: provenance.map(entryKey),
     provenanceSource,
+    scope: input.scope,
+    // Empty when scope is 'all': scopedOutEntryKeys is always computed from
+    // the manifest, but nothing is actually EXCLUDED this run unless
+    // scope:'public' filtered `provenance` down from it — match the doc
+    // comment on CoverageAuditOutput, not the raw classification set.
+    scopedOutEntries: input.scope === 'all' ? [] : [...scopedOutEntryKeys],
+    scopedOutFindingsCount,
     capabilitiesInventoried,
     rounds: finalState.rounds,
     // HONEST: complete only when a full sweep found nothing new — a
@@ -1302,6 +1529,9 @@ export default defineWorkflow({
       'OTHER direction of drift: real capabilities the docs never mention at all, not just stale ' +
       'prose. Pass repoRoot (absolute); optionally provenance (defaults to the bundled dwt ' +
       'manifest — pass an external repo manifest to run it there), hints, and sizing knobs. ' +
+      'scope defaults to "public" (excludes internal support-package entries — scaffold, smoke, ' +
+      'debugger, the examples/ catch-all — whose exports the public docs deliberately do not ' +
+      'catalogue in depth); pass scope:"all" for the full, noisier picture. ' +
       'Findings are remediation input, e.g. for doc-rewrite.',
     phases: [
       { title: 'Fence', detail: 'Leaf-fence + optional cross-model verifier probe' },

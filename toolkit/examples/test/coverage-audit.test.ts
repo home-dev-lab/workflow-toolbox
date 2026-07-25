@@ -1135,6 +1135,207 @@ describe('coverage-audit verification cap', () => {
     expect(capped).toHaveLength(1)
     expect(capped[0]?.capability).toBe('lowRiskCap')
     expect(out.warnings.some((w) => w.includes('maxVerifyClaims'))).toBe(true)
+    // A cap-truncated finding was never verified — evidence must be honestly
+    // empty, never fabricated (card #1826055113500788444 defect 1).
+    expect(capped[0]?.evidence).toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: evidence consolidation (card #1826055113500788444 defect 1) —
+// verifier votes always carry a `reason` (VERIFIER_SCHEMA requires it), but it
+// lived ONLY inside `votes[]` on run wf_36c11615-367 (0/109 confirmed findings
+// had a top-level evidence field). consolidateEvidence surfaces it.
+// ---------------------------------------------------------------------------
+
+describe('coverage-audit evidence consolidation (defect 1)', () => {
+  it('surfaces the agreeing verifier reasoning as a finding-level evidence field', async () => {
+    const rt = makeRuntime({
+      inventory: { 'src/a.ts': [makeCapability()] },
+      extractRounds: [[makeGap()], [makeGap()]],
+    })
+    const out = await wf.run(rt, JSON.stringify(BASE_INPUT))
+    expect(out.findings).toHaveLength(1)
+    expect(out.findings[0]?.evidence).toBeTruthy()
+    expect(out.findings[0]?.evidence).toBe('the gap is real')
+  })
+
+  it('surfaces a keyed vote reason (not the bare default) for a distinct capability', async () => {
+    const rt = makeRuntime({
+      inventory: { 'src/a.ts': [makeCapability()] },
+      extractRounds: [[makeGap({ capability: 'namedCap' })], [makeGap({ capability: 'namedCap' })]],
+      verdicts: { namedcap: 'confirmed' },
+    })
+    const out = await wf.run(rt, JSON.stringify(BASE_INPUT))
+    expect(out.findings[0]?.evidence).toBe('fake verdict for namedcap')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: dual-mapped source cross-validation (card #1826055113500788444
+// defect 2) — a sourcePath that is simultaneously an EXACT source of the
+// echoed entry AND falls under a DIFFERENT entry's dir prefix (the real
+// bundled-manifest case: toolkit/packages/scaffold/src/scaffold.ts is an
+// exact source of the observed-role-brief entry AND lives under the
+// scaffold-emitter entry's dir prefix) must not silently check only ONE
+// entry's docs.
+// ---------------------------------------------------------------------------
+
+describe('coverage-audit dual-mapped source cross-validation (defect 2)', () => {
+  // Mirrors the REAL bundled-manifest shape exactly: narrowEntry lists the
+  // shared file as a NON-FIRST source (entryKey is 'main.ts', not the shared
+  // file) — the real scaffold.ts case (an exact, non-identity source of the
+  // observed-role-brief entry that ALSO falls under the scaffold-emitter
+  // entry's dir prefix). A shared file that IS itself an entryKey short-
+  // circuits buildEntryResolver's "known key" branch before altKey is ever
+  // computed — not the bug this test targets.
+  const narrowEntry = { sources: ['src/shared/main.ts', 'src/shared/file.ts'], docs: ['docs/narrow.md'] }
+  const broadEntry = { sources: ['src/shared/'], docs: ['docs/broad.md'] }
+
+  it('unions BOTH candidate entries\' docs and flags attributionAmbiguous when echo and sourcePath already agree but sourcePath is dual-mapped', async () => {
+    const claim = makeGap({ entry: 'src/shared/main.ts', capability: 'dualCap', sourcePath: 'src/shared/file.ts' })
+    const rt = makeRuntime({ inventory: {}, extractRounds: [[claim], [claim]] })
+    const out = await wf.run(
+      rt, JSON.stringify({ repoRoot: '/repo', provenance: [narrowEntry, broadEntry] }),
+    )
+    expect(out.findings).toHaveLength(1)
+    expect(out.findings[0]?.entry).toBe('src/shared/main.ts')
+    expect(out.findings[0]?.mappedDocs).toEqual(['docs/narrow.md', 'docs/broad.md'])
+    expect(out.findings[0]?.attributionAmbiguous).toBe(true)
+    expect(out.warnings.some((w) => w.includes('dualCap') && w.includes('dual-mapped'))).toBe(true)
+  })
+
+  it('normalizes an ABSOLUTE sourcePath under repoRoot before resolving it — 7/21 of the real scaffold.ts misattributions used one', async () => {
+    // Ground truth: run wf_36c11615-367 — agents reading a real repoRoot with
+    // Bash/Read routinely echo the absolute path they actually saw. Without
+    // normalization this sourcePath resolves to null (no manifest evidence,
+    // no dir-prefix ever consulted) and silently falls back to the echo alone.
+    const claim = makeGap({
+      entry: 'src/shared/main.ts', capability: 'dualCapAbs',
+      sourcePath: '/repo/src/shared/file.ts',
+    })
+    const rt = makeRuntime({ inventory: {}, extractRounds: [[claim], [claim]] })
+    const out = await wf.run(
+      rt, JSON.stringify({ repoRoot: '/repo', provenance: [narrowEntry, broadEntry] }),
+    )
+    expect(out.findings).toHaveLength(1)
+    expect(out.findings[0]?.entry).toBe('src/shared/main.ts')
+    expect(out.findings[0]?.mappedDocs).toEqual(['docs/narrow.md', 'docs/broad.md'])
+    expect(out.findings[0]?.attributionAmbiguous).toBe(true)
+  })
+
+  it('does NOT flag attributionAmbiguous for an ordinary single-entry claim', async () => {
+    const rt = makeRuntime({
+      inventory: { 'src/a.ts': [makeCapability()] },
+      extractRounds: [[makeGap()], [makeGap()]],
+    })
+    const out = await wf.run(rt, JSON.stringify(BASE_INPUT))
+    expect(out.findings[0]?.attributionAmbiguous).toBe(false)
+  })
+
+  it('KNOWN BOUNDARY (review finding, evidence-checked, deliberately NOT fixed): a reported string that IS itself an entry key never surfaces a hidden dir-prefix alternative', async () => {
+    // Mirrors the real bundled-manifest shape (probe-agent-type.ts /
+    // pr-review.workflow.ts): the FIRST source of an exact entry ALSO falls
+    // under a different entry's dir prefix. When echo AND sourcePath are both
+    // that exact entry-key string, buildEntryResolver's "known key" branch
+    // short-circuits before ever consulting dirSources — no union, no
+    // attributionAmbiguous flag. See the doc comment on that branch for why
+    // this is a deliberate deferral, not a silent gap.
+    const keyIsEntry = { sources: ['src/exact/self.ts'], docs: ['docs/exact.md'] }
+    const dirOverlap = { sources: ['src/exact/'], docs: ['docs/exact-dir.md'] }
+    const claim = makeGap({ entry: 'src/exact/self.ts', capability: 'boundaryCap', sourcePath: 'src/exact/self.ts' })
+    const rt = makeRuntime({ inventory: {}, extractRounds: [[claim], [claim]] })
+    const out = await wf.run(
+      rt, JSON.stringify({ repoRoot: '/repo', provenance: [keyIsEntry, dirOverlap] }),
+    )
+    expect(out.findings[0]?.mappedDocs).toEqual(['docs/exact.md'])
+    expect(out.findings[0]?.attributionAmbiguous).toBe(false)
+  })
+
+  it('does NOT disturb the existing file-vs-file CONFLICT resolution (review F2) — no altKey, no union', async () => {
+    const conflicted = makeGap({ entry: 'src/a.ts', capability: 'conflictCap', sourcePath: 'src/b.ts' })
+    const rt = makeRuntime({ inventory: {}, extractRounds: [[conflicted], [conflicted]] })
+    const out = await wf.run(rt, JSON.stringify(BASE_INPUT))
+    expect(out.findings[0]?.mappedDocs).toEqual(['docs/a.md'])
+    expect(out.findings[0]?.attributionAmbiguous).toBe(false)
+  })
+
+  it('does NOT disturb the existing file-beats-dir resolution — no altKey, no union', async () => {
+    const fileEntry = { sources: ['src/over/special.ts'], docs: ['docs/special.md'] }
+    const dirEntry = { sources: ['src/over/'], docs: ['docs/over.md'] }
+    const claim = makeGap({ entry: 'src/over/', capability: 'overlapCap', sourcePath: 'src/over/special.ts' })
+    const rt = makeRuntime({ inventory: {}, extractRounds: [[claim], [claim]] })
+    const out = await wf.run(rt, JSON.stringify({ repoRoot: '/repo', provenance: [fileEntry, dirEntry] }))
+    expect(out.findings[0]?.mappedDocs).toEqual(['docs/special.md'])
+    expect(out.findings[0]?.attributionAmbiguous).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: scope knob (card #1826055113500788444 defect 3) — default 'public'
+// excludes the 4 internal-support entries from the BUNDLED manifest so
+// support-package noise (scaffold/smoke/debugger/examples catch-all) does not
+// drown real public-surface gaps; scope:'all' restores the full picture.
+// ---------------------------------------------------------------------------
+
+describe('coverage-audit scope knob (defect 3)', () => {
+  const INTERNAL_KEYS = [
+    'toolkit/packages/scaffold/src/',
+    'toolkit/packages/smoke/src/',
+    'toolkit/packages/debugger/src/',
+    'toolkit/examples/',
+  ]
+
+  function bundledRuntime(): FakeRuntime {
+    return new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+        if (p.includes('availability probe')) return 'PROBE_OK'
+        if (p.includes('reply with a single word')) return 'ready'
+        if (p.includes('inventory the user-facing capabilities')) return { entries: [] }
+        if (p.includes('extract undocumented-capability claims')) return { claims: [] }
+        return 'unrouted'
+      },
+    })
+  }
+
+  it('defaults to "public" and excludes the 4 internal-support entries from the bundled manifest', async () => {
+    const out = await wf.run(bundledRuntime(), JSON.stringify({ repoRoot: '/repo' }))
+    expect(out.scope).toBe('public')
+    expect(new Set(out.scopedOutEntries)).toEqual(new Set(INTERNAL_KEYS))
+    for (const key of INTERNAL_KEYS) expect(out.entries).not.toContain(key)
+    expect(out.scopedOutFindingsCount).toBe(0)
+  })
+
+  it('scope:"all" audits every bundled entry, including the 4 internal-support ones', async () => {
+    const out = await wf.run(bundledRuntime(), JSON.stringify({ repoRoot: '/repo', scope: 'all' }))
+    expect(out.scope).toBe('all')
+    expect(out.scopedOutEntries).toEqual([])
+    for (const key of INTERNAL_KEYS) expect(out.entries).toContain(key)
+  })
+
+  it('rejects an unknown scope value', async () => {
+    await expect(
+      wf.run(bundledRuntime(), JSON.stringify({ repoRoot: '/repo', scope: 'private' })),
+    ).rejects.toThrow(/scope/)
+  })
+
+  it('drops a freelance claim resolving to a scoped-out entry, with a distinct warning, under a fixture manifest', async () => {
+    // A fixture entry deliberately given an INTERNAL_SUPPORT key so the drop
+    // path is exercised without depending on the bundled manifest's shape.
+    const supportEntry = { sources: ['toolkit/packages/scaffold/src/'], docs: ['docs/scaffold.md'] }
+    const publicEntry = { sources: ['src/a.ts'], docs: ['docs/a.md'] }
+    const freelanceClaim = makeGap({
+      entry: 'toolkit/packages/scaffold/src/', capability: 'freelanceCap', sourcePath: 'toolkit/packages/scaffold/src/x.ts',
+    })
+    const rt = makeRuntime({ inventory: {}, extractRounds: [[freelanceClaim], [freelanceClaim]] })
+    const out = await wf.run(
+      rt, JSON.stringify({ repoRoot: '/repo', provenance: [publicEntry, supportEntry] }),
+    )
+    expect(out.claimsSeen).toBe(0)
+    expect(out.findings).toHaveLength(0)
+    expect(out.scopedOutFindingsCount).toBe(1)
+    expect(out.warnings.some((w) => w.includes('freelanceCap') && w.includes("scope:'public'"))).toBe(true)
   })
 })
 
