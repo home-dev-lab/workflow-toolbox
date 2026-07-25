@@ -101,6 +101,7 @@ export function scanCardCostAgents(subagentsDir: string, selector: AgentSelector
 
     let usage: AgentUsage = emptyUsage()
     let activity = emptyActivity()
+    let transcriptMissing = false
     try {
       const text = readFileSync(join(subagentsDir, `agent-${agentId}.jsonl`), 'utf8')
       usage = parseTranscriptUsage(text)
@@ -108,7 +109,11 @@ export function scanCardCostAgents(subagentsDir: string, selector: AgentSelector
     } catch {
       // Transcript missing/unreadable — meta.json still identified the agent; report it with
       // zeroed usage/activity rather than omitting the row (an omitted row would silently
-      // understate coverage instead of naming the gap via coveredAgents < totalAgents).
+      // understate coverage instead of naming the gap via coveredAgents < totalAgents). The
+      // zeros are a PLACEHOLDER, not a measurement — transcriptMissing is what disambiguates
+      // this from genuine zero-cost work (a real completeness gap flagged by cross-family
+      // review 2026-07-25: the two were indistinguishable in the numbers alone before this).
+      transcriptMissing = true
     }
 
     results.push({
@@ -119,6 +124,7 @@ export function scanCardCostAgents(subagentsDir: string, selector: AgentSelector
       description: meta.description,
       usage,
       activity,
+      transcriptMissing,
     })
   }
 

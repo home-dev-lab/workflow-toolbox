@@ -123,7 +123,12 @@ export interface TranscriptActivity {
   /** `tool_use` content blocks across the DEDUPED (final-snapshot) assistant messages — a
    *  streamed partial snapshot of the same message could carry a different block set than its
    *  final snapshot, so counting only the final snapshot avoids double-counting one tool call
-   *  seen in an intermediate delta too. */
+   *  seen in an intermediate delta too. ASSUMPTION (flagged by cross-family review 2026-07-25,
+   *  not independently re-verified against a live streaming edge case here): Claude API
+   *  streaming within one message.id is ADDITIVE — a tool_use block, once emitted in an
+   *  intermediate snapshot, persists into the final one and is never dropped. If that ever
+   *  proves false for some future streaming mode, this would silently UNDERCOUNT rather than
+   *  error — a residual gap, not a guarded invariant. */
   toolCalls: number
   /** Earliest / latest top-level `timestamp` across EVERY line (not just assistant/deduped —
    *  user and tool-result lines bound the real wall-clock span too). Null when no line carried

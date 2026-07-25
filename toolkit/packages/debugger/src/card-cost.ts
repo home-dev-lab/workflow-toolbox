@@ -36,6 +36,13 @@ export interface CardCostAgentInput {
   description: string | null
   usage: AgentUsage
   activity: TranscriptActivity
+  /** True when this agent's identity was found (meta.json present) but its transcript could
+   *  NOT be read (missing/pruned/unreadable) — usage/activity are then zeroed placeholders,
+   *  NOT a measured zero. Flagged by cross-family review (2026-07-25): without this field, a
+   *  transcript-missing row and a genuine zero-work row were indistinguishable in the numbers
+   *  alone (a `numbers-carry-their-set-and-unit`-shaped gap) — a caller could report "0 tokens"
+   *  as fact when the truth is "unmeasured". */
+  transcriptMissing: boolean
 }
 
 /** input + output + cache-creation ("fresh compute") — excludes cache-read. See module header. */
@@ -56,6 +63,8 @@ export interface CardCostAgentRow {
   toolCalls: number
   firstTimestamp: string | null
   lastTimestamp: string | null
+  /** See CardCostAgentInput.transcriptMissing — propagated verbatim to the row. */
+  transcriptMissing: boolean
 }
 
 export interface CardCostReport {
@@ -103,6 +112,7 @@ export function buildCardCostReport(cardId: string | null, inputs: CardCostAgent
       toolCalls: input.activity.toolCalls,
       firstTimestamp: input.activity.firstTimestamp,
       lastTimestamp: input.activity.lastTimestamp,
+      transcriptMissing: input.transcriptMissing,
     })
     totals = addUsage(totals, input.usage)
     freshTotal += fresh

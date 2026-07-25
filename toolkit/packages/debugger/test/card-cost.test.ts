@@ -22,6 +22,7 @@ function agent(overrides: Partial<CardCostAgentInput> = {}): CardCostAgentInput 
     description: null,
     usage: emptyUsage(),
     activity: emptyActivity(),
+    transcriptMissing: false,
     ...overrides,
   }
 }
@@ -93,6 +94,18 @@ describe('buildCardCostReport', () => {
     const report = buildCardCostReport('C', [agent({ agentId: 'a1' }), agent({ agentId: 'a2' })])
     expect(report.spanStart).toBeNull()
     expect(report.spanEnd).toBeNull()
+  })
+
+  it('TEST-LOCK (cross-family review finding, 2026-07-25): a transcript-missing agent is NOT indistinguishable from genuine zero-work — transcriptMissing propagates to the row', () => {
+    const missing = agent({ agentId: 'a-missing', transcriptMissing: true }) // usage/activity default to zeroed
+    const genuineZero = agent({ agentId: 'a-genuine-zero', transcriptMissing: false })
+    const report = buildCardCostReport('C', [missing, genuineZero])
+    const byId = new Map(report.agents.map((a) => [a.agentId, a]))
+    // Both rows have identical zeroed usage/activity numbers — transcriptMissing is the ONLY
+    // field that lets a caller tell "unmeasured" apart from "measured, and it was zero".
+    expect(byId.get('a-missing')!.transcriptMissing).toBe(true)
+    expect(byId.get('a-genuine-zero')!.transcriptMissing).toBe(false)
+    expect(byId.get('a-missing')!.freshTokens).toBe(byId.get('a-genuine-zero')!.freshTokens) // both 0
   })
 
   it('does not mutate its inputs', () => {
