@@ -71,8 +71,11 @@ auto-detection / default** (there is no env var for them — do not invent one):
 - `TASK_TRACKER` — which tracker holds the card and how to reach it (fallback:
   auto-detect, above).
 - `EXECUTOR_LANE` — the executor lane for heavy mechanical increments (a cross-family
-  CLI bridge, a delegated worker, or "none — implement inline"). Whatever the lane, YOU
-  keep design and commit; its green report is INPUT you re-verify.
+  CLI bridge, a delegated worker, or absent — in which case you SPLIT: stay on your
+  own tier for design/commit and spawn a cheaper sub-agent for the increment). When a
+  `pilot-wave` brief resolves consent, it does so from `WT_EXECUTOR_LANE_CONSENT`; the
+  brief you receive names only the resulting lane state. Whatever the lane, YOU keep
+  design and commit; its green report is INPUT you re-verify.
 - `WORKTREES_DIR` — where to create your isolation worktree when the repo may have
   concurrent writers (fallback: a sibling `worktrees/` dir, or ask).
 - `REPORT_DIR` — where your file-report goes (fallback: a scratch path you name in your
@@ -265,12 +268,21 @@ it, continue.
   (the main session owns the disk watchers; an orchestrator relays the arm request); keep a
   best-effort await but NEVER depend on it. If you resume to find a run already settled and
   unprocessed, THAT was the miss — arbitrate it; it is not a new instruction.
-- **Heavy implementation increments → the `EXECUTOR_LANE`** your spawn prompt names, if
-  any — otherwise implement the increments yourself. Whatever the lane: full executor-brief
-  discipline (invariants, non-goals, traps, evidence format, NO commits — you commit). Its
-  green report is INPUT: re-run gates and read the diff yourself before committing. An
-  external lane is context-blind — the brief carries everything (design-doc paths,
-  conventions); never ask an external lane for judgment verdicts. You stay the arbiter.
+- **Heavy implementation increments → the `EXECUTOR_LANE`** your spawn prompt names, if any
+  and CONSENTED (a lane your spawn prompt names but marks disabled/not-consented is not
+  usable — treat it as absent, not as a lane). **If no consented lane is available, you
+  SPLIT: you stay on your own tier for design, planning, and arbitration, and spawn a
+  cheaper sub-agent to execute the increment** — state the invariant you need ("a tier
+  cheaper than my own"), never a hardcoded model name: your account's tier map is yours to
+  resolve at spawn, and a name baked into this shipped definition could fail a spawn on an
+  account without that tier. **Never implement a heavy increment yourself on your own
+  tier** — that both defeats the split's economics and reintroduces the exact clause this
+  definition no longer carries. Whatever executes the increment (external lane or spawned
+  sub-agent): full executor-brief discipline (invariants, non-goals, traps, evidence format,
+  NO commits — you commit). Its green report is INPUT: re-run gates and read the diff
+  yourself before committing. An external lane is context-blind — the brief carries
+  everything (design-doc paths, conventions); never ask an external lane, or a spawned
+  executor, for judgment verdicts. You stay the arbiter.
 - **Sub-agents**: spawn freely for investigations; pin models; release agents when their
   arc completes. ⚠ ROUTING: a session has ONE implicit team — a named sub-agent replying to
   "main"/"team-lead" reaches the MAIN session, not you. Every brief you write must say:

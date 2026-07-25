@@ -51,10 +51,24 @@ the resolved values in the spawn prompt:
   tracker the user names → auto-detect (a kanban board pointer file, e.g. a planka.json board
   descriptor, reached through its MCP; else the ticketing CLI the project configures, e.g.
   Jira; else a plain task file). Pass which one and how to query it.
-- **`EXECUTOR_LANE`** — the lane for heavy mechanical increments. Resolve by PROBING the
-  machine: is a cross-family CLI bridge on `PATH` (e.g. `command -v codex`, `command -v
-  opencode`)? If yes, name it as the executor/verifier lane; if not, the lane is "implement
-  inline". Never assume a bridge is present — a missing one degrades cleanly to inline work.
+- **`EXECUTOR_LANE`** — the lane for heavy mechanical increments, gated by CONSENT, not mere
+  availability. Resolve in two steps:
+  1. **Availability**: is a cross-family CLI bridge on `PATH` (e.g. `command -v codex`,
+     `command -v opencode`)? A missing one degrades cleanly to step 2's fallback — never
+     assume a bridge is present.
+  2. **Consent** (checked only if available): read `WT_EXECUTOR_LANE_CONSENT` from the `env`
+     block of `~/.claude/settings.json` (account ceiling — opt-in, default OFF: absent or
+     not `"true"` means NOT consented) — this is a plain file read, so it takes effect
+     immediately with no process restart needed. Then check the CURRENT project's
+     `.claude/settings.local.json` `env` block for the SAME key: it may only NARROW (set it
+     to something other than `"true"`), never widen a ceiling that is off. A refusal at
+     either level wins.
+  If BOTH available AND consented → name the bridge as the executor/verifier lane.
+  Otherwise (no bridge, OR a bridge present but not consented) → **the lane is absent; the
+  pilot/orchestrator SPLITS** (its own tier for design/plan/arbitration, a spawned cheaper
+  sub-agent for the increment) — never "implement inline" on the arbiter's own tier. State
+  which of the two ("absent" vs "present but not consented") in the brief you compose, since
+  it changes what a later session should check before re-probing.
 - **`WORKTREES_DIR`** — where pilots create isolation worktrees when the repo may have
   concurrent writers. Resolve: an explicit dir → a sibling worktrees dir next to the repo.
 - **`REPORT_DIR`** — where file-reports land (the nested-routing workaround: a named agent's
@@ -157,7 +171,7 @@ and only the spawner knows which is which.
 |---|---|---|
 | `KNOWLEDGE_BASE_INDEX` | READ-ONLY session knowledge base | `WT_KNOWLEDGE_BASE_INDEX`, then derivation, then none |
 | `TASK_TRACKER` | which tracker + how to reach it | auto-detect (board pointer / CLI / task file) |
-| `EXECUTOR_LANE` | heavy-increment lane | probe for a bridge on PATH, else inline |
+| `EXECUTOR_LANE` | heavy-increment lane | probe for an available + consented bridge, else absent and split |
 | `WORKTREES_DIR` | isolation-worktree home | sibling worktrees dir |
 | `REPORT_DIR` | file-report home | a named scratch dir |
 | `QUOTA_POSTURE` | verification-budget posture | comfortable; degrade under pressure |
