@@ -69,6 +69,40 @@ export interface SpawnReadyDeps<H> {
 
 const POLL_INTERVAL_MS = 500
 
+/** Default spawn-readiness window (ms) — how long `wt-observe start` waits for a fresh
+ *  spawn to answer /api/health before declaring failure and reaping the child. Card
+ *  #1826653906575295552: kept UNCHANGED at 30s — the fix for the underlying incident (a
+ *  resumed run's cache-replay flood saturating the server's event loop before the
+ *  launcher's own probe could ever succeed) is an ORDERING fix on the SERVER side (the boot
+ *  sweep now defers resume dispatch until its own /api/health has answered at least once —
+ *  see workflow-observatory's app.ts, `releaseBootResumes`); this window is the operator's
+ *  escape hatch for a genuinely slow machine, not the fix itself. Raising the default would
+ *  paper over the ordering bug (still fails on a slow enough machine) and silently changes
+ *  what every existing user gets by default — a shipped-behavior change, not a bug fix. */
+export const HEALTH_TIMEOUT_DEFAULT_MS = 30_000
+
+/** Hard ceiling on the operator-configurable health-check window (10 minutes). An operator
+ *  requesting more than this is far more likely masking a genuinely dead/hung process than
+ *  legitimately waiting out a slow boot — `resolveHealthTimeoutMs` clamps to this rather
+ *  than honoring an unbounded value. */
+export const HEALTH_TIMEOUT_CEILING_MS = 600_000
+
+/** Effective spawn-readiness timeout (card #1826653906575295552's "make the window
+ *  configurable" — candidate fix 2): `--health-timeout <seconds>` flag wins over
+ *  WT_OBSERVE_HEALTH_TIMEOUT_MS (milliseconds), else HEALTH_TIMEOUT_DEFAULT_MS — same
+ *  precedence/sanitization posture as launch-body.ts's resolveLaunchTimeoutMs (a
+ *  non-numeric or non-positive value in EITHER channel is ignored, never a 0/NaN that
+ *  would fail the health wait instantly). A value above HEALTH_TIMEOUT_CEILING_MS is
+ *  CLAMPED, never silently honored — `clampedFrom` is non-null exactly when that happened,
+ *  so the caller can warn loudly (this function stays pure/testable — I/O is the caller's
+ *  job, mirroring safeRequesterCwd's `{ value, note }` shape in launch-body.ts). */
+export function resolveHealthTimeoutMs(flagSeconds: string | undefined, envMs: string | undefined): { ms: number; clampedFrom: number | null } {
+  const fromFlag = flagSeconds === undefined ? NaN : Number(flagSeconds) * 1000
+  const fromEnv = envMs === undefined ? NaN : Number(envMs)
+  const raw = Number.isFinite(fromFlag) && fromFlag > 0 ? fromFlag : Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : HEALTH_TIMEOUT_DEFAULT_MS
+  return raw > HEALTH_TIMEOUT_CEILING_MS ? { ms: HEALTH_TIMEOUT_CEILING_MS, clampedFrom: raw } : { ms: raw, clampedFrom: null }
+}
+
 /** Wait for the spawned server to become healthy on its REAL port. Throws on
  *  spawn error / immediate exit (no kill — no live child) and on timeout
  *  (AFTER reaping the child). Returns the ready health payload. */
@@ -104,7 +138,10 @@ export async function awaitSpawnedServerReady<H>(deps: SpawnReadyDeps<H>): Promi
             ? `:${port} (OS-assigned)`
             : 'its OS-assigned port (never announced in the log)'
       throw new Error(
-        `server did not become healthy on ${where} within ${deps.timeoutMs} ms — SIGTERM sent to the child (best-effort reap).\n${deps.logTail()}`,
+        `server did not become healthy on ${where} within ${deps.timeoutMs} ms — SIGTERM sent to the child (best-effort reap). ` +
+          `If a resumed run is expected to take a while, raise the window with --health-timeout <seconds> ` +
+          `(or WT_OBSERVE_HEALTH_TIMEOUT_MS, up to ${HEALTH_TIMEOUT_CEILING_MS} ms) — or start with --no-resume to park ` +
+          `pending resumes instead of waiting them out.\n${deps.logTail()}`,
       )
     }
     await deps.sleep(POLL_INTERVAL_MS)

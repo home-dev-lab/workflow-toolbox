@@ -74,7 +74,7 @@ import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, inlineObserverRequ
 import { isRecord } from './validator-shared.js'
 import { extractObservers } from './observer-def.js'
 import { buildLaunchBody, safeRequesterCwd, resolveLaunchTimeoutMs, resolveWebAvailable } from './launch-body.js'
-import { awaitSpawnedServerReady } from './spawn-ready.js'
+import { awaitSpawnedServerReady, resolveHealthTimeoutMs, HEALTH_TIMEOUT_CEILING_MS } from './spawn-ready.js'
 import { retryCanonicalPort } from './port-retry.js'
 import { readBootId, readProcStartStamp, pidState } from './observe-identity.js'
 import { discoverConfigDirCandidates, readObserveConfig, writeObserveConfig, type RemoteEntry } from './observe-config.js'
@@ -101,8 +101,6 @@ import {
 
 const DEFAULT_PORT = 5174
 const HEALTH_TIMEOUT_MS = 2_000
-// How long `start` waits for a fresh spawn to answer /api/health before declaring failure.
-const SPAWN_READY_TIMEOUT_MS = 30_000
 const LOG_ROTATE_BYTES = 5 * 1024 * 1024
 
 // ── identity probes — EXTRACTED to observe-identity.ts (shared with the Electron
@@ -351,6 +349,13 @@ async function probeFor(ctx: Ctx): Promise<{ pf: ObservePidfile | null; health: 
 interface StartFlags {
   watch: boolean
   enableLaunch: boolean
+  /** Card #1826653906575295552 candidate fix 4 — a supported way to start while PARKING
+   *  every pending A3 boot-sweep resume instead of dispatching it (--no-resume). Never
+   *  discards a launch record; only defers it to a later boot without this flag. */
+  noResume: boolean
+  /** Card #1826653906575295552 candidate fix 2 — the resolved (already flag/env/ceiling
+   *  applied) spawn-readiness window in ms; see resolveHealthTimeoutMs's own doc. */
+  healthTimeoutMs: number
 }
 
 /** Resolve the source set `wt-observe start` serves: --source flags > the persistent
@@ -488,6 +493,10 @@ async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly
       // byte-identical to before.
       ...(remotes.length > 0 ? { OBSERVE_REMOTES: JSON.stringify(remotes) } : {}),
       ...(flags.enableLaunch ? { OBSERVE_UI_ENABLE_LAUNCH: '1' } : {}),
+      // Card #1826653906575295552 candidate fix 4 — --no-resume: PARK every pending A3
+      // boot-sweep resume this boot instead of dispatching it (dev-api.ts reads this and
+      // sets AppOptions.bootResumesDisabled). Unset = resume normally (unchanged default).
+      ...(flags.noResume ? { OBSERVE_UI_NO_RESUME: '1' } : {}),
       // The agents-only shim plugin the server loads into every DELEGATED SDK
       // session (SDK `plugins` option), so `workflow-toolbox:lean`/`leaf` resolve
       // there despite the sessions' deliberate `settingSources: []` (without it
@@ -524,7 +533,7 @@ async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly
   // REAPS the still-alive child by precise PID instead of leaving an orphan.
   const h = await awaitSpawnedServerReady<Health>({
     requestedPort: port,
-    timeoutMs: SPAWN_READY_TIMEOUT_MS,
+    timeoutMs: flags.healthTimeoutMs,
     readLogSlice: () => readLogSliceFrom(logPath, logStartOffset),
     probe: (p) => probeHealth(p),
     // Accept EITHER health shape (the readiness poll must not assume cardinality).
@@ -600,6 +609,11 @@ async function cmdStart(ctx: Ctx, sourceDirs: readonly string[], remotes: readon
       }
       // Adopt keeps the running server AS-IS — a --watch request cannot retrofit a watcher.
       if (flags.watch) process.stderr.write('note: --watch ignored (adopted a running server). `wt-observe stop` then `start --watch` to get the watcher.\n')
+      // Card #1826653906575295552 — same posture as --watch above: --no-resume only affects
+      // a server's OWN boot sweep, which already ran (or didn't) at the ADOPTED server's own
+      // start time. An operator requesting --no-resume here would otherwise get no signal
+      // that it did nothing.
+      if (flags.noResume) process.stderr.write('note: --no-resume ignored (adopted a running server — its own boot sweep already ran). `wt-observe stop` then `start --no-resume` to park pending resumes on a fresh boot.\n')
       // --enable-launch CAN retrofit when EXACTLY 1 source is served (a root-level runtime
       // opt-in exists there, same as before verb-unification). 2+ sources have NO
       // server-wide toggle (launches are per-source, under /s/<key>/api/launch-enable) —
@@ -700,7 +714,11 @@ async function cmdStart(ctx: Ctx, sourceDirs: readonly string[], remotes: readon
     const port = p.port
     const { health: h, token } = await spawnServer(ctx.stateRoot, port, sourceDirs, remotes, flags)
     writePidfileAt(ctx.pidfilePath, { ...pidfileFromHealth(h), token })
-    const notes = [flags.watch ? ' with the vite build watcher (--watch)' : '', flags.enableLaunch ? ' with live launches ENABLED (--enable-launch)' : ''].join('')
+    const notes = [
+      flags.watch ? ' with the vite build watcher (--watch)' : '',
+      flags.enableLaunch ? ' with live launches ENABLED (--enable-launch)' : '',
+      flags.noResume ? ' with pending resumes PARKED, not dispatched (--no-resume)' : '',
+    ].join('')
     const label = sourceDirs.length === 1 ? ` for ${sourceDirs[0]}` : ''
     const sourcesLine = sourceDirs.length > 1 ? `sources: ${sourceDirs.join(', ')}\n` : ''
     process.stdout.write(`observe-ui started${label} (pid ${h.pid})${notes}.\n${sourcesLine}URL: http://127.0.0.1:${h.port}/\n`)
@@ -1691,7 +1709,7 @@ async function cmdPrune(argv: readonly string[]): Promise<number> {
 // the top-level dispatch fallback, and the `--help` / `<verb> --help` handler all
 // read from here, so the synopsis a user is shown can never drift between them.
 const SYNOPSIS = {
-  start: 'wt-observe start [--source <dir>]... [--watch] [--enable-launch]',
+  start: 'wt-observe start [--source <dir>]... [--watch] [--enable-launch] [--no-resume] [--health-timeout <seconds>]',
   stop: 'wt-observe stop',
   status: 'wt-observe status',
   prune: 'wt-observe prune [--run <id> | --name-prefix <p>]... [--older-than <dur>] [--yes]',
@@ -1708,6 +1726,12 @@ type Verb = keyof typeof SYNOPSIS
 // terse missing-arg throw stays a single line). launch documents the capability
 // wiring the one-line synopsis cannot carry: the auto-detected sidecar + registry.
 const HELP_DETAIL: Partial<Record<Verb, string>> = {
+  start:
+    '  --no-resume: park every pending orphaned-run resume this boot instead of dispatching\n' +
+    '  it (never discards a launch record — the next boot without this flag resumes it).\n' +
+    '  --health-timeout <seconds>: how long to wait for the fresh spawn to answer\n' +
+    '  /api/health before giving up and reaping the child (default 30s; also settable via\n' +
+    `  WT_OBSERVE_HEALTH_TIMEOUT_MS in milliseconds; hard ceiling ${HEALTH_TIMEOUT_CEILING_MS} ms).`,
   launch:
     "  <workflow.js> is resolved by NAME against the server's OBSERVE_WORKFLOWS_DIR\n" +
     '  (a registered artifact name, not an arbitrary path).\n' +
@@ -1759,7 +1783,20 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     if (cmd === 'start') {
       const sourceDirs = resolveStartSources(flagValues(argv, 'source'))
       const remotes = resolveStartRemotes()
-      await cmdStart(ctx, sourceDirs, remotes, { watch: argv.includes('--watch'), enableLaunch: argv.includes('--enable-launch') })
+      {
+        const { ms: healthTimeoutMs, clampedFrom } = resolveHealthTimeoutMs(flagValue(argv, 'health-timeout'), process.env['WT_OBSERVE_HEALTH_TIMEOUT_MS'])
+        if (clampedFrom !== null) {
+          process.stderr.write(
+            `wt-observe: --health-timeout/WT_OBSERVE_HEALTH_TIMEOUT_MS requested ${clampedFrom} ms, clamped to the ${HEALTH_TIMEOUT_CEILING_MS} ms ceiling\n`,
+          )
+        }
+        await cmdStart(ctx, sourceDirs, remotes, {
+          watch: argv.includes('--watch'),
+          enableLaunch: argv.includes('--enable-launch'),
+          noResume: argv.includes('--no-resume'),
+          healthTimeoutMs,
+        })
+      }
     } else if (cmd === 'stop') await cmdStop(ctx)
     else if (cmd === 'status') await cmdStatus(ctx)
     else if (cmd === 'prune') return await cmdPrune(argv)
