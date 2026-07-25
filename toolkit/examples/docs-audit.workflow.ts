@@ -115,6 +115,27 @@ export interface DocsAuditInput {
    *  so 250 claims cost about twice the OLD worst case for >4x the
    *  coverage — aim one COMPLETE pass, not repeated capped ones). */
   maxVerifyClaims: number
+  /** Skip this many claims (after risk-sorting, same order Verify uses) before applying
+   *  maxVerifyClaims — the mechanism a PARTITIONED follow-up run uses to verify a DIFFERENT
+   *  slice of the same claim set without re-extracting. Default 0 (verify from the start).
+   *  Combines with maxVerifyClaims: run 1 {claimOffset:0, maxVerifyClaims:250}, run 2
+   *  {claimOffset:250, maxVerifyClaims:250}, run 3 {claimOffset:500, maxVerifyClaims:250}
+   *  together cover claims 0..749 across three runs, none of which re-pays extraction when
+   *  combined with `resumeFrom` below. */
+  claimOffset: number
+  /** Optional pre-extracted claim set (+ its extraction metadata) from a PRIOR run's
+   *  persisted output (see the fail-fast guard in `run()`) — when provided, this run SKIPS
+   *  Inventory and Extract entirely and verifies (a slice of) this shared claim set instead,
+   *  so a partitioned follow-up never re-pays extraction. null = run Inventory+Extract
+   *  normally (the default, single-run path). */
+  resumeFrom: {
+    surfaces: readonly string[]
+    inventorySource: 'input' | 'agent'
+    rounds: number
+    stoppedBy: LoopStoppedBy
+    extractionComplete: boolean
+    claims: readonly AuditClaim[]
+  } | null
   /** Verifier votes for FULL-quorum claims. Default 3; the refute threshold
    *  is min(2, votes), clamped per claim so a single-vote claim is decided
    *  by its one vote. See tieredVotes for which claims get the full quorum. */
@@ -275,9 +296,35 @@ const RISK_ORDER: Readonly<Record<string, number>> = { high: 0, medium: 1, low: 
 /** Sort rank for a risk value outside RISK_ORDER (schema-impossible, but the
  *  sort must stay total): after every known rank. */
 const UNKNOWN_RISK_RANK = Object.keys(RISK_ORDER).length
+/** Verified binary ground truth: the harness's own agent()-call ceiling — hard, non-
+ *  configurable, identical across every run (confirmed via the CLI binary's `FSd=1000`
+ *  string and a failed run's terminal `agentCount:1000`). Not this workflow's to change. */
+const HARNESS_AGENT_CAP = 1000
+/** Residual conservative slack beyond the modeled call cost (the cache-warm probe and, when
+ *  routed externally, the provenance-checker calls are modeled explicitly in the Verify guard
+ *  below, via `verifyMechanismOverhead` — this buffer is NOT those, it's headroom for the ONE
+ *  extra agent() call the guard itself spends to persist claims when it trips, plus any minor
+ *  bookkeeping this estimate does not model exactly. Never spent on Verify's own claim-vote
+ *  calls. */
+const SAFETY_BUFFER = 15
 
 function claimKey(c: AuditClaim): string {
   return c.surface + ' ' + c.quote.toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+/** The SAME per-claim vote-count logic adversarialVerification is actually given below (tieredVotes
+ *  ? behavior/boundary/high gets the full quorum, everything else gets 1 : every claim gets the flat
+ *  `votes`) — used here ONLY to ESTIMATE total verify calls before dispatch, never a flat votes×claims
+ *  guess (a flat estimate would be wrong for a claim mix that isn't uniform risk, and Frederic's
+ *  explicit correction on this card is that the clamp must use the REAL vote function). */
+function estimateVerifyCalls(claims: readonly AuditClaim[], votes: number, tieredVotes: boolean): number {
+  let total = 0
+  for (const c of claims) {
+    total += tieredVotes
+      ? (c.kind === 'behavior' || c.kind === 'boundary' || c.risk === 'high' ? votes : 1)
+      : votes
+  }
+  return total
 }
 
 function chunk<T>(items: readonly T[], size: number): T[][] {
@@ -313,7 +360,9 @@ export interface DocsAuditOutput {
    *  collapsed into a boolean success. */
   extractionComplete: boolean
   stoppedBy: LoopStoppedBy
-  /** Unique claims discovered across all rounds (=== summary.total). */
+  /** Unique claims discovered across all rounds (=== summary.total when claimOffset is 0, the
+   *  default — a nonzero claimOffset intentionally verifies only a SLICE of claimsSeen, so the
+   *  two diverge by design in a partitioned run; see claimOffset on the input). */
   claimsSeen: number
   summary: {
     total: number
@@ -356,6 +405,19 @@ function parsePositiveInt(
   return raw
 }
 
+function parseNonNegativeInt(
+  obj: Record<string, unknown>,
+  field: string,
+  fallback: number,
+): number {
+  const raw = obj[field]
+  if (raw === undefined) return fallback
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
+    throw new Error(`docs-audit: "${field}" must be an integer >= 0, got ${JSON.stringify(raw)}`)
+  }
+  return raw
+}
+
 function parseOptionalString(obj: Record<string, unknown>, field: string): string | null {
   const raw = obj[field]
   if (raw === undefined || raw === null) return null
@@ -367,6 +429,8 @@ function parseOptionalString(obj: Record<string, unknown>, field: string): strin
 
 const AGENT_TYPE_ROLES = ['inventory', 'extract', 'verify'] as const
 const ROLE_MAP_KEYS = ['inventory', 'extract', 'verify'] as const
+const VALID_CLAIM_KINDS = new Set(['behavior', 'instruction', 'boundary', 'cross-reference', 'other'])
+const VALID_CLAIM_RISKS = new Set(['high', 'medium', 'low'])
 
 // Bridge-routing doctrine (OPENCODE_WORKDIR auto-injection, the wrapper-model
 // gate, and the per-role string-map parser) is SHARED across coverage-audit,
@@ -379,6 +443,86 @@ function parseRoleStringMapLocal(
 ): Readonly<{ inventory?: string; extract?: string; verify?: string }> | null {
   return parseRoleStringMap(raw, key, allowed, ROLE_MAP_KEYS, 'docs-audit') as
     Readonly<{ inventory?: string; extract?: string; verify?: string }> | null
+}
+
+function parseResumeFromClaim(v: unknown, i: number): AuditClaim {
+  if (typeof v !== 'object' || v === null) {
+    throw new Error(`docs-audit: "resumeFrom.claims[${i}]" must be an object`)
+  }
+  const c = v as Record<string, unknown>
+  for (const field of ['surface', 'kind', 'risk', 'quote', 'claim', 'checkHint'] as const) {
+    if (typeof c[field] !== 'string' || (c[field] as string).length === 0) {
+      throw new Error(`docs-audit: "resumeFrom.claims[${i}].${field}" must be a non-empty string`)
+    }
+  }
+  if (!VALID_CLAIM_KINDS.has(c['kind'] as string)) {
+    throw new Error(`docs-audit: "resumeFrom.claims[${i}].kind" must be one of ${[...VALID_CLAIM_KINDS].join(', ')}`)
+  }
+  if (!VALID_CLAIM_RISKS.has(c['risk'] as string)) {
+    throw new Error(`docs-audit: "resumeFrom.claims[${i}].risk" must be one of ${[...VALID_CLAIM_RISKS].join(', ')}`)
+  }
+  return {
+    surface: c['surface'] as string,
+    kind: c['kind'] as AuditClaim['kind'],
+    risk: c['risk'] as AuditClaim['risk'],
+    quote: c['quote'] as string,
+    claim: c['claim'] as string,
+    checkHint: c['checkHint'] as string,
+  }
+}
+
+function parseResumeFrom(obj: Record<string, unknown>): DocsAuditInput['resumeFrom'] {
+  const raw = obj['resumeFrom']
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'object') {
+    throw new Error('docs-audit: "resumeFrom" must be an object when provided')
+  }
+  const r = raw as Record<string, unknown>
+  if (!Array.isArray(r['claims'])) {
+    throw new Error('docs-audit: "resumeFrom.claims" must be an array')
+  }
+  const claims = (r['claims'] as unknown[]).map((c, i) => parseResumeFromClaim(c, i))
+  // Review finding (MED): resumeFrom is CALLER input, not re-serialized extractor output — a
+  // caller could otherwise smuggle a claim outside the declared surface corpus, something fresh
+  // extraction already rejects (the surfaceSet.has(claim.surface) guard in the Extract loop
+  // above). Mirror that same integrity check here at parse time, fail-fast like every other
+  // malformed field in this file.
+  if (!Array.isArray(r['surfaces']) || r['surfaces'].length === 0 || r['surfaces'].some((s) => typeof s !== 'string')) {
+    throw new Error('docs-audit: "resumeFrom.surfaces" must be a non-empty array of strings')
+  }
+  const resumeSurfaceSet = new Set(r['surfaces'] as string[])
+  for (let i = 0; i < claims.length; i++) {
+    const surface = claims[i]!.surface
+    if (!resumeSurfaceSet.has(surface)) {
+      throw new Error(
+        `docs-audit: "resumeFrom.claims[${i}].surface" ("${surface}") is not in "resumeFrom.surfaces" — ` +
+        'every resumed claim must belong to the declared surface corpus, same as a freshly extracted one',
+      )
+    }
+  }
+  const inventorySource = r['inventorySource']
+  if (inventorySource !== 'input' && inventorySource !== 'agent') {
+    throw new Error('docs-audit: "resumeFrom.inventorySource" must be "input" or "agent"')
+  }
+  if (typeof r['rounds'] !== 'number' || !Number.isInteger(r['rounds']) || r['rounds'] < 0) {
+    throw new Error('docs-audit: "resumeFrom.rounds" must be an integer >= 0')
+  }
+  if (typeof r['extractionComplete'] !== 'boolean') {
+    throw new Error('docs-audit: "resumeFrom.extractionComplete" must be a boolean')
+  }
+  const stoppedBy = r['stoppedBy']
+  const validStoppedBy = new Set(['done', 'maxIterations', 'dryRounds', 'budgetFloor'])
+  if (typeof stoppedBy !== 'string' || !validStoppedBy.has(stoppedBy)) {
+    throw new Error(`docs-audit: "resumeFrom.stoppedBy" must be one of ${[...validStoppedBy].join(', ')}`)
+  }
+  return {
+    surfaces: r['surfaces'] as string[],
+    inventorySource,
+    rounds: r['rounds'],
+    stoppedBy: stoppedBy as LoopStoppedBy,
+    extractionComplete: r['extractionComplete'],
+    claims,
+  }
 }
 
 function parseInput(raw: unknown): DocsAuditInput {
@@ -456,6 +600,8 @@ function parseInput(raw: unknown): DocsAuditInput {
     dryRounds: parsePositiveInt(obj, 'dryRounds', 1),
     surfacesPerAgent: parsePositiveInt(obj, 'surfacesPerAgent', 4, 10),
     maxVerifyClaims: parsePositiveInt(obj, 'maxVerifyClaims', 250),
+    claimOffset: parseNonNegativeInt(obj, 'claimOffset', 0),
+    resumeFrom: parseResumeFrom(obj),
     votes: parsePositiveInt(obj, 'votes', 3),
     tieredVotes,
     verifierModel,
@@ -568,6 +714,27 @@ function joinRepoPath(repoRoot: string, rel: string): string {
   return `${root}/${trimmed}`
 }
 
+// A checkHint that doesn't even look like a single-line, plain repo-relative path is unusable as a
+// direct-read instruction anyway (it's extractor-authored guidance derived from the audited repo's
+// OWN docs — untrusted for a third-party repo this workflow is published to run against). VALIDATE,
+// never sanitize-and-rewrite: a charset check that just DROPS the hoisted-path line on failure can
+// never turn a hostile checkHint into a working read instruction, whereas a "cleaning" rewrite could
+// silently produce a plausible-looking but wrong path. Deliberately conservative charset — a legit
+// checkHint that happens to fail this (e.g. an unusual character) just loses the direct-read shortcut
+// and falls back to the pre-fix behavior (search-only), never a broken/misleading read instruction.
+const SAFE_CHECK_HINT_RE = /^[A-Za-z0-9_./@-]+$/
+
+// Review finding (card #1826482533345265627, HIGH): the charset above admits '.' and '/' for
+// legitimate relative paths, which ALSO admits '..' traversal segments — "../../../etc/passwd"
+// passes the charset check untouched. joinRepoPath only strips a LEADING slash, it never
+// resolves/normalizes '..', so a hoisted path could escape repoRoot entirely. Reject any '..' (or
+// pointless '.') PATH SEGMENT explicitly, on top of the charset check.
+function looksLikeSafePath(hint: string): boolean {
+  const trimmed = hint.trim()
+  if (!SAFE_CHECK_HINT_RE.test(trimmed)) return false
+  return !trimmed.split('/').some((segment) => segment === '..' || segment === '.')
+}
+
 function renderAuditClaim(
   repoRoot: string,
   hints: string | null,
@@ -575,31 +742,43 @@ function renderAuditClaim(
   opencodeModel: string | null,
   opencodeVariant: string | null,
 ): (c: AuditClaim) => string {
-  return (c) =>
-    opencodeWorkdirLine(resolvedVerifierType, repoRoot) +
-    (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}\n\n` : '') +
-    (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}\n\n` : '') +
-    `Documentation-drift audit — verdict for ONE documentation claim.\n` +
-    `Repository root: ${repoRoot}.\n` +
-    // Card #1826399286049376144 (forensics wf_dd8c0300-c59): 107/750 verify
-    // wrappers died BEFORE calling opencode because this prompt named the
-    // claim but never its concrete source file — the wrapper burned its turn
-    // budget on ls/find/grep exploration to locate it. checkHint is ALREADY
-    // the extractor's best-guess concrete path; resolve + surface it here,
-    // OUTSIDE the untrusted block, as a direct read instruction.
-    `Concrete source path for THIS claim (read this file FIRST, directly — the extractor already ` +
-    `located it; do NOT run ls/find/grep to rediscover it): ${joinRepoPath(repoRoot, c.checkHint)}\n` +
-    `If — and only if — that exact path does not exist or does not contain the relevant code, ` +
-    `THEN search the repository, using checkHint below as a description rather than a literal path.\n` +
-    renderUntrustedClaimBlock(c) + '\n' +
-    (hints !== null ? `Extra context:\n${hints}\n` : '') +
-    `Read the ACTUAL current sources under the repository root (grep/read files; use git read-only ` +
-    `if helpful) and decide:\n` +
-    `- confirmed: the sources today match the claim;\n` +
-    `- partially-confirmed: partly accurate but imprecise or drifted in detail;\n` +
-    `- refuted: the doc statement is STALE or wrong versus the current sources;\n` +
-    `- unverifiable: you could not locate relevant evidence either way (say what you looked for).\n` +
-    `Cite the file paths (and line numbers where possible) your verdict rests on in "reason".`
+  return (c) => {
+    const resolvedPath = looksLikeSafePath(c.checkHint) ? joinRepoPath(repoRoot, c.checkHint) : null
+    const pathLine = resolvedPath !== null
+      ? `Concrete source path for THIS claim (read this file FIRST, directly — the extractor already ` +
+        `located it; do NOT run ls/find/grep to rediscover it): ${resolvedPath}\n` +
+        `If — and only if — that exact path does not exist or does not contain the relevant code, ` +
+        `THEN search the repository, using checkHint below as a description rather than a literal path.\n`
+      : `No literal source path was supplied for this claim (the extractor's checkHint did not look ` +
+        'like a plausible single-line file path, so it was not resolved into a direct-read instruction ' +
+        '— see checkHint below as a description only); search the repository for the relevant code.\n'
+    return (
+      opencodeWorkdirLine(resolvedVerifierType, repoRoot) +
+      (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}\n\n` : '') +
+      (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}\n\n` : '') +
+      `Documentation-drift audit — verdict for ONE documentation claim.\n` +
+      `Repository root: ${repoRoot}.\n` +
+      // Card #1826399286049376144 (forensics wf_dd8c0300-c59): 107/750 verify
+      // wrappers died BEFORE calling opencode because this prompt named the
+      // claim but never its concrete source file — the wrapper burned its turn
+      // budget on ls/find/grep exploration to locate it. checkHint is ALREADY
+      // the extractor's best-guess concrete path; resolve + surface it here,
+      // OUTSIDE the untrusted block, as a direct read instruction — but ONLY
+      // when it validates as a plausible path (card #1826438766219233213: a
+      // hostile checkHint containing a newline + closing marker must never
+      // land unfenced here).
+      pathLine +
+      renderUntrustedClaimBlock(c) + '\n' +
+      (hints !== null ? `Extra context:\n${hints}\n` : '') +
+      `Read the ACTUAL current sources under the repository root (grep/read files; use git read-only ` +
+      `if helpful) and decide:\n` +
+      `- confirmed: the sources today match the claim;\n` +
+      `- partially-confirmed: partly accurate but imprecise or drifted in detail;\n` +
+      `- refuted: the doc statement is STALE or wrong versus the current sources;\n` +
+      `- unverifiable: you could not locate relevant evidence either way (say what you looked for).\n` +
+      `Cite the file paths (and line numbers where possible) your verdict rests on in "reason".`
+    )
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -684,174 +863,196 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
   // any manifest edit.
   // -------------------------------------------------------------------------
 
-  rt.phase('Inventory')
-
   let surfaces: readonly string[]
   let inventorySource: DocsAuditOutput['inventorySource']
+  let groups: string[][] = []
+  let finalState: ExtractState
+  let stoppedBy: LoopStoppedBy
+  let extractionCompleteOverride: boolean | null = null
+  let extractTrail: TrailRecord[] = []
 
-  if (input.surfaces !== null) {
-    surfaces = input.surfaces
-    inventorySource = 'input'
+  if (input.resumeFrom !== null) {
+    rt.phase('Inventory')
+    surfaces = input.resumeFrom.surfaces
+    inventorySource = input.resumeFrom.inventorySource
+    rt.phase('Extract')
+    rt.log(
+      `docs-audit: resuming from a persisted claim set (${input.resumeFrom.claims.length} claims) — ` +
+      'skipping Inventory and Extract entirely',
+    )
+    finalState = { claims: [...input.resumeFrom.claims], seenKeys: [], rounds: input.resumeFrom.rounds }
+    stoppedBy = input.resumeFrom.stoppedBy
+    extractionCompleteOverride = input.resumeFrom.extractionComplete
   } else {
-    const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory)
-    const invOutcome = await agentWithSchemaSalvage<InventoryOutput>(rt, inventoryPrompt(
-      input,
-      resolvedInventoryType,
-      resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
-      resolvedInventoryType !== null ? input.opencodeVariants?.inventory ?? null : null,
-    ), {
-      schema: INVENTORY_SCHEMA,
-      label: 'docs-audit:inventory',
-      phase: 'Inventory',
-      effort: inventoryEffort,
-      ...(resolvedInventoryType !== null ? { agentType: resolvedInventoryType } : {}),
-      ...(inventoryModel !== undefined ? { model: inventoryModel } : {}),
-    })
-    for (const w of invOutcome.warnings) warn(rt, warnings, w)
-    const inv = invOutcome.value
-    if (inv === null) {
-      throw new Error(
-        'docs-audit: the inventory agent failed — structured-output salvage could not recover a ' +
-        'valid surface list (see warnings). Relaunch with resumeFromRunId, or pass an explicit ' +
-        '"surfaces" array to skip inventory entirely',
-      )
+    rt.phase('Inventory')
+
+    if (input.surfaces !== null) {
+      surfaces = input.surfaces
+      inventorySource = 'input'
+    } else {
+      const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory)
+      const invOutcome = await agentWithSchemaSalvage<InventoryOutput>(rt, inventoryPrompt(
+        input,
+        resolvedInventoryType,
+        resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
+        resolvedInventoryType !== null ? input.opencodeVariants?.inventory ?? null : null,
+      ), {
+        schema: INVENTORY_SCHEMA,
+        label: 'docs-audit:inventory',
+        phase: 'Inventory',
+        effort: inventoryEffort,
+        ...(resolvedInventoryType !== null ? { agentType: resolvedInventoryType } : {}),
+        ...(inventoryModel !== undefined ? { model: inventoryModel } : {}),
+      })
+      for (const w of invOutcome.warnings) warn(rt, warnings, w)
+      const inv = invOutcome.value
+      if (inv === null) {
+        throw new Error(
+          'docs-audit: the inventory agent failed — structured-output salvage could not recover a ' +
+          'valid surface list (see warnings). Relaunch with resumeFromRunId, or pass an explicit ' +
+          '"surfaces" array to skip inventory entirely',
+        )
+      }
+      const cleaned = [...new Set(inv.surfaces.map((s) => s.trim()).filter((s) => s.length > 0))]
+      if (cleaned.length === 0) {
+        throw new Error(
+          'docs-audit: inventory returned no surfaces — the surface rules matched nothing under ' +
+          `${input.repoRoot}. Review "surfaceRules" or pass an explicit "surfaces" array.`,
+        )
+      }
+      surfaces = cleaned
+      inventorySource = 'agent'
     }
-    const cleaned = [...new Set(inv.surfaces.map((s) => s.trim()).filter((s) => s.length > 0))]
-    if (cleaned.length === 0) {
-      throw new Error(
-        'docs-audit: inventory returned no surfaces — the surface rules matched nothing under ' +
-        `${input.repoRoot}. Review "surfaceRules" or pass an explicit "surfaces" array.`,
-      )
+
+    // -------------------------------------------------------------------------
+    // Phase 'Extract' — loop-until-dry claim discovery (PEDAGOGY 1).
+    //
+    // Each iteration is one angle-cycled sweep over ALL surfaces, batched
+    // surfacesPerAgent per extractor. Fresh claims are deduped against the
+    // accumulated seen-set (surface + normalized quote); a sweep with zero
+    // fresh claims is a dry round. dryRounds ends extraction as COMPLETE;
+    // maxRounds ends it as a CEILING — the two are reported distinctly.
+    // -------------------------------------------------------------------------
+
+    rt.phase('Extract')
+
+    const surfaceSet = new Set(surfaces)
+    groups = chunk(surfaces, input.surfacesPerAgent)
+    const extractModel = resolveWrapperModel(resolvedExtractType !== null, input.models?.extract)
+
+    let extractEffortByGroup: readonly EffortAlias[] | null = null
+    if (extractAuto) {
+      const sel = await autoSelectEffort(rt, groups.map((group, gi) => ({
+        id: `extract:${gi}`,
+        brief:
+          `Extract checkable claims from ${group.length} doc surface(s): ${group.join(', ')}`,
+        signals: {},
+      })), {
+        fallback: EXTRACT_EFFORT,
+        phase: 'Extract',
+        label: 'docs-audit:autoEffort:extract',
+      })
+      for (const w of sel.warnings) warn(rt, warnings, w)
+      extractEffortByGroup = groups.map((_, gi) => sel.efforts[`extract:${gi}`] ?? EXTRACT_EFFORT)
     }
-    surfaces = cleaned
-    inventorySource = 'agent'
-  }
 
-  // -------------------------------------------------------------------------
-  // Phase 'Extract' — loop-until-dry claim discovery (PEDAGOGY 1).
-  //
-  // Each iteration is one angle-cycled sweep over ALL surfaces, batched
-  // surfacesPerAgent per extractor. Fresh claims are deduped against the
-  // accumulated seen-set (surface + normalized quote); a sweep with zero
-  // fresh claims is a dry round. dryRounds ends extraction as COMPLETE;
-  // maxRounds ends it as a CEILING — the two are reported distinctly.
-  // -------------------------------------------------------------------------
+    const loopResult = await loopUntilDone<ExtractState>(rt, {
+      maxIterations: input.maxRounds,
+      dryRounds: input.dryRounds,
+      initial: { claims: [], seenKeys: [], rounds: 0 },
+      body: async (loopRt, state) => {
+        const round = state.rounds + 1
+        const angle = angleForRound(state.rounds)
 
-  rt.phase('Extract')
+        const results = await loopRt.parallel(
+          groups.map((group, gi) => async () => {
+            const outcome = await agentWithSchemaSalvage<ExtractOutput>(
+              loopRt,
+              extractPrompt(
+                input,
+                group,
+                round,
+                angle,
+                resolvedExtractType,
+                resolvedExtractType !== null ? input.opencodeModels?.extract ?? null : null,
+                resolvedExtractType !== null ? input.opencodeVariants?.extract ?? null : null,
+              ),
+              {
+                schema: EXTRACT_SCHEMA,
+                label: `docs-audit:extract:${round}:${gi}`,
+                phase: 'Extract',
+                effort: extractEffortByGroup?.[gi] ?? extractEffort,
+                ...(resolvedExtractType !== null ? { agentType: resolvedExtractType } : {}),
+                ...(extractModel !== undefined ? { model: extractModel } : {}),
+              },
+            )
+            for (const w of outcome.warnings) warn(rt, warnings, w)
+            return outcome.value
+          }),
+        )
 
-  const surfaceSet = new Set(surfaces)
-  const groups = chunk(surfaces, input.surfacesPerAgent)
-  const extractModel = resolveWrapperModel(resolvedExtractType !== null, input.models?.extract)
+        const seen = new Set(state.seenKeys)
+        const freshClaims: AuditClaim[] = []
+        const freshKeys: string[] = []
 
-  let extractEffortByGroup: readonly EffortAlias[] | null = null
-  if (extractAuto) {
-    const sel = await autoSelectEffort(rt, groups.map((group, gi) => ({
-      id: `extract:${gi}`,
-      brief:
-        `Extract checkable claims from ${group.length} doc surface(s): ${group.join(', ')}`,
-      signals: {},
-    })), {
-      fallback: EXTRACT_EFFORT,
-      phase: 'Extract',
-      label: 'docs-audit:autoEffort:extract',
-    })
-    for (const w of sel.warnings) warn(rt, warnings, w)
-    extractEffortByGroup = groups.map((_, gi) => sel.efforts[`extract:${gi}`] ?? EXTRACT_EFFORT)
-  }
-
-  const loopResult = await loopUntilDone<ExtractState>(rt, {
-    maxIterations: input.maxRounds,
-    dryRounds: input.dryRounds,
-    initial: { claims: [], seenKeys: [], rounds: 0 },
-    body: async (loopRt, state) => {
-      const round = state.rounds + 1
-      const angle = angleForRound(state.rounds)
-
-      const results = await loopRt.parallel(
-        groups.map((group, gi) => async () => {
-          const outcome = await agentWithSchemaSalvage<ExtractOutput>(
-            loopRt,
-            extractPrompt(
-              input,
-              group,
-              round,
-              angle,
-              resolvedExtractType,
-              resolvedExtractType !== null ? input.opencodeModels?.extract ?? null : null,
-              resolvedExtractType !== null ? input.opencodeVariants?.extract ?? null : null,
-            ),
-            {
-              schema: EXTRACT_SCHEMA,
-              label: `docs-audit:extract:${round}:${gi}`,
-              phase: 'Extract',
-              effort: extractEffortByGroup?.[gi] ?? extractEffort,
-              ...(resolvedExtractType !== null ? { agentType: resolvedExtractType } : {}),
-              ...(extractModel !== undefined ? { model: extractModel } : {}),
-            },
-          )
-          for (const w of outcome.warnings) warn(rt, warnings, w)
-          return outcome.value
-        }),
-      )
-
-      const seen = new Set(state.seenKeys)
-      const freshClaims: AuditClaim[] = []
-      const freshKeys: string[] = []
-
-      for (let gi = 0; gi < results.length; gi++) {
-        const res = results[gi]
-        if (res === null || res === undefined) {
-          warn(
-            rt, warnings,
-            `docs-audit [Extract]: extractor ${round}:${gi} failed — its surfaces contribute ` +
-            `nothing this round (${(groups[gi] ?? []).join(', ')})`,
-          )
-          continue
-        }
-        for (const claim of res.claims) {
-          if (!surfaceSet.has(claim.surface)) {
-            // Mechanical guard: an extractor may only report on its assigned
-            // corpus — a claim pinned to an unknown surface is unusable
-            // (verification could not attribute the finding to a doc).
+        for (let gi = 0; gi < results.length; gi++) {
+          const res = results[gi]
+          if (res === null || res === undefined) {
             warn(
               rt, warnings,
-              `docs-audit [Extract]: dropped a claim citing "${claim.surface}" — not in the ` +
-              `audited surface set`,
+              `docs-audit [Extract]: extractor ${round}:${gi} failed — its surfaces contribute ` +
+              `nothing this round (${(groups[gi] ?? []).join(', ')})`,
             )
             continue
           }
-          const key = claimKey(claim)
-          if (seen.has(key)) continue
-          seen.add(key)
-          freshClaims.push(claim)
-          freshKeys.push(key)
+          for (const claim of res.claims) {
+            if (!surfaceSet.has(claim.surface)) {
+              // Mechanical guard: an extractor may only report on its assigned
+              // corpus — a claim pinned to an unknown surface is unusable
+              // (verification could not attribute the finding to a doc).
+              warn(
+                rt, warnings,
+                `docs-audit [Extract]: dropped a claim citing "${claim.surface}" — not in the ` +
+                `audited surface set`,
+              )
+              continue
+            }
+            const key = claimKey(claim)
+            if (seen.has(key)) continue
+            seen.add(key)
+            freshClaims.push(claim)
+            freshKeys.push(key)
+          }
         }
-      }
 
-      if (freshClaims.length === 0) {
+        if (freshClaims.length === 0) {
+          return {
+            state: { ...state, rounds: round },
+            done: false,
+            progressed: false,
+          }
+        }
+
+        rt.log(`docs-audit: round ${round} (+${freshClaims.length} claims, ${state.claims.length + freshClaims.length} total)`)
         return {
-          state: { ...state, rounds: round },
+          state: {
+            claims: [...state.claims, ...freshClaims],
+            seenKeys: [...state.seenKeys, ...freshKeys],
+            rounds: round,
+          },
           done: false,
-          progressed: false,
+          progressed: true,
         }
-      }
+      },
+    })
 
-      rt.log(`docs-audit: round ${round} (+${freshClaims.length} claims, ${state.claims.length + freshClaims.length} total)`)
-      return {
-        state: {
-          claims: [...state.claims, ...freshClaims],
-          seenKeys: [...state.seenKeys, ...freshKeys],
-          rounds: round,
-        },
-        done: false,
-        progressed: true,
-      }
-    },
-  })
+    for (const w of loopResult.warnings) warnings.push(w)
 
-  for (const w of loopResult.warnings) warnings.push(w)
-
-  const { state: finalState, stoppedBy } = loopResult.value
+    const loopStateResult = loopResult.value
+    finalState = loopStateResult.state
+    stoppedBy = loopStateResult.stoppedBy
+    extractTrail = collectTrail(loopResult)
+  }
 
   // -------------------------------------------------------------------------
   // Phase 'Verify' — refute-first, evidence-tiered (PEDAGOGY 2 + 3).
@@ -868,12 +1069,28 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     )
     .map((x) => x.c)
 
+  // Partition-by-argument (never by resume — a resumeFromRunId resets the harness's own call
+  // counter but cached replays still consume it, so skipping already-covered claims must be an
+  // explicit ARGUMENT, not something a resume can do for us).
+  const claimsAfterOffset = input.claimOffset > 0 ? sortedClaims.slice(input.claimOffset) : sortedClaims
+  if (input.claimOffset > 0 && claimsAfterOffset.length === 0) {
+    warn(
+      rt, warnings,
+      `docs-audit: claimOffset=${input.claimOffset} is >= the ${sortedClaims.length} claim(s) available — ` +
+      'nothing left to verify in this slice.',
+    )
+  }
+
   // Zero extracted claims is a LEGITIMATE outcome (trivial surfaces, or every
   // extractor failed — the warnings say which), not a crash: the pattern
   // rejects an empty claims array at entry, so skip it and report zeros.
   let verified: ReadonlyArray<VerifiedClaim<AuditClaim>> = []
   let verifyTrail: TrailRecord[] = []
-  if (sortedClaims.length === 0) {
+  // Review finding (LOW): when claimOffset consumed the whole claim set, the warning above
+  // ALREADY explains why (accurately) — this generic warning would then falsely claim "no
+  // checkable claims were extracted" even though claimsSeen > 0. Only fire it when offset isn't
+  // the reason (offset === 0 is the one case this wording is actually accurate for).
+  if (claimsAfterOffset.length === 0 && input.claimOffset === 0) {
     warn(
       rt, warnings,
       'docs-audit [Verify]: no checkable claims were extracted from the audited surfaces — ' +
@@ -881,13 +1098,157 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
       '(review the Extract warnings above).',
     )
   } else {
+    // The same "keep the first N" truncation adversarialVerification's own applyCap will do —
+    // mirrored here ONLY to estimate the call cost of what will ACTUALLY be dispatched.
+    const candidateClaims = claimsAfterOffset.slice(0, input.maxVerifyClaims)
+    // Review finding (card #1826482533345265627, HIGH): a bare one-call-per-vote estimate is
+    // OPTIMISTIC, not worst-case. adversarialVerification's own mechanics (patterns/src/
+    // adversarial-verification.ts) spend real agent() calls beyond that floor: EVERY vote goes
+    // through agentWithSchemaSalvage (up to 2 real calls per vote — a native attempt plus one
+    // schema-less salvage respawn, same worst case as Extract); one cache-warm probe fires
+    // UNCONDITIONALLY per Verify call (cacheWarm defaults true, not gated on verifierType); and
+    // when routed through an external verifierType, a provenance gate can retry EVERY
+    // disqualified vote once (worst case: all of them) plus two provenance-checker calls
+    // (first pass + retry pass). Budgeting the TRUE worst case — not the floor — is what closes
+    // the exact crash class this guard exists to prevent.
+    // LOCKED by test/docs-audit.test.ts's "computes the ×2 worst-case estimate..." and "...×3
+    // worst-case estimate... when verifierType is routed" (exact arithmetic, not a magic number)
+    // — changing the multiplier/overhead below without updating those two tests fails them with
+    // an explanatory message naming the expected number, instead of silently under-counting again.
+    const voteSalvageMultiplier = resolvedVerifierType !== null ? 3 : 2
+    const verifyMechanismOverhead = 1 /* cache-warm, always */ + (resolvedVerifierType !== null ? 2 : 0) /* provenance checkers */
+    const estimatedVerifyCalls =
+      estimateVerifyCalls(candidateClaims, input.votes, input.tieredVotes) * voteSalvageMultiplier +
+      verifyMechanismOverhead
+
+    // Overhead already consumed this run by Fence/Inventory/Extract — computed from what ACTUALLY
+    // ran (not a blind ceiling guess), so the guard is as tight as the real evidence allows.
+    const fenceProbes =
+      (input.messaging ? 0 : 1) +
+      (input.inventoryType !== null ? 1 : 0) +
+      (input.extractType !== null ? 1 : 0) +
+      (input.verifierType !== null ? 1 : 0)
+    const inventoryOverhead = inventorySource === 'agent' ? 1 : 0
+    // Extract overhead is 0 when resumeFrom was used (no extraction ran this call); otherwise
+    // groups × actual rounds run, ×2 worst case for agentWithSchemaSalvage's one allowed salvage
+    // respawn per group-round (native attempt + one schema-less retry).
+    const extractOverhead = input.resumeFrom !== null ? 0 : groups.length * finalState.rounds * 2
+    const overheadSoFar = fenceProbes + inventoryOverhead + extractOverhead
+    const remainingBudget = HARNESS_AGENT_CAP - overheadSoFar - SAFETY_BUFFER
+
+    if (estimatedVerifyCalls > remainingBudget) {
+      // Find how many claims (in THIS same risk-sorted, offset order) WOULD fit under the real
+      // remaining budget, using the REAL per-claim vote function AND the same worst-case
+      // salvage/provenance multiplier as the estimate above — never a flat votes×claims guess,
+      // and never the optimistic floor either.
+      let safeSliceSize = 0
+      let running = 0
+      for (const c of claimsAfterOffset) {
+        const voteCost = input.tieredVotes
+          ? (c.kind === 'behavior' || c.kind === 'boundary' || c.risk === 'high' ? input.votes : 1)
+          : input.votes
+        const cost = voteCost * voteSalvageMultiplier
+        if (running + cost > remainingBudget) break
+        running += cost
+        safeSliceSize++
+      }
+      // Review finding (MED): forcing safeSliceSize to a floor of 1 when NO claim fits (running
+      // budget too small even for the cheapest single claim) would recommend a slice that
+      // re-trips this same guard immediately — an honest "not even one claim fits" case must
+      // name its OWN remedy (lower votes / disable tieredVotes), never a bogus slice count.
+      const sliceCount = safeSliceSize > 0 ? Math.ceil(claimsAfterOffset.length / safeSliceSize) : 0
+
+      // Persist the extraction BEFORE failing — the expensive half (Fence+Inventory+Extract) is
+      // already paid; a follow-up pipeline must start FROM this, never re-extract. The workflow
+      // SCRIPT has no filesystem access of its own (WorkflowRuntime exposes no write primitive) —
+      // only an agent's own Write tool can persist a file, so this costs exactly one extra agent()
+      // call, spent only on this failure path (ample budget remains: this trips well before any
+      // verify vote has been dispatched).
+      const persistedPath = `${input.repoRoot}/.workflow-toolbox-cache/docs-audit-claims.json`
+      const resumeFromPayload = {
+        surfaces,
+        inventorySource,
+        rounds: finalState.rounds,
+        stoppedBy,
+        extractionComplete: extractionCompleteOverride ?? (stoppedBy === 'dryRounds'),
+        claims: finalState.claims,
+      }
+      let persistSucceeded = false
+      try {
+        const persistOutcome = await rt.agent<{ written: boolean }>(
+          `Write the EXACT JSON content below to the file path ${persistedPath} (create parent ` +
+          'directories if needed), using the Write tool. Do not reformat, summarize, or alter the ' +
+          'content in any way — write it byte-for-byte as given.\n\n' +
+          '----- BEGIN JSON TO WRITE VERBATIM -----\n' +
+          JSON.stringify(resumeFromPayload) +
+          '\n----- END JSON TO WRITE VERBATIM -----\n\n' +
+          'Return { "written": true } after a successful write, or { "written": false } if the write failed.',
+          {
+            schema: {
+              type: 'object',
+              properties: { written: { type: 'boolean' } },
+              required: ['written'],
+              additionalProperties: false,
+            },
+            label: 'docs-audit:persistClaimsOnCapGuard',
+            phase: 'Verify',
+            effort: 'low',
+          },
+        )
+        persistSucceeded = persistOutcome?.written === true
+      } catch {
+        persistSucceeded = false
+      }
+
+      // Review finding (MED): the remedy paragraph must not tell every follow-up stage to read
+      // resumeFrom from a path that persistence just reported as NOT saved — branch it on
+      // persistSucceeded instead of always naming the (possibly nonexistent) path.
+      const pipelineHowTo =
+        'How to build that pipeline: the workflow-composer skill (workflow-toolbox Claude Code ' +
+        'plugin, github.com/home-dev-lab/workflow-toolbox) ships a pipeline-authoring reference ' +
+        'named "orchestrator-pipelines" — if that plugin is installed, ask your assistant to read ' +
+        'it directly rather than relying on skill auto-activation (this sandboxed workflow has no ' +
+        'filesystem access of its own, so this message cannot resolve or verify an absolute path ' +
+        'to it). If you have a local checkout of the workflow-toolbox repo, its file is at ' +
+        'plugin/skills/workflow-composer/references/orchestrator-pipelines.md relative to that ' +
+        'checkout root — not necessarily relative to the audited repository above.'
+      const remedyParagraph = safeSliceSize === 0
+        ? `Remedy: even the single cheapest remaining claim's worst-case verification cost exceeds ` +
+          `the ~${remainingBudget} calls left in this run's budget — slicing cannot help here. Lower ` +
+          `"votes" (currently ${input.votes}) or disable "tieredVotes" before retrying, independent ` +
+          `of claimOffset/maxVerifyClaims.\n`
+        : persistSucceeded
+          ? `Remedy: verify this claim set in slices via a PIPELINE of docs-audit runs — e.g. ${sliceCount} ` +
+            `slice(s) of up to ${safeSliceSize} claim(s) each (claimOffset ${input.claimOffset}, ` +
+            `${input.claimOffset + safeSliceSize}, ${input.claimOffset + safeSliceSize * 2}, ...), each stage ` +
+            `passing resumeFrom read from ${persistedPath} instead of re-extracting.\n${pipelineHowTo}`
+          : `Remedy: claim persistence FAILED, so a follow-up run cannot resume from a saved claim set — ` +
+            're-run this exact call (same repoRoot/surfaces/hints) to re-extract, or manually persist the ' +
+            `extracted claims yourself, before slicing across a PIPELINE of docs-audit runs via claimOffset ` +
+            `— e.g. ${sliceCount} slice(s) of up to ${safeSliceSize} claim(s) each.\n${pipelineHowTo}`
+
+      throw new Error(
+        `docs-audit: verifying ${candidateClaims.length} claim(s) (after claimOffset=${input.claimOffset}, ` +
+        `capped by maxVerifyClaims=${input.maxVerifyClaims}) would need an estimated ${estimatedVerifyCalls} ` +
+        `agent() calls, but only ~${remainingBudget} remain under the harness's hard ${HARNESS_AGENT_CAP}-call ` +
+        `ceiling (already consumed ~${overheadSoFar} this run on Fence/Inventory/Extract). Refusing to start ` +
+        'Verify and risk dying mid-fan (this is exactly how run wf_6f63845d-100 failed: 68 minutes and 4.7M ' +
+        'tokens in, at claim 312 of 706, having already paid for extraction).\n\n' +
+        (persistSucceeded
+          ? `The ${finalState.claims.length} extracted claim(s) were saved to: ${persistedPath}\n`
+          : 'Claim persistence FAILED (see warnings) — the extracted claims were NOT durably saved; a ' +
+            're-run will have to re-extract.\n') +
+        remedyParagraph,
+      )
+    }
+
     // Verify wrapper model: models.verify wins over the legacy verifierModel;
     // when both are absent adversarialVerification supplies the default itself
     // ('haiku' for an external relay via externalGateExpectation, BEST_MODEL for
     // a plain Claude verifier) — so we pass NOTHING rather than force a model.
     const verifyModel: ModelAlias | null = input.models?.verify ?? input.verifierModel ?? null
     const verifyResult = await adversarialVerification<AuditClaim>(rt, {
-      claims: sortedClaims,
+      claims: claimsAfterOffset,
       renderClaim: renderAuditClaim(
         input.repoRoot,
         input.hints,
@@ -959,14 +1320,14 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     rounds: finalState.rounds,
     // HONEST: complete only when a full sweep found nothing new — a
     // maxIterations stop means the claim space was NOT exhausted.
-    extractionComplete: stoppedBy === 'dryRounds',
+    extractionComplete: extractionCompleteOverride ?? (stoppedBy === 'dryRounds'),
     stoppedBy,
     claimsSeen: finalState.claims.length,
     summary,
     findings,
     verifierProbe,
     leafFence,
-    envelope: { trail: [...collectTrail(loopResult), ...verifyTrail] },
+    envelope: { trail: [...extractTrail, ...verifyTrail] },
     warnings,
   }
 }

@@ -86,10 +86,21 @@ export type LoopUntil = { gate: true } | { criterion: string }
 export interface PipelineLoopSpec {
   /** What decides "done" at each iteration boundary (REQUIRED — see LoopUntil). */
   until: LoopUntil
-  /** Hard iteration ceiling (REQUIRED safety net), integer 1..MAX_LOOP_ITERATIONS.
-   *  Hitting it settles the run (runner vocabulary: stoppedBy 'maxIterations', mirroring
-   *  the in-run loopUntilDone pattern). */
+  /** Hard iteration ceiling (REQUIRED safety net), integer 1..the owning spec's resolved
+   *  `limits.maxLoopIterations` (default MAX_LOOP_ITERATIONS). Hitting it settles the run
+   *  (runner vocabulary: stoppedBy 'maxIterations', mirroring the in-run loopUntilDone pattern). */
   maxIterations: number
+}
+
+/** Per-spec overrides for the safe structural defaults. Each present key must be an integer
+ *  in the documented range for that key. */
+export interface PipelineLimits {
+  /** Overrides MAX_STAGES; validated as an integer in [1, MAX_STAGES_CEILING]. */
+  maxStages?: number
+  /** Overrides MAX_PIPELINE_DEPTH; validated as an integer in [1, MAX_PIPELINE_DEPTH_CEILING]. */
+  maxPipelineDepth?: number
+  /** Overrides MAX_LOOP_ITERATIONS; validated as an integer in [1, MAX_LOOP_ITERATIONS_CEILING]. */
+  maxLoopIterations?: number
 }
 
 /** The full declarative pipeline definition — goal/projectDir/workspace once, then an
@@ -115,29 +126,79 @@ export interface PipelineSpec {
   /** Re-run the whole stage list until done (see PipelineLoopSpec). Absent = run once —
    *  every pre-loop spec keeps today's behavior untouched. */
   loop?: PipelineLoopSpec
+  /** Per-spec structural cap overrides. Omitted uses the safe defaults; a nested
+   *  pipeline-stage's child spec may set its own limits independently and inherits none.
+   *  CAVEAT (maxPipelineDepth only, found in review): depth is checked TOP-DOWN — an
+   *  ancestor's OWN resolved maxPipelineDepth is checked against the FULL remaining subtree
+   *  beneath it (staticNestingDepth counts the whole descendant chain), and that check runs
+   *  BEFORE recursion ever reaches a deeper child's own (possibly more permissive) `limits`.
+   *  So a child spec's raised maxPipelineDepth only takes effect for depth occurring entirely
+   *  beneath specs that themselves already permit reaching it — to allow deeper nesting
+   *  ANYWHERE in a tree, raise maxPipelineDepth on the ANCESTOR whose own default would
+   *  otherwise reject that depth (typically the root), not merely on the nested spec that
+   *  needs the room. True per-branch independence (a child's override rescuing depth an
+   *  ancestor's own default would otherwise reject) is a known gap, not yet implemented. */
+  limits?: PipelineLimits
 }
 
-/** Hard cap on stages per spec: one POST must not auto-chain an unbounded number of
+/** DEFAULT cap on stages per spec: one POST must not auto-chain an unbounded number of
  *  unattended launches — the human-gate safety property depends on a human eventually
- *  being reachable in the loop for any long spec, not an indefinitely deep auto-chain. */
+ *  being reachable in the loop for any long spec, not an indefinitely deep auto-chain.
+ *  See MAX_STAGES_CEILING for the absolute hard limit. */
 export const MAX_STAGES = 12
 
-/** Hard cap on pipeline NESTING depth — a child's ancestor chain (root = depth 0) must never
- *  exceed this before instantiation refuses it. Enforced in TWO places: validateStageList below
- *  rejects a spec whose OWN STATIC nesting (fully computable from the submitted spec alone,
- *  before anything is minted) already exceeds this cap — a clean, zero-mutation failure at the
- *  validation boundary; the companion app’s runner ALSO still checks the
- *  CUMULATIVE ancestors chain at instantiation (today's v1 inline-only child specs make the two
- *  checks always agree; the cumulative check is what will still matter once by-reference child
- *  specs land — a shallow SUBMITTED spec could reference an externally, already-deeply-nested
- *  child that no static read of the current spec alone could see). */
+/** DEFAULT cap on pipeline NESTING depth; see MAX_PIPELINE_DEPTH_CEILING for the absolute
+ *  hard limit. Enforced in TWO places: validateStageList below rejects a spec whose OWN
+ *  STATIC nesting (fully computable from the submitted spec alone, before anything is minted)
+ *  exceeds its resolved cap — a clean, zero-mutation failure at the validation boundary; the
+ *  companion app’s runner ALSO still checks the CUMULATIVE ancestors chain at instantiation
+ *  (today's v1 inline-only child specs make the two checks always agree; the cumulative check
+ *  is what will still matter once by-reference child specs land — a shallow SUBMITTED spec
+ *  could reference an externally, already-deeply-nested child that no static read of the
+ *  current spec alone could see). */
 export const MAX_PIPELINE_DEPTH = 8
 
-/** Hard cap on a loop's `maxIterations` — same order of magnitude as the in-run
- *  loopUntilDone pattern's defaults; a spec needing more iterations than this is a smell
- *  (the work should move into the stages, not the loop count). Bounds EVERY loop, gated or
- *  not — the gate exemption below only lifts the MAX_STAGES product cap, never this. */
+/** DEFAULT cap on a loop's `maxIterations` — same order of magnitude as the in-run
+ *  loopUntilDone pattern's defaults. Bounds EVERY loop, gated or not, against its spec's
+ *  resolved limit — the gate exemption below only lifts the resolved maxStages product cap,
+ *  never this. See MAX_LOOP_ITERATIONS_CEILING for the absolute hard limit. */
 export const MAX_LOOP_ITERATIONS = 10
+
+/** Absolute ceiling for `limits.maxStages` — never overridable beyond this, regardless of what a spec's `limits` field requests. */
+export const MAX_STAGES_CEILING = 100
+
+/** Absolute ceiling for `limits.maxPipelineDepth` — never overridable beyond this, regardless of what a spec's `limits` field requests. */
+export const MAX_PIPELINE_DEPTH_CEILING = 20
+
+/** Absolute ceiling for `limits.maxLoopIterations` — never overridable beyond this, regardless of what a spec's `limits` field requests. */
+export const MAX_LOOP_ITERATIONS_CEILING = 100
+
+function resolveLimits(limits: PipelineLimits | undefined): { maxStages: number; maxPipelineDepth: number; maxLoopIterations: number } {
+  return {
+    maxStages: limits?.maxStages ?? MAX_STAGES,
+    maxPipelineDepth: limits?.maxPipelineDepth ?? MAX_PIPELINE_DEPTH,
+    maxLoopIterations: limits?.maxLoopIterations ?? MAX_LOOP_ITERATIONS,
+  }
+}
+
+/** Validate a caller-supplied PipelineLimits override (or its absence): each PRESENT key must be
+ *  an integer in [1, its documented absolute ceiling] — returns a human-readable reason NAMING the
+ *  offending knob, or null when the object (or its absence) is fine. Shared by the untrusted-JSON
+ *  parse path and the trusted validate*-on-an-already-built-spec path (defense in depth, same
+ *  posture as every other check in this file). */
+function validateLimitsShape(limits: PipelineLimits | undefined): string | null {
+  if (limits === undefined) return null
+  const ceilings = { maxStages: MAX_STAGES_CEILING, maxPipelineDepth: MAX_PIPELINE_DEPTH_CEILING, maxLoopIterations: MAX_LOOP_ITERATIONS_CEILING } as const
+  for (const key of ['maxStages', 'maxPipelineDepth', 'maxLoopIterations'] as const) {
+    const v = limits[key]
+    if (v === undefined) continue
+    const ceiling = ceilings[key]
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > ceiling) {
+      return `limits.${key} must be an integer between 1 and its documented absolute ceiling (${ceiling}), got ${String(v)}`
+    }
+  }
+  return null
+}
 
 /** The spec's OWN internal nesting depth, fully computable from its `stage.pipeline` chains
  *  alone — 0 for a spec with no pipeline-stages, N for one nested N levels deep. Deliberately
@@ -162,16 +223,22 @@ function staticNestingDepth(stages: readonly StageSpecV2[]): number {
  *  independently at each level (duplicate-name uniqueness is PER-LEVEL, never global — a
  *  child's stageAttempts lives in its own separate manifest, so a child stage sharing a name
  *  with a PARENT stage cannot collide). */
-export function validateStageList(stages: readonly StageSpecV2[]): string | null {
+export function validateStageList(stages: readonly StageSpecV2[], limits?: PipelineLimits): string | null {
+  const limitsError = validateLimitsShape(limits)
+  if (limitsError !== null) return limitsError
+  const resolved = resolveLimits(limits)
   if (stages.length === 0) return 'a pipeline spec must have at least one stage'
-  if (stages.length > MAX_STAGES) return `a pipeline spec may have at most ${MAX_STAGES} stages (got ${stages.length})`
+  if (stages.length > resolved.maxStages) {
+    return `a pipeline spec may have at most ${resolved.maxStages} stages (got ${stages.length}) — raise via limits.maxStages, up to the documented absolute ceiling of ${MAX_STAGES_CEILING}`
+  }
   // Checked ONCE, up front, on the FULL stage list: a recursive call for a nested sub-spec
   // would only ever re-check a strictly SMALLER sub-problem (redundant, never a missed case) —
   // the outermost call's depth already covers the whole tree, so this rejects before the
   // per-stage loop below (and every caller's own minting/persisting) ever runs.
   const staticDepth = staticNestingDepth(stages)
-  if (staticDepth > MAX_PIPELINE_DEPTH) {
-    return `this pipeline nests ${staticDepth} levels deep on its own — exceeding MAX_PIPELINE_DEPTH (${MAX_PIPELINE_DEPTH}); rejected before minting or persisting anything`
+  if (staticDepth > resolved.maxPipelineDepth) {
+    const defaultLimitNote = limits?.maxPipelineDepth === undefined ? `; default MAX_PIPELINE_DEPTH (${MAX_PIPELINE_DEPTH})` : ''
+    return `this pipeline nests ${staticDepth} levels deep on its own — exceeding limits.maxPipelineDepth (${resolved.maxPipelineDepth}); raise via limits.maxPipelineDepth, up to the documented absolute ceiling of ${MAX_PIPELINE_DEPTH_CEILING}; rejected before minting or persisting anything${defaultLimitNote}`
   }
   const seen = new Set<string>()
   for (const stage of stages) {
@@ -194,7 +261,7 @@ export function validateStageList(stages: readonly StageSpecV2[]): string | null
       if (stage.artifact !== undefined) {
         return `stage "${stage.name}" is a sub-pipeline stage — "artifact" is disallowed here (its handoff is always the child's own raw final output, passed through verbatim; no extractor ever runs at this boundary)`
       }
-      const nestedError = validateStageList(stage.pipeline!.stages)
+      const nestedError = validateStageList(stage.pipeline!.stages, stage.pipeline!.limits)
       if (nestedError !== null) return `stage "${stage.name}"'s nested pipeline is invalid: ${nestedError}`
     }
   }
@@ -246,6 +313,9 @@ function hasGateInSubtree(stages: readonly StageSpecV2[]): boolean {
  *  everywhere else in this file — hence the runtime re-checks of typed fields). Returns a
  *  human-readable reason, or null. */
 function validateLoop(spec: PipelineSpec): string | null {
+  const limitsError = validateLimitsShape(spec.limits)
+  if (limitsError !== null) return limitsError
+  const resolved = resolveLimits(spec.limits)
   const loop = spec.loop
   if (loop === undefined) return null
   const until = loop.until as unknown
@@ -263,17 +333,18 @@ function validateLoop(spec: PipelineSpec): string | null {
     return `a pipeline loop's "until" must be exactly one of { gate: true } or { criterion: "<key>" } — a loop always names its stop condition`
   }
   const max = loop.maxIterations
-  if (typeof max !== 'number' || !Number.isInteger(max) || max < 1 || max > MAX_LOOP_ITERATIONS) {
-    return `a pipeline loop's maxIterations must be an integer between 1 and MAX_LOOP_ITERATIONS (${MAX_LOOP_ITERATIONS}), got ${String(max)}`
+  if (typeof max !== 'number' || !Number.isInteger(max) || max < 1 || max > resolved.maxLoopIterations) {
+    return `a pipeline loop's maxIterations must be an integer between 1 and limits.maxLoopIterations (${resolved.maxLoopIterations}), got ${String(max)} — raise via limits.maxLoopIterations, up to the documented absolute ceiling of ${MAX_LOOP_ITERATIONS_CEILING}`
   }
   if (flavor === 'criterion' && !hasGateInSubtree(spec.stages)) {
     const perPass = expandedLaunches(spec.stages)
     const product = perPass * max
-    if (product > MAX_STAGES) {
+    if (product > resolved.maxStages) {
+      const defaultLimitNote = spec.limits?.maxStages === undefined ? `; default MAX_STAGES (${MAX_STAGES})` : ''
       return (
-        `an ungated criterion-loop may auto-chain at most MAX_STAGES (${MAX_STAGES}) launches: this spec expands to ` +
+        `an ungated criterion-loop may auto-chain at most limits.maxStages (${resolved.maxStages}) launches: this spec expands to ` +
         `${perPass} launches per iteration × ${max} iterations = ${product} — add a human gate (a stage gateAfter, ` +
-        `or until: { gate: true }) or lower maxIterations`
+        `or until: { gate: true }), lower maxIterations, or raise limits.maxStages up to the documented absolute ceiling of ${MAX_STAGES_CEILING}${defaultLimitNote}`
       )
     }
   }
@@ -296,12 +367,14 @@ function validateLoopsDeep(spec: PipelineSpec): string | null {
 
 /** Full-spec structural validation: validateStageList over the stage list PLUS the loop
  *  rules (this level's `loop` and, recursively, every nested pipeline-stage child's).
- *  ADDITIVE — validateStageList's signature is shared with the Observatory runner's own
- *  callers and deliberately unchanged; a caller holding a whole PipelineSpec (definePipeline,
- *  a runner's start() defense-in-depth path) should prefer this entry point, since a bare
- *  stage list cannot see the spec-level `loop`. Returns a human-readable reason, or null. */
+ *  ADDITIVE — validateStageList's backwards-compatible stage-list-only call is shared with
+ *  the Observatory runner's own callers; a caller holding a whole PipelineSpec (definePipeline,
+ *  a runner's start() defense-in-depth path) should prefer this entry point, since a bare stage
+ *  list cannot see the spec-level `loop`. Returns a human-readable reason, or null. */
 export function validatePipelineSpec(spec: PipelineSpec): string | null {
-  const stageError = validateStageList(spec.stages)
+  const limitsError = validateLimitsShape(spec.limits)
+  if (limitsError !== null) return limitsError
+  const stageError = validateStageList(spec.stages, spec.limits)
   if (stageError !== null) return stageError
   return validateLoopsDeep(spec)
 }
@@ -395,6 +468,19 @@ function parseLoopSpec(v: unknown): PipelineLoopSpec | null {
   return { until, maxIterations }
 }
 
+function parseLimitsShape(v: unknown): PipelineLimits | null {
+  if (typeof v !== 'object' || v === null) return null
+  const l = v as Record<string, unknown>
+  const limits: PipelineLimits = {}
+  for (const key of ['maxStages', 'maxPipelineDepth', 'maxLoopIterations'] as const) {
+    if (l[key] === undefined) continue
+    const raw = l[key]
+    if (typeof raw !== 'number') return null
+    limits[key] = raw
+  }
+  return limits
+}
+
 // MAINTAINER NOTE (pr-review I5, batch 6): this parser must stay in lockstep with
 // PipelineSpec/StageSpecV2 above — a field added to those types but not here still compiles
 // (TypeScript can't see this runtime check), but definePipeline() (@workflow-toolbox/build)
@@ -415,11 +501,19 @@ export function parsePipelineSpec(v: unknown): PipelineSpec | null {
     if (stage === null) return null
     stages.push(stage)
   }
+  let limits: PipelineLimits | undefined
+  if (s['limits'] !== undefined) {
+    const parsed = parseLimitsShape(s['limits'])
+    if (parsed === null) return null
+    if (validateLimitsShape(parsed) !== null) return null
+    limits = parsed
+  }
   // Structural checks shared with the runner's start() defense-in-depth guard: empty, over the
-  // MAX_STAGES cap, duplicate names, or a trailing gateAfter all fail here, at the
+  // resolved stage cap, duplicate names, or a trailing gateAfter all fail here, at the
   // untrusted-JSON boundary — never reaching a persisted, orphaned record.
-  if (validateStageList(stages) !== null) return null
+  if (validateStageList(stages, limits) !== null) return null
   const spec: PipelineSpec = { goal: s['goal'], projectDir: s['projectDir'], stages }
+  if (limits !== undefined) spec.limits = limits
   if (s['workspaceId'] !== undefined) {
     if (typeof s['workspaceId'] !== 'string') return null
     spec.workspaceId = s['workspaceId']

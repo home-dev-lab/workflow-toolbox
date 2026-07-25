@@ -85,10 +85,22 @@ The spec's validation contract is the standalone `@workflow-toolbox/pipeline-spe
   list PLUS the `loop` rules (this level's and, recursively, every nested child's — see
   the loop section below). `definePipeline()` funnels through this; prefer it whenever you
   hold a whole spec rather than a bare stage list.
-- `MAX_STAGES` (12) — hard cap on stages per spec; nested sub-specs are re-checked
-  against the same cap.
-- `MAX_PIPELINE_DEPTH` (8) — hard cap on pipeline nesting depth.
-- `MAX_LOOP_ITERATIONS` (10) — hard cap on a loop's `maxIterations` (see below).
+- `MAX_STAGES` (12) — DEFAULT cap on stages per spec; nested sub-specs are re-checked against the same
+  default unless they set their own `limits.maxStages`. Absolute ceiling: `MAX_STAGES_CEILING` (100).
+- `MAX_PIPELINE_DEPTH` (8) — DEFAULT cap on pipeline nesting depth. Absolute ceiling:
+  `MAX_PIPELINE_DEPTH_CEILING` (20).
+- `MAX_LOOP_ITERATIONS` (10) — DEFAULT cap on a loop's `maxIterations` (see below). Absolute ceiling:
+  `MAX_LOOP_ITERATIONS_CEILING` (100).
+- `PipelineSpec.limits` (type `PipelineLimits`, optional) — per-spec override of any of the three
+  defaults above, each validated against its absolute ceiling at parse/validate time; a spec that needs
+  more than 12 stages (or deeper nesting, or more loop iterations) sets e.g. `limits: { maxStages: 20 }`.
+  Nested pipeline-stages are independent for `maxStages`/`maxLoopIterations`: a child spec inherits
+  nothing from its parent's `limits` and must set its own override if it needs one. **`maxPipelineDepth`
+  is the one exception** — depth is checked top-down, so an ANCESTOR's own (possibly stricter, default)
+  limit is checked against the FULL subtree beneath it before a deeper child's own more permissive
+  override is ever consulted. To allow deeper nesting anywhere in a tree, raise `maxPipelineDepth` on
+  the ancestor whose own default would otherwise reject that depth (typically the root spec) — setting
+  it only on the deeply-nested spec that needs the room does not rescue it.
 - `EXTRACTOR_KEYS` (type `ExtractorKey`) — the legal `artifact.extract` values:
   `plan-artifact`, `raw`.
 - `INPUT_REF_SOURCES` — the legal `{ from: … }` sources an `input` template may
@@ -226,4 +238,3 @@ authorable but inert, and `criterion` keys additionally need the runner's predic
 registry. The observe server loads the shared package at process start — picking up a new
 version requires a server restart — and the desktop app bundles its own copy, which
 requires a re-release.
-

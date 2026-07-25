@@ -2,8 +2,11 @@ import { describe, it, expect } from 'vitest'
 import {
   INPUT_REF_SOURCES,
   MAX_STAGES,
+  MAX_STAGES_CEILING,
   MAX_PIPELINE_DEPTH,
+  MAX_PIPELINE_DEPTH_CEILING,
   MAX_LOOP_ITERATIONS,
+  MAX_LOOP_ITERATIONS_CEILING,
   EXTRACTOR_KEYS,
   validateStageList,
   validatePipelineSpec,
@@ -475,5 +478,135 @@ describe('parsePipelineSpec — loop (parse LOCKSTEP + round-trip)', () => {
         loop: { until: { gate: true }, maxIterations: 2 },
       }),
     ).toBeNull()
+  })
+})
+
+describe('PipelineLimits — user-configurable caps', () => {
+  it('exports the documented absolute ceilings', () => {
+    expect(MAX_STAGES_CEILING).toBe(100)
+    expect(MAX_PIPELINE_DEPTH_CEILING).toBe(20)
+    expect(MAX_LOOP_ITERATIONS_CEILING).toBe(100)
+  })
+
+  it('validateStageList accepts a raised maxStages and rejects the next stage, naming the knob', () => {
+    const maxStages = 20
+    const stages = Array.from({ length: maxStages + 1 }, (_, i) => baseStage(`s${i}`))
+    expect(validateStageList(stages.slice(0, maxStages), { maxStages })).toBeNull()
+    expect(validateStageList(stages, { maxStages })).toMatch(/limits\.maxStages/)
+  })
+
+  it('rejects maxStages above its absolute ceiling even for a short stage list', () => {
+    expect(validateStageList([baseStage('a')], { maxStages: MAX_STAGES_CEILING + 1 })).toMatch(/limits\.maxStages/)
+  })
+
+  it('rejects zero, non-integer, and NaN maxStages overrides, naming the knob', () => {
+    for (const maxStages of [0, 1.5, Number.NaN]) {
+      expect(validateStageList([baseStage('a')], { maxStages }), `maxStages=${maxStages}`).toMatch(/limits\.maxStages/)
+    }
+  })
+
+  it('keeps the default MAX_STAGES behavior when limits is omitted', () => {
+    const stages = Array.from({ length: MAX_STAGES + 1 }, (_, i) => baseStage(`s${i}`))
+    expect(validateStageList(stages)).toMatch(new RegExp(`at most ${MAX_STAGES} stages`))
+  })
+
+  it('uses each nested pipeline spec\'s own maxStages without inheriting the parent override', () => {
+    const raisedChild: PipelineSpec = {
+      goal: 'child',
+      projectDir: '/repo',
+      stages: Array.from({ length: 20 }, (_, i) => baseStage(`child-${i}`)),
+      limits: { maxStages: 20 },
+    }
+    expect(validateStageList([{ name: 'nested', pipeline: raisedChild }])).toBeNull()
+
+    const defaultChild: PipelineSpec = {
+      goal: 'child',
+      projectDir: '/repo',
+      stages: Array.from({ length: MAX_STAGES + 1 }, (_, i) => baseStage(`child-${i}`)),
+    }
+    expect(validateStageList([{ name: 'nested', pipeline: defaultChild }], { maxStages: 20 })).toMatch(
+      /nested pipeline is invalid.*limits\.maxStages/,
+    )
+  })
+
+  it('validatePipelineSpec honors limits.maxLoopIterations', () => {
+    const accepted = makeSpec([baseStage('a')], gateLoop(MAX_LOOP_ITERATIONS + 1))
+    accepted.limits = { maxLoopIterations: MAX_LOOP_ITERATIONS + 1 }
+    expect(validatePipelineSpec(accepted)).toBeNull()
+
+    const rejected = makeSpec([baseStage('a')], gateLoop(MAX_LOOP_ITERATIONS + 2))
+    rejected.limits = { maxLoopIterations: MAX_LOOP_ITERATIONS + 1 }
+    expect(validatePipelineSpec(rejected)).toMatch(/limits\.maxLoopIterations/)
+  })
+
+  it('validatePipelineSpec uses limits.maxStages for the ungated-criterion product cap', () => {
+    const accepted = makeSpec(['a', 'b', 'c'].map(baseStage), criterionLoop(6))
+    accepted.limits = { maxStages: 20 }
+    expect(validatePipelineSpec(accepted)).toBeNull()
+
+    const rejected = makeSpec(['a', 'b', 'c'].map(baseStage), criterionLoop(7))
+    rejected.limits = { maxStages: 20 }
+    expect(validatePipelineSpec(rejected)).toMatch(/limits\.maxStages/)
+  })
+
+  it('parsePipelineSpec round-trips valid limits and applies them to loop validation', () => {
+    const limits = { maxStages: 20, maxPipelineDepth: 10, maxLoopIterations: 20 }
+    const parsed = parsePipelineSpec({
+      goal: 'g',
+      projectDir: '/repo',
+      stages: [{ name: 'a', workflow: 'a.js' }],
+      loop: { until: { gate: true }, maxIterations: 20 },
+      limits,
+    })
+    expect(parsed?.limits).toEqual(limits)
+  })
+
+  it('parsePipelineSpec rejects malformed and over-ceiling limits', () => {
+    const base = { goal: 'g', projectDir: '/repo', stages: [{ name: 'a', workflow: 'a.js' }] }
+    expect(parsePipelineSpec({ ...base, limits: { maxStages: '20' } })).toBeNull()
+    expect(parsePipelineSpec({ ...base, limits: { maxStages: MAX_STAGES_CEILING + 1 } })).toBeNull()
+  })
+
+  it('parsePipelineSpec omits the limits key entirely when absent', () => {
+    const parsed = parsePipelineSpec({ goal: 'g', projectDir: '/repo', stages: [{ name: 'a', workflow: 'a.js' }] })
+    expect(parsed).not.toBeNull()
+    expect(Object.prototype.hasOwnProperty.call(parsed!, 'limits')).toBe(false)
+  })
+
+  it('parsePipelineSpec applies a raised maxStages at the untrusted-JSON boundary', () => {
+    const maxStages = 20
+    const stages = Array.from({ length: maxStages + 1 }, (_, i) => ({ name: `s${i}`, workflow: `s${i}.js` }))
+    expect(parsePipelineSpec({ goal: 'g', projectDir: '/repo', stages: stages.slice(0, maxStages), limits: { maxStages } })).not.toBeNull()
+    expect(parsePipelineSpec({ goal: 'g', projectDir: '/repo', stages, limits: { maxStages } })).toBeNull()
+  })
+
+  // Documented (not fixed — review finding, MED, accepted as a follow-up card rather than a
+  // risky same-night algorithm change): maxPipelineDepth is checked TOP-DOWN, so an ANCESTOR's
+  // own resolved limit governs the FULL descendant subtree beneath it, checked BEFORE recursion
+  // ever reaches a deeper child's own more permissive `limits`. This test locks the ACTUAL
+  // behavior (a child's raised limit does NOT rescue depth an ancestor's own default already
+  // rejects) so a future change either fixes this deliberately (updating the test) or trips it
+  // as a regression, never silently.
+  it('a nested child\'s raised maxPipelineDepth does NOT rescue depth the ROOT\'s own default already rejects (known limitation, carded)', () => {
+    function nestSpec(depth: number): PipelineSpec {
+      if (depth === 0) return { goal: 'g', projectDir: '/repo', stages: [baseStage('leaf')] }
+      return { goal: 'g', projectDir: '/repo', stages: [{ name: `l${depth}`, pipeline: nestSpec(depth - 1) }] }
+    }
+    // Build a 9-deep tree, then give the DEEPEST non-leaf spec (depth 1 — the level whose OWN
+    // `stage.pipeline!.limits` the recursive validateStageList call would actually read) a
+    // permissive override, well above both the root's default (8) and the actual depth (9).
+    const rejected = nestSpec(9)
+    let cursor = rejected
+    for (let i = 0; i < 8; i++) cursor = (cursor.stages[0] as StageSpecV2).pipeline!
+    cursor.limits = { maxPipelineDepth: MAX_PIPELINE_DEPTH_CEILING }
+    // If independence held, this would be ACCEPTED (the deepest level explicitly allows up to
+    // 20 levels beneath it). It is REJECTED instead: the ROOT's own default (8) is checked
+    // against the FULL 9-level subtree, before recursion ever reaches depth 1's own override.
+    expect(validateStageList(rejected.stages)).toMatch(/nests 9 levels deep/)
+    // Setting the SAME override on the ROOT's own call instead (the documented workaround) DOES
+    // work — proving the gap is specifically about WHERE the override is set, not that
+    // overriding maxPipelineDepth is broken outright.
+    const accepted = nestSpec(9)
+    expect(validateStageList(accepted.stages, { maxPipelineDepth: 9 })).toBeNull()
   })
 })

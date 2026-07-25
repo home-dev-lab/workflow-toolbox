@@ -1966,8 +1966,17 @@ ${renderClaim(claim)}`;
   var DEFAULT_SURFACE_RULES = "Include every always-read documentation surface a consumer or an authoring model relies on:\n- README files at the repository root and one directory level down;\n- every markdown file under a docs/ directory (public docs), EXCLUDING ADR archives and dated records;\n- every skill SKILL.md and its references/*.md (e.g. under plugin/skills/);\n- the repository's CLAUDE.md files.\nExclude: CHANGELOGs, LICENSE files, generated artifacts, node_modules, and historical narrative marked as such.";
   var RISK_ORDER = { high: 0, medium: 1, low: 2 };
   var UNKNOWN_RISK_RANK = Object.keys(RISK_ORDER).length;
+  var HARNESS_AGENT_CAP = 1e3;
+  var SAFETY_BUFFER = 15;
   function claimKey(c) {
     return c.surface + " " + c.quote.toLowerCase().replace(/\s+/g, " ").trim();
+  }
+  function estimateVerifyCalls(claims, votes, tieredVotes) {
+    let total = 0;
+    for (const c of claims) {
+      total += tieredVotes ? c.kind === "behavior" || c.kind === "boundary" || c.risk === "high" ? votes : 1 : votes;
+    }
+    return total;
   }
   function chunk(items, size) {
     const out = [];
@@ -1985,6 +1994,14 @@ ${renderClaim(claim)}`;
     }
     return raw;
   }
+  function parseNonNegativeInt(obj, field, fallback) {
+    const raw = obj[field];
+    if (raw === void 0) return fallback;
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+      throw new Error(`docs-audit: "${field}" must be an integer >= 0, got ${JSON.stringify(raw)}`);
+    }
+    return raw;
+  }
   function parseOptionalString(obj, field) {
     const raw = obj[field];
     if (raw === void 0 || raw === null) return null;
@@ -1995,8 +2012,82 @@ ${renderClaim(claim)}`;
   }
   var AGENT_TYPE_ROLES = ["inventory", "extract", "verify"];
   var ROLE_MAP_KEYS = ["inventory", "extract", "verify"];
+  var VALID_CLAIM_KINDS = /* @__PURE__ */ new Set(["behavior", "instruction", "boundary", "cross-reference", "other"]);
+  var VALID_CLAIM_RISKS = /* @__PURE__ */ new Set(["high", "medium", "low"]);
   function parseRoleStringMapLocal(raw, key, allowed) {
     return parseRoleStringMap(raw, key, allowed, ROLE_MAP_KEYS, "docs-audit");
+  }
+  function parseResumeFromClaim(v, i) {
+    if (typeof v !== "object" || v === null) {
+      throw new Error(`docs-audit: "resumeFrom.claims[${i}]" must be an object`);
+    }
+    const c = v;
+    for (const field of ["surface", "kind", "risk", "quote", "claim", "checkHint"]) {
+      if (typeof c[field] !== "string" || c[field].length === 0) {
+        throw new Error(`docs-audit: "resumeFrom.claims[${i}].${field}" must be a non-empty string`);
+      }
+    }
+    if (!VALID_CLAIM_KINDS.has(c["kind"])) {
+      throw new Error(`docs-audit: "resumeFrom.claims[${i}].kind" must be one of ${[...VALID_CLAIM_KINDS].join(", ")}`);
+    }
+    if (!VALID_CLAIM_RISKS.has(c["risk"])) {
+      throw new Error(`docs-audit: "resumeFrom.claims[${i}].risk" must be one of ${[...VALID_CLAIM_RISKS].join(", ")}`);
+    }
+    return {
+      surface: c["surface"],
+      kind: c["kind"],
+      risk: c["risk"],
+      quote: c["quote"],
+      claim: c["claim"],
+      checkHint: c["checkHint"]
+    };
+  }
+  function parseResumeFrom(obj) {
+    const raw = obj["resumeFrom"];
+    if (raw === void 0 || raw === null) return null;
+    if (typeof raw !== "object") {
+      throw new Error('docs-audit: "resumeFrom" must be an object when provided');
+    }
+    const r = raw;
+    if (!Array.isArray(r["claims"])) {
+      throw new Error('docs-audit: "resumeFrom.claims" must be an array');
+    }
+    const claims = r["claims"].map((c, i) => parseResumeFromClaim(c, i));
+    if (!Array.isArray(r["surfaces"]) || r["surfaces"].length === 0 || r["surfaces"].some((s) => typeof s !== "string")) {
+      throw new Error('docs-audit: "resumeFrom.surfaces" must be a non-empty array of strings');
+    }
+    const resumeSurfaceSet = new Set(r["surfaces"]);
+    for (let i = 0; i < claims.length; i++) {
+      const surface = claims[i].surface;
+      if (!resumeSurfaceSet.has(surface)) {
+        throw new Error(
+          `docs-audit: "resumeFrom.claims[${i}].surface" ("${surface}") is not in "resumeFrom.surfaces" \u2014 every resumed claim must belong to the declared surface corpus, same as a freshly extracted one`
+        );
+      }
+    }
+    const inventorySource = r["inventorySource"];
+    if (inventorySource !== "input" && inventorySource !== "agent") {
+      throw new Error('docs-audit: "resumeFrom.inventorySource" must be "input" or "agent"');
+    }
+    if (typeof r["rounds"] !== "number" || !Number.isInteger(r["rounds"]) || r["rounds"] < 0) {
+      throw new Error('docs-audit: "resumeFrom.rounds" must be an integer >= 0');
+    }
+    if (typeof r["extractionComplete"] !== "boolean") {
+      throw new Error('docs-audit: "resumeFrom.extractionComplete" must be a boolean');
+    }
+    const stoppedBy = r["stoppedBy"];
+    const validStoppedBy = /* @__PURE__ */ new Set(["done", "maxIterations", "dryRounds", "budgetFloor"]);
+    if (typeof stoppedBy !== "string" || !validStoppedBy.has(stoppedBy)) {
+      throw new Error(`docs-audit: "resumeFrom.stoppedBy" must be one of ${[...validStoppedBy].join(", ")}`);
+    }
+    return {
+      surfaces: r["surfaces"],
+      inventorySource,
+      rounds: r["rounds"],
+      stoppedBy,
+      extractionComplete: r["extractionComplete"],
+      claims
+    };
   }
   function parseInput(raw) {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
@@ -2059,6 +2150,8 @@ ${renderClaim(claim)}`;
       dryRounds: parsePositiveInt(obj, "dryRounds", 1),
       surfacesPerAgent: parsePositiveInt(obj, "surfacesPerAgent", 4, 10),
       maxVerifyClaims: parsePositiveInt(obj, "maxVerifyClaims", 250),
+      claimOffset: parseNonNegativeInt(obj, "claimOffset", 0),
+      resumeFrom: parseResumeFrom(obj),
       votes: parsePositiveInt(obj, "votes", 3),
       tieredVotes,
       verifierModel,
@@ -2125,16 +2218,35 @@ Where to look first: ${c.checkHint}`.replace(/-{5} (BEGIN|END) AUDITED DOC CLAIM
     const trimmed = rel.trim().replace(/^\/+/, "");
     return `${root}/${trimmed}`;
   }
+  var SAFE_CHECK_HINT_RE = /^[A-Za-z0-9_./@-]+$/;
+  function looksLikeSafePath(hint) {
+    const trimmed = hint.trim();
+    if (!SAFE_CHECK_HINT_RE.test(trimmed)) return false;
+    return !trimmed.split("/").some((segment) => segment === ".." || segment === ".");
+  }
   function renderAuditClaim(repoRoot, hints, resolvedVerifierType, opencodeModel, opencodeVariant) {
-    return (c) => opencodeWorkdirLine(resolvedVerifierType, repoRoot) + (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
+    return (c) => {
+      const resolvedPath = looksLikeSafePath(c.checkHint) ? joinRepoPath(repoRoot, c.checkHint) : null;
+      const pathLine = resolvedPath !== null ? `Concrete source path for THIS claim (read this file FIRST, directly \u2014 the extractor already located it; do NOT run ls/find/grep to rediscover it): ${resolvedPath}
+If \u2014 and only if \u2014 that exact path does not exist or does not contain the relevant code, THEN search the repository, using checkHint below as a description rather than a literal path.
+` : `No literal source path was supplied for this claim (the extractor's checkHint did not look like a plausible single-line file path, so it was not resolved into a direct-read instruction \u2014 see checkHint below as a description only); search the repository for the relevant code.
+`;
+      return opencodeWorkdirLine(resolvedVerifierType, repoRoot) + (opencodeModel !== null ? `OPENCODE_MODEL: ${opencodeModel}
 
 ` : "") + (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}
 
 ` : "") + `Documentation-drift audit \u2014 verdict for ONE documentation claim.
 Repository root: ${repoRoot}.
-Concrete source path for THIS claim (read this file FIRST, directly \u2014 the extractor already located it; do NOT run ls/find/grep to rediscover it): ${joinRepoPath(repoRoot, c.checkHint)}
-If \u2014 and only if \u2014 that exact path does not exist or does not contain the relevant code, THEN search the repository, using checkHint below as a description rather than a literal path.
-` + renderUntrustedClaimBlock(c) + "\n" + (hints !== null ? `Extra context:
+` + // Card #1826399286049376144 (forensics wf_dd8c0300-c59): 107/750 verify
+      // wrappers died BEFORE calling opencode because this prompt named the
+      // claim but never its concrete source file — the wrapper burned its turn
+      // budget on ls/find/grep exploration to locate it. checkHint is ALREADY
+      // the extractor's best-guess concrete path; resolve + surface it here,
+      // OUTSIDE the untrusted block, as a direct read instruction — but ONLY
+      // when it validates as a plausible path (card #1826438766219233213: a
+      // hostile checkHint containing a newline + closing marker must never
+      // land unfenced here).
+      pathLine + renderUntrustedClaimBlock(c) + "\n" + (hints !== null ? `Extra context:
 ${hints}
 ` : "") + `Read the ACTUAL current sources under the repository root (grep/read files; use git read-only if helpful) and decide:
 - confirmed: the sources today match the claim;
@@ -2142,6 +2254,7 @@ ${hints}
 - refuted: the doc statement is STALE or wrong versus the current sources;
 - unverifiable: you could not locate relevant evidence either way (say what you looked for).
 Cite the file paths (and line numbers where possible) your verdict rests on in "reason".`;
+    };
   }
   async function run(rt00, input) {
     const { rt: rt0, report: leafFence } = await withLeafFence(rt00, {
@@ -2186,159 +2299,252 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       resolvedVerifierType = probe.agentType ?? null;
       verifierProbe = { requested: input.verifierType, available: probe.available, reason: probe.reason };
     }
-    rt.phase("Inventory");
     let surfaces;
     let inventorySource;
-    if (input.surfaces !== null) {
-      surfaces = input.surfaces;
-      inventorySource = "input";
+    let groups = [];
+    let finalState;
+    let stoppedBy;
+    let extractionCompleteOverride = null;
+    let extractTrail = [];
+    if (input.resumeFrom !== null) {
+      rt.phase("Inventory");
+      surfaces = input.resumeFrom.surfaces;
+      inventorySource = input.resumeFrom.inventorySource;
+      rt.phase("Extract");
+      rt.log(
+        `docs-audit: resuming from a persisted claim set (${input.resumeFrom.claims.length} claims) \u2014 skipping Inventory and Extract entirely`
+      );
+      finalState = { claims: [...input.resumeFrom.claims], seenKeys: [], rounds: input.resumeFrom.rounds };
+      stoppedBy = input.resumeFrom.stoppedBy;
+      extractionCompleteOverride = input.resumeFrom.extractionComplete;
     } else {
-      const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory);
-      const invOutcome = await agentWithSchemaSalvage(rt, inventoryPrompt(
-        input,
-        resolvedInventoryType,
-        resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
-        resolvedInventoryType !== null ? input.opencodeVariants?.inventory ?? null : null
-      ), {
-        schema: INVENTORY_SCHEMA,
-        label: "docs-audit:inventory",
-        phase: "Inventory",
-        effort: inventoryEffort,
-        ...resolvedInventoryType !== null ? { agentType: resolvedInventoryType } : {},
-        ...inventoryModel !== void 0 ? { model: inventoryModel } : {}
-      });
-      for (const w of invOutcome.warnings) warn(rt, warnings, w);
-      const inv = invOutcome.value;
-      if (inv === null) {
-        throw new Error(
-          'docs-audit: the inventory agent failed \u2014 structured-output salvage could not recover a valid surface list (see warnings). Relaunch with resumeFromRunId, or pass an explicit "surfaces" array to skip inventory entirely'
-        );
+      rt.phase("Inventory");
+      if (input.surfaces !== null) {
+        surfaces = input.surfaces;
+        inventorySource = "input";
+      } else {
+        const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory);
+        const invOutcome = await agentWithSchemaSalvage(rt, inventoryPrompt(
+          input,
+          resolvedInventoryType,
+          resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
+          resolvedInventoryType !== null ? input.opencodeVariants?.inventory ?? null : null
+        ), {
+          schema: INVENTORY_SCHEMA,
+          label: "docs-audit:inventory",
+          phase: "Inventory",
+          effort: inventoryEffort,
+          ...resolvedInventoryType !== null ? { agentType: resolvedInventoryType } : {},
+          ...inventoryModel !== void 0 ? { model: inventoryModel } : {}
+        });
+        for (const w of invOutcome.warnings) warn(rt, warnings, w);
+        const inv = invOutcome.value;
+        if (inv === null) {
+          throw new Error(
+            'docs-audit: the inventory agent failed \u2014 structured-output salvage could not recover a valid surface list (see warnings). Relaunch with resumeFromRunId, or pass an explicit "surfaces" array to skip inventory entirely'
+          );
+        }
+        const cleaned = [...new Set(inv.surfaces.map((s) => s.trim()).filter((s) => s.length > 0))];
+        if (cleaned.length === 0) {
+          throw new Error(
+            `docs-audit: inventory returned no surfaces \u2014 the surface rules matched nothing under ${input.repoRoot}. Review "surfaceRules" or pass an explicit "surfaces" array.`
+          );
+        }
+        surfaces = cleaned;
+        inventorySource = "agent";
       }
-      const cleaned = [...new Set(inv.surfaces.map((s) => s.trim()).filter((s) => s.length > 0))];
-      if (cleaned.length === 0) {
-        throw new Error(
-          `docs-audit: inventory returned no surfaces \u2014 the surface rules matched nothing under ${input.repoRoot}. Review "surfaceRules" or pass an explicit "surfaces" array.`
-        );
+      rt.phase("Extract");
+      const surfaceSet = new Set(surfaces);
+      groups = chunk(surfaces, input.surfacesPerAgent);
+      const extractModel = resolveWrapperModel(resolvedExtractType !== null, input.models?.extract);
+      let extractEffortByGroup = null;
+      if (extractAuto) {
+        const sel = await autoSelectEffort(rt, groups.map((group, gi) => ({
+          id: `extract:${gi}`,
+          brief: `Extract checkable claims from ${group.length} doc surface(s): ${group.join(", ")}`,
+          signals: {}
+        })), {
+          fallback: EXTRACT_EFFORT,
+          phase: "Extract",
+          label: "docs-audit:autoEffort:extract"
+        });
+        for (const w of sel.warnings) warn(rt, warnings, w);
+        extractEffortByGroup = groups.map((_, gi) => sel.efforts[`extract:${gi}`] ?? EXTRACT_EFFORT);
       }
-      surfaces = cleaned;
-      inventorySource = "agent";
-    }
-    rt.phase("Extract");
-    const surfaceSet = new Set(surfaces);
-    const groups = chunk(surfaces, input.surfacesPerAgent);
-    const extractModel = resolveWrapperModel(resolvedExtractType !== null, input.models?.extract);
-    let extractEffortByGroup = null;
-    if (extractAuto) {
-      const sel = await autoSelectEffort(rt, groups.map((group, gi) => ({
-        id: `extract:${gi}`,
-        brief: `Extract checkable claims from ${group.length} doc surface(s): ${group.join(", ")}`,
-        signals: {}
-      })), {
-        fallback: EXTRACT_EFFORT,
-        phase: "Extract",
-        label: "docs-audit:autoEffort:extract"
-      });
-      for (const w of sel.warnings) warn(rt, warnings, w);
-      extractEffortByGroup = groups.map((_, gi) => sel.efforts[`extract:${gi}`] ?? EXTRACT_EFFORT);
-    }
-    const loopResult = await loopUntilDone(rt, {
-      maxIterations: input.maxRounds,
-      dryRounds: input.dryRounds,
-      initial: { claims: [], seenKeys: [], rounds: 0 },
-      body: async (loopRt, state) => {
-        const round = state.rounds + 1;
-        const angle = angleForRound(state.rounds);
-        const results = await loopRt.parallel(
-          groups.map((group, gi) => async () => {
-            const outcome = await agentWithSchemaSalvage(
-              loopRt,
-              extractPrompt(
-                input,
-                group,
-                round,
-                angle,
-                resolvedExtractType,
-                resolvedExtractType !== null ? input.opencodeModels?.extract ?? null : null,
-                resolvedExtractType !== null ? input.opencodeVariants?.extract ?? null : null
-              ),
-              {
-                schema: EXTRACT_SCHEMA,
-                label: `docs-audit:extract:${round}:${gi}`,
-                phase: "Extract",
-                effort: extractEffortByGroup?.[gi] ?? extractEffort,
-                ...resolvedExtractType !== null ? { agentType: resolvedExtractType } : {},
-                ...extractModel !== void 0 ? { model: extractModel } : {}
-              }
-            );
-            for (const w of outcome.warnings) warn(rt, warnings, w);
-            return outcome.value;
-          })
-        );
-        const seen = new Set(state.seenKeys);
-        const freshClaims = [];
-        const freshKeys = [];
-        for (let gi = 0; gi < results.length; gi++) {
-          const res = results[gi];
-          if (res === null || res === void 0) {
-            warn(
-              rt,
-              warnings,
-              `docs-audit [Extract]: extractor ${round}:${gi} failed \u2014 its surfaces contribute nothing this round (${(groups[gi] ?? []).join(", ")})`
-            );
-            continue;
-          }
-          for (const claim of res.claims) {
-            if (!surfaceSet.has(claim.surface)) {
+      const loopResult = await loopUntilDone(rt, {
+        maxIterations: input.maxRounds,
+        dryRounds: input.dryRounds,
+        initial: { claims: [], seenKeys: [], rounds: 0 },
+        body: async (loopRt, state) => {
+          const round = state.rounds + 1;
+          const angle = angleForRound(state.rounds);
+          const results = await loopRt.parallel(
+            groups.map((group, gi) => async () => {
+              const outcome = await agentWithSchemaSalvage(
+                loopRt,
+                extractPrompt(
+                  input,
+                  group,
+                  round,
+                  angle,
+                  resolvedExtractType,
+                  resolvedExtractType !== null ? input.opencodeModels?.extract ?? null : null,
+                  resolvedExtractType !== null ? input.opencodeVariants?.extract ?? null : null
+                ),
+                {
+                  schema: EXTRACT_SCHEMA,
+                  label: `docs-audit:extract:${round}:${gi}`,
+                  phase: "Extract",
+                  effort: extractEffortByGroup?.[gi] ?? extractEffort,
+                  ...resolvedExtractType !== null ? { agentType: resolvedExtractType } : {},
+                  ...extractModel !== void 0 ? { model: extractModel } : {}
+                }
+              );
+              for (const w of outcome.warnings) warn(rt, warnings, w);
+              return outcome.value;
+            })
+          );
+          const seen = new Set(state.seenKeys);
+          const freshClaims = [];
+          const freshKeys = [];
+          for (let gi = 0; gi < results.length; gi++) {
+            const res = results[gi];
+            if (res === null || res === void 0) {
               warn(
                 rt,
                 warnings,
-                `docs-audit [Extract]: dropped a claim citing "${claim.surface}" \u2014 not in the audited surface set`
+                `docs-audit [Extract]: extractor ${round}:${gi} failed \u2014 its surfaces contribute nothing this round (${(groups[gi] ?? []).join(", ")})`
               );
               continue;
             }
-            const key = claimKey(claim);
-            if (seen.has(key)) continue;
-            seen.add(key);
-            freshClaims.push(claim);
-            freshKeys.push(key);
+            for (const claim of res.claims) {
+              if (!surfaceSet.has(claim.surface)) {
+                warn(
+                  rt,
+                  warnings,
+                  `docs-audit [Extract]: dropped a claim citing "${claim.surface}" \u2014 not in the audited surface set`
+                );
+                continue;
+              }
+              const key = claimKey(claim);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              freshClaims.push(claim);
+              freshKeys.push(key);
+            }
           }
-        }
-        if (freshClaims.length === 0) {
+          if (freshClaims.length === 0) {
+            return {
+              state: { ...state, rounds: round },
+              done: false,
+              progressed: false
+            };
+          }
+          rt.log(`docs-audit: round ${round} (+${freshClaims.length} claims, ${state.claims.length + freshClaims.length} total)`);
           return {
-            state: { ...state, rounds: round },
+            state: {
+              claims: [...state.claims, ...freshClaims],
+              seenKeys: [...state.seenKeys, ...freshKeys],
+              rounds: round
+            },
             done: false,
-            progressed: false
+            progressed: true
           };
         }
-        rt.log(`docs-audit: round ${round} (+${freshClaims.length} claims, ${state.claims.length + freshClaims.length} total)`);
-        return {
-          state: {
-            claims: [...state.claims, ...freshClaims],
-            seenKeys: [...state.seenKeys, ...freshKeys],
-            rounds: round
-          },
-          done: false,
-          progressed: true
-        };
-      }
-    });
-    for (const w of loopResult.warnings) warnings.push(w);
-    const { state: finalState, stoppedBy } = loopResult.value;
+      });
+      for (const w of loopResult.warnings) warnings.push(w);
+      const loopStateResult = loopResult.value;
+      finalState = loopStateResult.state;
+      stoppedBy = loopStateResult.stoppedBy;
+      extractTrail = collectTrail(loopResult);
+    }
     const sortedClaims = finalState.claims.map((c, i) => ({ c, i })).sort(
       (a, b) => (RISK_ORDER[a.c.risk] ?? UNKNOWN_RISK_RANK) - (RISK_ORDER[b.c.risk] ?? UNKNOWN_RISK_RANK) || a.i - b.i
     ).map((x) => x.c);
+    const claimsAfterOffset = input.claimOffset > 0 ? sortedClaims.slice(input.claimOffset) : sortedClaims;
+    if (input.claimOffset > 0 && claimsAfterOffset.length === 0) {
+      warn(
+        rt,
+        warnings,
+        `docs-audit: claimOffset=${input.claimOffset} is >= the ${sortedClaims.length} claim(s) available \u2014 nothing left to verify in this slice.`
+      );
+    }
     let verified = [];
     let verifyTrail = [];
-    if (sortedClaims.length === 0) {
+    if (claimsAfterOffset.length === 0 && input.claimOffset === 0) {
       warn(
         rt,
         warnings,
         "docs-audit [Verify]: no checkable claims were extracted from the audited surfaces \u2014 nothing to verify. This can be legitimate (trivial surfaces) or an extraction problem (review the Extract warnings above)."
       );
     } else {
+      const candidateClaims = claimsAfterOffset.slice(0, input.maxVerifyClaims);
+      const voteSalvageMultiplier = resolvedVerifierType !== null ? 3 : 2;
+      const verifyMechanismOverhead = 1 + (resolvedVerifierType !== null ? 2 : 0);
+      const estimatedVerifyCalls = estimateVerifyCalls(candidateClaims, input.votes, input.tieredVotes) * voteSalvageMultiplier + verifyMechanismOverhead;
+      const fenceProbes = (input.messaging ? 0 : 1) + (input.inventoryType !== null ? 1 : 0) + (input.extractType !== null ? 1 : 0) + (input.verifierType !== null ? 1 : 0);
+      const inventoryOverhead = inventorySource === "agent" ? 1 : 0;
+      const extractOverhead = input.resumeFrom !== null ? 0 : groups.length * finalState.rounds * 2;
+      const overheadSoFar = fenceProbes + inventoryOverhead + extractOverhead;
+      const remainingBudget = HARNESS_AGENT_CAP - overheadSoFar - SAFETY_BUFFER;
+      if (estimatedVerifyCalls > remainingBudget) {
+        let safeSliceSize = 0;
+        let running = 0;
+        for (const c of claimsAfterOffset) {
+          const voteCost = input.tieredVotes ? c.kind === "behavior" || c.kind === "boundary" || c.risk === "high" ? input.votes : 1 : input.votes;
+          const cost = voteCost * voteSalvageMultiplier;
+          if (running + cost > remainingBudget) break;
+          running += cost;
+          safeSliceSize++;
+        }
+        const sliceCount = safeSliceSize > 0 ? Math.ceil(claimsAfterOffset.length / safeSliceSize) : 0;
+        const persistedPath = `${input.repoRoot}/.workflow-toolbox-cache/docs-audit-claims.json`;
+        const resumeFromPayload = {
+          surfaces,
+          inventorySource,
+          rounds: finalState.rounds,
+          stoppedBy,
+          extractionComplete: extractionCompleteOverride ?? stoppedBy === "dryRounds",
+          claims: finalState.claims
+        };
+        let persistSucceeded = false;
+        try {
+          const persistOutcome = await rt.agent(
+            `Write the EXACT JSON content below to the file path ${persistedPath} (create parent directories if needed), using the Write tool. Do not reformat, summarize, or alter the content in any way \u2014 write it byte-for-byte as given.
+
+----- BEGIN JSON TO WRITE VERBATIM -----
+` + JSON.stringify(resumeFromPayload) + '\n----- END JSON TO WRITE VERBATIM -----\n\nReturn { "written": true } after a successful write, or { "written": false } if the write failed.',
+            {
+              schema: {
+                type: "object",
+                properties: { written: { type: "boolean" } },
+                required: ["written"],
+                additionalProperties: false
+              },
+              label: "docs-audit:persistClaimsOnCapGuard",
+              phase: "Verify",
+              effort: "low"
+            }
+          );
+          persistSucceeded = persistOutcome?.written === true;
+        } catch {
+          persistSucceeded = false;
+        }
+        const pipelineHowTo = 'How to build that pipeline: the workflow-composer skill (workflow-toolbox Claude Code plugin, github.com/home-dev-lab/workflow-toolbox) ships a pipeline-authoring reference named "orchestrator-pipelines" \u2014 if that plugin is installed, ask your assistant to read it directly rather than relying on skill auto-activation (this sandboxed workflow has no filesystem access of its own, so this message cannot resolve or verify an absolute path to it). If you have a local checkout of the workflow-toolbox repo, its file is at plugin/skills/workflow-composer/references/orchestrator-pipelines.md relative to that checkout root \u2014 not necessarily relative to the audited repository above.';
+        const remedyParagraph = safeSliceSize === 0 ? `Remedy: even the single cheapest remaining claim's worst-case verification cost exceeds the ~${remainingBudget} calls left in this run's budget \u2014 slicing cannot help here. Lower "votes" (currently ${input.votes}) or disable "tieredVotes" before retrying, independent of claimOffset/maxVerifyClaims.
+` : persistSucceeded ? `Remedy: verify this claim set in slices via a PIPELINE of docs-audit runs \u2014 e.g. ${sliceCount} slice(s) of up to ${safeSliceSize} claim(s) each (claimOffset ${input.claimOffset}, ${input.claimOffset + safeSliceSize}, ${input.claimOffset + safeSliceSize * 2}, ...), each stage passing resumeFrom read from ${persistedPath} instead of re-extracting.
+${pipelineHowTo}` : `Remedy: claim persistence FAILED, so a follow-up run cannot resume from a saved claim set \u2014 re-run this exact call (same repoRoot/surfaces/hints) to re-extract, or manually persist the extracted claims yourself, before slicing across a PIPELINE of docs-audit runs via claimOffset \u2014 e.g. ${sliceCount} slice(s) of up to ${safeSliceSize} claim(s) each.
+${pipelineHowTo}`;
+        throw new Error(
+          `docs-audit: verifying ${candidateClaims.length} claim(s) (after claimOffset=${input.claimOffset}, capped by maxVerifyClaims=${input.maxVerifyClaims}) would need an estimated ${estimatedVerifyCalls} agent() calls, but only ~${remainingBudget} remain under the harness's hard ${HARNESS_AGENT_CAP}-call ceiling (already consumed ~${overheadSoFar} this run on Fence/Inventory/Extract). Refusing to start Verify and risk dying mid-fan (this is exactly how run wf_6f63845d-100 failed: 68 minutes and 4.7M tokens in, at claim 312 of 706, having already paid for extraction).
+
+` + (persistSucceeded ? `The ${finalState.claims.length} extracted claim(s) were saved to: ${persistedPath}
+` : "Claim persistence FAILED (see warnings) \u2014 the extracted claims were NOT durably saved; a re-run will have to re-extract.\n") + remedyParagraph
+        );
+      }
       const verifyModel = input.models?.verify ?? input.verifierModel ?? null;
       const verifyResult = await adversarialVerification(rt, {
-        claims: sortedClaims,
+        claims: claimsAfterOffset,
         renderClaim: renderAuditClaim(
           input.repoRoot,
           input.hints,
@@ -2389,14 +2595,14 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       rounds: finalState.rounds,
       // HONEST: complete only when a full sweep found nothing new — a
       // maxIterations stop means the claim space was NOT exhausted.
-      extractionComplete: stoppedBy === "dryRounds",
+      extractionComplete: extractionCompleteOverride ?? stoppedBy === "dryRounds",
       stoppedBy,
       claimsSeen: finalState.claims.length,
       summary,
       findings,
       verifierProbe,
       leafFence,
-      envelope: { trail: [...collectTrail(loopResult), ...verifyTrail] },
+      envelope: { trail: [...extractTrail, ...verifyTrail] },
       warnings
     };
   }
