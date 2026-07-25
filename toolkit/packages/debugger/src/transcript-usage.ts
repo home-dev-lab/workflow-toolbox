@@ -59,12 +59,17 @@ function readUsage(usage: Record<string, unknown>): AgentUsage {
   }
 }
 
-/** Sum one agent transcript's billed token usage, deduping streaming snapshots by
- *  `message.id`. Never throws; an empty / unparseable transcript yields `emptyUsage()`. */
-export function parseTranscriptUsage(jsonl: string): AgentUsage {
-  // Per message.id, keep the snapshot with the greatest output_tokens (the final one).
-  // Lines without an id get a unique synthetic key so they are never collapsed together.
-  const finals = new Map<string, AgentUsage>()
+/** Dedup streamed assistant-message snapshots by `message.id`, keeping the snapshot with the
+ *  greatest `output_tokens` (the final one — see module header: input/cache are stable within
+ *  an id, so this co-selects the correct input/cache too). Lines without an id get a unique
+ *  synthetic key so they are never collapsed together. Returns the raw `message` records (not
+ *  just their usage) — shared by `parseTranscriptUsage` (sums usage) AND `parseTranscriptActivity`
+ *  (counts turns / tool_use blocks), so both stay consistent with the SAME streaming-dedup rule:
+ *  they would have to change together if that rule ever did (same reason to change, not just
+ *  same shape — the Rule-of-Three generalize case). Only admits assistant lines carrying a
+ *  `usage` block, matching the original parseTranscriptUsage admission rule exactly. */
+function dedupAssistantMessages(jsonl: string): Map<string, Record<string, unknown>> {
+  const finals = new Map<string, Record<string, unknown>>()
   let synthetic = 0
 
   for (const raw of jsonl.split('\n')) {
@@ -83,15 +88,86 @@ export function parseTranscriptUsage(jsonl: string): AgentUsage {
     if (!isRecord(usage)) continue
 
     const key = strOrNull(message['id']) ?? ` synthetic-${synthetic++}`
-    const current = readUsage(usage)
+    const currentOutput = numOrNull(usage['output_tokens']) ?? 0
     const prior = finals.get(key)
+    const priorUsage = prior ? prior['usage'] : undefined
+    const priorOutput = isRecord(priorUsage) ? numOrNull(priorUsage['output_tokens']) ?? 0 : -1
     // Keep the higher-output snapshot for a given id (the final streamed value).
-    if (prior === undefined || current.outputTokens >= prior.outputTokens) finals.set(key, current)
+    if (prior === undefined || currentOutput >= priorOutput) finals.set(key, message)
   }
 
+  return finals
+}
+
+/** Sum one agent transcript's billed token usage, deduping streaming snapshots by
+ *  `message.id`. Never throws; an empty / unparseable transcript yields `emptyUsage()`. */
+export function parseTranscriptUsage(jsonl: string): AgentUsage {
+  const finals = dedupAssistantMessages(jsonl)
   let total = emptyUsage()
-  for (const u of finals.values()) total = addUsage(total, u)
+  for (const message of finals.values()) {
+    const usage = message['usage']
+    if (isRecord(usage)) total = addUsage(total, readUsage(usage))
+  }
   return total
+}
+
+/** One transcript's ACTIVITY shape (turns / tool calls / wall-clock span) — the companion
+ *  measure to `parseTranscriptUsage` for card-cost reporting (turns/tool-calls answer "how much
+ *  work", tokens answer "how much it cost"; per `numbers-carry-their-set-and-unit`, a raw LINE
+ *  count is not a turn count — a single billed turn streams across many lines). */
+export interface TranscriptActivity {
+  /** Distinct billed assistant turns — same admission/dedup rule as parseTranscriptUsage
+   *  (message.id, or a synthetic key when absent), so "turns" and "tokens" always agree on
+   *  what counts as one turn. */
+  turns: number
+  /** `tool_use` content blocks across the DEDUPED (final-snapshot) assistant messages — a
+   *  streamed partial snapshot of the same message could carry a different block set than its
+   *  final snapshot, so counting only the final snapshot avoids double-counting one tool call
+   *  seen in an intermediate delta too. */
+  toolCalls: number
+  /** Earliest / latest top-level `timestamp` across EVERY line (not just assistant/deduped —
+   *  user and tool-result lines bound the real wall-clock span too). Null when no line carried
+   *  a parseable timestamp. */
+  firstTimestamp: string | null
+  lastTimestamp: string | null
+}
+
+export function emptyActivity(): TranscriptActivity {
+  return { turns: 0, toolCalls: 0, firstTimestamp: null, lastTimestamp: null }
+}
+
+/** Parse one agent transcript's activity: distinct turns, tool_use calls, and wall-clock span.
+ *  Never throws; an empty / unparseable transcript yields `emptyActivity()`. */
+export function parseTranscriptActivity(jsonl: string): TranscriptActivity {
+  const finals = dedupAssistantMessages(jsonl)
+  let toolCalls = 0
+  for (const message of finals.values()) {
+    const content = message['content']
+    if (!Array.isArray(content)) continue
+    for (const block of content) {
+      if (isRecord(block) && block['type'] === 'tool_use') toolCalls++
+    }
+  }
+
+  let firstTimestamp: string | null = null
+  let lastTimestamp: string | null = null
+  for (const raw of jsonl.split('\n')) {
+    const trimmed = raw.trim()
+    if (trimmed === '') continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch {
+      continue // malformed line — skip
+    }
+    if (!isRecord(parsed)) continue
+    const ts = strOrNull(parsed['timestamp'])
+    if (ts === null) continue
+    if (firstTimestamp === null || ts < firstTimestamp) firstTimestamp = ts
+    if (lastTimestamp === null || ts > lastTimestamp) lastTimestamp = ts
+  }
+
+  return { turns: finals.size, toolCalls, firstTimestamp, lastTimestamp }
 }
 
 /** One auto/manual compaction boundary found in an agent transcript. Read DEFENSIVELY: the

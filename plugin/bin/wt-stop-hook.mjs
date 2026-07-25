@@ -293,7 +293,7 @@ function readUsage(usage) {
     cacheCreationTokens: numOrNull(usage["cache_creation_input_tokens"]) ?? 0
   };
 }
-function parseTranscriptUsage(jsonl) {
+function dedupAssistantMessages(jsonl) {
   const finals = /* @__PURE__ */ new Map();
   let synthetic = 0;
   for (const raw of jsonl.split("\n")) {
@@ -311,12 +311,21 @@ function parseTranscriptUsage(jsonl) {
     const usage = message["usage"];
     if (!isRecord(usage)) continue;
     const key = strOrNull(message["id"]) ?? ` synthetic-${synthetic++}`;
-    const current = readUsage(usage);
+    const currentOutput = numOrNull(usage["output_tokens"]) ?? 0;
     const prior = finals.get(key);
-    if (prior === void 0 || current.outputTokens >= prior.outputTokens) finals.set(key, current);
+    const priorUsage = prior ? prior["usage"] : void 0;
+    const priorOutput = isRecord(priorUsage) ? numOrNull(priorUsage["output_tokens"]) ?? 0 : -1;
+    if (prior === void 0 || currentOutput >= priorOutput) finals.set(key, message);
   }
+  return finals;
+}
+function parseTranscriptUsage(jsonl) {
+  const finals = dedupAssistantMessages(jsonl);
   let total = emptyUsage();
-  for (const u of finals.values()) total = addUsage(total, u);
+  for (const message of finals.values()) {
+    const usage = message["usage"];
+    if (isRecord(usage)) total = addUsage(total, readUsage(usage));
+  }
   return total;
 }
 function parseTranscriptCompaction(jsonl) {

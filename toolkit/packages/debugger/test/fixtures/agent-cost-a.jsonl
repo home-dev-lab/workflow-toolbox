@@ -1,0 +1,4 @@
+{"type":"user","timestamp":"2026-07-25T10:00:00.000Z","message":{"role":"user","content":"go"}}
+{"type":"assistant","timestamp":"2026-07-25T10:00:01.000Z","message":{"id":"msg_a1","usage":{"input_tokens":100,"output_tokens":8,"cache_read_input_tokens":500,"cache_creation_input_tokens":10},"content":[]}}
+{"type":"assistant","timestamp":"2026-07-25T10:00:02.000Z","message":{"id":"msg_a1","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":500,"cache_creation_input_tokens":10},"content":[{"type":"text","text":"ok"},{"type":"tool_use","name":"Bash","id":"t1"}]}}
+{"type":"assistant","timestamp":"2026-07-25T10:00:05.000Z","message":{"id":"msg_a2","usage":{"input_tokens":20,"output_tokens":12,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[{"type":"tool_use","name":"Read","id":"t2"}]}}

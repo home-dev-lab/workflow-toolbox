@@ -11,11 +11,13 @@
 import { describe, it, expect } from 'vitest'
 import {
   parseTranscriptUsage,
+  parseTranscriptActivity,
   parseTranscriptCompaction,
   buildCompactionReport,
   mergeCompactionReports,
   emptyCompactionReport,
   emptyUsage,
+  emptyActivity,
   addUsage,
   type TranscriptCompaction,
 } from '../src/transcript-usage.js'
@@ -92,6 +94,98 @@ describe('parseTranscriptUsage — tolerance (never throws)', () => {
   it('coerces non-numeric usage fields to 0 rather than throwing', () => {
     const bad = JSON.stringify({ type: 'assistant', message: { id: 'x', usage: { input_tokens: 'lots' } } })
     expect(parseTranscriptUsage(bad)).toEqual(emptyUsage())
+  })
+})
+
+// Build a full assistant line (top-level timestamp + optional content blocks), for the
+// activity parser's tool_use/turn/span tests — distinct from `line()` above (which only needs
+// a usage block, no content/timestamp).
+function assistantLine(
+  id: string,
+  ts: string,
+  u: { o?: number },
+  content: Array<Record<string, unknown>> = [],
+): string {
+  return JSON.stringify({
+    type: 'assistant',
+    timestamp: ts,
+    message: { id, usage: { input_tokens: 1, output_tokens: u.o ?? 1 }, content },
+  })
+}
+
+function otherLine(type: string, ts: string): string {
+  return JSON.stringify({ type, timestamp: ts })
+}
+
+describe('parseTranscriptActivity — turns / tool calls / span', () => {
+  it('counts DISTINCT turns by message.id, not raw lines (mirrors parseTranscriptUsage dedup)', () => {
+    const jsonl = [
+      assistantLine('m1', '2026-07-25T10:00:00.000Z', { o: 4 }), // streaming snapshot
+      assistantLine('m1', '2026-07-25T10:00:01.000Z', { o: 40 }), // final snapshot, same turn
+      assistantLine('m2', '2026-07-25T10:00:02.000Z', { o: 5 }),
+    ].join('\n')
+    expect(parseTranscriptActivity(jsonl).turns).toBe(2) // NOT 3 raw lines
+  })
+
+  it('counts tool_use blocks only on the FINAL (deduped) snapshot of a message', () => {
+    const jsonl = [
+      // Partial snapshot carries no tool_use yet (still streaming); final one does.
+      assistantLine('m1', '2026-07-25T10:00:00.000Z', { o: 1 }, []),
+      assistantLine('m1', '2026-07-25T10:00:01.000Z', { o: 50 }, [
+        { type: 'text', text: 'hi' },
+        { type: 'tool_use', name: 'Bash', id: 't1' },
+        { type: 'tool_use', name: 'Read', id: 't2' },
+      ]),
+      assistantLine('m2', '2026-07-25T10:00:02.000Z', { o: 3 }, [{ type: 'tool_use', name: 'Grep', id: 't3' }]),
+    ].join('\n')
+    const activity = parseTranscriptActivity(jsonl)
+    expect(activity.turns).toBe(2)
+    expect(activity.toolCalls).toBe(3) // 2 (final m1) + 1 (m2) — the dropped m1 partial contributes 0
+  })
+
+  it('spans first/last TIMESTAMP across ALL line types, not just assistant lines', () => {
+    const jsonl = [
+      otherLine('user', '2026-07-25T09:00:00.000Z'),
+      assistantLine('m1', '2026-07-25T09:05:00.000Z', { o: 10 }),
+      otherLine('tool_result', '2026-07-25T09:06:00.000Z'),
+      assistantLine('m2', '2026-07-25T09:10:00.000Z', { o: 10 }),
+    ].join('\n')
+    const activity = parseTranscriptActivity(jsonl)
+    expect(activity.firstTimestamp).toBe('2026-07-25T09:00:00.000Z') // the user line, not m1
+    expect(activity.lastTimestamp).toBe('2026-07-25T09:10:00.000Z')
+  })
+
+  it('returns emptyActivity() for an empty / whitespace-only transcript', () => {
+    expect(parseTranscriptActivity('')).toEqual(emptyActivity())
+    expect(parseTranscriptActivity('\n  \n')).toEqual(emptyActivity())
+  })
+
+  it('tolerates malformed / usage-less lines without throwing, still counting the valid ones', () => {
+    const jsonl = [
+      '{ not json',
+      JSON.stringify({ type: 'assistant', message: { id: 'no-usage' } }), // no usage → not admitted
+      otherLine('system', '2026-07-25T11:00:00.000Z'),
+      assistantLine('real', '2026-07-25T11:00:01.000Z', { o: 5 }, [{ type: 'tool_use', name: 'X', id: 't1' }]),
+    ].join('\n')
+    const activity = parseTranscriptActivity(jsonl)
+    expect(activity.turns).toBe(1)
+    expect(activity.toolCalls).toBe(1)
+    expect(activity.firstTimestamp).toBe('2026-07-25T11:00:00.000Z')
+    expect(activity.lastTimestamp).toBe('2026-07-25T11:00:01.000Z')
+  })
+
+  it('treats id-less assistant messages as distinct turns (never collapsed), mirroring parseTranscriptUsage', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', timestamp: '2026-07-25T12:00:00.000Z', message: { usage: { input_tokens: 1, output_tokens: 1 }, content: [] } }),
+      JSON.stringify({ type: 'assistant', timestamp: '2026-07-25T12:00:01.000Z', message: { usage: { input_tokens: 1, output_tokens: 1 }, content: [] } }),
+    ].join('\n')
+    expect(parseTranscriptActivity(jsonl).turns).toBe(2)
+  })
+})
+
+describe('emptyActivity', () => {
+  it('is all-zero / null', () => {
+    expect(emptyActivity()).toEqual({ turns: 0, toolCalls: 0, firstTimestamp: null, lastTimestamp: null })
   })
 })
 
