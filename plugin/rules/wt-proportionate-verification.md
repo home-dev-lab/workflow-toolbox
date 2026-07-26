@@ -1,5 +1,6 @@
 # Scale verification to the change's risk
 
+<!-- embedded-copy:proportionate-verification-ladder:start -->
 Verification is mandatory; how much of it you spin up scales with what changed. Match the shape
 to the range:
 
@@ -38,3 +39,13 @@ hypothesis about. A scoped check finds only what it was pointed at, however deep
 This never licenses skipping verification: the gates (test / typecheck / lint by exit code) and
 your own diff-read are unconditional on both axes. When unsure between two rungs, pick the higher
 one for irreversible or outward-facing changes, the lower one otherwise.
+<!-- embedded-copy:proportionate-verification-ladder:end -->
+
+<!-- Embedded elsewhere in this plugin (delegated agents run with no ambient rules — only
+     their own definition reaches them): plugin/agents/pilot.md and
+     plugin/agents/pilot-orchestrator.md each carry a byte-identical copy of the block above,
+     between the same `embedded-copy:proportionate-verification-ladder` markers. The mechanical
+     gate `toolkit/packages/build/test/embedded-copy-sync.test.ts` fails the build if any
+     marked copy anywhere under `plugin/` drifts from this one — this file is the canonical
+     source for that comparison. Edit the ladder HERE, then let the gate tell you which
+     embedded copies still need the same edit; never edit an embedded copy directly. -->
