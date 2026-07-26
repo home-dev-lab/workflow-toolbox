@@ -46,21 +46,30 @@
 //
 //   Req 3 (nombre + unité + ensemble dans la même phrase ; % avec numérateur ET
 //   dénominateur)
-//     → MECHANICAL, but SCOPED TO PERCENTAGES ONLY: a percentage with no fraction
-//       (N/M, N sur M, N of M) in the same clause is a high-precision signal. The
-//       general form of req 3 — ANY bare count with an ambiguous unit noun ("29
-//       tours", "100 fichiers") and no stated set — is NOT mechanically checked
-//       here at all; that open-ended case is out of this lens's reach (same
-//       family of gap as req 4's location cross-check below). A first version of
-//       this comment described req 3 as "mechanical+heuristic" without disclosing
-//       this — the coverage label was truthful about the percentage sub-case but
-//       silent on the uncovered general case, which is exactly the kind of
-//       half-true scope claim this card exists to catch. Corrected here.
+//     → MECHANICAL for the percentage sub-case: a percentage with no fraction
+//       (N/M, N sur M, N of M) in the same clause is a high-precision signal.
 //     → ADVISORY ONLY (non-blocking) for "same pass" wording: whether the
 //       numerator and denominator come from the same run/pass is genuinely
 //       context-dependent (sometimes irrelevant), so its absence is a WARN, not a
 //       finding — this is stated so a clean run isn't over-read as proof this half
 //       was checked as strictly as the other two.
+//     → ADVISORY ONLY (non-blocking), LOW PRECISION, for the GENERAL bare-count
+//       case (card #1827338294346647054 — "29 tours", "100 fichiers", none of our
+//       five documented real burns was a percentage): a closed noun vocabulary
+//       plus a scope-OR-instrument grounding check (checkReq3bBareCount) reaches
+//       100% recall/precision on the five documented burns + hand-built
+//       counter-fixtures, but only ~25-35% measured true-positive rate on real
+//       corpus prose (see that function's own header comment for the full
+//       calibration numbers and the two rejected stricter designs — a
+//       verdict-marker-gated blocking check, and an ungated scope-only blocking
+//       check — both measured worse). Shipped as a WARNING, never a finding: a
+//       candidate list for a human reviewer, not a verdict. The prior version of
+//       this file's header stated flatly that the general bare-count case was
+//       "NOT mechanically checked here at all... out of this lens's reach" — that
+//       was accurate for the FIRST version of the lens and is corrected here now
+//       that a (low-precision, advisory) check exists; a coverage claim frozen at
+//       its original scope after the code changed would itself be exactly the
+//       half-true scope claim this card exists to catch.
 //
 //   UPD — a direct-Bash cross-family review (opencode CLI, openai/gpt-5.6-terra,
 //   no wrapper agent in between — see evidence 09/10/11/12 in the card's report)
@@ -215,8 +224,13 @@ function checkReq1(text: string): Finding[] {
 
 const ABSENCE_TERM =
   /\b(aucun[e]?|z[ée]ro|personne|rien\s+trouv[ée](?![A-Za-zÀ-ÖØ-öø-ÿ])|none|nothing|no issues?|no defects?)\b/i
+// "out of N" added (cross-family review, card #1827338294346647054, evidence
+// 10, Medium): the ordinary English idiom "100 files OUT OF 120" was not
+// recognized — only "of the N" was. Purely additive (a new alternation
+// branch): can only make MORE sentences pass as grounded, never fewer, so it
+// cannot regress any existing "must be flagged" assertion for req 2/3.
 const SCOPE_MARKER =
-  /\bsur\s+(les?\s+|la\s+|l['’])?\d+|\d+\s*\/\s*\d+|\bparmi\b|\bdes\s+\d+\b|\bof\s+the\s+\d+|\bin\s+the\s+\d+\b|\bacross\s+\d+|\bl['’]ensemble\b/i
+  /\bsur\s+(les?\s+|la\s+|l['’])?\d+|\d+\s*\/\s*\d+|\bparmi\b|\bdes\s+\d+\b|\bof\s+the\s+\d+|\bout\s+of\s+\d+\b|\bin\s+the\s+\d+\b|\bacross\s+\d+|\bl['’]ensemble\b/i
 const INSTRUMENT_MARKER =
   /\blu(e)?s?\s+(par|via)\b|\bex[ée]cut[ée]s?\s+via\b|\bvia\s+\w|\bpar\s+(script|lecture|grep|test|gate|opencode|sonnet|lint|typecheck)\b|\bby\s+(the\s+|a\s+)?(script|reading|grep|test)\b|\btranscripts?\b|\bjournal\b/i
 
@@ -308,6 +322,127 @@ function checkReq3(text: string): { findings: Finding[]; warnings: Warning[] } {
   return { findings, warnings }
 }
 
+// --- Req 3b: bare count, GENERAL CASE (card #1827338294346647054) -------
+//
+// Card #1827270233300141550 shipped req 3 scoped to PERCENTAGES only. Our
+// five documented real burns (see MEMORY.md numbers-carry-their-set-and-unit)
+// were NONE of them a percentage: "29 tours" (lines miscounted as turns),
+// "493 verdicts" (votes miscounted as aggregated verdicts), "100 fichiers"
+// (build artifacts miscounted as commit footprint), "7 tests" (static
+// occurrences miscounted as executed tests). This is that general case.
+//
+// ⚠ DELIBERATELY ADVISORY ONLY — never a `finding`, never flips `ok`/exit
+// code. Calibrated against the 5 burns + the real wave-20260725-r2 report
+// corpus (16 reports): a verdict-marker-gated blocking design missed 20-40%
+// of the burn shapes and false-positived on well-written prose; an ungated
+// design against only a scope marker flagged ~50% of all burn-noun sentences
+// in the real corpus — exactly the "cries on everything, disarmed in a
+// night" risk the card names. The design shipped here (closed noun
+// vocabulary + grounded-if-scope-OR-instrument, reusing both existing
+// mechanisms) reaches 100% recall/precision on the documented-burn fixture
+// set, but STILL flags ~38% of real-corpus burn-noun sentences (95
+// candidates, 36 flagged) with a manually spot-checked true-positive rate of
+// roughly 25-35% among those (titles, inline ID enumerations, and
+// differently-worded diff-stats are legitimate grounding forms this closed
+// vocabulary does not recognize). That precision is too low to gate on —
+// hence advisory: a candidate list for a human reviewer, not a verdict.
+//
+// Design note vs req 2/3's clause-splitting: this check tests grounding over
+// the WHOLE `sentencesOf()` UNIT, not the clause containing the count.
+// Clause-splitting was tried first and rejected — it reintroduced a false
+// positive on the common, legitimate "enumerate per bucket, state the shared
+// total once" pattern found live in the real corpus (e.g. "35 cartes X, 4
+// cartes Y, 0 carte Z sur 51 cartes ouvertes" — the trailing "sur 51" grounds
+// every count in the sentence, but sits in a different clause from each).
+//
+// ⚠ CORRECTED (cross-family review, evidence 10, Medium): a `sentencesOf()`
+// "unit" is NOT a full grammatical sentence — that shared function (also
+// used by req 1/2/4/5) splits on `;` too, not just `.!?`. So "100 tests
+// passed; pnpm test exited 0." is TWO units to this check, and the grounding
+// after the semicolon is invisible to the first one. Confirmed false
+// positive, left UNFIXED deliberately: `sentencesOf()` is shared
+// infrastructure — narrowing its semicolon-splitting to fix this one
+// advisory check risks an unreviewed behavior change for req 1/2/4/5, which
+// is out of this card's scope. Locked by a test that pins the CURRENT
+// (imperfect) behavior, so a future change to `sentencesOf()` is a visible
+// decision, not a silent regression either way.
+//
+// Known residual risk of the whole-unit choice, NOT fixed either: a unit
+// with an UNRELATED grounded clause elsewhere can mask a genuinely
+// ungrounded count earlier in it. Distinguishing "same population, stated
+// once" from "two different populations, one grounded" requires reading
+// what the text means — out of reach of this text lens (see the card's own
+// honest-exit clause). Lower stakes than it would be for a blocking check:
+// this is advisory, so a miss here is a miss on a nudge, not a silently-
+// passed gate.
+//
+// Closed vocabulary of "burn nouns" — same posture as req 1's IMPL_LANE/
+// REVIEW_LANE: closed, extend on a real synonym rather than loosen into a
+// false-negative machine. `[\d,.]*` (not just `\d+`) so thousands-separator
+// counts ("3,483 tests") are captured whole, not truncated after the comma.
+// An optional SINGLE modifier word between the number and the noun (cross-
+// family review, evidence 10, Medium: "100 CHANGED files" was missed — the
+// English adjective-before-noun order breaks a bare `\s*` gap) is allowed,
+// but capped at one word to avoid drifting toward matching arbitrary text
+// between an unrelated number and a coincidental later noun.
+const BARE_COUNT_NOUN =
+  /\b\d[\d,.]*\s*(?:[A-Za-zÀ-ÖØ-öø-ÿ]+\s+)?(tours?|lignes?|fichiers?|files?|tests?|verdicts?|votes?|transcripts?|agents?|commits?|cartes?|checks?|findings?|runs?|cas|items?|occurrences?|lecteurs?|rounds?|turns?|lines?|calls?|PRs?)\b/i
+
+// req 2's INSTRUMENT_MARKER targets NARRATIVE instrument phrasing ("lu via",
+// "exécuté via", "par script") — it does NOT recognize a bare literal
+// command/tool invocation ("pnpm test, exit 0", "git show --stat"), which is
+// this check's own common grounding form (a count anchored to a re-checkable
+// command is as legitimate a source as a fraction). Measured gap, not a
+// hypothetical: "146 fichiers, 3483 tests passés (pnpm test, exit 0)." false-
+// alarmed against INSTRUMENT_MARKER alone during calibration — this is the
+// fix, additive (checked with OR), not a change to req 2's own marker.
+// `git log` added and the exit-code digit widened to `\d+` (cross-family
+// review, evidence 10, Medium ×2: only show/diff/stat were recognized, and
+// only a SINGLE-digit exit code — "exit 10" silently didn't match `\d\b`).
+// `runner` (bare) DROPPED (evidence 10, Low): too generic — "100 tests
+// exercise the runner lifecycle" isn't naming a checkable command, it was
+// masking a genuinely ungrounded count. Trade-off taken deliberately: this
+// makes the check MORE likely to warn (lower false-negative rate), which is
+// the right direction for an advisory-only, disclosed-imprecision check.
+const TOOL_MARKER =
+  /\bgit\s+(show|diff|stat|log)\b|\bpnpm\s+\w+\b|\bexit\s+\d+\b|--stat\b|\bnpx\s+\w+\b/i
+
+// Markdown headers are a WHOLE PHYSICAL LINE, not a grammatical sentence
+// boundary — "# Release. 100 tests" is entirely header text even though
+// `sentencesOf()` splits it into two fragments at the period (cross-family
+// review, evidence 10, Low: checking `isHeaderLine` on the post-split
+// fragment let "100 tests" slip through as if it were body prose). Fix:
+// strip whole header LINES from the text before this check ever splits it
+// into sentences — scoped to this function only (does not change the
+// shared `sentencesOf`/`paragraphsOf` used by req 1/2/4/5).
+function stripHeaderLines(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*#{1,6}\s/.test(line))
+    .join('\n')
+}
+
+function checkReq3bBareCount(text: string): Warning[] {
+  const warnings: Warning[] = []
+  for (const sentence of sentencesOf(stripHeaderLines(text))) {
+    // req 3's mechanical percentage check already owns this shape — don't
+    // double-report the same sentence under two different requirement paths.
+    if (PERCENT.test(sentence)) continue
+    if (!BARE_COUNT_NOUN.test(sentence)) continue
+    const grounded =
+      SCOPE_MARKER.test(sentence) || INSTRUMENT_MARKER.test(sentence) || TOOL_MARKER.test(sentence)
+    if (!grounded) {
+      warnings.push({
+        requirement: 3,
+        message:
+          'compte nu (ex.: "100 fichiers") sans ensemble ni instrument nommé dans la phrase — ADVISORY seulement (vocabulaire fermé, précision mesurée basse sur prose libre — voir le commentaire de checkReq3bBareCount), jamais bloquant : à confirmer par une lecture humaine',
+        excerpt: excerptOf(sentence),
+      })
+    }
+  }
+  return warnings
+}
+
 // --- Req 4: vérification reportée = point ouvert avec un endroit -------
 
 const DEFERRAL_TERM =
@@ -368,6 +503,7 @@ export function checkReport(text: string): CheckResult {
   const r3 = checkReq3(text)
   findings.push(...r3.findings)
   warnings.push(...r3.warnings)
+  warnings.push(...checkReq3bBareCount(text))
   findings.push(...checkReq4(text))
   findings.push(...checkReq5(text))
 

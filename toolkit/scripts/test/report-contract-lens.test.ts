@@ -143,3 +143,128 @@ describe('report-contract-lens — honest coverage self-report', () => {
     expect(coverage[5]).toBe('heuristic')
   })
 })
+
+// Card #1827338294346647054 — "Étendre la lentille au COMPTE NU": req 3's
+// general case (a bare count with an ambiguous unit noun, no percentage
+// involved — "29 tours", "100 fichiers" — the actual shape of our five
+// documented burns, none of which was a percentage). Calibrated against the
+// 5 documented burns + the real wave-20260725-r2 report corpus (see the
+// pilot's report for the measured recall/precision at each design point);
+// the false-positive rate on free-form prose is too high to gate exit code
+// on, so this is ADVISORY ONLY — it must NEVER appear in `findings`, only in
+// `warnings`, and `ok`/exit code must stay unaffected by it.
+describe('report-contract-lens — bare count, general case (ADVISORY ONLY, never blocking)', () => {
+  it('a decisive bare count with no scope AND no named instrument produces a warning, never a finding', () => {
+    // NOTE: req 1 also fires on any bare sentence lacking lane labels — that
+    // is unrelated to this check and expected on a minimal fixture (see the
+    // file's other per-requirement tests, which likewise scope assertions to
+    // one requirement rather than the whole-report `ok`).
+    const result = checkReport(
+      '100 fichiers ont été modifiés en 25 minutes, ce qui montre qu’un bundle part dans le commit.',
+    )
+    expect(result.findings.some((f) => f.requirement === 3)).toBe(false)
+    expect(result.warnings.some((w) => w.requirement === 3)).toBe(true)
+  })
+
+  it('the same bare count grounded by a SCOPE marker (sur N / N sur M) produces no warning', () => {
+    const result = checkReport(
+      '168 claims sur 493 votes individuels ont été agrégés, ce qui confirme le rendement réel de l’audit.',
+    )
+    expect(result.warnings.some((w) => w.requirement === 3)).toBe(false)
+  })
+
+  it('the same bare count grounded by a NAMED INSTRUMENT (no fraction, but a re-checkable source) produces no warning', () => {
+    const result = checkReport(
+      '146 fichiers, 3483 tests passés (pnpm test, exit 0).',
+    )
+    expect(result.warnings.some((w) => w.requirement === 3)).toBe(false)
+  })
+
+  it('the "lines mistaken for turns" burn shape is caught', () => {
+    const result = checkReport("29 tours sans coupure, donc maxTurns n'est pas appliqué.")
+    expect(result.warnings.some((w) => w.requirement === 3)).toBe(true)
+  })
+
+  it('the "static occurrences mistaken for executed tests" burn shape is caught', () => {
+    const result = checkReport('Le fichier ne compte que 7 tests, ce qui confirme que le drift-lock est surévalué.')
+    expect(result.warnings.some((w) => w.requirement === 3)).toBe(true)
+  })
+
+  it('a markdown header line is excluded (a count in a title is not a decisive claim)', () => {
+    const result = checkReport('# Card #123 — fix round on the review’s 3 test-lock findings\n\nBody text.')
+    expect(result.warnings.some((w) => w.requirement === 3)).toBe(false)
+  })
+
+  it('a percentage sentence is not double-reported by the bare-count check (already covered mechanically above)', () => {
+    const result = checkReport('Couverture : 92%.')
+    // req 3 already fires a mechanical FINDING for this — the advisory
+    // bare-count warning must not ALSO fire on the same sentence.
+    expect(result.findings.some((f) => f.requirement === 3)).toBe(true)
+    expect(result.warnings.filter((w) => w.requirement === 3)).toHaveLength(0)
+  })
+
+  it('a word outside the closed burn-noun vocabulary is not flagged (documented limitation, not a bug)', () => {
+    const result = checkReport('Le rapport cite 42 anomalies, ce qui confirme le diagnostic.')
+    expect(result.warnings.some((w) => w.requirement === 3)).toBe(false)
+  })
+})
+
+// Adversarial cases found by cross-family review (opencode/gpt-5.6-terra, direct
+// CLI call, card #1827338294346647054 evidence 10) — re-verified against the
+// reviewer's OWN repro strings, not just this file's author's assertions (same
+// discipline as the parent card's evidence 12).
+describe('report-contract-lens — bare count, adversarial cases found by cross-family review', () => {
+  it('[Medium, fixed] an intervening modifier ("changed files") no longer defeats the noun match', () => {
+    expect(
+      checkReport('100 changed files were included in the commit.').warnings.some(
+        (w) => w.requirement === 3,
+      ),
+    ).toBe(true)
+  })
+
+  it('[Medium, fixed] "N out of M" (English scope form) is now recognized, not just "of the N"', () => {
+    expect(
+      checkReport('100 files out of 120 changed files were reviewed.').warnings.some(
+        (w) => w.requirement === 3,
+      ),
+    ).toBe(false)
+  })
+
+  it('[Medium, fixed] "git log" is recognized as a named tool, not just show/diff/stat', () => {
+    expect(
+      checkReport('100 commits were reviewed with git log --oneline.').warnings.some(
+        (w) => w.requirement === 3,
+      ),
+    ).toBe(false)
+  })
+
+  it('[Medium, fixed] a multi-digit exit code ("exit 10") is recognized, not just a single digit', () => {
+    expect(
+      checkReport('100 tests passed, exit 10 observed on retry.').warnings.some(
+        (w) => w.requirement === 3,
+      ),
+    ).toBe(false)
+  })
+
+  it('[Low, fixed] a header line immediately followed by prose on the SAME physical line is still excluded (markdown headers are whole-line)', () => {
+    expect(
+      checkReport('# Release. 100 tests').warnings.some((w) => w.requirement === 3),
+    ).toBe(false)
+  })
+
+  it('[Low, fixed] the overly generic "runner" tool marker no longer masks a genuinely ungrounded count', () => {
+    expect(
+      checkReport('100 tests exercise the runner lifecycle.').warnings.some(
+        (w) => w.requirement === 3,
+      ),
+    ).toBe(true)
+  })
+
+  it('[Medium, DECLINED — documented, not fixed] a semicolon splits what a human reads as one sentence; grounding after the ";" is not seen — sentencesOf() is a SHARED utility (req 1/2/4/5 also depend on its exact boundaries), so its splitting behavior is not changed by this card; the header comment is corrected instead of the code', () => {
+    const result = checkReport('100 tests passed; pnpm test exited 0.')
+    // Documented as a known false-positive class, not silently absent: this
+    // assertion pins the CURRENT (imperfect) behavior so a future change to
+    // sentencesOf() is a deliberate, visible decision, not an accident.
+    expect(result.warnings.some((w) => w.requirement === 3)).toBe(true)
+  })
+})
