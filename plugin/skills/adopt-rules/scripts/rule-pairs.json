@@ -5,5 +5,6 @@
   { "user": "proportionate-verification.md", "shipped": "wt-proportionate-verification.md", "partial": false },
   { "user": "proactive-decision-making.md", "shipped": "wt-proactive-decision-making.md", "partial": false },
   { "user": "verify-by-ground-truth.md", "shipped": "wt-verify-by-ground-truth.md", "partial": false },
-  { "user": "delegation-lanes.md", "shipped": "wt-delegation-ladder.md", "partial": true }
+  { "user": "delegation-lanes.md", "shipped": "wt-delegation-ladder.md", "partial": true },
+  { "user": "outbound-propose-dont-affirm.md", "shipped": "wt-propose-dont-affirm.md", "partial": true }
 ]

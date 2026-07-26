@@ -36,7 +36,7 @@
 //      B1 (dev-ground) THIRD in the Phase-C order ("après que le pilote
 //      existe, car c'est lui qui le route"). Building it first inverts that
 //      order. Kill reason: that doc's own status line (dev-loop-phase-b-tri.md:7)
-//      reads "Statut : proposition d'arbitre, À RATIFIER par Frederic" — it is
+//      reads "Statut : proposition d'arbitre, À RATIFIER" — it is
 //      UNRATIFIED — and the pilot only ROUTES dev-ground (a launch-time
 //      decision, "SI on grounde"), it has no structural/compile dependency on
 //      it. dev-ground is a pure tool; the ordering concern does not apply.

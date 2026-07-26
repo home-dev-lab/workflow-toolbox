@@ -28,6 +28,17 @@ Replace "this looks right" with a mechanical check on the signal that actually d
   unknown channel, a file or behavior with no known producer) — even mid-flow, off-task,
   harmless-looking. The skip-tell: you are BUSY with something else and the event is peripheral.
 
+For a high-impact or high-risk change (a guard, a safety mechanism, anything touching money,
+security, data loss, availability, or a published surface), state your verdict on all three:
+was the failure it prevents actually exercised (not just a happy-path test written from the
+same understanding as the code); did it run under real conditions/volume or only fixtures; and
+what can go wrong in the mechanism itself, not just the problem it addresses. Shipping with a
+"no" is legitimate — leaving the reader to assume it was asked is not, so say explicitly which
+of the three you can answer and which you cannot, at the same prominence as the result. A check
+deferred to a later step ("the integrating review will cover it") is not done until that later
+step's own record names it — read the executing system's own trace before crediting it, never a
+summary's silence.
+
 When a check outgrows a single mechanical read — evidence across several sources, leads to chase,
 a surprise needing a root cause — escalate to the `deep-grounding` skill (the recursive
 collect-verify pass that tags conclusions by evidence tier) rather than chaining ad-hoc reads.

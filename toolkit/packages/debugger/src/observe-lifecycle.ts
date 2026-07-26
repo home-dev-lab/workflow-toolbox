@@ -493,10 +493,10 @@ export function planRemoteMounts(remote: ResolvedRemote, healthBody: unknown): R
       typeof (s as Record<string, unknown>)['key'] === 'string' &&
       // Route-safe key REQUIRED. The subKey lands in BOTH my local route key AND the
       // `/s/<subKey>` prefix I forward to the REMOTE's own route — so it must be used VERBATIM
-      // (it has to byte-match the remote's configDirKey output, e.g. `-home-doublefx--claude-…`
+      // (it has to byte-match the remote's configDirKey output, e.g. `-home-u--claude-…`
       // with a leading + double dash). We therefore VALIDATE the charset instead of rewriting
       // it (an earlier slug-collapse here was a regression: it turned that key into
-      // `home-doublefx-claude-…`, so every forwarded request 404'd → the UI read "server
+      // `home-u-claude-…`, so every forwarded request 404'd → the UI read "server
       // unreachable"). A key outside [a-z0-9-] can't be a real remote route AND is unsafe to
       // splice into a forward path (`/`, CRLF, `..`), so such a sub-source is DROPPED, not mangled.
       /^[a-z0-9-]+$/.test((s as Record<string, unknown>)['key'] as string),

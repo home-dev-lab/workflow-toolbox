@@ -42,6 +42,11 @@ Complexity triage of a CODE task is a code-reading judgment, not a cheap-tier cl
 gate on deterministic signals (diff size, files touched) first, then one batched strong-tier
 triage call; keep verifiers at a static high floor.
 
+When the workhorse tier is DOMINATED by a stronger one — costs more per unit for lower
+quality — the "workhorse = cheap tier" assumption fails. Route that role to a cross-family
+lane instead, reserve the strong tier for quality, keep the cheap tier for trivial work, and
+avoid the dominated tier entirely.
+
 ## Briefing an executor (the split that makes delegation safe)
 
 The arbiter designs, briefs, gates, reviews, and commits; the executor implements the brief.
@@ -55,6 +60,19 @@ and operating boundaries (no commits/pushes, one working directory, sequential e
 Under-specification converts directly into extra review rounds. When the executor flags a
 possible completeness gap ("every X must produce a Y"), the arbiter must either require the
 guard or prove the case impossible — never file it as a harmless scope note.
+
+State the INVARIANT the executor must reach, not the mechanism you guessed would reach it. A
+brief that prescribes *how* caps the executor at the briefer's own knowledge of a layer the
+executor is the one actually reading; state what must be TRUE and let the executor find its
+own route — when it proposes a different mechanism for the same invariant, that is the brief
+working, not drift. Keep prescribing structural decisions (shape, seams, ownership); stop
+prescribing technique.
+
+Give the executor a MECHANICAL escalation trigger, never "use judgment": escalate after two
+failed attempts at the same fix, one repeated diagnosis, or roughly 15–20 minutes without
+narrowing the problem. A judgment-based clause is unenforceable and gets silently ignored — an
+agent grinding a wrong hypothesis feels busy, not stuck, so only a counting rule fires
+regardless.
 
 The executor's green report is EVIDENCE, not proof: rerun the gates by exit code and read the
 diff yourself before committing. Release an agent (shutdown request) only when its arc is

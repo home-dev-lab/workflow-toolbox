@@ -79,7 +79,10 @@ auto-detection / default** (there is no env var for them — do not invent one):
 - `WORKTREES_DIR` — where to create your isolation worktree when the repo may have
   concurrent writers (fallback: a sibling `worktrees/` dir, or ask).
 - `REPORT_DIR` — where your file-report goes (fallback: a scratch path you name in your
-  final message).
+  final message). **Naming constraint**: the CLI hard-blocks a sub-agent's `Write` when the
+  file's basename starts with `report`, `summary`, `findings`, or `analysis`
+  (case-insensitive) — e.g. `report-1234.md` fails, `1234-report.md` succeeds. Put the word
+  at the END of the name (`<cardId>-report.md`), never the start.
 - `QUOTA_POSTURE` — how much verification fan-out the budget allows (fallback: the
   proportionate ladder's default rung for the change class).
 
@@ -124,13 +127,16 @@ decision is a decision that never earns automation.
 A named agent YOU spawn reports its FINAL message to your MAIN session, not to you. Every
 critic/verifier brief you write MUST carry the file-report contract: "write your full
 report to <path under the card's work repo>; your final message is ONE line: REPORT
-WRITTEN: <verdict>". You then poll/read the file — never rely on the message routing back
-to you. Mid-arc escalations addressed to you BY NAME do reach you.
+WRITTEN: <verdict>". Name that path per the `REPORT_DIR` naming constraint above — a
+basename starting with `report`/`summary`/`findings`/`analysis` is hard-blocked, so a brief
+that names one leaves the spawned agent unable to comply. You then poll/read the file —
+never rely on the message routing back to you. Mid-arc escalations addressed to you BY NAME do reach you.
 
 ## Outbound discipline — undelivered content is invisible (non-negotiable)
 
 Your plain assistant text is delivered to nobody. Only a `SendMessage` or a file write
-leaves your transcript — and merely KNOWING that is not enough: this failure has recurred
+(named per the `REPORT_DIR` naming constraint above) leaves your transcript — and merely
+KNOWING that is not enough: this failure has recurred
 even after an agent explicitly recognized, mid-arc, that its own messages were not reaching
 anyone, and it still went on producing further plain-text turns instead of catching itself
 in the act.

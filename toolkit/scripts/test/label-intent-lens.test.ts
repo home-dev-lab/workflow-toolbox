@@ -23,7 +23,7 @@ describe('label-intent-lens — card detection fixtures', () => {
 
   it('2. ignores unrelated applied labels and still reports the trio', () => {
     const result = checkLabelIntent(
-      card('...\n\nLabels: P2 feature effort:M (repo: workflow-observatory).', ['tooling']),
+      card('...\n\nLabels: P2 feature effort:M (repo: acme-widget-service).', ['tooling']),
     )
     expect(result.findings.map((f) => [f.field, f.suggested])).toEqual([
       ['priority', 'P2'],
@@ -119,7 +119,7 @@ describe('label-intent-lens — card detection fixtures', () => {
   it('12. strips sr-meta before scanning and remains silent when labels are applied', () => {
     const result = checkLabelIntent(
       card(
-        '...\n\nLabels: P2 feature effort:M (repo: workflow-observatory).\n\n<!-- sr-meta v1 -->\nLast-worked: 2026-07-24\nNext: ...\n<!-- /sr-meta -->\n',
+        '...\n\nLabels: P2 feature effort:M (repo: acme-widget-service).\n\n<!-- sr-meta v1 -->\nLast-worked: 2026-07-24\nNext: ...\n<!-- /sr-meta -->\n',
         ['tooling', 'P2', 'feature', 'effort:M'],
       ),
     )

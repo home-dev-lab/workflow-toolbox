@@ -139,8 +139,8 @@ at intake, realtime transitions, one consolidated narrative, Done only at DoD).
 8. **Integrate** — sequential re-integration of worktrees; regenerate generated artifacts
    on the merged tree (never textual-merge them); gates green on the MERGED tree before
    any push or deployment.
-9. **Report** — ONE consolidated wave report file + a one-line SendMessage to the main
-   session. Verify each pilot left its card's narrative as one consolidated comment and its
+9. **Report** — ONE consolidated wave report file (named per the *File-report contract*
+   naming constraint below) + a one-line SendMessage to the main session. Verify each pilot left its card's narrative as one consolidated comment and its
    board state true. **Before you file the wave report, invoke an independent fidelity
    check** — a fresh-context agent that reads ONLY the persisted record (the board + repo
    state your report claims), never your working session, and confronts each factual claim
@@ -244,14 +244,18 @@ process it; it is not a new instruction. Pilots messaging you by name DO wake yo
 
 A named agent's FINAL message routes to the MAIN session, not to you. Every pilot/verifier
 brief you write MUST say: "write your full report to `<REPORT_DIR>/<cardId>-report.md`;
-your final message is ONE line: REPORT WRITTEN: <verdict>". You read the files; you never
-depend on final-message routing. Mid-arc escalations (SendMessage addressed to you by name)
-do reach you and wake you.
+your final message is ONE line: REPORT WRITTEN: <verdict>". **Keep `report` at the END of
+the basename, never the start** — the CLI hard-blocks a sub-agent's `Write` when a basename
+starts with `report`, `summary`, `findings`, or `analysis` (case-insensitive), so
+`report-<cardId>.md` would silently fail while `<cardId>-report.md` succeeds. You read the
+files; you never depend on final-message routing. Mid-arc escalations (SendMessage
+addressed to you by name) do reach you and wake you.
 
 ## Outbound discipline — undelivered content is invisible (non-negotiable)
 
 Your plain assistant text is delivered to nobody. Only a `SendMessage` or a file write
-leaves your transcript — and merely KNOWING that is not enough: this failure has recurred
+(named per the `File-report contract` naming constraint below) leaves your transcript — and
+merely KNOWING that is not enough: this failure has recurred
 even after an agent explicitly recognized, mid-arc, that its own messages were not reaching
 anyone, and it still went on producing further plain-text turns instead of catching itself
 in the act.

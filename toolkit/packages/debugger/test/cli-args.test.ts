@@ -4,7 +4,7 @@ import { parseDebugArgs, parseReportArgs } from '../src/cli-args.js'
 // Claude Code project slugs are derived from an absolute cwd with
 // non-alphanumerics mapped to "-", so EVERY real slug starts with a dash —
 // the parsers must accept it as a --project value, not read it as a flag.
-const SLUG = '-home-doublefx-projects-dynamic-workflow-toolbox'
+const SLUG = '-home-u-projects-dynamic-workflow-toolbox'
 
 describe('parseDebugArgs', () => {
   it('accepts a leading-dash slug in space form', () => {

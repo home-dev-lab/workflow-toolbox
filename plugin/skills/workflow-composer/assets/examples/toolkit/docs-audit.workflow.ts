@@ -315,8 +315,8 @@ function claimKey(c: AuditClaim): string {
 /** The SAME per-claim vote-count logic adversarialVerification is actually given below (tieredVotes
  *  ? behavior/boundary/high gets the full quorum, everything else gets 1 : every claim gets the flat
  *  `votes`) — used here ONLY to ESTIMATE total verify calls before dispatch, never a flat votes×claims
- *  guess (a flat estimate would be wrong for a claim mix that isn't uniform risk, and Frederic's
- *  explicit correction on this card is that the clamp must use the REAL vote function). */
+ *  guess (a flat estimate would be wrong for a claim mix that isn't uniform risk, and an explicit
+ *  correction recorded on this card requires the clamp to use the REAL vote function). */
 function estimateVerifyCalls(claims: readonly AuditClaim[], votes: number, tieredVotes: boolean): number {
   let total = 0
   for (const c of claims) {

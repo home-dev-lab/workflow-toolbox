@@ -73,7 +73,10 @@ the resolved values in the spawn prompt:
   concurrent writers. Resolve: an explicit dir → a sibling worktrees dir next to the repo.
 - **`REPORT_DIR`** — where file-reports land (the nested-routing workaround: a named agent's
   final message routes to the main session, so reports go to files the arbiter polls).
-  Resolve: an explicit dir → a scratch dir you create and name.
+  Resolve: an explicit dir → a scratch dir you create and name. **Naming constraint**: the
+  CLI hard-blocks a sub-agent's `Write` when the file's basename starts with `report`,
+  `summary`, `findings`, or `analysis` (case-insensitive) — put the word at the END instead
+  (`<cardId>-report.md`, not `report-<cardId>.md`).
 - **`QUOTA_POSTURE`** — how much verification fan-out the budget allows, so reviews scale to
   the change class. Resolve: an explicit posture the user states → "comfortable" default. Under
   pressure, the agents degrade to the single cross-family verifier shape.
@@ -126,8 +129,9 @@ The spawn prompt must carry:
    agents treat that as a boundary concern to flag, not a silent commit — see below).
 3. The resolved environment-brief blocks from Step 1.
 4. Invariants, non-goals, and known traps for the work.
-5. The file-report contract: "write your full report to a file under `REPORT_DIR`; your final
-   message is ONE line: REPORT WRITTEN: <verdict>".
+5. The file-report contract: "write your full report to a file under `REPORT_DIR`, named so
+   its basename does NOT start with `report`/`summary`/`findings`/`analysis` (e.g.
+   `<cardId>-report.md`); your final message is ONE line: REPORT WRITTEN: <verdict>".
 6. "Address escalations to <the spawning agent> via SendMessage."
 
 ## Step 4 — own the wake-ups, relay, integrate
@@ -173,7 +177,7 @@ and only the spawner knows which is which.
 | `TASK_TRACKER` | which tracker + how to reach it | auto-detect (board pointer / CLI / task file) |
 | `EXECUTOR_LANE` | heavy-increment lane | probe for an available + consented bridge, else absent and split |
 | `WORKTREES_DIR` | isolation-worktree home | sibling worktrees dir |
-| `REPORT_DIR` | file-report home | a named scratch dir |
+| `REPORT_DIR` | file-report home | a named scratch dir (naming constraint — see Step 1) |
 | `QUOTA_POSTURE` | verification-budget posture | comfortable; degrade under pressure |
 | publish surface | which repos/dirs are public vs private | assume all private; treat public writes as escalations |
 

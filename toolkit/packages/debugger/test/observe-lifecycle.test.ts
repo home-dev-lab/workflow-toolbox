@@ -619,13 +619,13 @@ describe('planRemoteMounts', () => {
 
   it("keeps a valid sub-key VERBATIM in the pathPrefix (it must byte-match the remote's own /s/<key> route)", () => {
     // Regression guard (2026-07-09, shipped then caught live): slug-collapsing a real
-    // configDirKey like '-home-doublefx--claude-c358fa78' (leading + double dash) to
-    // 'home-doublefx-claude-c358fa78' made every forwarded request 404 → "server unreachable".
-    const health = { sources: [{ key: '-home-doublefx--claude-c358fa78', configDir: '/home/u/.claude' }] }
+    // configDirKey like '-home-u--claude-c358fa78' (leading + double dash) to
+    // 'home-u-claude-c358fa78' made every forwarded request 404 → "server unreachable".
+    const health = { sources: [{ key: '-home-u--claude-c358fa78', configDir: '/home/u/.claude' }] }
     const mounts = planRemoteMounts(remote, health)
     expect(mounts).toHaveLength(1)
-    expect(mounts[0]!.pathPrefix).toBe('/s/-home-doublefx--claude-c358fa78') // VERBATIM, not collapsed
-    expect(mounts[0]!.key).toBe('remote-localhost-5174--home-doublefx--claude-c358fa78')
+    expect(mounts[0]!.pathPrefix).toBe('/s/-home-u--claude-c358fa78') // VERBATIM, not collapsed
+    expect(mounts[0]!.key).toBe('remote-localhost-5174--home-u--claude-c358fa78')
   })
 
   it("DROPS a sub-source whose key isn't route-safe ([a-z0-9-]) — never mangles it or forwards it", () => {

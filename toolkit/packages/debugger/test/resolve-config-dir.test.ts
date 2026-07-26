@@ -7,8 +7,8 @@ import { findJournalByTaskId, listRuns, resolveConfigDir, resolveDir } from '../
 // resolveConfigDir is the single home of "which Claude config dir am I under?" —
 // CLAUDE_CONFIG_DIR ?? ~/.claude, absolutized and realpath'd so two spellings of
 // the same dir (relative path, trailing slash, symlink) canonicalize identically.
-// This matters on a machine running TWO config dirs at once (clap ~/.claude +
-// claw ~/.claude-work): any consumer deriving a slug/pidfile key from the dir
+// This matters on a machine running TWO config dirs at once (e.g. ~/.claude +
+// ~/.claude-work): any consumer deriving a slug/pidfile key from the dir
 // must see ONE canonical string per real dir.
 
 let tmp: string

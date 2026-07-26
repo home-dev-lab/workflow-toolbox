@@ -294,7 +294,7 @@ describe('wt-verifier-cli-guard-hook — deny a self-answered verdict until the 
   // this ran successfully but its Bash tool_use line was not yet in the per-subagent transcript
   // when the StructuredOutput PreToolUse fired. The fix is a PostToolUse marker (flush-immune).
   const PROBE_OPENCODE_RUN =
-    'BIN="/home/doublefx/.opencode/bin/opencode"\nTASKFILE="$PWD/.oc-verify-$$.md"\n' +
+    'BIN="/home/x/.opencode/bin/opencode"\nTASKFILE="$PWD/.oc-verify-$$.md"\n' +
     "trap 'rm -f \"$TASKFILE\"' EXIT\ntimeout 570 \"$BIN\" run \"Adversarially verify the claim\" " +
     '-f "$TASKFILE" --model openai/gpt-5.6-sol < /dev/null'
   const postBash = (agentType: string, command: string, transcriptPath: string, agentId = 'a1b2c3d4') => ({

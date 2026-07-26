@@ -40,8 +40,8 @@ describe('resolveSource — the common cases never touch the fallback fetch', ()
 
   it('no --source given, hub mode: resolves to the FIRST source straight off health, no fallback fetch (the incident scenario)', async () => {
     const healthSources: HealthSourceEntry[] = [
-      { key: 'abc123', configDir: '/home/doublefx/.claude' },
-      { key: 'def456', configDir: '/home/doublefx/.claude-work' },
+      { key: 'abc123', configDir: '/home/u/.claude' },
+      { key: 'def456', configDir: '/home/u/.claude-work' },
     ]
     const fetchSourcesList = vi.fn(async () => null)
     const result = await resolveSource(healthSources, undefined, fetchSourcesList, noSleep)
@@ -51,8 +51,8 @@ describe('resolveSource — the common cases never touch the fallback fetch', ()
 
   it('--source matches by KEY straight off health, no fallback fetch', async () => {
     const healthSources: HealthSourceEntry[] = [
-      { key: 'abc123', configDir: '/home/doublefx/.claude' },
-      { key: 'def456', configDir: '/home/doublefx/.claude-work' },
+      { key: 'abc123', configDir: '/home/u/.claude' },
+      { key: 'def456', configDir: '/home/u/.claude-work' },
     ]
     const fetchSourcesList = vi.fn(async () => null)
     const result = await resolveSource(healthSources, 'def456', fetchSourcesList, noSleep)
@@ -61,11 +61,11 @@ describe('resolveSource — the common cases never touch the fallback fetch', ()
   })
 
   it('--source matches by configDir (exact or path-suffix) straight off health, no fallback fetch', async () => {
-    const healthSources: HealthSourceEntry[] = [{ key: 'abc123', configDir: '/home/doublefx/.claude' }]
+    const healthSources: HealthSourceEntry[] = [{ key: 'abc123', configDir: '/home/u/.claude' }]
     const fetchSourcesList = vi.fn(async () => null)
     const bySuffix = await resolveSource(healthSources, '.claude', fetchSourcesList, noSleep)
     expect(bySuffix).toEqual({ prefix: '/s/abc123', key: 'abc123', label: '.claude' })
-    const byExact = await resolveSource(healthSources, '/home/doublefx/.claude', fetchSourcesList, noSleep)
+    const byExact = await resolveSource(healthSources, '/home/u/.claude', fetchSourcesList, noSleep)
     expect(byExact).toEqual({ prefix: '/s/abc123', key: 'abc123', label: '.claude' })
     expect(fetchSourcesList).not.toHaveBeenCalled()
   })
@@ -79,8 +79,8 @@ describe('resolveSource — the common cases never touch the fallback fetch', ()
 
 describe('resolveSource — TEST-LOCK (a): probe failure RETRIES and never silently goes unprefixed', () => {
   it('the fallback fetch (needed for a label-only match) fails once then succeeds — resolves correctly, never unprefixed', async () => {
-    const healthSources: HealthSourceEntry[] = [{ key: 'abc123', configDir: '/home/doublefx/.claude' }]
-    const list: SourcesListEntry[] = [{ key: 'abc123', configDir: '/home/doublefx/.claude', label: 'my-label' }]
+    const healthSources: HealthSourceEntry[] = [{ key: 'abc123', configDir: '/home/u/.claude' }]
+    const list: SourcesListEntry[] = [{ key: 'abc123', configDir: '/home/u/.claude', label: 'my-label' }]
     let calls = 0
     const fetchSourcesList = vi.fn(async () => {
       calls += 1
@@ -96,7 +96,7 @@ describe('resolveSource — TEST-LOCK (a): probe failure RETRIES and never silen
 
 describe('resolveSource — TEST-LOCK (b): exhausted retries are a LOUD, distinct failure', () => {
   it('the fallback fetch fails every attempt — throws SourceResolutionError, never returns an unprefixed guess', async () => {
-    const healthSources: HealthSourceEntry[] = [{ key: 'abc123', configDir: '/home/doublefx/.claude' }]
+    const healthSources: HealthSourceEntry[] = [{ key: 'abc123', configDir: '/home/u/.claude' }]
     const fetchSourcesList = vi.fn(async () => null)
     const sleep = vi.fn(async () => {})
     await expect(resolveSource(healthSources, 'unmatched-label', fetchSourcesList, sleep)).rejects.toBeInstanceOf(SourceResolutionError)
@@ -105,8 +105,8 @@ describe('resolveSource — TEST-LOCK (b): exhausted retries are a LOUD, distinc
   })
 
   it('the fallback fetch succeeds but the label matches nothing — throws SourceResolutionError naming what IS available', async () => {
-    const healthSources: HealthSourceEntry[] = [{ key: 'abc123', configDir: '/home/doublefx/.claude' }]
-    const list: SourcesListEntry[] = [{ key: 'abc123', configDir: '/home/doublefx/.claude', label: 'real-label' }]
+    const healthSources: HealthSourceEntry[] = [{ key: 'abc123', configDir: '/home/u/.claude' }]
+    const list: SourcesListEntry[] = [{ key: 'abc123', configDir: '/home/u/.claude', label: 'real-label' }]
     const fetchSourcesList = vi.fn(async () => list)
     await expect(resolveSource(healthSources, 'nonexistent', fetchSourcesList, noSleep)).rejects.toThrow(/nonexistent/)
     await expect(resolveSource(healthSources, 'nonexistent', fetchSourcesList, noSleep)).rejects.toThrow(/real-label/)
@@ -173,9 +173,9 @@ describe('localSourceKeys — scoped to LOCAL sources only, remotes excluded', (
 
   it('returns only the keys of entries carrying a configDir, remotes filtered out', () => {
     const sources: HealthSourceEntry[] = [
-      { key: 'local-a', configDir: '/home/doublefx/.claude' },
+      { key: 'local-a', configDir: '/home/u/.claude' },
       { key: 'remote-b', remote: true },
-      { key: 'local-c', configDir: '/home/doublefx/.claude-work' },
+      { key: 'local-c', configDir: '/home/u/.claude-work' },
     ]
     expect(localSourceKeys(sources)).toEqual(['local-a', 'local-c'])
   })

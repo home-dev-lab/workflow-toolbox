@@ -100,7 +100,7 @@ describe('isExternalCliCommand — grounded invocation shapes', () => {
   it('matches a fully-QUOTED binary path with the subcommand outside the quotes (run wf_f512a38e-14c verify:1:1)', () => {
     expect(
       isExternalCliCommand(
-        'timeout 570 "/home/doublefx/.opencode/bin/opencode" run "Follow the instructions" --agent plan --model openai/gpt-5.5 -f /tmp/oc.md',
+        'timeout 570 "/home/x/.opencode/bin/opencode" run "Follow the instructions" --agent plan --model openai/gpt-5.5 -f /tmp/oc.md',
         OPENCODE,
       ),
     ).toBe(true)
