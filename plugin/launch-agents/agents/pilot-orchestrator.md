@@ -129,13 +129,24 @@ zero" gap this suite had. Two limitations, stated here rather than assumed away:
   reading the CLI's own frontmatter schema, not inferred). Only a PROJECT copy of this file
   (and of `pilot-orchestrator-watchdog.md`) in `.claude/agents/` makes the pairing operate
   at all; the plugin source is coherence, never the effect.
-- **Even as a project copy, the attach is UNPROVEN on this agent's actual production launch
-  path.** `pilot-orchestrator` is normally spawned by `main` (via the `pilot-wave` skill).
-  The only real-arc measurements available are for the sibling `pilot` role: launched by a
-  TEAMMATE → observer reports arrived (2/2); launched by `main`, named or anonymous → zero
-  (0/2). The orchestrator's own launcher class has never been measured. Do not credit this
-  pairing as working until that measurement exists — carry it as an open question, not a
-  solved one, in any report that leans on it.
+- **Even as a project copy, live attach for THIS role has not yet been directly observed.**
+  An earlier working hypothesis ("the LAUNCHER — main vs. teammate — governs attach") was
+  itself REFUTED by a later forensic pass that checked the right instrument: `observer-ref`
+  entries in the OBSERVED agent's own transcript, plus real `ObserverReport` tool calls in
+  the flat `subagents/` folder — never a count of what arrived at some inbox (the original
+  measurement's mistake: reports existed and never reached their addressee, which reads
+  identically to "no report produced" if you only count arrivals). The real variable is the
+  SPAWN MODE: a NAMED (`in_process_teammate`) spawn never attaches an observer (0 attached
+  on a large sample); an ASYNC spawn (an anonymous sub-agent — including one launched by
+  `main` itself via the Agent tool) attaches reliably (near-total attach rate on the same
+  sample). `pilot-orchestrator` launched through the standard `pilot-wave` skill IS an async,
+  anonymous spawn — the attaching mode. So there is now a real MECHANISTIC reason to expect
+  this pairing works on the production path, not merely a hope. State this at its exact
+  scope: the mechanism is understood and favorable; direct confirmation for the ORCHESTRATOR
+  role specifically — an actual `observer-ref` or `ObserverReport` seen against a
+  freshly-launched orchestrator running under this declaration — does not exist yet, because
+  no orchestrator has been relaunched since the declaration was added. Neither "proven" nor
+  "probably dead" — say which of the two you have evidence for before leaning on either.
 
 ## Verification shape — the proportionate ladder
 

@@ -42,12 +42,16 @@ agents — a `workflow-toolbox:pilot-orchestrator` runs WITHOUT this watchdog at
 here). The pairing works only when `pilot-orchestrator.md` and this file live in the
 project's `.claude/agents/` (bare names).
 
-⚠ **Even the project-copy form is DECLARED, NOT CREDITED, for this specific agent.** The
-orchestrator's real production launch path is `main → pilot-orchestrator` (via the
-`pilot-wave` skill). The only real-arc measurements taken so far are for the sibling
-`pilot` role: launched by a TEAMMATE, → observer reports arrived (2/2 positive); launched
-by `main`, named or anonymous, → zero (0/2). The orchestrator's own launcher class has
-never been measured. If you are reading this because you fired: that is itself the missing
-data point — say so explicitly in your report, name the launcher that spawned the
-orchestrator you are watching, and do not let this note be read as proof either way once
-that measurement actually exists.
+⚠ **Even the project-copy form is DECLARED, NOT YET DIRECTLY CONFIRMED, for this specific
+agent.** An earlier hypothesis ("the LAUNCHER — main vs. teammate — governs attach") was
+refuted by a forensic pass using the right instrument (`observer-ref` in the OBSERVED's own
+transcript + real `ObserverReport` tool calls in `subagents/`, never a count of what arrived
+at an inbox — the original mistake: reports existed and never reached their addressee). The
+real variable is the SPAWN MODE: a NAMED (`in_process_teammate`) spawn never attaches; an
+ASYNC spawn (anonymous, including one launched by `main` via the Agent tool) attaches
+reliably. `pilot-orchestrator` launched via `pilot-wave` IS an async, anonymous spawn — the
+attaching mode, giving a real mechanistic reason to expect this pairing works here. If you
+are reading this because you fired: that IS the missing direct confirmation for this role —
+say so explicitly in your report, name the launcher and spawn mode of the orchestrator you
+are watching (async vs. named), and state the result as what it is (a first direct data
+point for this specific role), not as proof of a general rule either way.

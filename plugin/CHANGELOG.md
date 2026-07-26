@@ -14,10 +14,13 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   (under-specified brief, arbitration on a pilot's summary instead of the real artefact,
   integration credited without a re-gate read, a number reported without its set, an
   escalation omitted on a named trigger), never the sibling pilot watchdog's TDD/gate/diff
-  tells. Declared but explicitly NOT CREDITED for `pilot-orchestrator`'s real production
-  launch path (`main → pilot-orchestrator`) — the attach is measured only for the sibling
-  `pilot` role (teammate launcher → 2/2 positive; `main` launcher, named or anonymous →
-  0/2); the orchestrator's own launcher class has never been measured, and the file says so.
+  tells. Declared, with the pairing's actual mechanism stated in the file: the SPAWN MODE
+  governs attach (a named/`in_process_teammate` spawn never attaches; an async/anonymous
+  spawn — including one launched by `main` via the Agent tool, which is how
+  `pilot-orchestrator` is normally launched — attaches reliably), not the launcher identity
+  as an earlier hypothesis had it. Direct confirmation for the orchestrator role specifically
+  does not exist yet (no orchestrator relaunched since the declaration was added), and the
+  file says so at that exact scope.
 - `pilot-orchestrator` now declares, at its Report step, a duty to invoke an independent
   end-of-arc fidelity check on its own wave report against the real board+repo state before
   filing it — the check agent itself is not built here (no general-purpose wave-report
