@@ -39,6 +39,17 @@ deferred to a later step ("the integrating review will cover it") is not done un
 step's own record names it — read the executing system's own trace before crediting it, never a
 summary's silence.
 
+Evidence must OUTLIVE the process that produced it: a check run at execution time and not
+archived is not re-verifiable — the proof dies with the process, and every later reader is left
+with the claim alone. Archive the input beside the output — the file itself, or its hash, plus
+the exact command — so a later reader can tell VERIFIED apart from ASSERTED BY WHOEVER RAN IT.
+Corroboration can make a claim likely; likely-by-corroboration is still not verified, and a
+report must say which one it is.
+
+A guard whose model of the system it protects is wrong does not degrade gracefully — it
+INVERTS, granting confidence exactly when the thing it guards is about to break. That is why
+question three checks the mechanism's own failure modes, not only the hazard it addresses.
+
 When a check outgrows a single mechanical read — evidence across several sources, leads to chase,
 a surprise needing a root cause — escalate to the `deep-grounding` skill (the recursive
 collect-verify pass that tags conclusions by evidence tier) rather than chaining ad-hoc reads.

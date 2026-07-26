@@ -47,6 +47,11 @@ Never set a blanket subagent-model env var: it downgrades hard tasks and can sil
 override an explicit per-spawn model:. If an agent self-reports a different model than you
 pinned, check the settings `env` blocks for such a var.
 
+Effort is task-relative, never identity- or project-relative: pin it via per-agent-type
+frontmatter, not a blanket user/project default — the un-pinned inheritance is the bug, not
+the pin. A session-level effort dial governs the arbiter's own reasoning only, never what it
+spawns.
+
 Complexity triage of a CODE task is a code-reading judgment, not a cheap-tier classification:
 gate on deterministic signals (diff size, files touched) first, then one batched strong-tier
 triage call; keep verifiers at a static high floor.
