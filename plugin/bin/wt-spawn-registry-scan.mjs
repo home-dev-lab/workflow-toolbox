@@ -99,9 +99,14 @@ const spoke = lastByName('out');
 
 const now = Date.now();
 const open = [];
+// Spawns made without a name return no child identity, so nothing can join them to the stop
+// record their subordinate produces. They are NOT dropped: a scan that silently omits what it
+// cannot follow reports a clean board while blind to part of it — the exact failure this exists
+// to catch. They are counted and stated instead, so the reader knows the reach of the answer.
+const untrackable = [];
 for (const s of spawns) {
   const name = s.childName;
-  if (!name) continue;
+  if (!name) { untrackable.push(s); continue; }
   if (stopped.has(name)) continue;                       // accounted for: it ended
   const last = spoke.get(name) || s.at;                  // never spoke => silent since birth
   const quietMin = Math.round((now - Date.parse(last)) / 60000);
@@ -119,12 +124,22 @@ for (const s of spawns) {
 const flagged = open.filter((o) => o.quietMin >= QUIET_MIN).sort((a, b) => b.quietMin - a.quietMin);
 
 if (AS_JSON) {
-  console.log(JSON.stringify({ file, totalSpawns: spawns.length, open: open.length, flagged }, null, 2));
+  console.log(JSON.stringify({
+    file, totalSpawns: spawns.length, open: open.length, flagged,
+    untrackable: untrackable.length,
+  }, null, 2));
   process.exit(flagged.length ? 1 : 0);
 }
 
 console.log(`Registry: ${file}`);
 console.log(`${spawns.length} spawn(s) recorded · ${open.length} with no recorded ending · threshold ${QUIET_MIN} min\n`);
+
+if (untrackable.length) {
+  console.log(`⚠ ${untrackable.length} spawn(s) cannot be followed individually — they were`);
+  console.log('  launched without a name, so nothing identifies the agent they created and no');
+  console.log('  stop record can ever be matched to them. They are NOT included in the counts');
+  console.log('  above: this scan is blind to whether they ended. Name a spawn to track it.\n');
+}
 
 if (!flagged.length) {
   console.log(open.length

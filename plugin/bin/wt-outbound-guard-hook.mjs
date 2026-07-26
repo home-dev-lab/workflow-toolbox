@@ -147,13 +147,26 @@ try {
   // agents, so gating this behind agent_id would miss almost every birth.
   if (event === 'PostToolUse' && SPAWN_TOOLS.has(payload?.tool_name)) {
     const resp = payload?.tool_response;
-    const child = resp?.agent_id ?? resp?.teammate_id ?? null;
+    const child = resp?.agent_id ?? resp?.teammate_id ?? resp?.agentId ?? null;
+    const childName = normalizeName(payload?.tool_input?.name ?? child);
+
+    // ⚠ AN UNNAMED SPAWN CANNOT BE CORRELATED, AND MUST NOT BE DROPPED FOR IT.
+    // A spawn made without a `name` returns no child identity, so nothing can later join it to
+    // the stop record its subordinate will produce. The tempting shortcut is to skip the record
+    // — and that is precisely the failure this guard exists to prevent: the registry would go
+    // quiet about the very spawns it cannot follow, and a reader would see a clean board.
+    // So it is recorded anyway, flagged as untrackable, and the response's shape is captured so
+    // a later reader can see what identity WAS on offer rather than re-guessing.
+    const untrackable = !childName;
     append(file, {
       t: 'spawn',
       parent: agentId ?? MAIN,
       parentName: agentId ? normalizeName(agentId) : MAIN,
       child,
-      childName: normalizeName(payload?.tool_input?.name ?? child),
+      childName,
+      untrackable: untrackable || undefined,
+      responseKeys: untrackable && resp && typeof resp === 'object'
+        ? Object.keys(resp).sort().slice(0, 20) : undefined,
       name: payload?.tool_input?.name ?? resp?.name ?? null,
       subagentType: payload?.tool_input?.subagent_type ?? null,
       model: payload?.tool_input?.model ?? null,
