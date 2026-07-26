@@ -16,11 +16,11 @@
 //              defs are their own single source; inlining them here would drift).
 //              Target: <cwd>/.claude/agents. Banner is an HTML comment placed AFTER
 //              the YAML frontmatter, because an agent def MUST start with `---`.
-//              A project copy of pilot.md + pilot-watchdog.md (+ pilot-orchestrator.md)
-//              is what lets the watchdog `observer:` pairing attach (plugin-installed
-//              agents do not honor it), and the fingerprint is what makes a stale copy
-//              DETECTABLE after a plugin bump — the hazard a raw manual copy has no
-//              defence against.
+//              A project copy of pilot.md + pilot-watchdog.md (+ pilot-orchestrator.md +
+//              pilot-orchestrator-watchdog.md) is what lets the watchdog `observer:`
+//              pairing attach (plugin-installed agents do not honor it), and the
+//              fingerprint is what makes a stale copy DETECTABLE after a plugin bump —
+//              the hazard a raw manual copy has no defence against.
 //
 // It is safe BY CONSTRUCTION: `--install` never overwrites a locally-edited (or
 // hand-authored) file — that needs an explicit `--force`. `--check` is always
@@ -80,7 +80,12 @@ function discoverRuleItems(root) {
  *  inlined — it is READ from the plugin's agents/ dir at run time (the agent defs are
  *  their own single source). Each `file` is both the source basename under
  *  <pluginRoot>/agents/ and the installed filename under <target>/.claude/agents. */
-const MANAGED_AGENTS = [{ file: 'pilot.md' }, { file: 'pilot-watchdog.md' }, { file: 'pilot-orchestrator.md' }]
+const MANAGED_AGENTS = [
+  { file: 'pilot.md' },
+  { file: 'pilot-watchdog.md' },
+  { file: 'pilot-orchestrator.md' },
+  { file: 'pilot-orchestrator-watchdog.md' },
+]
 
 /** The two managed sets. `kind` drives banner placement; `srcDir` is the plugin bundle
  *  dir each set reads its files from; `resolveItems(root)` lists the managed files (the

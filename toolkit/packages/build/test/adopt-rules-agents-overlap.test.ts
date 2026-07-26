@@ -61,6 +61,8 @@ const SHIPPED_AGENTS = {
     '---\nname: pilot-orchestrator\ndescription: synthetic orchestrator\n---\n\nAnnounce each selected card as you take it.\n',
   'pilot-watchdog.md':
     '---\nname: pilot-watchdog\ndescription: synthetic watchdog\n---\n\nWatch for drift only.\n',
+  'pilot-orchestrator-watchdog.md':
+    '---\nname: pilot-orchestrator-watchdog\ndescription: synthetic orchestrator watchdog\n---\n\nWatch the orchestrator for drift only.\n',
 } as const
 
 function mkFixture() {
@@ -166,6 +168,10 @@ describe('adopt-rules audit-overlap --set agents', () => {
       withModel(SHIPPED_AGENTS['pilot-orchestrator.md'], modelFor('pilot-orchestrator.md')),
     )
     writeFileSync(join(fixture.userDir, 'pilot-watchdog.md'), withModel(SHIPPED_AGENTS['pilot-watchdog.md'], modelFor('pilot-watchdog.md')))
+    writeFileSync(
+      join(fixture.userDir, 'pilot-orchestrator-watchdog.md'),
+      withModel(SHIPPED_AGENTS['pilot-orchestrator-watchdog.md'], modelFor('pilot-orchestrator-watchdog.md')),
+    )
 
     const res = run(fixture.script, fixture.userDir, ['--set', 'agents'])
 
@@ -177,6 +183,10 @@ describe('adopt-rules audit-overlap --set agents', () => {
     const fixture = mkFixture()
     writeFileSync(join(fixture.userDir, 'pilot.md'), withModel(SHIPPED_AGENTS['pilot.md'], modelFor('pilot.md')))
     writeFileSync(join(fixture.userDir, 'pilot-watchdog.md'), withModel(SHIPPED_AGENTS['pilot-watchdog.md'], modelFor('pilot-watchdog.md')))
+    writeFileSync(
+      join(fixture.userDir, 'pilot-orchestrator-watchdog.md'),
+      withModel(SHIPPED_AGENTS['pilot-orchestrator-watchdog.md'], modelFor('pilot-orchestrator-watchdog.md')),
+    )
 
     const res = run(fixture.script, fixture.userDir, ['--set', 'agents'])
 
@@ -200,6 +210,10 @@ describe('adopt-rules audit-overlap --set agents', () => {
       withModel(SHIPPED_AGENTS['pilot-orchestrator.md'], modelFor('pilot-orchestrator.md')),
     )
     writeFileSync(join(fixture.userDir, 'pilot-watchdog.md'), withModel(SHIPPED_AGENTS['pilot-watchdog.md'], modelFor('pilot-watchdog.md')))
+    writeFileSync(
+      join(fixture.userDir, 'pilot-orchestrator-watchdog.md'),
+      withModel(SHIPPED_AGENTS['pilot-orchestrator-watchdog.md'], modelFor('pilot-orchestrator-watchdog.md')),
+    )
 
     const res = run(fixture.script, fixture.userDir, ['--set', 'agents'])
 
@@ -225,6 +239,10 @@ describe('adopt-rules audit-overlap --set agents', () => {
       withModel(SHIPPED_AGENTS['pilot-orchestrator.md'], modelFor('pilot-orchestrator.md')),
     )
     writeFileSync(join(fixture.userDir, 'pilot-watchdog.md'), withModel(SHIPPED_AGENTS['pilot-watchdog.md'], modelFor('pilot-watchdog.md')))
+    writeFileSync(
+      join(fixture.userDir, 'pilot-orchestrator-watchdog.md'),
+      withModel(SHIPPED_AGENTS['pilot-orchestrator-watchdog.md'], modelFor('pilot-orchestrator-watchdog.md')),
+    )
 
     const res = run(fixture.script, fixture.userDir, ['--set', 'agents'])
 
