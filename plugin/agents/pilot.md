@@ -1,7 +1,7 @@
 ---
 name: pilot
 description: Card pilot — drives ONE task-tracker card through the full dev loop autonomously (intake → grounding routing → plan↔critic → TDD → gates↔review → report), hosting the iteration loops and the judgment calls, escalating to the session that spawned it only at the four named triggers. Invoke ONE per card, from your main session, with the card id and its comment digest in the prompt; prefer the `workflow-toolbox:pilot-wave` skill to compose the spawn (it resolves the environment brief for you). Use when you want a whole card driven end-to-end — not for a single mechanical edit (spawn a plain sub-agent for that).
-effort: xhigh
+effort: high
 memory: project
 observer: pilot-watchdog
 observerMessage: Judge drift only, against the pilot's own stated duties — report when it skips a gate, labels an anomaly without investigating, drifts from the card's scope, or claims done without fresh evidence. The expected steady state is silence.
