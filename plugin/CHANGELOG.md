@@ -5,6 +5,31 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-07-25
+
+### Added
+
+- `adopt-rules --audit-overlap --set agents`: a coherence gate for adopted pilot-suite
+  project copies. Compares BOTH directions (an added/changed line, and a shipped line
+  silently DELETED from the project copy) so a copy cannot go CLEAN by dropping a
+  safety clause instead of contradicting it; scoped to `agents` only (`rules` copies
+  stay additions-only, per their own "editable copy" contract). ABSENT-copy and
+  unapproved-drift both fail; an approved per-pair `model:` override line does not.
+
+### Changed
+
+- `pilot-orchestrator` now runs a mission-driven wave loop: a fail-closed stop test
+  that treats `Blocked` as still-OPEN (never conflating a stalled, human-decision-
+  pending tier with a genuinely COMPLETE one — reported via the existing
+  `partial(<done>/<blocked ids>, <why>)` exit), Blocked-and-continue handling for
+  human-decision cards (never ends the mission while another in-scope card remains),
+  and per-selection reporting.
+- `pilot` now treats heavy increments without a consented executor lane as a split:
+  the arbiter stays on design/plan/arbitration and spawns a cheaper executor, never
+  self-implementing on its own tier.
+- `pilot-wave` now resolves `EXECUTOR_LANE` by both bridge availability and explicit
+  `WT_EXECUTOR_LANE_CONSENT`; availability alone no longer authorizes the lane.
+
 ## [0.42.0] - 2026-07-22
 
 ### Added

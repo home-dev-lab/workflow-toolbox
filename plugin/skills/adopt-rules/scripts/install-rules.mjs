@@ -282,16 +282,20 @@ function normalizedLines(text) {
   return text.split(/\r?\n/).map((line) => line.replace(/[ \t]+$/, ''))
 }
 
-function auditOverlap(userDir, root, pairsFile) {
+function auditOverlap(userDir, root, pairsFile, set = 'rules') {
+  const setConfig = SETS[set]
+  if (!setConfig) fail(`unknown audit-overlap set '${set}' (expected rules | agents)`)
   let entries
   try {
     entries = fs.readdirSync(userDir)
   } catch {
     fail(`user directory does not exist: ${userDir}`)
   }
-  const pairsPath = path.resolve(pairsFile || path.join(path.dirname(fileURLToPath(import.meta.url)), 'rule-pairs.json'))
+  const defaultPairsFile = set === 'agents' ? 'agent-pairs.json' : 'rule-pairs.json'
+  const pairsPath = path.resolve(pairsFile || path.join(path.dirname(fileURLToPath(import.meta.url)), defaultPairsFile))
   const pairs = JSON.parse(fs.readFileSync(pairsPath, 'utf8'))
-  const shippedDir = path.join(root, SETS.rules.srcDir)
+  const shippedDir = path.join(root, setConfig.srcDir)
+  const stripBanner = set === 'agents' ? stripAgentBanner : stripRuleBanner
   const declaredUsers = new Set(pairs.map((pair) => pair.user))
   // The shipped-side basename of a declared pair is never itself a candidate for UNMAPPED:
   // it is either explained by DUPLICATE (both present), ABSENT (only the user side missing —
@@ -300,6 +304,7 @@ function auditOverlap(userDir, root, pairsFile) {
   const declaredShipped = new Set(pairs.map((pair) => pair.shipped))
   let duplicate = 0
   let drift = 0
+  let absent = 0
   let unmapped = 0
 
   for (const pair of pairs) {
@@ -308,10 +313,11 @@ function auditOverlap(userDir, root, pairsFile) {
     const userExists = realFile(userPath)
     const shippedInUserPath = path.join(userDir, pair.shipped)
     if (!userExists) {
+      if (set === 'agents') absent++
       process.stdout.write(`ABSENT ${pair.user}: ABSENT (declared pair, no user file present)\n`)
       continue
     }
-    if (realFile(shippedInUserPath)) {
+    if (pair.shipped !== pair.user && realFile(shippedInUserPath)) {
       // A `partial` pair (e.g. delegation-lanes.md / wt-delegation-ladder.md) is a DELIBERATE,
       // accepted, bounded coexistence — both files are MEANT to be present together. Flagging
       // it as a hard DUPLICATE would fail the guard on the documented target state itself.
@@ -325,10 +331,39 @@ function auditOverlap(userDir, root, pairsFile) {
       process.stdout.write(`CLEAN ${pair.user}: no shipped comparison file\n`)
       continue
     }
-    const userLines = normalizedLines(fs.readFileSync(userPath, 'utf8'))
-    const shippedLines = new Set(normalizedLines(stripRuleBanner(fs.readFileSync(shippedPath, 'utf8'))))
-    const extras = [...new Set(userLines.filter((line) => line !== '' && !shippedLines.has(line)))]
-    if (extras.length === 0) {
+    const allowExtraPatterns = Array.isArray(pair.allowExtraPatterns)
+      ? pair.allowExtraPatterns.map((pattern) => new RegExp(pattern))
+      : []
+    // A correctly-adopted user copy carries the SAME banner line the shipped side never has
+    // (stamped by --install) — comparing it unstripped against the stripped shipped content
+    // would report the banner itself as permanent, undiscriminating drift (an adopted copy
+    // could never go CLEAN). Strip it ONLY when the user file's own first-post-frontmatter
+    // line actually IS a recognized banner (VERSION_RE) — a hand-authored file with no banner
+    // must NOT have its real first line eaten.
+    const userContent = fs.readFileSync(userPath, 'utf8')
+    const userHasBanner = VERSION_RE.test(bannerLine(setConfig, userContent))
+    const userLines = normalizedLines(userHasBanner ? stripBanner(userContent) : userContent)
+    const shippedLines = new Set(normalizedLines(stripBanner(fs.readFileSync(shippedPath, 'utf8'))))
+    const extras = [...new Set(userLines.filter((line) => line !== '' && !shippedLines.has(line)))].filter(
+      (line) => !allowExtraPatterns.some((pattern) => pattern.test(line)),
+    )
+    // ADDITIONS-only was a real gap for the `agents` set (review finding, card
+    // #1827047859321570464): a project copy that DELETES a shipped line (e.g. a safety
+    // clause) adds no new line, so `extras` alone stays empty and the pair reports CLEAN —
+    // exactly the class of silent drift this gate exists to catch, since our own design
+    // decision is that an adopted agent copy = shipped body + ONE approved override line,
+    // nothing else may differ in either direction.
+    // Scoped to `agents` ONLY: `rules` copies are explicitly documented, in their own
+    // banner, as an "editable copy" users may freely trim/adapt — a blanket deletion check
+    // would fail every legitimately-edited rule and recreate the always-red trap this same
+    // pass just removed in the other direction. Rules-set behavior is therefore UNCHANGED
+    // (additions-only, as before).
+    const userLineSet = new Set(userLines)
+    const missing =
+      set === 'agents'
+        ? [...new Set([...shippedLines].filter((line) => line !== '' && !userLineSet.has(line)))]
+        : []
+    if (extras.length === 0 && missing.length === 0) {
       process.stdout.write(`CLEAN ${pair.user}\n`)
     } else {
       const partial = pair.partial === true
@@ -337,6 +372,8 @@ function auditOverlap(userDir, root, pairsFile) {
       process.stdout.write(`${label} ${pair.user}\n`)
       for (const line of extras.slice(0, 40)) process.stdout.write(`${label} ${pair.user}: ${line}\n`)
       if (extras.length > 40) process.stdout.write(`${label} ${pair.user}: +${extras.length - 40} more\n`)
+      for (const line of missing.slice(0, 40)) process.stdout.write(`${label} ${pair.user} (missing): ${line}\n`)
+      if (missing.length > 40) process.stdout.write(`${label} ${pair.user} (missing): +${missing.length - 40} more\n`)
     }
   }
   for (const file of entries.filter((f) => f.endsWith('.md')).sort()) {
@@ -345,8 +382,12 @@ function auditOverlap(userDir, root, pairsFile) {
       process.stdout.write(`UNMAPPED ${path.join(userDir, file)}\n`)
     }
   }
-  process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${unmapped} unmapped\n`)
-  if (duplicate || drift) process.exitCode = 1
+  if (set === 'agents') {
+    process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${absent} absent, ${unmapped} unmapped\n`)
+  } else {
+    process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${unmapped} unmapped\n`)
+  }
+  if (duplicate || drift || (set === 'agents' && absent)) process.exitCode = 1
 }
 
 /** Decide the status label and (for --install) whether to write. `force` only ever
@@ -440,8 +481,11 @@ function main() {
   const args = parseArgs(process.argv.slice(2))
   if (args.mode === 'audit-overlap') {
     if (!args.userDir) fail('--user-dir is required with --audit-overlap')
+    if (!['rules', 'agents'].includes(args.set)) {
+      fail(`unknown --set '${args.set}' for --audit-overlap (expected rules | agents)`)
+    }
     const root = pluginRoot()
-    auditOverlap(path.resolve(args.userDir), root, args.pairsFile)
+    auditOverlap(path.resolve(args.userDir), root, args.pairsFile, args.set)
     return
   }
   if (!['rules', 'agents', 'all'].includes(args.set)) {

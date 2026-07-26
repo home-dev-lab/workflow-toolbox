@@ -78,3 +78,11 @@ HEAD) rather than nudging blindly.
    executor, which reads for itself — a wrapper that reads everything first burns the
    coordinator-tier budget on work the executor repeats anyway, the same leak family as a
    wrapper answering in the executor's place.
+
+## Lane consent, not lane availability
+
+A pilot without a NAMED and CONSENTED executor lane does not implement a heavy increment on
+its own tier — it splits: design/plan/arbitrate on its own tier, spawn a cheaper sub-agent
+for the increment. Availability of a bridge on the machine is not consent to use it: consent
+composes account-level authorization (the ceiling) with project-level narrowing (never
+widening) — a refusal at either level wins, and the default is OFF.
