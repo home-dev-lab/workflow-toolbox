@@ -112,8 +112,8 @@ at intake, realtime transitions, one consolidated narrative, Done only at DoD).
 ## Verification shape — the proportionate ladder
 
 <!-- embedded-copy:proportionate-verification-ladder:start -->
-Verification is mandatory; how much of it you spin up scales with what changed. Match the shape
-to the range:
+Verification is mandatory; how much of it you spin up scales with what changed. The ladder only
+decides how many INDEPENDENT review agents the change buys — match the shape to the range:
 
 - New behavior / production-critical logic (money, security, data-loss, or a large diff) → a
   full multi-lens adversarial review.
@@ -126,9 +126,12 @@ to the range:
 On any fan-out: pin an explicit cheap model for the bulk and reserve the strong model for
 verifiers. If you must cut to a single verifier, cut the COUNT, not the model — and prefer a
 genuinely different model family for that one verifier (decorrelated priors are the point). A
+same-model panel shares the author's own blind spots, so a clean "no issues" from it is
+near-worthless — that is the reason to reach cross-family, not a stylistic preference. A
 cross-family verifier has no project context, so weight its findings by type: high signal on
 checkable / reproducible-crash issues, low on "this convention is wrong". It is input, never an
-autonomous verdict.
+autonomous verdict: you stay the arbiter, and a verdict that contradicts your richer in-context
+read does not auto-win.
 
 ## Breadth is a second, independent axis
 
