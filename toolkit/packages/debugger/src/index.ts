@@ -52,3 +52,9 @@ export type {
   UnknownDelegation,
 } from './external-delegation.js'
 export type { CompactionReport, CompactionAgent, CompactionEvent } from './transcript-usage.js'
+// Same split as tool-denial/external-delegation: result-shape types here, the pure builder
+// (buildCardCostReport) and the impure scanner (scanCardCostAgents) reachable via the dedicated
+// `@workflow-toolbox/debugger/card-cost` and `/card-cost-scan` subpaths (consumed today only by
+// card-cost-cli.ts, which imports them directly — no other consumer yet, so the function stays
+// off the main barrel until one exists).
+export type { CardCostReport, CardCostAgentRow, CardCostAgentInput } from './card-cost.js'

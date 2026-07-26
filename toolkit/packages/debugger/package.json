@@ -60,6 +60,14 @@
     "./observe-identity": {
       "import": "./src/observe-identity.ts",
       "types": "./src/observe-identity.ts"
+    },
+    "./card-cost": {
+      "import": "./src/card-cost.ts",
+      "types": "./src/card-cost.ts"
+    },
+    "./card-cost-scan": {
+      "import": "./src/card-cost-scan.ts",
+      "types": "./src/card-cost-scan.ts"
     }
   },
   "scripts": {
