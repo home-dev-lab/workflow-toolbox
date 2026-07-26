@@ -1,5 +1,6 @@
 [
   { "user": "pilot.md", "shipped": "pilot.md", "partial": false, "allowExtraPatterns": ["^model: sonnet$"] },
   { "user": "pilot-orchestrator.md", "shipped": "pilot-orchestrator.md", "partial": false, "allowExtraPatterns": ["^model: opus$"] },
-  { "user": "pilot-watchdog.md", "shipped": "pilot-watchdog.md", "partial": false, "allowExtraPatterns": ["^model: sonnet$"] }
+  { "user": "pilot-watchdog.md", "shipped": "pilot-watchdog.md", "partial": false, "allowExtraPatterns": ["^model: sonnet$"] },
+  { "user": "pilot-orchestrator-watchdog.md", "shipped": "pilot-orchestrator-watchdog.md", "partial": false, "allowExtraPatterns": ["^model: sonnet$"] }
 ]

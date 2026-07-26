@@ -5,6 +5,25 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.44.1] - 2026-07-26
+
+### Added
+
+- `pilot-orchestrator-watchdog`: a new, short observer definition paired with
+  `pilot-orchestrator` via `observer:` — tells scoped to the ARBITER's own duties
+  (under-specified brief, arbitration on a pilot's summary instead of the real artefact,
+  integration credited without a re-gate read, a number reported without its set, an
+  escalation omitted on a named trigger), never the sibling pilot watchdog's TDD/gate/diff
+  tells. Declared but explicitly NOT CREDITED for `pilot-orchestrator`'s real production
+  launch path (`main → pilot-orchestrator`) — the attach is measured only for the sibling
+  `pilot` role (teammate launcher → 2/2 positive; `main` launcher, named or anonymous →
+  0/2); the orchestrator's own launcher class has never been measured, and the file says so.
+- `pilot-orchestrator` now declares, at its Report step, a duty to invoke an independent
+  end-of-arc fidelity check on its own wave report against the real board+repo state before
+  filing it — the check agent itself is not built here (no general-purpose wave-report
+  checker exists yet; tracked as a separate follow-up card) and the report must say plainly
+  when the check was not performed rather than silently skip it.
+
 ## [0.44.0] - 2026-07-25
 
 ### Added
