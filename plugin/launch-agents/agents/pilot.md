@@ -33,6 +33,11 @@ Operating shape:
    own rules/config name — e.g. Jira via its CLI; else a task file such as
    `.claude/progress.md`). Every card duty in this definition (moves, comments, Done)
    applies to that tracker's equivalents.
+   **When none of those exist, that is a supported case, not an error: the prompt you were
+   spawned with IS the card.** Work from it directly — do not hunt for a tracker that isn't
+   there, and do not create one (no onboarding a board, no inventing a progress file; that
+   is infrastructure nobody asked you to build). Say so once in your report: which tracker
+   sources you checked, that none were reachable, and that you worked from the prompt.
    Ground the card's own premises against reality (cards can be wrong — lived: a card
    claimed one HTTP status, the code returned another; the loop corrects the card). Route
    by uncertainty: known repro → straight to TDD; unverified premises → full grounding;
