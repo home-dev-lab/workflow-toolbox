@@ -283,6 +283,112 @@ describe('wt-spawn-registry-scan.mjs — reports what is unaccounted for', () =>
 })
 
 // --------------------------------------------------------------------------
+// wt-spawn-registry-scan.mjs --ack — a human verdict scoped to ONE spawn, never a name forever.
+// Each fixture below is built with explicit, ORDERED, past timestamps (spawn, then ack, then
+// re-spawn) rather than by calling `--ack` mid-fixture: an ack written "now" is newer than any
+// past-dated spawn, so building the fixture that way silently tests the opposite of what it looks
+// like. `acked.at > spawn.at` is the whole scoping rule, so timestamps must be clearly separated.
+// --------------------------------------------------------------------------
+describe('wt-spawn-registry-scan.mjs --ack — records a verdict scoped to one spawn, not a name', () => {
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
+
+  it('BASELINE: an open, silent entry with no ack is reported (exit 1) -- without this, nothing else proves anything', () => {
+    const dir = mkRoot('ack-baseline')
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'baseline-worker', name: 'baseline-worker', at: minutesAgo(45) }) + '\n'
+    )
+    const r = runNoInput(SCAN, ['--quiet-min', '20'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    expect(r.code).toBe(1)
+    expect(r.stdout).toContain('baseline-worker')
+  })
+
+  it('after an ack (ack.at after spawn.at), the same entry is NOT reported (exit 0)', () => {
+    const dir = mkRoot('ack-suppress')
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'acked-worker', name: 'acked-worker', at: minutesAgo(45) }),
+        JSON.stringify({ t: 'ack', name: 'acked-worker', at: minutesAgo(40) }),
+      ].join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, ['--quiet-min', '20', '--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { open: number; flagged: unknown[] }
+    expect(parsed.open).toBe(0)
+    expect(parsed.flagged).toHaveLength(0)
+  })
+
+  // FAILS BEFORE THE FIX: a first-wins dedup-by-name would drop this later spawn record entirely,
+  // so an acked name would stay suppressed FOREVER -- a real agent relaunched under a reused name
+  // would never be reported again. This is the exact bug the first implementation had.
+  it('a LATER spawn of the same name IS reported again after an earlier ack settles the first one', () => {
+    const dir = mkRoot('ack-relaunch')
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'relaunched-worker', name: 'relaunched-worker', at: minutesAgo(45) }),
+        JSON.stringify({ t: 'ack', name: 'relaunched-worker', at: minutesAgo(40) }),
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'relaunched-worker', name: 'relaunched-worker', at: minutesAgo(30) }),
+      ].join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, ['--quiet-min', '20', '--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    expect(r.code, `expected the relaunch to be reported; stdout: ${r.stdout}`).toBe(1)
+    const parsed = JSON.parse(r.stdout) as { open: number; flagged: Array<{ name: string }> }
+    expect(parsed.open).toBe(1)
+    expect(parsed.flagged.filter((f) => f.name === 'relaunched-worker')).toHaveLength(1)
+  })
+
+  // Behaviour 3 (above) and behaviour 4 (the plain duplicate-registration test earlier in this
+  // file) pull in OPPOSITE directions on the same dedupeSpawnsByChild logic: one must treat a
+  // later same-name spawn as a NEW fact, the other must treat a near-simultaneous same-name spawn
+  // as the SAME fact twice. This fixture combines them -- the post-ack relaunch, duplicate-fired a
+  // few ms apart (well inside SPAWN_DEDUP_WINDOW_MS), as a hook registered at both plugin and
+  // project level would produce -- to prove fixing one did not re-break the other.
+  it('a duplicate-fired relaunch (post-ack) is still counted ONCE, not twice', () => {
+    const dir = mkRoot('ack-relaunch-dup')
+    const respawnAt = new Date(Date.now() - 30 * 60_000)
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'dup-relaunch-worker', name: 'dup-relaunch-worker', at: minutesAgo(45) }),
+        JSON.stringify({ t: 'ack', name: 'dup-relaunch-worker', at: minutesAgo(40) }),
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'dup-relaunch-worker', name: 'dup-relaunch-worker', at: respawnAt.toISOString() }),
+        JSON.stringify({
+          t: 'spawn', parentName: '(main-loop)', childName: 'dup-relaunch-worker', name: 'dup-relaunch-worker',
+          at: new Date(respawnAt.getTime() + 5).toISOString(), // duplicate fire, same real spawn
+        }),
+      ].join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, ['--quiet-min', '20', '--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    expect(r.code).toBe(1)
+    const parsed = JSON.parse(r.stdout) as { open: number; flagged: Array<{ name: string }> }
+    expect(parsed.open).toBe(1) // not 2 -- the duplicate fire must not double-count the relaunch
+    expect(parsed.flagged.filter((f) => f.name === 'dup-relaunch-worker')).toHaveLength(1)
+  })
+
+  it('the --ack CLI mode appends a verdict record without touching prior lines', () => {
+    const dir = mkRoot('ack-cli')
+    const file = join(dir, 'sess.jsonl')
+    writeFileSync(
+      file,
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'cli-worker', name: 'cli-worker', at: minutesAgo(45) }) + '\n'
+    )
+    const r = runNoInput(
+      SCAN,
+      ['--session', 'sess', '--ack', 'cli-worker', '--reason', 'checked, still running'],
+      { ...process.env, WT_OUTBOUND_GUARD_DIR: dir }
+    )
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('Acknowledged: cli-worker')
+    const lines = readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(lines).toHaveLength(2)
+    expect(lines[0]!.t).toBe('spawn') // original line untouched
+    expect(lines[1]).toMatchObject({ t: 'ack', name: 'cli-worker', reason: 'checked, still running' })
+  })
+})
+
+// --------------------------------------------------------------------------
 // wt-session-start-registry-hook.mjs — SessionStart: answers the question instead of
 // reminding someone to arm a scan. Its SCAN path must resolve to its SIBLING in plugin/bin/
 // (the fix this move required: the script previously walked to a `../scripts/` dir that no

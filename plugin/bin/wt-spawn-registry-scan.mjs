@@ -22,10 +22,18 @@
 //     --session     which session's registry to read (default: the most recently written)
 //     --quiet-min   minutes of silence before an open agent is worth asking about (default 20)
 //     --json        machine-readable output
+//     --ack <name>  mark one agent as dealt with, so later scans stop reporting it
+//
+// WHY --ack EXISTS. An entry nothing ever closed keeps surfacing, correctly, every single scan.
+// That is right the first time and corrosive by the fifth: a signal that repeats what the reader
+// has already handled stops being read, and the day it says something true nobody looks. So a
+// human verdict is recordable — as one more append-only line, never by editing history. An ack
+// says "I looked, this one is dealt with"; it does not say the agent finished, and it is scoped
+// to the entry it names, so a LATER spawn of the same name is reported again.
 //
 // Exit codes:  0 = nothing to ask about   ·   1 = at least one open+silent agent   ·   2 = no registry
 
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -57,6 +65,19 @@ if (file) {
 }
 if (!existsSync(file)) { console.log(`No registry file: ${file}`); process.exit(2); }
 
+// --- acknowledge and exit: append a verdict, change nothing that was already written.
+const ackName = arg('--ack', null);
+if (ackName) {
+  const rec = {
+    t: 'ack', name: ackName, at: new Date().toISOString(),
+    reason: arg('--reason', null) || undefined,
+  };
+  appendFileSync(file, JSON.stringify(rec) + '\n');
+  console.log(`Acknowledged: ${ackName} — later scans will not report this entry.`);
+  console.log('(The entry stays in the log. An ack records that you looked, not that the agent finished.)');
+  process.exit(0);
+}
+
 const records = readFileSync(file, 'utf8').split('\n').filter(Boolean)
   .map((l) => { try { return JSON.parse(l); } catch { return null; } })
   .filter(Boolean);
@@ -71,15 +92,24 @@ const records = readFileSync(file, 'utf8').split('\n').filter(Boolean)
 // CONSTRUCTION and need no change. The raw `spawns` list is NOT: iterating it unchanged would
 // list the same still-open agent TWICE in `open`/`flagged` below (one entry per duplicate spawn
 // record), so it is deduped by childName here — first record wins, repeats dropped.
+const SPAWN_DEDUP_WINDOW_MS = 1000;
 const spawns = dedupeSpawnsByChild(records.filter((r) => r.t === 'spawn'));
+// ⚠ The window is what makes this a DUPLICATE filter rather than a first-wins filter. A double
+// registration emits its two copies of the same event within milliseconds; a genuine RE-spawn of
+// the same name happens much later and is a different fact. Collapsing by name alone would drop
+// the later one — and then an entry acknowledged earlier would keep the name suppressed forever,
+// so a real agent relaunched under a reused name would never be reported again. Found by the test
+// that relaunches an acked name: it stayed silent when it should have spoken.
 function dedupeSpawnsByChild(spawnRecords) {
-  const seen = new Set();
+  const lastAt = new Map();
   const out = [];
   for (const s of spawnRecords) {
     const key = s.childName || s.child;
     if (key) {
-      if (seen.has(key)) continue;
-      seen.add(key);
+      const prev = lastAt.get(key);
+      const t = Date.parse(s.at);
+      if (prev !== undefined && t - prev < SPAWN_DEDUP_WINDOW_MS) continue;
+      lastAt.set(key, t);
     }
     out.push(s);
   }
@@ -95,6 +125,8 @@ const lastByName = (t) => {
   return m;
 };
 const stopped = lastByName('stop');
+// An acknowledged entry is excluded from the report — the reader has already dealt with it.
+const acked = lastByName('ack');
 const spoke = lastByName('out');
 
 const now = Date.now();
@@ -108,6 +140,10 @@ for (const s of spawns) {
   const name = s.childName;
   if (!name) { untrackable.push(s); continue; }
   if (stopped.has(name)) continue;                       // accounted for: it ended
+  // Acked AFTER this spawn: a human said they dealt with it. A later spawn of the same name has
+  // a newer `at` than the ack and is therefore reported again — the ack settles one entry, not
+  // a name forever.
+  if (acked.has(name) && acked.get(name) > s.at) continue;
   const last = spoke.get(name) || s.at;                  // never spoke => silent since birth
   const quietMin = Math.round((now - Date.parse(last)) / 60000);
   open.push({
