@@ -5,6 +5,26 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.44.2] - 2026-07-26
+
+### Added
+
+- `pilot-orchestrator`: a mechanical CLOSE-OUT gate on declaring a tier/mission COMPLETE,
+  separate from the ordinary per-card re-scan — fixes the observed failure where an
+  orchestrator counted its cards once at intake, created cards of its own mid-wave, then
+  stopped on that stale initial count while dozens of cards remained open. The gate:
+  (1) re-query the tracker live by CRITERIA (labels + lists), never from a list held in
+  memory — a criteria query catches what was born since intake, a remembered id list
+  cannot, by construction; (2) two staggered live re-queries separated by a NAMED,
+  overridable interval (`STOP_GATE_INTERVAL_MIN`, default 10 minutes) — declare COMPLETE
+  only if both come back empty; (3) fail-closed on the gate itself — a failed query, an
+  unparseable read, or a surprising count means NOT complete; (4) the orchestrator's own
+  self-created/absorbed cards are explicitly IN the set the gate re-queries, whatever the
+  mission's original shape; (5) the stop announcement must state both probes' timestamps,
+  criteria, and counts — "the board is empty" alone is not an acceptable closing statement.
+  Applied identically to the plugin source, the `launch-agents` byte-identical mirror, and
+  the adopted project copy (which additionally keeps its approved `model: opus` override).
+
 ## [0.44.1] - 2026-07-26
 
 ### Added

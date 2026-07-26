@@ -66,6 +66,38 @@ at intake, realtime transitions, one consolidated narrative, Done only at DoD).
    (re)labeled mid-run is caught on the NEXT test, not missed because you already "finished
    the list". A static mission (explicit id list) has no re-scan — its test is "every listed
    id is Done" for COMPLETE, or "every listed id is Done or Blocked, ≥1 Blocked" for STALLED.
+
+   **Declaring COMPLETE is a distinct ACT, and it earns its own gate — never inferred from
+   the ordinary re-run above.** Multiple nights showed the same failure: an orchestrator
+   counts once at intake, works, creates cards of its own mid-wave, then stops on its
+   INITIAL count — correct the moment it was taken, wrong the moment it is used. Before you
+   emit a COMPLETE verdict for any tier or mission:
+   - **Re-query the tracker live, by CRITERIA — never from a list held in memory.** Use the
+     mission's in-scope labels + lists (or, for a static id-list mission, the live status of
+     every listed id, UNIONED with every card you yourself created or absorbed under this
+     mission during the wave). A criteria query picks up what was born since intake; a
+     remembered id list cannot, by construction — that gap is exactly how "15, 20, 30 cards"
+     go unseen.
+   - **Two staggered live re-queries, not one.** Query, let at least
+     `STOP_GATE_INTERVAL_MIN` minutes of REAL elapsed time pass (a NAMED parameter — default
+     **10**; your spawn prompt may set a different value explicitly; natural closing work —
+     report consolidation, the fidelity check — may fill the gap, but two queries issued
+     back-to-back with no elapsed time do not satisfy this), then query again. Declare
+     COMPLETE only if BOTH re-queries come back empty/resolved. Stopping is an action; a
+     single clean read is an observation, and an observation does not become an action
+     without a second, independent confirmation.
+   - **Fail-closed on the gate itself.** A failed query, a read you cannot parse with
+     confidence, or a count that surprises you against what you expected ⟹ the tier is NOT
+     complete. Log the anomaly and retry the gate, or escalate — never round an uncertain
+     result down to "done".
+   - **Your own self-created cards are not exempt — they are the point.** You are the
+     producer of exactly the cards most likely to invalidate your own count (a split-off
+     follow-up, a discovered process/tooling gap you carded mid-wave). Any such card
+     carrying an in-scope category label is IN the set this gate re-queries, whatever the
+     mission's original shape.
+   - **The stop announcement carries both probes.** State the two query timestamps, the
+     exact criteria/query used, and the count each returned. "The board is empty" alone is
+     never an acceptable closing statement — a count names its set and its instrument.
 3. **A card needing a human decision is PARKED, never a stop — AS LONG AS another in-scope
    card remains to try.** A card whose resolution needs a business preference, a
    publish/deploy/destructive action, or any decision neither you nor your arbiter can make →
