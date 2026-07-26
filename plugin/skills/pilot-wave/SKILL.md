@@ -60,7 +60,7 @@ the resolved values in the spawn prompt:
      block of `~/.claude/settings.json` (account ceiling — opt-in, default OFF: absent or
      not `"true"` means NOT consented) — this is a plain file read, so it takes effect
      immediately with no process restart needed. Then check the CURRENT project's
-     `.claude/settings.local.json` `env` block for the SAME key: it may only NARROW (set it
+     `<project>/.claude/settings.local.json` `env` block for the SAME key: it may only NARROW (set it
      to something other than `"true"`), never widen a ceiling that is off. A refusal at
      either level wins.
   If BOTH available AND consented → name the bridge as the executor/verifier lane.
