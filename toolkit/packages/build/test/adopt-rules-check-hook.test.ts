@@ -6,6 +6,7 @@
 // (install, then a targeted string edit) rather than hand-rolling a second classifier.
 
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -98,9 +99,14 @@ describe('wt-adopt-rules-check-hook — SessionStart rule-adoption truth check',
     const dir = join(f.proj, '.claude', 'rules')
     installInto(dir)
     const p = join(dir, RULE)
-    // Lower ONLY the banner version (body/fingerprint untouched) — the same technique
-    // adopt-rules-installer.test.ts uses to construct a STALE-but-clean fixture.
-    writeFileSync(p, readFileSync(p, 'utf8').replace(/ v\d+\.\d+\.\d+ /, ' v0.0.1 '))
+    // Build a genuinely stale copy: an older banner version AND a body that differs from
+    // what ships, with the fingerprint restamped over that body so it still reads as
+    // unedited. Lowering the version alone no longer produces staleness — the installer
+    // compares CONTENT, so a version-only fixture describes an up-to-date copy and this
+    // test would then assert the hook speaks about a file it has nothing to say about.
+    const body = readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
+    const fp = createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
+    writeFileSync(p, `<!-- installed from workflow-toolbox v0.0.1 · content sha256:${fp} by the adopt-rules skill -->\n\n${body}`)
     const r = runHook(f.proj, f.env)
     expect(r.stdout, 'must not be silent').not.toBe('')
     expect(r.context).toContain('Behind the shipped version')

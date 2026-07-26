@@ -9,7 +9,8 @@
 // pattern as plugin-hooks.test.ts) so the contract is locked against future drift.
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, lstatSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, lstatSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -41,6 +42,18 @@ function runInCwd(args: string[], cwd: string): string {
 }
 const rulePath = (dir: string) => join(dir, RULE)
 
+// Age a managed RULE copy into "installed from an older release whose text has since
+// changed": an older banner version, a body that genuinely differs from what ships now, and
+// a fingerprint restamped over that body so the copy still classifies as UNEDITED ('clean')
+// rather than as a user edit. Both halves matter — since STALE tracks CONTENT, a fixture
+// that only lowered the version number would describe a copy that is legitimately up to
+// date, and could no longer exercise staleness at all.
+function ageRuleCopy(file: string, version = '0.0.1'): void {
+  const body = readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
+  const fp = createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
+  writeFileSync(file, `<!-- installed from workflow-toolbox v${version} · content sha256:${fp} by the adopt-rules skill -->\n\n${body}`)
+}
+
 describe('adopt-rules installer — edit-safety contract (committed drift lock)', () => {
   it('ABSENT: --install writes the rule with a version banner AND a content fingerprint', () => {
     const d = mkDir()
@@ -58,15 +71,16 @@ describe('adopt-rules installer — edit-safety contract (committed drift lock)'
     expect(run(['--check'], d)).toContain('UP-TO-DATE')
   })
 
-  it('STALE unedited (version behind, body intact): --install REFRESHES it', () => {
+  it('STALE unedited (older release, text has since changed): --install REFRESHES it', () => {
     const d = mkDir()
     run(['--install'], d)
     const p = rulePath(d)
-    // Lower ONLY the banner version; the body (and thus its fingerprint) is untouched.
-    writeFileSync(p, readFileSync(p, 'utf8').replace(/ v\d+\.\d+\.\d+ /, ' v0.0.1 '))
+    ageRuleCopy(p)
     expect(run(['--check'], d)).toContain('STALE')
     expect(run(['--install'], d)).toMatch(/REFRESHED/)
     expect(run(['--check'], d)).toContain('UP-TO-DATE')
+    // The refresh really replaced the text — not just re-stamped the banner over stale prose.
+    expect(readFileSync(p, 'utf8')).not.toContain('A PARAGRAPH SINCE REWRITTEN UPSTREAM')
   })
 
   it('EDITED (fingerprint mismatch) SURVIVES --install; overwritten ONLY with --force', () => {
@@ -164,16 +178,24 @@ describe('adopt-rules installer — agent-copies set (--set agents; committed dr
     }
   })
 
-  it('STALE unedited (version behind, body intact): --install REFRESHES it', () => {
+  it('STALE unedited (older release, def has since changed): --install REFRESHES it', () => {
     const d = mkDir()
     run(['--set', 'agents', '--install'], d)
     const p = agentPath(d, 'pilot.md')
-    // Lower ONLY the banner's version token (anchored to the banner, not the frontmatter);
-    // body + fingerprint stay intact so the copy is clean-but-behind.
-    writeFileSync(p, readFileSync(p, 'utf8').replace(/(installed from workflow-toolbox )v\d+\.\d+\.\d+/, '$1v0.0.1'))
+    // Age it into a copy from an older release whose def has since changed upstream: alter
+    // the body, RESTAMP the fingerprint over the altered body (so it still reads as unedited
+    // rather than as a user edit), and lower the banner version. Lowering the version alone
+    // would no longer describe a stale copy at all — staleness tracks CONTENT.
+    let text = readFileSync(p, 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
+    const fp = createHash('sha256').update(stripInstalledAgentBanner(text), 'utf8').digest('hex').slice(0, 12)
+    text = text
+      .replace(/(installed from workflow-toolbox )v\d+\.\d+\.\d+/, '$1v0.0.1')
+      .replace(/content sha256:[0-9a-f]{12}/, `content sha256:${fp}`)
+    writeFileSync(p, text)
     expect(run(['--set', 'agents', '--check'], d)).toContain('pilot.md: STALE')
     expect(run(['--set', 'agents', '--install'], d)).toMatch(/pilot\.md: REFRESHED/)
     expect(run(['--set', 'agents', '--check'], d)).toContain('pilot.md: UP-TO-DATE')
+    expect(readFileSync(p, 'utf8')).not.toContain('A PARAGRAPH SINCE REWRITTEN UPSTREAM')
   })
 
   it('EDITED (fingerprint mismatch) SURVIVES --install; overwritten ONLY with --force', () => {
@@ -257,6 +279,142 @@ describe('adopt-rules installer — CLI surface for the two-set engine', () => {
     expect(chk).toContain('wt-delegation-ladder.md: UP-TO-DATE')
     expect(chk).toContain('pilot.md: UP-TO-DATE')
     expect(chk).toContain('nothing to do')
+  })
+})
+
+// --global: target the CONFIG dir without anyone having to construct its path.
+//
+// WHY THIS EXISTS. Adopting into a config dir (rather than one project) is a supported,
+// common shape, but the engine had no notion of one: the caller had to build the path and
+// pass --dir. The skill's prose named the right source ("their CLAUDE_CONFIG_DIR rules dir")
+// and then, one clause later, handed out a literal "typically ~/.claude/rules/" — and the
+// literal is what gets copied. On a machine whose CLAUDE_CONFIG_DIR is NOT ~/.claude (a
+// separate work profile, say), that silently inspects the wrong directory and answers with
+// confidence about files it never looked at.
+//
+// The fix is mechanical rather than instructional: the engine resolves the config dir
+// itself, using the same rule the SessionStart hook already uses — CLAUDE_CONFIG_DIR, and
+// ~/.claude only when it is unset. A path nobody hand-builds is a path nobody gets wrong.
+describe('adopt-rules installer — --global targets the config dir, resolved not typed', () => {
+  // A runner with full control of the environment: `configDir` sets CLAUDE_CONFIG_DIR,
+  // and passing null DELETES it so the fallback branch is genuinely exercised (leaving the
+  // parent process's own value would test nothing).
+  function runEnv(args: string[], opts: { cwd: string; configDir: string | null; home?: string }): string {
+    const env = { ...process.env }
+    if (opts.configDir === null) delete env.CLAUDE_CONFIG_DIR
+    else env.CLAUDE_CONFIG_DIR = opts.configDir
+    if (opts.home) env.HOME = opts.home
+    const res = spawnSync(process.execPath, [SCRIPT, ...args], { cwd: opts.cwd, env, encoding: 'utf8' })
+    return (res.stdout ?? '') + (res.stderr ?? '')
+  }
+
+  it('resolves the target from CLAUDE_CONFIG_DIR, NOT from the cwd', () => {
+    const cwd = mkDir()
+    const cfg = mkDir()
+    const out = runEnv(['--set', 'rules', '--check', '--global'], { cwd, configDir: cfg })
+    expect(out).toContain(`[rules] target=${join(cfg, 'rules')}`)
+    // The decisive half: it must NOT have fallen back to the project default under cwd.
+    expect(out).not.toContain(join(cwd, '.claude', 'rules'))
+  })
+
+  it('falls back to ~/.claude ONLY when CLAUDE_CONFIG_DIR is unset', () => {
+    const cwd = mkDir()
+    const home = mkDir()
+    const out = runEnv(['--set', 'rules', '--check', '--global'], { cwd, configDir: null, home })
+    expect(out).toContain(`[rules] target=${join(home, '.claude', 'rules')}`)
+  })
+
+  it('--global --install writes into the config dir, and --set all splits by set', () => {
+    const cwd = mkDir()
+    const cfg = mkDir()
+    const out = runEnv(['--set', 'all', '--install', '--global'], { cwd, configDir: cfg })
+    expect(out).toContain(`[rules] target=${join(cfg, 'rules')}`)
+    expect(out).toContain(`[agents] target=${join(cfg, 'agents')}`)
+    expect(existsSync(join(cfg, 'rules', RULE))).toBe(true)
+    for (const f of AGENTS) expect(existsSync(join(cfg, 'agents', f))).toBe(true)
+    // Nothing leaked into the project dir — --global means the config dir, exclusively.
+    expect(existsSync(join(cwd, '.claude'))).toBe(false)
+  })
+
+  it('--global and --dir together are rejected rather than one silently winning', () => {
+    const cwd = mkDir()
+    const cfg = mkDir()
+    const out = runEnv(['--set', 'rules', '--check', '--global', '--dir', cwd], { cwd, configDir: cfg })
+    expect(out).toMatch(/--global and --dir/)
+  })
+})
+
+// STALE must mean "the text you hold differs from the text that ships" — not "the plugin
+// released since you installed".
+//
+// WHY. The verdict was a pure version comparison, so EVERY release marked EVERY adopted copy
+// stale, including copies byte-identical to the shipped file. A release touching one skill's
+// prose made twelve untouched rules announce themselves as out of date. That is how a signal
+// dies: a reader who is told to act four times for nothing stops reading the fourth, and the
+// release that genuinely changes a rule arrives into an audience that has learned to skip it.
+//
+// The fingerprint needed to answer this was ALREADY in the banner — it was just never
+// consulted for staleness, only for detecting user edits. These lock both directions,
+// because a fix that only silences is indistinguishable from a fix that also blinds.
+describe('adopt-rules installer — STALE tracks CONTENT, not the version number', () => {
+  // Write a managed copy that is internally consistent (its banner fingerprint matches its
+  // own body, so it classifies as 'clean' rather than 'edited') but carries an OLD version —
+  // i.e. exactly what an adopted copy looks like after the plugin releases again.
+  function installedAt(dir: string, file: string, version: string, body: string): void {
+    const fp = createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
+    writeFileSync(
+      join(dir, file),
+      `<!-- installed from workflow-toolbox v${version} · content sha256:${fp} by the adopt-rules skill -->\n${body}`,
+    )
+  }
+  const shipped = (file: string) => readFileSync(join(REPO_ROOT, 'plugin/rules', file), 'utf8')
+  const shippedRules = () =>
+    readdirSync(join(REPO_ROOT, 'plugin/rules')).filter((f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md')
+
+  // Populate the target with EVERY shipped rule at an old version. Seeding only one file
+  // leaves eleven ABSENT, and the check-mode hint reports absence in preference to staleness —
+  // so an assertion about the STALE hint would be decided by the missing files rather than by
+  // the behaviour under test. A fixture must not be able to produce the expected output for a
+  // reason other than the one being asserted.
+  function seedAllAt(dir: string, version: string): void {
+    for (const f of shippedRules()) installedAt(dir, f, version, shipped(f))
+  }
+
+  it('identical content behind a newer plugin version is UP-TO-DATE, not STALE', () => {
+    const d = mkDir()
+    seedAllAt(d, '0.0.1')
+    const out = run(['--set', 'rules', '--check'], d)
+    expect(out).toMatch(new RegExp(`${RULE}: UP-TO-DATE`))
+    expect(out).not.toContain('STALE')
+    expect(out).toContain('nothing to do')
+  })
+
+  it('CHANGED content behind a newer plugin version is still STALE (the fix must not blind it)', () => {
+    const d = mkDir()
+    seedAllAt(d, '0.0.1')
+    installedAt(d, RULE, '0.0.1', shipped(RULE) + '\nA LINE FROM AN OLDER RELEASE\n')
+    const out = run(['--set', 'rules', '--check'], d)
+    expect(out).toMatch(new RegExp(`${RULE}: STALE`))
+    expect(out).toContain('run with --install to refresh the STALE item(s)')
+    // ONLY the changed one — its untouched neighbours must not be swept along.
+    expect(out).toMatch(/wt-memory-hygiene\.md: UP-TO-DATE/)
+  })
+
+  it('--install refreshes the changed copy and leaves the identical ones alone', () => {
+    const d = mkDir()
+    seedAllAt(d, '0.0.1')
+    installedAt(d, RULE, '0.0.1', shipped(RULE) + '\nA LINE FROM AN OLDER RELEASE\n')
+    const out = run(['--set', 'rules', '--install'], d)
+    expect(out).toMatch(new RegExp(`${RULE}: (REFRESHED|WROTE|UPDATED)`))
+    expect(readFileSync(join(d, RULE), 'utf8')).not.toContain('A LINE FROM AN OLDER RELEASE')
+  })
+
+  it('AHEAD survives: a copy claiming a FUTURE version is still flagged, identical content or not', () => {
+    const d = mkDir()
+    seedAllAt(d, '0.0.1')
+    installedAt(d, RULE, '999.0.0', shipped(RULE))
+    const out = run(['--set', 'rules', '--check'], d)
+    expect(out).toMatch(new RegExp(`${RULE}: AHEAD`))
   })
 })
 

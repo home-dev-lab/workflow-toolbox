@@ -32,10 +32,18 @@
 //   node install-rules.mjs [--set rules|agents|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
 //   node install-rules.mjs [--set rules|agents|all] --install --force [--dir <dir>]  # also overwrite edited copies
 //   node install-rules.mjs [--set …] --install --replace-symlinks [--dir <dir>]      # replace a SYMLINKED target with a managed copy in place
+//   node install-rules.mjs [--set …] --check|--install --global                      # target the CONFIG dir instead of the project
 //
 // Default --set is `rules` (backward-compatible with the original rules-only tool).
 // Each set targets its own default dir under <cwd>; `--dir` overrides the target and
 // therefore requires a SINGLE --set (with `--set all` each set keeps its own default).
+//
+// `--global` targets the CONFIG dir — CLAUDE_CONFIG_DIR, or ~/.claude when that is unset —
+// resolving the path here so no caller has to build it. That matters because a caller who
+// hardcodes ~/.claude is RIGHT on a default machine and silently WRONG on one with a second
+// config profile: it then reports on files it never looked at. Unlike --dir, `--global`
+// composes with `--set all` (each set takes its own subdir); the two flags are mutually
+// exclusive, since passing both means the caller believes two different things at once.
 //
 // SYMLINK SAFETY: if a target file is a symlink (e.g. a config dir whose rules are
 // symlinked from another one), the engine NEVER writes through it — it reports the
@@ -44,6 +52,7 @@
 // target is preserved). This is never silent: a plain --install SKIPS a symlink.
 
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -149,6 +158,23 @@ function itemContent(set, item, root) {
   return fs.readFileSync(src, 'utf8')
 }
 
+/** The shipped content's fingerprint, or null when the source cannot be read.
+ *
+ *  Deliberately NOT itemContent(): that one calls fail() → exit(1), which is right for an
+ *  INSTALL (you cannot install from a source that is not there) and wrong for a --check,
+ *  where it would abort the whole report mid-list. Worse, the SessionStart hook parses this
+ *  script's stdout without inspecting the exit code, so a mid-run abort would drop every
+ *  remaining file from the hook's view — leaving it SILENT about items it never reached.
+ *  A guard that goes quiet because it broke is worse than one that never existed, so this
+ *  degrades to null and the caller falls back to the version comparison. */
+function shippedFingerprint(set, item, root) {
+  try {
+    return fingerprint(fs.readFileSync(path.join(root, set.srcDir, item.file), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
 /** Insert the banner right AFTER the YAML frontmatter (an agent def MUST start with
  *  `---`, so the banner cannot be line 1). Verified empirically: the harness parses
  *  and registers an agent def with an HTML comment as the first body line, and honors
@@ -242,7 +268,10 @@ function classify(target, set) {
   const fpm = FP_RE.exec(line)
   if (!fpm) return { state: 'edited-unknown', installedVer }
   const clean = fingerprint(stripBannerFor(set, content)) === fpm[1]
-  return { state: clean ? 'clean' : 'edited', installedVer }
+  // installedFp = the fingerprint of the content this copy actually holds. Returned so the
+  // planner can ask "is this the same text that ships today?" — the question the version
+  // number cannot answer, and the one that decides whether STALE means anything.
+  return { state: clean ? 'clean' : 'edited', installedVer, installedFp: fpm[1] }
 }
 
 function cmp(a, b) {
@@ -255,12 +284,13 @@ function cmp(a, b) {
 }
 
 function parseArgs(argv) {
-  const args = { mode: 'check', dir: null, force: false, set: 'rules', replaceSymlinks: false, userDir: null, pairsFile: null }
+  const args = { mode: 'check', dir: null, global: false, force: false, set: 'rules', replaceSymlinks: false, userDir: null, pairsFile: null }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--install') args.mode = 'install'
     else if (argv[i] === '--check') args.mode = 'check'
     else if (argv[i] === '--force') args.force = true
     else if (argv[i] === '--replace-symlinks') args.replaceSymlinks = true
+    else if (argv[i] === '--global') args.global = true
     else if (argv[i] === '--dir') args.dir = argv[++i]
     else if (argv[i] === '--set') args.set = argv[++i]
     else if (argv[i] === '--audit-overlap') args.mode = 'audit-overlap'
@@ -400,7 +430,7 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
  *  with no toolbox banner is NEVER overwritten — we won't clobber a file we never
  *  stamped. A symlink is never written THROUGH: it writes only under `replaceSymlinks`
  *  (and then processSet unlinks the link first, preserving its target). */
-function plan(c, version, force, replaceSymlinks) {
+function plan(c, version, force, replaceSymlinks, shippedFp) {
   switch (c.state) {
     case 'absent':
       return { status: 'ABSENT', write: true }
@@ -430,8 +460,26 @@ function plan(c, version, force, replaceSymlinks) {
       }
     case 'clean': {
       const c2 = cmp(c.installedVer, version)
-      if (c2 < 0) return { status: `STALE (installed v${c.installedVer} < v${version})`, write: true }
+      // AHEAD is decided FIRST and never short-circuited by matching content: a copy claiming
+      // a version this plugin does not have means something is wrong with the INSTALL, not
+      // with the text, and identical content does not make that anomaly go away. (Skipping
+      // this ordering is exactly how an earlier attempt silently swallowed the AHEAD signal.)
       if (c2 > 0) return { status: `AHEAD (installed v${c.installedVer} > v${version})`, write: force }
+      // Otherwise CONTENT decides, not the version number. Most releases touch a few files;
+      // comparing versions alone marks every adopted copy stale on every release, identical
+      // ones included — and a warning that cries wolf on each release is not read on the one
+      // release that matters. The banner then honestly records the version at which THIS
+      // exact text was installed.
+      if (shippedFp && c.installedFp === shippedFp) {
+        return {
+          status:
+            c2 === 0
+              ? `UP-TO-DATE (v${c.installedVer})`
+              : `UP-TO-DATE (banner v${c.installedVer}; content identical to v${version})`,
+          write: force,
+        }
+      }
+      if (c2 < 0) return { status: `STALE (installed v${c.installedVer} < v${version})`, write: true }
       return { status: `UP-TO-DATE (v${c.installedVer})`, write: force }
     }
     default:
@@ -451,9 +499,18 @@ function processSet(set, dir, args, version, root) {
   for (const item of set.resolveItems(root)) {
     const target = path.join(dir, item.file)
     const c = classify(target, set)
-    const p = plan(c, version, args.force, args.replaceSymlinks)
+    const shippedFp = shippedFingerprint(set, item, root)
+    const p = plan(c, version, args.force, args.replaceSymlinks, shippedFp)
     if (c.state === 'absent') anyAbsent = true
-    if (c.state === 'clean' && cmp(c.installedVer, version) < 0) anyStale = true
+    // Mirrors plan()'s own condition exactly, so the per-file lines and the closing hint can
+    // never disagree — a summary that says "refresh the STALE item(s)" above a list with no
+    // STALE line sends the reader looking for something that isn't there.
+    if (
+      c.state === 'clean' &&
+      cmp(c.installedVer, version) < 0 &&
+      !(shippedFp && c.installedFp === shippedFp)
+    )
+      anyStale = true
     if (c.state === 'edited' || c.state === 'edited-unknown') anyEdited = true
     if (c.state === 'symlink') anySymlink = true
 
@@ -502,6 +559,18 @@ function main() {
   if (args.dir && chosen.length > 1) {
     fail('--dir requires a single --set (use --set rules or --set agents; with --set all each set uses its own default dir)')
   }
+  // Refuse rather than let one silently win: the two flags express DIFFERENT intents (an
+  // explicit path vs "wherever this machine's config dir is"), and a caller who passed both
+  // holds a belief about the target that one of them contradicts. Answering confidently
+  // about a directory the caller did not mean is the failure this whole flag exists to end.
+  if (args.dir && args.global) {
+    fail('--global and --dir are mutually exclusive (--global resolves the config dir itself)')
+  }
+  // The SAME resolution the SessionStart hook uses — CLAUDE_CONFIG_DIR, else ~/.claude.
+  // Deliberately one rule in two places rather than an import: these are a shipped hook and
+  // a standalone script that must each run alone. They are locked in step by tests, not by
+  // a shared module they cannot both reach.
+  const globalRoot = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
 
   process.stdout.write(
     `adopt-rules: ${BANNER_TOOL} v${version} · mode=${args.mode}${args.force ? ' --force' : ''} · set=${args.set}\n`,
@@ -513,7 +582,14 @@ function main() {
   let anySymlink = false
   for (const name of chosen) {
     const set = SETS[name]
-    const dir = path.resolve(args.dir || path.join(process.cwd(), set.defaultDir))
+    // `set.defaultDir` is '.claude/rules' | '.claude/agents'; under --global the config dir
+    // IS the '.claude' layer already, so only its LAST segment is appended.
+    const dir = path.resolve(
+      args.dir ||
+        (args.global
+          ? path.join(globalRoot, path.basename(set.defaultDir))
+          : path.join(process.cwd(), set.defaultDir)),
+    )
     const r = processSet(set, dir, args, version, root)
     anyAbsent = anyAbsent || r.anyAbsent
     anyStale = anyStale || r.anyStale

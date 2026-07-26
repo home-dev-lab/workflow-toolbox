@@ -82,6 +82,11 @@ When adopting into a project that already has rules, reconcile first — see the
   the symlink and writes a managed copy in its place, leaving the former target untouched.
 - **Target a specific dir:** add `--dir <dir>` — requires a SINGLE `--set` (with `--set all`
   each set uses its own default dir).
+- **Target the CONFIG dir:** add `--global` — the script resolves `CLAUDE_CONFIG_DIR` itself
+  (falling back to `~/.claude` only when it is unset). Never hand-build that path and pass it
+  via `--dir`: a hardcoded `~/.claude` is correct on a default machine and silently WRONG on
+  one with a second config profile, and the report then describes a directory nobody meant.
+  Unlike `--dir`, `--global` composes with `--set all`; the two flags cannot be combined.
 - **Audit overlap (read-only):** `node scripts/install-rules.mjs --audit-overlap --user-dir <dir>`
   compares the user rules directory mechanically with the plugin's shipped rules bundle.
   Use `--pairs-file <path>` to provide an editable JSON array of user/shipped basename pairs;
@@ -102,8 +107,8 @@ When adopting into a project that already has rules, reconcile first — see the
 **Target dirs — confirm scope with the user first.** Each set has its own default under the
 current working directory: rules → `.claude/rules/`, agents → `.claude/agents/` (project
 scope, least invasive — they apply only in this project). For a machine-wide RULE install,
-pass `--set rules --dir <the user's global rules dir>` (their `CLAUDE_CONFIG_DIR` rules dir,
-typically `~/.claude/rules/`). Agent copies are almost always project-scoped (the watchdog
+pass `--set rules --global` and let the script resolve the config dir — do NOT type a path
+yourself. Agent copies are almost always project-scoped (the watchdog
 pairing is a per-project concern) — the default `.claude/agents/` is normally right; ask
 before overriding it.
 

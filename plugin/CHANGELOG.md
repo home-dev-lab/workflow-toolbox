@@ -5,6 +5,25 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- `adopt-rules`: `--global` targets the config directory, resolving `CLAUDE_CONFIG_DIR`
+  itself (falling back to `~/.claude` only when unset) instead of requiring the caller to
+  build that path and pass it via `--dir`. A hand-built `~/.claude` is correct on a default
+  machine and silently wrong on one running a second config profile, where the report then
+  describes a directory nobody meant. Composes with `--set all`; mutually exclusive with
+  `--dir`.
+
+### Changed
+
+- `adopt-rules`: `STALE` now tracks CONTENT, not the version number. Previously every
+  release marked every adopted copy stale, including copies byte-identical to the shipped
+  file — so a release touching one skill's prose made a dozen untouched rules announce
+  themselves as out of date. A warning that cries wolf on each release is not read on the
+  release that matters. `AHEAD` is still reported first and is never short-circuited by
+  matching content: a copy claiming a version the plugin does not have is an install
+  anomaly, which identical text does not explain away.
+
 ## [0.45.1] - 2026-07-26
 
 ### Fixed
