@@ -11,9 +11,13 @@ user's project, on explicit request only. It manages two sets:
 - **rules** — the cross-cutting guardrail rule files, SOURCED from the plugin's `rules/`
   bundle (every `*.md` there except `README.md` — currently the delegation ladder; the set
   is exactly what the plugin bundles and grows with it, the mirror of how the agents set
-  sources `agents/`). The plugin already injects the delegation-ladder PRINCIPLE ambiently
-  via a `SessionStart` hook where a project does tracked/delegated work; that injection is
-  ephemeral and version-locked. This set is the OPT-IN persistent, editable alternative.
+  sources `agents/`). **Until adopted, these rules are NOT in force.** A plugin's `rules/`
+  directory is inert — nothing loads it into a session. The only ambient injection is a
+  `SessionStart` hook that emits a SIX-LINE digest of the delegation ladder alone; every
+  other rule in the set (proportionate verification, ground-truth verification, answer-first
+  reporting, memory hygiene, checkpointing, task tracking, …) reaches a session ONLY as a
+  copy this skill writes into a real config dir. Adopting is therefore what puts them in
+  force — not merely what makes them editable.
 - **agents** — project copies of the pilot delegation suite's agent definitions
   (`pilot.md`, `pilot-watchdog.md`, `pilot-orchestrator.md`). A project copy matters because
   current Claude Code versions do NOT honor the `observer:` frontmatter for plugin-installed

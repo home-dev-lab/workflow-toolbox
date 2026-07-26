@@ -5,6 +5,22 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.45.1] - 2026-07-26
+
+### Fixed
+
+- `adopt-rules`: the skill described the bundled rules as already injected ambiently by the
+  `SessionStart` hook, presenting adoption as the "persistent, editable alternative". That
+  reading is wrong and consequential — a plugin's `rules/` directory is inert, and the hook
+  emits only a six-line digest of the delegation ladder. Every other bundled rule reaches a
+  session ONLY once adopted. The skill now states plainly that adopting is what puts the
+  rules in force, not merely what makes them editable.
+- `adopt-rules`: `--check` on a directory whose entries are symlinks (a supported setup —
+  two config dirs sharing one rule set) reported `nothing to do.`, which reads as "up to
+  date". A symlinked entry is never compared for staleness and a later `--install` there
+  silently refreshes nothing. The advisory now names where the managed copies actually live
+  and how to refresh them.
+
 ## [0.44.2] - 2026-07-26
 
 ### Added

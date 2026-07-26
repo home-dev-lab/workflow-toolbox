@@ -529,10 +529,21 @@ function main() {
     // Symlinks are an independent advisory (they can coexist with absent/stale items).
     // Suppressed when --replace-symlinks is already set — no point telling the user to
     // pass a flag they passed (the per-item line then previews the replacement).
-    if (anySymlink && !args.replaceSymlinks)
+    if (anySymlink && !args.replaceSymlinks) {
       process.stdout.write(
         'adopt-rules: symlinked target(s) present — left untouched; pass --replace-symlinks to replace them with managed copies.\n',
       )
+      // The operative half. Without it, a "nothing to do." on a fully-symlinked dir reads as
+      // "this dir is up to date", and a later --install here would silently refresh NOTHING —
+      // every item is skipped as a symlink. The managed copies live at the link TARGETS, so
+      // that is where a version bump must be applied; the links then serve it to this dir for
+      // free. Two config dirs sharing one rule set is a deliberate, supported setup.
+      process.stdout.write(
+        '  ↳ A symlinked item is NOT checked for staleness here — its managed copy lives at the\n' +
+        '    link target. Re-run --check/--install with --dir pointing at the target directory to\n' +
+        '    refresh it; this directory then follows automatically through the links.\n',
+      )
+    }
   }
 }
 
