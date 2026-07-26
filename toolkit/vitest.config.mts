@@ -6,6 +6,7 @@ export default defineConfig({
       'packages/*/test/**/*.test.ts',
       'packages/*/src/**/*.test.ts',
       'examples/test/**/*.test.ts',
+      'scripts/test/**/*.test.ts',
     ],
     // A few tests drive the real TypeScript compiler (ts.createProgram in
     // globals-typecheck, the `build --typecheck` path in cli-subcommands).
