@@ -18,6 +18,23 @@ cross-family verifier has no project context, so weight its findings by type: hi
 checkable / reproducible-crash issues, low on "this convention is wrong". It is input, never an
 autonomous verdict.
 
+## Breadth is a second, independent axis
+
+The ladder above scales verification to what the CHANGE introduces — that is DEPTH. It is
+structurally blind to a different failure class: a defect already sitting elsewhere on the same
+exposed surface (a rendered interface, an API shape, a CLI's output, a generated artifact — any
+outward-facing result), because no assertion derived from a diff covers what nobody had a
+hypothesis about. A scoped check finds only what it was pointed at, however deep it goes.
+
+- Before presenting an exposed surface as ready, sweep the WHOLE surface once, the way its real
+  consumer would encounter it — not only the assertions the diff suggested.
+- Depth and breadth are independent: assess both, and neither substitutes for the other. A
+  narrow, low-risk change can still land on a surface that deserves a full breadth sweep; a
+  surface nobody else touches may need only the change's own depth once assessed.
+- Handle a breadth finding like any other finding: fix it in scope, record what is not — never
+  fold an out-of-scope find into a silent extra fix. A code fix earns a test that fails before
+  the fix and passes after, like any other review finding.
+
 This never licenses skipping verification: the gates (test / typecheck / lint by exit code) and
-your own diff-read are unconditional. When unsure between two rungs, pick the higher one for
-irreversible or outward-facing changes, the lower one otherwise.
+your own diff-read are unconditional on both axes. When unsure between two rungs, pick the higher
+one for irreversible or outward-facing changes, the lower one otherwise.
