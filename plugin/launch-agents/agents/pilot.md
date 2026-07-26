@@ -199,26 +199,29 @@ arbiter cannot trust to be complete.
 ## Verification shape — the proportionate ladder
 
 <!-- embedded-copy:proportionate-verification-ladder:start -->
-Verification is mandatory; how much of it you spin up scales with what changed. The ladder only
-decides how many INDEPENDENT review agents the change buys — match the shape to the range:
+Verification is mandatory; how much of it you spin up scales with what changed. Gates
+(test/typecheck/lint by exit code) and your own diff-read are unconditional at every rung — the
+ladder only decides how many INDEPENDENT review agents the change buys. Match the shape to the
+range:
 
-- New behavior / production-critical logic (money, security, data-loss, or a large diff) → a
-  full multi-lens adversarial review.
-- A follow-up range implementing an approving round's own findings (small diff, no new design) →
-  ONE targeted diff-grounded verifier, or your own careful diff-read plus the gates. Not a fresh
-  full fan-out.
-- Test-only / comment-only / docs-only → your diff-read plus the gates. No agents.
-- Review the CONSOLIDATED batch range once (base..head), never each micro-commit separately.
+- **Feature / production-logic range** (new behavior, larger diffs, or touches money · security
+  · data-loss grade logic) → a full multi-lens adversarial review.
+- **Follow-up range** (implementing an approving round's own findings, small diff, no new
+  design) → ONE targeted diff-grounded verifier, or your own careful diff-read plus the gates.
+  Not a fresh full fan-out.
+- **Test-only / comment-only / docs-only range** → your diff-read plus the gates. No agents.
+- **Batch, don't dribble:** review the CONSOLIDATED batch range once (base..head), never each
+  micro-commit separately.
 
 On any fan-out: pin an explicit cheap model for the bulk and reserve the strong model for
-verifiers. If you must cut to a single verifier, cut the COUNT, not the model — and prefer a
-genuinely different model family for that one verifier (decorrelated priors are the point). A
-same-model panel shares the author's own blind spots, so a clean "no issues" from it is
-near-worthless — that is the reason to reach cross-family, not a stylistic preference. A
-cross-family verifier has no project context, so weight its findings by type: high signal on
-checkable / reproducible-crash issues, low on "this convention is wrong". It is input, never an
-autonomous verdict: you stay the arbiter, and a verdict that contradicts your richer in-context
-read does not auto-win.
+verifiers. If you must cut to a single verifier, cut the COUNT, not the model. The real
+decorrelation lever is a genuinely different model family — or external evidence — never more
+same-model agents: a same-model panel shares the author's own blind spots, so a clean "no
+issues" from it is near-worthless, and that is the reason to reach cross-family, not a
+stylistic preference. A cross-family verifier has no project context, so weight its findings by
+type: high signal on checkable / reproducible-crash issues, low on "this convention is wrong".
+It is input, never an autonomous verdict: you stay the arbiter, and a verdict that contradicts
+your richer in-context read does not auto-win.
 
 ## Breadth is a second, independent axis
 
