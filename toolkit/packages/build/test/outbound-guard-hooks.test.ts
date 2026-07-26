@@ -101,12 +101,15 @@ describe('wt-outbound-guard-hook — spawn edges, delivery detection, one nudge 
     expect(stop.code).toBe(0)
   })
 
-  it('stays SILENT for a subagent that wrote a file before its SubagentStop', () => {
-    const { env } = guardEnv('delivered-write')
+  // Writing a working file is not reporting, and the file-report contract requires BOTH halves:
+  // the file written AND the one line saying it exists. An agent that wrote and went silent has
+  // broken that contract, not half-satisfied it — so a Write must NOT buy silence from the guard.
+  it('still NUDGES a subagent that only wrote a file and never sent a message', () => {
+    const { env } = guardEnv('wrote-but-never-sent')
     run(GUARD_HOOK, outboundPayload('agent-3', 'sess-3', 'Write'), env)
     const stop = run(GUARD_HOOK, stopPayload('agent-3', 'sess-3'), env)
-    expect(stop.stderr).toBe('')
-    expect(stop.code).toBe(0)
+    expect(stop.stderr).toContain('OUTBOUND CHECK')
+    expect(stop.code).toBe(2)
   })
 
   it('NEVER nudges the main loop (no agent_id) even on its own Stop', () => {
@@ -322,7 +325,7 @@ describe('wt-session-start-registry-hook.mjs — runs the scan at session start'
 // longer relies on the project-level settings.local.json entries that were removed.
 // --------------------------------------------------------------------------
 describe('plugin.json registers the outbound-guard + session-start-registry hooks', () => {
-  it('PostToolUse carries a SendMessage|Write|Agent|Task group pointing at wt-outbound-guard-hook.mjs', () => {
+  it('PostToolUse carries a SendMessage|Agent|Task group pointing at wt-outbound-guard-hook.mjs', () => {
     const manifest = JSON.parse(readFileSync(PLUGIN_MANIFEST, 'utf8')) as {
       hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>
     }
@@ -330,7 +333,9 @@ describe('plugin.json registers the outbound-guard + session-start-registry hook
       (g.hooks ?? []).some((h) => (h.command ?? '').includes('wt-outbound-guard-hook.mjs'))
     )
     expect(group, 'no PostToolUse group registers wt-outbound-guard-hook.mjs').toBeTruthy()
-    expect(group!.matcher).toBe('SendMessage|Write|Agent|Task')
+    // Write is deliberately NOT matched: writing a working file is not reporting, so a Write
+    // must neither be recorded as delivery nor cost a hook invocation.
+    expect(group!.matcher).toBe('SendMessage|Agent|Task')
   })
 
   it('SubagentStop is matcher "*" pointing at wt-outbound-guard-hook.mjs', () => {

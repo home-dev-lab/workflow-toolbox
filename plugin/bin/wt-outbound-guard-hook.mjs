@@ -6,7 +6,7 @@
 //   2. NUDGE a sub-agent about to finish WITHOUT having delivered anything.
 //
 // WHY
-// An agent's plain assistant text reaches nobody: only a SendMessage or a file write leaves its
+// An agent's plain assistant text reaches nobody: only a message it SENDS leaves its
 // transcript. Agents fail this repeatedly — and, measured rather than guessed, not because they
 // believe they delivered, but because the question never arises before the turn ends. Three
 // agents in one evening; each said afterwards, in its own words, "the question did not come up".
@@ -33,7 +33,7 @@
 // A NUDGE STATES AN OBSERVATION, NOT A VERDICT. It cannot know whether the agent had anything
 // worth sending — only that nothing left. So it says what it sees, and how to proceed either way.
 //
-// SHIPPED (plugin/bin/): registered on PostToolUse (SendMessage|Write|Agent|Task) and
+// SHIPPED (plugin/bin/): registered on PostToolUse (SendMessage|Agent|Task) and
 // SubagentStop in plugin/.claude-plugin/plugin.json — see spawn-registry-scan.mjs (reads the
 // registry this hook writes) and wt-session-start-registry-hook.mjs (runs that scan at session
 // start, from this same directory).
@@ -45,11 +45,23 @@ import { homedir } from 'node:os';
 const STATE_DIR = process.env.WT_OUTBOUND_GUARD_DIR
   || join(homedir(), '.local', 'state', 'wt-outbound-guard');
 
-// Deliberately NARROW. `Edit` is excluded: editing source files is WORK, not REPORTING, and
-// counting it as delivery opens the very hole this guard closes — an implementer that modifies
-// twenty files and then ends in prose would look "delivered" and slip through. Found by reading
-// the guard's own first live records: the one agent it never nudged was the one editing.
-const OUTBOUND_TOOLS = new Set(['SendMessage', 'Write']);
+// Deliberately NARROW — and narrowed twice, both times by reading the guard's own records.
+//
+// `Edit` was excluded first: editing source files is WORK, not REPORTING, and counting it as
+// delivery opens the very hole this closes — an implementer that modifies twenty files and then
+// ends in prose would look "delivered". The one agent the guard failed to nudge, on its first
+// live run, was the one editing.
+//
+// `Write` was excluded next, for the same reason one level up: writing a working file is not
+// reporting either. An agent that produced files in a scratch directory and then went silent
+// looked delivered and slipped through. And the file-report contract this guard exists to
+// enforce requires BOTH halves — the report written AND a one-line message saying it exists.
+// An agent that wrote but never sent has broken that contract, not half-satisfied it.
+//
+// So the signal is the one that actually reaches somebody: a message. The cost of the strictness
+// is that an agent which genuinely had nothing to say is stopped once; the cost of the laxity was
+// silence about agents that had a great deal to say. Erring toward one wasted turn is correct.
+const OUTBOUND_TOOLS = new Set(['SendMessage']);
 const SPAWN_TOOLS = new Set(['Agent', 'Task']);
 
 // DOUBLE REGISTRATION: nothing stops an adopter from ALSO registering this same hook at project
@@ -230,12 +242,14 @@ try {
     process.stderr.write(
       'OUTBOUND CHECK — nothing you produced has left your transcript.\n' +
       '\n' +
-      'No SendMessage and no file write was recorded for you during this arc. Your plain\n' +
-      'assistant text is delivered to nobody: whatever you wrote exists only where you typed\n' +
-      'it. If you have a report, a status, a decision, an escalation, a question or a finding,\n' +
-      'it has not reached anyone.\n' +
+      'You sent no message during this arc. Your plain assistant text is delivered to\n' +
+      'nobody, and a file you wrote is not a report until someone is told it exists. If you\n' +
+      'have a report, a status, a decision, an escalation, a question or a finding, it has\n' +
+      'not reached anyone.\n' +
       '\n' +
-      'Send it now with SendMessage, or write it to a file. Filename caution: a sub-agent\n' +
+      'Send it now with SendMessage. If your contract also asks for a report FILE, write it\n' +
+      'AND send the one line saying where it is — the file alone does not close the loop.\n' +
+      'Filename caution: a sub-agent\n' +
       'cannot write a .md file whose name STARTS with report/summary/findings/analysis — the\n' +
       'harness refuses it. Put the word at the end instead: <something>-report.md\n' +
       '\n' +

@@ -46,7 +46,7 @@
         ]
       },
       {
-        "matcher": "SendMessage|Write|Agent|Task",
+        "matcher": "SendMessage|Agent|Task",
         "hooks": [
           {
             "type": "command",
