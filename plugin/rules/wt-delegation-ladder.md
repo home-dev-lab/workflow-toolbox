@@ -17,6 +17,15 @@ main session: owning wake-ups (a delegate’s background wait does not reliably
 re-wake it — an inbound message does), user-gates (publish / deploy / destructive /
 business preference), memory writes, and the Workflow tool.
 
+Your OWN turns are a spend too. When your session runs an expensive tier, delegating
+is the standing default rather than a fallback for heavy work: hand even light chores
+— writing a card or a report, grounding a doc, a mechanical file edit, an
+investigation — to a cheaper spawned agent, and keep your turns for the duties above.
+The reflex "this is too small to delegate" is backwards: the smaller the task, the
+higher the relative overhead of doing it inline, because every one of your turns
+carries the whole accumulated context with it. What stays inline is the arbitration
+itself, and genuinely tiny high-judgment edits you alone can make.
+
 This is a cost-model-neutral PRINCIPLE: which concrete model each rung maps to is
 your account’s business — pin it at spawn. Edit this file freely; it is yours.
 
