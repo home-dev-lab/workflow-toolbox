@@ -44,6 +44,15 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-verifier-cli-guard-hook.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "SendMessage|Write|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-outbound-guard-hook.mjs\""
+          }
+        ]
       }
     ],
     "SessionStart": [
@@ -53,6 +62,26 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-delegation-ladder-hook.mjs\"",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-session-start-registry-hook.mjs\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-outbound-guard-hook.mjs\""
           }
         ]
       }
