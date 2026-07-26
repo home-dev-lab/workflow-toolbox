@@ -45,7 +45,11 @@ either bloat or silent loss.
   sense in a single project or setup — those stay local, in a project-scoped file the broad rule
   can point to. Second, an auto-loaded rule only fires where it's actually loaded — after
   promoting, make sure it reaches every scope it's meant to cover instead of assuming one copy
-  covers all of them. Leave the source note in place afterward as rationale, pointing at the
+  covers all of them. If your setup keeps more than one configuration directory (for example,
+  separate personal and work profiles), a rule written into one does not propagate to the
+  others by itself — copy or link it into every directory it should govern, and treat "the rule
+  is written" and "the rule is in force everywhere it should be" as two separate facts to
+  verify, not one. Leave the source note in place afterward as rationale, pointing at the
   rule as the operative version.
 
 This keeps the index small and the store honest regardless of how often a dedicated

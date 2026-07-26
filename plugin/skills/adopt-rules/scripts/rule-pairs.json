@@ -9,5 +9,6 @@
   { "user": "outbound-propose-dont-affirm.md", "shipped": "wt-propose-dont-affirm.md", "partial": true },
   { "user": "checkpoint-and-compaction-policy.md", "shipped": "wt-checkpoint-and-compaction.md", "partial": true },
   { "user": "measure-context-before-compact.md", "shipped": "wt-checkpoint-and-compaction.md", "partial": true },
-  { "user": "memory-hygiene.md", "shipped": "wt-memory-hygiene.md", "partial": true }
+  { "user": "memory-hygiene.md", "shipped": "wt-memory-hygiene.md", "partial": true },
+  { "user": "executor-delegation-briefs.md", "shipped": "wt-delegation-ladder.md", "partial": true }
 ]

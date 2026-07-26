@@ -89,7 +89,15 @@ complete; a terminated or quota-killed agent resumes from its transcript on the 
 so try resuming a dead agent before respawning a replacement — and never spawn a successor
 into the same worktree before the predecessor's death is confirmed (two writers corrupt one
 tree). Before assuming an agent is stuck, check observable state (git status, file mtimes,
-HEAD) rather than nudging blindly.
+HEAD) rather than nudging blindly — and even then, silence alone does not mean it is dead:
+an agent legitimately waiting on something writes nothing, which looks identical to one
+that died. The signal that discriminates is the agent's response, not how long it has
+stayed quiet, so a check-in states the observation and asks rather than asserting death —
+asserting it forces a live agent to spend a turn correcting a wrong premise. Do not poll a
+spawned agent's completion through a status- or task-lookup tool either: its display name
+is not an id such tools accept, and a lookup that finds nothing proves nothing. Wait for
+the completion notification, or arm your own watcher on a real signal (file changes,
+process state) for an independent wake-up.
 
 ## Three prohibitions that sharpen the ladder
 
@@ -105,6 +113,16 @@ HEAD) rather than nudging blindly.
    executor, which reads for itself — a wrapper that reads everything first burns the
    coordinator-tier budget on work the executor repeats anyway, the same leak family as a
    wrapper answering in the executor's place.
+
+## A mandate is re-issued, not assumed
+
+A coordinator given a fixed list of items stops when that list is exhausted — nothing
+makes it pick up newly-appearing work on its own, and it shouldn't invent scope it wasn't
+given. If a coordinator should keep going as new qualifying work appears, its mandate must
+state an open scope plus a mechanical, fail-closed stop condition — not a list — so it can
+re-scan for work after each item without waiting to be reissued. Choose the mode
+deliberately at issuance: a fixed list for a bounded batch, an open mandate for a mission
+expected to absorb work created along the way.
 
 ## Lane consent, not lane availability
 
