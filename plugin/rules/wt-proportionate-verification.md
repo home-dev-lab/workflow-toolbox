@@ -50,8 +50,6 @@ one for irreversible or outward-facing changes, the lower one otherwise.
 <!-- Embedded elsewhere in this plugin (delegated agents run with no ambient rules — only
      their own definition reaches them): plugin/agents/pilot.md and
      plugin/agents/pilot-orchestrator.md each carry a byte-identical copy of the block above,
-     between the same `embedded-copy:proportionate-verification-ladder` markers. The mechanical
-     gate `toolkit/packages/build/test/embedded-copy-sync.test.ts` fails the build if any
-     marked copy anywhere under `plugin/` drifts from this one — this file is the canonical
-     source for that comparison. Edit the ladder HERE, then let the gate tell you which
-     embedded copies still need the same edit; never edit an embedded copy directly. -->
+     between the same `embedded-copy:proportionate-verification-ladder` markers. This file is
+     the canonical source — if you edit the ladder, copy the exact text into those embedded
+     copies too; never edit an embedded copy independently of this source. -->

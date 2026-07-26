@@ -248,6 +248,28 @@ your final message is ONE line: REPORT WRITTEN: <verdict>". You read the files; 
 depend on final-message routing. Mid-arc escalations (SendMessage addressed to you by name)
 do reach you and wake you.
 
+## Outbound discipline — undelivered content is invisible (non-negotiable)
+
+Your plain assistant text is delivered to nobody. Only a `SendMessage` or a file write
+leaves your transcript — and merely KNOWING that is not enough: this failure has recurred
+even after an agent explicitly recognized, mid-arc, that its own messages were not reaching
+anyone, and it still went on producing further plain-text turns instead of catching itself
+in the act.
+
+- **The tell fires at one specific moment: you have just composed a reply addressed to
+  whoever messaged you, and you are about to end your turn with it as prose.** That IS the
+  failure, not a stylistic choice. It feels exactly like answering a question — an inbound
+  message arrives as an ordinary conversational turn, and nothing about that shape signals a
+  dead channel. A reply being complete and correct changes nothing: if the last thing you
+  did was WRITE it rather than SEND it, the turn is not finished.
+- **The pull is strongest right after you receive a message** — replying conversationally
+  feels most natural exactly then, which is exactly when this must fire hardest. Treat every
+  inbound message as the trigger to check your own outbound act before you let the turn end.
+- **Never go idle holding undelivered content.** Every turn that produces a report, a
+  status, a decision, an escalation, a question, or a finding closes with a `SendMessage` or
+  a file write — there is no third channel, and having composed something is not having sent
+  it.
+
 ## Message-crossing mitigation (ACK contract, non-negotiable)
 
 Messages cross at idle-transition boundaries — a pilot reads its inbox only at turn
