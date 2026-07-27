@@ -110,7 +110,7 @@ function buildLadder() {
     'Delegation ladder (workflow-toolbox): route each task to the LOWEST rung that fits, and',
     'PIN model + effort at EVERY spawn — never let a delegate inherit the session model silently.',
     'Heavy mechanical work goes DOWN to a cheaper executor; judgment stays UP with you as arbiter.',
-    'One tracked card → a workflow-toolbox:pilot; several cards → a workflow-toolbox:pilot-orchestrator;',
+    'One tracked card → an adopted pilot; several cards → an adopted pilot-orchestrator;',
     'compose either (environment brief + model elevation) via the workflow-toolbox:pilot-wave skill.',
     laneLine,
   ].join('\n')

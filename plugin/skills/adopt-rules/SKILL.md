@@ -18,16 +18,17 @@ user's project, on explicit request only. It manages two sets:
   reporting, memory hygiene, checkpointing, task tracking, …) reaches a session ONLY as a
   copy this skill writes into a real config dir. Adopting is therefore what puts them in
   force — not merely what makes them editable.
-- **agents** — project copies of the pilot delegation suite's agent definitions
-  (`pilot.md`, `pilot-watchdog.md`, `pilot-orchestrator.md`). A project copy matters because
-  current Claude Code versions do NOT honor the `observer:` frontmatter for plugin-installed
-  agents — so a pilot spawned as `workflow-toolbox:pilot` runs WITHOUT its watchdog. The
-  pairing works only when `pilot.md` + `pilot-watchdog.md` live in the project's
-  `.claude/agents/` under their bare names. Copying by hand works too, but a hand copy has
-  NO staleness detection: because project agent copies WIN over the plugin's own types, a
-  copy left behind after a plugin update keeps winning silently. This set closes that gap —
-  every copy carries a version banner + content fingerprint, so a later `--check` reports
-  when the plugin has moved ahead.
+- **agents** — project copies of the pilot delegation suite's agent definitions, SOURCED from
+  the plugin's `agent-templates/` bundle (`pilot.md`, `pilot-watchdog.md`,
+  `pilot-orchestrator.md`, `pilot-orchestrator-watchdog.md`). These templates are
+  deliberately NOT plugin-registered agents — current Claude Code versions do NOT honor the
+  `observer:` frontmatter for a plugin-installed agent, so a registered pilot would run
+  WITHOUT its watchdog, silently. There is no namespaced "workflow-toolbox:pilot" type to
+  fall back to: a pilot only exists to spawn once adopted. The pairing works only when
+  `pilot.md` + `pilot-watchdog.md` live in the project's `.claude/agents/` under their bare
+  names. Copying by hand works too, but a hand copy has NO staleness detection: this set
+  closes that gap — every copy carries a version banner + content fingerprint, so a later
+  `--check` reports when the plugin has moved ahead.
 
 Both sets are stamped, fingerprinted, and yours to edit afterward. Use this skill ONLY when
 the user explicitly asks for such copies, or to check/refresh ones they adopted earlier.

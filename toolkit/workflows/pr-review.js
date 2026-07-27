@@ -2033,11 +2033,14 @@ ${renderClaim(claim)}`;
       // skill, which also documents the environment-brief contract. The whole
       // plugin/agents/ subtree is mapped above to the routing docs (accurate for
       // the leaf/lean/opencode-verifier agentTypes); this narrower entry adds the
-      // pilot-wave surface for the three pilot definitions specifically.
+      // pilot-wave surface for the three pilot definitions specifically. The pilot
+      // suite lives in plugin/agent-templates/, not plugin/agents/ — Claude Code
+      // silently ignores `observer:` on a plugin-registered agent, so the pilots stay
+      // unregistered templates, adopted as project copies (see adopt-rules).
       sources: [
-        "plugin/agents/pilot.md",
-        "plugin/agents/pilot-orchestrator.md",
-        "plugin/agents/pilot-watchdog.md"
+        "plugin/agent-templates/pilot.md",
+        "plugin/agent-templates/pilot-orchestrator.md",
+        "plugin/agent-templates/pilot-watchdog.md"
       ],
       docs: ["plugin/skills/pilot-wave/SKILL.md"]
     },

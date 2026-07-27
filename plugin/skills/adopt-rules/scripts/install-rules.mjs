@@ -101,7 +101,14 @@ const MANAGED_AGENTS = [
  *  rules set discovers them from the bundle; the agents set is a fixed suite). */
 const SETS = {
   rules: { kind: 'rules', srcDir: 'rules', defaultDir: '.claude/rules', resolveItems: discoverRuleItems },
-  agents: { kind: 'agents', srcDir: 'agents', defaultDir: '.claude/agents', resolveItems: () => MANAGED_AGENTS },
+  // srcDir is `agent-templates/`, NOT `agents/`: a plugin's agents/ dir is what REGISTERS an
+  // agent type, and a registered pilot is a broken pilot — Claude Code ignores `observer:` on
+  // plugin-installed agents, so `workflow-toolbox:pilot` spawns and runs with no watchdog and
+  // no warning. Keeping the pilot defs outside agents/ means that unwatched path does not
+  // exist to be taken; they reach a session only as project copies under their bare names,
+  // which is the only form where the pairing attaches. The other shipped agents (leaf, lean,
+  // …) stay in agents/ — they declare no observer, so registration serves them correctly.
+  agents: { kind: 'agents', srcDir: 'agent-templates', defaultDir: '.claude/agents', resolveItems: () => MANAGED_AGENTS },
 }
 
 // Match only against the banner line, never the body — a body mention of the phrase

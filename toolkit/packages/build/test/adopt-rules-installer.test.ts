@@ -122,12 +122,15 @@ describe('adopt-rules installer — edit-safety contract (committed drift lock)'
 })
 
 // The agent-copies set (--set agents) reuses the same engine (banner + fingerprint +
-// EDITED/--force safety) but SOURCES its content from plugin/agents/*.md at run time
-// and places the banner AFTER the YAML frontmatter (an agent def must start with ---).
-// A project copy of these defs is what lets the pilot-watchdog `observer:` pairing
-// attach, so the copy must carry the plugin source VERBATIM under its banner.
+// EDITED/--force safety) but SOURCES its content from plugin/agent-templates/*.md at run
+// time and places the banner AFTER the YAML frontmatter (an agent def must start with ---).
+// The pilot suite lives in agent-templates/, NOT plugin/agents/ (which the plugin registers
+// directly) — Claude Code silently ignores a plugin-installed agent's `observer:` field, so
+// only an adopted project copy under a bare name gets the pilot-watchdog pairing. A project
+// copy of these defs is what lets that pairing attach, so the copy must carry the source
+// VERBATIM under its banner.
 const AGENTS = ['pilot.md', 'pilot-watchdog.md', 'pilot-orchestrator.md']
-const AGENTS_SRC_DIR = join(REPO_ROOT, 'plugin/agents')
+const AGENTS_SRC_DIR = join(REPO_ROOT, 'plugin/agent-templates')
 const agentPath = (dir: string, f: string) => join(dir, f)
 
 // Independent re-derivation (NOT importing the engine): drop the banner comment line

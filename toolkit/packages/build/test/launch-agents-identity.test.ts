@@ -42,9 +42,26 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
-const CANONICAL_DIR = join(REPO_ROOT, 'plugin/agents')
+// Two canonical source dirs: plugin/agents/ (the plugin-registered, namespace-routed
+// agents — leaf/lean/opencode-verifier/…) and plugin/agent-templates/ (the pilot suite,
+// moved out of plugin/agents/ because Claude Code silently ignores a plugin-installed
+// agent's `observer:` field — pilots only get their watchdog when adopted as a project
+// copy under a bare name via adopt-rules). The shim mirrors the UNION of both, byte-for-byte.
+const CANONICAL_DIRS = [join(REPO_ROOT, 'plugin/agents'), join(REPO_ROOT, 'plugin/agent-templates')]
 const SHIM_DIR = join(REPO_ROOT, 'plugin/launch-agents/agents')
 const SHIM_MANIFEST = join(REPO_ROOT, 'plugin/launch-agents/.claude-plugin/plugin.json')
+
+/** Resolve a shim filename to its canonical source dir. Throws on ambiguity (same
+ * filename present in both canonical dirs) — that would make byte-identity undefined. */
+function resolveCanonicalDir(filename: string): string {
+  const hits = CANONICAL_DIRS.filter((dir) => existsSync(join(dir, filename)))
+  if (hits.length !== 1) {
+    throw new Error(
+      `${filename}: expected exactly one canonical source among ${CANONICAL_DIRS.join(', ')}, found ${hits.length}`,
+    )
+  }
+  return hits[0]!
+}
 
 describe('plugin/launch-agents — agents-only shim plugin for delegated launches', () => {
   it('exists and declares the workflow-toolbox plugin name (the agentType namespace)', () => {
@@ -54,15 +71,18 @@ describe('plugin/launch-agents — agents-only shim plugin for delegated launche
   })
 
   it('mirrors EVERY canonical agent byte-identically, with no orphans', () => {
-    const canonical = readdirSync(CANONICAL_DIR).filter((f) => f.endsWith('.md')).sort()
+    const canonical = CANONICAL_DIRS.flatMap((dir) =>
+      readdirSync(dir).filter((f) => f.endsWith('.md')),
+    ).sort()
     const shim = existsSync(SHIM_DIR)
       ? readdirSync(SHIM_DIR).filter((f) => f.endsWith('.md')).sort()
       : []
     expect(shim).toEqual(canonical)
     for (const f of canonical) {
+      const srcDir = resolveCanonicalDir(f)
       expect(
-        readFileSync(join(SHIM_DIR, f), 'utf8') === readFileSync(join(CANONICAL_DIR, f), 'utf8'),
-        `${f} shim copy is stale — cp plugin/agents/${f} plugin/launch-agents/agents/`,
+        readFileSync(join(SHIM_DIR, f), 'utf8') === readFileSync(join(srcDir, f), 'utf8'),
+        `${f} shim copy is stale — cp ${srcDir}/${f} plugin/launch-agents/agents/`,
       ).toBe(true)
     }
   })

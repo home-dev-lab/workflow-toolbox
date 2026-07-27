@@ -37,10 +37,11 @@ already acknowledged.
 ## Pairing availability (honest limitation — read before trusting a silence)
 
 Current Claude Code versions do not honor the `observer:` frontmatter for PLUGIN-installed
-agents — a `workflow-toolbox:pilot-orchestrator` runs WITHOUT this watchdog attached
+agents — a plugin-registered pilot-orchestrator would run WITHOUT this watchdog attached
 (verified empirically for the sibling pilot/pilot-watchdog pair; the mechanism is identical
-here). The pairing works only when `pilot-orchestrator.md` and this file live in the
-project's `.claude/agents/` (bare names).
+here). That is why this def ships as an unregistered template: there is no namespaced type
+to spawn as a fallback. The pairing works only when `pilot-orchestrator.md` and this file
+live in the project's `.claude/agents/` (bare names).
 
 ⚠ **Even the project-copy form is DECLARED, NOT YET DIRECTLY CONFIRMED, for this specific
 agent.** An earlier hypothesis ("the LAUNCHER — main vs. teammate — governs attach") was

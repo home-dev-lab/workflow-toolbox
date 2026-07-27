@@ -5,6 +5,24 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-07-27
+
+### Removed
+
+- **BREAKING — the `workflow-toolbox:pilot` / `workflow-toolbox:pilot-orchestrator` agent
+  types no longer exist.** The pilot suite now ships as unregistered templates under
+  `plugin/agent-templates/` and reaches a session only as an adopted project copy under its
+  bare name (`pilot`, `pilot-orchestrator`), installed by `adopt-rules --set agents --install`.
+  Reason: Claude Code silently ignores the `observer:` frontmatter on a plugin-REGISTERED
+  agent, so a namespaced pilot spawned fine and ran with NO watchdog attached and no warning
+  anywhere. Telling users to prefer the bare name was not enough — a guarantee that depends on
+  typing the right name at every spawn is not a guarantee. Removing the type removes the
+  unwatched path instead of deprecating it. **Adoption is now a prerequisite: without it there
+  is no pilot to spawn at all.** The other shipped agents (`leaf`, `lean`, `opencode-verifier`,
+  `fidelity-checker`, `index-groomer`) are unaffected — they declare no observer, so plugin
+  registration serves them correctly, and workflow routing to `workflow-toolbox:leaf` /
+  `workflow-toolbox:lean` is unchanged.
+
 ### Added
 
 - `adopt-rules`: `--global` targets the config directory, resolving `CLAUDE_CONFIG_DIR`

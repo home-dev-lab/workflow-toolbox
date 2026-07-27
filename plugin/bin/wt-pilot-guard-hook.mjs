@@ -17,7 +17,9 @@
 //   best-effort: if a future harness stops sending agent_id, the guard degrades to a
 //   silent no-op — it must NEVER fall back to a blanket deny, since the user's own
 //   main session legitimately runs `git push` etc. agent_type may be bare ("pilot")
-//   or namespaced ("workflow-toolbox:pilot"); we normalize by stripping the namespace.
+//   or namespaced ("workflow-toolbox:pilot") — the pilot suite is no longer
+//   plugin-registered so the harness should only ever send the bare form now, but the
+//   guard keeps tolerating both: normalize by stripping the namespace regardless.
 // - It only inspects Bash commands. Every other tool → no-op.
 // - For a matching pilot Bash call it DENIES only: `git push` with no explicitly
 //   named remote; a force/delete/mirror push to ANY remote; `npm|pnpm|yarn publish`;

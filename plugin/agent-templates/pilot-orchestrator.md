@@ -116,10 +116,12 @@ at intake, realtime transitions, one consolidated narrative, Done only at DoD).
    work on; it never widens what you are ALLOWED to do. Publishing, pushing, destructive
    actions, and business-preference calls remain hard escalations regardless of how the
    mission is phrased.
-6. **Brief & spawn** — ONE pilot per card. Spawn the project's own `pilot` definition when
-   the project's `.claude/agents/` carries one (a project copy takes the watchdog observer
-   pairing; a plugin-installed `workflow-toolbox:pilot` currently does not) — else the
-   `workflow-toolbox:pilot` type. Cards touching the same files run SEQUENTIALLY
+6. **Brief & spawn** — ONE pilot per card. Spawn the project's own adopted `pilot` definition
+   from `.claude/agents/` (a project copy takes the watchdog observer pairing; there is no
+   plugin-registered `pilot` type to spawn instead — a registered agent's `observer:` is
+   silently ignored, so the def ships unregistered until adopted). If no project copy exists,
+   propose the adoption before spawning anything — there is nothing to spawn otherwise. Cards
+   touching the same files run SEQUENTIALLY
    (one working tree per writer — worktree envelope mandatory); independent cards may run
    in parallel up to the concurrency the spawn prompt allows. Every pilot brief carries:
    card id + comment digest, repo scope with ABSOLUTE paths (and which repos/dirs are

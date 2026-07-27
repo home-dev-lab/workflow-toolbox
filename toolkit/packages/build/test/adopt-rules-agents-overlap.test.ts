@@ -72,7 +72,10 @@ function mkFixture() {
   const pluginRoot = join(base, 'plugin')
   const scriptsDir = join(pluginRoot, 'skills/adopt-rules/scripts')
   mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true })
-  mkdirSync(join(pluginRoot, 'agents'), { recursive: true })
+  // Pilot defs source from plugin/agent-templates/, NOT plugin/agents/ — the pilot suite was
+  // moved out of the plugin-registered dir because Claude Code silently ignores `observer:`
+  // on a plugin-installed agent (see install-rules.mjs SETS.agents.srcDir).
+  mkdirSync(join(pluginRoot, 'agent-templates'), { recursive: true })
   mkdirSync(join(pluginRoot, 'rules'), { recursive: true })
   mkdirSync(scriptsDir, { recursive: true })
 
@@ -82,7 +85,7 @@ function mkFixture() {
   writeFileSync(join(scriptsDir, 'rule-pairs.json'), JSON.stringify(RULE_PAIRS, null, 2) + '\n')
 
   for (const [file, source] of Object.entries(SHIPPED_AGENTS)) {
-    writeFileSync(join(pluginRoot, 'agents', file), source)
+    writeFileSync(join(pluginRoot, 'agent-templates', file), source)
   }
   writeFileSync(join(pluginRoot, 'rules', 'wt-step-back-architectural.md'), '# synthetic shipped rule\n\nKeep this rule.\n')
 

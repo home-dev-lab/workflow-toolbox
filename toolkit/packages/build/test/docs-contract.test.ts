@@ -69,6 +69,10 @@ const CORPUS_ROOTS = [
   'toolkit/pipelines',
   'toolkit/scripts',
   'plugin/agents',
+  // The pilot suite: source, same reason as plugin/agents/ above, but NOT a
+  // pluginSlugs source (see below) — these agents are deliberately NOT
+  // plugin-registered (observer: is ignored on a registered agent).
+  'plugin/agent-templates',
   'plugin/bin',
   'plugin/hooks',
   'plugin/workflows',

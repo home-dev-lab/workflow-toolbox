@@ -20,6 +20,12 @@ const GUARD_HOOK = join(REPO_ROOT, 'plugin/bin/wt-pilot-guard-hook.mjs')
 const VERIFIER_GUARD_HOOK = join(REPO_ROOT, 'plugin/bin/wt-verifier-cli-guard-hook.mjs')
 const DEBUGGER_DELEGATION_SRC = join(REPO_ROOT, 'toolkit/packages/debugger/src/external-delegation.ts')
 const AGENTS_DIR = join(REPO_ROOT, 'plugin/agents')
+// The pilot suite lives here, NOT in AGENTS_DIR — Claude Code silently ignores an
+// `observer:` field on a plugin-REGISTERED agent (AGENTS_DIR is what plugin.json's
+// agents-loading registers), so a pilot's watchdog pairing only works as a project
+// copy under a bare name (adopt-rules). Keeping the pilots out of AGENTS_DIR removes
+// the unwatched path entirely, rather than merely warning about it.
+const AGENT_TEMPLATES_DIR = join(REPO_ROOT, 'plugin/agent-templates')
 
 /** Text STRICTLY between the matchesOpencodeRun drift-lock markers of a source file (FILE TEXT,
  *  not `.toString()`, so it is immune to transpiler formatting). The three copies — debugger
@@ -612,15 +618,29 @@ describe('wt-verifier-cli-guard-hook — WT_VERIFIER_DEBUG env-gated logging', (
 // Observer-pairing drift gate — item 7
 // --------------------------------------------------------------------------
 describe('plugin agent observer pairings resolve to a sibling def', () => {
-  it('every `observer:` a plugin agent declares names an existing plugin/agents/*.md', () => {
+  it('no plugin-REGISTERED agent (plugin/agents/*.md) declares `observer:` — the field is silently ignored there', () => {
+    // Claude Code silently ignores `observer:` on an agent a plugin REGISTERS — a
+    // workflow-toolbox:pilot spawned that way would run with no watchdog and no
+    // warning. This is the invariant, not an enumeration of today's agents: it stays
+    // green regardless of which/how-many agents plugin/agents/ holds, and it catches
+    // the day someone drops an observer-declaring def back in there.
     const defs = readdirSync(AGENTS_DIR).filter((f) => f.endsWith('.md'))
+    const offenders = defs.filter((f) => {
+      const front = readFileSync(join(AGENTS_DIR, f), 'utf8').split('\n---', 2)[0] ?? ''
+      return /^observer:\s*\S+\s*$/m.test(front)
+    })
+    expect(offenders, `plugin/agents/*.md declaring observer: (ignored silently there): ${offenders.join(', ')}`).toEqual([])
+  })
+
+  it('every `observer:` a plugin-TEMPLATE agent declares names an existing plugin/agent-templates/*.md', () => {
+    const defs = readdirSync(AGENT_TEMPLATES_DIR).filter((f) => f.endsWith('.md'))
     const pairings: Array<[string, string]> = []
     for (const f of defs) {
-      const front = readFileSync(join(AGENTS_DIR, f), 'utf8').split('\n---', 2)[0] ?? ''
+      const front = readFileSync(join(AGENT_TEMPLATES_DIR, f), 'utf8').split('\n---', 2)[0] ?? ''
       const m = front.match(/^observer:\s*(\S+)\s*$/m)
       if (m) pairings.push([f, m[1] ?? ''])
     }
-    const missing = pairings.filter(([, obs]) => !existsSync(join(AGENTS_DIR, `${obs}.md`)))
+    const missing = pairings.filter(([, obs]) => !existsSync(join(AGENT_TEMPLATES_DIR, `${obs}.md`)))
     expect(missing, `dangling observer pairings: ${JSON.stringify(missing)}`).toEqual([])
     // Anchor: the pilot↔pilot-watchdog pairing must be one of them (guards a rename
     // silently dropping the shipped pair).
@@ -628,7 +648,7 @@ describe('plugin agent observer pairings resolve to a sibling def', () => {
   })
 
   it('pilot-watchdog keeps its report channel: the tools fence includes ObserverReport', () => {
-    const front = readFileSync(join(AGENTS_DIR, 'pilot-watchdog.md'), 'utf8').split('\n---', 2)[0] ?? ''
+    const front = readFileSync(join(AGENT_TEMPLATES_DIR, 'pilot-watchdog.md'), 'utf8').split('\n---', 2)[0] ?? ''
     const m = front.match(/^tools:\s*(.+)$/m)
     expect(m, 'pilot-watchdog has no tools: fence').toBeTruthy()
     const tools = (m?.[1] ?? '').split(',').map((t) => t.trim())
