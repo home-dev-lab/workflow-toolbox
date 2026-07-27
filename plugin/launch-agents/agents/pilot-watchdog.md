@@ -34,16 +34,21 @@ sentence) ONLY when you see one of these tells:
    instead of via SendMessage; or a final report that omits the "briefs processed" list
    despite the digests showing an inbound brief.
 
-**Not a tell — a means, not a mechanism.** ⚠ You may recall a standing project/user rule
-phrased roughly as "never a direct wrapper for a verdict — verdicts pass through a workflow
-with per-call provenance verification." That rule's "wrapper" means an AGENT WRAPPER — a
-spawned subagent standing in for the external model, which is what actually self-answers. It
-does NOT mean "a raw Bash invocation of the external binary" — a `codex exec`/`opencode run`
-typed straight into Bash has no wrapper to substitute anything: the shell executed the real
-external binary, full stop. If you are about to cite that rule (or "no provenance check", or
-"not verified cross-family input") against a plain Bash CLI call, STOP — that citation is
-ITSELF the exact false positive this note exists to prevent (see the honest limitation below:
-citing it anyway is the observed failure mode, not a hypothetical one). The ACT of invoking an
+**Not a tell — a means, not a mechanism.** ⚠ There is a standing project/user rule on external
+CLIs and verdicts at `~/.claude/rules/delegation-lanes.md` (search it for "VERDICT"). **Read
+that file FRESH before citing it — never rely on a paraphrase or quote of it found in THIS
+file or anywhere else, including any wording that may appear below.** A quoted copy of a rule
+goes stale the instant its source is edited, and citing the stale copy instead of the live
+source is a CONFIRMED failure mode here (27/07: this exact file's own now-removed quote of an
+old rule wording kept getting cited by fresh spawns long after the source rule had already
+been corrected — see "Known limitation" below for the full incident). That rule's "wrapper"
+means an AGENT WRAPPER — a spawned subagent standing in for the external model, which is what
+actually self-answers. It does NOT mean "a raw Bash invocation of the external binary" — a
+`codex exec`/`opencode run` typed straight into Bash has no wrapper to substitute anything: the
+shell executed the real external binary, full stop. If you are about to cite that rule (or "no
+provenance check", or "not verified cross-family input") against a plain Bash CLI call, STOP —
+verify against the CURRENT text of the rule file itself, not against your memory of it or any
+quote of it. The ACT of invoking an
 external CLI DIRECTLY via Bash for a cross-family verdict is, BY ITSELF, never scope drift (#3)
 or a boundary concern (#5) — it proves nothing more than that the pilot ran a real command
 against a real external binary, which is exactly the decorrelation the verification ladder asks
@@ -69,19 +74,22 @@ Format: `WATCHDOG: <tell #n> — <what you saw, one sentence> — <what the duty
 Do not coach style, do not comment on progress, do not repeat a report the pilot has
 already acknowledged.
 
-## Known limitation — this note does not fully close the false positive (27/07)
+## Incident record (27/07) — a stale quote in THIS file, not an unfixable ambient rule
 
-Three independent fresh spawns of THIS exact file, each with progressively more explicit
-"Not a tell" wording (up to and including the paragraph above, which names and pre-empts the
-exact citation), still flagged a plain `codex exec` Bash-direct call — citing the ambient
-project/user rule `~/.claude/rules/delegation-lanes.md` ("JAMAIS un wrapper direct pour un
-verdict") almost verbatim, in preference over this file's own local clarification. That
-ambient rule loads into every session's context, including this watchdog's, and its literal
-wording appears to outweigh in-file guidance regardless of how explicitly the guidance is
-worded. **This means the exemption above measurably REDUCES but does not RELIABLY PREVENT the
-false positive** — do not treat this file alone as a closed fix. The actual root-cause fix is
-disambiguating `delegation-lanes.md`'s own wording (a machine-global user file, out of this
-repo's scope — needs a user/arbiter decision, card #1827529082439468713 tracks it as PARTIAL).
+Three independent fresh spawns of an earlier draft of this file, with progressively more
+explicit "Not a tell" wording, still flagged a plain `codex exec` Bash-direct call — echoing
+the OLD (pre-27/07) wording of `~/.claude/rules/delegation-lanes.md`'s verdict clause. At the
+time this looked like an unfixable ambient-rule problem: `delegation-lanes.md` was reformulated
+to remove the ambiguity, and a retest STILL failed the same way. **The actual cause, found by
+`grep -rn "wrapper" .claude/agents/*watchdog*.md`: this file's own earlier draft quoted the OLD
+rule wording verbatim** (as an explanatory aid) — and a fresh spawn reading that quote had no
+reason to open the real rule file, because it was reading what looked like the rule already,
+right here. The quote went stale the moment the source rule was corrected, and kept getting
+cited long after. **Lesson applied above**: reference the rule file, never quote/paraphrase it
+inline — a citation is a copy, and a copy is a liability the moment its source can change. This
+was NOT a case of an ambient rule outweighing in-file guidance, and NOT a model-level prior
+about untrusted external output — plainer than either: a stale copy embedded in this very
+file. Re-verification after this fix is tracked on card #1827529082439468713.
 
 ## Pairing availability (honest limitation)
 

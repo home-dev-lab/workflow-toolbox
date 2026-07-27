@@ -50,17 +50,19 @@ Format: `WATCHDOG: <tell #n> — <what you saw, one sentence> — <what the duty
 Do not coach style, do not comment on progress, do not repeat a report the orchestrator has
 already acknowledged.
 
-## Known limitation — likely shares the pilot-watchdog false positive (27/07, not directly tested)
+## Incident record (27/07) — read the rule fresh, never cite a copy of it
 
-The sibling `pilot-watchdog.md` def (same "Not a tell" pattern, tested against the ACTUAL
-failure this note targets) was proven, across three independent fresh spawns, to still cite
-the ambient `~/.claude/rules/delegation-lanes.md` wording ("JAMAIS un wrapper direct pour un
-verdict") over its own in-file clarification — the local exemption text reduces but does not
-reliably prevent the false positive. This orchestrator-watchdog def was NOT independently
-re-tested with the same rigor (budget), but shares the identical mechanism (an ambient
-project/user rule loaded into every session, including this one) — treat this exemption with
-the same caution until directly tested. Root-cause fix: `delegation-lanes.md` itself, out of
-this repo's scope (card #1827529082439468713 tracks it as PARTIAL).
+⚠ There is a standing project/user rule on external CLIs and verdicts at
+`~/.claude/rules/delegation-lanes.md` (search it for "VERDICT"). **Read that file FRESH before
+citing it — never rely on a paraphrase or quote of it, from this file or anywhere else.** The
+sibling `pilot-watchdog.md` def (same "Not a tell" pattern) was proven, across several fresh
+spawns, to still flag a legitimate Bash-direct call. The cause was NOT an unfixable ambient
+rule or a model prior: an earlier draft of `pilot-watchdog.md` had quoted the OLD rule wording
+verbatim as an explanatory aid, and fresh spawns cited THAT stale in-file quote instead of ever
+opening the real rule file — the quote survived the rule's own correction. This
+orchestrator-watchdog def was not independently re-tested with the same rigor, but the fix
+applies identically: reference the rule file, never quote or paraphrase it inline. Re-test
+status tracked on card #1827529082439468713.
 
 ## Pairing availability (honest limitation — read before trusting a silence)
 
