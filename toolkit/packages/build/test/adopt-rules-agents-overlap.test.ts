@@ -132,6 +132,54 @@ describe('adopt-rules audit-overlap --set agents', () => {
     expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 0 absent, 0 unpaired, 0 unmapped')
   })
 
+  it('a project-local agent with no pairing entry (e.g. wt-check.md / wt-reviewer.md) never blocks the exit code, but stays named (card #1828669977687753994)', () => {
+    // Regression lock for the "always-red gate" defect: two local, never-managed agent files
+    // present alongside a fully clean managed suite used to sink the exit code to 1 forever —
+    // this is the exact shape measured at the 0.48.0 publish (0 duplicate, 0 drift, 0 absent,
+    // 0 unpaired, 2 unmapped) that Frederic had to bypass without being able to tell it apart
+    // from a real drift.
+    const fixture = mkFixture()
+    for (const [file, model] of Object.entries(MODELS)) {
+      writeFileSync(join(fixture.userDir, file), withModel(SHIPPED_AGENTS[file as keyof typeof SHIPPED_AGENTS], model))
+    }
+    writeFileSync(join(fixture.userDir, 'wt-check.md'), '---\nname: wt-check\n---\n\nlocal-only checker\n')
+    writeFileSync(join(fixture.userDir, 'wt-reviewer.md'), '---\nname: wt-reviewer\n---\n\nlocal-only reviewer\n')
+
+    const res = run(fixture.script, fixture.userDir, ['--set', 'agents'])
+
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('UNMAPPED')
+    expect(res.stdout).toContain('wt-check.md')
+    expect(res.stdout).toContain('wt-reviewer.md')
+    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 0 absent, 0 unpaired, 2 unmapped')
+  })
+
+  it('a REAL drift still fails the exit code even in the presence of unmapped local agents (unmapped never masks a genuine problem)', () => {
+    const fixture = mkFixture()
+    const driftedPilot = withModel(
+      SHIPPED_AGENTS['pilot.md'].replace(
+        'If no consented lane is available, split work to a cheaper sub-agent.',
+        'otherwise implement the increments yourself.',
+      ),
+      modelFor('pilot.md'),
+    )
+    writeFileSync(join(fixture.userDir, 'pilot.md'), driftedPilot)
+    writeFileSync(join(fixture.userDir, 'pilot-orchestrator.md'), withModel(SHIPPED_AGENTS['pilot-orchestrator.md'], modelFor('pilot-orchestrator.md')))
+    writeFileSync(join(fixture.userDir, 'pilot-watchdog.md'), withModel(SHIPPED_AGENTS['pilot-watchdog.md'], modelFor('pilot-watchdog.md')))
+    writeFileSync(
+      join(fixture.userDir, 'pilot-orchestrator-watchdog.md'),
+      withModel(SHIPPED_AGENTS['pilot-orchestrator-watchdog.md'], modelFor('pilot-orchestrator-watchdog.md')),
+    )
+    writeFileSync(join(fixture.userDir, 'wt-check.md'), '---\nname: wt-check\n---\n\nlocal-only checker\n')
+
+    const res = run(fixture.script, fixture.userDir, ['--set', 'agents'])
+
+    expect(res.status).toBe(1)
+    expect(res.stdout).toContain('DRIFT pilot.md: otherwise implement the increments yourself.')
+    expect(res.stdout).toContain('UNMAPPED')
+    expect(res.stdout).toContain('wt-check.md')
+  })
+
   it('reports CLEAN on a genuinely --install-ed, unedited copy (banner must not read as drift)', () => {
     // Regression test for card #1827047859321570464: the comparison used to diff the
     // user file's RAW content (banner included) against the shipped file's STRIPPED

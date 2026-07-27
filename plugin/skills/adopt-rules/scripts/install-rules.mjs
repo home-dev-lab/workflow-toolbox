@@ -230,6 +230,111 @@ function renderItem(set, item, version, root) {
   return set.kind === 'rules' ? `${b}\n\n${content}` : insertAgentBanner(content, b)
 }
 
+// --- Frontmatter preservation across a re-adoption (card #1828669764516447496) ---------------
+//
+// `--install --force` used to REPLACE an agent file wholesale, silently dropping any field a
+// user had locally added to the frontmatter (the standing example: a `model:` pin — the visible
+// mechanism by which a delegation tier is chosen instead of inherited). The loss carried no
+// signal: the write succeeded, exit code 0, nothing printed. This block makes a re-adoption
+// carry a local, single-line-valued frontmatter key FORWARD into the freshly-rendered shipped
+// text, and announce what it kept — silently, when there is nothing to carry (the common case).
+//
+// DESIGN DECISION (the card asked this be made explicitly, not left as a default): the SHIPPED
+// agent-templates/*.md do NOT carry a `model:` pin themselves, and this fix does not add one.
+// A model/tier choice is a deployment policy (which account, which cost posture, which task
+// mix) — the same reason the delegation-ladder rules keep concrete tier mappings out of the
+// shipped, environment-free rule text and into a project's own local layer. Baking a pin into
+// the shipped def would force every adopter onto one project's tier choice; the correct fix is
+// that a LOCAL pin, once made, survives re-adoption — which is what this block does.
+//
+// Deliberately conservative: only a frontmatter key whose ENTIRE value sits on one line (no
+// list/continuation lines under it) is ever treated as "simple" and carried over. A multi-line
+// local addition (e.g. a locally edited `disallowedTools:` list) is NOT reproduced — merging
+// that safely would need a real YAML-aware editor, and a half-merged list is worse than a clearly
+// SKIPPED file (the pre-existing EDITED/--force contract already gives the user that route).
+
+/** The raw frontmatter block INCLUDING both `---` delimiters, or null if `text` doesn't start
+ *  with one (mirrors FRONTMATTER_RE; a wrapper so callers don't repeat the null check). */
+function frontmatterBlock(text) {
+  const m = FRONTMATTER_RE.exec(text)
+  return m ? m[1] : null
+}
+
+/** Single-line, top-level frontmatter keys found in `block` (the raw block incl. delimiters),
+ *  as a Map of key -> its exact source line. A key is "simple" only when (a) its value is not a
+ *  YAML block-scalar indicator (`|`, `>`, optionally with a chomping/indent modifier — these
+ *  introduce a multi-line value that may resume after one or more BLANK lines, which a
+ *  next-line-only continuation check would miss and mis-preserve a truncated field), and (b) the
+ *  line right after it is NOT an indented/continuation line (and isn't the closing `---`) —
+ *  anything else (a YAML list, a folded string, a trailing comment block) is left alone rather
+ *  than guessed at, per the conservative-merge note above. Cross-family review finding (card
+ *  #1828669764516447496): a block scalar followed by a blank line before its own continuation
+ *  (`notes: |\n\n  continued\n`) used to read as "simple" and lose its continuation on merge. */
+function simpleFrontmatterKeys(block) {
+  const lines = block.split(/\r?\n/)
+  const keys = new Map()
+  const BLOCK_SCALAR_RE = /^[|>][-+]?\d*\s*$/
+  for (let i = 1; i < lines.length - 1; i++) {
+    const line = lines[i]
+    if (line === '---') break
+    const m = /^([A-Za-z_][\w-]*):\s?(.*)$/.exec(line)
+    if (!m) continue
+    if (BLOCK_SCALAR_RE.test(m[2].trim())) continue
+    const next = lines[i + 1]
+    const isContinuation = next !== undefined && next !== '---' && /^[ \t]/.test(next) && next.trim() !== ''
+    if (isContinuation) continue
+    keys.set(m[1], line)
+  }
+  return keys
+}
+
+/** Splice `extraLines` into `frontmatterSource` (a full agent-def string starting with its own
+ *  frontmatter), immediately before the CLOSING `---` delimiter. Returns the spliced string, or
+ *  the input unchanged if its frontmatter can't be located (should not happen — callers only
+ *  call this with content that already round-tripped through FRONTMATTER_RE). */
+function spliceIntoFrontmatter(frontmatterSource, extraLines) {
+  const block = frontmatterBlock(frontmatterSource)
+  if (!block) return frontmatterSource
+  const blockLines = block.split(/\r?\n/)
+  let closeIdx = -1
+  for (let i = blockLines.length - 1; i >= 1; i--) {
+    if (blockLines[i] === '---') {
+      closeIdx = i
+      break
+    }
+  }
+  if (closeIdx === -1) return frontmatterSource
+  const newBlockLines = [...blockLines.slice(0, closeIdx), ...extraLines, ...blockLines.slice(closeIdx)]
+  return newBlockLines.join('\n') + frontmatterSource.slice(block.length)
+}
+
+/** Carry any LOCAL, single-line frontmatter key from `oldContent` (the file about to be
+ *  overwritten) into `shippedRendered` (the fresh banner+content about to replace it), for
+ *  every key the shipped def does not itself define. Returns `{ text, preserved }` — `text` is
+ *  `shippedRendered` unchanged and `preserved` is `[]` when there is nothing local to carry
+ *  (silent, common case — the second sense of the card's closure criterion). `oldContent` may
+ *  be a previously-banner-stamped copy; its banner line is stripped first so the banner's own
+ *  HTML-comment line is never mistaken for a frontmatter key (it lives after the frontmatter
+ *  anyway, so this only matters for defensiveness). */
+function preserveLocalFrontmatter(shippedRendered, oldContent) {
+  if (oldContent == null) return { text: shippedRendered, preserved: [] }
+  const shippedBlock = frontmatterBlock(shippedRendered)
+  const oldBlock = frontmatterBlock(stripAgentBanner(oldContent))
+  if (!shippedBlock || !oldBlock) return { text: shippedRendered, preserved: [] }
+  const shippedKeys = simpleFrontmatterKeys(shippedBlock)
+  const oldKeys = simpleFrontmatterKeys(oldBlock)
+  const extraLines = []
+  const preserved = []
+  for (const [key, line] of oldKeys) {
+    if (!shippedKeys.has(key)) {
+      extraLines.push(line)
+      preserved.push(key)
+    }
+  }
+  if (extraLines.length === 0) return { text: shippedRendered, preserved: [] }
+  return { text: spliceIntoFrontmatter(shippedRendered, extraLines), preserved }
+}
+
 /** The line carrying the banner: line 1 for a rule, the line after the frontmatter for
  *  an agent (an agent's line 1 is always `---`). */
 function bannerLine(set, text) {
@@ -469,7 +574,17 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
   } else {
     process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${unpaired} unpaired, ${unmapped} unmapped\n`)
   }
-  if (duplicate || drift || unpaired || unmapped || (set === 'agents' && absent)) process.exitCode = 1
+  // `unmapped` is deliberately NOT in this condition — it decides nothing. A file with no
+  // pairing entry (e.g. this project's own wt-check.md / wt-reviewer.md agents, which will
+  // never join the managed suite) is a PERMANENT, legitimate state for some projects: if it
+  // gated the exit code, the gate could never go green on those projects, and a bloqueur that
+  // is always red is bypassed by reflex — the day it also carries a real `drift`, nobody can
+  // tell the two apart in the same non-zero exit (card #1828669977687753994, 27/07/2026).
+  // `unmapped` stays fully VISIBLE above (one UNMAPPED line per file, counted in the summary)
+  // because an unmapped file can just as well be the symptom of an INCOMPLETE adoption — the
+  // tool cannot tell intent from omission, so it reports and lets a human judge, it just never
+  // blocks a release on that judgment call alone.
+  if (duplicate || drift || unpaired || (set === 'agents' && absent)) process.exitCode = 1
 }
 
 /** Decide the status label and (for --install) whether to write. `force` only ever
@@ -563,10 +678,33 @@ function processSet(set, dir, args, version, root) {
 
     if (args.mode === 'install') {
       if (p.write) {
+        // Capture the pre-overwrite content BEFORE any mutation, for the agents set only (rules
+        // carry no frontmatter to preserve) and only when the classifier already found a REAL
+        // local edit (`edited` / `edited-unknown`). Deliberately excludes `clean` (incl. a
+        // STALE-but-clean refresh): a clean copy's content, by definition, was never modified
+        // after install — any key present in it but absent from the fresh shipped text is a
+        // field the PLUGIN itself retired, not something the user added. Preserving on a plain
+        // refresh would silently resurrect a field upstream deliberately removed (cross-family
+        // review finding on card #1828669764516447496).
+        let oldContent = null
+        if (set.kind === 'agents' && (c.state === 'edited' || c.state === 'edited-unknown')) {
+          try {
+            oldContent = fs.readFileSync(target, 'utf8')
+          } catch {
+            oldContent = null
+          }
+        }
         // A symlink is REPLACED, never written THROUGH: unlink the link first (its real
         // target is left untouched), then write a regular managed file in its place.
         if (c.state === 'symlink') fs.rmSync(target, { force: true })
-        fs.writeFileSync(target, renderItem(set, item, version, root))
+        const shippedRendered = renderItem(set, item, version, root)
+        const { text: finalText, preserved } = preserveLocalFrontmatter(shippedRendered, oldContent)
+        if (preserved.length > 0) {
+          process.stdout.write(
+            `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,
+          )
+        }
+        fs.writeFileSync(target, finalText)
         const verb =
           c.state === 'absent'
             ? 'WROTE'

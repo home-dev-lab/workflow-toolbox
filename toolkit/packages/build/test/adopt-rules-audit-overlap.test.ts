@@ -37,11 +37,13 @@ describe('adopt-rules audit-overlap', () => {
     const res = run(d)
     expect(res.status).toBe(1); expect(res.stdout).toMatch(/DUPLICATE.*step-back-architectural\.md.*wt-step-back-architectural\.md/)
   })
-  it('reports partial drift informationally, and UNMAPPED', () => {
+  it('reports partial drift informationally, and UNMAPPED — neither blocks the exit code (card #1828669977687753994)', () => {
     const d = mkDir(); writeFileSync(join(d, 'delegation-lanes.md'), '# unique partial edit\n'); writeFileSync(join(d, 'some-other-rule.md'), 'x\n')
     const res = run(d)
-    // Any file present that maps to no declared pair now fails the exit code — the discriminant this card exists to fix, not just an informational print.
-    expect(res.status).toBe(1); expect(res.stdout).toContain('DRIFT (partial, informational) delegation-lanes.md')
+    // Neither a PARTIAL drift nor an UNMAPPED file fails the exit code: `unmapped` decides
+    // nothing (card #1828669977687753994 — an always-red gate is bypassed by reflex), and
+    // `partial` drift was already informational before that fix. Both stay fully visible.
+    expect(res.status).toBe(0); expect(res.stdout).toContain('DRIFT (partial, informational) delegation-lanes.md')
     // UNMAPPED prints the full joined path (consistent with DUPLICATE's own convention), not
     // the bare basename — an operator can act on the printed path directly.
     expect(res.stdout).toContain(`UNMAPPED ${join(d, 'some-other-rule.md')}`)
@@ -125,7 +127,7 @@ describe('adopt-rules audit-overlap', () => {
     expect(res.status).toBe(1)
     expect(res.stdout).toContain('UNPAIRED wt-task-tracking.md: no pairing entry in')
   })
-  it('makes every file with no declared pair visible and failing, while a clean directory passes', () => {
+  it('makes every file with no declared pair visible, but NEVER failing on its own — a project-local file (e.g. wt-check.md) must not block the gate forever (card #1828669977687753994)', () => {
     const d = mkDir()
     const pairsFile = join(d, 'pairs.json')
     const strayPath = join(d, 'arbitrary-local-extension.md')
@@ -133,7 +135,12 @@ describe('adopt-rules audit-overlap', () => {
     writeFileSync(strayPath, 'local-only rule\n')
 
     const withStray = run(d, ['--pairs-file', pairsFile])
-    expect(withStray.status).toBe(1)
+    // UNMAPPED stays fully visible and NAMED (an unmapped file may equally be a symptom of an
+    // incomplete adoption, not just a deliberate local file — the tool cannot tell intent from
+    // omission, so it never hides it) but it must never, on its own, fail the exit code: a
+    // gate that can never go green on a project carrying legitimate local-only files is
+    // bypassed by reflex the day it also carries a real drift.
+    expect(withStray.status).toBe(0)
     expect(withStray.stdout).toContain(`UNMAPPED ${strayPath}`)
 
     unlinkSync(strayPath)
