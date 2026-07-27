@@ -10,7 +10,7 @@
 // option, where a wiring regression (a hook that silently stops firing after a move) hides.
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync, mkdirSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,6 +36,30 @@ function mkRoot(tag: string): string {
 function guardEnv(tag: string): { env: NodeJS.ProcessEnv; dir: string } {
   const dir = mkRoot(tag)
   return { env: { ...process.env, WT_OUTBOUND_GUARD_DIR: dir }, dir }
+}
+
+// Mirrors the REAL on-disk transcript layout the liveness check reads:
+// <CLAUDE_CONFIG_DIR>/projects/<slug(cwd)>/<sessionId>/subagents/agent-X.{meta.json,jsonl} —
+// verified against this machine's actual directory structure, not guessed. `transcriptAgeMin`
+// controls the sibling `.jsonl`'s mtime (null = no transcript exists at all, e.g. an untrackable
+// spawn or a session recorded before this scan existed).
+function transcriptEnv(
+  tag: string,
+  opts: { sessionId: string; cwd: string; name: string; transcriptAgeMin: number | null }
+): { env: NodeJS.ProcessEnv; dir: string } {
+  const { env, dir } = guardEnv(tag)
+  const configDir = mkRoot(`${tag}-config`)
+  const slug = opts.cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  const subagentsDir = join(configDir, 'projects', slug, opts.sessionId, 'subagents')
+  mkdirSync(subagentsDir, { recursive: true })
+  if (opts.transcriptAgeMin !== null) {
+    const base = join(subagentsDir, `agent-a${opts.name}-deadbeef1234`)
+    writeFileSync(`${base}.meta.json`, JSON.stringify({ name: opts.name, agentType: opts.name }))
+    writeFileSync(`${base}.jsonl`, '{}\n')
+    const mtime = new Date(Date.now() - opts.transcriptAgeMin * 60_000)
+    utimesSync(`${base}.jsonl`, mtime, mtime)
+  }
+  return { env: { ...env, CLAUDE_CONFIG_DIR: configDir }, dir }
 }
 
 interface Run {
@@ -544,6 +568,148 @@ describe('wt-spawn-registry-scan.mjs --ack — records a verdict scoped to one s
     expect(lines).toHaveLength(2)
     expect(lines[0]!.t).toBe('spawn') // original line untouched
     expect(lines[1]).toMatchObject({ t: 'ack', name: 'cli-worker', reason: 'checked, still running' })
+  })
+})
+
+// --------------------------------------------------------------------------
+// LIVENESS — design objection (Frederic, same morning as the Stop-hook wiring): message-silence
+// alone is the wrong model of this system's real dispatch (our own pilots only speak at
+// milestones), so a message-silent entry must ALSO show no transcript growth before it is
+// actually flagged. Three cases, matching the objection's own closure criterion exactly:
+//   ROUGE   : silent by message AND transcript stale/missing -> flagged
+//   VERT-1  : silent by message BUT transcript still growing -> NOT flagged (confirmedAlive)
+//   VERT-2  : nothing open -> silent (already covered above; not duplicated here)
+// --------------------------------------------------------------------------
+describe('wt-spawn-registry-scan.mjs — liveness: transcript growth suppresses the false positive', () => {
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
+  const CWD = '/fake/project/for/liveness'
+  const SESSION = 'sess-liveness'
+
+  it('ROUGE: silent by message AND no transcript found at all -> still flagged (unknown = ask)', () => {
+    const { env, dir } = transcriptEnv('rouge-missing', { sessionId: SESSION, cwd: CWD, name: 'stuck-worker', transcriptAgeMin: null })
+    writeFileSync(
+      join(dir, `${SESSION}.jsonl`),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'stuck-worker', name: 'stuck-worker', at: minutesAgo(45) }) + '\n'
+    )
+    const r = runNoInput(SCAN, ['--session', SESSION, '--cwd', CWD, '--json'], env)
+    expect(r.code).toBe(1)
+    const parsed = JSON.parse(r.stdout) as { flagged: Array<{ name: string; transcriptFreshMin: number | null }>; confirmedAlive: unknown[] }
+    expect(parsed.flagged.map((f) => f.name)).toContain('stuck-worker')
+    expect(parsed.flagged[0]!.transcriptFreshMin).toBeNull()
+    expect(parsed.confirmedAlive).toHaveLength(0)
+  })
+
+  it('ROUGE: silent by message AND transcript itself is STALE (30 min > 5 min default) -> flagged', () => {
+    const { env, dir } = transcriptEnv('rouge-stale', { sessionId: SESSION, cwd: CWD, name: 'stuck-worker-2', transcriptAgeMin: 30 })
+    writeFileSync(
+      join(dir, `${SESSION}.jsonl`),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'stuck-worker-2', name: 'stuck-worker-2', at: minutesAgo(45) }) + '\n'
+    )
+    const r = runNoInput(SCAN, ['--session', SESSION, '--cwd', CWD, '--json'], env)
+    expect(r.code).toBe(1)
+    const parsed = JSON.parse(r.stdout) as { flagged: Array<{ name: string; transcriptFreshMin: number }> }
+    expect(parsed.flagged.map((f) => f.name)).toContain('stuck-worker-2')
+    expect(parsed.flagged[0]!.transcriptFreshMin).toBeGreaterThanOrEqual(29)
+  })
+
+  // THE DISCRIMINATING CASE the objection asked for: this is the nominal, healthy population
+  // (an agent reading code / running tests / awaiting a delegated run) that must NOT be blocked.
+  it('VERT-1: silent by message BUT transcript grew 1 min ago -> NOT flagged, reported confirmedAlive', () => {
+    const { env, dir } = transcriptEnv('vert1-fresh', { sessionId: SESSION, cwd: CWD, name: 'busy-worker', transcriptAgeMin: 1 })
+    writeFileSync(
+      join(dir, `${SESSION}.jsonl`),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'busy-worker', name: 'busy-worker', at: minutesAgo(45) }) + '\n'
+    )
+    const r = runNoInput(SCAN, ['--session', SESSION, '--cwd', CWD, '--json'], env)
+    expect(r.code, `expected NOT flagged; stdout: ${r.stdout}`).toBe(0)
+    const parsed = JSON.parse(r.stdout) as {
+      flagged: unknown[]
+      confirmedAlive: Array<{ name: string; transcriptFreshMin: number }>
+    }
+    expect(parsed.flagged).toHaveLength(0)
+    expect(parsed.confirmedAlive).toHaveLength(1)
+    expect(parsed.confirmedAlive[0]!.name).toBe('busy-worker')
+    expect(parsed.confirmedAlive[0]!.transcriptFreshMin).toBeLessThan(5)
+  })
+
+  it('VERT-1 human-text mode names the confirmed-alive agent and says why it is not asked about', () => {
+    const { env, dir } = transcriptEnv('vert1-text', { sessionId: SESSION, cwd: CWD, name: 'busy-worker-2', transcriptAgeMin: 1 })
+    writeFileSync(
+      join(dir, `${SESSION}.jsonl`),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'busy-worker-2', name: 'busy-worker-2', at: minutesAgo(45) }) + '\n'
+    )
+    const r = runNoInput(SCAN, ['--session', SESSION, '--cwd', CWD], env)
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('CONFIRMED ALIVE')
+    expect(r.stdout).toContain('busy-worker-2')
+    expect(r.stdout).toContain('Nothing to ask about')
+  })
+
+  it('a MIX of one confirmed-alive and one truly stale agent flags only the stale one', () => {
+    const { env, dir } = transcriptEnv('mix', { sessionId: SESSION, cwd: CWD, name: 'alive-one', transcriptAgeMin: 1 })
+    // second entry's transcript is missing entirely (never written) -> stays unconfirmed
+    writeFileSync(
+      join(dir, `${SESSION}.jsonl`),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'alive-one', name: 'alive-one', at: minutesAgo(45) }),
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'dead-one', name: 'dead-one', at: minutesAgo(45) }),
+      ].join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, ['--session', SESSION, '--cwd', CWD, '--json'], env)
+    expect(r.code).toBe(1) // still exit 1: at least one REAL flag remains
+    const parsed = JSON.parse(r.stdout) as {
+      flagged: Array<{ name: string }>
+      confirmedAlive: Array<{ name: string }>
+    }
+    expect(parsed.flagged.map((f) => f.name)).toEqual(['dead-one'])
+    expect(parsed.confirmedAlive.map((f) => f.name)).toEqual(['alive-one'])
+  })
+
+  it('an entry under the message quiet-min threshold never triggers the directory scan at all (no false confirmedAlive)', () => {
+    const { env, dir } = transcriptEnv('under-threshold', { sessionId: SESSION, cwd: CWD, name: 'recent-worker', transcriptAgeMin: 1 })
+    writeFileSync(
+      join(dir, `${SESSION}.jsonl`),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'recent-worker', name: 'recent-worker', at: minutesAgo(2) }) + '\n'
+    )
+    const r = runNoInput(SCAN, ['--session', SESSION, '--cwd', CWD, '--json'], env)
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { flagged: unknown[]; confirmedAlive: unknown[] }
+    expect(parsed.flagged).toHaveLength(0)
+    expect(parsed.confirmedAlive).toHaveLength(0) // under threshold: never a candidate in the first place
+  })
+})
+
+// --------------------------------------------------------------------------
+// wt-registry-heartbeat-hook.mjs + liveness — the Stop hook must inherit the same fix: a
+// message-silent agent with a growing transcript must NOT block the session's stop.
+// --------------------------------------------------------------------------
+describe('wt-registry-heartbeat-hook.mjs — liveness end-to-end: confirmed-alive agents never block Stop', () => {
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
+  const CWD = '/fake/project/for/heartbeat-liveness'
+  const SESSION = 'sess-hb-liveness'
+
+  it('an agent silent by message but with a growing transcript does NOT block the stop', () => {
+    const { env, dir } = transcriptEnv('hb-alive', { sessionId: SESSION, cwd: CWD, name: 'hb-busy-worker', transcriptAgeMin: 1 })
+    writeFileSync(
+      join(dir, `${SESSION}.jsonl`),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'hb-busy-worker', name: 'hb-busy-worker', at: minutesAgo(45) }) + '\n'
+    )
+    const r = run(HEARTBEAT_HOOK, { hook_event_name: 'Stop', session_id: SESSION, cwd: CWD, stop_hook_active: false }, env)
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe('{}')
+  })
+
+  it('an agent silent by message AND with a stale transcript still blocks the stop', () => {
+    const { env, dir } = transcriptEnv('hb-stale', { sessionId: SESSION, cwd: CWD, name: 'hb-stuck-worker', transcriptAgeMin: 30 })
+    writeFileSync(
+      join(dir, `${SESSION}.jsonl`),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'hb-stuck-worker', name: 'hb-stuck-worker', at: minutesAgo(45) }) + '\n'
+    )
+    const r = run(HEARTBEAT_HOOK, { hook_event_name: 'Stop', session_id: SESSION, cwd: CWD, stop_hook_active: false }, env)
+    const out = JSON.parse(r.stdout) as { decision?: string; reason?: string }
+    expect(out.decision).toBe('block')
+    expect(out.reason).toContain('hb-stuck-worker')
+    expect(out.reason).toContain('transcript has stopped growing')
   })
 })
 

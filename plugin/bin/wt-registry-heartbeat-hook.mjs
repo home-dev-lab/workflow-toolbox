@@ -16,13 +16,23 @@
 // moment this hook cannot see (what happened before this session existed); together the two cover
 // "dead in the past" and "silent right now", leaving no gap while Claude Code is running at all.
 //
-// WHAT IT DOES ON A HIT. An agent that is open and has gone silent past the threshold is exactly
-// the failure this whole registry exists to surface (measured incident: 6h54 of empty pings,
-// nobody looked, because a signal existed but never reached an actor). So a hit BLOCKS the stop —
-// the one mechanism available here that hands the finding to something that can ACT, instead of a
-// log file nobody opens. The session is forced to read it and can `SendMessage` the flagged
-// agent, or run `wt-spawn-registry-scan.mjs --ack <name>` once it has looked — the same contract
-// the scan script itself documents ("an ack records that you looked, not that the agent finished").
+// WHAT IT DOES ON A HIT. An agent that is open, silent past the message threshold, AND whose
+// transcript has stopped growing is exactly the failure this whole registry exists to surface
+// (measured incident: 6h54 of empty pings, nobody looked, because a signal existed but never
+// reached an actor). So a hit BLOCKS the stop — the one mechanism available here that hands the
+// finding to something that can ACT, instead of a log file nobody opens. The session is forced to
+// read it and can `SendMessage` the flagged agent, or run `wt-spawn-registry-scan.mjs --ack <name>`
+// once it has looked — the same contract the scan script itself documents ("an ack records that
+// you looked, not that the agent finished").
+//
+// WHY MESSAGE-SILENCE ALONE IS NOT THE TRIGGER. An agent reading code, running a test suite, or
+// awaiting a delegated run legitimately sends nothing for a long time — our own pilots only speak
+// at milestones. Blocking on message-silence alone would fire on the NOMINAL case, which is
+// exactly the guard-must-model-real-dispatch failure (a guard whose model of the system it
+// protects is wrong doesn't degrade, it inverts). The scan script itself now carries the fix: a
+// message-silent entry is only actually flagged when its own transcript has ALSO stopped growing
+// (see wt-spawn-registry-scan.mjs's LIVENESS section) — this hook only forwards what the scan
+// decided, it adds no threshold logic of its own.
 //
 // LOOP SAFETY. A blocked Stop re-enters this same hook with `stop_hook_active: true` (the harness's
 // own re-processing pass). On that pass the finding is surfaced as an informational systemMessage
@@ -47,6 +57,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCAN = join(HERE, 'wt-spawn-registry-scan.mjs');
 const QUIET_MIN = process.env.WT_REGISTRY_HEARTBEAT_QUIET_MIN || '20';
+const STALE_TRANSCRIPT_MIN = process.env.WT_REGISTRY_HEARTBEAT_STALE_TRANSCRIPT_MIN || '5';
 
 function emit(json) {
   process.stdout.write(JSON.stringify(json));
@@ -62,12 +73,16 @@ try {
 
 try {
   const sessionId = payload?.session_id;
+  const cwd = typeof payload?.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd();
   const stopHookActive = payload?.stop_hook_active === true;
   if (!sessionId || typeof sessionId !== 'string' || !existsSync(SCAN)) emit({});
 
   const res = spawnSync(
     process.execPath,
-    [SCAN, '--session', sessionId, '--quiet-min', QUIET_MIN, '--json'],
+    [
+      SCAN, '--session', sessionId, '--quiet-min', QUIET_MIN,
+      '--stale-transcript-min', STALE_TRANSCRIPT_MIN, '--cwd', cwd, '--json',
+    ],
     { encoding: 'utf8', timeout: 10_000 }
   );
 
@@ -90,9 +105,10 @@ try {
       (o.purpose ? `, was doing: ${o.purpose}` : '')
   );
   const reason =
-    `${flagged.length} spawned agent(s) have no recorded ending AND have gone silent mid-session ` +
-    `(>= ${QUIET_MIN} min). Nothing else fires for a frozen or killed agent — this scan is the ` +
-    `only thing that sees it:\n\n${lines.join('\n')}\n\n` +
+    `${flagged.length} spawned agent(s) have no recorded ending, have gone silent mid-session ` +
+    `(>= ${QUIET_MIN} min) AND their transcript has stopped growing (>= ${STALE_TRANSCRIPT_MIN} ` +
+    `min) — nothing else fires for a frozen or killed agent, this scan is the only thing that ` +
+    `sees it:\n\n${lines.join('\n')}\n\n` +
     'This does NOT mean they are dead: reading a large file, waiting on a delegated run, and a ' +
     'kill all look identical from here. ASK each one (SendMessage) before assuming anything — a ' +
     'substantive reply means it was working, "resumed from transcript" means it had died. Once ' +

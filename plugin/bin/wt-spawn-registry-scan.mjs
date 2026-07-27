@@ -18,11 +18,15 @@
 // enough to be ignored, and a signal that gets ignored is worse than no signal.
 //
 // Usage:
-//   node wt-spawn-registry-scan.mjs [--session <id>] [--quiet-min <n>] [--json]
-//     --session     which session's registry to read (default: the most recently written)
-//     --quiet-min   minutes of silence before an open agent is worth asking about (default 20)
-//     --json        machine-readable output
-//     --ack <name>  mark one agent as dealt with, so later scans stop reporting it
+//   node wt-spawn-registry-scan.mjs [--session <id>] [--quiet-min <n>] [--stale-transcript-min <n>] [--cwd <path>] [--json]
+//     --session              which session's registry to read (default: the most recently written)
+//     --quiet-min            minutes of message-silence before an open agent is a CANDIDATE (default 20)
+//     --stale-transcript-min minutes with no transcript growth before a candidate is actually
+//                            flagged (default 5) — see LIVENESS below
+//     --cwd                  the project cwd used to locate this session's transcripts
+//                            (default: process.cwd()) — only used for the liveness check
+//     --json                 machine-readable output
+//     --ack <name>           mark one agent as dealt with, so later scans stop reporting it
 //
 // WHY --ack EXISTS. An entry nothing ever closed keeps surfacing, correctly, every single scan.
 // That is right the first time and corrosive by the fifth: a signal that repeats what the reader
@@ -31,10 +35,22 @@
 // says "I looked, this one is dealt with"; it does not say the agent finished, and it is scoped
 // to the entry it names, so a LATER spawn of the same name is reported again.
 //
+// LIVENESS (added after a design objection, same day as the Stop-hook wiring): message-silence
+// alone is the WRONG model of this system's real dispatch — an agent that reads code, runs a
+// test suite, or awaits a delegated run legitimately sends nothing for a long time; our own
+// pilots only speak at milestones. A guard whose model of "silent" means "in trouble" INVERTS on
+// exactly that population (see guard-must-model-real-dispatch). So `--quiet-min` alone no longer
+// flags: it only makes an entry a CANDIDATE. A candidate is flagged only if its transcript ALSO
+// shows no growth for `--stale-transcript-min` — an agent still writing to its own transcript is
+// demonstrably alive, which is a strictly better signal than "did it send a message". This mirrors
+// the harness's own liveness convention: freshness proves LIFE, never proves death (a transcript
+// can go quiet while an agent legitimately waits on a background exec) — so staleness still only
+// asks a question, it never asserts a death. See CONFIRMED-ALIVE below for the suppressed set.
+//
 // Exit codes:  0 = nothing to ask about   ·   1 = at least one open+silent agent   ·   2 = no registry
 
-import { readFileSync, existsSync, readdirSync, statSync, appendFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, existsSync, readdirSync, statSync, appendFileSync, realpathSync } from 'node:fs';
+import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 
 const STATE_DIR = process.env.WT_OUTBOUND_GUARD_DIR
@@ -46,7 +62,48 @@ const arg = (flag, dflt) => {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : dflt;
 };
 const QUIET_MIN = Number(arg('--quiet-min', '20'));
+const STALE_TRANSCRIPT_MIN = Number(arg('--stale-transcript-min', '5'));
+const CWD = arg('--cwd', null) || process.cwd();
 const AS_JSON = argv.includes('--json');
+
+// ⚠ Where transcripts actually live — VERIFIED against this machine's real directory layout, not
+// guessed: `~/.claude/projects/<slug(cwd)>/<sessionId>/subagents/agent-<X>.meta.json` + its
+// sibling `.jsonl`. `<X>` is NOT any id already sitting on the spawn record (neither the raw
+// `child` nor the normalized `childName`) — a THIRD id shape, unrelated to the other two. The
+// meta.json's OWN `name` field is what matches the registry's `childName` exactly; an UNNAMED
+// spawn's meta carries no `name` field at all (confirmed on a real one), which is fine — this
+// check only ever runs for entries that already passed the `s.name` trackability gate above.
+function resolveConfigDir() {
+  const raw = process.env.CLAUDE_CONFIG_DIR;
+  const base = raw && raw.length > 0 ? raw : join(homedir(), '.claude');
+  try { return realpathSync(base); } catch { return base; }
+}
+function projectSlug(cwd) { return cwd.replace(/[^a-zA-Z0-9]/g, '-'); }
+function subagentsDirFor(sessionId) {
+  return join(resolveConfigDir(), 'projects', projectSlug(CWD), sessionId, 'subagents');
+}
+// Minutes since the freshest transcript matching this childName last grew, or null if none is
+// found / readable. NEVER a death signal — only ever used to SUPPRESS a false positive when a
+// live transcript proves the agent is working; staleness or absence changes nothing, the entry
+// is asked about exactly as before.
+function transcriptFreshnessMin(sessionId, childName, nowMs) {
+  const dir = subagentsDirFor(sessionId);
+  if (!existsSync(dir)) return null;
+  let entries;
+  try { entries = readdirSync(dir); } catch { return null; }
+  let freshest = null;
+  for (const f of entries) {
+    if (!f.endsWith('.meta.json')) continue;
+    let meta;
+    try { meta = JSON.parse(readFileSync(join(dir, f), 'utf8')); } catch { continue; }
+    if (meta?.name !== childName) continue;
+    try {
+      const m = statSync(join(dir, f.replace(/\.meta\.json$/, '.jsonl'))).mtimeMs;
+      if (freshest === null || m > freshest) freshest = m;
+    } catch { /* transcript file missing/unreadable — skip this candidate meta */ }
+  }
+  return freshest === null ? null : (nowMs - freshest) / 60000;
+}
 
 if (!existsSync(STATE_DIR)) {
   console.log(`No registry at ${STATE_DIR} — nothing has been recorded yet.`);
@@ -64,6 +121,7 @@ if (file) {
   file = files[0].f;
 }
 if (!existsSync(file)) { console.log(`No registry file: ${file}`); process.exit(2); }
+const sessionId = basename(file, '.jsonl');
 
 // --- acknowledge and exit: append a verdict, change nothing that was already written.
 const ackName = arg('--ack', null);
@@ -152,6 +210,9 @@ for (const s of spawns) {
   if (acked.has(name) && acked.get(name) > s.at) continue;
   const last = spoke.get(name) || s.at;                  // never spoke => silent since birth
   const quietMin = Math.round((now - Date.parse(last)) / 60000);
+  // Only worth the directory scan for candidates that would otherwise be flagged — an entry
+  // already under QUIET_MIN was never going to be flagged, so its liveness is moot.
+  const transcriptFreshMin = quietMin >= QUIET_MIN ? transcriptFreshnessMin(sessionId, name, now) : null;
   open.push({
     name,
     parent: s.parentName || s.parent,
@@ -160,10 +221,16 @@ for (const s of spawns) {
     spawnedAt: s.at,
     lastOutbound: spoke.get(name) || null,
     quietMin,
+    transcriptFreshMin,
   });
 }
 
-const flagged = open.filter((o) => o.quietMin >= QUIET_MIN).sort((a, b) => b.quietMin - a.quietMin);
+// A candidate is CONFIRMED ALIVE when its transcript grew more recently than
+// STALE_TRANSCRIPT_MIN — a positive liveness signal that suppresses the false positive instead
+// of a threshold bump, which would stay arbitrary and not fix the underlying model.
+const isConfirmedAlive = (o) => o.transcriptFreshMin !== null && o.transcriptFreshMin < STALE_TRANSCRIPT_MIN;
+const flagged = open.filter((o) => o.quietMin >= QUIET_MIN && !isConfirmedAlive(o)).sort((a, b) => b.quietMin - a.quietMin);
+const confirmedAlive = open.filter((o) => o.quietMin >= QUIET_MIN && isConfirmedAlive(o));
 
 // A count alone ("N spawn(s) cannot be followed") is a number with no set: the reader cannot
 // judge whether the untracked loss matters without knowing what those spawns WERE. Every field
@@ -180,7 +247,7 @@ function untrackableLine(s) {
 
 if (AS_JSON) {
   console.log(JSON.stringify({
-    file, totalSpawns: spawns.length, open: open.length, flagged,
+    file, totalSpawns: spawns.length, open: open.length, flagged, confirmedAlive,
     untrackable: untrackable.length,
     untrackableDetail: untrackable.map((s) => ({
       subagentType: s.subagentType ?? null,
@@ -204,23 +271,34 @@ if (untrackable.length) {
   console.log('');
 }
 
+if (confirmedAlive.length) {
+  console.log(`${confirmedAlive.length} agent(s) silent by message past ${QUIET_MIN} min but CONFIRMED ALIVE`);
+  console.log('(their transcript is still growing) — not asked about:');
+  for (const o of confirmedAlive) {
+    console.log(`  ${o.name} — transcript touched ~${Math.round(o.transcriptFreshMin)} min ago`);
+  }
+  console.log('');
+}
+
 if (!flagged.length) {
   console.log(open.length
-    ? `Nothing to ask about: all ${open.length} open agent(s) have spoken within the last ${QUIET_MIN} min.`
+    ? `Nothing to ask about: all ${open.length} open agent(s) have spoken within the last ${QUIET_MIN} min, or are confirmed alive by transcript.`
     : 'Nothing open.');
   process.exit(0);
 }
 
-console.log(`${flagged.length} agent(s) have no recorded ending AND have been silent — worth asking about:\n`);
+console.log(`${flagged.length} agent(s) have no recorded ending, have been silent by message, AND`);
+console.log(`show no transcript growth for >= ${STALE_TRANSCRIPT_MIN} min — worth asking about:\n`);
 for (const o of flagged) {
   console.log(`  ${o.name}  (launched by ${o.parent})`);
   console.log(`    silent for ~${o.quietMin} min · ${o.lastOutbound ? `last spoke ${o.lastOutbound}` : 'NEVER spoke'}`);
+  console.log(`    transcript: ${o.transcriptFreshMin === null ? 'not found (cannot confirm liveness)' : `last grew ~${Math.round(o.transcriptFreshMin)} min ago`}`);
   if (o.purpose) console.log(`    was doing: ${o.purpose}`);
   console.log('');
 }
-console.log('This does NOT mean they are dead. An agent reading a large file, waiting on a');
-console.log('delegated run, and one that was killed all look identical from here — nothing');
-console.log('fires when an agent is frozen or killed, which is exactly why this scan exists.');
-console.log('The way to tell them apart is to ASK: send each one a message. A substantive');
+console.log('This does NOT mean they are dead. A stale/missing transcript does not PROVE death —');
+console.log('an agent awaiting a background exec writes nothing either — it only means this scan');
+console.log('has no positive evidence of life, which is exactly why this scan exists to ask, not');
+console.log('conclude. The way to tell them apart is to ASK: send each one a message. A substantive');
 console.log('reply means it was working; "resumed from transcript" means it had died.');
 process.exit(1);
