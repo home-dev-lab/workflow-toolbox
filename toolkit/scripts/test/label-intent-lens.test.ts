@@ -1,10 +1,26 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { checkBoard, checkLabelIntent, type CardSnapshot } from '../label-intent-lens.ts'
+import { fetchBoardCards } from '../planka-mcp-client.ts'
+import {
+  checkBoard,
+  checkLabelIntent,
+  handleCliError,
+  main,
+  type CardSnapshot,
+} from '../label-intent-lens.ts'
+
+vi.mock('../planka-mcp-client.ts', () => ({
+  fetchBoardCards: vi.fn(),
+}))
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.mocked(fetchBoardCards).mockReset()
+})
 
 function card(description: string, labels: string[] = [], id = 'card-1'): CardSnapshot {
   return { id, description, labels }
@@ -266,5 +282,47 @@ describe('label-intent-lens — CLI exit code gate', () => {
 
     expect(badRun.status).toBe(1)
     expect(goodRun.status).toBe(0)
+  })
+
+  it('fetches and checks BoardCards in --board mode without requiring a snapshot', async () => {
+    vi.mocked(fetchBoardCards).mockResolvedValue([
+      {
+        id: 'bad-board-card',
+        name: 'Missing labels',
+        description: '...\n\nLabels: P2 chore effort:M.',
+        labels: ['P2'],
+        listName: 'Next',
+      },
+      {
+        id: 'good-board-card',
+        name: 'Complete labels',
+        description: '...\n\nLabels: P2 research effort:L.',
+        labels: ['P2', 'research', 'effort:L'],
+        listName: 'Done',
+      },
+    ])
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+
+    await main(['--board', 'board-123', '--mcp-url', 'http://planka.test/mcp'])
+
+    expect(fetchBoardCards).toHaveBeenCalledWith({
+      boardId: 'board-123',
+      mcpUrl: 'http://planka.test/mcp',
+    })
+    expect(log).toHaveBeenCalledWith('card bad-board-card')
+    expect(log).toHaveBeenCalledWith('TOTAL: 2 finding(s), 0 advisory/advisories, 1 card(s)')
+    expect(exit).toHaveBeenCalledWith(1)
+  })
+
+  it('exits non-zero and reports a fetch failure in --board mode', async () => {
+    vi.mocked(fetchBoardCards).mockRejectedValue(new Error('Planka MCP unavailable'))
+    const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    await main(['--board', 'board-123']).catch(handleCliError)
+
+    expect(error).toHaveBeenCalledWith('Planka MCP unavailable')
+    expect(exit).toHaveBeenCalledWith(1)
   })
 })

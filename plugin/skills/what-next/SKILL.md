@@ -63,6 +63,42 @@ Read in order; stop as soon as you have enough.
 
 ## Output
 
+### Step 0 (MANDATORY, when the board is managed) — run the label-intent lens, don't describe it
+
+If input 1 resolved to the Planka board (not the `progress.md` fallback), run the label-intent
+lens with a REAL Bash tool call — reading the script's source to understand it, or mentioning it
+in prose, does NOT satisfy this step; only an actual execution does:
+
+```bash
+npx tsx toolkit/scripts/label-intent-lens.ts --board <boardId>
+```
+
+(from the toolbox checkout — `toolkit/scripts/label-intent-lens.ts` relative to the repo root;
+if the project doesn't vendor `toolkit/`, skip this step and say so explicitly instead of
+silently omitting it). `--board` fetches its own snapshot — there is nothing to build first, no
+excuse to stop short of running it. Exit 0 means no blocking findings; exit 1 means findings
+exist — report them or their absence from THIS run's actual output.
+
+Same rule for `toolkit/scripts/card-hygiene-lens.ts --board <boardId>` (label-trio/category
+completeness, `Depends-on` integrity and cycles) when the toolbox is vendored — run it, don't
+describe it. Its mechanical hook wiring is a named open follow-up (see the script's own top
+comment), not yet in force here; this skill step is its interim invocation point.
+
+⚠ **Never write "zero label gap" / "no label drift" / any equivalent verdict unless this command
+was actually executed in this response.** If the lens did not run — MCP unreachable, `toolkit/`
+absent, the step was skipped — say plainly "label-intent lens not run this session" instead. A
+verdict with the authority of a mechanical check, produced without the check, is worse than no
+verdict at all: it manufactures false assurance on every read. This applies even when nothing
+about the board looks wrong — an impression is not a substitute for the tool that was built to
+replace it.
+
+⚠ **Measured 2026-07-27, fresh session, this exact wording in force**: the anti-false-verdict
+rule above held (the session correctly declined to claim "zero gap" when it had not run the
+lens) — but the "run it" instruction alone did NOT reliably trigger the actual invocation; the
+session investigated other things and never called the script. Treat this MANDATORY step as
+advisory-strength in practice until it is backed by a mechanical hook, not a skill line alone —
+see card #1827598841508005595's own reserved caveat about this exact gap.
+
 ### Step 1 (MANDATORY first) — scan for stalls
 
 For each in-flight item (`In Progress` cards, or the equivalent "currently active" entries in
