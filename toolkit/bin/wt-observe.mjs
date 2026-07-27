@@ -1164,6 +1164,14 @@ function parseAnnouncedPort(logSlice) {
   return last;
 }
 var POLL_INTERVAL_MS = 500;
+var HEALTH_TIMEOUT_DEFAULT_MS = 3e4;
+var HEALTH_TIMEOUT_CEILING_MS = 6e5;
+function resolveHealthTimeoutMs(flagSeconds, envMs) {
+  const fromFlag = flagSeconds === void 0 ? NaN : Number(flagSeconds) * 1e3;
+  const fromEnv = envMs === void 0 ? NaN : Number(envMs);
+  const raw = Number.isFinite(fromFlag) && fromFlag > 0 ? fromFlag : Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : HEALTH_TIMEOUT_DEFAULT_MS;
+  return raw > HEALTH_TIMEOUT_CEILING_MS ? { ms: HEALTH_TIMEOUT_CEILING_MS, clampedFrom: raw } : { ms: raw, clampedFrom: null };
+}
 async function awaitSpawnedServerReady(deps) {
   const deadline = deps.now() + deps.timeoutMs;
   for (; ; ) {
@@ -1187,7 +1195,7 @@ ${deps.logTail()}`
       deps.kill();
       const where = deps.requestedPort !== 0 ? `:${deps.requestedPort}` : port !== null ? `:${port} (OS-assigned)` : "its OS-assigned port (never announced in the log)";
       throw new Error(
-        `server did not become healthy on ${where} within ${deps.timeoutMs} ms \u2014 SIGTERM sent to the child (best-effort reap).
+        `server did not become healthy on ${where} within ${deps.timeoutMs} ms \u2014 SIGTERM sent to the child (best-effort reap). If a resumed run is expected to take a while, raise the window with --health-timeout <seconds> (or WT_OBSERVE_HEALTH_TIMEOUT_MS, up to ${HEALTH_TIMEOUT_CEILING_MS} ms) \u2014 or start with --no-resume to park pending resumes instead of waiting them out.
 ${deps.logTail()}`
       );
     }
@@ -1501,7 +1509,6 @@ function pathsToDelete(record) {
 // packages/debugger/src/observe-cli.ts
 var DEFAULT_PORT = 5174;
 var HEALTH_TIMEOUT_MS = 2e3;
-var SPAWN_READY_TIMEOUT_MS = 3e4;
 var LOG_ROTATE_BYTES = 5 * 1024 * 1024;
 async function probeHealth(port, timeoutMs = HEALTH_TIMEOUT_MS) {
   try {
@@ -1723,6 +1730,10 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
       // byte-identical to before.
       ...remotes.length > 0 ? { OBSERVE_REMOTES: JSON.stringify(remotes) } : {},
       ...flags.enableLaunch ? { OBSERVE_UI_ENABLE_LAUNCH: "1" } : {},
+      // Card #1826653906575295552 candidate fix 4 — --no-resume: PARK every pending A3
+      // boot-sweep resume this boot instead of dispatching it (dev-api.ts reads this and
+      // sets AppOptions.bootResumesDisabled). Unset = resume normally (unchanged default).
+      ...flags.noResume ? { OBSERVE_UI_NO_RESUME: "1" } : {},
       // The agents-only shim plugin the server loads into every DELEGATED SDK
       // session (SDK `plugins` option), so `workflow-toolbox:lean`/`leaf` resolve
       // there despite the sessions' deliberate `settingSources: []` (without it
@@ -1747,7 +1758,7 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
   child.unref();
   const h = await awaitSpawnedServerReady({
     requestedPort: port,
-    timeoutMs: SPAWN_READY_TIMEOUT_MS,
+    timeoutMs: flags.healthTimeoutMs,
     readLogSlice: () => readLogSliceFrom(logPath, logStartOffset),
     probe: (p) => probeHealth(p),
     // Accept EITHER health shape (the readiness poll must not assume cardinality).
@@ -1806,6 +1817,7 @@ ${sourcesLine2}URL: http://127.0.0.1:${h2.port}/
         );
       }
       if (flags.watch) process.stderr.write("note: --watch ignored (adopted a running server). `wt-observe stop` then `start --watch` to get the watcher.\n");
+      if (flags.noResume) process.stderr.write("note: --no-resume ignored (adopted a running server \u2014 its own boot sweep already ran). `wt-observe stop` then `start --no-resume` to park pending resumes on a fresh boot.\n");
       if (flags.enableLaunch && h2.launchEnabled !== true) {
         if (sourceDirs.length > 1) {
           process.stderr.write(
@@ -1884,7 +1896,11 @@ URL: http://127.0.0.1:${h2.port}/
     const port = p.port;
     const { health: h, token } = await spawnServer(ctx.stateRoot, port, sourceDirs, remotes, flags);
     writePidfileAt(ctx.pidfilePath, { ...pidfileFromHealth(h), token });
-    const notes = [flags.watch ? " with the vite build watcher (--watch)" : "", flags.enableLaunch ? " with live launches ENABLED (--enable-launch)" : ""].join("");
+    const notes = [
+      flags.watch ? " with the vite build watcher (--watch)" : "",
+      flags.enableLaunch ? " with live launches ENABLED (--enable-launch)" : "",
+      flags.noResume ? " with pending resumes PARKED, not dispatched (--no-resume)" : ""
+    ].join("");
     const label = sourceDirs.length === 1 ? ` for ${sourceDirs[0]}` : "";
     const sourcesLine = sourceDirs.length > 1 ? `sources: ${sourceDirs.join(", ")}
 ` : "";
@@ -2541,7 +2557,7 @@ async function cmdPrune(argv) {
   return 0;
 }
 var SYNOPSIS = {
-  start: "wt-observe start [--source <dir>]... [--watch] [--enable-launch]",
+  start: "wt-observe start [--source <dir>]... [--watch] [--enable-launch] [--no-resume] [--health-timeout <seconds>]",
   stop: "wt-observe stop",
   status: "wt-observe status",
   prune: "wt-observe prune [--run <id> | --name-prefix <p>]... [--older-than <dur>] [--yes]",
@@ -2551,6 +2567,11 @@ var SYNOPSIS = {
   config: "wt-observe config [show | add-source <dir> | remove-source <dir> | add-remote <url> [--token <t> | --token-file <p>] [--label <l>] | remove-remote <url>]"
 };
 var HELP_DETAIL = {
+  start: `  --no-resume: park every pending orphaned-run resume this boot instead of dispatching
+  it (never discards a launch record \u2014 the next boot without this flag resumes it).
+  --health-timeout <seconds>: how long to wait for the fresh spawn to answer
+  /api/health before giving up and reaping the child (default 30s; also settable via
+  WT_OBSERVE_HEALTH_TIMEOUT_MS in milliseconds; hard ceiling ${HEALTH_TIMEOUT_CEILING_MS} ms).`,
   launch: "  <workflow.js> is resolved by NAME against the server's OBSERVE_WORKFLOWS_DIR\n  (a registered artifact name, not an arbitrary path).\n  Capabilities: an adjacent <workflow>.capabilities.json sidecar is auto-detected\n  and its declared needs are resolved against the machine capability registry\n  (WT_CAPABILITY_REGISTRY, else the XDG default). --args may carry a capabilities\n  or observers section that composes over the sidecar resolution.\n  --comm-root <dir> sets the wt-comm ROOT for a hint-emitting observer (the server\n  appends the runId and validates the root against its OBSERVE_COMM_ALLOWED_ROOTS);\n  absent = wt-comm hint delivery is not enabled."
 };
 function usageText(verb) {
@@ -2584,7 +2605,21 @@ async function main(argv = process.argv.slice(2)) {
     if (cmd === "start") {
       const sourceDirs = resolveStartSources(flagValues(argv, "source"));
       const remotes = resolveStartRemotes();
-      await cmdStart(ctx, sourceDirs, remotes, { watch: argv.includes("--watch"), enableLaunch: argv.includes("--enable-launch") });
+      {
+        const { ms: healthTimeoutMs, clampedFrom } = resolveHealthTimeoutMs(flagValue(argv, "health-timeout"), process.env["WT_OBSERVE_HEALTH_TIMEOUT_MS"]);
+        if (clampedFrom !== null) {
+          process.stderr.write(
+            `wt-observe: --health-timeout/WT_OBSERVE_HEALTH_TIMEOUT_MS requested ${clampedFrom} ms, clamped to the ${HEALTH_TIMEOUT_CEILING_MS} ms ceiling
+`
+          );
+        }
+        await cmdStart(ctx, sourceDirs, remotes, {
+          watch: argv.includes("--watch"),
+          enableLaunch: argv.includes("--enable-launch"),
+          noResume: argv.includes("--no-resume"),
+          healthTimeoutMs
+        });
+      }
     } else if (cmd === "stop") await cmdStop(ctx);
     else if (cmd === "status") await cmdStatus(ctx);
     else if (cmd === "prune") return await cmdPrune(argv);
