@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
 import { DELEGATION_EXPECTATIONS } from '@workflow-toolbox/debugger/external-delegation'
 
@@ -659,5 +659,67 @@ describe('plugin agent observer pairings resolve to a sibling def', () => {
     // role-provisioned.)
     expect(tools).toContain('ObserverReport')
     expect(tools).toContain('Read')
+  })
+})
+
+// --------------------------------------------------------------------------
+// safeTmpDir / looksLikeProjectDir (root-hygiene follow-up, card: temp dirs leaking into the
+// wt-suite umbrella root). markerDir() used to trust `os.tmpdir()` unconditionally — on
+// 2026-07-27 a process whose os.tmpdir() resolved to a PROJECT directory (not a real system
+// temp dir) wrote its marker files straight into the repo root. safeTmpDir() rejects an
+// os.tmpdir() result that is an ancestor of (or equal to) the current working directory,
+// which a genuine system temp dir never is. See also
+// toolkit/scripts/test/wt-suite-root-hygiene.test.ts (the whitelist sweep on the real root).
+// --------------------------------------------------------------------------
+describe('wt-verifier-cli-guard-hook — safeTmpDir rejects a project-rooted os.tmpdir()', () => {
+  // A plain `node` subprocess (not vite's module runner, which refuses to serve a dynamic
+  // import outside its configured root) that imports the real hook file by its file:// URL
+  // and drives the exported pure functions — same "closest to real" spirit as `runHook`
+  // above, just for functions instead of the hook's stdin/stdout contract.
+  function evalInHook(expr: string): unknown {
+    const hookUrl = pathToFileURL(VERIFIER_GUARD_HOOK).href
+    const script = `
+      import * as mod from ${JSON.stringify(hookUrl)}
+      import os from 'node:os'
+      const result = (${expr})
+      process.stdout.write(JSON.stringify(result === undefined ? null : result))
+    `
+    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
+    if (res.status !== 0) throw new Error(`subprocess failed: ${res.stderr}`)
+    return JSON.parse(res.stdout)
+  }
+
+  it('looksLikeProjectDir: true when candidate === cwd, or is an ancestor of cwd', () => {
+    expect(evalInHook("mod.looksLikeProjectDir('/home/x/projects/wt-suite', '/home/x/projects/wt-suite')")).toBe(true)
+    expect(
+      evalInHook(
+        "mod.looksLikeProjectDir('/home/x/projects/wt-suite', '/home/x/projects/wt-suite/workflow-toolbox')"
+      )
+    ).toBe(true)
+  })
+
+  it('looksLikeProjectDir: false for a real temp dir unrelated to cwd', () => {
+    expect(evalInHook("mod.looksLikeProjectDir('/tmp', '/home/x/projects/wt-suite/workflow-toolbox')")).toBe(false)
+    // A cwd that merely SHARES A PREFIX with the candidate (sibling dir, not a descendant)
+    // must not false-positive — this is the case a naive `startsWith` (no separator) would
+    // wrongly flag: /tmp/wt-suite-other is NOT inside /tmp/wt-suite.
+    expect(evalInHook("mod.looksLikeProjectDir('/tmp/wt-suite', '/tmp/wt-suite-other/sub')")).toBe(false)
+  })
+
+  it('safeTmpDir: falls back to the OS temp dir when os.tmpdir() would equal cwd (RED without the guard)', () => {
+    const expected = process.platform === 'win32'
+      ? (process.env['SystemRoot'] ? join(process.env['SystemRoot'], 'Temp') : 'C:\\Windows\\Temp')
+      : '/tmp'
+    const result = evalInHook(
+      "(() => { const fake = '/home/x/projects/wt-suite/workflow-toolbox'; " +
+        "process.cwd = () => fake; os.tmpdir = () => '/home/x/projects/wt-suite'; " +
+        'return mod.safeTmpDir() })()'
+    )
+    expect(result).not.toBe('/home/x/projects/wt-suite')
+    expect(result).toBe(expected)
+  })
+
+  it('safeTmpDir: passes through a real os.tmpdir() untouched', () => {
+    expect(evalInHook('mod.safeTmpDir()')).toBe(tmpdir())
   })
 })

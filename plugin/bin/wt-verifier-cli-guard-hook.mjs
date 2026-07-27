@@ -210,8 +210,37 @@ export function countCliInvocations(transcriptText, sig) {
   return n
 }
 
+/** True when `candidate` is (or is an ancestor of) `cwd` — the exact shape of the bug found
+ *  2026-07-27 (root-hygiene guard, toolkit/scripts/test/wt-suite-root-hygiene.test.ts): a
+ *  process whose `os.tmpdir()` resolved to a PROJECT directory instead of a real system temp
+ *  location, so every marker file it wrote landed in the repo/umbrella root instead of /tmp. A
+ *  genuine system temp dir is never an ancestor of a project working directory under
+ *  ~/projects/…, so this is a safe, platform-agnostic tripwire — no OS-specific path pattern
+ *  to keep in sync. */
+export function looksLikeProjectDir(candidate, cwd = process.cwd()) {
+  if (typeof candidate !== 'string' || candidate.length === 0) return false
+  try {
+    if (candidate === cwd) return true
+    const withSep = candidate.endsWith(path.sep) ? candidate : candidate + path.sep
+    return cwd.startsWith(withSep)
+  } catch {
+    return false
+  }
+}
+
+/** `os.tmpdir()`, guarded: if it resolves to (or above) the current working directory — never
+ *  a real system temp location — fall back to the OS-conventional temp dir instead of trusting
+ *  it blindly. `WT_VERIFIER_MARKER_DIR` (test override) always wins, unchecked. */
+export function safeTmpDir() {
+  const candidate = os.tmpdir()
+  if (looksLikeProjectDir(candidate)) {
+    return process.platform === 'win32' ? (process.env['SystemRoot'] ? path.join(process.env['SystemRoot'], 'Temp') : 'C:\\Windows\\Temp') : '/tmp'
+  }
+  return candidate
+}
+
 function markerDir() {
-  return process.env['WT_VERIFIER_MARKER_DIR'] || os.tmpdir()
+  return process.env['WT_VERIFIER_MARKER_DIR'] || safeTmpDir()
 }
 
 /** Deterministic PER-SUBAGENT marker path. Keyed by (transcript_path + agent_id): in Path B
