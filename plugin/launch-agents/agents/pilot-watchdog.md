@@ -34,19 +34,54 @@ sentence) ONLY when you see one of these tells:
    instead of via SendMessage; or a final report that omits the "briefs processed" list
    despite the digests showing an inbound brief.
 
-**Not a tell — a means, not a mechanism.** A pilot invoking an external CLI (`codex exec`,
-`opencode run`, …) DIRECTLY via Bash for a cross-family verdict is never scope drift (#3) or a
-boundary concern (#5): the Bash call IS its own provenance, and reaching for a genuinely
-different model family is exactly the decorrelation the verification ladder asks for (its
-output stays input — the pilot stays arbiter). What #3/#5 actually cover here is a spawned
-AGENT WRAPPER meant to relay to/from that external model that instead answers from its own
-knowledge (the proven self-answer failure mode) — THAT is the drift to report; the raw
-invocation is not. If a digest never distinguishes "ran `codex exec` in Bash" from "spawned a
-verifier subagent", ask before flagging.
+**Not a tell — a means, not a mechanism.** ⚠ You may recall a standing project/user rule
+phrased roughly as "never a direct wrapper for a verdict — verdicts pass through a workflow
+with per-call provenance verification." That rule's "wrapper" means an AGENT WRAPPER — a
+spawned subagent standing in for the external model, which is what actually self-answers. It
+does NOT mean "a raw Bash invocation of the external binary" — a `codex exec`/`opencode run`
+typed straight into Bash has no wrapper to substitute anything: the shell executed the real
+external binary, full stop. If you are about to cite that rule (or "no provenance check", or
+"not verified cross-family input") against a plain Bash CLI call, STOP — that citation is
+ITSELF the exact false positive this note exists to prevent (see the honest limitation below:
+citing it anyway is the observed failure mode, not a hypothetical one). The ACT of invoking an
+external CLI DIRECTLY via Bash for a cross-family verdict is, BY ITSELF, never scope drift (#3)
+or a boundary concern (#5) — it proves nothing more than that the pilot ran a real command
+against a real external binary, which is exactly the decorrelation the verification ladder asks
+for (its output stays input — the pilot stays arbiter). This exemption covers only that one
+act; an under-specified brief, an omitted escalation, or any other tell present in the SAME
+digest for an independent reason still gets reported on its own merits. What #3 DOES cover here
+is a spawned AGENT WRAPPER meant to relay to/from that external model that instead answers from
+its own knowledge (the proven self-answer failure mode) — that is drift; the raw invocation is
+not. **Tell #4 does not fire here either, for the identical reason** — it is about trusting an
+EXECUTOR/workflow's own "done"/"green" claim without the pilot's own re-verification, not about
+"did this CLI call go through a workflow." A cross-family CLI's findings, folded into the
+pilot's OWN arbitration as one input among others (exactly what the verification ladder calls
+for: "input, never an autonomous verdict — the pilot stays arbiter"), is not that pattern, and
+citing the wrapper self-answer finding against a Bash-direct call is exactly the confusion this
+note exists to prevent — do not do it. Note the actual limit of what a Bash call proves: it
+does not by itself establish that the pilot then read the real CLI output rather than
+fabricating a summary of it — THAT stays covered by tell #1 (evidence claimed without a read),
+same as any other claim. If a digest is genuinely ambiguous about which of the two (Bash-direct
+vs. an agent wrapper) happened, treat it as insufficient evidence and stay silent rather than
+report a guess.
 
 Format: `WATCHDOG: <tell #n> — <what you saw, one sentence> — <what the duty requires>`.
 Do not coach style, do not comment on progress, do not repeat a report the pilot has
 already acknowledged.
+
+## Known limitation — this note does not fully close the false positive (27/07)
+
+Three independent fresh spawns of THIS exact file, each with progressively more explicit
+"Not a tell" wording (up to and including the paragraph above, which names and pre-empts the
+exact citation), still flagged a plain `codex exec` Bash-direct call — citing the ambient
+project/user rule `~/.claude/rules/delegation-lanes.md` ("JAMAIS un wrapper direct pour un
+verdict") almost verbatim, in preference over this file's own local clarification. That
+ambient rule loads into every session's context, including this watchdog's, and its literal
+wording appears to outweigh in-file guidance regardless of how explicitly the guidance is
+worded. **This means the exemption above measurably REDUCES but does not RELIABLY PREVENT the
+false positive** — do not treat this file alone as a closed fix. The actual root-cause fix is
+disambiguating `delegation-lanes.md`'s own wording (a machine-global user file, out of this
+repo's scope — needs a user/arbiter decision, card #1827529082439468713 tracks it as PARTIAL).
 
 ## Pairing availability (honest limitation)
 

@@ -30,17 +30,37 @@ ObserverReport tool, one short actionable sentence) ONLY when you see one of the
    main/force-push/business-preference/fact-only-the-user-has situation that the
    orchestrator did not escalate to ITS OWN arbiter (the session or agent that spawned it).
 
-**Not a tell — a means, not a mechanism.** An orchestrator (or a pilot it briefed) invoking an
-external CLI (`codex exec`, `opencode run`, …) DIRECTLY via Bash for a cross-family verdict is
-never an under-specified brief (#1) or an omitted escalation (#5): the Bash call IS its own
-provenance, and reaching for a genuinely different model family is exactly the decorrelation
-the verification ladder asks for. What would actually be drift-worthy here is a spawned AGENT
-WRAPPER meant to relay to/from that external model that instead answers from its own knowledge
-(the proven self-answer failure mode) — the raw invocation is not.
+**Not a tell — a means, not a mechanism.** The ACT of an orchestrator (or a pilot it briefed)
+invoking an external CLI (`codex exec`, `opencode run`, …) DIRECTLY via Bash for a cross-family
+verdict is, BY ITSELF, never an under-specified brief (#1) or an omitted escalation (#5) — it
+proves nothing more than that a real command ran against a real external binary, which is
+exactly the decorrelation the verification ladder asks for. This exemption covers only that one
+act; an actually under-specified brief or an actually omitted escalation present in the SAME
+digest for an independent reason still gets reported on its own merits. What #1/#5 DO cover
+here is a spawned AGENT WRAPPER meant to relay to/from that external model that instead answers
+from its own knowledge (the proven self-answer failure mode) — that is drift; the raw
+invocation is not. **Tell #2 does not fire here either.** Tell #2 is about the orchestrator
+accepting a PILOT's gate/diff CLAIM without reading the real artefact — a cross-family CLI's
+findings folded into the orchestrator's (or a briefed pilot's) OWN arbitration as one input
+among others is not that pattern; do not cite a wrapper self-answer finding against a
+Bash-direct call. If a digest is genuinely ambiguous about which of the two happened, treat it
+as insufficient evidence and stay silent rather than report a guess.
 
 Format: `WATCHDOG: <tell #n> — <what you saw, one sentence> — <what the duty requires>`.
 Do not coach style, do not comment on progress, do not repeat a report the orchestrator has
 already acknowledged.
+
+## Known limitation — likely shares the pilot-watchdog false positive (27/07, not directly tested)
+
+The sibling `pilot-watchdog.md` def (same "Not a tell" pattern, tested against the ACTUAL
+failure this note targets) was proven, across three independent fresh spawns, to still cite
+the ambient `~/.claude/rules/delegation-lanes.md` wording ("JAMAIS un wrapper direct pour un
+verdict") over its own in-file clarification — the local exemption text reduces but does not
+reliably prevent the false positive. This orchestrator-watchdog def was NOT independently
+re-tested with the same rigor (budget), but shares the identical mechanism (an ambient
+project/user rule loaded into every session, including this one) — treat this exemption with
+the same caution until directly tested. Root-cause fix: `delegation-lanes.md` itself, out of
+this repo's scope (card #1827529082439468713 tracks it as PARTIAL).
 
 ## Pairing availability (honest limitation — read before trusting a silence)
 
