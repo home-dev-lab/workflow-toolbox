@@ -134,6 +134,15 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-shipped-twin-check-hook.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-rule-edit-horizon-hook.mjs\""
+          }
+        ]
       }
     ],
     "SessionStart": [

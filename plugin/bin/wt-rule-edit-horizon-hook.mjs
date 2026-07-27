@@ -1,0 +1,106 @@
+#!/usr/bin/env node
+// wt-rule-edit-horizon-hook.mjs — surface the reload horizon at the moment an
+// ambient rule is edited, when the otherwise-delayed effect is easiest to miss.
+//
+// Ambient rules are snapshotted when a session starts. A sub-agent spawn inherits
+// that session's snapshot, so neither the current session nor a spawn can verify an
+// edit; only a newly started session can. The hook is deliberately silent for every
+// other edit so the useful signal does not become routine noise.
+
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
+
+/** Read the hook payload; malformed or empty input is a silent no-op. */
+function readInput() {
+  try {
+    const raw = fs.readFileSync(0, 'utf8')
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+function editedFile(payload) {
+  if (payload?.hook_event_name !== 'PostToolUse' || !EDIT_TOOLS.has(payload?.tool_name)) return null
+  const input = payload?.tool_input
+  if (typeof input?.file_path === 'string' && input.file_path) return input.file_path
+  const firstEdit = Array.isArray(input?.edits) ? input.edits[0] : null
+  return typeof firstEdit?.file_path === 'string' && firstEdit.file_path
+    ? firstEdit.file_path
+    : null
+}
+
+// Accept BOTH slash styles for the leading `~` regardless of host platform: a payload's
+// file_path is produced by the tool call, not typed at a platform-native shell, so a
+// forward-slash tilde path can legitimately reach us even on Windows.
+function normalizeFile(file, cwd) {
+  const expanded = file === '~'
+    ? os.homedir()
+    : file.startsWith('~/') || file.startsWith('~\\')
+      ? path.join(os.homedir(), file.slice(2))
+      : file
+  return path.isAbsolute(expanded)
+    ? path.normalize(expanded)
+    : typeof cwd === 'string' && cwd
+      ? path.resolve(cwd, expanded)
+      : null
+}
+
+const CLAUDE_DIR_SEGMENT = /^\.claude(-.*)?$/
+
+// Ambient rules live one level under a `.claude`-named (or `.claude-*`, e.g. `.claude-work`)
+// directory: `<config-dir>/rules/*.md`. `rules` must be the DIRECT child of that segment —
+// `.claude/agents/rules/x.md` or `.claude/rules-backup/rules/x.md` are NOT the ambient rules
+// dir, just files that happen to sit under a nested "rules"-named folder. A CLAUDE_CONFIG_DIR
+// pointed at an arbitrarily-named directory (documented as configurable, e.g.
+// `/srv/claude-config`) is honored explicitly, since the `.claude*`-naming heuristic can't see it.
+function isAmbientRule(file) {
+  if (!file.endsWith('.md')) return false
+  const segments = file.split(/[\\/]+/).filter(Boolean)
+  const rulesIndex = segments.lastIndexOf('rules')
+  if (rulesIndex < 1 || rulesIndex === segments.length - 1) return false
+  if (CLAUDE_DIR_SEGMENT.test(segments[rulesIndex - 1])) return true
+
+  const configDir = process.env.CLAUDE_CONFIG_DIR
+  if (!configDir) return false
+  try {
+    const rel = path.relative(configDir, file)
+    return Boolean(rel) && !rel.startsWith('..') && !path.isAbsolute(rel) &&
+      rel.split(/[\\/]+/)[0] === 'rules'
+  } catch {
+    return false
+  }
+}
+
+function main() {
+  const payload = readInput()
+  if (!payload) return
+  const sourceFile = editedFile(payload)
+  if (!sourceFile) return
+  const file = normalizeFile(sourceFile, payload.cwd)
+  if (!file || !isAmbientRule(file)) return
+
+  const context =
+    `L'édition de ${file} ne sera vérifiable QU'À PARTIR D'UNE SESSION NEUVE. ` +
+    `Pas dans la session courante, ni via un spawn d'agent : un spawn hérite de ` +
+    `l'instantané pris au démarrage de sa session ; seul un nouveau démarrage de ` +
+    `session recharge les règles ambiantes.`
+
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: context,
+      },
+    }),
+  )
+}
+
+try {
+  main()
+} catch {
+  // An observation hook must never disrupt the tool it follows: emit nothing, exit clean.
+}
