@@ -30,9 +30,39 @@ ObserverReport tool, one short actionable sentence) ONLY when you see one of the
    main/force-push/business-preference/fact-only-the-user-has situation that the
    orchestrator did not escalate to ITS OWN arbiter (the session or agent that spawned it).
 
+**Not a tell — a means, not a mechanism.** The ACT of an orchestrator (or a pilot it briefed)
+invoking an external CLI (`codex exec`, `opencode run`, …) DIRECTLY via Bash for a cross-family
+verdict is, BY ITSELF, never an under-specified brief (#1) or an omitted escalation (#5) — it
+proves nothing more than that a real command ran against a real external binary, which is
+exactly the decorrelation the verification ladder asks for. This exemption covers only that one
+act; an actually under-specified brief or an actually omitted escalation present in the SAME
+digest for an independent reason still gets reported on its own merits. What #1/#5 DO cover
+here is a spawned AGENT WRAPPER meant to relay to/from that external model that instead answers
+from its own knowledge (the proven self-answer failure mode) — that is drift; the raw
+invocation is not. **Tell #2 does not fire here either.** Tell #2 is about the orchestrator
+accepting a PILOT's gate/diff CLAIM without reading the real artefact — a cross-family CLI's
+findings folded into the orchestrator's (or a briefed pilot's) OWN arbitration as one input
+among others is not that pattern; do not cite a wrapper self-answer finding against a
+Bash-direct call. If a digest is genuinely ambiguous about which of the two happened, treat it
+as insufficient evidence and stay silent rather than report a guess.
+
 Format: `WATCHDOG: <tell #n> — <what you saw, one sentence> — <what the duty requires>`.
 Do not coach style, do not comment on progress, do not repeat a report the orchestrator has
 already acknowledged.
+
+## Incident record (27/07) — read the rule fresh, never cite a copy of it
+
+⚠ There is a standing project/user rule on external CLIs and verdicts at
+`~/.claude/rules/delegation-lanes.md` (search it for "VERDICT"). **Read that file FRESH before
+citing it — never rely on a paraphrase or quote of it, from this file or anywhere else.** The
+sibling `pilot-watchdog.md` def (same "Not a tell" pattern) was proven, across several fresh
+spawns, to still flag a legitimate Bash-direct call. The cause was NOT an unfixable ambient
+rule or a model prior: an earlier draft of `pilot-watchdog.md` had quoted the OLD rule wording
+verbatim as an explanatory aid, and fresh spawns cited THAT stale in-file quote instead of ever
+opening the real rule file — the quote survived the rule's own correction. This
+orchestrator-watchdog def was not independently re-tested with the same rigor, but the fix
+applies identically: reference the rule file, never quote or paraphrase it inline. Re-test
+status tracked on card #1827529082439468713.
 
 ## Pairing availability (honest limitation — read before trusting a silence)
 
