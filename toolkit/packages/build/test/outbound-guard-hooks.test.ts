@@ -172,6 +172,43 @@ describe('wt-outbound-guard-hook — spawn edges, delivery detection, one nudge 
     expect(spawn!.name).toBe('nested-worker')
   })
 
+  // FAILS BEFORE THE FIX: normalizeName() used to strip ANY leading "a" unconditionally,
+  // so an explicit agent name that happens to start with "a" (no trailing hex suffix, i.e.
+  // not an agent-id at all) came out truncated ("archeo-disk" -> "rcheo-disk"), silently
+  // breaking registry correlation for that agent. The invariant: an explicit name survives
+  // UNCHANGED regardless of its first character. Paired below with the agent-id-shape case
+  // (prefix + trailing hex DOES get stripped) so a fix that shifted the boundary the other
+  // way would fail one of the two.
+  it('an explicit agent NAME (no hex-id suffix) starting with "a" is preserved verbatim', () => {
+    for (const name of ['archeo-disk', 'ancre-1530', 'apple', 'zebra']) {
+      const { env, dir } = guardEnv(`explicit-name-${name}`)
+      const r = run(
+        GUARD_HOOK,
+        { ...spawnPayload('sess-name', { childId: 'achild-3', name: 'child' }), tool_name: 'Task', agent_id: name },
+        env
+      )
+      expect(r.code).toBe(0)
+      const records = readFileSync(join(dir, 'sess-name.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+      const spawn = records.find((rec) => rec.t === 'spawn')
+      expect(spawn!.parentName, `normalizeName(${JSON.stringify(name)}) must stay "${name}"`).toBe(name)
+    }
+  })
+
+  // The other direction of the same invariant, restated explicitly: a REAL agent-id
+  // (prefix + trailing 12+ hex chars) still gets stripped to its bare name.
+  it('a real agent-id (prefix + trailing hex) is still normalized to its bare name', () => {
+    const { env, dir } = guardEnv('agent-id-shape')
+    const r = run(
+      GUARD_HOOK,
+      { ...spawnPayload('sess-idshape', { childId: 'achild-4', name: 'child' }), tool_name: 'Task', agent_id: 'aarcheo-disk-2ad53e92c1b0' },
+      env
+    )
+    expect(r.code).toBe(0)
+    const records = readFileSync(join(dir, 'sess-idshape.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+    const spawn = records.find((rec) => rec.t === 'spawn')
+    expect(spawn!.parentName).toBe('archeo-disk')
+  })
+
   // B2 extension: capture "what effort was REQUESTED at the spawn call", named effortRequested
   // (never `effort`) so a null does not misread as "no effort applies" — real effort mostly
   // comes from the agent DEFINITION's frontmatter, not this call. The Agent tool exposes no

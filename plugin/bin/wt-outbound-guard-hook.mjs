@@ -116,8 +116,12 @@ function normalizeName(raw) {
   const at = s.indexOf('@');            // "name@session-xxxx" -> "name"
   if (at > 0) s = s.slice(0, at);
   else {
-    s = s.replace(/^a/, '');            // "a<name>-<hex>" -> "<name>"
-    s = s.replace(/-[0-9a-f]{12,}$/i, '');
+    // Only strip the leading "a" when the WHOLE string has the agent-id shape
+    // (prefix + trailing hex) — an unconditional `replace(/^a/, '')` also ate the
+    // first letter of an explicit name that happens to start with "a" (e.g.
+    // "archeo-disk" -> "rcheo-disk"), which silently broke registry correlation.
+    const m = s.match(/^a(.+)-[0-9a-f]{12,}$/i);
+    if (m) s = m[1];
   }
   return s || null;
 }
