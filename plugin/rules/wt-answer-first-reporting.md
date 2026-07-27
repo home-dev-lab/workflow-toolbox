@@ -39,6 +39,29 @@ plain-language lead.
   partial — never left to be inferred from prose. A known gap gets stated as PARTIAL in the same
   line, not left implicit.
 
+## Escalating an action — the authorization sentence is the payload
+
+Escalating an action means handing the reader the AUTHORIZATION SENTENCE — the words they
+send back — ready to paste. Not the shell command or API call: they must never have to read,
+parse, or trust a command in order to grant permission. Put that sentence, and only that
+sentence, in its own fenced block: one single line, alone, with nothing else inside the
+fence — no ASCII frame, no side bars, no wrapping, no adjacent prose. The fence is what makes
+the sentence copyable in one click; a one-line payload is what makes that click actually yield
+the sentence rather than something the reader must then edit down. A framed or multi-line
+block defeats its own purpose: the reader copies the frame along with the sentence and has to
+strip it back out, which is exactly the friction the fenced block existed to remove.
+
+Mark the block with a full-width separator line immediately above and below the fence, outside
+it — a long escalation is easy to miss when scrolling back, and the separators catch the eye
+without entering what actually gets copied. The technical command or call belongs lower in the
+message, as detail for whoever executes it, never as the thing the reader is asked to copy.
+
+If the action is not fully settled yet, do not escalate yet — wait, then escalate once,
+complete. A description now plus the specifics later costs the reader a round trip and makes
+them wait on wording rather than on their own decision. The message carries: the paste-ready
+authorization sentence, what changes in plain words, and what is at risk if it is wrong. One
+thing to copy, one decision to make.
+
 ## Frequency — report at milestones, not continuously
 
 During long autonomous stretches, report at points where something is decided, delivered, or
