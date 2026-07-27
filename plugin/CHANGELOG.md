@@ -5,6 +5,43 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-07-27
+
+### Added
+
+- **Registry heartbeat (`wt-registry-heartbeat-hook.mjs`, on `Stop`)** — the spawn-registry
+  scan is now invoked periodically with nothing to arm. `Stop` fires at the end of every turn
+  for the whole life of a session, so no cron, timer, or remembered `/loop` is involved. On a
+  hit it BLOCKS the stop, handing the finding to something that can ACT rather than to a log
+  file nobody opens. Fails OPEN on every error path (bad stdin, missing/timed-out scan), and a
+  re-entered stop (`stop_hook_active`) informs without ever blocking twice — a guard able to
+  hang a session shut would be a worse defect than the silence it watches for. Thresholds are
+  env-overridable (`WT_REGISTRY_HEARTBEAT_QUIET_MIN`,
+  `WT_REGISTRY_HEARTBEAT_STALE_TRANSCRIPT_MIN`).
+- The scan now names what UNTRACKABLE spawns were doing (type, model, purpose) instead of
+  printing a bare count — a number without its set cannot tell a reader whether the lost
+  tracking matters. Retroactive: the fields were already on disk.
+- Spawn records carry `effortRequested` (deliberately not `effort`: the `Agent` tool exposes no
+  such parameter today, so it is `null` everywhere and fills itself in if one appears, with no
+  code change). Its value is that "pin model AND effort at every spawn" stops being an
+  unverifiable instruction — a null in the registry is now mechanical evidence it was skipped.
+
+### Fixed
+
+- **Silence alone was the wrong liveness model.** The first cut blocked on message-silence, which
+  in this system describes the NOMINAL population: a pilot reading code or running a suite says
+  nothing for half an hour. A guard that fires on healthy agents is switched off within days and
+  is then mute when it matters. Flagging now additionally requires the agent's own transcript to
+  have stopped growing (`--stale-transcript-min`, decoupled from the message threshold). An agent
+  silent but still writing is reported as `confirmedAlive` and never blocks. The converse is
+  deliberately NOT claimed: a frozen transcript is not proof of death (an agent awaiting a
+  background executor writes nothing), so the finding stays a question.
+- Unnamed spawns no longer fabricate a correlatable name from the raw child id. The child reports
+  itself under its TYPE, so the fabricated name could never match — leaving every anonymous spawn
+  an open "ghost" forever (observed: an agent finished 9h earlier reported as silent for 551
+  minutes). Trackability is now decided from the EXPLICIT spawn name, on the read side too, so
+  registries already written with the old format are handled without a migration.
+
 ## [0.46.0] - 2026-07-27
 
 ### Removed
