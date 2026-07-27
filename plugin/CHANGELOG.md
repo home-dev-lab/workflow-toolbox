@@ -5,6 +5,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Documentation
+
+- **Known issue #9**: the spawn-registry heartbeat's repeated `Stop` block on an unacknowledged
+  open+silent+stale entry (one block per fresh turn, not one-and-done) is now written down as an
+  intentional design choice, with the way out (`--ack <name>`) — see `docs/public/known-issues.md`.
+
 ## [0.47.0] - 2026-07-27
 
 ### Added
