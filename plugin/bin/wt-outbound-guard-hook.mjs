@@ -160,7 +160,16 @@ try {
   if (event === 'PostToolUse' && SPAWN_TOOLS.has(payload?.tool_name)) {
     const resp = payload?.tool_response;
     const child = resp?.agent_id ?? resp?.teammate_id ?? resp?.agentId ?? null;
-    const childName = normalizeName(payload?.tool_input?.name ?? child);
+    // ⚠ NEVER fall back to the raw child id here. A spawned agent that stops or speaks reports
+    // itself under `agent_type` — which for an UNNAMED spawn is the subagent/leaf TYPE (e.g.
+    // "general-purpose"), never the id the Agent/Task tool_response returned. normalizeName()
+    // on that id produces something that LOOKS like a handle ("a2600ff39954b6472" ->
+    // "2600ff39954b6472") but can never match what the child later reports under — a silent,
+    // permanent correlation failure (found in production: a spawn that finished 9h earlier was
+    // still reported as an open, silent ghost). So the correlatable name is the EXPLICIT name
+    // only, exactly mirroring what a later 'out'/'stop' record can actually carry.
+    const explicitName = payload?.tool_input?.name ?? resp?.name ?? null;
+    const childName = normalizeName(explicitName);
 
     // ⚠ AN UNNAMED SPAWN CANNOT BE CORRELATED, AND MUST NOT BE DROPPED FOR IT.
     // A spawn made without a `name` returns no child identity, so nothing can later join it to
@@ -179,7 +188,7 @@ try {
       untrackable: untrackable || undefined,
       responseKeys: untrackable && resp && typeof resp === 'object'
         ? Object.keys(resp).sort().slice(0, 20) : undefined,
-      name: payload?.tool_input?.name ?? resp?.name ?? null,
+      name: explicitName,
       subagentType: payload?.tool_input?.subagent_type ?? null,
       model: payload?.tool_input?.model ?? null,
       purpose: typeof payload?.tool_input?.description === 'string'

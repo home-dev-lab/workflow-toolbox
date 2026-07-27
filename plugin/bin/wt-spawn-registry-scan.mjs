@@ -137,7 +137,13 @@ const open = [];
 // to catch. They are counted and stated instead, so the reader knows the reach of the answer.
 const untrackable = [];
 for (const s of spawns) {
-  const name = s.childName;
+  // ⚠ Trackability is decided from `s.name` (the EXPLICIT name given at spawn time), never from
+  // `s.childName` alone. An already-written registry can carry the OLD-format bug: a spawn with
+  // no explicit name (`name: null`) whose `childName` was wrongly fabricated from the raw child
+  // id — a value that looks like a valid handle but can never match what the child later reports
+  // itself under. Gating on `s.name` catches those old records too, without needing to know they
+  // were buggy: no explicit name was ever given, so the spawn cannot be correlated, full stop.
+  const name = s.name ? s.childName : null;
   if (!name) { untrackable.push(s); continue; }
   if (stopped.has(name)) continue;                       // accounted for: it ended
   // Acked AFTER this spawn: a human said they dealt with it. A later spawn of the same name has

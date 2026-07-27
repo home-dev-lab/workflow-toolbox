@@ -147,6 +147,34 @@ describe('wt-outbound-guard-hook — spawn edges, delivery detection, one nudge 
     expect(spawn!.name).toBe('nested-worker')
   })
 
+  // FAILS BEFORE THE FIX: an unnamed spawn's tool_response carries the raw agent id (e.g.
+  // "a2600ff39954b6472"), and normalizeName() strips its leading "a" into something that LOOKS
+  // like a valid handle ("2600ff39954b6472"). But the agent later reports under its agent_type
+  // ("general-purpose") on its 'out'/'stop' records, which never matches that fabricated id-based
+  // name — so the spawn can never be marked accounted for. It must be marked untrackable instead,
+  // exactly like a spawn with no child id at all.
+  it('an UNNAMED spawn is marked untrackable, never given a fabricated id-derived name', () => {
+    const { env, dir } = guardEnv('spawn-unnamed')
+    const r = run(
+      GUARD_HOOK,
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        session_id: 'sess-unnamed',
+        tool_input: { subagent_type: 'general-purpose', description: 'a purpose' }, // no `name`
+        tool_response: { agent_id: 'a2600ff39954b6472' },
+      },
+      env
+    )
+    expect(r.code).toBe(0)
+    const records = readFileSync(join(dir, 'sess-unnamed.jsonl'), 'utf8').trim().split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+    const spawn = records.find((rec) => rec.t === 'spawn')
+    expect(spawn!.name).toBeNull()
+    expect(spawn!.childName).toBeNull() // never fabricated from the raw child id
+    expect(spawn!.untrackable).toBe(true)
+  })
+
   it('nudges only ONCE per arc: a second SubagentStop for the same still-silent agent stays quiet', () => {
     const { env } = guardEnv('once-per-arc')
     const first = run(GUARD_HOOK, stopPayload('agent-7', 'sess-7'), env)
@@ -247,6 +275,37 @@ describe('wt-spawn-registry-scan.mjs — reports what is unaccounted for', () =>
     const r = runNoInput(SCAN, [], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
     expect(r.code).toBe(0)
     expect(r.stdout).toContain('Nothing open.') // 0 open agents (all stopped) => this branch, not "Nothing to ask about"
+  })
+
+  // FAILS BEFORE THE FIX — reproduces the exact real production sequence (registry excerpt from
+  // 2026-07-26): an UNNAMED spawn, whose child later reports and stops under its agent_type
+  // ("general-purpose"), never sharing a name with the spawn record. This must be reported as
+  // untrackable, never as an open-and-silent ghost — even though it actually finished 9+ hours
+  // ago. Also proves backward compatibility: this record is written in the OLD (buggy) format,
+  // exactly as it sits in an already-written registry file — `childName` is the fabricated
+  // id-derived value, `name` is null. The scan must recognize it as untrackable from `name`
+  // alone, not crash, and not fabricate an entry.
+  it('an old-format UNNAMED spawn that actually finished is reported as untrackable, never as an open ghost', () => {
+    const dir = mkRoot('scan-unnamed-finished')
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      [
+        JSON.stringify({
+          t: 'spawn', parent: '(main-loop)', parentName: '(main-loop)',
+          child: 'a2600ff39954b6472', childName: '2600ff39954b6472', name: null,
+          subagentType: 'general-purpose', model: 'haiku', purpose: "Record tonight's delivery on the board",
+          at: '2026-07-26T22:31:52.233Z',
+        }),
+        JSON.stringify({ t: 'out', agentId: 'a2600ff39954b6472', name: 'general-purpose', tool: 'SendMessage', at: '2026-07-26T22:32:55.347Z' }),
+        JSON.stringify({ t: 'stop', agentId: 'a2600ff39954b6472', name: 'general-purpose', event: 'SubagentStop', at: '2026-07-26T22:32:57.904Z' }),
+      ].join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, ['--quiet-min', '20', '--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    expect(r.code, `expected no ghost; stdout: ${r.stdout}`).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { open: number; flagged: unknown[]; untrackable: number }
+    expect(parsed.open).toBe(0)
+    expect(parsed.flagged).toHaveLength(0)
+    expect(parsed.untrackable).toBe(1)
   })
 
   it('exits 1 and names an agent that is OPEN and silent past the threshold', () => {
