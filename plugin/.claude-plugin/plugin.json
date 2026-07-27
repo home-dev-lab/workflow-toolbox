@@ -103,6 +103,15 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-stop-hook.mjs\""
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-registry-heartbeat-hook.mjs\"",
+            "timeout": 15
+          }
+        ]
       }
     ]
   }

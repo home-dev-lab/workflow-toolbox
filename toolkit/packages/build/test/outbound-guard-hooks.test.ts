@@ -20,6 +20,7 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const GUARD_HOOK = join(REPO_ROOT, 'plugin/bin/wt-outbound-guard-hook.mjs')
 const SCAN = join(REPO_ROOT, 'plugin/bin/wt-spawn-registry-scan.mjs')
 const SESSION_START_HOOK = join(REPO_ROOT, 'plugin/bin/wt-session-start-registry-hook.mjs')
+const HEARTBEAT_HOOK = join(REPO_ROOT, 'plugin/bin/wt-registry-heartbeat-hook.mjs')
 const PLUGIN_MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 
 const roots: string[] = []
@@ -486,6 +487,101 @@ describe('wt-session-start-registry-hook.mjs — runs the scan at session start'
 })
 
 // --------------------------------------------------------------------------
+// wt-registry-heartbeat-hook.mjs — Stop: the periodic invocation the card asked for, without
+// anyone arming a loop. Fires on every attempted Stop of the session; a hit BLOCKS so the finding
+// reaches something that can act (the session itself), never a log file.
+// --------------------------------------------------------------------------
+describe('wt-registry-heartbeat-hook.mjs — mid-session silence surfaces on Stop, never on a log file', () => {
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
+  const stopEventPayload = (sessionId: string, stopHookActive = false) => ({
+    hook_event_name: 'Stop',
+    session_id: sessionId,
+    stop_hook_active: stopHookActive,
+  })
+
+  it('GREEN: nothing open => stays silent, never blocks', () => {
+    const { env } = guardEnv('heartbeat-clean')
+    const r = run(HEARTBEAT_HOOK, stopEventPayload('sess-hb-clean'), env)
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe('{}')
+  })
+
+  it('GREEN: an open agent that spoke recently (under threshold) stays silent', () => {
+    const { env, dir } = guardEnv('heartbeat-recent')
+    writeFileSync(
+      join(dir, 'sess-hb-recent.jsonl'),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'busy-worker', name: 'busy-worker', at: minutesAgo(2) }) + '\n'
+    )
+    const r = run(HEARTBEAT_HOOK, stopEventPayload('sess-hb-recent'), env)
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe('{}')
+  })
+
+  // POSITIVE CONTROL: an agent open and silent past the threshold DOES block the stop, and the
+  // reason names it — this is the discriminating case the whole card exists for.
+  it('RED->GREEN discriminator: an open+silent agent BLOCKS the stop and names it in the reason', () => {
+    const { env, dir } = guardEnv('heartbeat-flagged')
+    writeFileSync(
+      join(dir, 'sess-hb-flagged.jsonl'),
+      JSON.stringify({
+        t: 'spawn', parentName: '(main-loop)', childName: 'frozen-worker', name: 'frozen-worker',
+        purpose: 'investigate the incident', at: minutesAgo(45),
+      }) + '\n'
+    )
+    const r = run(HEARTBEAT_HOOK, stopEventPayload('sess-hb-flagged'), env)
+    expect(r.code).toBe(0) // the block is carried in the JSON decision, not the exit code
+    const out = JSON.parse(r.stdout) as { decision?: string; reason?: string }
+    expect(out.decision).toBe('block')
+    expect(out.reason).toContain('frozen-worker')
+    expect(out.reason).toContain('SendMessage')
+    expect(out.reason).toContain('--ack')
+  })
+
+  // LOOP SAFETY: the harness re-enters this same hook with stop_hook_active:true when the FIRST
+  // block is being reprocessed. That re-entry must inform, never block again — otherwise a still-
+  // unacked entry would hang the session shut instead of just nudging it once per stop attempt.
+  it('LOOP SAFETY: stop_hook_active=true reports the same finding but never blocks again', () => {
+    const { env, dir } = guardEnv('heartbeat-reentry')
+    writeFileSync(
+      join(dir, 'sess-hb-reentry.jsonl'),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'frozen-worker-2', name: 'frozen-worker-2', at: minutesAgo(45) }) + '\n'
+    )
+    const r = run(HEARTBEAT_HOOK, stopEventPayload('sess-hb-reentry', true), env)
+    const out = JSON.parse(r.stdout) as { decision?: string; systemMessage?: string }
+    expect(out.decision).toBeUndefined()
+    expect(out.systemMessage).toContain('frozen-worker-2')
+  })
+
+  it('an acked entry does not block the stop, exactly like the scan itself', () => {
+    const { env, dir } = guardEnv('heartbeat-acked')
+    writeFileSync(
+      join(dir, 'sess-hb-acked.jsonl'),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'acked-worker', name: 'acked-worker', at: minutesAgo(45) }),
+        JSON.stringify({ t: 'ack', name: 'acked-worker', at: minutesAgo(40) }),
+      ].join('\n') + '\n'
+    )
+    const r = run(HEARTBEAT_HOOK, stopEventPayload('sess-hb-acked'), env)
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe('{}')
+  })
+
+  it('never throws: malformed stdin emits {} and exits 0', () => {
+    const { env } = guardEnv('heartbeat-malformed')
+    const res = spawnSync(process.execPath, [HEARTBEAT_HOOK], { input: 'not json', encoding: 'utf8', env })
+    expect(res.status).toBe(0)
+    expect((res.stdout ?? '').trim()).toBe('{}')
+  })
+
+  it('no registry directory yet (fresh machine) => stays silent, never blocks', () => {
+    const dir = join(mkRoot('heartbeat-no-registry'), 'nonexistent')
+    const r = run(HEARTBEAT_HOOK, stopEventPayload('sess-hb-none'), { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe('{}')
+  })
+})
+
+// --------------------------------------------------------------------------
 // Manifest wiring — plugin/.claude-plugin/plugin.json actually registers both hooks, and no
 // longer relies on the project-level settings.local.json entries that were removed.
 // --------------------------------------------------------------------------
@@ -527,5 +623,16 @@ describe('plugin.json registers the outbound-guard + session-start-registry hook
     expect(existsSync(GUARD_HOOK)).toBe(true)
     expect(existsSync(SESSION_START_HOOK)).toBe(true)
     expect(existsSync(SCAN)).toBe(true)
+  })
+
+  it('Stop registers wt-registry-heartbeat-hook.mjs alongside wt-stop-hook.mjs (both must fire)', () => {
+    const manifest = JSON.parse(readFileSync(PLUGIN_MANIFEST, 'utf8')) as {
+      hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>
+    }
+    const groups = manifest.hooks?.['Stop'] ?? []
+    const commands = groups.flatMap((g) => g.hooks ?? []).map((h) => h.command ?? '')
+    expect(commands.some((c) => c.includes('wt-stop-hook.mjs'))).toBe(true)
+    expect(commands.some((c) => c.includes('wt-registry-heartbeat-hook.mjs'))).toBe(true)
+    expect(existsSync(HEARTBEAT_HOOK)).toBe(true)
   })
 })
