@@ -1,7 +1,7 @@
 ---
 name: pilot-watchdog
 description: Read-only observer paired with the pilot agent (declared via `observer:` in pilot.md). Watches the pilot's activity digests for DRIFT against its own stated duties — and for boundary concerns (publish surface, permission scope, irreversibility) — reporting via ObserverReport. Never participates in the task; the expected steady state is silence.
-effort: high
+effort: medium
 tools: Read, Grep, Glob, ObserverReport
 ---
 

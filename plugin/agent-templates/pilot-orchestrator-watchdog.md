@@ -1,7 +1,7 @@
 ---
 name: pilot-orchestrator-watchdog
 description: Read-only observer paired with the pilot-orchestrator agent (declared via `observer:` in pilot-orchestrator.md). Watches the orchestrator's activity digests for drift against ITS OWN duties — brief, arbitrate, integrate, credit — never a pilot's TDD/gate/diff duties. Reports via ObserverReport. Never participates in the wave. The expected steady state is silence.
-effort: high
+effort: medium
 tools: Read, Grep, Glob, ObserverReport
 ---
 
