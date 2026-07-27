@@ -207,9 +207,18 @@ function stripAgentBanner(text) {
   return head + after
 }
 
-/** Recover the pre-banner content of an installed RULE (banner is line 1). */
+/** Recover the pre-banner content of an installed RULE (banner is line 1). Conditional on
+ *  the first line actually being a recognized banner — mirrors `stripAgentBanner`'s own
+ *  guard. Card #1827841682423416647 review finding: this used to strip line 1
+ *  UNCONDITIONALLY, silently treating a raw (unbannered) shipped source file's own title
+ *  line as disposable framing. That never mattered while the shipped-name-direct-adoption
+ *  comparison in `auditOverlap` was unreachable (it used to short-circuit to ABSENT before
+ *  ever comparing content); fixing that reachability exposed this as a real false-positive
+ *  DRIFT on every genuinely clean, directly-adopted rule. */
 function stripRuleBanner(text) {
   const nl = text.indexOf('\n')
+  const firstLine = nl === -1 ? text : text.slice(0, nl)
+  if (!VERSION_RE.test(firstLine)) return text
   if (nl === -1) return ''
   return text.slice(nl + 1).replace(/^\n+/, '')
 }
@@ -347,28 +356,49 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
   let duplicate = 0
   let drift = 0
   let absent = 0
+  let unpaired = 0
   let unmapped = 0
 
+  for (const item of setConfig.resolveItems(root)) {
+    if (!declaredShipped.has(item.file)) {
+      unpaired++
+      process.stdout.write(
+        `UNPAIRED ${item.file}: no pairing entry in ${pairsPath} — this shipped ${set === 'agents' ? 'agent' : 'rule'} is untracked by audit-overlap\n`,
+      )
+    }
+  }
+
   for (const pair of pairs) {
-    const userPath = path.join(userDir, pair.user)
+    const declaredUserPath = path.join(userDir, pair.user)
     const shippedPath = path.join(shippedDir, pair.shipped)
-    const userExists = realFile(userPath)
+    const userExists = realFile(declaredUserPath)
     const shippedInUserPath = path.join(userDir, pair.shipped)
-    if (!userExists) {
+    const shippedAdoptedDirectly = pair.shipped !== pair.user && realFile(shippedInUserPath)
+    if (!userExists && !shippedAdoptedDirectly) {
       if (set === 'agents') absent++
       process.stdout.write(`ABSENT ${pair.user}: ABSENT (declared pair, no user file present)\n`)
       continue
     }
-    if (pair.shipped !== pair.user && realFile(shippedInUserPath)) {
+    if (userExists && shippedAdoptedDirectly) {
       // A `partial` pair (e.g. delegation-lanes.md / wt-delegation-ladder.md) is a DELIBERATE,
       // accepted, bounded coexistence — both files are MEANT to be present together. Flagging
       // it as a hard DUPLICATE would fail the guard on the documented target state itself.
       const partial = pair.partial === true
       if (!partial) duplicate++
       const label = partial ? 'DUPLICATE (partial, informational)' : 'DUPLICATE'
-      process.stdout.write(`${label} ${userPath} + ${shippedInUserPath}\n`)
+      process.stdout.write(`${label} ${declaredUserPath} + ${shippedInUserPath}\n`)
       continue
     }
+    // Exactly one of {declaredUserPath, shippedInUserPath} exists. When it's the shipped
+    // name alone (no separate local override authored), that is a VALID adoption — but it
+    // must still be drift-checked against the shipped source below, not waved through as
+    // CLEAN on existence alone: review finding on this same card showed an earlier version
+    // of this fix declared it CLEAN without ever reading the file, so an edited
+    // shipped-name-adopted copy passed silently. `--audit-overlap` is a standalone mode
+    // (main() returns before reaching --check/--install's classify()/plan() codepath), so
+    // nothing else in this invocation would have caught that edit.
+    const userPath = userExists ? declaredUserPath : shippedInUserPath
+    const adoptedUnderShippedName = !userExists
     if (!realFile(shippedPath)) {
       process.stdout.write(`CLEAN ${pair.user}: no shipped comparison file\n`)
       continue
@@ -406,12 +436,20 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
         ? [...new Set([...shippedLines].filter((line) => line !== '' && !userLineSet.has(line)))]
         : []
     if (extras.length === 0 && missing.length === 0) {
-      process.stdout.write(`CLEAN ${pair.user}\n`)
+      process.stdout.write(
+        adoptedUnderShippedName
+          ? `CLEAN ${pair.user}: adopted under shipped name (${pair.shipped})\n`
+          : `CLEAN ${pair.user}\n`,
+      )
     } else {
       const partial = pair.partial === true
       if (!partial) drift++
       const label = partial ? 'DRIFT (partial, informational)' : 'DRIFT'
-      process.stdout.write(`${label} ${pair.user}\n`)
+      process.stdout.write(
+        adoptedUnderShippedName
+          ? `${label} ${pair.user}: adopted under shipped name (${pair.shipped}), content diverges from the shipped source\n`
+          : `${label} ${pair.user}\n`,
+      )
       for (const line of extras.slice(0, 40)) process.stdout.write(`${label} ${pair.user}: ${line}\n`)
       if (extras.length > 40) process.stdout.write(`${label} ${pair.user}: +${extras.length - 40} more\n`)
       for (const line of missing.slice(0, 40)) process.stdout.write(`${label} ${pair.user} (missing): ${line}\n`)
@@ -425,11 +463,13 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
     }
   }
   if (set === 'agents') {
-    process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${absent} absent, ${unmapped} unmapped\n`)
+    process.stdout.write(
+      `audit-overlap: ${duplicate} duplicate, ${drift} drift, ${absent} absent, ${unpaired} unpaired, ${unmapped} unmapped\n`,
+    )
   } else {
-    process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${unmapped} unmapped\n`)
+    process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${unpaired} unpaired, ${unmapped} unmapped\n`)
   }
-  if (duplicate || drift || (set === 'agents' && absent)) process.exitCode = 1
+  if (duplicate || drift || unpaired || unmapped || (set === 'agents' && absent)) process.exitCode = 1
 }
 
 /** Decide the status label and (for --install) whether to write. `force` only ever
