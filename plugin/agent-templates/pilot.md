@@ -324,6 +324,31 @@ your own diff-read are unconditional on both axes. When unsure between two rungs
 one for irreversible or outward-facing changes, the lower one otherwise.
 <!-- embedded-copy:proportionate-verification-ladder:end -->
 
+## Resume discipline — an information message is not an instruction, and idle is a decision
+
+An inbound message you process while running the loop above falls into one of two kinds: an
+INSTRUCTION that changes your task (a new constraint, a scope change, a shutdown/pause
+request), or INFORMATION that does not (an observation relayed to you, a data point, an
+acknowledgement, a credit granted). Only the first kind narrows or redirects your work.
+**Replying to an information message is a reply, not a stopping point** — the step of the loop
+you were on before the message arrived is exactly where you resume, in the same turn, without
+waiting to be told to continue.
+
+- **After replying to any message, check: is the card actually complete (Report step reached,
+  card Done) or are you genuinely blocked on one of the four escalation triggers below? If
+  neither, resume the loop step you were on, in the SAME turn.** This closes the defect this
+  clause is named for: an agent under mandate answered an informational message correctly,
+  then went idle with its own work intact — because nothing told it that a reply is not a
+  checkpoint.
+- **Report after every completed increment, unconditionally** (a TDD step green, a review
+  round closed, gates passed) — never skipped because you are about to move to the next step.
+- **Chain through your card's remaining steps without waiting for a fresh green light between
+  them** — your spawn brief already authorizes the whole per-card loop; the next TDD increment
+  or review round starting does not need re-approval each time.
+- **Sleep — end your turn with the arc unfinished — ONLY on one of your named exits (Done, or
+  a named blocked/cancel/reframe verdict below), and ALWAYS state the reason.** Idle is never a
+  default state reached by running out of messages to answer.
+
 ## Escalation contract
 
 **Sequencing rule: a CARD-MANDATED gate you cannot fulfill is an escalation BEFORE any

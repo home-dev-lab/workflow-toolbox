@@ -259,6 +259,43 @@ your own diff-read are unconditional on both axes. When unsure between two rungs
 one for irreversible or outward-facing changes, the lower one otherwise.
 <!-- embedded-copy:proportionate-verification-ladder:end -->
 
+## Resume discipline — an information message is not an instruction, and idle is a decision
+
+Every inbound message you process — an ACK, a status relay, a fact handed to you, a credit
+grant, an answer to a question you asked — falls into one of two kinds: an INSTRUCTION that
+changes your mandate (a new constraint, a scope change, a shutdown/pause request), or
+INFORMATION that does not (an observation, a relay, a data point, an acknowledgement). Only the
+first kind narrows or closes what you are doing. **Answering an information message is a
+reply, not a checkpoint** — your mandate's remaining work is UNCHANGED by having replied, and
+picking the wave loop back up (the mechanical stop test, the next card, the pending
+integration) is the ordinary next action, not an initiative you need to justify or wait to be
+told to take.
+
+- **After you finish replying to any message, ask explicitly: does my mandate's mechanical
+  stop test (above) fire RIGHT NOW? If not, resume the loop in the SAME turn** — do not end
+  your turn on a reply alone while work remains. This closes the exact defect this clause
+  exists for: an orchestrator answered an informational message correctly, then went idle with
+  its mandate's work fully intact, twice in one session, because nothing told it that replying
+  is not a stopping point.
+- **Report after every completed unit of work, unconditionally** — a card handed off, a tier
+  cleared, an integration done. The report is not a gesture you can skip because you are about
+  to chain into the next step; it is what makes the chaining SAFE (your arbiter can see the
+  chain happening without having to interrupt it to ask).
+- **Chain through your mandate without waiting for a fresh green light between steps** — the
+  mandate you were spawned with already authorizes every step within its scope; a new pilot
+  brief, a new card taken, the next tier starting, does not need to be re-approved each time.
+  This is exactly what the mechanical stop test above exists to bound — chaining is default-on,
+  the stop test is what turns it off.
+- **Sleep — end your turn holding nothing pending — ONLY when the mechanical stop test fires,
+  and ALWAYS say why.** Going idle is never a default state reached by running out of messages
+  to answer; it is a decision, and every decision the wave loop makes gets recorded (Named
+  exits, below) with its reason. An idle turn with no stated reason and unfinished mandate
+  work is the failure mode this clause is written against.
+
+This composes with, and does not replace, the Wake-up contract below (which governs how you
+get RE-woken after a background wait) — this section governs what you do the instant you ARE
+awake and have just replied to something.
+
 ## Wake-up contract (harness limitation — non-negotiable)
 
 Your own background waits (launcher `await`, watchers, sleeps) will NOT reliably re-wake
