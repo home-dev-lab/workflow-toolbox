@@ -7,8 +7,11 @@ observer: pilot-orchestrator-watchdog
 observerMessage: Judge drift only, against the orchestrator's own stated duties (brief, arbitrate, integrate, credit) — never a pilot's gate/TDD/diff duties. The expected steady state is silence.
 # Pattern denylist, not a semantic guard — a serious brake against accident/forgetting, not
 # proof against obfuscated intent (subshells, aliases, env vars can still slip past a literal
-# prefix match). Targets the dangerous VERBS (force-push, push-to-main, publish, merge-to-main)
-# — never a blanket "no push", which would break a pilot's legitimate own-branch push carve-out.
+# prefix match) — NOR against a differently-formed invocation on another OS/shell (an absolute
+# git.exe path, a PowerShell call operator) that the harness's own permission layer has not been
+# verified against outside Linux; a silent non-match there is a case-3 platform gap, not proven
+# closed. Targets the dangerous VERBS (force-push, push-to-main, publish, merge-to-main) — never
+# a blanket "no push", which would break a pilot's legitimate own-branch push carve-out.
 disallowedTools:
   - "Bash(git push --force:*)"
   - "Bash(git push -f:*)"
