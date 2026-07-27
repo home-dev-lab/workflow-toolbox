@@ -165,10 +165,29 @@ for (const s of spawns) {
 
 const flagged = open.filter((o) => o.quietMin >= QUIET_MIN).sort((a, b) => b.quietMin - a.quietMin);
 
+// A count alone ("N spawn(s) cannot be followed") is a number with no set: the reader cannot
+// judge whether the untracked loss matters without knowing what those spawns WERE. Every field
+// used here (subagentType, model, purpose) is already on the spawn record written by
+// wt-outbound-guard-hook.mjs — this is READ-ONLY, it changes no record and works retroactively on
+// registries written before this change. It must NOT read as "these are tracked after all": the
+// blind-spot warning above stays intact, this only names what was lost, not whether it survived.
+function untrackableLine(s) {
+  const label = s.subagentType || '(unknown type)';
+  const modelPart = s.model ? ` (${s.model})` : '';
+  const purposePart = s.purpose ? `"${s.purpose}"` : '(no purpose recorded)';
+  return `    · ${label}${modelPart} — ${purposePart}  · launched ${s.at}`;
+}
+
 if (AS_JSON) {
   console.log(JSON.stringify({
     file, totalSpawns: spawns.length, open: open.length, flagged,
     untrackable: untrackable.length,
+    untrackableDetail: untrackable.map((s) => ({
+      subagentType: s.subagentType ?? null,
+      model: s.model ?? null,
+      purpose: s.purpose || null,
+      spawnedAt: s.at,
+    })),
   }, null, 2));
   process.exit(flagged.length ? 1 : 0);
 }
@@ -180,7 +199,9 @@ if (untrackable.length) {
   console.log(`⚠ ${untrackable.length} spawn(s) cannot be followed individually — they were`);
   console.log('  launched without a name, so nothing identifies the agent they created and no');
   console.log('  stop record can ever be matched to them. They are NOT included in the counts');
-  console.log('  above: this scan is blind to whether they ended. Name a spawn to track it.\n');
+  console.log('  above: this scan is blind to whether they ended. Name a spawn to track it.');
+  for (const s of untrackable) console.log(untrackableLine(s));
+  console.log('');
 }
 
 if (!flagged.length) {

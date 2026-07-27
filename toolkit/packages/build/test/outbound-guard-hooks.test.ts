@@ -148,6 +148,31 @@ describe('wt-outbound-guard-hook — spawn edges, delivery detection, one nudge 
     expect(spawn!.name).toBe('nested-worker')
   })
 
+  // B2 extension: capture "what effort was REQUESTED at the spawn call", named effortRequested
+  // (never `effort`) so a null does not misread as "no effort applies" — real effort mostly
+  // comes from the agent DEFINITION's frontmatter, not this call. The Agent tool exposes no
+  // `effort` parameter today, so this reads null everywhere until the tool grows one.
+  it('B2: records effortRequested as null when the spawn tool_input carries no effort field (today\'s case)', () => {
+    const { env, dir } = guardEnv('effort-absent')
+    const r = run(GUARD_HOOK, spawnPayload('sess-effort-absent', { childId: 'achild-ea', name: 'worker-ea' }), env)
+    expect(r.code).toBe(0)
+    const records = readFileSync(join(dir, 'sess-effort-absent.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+    const spawn = records.find((rec) => rec.t === 'spawn')
+    expect(spawn).toHaveProperty('effortRequested')
+    expect(spawn!.effortRequested).toBeNull()
+  })
+
+  it('B2: records the effortRequested VALUE when the spawn tool_input carries one (future-proofing)', () => {
+    const { env, dir } = guardEnv('effort-present')
+    const payload = { ...spawnPayload('sess-effort-present', { childId: 'achild-ep', name: 'worker-ep' }) }
+    ;(payload.tool_input as Record<string, unknown>).effort = 'high'
+    const r = run(GUARD_HOOK, payload, env)
+    expect(r.code).toBe(0)
+    const records = readFileSync(join(dir, 'sess-effort-present.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+    const spawn = records.find((rec) => rec.t === 'spawn')
+    expect(spawn!.effortRequested).toBe('high')
+  })
+
   // FAILS BEFORE THE FIX: an unnamed spawn's tool_response carries the raw agent id (e.g.
   // "a2600ff39954b6472"), and normalizeName() strips its leading "a" into something that LOOKS
   // like a valid handle ("2600ff39954b6472"). But the agent later reports under its agent_type
@@ -323,6 +348,80 @@ describe('wt-spawn-registry-scan.mjs — reports what is unaccounted for', () =>
     expect(r.code).toBe(1)
     expect(r.stdout).toContain('stuck-worker')
     expect(r.stdout).toContain('worth asking about')
+  })
+
+  // B1 extension: the untrackable block must NAME what each entry was doing, not just count them
+  // — a bare number with no set. Property over the WHOLE family, not a fixed list of known cases.
+  it('B1: names purpose/type/model for EVERY untrackable entry, not a fixed enumeration', () => {
+    const dir = mkRoot('untrackable-detail')
+    const entries = [
+      { subagentType: 'general-purpose', model: 'haiku', purpose: "Record tonight's delivery on the board" },
+      { subagentType: 'Explore', model: 'sonnet', purpose: 'map the auth module' },
+      { subagentType: 'claude', model: 'opus', purpose: 'triage the incident' },
+    ]
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      entries
+        .map((e, i) =>
+          JSON.stringify({
+            t: 'spawn', parent: '(main-loop)', parentName: '(main-loop)',
+            child: `achild-${i}`, childName: `childname-${i}`, name: null,
+            subagentType: e.subagentType, model: e.model, purpose: e.purpose,
+            at: new Date(Date.now() - (i + 1) * 60_000).toISOString(),
+          })
+        )
+        .join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, [], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    expect(r.code).toBe(0) // untrackable entries never count as open/flagged
+    for (const e of entries) {
+      expect(r.stdout).toContain(e.subagentType)
+      expect(r.stdout).toContain(e.model)
+      expect(r.stdout).toContain(e.purpose)
+    }
+    // still says plainly that this scan is blind to whether they ended — naming the purpose must
+    // not read as "these are tracked after all"
+    expect(r.stdout).toContain('blind to whether they ended')
+  })
+
+  it('B1: an untrackable entry with NO purpose is rendered legibly, not blank', () => {
+    const dir = mkRoot('untrackable-no-purpose')
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      JSON.stringify({
+        t: 'spawn', parent: '(main-loop)', parentName: '(main-loop)',
+        child: 'achild-np', childName: 'childname-np', name: null,
+        subagentType: 'general-purpose', model: null, purpose: null,
+        at: new Date().toISOString(),
+      }) + '\n'
+    )
+    const r = runNoInput(SCAN, [], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain('general-purpose')
+    expect(r.stdout).toContain('no purpose recorded')
+  })
+
+  it('B1: --json also carries untrackableDetail (subagentType/model/purpose/spawnedAt)', () => {
+    const dir = mkRoot('untrackable-json')
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      JSON.stringify({
+        t: 'spawn', parent: '(main-loop)', parentName: '(main-loop)',
+        child: 'achild-j', childName: 'childname-j', name: null,
+        subagentType: 'general-purpose', model: 'haiku', purpose: 'a json-mode purpose',
+        at: '2026-07-26T22:31:52.233Z',
+      }) + '\n'
+    )
+    const r = runNoInput(SCAN, ['--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    const parsed = JSON.parse(r.stdout) as {
+      untrackable: number
+      untrackableDetail: Array<{ subagentType: string | null; model: string | null; purpose: string | null; spawnedAt: string }>
+    }
+    expect(parsed.untrackable).toBe(1)
+    expect(parsed.untrackableDetail).toHaveLength(1)
+    expect(parsed.untrackableDetail[0]).toMatchObject({
+      subagentType: 'general-purpose', model: 'haiku', purpose: 'a json-mode purpose', spawnedAt: '2026-07-26T22:31:52.233Z',
+    })
   })
 
   it('does not double-list the same agent when a duplicate-registered hook double-fires the spawn record', () => {

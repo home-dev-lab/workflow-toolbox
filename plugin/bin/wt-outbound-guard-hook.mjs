@@ -191,6 +191,16 @@ try {
       name: explicitName,
       subagentType: payload?.tool_input?.subagent_type ?? null,
       model: payload?.tool_input?.model ?? null,
+      // ⚠ NAMED `effortRequested`, never `effort`. The Agent tool exposes no `effort` parameter
+      // today (checked: description, prompt, subagent_type, model, name, isolation, mode) — this
+      // reads null on every spawn right now, on purpose: the day the tool grows one, it is
+      // captured with zero code change. A field named `effort` reading null would say "this agent
+      // ran with no effort defined" — false, since real effort mostly comes from the agent
+      // DEFINITION's frontmatter, not the spawn call. `effortRequested` says only what was asked
+      // AT THE SPAWN CALL, which is what makes "pin model AND effort at every spawn, never a
+      // silent inherit" mechanically auditable: a spawn with model/effortRequested both null in
+      // the registry is now visible proof that pin discipline was skipped, not a claim to trust.
+      effortRequested: payload?.tool_input?.effort ?? null,
       purpose: typeof payload?.tool_input?.description === 'string'
         ? payload.tool_input.description.slice(0, 160) : null,
       at: now,
