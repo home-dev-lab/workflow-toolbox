@@ -129,7 +129,7 @@ describe('adopt-rules audit-overlap --set agents', () => {
     expect(res.stdout).toContain('CLEAN pilot.md')
     expect(res.stdout).toContain('CLEAN pilot-orchestrator.md')
     expect(res.stdout).toContain('CLEAN pilot-watchdog.md')
-    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 0 absent, 0 unmapped')
+    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 0 absent, 0 unpaired, 0 unmapped')
   })
 
   it('reports CLEAN on a genuinely --install-ed, unedited copy (banner must not read as drift)', () => {
@@ -152,7 +152,7 @@ describe('adopt-rules audit-overlap --set agents', () => {
     expect(res.stdout).toContain('CLEAN pilot.md')
     expect(res.stdout).toContain('CLEAN pilot-orchestrator.md')
     expect(res.stdout).toContain('CLEAN pilot-watchdog.md')
-    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 0 absent, 0 unmapped')
+    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 0 absent, 0 unpaired, 0 unmapped')
   })
 
   it('still fails DRIFT on a hand-authored (no-banner) copy — the strip is conditional, not blanket', () => {
@@ -195,7 +195,7 @@ describe('adopt-rules audit-overlap --set agents', () => {
 
     expect(res.status).toBe(1)
     expect(res.stdout).toContain('ABSENT pilot-orchestrator.md: ABSENT (declared pair, no user file present)')
-    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 1 absent, 0 unmapped')
+    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 1 absent, 0 unpaired, 0 unmapped')
   })
 
   it('fails DRIFT when a project copy diverges beyond its approved model line', () => {
@@ -223,7 +223,7 @@ describe('adopt-rules audit-overlap --set agents', () => {
     expect(res.status).toBe(1)
     expect(res.stdout).toContain('DRIFT pilot.md')
     expect(res.stdout).toContain('DRIFT pilot.md: otherwise implement the increments yourself.')
-    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 1 drift, 0 absent, 0 unmapped')
+    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 1 drift, 0 absent, 0 unpaired, 0 unmapped')
   })
 
   it('fails DRIFT when a project copy DELETES a shipped body line (no addition at all)', () => {
@@ -252,7 +252,7 @@ describe('adopt-rules audit-overlap --set agents', () => {
     expect(res.status).toBe(1)
     expect(res.stdout).toContain('DRIFT pilot.md')
     expect(res.stdout).toContain('DRIFT pilot.md (missing): If no consented lane is available, split work to a cheaper sub-agent.')
-    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 1 drift, 0 absent, 0 unmapped')
+    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 1 drift, 0 absent, 0 unpaired, 0 unmapped')
   })
 
   it('does NOT flag a deleted rule line as drift — rules stay additions-only (editable-copy contract)', () => {
@@ -269,7 +269,7 @@ describe('adopt-rules audit-overlap --set agents', () => {
 
     expect(res.status).toBe(0)
     expect(res.stdout).toContain('CLEAN step-back-architectural.md')
-    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 0 unmapped')
+    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 0 unpaired, 0 unmapped')
   })
 
   it('keeps the rules-set ABSENT behavior non-failing by default', () => {
@@ -279,7 +279,7 @@ describe('adopt-rules audit-overlap --set agents', () => {
 
     expect(res.status).toBe(0)
     expect(res.stdout).toContain('ABSENT step-back-architectural.md: ABSENT (declared pair, no user file present)')
-    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 0 unmapped')
+    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 0 unpaired, 0 unmapped')
     expect(res.stdout).not.toContain('0 absent')
   })
 })

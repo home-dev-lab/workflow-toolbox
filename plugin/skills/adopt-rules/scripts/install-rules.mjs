@@ -347,19 +347,34 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
   let duplicate = 0
   let drift = 0
   let absent = 0
+  let unpaired = 0
   let unmapped = 0
+
+  for (const item of setConfig.resolveItems(root)) {
+    if (!declaredShipped.has(item.file)) {
+      unpaired++
+      process.stdout.write(
+        `UNPAIRED ${item.file}: no pairing entry in ${pairsPath} — this shipped ${set === 'agents' ? 'agent' : 'rule'} is untracked by audit-overlap\n`,
+      )
+    }
+  }
 
   for (const pair of pairs) {
     const userPath = path.join(userDir, pair.user)
     const shippedPath = path.join(shippedDir, pair.shipped)
     const userExists = realFile(userPath)
     const shippedInUserPath = path.join(userDir, pair.shipped)
+    const shippedAdoptedDirectly = pair.shipped !== pair.user && realFile(shippedInUserPath)
     if (!userExists) {
+      if (shippedAdoptedDirectly) {
+        process.stdout.write(`CLEAN ${pair.user}: adopted under shipped name (${pair.shipped})\n`)
+        continue
+      }
       if (set === 'agents') absent++
       process.stdout.write(`ABSENT ${pair.user}: ABSENT (declared pair, no user file present)\n`)
       continue
     }
-    if (pair.shipped !== pair.user && realFile(shippedInUserPath)) {
+    if (shippedAdoptedDirectly) {
       // A `partial` pair (e.g. delegation-lanes.md / wt-delegation-ladder.md) is a DELIBERATE,
       // accepted, bounded coexistence — both files are MEANT to be present together. Flagging
       // it as a hard DUPLICATE would fail the guard on the documented target state itself.
@@ -425,11 +440,13 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
     }
   }
   if (set === 'agents') {
-    process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${absent} absent, ${unmapped} unmapped\n`)
+    process.stdout.write(
+      `audit-overlap: ${duplicate} duplicate, ${drift} drift, ${absent} absent, ${unpaired} unpaired, ${unmapped} unmapped\n`,
+    )
   } else {
-    process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${unmapped} unmapped\n`)
+    process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${unpaired} unpaired, ${unmapped} unmapped\n`)
   }
-  if (duplicate || drift || (set === 'agents' && absent)) process.exitCode = 1
+  if (duplicate || drift || unpaired || unmapped || (set === 'agents' && absent)) process.exitCode = 1
 }
 
 /** Decide the status label and (for --install) whether to write. `force` only ever
