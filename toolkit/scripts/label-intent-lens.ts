@@ -81,16 +81,21 @@
 //       structurally possible.
 //
 //   Scope boundary
-//     → This lens does NOT talk to Planka by itself. It takes a JSON snapshot as
-//       input. The caller must resolve LABEL NAMES first (not raw IDs from
-//       `get_card`) before constructing the snapshot — `find_cards` / `get_board`
-//       already return resolved label names and are the intended source.
+//     → The recommended `--board` mode fetches the board through the Planka MCP
+//       client and resolves its own input, so the caller has no snapshot to build.
+//       A lens that requires the caller to build its own input before invoking it
+//       is an invitation, not a wiring — this is why --board exists.
+//     → The snapshot-file mode remains available for fixtures and testing. Its
+//       input must contain resolved LABEL NAMES, not raw IDs from `get_card`.
 //
-// CLI usage: `tsx toolkit/scripts/label-intent-lens.ts <snapshot.json>` — exits
-// 0 when there are no blocking findings on the whole snapshot, 1 otherwise.
+// Recommended CLI usage:
+// `tsx toolkit/scripts/label-intent-lens.ts --board <boardId> [--mcp-url <url>]`
+// Fixture/testing usage: `tsx toolkit/scripts/label-intent-lens.ts <snapshot.json>`
+// Both forms exit 0 when there are no blocking findings, 1 otherwise.
 
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { fetchBoardCards } from './planka-mcp-client.ts'
 
 export interface CardSnapshot {
   id: string
@@ -332,18 +337,55 @@ function printResult(path: string, result: BoardCheckResult): void {
   console.log(result.ok ? 'RESULT: PASS (exit 0)' : 'RESULT: FAIL (exit 1)')
 }
 
-async function main(): Promise<void> {
-  const path = process.argv[2]
-  if (!path) {
-    console.error('usage: tsx toolkit/scripts/label-intent-lens.ts <snapshot.json>')
+interface ResolvedCards {
+  cards: CardSnapshot[]
+  source: string
+}
+
+export async function resolveCards(args: string[]): Promise<ResolvedCards> {
+  const firstArg = args[0]
+  if (firstArg !== '--board') {
+    const raw = readFileSync(firstArg, 'utf8')
+    return { cards: JSON.parse(raw) as CardSnapshot[], source: firstArg }
+  }
+
+  const boardId = args[1]
+  if (!boardId) throw new Error('--board requires a boardId')
+
+  let mcpUrl: string | undefined
+  for (let index = 2; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg !== '--mcp-url') throw new Error(`unknown argument in --board mode: ${arg}`)
+    mcpUrl = args[index + 1]
+    if (!mcpUrl) throw new Error('--mcp-url requires a URL')
+    index += 1
+  }
+
+  const boardCards = await fetchBoardCards({ boardId, mcpUrl })
+  return {
+    cards: boardCards.map(({ id, description, labels }) => ({ id, description, labels })),
+    source: `board ${boardId}`,
+  }
+}
+
+export async function main(args = process.argv.slice(2)): Promise<void> {
+  if (args.length === 0) {
+    console.error(
+      'usage: tsx toolkit/scripts/label-intent-lens.ts --board <boardId> [--mcp-url <url>]\n' +
+        '       tsx toolkit/scripts/label-intent-lens.ts <snapshot.json>',
+    )
     process.exit(2)
   }
 
-  const raw = readFileSync(path, 'utf8')
-  const cards = JSON.parse(raw) as CardSnapshot[]
+  const { cards, source } = await resolveCards(args)
   const result = checkBoard(cards)
-  printResult(path, result)
+  printResult(source, result)
   process.exit(result.ok ? 0 : 1)
+}
+
+export function handleCliError(err: unknown): never {
+  console.error(err instanceof Error ? err.message : String(err))
+  process.exit(1)
 }
 
 const isMain = (() => {
@@ -357,8 +399,5 @@ const isMain = (() => {
 })()
 
 if (isMain) {
-  main().catch((err: unknown) => {
-    console.error(err instanceof Error ? err.message : String(err))
-    process.exit(1)
-  })
+  main().catch(handleCliError)
 }
