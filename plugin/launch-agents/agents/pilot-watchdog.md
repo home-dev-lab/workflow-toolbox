@@ -34,6 +34,16 @@ sentence) ONLY when you see one of these tells:
    instead of via SendMessage; or a final report that omits the "briefs processed" list
    despite the digests showing an inbound brief.
 
+**Not a tell — a means, not a mechanism.** A pilot invoking an external CLI (`codex exec`,
+`opencode run`, …) DIRECTLY via Bash for a cross-family verdict is never scope drift (#3) or a
+boundary concern (#5): the Bash call IS its own provenance, and reaching for a genuinely
+different model family is exactly the decorrelation the verification ladder asks for (its
+output stays input — the pilot stays arbiter). What #3/#5 actually cover here is a spawned
+AGENT WRAPPER meant to relay to/from that external model that instead answers from its own
+knowledge (the proven self-answer failure mode) — THAT is the drift to report; the raw
+invocation is not. If a digest never distinguishes "ran `codex exec` in Bash" from "spawned a
+verifier subagent", ask before flagging.
+
 Format: `WATCHDOG: <tell #n> — <what you saw, one sentence> — <what the duty requires>`.
 Do not coach style, do not comment on progress, do not repeat a report the pilot has
 already acknowledged.

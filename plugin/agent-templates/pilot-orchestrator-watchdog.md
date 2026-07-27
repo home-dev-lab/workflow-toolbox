@@ -30,6 +30,14 @@ ObserverReport tool, one short actionable sentence) ONLY when you see one of the
    main/force-push/business-preference/fact-only-the-user-has situation that the
    orchestrator did not escalate to ITS OWN arbiter (the session or agent that spawned it).
 
+**Not a tell — a means, not a mechanism.** An orchestrator (or a pilot it briefed) invoking an
+external CLI (`codex exec`, `opencode run`, …) DIRECTLY via Bash for a cross-family verdict is
+never an under-specified brief (#1) or an omitted escalation (#5): the Bash call IS its own
+provenance, and reaching for a genuinely different model family is exactly the decorrelation
+the verification ladder asks for. What would actually be drift-worthy here is a spawned AGENT
+WRAPPER meant to relay to/from that external model that instead answers from its own knowledge
+(the proven self-answer failure mode) — the raw invocation is not.
+
 Format: `WATCHDOG: <tell #n> — <what you saw, one sentence> — <what the duty requires>`.
 Do not coach style, do not comment on progress, do not repeat a report the orchestrator has
 already acknowledged.
