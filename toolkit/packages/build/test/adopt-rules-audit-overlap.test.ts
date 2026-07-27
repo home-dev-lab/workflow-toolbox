@@ -59,37 +59,60 @@ describe('adopt-rules audit-overlap', () => {
     const res = spawnSync(process.execPath, [SCRIPT, '--audit-overlap'], { encoding: 'utf8' })
     expect(res.status).not.toBe(0); expect((res.stdout ?? '') + (res.stderr ?? '')).toContain('--user-dir is required')
   })
-  it('reports CLEAN when the user file is removed and the shipped copy is installed directly', () => {
-    const d = mkDir()
-    writeFileSync(join(d, 'wt-step-back-architectural.md'), 'installed copy\n')
-    const res = run(d)
-    expect(res.status).toBe(0)
-    expect(res.stdout).toContain('CLEAN step-back-architectural.md: adopted under shipped name (wt-step-back-architectural.md)')
-    expect(res.stdout).not.toContain('UNMAPPED')
-  })
-  it('accepts a declared pair adopted only under its shipped name', () => {
+  // Both tests below build a self-contained fixture plugin root and go through the REAL
+  // `--install` path so the resulting userDir file carries a genuine adopt-rules banner —
+  // the actual shape a directly-adopted (no local rename) shipped-name file has in
+  // production (verified against the real ~/.claude/rules). A raw byte-copy with no banner
+  // is NOT that shape (stripBanner treats the shipped source's own first line as disposable
+  // framing unconditionally, but only strips the user side's first line when it recognizes
+  // an install banner there — an asymmetry that predates this fix and is out of scope here;
+  // going through --install sidesteps it exactly the way a real install does).
+  function mkPairsFixture(shippedFile: string, shippedContent: string, pair: { user: string; shipped: string; partial: boolean }) {
     const base = mkDir()
     const pluginRoot = join(base, 'plugin')
     const scriptsDir = join(pluginRoot, 'skills/adopt-rules/scripts')
     const rulesDir = join(pluginRoot, 'rules')
     const userDir = join(base, 'user')
     const pairsFile = join(base, 'pairs.json')
-    const shippedFile = 'wt-step-back-architectural.md'
-    const shipped = readFileSync(join(REPO_ROOT, 'plugin/rules', shippedFile), 'utf8')
     mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true })
     mkdirSync(scriptsDir, { recursive: true })
     mkdirSync(rulesDir)
     mkdirSync(userDir)
     writeFileSync(join(pluginRoot, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'fixture', version: '1.0.0' }))
-    writeFileSync(join(scriptsDir, 'install-rules.mjs'), readFileSync(SCRIPT, 'utf8'))
-    writeFileSync(join(rulesDir, shippedFile), shipped)
-    writeFileSync(join(userDir, shippedFile), shipped)
-    writeFileSync(pairsFile, JSON.stringify([{ user: 'my-local-name.md', shipped: shippedFile, partial: false }]))
+    const script = join(scriptsDir, 'install-rules.mjs')
+    writeFileSync(script, readFileSync(SCRIPT, 'utf8'))
+    writeFileSync(join(rulesDir, shippedFile), shippedContent)
+    writeFileSync(pairsFile, JSON.stringify([pair]))
+    const installRes = spawnSync(process.execPath, [script, '--set', 'rules', '--install', '--dir', userDir], { encoding: 'utf8' })
+    if (installRes.status !== 0) throw new Error(`fixture --install failed: ${installRes.stdout}${installRes.stderr}`)
+    return { script, userDir, pairsFile, installedPath: join(userDir, shippedFile) }
+  }
+  it('reports CLEAN for a declared pair adopted only under its shipped, --install-ed name', () => {
+    const shippedFile = 'wt-step-back-architectural.md'
+    const shippedContent = readFileSync(join(REPO_ROOT, 'plugin/rules', shippedFile), 'utf8')
+    const fixture = mkPairsFixture(shippedFile, shippedContent, { user: 'my-local-name.md', shipped: shippedFile, partial: false })
 
-    const res = run(userDir, ['--pairs-file', pairsFile], join(scriptsDir, 'install-rules.mjs'))
+    const res = run(fixture.userDir, ['--pairs-file', fixture.pairsFile], fixture.script)
     expect(res.status).toBe(0)
     expect(res.stdout).toContain('CLEAN my-local-name.md: adopted under shipped name (wt-step-back-architectural.md)')
     expect(res.stdout).not.toContain('ABSENT')
+  })
+  it('reports DRIFT for a directly-adopted (shipped-name) file whose content was edited after install — content IS checked, not just existence', () => {
+    // Regression lock for the review finding on card #1827841682423416647: an earlier
+    // version of the ABSENT fix declared this case CLEAN on existence alone, without ever
+    // reading the file, so a locally-edited shipped-name-adopted copy passed silently —
+    // and `--audit-overlap` is a standalone mode (nothing else in the same invocation would
+    // have caught the edit; --check/--install run only as a SEPARATE command).
+    const shippedFile = 'wt-step-back-architectural.md'
+    const shippedContent = readFileSync(join(REPO_ROOT, 'plugin/rules', shippedFile), 'utf8')
+    const fixture = mkPairsFixture(shippedFile, shippedContent, { user: 'my-local-name.md', shipped: shippedFile, partial: false })
+    const installed = readFileSync(fixture.installedPath, 'utf8')
+    writeFileSync(fixture.installedPath, installed + '\nlocally added divergent line\n')
+
+    const res = run(fixture.userDir, ['--pairs-file', fixture.pairsFile], fixture.script)
+    expect(res.status).toBe(1)
+    expect(res.stdout).toContain('DRIFT my-local-name.md: adopted under shipped name (wt-step-back-architectural.md), content diverges from the shipped source')
+    expect(res.stdout).toContain('DRIFT my-local-name.md: locally added divergent line')
   })
   it('fails when a shipped rule has no pairing entry even with zero local files', () => {
     const d = mkDir()
