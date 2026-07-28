@@ -255,6 +255,105 @@ describe('adopt-rules installer — agent-copies set (--set agents; committed dr
   })
 })
 
+// Frontmatter preservation across a re-adoption (card #1828669764516447496): a `--force`
+// overwrite must not silently drop a LOCAL, single-line frontmatter field the shipped def
+// does not itself define (the standing example is a `model:` pin — the visible mechanism a
+// user controls delegation routing with). Positive sense: a pinned file keeps its pin AND the
+// tool announces what it kept. Negative sense: a file with no local field stays silent — no
+// noise on the common case.
+describe('adopt-rules installer — frontmatter preservation across --force (card #1828669764516447496)', () => {
+  it('a locally-added `model:` pin SURVIVES a --force re-adoption, and the tool announces it', () => {
+    const d = mkDir()
+    run(['--set', 'agents', '--install'], d)
+    const p = agentPath(d, 'pilot.md')
+    const withPin = readFileSync(p, 'utf8').replace(/^(description:.*\n)/m, '$1model: sonnet\n')
+    expect(withPin).toContain('model: sonnet')
+    writeFileSync(p, withPin)
+
+    // Plain --install must SKIP (EDITED), same contract as any other local edit.
+    expect(run(['--set', 'agents', '--install'], d)).toContain('pilot.md: SKIPPED')
+    expect(readFileSync(p, 'utf8')).toContain('model: sonnet')
+
+    const out = run(['--set', 'agents', '--install', '--force'], d)
+    expect(out).toMatch(/pilot\.md: OVERWROTE/)
+    expect(out).toContain('pilot.md: PRESERVING local frontmatter field(s) not defined by the shipped def: model')
+    const after = readFileSync(p, 'utf8')
+    expect(after, 'the model pin must survive the forced overwrite').toContain('model: sonnet')
+    // The pin sits INSIDE the frontmatter block, not dumped into the body.
+    const frontmatter = after.split(/\r?\n---\r?\n/)[0] + '\n---\n'
+    expect(frontmatter).toContain('model: sonnet')
+  })
+
+  it('a --force re-adoption on a file with NO local frontmatter field stays silent (no PRESERVING noise)', () => {
+    const d = mkDir()
+    run(['--set', 'agents', '--install'], d)
+    const p = agentPath(d, 'pilot.md')
+    // A body-only edit (no frontmatter change) — must still classify EDITED and overwrite
+    // cleanly under --force, with no PRESERVING line since there is nothing local to carry.
+    writeFileSync(p, readFileSync(p, 'utf8') + '\nMY LOCAL BODY EDIT\n')
+
+    const out = run(['--set', 'agents', '--install', '--force'], d)
+    expect(out).toMatch(/pilot\.md: OVERWROTE/)
+    expect(out).not.toContain('PRESERVING')
+    expect(readFileSync(p, 'utf8')).not.toContain('MY LOCAL BODY EDIT')
+  })
+
+  // Cross-family review finding (opencode gpt-5.6-terra, 27/07): a plain STALE refresh (no
+  // --force, `clean` classification — the file was never locally edited, just installed from
+  // an older release) must NOT run preservation. A key present only in that older, unedited
+  // copy is a field the PLUGIN itself retired upstream, not something the user added — carrying
+  // it forward would silently resurrect retired content on every routine refresh.
+  it('a plain STALE refresh (unedited, older release) does NOT resurrect a field the plugin has since retired', () => {
+    const d = mkDir()
+    run(['--set', 'agents', '--install'], d)
+    const p = agentPath(d, 'pilot.md')
+    // Age the copy: append a frontmatter-shaped line the CURRENT shipped def does not define,
+    // then restamp version+fingerprint over that content so it classifies as `clean` (unedited)
+    // rather than `edited` — genuinely simulating "installed from an older release that used to
+    // ship this field".
+    const before = readFileSync(p, 'utf8')
+    const aged = before.replace(/^(description:.*\n)/m, '$1retired-field: from-an-older-release\n')
+    const fp = createHash('sha256').update(stripInstalledAgentBanner(aged), 'utf8').digest('hex').slice(0, 12)
+    const restamped = aged
+      .replace(/(installed from workflow-toolbox )v\d+\.\d+\.\d+/, '$1v0.0.1')
+      .replace(/content sha256:[0-9a-f]{12}/, `content sha256:${fp}`)
+    writeFileSync(p, restamped)
+    expect(run(['--set', 'agents', '--check'], d)).toContain('pilot.md: STALE')
+
+    const out = run(['--set', 'agents', '--install'], d) // no --force: STALE always refreshes
+    expect(out).toMatch(/pilot\.md: REFRESHED/)
+    expect(out).not.toContain('PRESERVING')
+    expect(readFileSync(p, 'utf8')).not.toContain('retired-field')
+  })
+
+  // Second cross-family finding: a YAML block-scalar value (`notes: |`) followed by a BLANK
+  // line before its own indented continuation must never be treated as a "simple" one-line
+  // key — the naive next-line-only continuation check would preserve just the `notes: |`
+  // header and silently drop the continuation, corrupting the field's meaning. The correct,
+  // conservative behavior is to leave it alone entirely (same as any other multi-line field):
+  // not preserved, not partially reproduced.
+  it('a block-scalar (`notes: |`) frontmatter value followed by a blank continuation line is never partially preserved', () => {
+    const d = mkDir()
+    run(['--set', 'agents', '--install'], d)
+    const p = agentPath(d, 'pilot.md')
+    const withBlockScalar = readFileSync(p, 'utf8').replace(
+      /^(description:.*\n)/m,
+      '$1notes: |\n\n  continued after a blank line\n',
+    )
+    expect(withBlockScalar).toContain('notes: |')
+    writeFileSync(p, withBlockScalar)
+    expect(run(['--set', 'agents', '--check'], d)).toContain('pilot.md: EDITED')
+
+    const out = run(['--set', 'agents', '--install', '--force'], d)
+    expect(out).toMatch(/pilot\.md: OVERWROTE/)
+    // Not preserved at all — neither the truncated header nor the continuation survives.
+    expect(out).not.toContain('PRESERVING')
+    const after = readFileSync(p, 'utf8')
+    expect(after).not.toContain('notes: |')
+    expect(after).not.toContain('continued after a blank line')
+  })
+})
+
 describe('adopt-rules installer — CLI surface for the two-set engine', () => {
   it('--set all with --dir is rejected (a single dir cannot target two sets)', () => {
     const d = mkDir()
