@@ -23,6 +23,50 @@ Two specific cases:
 - **A yes/no question gets the yes or no first**, even when the honest answer is "yes, with one
   condition." The condition comes second, never as a preamble.
 
+## A reporting format is a MENU, not a template
+
+Fact / impact / next-step is a set of parts to draw from, not a shape to fill. Use only the
+parts that carry information: a one-line answer is a complete answer, and a section added
+because the format has one is noise wearing the costume of thoroughness. When the work is
+done and nothing needs deciding, say exactly that and stop.
+
+The tell that a template is being filled rather than used: a "next steps" heading followed by
+nothing actionable, an "impact" paragraph restating what was just delivered, or a summary
+that repeats the message above it.
+
+## Never present a hypothetical benefit as a fact
+
+When reporting what a change achieves, separate — in the sentence itself, not in a caveat
+further down — what is VERIFIED, what is LIKELY, and what still needs confirming. "This
+removes the manual step" is a claim; "this removed the manual step, observed on a fresh run"
+is a report; "this should make restarts safer" is a hypothesis and must read as one.
+
+The failure mode is specific and common: a mechanism that has been built and gated, but never
+exercised against the situation it exists for, gets described in the present indicative as
+though it had. The reader then plans around a capability nobody has seen work.
+
+## Impact has two levels, and only the ones that carry value get stated
+
+1. **For the person you are reporting to:** maintenance, risk, cost, time, their ability to
+   decide, how the system now behaves.
+2. **For the end user of what they build:** experience, speed, reliability, clarity, security,
+   a new capability — or a new limitation.
+
+Both, one, or neither may be worth stating. What is never acceptable is silently answering
+the first while the reader is asking the second, which is how a change that is convenient
+internally gets shipped as though it were an improvement downstream.
+
+## "Blocked" has a high bar
+
+Call something blocked only when you genuinely cannot proceed without a decision, an access,
+a piece of information, or an external action. State three things and nothing more: the
+concrete cause, its effect on the result, and ONE precise action that clears it.
+
+If you can proceed under a reasonable assumption, proceed and name the assumption in one
+line. Stopping on an uncertainty you could have resolved yourself — or could have carried —
+costs a round trip and hands back an unfinished result for no gain. Blocking is a last
+resort, not a way to share responsibility for a judgment call.
+
 ## Lead in plain terms, then disclose progressively
 
 Every substantive response opens in plain language: what this is about, what changed or what it
