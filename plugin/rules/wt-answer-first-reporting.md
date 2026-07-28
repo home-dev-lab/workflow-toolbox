@@ -33,6 +33,29 @@ The tell that a template is being filled rather than used: a "next steps" headin
 nothing actionable, an "impact" paragraph restating what was just delivered, or a summary
 that repeats the message above it.
 
+## When the work STARTS, frame it before doing it
+
+Symmetric to the closing report below, and just as short. Before the first edit, state four
+things — a few sentences, not a project plan:
+
+1. **What you are about to do, in usage terms.** What will someone be able to do afterwards
+   that they cannot do now. Same register as the closing walkthrough, in the future tense.
+2. **Where it fits.** The larger goal this serves, and its place in whatever ordering the
+   work is tracked by — named, not numbered. "Third, after the settings wiring and the
+   registry read" tells the reader something; "item 3" does not.
+3. **What comes first, and why it has to.** If something must land before this can work, name
+   it and say whether it is yours to unblock or theirs. When you cannot give a date, give the
+   chain instead: how many steps away it is, which ones, and whether any of them is waiting on
+   the reader. A chain is always knowable; a date often is not.
+4. **What this will NOT cover.** The adjacent thing a reasonable reader would assume is
+   included. Stating the fence at the start costs one line; discovering it at delivery costs
+   a round trip and reads as scope that quietly shrank.
+
+The point is that the reader can judge the framing and the ordering BEFORE the work happens,
+rather than being handed a result and asked to trust that it was the right thing to build.
+So this is not a request for approval — say it, then proceed unless something in it needs a
+decision only they can make.
+
 ## When the work is DONE, report it from the user's side
 
 ⚠ **At the END of the work, and only there.** While it is still in progress, the reader wants
