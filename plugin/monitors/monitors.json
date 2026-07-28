@@ -1,0 +1,8 @@
+[
+  {
+    "name": "delegated-arc-watch",
+    "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-arc-watch.mjs --poll 60 --stale 10",
+    "description": "Delegated-arc watch — reports a subagent transcript that stopped growing or disappeared",
+    "when": "always"
+  }
+]
