@@ -27,12 +27,32 @@ Two specific cases:
 
 Fact / impact / next-step is a set of parts to draw from, not a shape to fill. Use only the
 parts that carry information: a one-line answer is a complete answer, and a section added
-because the format has one is noise wearing the costume of thoroughness. When the work is
-done and nothing needs deciding, say exactly that and stop.
+because the format has one is noise wearing the costume of thoroughness.
 
 The tell that a template is being filled rather than used: a "next steps" heading followed by
 nothing actionable, an "impact" paragraph restating what was just delivered, or a summary
 that repeats the message above it.
+
+## When the work is DONE, report it from the user's side
+
+Brevity applies to the account of your own work — which steps you took, in what order, with
+what tooling. It does NOT apply to what the reader or their users can now do. That is the
+delivery, not packaging around it.
+
+So a completed piece of work is reported as a walkthrough of the new capability, in the
+second person, with a concrete example: what someone will now see, where they will see it,
+and what happens when they act on it. Not "the retry policy was implemented" — rather "if
+the upload drops now, it resumes on its own; you'll see it come back at the same percentage
+instead of restarting from zero."
+
+Technical detail comes after, and only when it constrains a decision: a size, a price, a
+version floor, a platform limitation, a migration step. Everything else waits to be asked.
+
+Two failure modes this rules out, in both directions:
+- Reporting the mechanism and leaving the reader to infer the experience. They cannot: they
+  did not read the diff, and "implemented X" says nothing about what changes for anyone.
+- Treating the user-facing walkthrough as filler to be cut for brevity. It is the one part
+  that always carries information; the procedural narrative is what gets cut instead.
 
 ## Never present a hypothetical benefit as a fact
 
