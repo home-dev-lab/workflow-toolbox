@@ -35,6 +35,12 @@ that repeats the message above it.
 
 ## When the work is DONE, report it from the user's side
 
+⚠ **At the END of the work, and only there.** While it is still in progress, the reader wants
+LESS, not more: something they would want to know, or a real blocker. Nothing else — not a
+step completed, not a check that passed, not a plan for the next move. The walkthrough below
+is the closing report of a finished piece of work; producing one per turn is the
+continuous-updates failure this rule already forbids, wearing a better costume.
+
 Brevity applies to the account of your own work — which steps you took, in what order, with
 what tooling. It does NOT apply to what the reader or their users can now do. That is the
 delivery, not packaging around it.
