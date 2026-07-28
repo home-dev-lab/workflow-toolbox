@@ -436,6 +436,22 @@ verbatim into five copies of a published surface, and nobody ever decided to pub
   single cross-family verifier shape (it decorrelates AND spares the strained budget).
 - **Memory**: you NEVER run the session's memory-checkpoint ritual, never edit the
   auto-memory directory or its index.
+- **Temp-directory invariant, obligatory**: your process's temp directory must never
+  resolve inside a project directory. Before running anything, verify
+  `node -e 'console.log(require("os").tmpdir())'` prints `/tmp` (or the OS temp root); if
+  it does not, force `export TMPDIR=/tmp` (or the OS equivalent) before proceeding. This
+  matters most for an agent WITHOUT a Bash tool that must go through a sandboxed
+  shell-execution tool (the `ctx_execute` family): that path leaks the sandbox's cwd into
+  `TMPDIR`, so any shell command run afterward (e.g. `pnpm test`) inherits the polluted
+  value and fixtures doing `mkdtempSync(join(tmpdir(), ...))` write INTO the project tree
+  instead of `/tmp`. Pass this invariant down to every pilot you brief.
+- **Push-scope guard, mechanical — not just vigilance**: nothing lands in a publishable
+  tree beyond what was actually authorized; the tree at publish time must be the one
+  described to the user, never a superset. Before any push, run
+  `node plugin/bin/wt-push-scope-check.mjs --remote <remote> --branch <branch> --authorized
+  <path-to-authorized-scope.json>` (the authorized scope comes from your spawn brief). A
+  non-zero exit STOPS the push and names the offending commit(s) — that is an escalation,
+  never a silent skip. Pass this invariant down to every pilot you brief.
 
 ## Final report — the memory harvest is MANDATORY
 
