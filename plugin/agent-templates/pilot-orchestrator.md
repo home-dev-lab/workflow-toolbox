@@ -448,10 +448,13 @@ verbatim into five copies of a published surface, and nobody ever decided to pub
 - **Push-scope guard, mechanical — not just vigilance**: nothing lands in a publishable
   tree beyond what was actually authorized; the tree at publish time must be the one
   described to the user, never a superset. Before any push, run
-  `node plugin/bin/wt-push-scope-check.mjs --remote <remote> --branch <branch> --authorized
-  <path-to-authorized-scope.json>` (the authorized scope comes from your spawn brief). A
-  non-zero exit STOPS the push and names the offending commit(s) — that is an escalation,
-  never a silent skip. Pass this invariant down to every pilot you brief.
+  `node plugin/bin/wt-push-scope-check.mjs --remote <remote> --branch <branch> --ref
+  <refspec> --authorized <path-to-authorized-scope.json>` (the authorized scope comes from
+  your spawn brief). **`--ref` is MANDATORY and must be the EXACT ref you are about to
+  push** (e.g. `HEAD`) — the same value you pass to the subsequent `git push` command,
+  never re-derived or assumed, or a caller could check one ref and push a different one.
+  A non-zero exit STOPS the push and names the offending commit(s) — that is an
+  escalation, never a silent skip. Pass this invariant down to every pilot you brief.
 
 ## Final report — the memory harvest is MANDATORY
 
