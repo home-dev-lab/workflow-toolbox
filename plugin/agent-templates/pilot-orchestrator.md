@@ -236,10 +236,30 @@ Adding agents does not add independence. These levers do, and the ordering is th
 each one is worth more than everything below it, so spend the cheap top of the list before
 buying the expensive bottom.
 
-1. **Mechanical ground truth — not a form of diversity at all, and it dominates.** If the
-   claim is decidable by an exit code, a rendered pixel, a re-read of the source at the right
-   revision, or a re-run of the failing case, decide it that way and stop. Judgment does not
-   need corroborating when measurement is available; diversity is for what cannot be measured.
+1. **Mechanical ground truth — the strongest lever, and NOT self-validating.** If the claim is
+   decidable by an exit code, a rendered pixel, a re-read of the source at the right revision,
+   or a re-run of the failing case, decide it that way rather than by judgment.
+
+   But an instrument answers the question IT asks, which is not always the question you meant,
+   and it can be perturbed by its own environment. A measurement returning a plausible value
+   with a zero exit code is not therefore correct. Observed failures, all mechanical, all
+   confidently wrong: a process scan truncated by its own `head` and reporting the absence of
+   what sat past the cut; a checksum over concatenated files that differed only because the
+   directory walk ordered them differently, while a file-by-file compare said identical; a
+   file-age filter reading modification time to answer a question about reads; a usage probe
+   that fails precisely when usage is exhausted, which is the condition it exists to report.
+
+   So: **corroborate a consequential measurement with a SECOND one that would fail
+   differently** — a different instrument, a different route to the same fact, a check at the
+   other end of the claim. Agreement between two differently-constructed measurements is
+   evidence; one instrument agreeing with itself is not.
+
+   The trigger is mechanical, not a judgment call, or this clause becomes paralysis: a second
+   measurement is required when the result is CONSEQUENTIAL **and** the instrument was built
+   from the same understanding as the thing it measures — you wrote the probe and the expected
+   answer in the same motion. That is the case where a wrong instrument and a wrong belief
+   agree perfectly. Add a third tell: a measurement that lands exactly where you hoped deserves
+   the second instrument more, not less.
 2. **Method diversity — the strongest lever on what remains.** Have the checks reach the same
    question by genuinely different ROUTES: static reading, dynamic execution, a property or
    proof, fuzzing/adversarial input, differential comparison against a known-good. Two agents
