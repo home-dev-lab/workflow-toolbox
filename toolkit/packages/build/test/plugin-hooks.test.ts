@@ -149,6 +149,44 @@ describe('wt-pilot-guard-hook — self-scoped destructive-action guard', () => {
   // integration branch", and the answer is no for all of them: those are user-gated escalations
   // the spawning session holds. The guard now fails CLOSED — a type created tomorrow is covered
   // without anyone remembering to list it.
+  // A named spawn is rerouted to the in-process-teammate path, which rebuilds the definition and
+  // never reads its `observer:` — the watchdog is silently never attached, and the agent's own
+  // report then honestly says "no observer findings", which reads exactly like a watchdog that
+  // saw nothing. `isolation` excludes the spawn from that path and the pairing survives.
+  // The guard refuses only where the remedy exists: `isolation` itself needs the session cwd to
+  // be inside a git repository, so outside one it says what is lost and allows.
+  const SHAPE_HOOK = GUARD_HOOK.replace('wt-pilot-guard-hook.mjs', 'wt-spawn-shape-guard-hook.mjs')
+  const spawn = (ti: Record<string, unknown>, cwd: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Agent',
+    cwd,
+    tool_input: ti,
+  })
+  // The toolkit dir is inside the repo; the OS temp dir is not.
+  const IN_REPO = process.cwd()
+  const NO_REPO = tmpdir()
+
+  it('spawn-shape: REFUSES a named spawn with no isolation when isolation is available', () => {
+    const r = runHook(SHAPE_HOOK, spawn({ subagent_type: 'pilot', name: 's-x' }, IN_REPO))
+    expect(r.stdout).toContain('deny')
+    expect(r.stdout).toContain('isolation')
+  })
+
+  it('spawn-shape: ALLOWS but warns when isolation is unavailable (cwd outside a git repo)', () => {
+    const r = runHook(SHAPE_HOOK, spawn({ subagent_type: 'pilot', name: 's-x' }, NO_REPO))
+    expect(r.stdout).toContain('systemMessage')
+    expect(r.stdout).not.toContain('deny')
+  })
+
+  it('spawn-shape: SILENT for the safe shapes and for anything else', () => {
+    const named = runHook(SHAPE_HOOK, spawn({ subagent_type: 'pilot', name: 's-x', isolation: 'worktree' }, IN_REPO))
+    const anon = runHook(SHAPE_HOOK, spawn({ subagent_type: 'pilot' }, IN_REPO))
+    const other = runHook(SHAPE_HOOK, { hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: IN_REPO, tool_input: { command: 'ls' } })
+    expect(named.stdout).toBe('')
+    expect(anon.stdout).toBe('')
+    expect(other.stdout).toBe('')
+  })
+
   it('GUARDS an arbitrary subagent type — the scope is "a subagent", not a name list', () => {
     const r = runHook(GUARD_HOOK, pilotBash('git push', 'some-other-agent'))
     expect(r.stdout).toContain('permissionDecision')
