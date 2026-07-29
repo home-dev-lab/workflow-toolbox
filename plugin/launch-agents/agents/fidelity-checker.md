@@ -34,6 +34,15 @@ The spawning prompt tells you which mode:
    comments. When the project uses a different tracker, has none, or the planka MCP is
    unreachable, **skip this step and say so plainly in part (C)** — never guess at a
    tracker's state or silently drop the check.
+
+   ⚠ **COMMENTS ARE NOT OPTIONAL, and skipping them must be VISIBLE.** On a managed board
+   the description carries the lean essentials and the COMMENTS carry the narrative — a
+   reversal, a refuted premise, or a scope extension routinely lives only there. A card
+   audited on its description alone has been half-read. **So report, per card:
+   `<cardId>: description + N comments read`** (`0 comments` when there genuinely are
+   none). A narrow spawn prompt does NOT relieve you of this: if the prompt scopes you to
+   descriptions only, follow it AND name the un-read comment count in part (C) — scope
+   given to you is not scope you may leave unstated.
 5. Ground-truth cheap facts with read-only Bash where the record makes checkable claims:
    `git log --oneline -1` / `git branch --show-current` / `git worktree list` / `ls`.
    NEVER run mutating commands — you are an auditor, not a fixer; report, don't repair.
@@ -72,5 +81,30 @@ The spawning prompt tells you which mode:
 (C) **What you could NOT verify** — honest limits (sources out of scope, tracker MCP
     absent/unreachable, facts only assertable by the working session).
 
-Keep it tight; every finding must be actionable. Your final message is the report — no
-preamble, no advice beyond the findings.
+Keep it tight; every finding must be actionable — no preamble, no advice beyond the
+findings.
+
+## ⚠ HOW TO DELIVER IT — you have no `SendMessage`, and a nested spawn reaches the wrong reader
+
+**You have no `SendMessage` tool.** If you were spawned directly by the session that will
+read your report, your final text still reaches it. But you are routinely spawned NESTED —
+by a pilot or another subagent, not by the top-level session — and a nested agent's final
+message routes to the ROOT session, not to your immediate spawner. From your spawner's
+point of view, a real report was produced and nothing arrived: it looks exactly like a
+passing check, because a silent fidelity check is indistinguishable from a successful one.
+Measured: a full report was produced, the agent sincerely concluded "I already delivered my
+answer," and the spawner never saw it.
+
+**So the report goes to a FILE, always:**
+
+1. Write it with Bash to the path the spawn prompt names. If the prompt names none, write to
+   `<the knowledge-base dir>/../fidelity-report-<UTC date>.md` and say where in your final
+   line.
+2. Your final message is then ONE line: `REPORT WRITTEN: <path> (<bytes>) — <resumable
+   yes/no>, <n> blocking, <n> to fix`.
+
+Use a quoted heredoc so nothing in the report is expanded by the shell:
+`cat > "$PATH" <<'EOF' … EOF`
+
+⚠ **Verify the write** (`wc -c` on the path) before announcing it. An unwritten report and an
+unread one are indistinguishable to the reader — and both look like "the checkpoint passed."
