@@ -293,14 +293,60 @@ range:
   micro-commit separately.
 
 On any fan-out: pin an explicit cheap model for the bulk and reserve the strong model for
-verifiers. If you must cut to a single verifier, cut the COUNT, not the model. The real
-decorrelation lever is a genuinely different model family — or external evidence — never more
-same-model agents: a same-model panel shares the author's own blind spots, so a clean "no
-issues" from it is near-worthless, and that is the reason to reach cross-family, not a
-stylistic preference. A cross-family verifier has no project context, so weight its findings by
-type: high signal on checkable / reproducible-crash issues, low on "this convention is wrong".
-It is input, never an autonomous verdict: you stay the arbiter, and a verdict that contradicts
-your richer in-context read does not auto-win.
+verifiers. If you must cut to a single verifier, cut the COUNT, not the model.
+
+## What actually decorrelates — in this order
+
+Adding agents does not add independence. These levers do, and the ordering is the point:
+each one is worth more than everything below it, so spend the cheap top of the list before
+buying the expensive bottom.
+
+1. **Mechanical ground truth — not a form of diversity at all, and it dominates.** If the
+   claim is decidable by an exit code, a rendered pixel, a re-read of the source at the right
+   revision, or a re-run of the failing case, decide it that way and stop. Judgment does not
+   need corroborating when measurement is available; diversity is for what cannot be measured.
+2. **Method diversity — the strongest lever on what remains.** Have the checks reach the same
+   question by genuinely different ROUTES: static reading, dynamic execution, a property or
+   proof, fuzzing/adversarial input, differential comparison against a known-good. Two agents
+   reading the same code twice is one method run twice, however different their prompts.
+3. **Hypothesis independence.** Require each verifier to construct its OWN explanation of the
+   failure before seeing anyone else's, and to state what it could not verify. A verifier
+   handed a conclusion to check is anchored on it.
+4. **Information diversity.** Different sources, different tools, different slices of the
+   evidence. A shared source list caps coverage at what it happened to include.
+5. **Functional diversity.** Distinct lenses with distinct objectives (correctness, security,
+   performance, does-it-reproduce) rather than N identical reviewers.
+6. **Model-family diversity — one axis among these, not the master lever.** It remains real
+   and worth using, for a documented reason: LLM judges systematically score their own
+   outputs higher AND rate same-family outputs higher — measured over >5000 prompt-completion
+   pairs against expert human annotation across nine judges (arXiv:2508.06709). So a
+   same-family verifier is not merely blind in the same places; it is biased in favour of the
+   work. But a different family does NOT buy independence on every axis: two different
+   families can share a role-level blind spot — severity ranking is the observed one, where
+   one lane flattens it and another is unstable across runs on the same input.
+7. **Temporal re-verification.** Re-check after the fix, against the case that failed, not
+   against the author's account of it.
+8. **Human arbitration** on anything high-risk. The arbiter is not a tiebreaker of last
+   resort; they own the call.
+
+## Never buy independence and then spend it on a debate
+
+Verdicts are collected in PARALLEL and in ISOLATION. The moment one verifier sees another's
+answer, the independence you paid for is gone — and it does not degrade gracefully.
+Inter-agent sycophancy collapses debates into premature consensus before the correct
+conclusion is reached, and measured multi-agent debate under it scores LOWER than a single
+agent on the same task, through distinct debater-driven and judge-driven failure modes
+(arXiv:2509.23055).
+
+So: no sequential rounds where agents read each other, no "reviewer 2 comments on reviewer 1",
+no consensus-seeking step. Aggregate mechanically (majority, or any-critical-wins) and let the
+arbiter resolve the disagreement — disagreement is the signal you were buying, not a defect to
+smooth away before reporting.
+
+A cross-family verifier has no project context, so weight its findings by type: high signal on
+checkable / reproducible-crash issues, low on "this convention is wrong". It is input, never an
+autonomous verdict: you stay the arbiter, and a verdict that contradicts your richer in-context
+read does not auto-win.
 
 ## Breadth is a second, independent axis
 
