@@ -141,8 +141,32 @@ describe('wt-pilot-guard-hook — self-scoped destructive-action guard', () => {
     expect(r.stdout).toBe('')
   })
 
-  it('NO-OPs for a non-pilot subagent', () => {
+  // The scope used to be an allowlist of three pilot type names, and this test asserted a
+  // non-pilot subagent was left alone. That failed OPEN: a byte-identical copy of the pilot
+  // definition under any other name was unguarded, silently — measured 2026-07-29, where the
+  // same `git merge main` was refused for `pilot` and allowed for `pilot-verify`.
+  // The invariant is not "is this a pilot" but "may a SUBAGENT publish, force-push or merge an
+  // integration branch", and the answer is no for all of them: those are user-gated escalations
+  // the spawning session holds. The guard now fails CLOSED — a type created tomorrow is covered
+  // without anyone remembering to list it.
+  it('GUARDS an arbitrary subagent type — the scope is "a subagent", not a name list', () => {
     const r = runHook(GUARD_HOOK, pilotBash('git push', 'some-other-agent'))
+    expect(r.stdout).toContain('permissionDecision')
+    expect(r.stdout).toContain('deny')
+  })
+
+  it('still guards a renamed COPY of a pilot definition (the hole this closed)', () => {
+    const r = runHook(GUARD_HOOK, pilotBash('git merge main', 'pilot-verify'))
+    expect(r.stdout).toContain('deny')
+  })
+
+  it('leaves the MAIN session alone — no agent_id means it holds the gate itself', () => {
+    const r = runHook(GUARD_HOOK, {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push --force public main' },
+      agent_type: '',
+    })
     expect(r.stdout).toBe('')
   })
 

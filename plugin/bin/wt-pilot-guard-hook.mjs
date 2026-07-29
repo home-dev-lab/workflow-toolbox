@@ -37,7 +37,20 @@
 
 import fs from 'node:fs'
 
-const PILOT_AGENTS = new Set(['pilot', 'pilot-orchestrator', 'pilot-watchdog'])
+// ⚠ NOT an allowlist of agent types. It used to be one — `pilot`, `pilot-orchestrator`,
+// `pilot-watchdog` — and that failed OPEN: a copy of the pilot definition under any other name
+// was unguarded, silently. Measured 2026-07-29: the same `git merge main` was refused for
+// `pilot` and allowed for `pilot-verify`, a byte-identical copy.
+//
+// The invariant is not "is this a pilot" — it is "may a SUBAGENT publish, force-push, or merge
+// an integration branch". The answer is no for every one of them: those are user-gated
+// escalations the spawning session holds, never a delegate's to take. So the guard now applies
+// to EVERY subagent and fails CLOSED — a new agent type is covered the day it is created,
+// without anyone remembering to list it.
+//
+// EXEMPT is the escape hatch, deliberately empty. Add a type here only with a written reason:
+// an entry is a hole, and a hole nobody re-reads is how the enumeration failed the first time.
+const EXEMPT_AGENTS = new Set()
 
 function readInput() {
   try {
@@ -108,10 +121,10 @@ function firstViolation(command) {
 
 function main() {
   const input = readInput()
-  // Only OUR pilot subagents. No agent_id ⇒ main session ⇒ not ours ⇒ allow (silent).
+  // Any SUBAGENT. No agent_id ⇒ the main session itself ⇒ it holds the gate, so allow (silent).
   if (!input.agent_id) return
   const agentType = String(input.agent_type || '').split(':').pop()
-  if (!PILOT_AGENTS.has(agentType)) return
+  if (EXEMPT_AGENTS.has(agentType)) return
   if (input.tool_name !== 'Bash') return
   const command =
     input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : ''
