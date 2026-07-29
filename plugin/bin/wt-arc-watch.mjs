@@ -245,10 +245,21 @@ function makeBudget() {
 // the agents already working at arming (the normal case, watcher silent forever);
 // seeding with NOTHING floods at arming and the monitor is stopped. A transcript
 // alive at arming that later goes quiet still fires, which is the case that matters.
+// The same set also suppresses GONE for those transcripts, and that is not an
+// optimisation — it is the same principle applied to the other event. This watcher
+// covers EVERY session of the project (thousands of transcripts on a long-lived
+// one), so ordinary retention cleanup of old sessions deletes transcripts by the
+// directory-full. Reporting those as GONE is technically true and practically
+// misleading: it looks like agents dying, and it buries the one death that matters.
+// A transcript that was alive at arming and then vanishes is still reported.
+const preexistingSilent = new Set()
 {
   const armedAt = Date.now()
   for (const [name, modifiedAt] of previousTranscripts) {
-    if (modifiedAt <= armedAt && armedAt - modifiedAt >= staleMs) announcedStale.add(name)
+    if (modifiedAt <= armedAt && armedAt - modifiedAt >= staleMs) {
+      announcedStale.add(name)
+      preexistingSilent.add(name)
+    }
   }
 }
 
@@ -304,12 +315,14 @@ while (true) {
     if (currentComplete) {
       for (const name of previousTranscripts.keys()) {
         if (currentTranscripts.has(name)) continue
-        if (!announcedGone.has(name)) {
+        // Already silent before this watch began: its deletion is cleanup, not death.
+        if (!announcedGone.has(name) && !preexistingSilent.has(name)) {
           budget.emit(`GONE: ${safeName(name)} — the transcript no longer exists`)
           announcedGone.add(name)
         }
         announcedStale.delete(name)
         announcedFuture.delete(name)
+        preexistingSilent.delete(name)
       }
     } else if (!degraded.has(sessionsRoot)) {
       write('ARC WATCH DEGRADED: partial scan — disappearances not reported this poll')
