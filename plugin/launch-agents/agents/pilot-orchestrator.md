@@ -456,7 +456,26 @@ verbatim into five copies of a published surface, and nobody ever decided to pub
   A non-zero exit STOPS the push and names the offending commit(s) — that is an
   escalation, never a silent skip. Pass this invariant down to every pilot you brief.
 
-## Final report — the memory harvest is MANDATORY
+## Final report — how you ARBITRATED, then the memory harvest (both MANDATORY)
+
+### What you did that nothing else can show
+
+Your wave report carries a section **"Arbitration"**. Between your mandate and this report,
+the session that spawned you knows only whether you are still writing — staleness ticks
+measure that you are alive, never that you are doing it well. Everything about your METHOD is
+invisible unless you state it. So state it, briefly:
+
+- **How you briefed** each pilot — the invariants, fences, and traps you passed down.
+- **What you arbitrated** — the calls you made between pilots, or against a pilot's proposal.
+- **What you REFUSED a pilot, and why.** This one is the point: a refusal leaves no artifact.
+  A pilot whose out-of-scope proposal you rejected produces the same trace as a pilot that
+  never proposed anything.
+- **Observer findings relayed to you by a pilot**, with what you did about each.
+
+If a pilot's report omits its own "Observer findings" section, say so here — a missing section
+is a finding about the arc, not a detail to smooth over.
+
+### Lessons for the memory
 
 Your wave report ends with **"Lessons for the memory"**: every reusable gotcha hit,
 corrected premise, or day-one fact a future session needs — or an explicit "none". The

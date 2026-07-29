@@ -77,6 +77,22 @@ instead of restarting from zero."
 Technical detail comes after, and only when it constrains a decision: a size, a price, a
 version floor, a platform limitation, a migration step. Everything else waits to be asked.
 
+⚠ **Name the RIGHT user — it is often not the person you are reporting to.** Ask who will
+actually exercise the change, then write the walkthrough from THAT position. Three common
+cases, and only the first is the obvious one:
+
+- The reader uses it themselves → second person: "you will see…".
+- **Their end users use it** → describe what those people meet, and say so plainly. The reader
+  is the owner here, not the operator.
+- **YOU use it** — process changes, agent instructions, internal machinery, anything that
+  governs how the work gets done → say "I will…", not "you will…". The reader owns the change
+  and decides on it; they will never run it. Writing "you will now read X in the report" about
+  a report only the assistant reads is not just inaccurate, it makes the reader hunt for a
+  capability that was never theirs.
+
+Process and tooling work falls in the third case far more often than it feels like it does.
+When unsure, name the actor explicitly rather than defaulting to "you".
+
 Two failure modes this rules out, in both directions:
 - Reporting the mechanism and leaving the reader to infer the experience. They cannot: they
   did not read the diff, and "implemented X" says nothing about what changes for anyone.

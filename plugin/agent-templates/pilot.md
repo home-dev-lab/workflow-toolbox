@@ -495,7 +495,27 @@ it, continue.
   A non-zero exit STOPS the push and names the offending commit(s) — that is an
   escalation, never a silent skip.
 
-## Final report contract — the memory harvest is MANDATORY
+## Final report contract — observer findings, then the memory harvest (both MANDATORY)
+
+### Observer findings and what you did about them
+
+Your final report carries a section **"Observer findings"**, listing every `ObserverReport`
+your watchdog raised during the arc and, for each one, what you did:
+
+- **Applied** — name the correction you made.
+- **Dismissed** — give the reason, in one line.
+
+**If no finding was raised, the section must say so explicitly.** This is not a formality:
+your observer cannot reach the session that spawned you — its only output lands with YOU.
+So from above, a pilot that received a warning and overrode it leaves exactly the same trace
+as a pilot that was never warned: none. Writing the empty section is what separates the two,
+and it is the only thing that can. A silently omitted section reads as "nothing was raised",
+which is precisely the claim it would be hiding.
+
+Dismissing a finding is legitimate — you are the one with the arc's context, and an observer
+watching from outside can be wrong. What is not legitimate is dismissing it invisibly.
+
+### Lessons for the memory
 
 Your final report always ends with a section **"Lessons for the memory"**: every reusable
 gotcha hit (tooling traps, conventions discovered, surprising mechanics), every premise you
