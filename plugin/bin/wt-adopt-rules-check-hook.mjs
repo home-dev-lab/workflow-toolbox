@@ -61,12 +61,12 @@ function readInput() {
  *  per-file status lines (`  <file>: <status>`) into a Map<file, status>. Never throws —
  *  a missing/failed child (broken install, no such dir handled fine by install-rules
  *  itself) just yields an empty map, which contributes nothing to the merge. */
-function checkDir(dir) {
+function checkDir(dir, set = 'rules') {
   const map = new Map()
   if (!fs.existsSync(INSTALL_RULES)) return map
   let res
   try {
-    res = spawnSync(process.execPath, [INSTALL_RULES, '--check', '--set', 'rules', '--dir', dir], {
+    res = spawnSync(process.execPath, [INSTALL_RULES, '--check', '--set', set, '--dir', dir], {
       encoding: 'utf8',
       timeout: 5_000,
     })
@@ -103,29 +103,38 @@ function mergeFile(a, b) {
   return RANK[ba] <= RANK[bb] ? ba : bb
 }
 
-function buildMessage(perFile, installCmd) {
+function buildMessage(perFile, installCmd, set = 'rules', event = 'SessionStart') {
   const buckets = { absent: [], stale: [], edited: [] }
   for (const [file, b] of perFile) {
     if (b !== 'ok') buckets[b].push(file)
   }
+  // ABSENT means opposite things for the two sets. Rules carry the methodology: not having
+  // them is a gap worth naming. Agent copies are OPT-IN — a project that never adopted the
+  // pilot suite made a choice, and nagging it on every session would be a guard that is
+  // always red, which is a guard that gets ignored. For agents, only STALE is a finding.
+  if (set !== 'rules') buckets.absent = []
   if (!buckets.absent.length && !buckets.stale.length && !buckets.edited.length) return null
 
   const lines = []
   if (buckets.absent.length) {
     lines.push(
       `workflow-toolbox rules NOT installed here: ${buckets.absent.sort().join(', ')}. ` +
-        `Plugin rule files never load into a session on their own, so the methodology's ` +
-        `directives are NOT in force for these. Fix: run the ${SKILL_NAME} skill ` +
-        `(or \`node ${installCmd} --set rules --install\`).`,
+        `Plugin ${set} never load into a session on their own, so what they carry is ` +
+        `NOT in force for these. Fix: run the ${SKILL_NAME} skill ` +
+        `(or \`node ${installCmd} --set ${set} --install\`).`,
     )
   }
   if (buckets.stale.length) {
     lines.push(
       `Behind the shipped version: ${buckets.stale.sort().join(', ')}. Refresh via ` +
-        `${SKILL_NAME} (--install) — it will not touch a file you've locally edited.`,
+        `${SKILL_NAME} (\`--set ${set} --install\`) — it will not touch a file you've locally edited.`,
     )
   }
-  if (buckets.edited.length) {
+  // "Locally modified" is a SUPPORTED steady state, not an event. Reporting it at session
+  // start is informative; reporting it after every push would fire forever on the same
+  // unchanged files — and a guard that is always red is a guard that gets ignored, which
+  // manufactures the blind spot it exists to close.
+  if (buckets.edited.length && event !== 'PostToolUse') {
     lines.push(
       `Locally modified (supported, left untouched by any refresh): ${buckets.edited.sort().join(', ')}.`,
     )
@@ -158,18 +167,32 @@ function main() {
   if (!root) return // no cwd in payload → can't locate the project; stay silent
 
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-  const projectDir = path.join(root, '.claude', 'rules')
-  const globalDir = path.join(configDir, 'rules')
 
-  const projectMap = checkDir(projectDir)
-  const globalMap = checkDir(globalDir)
-  if (projectMap.size === 0 && globalMap.size === 0) return // couldn't check either → silent
+  // BOTH managed sets, not just rules. An agent definition goes stale exactly the same way a
+  // rule does — a shipped fix lands, the adopted copy keeps the old text — and the project
+  // copies are the ones that WIN over the plugin's own types, so a stale agent copy keeps
+  // winning silently. Checking only rules left that half unguarded, which was noticed the day
+  // this hook shipped, by a commit that changed agent definitions and drew no warning at all.
+  const SETS = [
+    { set: 'rules', subdir: 'rules' },
+    { set: 'agents', subdir: 'agents' },
+  ]
 
-  const files = new Set([...projectMap.keys(), ...globalMap.keys()])
-  const perFile = new Map()
-  for (const file of files) perFile.set(file, mergeFile(projectMap.get(file), globalMap.get(file)))
+  const sections = []
+  for (const { set, subdir } of SETS) {
+    const projectMap = checkDir(path.join(root, '.claude', subdir), set)
+    const globalMap = checkDir(path.join(configDir, subdir), set)
+    if (projectMap.size === 0 && globalMap.size === 0) continue // couldn't check → skip this set
 
-  const message = buildMessage(perFile, INSTALL_RULES)
+    const files = new Set([...projectMap.keys(), ...globalMap.keys()])
+    const perFile = new Map()
+    for (const file of files) perFile.set(file, mergeFile(projectMap.get(file), globalMap.get(file)))
+
+    const built = buildMessage(perFile, INSTALL_RULES, set, event)
+    if (built) sections.push(built)
+  }
+
+  const message = sections.length ? sections.join('\n') : null
   if (!message) return // everything adopted & current somewhere → silent
 
   // After a push, the reader needs to know WHY they are being told now: they just moved
