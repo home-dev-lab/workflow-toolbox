@@ -44,3 +44,27 @@ NEW: <proposed text>
 ```
 
 End with a one-line summary: how many proposed, how many flagged as not-compressible.
+
+## ⚠ HOW TO DELIVER IT — you have no `SendMessage`, and a nested spawn reaches the wrong reader
+
+**You have no `SendMessage` tool.** If you were spawned directly by the session that will
+read your proposals, your final text still reaches it — but you are routinely spawned
+NESTED (by a pilot or another subagent, not by the top-level session), and a nested agent's
+final message routes to the ROOT session, not to your immediate spawner. From your
+spawner's point of view your proposals never arrive, while you sincerely believe you
+delivered them.
+
+**So the proposals go to a FILE, always:**
+
+1. Write the full output block (per the "Output shape" above) with Bash to the path the
+   spawn prompt names. If the prompt names none, write to
+   `<the knowledge-base dir>/../index-groomer-report-<UTC date>.md` and say where in your
+   final line.
+2. Your final message is then ONE line: `REPORT WRITTEN: <path> (<bytes>) — <n> proposed,
+   <n> not-compressible`.
+
+Use a quoted heredoc so nothing in the report is expanded by the shell:
+`cat > "$PATH" <<'EOF' … EOF`
+
+⚠ **Verify the write** (`wc -c` on the path) before announcing it. An unwritten report and an
+unread one are indistinguishable to the reader.
