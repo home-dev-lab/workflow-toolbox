@@ -78,7 +78,9 @@ agent.** An earlier hypothesis ("the LAUNCHER — main vs. teammate — governs 
 refuted by a forensic pass using the right instrument (`observer-ref` in the OBSERVED's own
 transcript + real `ObserverReport` tool calls in `subagents/`, never a count of what arrived
 at an inbox — the original mistake: reports existed and never reached their addressee). The
-real variable is the SPAWN MODE: a NAMED (`in_process_teammate`) spawn never attaches; an
+real variable is the SPAWN MODE: a NAMED (`in_process_teammate`) spawn never attaches — and
+that same path also drops the observed agent's `disallowedTools` fence entirely (harness
+source, 2026-07-29), so a named spawn is less guarded than it looks in more ways than one; an
 ASYNC spawn (anonymous, including one launched by `main` via the Agent tool) attaches
 reliably. `pilot-orchestrator` launched via `pilot-wave` IS an async, anonymous spawn — the
 attaching mode, giving a real mechanistic reason to expect this pairing works here. If you

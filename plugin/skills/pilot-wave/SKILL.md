@@ -97,6 +97,32 @@ user when it is ambiguous. For a single named card, skip straight to a `pilot`.
 
 ## Step 3 — compose the spawn prompt (with model elevation)
 
+⚠ **Do NOT pass a `name` to a pilot or orchestrator spawn.** In a session that already has
+addressable teammates, a named spawn is routed down the in-process-teammate path, and that
+path rebuilds the agent definition instead of using it. Read from the harness source (CLI
+2.1.220) and consistent with what the pilot definitions already record about observers:
+
+| The definition declares | What survives a named spawn on that path |
+|---|---|
+| `observer:` (the watchdog pairing) | **dropped** — never read |
+| `disallowedTools` (the force-push / push-to-main / publish / merge fence) | **dropped** — the key is absent from the rebuilt definition |
+| `permissionMode` | **overwritten** to `default` |
+| the definition's system prompt | kept, but appended to a generic base prompt |
+
+The second row is the one that matters: **a named pilot loses its publication fence**, so the
+only thing standing between it and an irreversible outward-facing action is its own briefing.
+That turns defense-in-depth into a single layer, silently — the spawn succeeds, the agent
+behaves normally, and nothing reports the missing guard.
+
+The condition is narrow (an active team context in the spawning session, and no `isolation`
+or `cwd` passed), which is exactly why it goes unnoticed: the same spawn keeps everything in
+a headless run and loses it in an interactive one. **So do not reason about whether the
+condition holds — just leave `name` off a typed spawn.** Anonymous spawns attach observers
+reliably and keep their fences.
+
+If you need to address the agent later, `SendMessage` reaches an anonymous spawn by its agent
+id, which the spawn result gives you.
+
 Spawn the orchestrator (wave) or pilot (single card) via the Agent tool. **Elevate the model
 AT SPAWN**: the shipped agent definitions deliberately OMIT a `model:` field. With no pin, the
 agent inherits the SESSION's own model — which is available by construction, because it is the

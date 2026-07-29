@@ -199,7 +199,9 @@ zero" gap this suite had. Two limitations, stated here rather than assumed away:
   measurement's mistake: reports existed and never reached their addressee, which reads
   identically to "no report produced" if you only count arrivals). The real variable is the
   SPAWN MODE: a NAMED (`in_process_teammate`) spawn never attaches an observer (0 attached
-  on a large sample); an ASYNC spawn (an anonymous sub-agent — including one launched by
+  on a large sample) — and, established from the harness source on 2026-07-29, that same
+  path also DROPS `disallowedTools` and forces `permissionMode` to `default`, so a named
+  pilot loses its force-push / push-to-main / publish fence too, not just its watchdog; an ASYNC spawn (an anonymous sub-agent — including one launched by
   `main` itself via the Agent tool) attaches reliably (near-total attach rate on the same
   sample). `pilot-orchestrator` launched through the standard `pilot-wave` skill IS an async,
   anonymous spawn — the attaching mode. So there is now a real MECHANISTIC reason to expect
