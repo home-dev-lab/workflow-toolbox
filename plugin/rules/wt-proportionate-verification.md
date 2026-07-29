@@ -52,6 +52,26 @@ buying the expensive bottom.
    question by genuinely different ROUTES: static reading, dynamic execution, a property or
    proof, fuzzing/adversarial input, differential comparison against a known-good. Two agents
    reading the same code twice is one method run twice, however different their prompts.
+
+   **MUTATION is the sharpest of these routes: the only way to know a check CAN fail is to make
+   it fail.** A test written from the same understanding as the code agrees with the code's
+   mistakes — it goes green on the very bug it was meant to catch, and its green is then
+   evidence of nothing. So, on a copy outside the repository, put the defect back (revert the
+   fix, flip the condition, delete the guard) and count which assertions go red. **None red
+   means the suite never covered that defect**, whatever it says today.
+
+   As a REQUIREMENT this rule sets exactly one thing, and it is cheap: **every fix is proven RED
+   in isolation before it is accepted as green.** One revert, one run — seconds, and it converts
+   "the tests pass" into "the test can fail for this reason". A fix whose lock cannot be shown
+   red is not locked; it is decorated.
+
+   Mutating a whole module's invariants to hunt surviving mutants is a genuinely different and
+   much larger commitment (tooling, runtime, a false-positive triage of its own). It is a
+   legitimate thing to choose; it is NOT required here, and adopting the cheap per-fix form is
+   not a down-payment on the expensive one.
+
+   This is the operational answer to "was the failure it prevents actually exercised" — a
+   question a green suite cannot settle about itself.
 3. **Hypothesis independence.** Require each verifier to construct its OWN explanation of the
    failure before seeing anyone else's, and to state what it could not verify. A verifier
    handed a conclusion to check is anchored on it.
@@ -71,6 +91,28 @@ buying the expensive bottom.
    against the author's account of it.
 8. **Human arbitration** on anything high-risk. The arbiter is not a tiebreaker of last
    resort; they own the call.
+
+## Say WHICH axes you actually varied — a ranking nobody cites is decoration
+
+A ladder is only usable by a reader who is told where the work landed on it. So a verification
+report names the axes it actually varied, and the ones it did not. One line is enough:
+"mechanical ground truth + method diversity; same model family; no independent hypothesis."
+
+The failure this closes is specific and runs in BOTH directions, which is why naming the
+strongest axis matters as much as admitting the weakest:
+
+- Report only the WEAK axis you used and stay silent on a STRONG one you also used, and a
+  sound finding gets discounted for a reason that was never true.
+- Report only the STRONG-sounding axis — "a different model family reviewed it" — and the
+  reader credits independence you did not buy.
+
+Both are the same mistake: the reader is left to guess the axis from the shape of the report.
+A cross-family review that found real defects usually found them by METHOD (enumerating
+failure modes, running the thing, reading the source), not by being a different family — say
+that, or the ranking above teaches the wrong lesson to whoever reads the outcome.
+
+State it at the same prominence as the result, exactly like the disclosure of what could not
+be verified. An unstated axis reads as an axis covered.
 
 ## Never buy independence and then spend it on a debate
 
@@ -105,8 +147,8 @@ hypothesis about. A scoped check finds only what it was pointed at, however deep
   narrow, low-risk change can still land on a surface that deserves a full breadth sweep; a
   surface nobody else touches may need only the change's own depth once assessed.
 - Handle a breadth finding like any other finding: fix it in scope, record what is not — never
-  fold an out-of-scope find into a silent extra fix. A code fix earns a test that fails before
-  the fix and passes after, like any other review finding.
+  fold an out-of-scope find into a silent extra fix. Its lock is proven red the same way as any
+  other fix (see MUTATION under method diversity, above) — no separate standard applies here.
 
 This never licenses skipping verification: the gates (test / typecheck / lint by exit code) and
 your own diff-read are unconditional on both axes. When unsure between two rungs, pick the higher
