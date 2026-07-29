@@ -77,10 +77,25 @@ function gitPushViolation(seg) {
   return null
 }
 
+/** Merging an integration branch INTO the pilot's own work — the pilot integrates its branch
+ *  the other way round, and pulling main in mid-arc silently moves the base its gates ran
+ *  against. Covers a bare `main`/`master` and any remote-qualified form. */
+function gitMergeViolation(seg) {
+  const toks = seg.split(/\s+/)
+  const mi = toks.indexOf('merge')
+  if (mi === -1) return null
+  if (toks.slice(0, mi).indexOf('git') === -1) return null // not a `git … merge`
+  const refs = toks.slice(mi + 1).filter((t) => !t.startsWith('-'))
+  const protectedRef = refs.some((r) => /^(?:[A-Za-z0-9._-]+\/)?(?:main|master)$/.test(r))
+  return protectedRef ? 'merging main/master into your branch changes the base your gates ran against' : null
+}
+
 /** The first destructive/forbidden pattern in the command, or null to allow. */
 function firstViolation(command) {
   for (const seg of segments(command)) {
     if (/\b(npm|pnpm|yarn)\s+publish\b/.test(seg)) return 'npm/pnpm/yarn publish is a release action'
+    const merge = gitMergeViolation(seg)
+    if (merge) return merge
     if (/\bkillall\b/.test(seg)) return 'killall is a pattern-kill (kill by exact PID instead)'
     if (/\bpkill\b/.test(seg) && /(-[a-z]*f\b|--full\b)/i.test(seg)) {
       return 'pkill -f is a broad pattern-kill (kill by exact PID instead)'

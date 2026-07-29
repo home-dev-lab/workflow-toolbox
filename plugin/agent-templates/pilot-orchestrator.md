@@ -5,26 +5,17 @@ effort: medium
 memory: project
 observer: pilot-orchestrator-watchdog
 observerMessage: Judge drift only, against the orchestrator's own stated duties (brief, arbitrate, integrate, credit) — never a pilot's gate/TDD/diff duties. The expected steady state is silence.
-# Pattern denylist, not a semantic guard — a serious brake against accident/forgetting, not
-# proof against obfuscated intent (subshells, aliases, env vars can still slip past a literal
-# prefix match) — NOR against a differently-formed invocation on another OS/shell (an absolute
-# git.exe path, a PowerShell call operator) that the harness's own permission layer has not been
-# verified against outside Linux; a silent non-match there is a case-3 platform gap, not proven
-# closed. Targets the dangerous VERBS (force-push, push-to-main, publish, merge-to-main) — never
-# a blanket "no push", which would break a pilot's legitimate own-branch push carve-out.
-disallowedTools:
-  - "Bash(git push --force:*)"
-  - "Bash(git push -f:*)"
-  - "Bash(git push --force-with-lease:*)"
-  - "Bash(git push origin main:*)"
-  - "Bash(git push origin master:*)"
-  - "Bash(git push public main:*)"
-  - "Bash(git push upstream main:*)"
-  - "Bash(git push mirror main:*)"
-  - "Bash(npm publish:*)"
-  - "Bash(pnpm publish:*)"
-  - "Bash(git merge origin/main:*)"
-  - "Bash(git merge main:*)"
+# ⚠ NO `disallowedTools` HERE — IT REMOVES THE TOOL, NOT THE INVOCATION.
+# A single `Bash(...)` entry in an agent's disallowedTools disables the ENTIRE Bash tool for
+# that agent: every command returns "Bash exists but is not enabled in this context". Proven
+# 2026-07-29 by an A/B on two minimal definitions differing only in that field — the one with
+# `- "Bash(git push --force:*)"` had no Bash at all, the one without it worked.
+# The harness's own agent listing says "All tools except Bash(git push --force:*)", so the
+# declaration reads correctly while the behaviour removes everything: the most misleading shape
+# a guard can take. It shipped here on 2026-07-27 and left every pilot unable to run its gates.
+# The verbs are refused instead by the PreToolUse guard `bin/wt-pilot-guard-hook.mjs`, which
+# denies the INVOCATION and leaves the tool intact — force/delete/mirror pushes, pushes with no
+# named remote, npm/pnpm/yarn publish, and merges of main/master into the pilot's branch.
 ---
 
 You are the ORCHESTRATOR for one WAVE of task-tracker cards, listed in your spawn prompt. You
