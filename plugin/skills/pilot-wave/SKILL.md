@@ -97,31 +97,40 @@ user when it is ambiguous. For a single named card, skip straight to a `pilot`.
 
 ## Step 3 — compose the spawn prompt (with model elevation)
 
-⚠ **Do NOT pass a `name` to a pilot or orchestrator spawn.** In a session that already has
-addressable teammates, a named spawn is routed down the in-process-teammate path, and that
-path rebuilds the agent definition instead of using it. Read from the harness source (CLI
-2.1.220) and consistent with what the pilot definitions already record about observers:
+⚠ **A `name` on a typed spawn costs you the observer — unless you also pass `isolation`.**
 
-| The definition declares | What survives a named spawn on that path |
-|---|---|
-| `observer:` (the watchdog pairing) | **dropped** — never read |
-| `disallowedTools` (the force-push / push-to-main / publish / merge fence) | **dropped** — the key is absent from the rebuilt definition |
-| `permissionMode` | **overwritten** to `default` |
-| the definition's system prompt | kept, but appended to a generic base prompt |
+In a session that already has addressable teammates, a named spawn is routed down the
+in-process-teammate path, and that path **rebuilds** the agent definition instead of using it:
+the `observer:` pairing is never read, `permissionMode` is overwritten, and the definition's
+system prompt survives only as an appendix to a generic base prompt. Read from the harness
+source (CLI 2.1.220) and confirmed by measurement.
 
-The second row is the one that matters: **a named pilot loses its publication fence**, so the
-only thing standing between it and an irreversible outward-facing action is its own briefing.
-That turns defense-in-depth into a single layer, silently — the spawn succeeds, the agent
-behaves normally, and nothing reports the missing guard.
+The condition is narrow and invisible at the moment you spawn — the same call keeps everything
+in a headless run and loses the observer in an interactive one — so do not reason about
+whether it holds. **Two shapes are safe, and both were verified end to end:**
 
-The condition is narrow (an active team context in the spawning session, and no `isolation`
-or `cwd` passed), which is exactly why it goes unnoticed: the same spawn keeps everything in
-a headless run and loses it in an interactive one. **So do not reason about whether the
-condition holds — just leave `name` off a typed spawn.** Anonymous spawns attach observers
-reliably and keep their fences.
+| Shape | Observer | Tools | Your name visible |
+|---|---|---|---|
+| anonymous (no `name`) | attached | intact | no |
+| `name` **+** `isolation` | **attached** | intact | **yes** |
+| `name` alone | **dropped** | intact | yes |
 
-If you need to address the agent later, `SendMessage` reaches an anonymous spawn by its agent
-id, which the spawn result gives you.
+`isolation` keeps the spawn on the normal path (the harness's own condition excludes it), so
+naming is free again as long as it travels with it. Measured: a named+isolated pilot got its
+watchdog 4 seconds after spawn, ran Bash, and had the destructive-action guard refuse a
+publish attempt.
+
+Two practical notes on `isolation`, both measured:
+
+- It puts the agent in a worktree of the repo, and **the agent can still create its own**
+  worktree on top if its brief calls for one — nested creation works and cleans up. In most
+  cases it no longer needs to.
+- It requires the **spawning session's** working directory to be inside a git repository, not
+  the repo you are targeting. On an umbrella project holding several repos, a spawn succeeds
+  or fails depending on where the shell happens to be; the failure is explicit, not silent.
+
+If you spawn anonymously, `SendMessage` still reaches the agent by the agent id the spawn
+result gives you.
 
 Spawn the orchestrator (wave) or pilot (single card) via the Agent tool. **Elevate the model
 AT SPAWN**: the shipped agent definitions deliberately OMIT a `model:` field. With no pin, the
