@@ -26,6 +26,13 @@ This is a local developer tool. It has a deliberately small attack surface:
   built from this repository's own source with esbuild, contain no third-party
   network calls, and are designed never to throw (the Stop hook exits cleanly and
   silently on any malformed input rather than blocking your session).
+- **Bundled quota probe** (`bin/wt-quota-probe.mjs`) is read-only with respect to
+  Claude credentials: `wt-quota-watch.mjs` resolves `--probe <path>` first, then
+  `<configDir>/scripts/quota-usage.mjs` if present, else the bundled probe. The
+  bundled probe reads `<configDir>/.credentials.json`, never writes it, uses the
+  token only as an `Authorization` header, and never prints or logs it. Its
+  outbound call is to `https://api.anthropic.com/api/oauth/usage`, an endpoint
+  that is not publicly documented by Anthropic and may change without notice.
 - **Filesystem reads** are scoped to a Workflow run's own journal and transcripts;
   filesystem **writes** (the audit report folder) happen only when you opt in via
   `$DWT_WORKFLOW_LOG_DIR` or `--out`, to a path you choose.

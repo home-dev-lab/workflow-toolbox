@@ -34,6 +34,16 @@ already writes for the Workflow tool.
   toolkit using your existing local Claude Code authentication; nothing leaves
   your machine.
 
+- **Quota watch** (`bin/wt-quota-watch.mjs` + bundled `bin/wt-quota-probe.mjs`)
+  — monitors the account's five-hour and seven-day quota windows. Probe
+  resolution is `--probe <path>` first, then `<configDir>/scripts/quota-usage.mjs`
+  if you already have one, else the bundled probe. The probe only READS
+  `<configDir>/.credentials.json`; it never writes credentials. The access token
+  is used only as an `Authorization` header to
+  `https://api.anthropic.com/api/oauth/usage`, is never printed or logged, and
+  that endpoint is not publicly documented by Anthropic, so it may change or
+  disappear without notice.
+
 ## What it never does
 
 - No telemetry, analytics, crash reporting, or usage tracking.

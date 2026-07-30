@@ -2,11 +2,24 @@
 // Quota watcher for the Monitor tool (persistent: true), shipped as a plugin monitor.
 //
 // WHAT IT WATCHES: the account's five-hour and seven-day usage windows, via a
-// user-supplied PROBE script (default: `<configDir>/scripts/quota-usage.mjs`,
-// overridable with `--probe`). This watcher is deliberately generic — reading
-// a Claude account's real usage percentage depends on internal, undocumented
-// state that varies by install and by account, so that part is left to the
-// user's own probe rather than bundled here. If the probe is missing, this
+// PROBE script. A probe is BUNDLED (`wt-quota-probe.mjs`, same directory); a
+// user probe at `<configDir>/scripts/quota-usage.mjs` takes precedence when it
+// exists, and `--probe` overrides both.
+//
+// WHY BUNDLING IT IS THE RIGHT CALL, AND WHAT IT COSTS. An earlier version of
+// this header claimed the probe could not be shipped because reading real usage
+// "depends on internal state that varies by install and by account". That was
+// wrong, and wrong in the direction that makes a reader give up: what varies is
+// read AT RUNTIME (the active `CLAUDE_CONFIG_DIR`, its credentials), which is
+// exactly what makes the probe portable rather than what prevents it.
+//
+// The real cost is different and worth stating plainly: the usage endpoint is
+// NOT publicly documented by Anthropic. It can change or disappear without
+// notice, and bundled, it then breaks for every user at once instead of for one.
+// That is the accepted trade — a watcher nobody can arm helps no one. The probe
+// reads credentials, never writes them, and never prints the token.
+//
+// If the probe is missing, this
 // script fails LOUD at startup (exit 1, one stdout line) rather than running
 // silently with nothing to report — an armed-but-blind watcher is exactly the
 // failure this file exists to avoid.
@@ -26,7 +39,8 @@
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, writeSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { basename, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 
 const DEFAULT_THRESHOLDS = '80,90,95'
@@ -35,7 +49,8 @@ const DEFAULT_TIMEOUT_SECONDS = 60
 const MAX_PROBE_OUTPUT_BYTES = 64 * 1024
 const MAX_TIMER_SECONDS = Math.floor(0x7fffffff / 1000)
 const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
-const DEFAULT_PROBE = join(CONFIG_DIR, 'scripts', 'quota-usage.mjs')
+const USER_PROBE = join(CONFIG_DIR, 'scripts', 'quota-usage.mjs')
+const BUNDLED_PROBE = join(dirname(fileURLToPath(import.meta.url)), 'wt-quota-probe.mjs')
 const WINDOWS = [
   { key: 'five_hour', label: '5h' },
   { key: 'seven_day', label: '7d' },
@@ -68,11 +83,21 @@ function usageError(message) {
   process.exit(2)
 }
 
+function resolveProbePath(probeOverride) {
+  if (probeOverride) {
+    return { path: probeOverride, source: '--probe override' }
+  }
+  if (existsSync(USER_PROBE)) {
+    return { path: USER_PROBE, source: 'user config probe' }
+  }
+  return { path: BUNDLED_PROBE, source: 'bundled probe' }
+}
+
 function parseArgs(argv) {
   let thresholdsArg = DEFAULT_THRESHOLDS
   let poll = DEFAULT_POLL_SECONDS
   let timeout = DEFAULT_TIMEOUT_SECONDS
-  let probe = DEFAULT_PROBE
+  let probeOverride = null
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -93,7 +118,7 @@ function parseArgs(argv) {
     }
     if (arg === '--probe') {
       if (i + 1 >= argv.length) usageError('wt-quota-watch: missing value for --probe')
-      probe = argv[i + 1]
+      probeOverride = argv[i + 1]
       i += 1
       continue
     }
@@ -117,6 +142,7 @@ function parseArgs(argv) {
 
   if (timeout >= poll) usageError(`wt-quota-watch: invalid --timeout (${timeout}s must be lower than the ${poll}s poll)`)
 
+  const probe = resolveProbePath(probeOverride)
   return { poll, timeout, probe, thresholds }
 }
 
@@ -235,8 +261,8 @@ function sleep(ms) {
 
 const { poll, timeout, probe, thresholds } = parseArgs(process.argv.slice(2))
 
-if (!existsSync(probe)) {
-  writeSync(1, `QUOTA WATCH FAILED: probe not found: ${redact(probe)} — quota is NOT being watched\n`)
+if (!existsSync(probe.path)) {
+  writeSync(1, `QUOTA WATCH FAILED: selected ${probe.source} not found: ${redact(probe.path)} — quota is NOT being watched\n`)
   process.exit(1)
 }
 
@@ -250,11 +276,11 @@ const state = {
   hasReading: false,
 }
 
-writeLine(`QUOTA WATCH ARMED: thresholds=${thresholds.join(',')} poll=${poll}s probe=${basename(probe)}`)
+writeLine(`QUOTA WATCH ARMED: thresholds=${thresholds.join(',')} poll=${poll}s probe=${basename(probe.path)} source=${probe.source}`)
 
 while (true) {
   try {
-    const { stdout: rawJson, stderr: probeStderr, spawnError, timedOut } = await runProbe(probe, timeout * 1000)
+    const { stdout: rawJson, stderr: probeStderr, spawnError, timedOut } = await runProbe(probe.path, timeout * 1000)
 
     if (timedOut) {
       if (!state.probeTimeoutSignaled) {

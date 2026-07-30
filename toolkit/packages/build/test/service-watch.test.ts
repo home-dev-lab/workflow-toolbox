@@ -528,7 +528,7 @@ describe('monitors.json registers the new monitor', () => {
     expect(entry.when).toBe('always')
   })
 
-  it('wt-quota-watch.mjs fails loud, not silently, when its probe is missing', () => {
+  it('wt-quota-watch.mjs fails loud, not silently, when an explicit --probe is missing', () => {
     const QUOTA_WATCH = join(REPO_ROOT, 'plugin/bin/wt-quota-watch.mjs')
     const res = spawnSync(process.execPath, [QUOTA_WATCH, '--probe', join(tmpRoot('wt-quota-watch-'), 'does-not-exist.mjs')], {
       encoding: 'utf8',
@@ -536,6 +536,48 @@ describe('monitors.json registers the new monitor', () => {
     })
     expect(res.status).toBe(1)
     expect(res.stdout).toContain('QUOTA WATCH FAILED')
+    expect(res.stdout).toContain('--probe override')
     expect(res.stdout).toContain('quota is NOT being watched')
+  })
+
+  // The watcher now resolves its probe through THREE levels. The level that matters is the
+  // one nobody exercises by hand: with no user probe, it must land on the BUNDLED file — and
+  // that file must actually be there. A rename or a missed package include would otherwise
+  // surface only at run time, on a user's machine, as a watcher that arms and never reports.
+  it('ships the bundled probe the watcher falls back to', () => {
+    const BUNDLED = join(REPO_ROOT, 'plugin/bin/wt-quota-probe.mjs')
+    expect(existsSync(BUNDLED)).toBe(true)
+    const src = readFileSync(BUNDLED, 'utf8')
+    // Shipped surface: no author-machine paths, and no author-locale date formatting.
+    expect(src).not.toMatch(/\/home\/[a-z]/i)
+    expect(src).not.toContain("'fr-FR'")
+  })
+
+  it('falls back to the bundled probe when the config dir has none', () => {
+    const emptyConfig = tmpRoot('wt-quota-empty-config-')
+    const res = spawnSync(process.execPath, [join(REPO_ROOT, 'plugin/bin/wt-quota-watch.mjs'), '--poll', '5', '--timeout', '1'], {
+      encoding: 'utf8',
+      timeout: 8_000,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: emptyConfig },
+      killSignal: 'SIGKILL',
+    })
+    // It must ARM on the bundled probe — never exit 1 "probe not found", which is what the
+    // old `<configDir>/scripts/quota-usage.mjs`-only default did for every adopter.
+    expect(res.stdout).toContain('QUOTA WATCH ARMED')
+    expect(res.stdout).toContain('source=bundled probe')
+    expect(res.stdout).not.toContain('QUOTA WATCH FAILED')
+  })
+
+  it('prefers a user probe over the bundled one when both exist', () => {
+    const cfg = tmpRoot('wt-quota-user-probe-')
+    mkdirSync(join(cfg, 'scripts'), { recursive: true })
+    writeFileSync(join(cfg, 'scripts', 'quota-usage.mjs'), 'process.exit(2)\n')
+    const res = spawnSync(process.execPath, [join(REPO_ROOT, 'plugin/bin/wt-quota-watch.mjs'), '--poll', '5', '--timeout', '1'], {
+      encoding: 'utf8',
+      timeout: 8_000,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: cfg },
+      killSignal: 'SIGKILL',
+    })
+    expect(res.stdout).toContain('source=user config probe')
   })
 })

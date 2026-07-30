@@ -730,10 +730,16 @@ journaled per-run token costs for each pattern, on a commercial runtime.
 
 This plugin collects no user data, has no telemetry, and transmits nothing about
 you or your conversations. Everything runs locally against files Claude Code
-already writes; the only outbound connection is the `upgrade-canary`'s
-best-effort fetch of the public Claude Code changelog. See [PRIVACY.md](PRIVACY.md)
+already writes. There are exactly two outbound connections, both opt-in by
+component: the `upgrade-canary`'s best-effort fetch of the public Claude Code
+changelog, and the quota monitor's read of your own usage windows. See [PRIVACY.md](PRIVACY.md)
 for the per-component breakdown and [SECURITY.md](SECURITY.md) to report a
-vulnerability.
+vulnerability. The bundled quota monitor `wt-quota-watch.mjs` ships its own
+probe (`plugin/bin/wt-quota-probe.mjs`): resolution is `--probe <path>` first,
+then `<configDir>/scripts/quota-usage.mjs` if present, else the bundled probe.
+That probe only READS `<configDir>/.credentials.json`; it never writes it. Its
+usage endpoint (`https://api.anthropic.com/api/oauth/usage`) is not publicly
+documented by Anthropic and may change without notice.
 
 ## Companion app — Workflow Observatory
 
