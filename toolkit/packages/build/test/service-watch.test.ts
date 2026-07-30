@@ -368,6 +368,22 @@ describe('wt-arc-watch: suppresses emission while the service flag is live, resu
     return dir.replace(/[^A-Za-z0-9-]/g, '-')
   }
 
+  // These tests exercise the SERVICE-FLAG suppression path, not arc-watch's
+  // own delegation gate (see the dedicated describe block below) — so they
+  // must not inherit whatever CLAUDE_CODE_SESSION_ID happens to be set in the
+  // env this test process itself runs under. Running the suite from inside a
+  // live Claude Code session (as opposed to plain CI) leaks a real session id
+  // into spawnSync's `...process.env`, and that id has no matching subagents
+  // dir under the fresh tmp configDir here — the gate would then hold the
+  // watcher silent for the whole sampling window, and the assertions below
+  // would fail for a reason unrelated to what they test. Stripping the var
+  // restores the "no session id known → arm immediately" fallback.
+  function envWithoutSessionId(configDir: string): Record<string, string | undefined> {
+    const env: Record<string, string | undefined> = { ...process.env, CLAUDE_CONFIG_DIR: configDir }
+    delete env.CLAUDE_CODE_SESSION_ID
+    return env
+  }
+
   function makeStaleTranscript(configDir: string, project: string, sessionId: string, agentFile: string) {
     const dir = join(configDir, 'projects', projectSlug(project), sessionId, 'subagents')
     mkdirSync(dir, { recursive: true })
@@ -388,7 +404,7 @@ describe('wt-arc-watch: suppresses emission while the service flag is live, resu
 
     const res = spawnSync(process.execPath, [ARC_WATCH, '--project', project, '--poll', '5', '--stale', '1'], {
       encoding: 'utf8',
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+      env: envWithoutSessionId(configDir),
       timeout: 8_000, // the watcher loops forever; we only sample its early output
     })
     // spawnSync with a timeout kills the process; stdout collected up to the kill is what we check.
@@ -404,7 +420,7 @@ describe('wt-arc-watch: suppresses emission while the service flag is live, resu
     // No flag at all: normal operation, ARMED line must appear promptly.
     const res = spawnSync(process.execPath, [ARC_WATCH, '--project', project, '--poll', '5', '--stale', '1'], {
       encoding: 'utf8',
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+      env: envWithoutSessionId(configDir),
       timeout: 3_000,
     })
     expect(res.stdout).toContain('ARC WATCH ARMED')
@@ -415,6 +431,83 @@ describe('wt-arc-watch: suppresses emission while the service flag is live, resu
   })
 })
 
+describe('wt-arc-watch: gated on THIS session\'s own first delegation, not on process start', () => {
+  // What this protects: 2026-07-30, a read-only relay (front desk) armed
+  // delegated-arc-watch and received a STALE analysis it had no way to act
+  // on, BEFORE it had even received its own role. The manifest can only say
+  // `"when": "always"` (Claude Code's monitor schema has no other trigger —
+  // see the header comment in plugin/bin/wt-arc-watch.mjs), so the fix lives
+  // inside the script: withhold every line, including the ARMED banner,
+  // until THIS session (identified by CLAUDE_CODE_SESSION_ID) has itself
+  // spawned at least one subagent. A session that never delegates then never
+  // emits anything, for its whole lifetime — while a session that DOES
+  // delegate must still always end up covered, however late.
+
+  function projectDir(): string {
+    return tmpRoot('wt-arc-watch-gate-project-')
+  }
+
+  function freshConfigDir(project: string): string {
+    const configDir = join(project, '.claude-config')
+    mkdirSync(configDir, { recursive: true })
+    return configDir
+  }
+
+  function projectSlug(dir: string): string {
+    return dir.replace(/[^A-Za-z0-9-]/g, '-')
+  }
+
+  it('a session with a known id and no delegation yet stays fully silent', () => {
+    const project = projectDir()
+    const configDir = freshConfigDir(project)
+
+    const res = spawnSync(process.execPath, [ARC_WATCH, '--project', project, '--poll', '5', '--stale', '1'], {
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_SESSION_ID: 'relay-session-under-test' },
+      timeout: 3_000, // the watcher loops forever; sampling confirms silence, not exit
+    })
+    expect(res.stdout).toBe('')
+  })
+
+  it('the SAME session delegating mid-run opens the gate and arms live — coverage is never lost', () => {
+    // Real wall-clock time: the gate polls at 5s (the script's own poll-second
+    // minimum), and this test waits out two such polls plus slack.
+    const project = projectDir()
+    const configDir = freshConfigDir(project)
+    const sessionId = 'main-session-under-test'
+    const subagentsDir = join(configDir, 'projects', projectSlug(project), sessionId, 'subagents')
+
+    // Start silent — the session has not delegated yet.
+    // Then, while the SAME watcher process is still running its gate-poll
+    // loop, create the session's own first transcript. `--poll 5` bounds the
+    // gate's own check interval (min(pollSeconds, 30s) per the script), so a
+    // watcher started now must observe the delegation and arm within a few
+    // polls — not require a restart.
+    mkdirSync(subagentsDir, { recursive: true })
+    const res = spawnSync(
+      process.execPath,
+      ['-e', `
+        const { spawn } = require('node:child_process')
+        const child = spawn(process.execPath, [${JSON.stringify(ARC_WATCH)}, '--project', ${JSON.stringify(project)}, '--poll', '5', '--stale', '1'], {
+          env: { ...process.env, CLAUDE_CONFIG_DIR: ${JSON.stringify(configDir)}, CLAUDE_CODE_SESSION_ID: ${JSON.stringify(sessionId)} },
+        })
+        let out = ''
+        child.stdout.on('data', (d) => { out += d })
+        setTimeout(() => {
+          require('node:fs').writeFileSync(${JSON.stringify(join(subagentsDir, 'agent-live.jsonl'))}, '{}')
+        }, 500)
+        setTimeout(() => {
+          child.kill()
+          process.stdout.write(out)
+          process.exit(0)
+        }, 11_000)
+      `],
+      { encoding: 'utf8', timeout: 14_000 },
+    )
+    expect(res.stdout).toContain('ARC WATCH ARMED')
+  }, 18_000)
+})
+
 describe('monitors.json registers the new monitor', () => {
   it('lists service-status-watch pointing at wt-service-watch.mjs', () => {
     const monitors = JSON.parse(readFileSync(MONITORS_JSON, 'utf8'))
@@ -422,5 +515,27 @@ describe('monitors.json registers the new monitor', () => {
     expect(entry).toBeTruthy()
     expect(entry.command).toContain('wt-service-watch.mjs')
     expect(entry.when).toBe('always')
+  })
+
+  it('lists quota-watch pointing at wt-quota-watch.mjs, armed unconditionally', () => {
+    // Unlike delegated-arc-watch, quota concerns EVERY session unconditionally
+    // (not just ones that delegate), so it keeps "when": "always" rather than
+    // gaining a gate — see the card decision recorded 2026-07-30.
+    const monitors = JSON.parse(readFileSync(MONITORS_JSON, 'utf8'))
+    const entry = monitors.find((m: { name: string }) => m.name === 'quota-watch')
+    expect(entry).toBeTruthy()
+    expect(entry.command).toContain('wt-quota-watch.mjs')
+    expect(entry.when).toBe('always')
+  })
+
+  it('wt-quota-watch.mjs fails loud, not silently, when its probe is missing', () => {
+    const QUOTA_WATCH = join(REPO_ROOT, 'plugin/bin/wt-quota-watch.mjs')
+    const res = spawnSync(process.execPath, [QUOTA_WATCH, '--probe', join(tmpRoot('wt-quota-watch-'), 'does-not-exist.mjs')], {
+      encoding: 'utf8',
+      timeout: 3_000,
+    })
+    expect(res.status).toBe(1)
+    expect(res.stdout).toContain('QUOTA WATCH FAILED')
+    expect(res.stdout).toContain('quota is NOT being watched')
   })
 })

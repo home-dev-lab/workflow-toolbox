@@ -10,5 +10,11 @@
     "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-service-watch.mjs",
     "description": "Anthropic service-status watch — reports when the Claude API/Claude Code goes degraded or recovers, and flags other monitors to fall silent meanwhile",
     "when": "always"
+  },
+  {
+    "name": "quota-watch",
+    "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-quota-watch.mjs",
+    "description": "Account quota watch — reports five-hour/seven-day usage crossing a threshold and window resets, so a long delegated arc gets a wake-up before hitting the wall",
+    "when": "always"
   }
 ]

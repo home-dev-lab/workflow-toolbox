@@ -17,6 +17,31 @@
 // Every line goes to STDOUT: the monitor mechanism reads stdout only, so a
 // failure written to stderr would be indistinguishable from this watcher never
 // having been armed.
+//
+// GATED ON THIS SESSION'S OWN FIRST DELEGATION, not on session start. The
+// manifest can only declare `"when": "always"` — Claude Code's monitor schema
+// accepts no other trigger (confirmed against the installed CLI: `when` is
+// `"always"` or `"on-skill-invoke:<skill>"`, and delegation is not a skill
+// invocation) — so every session that loads this plugin used to start this
+// watcher, including a read-only relay that never spawns a subagent and can
+// do nothing with a STALE/GONE event. A relay measured 2026-07-30 armed
+// before it even received its own role.
+//
+// The fix does not try to answer "am I a main session?" — that information
+// does not exist yet when the manifest runs, so no heuristic can read it
+// (the relay above proved this: its role arrived AFTER the ARMED banner).
+// Instead it answers a question that IS observable: "has THIS session
+// delegated anything yet?" The process starts immediately either way (so a
+// session that delegates within the gate's poll interval is never at risk of
+// missing coverage), but withholds every stdout line — including the ARMED
+// banner itself — until this session's own subagent transcript directory
+// (keyed by CLAUDE_CODE_SESSION_ID, present in this process's own env) shows
+// at least one transcript. A session that never delegates then never emits
+// anything, for its whole lifetime, without ever risking the failure mode
+// that matters most: it NEVER self-terminates while waiting, so a session
+// that delegates an hour in is still covered — unlike a fixed-idle-timeout
+// self-exit would be, since nothing rearms a monitor mid-session once it has
+// exited (monitors only (re)arm at session start or plugin reload).
 
 import { lstat, readdir } from 'node:fs/promises'
 import { writeSync } from 'node:fs'
@@ -131,6 +156,31 @@ function projectSlug(dir) {
 
 const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude')
 const sessionsRoot = path.join(configDir, 'projects', projectSlug(projectDir))
+
+// The gate this file's header describes: has THIS session (identified by the
+// env var the harness sets on every process it spawns, monitors included)
+// delegated at least once? `currentSessionId` empty means the check cannot be
+// made — fail toward coverage (arm immediately) rather than toward silence.
+const currentSessionId = process.env.CLAUDE_CODE_SESSION_ID || ''
+const GATE_POLL_MS = Math.min(pollSeconds * 1000, 30_000)
+
+async function ownSessionHasDelegated() {
+  if (!currentSessionId) return true
+  try {
+    const entries = await readdir(path.join(sessionsRoot, currentSessionId, 'subagents'), { withFileTypes: true })
+    return entries.some((entry) => entry.isFile() && /^agent-.+\.jsonl$/.test(entry.name))
+  } catch (error) {
+    // No subagents dir yet is the normal "hasn't delegated" case. Any other
+    // error (permissions, a transient mount blip) must not block arming
+    // behind a check that cannot be answered — fail toward coverage.
+    if (error?.code === 'ENOENT') return false
+    return true
+  }
+}
+
+while (!(await ownSessionHasDelegated())) {
+  await wait(GATE_POLL_MS)
+}
 
 // Transcripts live at <sessionsRoot>/<sessionId>/subagents/agent-*.jsonl. The
 // session ids are not known in advance, so each pass re-enumerates them: a
