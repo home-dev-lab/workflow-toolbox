@@ -4,5 +4,11 @@
     "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-arc-watch.mjs --poll 60 --stale 10",
     "description": "Delegated-arc watch — reports a subagent transcript that stopped growing or disappeared",
     "when": "always"
+  },
+  {
+    "name": "service-status-watch",
+    "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-service-watch.mjs",
+    "description": "Anthropic service-status watch — reports when the Claude API/Claude Code goes degraded or recovers, and flags other monitors to fall silent meanwhile",
+    "when": "always"
   }
 ]

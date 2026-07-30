@@ -22,12 +22,24 @@ import { lstat, readdir } from 'node:fs/promises'
 import { writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
+import { isServiceDegraded } from './lib/service-flag.mjs'
 
 const MAX_TIMER_MS = 0x7fffffff
 const MAX_POLL_SECONDS = Math.floor(MAX_TIMER_MS / 1_000)
 const MAX_STALE_MINUTES = Math.floor(MAX_TIMER_MS / 60_000)
 
+// Set once per poll (see the main loop) from the shared service-degraded flag
+// (see plugin/bin/wt-service-watch.mjs). While true, `write()` drops every
+// line — but ONLY the emission: every Set/Map this file tracks (transcripts,
+// announced-* sets, reports) keeps updating underneath exactly as it always
+// has. That is what makes recovery backlog-free — nothing is queued during
+// the blackout, so lifting the flag just resumes normal diffing from
+// whatever the state already is, instead of dumping everything that was
+// suppressed.
+let suppressEmission = false
+
 function write(line) {
+  if (suppressEmission) return
   process.stdout.write(`${line}\n`)
 }
 
@@ -267,6 +279,10 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+// Checked before the very first line too — a service outage already live at
+// arming time must suppress the ARMED banner exactly like every later line.
+suppressEmission = Boolean(await isServiceDegraded())
+
 write(`ARC WATCH ARMED: stale=${staleMinutes}min poll=${pollSeconds}s tracking=${previousTranscripts.size} transcript(s)`)
 if (announcedStale.size > 0) {
   write(`ARC WATCH BASELINE: ${announcedStale.size} transcript(s) were already silent at arming and are not tracked`)
@@ -276,6 +292,12 @@ if (!previousComplete) {
 }
 
 while (true) {
+  // Re-checked every poll: a service outage can start or end between polls,
+  // and the flag itself expires — a stale read would either blind this
+  // watcher past the outage or resume it too early. Only emission is gated
+  // (see `write()` above); the scan below still runs unconditionally.
+  suppressEmission = Boolean(await isServiceDegraded())
+
   let currentTranscripts
   let currentComplete = true
   let currentReports
