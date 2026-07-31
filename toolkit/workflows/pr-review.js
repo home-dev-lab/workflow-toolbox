@@ -2320,6 +2320,9 @@ ${renderClaim(claim)}`;
     required: ["verdict", "summary"],
     additionalProperties: false
   };
+  function summarizeCoverageGap(missing) {
+    return `Review coverage incomplete: ${missing.join(", ")} did not return. Rerun the named missing lens or resume the run before trusting an approval verdict.`;
+  }
   var READ_ONLY_GIT = "Inspect via READ-ONLY git only \u2014 `git show <sha>:<path>`, `git diff <range>`, `git log` \u2014 NEVER `git checkout` / `git reset` / `git restore` / `git clean` (they mutate the shared working tree and will be denied).";
   function actPrompt(category, summaryAsk, extraTaskLine) {
     return (target) => `You are reviewing a ${category} change.
@@ -2483,6 +2486,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     const warnings = [];
     let reviewersSpawned = 0;
     let dropped = 0;
+    const returnedLenses = [];
     const lensTrails = [];
     const classifyEffort = resolveEffort(input.effort?.["classify"], CLASSIFY_EFFORT);
     const routeActEffort = resolveEffort(input.effort?.["route"], ROUTE_ACT_EFFORT);
@@ -2677,6 +2681,7 @@ Return your findings across ALL lenses combined. Each finding: \`{ title, file, 
             ...reviewModel !== void 0 ? { model: reviewModel } : {}
           }
         );
+        if (result2 !== null) returnedLenses.push(lens);
         return result2;
       }
       const lensInstructions = lensInstructionsFor(lens);
@@ -2715,6 +2720,7 @@ Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'
           ...reviewModel !== void 0 ? { model: reviewModel } : {}
         }
       );
+      if (result !== null) returnedLenses.push(lens);
       return result;
     };
     const verifyStage = async (prev, originalItem) => {
@@ -2779,6 +2785,13 @@ ${READ_ONLY_GIT}`,
       reviewStage,
       verifyStage
     );
+    const launchedLenses = [...reviewItems];
+    const missingLenses = launchedLenses.filter((lens) => !returnedLenses.includes(lens));
+    const coverage = missingLenses.length > 0 ? {
+      launched: launchedLenses,
+      returned: [...returnedLenses],
+      missing: missingLenses
+    } : void 0;
     const allVerifiedFindings = [];
     for (const item of pipelineResults) {
       if (item === null) {
@@ -2835,10 +2848,12 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
         "pr-review: synthesis agent failed \u2014 unable to produce a verdict. Use resumeFromRunId to retry from the Synthesize phase (reviewed findings are cached)."
       );
     }
+    const verdict = coverage === void 0 ? synthesisAgent.verdict : "incomplete";
+    const summary = coverage === void 0 ? synthesisAgent.summary : summarizeCoverageGap(coverage.missing);
     return {
       category,
-      verdict: synthesisAgent.verdict,
-      summary: synthesisAgent.summary,
+      verdict,
+      summary,
       mode: input.mode,
       findings: outputFindings,
       // Reviewer routing outcome: the pure identifier actually used (null =
@@ -2852,6 +2867,7 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
       provenanceDocs,
       provenanceSource,
       coverageSurfaces,
+      ...coverage !== void 0 ? { coverage } : {},
       stats: {
         reviewersSpawned,
         findingsRaw,

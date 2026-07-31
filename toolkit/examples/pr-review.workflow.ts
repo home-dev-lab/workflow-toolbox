@@ -296,6 +296,13 @@ const SYNTHESIS_SCHEMA = {
 
 type SynthesisOutput = FromSchema<typeof SYNTHESIS_SCHEMA>
 
+function summarizeCoverageGap(missing: readonly string[]): string {
+  return (
+    `Review coverage incomplete: ${missing.join(', ')} did not return. ` +
+    'Rerun the named missing lens or resume the run before trusting an approval verdict.'
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Read-only git constraint — interpolated into every prompt below that asks an
 // agent to inspect a change. Prevents agents from reaching for destructive git
@@ -400,7 +407,7 @@ interface VerifiedFinding {
 
 interface PrReviewOutput {
   category: string
-  verdict: 'approve' | 'request-changes'
+  verdict: 'approve' | 'request-changes' | 'incomplete'
   summary: string
   /** The resolved mode this run executed — 'full' (default/omitted) or
    *  'single-verifier'. See the `mode` field's doc comment on PrReviewInput. */
@@ -443,6 +450,13 @@ interface PrReviewOutput {
    *  alignment lens and the mechanical gates cover that path). Observability
    *  guard against silent disarm, same class as provenanceSource. */
   coverageSurfaces: readonly string[]
+  /** Present ONLY when one or more launched review lenses returned nothing.
+   *  Full-coverage runs omit it entirely to keep their output unchanged. */
+  coverage?: {
+    launched: readonly string[]
+    returned: readonly string[]
+    missing: readonly string[]
+  }
   stats: {
     reviewersSpawned: number
     findingsRaw: number
@@ -702,6 +716,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   const warnings: string[] = []
   let reviewersSpawned = 0
   let dropped = 0
+  const returnedLenses: string[] = []
   // One entry per lens whose verifyStage actually ran adversarialVerification
   // (a dropped reviewer or an empty findings list contributes nothing) —
   // folded into envelope.trail via collectTrail at Synthesize time.
@@ -1073,6 +1088,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         },
       )
 
+      if (result !== null) returnedLenses.push(lens)
       return result
     }
 
@@ -1110,6 +1126,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       },
     )
 
+    if (result !== null) returnedLenses.push(lens)
     return result
   }
 
@@ -1191,6 +1208,16 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     reviewStage,
     verifyStage,
   )
+
+  const launchedLenses = [...reviewItems]
+  const missingLenses = launchedLenses.filter((lens) => !returnedLenses.includes(lens))
+  const coverage = missingLenses.length > 0
+    ? {
+      launched: launchedLenses,
+      returned: [...returnedLenses],
+      missing: missingLenses,
+    }
+    : undefined
 
   // Collect verified findings across all lenses
   const allVerifiedFindings: Array<VerifiedClaim<FindingsOutput['findings'][number]>> = []
@@ -1280,10 +1307,13 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     )
   }
 
+  const verdict = coverage === undefined ? synthesisAgent.verdict : 'incomplete'
+  const summary = coverage === undefined ? synthesisAgent.summary : summarizeCoverageGap(coverage.missing)
+
   return {
     category,
-    verdict: synthesisAgent.verdict,
-    summary: synthesisAgent.summary,
+    verdict,
+    summary,
     mode: input.mode,
     findings: outputFindings,
     // Reviewer routing outcome: the pure identifier actually used (null =
@@ -1297,6 +1327,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     provenanceDocs,
     provenanceSource,
     coverageSurfaces,
+    ...(coverage !== undefined ? { coverage } : {}),
     stats: {
       reviewersSpawned,
       findingsRaw,

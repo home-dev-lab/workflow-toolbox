@@ -239,9 +239,7 @@ describe('pr-review happy path', () => {
 // ---------------------------------------------------------------------------
 
 describe('pr-review null reviewer handling', () => {
-  it('drops a null reviewer and counts it in warnings/stats, but completes', async () => {
-    let reviewerCallCount = 0
-
+  it('makes approve unreachable and names the missing lens when a launched reviewer returns nothing', async () => {
     const rt = new FakeRuntime({
       onAgent: ({ prompt }: { prompt: string; index: number }) => {
         const p = prompt.toLowerCase()
@@ -256,15 +254,10 @@ describe('pr-review null reviewer handling', () => {
           return { verdict: 'approve', summary: 'No critical issues' }
         }
 
-        // (3) Reviewer stage — first reviewer returns null
+        // (3) Reviewer stage — fabricate a non-return for one NAMED lens.
         if (p.includes('you are a specialized code reviewer')) {
-          reviewerCallCount++
-          if (reviewerCallCount === 1) return null // first reviewer dies
-          return {
-            findings: [
-              { title: 'Test finding', file: 'src/foo.ts', severity: 'low', detail: 'Details here' },
-            ],
-          }
+          if (p.includes('**root-cause**')) return null
+          return { findings: [] }
         }
 
         // (4) Act stage (change summary)
@@ -285,9 +278,53 @@ describe('pr-review null reviewer handling', () => {
 
     // Composition must complete
     expect(result).toHaveProperty('verdict')
+    expect(result.verdict).toBe('incomplete')
+    expect(result.verdict).not.toBe('approve')
+    expect(result.coverage).toEqual({
+      launched: ['root-cause', 'regression-risk', 'test-coverage', 'maintainability'],
+      returned: ['regression-risk', 'test-coverage', 'maintainability'],
+      missing: ['root-cause'],
+    })
 
-    // dropped counter must reflect the null reviewer
+    // dropped counter must still reflect the null reviewer
     expect(result.stats.dropped).toBeGreaterThan(0)
+  })
+
+  it('keeps the full-coverage output clean and unchanged when every launched lens returns', async () => {
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string; index: number }) => {
+        const p = prompt.toLowerCase()
+
+        if (p.includes('adversarially verify')) {
+          return { verdict: 'confirmed', reason: 'Looks right' }
+        }
+
+        if (p.includes('synthesizing a code review')) {
+          return { verdict: 'approve', summary: 'No critical issues' }
+        }
+
+        if (p.includes('you are a specialized code reviewer')) {
+          return { findings: [] }
+        }
+
+        if (p.includes('you are reviewing a')) {
+          return { summary: 'Bugfix summary with enough detail', riskAreas: ['core'], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
+        }
+
+        if (p.includes('classify it into exactly one category')) {
+          return { category: 'bugfix' }
+        }
+
+        return { summary: 'Default summary', riskAreas: [], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
+      },
+    })
+
+    const result = await wf.run(rt, JSON.stringify({ target: 'feature-branch' }))
+
+    expect(result.verdict).toBe('approve')
+    expect(result.summary).toBe('No critical issues')
+    expect(result.warnings).toEqual([])
+    expect(result).not.toHaveProperty('coverage')
   })
 })
 
