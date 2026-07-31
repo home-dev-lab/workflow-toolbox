@@ -36,17 +36,51 @@
 // caller-supplied TTL faithfully (it already takes one as a parameter) and stay agnostic
 // about who's asking. Deciding HOW MUCH staleness is acceptable is a policy call that
 // belongs to the specific consumer — here, the watcher — not to the shared cache mechanism.
+//
+// SECOND DEFECT, cross-family review (2026-07-31): the ×3-of-poll bound above has NO upper
+// limit — it inherits whatever `--poll` the operator passes. With `--poll 3600`, the
+// tolerance becomes 3 hours: a cache warmed at 79% could sit unrefreshed while real usage
+// crosses 80% and 90% AND the five-hour window resets, and the watcher — trusting a 3-hour-
+// old reading — would never observe any of it, only the post-reset value. A reading older
+// than the window's own dynamics cannot detect anything that happened inside it; scaling
+// the tolerance by the poll interval alone has no bound that prevents this, because nothing
+// ties it to how fast the WATCHED SIGNAL itself can move.
+//
+// THE CAP: the tolerance is also capped at a small, fixed fraction of the SHORTER of the two
+// windows this watcher tracks (the five-hour window — the account's usage windows are five
+// hours and seven days; if a shorter window is ever added to WINDOWS in wt-quota-watch.mjs,
+// update SHORTEST_WATCHED_WINDOW_MS here too). 1/20th of 5h = 15 minutes: short enough that
+// even a maximally-stale cache reading cannot span a meaningful fraction of the window's own
+// reset cadence, so the crossing-then-reset race described above shrinks from "up to 3 hours
+// of blind spot" to "at most 15 minutes, regardless of what --poll is configured". This is
+// deliberately NOT proportional to poll — that is the property that failed. A large --poll
+// still reduces network traffic exactly as intended (SUIVI 2); it can no longer buy an
+// unbounded blind spot as a side effect.
+//
+// Exported so tests can assert against the REAL constant rather than a copy of the number.
 
 import { DEFAULT_CACHE_TTL_MS } from './quota-cache.mjs'
 
 const TOLERANCE_MULTIPLIER = 3
 
+// The account's five-hour usage window — the shorter of the two windows wt-quota-watch.mjs
+// tracks (WINDOWS: five_hour, seven_day). Kept here rather than derived, because this file
+// has no visibility into the watcher's WINDOWS list; see the header comment above for the
+// coupling this creates and what to do if that list ever changes.
+export const SHORTEST_WATCHED_WINDOW_MS = 5 * 60 * 60 * 1000
+
+const MAX_TOLERANCE_FRACTION_OF_SHORTEST_WINDOW = 1 / 20 // 15 min for a 5h window
+
+export const MAX_TOLERANCE_MS = SHORTEST_WATCHED_WINDOW_MS * MAX_TOLERANCE_FRACTION_OF_SHORTEST_WINDOW
+
 /**
  * @param {number} pollSeconds the watcher's configured poll interval, in seconds
  * @returns {number} the maximum age (ms) of a cached reading this watcher will still use
- *   instead of probing live
+ *   instead of probing live — always <= MAX_TOLERANCE_MS, regardless of how large
+ *   pollSeconds is
  */
 export function computeWatcherCacheToleranceMs(pollSeconds) {
   const pollMs = pollSeconds * 1000
-  return Math.max(DEFAULT_CACHE_TTL_MS, pollMs) * TOLERANCE_MULTIPLIER
+  const proportional = Math.max(DEFAULT_CACHE_TTL_MS, pollMs) * TOLERANCE_MULTIPLIER
+  return Math.min(proportional, MAX_TOLERANCE_MS)
 }

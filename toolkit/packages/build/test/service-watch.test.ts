@@ -35,6 +35,7 @@ const QUOTA_WATCH = join(REPO_ROOT, 'plugin/bin/wt-quota-watch.mjs')
 const QUOTA_CACHE_LIB = join(REPO_ROOT, 'plugin/bin/lib/quota-cache.mjs')
 const QUOTA_BACKOFF_LIB = join(REPO_ROOT, 'plugin/bin/lib/quota-backoff.mjs')
 const QUOTA_CACHE_TOLERANCE_LIB = join(REPO_ROOT, 'plugin/bin/lib/quota-cache-tolerance.mjs')
+const QUOTA_WINDOW_COMPLETENESS_LIB = join(REPO_ROOT, 'plugin/bin/lib/quota-window-completeness.mjs')
 
 // Vite's own module resolution intercepts a direct dynamic `import()` of a
 // path outside the toolkit project root (it tries to resolve it as a
@@ -131,6 +132,51 @@ function readDefaultCacheTtlMsViaChildProcess(): number {
     { encoding: 'utf8' },
   )
   if (res.status !== 0) throw new Error(`cache-ttl child failed: ${res.stderr}`)
+  return JSON.parse(res.stdout)
+}
+
+function readMaxToleranceMsViaChildProcess(): number {
+  const res = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import { MAX_TOLERANCE_MS } from ${JSON.stringify(pathToFileURL(QUOTA_CACHE_TOLERANCE_LIB).href)};
+       process.stdout.write(JSON.stringify(MAX_TOLERANCE_MS));`,
+    ],
+    { encoding: 'utf8' },
+  )
+  if (res.status !== 0) throw new Error(`max-tolerance child failed: ${res.stderr}`)
+  return JSON.parse(res.stdout)
+}
+
+function readShortestWatchedWindowMsViaChildProcess(): number {
+  const res = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import { SHORTEST_WATCHED_WINDOW_MS } from ${JSON.stringify(pathToFileURL(QUOTA_CACHE_TOLERANCE_LIB).href)};
+       process.stdout.write(JSON.stringify(SHORTEST_WATCHED_WINDOW_MS));`,
+    ],
+    { encoding: 'utf8' },
+  )
+  if (res.status !== 0) throw new Error(`shortest-window child failed: ${res.stderr}`)
+  return JSON.parse(res.stdout)
+}
+
+function hasCompleteWindowsViaChildProcess(windows: unknown): boolean {
+  const res = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import { hasCompleteWindows } from ${JSON.stringify(pathToFileURL(QUOTA_WINDOW_COMPLETENESS_LIB).href)};
+       process.stdout.write(JSON.stringify(hasCompleteWindows(${JSON.stringify(windows)})));`,
+    ],
+    { encoding: 'utf8' },
+  )
+  if (res.status !== 0) throw new Error(`window-completeness child failed: ${res.stderr}`)
   return JSON.parse(res.stdout)
 }
 
@@ -835,8 +881,10 @@ describe('quota-backoff: grows on failure, capped, immediate at zero failures', 
 // -----------------------------------------------------------------------------------
 
 describe('quota-cache-tolerance: the watcher tolerates staleness the hook would not — locks the RELATIONSHIP', () => {
-  it('INVARIANT: tolerance is at least double the poll interval, for any configured poll', () => {
-    for (const pollSeconds of [5, 60, 300, 600, 3600]) {
+  // "Small" polls (below where the window-based cap binds — see the cap block further
+  // down) still show the original poll-proportional relationship from SUIVI 2.
+  it('INVARIANT: for small polls, tolerance is at least double the poll interval', () => {
+    for (const pollSeconds of [5, 60, 300]) {
       const tolerance = computeWatcherCacheToleranceViaChildProcess(pollSeconds)
       expect(tolerance).toBeGreaterThanOrEqual(pollSeconds * 1000 * 2)
     }
@@ -857,10 +905,73 @@ describe('quota-cache-tolerance: the watcher tolerates staleness the hook would 
     const tolerance = computeWatcherCacheToleranceViaChildProcess(pollSeconds)
     expect(tolerance).toBeGreaterThan(pollSeconds * 1000)
   })
+
+  // ---------------------------------------------------------------------------------
+  // Finding 3, cross-family review (2026-07-31): the poll-proportional formula above has
+  // NO upper bound — a large --poll (e.g. 3600s) inflates the tolerance to hours, long
+  // enough for a real threshold crossing AND a window reset to both happen while the
+  // watcher trusts a stale cached reading and never probes. The cap fixes this by pinning
+  // the tolerance to a small, fixed fraction of the SHORTEST window being watched,
+  // regardless of --poll.
+  // ---------------------------------------------------------------------------------
+  it('INVARIANT: tolerance never exceeds MAX_TOLERANCE_MS, no matter how large --poll is', () => {
+    const maxToleranceMs = readMaxToleranceMsViaChildProcess()
+    for (const pollSeconds of [3600, 36_000, 360_000, 3_600_000]) {
+      expect(computeWatcherCacheToleranceViaChildProcess(pollSeconds)).toBeLessThanOrEqual(maxToleranceMs)
+    }
+  })
+
+  it('INVARIANT: MAX_TOLERANCE_MS is itself a SMALL fraction of the shortest watched window, not an arbitrary constant', () => {
+    // "Small" pinned at <=10% here — the lib's own comment states 1/20 (5%); this test
+    // would fail if someone loosened the fraction enough to defeat the point of the cap,
+    // without hard-coding the exact ratio the lib picked.
+    const maxToleranceMs = readMaxToleranceMsViaChildProcess()
+    const shortestWindowMs = readShortestWatchedWindowMsViaChildProcess()
+    expect(maxToleranceMs).toBeLessThanOrEqual(shortestWindowMs * 0.1)
+  })
+
+  it('regression: the exact scenario described in the finding — a large --poll no longer produces an hours-long tolerance', () => {
+    // --poll 3600 (1h) used to yield a 3h tolerance (1h x 3). It must now be capped at
+    // MAX_TOLERANCE_MS, which is materially smaller than what the uncapped formula alone
+    // would have produced.
+    const uncappedWouldBe = 3600 * 1000 * 3
+    const tolerance = computeWatcherCacheToleranceViaChildProcess(3600)
+    expect(tolerance).toBeLessThan(uncappedWouldBe)
+    expect(tolerance).toBe(readMaxToleranceMsViaChildProcess())
+  })
+
+  it('INVARIANT: monotonic non-decreasing then flat at the cap — never exceeds it, never drops below the small-poll floor', () => {
+    let previous = 0
+    for (const pollSeconds of [5, 60, 300, 600, 3600, 36_000, 360_000]) {
+      const tolerance = computeWatcherCacheToleranceViaChildProcess(pollSeconds)
+      expect(tolerance).toBeGreaterThanOrEqual(previous)
+      expect(tolerance).toBeLessThanOrEqual(readMaxToleranceMsViaChildProcess())
+      previous = tolerance
+    }
+  })
+})
+
+describe('quota-window-completeness: a partial reading never counts as success', () => {
+  it('every watched window present -> complete', () => {
+    expect(hasCompleteWindowsViaChildProcess({ five_hour: { pct: 1 }, seven_day: { pct: 1 } })).toBe(true)
+  })
+
+  it.each([
+    ['missing five_hour', { seven_day: { pct: 50 } }],
+    ['missing seven_day', { five_hour: { pct: 50 } }],
+    ['empty object', {}],
+    ['extra unrelated key does not compensate for a missing watched one', { seven_day: { pct: 50 }, weekly_scoped: [] }],
+  ])('%s -> incomplete, never a success', (_label, windows) => {
+    expect(hasCompleteWindowsViaChildProcess(windows)).toBe(false)
+  })
 })
 
 describe('wt-quota-watch.mjs: cache-first probing (the actual 429 fix)', () => {
-  function writeCounterProbe(cfg: string, counterPath: string, behavior: 'always-fail' | 'always-succeed' | 'fail-once-then-succeed') {
+  function writeCounterProbe(
+    cfg: string,
+    counterPath: string,
+    behavior: 'always-fail' | 'always-succeed' | 'fail-once-then-succeed' | 'always-partial',
+  ) {
     mkdirSync(join(cfg, 'scripts'), { recursive: true })
     const body = `
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
@@ -870,13 +981,16 @@ if (existsSync(counterPath)) n = Number(readFileSync(counterPath, 'utf8')) || 0
 n += 1
 writeFileSync(counterPath, String(n))
 const ok = () => process.stdout.write(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, five_hour: { pct: 99, reset_local: '12:00' }, seven_day: { pct: 5, reset_local: 'sam. 01/08 00:00' } }))
+const partial = () => process.stdout.write(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, seven_day: { pct: 5, reset_local: 'sam. 01/08 00:00' } })) // five_hour deliberately missing
 const fail = () => { process.stderr.write('usage endpoint failed: HTTP 429'); process.exit(1) }
 ${
   behavior === 'always-fail'
     ? 'fail()'
     : behavior === 'always-succeed'
       ? 'ok()'
-      : 'if (n === 1) fail(); else ok()'
+      : behavior === 'always-partial'
+        ? 'partial()'
+        : 'if (n === 1) fail(); else ok()'
 }
 `
     writeFileSync(join(cfg, 'scripts', 'quota-usage.mjs'), body)
@@ -940,17 +1054,109 @@ ${
       .map(Number)
   }
 
-  it('a fresh cache suppresses the live probe entirely', async () => {
-    const cfg = tmpRoot('wt-quota-watch-cache-')
+  // -------------------------------------------------------------------------------
+  // Finding 1, cross-family review (2026-07-31): a poisoned/foreign cache file used to be
+  // trusted as the BASELINE (the very first reading), pre-seeding state.fired with
+  // thresholds that never really fired — permanently suppressing the real crossing later.
+  // Attack fixture per the review's own instruction: a hand-written cache with a WRONG,
+  // attacker-controlled value, distinguishable from what the live probe actually returns.
+  // -------------------------------------------------------------------------------
+  it('the BASELINE always comes from a live probe, even with a fresh pre-existing cache (attack fixture)', async () => {
+    const cfg = tmpRoot('wt-quota-watch-baseline-')
+    const counterPath = join(cfg, 'counter.txt')
+    writeCounterProbe(cfg, counterPath, 'always-succeed') // real probe reports 99%
+    // Attacker-controlled cache: a LOW, wrong value that would suppress the real 99%
+    // threshold lines if it were ever allowed to seed the baseline.
+    writeFileSync(
+      join(cfg, '.quota-cache.json'),
+      JSON.stringify({ at: Date.now(), data: { configDir: cfg, five_hour: { pct: 1 }, seven_day: { pct: 1 } } }),
+    )
+
+    const res = await runWatcher(cfg, { maxCycles: 1, sleepLogPath: join(cfg, 'sleeps.log') })
+
+    // The live probe WAS called for the baseline (the poisoned cache was never trusted)...
+    expect(readCounter(counterPath)).toBe(1)
+    // ...and the reported state reflects the REAL 99%, not the attacker's fabricated 1% —
+    // proving the baseline was actually seeded from the live reading, not merely that a
+    // probe happened to run alongside an unused cache.
+    expect(res.stdout).toContain('5h 99%')
+    expect(res.stdout).not.toContain('5h 1%')
+  })
+
+  it('steady state (after a genuine baseline) DOES use a fresh cache and skips the live probe', async () => {
+    const cfg = tmpRoot('wt-quota-watch-baseline-')
     const counterPath = join(cfg, 'counter.txt')
     writeCounterProbe(cfg, counterPath, 'always-succeed')
-    // Pre-seed a fresh, valid cache the watcher should use instead of the probe.
-    writeFileSync(join(cfg, '.quota-cache.json'), JSON.stringify({ at: Date.now(), data: { configDir: cfg, five_hour: { pct: 1 }, seven_day: { pct: 1 } } }))
+    // No pre-existing cache: cycle 1 (baseline) must go live and writes its OWN cache;
+    // cycles 2-3 should then find that self-written cache fresh and skip the network.
+    await runWatcher(cfg, { maxCycles: 3, sleepLogPath: join(cfg, 'sleeps.log') })
 
-    await runWatcher(cfg, { maxCycles: 2, sleepLogPath: join(cfg, 'sleeps.log') })
-
-    expect(readCounter(counterPath)).toBe(0)
+    expect(readCounter(counterPath)).toBe(1)
   })
+
+  // -------------------------------------------------------------------------------
+  // Finding 2, cross-family review (2026-07-31): a reading covering only SOME windows used
+  // to be accepted as success, silently dropping whatever was missing with no DEGRADED
+  // line. Two doors test the SAME defect shape: the live probe returning partial data
+  // (below), and an externally-corrupted cache read in steady state (further below).
+  // -------------------------------------------------------------------------------
+  it('a live probe returning only ONE window is DEGRADED, never a silent partial success', async () => {
+    const cfg = tmpRoot('wt-quota-watch-partial-')
+    const counterPath = join(cfg, 'counter.txt')
+    const sleepLogPath = join(cfg, 'sleeps.log')
+    writeCounterProbe(cfg, counterPath, 'always-partial') // always missing five_hour
+
+    const res = await runWatcher(cfg, { maxCycles: 2, sleepLogPath })
+
+    expect(readCounter(counterPath)).toBe(2) // both cycles hit the probe — never cached, never a baseline
+    expect(res.stdout).toContain('QUOTA WATCH DEGRADED')
+    expect(res.stdout).toContain('missing window(s): five_hour')
+    expect(res.stdout).not.toContain('QUOTA STATUS') // no baseline was ever established
+    // Backoff still applies to this failure class, same as any other DEGRADED cause.
+    expect(readSleepLog(sleepLogPath)).toEqual([10_000, 20_000])
+  })
+
+  it('an externally-corrupted PARTIAL cache in steady state is rejected, forcing a live probe (attack fixture)', async () => {
+    const cfg = tmpRoot('wt-quota-watch-partial-cache-')
+    const counterPath = join(cfg, 'counter.txt')
+    writeCounterProbe(cfg, counterPath, 'always-succeed')
+
+    // This test needs a REAL steady-state cycle boundary to inject the attack between
+    // cycle 1 (which legitimately writes a COMPLETE cache) and cycle 2 (which must reject
+    // whatever is on disk by then) — so it does NOT use the sleep-log seam (which would
+    // collapse the gap to ~0ms) for this run. --poll 5 (the CLI floor) keeps the real wait
+    // small and bounded; the ~800ms injection delay leaves a generous ~4.2s margin before
+    // cycle 2 actually reads the cache, which is what makes this robust under load rather
+    // than a re-run of the counting-race flake this file's tests were rewritten to avoid —
+    // the assertion is exact-count-after-self-exit, not a count sampled inside a window.
+    const res = await new Promise<{ stdout: string; timedOut: boolean }>((resolve) => {
+      const child = spawn(process.execPath, [QUOTA_WATCH, '--poll', '5', '--timeout', '1'], {
+        env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, WT_QUOTA_WATCH_TEST_MAX_CYCLES: '2' },
+      })
+      let stdout = ''
+      child.stdout.on('data', (d) => {
+        stdout += d
+      })
+      const injectAttack = setTimeout(() => {
+        writeFileSync(join(cfg, '.quota-cache.json'), JSON.stringify({ at: Date.now(), data: { configDir: cfg, seven_day: { pct: 50 } } })) // five_hour missing
+      }, 800)
+      const safety = setTimeout(() => {
+        child.kill('SIGKILL')
+        resolve({ stdout, timedOut: true })
+      }, 12_000)
+      child.on('close', () => {
+        clearTimeout(injectAttack)
+        clearTimeout(safety)
+        resolve({ stdout, timedOut: false })
+      })
+    })
+
+    expect(res.timedOut).toBe(false) // self-exited via WT_QUOTA_WATCH_TEST_MAX_CYCLES, as expected
+    // Cycle 1 (baseline, always live) + cycle 2 (steady state, but the on-disk cache was
+    // corrupted to partial in between) — BOTH hit the live probe. If cycle 2 had accepted
+    // the corrupted partial cache, the counter would still read 1.
+    expect(readCounter(counterPath)).toBe(2)
+  }, 15_000)
 
   it('a live probe refills the shared cache in the format the per-turn hook reads', async () => {
     const cfg = tmpRoot('wt-quota-watch-cache-')

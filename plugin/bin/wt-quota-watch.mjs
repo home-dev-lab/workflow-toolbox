@@ -60,6 +60,7 @@ import { homedir } from 'node:os'
 import { readQuotaCache, writeQuotaCacheAtomic, defaultQuotaCachePath } from './lib/quota-cache.mjs'
 import { computeBackoffMs } from './lib/quota-backoff.mjs'
 import { computeWatcherCacheToleranceMs } from './lib/quota-cache-tolerance.mjs'
+import { hasCompleteWindows } from './lib/quota-window-completeness.mjs'
 
 const DEFAULT_THRESHOLDS = '80,90,95'
 const DEFAULT_POLL_SECONDS = 300
@@ -234,6 +235,11 @@ function extractWindows(source) {
   return windows
 }
 
+// FINDING 2 fix (cross-family review, 2026-07-31): hasCompleteWindows (imported above)
+// requires EVERY window this watcher tracks to be present before a reading — cached or
+// freshly probed — counts as usable. A partial reading (some non-empty subset) used to be
+// accepted as success; see lib/quota-window-completeness.mjs for the full rationale.
+
 function readAccountFingerprint(configDir) {
   try {
     if (typeof configDir !== 'string' || configDir.length === 0) return null
@@ -387,16 +393,34 @@ while (true) {
     // hook's own TTL, see lib/quota-cache-tolerance.mjs) — no network call at all. This is
     // what stops N independent watchers/sessions from each hitting the live endpoint on
     // their own schedule.
-    const cachedReading = await readQuotaCache(CACHE_PATH, WATCHER_CACHE_TOLERANCE_MS)
+    //
+    // FINDING 1 fix (cross-family review, 2026-07-31): the cache is NEVER consulted for
+    // the very first reading (`!state.hasReading`) — the BASELINE always comes from a live
+    // probe. That file lives at a fixed, predictable path any process on the machine can
+    // write; "structurally valid JSON with the right shape" is not "authentic", and there
+    // is no cheap way to authenticate it without breaking the hook's format (which stays
+    // unsigned, unauthenticated by design). The danger is specific to the baseline: it
+    // seeds `state.fired`, so a poisoned reading with pct=95 for every window would mark
+    // every threshold as "already crossed" and PERMANENTLY suppress every real crossing at
+    // that level for the rest of this process's life — a silent guard inversion, exactly
+    // the failure class this whole change exists to remove. A poisoned reading consulted
+    // only in STEADY STATE (after a genuine baseline) is lower-risk by comparison: it can
+    // at worst produce one wrong-but-VISIBLE threshold line, self-correcting on the next
+    // real reading — annoying, not silent. So only the baseline is hardened; steady-state
+    // cache trust is unchanged. Argued explicitly, not left implicit: disabling the cache
+    // entirely would defeat SUIVI 1/2 (the whole point of this change); requiring a live
+    // probe for EVERY reading was rejected for the same reason.
+    const cachedReading = state.hasReading ? await readQuotaCache(CACHE_PATH, WATCHER_CACHE_TOLERANCE_MS) : null
     if (cachedReading && cachedReading.fresh) {
       const cachedWindows = extractWindows(cachedReading.data)
-      if (Object.keys(cachedWindows).length > 0) {
+      // FINDING 2 fix: completeness, not mere non-emptiness — see hasCompleteWindows.
+      if (hasCompleteWindows(cachedWindows)) {
         windows = cachedWindows
         sourceData = cachedReading.data
         viaCache = true
       }
-      // A fresh-but-unusable cache (foreign shape, no recognizable window) is NOT trusted
-      // as a reading — falls through to a live probe just like a cold cache would.
+      // A fresh-but-unusable (partial or foreign-shaped) cache is NOT trusted as a
+      // reading — falls through to a live probe just like a cold cache would.
     }
 
     if (!viaCache) {
@@ -458,11 +482,17 @@ while (true) {
 
       const liveWindows = extractWindows(parsed)
 
-      if (Object.keys(liveWindows).length === 0) {
+      // FINDING 2 fix, extended to this door too (not cited by the review, but the SAME
+      // defect shape: a probe returning only ONE window used to be accepted as success,
+      // silently dropping the other — see hasCompleteWindows above). A malformed/legacy
+      // probe script is a realistic way for this to happen even though the shipped probes
+      // always return both windows together from one API response.
+      if (!hasCompleteWindows(liveWindows)) {
         state.consecutiveFailures += 1
         if (!state.probeKoSignaled) {
           state.probeKoSignaled = true
-          writeLine('QUOTA WATCH DEGRADED: probe output INVALID (no usable window) (reported once)')
+          const missing = WINDOWS.filter(({ key }) => !(key in liveWindows)).map(({ key }) => key)
+          writeLine(`QUOTA WATCH DEGRADED: probe output INVALID (missing window(s): ${missing.join(',')}) (reported once)`)
         }
         await sleep(computeBackoffMs(poll, state.consecutiveFailures))
         continue
@@ -547,6 +577,11 @@ while (true) {
     for (const { key, label } of WINDOWS) {
       const windowData = windows[key]
       if (!windowData) {
+        // Defensive only: with hasCompleteWindows() gating both the cache and live-probe
+        // paths above, `windows` always covers every WINDOWS key by the time we reach
+        // here — this branch should be unreachable in normal operation. Kept as a
+        // fail-safe (never a fabricated reading) rather than an assertion that would
+        // crash the watcher on a future change to the gating logic above.
         clearWindowState(state, key)
         continue
       }
