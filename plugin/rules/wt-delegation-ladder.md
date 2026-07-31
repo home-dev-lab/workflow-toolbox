@@ -4,12 +4,19 @@ Route each task to the LOWEST rung that fits, and PIN model + effort at EVERY
 spawn — never let a delegate inherit the session model silently. Heavy mechanical
 work goes DOWN to a cheaper executor; judgment stays UP with you as the arbiter.
 
+- A deterministic predicate (a count, "does this field exist", "did the last turn call X") →
+  code — a script or a grep, no model at all.
 - A question / analysis / arbitration → answer inline, no delegation.
 - One isolated mechanical chore → one throwaway sub-agent (cheap model).
 - One tracked card, full dev loop → an adopted `pilot`.
 - Several cards / a wave → an adopted `pilot-orchestrator` → pilots.
 - A heavy implementation increment of one card → the card’s executor lane.
 - Decorrelated verification of a checkable claim → a genuinely different model family.
+
+**The floor of this ladder is not the cheapest model — it is code.** A question with a
+deterministic answer resolves by script for zero cost, zero latency, and zero ambiguity.
+Routing a deterministic predicate to a model instead is not rigor, it is over-delegation —
+it introduces uncertainty into a question that had none.
 
 Compose a pilot/orchestrator spawn (environment brief + model elevation) via the
 `workflow-toolbox:pilot-wave` skill. The duties that stay non-delegable with your
@@ -28,6 +35,26 @@ itself, and genuinely tiny high-judgment edits you alone can make.
 
 This is a cost-model-neutral PRINCIPLE: which concrete model each rung maps to is
 your account’s business — pin it at spawn. Edit this file freely; it is yours.
+
+## Every delegation hop costs an envelope — depth and chatter multiply it
+
+Each delegation carries a model pass that ingests the input and re-ingests the output of
+what was delegated. Cheap per hop, never free — and it multiplies along three axes:
+
+- **Depth.** main → orchestrator → pilot → executor is already three envelopes before a
+  line of code is written. Do not add a fourth level; if a task seems to need one, the
+  decomposition is wrong, not the depth limit.
+- **Chatter.** Every follow-up message to a live delegate re-runs its envelope and reloads
+  its whole context. Sending five incremental corrections costs about five times one
+  complete brief. The tell: a second clarification to the same delegate within minutes —
+  that is not diligence, it means the first brief was incomplete. Fix the brief; never
+  stack messages on top of it.
+- **Fan-out width.** Each agent in a fan-out pays its own envelope, which is a second,
+  independent reason never to add "one more reviewer to be safe".
+
+Batch guidance into fewer complete messages, and require the same of every coordinator —
+a coordinator reporting per-step instead of per-milestone is paying the envelope to say
+nothing.
 
 ## Picking the tier and effort at each spawn
 
@@ -104,7 +131,7 @@ is not an id such tools accept, and a lookup that finds nothing proves nothing. 
 the completion notification, or arm your own watcher on a real signal (file changes,
 process state) for an independent wake-up.
 
-## Three prohibitions that sharpen the ladder
+## Four prohibitions that sharpen the ladder
 
 1. **Executing a fully-specified design is executor-lane work, not inline work on a strong
    model.** A design that is 100% specified and ratified is the IDEAL profile for the cheapest
@@ -118,6 +145,14 @@ process state) for an independent wake-up.
    executor, which reads for itself — a wrapper that reads everything first burns the
    coordinator-tier budget on work the executor repeats anyway, the same leak family as a
    wrapper answering in the executor's place.
+4. **A wrapper around an external model must never render its verdict itself.** An agent that
+   encapsulates a call to a cross-family CLI or API can answer in that model's place with
+   nothing in the transcript showing the substitution happened — so a verdict attributed to a
+   decorrelated model needs its provenance checked per call, against the execution evidence the
+   call itself produced, never trusted from the wrapper's summary alone. Invoking the external
+   tool directly (rather than through a wrapper) is the recommended form precisely because the
+   invocation is then its own provenance. The prohibition targets the intermediary that can
+   substitute for the model, never the directness of the call.
 
 ## A mandate is re-issued, not assumed
 
@@ -128,6 +163,15 @@ state an open scope plus a mechanical, fail-closed stop condition — not a list
 re-scan for work after each item without waiting to be reissued. Choose the mode
 deliberately at issuance: a fixed list for a bounded batch, an open mandate for a mission
 expected to absorb work created along the way.
+
+## A cost or routing directive with no report-time check does not apply
+
+Stating a delegation or cost policy ("increments go through the cheaper lane by default") is
+not the same as it being followed — a coordinator can silently ignore it under real pressure,
+and nothing surfaces the gap until someone reads a transcript after the fact. So: every wave
+or card report names which tier or lane carried the IMPLEMENTATION and which carried the
+REVIEW, separately. A policy that is not verifiable at report time is not in force, however
+much everyone agreed with it in principle.
 
 ## Lane consent, not lane availability
 
