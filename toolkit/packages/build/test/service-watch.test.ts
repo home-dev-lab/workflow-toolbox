@@ -19,7 +19,7 @@
 // invocations against the same `--flag` path, exactly the way the real
 // process would see them across successive polls.
 
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, readdirSync, existsSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -31,6 +31,9 @@ const SERVICE_WATCH = join(REPO_ROOT, 'plugin/bin/wt-service-watch.mjs')
 const ARC_WATCH = join(REPO_ROOT, 'plugin/bin/wt-arc-watch.mjs')
 const MONITORS_JSON = join(REPO_ROOT, 'plugin/monitors/monitors.json')
 const SERVICE_FLAG_LIB = join(REPO_ROOT, 'plugin/bin/lib/service-flag.mjs')
+const QUOTA_WATCH = join(REPO_ROOT, 'plugin/bin/wt-quota-watch.mjs')
+const QUOTA_CACHE_LIB = join(REPO_ROOT, 'plugin/bin/lib/quota-cache.mjs')
+const QUOTA_BACKOFF_LIB = join(REPO_ROOT, 'plugin/bin/lib/quota-backoff.mjs')
 
 // Vite's own module resolution intercepts a direct dynamic `import()` of a
 // path outside the toolkit project root (it tries to resolve it as a
@@ -51,6 +54,76 @@ function readDegradedViaChildProcess(flagPath: string): unknown {
   )
   if (res.status !== 0) throw new Error(`probe child failed: ${res.stderr}`)
   return JSON.parse(res.stdout)
+}
+
+// Same Vite-external-path rationale as readDegradedViaChildProcess above, applied to the
+// two quota-watch helper libs.
+function readQuotaCacheViaChildProcess(cachePath: string, ttlMs?: number): unknown {
+  const res = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import { readQuotaCache } from ${JSON.stringify(pathToFileURL(QUOTA_CACHE_LIB).href)};
+       const r = await readQuotaCache(${JSON.stringify(cachePath)}${ttlMs !== undefined ? `, ${ttlMs}` : ''});
+       process.stdout.write(JSON.stringify(r));`,
+    ],
+    { encoding: 'utf8' },
+  )
+  if (res.status !== 0) throw new Error(`quota-cache read child failed: ${res.stderr}`)
+  return JSON.parse(res.stdout)
+}
+
+function writeQuotaCacheViaChildProcess(cachePath: string, data: unknown): void {
+  const res = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import { writeQuotaCacheAtomic } from ${JSON.stringify(pathToFileURL(QUOTA_CACHE_LIB).href)};
+       await writeQuotaCacheAtomic(${JSON.stringify(cachePath)}, ${JSON.stringify(data)});`,
+    ],
+    { encoding: 'utf8' },
+  )
+  if (res.status !== 0) throw new Error(`quota-cache write child failed: ${res.stderr}`)
+}
+
+function computeBackoffViaChildProcess(pollSeconds: number, consecutiveFailures: number): number {
+  const res = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import { computeBackoffMs } from ${JSON.stringify(pathToFileURL(QUOTA_BACKOFF_LIB).href)};
+       process.stdout.write(JSON.stringify(computeBackoffMs(${pollSeconds}, ${consecutiveFailures})));`,
+    ],
+    { encoding: 'utf8' },
+  )
+  if (res.status !== 0) throw new Error(`backoff child failed: ${res.stderr}`)
+  return JSON.parse(res.stdout)
+}
+
+// Real OS-level concurrency (not just interleaved promises in one event loop) — the
+// property under test is whether several independent PROCESSES writing the same cache
+// path can ever leave a reader with a torn/partial file, which an in-process Promise.all
+// would not exercise faithfully (one process, one fs driver, naturally serialized syscalls).
+function writeQuotaCacheAsync(cachePath: string, data: unknown): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [
+      '--input-type=module',
+      '-e',
+      `import { writeQuotaCacheAtomic } from ${JSON.stringify(pathToFileURL(QUOTA_CACHE_LIB).href)};
+       await writeQuotaCacheAtomic(${JSON.stringify(cachePath)}, ${JSON.stringify(data)});`,
+    ])
+    let stderr = ''
+    child.stderr.on('data', (d) => {
+      stderr += d
+    })
+    child.on('close', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`concurrent writer failed: ${stderr}`))
+    })
+  })
 }
 
 const roots: string[] = []
@@ -580,4 +653,258 @@ describe('monitors.json registers the new monitor', () => {
     })
     expect(res.stdout).toContain('source=user config probe')
   })
+})
+
+// -----------------------------------------------------------------------------------
+// quota-cache.mjs / quota-backoff.mjs — root-caused a live HTTP 429 (2026-07-31): every
+// watcher hit the usage endpoint live on every poll, with no coordination with the
+// per-turn hook's own cache or with other watchers/sessions on the same account. See the
+// header comments in plugin/bin/wt-quota-watch.mjs and plugin/bin/lib/quota-cache.mjs for
+// the full rationale. Unit tests below exercise the two libs directly (fast, no
+// wall-clock); the wt-quota-watch.mjs describe block below that drives the real watcher
+// end-to-end against fake probes, never the live network.
+// -----------------------------------------------------------------------------------
+
+describe('quota-cache: fail-open on anything but a fresh, structurally valid reading', () => {
+  it('a missing file is a cache miss, not a crash', () => {
+    const dir = tmpRoot('wt-quota-cache-')
+    expect(readQuotaCacheViaChildProcess(join(dir, 'nope.json'))).toBeNull()
+  })
+
+  it('corrupt / truncated JSON is a cache miss', () => {
+    const dir = tmpRoot('wt-quota-cache-')
+    const cachePath = join(dir, '.quota-cache.json')
+    writeFileSync(cachePath, '{ "at": 123, "dat')
+    expect(readQuotaCacheViaChildProcess(cachePath)).toBeNull()
+  })
+
+  it.each([
+    ['missing at', { data: { five_hour: { pct: 1 } } }],
+    ['at not a number', { at: 'now', data: { five_hour: { pct: 1 } } }],
+    ['missing data', { at: Date.now() }],
+    ['data is an array', { at: Date.now(), data: [] }],
+    ['data is null', { at: Date.now(), data: null }],
+    ['top-level array', [1, 2, 3]],
+  ])('a foreign/malformed shape (%s) is a cache miss, never a fabricated reading', (_label, payload) => {
+    const dir = tmpRoot('wt-quota-cache-')
+    const cachePath = join(dir, '.quota-cache.json')
+    writeFileSync(cachePath, JSON.stringify(payload))
+    expect(readQuotaCacheViaChildProcess(cachePath)).toBeNull()
+  })
+
+  it('a fresh, valid write is readable back with the same data — the hook/watcher share format', () => {
+    const dir = tmpRoot('wt-quota-cache-')
+    const cachePath = join(dir, '.quota-cache.json')
+    const data = { configDir: dir, five_hour: { pct: 33, reset_local: '12:30' }, seven_day: { pct: 12 } }
+    writeQuotaCacheViaChildProcess(cachePath, data)
+    const read = readQuotaCacheViaChildProcess(cachePath) as { data: unknown; at: number; fresh: boolean }
+    expect(read).not.toBeNull()
+    expect(read.data).toEqual(data)
+    expect(read.fresh).toBe(true)
+    expect(typeof read.at).toBe('number')
+  })
+
+  it('a reading older than the TTL is returned but marked NOT fresh', () => {
+    const dir = tmpRoot('wt-quota-cache-')
+    const cachePath = join(dir, '.quota-cache.json')
+    writeFileSync(cachePath, JSON.stringify({ at: Date.now() - 10_000, data: { five_hour: { pct: 1 } } }))
+    const read = readQuotaCacheViaChildProcess(cachePath, 5_000) as { fresh: boolean } // 5s TTL, 10s old
+    expect(read).not.toBeNull()
+    expect(read.fresh).toBe(false)
+  })
+
+  it('write is atomic: no .tmp leftovers, and the file always parses once present', () => {
+    const dir = tmpRoot('wt-quota-cache-')
+    const cachePath = join(dir, '.quota-cache.json')
+    writeQuotaCacheViaChildProcess(cachePath, { five_hour: { pct: 1 } })
+    expect(() => JSON.parse(readFileSync(cachePath, 'utf8'))).not.toThrow()
+    const leftovers = readdirSync(dir).filter((f) => f.endsWith('.tmp'))
+    expect(leftovers).toEqual([])
+  })
+
+  it('concurrent writers never leave a torn/partial file readable', async () => {
+    const dir = tmpRoot('wt-quota-cache-')
+    const cachePath = join(dir, '.quota-cache.json')
+    const WRITERS = 24
+    // Distinct, sizeable payloads (padding varies per writer) so a naive non-atomic
+    // implementation (write-in-place instead of tmp+rename) would have a real chance of
+    // interleaving two writers' bytes into one unparseable file.
+    const writes = Array.from({ length: WRITERS }, (_, i) =>
+      writeQuotaCacheAsync(cachePath, { writer: i, pad: 'x'.repeat(200 + i * 37), five_hour: { pct: i } }),
+    )
+
+    // Sample the file WHILE writers are racing: every non-empty read must parse and must
+    // be a WHOLE writer's payload, never a mix of two.
+    let sawAny = false
+    const sampler = (async () => {
+      for (let i = 0; i < 150; i += 1) {
+        if (existsSync(cachePath)) {
+          let raw: string
+          try {
+            raw = readFileSync(cachePath, 'utf8')
+          } catch {
+            continue // ENOENT mid-rename race is fine — the file simply isn't there yet
+          }
+          if (raw.length > 0) {
+            sawAny = true
+            const parsed = JSON.parse(raw) // throws (test failure) on a torn read
+            expect(typeof parsed.at).toBe('number')
+            expect(typeof parsed.data.writer).toBe('number')
+            expect(parsed.data.pad.length).toBe(200 + parsed.data.writer * 37)
+          }
+        }
+        await new Promise((r) => setTimeout(r, 5))
+      }
+    })()
+
+    await Promise.all([...writes, sampler])
+
+    // Final state: still a single, whole, valid reading from exactly one writer.
+    const final = JSON.parse(readFileSync(cachePath, 'utf8'))
+    expect(typeof final.data.writer).toBe('number')
+    expect(final.data.writer).toBeGreaterThanOrEqual(0)
+    expect(final.data.writer).toBeLessThan(WRITERS)
+    expect(sawAny).toBe(true)
+  })
+})
+
+describe('quota-backoff: grows on failure, capped, immediate at zero failures', () => {
+  it('zero (or invalid) consecutive failures means the normal poll cadence', () => {
+    expect(computeBackoffViaChildProcess(300, 0)).toBe(300_000)
+    expect(computeBackoffViaChildProcess(300, -5)).toBe(300_000)
+  })
+
+  it('doubles per failure up to the 8x cap', () => {
+    expect(computeBackoffViaChildProcess(300, 1)).toBe(600_000) // 2x
+    expect(computeBackoffViaChildProcess(300, 2)).toBe(1_200_000) // 4x
+    expect(computeBackoffViaChildProcess(300, 3)).toBe(2_400_000) // 8x — cap reached
+  })
+
+  it('INVARIANT: monotonic non-decreasing and never exceeds 8x the poll, for any failure count', () => {
+    const pollSeconds = 300
+    let previous = 0
+    for (let failures = 0; failures <= 12; failures += 1) {
+      const ms = computeBackoffViaChildProcess(pollSeconds, failures)
+      expect(ms).toBeGreaterThanOrEqual(previous)
+      expect(ms).toBeLessThanOrEqual(pollSeconds * 1000 * 8)
+      previous = ms
+    }
+  })
+})
+
+describe('wt-quota-watch.mjs: cache-first probing (the actual 429 fix)', () => {
+  function writeCounterProbe(cfg: string, counterPath: string, behavior: 'always-fail' | 'always-succeed' | 'fail-once-then-succeed') {
+    mkdirSync(join(cfg, 'scripts'), { recursive: true })
+    const body = `
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+const counterPath = ${JSON.stringify(counterPath)}
+let n = 0
+if (existsSync(counterPath)) n = Number(readFileSync(counterPath, 'utf8')) || 0
+n += 1
+writeFileSync(counterPath, String(n))
+const ok = () => process.stdout.write(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, five_hour: { pct: 99, reset_local: '12:00' }, seven_day: { pct: 5, reset_local: 'sam. 01/08 00:00' } }))
+const fail = () => { process.stderr.write('usage endpoint failed: HTTP 429'); process.exit(1) }
+${
+  behavior === 'always-fail'
+    ? 'fail()'
+    : behavior === 'always-succeed'
+      ? 'ok()'
+      : 'if (n === 1) fail(); else ok()'
+}
+`
+    writeFileSync(join(cfg, 'scripts', 'quota-usage.mjs'), body)
+  }
+
+  function readCounter(counterPath: string): number {
+    if (!existsSync(counterPath)) return 0
+    return Number(readFileSync(counterPath, 'utf8')) || 0
+  }
+
+  // ASYNC on purpose (spawn, not spawnSync): these waits run several seconds each, and a
+  // synchronous spawnSync blocks the whole Node event loop for that whole time — including
+  // vitest's own worker RPC heartbeat, which trips a false "[vitest-worker] Timeout calling
+  // onTaskUpdate" once the cumulative blocked time in one file gets long enough (observed
+  // with spawnSync here). An async spawn keeps the event loop free while waiting.
+  function runWatcher(cfg: string, extraEnv: Record<string, string>, timeoutMs: number): Promise<{ stdout: string }> {
+    return new Promise((resolve) => {
+      const child = spawn(process.execPath, [QUOTA_WATCH, '--poll', '5', '--timeout', '1'], {
+        env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, ...extraEnv },
+      })
+      let stdout = ''
+      child.stdout.on('data', (d) => {
+        stdout += d
+      })
+      const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
+      child.on('close', () => {
+        clearTimeout(timer)
+        resolve({ stdout })
+      })
+    })
+  }
+
+  it('a fresh cache suppresses the live probe entirely', async () => {
+    const cfg = tmpRoot('wt-quota-watch-cache-')
+    const counterPath = join(cfg, 'counter.txt')
+    writeCounterProbe(cfg, counterPath, 'always-succeed')
+    // Pre-seed a fresh, valid cache the watcher should use instead of the probe.
+    writeFileSync(join(cfg, '.quota-cache.json'), JSON.stringify({ at: Date.now(), data: { configDir: cfg, five_hour: { pct: 1 }, seven_day: { pct: 1 } } }))
+
+    await runWatcher(cfg, {}, 8_000)
+
+    expect(readCounter(counterPath)).toBe(0)
+  })
+
+  it('a live probe refills the shared cache in the format the per-turn hook reads', async () => {
+    const cfg = tmpRoot('wt-quota-watch-cache-')
+    const counterPath = join(cfg, 'counter.txt')
+    writeCounterProbe(cfg, counterPath, 'always-succeed')
+    // No pre-existing cache — the first poll must go live and then write one.
+
+    await runWatcher(cfg, {}, 8_000)
+
+    expect(readCounter(counterPath)).toBeGreaterThanOrEqual(1)
+    const cache = JSON.parse(readFileSync(join(cfg, '.quota-cache.json'), 'utf8'))
+    expect(typeof cache.at).toBe('number')
+    expect(cache.data.five_hour.pct).toBe(99)
+  })
+
+  it('a corrupt pre-existing cache degrades to a direct probe instead of crashing or hanging', async () => {
+    const cfg = tmpRoot('wt-quota-watch-cache-')
+    const counterPath = join(cfg, 'counter.txt')
+    writeCounterProbe(cfg, counterPath, 'always-succeed')
+    writeFileSync(join(cfg, '.quota-cache.json'), '{ not valid json')
+
+    const res = await runWatcher(cfg, {}, 6_000)
+
+    expect(res.stdout).toContain('QUOTA WATCH ARMED')
+    expect(readCounter(counterPath)).toBeGreaterThanOrEqual(1)
+  })
+
+  it('a rate-limited probe backs off — far fewer retries than the plain poll cadence would produce', async () => {
+    const cfg = tmpRoot('wt-quota-watch-backoff-')
+    const counterPath = join(cfg, 'counter.txt')
+    writeCounterProbe(cfg, counterPath, 'always-fail')
+
+    // poll=5s: the plain (pre-fix) cadence would retry at ~0s,5s,10s,15s,20s → ~5-6 calls
+    // in 24s. A growing backoff (10s, then 20s, capped at 40s) fits only 2 calls in the
+    // same window — the gap between "a few" and "many" is the wiring signal this checks;
+    // the exact growth curve is proven by the quota-backoff unit tests above.
+    await runWatcher(cfg, {}, 24_000)
+
+    const count = readCounter(counterPath)
+    expect(count).toBeGreaterThanOrEqual(1)
+    expect(count).toBeLessThanOrEqual(3)
+  }, 30_000)
+
+  it('recovers automatically after a transient failure — never permanently silent', async () => {
+    const cfg = tmpRoot('wt-quota-watch-recover-')
+    const counterPath = join(cfg, 'counter.txt')
+    writeCounterProbe(cfg, counterPath, 'fail-once-then-succeed')
+
+    const res = await runWatcher(cfg, {}, 18_000)
+
+    expect(res.stdout).toContain('QUOTA WATCH DEGRADED')
+    expect(res.stdout).toContain('QUOTA STATUS')
+    expect(res.stdout).toContain('5h 99%')
+  }, 24_000)
 })

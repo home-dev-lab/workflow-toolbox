@@ -35,6 +35,21 @@
 // from an ACCOUNT SWITCH. In that case a drop is reported as
 // "QUOTA DROP ... cause undetermined (reset or account change)", and the
 // state is simply re-baselined — it does not claim to know more than it does.
+//
+// SHARED CACHE + BACKOFF (added after a live 429 was observed on this
+// machine). Before this, every poll hit the usage endpoint live, with no
+// coordination between this watcher, other watchers (one per session), and
+// the private per-turn hook that ALSO probes the same endpoint. Several of
+// those running against the same account is enough independent traffic to
+// trip the endpoint's own rate limit. Now: a fresh reading in the shared
+// cache (`<configDir>/.quota-cache.json`, same file and format the per-turn
+// hook already uses) is used instead of a live call, and a live call refills
+// that cache for the next reader — see `lib/quota-cache.mjs`. A failed or
+// rate-limited probe backs off with a growing, capped interval instead of
+// retrying at the same cadence that got it rate-limited — see
+// `lib/quota-backoff.mjs`. Neither change touches the property that already
+// held: the watcher never goes permanently silent; it keeps polling and
+// recovers on its own as soon as a probe (or the cache) succeeds again.
 
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, writeSync } from 'node:fs'
@@ -42,6 +57,8 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
+import { readQuotaCache, writeQuotaCacheAtomic, defaultQuotaCachePath } from './lib/quota-cache.mjs'
+import { computeBackoffMs } from './lib/quota-backoff.mjs'
 
 const DEFAULT_THRESHOLDS = '80,90,95'
 const DEFAULT_POLL_SECONDS = 300
@@ -51,6 +68,9 @@ const MAX_TIMER_SECONDS = Math.floor(0x7fffffff / 1000)
 const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
 const USER_PROBE = join(CONFIG_DIR, 'scripts', 'quota-usage.mjs')
 const BUNDLED_PROBE = join(dirname(fileURLToPath(import.meta.url)), 'wt-quota-probe.mjs')
+// Same path AND format the private per-turn hook (inject-context-quota.mjs) already
+// reads/writes — see lib/quota-cache.mjs for the compatibility contract.
+const CACHE_PATH = defaultQuotaCachePath(CONFIG_DIR)
 const WINDOWS = [
   { key: 'five_hour', label: '5h' },
   { key: 'seven_day', label: '7d' },
@@ -200,6 +220,19 @@ function parseProbeWindow(windowValue) {
   }
 }
 
+// Shared by both the cache-hit and the live-probe path: pull the two known windows out
+// of a probe-shaped object (cached or fresh), ignoring anything else it may contain —
+// a cache written by a newer/older probe version degrades gracefully to whatever
+// windows it still recognizes, never to a crash or a fabricated zero.
+function extractWindows(source) {
+  const windows = {}
+  for (const { key } of WINDOWS) {
+    const windowData = parseProbeWindow(source?.[key])
+    if (windowData) windows[key] = windowData
+  }
+  return windows
+}
+
 function readAccountFingerprint(configDir) {
   try {
     if (typeof configDir !== 'string' || configDir.length === 0) return null
@@ -274,93 +307,132 @@ const state = {
   internalErrorSignaled: false,
   fingerprint: null,
   hasReading: false,
+  consecutiveFailures: 0,
 }
 
 writeLine(`QUOTA WATCH ARMED: thresholds=${thresholds.join(',')} poll=${poll}s probe=${basename(probe.path)} source=${probe.source}`)
 
 while (true) {
   try {
-    const { stdout: rawJson, stderr: probeStderr, spawnError, timedOut } = await runProbe(probe.path, timeout * 1000)
+    let windows = {}
+    let sourceData = null
+    let viaCache = false
 
-    if (timedOut) {
-      if (!state.probeTimeoutSignaled) {
-        state.probeTimeoutSignaled = true
-        writeLine(`QUOTA WATCH DEGRADED: probe exceeded its ${timeout}s timeout and was stopped (reported once)`)
+    // Cache-first: a fresh reading already on disk (ours from a previous poll, another
+    // watcher's, or the per-turn hook's) is used as-is — no network call at all. This is
+    // what stops N independent watchers/sessions from each hitting the live endpoint on
+    // their own schedule.
+    const cachedReading = await readQuotaCache(CACHE_PATH)
+    if (cachedReading && cachedReading.fresh) {
+      const cachedWindows = extractWindows(cachedReading.data)
+      if (Object.keys(cachedWindows).length > 0) {
+        windows = cachedWindows
+        sourceData = cachedReading.data
+        viaCache = true
       }
-      await sleep(poll * 1000)
-      continue
+      // A fresh-but-unusable cache (foreign shape, no recognizable window) is NOT trusted
+      // as a reading — falls through to a live probe just like a cold cache would.
     }
 
-    if (spawnError) {
-      if (!state.probeKoSignaled) {
-        state.probeKoSignaled = true
-        writeLine(`QUOTA WATCH DEGRADED: probe could not START: ${spawnError} (reported once)`)
+    if (!viaCache) {
+      const { stdout: rawJson, stderr: probeStderr, spawnError, timedOut } = await runProbe(probe.path, timeout * 1000)
+
+      if (timedOut) {
+        state.consecutiveFailures += 1
+        if (!state.probeTimeoutSignaled) {
+          state.probeTimeoutSignaled = true
+          writeLine(`QUOTA WATCH DEGRADED: probe exceeded its ${timeout}s timeout and was stopped (reported once)`)
+        }
+        await sleep(computeBackoffMs(poll, state.consecutiveFailures))
+        continue
       }
-      await sleep(poll * 1000)
-      continue
-    }
 
-    if (rawJson.length === 0) {
-      if (!state.probeKoSignaled) {
-        state.probeKoSignaled = true
-        const reason = probeStderr.length > 0 ? redact(probeStderr.split('\n')[0]).slice(0, 200) : 'no reason given'
-        writeLine(`QUOTA WATCH DEGRADED: probe returned nothing (${reason}) (reported once)`)
+      if (spawnError) {
+        state.consecutiveFailures += 1
+        if (!state.probeKoSignaled) {
+          state.probeKoSignaled = true
+          writeLine(`QUOTA WATCH DEGRADED: probe could not START: ${spawnError} (reported once)`)
+        }
+        await sleep(computeBackoffMs(poll, state.consecutiveFailures))
+        continue
       }
-      await sleep(poll * 1000)
-      continue
-    }
 
-    let parsed
-    try {
-      parsed = JSON.parse(rawJson)
-    } catch {
-      if (!state.probeKoSignaled) {
-        state.probeKoSignaled = true
-        writeLine('QUOTA WATCH DEGRADED: probe output UNPARSEABLE (invalid JSON) (reported once)')
+      if (rawJson.length === 0) {
+        state.consecutiveFailures += 1
+        if (!state.probeKoSignaled) {
+          state.probeKoSignaled = true
+          const reason = probeStderr.length > 0 ? redact(probeStderr.split('\n')[0]).slice(0, 200) : 'no reason given'
+          writeLine(`QUOTA WATCH DEGRADED: probe returned nothing (${reason}) (reported once)`)
+        }
+        await sleep(computeBackoffMs(poll, state.consecutiveFailures))
+        continue
       }
-      await sleep(poll * 1000)
-      continue
-    }
 
-    const windows = {}
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      if (!state.probeKoSignaled) {
-        state.probeKoSignaled = true
-        writeLine('QUOTA WATCH DEGRADED: probe output INVALID (expected a JSON object with a usable window) (reported once)')
+      let parsed
+      try {
+        parsed = JSON.parse(rawJson)
+      } catch {
+        state.consecutiveFailures += 1
+        if (!state.probeKoSignaled) {
+          state.probeKoSignaled = true
+          writeLine('QUOTA WATCH DEGRADED: probe output UNPARSEABLE (invalid JSON) (reported once)')
+        }
+        await sleep(computeBackoffMs(poll, state.consecutiveFailures))
+        continue
       }
-      await sleep(poll * 1000)
-      continue
-    }
 
-    for (const { key } of WINDOWS) {
-      const windowData = parseProbeWindow(parsed[key])
-      if (windowData) windows[key] = windowData
-    }
-
-    if (Object.keys(windows).length === 0) {
-      if (!state.probeKoSignaled) {
-        state.probeKoSignaled = true
-        writeLine('QUOTA WATCH DEGRADED: probe output INVALID (no usable window) (reported once)')
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        state.consecutiveFailures += 1
+        if (!state.probeKoSignaled) {
+          state.probeKoSignaled = true
+          writeLine('QUOTA WATCH DEGRADED: probe output INVALID (expected a JSON object with a usable window) (reported once)')
+        }
+        await sleep(computeBackoffMs(poll, state.consecutiveFailures))
+        continue
       }
-      await sleep(poll * 1000)
-      continue
+
+      const liveWindows = extractWindows(parsed)
+
+      if (Object.keys(liveWindows).length === 0) {
+        state.consecutiveFailures += 1
+        if (!state.probeKoSignaled) {
+          state.probeKoSignaled = true
+          writeLine('QUOTA WATCH DEGRADED: probe output INVALID (no usable window) (reported once)')
+        }
+        await sleep(computeBackoffMs(poll, state.consecutiveFailures))
+        continue
+      }
+
+      // Live probe succeeded: refill the shared cache so the per-turn hook and any other
+      // watcher can use this reading instead of hitting the endpoint again inside the TTL
+      // window. Best-effort — a cache write failure must never take the watcher down.
+      try {
+        await writeQuotaCacheAtomic(CACHE_PATH, parsed)
+      } catch {
+        /* best effort */
+      }
+
+      windows = liveWindows
+      sourceData = parsed
     }
 
-    // Notices only re-arm after a structurally valid response.
+    // Notices only re-arm after a structurally valid response (cached or live), and a
+    // successful cycle — via cache or a live probe — resets the backoff to normal cadence.
     state.probeKoSignaled = false
     state.probeTimeoutSignaled = false
+    state.consecutiveFailures = 0
 
     if (!state.hasReading) {
       const line = initialStateLine(windows, thresholds)
       setBaseline(state, windows, thresholds)
-      state.fingerprint = readAccountFingerprint(parsed.configDir)
+      state.fingerprint = readAccountFingerprint(sourceData?.configDir)
       state.hasReading = true
       if (line) writeLine(line)
       await sleep(poll * 1000)
       continue
     }
 
-    const currentFingerprint = readAccountFingerprint(parsed.configDir)
+    const currentFingerprint = readAccountFingerprint(sourceData?.configDir)
     const previousFingerprint = state.fingerprint
     const fingerprintChanged = previousFingerprint !== null && currentFingerprint !== null && previousFingerprint !== currentFingerprint
 
