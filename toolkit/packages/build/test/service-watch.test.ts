@@ -820,26 +820,57 @@ ${
     return Number(readFileSync(counterPath, 'utf8')) || 0
   }
 
-  // ASYNC on purpose (spawn, not spawnSync): these waits run several seconds each, and a
-  // synchronous spawnSync blocks the whole Node event loop for that whole time — including
-  // vitest's own worker RPC heartbeat, which trips a false "[vitest-worker] Timeout calling
-  // onTaskUpdate" once the cumulative blocked time in one file gets long enough (observed
-  // with spawnSync here). An async spawn keeps the event loop free while waiting.
-  function runWatcher(cfg: string, extraEnv: Record<string, string>, timeoutMs: number): Promise<{ stdout: string }> {
-    return new Promise((resolve) => {
-      const child = spawn(process.execPath, [QUOTA_WATCH, '--poll', '5', '--timeout', '1'], {
-        env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, ...extraEnv },
-      })
+  // DETERMINISTIC on purpose — no wall-clock racing. An earlier version of these tests
+  // spawned the real watcher, waited a fixed number of milliseconds, SIGKILLed it, and
+  // counted how many probe invocations happened in that window. That flaked (2026-07-31):
+  // green alone, red once under the contention of the FULL suite (159 files' worth of
+  // concurrent child processes), green again on a re-run — a setTimeout racing a SIGKILL
+  // deadline under arbitrary system load, not a defect in the watcher. The window itself
+  // was never provably wrong, which is exactly the failure mode this file's own header
+  // warns about: an intermittent test nobody believes, including the day it is right.
+  //
+  // Fix: the watcher's `sleep()` has a test-only seam (see its header comment in
+  // wt-quota-watch.mjs) — WT_QUOTA_WATCH_TEST_SLEEP_LOG makes it log the millisecond value
+  // it was asked to wait (the REAL backoff/poll math it computed) instead of waiting it
+  // out, and WT_QUOTA_WATCH_TEST_MAX_CYCLES bounds the run to an exact number of loop
+  // iterations before a clean `process.exit(0)`. Tests below await process EXIT (a real
+  // signal) instead of a delay, then assert on the logged durations directly. The safety
+  // timeout in runWatcher is a backstop against a genuine hang, never the pass/fail signal
+  // — under correct operation the process always exits on its own, fast.
+  function runWatcher(
+    cfg: string,
+    opts: { maxCycles?: number; sleepLogPath?: string; extraEnv?: Record<string, string> },
+    safetyTimeoutMs = 10_000,
+  ): Promise<{ stdout: string }> {
+    return new Promise((resolve, reject) => {
+      const env: Record<string, string | undefined> = { ...process.env, CLAUDE_CONFIG_DIR: cfg, ...opts.extraEnv }
+      if (opts.maxCycles !== undefined) env.WT_QUOTA_WATCH_TEST_MAX_CYCLES = String(opts.maxCycles)
+      if (opts.sleepLogPath !== undefined) env.WT_QUOTA_WATCH_TEST_SLEEP_LOG = opts.sleepLogPath
+      const child = spawn(process.execPath, [QUOTA_WATCH, '--poll', '5', '--timeout', '1'], { env })
       let stdout = ''
       child.stdout.on('data', (d) => {
         stdout += d
       })
-      const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
+      // Backstop only: a healthy run exits on its own once WT_QUOTA_WATCH_TEST_MAX_CYCLES
+      // is reached. If this fires, the watcher genuinely hung — that IS a test failure,
+      // just reported honestly instead of silently resolving with a truncated stdout.
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL')
+        reject(new Error(`wt-quota-watch.mjs did not self-exit within ${safetyTimeoutMs}ms (maxCycles=${opts.maxCycles})`))
+      }, safetyTimeoutMs)
       child.on('close', () => {
         clearTimeout(timer)
         resolve({ stdout })
       })
     })
+  }
+
+  function readSleepLog(path: string): number[] {
+    if (!existsSync(path)) return []
+    return readFileSync(path, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map(Number)
   }
 
   it('a fresh cache suppresses the live probe entirely', async () => {
@@ -849,7 +880,7 @@ ${
     // Pre-seed a fresh, valid cache the watcher should use instead of the probe.
     writeFileSync(join(cfg, '.quota-cache.json'), JSON.stringify({ at: Date.now(), data: { configDir: cfg, five_hour: { pct: 1 }, seven_day: { pct: 1 } } }))
 
-    await runWatcher(cfg, {}, 8_000)
+    await runWatcher(cfg, { maxCycles: 2, sleepLogPath: join(cfg, 'sleeps.log') })
 
     expect(readCounter(counterPath)).toBe(0)
   })
@@ -860,7 +891,7 @@ ${
     writeCounterProbe(cfg, counterPath, 'always-succeed')
     // No pre-existing cache — the first poll must go live and then write one.
 
-    await runWatcher(cfg, {}, 8_000)
+    await runWatcher(cfg, { maxCycles: 1, sleepLogPath: join(cfg, 'sleeps.log') })
 
     expect(readCounter(counterPath)).toBeGreaterThanOrEqual(1)
     const cache = JSON.parse(readFileSync(join(cfg, '.quota-cache.json'), 'utf8'))
@@ -874,37 +905,42 @@ ${
     writeCounterProbe(cfg, counterPath, 'always-succeed')
     writeFileSync(join(cfg, '.quota-cache.json'), '{ not valid json')
 
-    const res = await runWatcher(cfg, {}, 6_000)
+    const res = await runWatcher(cfg, { maxCycles: 1, sleepLogPath: join(cfg, 'sleeps.log') })
 
     expect(res.stdout).toContain('QUOTA WATCH ARMED')
     expect(readCounter(counterPath)).toBeGreaterThanOrEqual(1)
   })
 
-  it('a rate-limited probe backs off — far fewer retries than the plain poll cadence would produce', async () => {
+  it('a rate-limited probe backs off with the EXACT growing, capped schedule — deterministically', async () => {
     const cfg = tmpRoot('wt-quota-watch-backoff-')
     const counterPath = join(cfg, 'counter.txt')
+    const sleepLogPath = join(cfg, 'sleeps.log')
     writeCounterProbe(cfg, counterPath, 'always-fail')
 
-    // poll=5s: the plain (pre-fix) cadence would retry at ~0s,5s,10s,15s,20s → ~5-6 calls
-    // in 24s. A growing backoff (10s, then 20s, capped at 40s) fits only 2 calls in the
-    // same window — the gap between "a few" and "many" is the wiring signal this checks;
-    // the exact growth curve is proven by the quota-backoff unit tests above.
-    await runWatcher(cfg, {}, 24_000)
+    // 3 cycles, always failing: consecutiveFailures goes 1, 2, 3 → backoff (poll=5s) goes
+    // 10s, 20s, 40s(capped at 8x). This is the SAME math the quota-backoff unit tests
+    // check in isolation; here it asserts the watcher actually WIRES computeBackoffMs into
+    // its failure path, end to end, against the real cache-miss + probe-failure code path.
+    await runWatcher(cfg, { maxCycles: 3, sleepLogPath })
 
-    const count = readCounter(counterPath)
-    expect(count).toBeGreaterThanOrEqual(1)
-    expect(count).toBeLessThanOrEqual(3)
-  }, 30_000)
+    expect(readCounter(counterPath)).toBe(3) // no cache ever gets written on an always-failing probe
+    expect(readSleepLog(sleepLogPath)).toEqual([10_000, 20_000, 40_000])
+  })
 
-  it('recovers automatically after a transient failure — never permanently silent', async () => {
+  it('recovers automatically after a transient failure, and resets to the NORMAL cadence — deterministically', async () => {
     const cfg = tmpRoot('wt-quota-watch-recover-')
     const counterPath = join(cfg, 'counter.txt')
+    const sleepLogPath = join(cfg, 'sleeps.log')
     writeCounterProbe(cfg, counterPath, 'fail-once-then-succeed')
 
-    const res = await runWatcher(cfg, {}, 18_000)
+    // Cycle 1 fails → backoff (10s, logged but not waited). Cycle 2 succeeds → reset to
+    // the plain poll cadence (5s, logged). The SECOND value proves the "resets to normal
+    // cadence on success" half of the invariant, not just "eventually recovers".
+    const res = await runWatcher(cfg, { maxCycles: 2, sleepLogPath })
 
     expect(res.stdout).toContain('QUOTA WATCH DEGRADED')
     expect(res.stdout).toContain('QUOTA STATUS')
     expect(res.stdout).toContain('5h 99%')
-  }, 24_000)
+    expect(readSleepLog(sleepLogPath)).toEqual([10_000, 5_000])
+  })
 })

@@ -52,7 +52,7 @@
 // recovers on its own as soon as a probe (or the cache) succeeds again.
 
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, writeSync } from 'node:fs'
+import { existsSync, readFileSync, writeSync, appendFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { basename, dirname, join } from 'node:path'
@@ -286,9 +286,44 @@ function initialStateLine(windows, thresholds) {
   return `QUOTA STATUS: ${parts.join(' | ')}`
 }
 
+// TEST SEAM — never set outside the test suite; unset in every real deployment.
+//
+// WHY THIS EXISTS. The integration tests used to race a wall clock (spawn the real
+// watcher, sleep N seconds, SIGKILL, count how many probe invocations happened in that
+// window) — flagged flaky (2026-07-31): a test that passed alone failed once under the
+// contention of the FULL suite running 159 files' worth of child processes concurrently,
+// then passed again on a re-run. The window itself was never wrong; the assumption that a
+// setTimeout fires within a fixed wall-clock margin under arbitrary system load was.
+//
+// Rather than widen the windows (a slower flake, same defect), the watcher's own `sleep`
+// gets an injectable seam: WT_QUOTA_WATCH_TEST_SLEEP_LOG makes it log the millisecond
+// value it was ACTUALLY asked to wait (the real backoff/poll math this file computed) and
+// resolve near-instantly instead of waiting it out; WT_QUOTA_WATCH_TEST_MAX_CYCLES bounds
+// the run to an exact number of loop iterations before a clean `process.exit(0)`. A test
+// then awaits process EXIT (a real signal) instead of a wall-clock delay, and asserts on
+// the logged durations directly — deterministic, fast, and no less real: the code path,
+// the cache, the backoff math are all the genuine ones, only the WAITING is skipped.
+const TEST_SLEEP_LOG = process.env.WT_QUOTA_WATCH_TEST_SLEEP_LOG || null
+const TEST_MAX_CYCLES = (() => {
+  const n = Number(process.env.WT_QUOTA_WATCH_TEST_MAX_CYCLES)
+  return Number.isFinite(n) && n > 0 ? n : null
+})()
+let testCyclesCompleted = 0
+
 function sleep(ms) {
+  if (TEST_SLEEP_LOG) {
+    try {
+      appendFileSync(TEST_SLEEP_LOG, `${ms}\n`)
+    } catch {
+      /* best effort — a logging failure must not change real watcher behavior */
+    }
+  }
+  if (TEST_MAX_CYCLES !== null) {
+    testCyclesCompleted += 1
+    if (testCyclesCompleted >= TEST_MAX_CYCLES) process.exit(0)
+  }
   return new Promise((resolve) => {
-    setTimeout(resolve, ms)
+    setTimeout(resolve, TEST_SLEEP_LOG ? 0 : ms)
   })
 }
 
