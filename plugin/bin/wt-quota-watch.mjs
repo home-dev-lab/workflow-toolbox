@@ -59,6 +59,7 @@ import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { readQuotaCache, writeQuotaCacheAtomic, defaultQuotaCachePath } from './lib/quota-cache.mjs'
 import { computeBackoffMs } from './lib/quota-backoff.mjs'
+import { computeWatcherCacheToleranceMs } from './lib/quota-cache-tolerance.mjs'
 
 const DEFAULT_THRESHOLDS = '80,90,95'
 const DEFAULT_POLL_SECONDS = 300
@@ -328,6 +329,10 @@ function sleep(ms) {
 }
 
 const { poll, timeout, probe, thresholds } = parseArgs(process.argv.slice(2))
+// This watcher's OWN staleness tolerance — deliberately larger than the per-turn hook's
+// TTL. See lib/quota-cache-tolerance.mjs for the full reasoning; the short version: a poll
+// interval equal to the hook's TTL made the watcher probe live on almost every cycle.
+const WATCHER_CACHE_TOLERANCE_MS = computeWatcherCacheToleranceMs(poll)
 
 if (!existsSync(probe.path)) {
   writeSync(1, `QUOTA WATCH FAILED: selected ${probe.source} not found: ${redact(probe.path)} — quota is NOT being watched\n`)
@@ -353,11 +358,13 @@ while (true) {
     let sourceData = null
     let viaCache = false
 
-    // Cache-first: a fresh reading already on disk (ours from a previous poll, another
-    // watcher's, or the per-turn hook's) is used as-is — no network call at all. This is
+    // Cache-first: a reading already on disk (ours from a previous poll, another
+    // watcher's, or the per-turn hook's) is used as-is when it is fresh enough BY THIS
+    // WATCHER'S OWN TOLERANCE (WATCHER_CACHE_TOLERANCE_MS — deliberately looser than the
+    // hook's own TTL, see lib/quota-cache-tolerance.mjs) — no network call at all. This is
     // what stops N independent watchers/sessions from each hitting the live endpoint on
     // their own schedule.
-    const cachedReading = await readQuotaCache(CACHE_PATH)
+    const cachedReading = await readQuotaCache(CACHE_PATH, WATCHER_CACHE_TOLERANCE_MS)
     if (cachedReading && cachedReading.fresh) {
       const cachedWindows = extractWindows(cachedReading.data)
       if (Object.keys(cachedWindows).length > 0) {

@@ -34,6 +34,7 @@ const SERVICE_FLAG_LIB = join(REPO_ROOT, 'plugin/bin/lib/service-flag.mjs')
 const QUOTA_WATCH = join(REPO_ROOT, 'plugin/bin/wt-quota-watch.mjs')
 const QUOTA_CACHE_LIB = join(REPO_ROOT, 'plugin/bin/lib/quota-cache.mjs')
 const QUOTA_BACKOFF_LIB = join(REPO_ROOT, 'plugin/bin/lib/quota-backoff.mjs')
+const QUOTA_CACHE_TOLERANCE_LIB = join(REPO_ROOT, 'plugin/bin/lib/quota-cache-tolerance.mjs')
 
 // Vite's own module resolution intercepts a direct dynamic `import()` of a
 // path outside the toolkit project root (it tries to resolve it as a
@@ -100,6 +101,36 @@ function computeBackoffViaChildProcess(pollSeconds: number, consecutiveFailures:
     { encoding: 'utf8' },
   )
   if (res.status !== 0) throw new Error(`backoff child failed: ${res.stderr}`)
+  return JSON.parse(res.stdout)
+}
+
+function computeWatcherCacheToleranceViaChildProcess(pollSeconds: number): number {
+  const res = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import { computeWatcherCacheToleranceMs } from ${JSON.stringify(pathToFileURL(QUOTA_CACHE_TOLERANCE_LIB).href)};
+       process.stdout.write(JSON.stringify(computeWatcherCacheToleranceMs(${pollSeconds})));`,
+    ],
+    { encoding: 'utf8' },
+  )
+  if (res.status !== 0) throw new Error(`cache-tolerance child failed: ${res.stderr}`)
+  return JSON.parse(res.stdout)
+}
+
+function readDefaultCacheTtlMsViaChildProcess(): number {
+  const res = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import { DEFAULT_CACHE_TTL_MS } from ${JSON.stringify(pathToFileURL(QUOTA_CACHE_LIB).href)};
+       process.stdout.write(JSON.stringify(DEFAULT_CACHE_TTL_MS));`,
+    ],
+    { encoding: 'utf8' },
+  )
+  if (res.status !== 0) throw new Error(`cache-ttl child failed: ${res.stderr}`)
   return JSON.parse(res.stdout)
 }
 
@@ -789,6 +820,42 @@ describe('quota-backoff: grows on failure, capped, immediate at zero failures', 
       expect(ms).toBeLessThanOrEqual(pollSeconds * 1000 * 8)
       previous = ms
     }
+  })
+})
+
+// -----------------------------------------------------------------------------------
+// Follow-up measurement (2026-07-31): a re-armed watcher on the fixed build STILL took a
+// 429. Root cause: the watcher read the shared cache with the per-turn hook's own TTL
+// (300s), and the watcher's own default poll interval is ALSO 300s — the cache goes stale
+// at almost exactly the moment the watcher wakes to check it, so it probed live on nearly
+// every cycle. lib/quota-cache-tolerance.mjs gives the watcher its OWN, larger tolerance.
+// The tests below lock the RELATIONSHIP between poll and tolerance, not either number in
+// isolation — a lock hard-coding both 300s values would stay green if someone "fixed" this
+// by moving both constants together.
+// -----------------------------------------------------------------------------------
+
+describe('quota-cache-tolerance: the watcher tolerates staleness the hook would not — locks the RELATIONSHIP', () => {
+  it('INVARIANT: tolerance is at least double the poll interval, for any configured poll', () => {
+    for (const pollSeconds of [5, 60, 300, 600, 3600]) {
+      const tolerance = computeWatcherCacheToleranceViaChildProcess(pollSeconds)
+      expect(tolerance).toBeGreaterThanOrEqual(pollSeconds * 1000 * 2)
+    }
+  })
+
+  it("INVARIANT: tolerance never drops below the hook's own TTL, whatever either constant is set to", () => {
+    const hookTtlMs = readDefaultCacheTtlMsViaChildProcess()
+    for (const pollSeconds of [5, 60, 300, 600]) {
+      expect(computeWatcherCacheToleranceViaChildProcess(pollSeconds)).toBeGreaterThanOrEqual(hookTtlMs)
+    }
+  })
+
+  it('regression: the exact historical collision (poll == hook TTL) no longer yields a probe-every-cycle tolerance', () => {
+    // pollSeconds is DERIVED from the real hook-TTL constant, not hard-coded as "300" — so
+    // this stays the actual regression case even if that constant changes later.
+    const hookTtlMs = readDefaultCacheTtlMsViaChildProcess()
+    const pollSeconds = hookTtlMs / 1000
+    const tolerance = computeWatcherCacheToleranceViaChildProcess(pollSeconds)
+    expect(tolerance).toBeGreaterThan(pollSeconds * 1000)
   })
 })
 
