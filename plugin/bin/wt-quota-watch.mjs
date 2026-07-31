@@ -309,7 +309,22 @@ const TEST_MAX_CYCLES = (() => {
   const n = Number(process.env.WT_QUOTA_WATCH_TEST_MAX_CYCLES)
   return Number.isFinite(n) && n > 0 ? n : null
 })()
+const TEST_SEAM_ACTIVE = TEST_SLEEP_LOG !== null || TEST_MAX_CYCLES !== null
 let testCyclesCompleted = 0
+
+// The seam is discipline (an env var nobody but the test suite should set), not a
+// mechanism that PREVENTS misuse — env vars leak: inherited by a subprocess, left in a
+// shell profile, copied from a CI config. So "never set outside tests" is enforced by
+// making it IMPOSSIBLE TO MISS when it fires, not by trusting the discipline. If either
+// var is set, this line goes out on the SAME stream `QUOTA WATCH ARMED` uses — the one a
+// monitor actually reads — so a leaked seam is loud, not silent. The single most dangerous
+// shape this could take unannounced is the quiet one: an exit(0) after a few cycles that
+// looks exactly like nothing to report, which is the whole failure family this file exists
+// to remove. See the header above this constant block for what the seam does; this is
+// what makes it safe to ship with the seam left in.
+function testSeamBanner() {
+  return `⚠ QUOTA WATCH TEST MODE — WT_QUOTA_WATCH_TEST_SLEEP_LOG=${TEST_SLEEP_LOG ?? '(unset)'} WT_QUOTA_WATCH_TEST_MAX_CYCLES=${TEST_MAX_CYCLES ?? '(unset)'} — sleeps are being LOGGED, NOT HONORED, and/or this run will SELF-EXIT after a fixed number of cycles. This must NEVER be set outside the test suite. If you see this in a real deployment, find what set these environment variables and unset them — quota is effectively NOT being watched while this is active.`
+}
 
 function sleep(ms) {
   if (TEST_SLEEP_LOG) {
@@ -321,7 +336,14 @@ function sleep(ms) {
   }
   if (TEST_MAX_CYCLES !== null) {
     testCyclesCompleted += 1
-    if (testCyclesCompleted >= TEST_MAX_CYCLES) process.exit(0)
+    if (testCyclesCompleted >= TEST_MAX_CYCLES) {
+      // The exact moment the danger described above materializes: about to exit(0),
+      // quietly, with a success code. One more loud line right before it, so a leaked
+      // seam's LAST output — not just its startup line, in case that scrolled away — says
+      // plainly that this was a test exit, not a healthy watcher finding nothing to report.
+      writeLine(`${testSeamBanner()} Exiting now (cycle ${testCyclesCompleted}/${TEST_MAX_CYCLES}).`)
+      process.exit(0)
+    }
   }
   return new Promise((resolve) => {
     setTimeout(resolve, TEST_SLEEP_LOG ? 0 : ms)
@@ -351,6 +373,7 @@ const state = {
 }
 
 writeLine(`QUOTA WATCH ARMED: thresholds=${thresholds.join(',')} poll=${poll}s probe=${basename(probe.path)} source=${probe.source}`)
+if (TEST_SEAM_ACTIVE) writeLine(testSeamBanner())
 
 while (true) {
   try {

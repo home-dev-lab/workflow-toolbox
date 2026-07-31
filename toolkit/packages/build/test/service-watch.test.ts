@@ -1010,4 +1010,55 @@ ${
     expect(res.stdout).toContain('5h 99%')
     expect(readSleepLog(sleepLogPath)).toEqual([10_000, 5_000])
   })
+
+  // -----------------------------------------------------------------------------------
+  // Concern raised at integration (2026-07-31): the test seam above (WT_QUOTA_WATCH_TEST_
+  // SLEEP_LOG / WT_QUOTA_WATCH_TEST_MAX_CYCLES) makes the watcher exit(0) quietly after N
+  // cycles — env vars leak (inherited by a subprocess, left in a shell profile, copied
+  // from a CI config), and the day one leaks into a real deployment the watcher would
+  // "succeed" and say nothing, the exact failure family this whole file exists to remove.
+  // Fix: an unmissable banner on the SAME stream QUOTA WATCH ARMED uses, both at arming
+  // and right before the seam's own exit(0). These tests lock that it actually fires, and
+  // — just as important — that it stays SILENT during real operation.
+  // -----------------------------------------------------------------------------------
+
+  it('a leaked/active test seam announces itself loudly at arming and at self-exit', async () => {
+    const cfg = tmpRoot('wt-quota-watch-seam-')
+    const counterPath = join(cfg, 'counter.txt')
+    const sleepLogPath = join(cfg, 'sleeps.log')
+    writeCounterProbe(cfg, counterPath, 'always-succeed')
+
+    const res = await runWatcher(cfg, { maxCycles: 1, sleepLogPath })
+
+    expect(res.stdout).toContain('QUOTA WATCH TEST MODE')
+    expect(res.stdout).toContain('WT_QUOTA_WATCH_TEST_SLEEP_LOG')
+    expect(res.stdout).toContain('WT_QUOTA_WATCH_TEST_MAX_CYCLES')
+    expect(res.stdout).toContain('Exiting now (cycle 1/1)')
+  })
+
+  it('normal operation (no seam vars set) never mentions TEST MODE', async () => {
+    const cfg = tmpRoot('wt-quota-watch-noseam-')
+    const counterPath = join(cfg, 'counter.txt')
+    writeCounterProbe(cfg, counterPath, 'always-succeed')
+
+    // No maxCycles/sleepLogPath here — this watcher loops forever like a real deployment,
+    // so this one real-time-bounded sample (long enough to see the ARMED line and the
+    // first cycle's output, short enough to keep the test fast) is the honest way to
+    // check the ABSENCE of a marker during normal operation — there is no deterministic
+    // signal to await for "nothing happened, and never will".
+    const res = await new Promise<{ stdout: string }>((resolve) => {
+      const child = spawn(process.execPath, [QUOTA_WATCH, '--poll', '5', '--timeout', '1'], {
+        env: { ...process.env, CLAUDE_CONFIG_DIR: cfg },
+      })
+      let stdout = ''
+      child.stdout.on('data', (d) => {
+        stdout += d
+      })
+      setTimeout(() => child.kill('SIGKILL'), 1_500)
+      child.on('close', () => resolve({ stdout }))
+    })
+
+    expect(res.stdout).toContain('QUOTA WATCH ARMED')
+    expect(res.stdout).not.toContain('TEST MODE')
+  })
 })
