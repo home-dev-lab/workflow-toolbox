@@ -1200,6 +1200,89 @@ ${
     expect(readSleepLog(sleepLogPath)).toEqual([10_000, 20_000, 40_000])
   })
 
+  it('a cache-sourced success does NOT re-arm degraded-once or reset probe backoff after repeated live failures', async () => {
+    const cfg = tmpRoot('wt-quota-watch-cache-backoff-')
+    const counterPath = join(cfg, 'counter.txt')
+    const sleepLogPath = join(cfg, 'sleeps.log')
+    const cachePath = join(cfg, '.quota-cache.json')
+    const preloadPath = join(cfg, 'sleep-hook.mjs')
+    const pollMs = computeBackoffViaChildProcess(5, 0)
+    const firstFailureSleepMs = computeBackoffViaChildProcess(5, 1)
+    mkdirSync(join(cfg, 'scripts'), { recursive: true })
+    writeFileSync(
+      join(cfg, 'scripts', 'quota-usage.mjs'),
+      `import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+const counterPath = ${JSON.stringify(counterPath)}
+let n = 0
+if (existsSync(counterPath)) n = Number(readFileSync(counterPath, 'utf8')) || 0
+n += 1
+writeFileSync(counterPath, String(n))
+if (n === 1) {
+  process.stdout.write(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, five_hour: { pct: 99, reset_local: '12:00' }, seven_day: { pct: 5, reset_local: 'sam. 01/08 00:00' } }))
+} else {
+  process.stderr.write('usage endpoint failed: HTTP 429')
+  process.exit(1)
+}
+`,
+    )
+    writeFileSync(
+      preloadPath,
+      `import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+
+const sleepLogPath = ${JSON.stringify(sleepLogPath)}
+const cachePath = ${JSON.stringify(cachePath)}
+const cfg = ${JSON.stringify(cfg)}
+const completeCache = JSON.stringify({
+  at: Date.now(),
+  data: {
+    configDir: cfg,
+    five_hour: { pct: 99, reset_local: '12:00' },
+    seven_day: { pct: 5, reset_local: 'sam. 01/08 00:00' },
+  },
+})
+const originalAppendFileSync = fs.appendFileSync.bind(fs)
+let cycle = 0
+
+fs.appendFileSync = function patchedAppendFileSync(path, data, options) {
+  const result = originalAppendFileSync(path, data, options)
+  if (path === sleepLogPath) {
+    cycle += 1
+    if (cycle === 2 || cycle === 4) fs.writeFileSync(cachePath, completeCache)
+    if (cycle === 1 || cycle === 3 || cycle === 5) fs.rmSync(cachePath, { force: true })
+  }
+  return result
+}
+
+syncBuiltinESMExports()
+`,
+    )
+
+    const res = await runWatcher(
+      cfg,
+      {
+        maxCycles: 6,
+        sleepLogPath,
+        extraEnv: { NODE_OPTIONS: `--import=${preloadPath}` },
+      },
+      15_000,
+    )
+
+    const degradedCount = (res.stdout.match(/QUOTA WATCH DEGRADED/g) || []).length
+    const failureSleeps = readSleepLog(sleepLogPath).filter((ms) => ms !== pollMs)
+
+    expect(readCounter(counterPath)).toBe(4) // cycle 1 seeds the baseline; cycles 2, 4, 6 are failed probes; cycles 3, 5 are cache hits
+    expect(degradedCount).toBe(1)
+    expect(failureSleeps[0]).toBe(firstFailureSleepMs)
+    expect(failureSleeps).toHaveLength(3)
+    // Non-decreasing AND actually grown. Both halves matter: a backoff that merely never
+    // shrinks would still be satisfied by a flat curve, which is exactly the defect (the
+    // counter reset kept every failure at step one). Comparing against a sorted copy states
+    // the ordering property over the WHOLE series rather than enumerating index pairs.
+    expect(failureSleeps).toEqual([...failureSleeps].sort((a, b) => a - b))
+    expect(Math.max(...failureSleeps)).toBeGreaterThan(Math.min(...failureSleeps))
+  })
+
   it('recovers automatically after a transient failure, and resets to the NORMAL cadence — deterministically', async () => {
     const cfg = tmpRoot('wt-quota-watch-recover-')
     const counterPath = join(cfg, 'counter.txt')

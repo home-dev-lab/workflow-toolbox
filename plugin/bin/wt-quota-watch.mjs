@@ -511,11 +511,21 @@ while (true) {
       sourceData = parsed
     }
 
-    // Notices only re-arm after a structurally valid response (cached or live), and a
-    // successful cycle — via cache or a live probe — resets the backoff to normal cadence.
-    state.probeKoSignaled = false
-    state.probeTimeoutSignaled = false
-    state.consecutiveFailures = 0
+    // Probe-health state describes the PROBE, so ONLY a successful LIVE probe clears it.
+    // Clearing it on a cache-sourced reading was wrong in two compounding ways, both
+    // observed 2026-07-31 with several sessions running against one account:
+    //   1. the shared cache alternates fresh/stale as any session takes a turn, so every
+    //      stale-cache cycle re-armed the "reported once" notice — the DEGRADED line then
+    //      repeats for the whole session instead of once;
+    //   2. worse, it reset consecutiveFailures, so the exponential backoff could never
+    //      grow past one — the watcher kept probing at full cadence precisely while the
+    //      endpoint was rate-limiting it, sustaining the 429 it was backing off from.
+    // A cache hit says nothing about whether the endpoint recovered; only a live probe does.
+    if (!viaCache) {
+      state.probeKoSignaled = false
+      state.probeTimeoutSignaled = false
+      state.consecutiveFailures = 0
+    }
 
     if (!state.hasReading) {
       const line = initialStateLine(windows, thresholds)
