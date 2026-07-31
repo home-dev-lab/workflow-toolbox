@@ -67,6 +67,9 @@ const DEFAULT_POLL_SECONDS = 300
 const DEFAULT_TIMEOUT_SECONDS = 60
 const MAX_PROBE_OUTPUT_BYTES = 64 * 1024
 const MAX_TIMER_SECONDS = Math.floor(0x7fffffff / 1000)
+const MINUTE_MS = 60 * 1000
+const HOUR_MS = 60 * MINUTE_MS
+const DEGRADED_REMINDER_STEPS_MS = [5 * MINUTE_MS, 15 * MINUTE_MS, 45 * MINUTE_MS]
 const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
 const USER_PROBE = join(CONFIG_DIR, 'scripts', 'quota-usage.mjs')
 const BUNDLED_PROBE = join(dirname(fileURLToPath(import.meta.url)), 'wt-quota-probe.mjs')
@@ -271,6 +274,44 @@ function clearWindowState(state, windowKey) {
   state.fired.delete(windowKey)
 }
 
+function formatDurationMs(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const parts = []
+  if (hours > 0) parts.push(`${hours}h`)
+  if (minutes > 0) parts.push(`${minutes}m`)
+  if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`)
+  return parts.join(' ')
+}
+
+function nextDegradedReminderMs(currentReminderMs) {
+  const stepIndex = DEGRADED_REMINDER_STEPS_MS.indexOf(currentReminderMs)
+  if (stepIndex >= 0 && stepIndex < DEGRADED_REMINDER_STEPS_MS.length - 1) {
+    return DEGRADED_REMINDER_STEPS_MS[stepIndex + 1]
+  }
+  if (stepIndex === DEGRADED_REMINDER_STEPS_MS.length - 1) {
+    return currentReminderMs + HOUR_MS
+  }
+  return DEGRADED_REMINDER_STEPS_MS[0]
+}
+
+function maybeWriteDegradedReminder(state) {
+  if (state.degradedElapsedMs < state.nextDegradedReminderMs) return
+  writeLine(`QUOTA WATCH DEGRADED: still blind after ${formatDurationMs(state.degradedElapsedMs)} without a fresh reading`)
+  state.nextDegradedReminderMs = nextDegradedReminderMs(state.nextDegradedReminderMs)
+}
+
+function noteDegradedSleep(state, sleepMs) {
+  state.degradedElapsedMs += sleepMs
+}
+
+function resetDegradedVisibility(state) {
+  state.degradedElapsedMs = 0
+  state.nextDegradedReminderMs = DEGRADED_REMINDER_STEPS_MS[0]
+}
+
 function baselineWindow(state, windowKey, pct, thresholds) {
   state.lastPct.set(windowKey, pct)
   const firedForWindow = new Set()
@@ -376,6 +417,8 @@ const state = {
   fingerprint: null,
   hasReading: false,
   consecutiveFailures: 0,
+  degradedElapsedMs: 0,
+  nextDegradedReminderMs: DEGRADED_REMINDER_STEPS_MS[0],
 }
 
 writeLine(`QUOTA WATCH ARMED: thresholds=${thresholds.join(',')} poll=${poll}s probe=${basename(probe.path)} source=${probe.source}`)
@@ -432,7 +475,10 @@ while (true) {
           state.probeTimeoutSignaled = true
           writeLine(`QUOTA WATCH DEGRADED: probe exceeded its ${timeout}s timeout and was stopped (reported once)`)
         }
-        await sleep(computeBackoffMs(poll, state.consecutiveFailures))
+        maybeWriteDegradedReminder(state)
+        const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
+        await sleep(backoffMs)
+        noteDegradedSleep(state, backoffMs)
         continue
       }
 
@@ -442,7 +488,10 @@ while (true) {
           state.probeKoSignaled = true
           writeLine(`QUOTA WATCH DEGRADED: probe could not START: ${spawnError} (reported once)`)
         }
-        await sleep(computeBackoffMs(poll, state.consecutiveFailures))
+        maybeWriteDegradedReminder(state)
+        const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
+        await sleep(backoffMs)
+        noteDegradedSleep(state, backoffMs)
         continue
       }
 
@@ -453,7 +502,10 @@ while (true) {
           const reason = probeStderr.length > 0 ? redact(probeStderr.split('\n')[0]).slice(0, 200) : 'no reason given'
           writeLine(`QUOTA WATCH DEGRADED: probe returned nothing (${reason}) (reported once)`)
         }
-        await sleep(computeBackoffMs(poll, state.consecutiveFailures))
+        maybeWriteDegradedReminder(state)
+        const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
+        await sleep(backoffMs)
+        noteDegradedSleep(state, backoffMs)
         continue
       }
 
@@ -466,7 +518,10 @@ while (true) {
           state.probeKoSignaled = true
           writeLine('QUOTA WATCH DEGRADED: probe output UNPARSEABLE (invalid JSON) (reported once)')
         }
-        await sleep(computeBackoffMs(poll, state.consecutiveFailures))
+        maybeWriteDegradedReminder(state)
+        const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
+        await sleep(backoffMs)
+        noteDegradedSleep(state, backoffMs)
         continue
       }
 
@@ -476,7 +531,10 @@ while (true) {
           state.probeKoSignaled = true
           writeLine('QUOTA WATCH DEGRADED: probe output INVALID (expected a JSON object with a usable window) (reported once)')
         }
-        await sleep(computeBackoffMs(poll, state.consecutiveFailures))
+        maybeWriteDegradedReminder(state)
+        const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
+        await sleep(backoffMs)
+        noteDegradedSleep(state, backoffMs)
         continue
       }
 
@@ -494,7 +552,10 @@ while (true) {
           const missing = WINDOWS.filter(({ key }) => !(key in liveWindows)).map(({ key }) => key)
           writeLine(`QUOTA WATCH DEGRADED: probe output INVALID (missing window(s): ${missing.join(',')}) (reported once)`)
         }
-        await sleep(computeBackoffMs(poll, state.consecutiveFailures))
+        maybeWriteDegradedReminder(state)
+        const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
+        await sleep(backoffMs)
+        noteDegradedSleep(state, backoffMs)
         continue
       }
 
@@ -525,6 +586,7 @@ while (true) {
       state.probeKoSignaled = false
       state.probeTimeoutSignaled = false
       state.consecutiveFailures = 0
+      resetDegradedVisibility(state)
     }
 
     if (!state.hasReading) {
@@ -625,6 +687,9 @@ while (true) {
       state.internalErrorSignaled = true
       writeLine(`QUOTA WATCH DEGRADED: internal watcher error, cycles skipped: ${redact(error?.message ?? error)} (reported once)`)
     }
-    await sleep(poll * 1000)
+    maybeWriteDegradedReminder(state)
+    const pollMs = poll * 1000
+    await sleep(pollMs)
+    noteDegradedSleep(state, pollMs)
   }
 }

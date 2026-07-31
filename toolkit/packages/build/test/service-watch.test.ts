@@ -1054,6 +1054,13 @@ ${
       .map(Number)
   }
 
+  function degradedLines(stdout: string): string[] {
+    return stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.includes('QUOTA WATCH DEGRADED'))
+  }
+
   // -------------------------------------------------------------------------------
   // Finding 1, cross-family review (2026-07-31): a poisoned/foreign cache file used to be
   // trusted as the BASELINE (the very first reading), pre-seeding state.fired with
@@ -1281,6 +1288,85 @@ syncBuiltinESMExports()
     // the ordering property over the WHOLE series rather than enumerating index pairs.
     expect(failureSleeps).toEqual([...failureSleeps].sort((a, b) => a - b))
     expect(Math.max(...failureSleeps)).toBeGreaterThan(Math.min(...failureSleeps))
+  })
+
+  it('keeps a degraded watcher visible over time without regressing to per-cycle noise, and restarts that schedule after live recovery', async () => {
+    const failingCfg = tmpRoot('wt-quota-watch-visible-degraded-')
+    writeCounterProbe(failingCfg, join(failingCfg, 'counter.txt'), 'always-fail')
+
+    const failingRun = await runWatcher(failingCfg, { maxCycles: 26, sleepLogPath: join(failingCfg, 'sleeps.log') }, 15_000)
+    const failingDegradedLines = degradedLines(failingRun.stdout)
+    const failingReminderLines = failingDegradedLines.filter((line) => !line.includes('(reported once)'))
+
+    expect(failingReminderLines.length).toBeGreaterThanOrEqual(2)
+    expect(failingDegradedLines.length).toBeGreaterThan(1)
+    expect(failingDegradedLines.length).toBeLessThan(26)
+
+    const healthyCfg = tmpRoot('wt-quota-watch-visible-healthy-')
+    writeCounterProbe(healthyCfg, join(healthyCfg, 'counter.txt'), 'always-succeed')
+
+    const healthyRun = await runWatcher(healthyCfg, { maxCycles: 3, sleepLogPath: join(healthyCfg, 'sleeps.log') })
+
+    expect(degradedLines(healthyRun.stdout)).toHaveLength(0)
+
+    const resetCfg = tmpRoot('wt-quota-watch-visible-reset-')
+    const resetCounterPath = join(resetCfg, 'counter.txt')
+    const resetSleepLogPath = join(resetCfg, 'sleeps.log')
+    const resetCachePath = join(resetCfg, '.quota-cache.json')
+    const resetPreloadPath = join(resetCfg, 'sleep-hook.mjs')
+    mkdirSync(join(resetCfg, 'scripts'), { recursive: true })
+    writeFileSync(
+      join(resetCfg, 'scripts', 'quota-usage.mjs'),
+      `import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+const counterPath = ${JSON.stringify(resetCounterPath)}
+let n = 0
+if (existsSync(counterPath)) n = Number(readFileSync(counterPath, 'utf8')) || 0
+n += 1
+writeFileSync(counterPath, String(n))
+if (n === 1 || n === 12) {
+  process.stdout.write(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, five_hour: { pct: 99, reset_local: '12:00' }, seven_day: { pct: 5, reset_local: 'sam. 01/08 00:00' } }))
+} else {
+  process.stderr.write('usage endpoint failed: HTTP 429')
+  process.exit(1)
+}
+`,
+    )
+    writeFileSync(
+      resetPreloadPath,
+      `import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+
+const sleepLogPath = ${JSON.stringify(resetSleepLogPath)}
+const cachePath = ${JSON.stringify(resetCachePath)}
+const originalAppendFileSync = fs.appendFileSync.bind(fs)
+
+fs.appendFileSync = function patchedAppendFileSync(path, data, options) {
+  const result = originalAppendFileSync(path, data, options)
+  if (path === sleepLogPath) fs.rmSync(cachePath, { force: true })
+  return result
+}
+
+syncBuiltinESMExports()
+`,
+    )
+
+    const resetRun = await runWatcher(
+      resetCfg,
+      {
+        maxCycles: 22,
+        sleepLogPath: resetSleepLogPath,
+        extraEnv: { NODE_OPTIONS: `--import=${resetPreloadPath}` },
+      },
+      15_000,
+    )
+    const resetDegradedLines = degradedLines(resetRun.stdout)
+    const resetReminderLines = resetDegradedLines.filter((line) => !line.includes('(reported once)'))
+
+    expect(resetDegradedLines).toHaveLength(4)
+    expect(resetDegradedLines[0]).toContain('(reported once)')
+    expect(resetDegradedLines[2]).toContain('(reported once)')
+    expect(resetReminderLines).toHaveLength(2)
+    expect(resetReminderLines[0]).toBe(resetReminderLines[1])
   })
 
   it('recovers automatically after a transient failure, and resets to the NORMAL cadence — deterministically', async () => {
