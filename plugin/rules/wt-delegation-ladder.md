@@ -154,6 +154,81 @@ process state) for an independent wake-up.
    invocation is then its own provenance. The prohibition targets the intermediary that can
    substitute for the model, never the directness of the call.
 
+## Addressing a delegated agent — name vs raw id, and what breaks silently
+
+Two facts about how a delegated agent is reached and watched are easy to get wrong, because
+getting them wrong produces a false "it's dead" or "it's idle" instead of an error — the
+harness stays quiet either way. Both come from directly exercising the surface; it is
+undocumented and may change without notice, so treat the specifics below as a dated
+measurement, not a permanent contract.
+
+**Addressing.** The short `name` is the normal address, and it keeps working after the agent's
+own turn ends — sending to a completed agent's name resumes it from its transcript, per the
+tool's own contract. The raw id (shape `a<name>-<hash>` for a named agent, `a<hex>` for an
+anonymous one) is the fallback: use it only when the agent has no name, or when a newer agent
+took the same name (latest wins). Do not treat the raw id as the primary or required address —
+both routes were exercised end-to-end (message delivered AND acted on, not just accepted by the
+tool) and both worked.
+
+⚠ **One dated, unreproduced exception**: in one session, after a full session restart (not
+just an agent completing), addressing a previously-alive agent by its short name failed while
+the same agent's raw id succeeded. This is a single observation, not a confirmed behavior — do
+not generalize it into "always use the raw id after a restart". It does mean the raw id is worth
+knowing regardless of whether the name works, which is the next point.
+
+⚠ **The TUI does not show a resumed agent.** An agent revived from a previous session's
+transcript — alive, responsive, carrying its full prior context — does not appear anywhere in
+the interactive agent list. This is what makes the failure mode expensive: if the short name
+also happens to fail, everything visible says "gone", with nothing to contradict it. Knowing the
+raw-id fallback only helps if you know to reach for it despite the UI showing nothing — that is
+the reason this is worth stating explicitly rather than leaving it as an implied detail of the
+addressing contract.
+
+## A delegated agent's transcript is a DIFFERENT file from the session's own
+
+A freshness watcher armed on "the agent's transcript" is easy to point at the wrong file,
+because the natural guess — the session's own conversation log — is not it. The layout:
+
+```
+<projects-dir>/<session-id>.jsonl                              ← the SESSION's own conversation
+<projects-dir>/<session-id>/subagents/agent-<raw-id>.jsonl      ← the DELEGATE's own transcript
+```
+
+⚠ **A watcher armed on the top-level file is a hollow guard.** It measures the session's own
+writes, not the delegate's — so it reports "active" for as long as the session keeps talking,
+regardless of whether the delegate is working, stuck, or gone. It can never fire, and its
+silence is indistinguishable from a healthy delegate. Point any freshness check at the
+`subagents/agent-<raw-id>.jsonl` path, and confirm the file exists before arming: an absent file
+means the watcher never armed, not that the delegate is quiet.
+
+**Side benefit**: the filenames under `subagents/` ARE the raw ids (`agent-<raw-id>.jsonl`) —
+this is the dependency-free way to recover a delegate's raw id when its name stops resolving,
+with no dependency on any optional hook or state directory being enabled.
+
+## The naming/observer trade-off — state it, don't pick a side
+
+When a delegate definition declares a paired read-only observer, how it is spawned changes
+whether the observer attaches, on this same undocumented surface:
+
+| Spawn shape | Observer attaches | Addressable by name | Addressable by raw id |
+|---|---|---|---|
+| anonymous (no `name`) | yes | no | yes (recover via `subagents/`) |
+| `name` **+** an isolated worktree | yes | yes | yes |
+| `name` alone | **no** (drops silently) | yes | yes |
+
+The third row's drop is conditional, not absolute: it happens once the session already has
+other addressable teammates, because that team context initializes lazily — so the very first
+named spawn of a session can still land the observer even without isolation. Don't reason about
+whether the condition holds for a given spawn; pick a shape that is safe either way.
+
+This makes the choice a real three-way trade-off, not a rule to prescribe once: anonymous spawns
+keep the observer at the cost of name-based addressing (recoverable via the raw id above); named
+spawns without isolation risk losing the observer silently; named-plus-isolated spawns keep
+both — except when the delegate hands its own increment to an external executor lane, because an
+isolated worktree with a zero-diff at idle gets reaped while the lane is still running inside it,
+which makes that combination unusable for a lane-delegating delegate specifically. State which
+shape a given coordinator uses and why, rather than defaulting to one without saying so.
+
 ## A mandate is re-issued, not assumed
 
 A coordinator given a fixed list of items stops when that list is exhausted — nothing
