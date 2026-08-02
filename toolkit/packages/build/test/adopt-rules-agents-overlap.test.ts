@@ -175,7 +175,7 @@ describe('adopt-rules audit-overlap --set agents', () => {
     const res = run(fixture.script, fixture.userDir, ['--set', 'agents'])
 
     expect(res.status).toBe(1)
-    expect(res.stdout).toContain('DRIFT pilot.md: otherwise implement the increments yourself.')
+    expect(res.stdout).toContain('DRIFT pilot.md (missing from shipped template): otherwise implement the increments yourself.')
     expect(res.stdout).toContain('UNMAPPED')
     expect(res.stdout).toContain('wt-check.md')
   })
@@ -227,7 +227,7 @@ describe('adopt-rules audit-overlap --set agents', () => {
     const res = run(fixture.script, fixture.userDir, ['--set', 'agents'])
 
     expect(res.status).toBe(1)
-    expect(res.stdout).toContain('DRIFT pilot.md: otherwise implement the increments yourself.')
+    expect(res.stdout).toContain('DRIFT pilot.md (missing from shipped template): otherwise implement the increments yourself.')
   })
 
   it('fails when a declared agent copy is ABSENT', () => {
@@ -270,7 +270,7 @@ describe('adopt-rules audit-overlap --set agents', () => {
 
     expect(res.status).toBe(1)
     expect(res.stdout).toContain('DRIFT pilot.md')
-    expect(res.stdout).toContain('DRIFT pilot.md: otherwise implement the increments yourself.')
+    expect(res.stdout).toContain('DRIFT pilot.md (missing from shipped template): otherwise implement the increments yourself.')
     expect(res.stdout).toContain('audit-overlap: 0 duplicate, 1 drift, 0 absent, 0 unpaired, 0 unmapped')
   })
 
@@ -299,8 +299,58 @@ describe('adopt-rules audit-overlap --set agents', () => {
 
     expect(res.status).toBe(1)
     expect(res.stdout).toContain('DRIFT pilot.md')
-    expect(res.stdout).toContain('DRIFT pilot.md (missing): If no consented lane is available, split work to a cheaper sub-agent.')
+    expect(res.stdout).toContain('DRIFT pilot.md (missing from project copy): If no consented lane is available, split work to a cheaper sub-agent.')
     expect(res.stdout).toContain('audit-overlap: 0 duplicate, 1 drift, 0 absent, 0 unpaired, 0 unmapped')
+  })
+
+  it('discriminates the two drift directions with different, unambiguous labels — and every DRIFT content line names its side (card #1832961693500573565)', () => {
+    // The DoD's real test: fabricate a divergence in EACH direction on the SAME pair (one
+    // line only the project copy has, one line only the shipped template has) and check that
+    // a reader who knows nothing about this tool can tell, from the output alone, which file
+    // to edit for which line. Locks the INVARIANT ("every drift content line names its
+    // direction"), not an enumeration of today's two labels — the loop below scans every
+    // DRIFT content line, not just the two the test happens to construct.
+    const fixture = mkFixture()
+    const bothDirectionsPilot = withModel(
+      SHIPPED_AGENTS['pilot.md'].replace(
+        'If no consented lane is available, split work to a cheaper sub-agent.\n',
+        'a brand-new line only the project copy has.\n',
+      ),
+      modelFor('pilot.md'),
+    )
+    writeFileSync(join(fixture.userDir, 'pilot.md'), bothDirectionsPilot)
+    writeFileSync(join(fixture.userDir, 'pilot-orchestrator.md'), withModel(SHIPPED_AGENTS['pilot-orchestrator.md'], modelFor('pilot-orchestrator.md')))
+    writeFileSync(join(fixture.userDir, 'pilot-watchdog.md'), withModel(SHIPPED_AGENTS['pilot-watchdog.md'], modelFor('pilot-watchdog.md')))
+    writeFileSync(
+      join(fixture.userDir, 'pilot-orchestrator-watchdog.md'),
+      withModel(SHIPPED_AGENTS['pilot-orchestrator-watchdog.md'], modelFor('pilot-orchestrator-watchdog.md')),
+    )
+
+    const res = run(fixture.script, fixture.userDir, ['--set', 'agents'])
+
+    expect(res.status).toBe(1)
+    // The line ONLY the project copy has: absent from the shipped template.
+    expect(res.stdout).toContain('DRIFT pilot.md (missing from shipped template): a brand-new line only the project copy has.')
+    // The line ONLY the shipped template has: absent from the project copy.
+    expect(res.stdout).toContain('DRIFT pilot.md (missing from project copy): If no consented lane is available, split work to a cheaper sub-agent.')
+    // The two labels are DIFFERENT strings — a reader cannot confuse which side is which.
+    expect(res.stdout).toContain('missing from shipped template')
+    expect(res.stdout).toContain('missing from project copy')
+    // The summary breakdown also carries both counts, both non-zero on this fixture.
+    expect(res.stdout).toContain('1 pair(s) missing from project copy (project is BEHIND the shipped template)')
+    expect(res.stdout).toContain('1 pair(s) missing from shipped template (project has DIVERGED ahead of the shipped template)')
+
+    // INVARIANT, not enumeration: every DRIFT line that carries an actual content entry (a
+    // trailing `: <text>`, as opposed to the bare intro `DRIFT pilot.md` line) names one of
+    // the two known directions. A future third divergence shape (were one ever added) would
+    // fail THIS assertion instead of silently shipping an unlabelled line.
+    const driftContentLines = res.stdout
+      .split('\n')
+      .filter((line) => /^DRIFT [^\s].*: /.test(line) && !/^DRIFT \S+: adopted under shipped name/.test(line))
+    expect(driftContentLines.length).toBeGreaterThan(0)
+    for (const line of driftContentLines) {
+      expect(line).toMatch(/\((missing from shipped template|missing from project copy)\): /)
+    }
   })
 
   it('does NOT flag a deleted rule line as drift — rules stay additions-only (editable-copy contract)', () => {
