@@ -5,6 +5,32 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+
+- **`adopt-rules`'s `install-rules.mjs`: a flag with no effect in the current mode is now
+  REFUSED, not silently ignored.** `--user-dir` was parsed and stored in every mode but only
+  ever read inside `--audit-overlap` — under `--check`/`--install` it did nothing, and the
+  target silently fell back to `--dir`/cwd. A near-miss: a session ran `--check --user-dir
+  <adopted path>` from the `workflow-toolbox` checkout, got a confident "all agents ABSENT"
+  for a directory nobody adopts into, and the tool's own closing line invited `--install` —
+  which would have written agent files into the public repo. Fixed with a mode → flag table
+  checked once after parsing: any flag whose stored value differs from its default but isn't
+  read by the resolved mode fails fast, naming the flag, the mode, and (for `--user-dir`) the
+  correct `--dir` alternative. The sweep also catches the same asymmetry on `--dir`,
+  `--global`, `--force`, and `--replace-symlinks` under `--audit-overlap`, where none of them
+  were read either.
+- **A gate's reported exit code can no longer be a wrapper's, not the gate's own.** A task
+  notification once reported `exit 0` for a batch where `pnpm typecheck` had actually failed
+  with `exit 2` — the code read back was a chained wrapper's trailing `echo`, not the gate.
+  Added `plugin/bin/wt-run-gate.mjs`: runs exactly one command with no shell (nothing for a
+  later command to chain onto), writes its real exit code to a file of its own the instant the
+  process returns, and — given `--fail-pattern` — cross-checks that code against the captured
+  log so a 0-but-the-log-shows-an-error mismatch is reported as INCONSISTENT and forced
+  non-zero rather than trusted. `wt-verify-by-ground-truth.md` and the pilot agent template
+  both now state the corollary explicitly: the code you read must belong to the gate, never to
+  something that ran after it, and a second signal (the tool's own summary/failure count)
+  should be read beside it.
+
 ### Documentation
 
 - **Known issue #9**: the spawn-registry heartbeat's repeated `Stop` block on an unacknowledged

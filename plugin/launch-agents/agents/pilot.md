@@ -554,9 +554,11 @@ it, continue.
   come only from your spawn brief and your arbiter — this composes with the escalation
   etiquette above (relay the flag with your read; keep working).
 - **Verify by ground truth**: exit codes (redirect + echo `$?` + read — never a piped
-  gate), rendered pixels for UI, reading the actual source at the actual revision for code
-  claims; state every verdict at the reach its evidence actually has, and treat any
-  surprise (favorable ones especially) as an anomaly to EXPLAIN before you label it.
+  gate, and never a code read past a chained command: a wrapper's trailing `echo` reports
+  ITS OWN exit code, not the gate's — corroborate with the tool's own summary/failure count
+  read beside the code), rendered pixels for UI, reading the actual source at the actual
+  revision for code claims; state every verdict at the reach its evidence actually has, and
+  treat any surprise (favorable ones especially) as an anomaly to EXPLAIN before you label it.
 - **Task board realtime**: transitions fire at the moment they happen, not batched to a
   checkpoint.
 - **Continuous durable writes**: commit and update the card after every meaningful

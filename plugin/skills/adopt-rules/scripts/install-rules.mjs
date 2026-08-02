@@ -421,6 +421,39 @@ function parseArgs(argv) {
   return args
 }
 
+// Which flags are actually READ by which mode's code path — the single source of truth
+// this function's guard checks against. A flag absent from its own mode's list has NO
+// EFFECT there: nothing downstream ever reads it. That must REFUSE, not silently accept —
+// the original bug (card #1832848906090710813): `--user-dir` was parsed and stored in every
+// mode but read only inside auditOverlap(), so `--check --user-dir <x>` reported on the
+// --dir/cwd fallback while looking like it had honoured the caller's target.
+//
+// Keep this table in sync with what each mode's branch in main()/auditOverlap() actually
+// reads — that is the invariant being enforced ("no flag is accepted where it does nothing"),
+// not an enumeration of today's specific flags. Adding a flag that is mode-scoped means
+// adding one line here; forgetting to is exactly the class of bug this guard exists to catch
+// in every OTHER flag, so it would still be caught the next time this list is audited against
+// the parsing/reading sites.
+const FLAG_EFFECTIVE_MODES = {
+  userDir: { cli: '--user-dir', modes: ['audit-overlap'] },
+  pairsFile: { cli: '--pairs-file', modes: ['audit-overlap'] },
+  dir: { cli: '--dir', modes: ['check', 'install'] },
+  global: { cli: '--global', modes: ['check', 'install'] },
+  force: { cli: '--force', modes: ['check', 'install'] },
+  replaceSymlinks: { cli: '--replace-symlinks', modes: ['check', 'install'] },
+}
+
+/** Refuse any flag that was passed but has no effect in the resolved mode. */
+function checkFlagModeAsymmetry(args) {
+  for (const [key, { cli, modes }] of Object.entries(FLAG_EFFECTIVE_MODES)) {
+    const passed = args[key] !== null && args[key] !== false
+    if (!passed || modes.includes(args.mode)) continue
+    const modeList = modes.map((m) => `--${m}`).join(' or ')
+    const extra = key === 'userDir' ? ' — to target a directory under --check/--install, use --dir instead' : ''
+    fail(`${cli} has no effect with --${args.mode} (only honoured with ${modeList})${extra}`)
+  }
+}
+
 // Follows symlinks deliberately (unlike classify()'s lstat-first write-safety check): this
 // mode never writes, and a VALID symlink still means the concern is genuinely loaded from
 // this path — e.g. the exact pre-2026-07-23 work-side shape (a symlinked original alongside
@@ -441,6 +474,7 @@ function normalizedLines(text) {
 function auditOverlap(userDir, root, pairsFile, set = 'rules') {
   const setConfig = SETS[set]
   if (!setConfig) fail(`unknown audit-overlap set '${set}' (expected rules | agents)`)
+  process.stdout.write(`[audit-overlap:${set}] target=${userDir}\n`)
   let entries
   try {
     entries = fs.readdirSync(userDir)
@@ -726,6 +760,7 @@ function processSet(set, dir, args, version, root) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2))
+  checkFlagModeAsymmetry(args)
   if (args.mode === 'audit-overlap') {
     if (!args.userDir) fail('--user-dir is required with --audit-overlap')
     if (!['rules', 'agents'].includes(args.set)) {

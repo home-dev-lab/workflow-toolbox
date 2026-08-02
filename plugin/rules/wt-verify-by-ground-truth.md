@@ -5,7 +5,20 @@ Replace "this looks right" with a mechanical check on the signal that actually d
 
 - Gates by EXIT CODE, not visible output. Redirect the command to a file, echo `$?`, then read
   the file — never pipe a gate (a pipe's own exit 0 masks the failure, and `PIPESTATUS` is
-  shell-specific and easy to misread). 
+  shell-specific and easy to misread).
+  ⚠ **The code you read must belong to the GATE, never to something that ran AFTER it.**
+  Redirect-then-`$?` is necessary but not sufficient: any command placed between the gate and
+  the read replaces the value, and a wrapping script's final `echo` succeeds even when the
+  gate it wraps failed — the last command in a chain is almost always the one whose code
+  survives to be read, and it is rarely the one that matters. A real case: a batch reported
+  `exit 0` for a gate run where `typecheck` had actually failed with `exit 2`, because the
+  number read back was a wrapper's trailing `echo`, not the gate's. **Corroborate with a
+  second signal that would fail differently** — the tool's own summary line, a failure count,
+  a grep for its error marker in the captured log — read BESIDE the code, not instead of it.
+  A misread code does not spoil one result: it retroactively voids every "gates green" claim
+  built on the same capture path. Where available, prefer a runner that makes this
+  structurally impossible rather than merely disciplined (no shell, no chaining, the code
+  written to its own file the instant the gate returns) over a hand-typed redirect-and-echo.
 - UI claims by RENDERED PIXELS, not API payloads — a field can be in the JSON and dropped before
   the DOM. Drive the real browser.
 - Claims about code by READING THE SOURCE at the actual revision, not from memory. To read a

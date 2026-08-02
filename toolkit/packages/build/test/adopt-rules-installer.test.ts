@@ -618,3 +618,89 @@ describe('adopt-rules installer — symlink-aware install (never write through a
     expect(readFileSync(canonical, 'utf8'), 'replacing the symlink must not touch its former target').toBe(CANON)
   })
 })
+
+// A flag that is parsed and stored in every mode but only ever READ by one of them has NO
+// EFFECT when passed under a different mode — the installer used to accept it silently
+// (card #1832848906090710813: `--check --user-dir <x>` reported on the --dir/cwd fallback
+// while looking like it had honoured the caller's target). These three cases are the
+// card's own discriminating closure criteria, plus a sweep of the OTHER flags that share
+// the same asymmetry (`--dir`/`--global`/`--force`/`--replace-symlinks` under
+// `--audit-overlap`) — the fix is an INVARIANT ("no flag is accepted where it does nothing"),
+// not a special case for `--user-dir` alone, so the sweep is what proves that.
+describe('adopt-rules installer — a flag with no effect in the resolved mode is REFUSED, not ignored', () => {
+  function runRaw(args: string[]) {
+    const res = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' })
+    return { ...res, out: (res.stdout ?? '') + (res.stderr ?? '') }
+  }
+
+  it('--check --user-dir <x>: non-zero exit, message names --dir', () => {
+    const d = mkDir()
+    const res = runRaw(['--check', '--user-dir', d])
+    expect(res.status).not.toBe(0)
+    expect(res.out).toContain('--user-dir')
+    expect(res.out).toContain('--dir')
+  })
+
+  it('--check --dir <x>: unaffected — still works, and names the effective target', () => {
+    const d = mkDir()
+    const res = runRaw(['--check', '--dir', d])
+    expect(res.status).toBe(0)
+    expect(res.out).toContain(`target=${d}`)
+  })
+
+  it('--audit-overlap --user-dir <x>: unaffected — still works exactly as before', () => {
+    const d = mkDir()
+    const res = runRaw(['--audit-overlap', '--user-dir', d])
+    expect(res.status).toBe(0)
+    expect(res.out).toContain(`target=${d}`)
+  })
+
+  it('--install --user-dir <x>: also refused (not just --check)', () => {
+    const d = mkDir()
+    const res = runRaw(['--install', '--user-dir', d])
+    expect(res.status).not.toBe(0)
+    expect(res.out).toContain('--user-dir')
+  })
+
+  it('sweep: --audit-overlap --dir <x> is refused too (--dir has no effect in that mode)', () => {
+    const d = mkDir()
+    const res = runRaw(['--audit-overlap', '--user-dir', d, '--dir', d])
+    expect(res.status).not.toBe(0)
+    expect(res.out).toContain('--dir')
+  })
+
+  it('sweep: --audit-overlap --global is refused too', () => {
+    const d = mkDir()
+    const res = runRaw(['--audit-overlap', '--user-dir', d, '--global'])
+    expect(res.status).not.toBe(0)
+    expect(res.out).toContain('--global')
+  })
+
+  it('sweep: --audit-overlap --force is refused too', () => {
+    const d = mkDir()
+    const res = runRaw(['--audit-overlap', '--user-dir', d, '--force'])
+    expect(res.status).not.toBe(0)
+    expect(res.out).toContain('--force')
+  })
+
+  it('sweep: --audit-overlap --replace-symlinks is refused too', () => {
+    const d = mkDir()
+    const res = runRaw(['--audit-overlap', '--user-dir', d, '--replace-symlinks'])
+    expect(res.status).not.toBe(0)
+    expect(res.out).toContain('--replace-symlinks')
+  })
+
+  it('sweep: --check --pairs-file <x> is refused (pairs-file only honoured under --audit-overlap)', () => {
+    const d = mkDir()
+    const res = runRaw(['--check', '--dir', d, '--pairs-file', join(d, 'x.json')])
+    expect(res.status).not.toBe(0)
+    expect(res.out).toContain('--pairs-file')
+  })
+
+  it('--force and --replace-symlinks remain accepted under --check/--install (they ARE read there, informationally)', () => {
+    const d = mkDir()
+    expect(runRaw(['--check', '--dir', d, '--force']).status).toBe(0)
+    expect(runRaw(['--check', '--dir', d, '--replace-symlinks']).status).toBe(0)
+    expect(runRaw(['--install', '--dir', d, '--force']).status).toBe(0)
+  })
+})
