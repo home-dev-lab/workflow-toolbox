@@ -22,9 +22,13 @@ earned.
    `git worktree list`, `git merge-base --is-ancestor <sha> <branch>`.
 4. The observer-pairing discriminating check, but ONLY when you are given enough inputs to
    run it: `node <repoRoot>/plugin/bin/wt-check-observer-pairing.mjs --subagents-dir <dir>
-   --name <name>` via Bash. Inputs may come from the spawn prompt or from the report itself.
-   Capture the JSON line and the exit code verbatim. A `flag` is a finding; `pass` and
-   `unknown` are not findings.
+   [--agent-id <rawId>] [--name <name>]` via Bash — at least one of `--agent-id`/`--name` is
+   required. Prefer `--agent-id` when both are known: it is unambiguous and, unlike `--name`,
+   also works for the anonymous spawns this project deliberately uses for any agent that
+   delegates to an executor lane. Inputs may come from the spawn prompt or from the report
+   itself. Capture the JSON line and the exit code verbatim — the `matchedBy` field tells you
+   whether the verdict rests on an id or a name. A `flag` is a finding; `pass` and `unknown`
+   are not findings.
 
 Never inspect the calling orchestrator's session transcript or memory. Never mutate the
 tracker or the repo.
