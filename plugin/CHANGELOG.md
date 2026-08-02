@@ -5,8 +5,45 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-08-02
+
+### Added
+
+- **`wave-fidelity-checker` — an end-of-arc agent that reads a wave report and checks its
+  claims against the primary sources**, refute-first, reporting CONFIRMED / REFUTED /
+  UNVERIFIABLE per claim. Ships with `plugin/bin/wt-check-observer-pairing.mjs`, which reads
+  the harness's own `.meta.json` (`isObserver`) rather than transcript content.
+  ⚠ **Two limitations, both known and neither fixed in this release.** The pairing check
+  hard-requires a `--name` and therefore cannot verify an agent spawned **anonymously** — which
+  is the mode a lane-delegating agent must use, since harness-managed `isolation` deletes a
+  worktree whose agent has yielded to an external executor. And the checker has been exercised
+  on exactly **one** real report: a verifier observed only passing is indistinguishable from one
+  that always passes. It did flag two underspecified claims and an unfilled placeholder on that
+  run, which is the only evidence so far that it discriminates at all.
+
 ### Fixed
 
+- **A cleanly-finished agent is no longer reported as stuck forever.** The spawn registry
+  correlated a `spawn` record to its `stop` record **by name only** — but the two ends do not
+  always use the same name: a spawn made with an explicit `name:` and an ordinary
+  `subagent_type` records the NAME on the spawn and the TYPE on the stop
+  (`{"child":"aa877…","name":"s-fence-125"}` versus
+  `{"agentId":"aa877…","name":"general-purpose"}`). The raw agent id is identical on both
+  sides and was not being used, so the entry never closed and only a manual `--ack` could
+  clear it. Fixed by correlating on the raw `agentId` first, with name/type as fallback.
+  Measured across 422 spawn records in 20 journals: 272 already matched by id, **149 were
+  name-correlation misses**, and exactly one was a genuine unrecorded death.
+- **The arc watcher no longer treats "silent" as "dead".** It fired on every normally-finished
+  agent. It now corroborates a stale transcript against the outbound-guard journal before
+  alerting, and — the part that matters — only accepts a `stop` record that can account for the
+  CURRENT silence: a single agent writes one stop record **per turn boundary**, not one per
+  lifetime, so an old clean stop from an earlier turn proves nothing about a later silence. The
+  backward tolerance (1 s) is derived from the measured distribution rather than chosen: 45 real
+  negative samples, one at −0.021 s, then an empty 5.87 s gap, then 44 from −5.894 s down. It is
+  a separator between two observed populations, not a safety margin — if the gap closes it must
+  be re-derived, never widened.
+- **A card whose pilot dies before its intake is no longer invisible.** New
+  `plugin/bin/wt-pilot-card-reconcile.mjs` compares claimed cards against live pilots.
 - **`adopt-rules`'s `install-rules.mjs`: a flag with no effect in the current mode is now
   REFUSED, not silently ignored.** `--user-dir` was parsed and stored in every mode but only
   ever read inside `--audit-overlap` — under `--check`/`--install` it did nothing, and the
