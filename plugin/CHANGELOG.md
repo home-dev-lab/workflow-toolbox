@@ -5,6 +5,40 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.66.0] - 2026-08-02
+
+### Added
+
+- **`wt-stale-date-guard.mjs` — flags an operational deadline in markdown prose once it has
+  passed, without flagging the far more common dated FACT that never expires.** The motivating
+  case: a rule carried "the next usable account is <date>" for four days past that date, read as
+  current the whole time, because a rule file is a snapshot with no expiry mechanism — a past
+  date reads exactly like a future one.
+  The hard part is not the arithmetic, it is the classification: on one real 27-file corpus, **54
+  of 54** dates were provenance ("measured on …", "(name, DD/MM)"). A guard that cannot tell them
+  apart emits 54 false alarms on its first run and gets disabled within the week. Three keyword
+  tiers, checked in priority order — **acknowledged-past** ("l'échéance est passée", "no longer",
+  "discontinued") wins over **deadline** ("jusqu'au", "valid until") wins over **provenance** —
+  with the window bounded to the sentence rather than a flat character radius. A date matching
+  none of the three is reported as UNKNOWN, never silently dropped and never silently treated as
+  a deadline.
+  ⚠ **Honest scope:** zero unknowns on the corpus it was tuned against is not evidence of
+  generalisation, and one provenance marker was added narrowly to close the last case on that
+  corpus. On prose it has not seen, UNKNOWN is the intended output, not a metric to drive to
+  zero. Standalone CLI — not wired into any hook or CI.
+
+- **A mechanical guard against private tracker identifiers on the shipped surface.** It walks
+  `plugin/`, `docs/public/` and the README on every run rather than checking a list of known
+  files, so a file nobody thought of is covered by construction.
+
+### Fixed
+
+- **40 private tracker identifiers removed from the shipped surface**, replaced by what they
+  referred to rather than deleted — provenance mentions went UP (542 → 551), which is the control
+  separating a rewrite from an erasure. A reader outside the machine that hosts the board could
+  not resolve `card #<id>`; it was a bare identifier with no referent. Three of the forty lived in
+  byte-identity-mirrored artifacts and were fixed at their true source, not in the copies.
+
 ## [0.65.0] - 2026-08-02
 
 ### Fixed

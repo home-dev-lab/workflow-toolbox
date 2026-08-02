@@ -2,7 +2,7 @@
 // as PROVENANCE (a dated fact — "measured on 31/07" — never expires) or
 // DEADLINE (an operational cutoff — "usable again on 29/07" — expires the
 // moment "today" passes it), and flag only a DEADLINE that has actually
-// passed AND is not already narrated as past. See card #1832980806121817984:
+// passed AND is not already narrated as past. Measured case that motivated it:
 // a rule carried a dead account-reset deadline for four days because nothing
 // distinguished it from the ~45 harmless provenance dates in the same file —
 // the two must never be treated alike, or the guard is either blind (folds
@@ -13,8 +13,8 @@
 // French and English rule prose does not carry a machine-readable tag for
 // "this date is a deadline". The heuristic is a WINDOW of text around each
 // date match, tested against THREE keyword tiers, checked in this priority
-// order (real bug found running this guard against the actual corpus, card
-// #1832980806121817984, arbiter review):
+// order (tier 1 was added after an arbiter ran this guard against the actual
+// corpus and found it flagging a clause that already narrated its own expiry):
 //
 //   1. ACKNOWLEDGED-PAST markers ("l'échéance est passée", "GLM est MORT",
 //      "service arrêté") — the surrounding text is ITSELF reporting that the
@@ -43,9 +43,9 @@ const DATE_PATTERN =
 // Checked FIRST and wins over a deadline marker in the same window: a phrase
 // like "l'échéance est passée" or "service arrêté" IS a deadline word, but
 // paired with an explicit past-tense acknowledgment it is reporting a
-// RESOLVED fact, not asking the reader to act. Real corpus case (card
-// #1832980806121817984): "GLM est MORT — service arrêté le 2026-07-28,
-// l'échéance est passée" is the rule's OWN fix for the class this card
+// RESOLVED fact, not asking the reader to act. Real corpus case:
+// "GLM est MORT — service arrêté le 2026-07-28,
+// l'échéance est passée" is the rule's OWN fix for the class this guard
 // exists to catch; flagging it as an open stale deadline would have the
 // guard ask a reader to re-fix something already fixed.
 const ACKNOWLEDGED_PAST_MARKERS = [
@@ -79,7 +79,7 @@ const DEADLINE_MARKERS = [
 // is also used generically ("annoncer l'ÉCHÉANCE de la carte") to talk ABOUT
 // the concept of a deadline without stating one for the surrounding date.
 // Caught by real-world validation against this project's own rule files
-// (card #1832980806121817984): "l'ÉCHÉANCE de la carte (Frederic, 27/07)"
+// (measured on the real corpus): "l'ÉCHÉANCE de la carte (Frederic, 27/07)"
 // false-flagged the citation date as a deadline.
 // NOTE: "résilié" / "service arrêté" moved to tier 1 (acknowledged-past) —
 // both are past-participle constructions in this project's French/English
@@ -106,8 +106,8 @@ const PROVENANCE_MARKERS = [
   /dat[ée] du\b/i,
   /set\s+\d/i, // "(set 28/07, approved …)"
   /approved/i,
-  // Additional narrative-report verbs found scanning the REAL corpus (card
-  // #1832980806121817984, second arbiter round) — "on 24/07" or "le 31/07"
+  // Additional narrative-report verbs found scanning the REAL corpus,
+  // second arbiter round — "on 24/07" or "le 31/07"
   // alone tells you nothing about tense, but the verb next to it does.
   /viol[ée]e?s?/i, // "violées le 24/07"
   /clarifi[ée]/i, // "clarifiée le 27/07"
@@ -127,7 +127,7 @@ const PROVENANCE_MARKERS = [
 function isParentheticalCitation(text, matchIndex, matchLength) {
   // Look for an unmatched '(' before the date and the nearest ')' after it,
   // within a short span — "(Frederic, 31/07)" / "(28/07, testé)" / "(31/07)".
-  // Radius widened to 90 (card #1832980806121817984, 2nd round): a real
+  // Radius widened to 90 (2nd arbiter round): a real
   // multi-clause parenthetical aside ("(Formulation clarifiée le 27/07 : … et
   // un pilote avait abandonné sa review … pour une relecture plus faible le
   // 26/07.)") put the opening paren more than 40 chars before its SECOND
@@ -155,8 +155,8 @@ function isParentheticalCitation(text, matchIndex, matchLength) {
 // between them ("Mesuré le 31/07 : X. Le prochain compte utilisable est le
 // 29/08.") let the FIRST sentence's provenance marker rescue the SECOND
 // sentence's live deadline date, and vice versa — caught by this guard's
-// own test suite immediately after paragraph-joining was added (card
-// #1832980806121817984, 2nd round). Sentence-bounding keeps the
+// own test suite immediately after paragraph-joining was added,
+// in the 2nd arbiter round. Sentence-bounding keeps the
 // line-wrap fix (no terminator sits between a wrapped clause and the date
 // that follows it) while restoring the one-sentence-at-a-time scope a
 // classifier like this needs.
@@ -205,7 +205,7 @@ function toComparableNumber({ year, month, day }) {
 }
 
 // A markdown paragraph is a run of non-blank lines bounded by blank lines.
-// Real bug (card #1832980806121817984, 2nd round): "Mesuré deux fois le" /
+// Real bug (2nd arbiter round): "Mesuré deux fois le" /
 // "28/07 — …" was a single hard-wrapped SENTENCE split across two lines by
 // the editor's line width, and a per-LINE window never saw "Mesuré" sitting
 // on the previous line — the date came back UNKNOWN despite being provenance

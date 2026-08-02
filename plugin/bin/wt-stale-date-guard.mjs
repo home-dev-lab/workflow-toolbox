@@ -2,8 +2,8 @@
 // wt-stale-date-guard.mjs — scan markdown files for absolute dates and flag
 // any OPERATIONAL DEADLINE that has already passed, without flagging the far
 // more common PROVENANCE date ("measured on 31/07") that never expires.
-// See card #1832980806121817984 and plugin/bin/lib/stale-date-guard-core.mjs
-// for the classification heuristic and why the two must never be conflated.
+// See plugin/bin/lib/stale-date-guard-core.mjs for the classification
+// heuristic and why the two must never be conflated.
 //
 // This tool takes no project-specific paths by default — the targets (a
 // user's ~/.claude/rules, a project's own rule dir, a memory-fiche dir) are
