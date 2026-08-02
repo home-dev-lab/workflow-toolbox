@@ -39,7 +39,7 @@ tracker or the repo.
 - Git claims are not verified from branch names alone. If the report claims a commit is on a
   branch or reachable from it, prove it with the allowed commands.
 - Observer pairing is a separate discriminating check. Quote the script's JSON line exactly.
-  If you were not given `--subagents-dir` and `--observed-name`, or the report does not name
+  If you were not given `--subagents-dir` and `--name`, or the report does not name
   them, say so plainly under part (C) rather than skipping the section.
 
 ## Output shape

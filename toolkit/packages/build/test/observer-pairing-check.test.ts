@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,7 +11,14 @@ const SCRIPT = join(REPO_ROOT, 'plugin/bin/wt-check-observer-pairing.mjs')
 type Verdict = {
   exitCode: number
   stdout: string
-  json: { status?: string; reason?: string; observerFile?: string; checked?: number }
+  json: {
+    status?: string
+    reason?: string
+    observerFile?: string
+    checked?: number
+    malformed?: unknown[]
+    candidates?: string[]
+  }
 }
 
 function withTempSubagentsDir(run: (dir: string) => void): void {
@@ -143,6 +150,71 @@ describe('wt-check-observer-pairing.mjs', () => {
 
       expect(result.exitCode).toBe(2)
       expect(result.json.status).toBe('unknown')
+    })
+  })
+
+  // Mutation-coverage: an isObserver sibling that predates the observed agent must NOT
+  // count as pairing — timing correlation only makes sense forward in time (the observer
+  // attaches AFTER the observed spawns). Without this test, relaxing the script's
+  // `delta >= 0` guard to a bare `delta <= windowMs` would keep every other test green.
+  it('flags async when the only isObserver sibling predates the observed agent (negative delta)', () => {
+    withTempSubagentsDir((dir) => {
+      writeMeta(dir, 'observer.meta.json', { name: 'pilot-orchestrator-watchdog', isObserver: true }, 990)
+      writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'async' }, 1_000)
+
+      const result = runCheck(dir, 'pilot-orchestrator', 30)
+
+      expect(result.exitCode).toBe(1)
+      expect(result.json.status).toBe('flag')
+    })
+  })
+
+  // No field in the harness's own meta.json ties an observer to a specific observed agent —
+  // pairing is inferred by mtime correlation only (see measure-in-metadata-not-content.md).
+  // Two isObserver siblings landing in the same window (e.g. an unrelated concurrent async
+  // agent's own watchdog) makes that inference ambiguous — a false "pass" here would be
+  // worse than an honest "can't tell", so this must resolve to unknown, not pass.
+  it('returns unknown (ambiguous) when more than one isObserver sibling lands in the window', () => {
+    withTempSubagentsDir((dir) => {
+      writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'async' }, 1_000)
+      writeMeta(dir, 'observer-a.meta.json', { name: 'pilot-orchestrator-watchdog', isObserver: true }, 1_003)
+      writeMeta(dir, 'observer-b.meta.json', { name: 'some-other-watchdog', isObserver: true }, 1_006)
+
+      const result = runCheck(dir, 'pilot-orchestrator', 30)
+
+      expect(result.exitCode).toBe(2)
+      expect(result.json.status).toBe('unknown')
+    })
+  })
+
+  it('does not let a malformed sibling silently masquerade as a missing observer without saying so', () => {
+    withTempSubagentsDir((dir) => {
+      writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'async' }, 1_000)
+      const corruptPath = join(dir, 'observer.meta.json')
+      writeFileSync(corruptPath, '{not valid json')
+      utimesSync(corruptPath, new Date(1_005 * 1000), new Date(1_005 * 1000))
+
+      const result = runCheck(dir, 'pilot-orchestrator', 30)
+
+      expect(result.exitCode).toBe(1)
+      expect(result.json.status).toBe('flag')
+      expect(result.json.malformed).toBeDefined()
+      expect(JSON.stringify(result.json.malformed)).toContain('observer.meta.json')
+    })
+  })
+
+  it('does not follow a symlinked meta.json as a valid observer sibling', () => {
+    withTempSubagentsDir((dir) => {
+      writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'async' }, 1_000)
+      const realPath = writeMeta(dir, 'real-observer.meta.json', { name: 'watchdog', isObserver: true }, 1_005)
+      const linkPath = join(dir, 'linked-observer.meta.json')
+      symlinkSync(realPath, linkPath)
+      unlinkSync(realPath)
+
+      const result = runCheck(dir, 'pilot-orchestrator', 30)
+
+      expect(result.exitCode).toBe(1)
+      expect(result.json.status).toBe('flag')
     })
   })
 })
