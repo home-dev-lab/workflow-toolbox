@@ -5,6 +5,36 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-08-02
+
+### Fixed
+
+- **`wt-arc-watch` no longer reports a cleanly-finished agent as stale.** Its "has this agent
+  stopped?" check anchored on the transcript's last record, but a PAIRED observer (the
+  `observer:` watchdog) writes its own `{type:"observer-ref"}` heartbeats into that same
+  transcript file, on its own polling cadence. Those records carry no `uuid`, `parentUuid`,
+  `role` or `message` — they are not part of the turn chain at all — yet they moved the anchor
+  forward by up to 46 seconds, pushing a genuine stop record outside the acceptance window.
+  Measured across one session's 105 stop-matched agents: **all 51** whose naive gap fell in the
+  5.89s–46.3s band had an `observer-ref` as their literal last line, and **all 51** fell back
+  inside the existing 1000 ms tolerance once those are excluded. Zero exceptions.
+  ⚠ **The tolerance constant is unchanged, deliberately.** Re-deriving a larger one would have
+  spanned the same 1–46 s range and silently masked genuine mid-turn deaths, with no way left to
+  tell the two apart — the failure this module's own header warns against. The anchor now takes
+  the **maximum over non-observer-ref records** rather than walking back from the end, so an
+  interleaved heartbeat cannot hide a genuinely later turn either.
+  ⚠ **Known scope:** locked by tests against real captured record shapes and proven red before
+  green, but **not yet observed in production** — the running watcher is the previously published
+  build. The both-directions check after adoption: a cleanly-finished agent must stop producing
+  `STALE`, and an agent that died mid-turn must still produce it.
+
+- **`--audit-overlap` names the direction of every divergence.** A `DRIFT` line used to read
+  `(missing)` without saying which side it was missing FROM, leaving the reader to supply the
+  half that decides what to do. Each per-line entry now reads `(missing from shipped template)`
+  or `(missing from project copy)`, and the summary adds a direction breakdown alongside the
+  existing `drift` count. Verdicts and exit codes are byte-identical to the previous build on the
+  same input — only what the audit SAYS changed, never what it decides.
+
 ## [0.64.0] - 2026-08-02
 
 ### Added
