@@ -5,6 +5,33 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-08-02
+
+### Added
+
+- **`wt-check-observer-pairing.mjs` accepts `--agent-id`** and correlates by the raw agent id
+  first, falling back to `--name` only when no id is given. `--name` is now optional. This
+  closes the coverage limitation disclosed in 0.63.0: an **anonymously spawned** agent has no
+  name to match on, and anonymous is precisely the mode a lane-delegating agent must use —
+  harness-managed `isolation` deletes a worktree whose agent has yielded to an external
+  executor, so that agent's tree is empty at the exact moment the reaper looks at it. Every
+  verdict now carries a `matchedBy` field (`id` or `name`) so a reader can see what the result
+  rests on rather than inferring it.
+
+### Fixed
+
+- **The pairing check no longer returns `unknown` for the majority of real spawns.** It gated
+  its mtime-correlation branch on `taskKind === 'async'`, a value the harness does not appear
+  to write: across every `.meta.json` on one machine (1687 files), 546 carried
+  `in_process_teammate`, **zero** carried `async`, and the remaining 1141 carried no `taskKind`
+  at all. An absent `taskKind` is now treated as the async-shaped case, while the literal
+  `'async'` keeps working for fixtures and any future explicit writer.
+- **A private tracker card id no longer appears in the shipped `pilot-orchestrator`
+  definition.** The surrounding claim is unchanged — it now states the measurement rather than
+  citing an identifier an adopter cannot resolve. ⚠ **Known and not fixed here:** other shipped
+  files still carry such identifiers as provenance markers; replacing them with their substance,
+  behind a mechanical guard over the whole shipped surface, is tracked separately.
+
 ## [0.63.0] - 2026-08-02
 
 ### Added
