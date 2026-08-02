@@ -5,6 +5,69 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-08-02
+
+### Added
+
+- **`wave-fidelity-checker` — an end-of-arc agent that reads a wave report and checks its
+  claims against the primary sources**, refute-first, reporting CONFIRMED / REFUTED /
+  UNVERIFIABLE per claim. Ships with `plugin/bin/wt-check-observer-pairing.mjs`, which reads
+  the harness's own `.meta.json` (`isObserver`) rather than transcript content.
+  ⚠ **Two limitations, both known and neither fixed in this release.** The pairing check
+  hard-requires a `--name` and therefore cannot verify an agent spawned **anonymously** — which
+  is the mode a lane-delegating agent must use, since harness-managed `isolation` deletes a
+  worktree whose agent has yielded to an external executor. And the checker has been exercised
+  on exactly **one** real report: a verifier observed only passing is indistinguishable from one
+  that always passes. It did flag two underspecified claims and an unfilled placeholder on that
+  run, which is the only evidence so far that it discriminates at all.
+
+### Fixed
+
+- **A cleanly-finished agent is no longer reported as stuck forever.** The spawn registry
+  correlated a `spawn` record to its `stop` record **by name only** — but the two ends do not
+  always use the same name: a spawn made with an explicit `name:` and an ordinary
+  `subagent_type` records the NAME on the spawn and the TYPE on the stop
+  (`{"child":"aa877…","name":"s-fence-125"}` versus
+  `{"agentId":"aa877…","name":"general-purpose"}`). The raw agent id is identical on both
+  sides and was not being used, so the entry never closed and only a manual `--ack` could
+  clear it. Fixed by correlating on the raw `agentId` first, with name/type as fallback.
+  Measured across 422 spawn records in 20 journals: 272 already matched by id, **149 were
+  name-correlation misses**, and exactly one was a genuine unrecorded death.
+- **The arc watcher no longer treats "silent" as "dead".** It fired on every normally-finished
+  agent. It now corroborates a stale transcript against the outbound-guard journal before
+  alerting, and — the part that matters — only accepts a `stop` record that can account for the
+  CURRENT silence: a single agent writes one stop record **per turn boundary**, not one per
+  lifetime, so an old clean stop from an earlier turn proves nothing about a later silence. The
+  backward tolerance (1 s) is derived from the measured distribution rather than chosen: 45 real
+  negative samples, one at −0.021 s, then an empty 5.87 s gap, then 44 from −5.894 s down. It is
+  a separator between two observed populations, not a safety margin — if the gap closes it must
+  be re-derived, never widened.
+- **A card whose pilot dies before its intake is no longer invisible.** New
+  `plugin/bin/wt-pilot-card-reconcile.mjs` compares claimed cards against live pilots.
+- **`adopt-rules`'s `install-rules.mjs`: a flag with no effect in the current mode is now
+  REFUSED, not silently ignored.** `--user-dir` was parsed and stored in every mode but only
+  ever read inside `--audit-overlap` — under `--check`/`--install` it did nothing, and the
+  target silently fell back to `--dir`/cwd. A near-miss: a session ran `--check --user-dir
+  <adopted path>` from the `workflow-toolbox` checkout, got a confident "all agents ABSENT"
+  for a directory nobody adopts into, and the tool's own closing line invited `--install` —
+  which would have written agent files into the public repo. Fixed with a mode → flag table
+  checked once after parsing: any flag whose stored value differs from its default but isn't
+  read by the resolved mode fails fast, naming the flag, the mode, and (for `--user-dir`) the
+  correct `--dir` alternative. The sweep also catches the same asymmetry on `--dir`,
+  `--global`, `--force`, and `--replace-symlinks` under `--audit-overlap`, where none of them
+  were read either.
+- **A gate's reported exit code can no longer be a wrapper's, not the gate's own.** A task
+  notification once reported `exit 0` for a batch where `pnpm typecheck` had actually failed
+  with `exit 2` — the code read back was a chained wrapper's trailing `echo`, not the gate.
+  Added `plugin/bin/wt-run-gate.mjs`: runs exactly one command with no shell (nothing for a
+  later command to chain onto), writes its real exit code to a file of its own the instant the
+  process returns, and — given `--fail-pattern` — cross-checks that code against the captured
+  log so a 0-but-the-log-shows-an-error mismatch is reported as INCONSISTENT and forced
+  non-zero rather than trusted. `wt-verify-by-ground-truth.md` and the pilot agent template
+  both now state the corollary explicitly: the code you read must belong to the gate, never to
+  something that ran after it, and a second signal (the tool's own summary/failure count)
+  should be read beside it.
+
 ### Documentation
 
 - **Known issue #9**: the spawn-registry heartbeat's repeated `Stop` block on an unacknowledged

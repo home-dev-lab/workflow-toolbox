@@ -44,10 +44,11 @@
 // exited (monitors only (re)arm at session start or plugin reload).
 
 import { lstat, readdir } from 'node:fs/promises'
-import { writeSync } from 'node:fs'
+import { writeSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { isServiceDegraded } from './lib/service-flag.mjs'
+import { hasRecordedStop, lastStopTimestamps } from './lib/stop-correlation.mjs'
 
 const MAX_TIMER_MS = 0x7fffffff
 const MAX_POLL_SECONDS = Math.floor(MAX_TIMER_MS / 1_000)
@@ -156,6 +157,125 @@ function projectSlug(dir) {
 
 const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude')
 const sessionsRoot = path.join(configDir, 'projects', projectSlug(projectDir))
+
+// ⚠ DISCRIMINATOR — cards 1829924641678820839 + 1832820166895863516. Measured on 2026-08-02
+// across 422+ real spawn records (three independent audits, including a disposable headless bench
+// that produced an ACCIDENTAL genuine kill — an agent terminated mid-generation by a content-
+// filter API error, zero stop/nudged records, contrasted against a control agent in the same mode
+// that produced two clean stop records seconds apart): the dominant cause of a stale-but-alive
+// transcript is either legitimate idle-between-turns (proven live: agent a1f5eb82662eb4d75,
+// repeated stop/resume cycles, a STALE alert landing inside one of its idle gaps) or a NAME
+// correlation miss (s-fence-125: the stop record's `name` carries the underlying subagent_type,
+// not the explicit spawn name). Before emitting STALE, corroborate against the outbound-guard
+// journal wt-outbound-guard-hook.mjs already writes on every SubagentStop — if a stop record
+// AT OR AFTER this transcript's last write accounts for it (by name OR by agentType, see
+// lib/stop-correlation.mjs), the silence is benign and nothing is emitted.
+//
+// ⚠⚠ WHY "AT OR AFTER", NOT MERELY "A STOP RECORD EXISTS SOMEWHERE IN THIS AGENT'S HISTORY". The
+// same bench proved a single agent produces ONE stop record PER TURN BOUNDARY, not one per agent
+// lifetime (838 stop events / 380 agents measured elsewhere, ~2.2 per agent). A discriminator that
+// matched on "any past stop record for this name" would wrongly suppress an agent that stopped
+// cleanly on an earlier turn and then died mid-turn on a LATER one — an old, already-resumed stop
+// proves nothing about the CURRENT silence. lib/stop-correlation.mjs's hasRecordedStop() takes
+// this transcript's own last-write time and only accepts a stop record timestamped at or after it
+// (minus a small tolerance for write-then-hook-fires ordering).
+//
+// ⚠ FAILS TOWARD EMITTING, NEVER TOWARD SILENCE. A journal that cannot be read (missing,
+// malformed, wrong permissions) must never be read as "accounted for" — that would suppress the
+// exact death case this watcher exists to catch. Only a POSITIVE, TIME-RELEVANT match suppresses;
+// every read failure, absent match, or stale-but-irrelevant old match falls through to the
+// ordinary STALE line, unchanged.
+const OUTBOUND_GUARD_DIR = process.env.WT_OUTBOUND_GUARD_DIR
+  || path.join(homedir(), '.local', 'state', 'wt-outbound-guard')
+
+function loadLastStopTimestamps(sessionName) {
+  try {
+    const raw = readFileSync(path.join(OUTBOUND_GUARD_DIR, `${sessionName}.jsonl`), 'utf8')
+    const records = raw.split('\n').filter(Boolean)
+      .map((l) => { try { return JSON.parse(l) } catch { return null } })
+      .filter(Boolean)
+    return lastStopTimestamps(records)
+  } catch {
+    return null // unreadable/missing journal — cannot corroborate, caller falls through to STALE
+  }
+}
+
+function readTranscriptMeta(sessionName, transcriptFile) {
+  try {
+    const metaPath = path.join(sessionsRoot, sessionName, 'subagents', transcriptFile.replace(/\.jsonl$/, '.meta.json'))
+    return JSON.parse(readFileSync(metaPath, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+// ⚠⚠⚠ WHY THIS READS THE TRANSCRIPT'S OWN CONTENT, NOT THE FILE'S mtime — the THIRD correction on
+// this discriminator, from an independent measurement done AFTER the timestamp-aware fix already
+// shipped with mtime as its anchor. Measured on 2026-08-02, the SAME 325 (stop, transcript) pairs,
+// two instruments:
+//   anchored on file MTIME    : 217/325 negative (stop "before" mtime), worst -46.4s
+//   anchored on the transcript's OWN last-record `timestamp` field : 45-46/325 negative, worst
+//     -46.3s (this pilot's own re-run: 46/325, worst -106.9s — the journal kept growing between
+//     the two measurements; both runs agree on the shape that matters, see below)
+// mtime overstated the negative population by ~4.8x: a FILESYSTEM property was being used to
+// answer a question about when the agent last recorded a turn — the same error class as every
+// other wrong-instrument case catalogued in this fix's history. Using mtime as the anchor with a
+// small backward tolerance would have WRONGLY rejected the ~170 benign cases where mtime merely
+// lags the true last-turn time, flooding the channel with exactly the false STALE alerts this fix
+// exists to remove. The transcript's own last-record timestamp is the right anchor; mtime is kept
+// ONLY as the fallback when the transcript is unreadable (fails toward the ORIGINAL, weaker
+// behavior — still safe, since the original behavior was "always alert").
+//
+// SHAPE CHECK (why a small tolerance is safe on the true-anchor side): both measurements' negative
+// populations have NO cluster near zero — this pilot's own sorted list of 46 negatives has its
+// nearest-to-zero value at -2.79s, nothing between -2.79s and 0. So BACKWARD_TOLERANCE_MS well
+// under that gap (1s, see lib/stop-correlation.mjs) cleanly separates genuine cross-process clock/
+// ordering skew (the hook is written by a different process than the transcript) from a real
+// unaccounted later turn.
+function lastRecordTimestampMs(sessionName, transcriptFile) {
+  try {
+    const raw = readFileSync(path.join(sessionsRoot, sessionName, 'subagents', transcriptFile), 'utf8')
+    let best = null
+    for (const line of raw.split('\n')) {
+      if (!line) continue
+      let r
+      try { r = JSON.parse(line) } catch { continue }
+      for (const key of ['timestamp', 'at', 'ts', 'createdAt', 'time']) {
+        const v = r?.[key]
+        if (typeof v === 'string' && v.length >= 20) {
+          const t = Date.parse(v)
+          if (Number.isFinite(t) && (best === null || t > best)) best = t
+          break
+        }
+      }
+    }
+    return best
+  } catch {
+    return null
+  }
+}
+
+// Transcript filenames are `agent-<rawId>.jsonl` — the SAME raw id the outbound-guard journal
+// records as `stop.agentId` (verified byte-identical against a real record; see the CORRECTION 4
+// note in lib/stop-correlation.mjs). Extracted here, once, so isAccountedForByStop can offer it
+// as the first, least-ambiguous correlation candidate.
+const TRANSCRIPT_RAW_ID_RE = /^agent-(.+)\.jsonl$/
+
+// `name` here is the `${sessionId}/${transcriptFile}` key used throughout this watcher's maps.
+// `modifiedAt` (file mtime) is the FALLBACK anchor only — the transcript's own last-record
+// timestamp is preferred (see the note above on why mtime is the wrong instrument for this).
+function isAccountedForByStop(name, modifiedAt) {
+  const slash = name.indexOf('/')
+  if (slash < 0) return false
+  const sessionName = name.slice(0, slash)
+  const transcriptFile = name.slice(slash + 1)
+  const stops = loadLastStopTimestamps(sessionName)
+  if (!stops) return false // journal unreadable — never suppress on an unreadable source
+  const meta = readTranscriptMeta(sessionName, transcriptFile)
+  const anchorMs = lastRecordTimestampMs(sessionName, transcriptFile) ?? modifiedAt
+  const rawId = TRANSCRIPT_RAW_ID_RE.exec(transcriptFile)?.[1]
+  return hasRecordedStop(stops, meta, anchorMs, rawId)
+}
 
 // The gate this file's header describes: has THIS session (identified by the
 // env var the harness sets on every process it spawns, monitors included)
@@ -417,8 +537,26 @@ while (true) {
         continue
       }
       announcedFuture.delete(name)
+      // ⚠⚠ ORDERING IS LOAD-BEARING, VERIFIED ON REQUEST — do not reorder this `if`. The mtime
+      // staleness gate (`now - modifiedAt >= staleMs`) MUST run and short-circuit BEFORE
+      // isAccountedForByStop() is ever called. A live, currently-working agent has a FRESH mtime
+      // (its transcript is actively growing), so it never satisfies this gate at all and
+      // isAccountedForByStop() is never reached for it — this is what stops a live agent with an
+      // OLD last-stop record (e.g. deep into a long-running multi-turn mandate) from being wrongly
+      // matched by that stale stop and reported. The discriminator's own anchor (the transcript's
+      // last-record timestamp, see isAccountedForByStop) is a SEPARATE, later check that only ever
+      // runs on an agent already judged stale by THIS gate — moving the discriminator ahead of, or
+      // independent of, this condition would let a live agent's old stop satisfy it and misreport
+      // a working agent as accounted-for-and-silenced instead of correctly never being asked about.
       if (now - modifiedAt >= staleMs && !announcedStale.has(name)) {
-        budget.emit(`STALE: ${safeName(name)} — no write for ${staleMinutes}+ min`)
+        // Corroborate before alerting: a recorded SubagentStop (by name or by agentType) means
+        // this agent's last turn ended cleanly — idle-between-turns or a benign shutdown, not a
+        // silent death. See the DISCRIMINATOR block above for the evidence and the fail-toward-
+        // emitting guarantee. `announcedStale` is still marked either way, so a suppressed entry
+        // is not re-checked every poll — only a fresh write (which clears it above) re-arms it.
+        if (!isAccountedForByStop(name, modifiedAt)) {
+          budget.emit(`STALE: ${safeName(name)} — no write for ${staleMinutes}+ min`)
+        }
         announcedStale.add(name)
       }
     }

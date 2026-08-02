@@ -395,6 +395,41 @@ describe('wt-spawn-registry-scan.mjs — reports what is unaccounted for', () =>
     expect(parsed.untrackable).toBe(1)
   })
 
+  // FAILS BEFORE THE FIX — reproduces the EXACT real production record shape from the s-fence-125
+  // incident (2026-08-02, atlassian-cli session, journal cc4e1f93-...): a NAMED, trackable spawn
+  // (name given explicitly at spawn time) whose SubagentStop records nonetheless carry
+  // name:"general-purpose" (the underlying subagent_type), never "s-fence-125" (the explicit
+  // name). This is NOT the untrackable-unnamed-spawn case tested above — the spawn record has a
+  // real name and a real child id; only the STOP records are keyed wrong. Name-only correlation
+  // (`stopped = lastByName('stop')`) never matches "s-fence-125", so the entry stays open forever
+  // even though the agent completed, sent a message, and was nudged normally — matching the
+  // measured incident (a neighboring session lost over an hour to this alert). The raw `agentId`
+  // on every stop/out/nudged record DOES equal the spawn's raw `child` id, which is the fact the
+  // fix must use.
+  it('a NAMED spawn whose SubagentStop reports agent_type (not the name) is still recognized as accounted for, via raw-id correlation', () => {
+    const dir = mkRoot('scan-name-mismatch')
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      [
+        JSON.stringify({
+          t: 'spawn', parent: '(main-loop)', parentName: '(main-loop)',
+          child: 'aa877ce816e0c2b0f', childName: 's-fence-125', name: 's-fence-125',
+          subagentType: 'general-purpose', model: 'sonnet', purpose: 'Implement write fence #125',
+          at: '2026-08-02T11:25:25.426Z',
+        }),
+        JSON.stringify({ t: 'stop', agentId: 'aa877ce816e0c2b0f', name: 'general-purpose', event: 'SubagentStop', at: '2026-08-02T11:42:57.492Z' }),
+        JSON.stringify({ t: 'nudged', agentId: 'aa877ce816e0c2b0f', name: 'general-purpose', event: 'SubagentStop', at: '2026-08-02T11:42:57.492Z' }),
+        JSON.stringify({ t: 'out', agentId: 'aa877ce816e0c2b0f', name: 'general-purpose', tool: 'SendMessage', at: '2026-08-02T11:43:08.206Z' }),
+        JSON.stringify({ t: 'stop', agentId: 'aa877ce816e0c2b0f', name: 'general-purpose', event: 'SubagentStop', at: '2026-08-02T11:43:13.649Z' }),
+      ].join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, ['--quiet-min', '20', '--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    expect(r.code, `expected s-fence-125 accounted for; stdout: ${r.stdout}`).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { open: number; flagged: unknown[] }
+    expect(parsed.open).toBe(0)
+    expect(parsed.flagged).toHaveLength(0)
+  })
+
   it('exits 1 and names an agent that is OPEN and silent past the threshold', () => {
     const dir = mkRoot('scan-flagged')
     const longAgo = new Date(Date.now() - 45 * 60_000).toISOString() // 45 min ago

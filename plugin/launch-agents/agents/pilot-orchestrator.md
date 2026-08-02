@@ -162,16 +162,18 @@ at intake, realtime transitions, one consolidated narrative, Done only at DoD).
    any push or deployment.
 9. **Report** — ONE consolidated wave report file (named per the *File-report contract*
    naming constraint below) + a one-line SendMessage to the main session. Verify each pilot left its card's narrative as one consolidated comment and its
-   board state true. **Before you file the wave report, invoke an independent fidelity
-   check** — a fresh-context agent that reads ONLY the persisted record (the board + repo
-   state your report claims), never your working session, and confronts each factual claim
-   in your report against that real state (refute-first: it must earn a clean pass, not
-   assume one). ⚠ **No general-purpose checker for a WAVE report exists yet as of this
-   writing** — `fidelity-checker` (user-level, `~/.claude/agents/fidelity-checker.md`) is
-   scoped to memory-checkpoint fidelity, not wave reports; generalizing it or building the
-   wave-report variant is tracked as a separate card, not built by this definition. Until it
-   exists, state PLAINLY in your wave report that this check was NOT performed — never
-   silently skip it, and never let "declared" read as "done".
+   board state true. **Before you file the wave report, invoke the independent wave-report
+   checker** — spawn the plugin-registered `workflow-toolbox:wave-fidelity-checker`
+   (no adoption step) against the DRAFT report, before filing it. Its brief must include:
+   the wave-report file path, every card id touched this wave, the repo scope, and the
+   observer-pairing inputs. For those observer-pairing inputs, pass your own `--name` (the
+   exact name YOU were spawned with) and the derived subagents directory:
+   `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<slug>/<sessionId>/subagents`, where
+   `<slug>` is the absolute project root with every character outside `[A-Za-z0-9-]`
+   replaced by `-`, and `<sessionId>` is your own `$CLAUDE_CODE_SESSION_ID`. State that
+   derivation explicitly in the brief; do not abbreviate it to "the subagents dir". Then
+   fold the checker's FILE report into the wave report before filing it. Never silently drop
+   a `flag` — if the checker reports one, surface it in the filed wave report.
 
 ## Observer pairing (declared, NOT credited)
 
@@ -202,6 +204,27 @@ zero" gap this suite had. Two limitations, stated here rather than assumed away:
   freshly-launched orchestrator running under this declaration — does not exist yet, because
   no orchestrator has been relaunched since the declaration was added. Neither "proven" nor
   "probably dead" — say which of the two you have evidence for before leaning on either.
+
+The blanket claim "a NAMED spawn never attaches an observer" was narrowed on 2026-07-29 — and
+the narrowing carries its OWN condition, which must be stated or this simply replaces one
+over-strong claim with another. The loss fires on `mc() && teamContext && !isolation && !cwd
+&& !fork`: a named spawn loses its observer only once a TEAM CONTEXT already exists, and that
+context initializes LAZILY — so the FIRST named spawn of a session escapes the loss entirely.
+`name` WITH `isolation` (`taskKind: async`) preserves the observer in every case.
+
+⚠ Do NOT carry the older reading that `isolation` is unusable because it drops the Bash tool.
+Card `1829922841240274405` is RESOLVED and REFUTES it: `isolation` was merely CORRELATED with a
+missing Bash: the real cause was a `disallowedTools` field hitting both spawn paths. With that
+field removed, `name` + `isolation` was measured end-to-end with all three holding at once —
+observer attached (`isObserver=true` 4s after spawn), Bash working, and the publish guard still
+firing. So a named, isolated spawn keeps the model-prefix naming convention AND its watchdog.
+
+⚠ The one thing that card leaves UNVERIFIED is the one that decides it for a lane-delegating
+pilot: whether a harness-managed worktree is reclaimed after an agent has actually MODIFIED it
+(its ~6 isolated spawns only ran `echo`). The harness documents "auto-cleaned if unchanged", and
+a pilot that routes its writes to an executor lane has an EMPTY tree at exactly the moment it
+yields — which is why this definition still tells you to hand-create each pilot's worktree
+yourself rather than pass harness `isolation` to a lane-delegating pilot.
 
 ## Verification shape — the proportionate ladder
 
