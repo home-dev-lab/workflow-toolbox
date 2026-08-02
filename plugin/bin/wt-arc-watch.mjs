@@ -48,7 +48,7 @@ import { writeSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { isServiceDegraded } from './lib/service-flag.mjs'
-import { hasRecordedStop, lastStopTimestamps } from './lib/stop-correlation.mjs'
+import { hasRecordedStop, lastStopTimestamps, lastRealRecordTimestampMs } from './lib/stop-correlation.mjs'
 
 const MAX_TIMER_MS = 0x7fffffff
 const MAX_POLL_SECONDS = Math.floor(MAX_TIMER_MS / 1_000)
@@ -226,30 +226,21 @@ function readTranscriptMeta(sessionName, transcriptFile) {
 // ONLY as the fallback when the transcript is unreadable (fails toward the ORIGINAL, weaker
 // behavior — still safe, since the original behavior was "always alert").
 //
-// SHAPE CHECK (why a small tolerance is safe on the true-anchor side): both measurements' negative
-// populations have NO cluster near zero — this pilot's own sorted list of 46 negatives has its
-// nearest-to-zero value at -2.79s, nothing between -2.79s and 0. So BACKWARD_TOLERANCE_MS well
-// under that gap (1s, see lib/stop-correlation.mjs) cleanly separates genuine cross-process clock/
-// ordering skew (the hook is written by a different process than the transcript) from a real
-// unaccounted later turn.
+// ⚠⚠⚠⚠⚠ CORRECTION 5 (card 1832940311869917034, 2026-08-02) — "the transcript's own last-record
+// timestamp" is no longer a plain max over every line. See lib/stop-correlation.mjs's own
+// CORRECTION 5 note for the full evidence: a paired watchdog agent writes independent
+// `type:"observer-ref"` heartbeat records into the same transcript file, and taking the max over
+// those too was inflating the anchor by up to 46s on cleanly-finished agents (51/105 real agents
+// in one session, zero exceptions). lastRealRecordTimestampMs() excludes them; the SHAPE CHECK
+// below (the near-zero cluster, no cluster between -0.4s and -6s) is what it was ALWAYS measuring
+// once that pollution is removed — the BACKWARD_TOLERANCE_MS constant did not need to change.
 function lastRecordTimestampMs(sessionName, transcriptFile) {
   try {
     const raw = readFileSync(path.join(sessionsRoot, sessionName, 'subagents', transcriptFile), 'utf8')
-    let best = null
-    for (const line of raw.split('\n')) {
-      if (!line) continue
-      let r
-      try { r = JSON.parse(line) } catch { continue }
-      for (const key of ['timestamp', 'at', 'ts', 'createdAt', 'time']) {
-        const v = r?.[key]
-        if (typeof v === 'string' && v.length >= 20) {
-          const t = Date.parse(v)
-          if (Number.isFinite(t) && (best === null || t > best)) best = t
-          break
-        }
-      }
-    }
-    return best
+    const records = raw.split('\n').filter(Boolean).map((line) => {
+      try { return JSON.parse(line) } catch { return null }
+    })
+    return lastRealRecordTimestampMs(records)
   } catch {
     return null
   }
