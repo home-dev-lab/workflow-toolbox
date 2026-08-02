@@ -70,8 +70,8 @@ export interface SpawnReadyDeps<H> {
 const POLL_INTERVAL_MS = 500
 
 /** Default spawn-readiness window (ms) — how long `wt-observe start` waits for a fresh
- *  spawn to answer /api/health before declaring failure and reaping the child. Card
- *  #1826653906575295552: kept UNCHANGED at 30s — the fix for the underlying incident (a
+ *  spawn to answer /api/health before declaring failure and reaping the child. Kept
+ *  UNCHANGED at 30s — the fix for the underlying incident (a
  *  resumed run's cache-replay flood saturating the server's event loop before the
  *  launcher's own probe could ever succeed) is an ORDERING fix on the SERVER side (the boot
  *  sweep now defers resume dispatch until its own /api/health has answered at least once —
@@ -87,7 +87,7 @@ export const HEALTH_TIMEOUT_DEFAULT_MS = 30_000
  *  than honoring an unbounded value. */
 export const HEALTH_TIMEOUT_CEILING_MS = 600_000
 
-/** Effective spawn-readiness timeout (card #1826653906575295552's "make the window
+/** Effective spawn-readiness timeout ("make the window
  *  configurable" — candidate fix 2): `--health-timeout <seconds>` flag wins over
  *  WT_OBSERVE_HEALTH_TIMEOUT_MS (milliseconds), else HEALTH_TIMEOUT_DEFAULT_MS — same
  *  precedence/sanitization posture as launch-body.ts's resolveLaunchTimeoutMs (a

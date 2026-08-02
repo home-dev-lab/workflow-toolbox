@@ -96,7 +96,7 @@ export interface AdversarialVerificationOptions<TClaim> {
    *
    *  Default **2** (quality-first): a single surviving valid vote — e.g. a
    *  3-vote claim whose other two votes failed or were provenance-disqualified,
-   *  the thin-majority case the retry feature (card #1824029483854726303) left
+   *  the thin-majority case the disqualified-vote retry feature (below) left
    *  open — is NOT enough to confirm/refute on its own; it demotes. Set
    *  `minValidVotes: 1` to opt OUT: a confident verdict then needs only one
    *  valid vote, which is byte-identical to the pre-floor behaviour (with
@@ -542,7 +542,7 @@ export async function adversarialVerification<TClaim>(
         votes,
         voteStages,
         // A salvaged vote's credited value came from the `:salvage` respawn transcript —
-        // point the provenance checker THERE (card #1824029483854726303 fix round).
+        // point the provenance checker THERE (fix round, below).
         effectiveStages: voteStages.map((s, vi) =>
           voteOuts[vi]?.salvaged === true ? `${s}:salvage` : s,
         ),
@@ -569,7 +569,7 @@ export async function adversarialVerification<TClaim>(
   if (gateExpectation !== null) {
     // Scan the EFFECTIVE label of each vote (the salvage transcript when the value was
     // salvaged), so provenance is attributed to the transcript that actually produced the
-    // credited value — not the original's (card #1824029483854726303 fix round).
+    // credited value — not the original's (same fix round as the retry gate below).
     const allLabels = perClaim.flatMap((pc) => pc.effectiveStages)
     if (allLabels.length > 0) {
       agentsSpawned++
@@ -617,7 +617,7 @@ export async function adversarialVerification<TClaim>(
     }
   }
 
-  // ---- Phase B2: retry gate-disqualified votes ONCE (card #1824029483854726303).
+  // ---- Phase B2: retry gate-disqualified votes ONCE.
   // A vote nullified by the provenance gate (absent OR undetermined provenance — a
   // possible self-answer, NOT a plain agent failure) gets exactly ONE fresh re-spawn
   // under the SAME claim/lens/verifier config; a SECOND provenance checker then re-reads

@@ -158,7 +158,7 @@ function projectSlug(dir) {
 const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude')
 const sessionsRoot = path.join(configDir, 'projects', projectSlug(projectDir))
 
-// ⚠ DISCRIMINATOR — cards 1829924641678820839 + 1832820166895863516. Measured on 2026-08-02
+// ⚠ DISCRIMINATOR — measured on 2026-08-02
 // across 422+ real spawn records (three independent audits, including a disposable headless bench
 // that produced an ACCIDENTAL genuine kill — an agent terminated mid-generation by a content-
 // filter API error, zero stop/nudged records, contrasted against a control agent in the same mode
@@ -226,7 +226,7 @@ function readTranscriptMeta(sessionName, transcriptFile) {
 // ONLY as the fallback when the transcript is unreadable (fails toward the ORIGINAL, weaker
 // behavior — still safe, since the original behavior was "always alert").
 //
-// ⚠⚠⚠⚠⚠ CORRECTION 5 (card 1832940311869917034, 2026-08-02) — "the transcript's own last-record
+// ⚠⚠⚠⚠⚠ CORRECTION 5 (measured 2026-08-02) — "the transcript's own last-record
 // timestamp" is no longer a plain max over every line. See lib/stop-correlation.mjs's own
 // CORRECTION 5 note for the full evidence: a paired watchdog agent writes independent
 // `type:"observer-ref"` heartbeat records into the same transcript file, and taking the max over

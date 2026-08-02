@@ -6,7 +6,7 @@
 // model gate (`resolveWrapperModel`) and its parse helper (`parseRoleStringMap`)
 // were duplicated byte-for-byte across coverage-audit.workflow.ts and
 // docs-audit.workflow.ts (commit 340437f); pr-review adding the SAME doctrine
-// (card #1826112535493871358) is the 3rd instance. All three share a genuine
+// is the 3rd instance. All three share a genuine
 // reason to change together — they encode ONE bridge-routing model doctrine —
 // so this is a real generalization, not a coincidental shape match. Verified
 // buildable: `wt:build` (esbuild, packages/build/src/bundle.ts) already inlines
@@ -22,8 +22,8 @@
 // (see .changeset/ in this commit); the two are separate surfaces, not a
 // contradiction.
 //
-// Also carries the OPENCODE_WORKDIR auto-injection helper (card
-// #1825784696588469957) — a distinct feature (the cd-to-target token economy)
+// Also carries the OPENCODE_WORKDIR auto-injection helper —
+// a distinct feature (the cd-to-target token economy)
 // that happens to be the SAME "route a role to opencode-verifier" doctrine
 // family, so it lives alongside the model-doctrine helpers rather than as a
 // 3rd near-duplicate module.
@@ -37,7 +37,7 @@ import type { ModelAlias } from '@workflow-toolbox/runtime'
 import { isExternalBridgeType } from '@workflow-toolbox/patterns'
 
 // ---------------------------------------------------------------------------
-// OPENCODE_WORKDIR auto-injection (card #1825784696588469957)
+// OPENCODE_WORKDIR auto-injection
 // ---------------------------------------------------------------------------
 
 // The one bridge agentType that recognizes the `OPENCODE_WORKDIR:` directive
@@ -60,7 +60,7 @@ export function opencodeWorkdirLine(resolvedType: string | null, repoRoot: strin
 }
 
 // ---------------------------------------------------------------------------
-// Bridge-identity discriminator (card #1826112535493871358, arbiter ruling
+// Bridge-identity discriminator (arbiter ruling
 // "Option B" — 2026-07-24) — used ONLY where a resolved agentType can
 // legitimately be a same-family Claude SPECIALIST rather than an external
 // relay (pr-review's `agentTypes.review`, whose own doc comment documents
@@ -77,7 +77,7 @@ export function opencodeWorkdirLine(resolvedType: string | null, repoRoot: strin
 // on the SAME registry (EXTERNAL_CLI_SIGNATURES) that
 // adversarialVerification's own haiku-vs-BEST_MODEL fan decision keys off
 // (adversarial-verification.ts:376,390). Exported at the package root
-// specifically for this reuse (card #1826112535493871358) — two earlier
+// specifically for this reuse — two earlier
 // drafts of this helper hand-rolled a SECOND registry (an exact-name list,
 // then a mirrored regex pair); both were rejected on review as an avoidable
 // Nth copy of "what counts as a bridge" one layer up from the wrapper-model

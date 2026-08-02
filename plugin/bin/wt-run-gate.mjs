@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // wt-run-gate.mjs — run ONE gate command and make its exit code NON-BYPASSABLE.
 //
-// Card #1832861908256950072: a task notification reported `exit 0` for a gate batch while
+// Measured: a task notification reported `exit 0` for a gate batch while
 // `pnpm typecheck` had actually failed with `exit 2`. The number that reached the report was
 // not the gate's own — it was the exit code of a wrapper's trailing `echo`, because the wrapper
 // chained several commands and only the LAST one's code survives to be read. Redirecting a gate

@@ -177,7 +177,7 @@ function entryKey(e: ProvenanceEntry): string {
 }
 
 // ---------------------------------------------------------------------------
-// Scope filter (card #1826055113500788444 defect 3) — matched by ENTRY KEY
+// Scope filter (defect 3) — matched by ENTRY KEY
 // (first source path), never a loose path-prefix test: a sibling entry that
 // happens to share a directory root but carries its OWN richer, dedicated doc
 // surface (pr-review.workflow.ts's worked-example doc; the capability-registry
@@ -201,7 +201,7 @@ function isInternalSupportKey(key: string): boolean {
 }
 
 /** Normalize a possibly-ABSOLUTE reported path to repo-relative before
- *  attribution (card #1826055113500788444 defect 2, gap found reviewing the
+ *  attribution (defect 2, gap found reviewing the
  *  actual run wf_36c11615-367 data): resolveEntry only matches repo-relative
  *  manifest prefixes, but agents reading a real repoRoot with Bash/Read
  *  routinely echo the ABSOLUTE path they actually saw — 7 of the 21 real
@@ -223,7 +223,7 @@ function toRepoRelative(repoRoot: string, path: string): string {
  *  AND falls under a DIFFERENT entry's dir-prefix — the exact match wins the
  *  primary resolution (buildEntryResolver checks exact sources before dir
  *  prefixes), so without this the alternate entry would never surface at all
- *  (card #1826055113500788444 defect 2: `scaffold.ts` is an exact source of
+ *  (defect 2: `scaffold.ts` is an exact source of
  *  the observed-role-brief entry AND lives under the scaffold-emitter entry's
  *  directory prefix — every scaffold.ts capability silently checked ONLY the
  *  former's narrower docs). null when there is no such hidden alternative. */
@@ -233,8 +233,8 @@ interface EntryMatch {
   altKey: string | null
 }
 
-/** Alias resolution for agent-reported entry identifiers (quirk fix, card
- *  #1821093105403692296). Lived failure: the bundled manifest's build entry
+/** Alias resolution for agent-reported entry identifiers (quirk fix).
+ *  Lived failure: the bundled manifest's build entry
  *  lists THREE sources (define-workflow.ts, bundle.ts, cli.ts); agents
  *  naturally echo the source path they actually READ — a NON-FIRST source
  *  path, or a file under a dir-prefix source — and the old exact-entryKey
@@ -266,7 +266,7 @@ function buildEntryResolver(
   dirSources.sort((a, b) => b.prefix.length - a.prefix.length)
   return (reported: string): EntryMatch | null => {
     if (keys.has(reported)) {
-      // KNOWN BOUNDARY (review finding, card #1826055113500788444 defect 2):
+      // KNOWN BOUNDARY (review finding, defect 2):
       // altKey is deliberately NOT computed here, so a reported string that IS
       // itself an entry's FIRST source (its entryKey) never surfaces a hidden
       // dir-prefix alternative, even when one exists (e.g. probe-agent-type.ts
@@ -349,8 +349,8 @@ export interface CoverageAuditInput {
    *  `provenance` knob. Each entry maps `sources` (implementation) to `docs`
    *  (the surfaces that are SUPPOSED to describe it). */
   provenance: readonly ProvenanceEntry[] | null
-  /** Which provenance entries this run actually audits (card
-   *  #1826055113500788444 defect 3). Default 'public': excludes the fixed
+  /** Which provenance entries this run actually audits
+   *  (defect 3). Default 'public': excludes the fixed
    *  INTERNAL_SUPPORT_ENTRY_KEYS (support packages the public docs
    *  deliberately do not catalogue export-by-export — scaffold, smoke,
    *  debugger, and the catch-all examples/ entry) — on run wf_36c11615-367
@@ -364,7 +364,7 @@ export interface CoverageAuditInput {
   /** Extraction loop ceiling (loopUntilDone maxIterations). Default 6 (two
    *  full angle cycles — sized so a typical run ends by going DRY, i.e.
    *  extractionComplete:true, instead of hitting the ceiling; raised from 3
-   *  with the severity-tiered votes retuning, card #1821093105403692296). */
+   *  with the severity-tiered votes retuning). */
   maxRounds: number
   /** Consecutive no-new-claims rounds that end extraction. Default 1. */
   dryRounds: number
@@ -612,7 +612,7 @@ export interface CoverageAuditFinding {
   mappedDocs: readonly string[]
   verdict: ClaimVerdict
   votes: ReadonlyArray<VerifierVote | null>
-  /** Consolidated verifier reasoning (card #1826055113500788444 defect 1) —
+  /** Consolidated verifier reasoning (defect 1) —
    *  every verifier vote already carries a `reason` (VERIFIER_SCHEMA requires
    *  it), but it lived ONLY inside `votes[]`, forcing an arbiter to reopen
    *  transcripts to judge a finding. Derived by consolidateEvidence: the
@@ -954,7 +954,7 @@ function renderCoverageClaim(
 }
 
 /** Derive ONE canonical evidence string for a finding from its raw verifier
- *  votes (card #1826055113500788444 defect 1 — see CoverageAuditFinding's doc
+ *  votes (defect 1 — see CoverageAuditFinding's doc
  *  comment for why this exists). Prefers a vote that AGREES with the decided
  *  verdict (the reasoning that actually drove the tally); falls back to the
  *  first available reason when none agrees (e.g. a demoted
@@ -1004,8 +1004,8 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
   const extractEffort = resolveEffort(input.effort?.['extract'], EXTRACT_EFFORT)
   const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
 
-  // Opt-in per-group auto-effort on the WORKER roles (card
-  // #1821093105403692296): effort.inventory / effort.extract = 'auto' routes
+  // Opt-in per-group auto-effort on the WORKER roles:
+  // effort.inventory / effort.extract = 'auto' routes
   // each group's effort through ONE batched judgment triage (autoSelectEffort;
   // resolveEffort above already degraded 'auto' to the static default, which
   // stays the fail-safe fallback). Groups are FIXED across extraction rounds,
@@ -1421,7 +1421,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
         resolvedVerifierType !== null ? input.opencodeVariants?.verify ?? null : null,
       ),
       votes: input.votes,
-      // Severity-tiered votes (card #1821093105403692296): the full quorum
+      // Severity-tiered votes: the full quorum
       // only where an error is expensive — behavioral contracts and high-risk
       // gaps; descriptive gaps (exports/knobs/flags at medium/low risk) get
       // one refute-first verifier. The pattern clamps the refute threshold

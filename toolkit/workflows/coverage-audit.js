@@ -1447,7 +1447,7 @@ ${renderClaim(claim)}`;
           votes,
           voteStages,
           // A salvaged vote's credited value came from the `:salvage` respawn transcript —
-          // point the provenance checker THERE (card #1824029483854726303 fix round).
+          // point the provenance checker THERE (fix round, below).
           effectiveStages: voteStages.map(
             (s, vi) => voteOuts[vi]?.salvaged === true ? `${s}:salvage` : s
           ),
@@ -2806,7 +2806,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
           resolvedVerifierType !== null ? input.opencodeVariants?.verify ?? null : null
         ),
         votes: input.votes,
-        // Severity-tiered votes (card #1821093105403692296): the full quorum
+        // Severity-tiered votes: the full quorum
         // only where an error is expensive — behavioral contracts and high-risk
         // gaps; descriptive gaps (exports/knobs/flags at medium/low risk) get
         // one refute-first verifier. The pattern clamps the refute threshold

@@ -61,8 +61,7 @@ rule or a model prior: an earlier draft of `pilot-watchdog.md` had quoted the OL
 verbatim as an explanatory aid, and fresh spawns cited THAT stale in-file quote instead of ever
 opening the real rule file — the quote survived the rule's own correction. This
 orchestrator-watchdog def was not independently re-tested with the same rigor, but the fix
-applies identically: reference the rule file, never quote or paraphrase it inline. Re-test
-status tracked on card #1827529082439468713.
+applies identically: reference the rule file, never quote or paraphrase it inline. Re-test status: still open — not yet independently re-verified with the same rigor.
 
 ## Pairing availability (honest limitation — read before trusting a silence)
 

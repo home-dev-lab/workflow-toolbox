@@ -89,7 +89,7 @@ cited long after. **Lesson applied above**: reference the rule file, never quote
 inline — a citation is a copy, and a copy is a liability the moment its source can change. This
 was NOT a case of an ambient rule outweighing in-file guidance, and NOT a model-level prior
 about untrusted external output — plainer than either: a stale copy embedded in this very
-file. Re-verification after this fix is tracked on card #1827529082439468713.
+file. Re-verification after this fix remains an open follow-up item.
 
 ## Pairing availability (honest limitation)
 

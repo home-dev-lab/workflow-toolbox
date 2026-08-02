@@ -2,11 +2,11 @@
 // card's enumerated premises against reality BEFORE any code is written, and
 // recommend cancel / reframe / proceed.
 //
-// WHY THIS EXISTS: docs/internal/dev-loop-as-workflows-design-brief.md (carte
-// #1818921945756861933) documents the "recette" the arbitre session already
+// WHY THIS EXISTS: docs/internal/dev-loop-as-workflows-design-brief.md
+// documents the "recette" the arbitre session already
 // runs by hand — plan ↔ critic → TDD → gates ↔ review — and identifies that
 // its FIRST rung, grounding, was never mechanized. The brief's own lived case
-// (14/07, cards #1819053659325990500 / #1819020803027502679): the card claimed
+// (14/07): the card claimed
 // an HTTP 500 the real code no longer returned (it was 409) — grounding
 // CORRECTED THE CARD, not the code. Three of three premises on another card
 // were refuted with no alternative → the grounding killed an L-sized plan
@@ -242,7 +242,7 @@ function parseSourceRefs(obj: Record<string, unknown>): string[] {
 // Every schema: additionalProperties:false, `required` listing EVERY
 // property, every string min/maxLength-bounded, every array maxItems-capped.
 // Field order is LOAD-BEARING (enum/short/mechanical FIRST, free prose LAST —
-// pr-review commit 11eb758 / run wf_bda8b4b9-e35 / card #1814943589197677963:
+// pr-review commit 11eb758 / run wf_bda8b4b9-e35:
 // a long prose field emitted first starved its required short siblings, drew
 // 2 schema rejections, then capitulated into `{"summary":"test"}` which
 // VALIDATED — schema validity alone proves nothing).
@@ -418,7 +418,7 @@ export type GroundingRoute = 'cancel' | 'reframe' | 'proceed'
 // AND unsettled-with-no-alternative) — naming an exit without its corrective
 // path is the anti-pattern (dev-implement.workflow.ts:425-427 precedent).
 //
-// Arbiter review finding (fix round, card #1819690698539009755): the reframe
+// Arbiter review finding (fix round): the reframe
 // sentence previously claimed "an alternative … for EVERY blocking premise",
 // but `deriveRecommendation` routes to 'reframe' on `blockers.some(hasAlternative)`
 // — ANY blocking premise with an alternative, not all of them (KEPT semantics,
@@ -599,8 +599,8 @@ export const POC_ROUTING: Record<PocOutcome, string> = {
 // outcome is material offered to Verify for refutation, never a verdict that
 // bypasses it. Kept exhaustive + typed so a sixth PocOutcome is a COMPILE
 // error here (mirrors the design's own "tally in code" discipline even for
-// an audit-only mapping). GENUINELY CONSULTED (fix round, card
-// #1819690698539009755): the Verify renderClaim below reads this mapping and
+// an audit-only mapping). GENUINELY CONSULTED (fix round):
+// the Verify renderClaim below reads this mapping and
 // renders its output as one more offered-for-refutation hypothesis line — an
 // earlier revision exported this const but never actually referenced it,
 // which was dead code from run()'s own control-flow perspective.
@@ -700,8 +700,8 @@ export interface FinalPremiseResult {
  *  caveat. `hypothesis` is what the card currently claims (bounded by the
  *  source CardCorrectionField.field/current, ≤60+~205 chars); `correction`
  *  is what it should say instead (bounded by CardCorrectionField.corrected,
- *  ≤200 chars). Arbiter review finding (fix round, card
- *  #1819690698539009755): STRUCTURED, not a pre-rendered prose string — so
+ *  ≤200 chars). Arbiter review finding (fix round):
+ *  STRUCTURED, not a pre-rendered prose string — so
  *  renderSummaryMarkdown looks up the owning premise's verdict by
  *  `premiseId` directly (no regex re-parse, no separator fragility — a
  *  premiseId containing a space or dash no longer risks a mis-split). */
@@ -732,8 +732,8 @@ const SUMMARY_TRUNCATION_MARKER = '\n\n*(summary truncated at the character cap 
 
 /** Neutralizes markdown table-breaking characters in a cell's rendered text —
  *  a literal `|` would split the row, an embedded newline would break out of
- *  it entirely. Arbiter review finding (fix round, card
- *  #1819690698539009755): premise ids and evidence locators are caller- or
+ *  it entirely. Arbiter review finding (fix round):
+ *  premise ids and evidence locators are caller- or
  *  agent-supplied text, not guaranteed pipe/newline-free. `target`/`verdict`
  *  are closed schema enums and never need this — only the free-text cells do. */
 function escapeTableCell(s: string): string {
@@ -1332,7 +1332,7 @@ export default defineWorkflow({
     const recommendationNote = formatRecommendation(recommendation)
 
     // "la boucle corrige la carte" (design brief §1, the 500-vs-409 lived
-    // case, cards #1819053659325990500 / #1819020803027502679): a correction
+    // case): a correction
     // anchored to a CONFIRMED premise is noise, so only refuted/
     // partially-confirmed premises' corrections survive to the top level.
     //
@@ -1348,8 +1348,8 @@ export default defineWorkflow({
     // below labels the section honestly and annotates each line with the
     // premise's own verified verdict so a contradiction is visible at a glance.
     //
-    // STRUCTURED, not pre-rendered prose (fix round, card
-    // #1819690698539009755): `hypothesis` = what the card currently claims,
+    // STRUCTURED, not pre-rendered prose (fix round):
+    // `hypothesis` = what the card currently claims,
     // `correction` = what it should say instead — both derived from the
     // arm's own schema-bounded CardCorrectionField, so the artifact carries
     // machine-readable fields instead of a string a consumer would have to

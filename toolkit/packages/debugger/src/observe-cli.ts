@@ -349,11 +349,11 @@ async function probeFor(ctx: Ctx): Promise<{ pf: ObservePidfile | null; health: 
 interface StartFlags {
   watch: boolean
   enableLaunch: boolean
-  /** Card #1826653906575295552 candidate fix 4 — a supported way to start while PARKING
+  /** Candidate fix 4 — a supported way to start while PARKING
    *  every pending A3 boot-sweep resume instead of dispatching it (--no-resume). Never
    *  discards a launch record; only defers it to a later boot without this flag. */
   noResume: boolean
-  /** Card #1826653906575295552 candidate fix 2 — the resolved (already flag/env/ceiling
+  /** Candidate fix 2 — the resolved (already flag/env/ceiling
    *  applied) spawn-readiness window in ms; see resolveHealthTimeoutMs's own doc. */
   healthTimeoutMs: number
 }
@@ -493,7 +493,7 @@ async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly
       // byte-identical to before.
       ...(remotes.length > 0 ? { OBSERVE_REMOTES: JSON.stringify(remotes) } : {}),
       ...(flags.enableLaunch ? { OBSERVE_UI_ENABLE_LAUNCH: '1' } : {}),
-      // Card #1826653906575295552 candidate fix 4 — --no-resume: PARK every pending A3
+      // Candidate fix 4 — --no-resume: PARK every pending A3
       // boot-sweep resume this boot instead of dispatching it (dev-api.ts reads this and
       // sets AppOptions.bootResumesDisabled). Unset = resume normally (unchanged default).
       ...(flags.noResume ? { OBSERVE_UI_NO_RESUME: '1' } : {}),
@@ -609,7 +609,7 @@ async function cmdStart(ctx: Ctx, sourceDirs: readonly string[], remotes: readon
       }
       // Adopt keeps the running server AS-IS — a --watch request cannot retrofit a watcher.
       if (flags.watch) process.stderr.write('note: --watch ignored (adopted a running server). `wt-observe stop` then `start --watch` to get the watcher.\n')
-      // Card #1826653906575295552 — same posture as --watch above: --no-resume only affects
+      // Same posture as --watch above: --no-resume only affects
       // a server's OWN boot sweep, which already ran (or didn't) at the ADOPTED server's own
       // start time. An operator requesting --no-resume here would otherwise get no signal
       // that it did nothing.
@@ -1173,7 +1173,7 @@ const AWAIT_SETTLE_INTERVAL_MS = 1_000
 /** GET /api/runs/:runId — the recall read both the main poll loop and the settle window
  *  share. `prefix` = hub source mount ('' single-source).
  *
- *  Card #1826344878393526139 / #1825812079798388423 (the await→missing bug) — `reached`
+ *  (the await→missing bug) — `reached`
  *  distinguishes a TRUSTWORTHY answer from an UNKNOWN one: `recall` alone used to collapse
  *  three very different outcomes into the same "null", indistinguishable to the caller —
  *    (a) a genuine 404 with no launch record anywhere (confirmed: never existed)
@@ -1184,8 +1184,8 @@ const AWAIT_SETTLE_INTERVAL_MS = 1_000
  *    (c) a network failure/timeout/5xx (the call never got a trustworthy answer at all)
  *  `reached: false` covers (b) and (c) uniformly — both mean "this tick cannot confirm
  *  absence", which the caller feeds into the SAME never-latch `sourcesUnprobed` gate the
- *  cross-source search already uses (source-resolve.ts's discipline, card
- *  #1821784328170899045) instead of a hard `missing`. Only (a) sets `reached: true` with a
+ *  cross-source search already uses (source-resolve.ts's discipline)
+ *  instead of a hard `missing`. Only (a) sets `reached: true` with a
  *  null recall — a genuinely confirmed "not found anywhere". */
 async function fetchRecall(port: number, token: string, prefix: string, runId: string): Promise<{ reached: boolean; recall: unknown }> {
   try {
@@ -1226,7 +1226,7 @@ async function searchLocalSources(
       const p = `/s/${key}`
       // Track whether each endpoint was actually REACHED. A timeout/5xx under concurrent
       // load is UNKNOWN, never a confirmed "run not here" — conflating the two is the
-      // false-missing this fixes (card #1821784328170899045): the same never-latch
+      // false-missing this fixes: the same never-latch
       // discipline source-resolve.ts already applies to resolveSource.
       let liveReached = false
       let inLive = false
@@ -1301,7 +1301,7 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
   let warnedAmbiguous = false
   const startedAt = Date.now()
   for (;;) {
-    // Card #1825812079798388423 — track REACHED separately from "empty": a live-list fetch
+    // Track REACHED separately from "empty": a live-list fetch
     // that times out / errors used to collapse to the same `[]` an actually-empty list
     // produces, so `entry` alone could not tell "the run isn't live" from "we don't know".
     let liveReached = true
@@ -1332,7 +1332,7 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
       recallReached = r.reached
       recallStatus = extractAwaitOutcome(recall).status
     }
-    // Card #1825812079798388423 — the ACTIVE source's own primary probes (not just the
+    // The ACTIVE source's own primary probes (not just the
     // cross-source search below) can fail to reach the server this tick. That is an UNKNOWN
     // absence, not a confirmed one: feed it into the SAME never-latch flag the multi-source
     // search already uses, so classifyAwaitTick treats it as pending, never a hard `missing`.
@@ -1362,8 +1362,8 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
       missingGraceMs: AWAIT_MISSING_GRACE_MS,
       // A run "visible nowhere" while a local source (INCLUDING the active one's own primary
       // probes) could not be reached this tick has an UNKNOWN absence — keeps the tick
-      // pending instead of a false `missing` (never-latch, cards #1821784328170899045 and
-      // #1825812079798388423).
+      // pending instead of a false `missing` (never-latch, measured against two independent
+      // false-`missing` incidents where a probe outage alone had caused the wrong verdict).
       sourcesUnprobed: primaryUnreached || searchUnprobed.length > 0,
     })
     if (verdict.kind === 'pending') {
@@ -1399,7 +1399,7 @@ async function cmdAwait(ctx: Ctx, runId: string | undefined, timeoutS: number, p
     // timeout / missing — one machine-readable error line, distinct exit codes. When the
     // multi-source search could not reach some local sources this tick, NAME them: the run
     // may be live under one of them and the verdict is an "unknown", not a confident
-    // absence (card #1821784328170899045). Pass --source to target it directly, or retry.
+    // absence. Pass --source to target it directly, or retry.
     if (searchUnprobed.length > 0) {
       process.stderr.write(
         `[wt-observe await] ${runId} ${verdict.kind}: could not probe source(s) ${searchUnprobed.join(', ')} — the run may be live under one of them (retry, or pass --source <label|dir>).\n`,

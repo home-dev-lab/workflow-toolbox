@@ -1705,7 +1705,7 @@ ${renderClaim(claim)}`;
           votes,
           voteStages,
           // A salvaged vote's credited value came from the `:salvage` respawn transcript —
-          // point the provenance checker THERE (card #1824029483854726303 fix round).
+          // point the provenance checker THERE (fix round, below).
           effectiveStages: voteStages.map(
             (s, vi) => voteOuts[vi]?.salvaged === true ? `${s}:salvage` : s
           ),
@@ -2261,7 +2261,7 @@ ${renderClaim(claim)}`;
     type: "object",
     properties: {
       summary: { type: "string", minLength: 12, maxLength: 1200 },
-      // Runaway bounds (card #1820561035728258107, lived: a long/dense target
+      // Runaway bounds (lived: a long/dense target
       // starved the REQUIRED riskAreas out of the JSON entirely — the unbounded
       // long-array sibling is exactly what eats the budget first). Same posture
       // as addedPublicSurface below: schema-level runaway bound, not a
@@ -2675,7 +2675,7 @@ Return your findings across ALL lenses combined. Each finding: \`{ title, file, 
             // Same agentTypes.review routing as the per-lens path — this is
             // precisely the shape a cross-family/quota-degraded verifier wants.
             ...resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {},
-            // Wrapper-model gate (card #1826112535493871358): haiku by default
+            // Wrapper-model gate: haiku by default
             // when bridge-routed, models.review override, or the Claude tier
             // unchanged when not bridge-routed (undefined → omitted).
             ...reviewModel !== void 0 ? { model: reviewModel } : {}
@@ -2714,7 +2714,7 @@ Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'
           // graceful-fallback path when the requested type could not answer).
           // Routes the lens reviewers ONLY; verifiers and synthesizer stay generic.
           ...resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {},
-          // Wrapper-model gate (card #1826112535493871358): haiku by default
+          // Wrapper-model gate: haiku by default
           // when bridge-routed, models.review override, or the Claude tier
           // unchanged when not bridge-routed (undefined → omitted).
           ...reviewModel !== void 0 ? { model: reviewModel } : {}
@@ -2743,8 +2743,8 @@ Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'
         // probe-resolved above. Omitted when null → the standard subagent (default,
         // also the graceful-fallback path when the requested type could not answer).
         ...resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {},
-        // Per-lens stage/label discriminator (card #1816036725248493168,
-        // amendment A2 — the flagship remediation of the original finding, run
+        // Per-lens stage/label discriminator (amendment A2 —
+        // the flagship remediation of the original finding, run
         // wf_7b5bb844-368): this verifyStage runs once per lens via
         // rt.pipeline's no-barrier per-item stages, all on the SAME `rt` — the
         // auto salt counter would assign completion-order numbers (concurrent

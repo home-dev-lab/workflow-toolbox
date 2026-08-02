@@ -100,7 +100,7 @@ export interface DocsAuditInput {
   /** Extraction loop ceiling (loopUntilDone maxIterations). Default 6 (two
    *  full angle cycles — sized so a typical run ends by going DRY, i.e.
    *  extractionComplete:true, instead of hitting the ceiling; raised from 3
-   *  with the severity-tiered votes retuning, card #1821093105403692296). */
+   *  with the severity-tiered votes retuning). */
   maxRounds: number
   /** Consecutive no-new-claims rounds that end extraction. Default 1. */
   dryRounds: number
@@ -724,7 +724,7 @@ function joinRepoPath(repoRoot: string, rel: string): string {
 // and falls back to the pre-fix behavior (search-only), never a broken/misleading read instruction.
 const SAFE_CHECK_HINT_RE = /^[A-Za-z0-9_./@-]+$/
 
-// Review finding (card #1826482533345265627, HIGH): the charset above admits '.' and '/' for
+// Review finding (HIGH): the charset above admits '.' and '/' for
 // legitimate relative paths, which ALSO admits '..' traversal segments — "../../../etc/passwd"
 // passes the charset check untouched. joinRepoPath only strips a LEADING slash, it never
 // resolves/normalizes '..', so a hoisted path could escape repoRoot entirely. Reject any '..' (or
@@ -758,13 +758,13 @@ function renderAuditClaim(
       (opencodeVariant !== null ? `OPENCODE_VARIANT: ${opencodeVariant}\n\n` : '') +
       `Documentation-drift audit — verdict for ONE documentation claim.\n` +
       `Repository root: ${repoRoot}.\n` +
-      // Card #1826399286049376144 (forensics wf_dd8c0300-c59): 107/750 verify
+      // Forensics (run wf_dd8c0300-c59): 107/750 verify
       // wrappers died BEFORE calling opencode because this prompt named the
       // claim but never its concrete source file — the wrapper burned its turn
       // budget on ls/find/grep exploration to locate it. checkHint is ALREADY
       // the extractor's best-guess concrete path; resolve + surface it here,
       // OUTSIDE the untrusted block, as a direct read instruction — but ONLY
-      // when it validates as a plausible path (card #1826438766219233213: a
+      // when it validates as a plausible path (a
       // hostile checkHint containing a newline + closing marker must never
       // land unfenced here).
       pathLine +
@@ -813,8 +813,8 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
   const extractEffort = resolveEffort(input.effort?.['extract'], EXTRACT_EFFORT)
   const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
 
-  // Opt-in per-group auto-effort on the extract WORKERS (card
-  // #1821093105403692296): effort.extract = 'auto' routes each surface
+  // Opt-in per-group auto-effort on the extract WORKERS:
+  // effort.extract = 'auto' routes each surface
   // group's effort through ONE batched judgment triage (autoSelectEffort;
   // resolveEffort above already degraded 'auto' to the static default, which
   // stays the fail-safe fallback). Groups are FIXED across extraction rounds,
@@ -1101,7 +1101,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     // The same "keep the first N" truncation adversarialVerification's own applyCap will do —
     // mirrored here ONLY to estimate the call cost of what will ACTUALLY be dispatched.
     const candidateClaims = claimsAfterOffset.slice(0, input.maxVerifyClaims)
-    // Review finding (card #1826482533345265627, HIGH): a bare one-call-per-vote estimate is
+    // Review finding (HIGH): a bare one-call-per-vote estimate is
     // OPTIMISTIC, not worst-case. adversarialVerification's own mechanics (patterns/src/
     // adversarial-verification.ts) spend real agent() calls beyond that floor: EVERY vote goes
     // through agentWithSchemaSalvage (up to 2 real calls per vote — a native attempt plus one
@@ -1257,7 +1257,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
         resolvedVerifierType !== null ? input.opencodeVariants?.verify ?? null : null,
       ),
       votes: input.votes,
-      // Severity-tiered votes (card #1821093105403692296): the full quorum
+      // Severity-tiered votes: the full quorum
       // only where an error is expensive — behavioral contracts, boundary
       // guarantees and high-risk claims; descriptive claims (instructions,
       // cross-references, other at medium/low risk) get one refute-first
