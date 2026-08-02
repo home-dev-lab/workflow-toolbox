@@ -44,6 +44,29 @@ describe('hasRecordedStop — real record shapes, timestamp-aware', () => {
     expect(hasRecordedStop(stops, meta, Date.now())).toBe(false)
   })
 
+  // ⚠⚠⚠ RAW-AGENT-ID CORRELATION — the fourth correction, flagged by an independent review AFTER
+  // this file already shipped (pilot-orchestrator brief B9): this module reproduced, one card
+  // over, the exact defect card 1832820166895863516 fixed. A stop record's `name` field can carry
+  // neither the spawn's explicit name NOR its agentType — but the raw `agentId` still matches the
+  // transcript filename's own id (`agent-<rawId>.jsonl`, verified directly against the real
+  // journal: `agent-a013def19e5877298.jsonl` <-> `{"t":"stop","agentId":"a013def19e5877298",...}`).
+  // FAILS before the raw-id lookup is added: neither `name` nor `agentType` matches "an-unrelated-
+  // internal-label", so hasRecordedStop had no way to find this stop record at all.
+  it('RAW-ID CORRELATION: matches via the raw agentId when neither name nor agentType appears among stop records', () => {
+    const stops = new Map([['an-unrelated-internal-label', '2026-08-02T11:43:13.649Z']])
+    const rawId = 'aa877ce816e0c2b0f' // the real s-fence-125 raw id, present on both spawn.child and stop.agentId
+    stops.set(rawId, '2026-08-02T11:43:13.649Z') // lastStopTimestamps must key by agentId too — see its own test below
+    const meta = { name: 's-fence-125', agentType: 'general-purpose' } // neither key is in the map above
+    const modifiedAt = ms('2026-08-02T11:43:13.649Z')
+    expect(hasRecordedStop(stops, meta, modifiedAt, rawId)).toBe(true)
+  })
+
+  it('RAW-ID CORRELATION: still returns false when the raw id ALSO does not match anything (true negative preserved)', () => {
+    const stops = new Map([['some-other-agent', '2026-08-02T10:00:00.000Z']])
+    const meta = { name: 'truly-silent-worker', agentType: 'Explore' }
+    expect(hasRecordedStop(stops, meta, Date.now(), 'a-raw-id-with-no-matching-stop')).toBe(false)
+  })
+
   it('returns false, never throws, when meta is missing entirely (transcript with no sibling meta.json)', () => {
     const stops = new Map([['whatever', '2026-08-02T10:00:00.000Z']])
     expect(hasRecordedStop(stops, null, Date.now())).toBe(false)
@@ -115,7 +138,26 @@ describe('lastStopTimestamps — builds the lookup map from already-parsed journ
     expect(m.get('general-purpose')).toBe('2026-08-02T11:43:13.649Z') // the LATER of the two stops
     expect(m.has('spawned-not-stopped')).toBe(false)
     expect(m.has('acked-agent')).toBe(false)
-    expect(m.size).toBe(1)
+  })
+
+  // RAW-ID CORRELATION (card 1832820166895863516's fix, extended here on B9's finding): the map
+  // is ALSO keyed by agentId, at the SAME latest timestamp as the name key — a caller that only
+  // has the raw id (wt-arc-watch.mjs, from the transcript filename) can look it up directly,
+  // without needing the name/agentType meta at all.
+  it('ALSO keys by agentId, at the same latest timestamp as the name key', () => {
+    const records = [
+      { t: 'stop', name: 'general-purpose', agentId: 'aa877ce816e0c2b0f', at: '2026-08-02T11:42:57.492Z' },
+      { t: 'stop', name: 'general-purpose', agentId: 'aa877ce816e0c2b0f', at: '2026-08-02T11:43:13.649Z' },
+    ]
+    const m = lastStopTimestamps(records)
+    expect(m.get('aa877ce816e0c2b0f')).toBe('2026-08-02T11:43:13.649Z')
+    expect(m.get('general-purpose')).toBe(m.get('aa877ce816e0c2b0f'))
+  })
+
+  it('a stop record with an agentId but no usable name still gets its agentId keyed', () => {
+    const records = [{ t: 'stop', agentId: 'a-raw-id-only', at: '2026-08-02T11:43:13.649Z' }]
+    const m = lastStopTimestamps(records)
+    expect(m.get('a-raw-id-only')).toBe('2026-08-02T11:43:13.649Z')
   })
 
   it('skips malformed stop records (missing/empty name or at) without throwing', () => {
