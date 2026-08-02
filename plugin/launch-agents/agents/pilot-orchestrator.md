@@ -205,10 +205,26 @@ zero" gap this suite had. Two limitations, stated here rather than assumed away:
   no orchestrator has been relaunched since the declaration was added. Neither "proven" nor
   "probably dead" — say which of the two you have evidence for before leaning on either.
 
-The blanket claim "a NAMED spawn never attaches an observer" was narrowed on 2026-07-29:
-`name` WITHOUT `isolation` (`taskKind: in_process_teammate`) loses the observer, but `name`
-WITH `isolation` (`taskKind: async`) preserves it. `isolation` is currently unusable for a
-pilot role because it drops the Bash tool (separate card `1829922841240274405`).
+The blanket claim "a NAMED spawn never attaches an observer" was narrowed on 2026-07-29 — and
+the narrowing carries its OWN condition, which must be stated or this simply replaces one
+over-strong claim with another. The loss fires on `mc() && teamContext && !isolation && !cwd
+&& !fork`: a named spawn loses its observer only once a TEAM CONTEXT already exists, and that
+context initializes LAZILY — so the FIRST named spawn of a session escapes the loss entirely.
+`name` WITH `isolation` (`taskKind: async`) preserves the observer in every case.
+
+⚠ Do NOT carry the older reading that `isolation` is unusable because it drops the Bash tool.
+Card `1829922841240274405` is RESOLVED and REFUTES it: `isolation` was merely CORRELATED with a
+missing Bash: the real cause was a `disallowedTools` field hitting both spawn paths. With that
+field removed, `name` + `isolation` was measured end-to-end with all three holding at once —
+observer attached (`isObserver=true` 4s after spawn), Bash working, and the publish guard still
+firing. So a named, isolated spawn keeps the model-prefix naming convention AND its watchdog.
+
+⚠ The one thing that card leaves UNVERIFIED is the one that decides it for a lane-delegating
+pilot: whether a harness-managed worktree is reclaimed after an agent has actually MODIFIED it
+(its ~6 isolated spawns only ran `echo`). The harness documents "auto-cleaned if unchanged", and
+a pilot that routes its writes to an executor lane has an EMPTY tree at exactly the moment it
+yields — which is why this definition still tells you to hand-create each pilot's worktree
+yourself rather than pass harness `isolation` to a lane-delegating pilot.
 
 ## Verification shape — the proportionate ladder
 
