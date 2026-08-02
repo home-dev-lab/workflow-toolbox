@@ -229,7 +229,7 @@ function readTranscriptMeta(sessionName, transcriptFile) {
 // SHAPE CHECK (why a small tolerance is safe on the true-anchor side): both measurements' negative
 // populations have NO cluster near zero — this pilot's own sorted list of 46 negatives has its
 // nearest-to-zero value at -2.79s, nothing between -2.79s and 0. So BACKWARD_TOLERANCE_MS well
-// under that gap (2s, see lib/stop-correlation.mjs) cleanly separates genuine cross-process clock/
+// under that gap (1s, see lib/stop-correlation.mjs) cleanly separates genuine cross-process clock/
 // ordering skew (the hook is written by a different process than the transcript) from a real
 // unaccounted later turn.
 function lastRecordTimestampMs(sessionName, transcriptFile) {
@@ -255,6 +255,12 @@ function lastRecordTimestampMs(sessionName, transcriptFile) {
   }
 }
 
+// Transcript filenames are `agent-<rawId>.jsonl` — the SAME raw id the outbound-guard journal
+// records as `stop.agentId` (verified byte-identical against a real record; see the CORRECTION 4
+// note in lib/stop-correlation.mjs). Extracted here, once, so isAccountedForByStop can offer it
+// as the first, least-ambiguous correlation candidate.
+const TRANSCRIPT_RAW_ID_RE = /^agent-(.+)\.jsonl$/
+
 // `name` here is the `${sessionId}/${transcriptFile}` key used throughout this watcher's maps.
 // `modifiedAt` (file mtime) is the FALLBACK anchor only — the transcript's own last-record
 // timestamp is preferred (see the note above on why mtime is the wrong instrument for this).
@@ -267,7 +273,8 @@ function isAccountedForByStop(name, modifiedAt) {
   if (!stops) return false // journal unreadable — never suppress on an unreadable source
   const meta = readTranscriptMeta(sessionName, transcriptFile)
   const anchorMs = lastRecordTimestampMs(sessionName, transcriptFile) ?? modifiedAt
-  return hasRecordedStop(stops, meta, anchorMs)
+  const rawId = TRANSCRIPT_RAW_ID_RE.exec(transcriptFile)?.[1]
+  return hasRecordedStop(stops, meta, anchorMs, rawId)
 }
 
 // The gate this file's header describes: has THIS session (identified by the

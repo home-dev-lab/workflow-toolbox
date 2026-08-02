@@ -52,9 +52,18 @@
 // justified, however much later — measured max is well under 1s, but nothing is gained by capping.
 export const BACKWARD_TOLERANCE_MS = 1_000
 
-export function hasRecordedStop(lastStopAt, meta, modifiedAtMs) {
-  if (!meta) return false
-  const candidates = [meta.name, meta.agentType].filter(Boolean)
+// ⚠⚠⚠⚠ CORRECTION 4 — RAW AGENT ID AS THE FIRST CANDIDATE. Flagged by an independent review
+// (pilot-orchestrator brief B9) AFTER this file already shipped, matching by name/agentType only:
+// this reproduced, one card over, the EXACT correlation defect card 1832820166895863516 fixed —
+// a stop record's `name` field can carry neither the spawn's explicit name nor its agentType (the
+// s-fence-125 shape), while the raw `agentId` still matches. That raw id is available here too:
+// transcript files are named `agent-<rawId>.jsonl`, and the id is verified byte-identical to the
+// journal's `stop.agentId` on a real record (`agent-a013def19e5877298.jsonl` <->
+// `{"t":"stop","agentId":"a013def19e5877298",...}`). Checked FIRST, before name/agentType, since
+// it is the most specific and least ambiguous of the three keys — a raw id is unique per spawn,
+// where a name or type can (rarely) collide across agents.
+export function hasRecordedStop(lastStopAt, meta, modifiedAtMs, rawAgentId) {
+  const candidates = [rawAgentId, meta?.name, meta?.agentType].filter(Boolean)
   for (const key of candidates) {
     const at = lastStopAt.get(key)
     if (!at) continue
@@ -65,15 +74,28 @@ export function hasRecordedStop(lastStopAt, meta, modifiedAtMs) {
   return false
 }
 
-// Builds a Map of name -> latest 'at' timestamp seen on 'stop' records, from a journal's already-
+// Builds a Map of key -> latest 'at' timestamp seen on 'stop' records, from a journal's already-
 // parsed record list — kept separate from file I/O so a caller with records in hand (tests, or a
 // caller that already parsed the journal for another reason) never re-reads the file.
+//
+// Keyed by BOTH `name` and `agentId` (CORRECTION 4, see hasRecordedStop above) — the two keys
+// point at the SAME latest timestamp for a given stop record, so a caller can look up by whichever
+// one it has (wt-arc-watch.mjs only ever has the raw id from a transcript filename; a caller
+// working from meta.json only has name/agentType). Each key's "latest" is tracked independently,
+// since a stop record can carry one without the other (an agentId with no usable name still gets
+// its agentId keyed; a name/agentType with no agentId still gets its name keyed, exactly as
+// before this correction).
 export function lastStopTimestamps(records) {
   const m = new Map()
+  const bump = (key, at) => {
+    if (!key) return
+    const prev = m.get(key)
+    if (!prev || at > prev) m.set(key, at)
+  }
   for (const r of records) {
-    if (!r || r.t !== 'stop' || typeof r.name !== 'string' || !r.name || typeof r.at !== 'string') continue
-    const prev = m.get(r.name)
-    if (!prev || r.at > prev) m.set(r.name, r.at)
+    if (!r || r.t !== 'stop' || typeof r.at !== 'string') continue
+    if (typeof r.name === 'string' && r.name) bump(r.name, r.at)
+    if (typeof r.agentId === 'string' && r.agentId) bump(r.agentId, r.at)
   }
   return m
 }
