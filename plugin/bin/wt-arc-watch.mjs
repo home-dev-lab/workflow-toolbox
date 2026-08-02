@@ -530,6 +530,17 @@ while (true) {
         continue
       }
       announcedFuture.delete(name)
+      // ⚠⚠ ORDERING IS LOAD-BEARING, VERIFIED ON REQUEST — do not reorder this `if`. The mtime
+      // staleness gate (`now - modifiedAt >= staleMs`) MUST run and short-circuit BEFORE
+      // isAccountedForByStop() is ever called. A live, currently-working agent has a FRESH mtime
+      // (its transcript is actively growing), so it never satisfies this gate at all and
+      // isAccountedForByStop() is never reached for it — this is what stops a live agent with an
+      // OLD last-stop record (e.g. deep into a long-running multi-turn mandate) from being wrongly
+      // matched by that stale stop and reported. The discriminator's own anchor (the transcript's
+      // last-record timestamp, see isAccountedForByStop) is a SEPARATE, later check that only ever
+      // runs on an agent already judged stale by THIS gate — moving the discriminator ahead of, or
+      // independent of, this condition would let a live agent's old stop satisfy it and misreport
+      // a working agent as accounted-for-and-silenced instead of correctly never being asked about.
       if (now - modifiedAt >= staleMs && !announcedStale.has(name)) {
         // Corroborate before alerting: a recorded SubagentStop (by name or by agentType) means
         // this agent's last turn ended cleanly — idle-between-turns or a benign shutdown, not a
