@@ -78,7 +78,7 @@ const SYNTHESIZE_EFFORT: EffortAlias = 'medium'  // Synthesize: final verdict �
 
 export interface PrReviewInput {
   target: string
-  /** Proportionate-review ladder rung this run executes (card #1819690936574150367).
+  /** Proportionate-review ladder rung this run executes.
    *  'full' (default, and the result when the `mode` key is OMITTED entirely) is
    *  today's behavior, bit-compatible: the Review phase spawns one reviewer PER LENS
    *  (see REVIEWER_LENSES/DEFAULT_LENSES below, plus docs-alignment/docs-coverage when
@@ -139,8 +139,8 @@ export interface PrReviewInput {
    *  NAME-RECOGNIZED external bridge agentType (isBridgeAgentType,
    *  opencode-routing.ts — e.g. 'workflow-toolbox:opencode-verifier') is a
    *  THIN RELAY, so the wrapper defaults to 'haiku' and the run-global
-   *  `perAgent.model` deliberately does NOT reach it (residual leak fixed by
-   *  card #1826112535493871358). A CLAUDE review lens — no agentType routed,
+   *  `perAgent.model` deliberately does NOT reach it (a residual leak, since fixed).
+   *  A CLAUDE review lens — no agentType routed,
    *  OR a specialist agentType not on the bridge allowlist (e.g.
    *  'magic-claude:ts-reviewer') — KEEPS its normal tier, never forced to
    *  haiku (fail-safe: an unrecognized agentType is assumed Claude-family,
@@ -165,7 +165,7 @@ export interface PrReviewInput {
    *  'verify' role is additionally clamped to a 'high' floor via
    *  resolveVerifierEffort — an override may only raise it.
    *
-   *  'auto' on the WORKER role 'review' (card #1809425610812949851) enables
+   *  'auto' on the WORKER role 'review' enables
    *  change-difficulty effort auto-selection for the reviewer agents:
    *  deterministic signals from the routed change summary (changed-file
    *  count, summary size) decide the clear extremes in code, else ONE
@@ -209,7 +209,7 @@ const CHANGE_SUMMARY_SCHEMA = {
   type: 'object',
   properties: {
     summary: { type: 'string', minLength: 12, maxLength: 1200 },
-    // Runaway bounds (card #1820561035728258107, lived: a long/dense target
+    // Runaway bounds (lived: a long/dense target
     // starved the REQUIRED riskAreas out of the JSON entirely — the unbounded
     // long-array sibling is exactly what eats the budget first). Same posture
     // as addedPublicSurface below: schema-level runaway bound, not a
@@ -318,7 +318,7 @@ const READ_ONLY_GIT =
 // classifyAndAct's `act` goal template — shared markdown builder for the five
 // per-category prompts below (feature/bugfix/refactor/config/docs). Markdown
 // (## sections + bullets) instead of one flat paragraph so observe's
-// markdown-rendering goal display (card #1820724046774404234, the UI side of
+// markdown-rendering goal display (the UI side of
 // this fix) has real structure to render — the run wf_d55a5b96 witness showed
 // a flat `classifyAndAct:act:feature:0` goal with nothing for it to format.
 // Rule of Three: the five categories share this exact shape (task, what to
@@ -659,7 +659,7 @@ function parseInput(raw: unknown): PrReviewInput {
   const mode = parseMode(obj['mode'])
 
   // Bespoke pr-review key (parseConfig ignores it, like provenance/mode
-  // above): the wrapper-model gate for the review lens (card #1826112535493871358).
+  // above): the wrapper-model gate for the review lens.
   const models = parseModels(obj['models'])
 
   return { target: obj['target'], mode, reviewerType, models, verifierModel, verifierType, perAgent, effort, messaging, provenance }
@@ -750,8 +750,8 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     probeReport = { requested: input.reviewerType, available: probe.available, reason: probe.reason }
   }
 
-  // Wrapper-role Claude model for the review lens (card #1826112535493871358,
-  // GATED doctrine adapted from coverage-audit/docs-audit's `models`, commit
+  // Wrapper-role Claude model for the review lens
+  // (GATED doctrine adapted from coverage-audit/docs-audit's `models`, commit
   // 340437f). UNLIKE those two workflows, `agentTypes.review` here is
   // documented DUAL-PURPOSE (a same-family Claude specialist OR a
   // cross-family bridge) — so "agentType resolved" is NOT a valid bridge
@@ -842,7 +842,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   const category = routedItem.category
   const changeSummary = routedItem.result
 
-  // Auto-effort for the reviewer WORKERS (card #1809425610812949851, opt-in
+  // Auto-effort for the reviewer WORKERS (opt-in
   // via effort.review === 'auto'): now that the routed change summary exists,
   // deterministic signals (changed-file count, summary size) decide the clear
   // extremes in code; otherwise ONE best-model triage call scores the change
@@ -970,7 +970,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     ...(coverageSurfaces.length > 0 ? ['docs-coverage'] : []),
   ]
 
-  // Proportionate-review ladder (card #1819690936574150367): 'full' (default)
+  // Proportionate-review ladder: 'full' (default)
   // runs the pipeline over EVERY lens below — one reviewer each, exactly the
   // pre-ladder code path (reviewItems === lenses, byte-identical prompts).
   // 'single-verifier' collapses the fan to ONE sentinel item; reviewStage
@@ -1081,7 +1081,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
           // Same agentTypes.review routing as the per-lens path — this is
           // precisely the shape a cross-family/quota-degraded verifier wants.
           ...(resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {}),
-          // Wrapper-model gate (card #1826112535493871358): haiku by default
+          // Wrapper-model gate: haiku by default
           // when bridge-routed, models.review override, or the Claude tier
           // unchanged when not bridge-routed (undefined → omitted).
           ...(reviewModel !== undefined ? { model: reviewModel } : {}),
@@ -1119,7 +1119,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         // graceful-fallback path when the requested type could not answer).
         // Routes the lens reviewers ONLY; verifiers and synthesizer stay generic.
         ...(resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {}),
-        // Wrapper-model gate (card #1826112535493871358): haiku by default
+        // Wrapper-model gate: haiku by default
         // when bridge-routed, models.review override, or the Claude tier
         // unchanged when not bridge-routed (undefined → omitted).
         ...(reviewModel !== undefined ? { model: reviewModel } : {}),
@@ -1163,8 +1163,8 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       // probe-resolved above. Omitted when null → the standard subagent (default,
       // also the graceful-fallback path when the requested type could not answer).
       ...(resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}),
-      // Per-lens stage/label discriminator (card #1816036725248493168,
-      // amendment A2 — the flagship remediation of the original finding, run
+      // Per-lens stage/label discriminator (amendment A2 —
+      // the flagship remediation of the original finding, run
       // wf_7b5bb844-368): this verifyStage runs once per lens via
       // rt.pipeline's no-barrier per-item stages, all on the SAME `rt` — the
       // auto salt counter would assign completion-order numbers (concurrent

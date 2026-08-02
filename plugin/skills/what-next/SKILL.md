@@ -97,7 +97,7 @@ rule above held (the session correctly declined to claim "zero gap" when it had 
 lens) — but the "run it" instruction alone did NOT reliably trigger the actual invocation; the
 session investigated other things and never called the script. Treat this MANDATORY step as
 advisory-strength in practice until it is backed by a mechanical hook, not a skill line alone —
-see card #1827598841508005595's own reserved caveat about this exact gap.
+this exact gap is a standing reserved caveat, not yet closed.
 
 ### Step 1 (MANDATORY first) — scan for stalls
 

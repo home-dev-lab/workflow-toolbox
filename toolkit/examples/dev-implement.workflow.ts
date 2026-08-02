@@ -164,7 +164,7 @@ export interface DevImplementInput {
   artifactPath: string | null
   /** "sequential" (default, no git required), "worktree" (parallel waves of
    *  per-task git worktrees + a merge step; git repo REQUIRED), or "auto"
-   *  (card #1820484453298865160 — routes PER weakly-connected COMPONENT of
+   *  (routes PER weakly-connected COMPONENT of
    *  the dependsOn graph): qualifying components (>= autoLaneMinTasks tasks)
    *  each become a parallel LANE, one isolated git worktree per lane; tasks
    *  WITHIN a lane still run SEQUENTIALLY, in topological order — "auto"
@@ -242,7 +242,7 @@ export interface DevImplementInput {
    *  Resolved per-stage via resolveEffort; 'check'/'integration' are
    *  additionally clamped to a 'high' floor via resolveVerifierEffort.
    *
-   *  'auto' on the WORKER roles 'red'/'green' (card #1809425610812949851)
+   *  'auto' on the WORKER roles 'red'/'green'
    *  enables PER-TASK effort auto-selection: deterministic signals in code
    *  (file counts, spec size) decide the clear extremes, then ONE batched
    *  best-model triage call scores the remaining tasks ("when unsure, score
@@ -283,7 +283,7 @@ const SEAM_FILES_CAP = 4
 // keeps written:false on the warn+retry path; the three named verdicts are
 // accepted first-class exits that STOP the task loop.
 //
-// `seams` (Tier 0, card #1820492803109553162) is optional for the SAME
+// `seams` (Tier 0) is optional for the SAME
 // replay reason and normalized to [] in code. Its per-field bounds are the
 // structured-output anti-capitulation defenses (short fields first in the
 // prompt template, min/maxLength so junk and runaways become actionable
@@ -558,8 +558,8 @@ type CleanupResult = FromSchema<typeof CLEANUP_RESULT_SCHEMA>
 type TaskStatus = 'succeeded' | 'failed' | 'skipped' | 'merge-failed' | 'integration-failed' | 'blocked'
 
 // The mutation "auto" routing decision — ALWAYS present on the output,
-// regardless of mode (card #1820484453298865160: "the observability of the
-// decision is the essence of the card"). For the two EXPLICIT modes
+// regardless of mode ("the observability of the
+// decision is the essence of the card" — the original design rationale). For the two EXPLICIT modes
 // ('sequential'/'worktree') no component/lane computation ever runs:
 // `resolved` simply mirrors `requested`, `components`/`lanes` are 0, and
 // `reason` is the literal 'explicit'. For "auto", `resolved` is 'sequential'
@@ -1140,7 +1140,7 @@ function waveLevels(tasks: PlanTask[]): PlanTask[][] {
 }
 
 // ---------------------------------------------------------------------------
-// mutation "auto" — connected-component routing (card #1820484453298865160).
+// mutation "auto" — connected-component routing.
 //
 // computeComponents: weakly-connected components of the UNDIRECTED adjacency
 // built from dependsOn (a dependsOn edge never crosses a component boundary
@@ -1878,7 +1878,7 @@ async function resolveArtifactInput(
 }
 
 // ---------------------------------------------------------------------------
-// Per-task WORKER effort resolution (card #1809425610812949851)
+// Per-task WORKER effort resolution
 //
 // Returns a per-task resolver. Static case (no 'auto' on red/green): the same
 // object for every task, exactly the pre-auto behavior. Auto case: ONE

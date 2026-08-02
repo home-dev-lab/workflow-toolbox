@@ -25,7 +25,7 @@ export interface AwaitObservation {
    *  I/O failure reaching it (timeout/5xx under load), NOT a confirmed "run not here".
    *  A run "visible nowhere" while a source could not be reached has UNKNOWN absence, so
    *  it must never read as a confident `missing` (the never-latch discipline
-   *  source-resolve.ts already applies to `resolveSource`, card #1821784328170899045).
+   *  source-resolve.ts already applies to `resolveSource`).
    *  Absent/false on single-source servers and whenever every source was reached, so the
    *  existing missing behavior is unchanged there. */
   sourcesUnprobed?: boolean
@@ -67,8 +67,8 @@ export function classifyAwaitTick(obs: AwaitObservation): AwaitVerdict {
   if (obs.recallStatus !== null) return { kind: 'pending' } // running/pending on disk
   // Visible nowhere. If this tick's multi-source runId search left a source UNPROBED (an
   // I/O failure reaching it, not a confirmed miss), the run's absence is UNKNOWN — keep
-  // polling rather than assert a confident `missing` (never-latch, card
-  // #1821784328170899045). The overall timeout above still bounds the wait, so a source
+  // polling rather than assert a confident `missing` (never-latch).
+  // The overall timeout above still bounds the wait, so a source
   // that never recovers ends the await as `timeout` (exit 3), never a false `missing`.
   if (obs.sourcesUnprobed === true) return { kind: 'pending' }
   return obs.elapsedMs > obs.missingGraceMs ? { kind: 'missing' } : { kind: 'pending' }
@@ -120,7 +120,7 @@ export function awaitExitCode(verdict: Exclude<AwaitVerdict, { kind: 'pending' }
  *  the source was already resolved). */
 export const AWAIT_SOURCE_UNRESOLVED_EXIT_CODE = 5
 
-// ── recall-probe classification (card #1825812079798388423 — the await→missing bug) ────────
+// ── recall-probe classification (the await→missing bug) ─────────────────────────────────────
 
 /** One GET /api/runs/:runId HTTP outcome, abstracted away from fetch/JSON-parsing (the CLI
  *  shell owns those — see fetchRecall in observe-cli.ts) so the classification stays pure and
@@ -149,7 +149,7 @@ export interface RecallProbeResult {
  *  Never throws — a malformed body degrades to `recall: null` with whatever `reached` the
  *  status alone implies.
  *
- *  Review finding (codex, card #1825812079798388423) — a body that IS present but is not a
+ *  Review finding (codex) — a body that IS present but is not a
  *  well-formed object can never be trusted, on EITHER status: a malformed 200 (this endpoint
  *  always returns a real object on success — a non-object body means something is badly wrong
  *  in transit, not a confirmed answer) degrades to reached: false instead of a false confirmed

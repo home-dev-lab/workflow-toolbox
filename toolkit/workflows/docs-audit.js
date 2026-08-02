@@ -1447,7 +1447,7 @@ ${renderClaim(claim)}`;
           votes,
           voteStages,
           // A salvaged vote's credited value came from the `:salvage` respawn transcript —
-          // point the provenance checker THERE (card #1824029483854726303 fix round).
+          // point the provenance checker THERE (fix round, below).
           effectiveStages: voteStages.map(
             (s, vi) => voteOuts[vi]?.salvaged === true ? `${s}:salvage` : s
           ),
@@ -2237,13 +2237,13 @@ If \u2014 and only if \u2014 that exact path does not exist or does not contain 
 
 ` : "") + `Documentation-drift audit \u2014 verdict for ONE documentation claim.
 Repository root: ${repoRoot}.
-` + // Card #1826399286049376144 (forensics wf_dd8c0300-c59): 107/750 verify
+` + // Forensics (run wf_dd8c0300-c59): 107/750 verify
       // wrappers died BEFORE calling opencode because this prompt named the
       // claim but never its concrete source file — the wrapper burned its turn
       // budget on ls/find/grep exploration to locate it. checkHint is ALREADY
       // the extractor's best-guess concrete path; resolve + surface it here,
       // OUTSIDE the untrusted block, as a direct read instruction — but ONLY
-      // when it validates as a plausible path (card #1826438766219233213: a
+      // when it validates as a plausible path (a
       // hostile checkHint containing a newline + closing marker must never
       // land unfenced here).
       pathLine + renderUntrustedClaimBlock(c) + "\n" + (hints !== null ? `Extra context:
@@ -2553,7 +2553,7 @@ ${pipelineHowTo}`;
           resolvedVerifierType !== null ? input.opencodeVariants?.verify ?? null : null
         ),
         votes: input.votes,
-        // Severity-tiered votes (card #1821093105403692296): the full quorum
+        // Severity-tiered votes: the full quorum
         // only where an error is expensive — behavioral contracts, boundary
         // guarantees and high-risk claims; descriptive claims (instructions,
         // cross-references, other at medium/low risk) get one refute-first

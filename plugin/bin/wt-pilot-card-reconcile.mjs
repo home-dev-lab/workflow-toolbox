@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // pilot-card-reconcile — compare CARDS reputedly taken against PILOTS actually in flight, and
-// name the mismatch. Card #1827494361110152853: the gap this closes is a pilot that dies between
+// name the mismatch. The gap this closes is a pilot that dies between
 // spawn and its own intake (its first act, moving the card to In Progress) — the card then sits
 // claimed while nobody works it, and nothing detects it.
 //
@@ -19,7 +19,7 @@
 //   - PILOTS : derived from the SAME spawn registry wt-outbound-guard-hook.mjs already writes
 //              (~/.local/state/wt-outbound-guard/<sessionId>.jsonl). A pilot is "alive" when its
 //              spawn record has no matching 'stop' record — using the SAME raw-id fallback
-//              correlation as wt-spawn-registry-scan.mjs (card #1832820166895863516's fix), since
+//              correlation as wt-spawn-registry-scan.mjs's own raw-agent-id fix, since
 //              a pilot's own spawn shape can hit the identical name-vs-agent_type mismatch.
 //
 // MATCHING A CARD TO A PILOT. The registry has no first-class "this pilot works this card" link,
@@ -40,8 +40,8 @@
 // #3, "who runs it and when") is a deliberate ARBITER CALL, stated here rather than left silent:
 // run it from the pilot-orchestrator / main session at board-reconciliation points (wave start,
 // wave end, and on any "is this card actually being worked" doubt) — the same moment this very
-// wave's orchestrator already did this check BY HAND (see card 1829924641678820839's board-
-// reconciliation comment, 2026-08-02). A Stop-hook wiring was considered and rejected: unlike the
+// wave's orchestrator already did this check BY HAND (a board-reconciliation comment,
+// 2026-08-02). A Stop-hook wiring was considered and rejected: unlike the
 // registry heartbeat (which the SESSION that spawned an agent can act on directly), reconciling
 // cards against pilots is an ORCHESTRATOR-level judgment (which card, which wave) that a generic
 // per-session hook has no scope to make correctly — wiring it in would fire on sessions with no
@@ -100,7 +100,7 @@ const records = readFileSync(file, 'utf8').split('\n').filter(Boolean)
 
 const spawns = records.filter((r) => r.t === 'spawn');
 
-// Same raw-id fallback as wt-spawn-registry-scan.mjs's fix (card #1832820166895863516): a stop
+// Same raw-id fallback as wt-spawn-registry-scan.mjs's own fix: a stop
 // record's `name` field can carry the underlying subagent_type instead of the explicit spawn
 // name for a plain non-teammate Agent-tool spawn, so correlate on raw agentId too.
 const lastByName = (t) => {

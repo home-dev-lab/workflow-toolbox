@@ -117,8 +117,8 @@ const VERSION_RE = new RegExp(`installed from ${BANNER_TOOL} v(\\d+)\\.(\\d+)\\.
 const FP_RE = /content sha256:([0-9a-f]{12})/
 
 // A DRIFT line reports one divergent line of TEXT, and that line lives on exactly one
-// side — the project copy or the shipped template, never both. Card #1832961693500573565:
-// a label that just says "(missing)" makes the reader supply the missing half themselves,
+// side — the project copy or the shipped template, never both.
+// A label that just says "(missing)" makes the reader supply the missing half themselves,
 // and the guess goes wrong as often as it goes right (measured: a full session inverted it,
 // declared a publish blocked that wasn't, and spawned a pilot on a premise that was the exact
 // opposite of the truth). So every per-line DRIFT entry below names the side it is missing
@@ -223,7 +223,7 @@ function stripAgentBanner(text) {
 
 /** Recover the pre-banner content of an installed RULE (banner is line 1). Conditional on
  *  the first line actually being a recognized banner — mirrors `stripAgentBanner`'s own
- *  guard. Card #1827841682423416647 review finding: this used to strip line 1
+ *  guard. Cross-family review finding: this used to strip line 1
  *  UNCONDITIONALLY, silently treating a raw (unbannered) shipped source file's own title
  *  line as disposable framing. That never mattered while the shipped-name-direct-adoption
  *  comparison in `auditOverlap` was unreachable (it used to short-circuit to ABSENT before
@@ -244,7 +244,7 @@ function renderItem(set, item, version, root) {
   return set.kind === 'rules' ? `${b}\n\n${content}` : insertAgentBanner(content, b)
 }
 
-// --- Frontmatter preservation across a re-adoption (card #1828669764516447496) ---------------
+// --- Frontmatter preservation across a re-adoption -------------------------------------------
 //
 // `--install --force` used to REPLACE an agent file wholesale, silently dropping any field a
 // user had locally added to the frontmatter (the standing example: a `model:` pin — the visible
@@ -281,8 +281,8 @@ function frontmatterBlock(text) {
  *  next-line-only continuation check would miss and mis-preserve a truncated field), and (b) the
  *  line right after it is NOT an indented/continuation line (and isn't the closing `---`) —
  *  anything else (a YAML list, a folded string, a trailing comment block) is left alone rather
- *  than guessed at, per the conservative-merge note above. Cross-family review finding (card
- *  #1828669764516447496): a block scalar followed by a blank line before its own continuation
+ *  than guessed at, per the conservative-merge note above. Cross-family review finding:
+ *  a block scalar followed by a blank line before its own continuation
  *  (`notes: |\n\n  continued\n`) used to read as "simple" and lose its continuation on merge. */
 function simpleFrontmatterKeys(block) {
   const lines = block.split(/\r?\n/)
@@ -438,7 +438,7 @@ function parseArgs(argv) {
 // Which flags are actually READ by which mode's code path — the single source of truth
 // this function's guard checks against. A flag absent from its own mode's list has NO
 // EFFECT there: nothing downstream ever reads it. That must REFUSE, not silently accept —
-// the original bug (card #1832848906090710813): `--user-dir` was parsed and stored in every
+// the original bug (measured): `--user-dir` was parsed and stored in every
 // mode but read only inside auditOverlap(), so `--check --user-dir <x>` reported on the
 // --dir/cwd fallback while looking like it had honoured the caller's target.
 //
@@ -511,7 +511,7 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
   let absent = 0
   let unpaired = 0
   let unmapped = 0
-  // Direction breakdown of `drift` (item 2 of card #1832961693500573565): the single `drift`
+  // Direction breakdown of `drift`: the single `drift`
   // count says a pair diverges, never which way — so "2 drift" cannot tell a reader whether
   // the project is BEHIND the shipped template or has DIVERGED locally ahead of it. Counted
   // per PAIR (a pair can contribute to both when it both adds and drops lines), never
@@ -579,8 +579,8 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
     const extras = [...new Set(userLines.filter((line) => line !== '' && !shippedLines.has(line)))].filter(
       (line) => !allowExtraPatterns.some((pattern) => pattern.test(line)),
     )
-    // ADDITIONS-only was a real gap for the `agents` set (review finding, card
-    // #1827047859321570464): a project copy that DELETES a shipped line (e.g. a safety
+    // ADDITIONS-only was a real gap for the `agents` set (review finding):
+    // a project copy that DELETES a shipped line (e.g. a safety
     // clause) adds no new line, so `extras` alone stays empty and the pair reports CLEAN —
     // exactly the class of silent drift this gate exists to catch, since our own design
     // decision is that an adopted agent copy = shipped body + ONE approved override line,
@@ -646,7 +646,7 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
   // never join the managed suite) is a PERMANENT, legitimate state for some projects: if it
   // gated the exit code, the gate could never go green on those projects, and a bloqueur that
   // is always red is bypassed by reflex — the day it also carries a real `drift`, nobody can
-  // tell the two apart in the same non-zero exit (card #1828669977687753994, 27/07/2026).
+  // tell the two apart in the same non-zero exit (measured 27/07/2026).
   // `unmapped` stays fully VISIBLE above (one UNMAPPED line per file, counted in the summary)
   // because an unmapped file can just as well be the symptom of an INCOMPLETE adoption — the
   // tool cannot tell intent from omission, so it reports and lets a human judge, it just never
@@ -752,7 +752,7 @@ function processSet(set, dir, args, version, root) {
         // after install — any key present in it but absent from the fresh shipped text is a
         // field the PLUGIN itself retired, not something the user added. Preserving on a plain
         // refresh would silently resurrect a field upstream deliberately removed (cross-family
-        // review finding on card #1828669764516447496).
+        // review finding).
         let oldContent = null
         if (set.kind === 'agents' && (c.state === 'edited' || c.state === 'edited-unknown')) {
           try {

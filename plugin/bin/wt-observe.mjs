@@ -1730,7 +1730,7 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
       // byte-identical to before.
       ...remotes.length > 0 ? { OBSERVE_REMOTES: JSON.stringify(remotes) } : {},
       ...flags.enableLaunch ? { OBSERVE_UI_ENABLE_LAUNCH: "1" } : {},
-      // Card #1826653906575295552 candidate fix 4 — --no-resume: PARK every pending A3
+      // Candidate fix 4 — --no-resume: PARK every pending A3
       // boot-sweep resume this boot instead of dispatching it (dev-api.ts reads this and
       // sets AppOptions.bootResumesDisabled). Unset = resume normally (unchanged default).
       ...flags.noResume ? { OBSERVE_UI_NO_RESUME: "1" } : {},
@@ -2296,8 +2296,8 @@ async function cmdAwait(ctx, runId, timeoutS, pollS, sourceFlag) {
       missingGraceMs: AWAIT_MISSING_GRACE_MS,
       // A run "visible nowhere" while a local source (INCLUDING the active one's own primary
       // probes) could not be reached this tick has an UNKNOWN absence — keeps the tick
-      // pending instead of a false `missing` (never-latch, cards #1821784328170899045 and
-      // #1825812079798388423).
+      // pending instead of a false `missing` (never-latch, measured against two independent
+      // false-`missing` incidents where a probe outage alone had caused the wrong verdict).
       sourcesUnprobed: primaryUnreached || searchUnprobed.length > 0
     });
     if (verdict.kind === "pending") {

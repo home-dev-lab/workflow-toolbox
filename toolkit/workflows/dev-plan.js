@@ -1322,7 +1322,7 @@ ${renderClaim(claim)}`;
           votes,
           voteStages,
           // A salvaged vote's credited value came from the `:salvage` respawn transcript —
-          // point the provenance checker THERE (card #1824029483854726303 fix round).
+          // point the provenance checker THERE (fix round, below).
           effectiveStages: voteStages.map(
             (s, vi) => voteOuts[vi]?.salvaged === true ? `${s}:salvage` : s
           ),

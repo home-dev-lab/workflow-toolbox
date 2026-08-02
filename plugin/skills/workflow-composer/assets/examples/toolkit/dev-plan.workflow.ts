@@ -223,7 +223,7 @@ type CandidateTask = CandidateTasksOutput['tasks'][number]
 // schema rejection the agent can retry shorter. The bounds live here and NOT on the
 // shared TASK_FILE_SCHEMA/ALTERNATIVE_SCHEMA consts: those participate in earlier
 // phases' agent calls, and changing them would invalidate the resume cache prefix.
-// Arbiter review finding (fix round, card #1819690698539009755): `files`,
+// Arbiter review finding (fix round): `files`,
 // `alternativesConsidered`, and `dependsOn` were the three unbounded arrays left
 // in this schema — same runaway-output risk the maxLength bounds above already
 // guard against, just on the array axis instead of the string axis. Capped

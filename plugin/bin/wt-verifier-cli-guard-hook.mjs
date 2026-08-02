@@ -5,7 +5,7 @@
 // that must shell out to the external CLI (`opencode run` / `codex-companion task`) and
 // transcribe its verdict — but it can silently SELF-ANSWER (reason from its own priors and emit
 // the verdict tool call) without ever invoking the CLI (sonnet ~37%, codex 16/16 — see the
-// provenance gate, card #1823504956762621933). The provenance gate DISQUALIFIES such a vote
+// provenance gate below). The provenance gate DISQUALIFIES such a vote
 // post-hoc, but only AFTER the wrapper has spent its full budget. This hook DENIES the terminal
 // verdict tool (`StructuredOutput`) until a REAL external-CLI invocation is proven for this
 // wrapper, so a self-answer cannot emit a verdict.
@@ -61,8 +61,8 @@ import { pathToFileURL } from 'node:url'
 
 // A two-step LINEAR opencode-run matcher — replaces the catastrophic single regex (its BIN= arm
 // `[\s\S]*?` backtracked ~30s on a 200KB opencode-but-no-run command) and the 20k scan cap (which
-// hid a real `run` past position 20k → the a50c1510/aafb024d false-refuse, cards
-// #1825363023930328542 + #1825347787861001678). head(20k)+tail(20k) bounds the work AND co-locates
+// hid a real `run` past position 20k → the a50c1510/aafb024d false-refuse, measured and
+// fixed together). head(20k)+tail(20k) bounds the work AND co-locates
 // a `BIN=` in the head with its `"$BIN" run` in the tail; the two-step scan is indexOf-based (no
 // `[\s\S]*?` bridge) → O(n). SELF-CONTAINED (helpers inlined) so the provenance checker's scanner
 // embeds its source verbatim via `.toString()`. indexOf('opencode')/('BIN=') are case-SENSITIVE
@@ -135,7 +135,7 @@ const COMMAND_SCAN_MAX = 20_000
 const MARKER_PREFIX = 'wt-verifier-cli-seen-'
 const MARKER_TTL_MS = 6 * 60 * 60 * 1000 // opportunistically reap markers older than this
 
-// Per-subagent DENY counter (card #1825363023930328542): a sibling file (SAME key family as the
+// Per-subagent DENY counter: a sibling file (SAME key family as the
 // cli-seen marker — sha1(transcript_path + ':' + agent_id)) holding how many verdicts THIS wrapper
 // has had refused with no CLI provenance. At DENY_TERMINAL_AT the refusal becomes TERMINAL (stop
 // retrying, return text). After the step-1 matcher fix a real-CLI vote is ALLOWED on its first

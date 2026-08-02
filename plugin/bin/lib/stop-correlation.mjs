@@ -54,7 +54,7 @@ export const BACKWARD_TOLERANCE_MS = 1_000
 
 // ⚠⚠⚠⚠ CORRECTION 4 — RAW AGENT ID AS THE FIRST CANDIDATE. Flagged by an independent review
 // (pilot-orchestrator brief B9) AFTER this file already shipped, matching by name/agentType only:
-// this reproduced, one card over, the EXACT correlation defect card 1832820166895863516 fixed —
+// this reproduced the EXACT correlation defect an earlier raw-agent-id fix already closed —
 // a stop record's `name` field can carry neither the spawn's explicit name nor its agentType (the
 // s-fence-125 shape), while the raw `agentId` still matches. That raw id is available here too:
 // transcript files are named `agent-<rawId>.jsonl`, and the id is verified byte-identical to the
@@ -75,7 +75,7 @@ export function hasRecordedStop(lastStopAt, meta, modifiedAtMs, rawAgentId) {
 }
 
 // ⚠⚠⚠⚠⚠ CORRECTION 5 — TRAILING `observer-ref` RECORDS ARE NOT TURN CONTENT, AND POLLUTE THE
-// ANCHOR. Card 1832940311869917034, 2026-08-02: two REAL clean-finish agents were wrongly
+// ANCHOR. Measured 2026-08-02: two REAL clean-finish agents were wrongly
 // STALE'd, with backward gaps of 11.4s and 7.2s -- far past BACKWARD_TOLERANCE_MS. Delegated
 // forensics (transcript structure, not guessed) found the "second cluster" of large backward
 // gaps described in CORRECTION 3 above (5.99s-46.3s, assumed there to be mostly genuine
