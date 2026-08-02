@@ -606,6 +606,51 @@ describe('wt-spawn-registry-scan.mjs --ack — records a verdict scoped to one s
     expect(lines[0]!.t).toBe('spawn') // original line untouched
     expect(lines[1]).toMatchObject({ t: 'ack', name: 'cli-worker', reason: 'checked, still running' })
   })
+
+  it('the --ack CLI mode reports the journal path it wrote to', () => {
+    const dir = mkRoot('ack-cli-journal-path')
+    const file = join(dir, 'sess.jsonl')
+    writeFileSync(
+      file,
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'path-worker', name: 'path-worker', at: minutesAgo(45) }) + '\n'
+    )
+    const r = runNoInput(
+      SCAN,
+      ['--session', 'sess', '--ack', 'path-worker'],
+      { ...process.env, WT_OUTBOUND_GUARD_DIR: dir }
+    )
+    expect(r.code).toBe(0)
+    expect(r.stdout).toContain(`Acknowledged: path-worker (journal: ${file})`)
+  })
+
+  it('refuses ambiguous --ack without --session when multiple journals exist, and appends nothing', () => {
+    const dir = mkRoot('ack-ambiguous')
+    const first = join(dir, 'sess-a.jsonl')
+    const second = join(dir, 'sess-b.jsonl')
+    writeFileSync(
+      first,
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'worker-a', name: 'worker-a', at: minutesAgo(45) }) + '\n'
+    )
+    writeFileSync(
+      second,
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'worker-b', name: 'worker-b', at: minutesAgo(45) }) + '\n'
+    )
+    const firstBefore = readFileSync(first)
+    const secondBefore = readFileSync(second)
+
+    const r = runNoInput(
+      SCAN,
+      ['--ack', 'worker-a'],
+      { ...process.env, WT_OUTBOUND_GUARD_DIR: dir }
+    )
+
+    expect(r.code).toBe(3)
+    expect(r.stderr).toContain('Refusing ambiguous --ack')
+    expect(r.stderr).toContain('found 2 journals')
+    expect(r.stderr).toContain('re-run with --session <id>')
+    expect(readFileSync(first).byteLength).toBe(firstBefore.byteLength)
+    expect(readFileSync(second).byteLength).toBe(secondBefore.byteLength)
+  })
 })
 
 // --------------------------------------------------------------------------
@@ -837,6 +882,17 @@ describe('wt-registry-heartbeat-hook.mjs — mid-session silence surfaces on Sto
     expect(out.reason).toContain('frozen-worker')
     expect(out.reason).toContain('SendMessage')
     expect(out.reason).toContain('--ack')
+  })
+
+  it('the remediation command in the block reason includes the explicit session id', () => {
+    const { env, dir } = guardEnv('heartbeat-ack-session')
+    writeFileSync(
+      join(dir, 'sess-hb-ack-session.jsonl'),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'frozen-worker-ack', name: 'frozen-worker-ack', at: minutesAgo(45) }) + '\n'
+    )
+    const r = run(HEARTBEAT_HOOK, stopEventPayload('sess-hb-ack-session'), env)
+    const out = JSON.parse(r.stdout) as { reason?: string }
+    expect(out.reason).toContain(`--session sess-hb-ack-session --ack <name>`)
   })
 
   // LOOP SAFETY: the harness re-enters this same hook with stop_hook_active:true when the FIRST

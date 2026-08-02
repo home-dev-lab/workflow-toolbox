@@ -112,7 +112,8 @@ try {
     'This does NOT mean they are dead: reading a large file, waiting on a delegated run, and a ' +
     'kill all look identical from here. ASK each one (SendMessage) before assuming anything — a ' +
     'substantive reply means it was working, "resumed from transcript" means it had died. Once ' +
-    `you have looked, run \`node ${SCAN} --ack <name>\` so this stops repeating for that entry.`;
+    `you have looked, run \`node ${SCAN} --session ${sessionId} --ack <name>\` so this stops ` +
+    'repeating for that entry.';
 
   if (stopHookActive) emit({ systemMessage: reason }); // already forced through once this attempt
   emit({ decision: 'block', reason });

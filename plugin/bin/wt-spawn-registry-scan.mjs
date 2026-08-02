@@ -48,6 +48,7 @@
 // asks a question, it never asserts a death. See CONFIRMED-ALIVE below for the suppressed set.
 //
 // Exit codes:  0 = nothing to ask about   ·   1 = at least one open+silent agent   ·   2 = no registry
+//              3 = refused ambiguous --ack without --session (new: distinct from "no registry")
 
 import { readFileSync, existsSync, readdirSync, statSync, appendFileSync, realpathSync } from 'node:fs';
 import { join, basename } from 'node:path';
@@ -110,28 +111,37 @@ if (!existsSync(STATE_DIR)) {
   process.exit(2);
 }
 
-let file = arg('--session', null);
+const requestedSession = arg('--session', null);
+const ackName = arg('--ack', null);
+const journals = readdirSync(STATE_DIR).filter((f) => f.endsWith('.jsonl'))
+  .map((f) => ({ f: join(STATE_DIR, f), m: statSync(join(STATE_DIR, f)).mtimeMs }))
+  .sort((a, b) => b.m - a.m);
+
+let file = requestedSession;
 if (file) {
   file = join(STATE_DIR, `${file}.jsonl`);
 } else {
-  const files = readdirSync(STATE_DIR).filter((f) => f.endsWith('.jsonl'))
-    .map((f) => ({ f: join(STATE_DIR, f), m: statSync(join(STATE_DIR, f)).mtimeMs }))
-    .sort((a, b) => b.m - a.m);
-  if (!files.length) { console.log('Registry directory is empty.'); process.exit(2); }
-  file = files[0].f;
+  if (!journals.length) { console.log('Registry directory is empty.'); process.exit(2); }
+  if (ackName && journals.length > 1) {
+    console.error(`Refusing ambiguous --ack: found ${journals.length} journals in ${STATE_DIR}; re-run with --session <id>.`);
+    process.exit(3);
+  }
+  file = journals[0].f;
+  if (!ackName && journals.length > 1) {
+    console.error(`No --session given; using most recent journal: ${file}`);
+  }
 }
 if (!existsSync(file)) { console.log(`No registry file: ${file}`); process.exit(2); }
 const sessionId = basename(file, '.jsonl');
 
 // --- acknowledge and exit: append a verdict, change nothing that was already written.
-const ackName = arg('--ack', null);
 if (ackName) {
   const rec = {
     t: 'ack', name: ackName, at: new Date().toISOString(),
     reason: arg('--reason', null) || undefined,
   };
   appendFileSync(file, JSON.stringify(rec) + '\n');
-  console.log(`Acknowledged: ${ackName} — later scans will not report this entry.`);
+  console.log(`Acknowledged: ${ackName} (journal: ${file}) — later scans will not report this entry.`);
   console.log('(The entry stays in the log. An ack records that you looked, not that the agent finished.)');
   process.exit(0);
 }
