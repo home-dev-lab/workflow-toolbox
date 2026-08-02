@@ -197,6 +197,29 @@ const stopped = lastByName('stop');
 const acked = lastByName('ack');
 const spoke = lastByName('out');
 
+// ⚠ RAW-ID FALLBACK CORRELATION — needed because name-based correlation silently fails for one
+// real spawn shape. A plain `Agent`/`Task` spawn given an explicit `name:` but no teammate/
+// isolation registration reports `agent_type` on its OWN stop/out hooks as its underlying
+// `subagent_type` (e.g. "general-purpose"), never the explicit name — confirmed on the real
+// s-fence-125 incident (2026-08-02): the spawn record carries `child:"aa877ce816e0c2b0f"`,
+// `childName:"s-fence-125"`, but every stop/out record for that SAME raw agentId carries
+// `name:"general-purpose"`. Name-only correlation (`stopped.has(name)`) never matches, so the
+// entry stays open forever even though the agent completed and reported normally. The raw id
+// DOES match on both sides for this shape (`stop.agentId === spawn.child`), which a genuine
+// named-teammate spawn (raw id shape `name@session-xxx`) does NOT share — so this is a fallback,
+// never a replacement: name correlation still covers the teammate shape it was built for.
+const lastByAgentId = (t) => {
+  const m = new Map();
+  for (const r of records) {
+    if (r.t !== t || !r.agentId) continue;
+    const prev = m.get(r.agentId);
+    if (!prev || r.at > prev) m.set(r.agentId, r.at);
+  }
+  return m;
+};
+const stoppedById = lastByAgentId('stop');
+const spokeById = lastByAgentId('out');
+
 const now = Date.now();
 const open = [];
 // Spawns made without a name return no child identity, so nothing can join them to the stop
@@ -213,12 +236,14 @@ for (const s of spawns) {
   // were buggy: no explicit name was ever given, so the spawn cannot be correlated, full stop.
   const name = s.name ? s.childName : null;
   if (!name) { untrackable.push(s); continue; }
-  if (stopped.has(name)) continue;                       // accounted for: it ended
+  const stoppedAt = stopped.get(name) || (s.child ? stoppedById.get(s.child) : undefined);
+  if (stoppedAt !== undefined) continue;                 // accounted for: it ended
   // Acked AFTER this spawn: a human said they dealt with it. A later spawn of the same name has
   // a newer `at` than the ack and is therefore reported again — the ack settles one entry, not
   // a name forever.
   if (acked.has(name) && acked.get(name) > s.at) continue;
-  const last = spoke.get(name) || s.at;                  // never spoke => silent since birth
+  const spokenAt = spoke.get(name) || (s.child ? spokeById.get(s.child) : undefined);
+  const last = spokenAt || s.at;                         // never spoke => silent since birth
   const quietMin = Math.round((now - Date.parse(last)) / 60000);
   // Only worth the directory scan for candidates that would otherwise be flagged — an entry
   // already under QUIET_MIN was never going to be flagged, so its liveness is moot.
@@ -229,7 +254,7 @@ for (const s of spawns) {
     purpose: s.purpose,
     model: s.model,
     spawnedAt: s.at,
-    lastOutbound: spoke.get(name) || null,
+    lastOutbound: spokenAt || null,
     quietMin,
     transcriptFreshMin,
   });
