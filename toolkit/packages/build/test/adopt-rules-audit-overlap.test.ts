@@ -30,7 +30,17 @@ describe('adopt-rules audit-overlap', () => {
     const d = mkDir(); writeFileSync(join(d, 'step-back-architectural.md'), '# extra\n')
     const res = run(d)
     expect(res.status).toBe(1); expect(res.stdout).toContain('DRIFT step-back-architectural.md')
-    expect(res.stdout).toContain('DRIFT step-back-architectural.md: # extra')
+    expect(res.stdout).toContain('DRIFT step-back-architectural.md (missing from shipped template): # extra')
+  })
+  it('names the drift DIRECTION on the summary line too, not just per-line (card #1832961693500573565)', () => {
+    // The rules set only ever produces the "extras" direction (additions-only contract), so
+    // this pins that the summary breakdown reads as "diverged ahead of the shipped template" —
+    // never "behind" — for a case that could only ever be an addition.
+    const d = mkDir(); writeFileSync(join(d, 'step-back-architectural.md'), '# extra\n')
+    const res = run(d)
+    expect(res.status).toBe(1)
+    expect(res.stdout).toContain('1 pair(s) missing from shipped template (project has DIVERGED ahead of the shipped template)')
+    expect(res.stdout).toContain('0 pair(s) missing from project copy (project is BEHIND the shipped template)')
   })
   it('reports DUPLICATE with both paths', () => {
     const d = mkDir(); writeFileSync(join(d, 'step-back-architectural.md'), 'x\n'); writeFileSync(join(d, 'wt-step-back-architectural.md'), 'y\n')
@@ -114,7 +124,7 @@ describe('adopt-rules audit-overlap', () => {
     const res = run(fixture.userDir, ['--pairs-file', fixture.pairsFile], fixture.script)
     expect(res.status).toBe(1)
     expect(res.stdout).toContain('DRIFT my-local-name.md: adopted under shipped name (wt-step-back-architectural.md), content diverges from the shipped source')
-    expect(res.stdout).toContain('DRIFT my-local-name.md: locally added divergent line')
+    expect(res.stdout).toContain('DRIFT my-local-name.md (missing from shipped template): locally added divergent line')
   })
   it('fails when a shipped rule has no pairing entry even with zero local files', () => {
     const d = mkDir()

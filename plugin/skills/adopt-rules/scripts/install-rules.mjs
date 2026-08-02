@@ -115,6 +115,20 @@ const SETS = {
 // must not be read as a banner.
 const VERSION_RE = new RegExp(`installed from ${BANNER_TOOL} v(\\d+)\\.(\\d+)\\.(\\d+)`)
 const FP_RE = /content sha256:([0-9a-f]{12})/
+
+// A DRIFT line reports one divergent line of TEXT, and that line lives on exactly one
+// side — the project copy or the shipped template, never both. Card #1832961693500573565:
+// a label that just says "(missing)" makes the reader supply the missing half themselves,
+// and the guess goes wrong as often as it goes right (measured: a full session inverted it,
+// declared a publish blocked that wasn't, and spawned a pilot on a premise that was the exact
+// opposite of the truth). So every per-line DRIFT entry below names the side it is missing
+// FROM, on the line the reader actually reads — never in a legend, never only in the summary.
+//   - a line present in the PROJECT copy but absent from the shipped template is "missing
+//     from the shipped template" (the project has it; the template doesn't — yet).
+//   - a line present in the SHIPPED template but absent from the project copy is "missing
+//     from the project copy" (the template has it; the project hasn't caught up).
+const MISSING_FROM_SHIPPED = 'missing from shipped template'
+const MISSING_FROM_PROJECT = 'missing from project copy'
 // The leading YAML frontmatter block of an agent def, incl. its trailing newline.
 const FRONTMATTER_RE = /^(---\r?\n[\s\S]*?\r?\n---\r?\n)/
 
@@ -497,6 +511,13 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
   let absent = 0
   let unpaired = 0
   let unmapped = 0
+  // Direction breakdown of `drift` (item 2 of card #1832961693500573565): the single `drift`
+  // count says a pair diverges, never which way — so "2 drift" cannot tell a reader whether
+  // the project is BEHIND the shipped template or has DIVERGED locally ahead of it. Counted
+  // per PAIR (a pair can contribute to both when it both adds and drops lines), never
+  // double-counted against `drift` itself, which stays the pre-existing gate signal.
+  let driftMissingFromShipped = 0
+  let driftMissingFromProject = 0
 
   for (const item of setConfig.resolveItems(root)) {
     if (!declaredShipped.has(item.file)) {
@@ -583,16 +604,18 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
     } else {
       const partial = pair.partial === true
       if (!partial) drift++
+      if (!partial && extras.length > 0) driftMissingFromShipped++
+      if (!partial && missing.length > 0) driftMissingFromProject++
       const label = partial ? 'DRIFT (partial, informational)' : 'DRIFT'
       process.stdout.write(
         adoptedUnderShippedName
           ? `${label} ${pair.user}: adopted under shipped name (${pair.shipped}), content diverges from the shipped source\n`
           : `${label} ${pair.user}\n`,
       )
-      for (const line of extras.slice(0, 40)) process.stdout.write(`${label} ${pair.user}: ${line}\n`)
-      if (extras.length > 40) process.stdout.write(`${label} ${pair.user}: +${extras.length - 40} more\n`)
-      for (const line of missing.slice(0, 40)) process.stdout.write(`${label} ${pair.user} (missing): ${line}\n`)
-      if (missing.length > 40) process.stdout.write(`${label} ${pair.user} (missing): +${missing.length - 40} more\n`)
+      for (const line of extras.slice(0, 40)) process.stdout.write(`${label} ${pair.user} (${MISSING_FROM_SHIPPED}): ${line}\n`)
+      if (extras.length > 40) process.stdout.write(`${label} ${pair.user} (${MISSING_FROM_SHIPPED}): +${extras.length - 40} more\n`)
+      for (const line of missing.slice(0, 40)) process.stdout.write(`${label} ${pair.user} (${MISSING_FROM_PROJECT}): ${line}\n`)
+      if (missing.length > 40) process.stdout.write(`${label} ${pair.user} (${MISSING_FROM_PROJECT}): +${missing.length - 40} more\n`)
     }
   }
   for (const file of entries.filter((f) => f.endsWith('.md')).sort()) {
@@ -607,6 +630,16 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
     )
   } else {
     process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${unpaired} unpaired, ${unmapped} unmapped\n`)
+  }
+  // The single `drift` count above still decides the exit code (unchanged) — this line adds
+  // DIRECTION on top of it, never in place of it, so "2 drift" is never left to mean "behind"
+  // or "ahead" depending on which the reader happens to assume. Printed only when there is a
+  // direction to report; a project that's fully caught up gets no extra line to read.
+  if (driftMissingFromShipped > 0 || driftMissingFromProject > 0) {
+    process.stdout.write(
+      `  ↳ drift direction: ${driftMissingFromProject} pair(s) ${MISSING_FROM_PROJECT} (project is BEHIND the shipped template), ` +
+        `${driftMissingFromShipped} pair(s) ${MISSING_FROM_SHIPPED} (project has DIVERGED ahead of the shipped template)\n`,
+    )
   }
   // `unmapped` is deliberately NOT in this condition — it decides nothing. A file with no
   // pairing entry (e.g. this project's own wt-check.md / wt-reviewer.md agents, which will
