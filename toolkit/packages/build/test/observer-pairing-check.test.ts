@@ -14,10 +14,13 @@ type Verdict = {
   json: {
     status?: string
     reason?: string
+    matchedBy?: 'id' | 'name'
     observerFile?: string
     checked?: number
     malformed?: unknown[]
     candidates?: string[]
+    triedAgentId?: string | null
+    triedName?: string | null
   }
 }
 
@@ -40,9 +43,23 @@ function writeMeta(dir: string, filename: string, payload: unknown, atSeconds: n
   return filePath
 }
 
-function runCheck(subagentsDir: string, name: string, windowSec?: number): Verdict {
-  const args = [SCRIPT, '--subagents-dir', subagentsDir, '--name', name]
-  if (windowSec !== undefined) args.push('--window-sec', String(windowSec))
+function writeAgentFixture(dir: string, rawId: string, payload: unknown, atSeconds: number): string {
+  const metaPath = writeMeta(dir, `agent-${rawId}.meta.json`, payload, atSeconds)
+  const jsonlPath = join(dir, `agent-${rawId}.jsonl`)
+  writeFileSync(jsonlPath, '')
+  const at = new Date(atSeconds * 1000)
+  utimesSync(jsonlPath, at, at)
+  return metaPath
+}
+
+function runCheck(
+  subagentsDir: string,
+  options: { agentId?: string; name?: string; windowSec?: number },
+): Verdict {
+  const args = [SCRIPT, '--subagents-dir', subagentsDir]
+  if (options.agentId) args.push('--agent-id', options.agentId)
+  if (options.name) args.push('--name', options.name)
+  if (options.windowSec !== undefined) args.push('--window-sec', String(options.windowSec))
   try {
     const stdout = execFileSync(process.execPath, args, { encoding: 'utf8' })
     return { exitCode: 0, stdout, json: JSON.parse(stdout) as Verdict['json'] }
@@ -58,51 +75,126 @@ function runCheck(subagentsDir: string, name: string, windowSec?: number): Verdi
 }
 
 describe('wt-check-observer-pairing.mjs', () => {
+  it('returns a usage error when neither --agent-id nor --name is given', () => {
+    withTempSubagentsDir((dir) => {
+      try {
+        execFileSync(process.execPath, [SCRIPT, '--subagents-dir', dir], { encoding: 'utf8' })
+        expect.unreachable()
+      } catch (error) {
+        const failed = error as Error & { status?: number; stdout?: string | Buffer }
+        const stdout = typeof failed.stdout === 'string' ? failed.stdout : String(failed.stdout ?? '')
+        const json = JSON.parse(stdout) as Verdict['json']
+
+        expect(failed.status).toBe(2)
+        expect(json.status).toBe('unknown')
+        expect(json.reason).toContain('(--agent-id <rawId> | --name <observedAgentName>)')
+      }
+    })
+  })
+
   it('passes for in_process_teammate with no siblings at all', () => {
     withTempSubagentsDir((dir) => {
       writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'in_process_teammate' }, 1_000)
 
-      const result = runCheck(dir, 'pilot-orchestrator')
+      const result = runCheck(dir, { name: 'pilot-orchestrator' })
 
       expect(result.exitCode).toBe(0)
       expect(result.json.status).toBe('pass')
+      expect(result.json.matchedBy).toBe('name')
     })
   })
 
-  it('passes for async when an isObserver sibling lands 5s later', () => {
+  it('passes for an anonymous agent resolved by --agent-id when an isObserver sibling lands in-window', () => {
     withTempSubagentsDir((dir) => {
-      writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'async' }, 1_000)
+      writeAgentFixture(dir, 'anon-pass', { agentType: 'general-purpose', description: 'anonymous spawn', spawnDepth: 1 }, 1_000)
       writeMeta(dir, 'observer.meta.json', { name: 'pilot-orchestrator-watchdog', isObserver: true }, 1_005)
 
-      const result = runCheck(dir, 'pilot-orchestrator')
+      const result = runCheck(dir, { agentId: 'anon-pass' })
 
       expect(result.exitCode).toBe(0)
       expect(result.json.status).toBe('pass')
+      expect(result.json.matchedBy).toBe('id')
       expect(result.json.observerFile).toContain('observer.meta.json')
     })
   })
 
-  it('flags async when no isObserver sibling exists at all', () => {
+  it('flags the same anonymous --agent-id shape when no isObserver sibling exists', () => {
+    withTempSubagentsDir((dir) => {
+      writeAgentFixture(dir, 'anon-flag', { agentType: 'general-purpose', description: 'anonymous spawn', spawnDepth: 1 }, 1_000)
+      writeMeta(dir, 'other.meta.json', { name: 'pilot-helper' }, 1_010)
+
+      const result = runCheck(dir, { agentId: 'anon-flag' })
+
+      expect(result.exitCode).toBe(1)
+      expect(result.json.status).toBe('flag')
+      expect(result.json.matchedBy).toBe('id')
+    })
+  })
+
+  it('passes for a named agent resolved by --name when an isObserver sibling lands 5s later', () => {
+    withTempSubagentsDir((dir) => {
+      writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'async' }, 1_000)
+      writeMeta(dir, 'observer.meta.json', { name: 'pilot-orchestrator-watchdog', isObserver: true }, 1_005)
+
+      const result = runCheck(dir, { name: 'pilot-orchestrator' })
+
+      expect(result.exitCode).toBe(0)
+      expect(result.json.status).toBe('pass')
+      expect(result.json.matchedBy).toBe('name')
+      expect(result.json.observerFile).toContain('observer.meta.json')
+    })
+  })
+
+  it('flags a named agent resolved by --name when no isObserver sibling exists', () => {
     withTempSubagentsDir((dir) => {
       writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'async' }, 1_000)
       writeMeta(dir, 'other.meta.json', { name: 'pilot-helper', taskKind: 'async' }, 1_010)
 
-      const result = runCheck(dir, 'pilot-orchestrator')
+      const result = runCheck(dir, { name: 'pilot-orchestrator' })
 
       expect(result.exitCode).toBe(1)
       expect(result.json.status).toBe('flag')
+      expect(result.json.matchedBy).toBe('name')
     })
   })
 
-  it('flags async when an isObserver sibling exists outside the window', () => {
+  it('raw id takes priority over name when both resolve different agents', () => {
     withTempSubagentsDir((dir) => {
-      writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'async' }, 1_000)
-      writeMeta(dir, 'observer.meta.json', { name: 'pilot-orchestrator-watchdog', isObserver: true }, 1_200)
+      writeAgentFixture(dir, 'id-wins', { agentType: 'general-purpose', description: 'anonymous spawn', spawnDepth: 1 }, 1_000)
+      writeAgentFixture(dir, 'name-would-pass', { name: 'named-target' }, 1_100)
+      writeMeta(dir, 'observer.meta.json', { name: 'pilot-orchestrator-watchdog', isObserver: true }, 1_105)
 
-      const result = runCheck(dir, 'pilot-orchestrator', 30)
+      const result = runCheck(dir, { agentId: 'id-wins', name: 'named-target' })
 
       expect(result.exitCode).toBe(1)
       expect(result.json.status).toBe('flag')
+      expect(result.json.matchedBy).toBe('id')
+    })
+  })
+
+  it('falls back to --name when --agent-id does not resolve to a readable file', () => {
+    withTempSubagentsDir((dir) => {
+      writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'async' }, 1_000)
+      writeMeta(dir, 'observer.meta.json', { name: 'pilot-orchestrator-watchdog', isObserver: true }, 1_005)
+
+      const result = runCheck(dir, { agentId: 'missing-id', name: 'pilot-orchestrator' })
+
+      expect(result.exitCode).toBe(0)
+      expect(result.json.status).toBe('pass')
+      expect(result.json.matchedBy).toBe('name')
+    })
+  })
+
+  it('flags a taskKind-absent agent instead of treating it as unrecognized', () => {
+    withTempSubagentsDir((dir) => {
+      writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator' }, 1_000)
+      writeMeta(dir, 'other.meta.json', { name: 'pilot-helper' }, 1_010)
+
+      const result = runCheck(dir, { name: 'pilot-orchestrator' })
+
+      expect(result.exitCode).toBe(1)
+      expect(result.json.status).toBe('flag')
+      expect(result.json.matchedBy).toBe('name')
     })
   })
 
@@ -111,10 +203,11 @@ describe('wt-check-observer-pairing.mjs', () => {
       writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'async' }, 1_000)
       writeMeta(dir, 'observer.meta.json', { name: 'pilot-orchestrator-watchdog', isObserver: true }, 1_005)
 
-      const result = runCheck(dir, 'pilot-orchestrator')
+      const result = runCheck(dir, { name: 'pilot-orchestrator' })
 
       expect(result.exitCode).toBe(0)
       expect(result.json.status).toBe('pass')
+      expect(result.json.matchedBy).toBe('name')
     })
   })
 
@@ -124,10 +217,11 @@ describe('wt-check-observer-pairing.mjs', () => {
       const observer = writeMeta(dir, 'observer.meta.json', { name: 'pilot-orchestrator-watchdog', isObserver: true }, 1_005)
       unlinkSync(observer)
 
-      const result = runCheck(dir, 'pilot-orchestrator')
+      const result = runCheck(dir, { name: 'pilot-orchestrator' })
 
       expect(result.exitCode).toBe(1)
       expect(result.json.status).toBe('flag')
+      expect(result.json.matchedBy).toBe('name')
     })
   })
 
@@ -135,10 +229,11 @@ describe('wt-check-observer-pairing.mjs', () => {
     withTempSubagentsDir((dir) => {
       writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'named-but-weird' }, 1_000)
 
-      const result = runCheck(dir, 'pilot-orchestrator')
+      const result = runCheck(dir, { name: 'pilot-orchestrator' })
 
       expect(result.exitCode).toBe(2)
       expect(result.json.status).toBe('unknown')
+      expect(result.json.matchedBy).toBe('name')
     })
   })
 
@@ -146,10 +241,12 @@ describe('wt-check-observer-pairing.mjs', () => {
     withTempSubagentsDir((dir) => {
       writeMeta(dir, 'other.meta.json', { name: 'someone-else', taskKind: 'async' }, 1_000)
 
-      const result = runCheck(dir, 'pilot-orchestrator')
+      const result = runCheck(dir, { name: 'pilot-orchestrator' })
 
       expect(result.exitCode).toBe(2)
       expect(result.json.status).toBe('unknown')
+      expect(result.json.triedAgentId).toBeNull()
+      expect(result.json.triedName).toBe('pilot-orchestrator')
     })
   })
 
@@ -162,10 +259,11 @@ describe('wt-check-observer-pairing.mjs', () => {
       writeMeta(dir, 'observer.meta.json', { name: 'pilot-orchestrator-watchdog', isObserver: true }, 990)
       writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'async' }, 1_000)
 
-      const result = runCheck(dir, 'pilot-orchestrator', 30)
+      const result = runCheck(dir, { name: 'pilot-orchestrator', windowSec: 30 })
 
       expect(result.exitCode).toBe(1)
       expect(result.json.status).toBe('flag')
+      expect(result.json.matchedBy).toBe('name')
     })
   })
 
@@ -180,10 +278,11 @@ describe('wt-check-observer-pairing.mjs', () => {
       writeMeta(dir, 'observer-a.meta.json', { name: 'pilot-orchestrator-watchdog', isObserver: true }, 1_003)
       writeMeta(dir, 'observer-b.meta.json', { name: 'some-other-watchdog', isObserver: true }, 1_006)
 
-      const result = runCheck(dir, 'pilot-orchestrator', 30)
+      const result = runCheck(dir, { name: 'pilot-orchestrator', windowSec: 30 })
 
       expect(result.exitCode).toBe(2)
       expect(result.json.status).toBe('unknown')
+      expect(result.json.matchedBy).toBe('name')
     })
   })
 
@@ -194,10 +293,11 @@ describe('wt-check-observer-pairing.mjs', () => {
       writeFileSync(corruptPath, '{not valid json')
       utimesSync(corruptPath, new Date(1_005 * 1000), new Date(1_005 * 1000))
 
-      const result = runCheck(dir, 'pilot-orchestrator', 30)
+      const result = runCheck(dir, { name: 'pilot-orchestrator', windowSec: 30 })
 
       expect(result.exitCode).toBe(1)
       expect(result.json.status).toBe('flag')
+      expect(result.json.matchedBy).toBe('name')
       expect(result.json.malformed).toBeDefined()
       expect(JSON.stringify(result.json.malformed)).toContain('observer.meta.json')
     })
@@ -211,10 +311,11 @@ describe('wt-check-observer-pairing.mjs', () => {
       symlinkSync(realPath, linkPath)
       unlinkSync(realPath)
 
-      const result = runCheck(dir, 'pilot-orchestrator', 30)
+      const result = runCheck(dir, { name: 'pilot-orchestrator', windowSec: 30 })
 
       expect(result.exitCode).toBe(1)
       expect(result.json.status).toBe('flag')
+      expect(result.json.matchedBy).toBe('name')
     })
   })
 })
