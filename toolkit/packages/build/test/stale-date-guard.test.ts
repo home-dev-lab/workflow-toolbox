@@ -126,6 +126,51 @@ describe('stale-date-guard-core: classification', () => {
     expect(findings[0].kind).toBe('provenance')
   })
 
+  it('an ACKNOWLEDGED-PAST deadline is never flagged stale, even though it reads as a deadline phrase', () => {
+    // Real bug (card #1832980806121817984, arbiter round 2): the guard's own
+    // confident output flagged the ONE sentence in the corpus that already
+    // fixed this exact class of bug — "GLM est MORT — service arrêté le
+    // 2026-07-28, l'échéance est passée." — as if it still needed fixing.
+    // The text is a dated FACT about when the service ended, not an open
+    // deadline; must classify as provenance, never as a stale deadline.
+    const text =
+      "⚠ **GLM est MORT — service arrêté le 2026-07-28, l'échéance est passée.** Plus AUCUN routage.\n"
+    const findings = scanText(text, { today: TODAY })
+    expect(findings.length).toBeGreaterThan(0)
+    for (const f of findings) {
+      expect(f.kind).toBe('provenance')
+      expect(f.stale).toBe(false)
+    }
+  })
+
+  it('a hard-wrapped sentence split across two lines still finds its provenance marker on the previous line', () => {
+    // Real bug (card #1832980806121817984, arbiter round 2): markdown hard-
+    // wraps prose, so "Mesuré deux fois le" / "28/07 — …" is ONE sentence
+    // split across two lines. A per-line-only window never sees "Mesuré"
+    // sitting on the previous line and reports the date UNKNOWN.
+    const text =
+      'sincèrement « j\'ai livré ma réponse », et le contenu n\'arrive pas. Mesuré deux fois le\n28/07 — `claude-code-guide` (~132 k tokens).\n'
+    const findings = scanText(text, { today: TODAY })
+    expect(findings.length).toBe(1)
+    expect(findings[0].kind).toBe('provenance')
+  })
+
+  it('two back-to-back sentences with no blank line between them do not leak markers across each other', () => {
+    // Real bug introduced WHILE fixing the line-wrap case above: joining an
+    // entire paragraph let a marker in one sentence "rescue" — or falsely
+    // stale-flag — a date in the NEXT, unrelated sentence. A provenance
+    // marker in sentence 1 must not swallow a live deadline in sentence 2,
+    // and vice versa; the window must stop at the sentence boundary.
+    const text = 'Mesuré le 31/07 : constat X. Le prochain compte utilisable est le 29/08 à 13:59.\n'
+    const findings = scanText(text, { today: TODAY })
+    expect(findings.length).toBe(2)
+    const provenance = findings.find((f: Finding) => f.raw === '31/07')
+    const deadline = findings.find((f: Finding) => f.raw === '29/08')
+    expect(provenance?.kind).toBe('provenance')
+    expect(deadline?.kind).toBe('deadline')
+    expect(deadline?.stale).toBe(false) // 29/08 is future relative to TODAY
+  })
+
   it('a future ISO deadline is not flagged', () => {
     const text = "Fenêtre GPT jusqu'à 2026-09-15, re-trancher alors.\n"
     const findings = scanText(text, { today: TODAY })
