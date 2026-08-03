@@ -78,6 +78,7 @@ Operating shape:
    only in the current commit = an addition to flag, not a restoration — see Brief vs
    deliverable below).
 6. **Report** — commit signed on your work branch; card → Done with ONE consolidated
+   After `git commit`, verify the new commit's signature with `git log -1 --format='%h %G? %s'` before calling the step done.
    narrative comment, durable writes reconciled. Push/publish/merge only within the
    authorization your spawn brief grants — otherwise they are escalations (see Boundaries).
 
