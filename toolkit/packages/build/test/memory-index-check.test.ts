@@ -132,6 +132,16 @@ describe('memory-index-check-core: reachability', () => {
     expect(report.unreachableFiches).toEqual([])
   })
 
+  it('a [[slug]] containing a space resolves — cross-model review finding: an earlier version enumerated a filename character class and dropped it', () => {
+    const dir = makeStore()
+    fiche(dir, 'topic 1', 'A fiche whose filename has a space.\n')
+    fiche(dir, 'hub-topic', '- [[topic 1]] — hook with a space in the target name\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](hub-topic.md) — grouped\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.unreachableFiches).toEqual([])
+    expect(report.flagged).toBe(false)
+  })
+
   it('case 4 — a fiche on disk reachable by NO path is flagged, even with a low line count', () => {
     const dir = makeStore()
     fiche(dir, 'linked-fact', 'Reachable.\n')
@@ -258,6 +268,45 @@ describe('wt-memory-index-check.mjs CLI: exit codes are the ground truth', () =>
       status = (e as ExecError).status ?? 1
     }
     expect(status).toBe(2)
+  })
+
+  it('a flag missing its value exits 2 — cross-model review finding: it previously silently fell back to a default', () => {
+    const dir = makeStore()
+    fiche(dir, 'fact-a', 'Fact.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Fact A](fact-a.md) — a fact\n')
+    let status = 0
+    let stderr = ''
+    try {
+      execFileSync('node', [CLI, '--store', dir, '--index-file'], { encoding: 'utf8' })
+    } catch (e) {
+      const err = e as ExecError & { stderr?: string }
+      status = err.status ?? 1
+      stderr = err.stderr ?? ''
+    }
+    expect(status).toBe(2)
+    expect(stderr).toContain('--index-file requires a value')
+  })
+
+  it('a bad --out path exits 2 with a clean message, not an uncaught crash — cross-model review finding', () => {
+    const dir = makeStore()
+    fiche(dir, 'fact-a', 'Fact.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Fact A](fact-a.md) — a fact\n')
+    let status = 0
+    let stderr = ''
+    try {
+      execFileSync(
+        'node',
+        [CLI, '--store', dir, '--json', '--out', join(dir, 'missing-parent-dir', 'out.json')],
+        { encoding: 'utf8' },
+      )
+    } catch (e) {
+      const err = e as ExecError & { stderr?: string }
+      status = err.status ?? 1
+      stderr = err.stderr ?? ''
+    }
+    expect(status).toBe(2)
+    expect(stderr).toContain('cannot write --out file')
+    expect(stderr).not.toContain('at writeFileSync') // no raw Node stack trace
   })
 
   it('the human-readable (non --json) output names the threshold applied', () => {

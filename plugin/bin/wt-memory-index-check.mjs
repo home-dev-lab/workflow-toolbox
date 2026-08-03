@@ -33,26 +33,34 @@
 import { writeFileSync } from 'node:fs';
 import { checkStore } from './lib/memory-index-check-core.mjs';
 
+function fail(msg) {
+  console.error(msg);
+  process.exit(2);
+}
+
 function parseArgs(argv) {
   const out = { store: null, threshold: 200, indexFile: 'MEMORY.md', json: false, out: null };
+  // A flag that takes a value must actually find one — `--index-file` at
+  // the end of argv with nothing after it must fail loudly (usage error),
+  // never silently fall back to a default because `undefined` happened to
+  // coalesce into one downstream.
+  const nextValue = (i, flag) => {
+    if (i + 1 >= argv.length) fail(`${flag} requires a value`);
+    return argv[i + 1];
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--store') out.store = argv[++i];
-    else if (a === '--threshold') out.threshold = Number(argv[++i]);
-    else if (a === '--index-file') out.indexFile = argv[++i];
+    if (a === '--store') out.store = nextValue(i++, a);
+    else if (a === '--threshold') out.threshold = Number(nextValue(i++, a));
+    else if (a === '--index-file') out.indexFile = nextValue(i++, a);
     else if (a === '--json') out.json = true;
-    else if (a === '--out') out.out = argv[++i];
+    else if (a === '--out') out.out = nextValue(i++, a);
     else {
       console.error(`unknown argument: ${a}`);
       process.exit(2);
     }
   }
   return out;
-}
-
-function fail(msg) {
-  console.error(msg);
-  process.exit(2);
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -72,9 +80,22 @@ try {
   fail(e instanceof Error ? e.message : String(e));
 }
 
+// A bad --out path (a parent dir that doesn't exist, no write permission)
+// is a usage problem the caller can fix, not a computed verdict — it must
+// exit 2 with a clean message, never crash uncaught with a raw stack trace
+// (found by cross-model review: `--out <missing-dir>/out.json` previously
+// threw ENOENT past this script's own exit-code contract).
+function writeReport(path, text) {
+  try {
+    writeFileSync(path, text);
+  } catch (e) {
+    fail(`cannot write --out file: ${path} (${e instanceof Error ? e.message : String(e)})`);
+  }
+}
+
 if (args.json) {
   const json = JSON.stringify(report, null, 2);
-  if (args.out) writeFileSync(args.out, json);
+  if (args.out) writeReport(args.out, json);
   else console.log(json);
 } else {
   if (!report.hasIndex) {
@@ -88,7 +109,7 @@ if (args.json) {
     for (const r of report.reasons) console.log(`FLAG: ${r}`);
     for (const f of report.unreachableFiches) console.log(`  unreachable: ${f}`);
   }
-  if (args.out) writeFileSync(args.out, JSON.stringify(report, null, 2));
+  if (args.out) writeReport(args.out, JSON.stringify(report, null, 2));
 }
 
 process.exit(report.flagged ? 1 : 0);

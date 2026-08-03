@@ -24,10 +24,16 @@ const ENTRY_LINE_RE = /^-\s*\[[^\]]*\]\(([^)]+\.md)\)/;
 // Any markdown link to a .md file, anywhere in a line (index or fiche body).
 const LINK_RE = /\]\(([^)]+\.md)\)/g;
 // A wiki-style hub member reference inside a fiche BODY: `[[slug]]`.
-// Uppercase is included deliberately — a lowercase-only class silently
-// drops any slug containing capitals (observed against a real store: a
-// case-sensitive checker misreported a correctly-linked fiche as dropped).
-const HUBLINK_RE = /\[\[([A-Za-z0-9_.-]+)\]\]/g;
+// Any character except a literal bracket is accepted inside the double
+// brackets — an earlier version enumerated a character class
+// ([A-Za-z0-9_.-]) and silently dropped any slug outside it (a real gap
+// found by cross-model review: a fiche filename containing a space, e.g.
+// `[[topic 1]]` -> `topic 1.md`, was falsely reported unreachable even
+// though ordinary markdown links already permit spaces). Enumerating a
+// filename-character allowlist is the same trap the case-sensitivity fix
+// above was meant to close — better to accept whatever the filesystem
+// accepts and let diskFiches (the real on-disk listing) be the filter.
+const HUBLINK_RE = /\[\[([^[\]]+)\]\]/g;
 
 /**
  * @param {string} storeDir - absolute or relative path to the memory store
