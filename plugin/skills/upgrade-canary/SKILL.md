@@ -201,16 +201,34 @@ Without the env var it reports every leg `NOT_MEASURED` and spends zero live
 launches — it never silently assumes "attached" or "not attached" just because
 the feature couldn't be exercised.
 
+⚠ **Corrected 2026-08-03, read before re-tuning this probe or trusting a `NOT_ATTACHED`
+from it.** This probe drives a headless SDK `query()` session in which the model
+calls the `Agent`/`Task` tool to spawn a NESTED subagent. That is a DIFFERENT
+launch shape from the INTERACTIVE Agent-tool spawn path — the one the pilot
+suite's `pilot-watchdog` pairing actually uses in production — and this repo has
+**independent, on-disk confirmation the interactive path attaches observers
+today** (a live session's own `pilot-watchdog` transcripts: a `role:"user"`
+message with `origin: {"kind": "observer-activity"}` wrapping
+`<pilot-activity>...</pilot-activity>`, delivered into the observer's own
+transcript). Nothing has ever independently shown the headless/nested-spawn path
+this probe drives can attach at all. So a clean negative on THIS probe's legs —
+enough observed turns, zero attach signal — reports `NOT_MEASURED`, **never** a
+loud `NOT_ATTACHED`: it cannot currently distinguish "this specific launch shape
+never attaches" from "attachment broke". Building a canary for the interactive
+path itself is an explicit, acknowledged gap (out of scope for this pass) — see
+`observer.ts`'s `classifyAttachment` doc for the full reasoning and the
+`pathHasWorkingBaseline` parameter that encodes it.
+
 Five legs, each a THREE-state verdict (`ATTACHED` / `NOT_ATTACHED` / `NOT_MEASURED`
 — never collapsed to a boolean, so "couldn't measure" never reads as "broken"):
 
 | Leg | What it checks |
 |---|---|
 | `observer-flag-present` | the feature gate env var — always informational, `ok:true` either way |
-| `observer-positive-control` | an ANONYMOUS spawn (no `name`) — reliably attaches in every mode tested to date. A `NOT_ATTACHED` here is a **hard** failure: every other leg becomes uninterpretable, so the runner skips them (reports them `NOT_MEASURED`, reason "skipped") instead of pretending they still mean something |
+| `observer-positive-control` | an ANONYMOUS spawn (no `name`), via the headless/nested-spawn path above — a clean negative here reports `NOT_MEASURED` (see the correction above), never `NOT_ATTACHED`, because that path has no independent confirmation it can attach at all. The runner still SKIPS every downstream leg whenever this one is not `ATTACHED` (reports them `NOT_MEASURED`, reason "skipped") — a downstream result would be equally uninterpretable either way |
 | `observer-report-tool` | mechanical assertion: the observer's `ObserverReport` call succeeds (folded from the SAME run as the positive control) |
 | `observer-sendmessage-refused` | mechanical assertion: `SendMessage` is REFUSED for the observer even when declared in its `tools:` — this is the documented, CORRECT contract ("an observer must never participate in the task"); only an unexpected SUCCESS is a regression |
-| `observer-named-headless` | a SEPARATE run, named spawn, in THIS headless/`query()` harness — a SECONDARY signal only, explicitly labeled as such in its own detail text. It is NOT a reproduction of the interactive-CLI "named spawn rebuilds its AgentDefinition and drops the observer pairing" bug (that mechanism is specific to the in-process "teammate" path an interactive session takes for a named spawn; a headless SDK session does not go through it) |
+| `observer-named-headless` | a SEPARATE run, named spawn, same headless/nested-spawn path and same "no known baseline" caveat as the positive control. It is NOT a reproduction of the interactive-CLI "named spawn rebuilds its AgentDefinition and drops the observer pairing" bug (that mechanism is specific to the in-process "teammate" path an interactive session takes for a named spawn; a headless SDK session does not go through it) |
 
 Detection reads the parent session's OWN SDK message stream — never subagent
 transcript files off disk — via two signals: (a) `subagent_type` tagging on
@@ -222,9 +240,9 @@ greps for a literal marker string it also planted would be a guaranteed false
 positive (a documented trap from the manual PoC this probe replaces).
 
 An observed-agent prompt forces 3 sequential tool calls before this probe will
-trust a "no digest seen" result as a genuine `NOT_ATTACHED` rather than "too
-few turns to produce one" (`MIN_OBSERVED_TOOL_CALLS` in `observer.ts`) — a
-missing digest after fewer than 3 observed tool calls is always `NOT_MEASURED`.
+trust a "no digest seen" result at all — fewer than that is always
+`NOT_MEASURED` regardless of the baseline question above
+(`MIN_OBSERVED_TOOL_CALLS` in `observer.ts`).
 
 **Known harness quirk worth knowing before re-tuning this probe**: the SDK's
 `Agent` tool defaults `run_in_background` to `true`, and even with it forced

@@ -23,24 +23,45 @@
 //
 // Legs (see observer.ts for the pure verdict logic):
 //   1. flag-check              — env presence, zero-cost
-//   2. positive-control        — ANONYMOUS spawn (no `name`); reliably attaches
-//                                 in every mode tested so far. HARD: a
-//                                 NOT_ATTACHED here fails loudly and skips the
-//                                 rest (every other leg would be uninterpretable).
+//   2. positive-control        — ANONYMOUS spawn (no `name`), via a headless SDK
+//                                 query() session in which the model calls the
+//                                 Agent/Task tool to spawn a NESTED subagent.
+//                                 ⚠ CORRECTED 2026-08-03: this launch shape has
+//                                 NO independent confirmation it can attach an
+//                                 observer at all — it is a DIFFERENT path from
+//                                 the INTERACTIVE Agent-tool spawn this session's
+//                                 own pilot-watchdog transcripts prove works in
+//                                 production today. So a clean negative here
+//                                 (enough observed turns, zero attach signal)
+//                                 reports NOT_MEASURED, never a loud NOT_ATTACHED
+//                                 — this probe cannot yet distinguish "this path
+//                                 never attaches" from "attachment broke" (see
+//                                 classifyAttachment's own doc in observer.ts).
+//                                 The downstream legs still skip when this one is
+//                                 not ATTACHED, because their own result would be
+//                                 uninterpretable either way.
 //   3. observer-report-tool    — mechanical assertion: ObserverReport succeeds
 //                                 (folded from the SAME positive-control run).
 //   4. observer-sendmessage    — mechanical assertion: SendMessage is REFUSED
 //                                 for the observer even though declared in its
 //                                 `tools:` (folded from the same run too).
 //   5. named-headless          — a SEPARATE run, named spawn, in THIS headless/
-//                                 query() harness. NOT a reproduction of the
-//                                 interactive-mode "named spawn rebuilds its
-//                                 AgentDefinition and drops the observer" bug —
-//                                 that mechanism is specific to the in-process
-//                                 "teammate" path an interactive CLI session
-//                                 takes for a named Task/Agent spawn, which a
-//                                 headless SDK session does not go through.
-//                                 Recorded and labeled as a secondary signal.
+//                                 query() harness — same "no known baseline"
+//                                 caveat as the positive-control leg applies.
+//                                 NOT a reproduction of the interactive-mode
+//                                 "named spawn rebuilds its AgentDefinition and
+//                                 drops the observer" bug — that mechanism is
+//                                 specific to the in-process "teammate" path an
+//                                 interactive CLI session takes for a named
+//                                 Task/Agent spawn, which a headless SDK session
+//                                 does not go through. Recorded and labeled as a
+//                                 secondary signal.
+//
+// Known gap, explicitly out of scope for this pass: there is currently no
+// automated canary for the INTERACTIVE Agent-tool spawn path — the one that
+// demonstrably works (pilot-watchdog, today). Whether that path is even
+// exercisable from an automated headless test harness at all is an open
+// question, not a defect of this probe.
 
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { pathToFileURL } from 'node:url'
@@ -232,7 +253,7 @@ export async function runObserverCanaries(env: Record<string, string | undefined
   console.log('  ▶ observer-named-headless (named spawn, forced 3+ tool calls)…')
   const nm = await runSession(opts, spawnPrompt(true), SESSION_TIMEOUT_MS)
   if (nm.error !== null) console.log(`    ⚠ run note: ${nm.error}`)
-  const nmVerdict = classifyAttachment(nm.tally, 'observer-named-headless', false)
+  const nmVerdict = classifyAttachment(nm.tally, 'observer-named-headless', { hard: false, pathHasWorkingBaseline: false })
   const nmResult = legVerdictToCheckResult(nmVerdict)
   checks.push({ ...nmResult, detail: nmResult.detail + NAMED_HEADLESS_CAVEAT })
   console.log(`    → ${nmVerdict.state}: ${nmVerdict.reason}`)
