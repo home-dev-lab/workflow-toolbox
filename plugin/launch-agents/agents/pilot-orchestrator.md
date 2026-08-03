@@ -145,7 +145,40 @@ at intake, realtime transitions, one consolidated narrative, Done only at DoD).
    a hard cap; never arm-and-yield on a self-owned watcher) — a pilot brief that authorizes a
    lane without this is the exact incomplete-brief shape that has already produced a silently
    dormant delegate.
-7. **Arbitrate** — pilot file-reports are INPUT: re-run the gates yourself by EXIT CODE
+7. **In-flight lane verification — run WHILE pilots work, never only at their report.** A
+   wave once discovered, only in the final report, that a mandate to route every increment
+   to an executor lane had not been honored — both pilots had coded in place and used the
+   lane for review only. The remedy then was a report-time question (below, step 9): name
+   which lane carried implementation and which carried review. That question is still
+   required, but it is the testimony of the party under check, and a later wave did better —
+   it read `readlink /proc/<pid>/cwd` on every live lane process WHILE the wave was still
+   running and matched the result against each pilot's worktree, catching the gap while it
+   could still be corrected instead of only after. The two checks fail differently — the
+   report-time question sees nothing if the report is wrong; a periodic sweep sees nothing if
+   it lands between two invocations — so run BOTH, never one instead of the other.
+   - For every pilot whose brief authorized an executor lane, periodically run
+     `node plugin/bin/wt-lane-probe.mjs --worktree <its-worktree> --pattern <lane-cli-name>
+     --archive <REPORT_DIR>/lane-probe.jsonl` (repeat `--worktree` for every pilot you are
+     sweeping in one call; `--pattern` is the lane CLI's process name, e.g. `opencode`).
+     Always pass `--archive` — the record must survive on disk after the process it describes
+     has exited, or a sweep read once and discarded proves nothing to anyone who checks
+     later. Read the JSON verdict, never the exit code alone (exit 0 means "the probe ran",
+     not "a lane is in use").
+   - **A worktree the probe reports `idle` is a real, informative result, not silence** — a
+     probe that only speaks when it finds a match would be indistinguishable from one that
+     never ran. If a pilot's brief said the increment goes to the lane and its worktree shows
+     `idle` across several sweeps while its own writes keep accumulating, that is exactly the
+     report-time gap this step exists to catch early: relay it to that pilot as a non-gating
+     concern (with your own grounded read) while it keeps working — never wait for its final
+     report to discover it.
+   - **A process the probe reports under `unattributed` is an anomaly to NAME, not explain
+     away.** Its `cwd`, `ppid`, and a truncated command line are already captured at the
+     instant the probe ran — carry those three fields into whatever you relay or record. A
+     bare pid is a reference to something that may no longer exist by the time anyone reads
+     about it; do not relay one alone, and do not speculate about what an unattributed
+     process was for beyond what those three fields show.
+   - **This does not replace step 10's report-time lane naming below** — keep both.
+8. **Arbitrate** — pilot file-reports are INPUT: re-run the gates yourself by EXIT CODE
    (redirect to file, echo `$?`, read the file — never pipe a gate), read the diff
    yourself, and apply the proportionate review ladder below — both its depth rungs and
    the breadth sweep (state which rung and why; respect the quota posture your spawn
@@ -157,12 +190,17 @@ at intake, realtime transitions, one consolidated narrative, Done only at DoD).
    addition to flag, not a restoration — see Brief vs deliverable below). A pilot may relay a NON-GATING concern with its own grounded read while it keeps
    working — reply promptly (confirm, or add the constraint it lacked); it integrates your
    reply without restarting.
-8. **Integrate** — sequential re-integration of worktrees; regenerate generated artifacts
+9. **Integrate** — sequential re-integration of worktrees; regenerate generated artifacts
    on the merged tree (never textual-merge them); gates green on the MERGED tree before
    any push or deployment.
-9. **Report** — ONE consolidated wave report file (named per the *File-report contract*
+10. **Report** — ONE consolidated wave report file (named per the *File-report contract*
    naming constraint below) + a one-line SendMessage to the main session. Verify each pilot left its card's narrative as one consolidated comment and its
-   board state true. **Before you file the wave report, invoke the independent wave-report
+   board state true. **Name, per card, which lane or tier carried the IMPLEMENTATION and
+   which carried the REVIEW, separately** — this is the report-time half of step 7's check,
+   asked of the pilot rather than observed on a live process, so state it even when step 7's
+   sweep already answered it (the two are independent evidence, not a fallback for each
+   other — see step 7). A stated policy with no report-time check does not apply, however
+   much everyone agreed with it going in. **Before you file the wave report, invoke the independent wave-report
    checker** — spawn the plugin-registered `workflow-toolbox:wave-fidelity-checker`
    (no adoption step) against the DRAFT report, before filing it. Its brief must include:
    the wave-report file path, every card id touched this wave, the repo scope, and the
@@ -525,7 +563,7 @@ verbatim into five copies of a published surface, and nobody ever decided to pub
   footer to every substantial one — near-zero cost, not a ritual: `[BRIEF — working
   instruction, not deliverable text; write your own words for anything you publish from
   it.]`
-- **At integration, carry the symmetric check** (see step 7, Arbitrate): a fixed finding is
+- **At integration, carry the symmetric check** (see step 8, Arbitrate): a fixed finding is
   not the only thing you look for — ask "did this delivery ADD something nobody asked for?"
   via `git log --all -S"<the exact added wording>"` on the touched surface; wording present
   ONLY in the current commit and absent from every earlier revision is an unrequested
