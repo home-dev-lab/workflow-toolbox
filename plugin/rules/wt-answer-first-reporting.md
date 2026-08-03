@@ -181,6 +181,41 @@ consolidated message covering what landed, what it changes, and what is still op
 is anything the reader must act on — a blocking question, a gate, an irreversible step about to be
 taken — which goes out immediately, alone, never batched.
 
+**A report ends the turn, and an ended turn is a full stop — this is a question of CONSEQUENCE,
+not of cadence.** Under an autonomous mandate, closing a report with "I'll pick this back up" or
+"continuing with the next item" resumes nothing: nothing hands control back until whoever is
+waiting on the other end speaks again. The sentence promises a next turn that does not exist.
+This has nothing to do with willingness to keep going, which is exactly why it slips past every
+rule about deciding, announcing, or not quietly narrowing scope — those govern what gets said,
+never the fact that saying it and stopping IS the stop.
+
+Observed cost of missing this: four consecutive stops in one stretch, each closed by a report
+ending on an intention to continue, each followed by zero further work — until the person
+waiting asked why the work had stopped, four separate times. The first explanation offered
+("I mistook a finished batch for the whole queue") was wrong, and the repetition proved it: a
+check built on that wrong explanation stayed silent through all four stops it was meant to
+catch, because it verified that the remaining work had been looked at, never that it continued.
+
+**The operative rule: chain within the same turn.** Verify the last result, integrate it, pick
+the next item, start it — only THEN say what needs saying. A report is what gets written AFTER
+work has resumed, never written in place of resuming it.
+
+Three roles keep this from recurring when combined, and confusing them is exactly how one ends
+up building two alarms while believing an engine was built:
+
+| Role | What it does | What it does NOT do |
+|---|---|---|
+| something that re-paces itself and hands control back on its own, unprompted | the only thing that actually resumes stopped work | only exists while the process running it exists — it cannot outlive that |
+| something that watches delegated work and raises an alarm if it stalls | catches a delegate that has frozen | restarts nothing by itself |
+| something that makes an unexplained stop loud instead of silent | turns a silent stop into a visible one | cannot force further work to happen |
+
+The third row has an inherent limit worth naming: a check that blocked every stop
+unconditionally would deadlock the very work it exists to protect, so it can only object once
+and then has to let the turn proceed regardless — which is exactly why it cannot substitute for
+the first row. Neither the second nor the third role resumes anything on its own: without
+something that hands control back unprompted, the most carefully built pair of alarms still
+leaves the work stopped, only loudly instead of quietly.
+
 ## A pending list without the done items reads as a status quo
 
 Whenever listing what still awaits the reader (decisions, approvals, next steps), name in the same
