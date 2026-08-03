@@ -5,6 +5,60 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-08-03
+
+### Added
+
+- **`wt-lane-probe.mjs` — verify that a delegate's work is really being routed to its executor
+  lane WHILE it runs, instead of asking the delegate afterwards.** It reads the working directory
+  of each live lane process and matches it against the worktrees of the delegates currently
+  running. A statement in a report is the testimony of the party under check; a live process's
+  cwd is an execution trace that party does not write. Keep BOTH: they fail differently — an
+  in-flight sweep sees nothing if it lands between two invocations, a report-time check sees
+  nothing if the report is wrong. The orchestrator definition calls it and archives the result.
+  ⚠ A cwd proves work is happening in a tree; it does **not** prove the delegate that owns the
+  tree is alive — a dead delegate leaves its lane running.
+
+- **`lesson-harvest` skill — find a closure report's own lessons section, mechanically.** Every
+  delegate closure report already carries one; nobody was harvesting them. Measured on one
+  night's eight reports: **3 to 6 reusable lessons each**, of which three were harvested by hand.
+  ⚠ It DETECTS and EXTRACTS; it never writes to a knowledge base — that stays with whatever
+  single writer owns it. And it distinguishes "no section at all" (a malformed report — read it
+  yourself) from "the section says none" (a decided, empty value): a silence is not a declared
+  absence.
+
+- **`stale-card-sweep` skill + `toolkit/scripts/stale-card-sweep.ts` — the ADD-side symmetric of
+  the reversal sweep.** When something is REMOVED, sweeping what still cites it is already
+  standard practice. When something is ADDED, nothing sweeps what still ASKED for it — so a
+  tracked item stays open after a sibling's implementation already covered it, and someone
+  redoes the work. Measured cost of its absence, on the night it was built: a delegate spawned
+  on an already-shipped item, returning an empty branch.
+  ⚠ Two staged layers, deliberately: the mechanical one shortlists by the closing diff's changed
+  files (words fail — the same idea gets written five different ways and a keyword search returns
+  a zero that reads as "does not exist"); the judgment layer decides. **Below ~200 open items the
+  tool tells you to read them all instead** — reading everything cannot miss a reformulation, a
+  filter can. The filter is a degradation accepted for volume, never an improvement.
+
+### Changed
+
+- **`wt-delegation-ladder.md` gains three harness facts that were nowhere in the shipped set**,
+  each of which produces a silent false negative — you conclude a delegate is dead when it is not.
+  The addressing contract (short name is the normal route and keeps working after completion; the
+  raw id is the fallback); **a resumed delegate is invisible in the interactive agent list**,
+  which is what makes the failure expensive; and **a delegate's transcript is a different file
+  from the session's own** — a freshness watcher armed on the session file measures the SESSION's
+  writes, so it reports "active" for as long as the session keeps talking. It can never fire, and
+  its silence is indistinguishable from a healthy delegate. Plus the naming/observer trade-off
+  stated as a three-way choice rather than a prescription.
+
+- **`wt-checkpoint-and-compaction.md`: a resource limit is a door, not a loss.** Do not stop
+  early to avoid being cut off — with durable state an interrupted arc resumes, while budget left
+  unspent inside a window is gone. The tell is a sentence forming in your own reasoning ("I won't
+  start anything else, there's only N% left"), and the question at that moment is not "can I
+  finish?" but "is there budget left to spend?". Stated for the single-account case explicitly,
+  because that is the objection that would make an adopter dismiss it: what makes the cut harmless
+  is the durability of the work, never a spare budget.
+
 ## [0.66.0] - 2026-08-02
 
 ### Added
