@@ -178,8 +178,21 @@ at intake, realtime transitions, one consolidated narrative, Done only at DoD).
      about it; do not relay one alone, and do not speculate about what an unattributed
      process was for beyond what those three fields show.
    - **This does not replace step 10's report-time lane naming below** — keep both.
+   - **Card-vs-pilot reconciliation — at wave start, wave end, and on any "is this card
+     actually being worked" doubt** — run `node plugin/bin/wt-pilot-card-reconcile.mjs
+     --cards <snapshot-of-claimed-cards.json> --session <this-session-id>` (a JSON snapshot
+     of `{cardId, title?, list, claimedAt}` per claimed card; `--tolerance-min` and `--json`
+     are also available — see the script's own header for the exact contract and why it
+     rejected a Stop-hook wiring). It compares cards claimed on the board against pilots
+     actually alive in the spawn registry and names the gap in both directions — a card
+     claimed with no live pilot behind it, and a live pilot whose purpose names no claimed
+     card. **Silent (exit 0) when the two sets agree; one line per mismatch otherwise** — the
+     same self-disabling shape as the lane probe above, so it is safe to run on every sweep.
 8. **Arbitrate** — pilot file-reports are INPUT: re-run the gates yourself by EXIT CODE
-   (redirect to file, echo `$?`, read the file — never pipe a gate), read the diff
+   (redirect to file, echo `$?`, read the file — never pipe a gate); prefer
+   `node plugin/bin/wt-run-gate.mjs --name <gate> --out-dir <dir> -- <cmd>` over a
+   hand-typed redirect where available — it structurally prevents a later command's exit
+   code from being misread as the gate's own (see the script's own header). Read the diff
    yourself, and apply the proportionate review ladder below — both its depth rungs and
    the breadth sweep (state which rung and why; respect the quota posture your spawn
    prompt states). Every fixed review finding gets a TEST-LOCK
