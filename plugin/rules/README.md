@@ -28,6 +28,43 @@ dir whose rules are symlinked from another one), the installer never writes
 through it: it reports the symlink and leaves it untouched unless you pass
 `--replace-symlinks`, which replaces the link with a managed copy in place.
 
+## Citation markers for copied rule prose
+
+Prefer a reference to a rule over a copied citation. A reference cannot become
+false in its content when the source wording changes; a copied sentence can.
+Where a copy must exist anyway, declare it beside the copied text:
+
+```md
+<!-- cite: plugin/rules/example.md#clause-id sha256:<sha256-of-source-clause> -->
+```
+
+The `#clause-id` points at an explicit source block, not a line number and not a
+guessed paraphrase. In this repository the checker accepts either:
+
+- `<!-- clause: <id>:start --> ... <!-- clause: <id>:end -->`
+- `<!-- embedded-copy:<id>:start --> ... <!-- embedded-copy:<id>:end -->`
+
+Those block ids survive edits above the clause. Line numbers do not, and heading
+anchors were rejected because changing the heading text would break the locator
+even when the copied clause itself had not changed.
+
+The `sha256:` records the exact source-clause content that the citation last
+confirmed. If the source block changes later, the citation becomes stale by hash
+mismatch and the test suite reports both the citing file and the source file.
+
+This convention makes declared citations checkable; it does not make undeclared
+copies discoverable. A paraphrase that nobody marked stays invisible.
+
+The bundled test sweeps only the current working tree's authored prose trees:
+
+- `plugin/rules`
+- `plugin/agent-templates`
+- `plugin/launch-agents/agents`
+- `plugin/skills`
+
+That scope is deliberate and limited: a green run on one branch says nothing
+about other branches, other worktrees, or out-of-git copies.
+
 ## Reconciling your existing project rules
 
 Adopting the bundled rules into a project that already has rules can create

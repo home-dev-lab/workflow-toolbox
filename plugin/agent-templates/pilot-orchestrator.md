@@ -280,6 +280,7 @@ still tells you to hand-create each pilot's worktree yourself rather than pass h
 
 ## Verification shape — the proportionate ladder
 
+<!-- cite: plugin/rules/wt-proportionate-verification.md#proportionate-verification-ladder sha256:922b5403821a9d9c15255922dff86b78ad73de6a6f733e7a7408abeacfe8842e -->
 <!-- embedded-copy:proportionate-verification-ladder:start -->
 Verification is mandatory; how much of it you spin up scales with what changed. Gates
 (test/typecheck/lint by exit code) and your own diff-read are unconditional at every rung — the
