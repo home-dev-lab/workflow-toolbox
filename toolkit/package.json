@@ -27,6 +27,7 @@
     "canary:budget": "tsx packages/smoke/src/budget-canaries.ts",
     "canary:version": "tsx packages/smoke/src/check-version.ts",
     "canary:agents": "tsx packages/smoke/src/sdk-agent-probe.ts",
+    "canary:observer": "tsx packages/smoke/src/observer-canaries.ts",
     "audit:rules-overlap": "node scripts/audit-rules-overlap.mjs"
   },
   "devDependencies": {

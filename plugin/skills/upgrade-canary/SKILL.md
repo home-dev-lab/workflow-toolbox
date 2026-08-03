@@ -120,6 +120,7 @@ to re-verify one claim (all from `toolkit/`):
 | `pnpm canary:budget` | budget semantics across two strictly-sequential orchestrator launches |
 | `pnpm canary:version` | the cheap gate above (CLI/SDK versions + last verdict vs the marker) — read-only |
 | `pnpm canary:agents` | which SDK agent-definition fields the runtime honors (feeds the tested least-privilege recipe builder in `smoke/src/least-privilege.ts`) |
+| `pnpm canary:observer` | whether the EXPERIMENTAL `observer:` agent-pairing surface actually attaches at runtime (see below) |
 | `pnpm wt:calibrate` | records real-run token signals and derives a grounded `budgetFloor` estimate |
 | `tsx packages/smoke/src/capabilities-probe.ts` | the per-run capabilities channel (launch `args` → each agent's declared capabilities) end-to-end |
 
@@ -176,6 +177,65 @@ it degrades to a one-line note if the changelog can't be fetched (it is pulled
 best-effort from the official Claude Code CHANGELOG with a short timeout — offline
 or any network failure simply skips the section). On a downgrade or an unmoved version it says so and shows nothing.
 
+### The observer-agent-pairing probe (`pnpm canary:observer`)
+
+An `AgentDefinition.observer?: string` names another agent type as a read-only
+background observer of the agent that carries it — the observer gets periodic
+activity digests and reports via the `ObserverReport` tool, but never
+participates in the task. This is what the pilot suite's `pilot-watchdog` /
+`pilot-orchestrator-watchdog` pairing relies on. It is **experimental,
+undocumented, and gated at process start** by
+`CLAUDE_CODE_EXPERIMENTAL_OBSERVER_AGENTS=1` — absent, the field is silently
+ignored — so this probe exists to catch a silent SDK-upgrade regression on it,
+the same way `pnpm canary:agents` catches one on tool/skill/MCP fencing.
+
+Standalone (like `canary:agents`, NOT folded into `pnpm canary`'s per-runtime-target
+matrix — see the module header in `packages/smoke/src/observer-canaries.ts` for why).
+Run it directly:
+
+```bash
+CLAUDE_CODE_EXPERIMENTAL_OBSERVER_AGENTS=1 pnpm canary:observer
+```
+
+Without the env var it reports every leg `NOT_MEASURED` and spends zero live
+launches — it never silently assumes "attached" or "not attached" just because
+the feature couldn't be exercised.
+
+Five legs, each a THREE-state verdict (`ATTACHED` / `NOT_ATTACHED` / `NOT_MEASURED`
+— never collapsed to a boolean, so "couldn't measure" never reads as "broken"):
+
+| Leg | What it checks |
+|---|---|
+| `observer-flag-present` | the feature gate env var — always informational, `ok:true` either way |
+| `observer-positive-control` | an ANONYMOUS spawn (no `name`) — reliably attaches in every mode tested to date. A `NOT_ATTACHED` here is a **hard** failure: every other leg becomes uninterpretable, so the runner skips them (reports them `NOT_MEASURED`, reason "skipped") instead of pretending they still mean something |
+| `observer-report-tool` | mechanical assertion: the observer's `ObserverReport` call succeeds (folded from the SAME run as the positive control) |
+| `observer-sendmessage-refused` | mechanical assertion: `SendMessage` is REFUSED for the observer even when declared in its `tools:` — this is the documented, CORRECT contract ("an observer must never participate in the task"); only an unexpected SUCCESS is a regression |
+| `observer-named-headless` | a SEPARATE run, named spawn, in THIS headless/`query()` harness — a SECONDARY signal only, explicitly labeled as such in its own detail text. It is NOT a reproduction of the interactive-CLI "named spawn rebuilds its AgentDefinition and drops the observer pairing" bug (that mechanism is specific to the in-process "teammate" path an interactive session takes for a named spawn; a headless SDK session does not go through it) |
+
+Detection reads the parent session's OWN SDK message stream — never subagent
+transcript files off disk — via two signals: (a) `subagent_type` tagging on
+assistant/user messages (the same mechanism `sdk-agent-probe.ts` proved), and
+(b) the harness-emitted `origin.kind` ENVELOPE (`'observer-activity'` on a
+digest delivered TO an observer, `'observer'` on a report delivered FROM one).
+The envelope, never the payload text, is what is matched — a detector that
+greps for a literal marker string it also planted would be a guaranteed false
+positive (a documented trap from the manual PoC this probe replaces).
+
+An observed-agent prompt forces 3 sequential tool calls before this probe will
+trust a "no digest seen" result as a genuine `NOT_ATTACHED` rather than "too
+few turns to produce one" (`MIN_OBSERVED_TOOL_CALLS` in `observer.ts`) — a
+missing digest after fewer than 3 observed tool calls is always `NOT_MEASURED`.
+
+**Known harness quirk worth knowing before re-tuning this probe**: the SDK's
+`Agent` tool defaults `run_in_background` to `true`, and even with it forced
+`false`, the tool's own `tool_result` can arrive as an early acknowledgment
+*before* the spawned agent's own tool calls appear in the stream — a parent
+prompt that replies as soon as the tool call "returns" ends the whole session
+(and the still-running subagent + its observer) prematurely. The prompt in
+`observer-canaries.ts` works around this by making the parent poll via
+`Bash sleep` in a loop until it has explicit confirmation the spawned agent
+actually finished, rather than trusting the tool_result alone.
+
 ## How it works (for maintenance)
 
 The mechanism lives in the toolkit (it shares the SDK dependency + the tested
@@ -212,6 +272,12 @@ message-parsing helpers), not in this skill:
 - `run.ts` / `edge-canaries.ts` — the live runners (`runSmokeChecks` / `runEdgeChecks`),
   also runnable standalone as `pnpm smoke` / `pnpm canary:edge` against the bundled runtime.
 - `canary-all.ts` — the `pnpm canary` orchestrator: matrix → diff → report → record.
+- `observer.ts` — pure message-shape readers (`readObserverSignals`), the immutable
+  tally fold (`foldObserverSignal`), and the three-state verdict logic
+  (`classifyAttachment`, `observerReportAssertion`, `sendMessageRefusalAssertion`)
+  behind `pnpm canary:observer`. Unit-tested. `observer-canaries.ts` is the live
+  runner (`runObserverCanaries`, standalone — not part of the `pnpm canary` matrix
+  loop; see its own module header for why).
 
 The pure halves are covered by `pnpm test`; the live runners are held out (they
 spend launches and need auth), exactly like `pnpm smoke`. The headless launch
