@@ -241,6 +241,38 @@ describe('wt-queue-not-empty-gate-hook — card 1833578371640984633: work-possib
     expect(r.code).toBe(2)
     expect(r.stderr).toContain('1 open item')
   })
+
+  // The two locks below close a gap a cross-family review found: the five tests above prove the
+  // FIELDS work when present in their documented shape, but none of them prove the check is
+  // STRICTLY typed rather than coercive — a looser `Number(until)` or truthy check would satisfy
+  // every test above just as well while wrongly silencing on a numeric STRING deadline.
+  it('workBlockedUntil as a numeric STRING (not a number) ⇒ fails the strict typeof check, still blocks', () => {
+    const { env, payload, gateDir, cwd } = scaffold('deadline-is-a-string')
+    mkdirSync(gateDir, { recursive: true })
+    writeFileSync(
+      join(gateDir, `queue-${slug(cwd)}.json`),
+      JSON.stringify({
+        open: 5,
+        at: Date.now(),
+        next: 'card #1',
+        workPossible: false,
+        workBlockedUntil: String(Date.now() + 3_600_000), // e.g. "1785791955480" — a STRING
+      }),
+    )
+    const r = runHook(payload, env)
+    expect(r.code).toBe(2)
+  })
+
+  it('workBlockedUntil set to "now" at write time ⇒ already past by the time the hook reads it, blocks', () => {
+    const { env, payload, gateDir, cwd } = scaffold('deadline-boundary')
+    mkdirSync(gateDir, { recursive: true })
+    writeFileSync(
+      join(gateDir, `queue-${slug(cwd)}.json`),
+      JSON.stringify({ open: 5, at: Date.now(), next: 'card #1', workPossible: false, workBlockedUntil: Date.now() }),
+    )
+    const r = runHook(payload, env) // strict `<`, and real wall-clock time has moved on by now
+    expect(r.code).toBe(2)
+  })
 })
 
 describe('wt-queue-not-empty-gate-hook — cross-family review finding: project-slug collision', () => {
