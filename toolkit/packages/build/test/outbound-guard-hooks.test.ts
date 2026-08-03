@@ -754,6 +754,38 @@ describe('wt-spawn-registry-scan.mjs — WAITING-FOR surfaces on flagged/confirm
     expect(entry!.waitingFor).toEqual({ artifact: 'delegated run', path: '/tmp/delegated.log' })
   })
 
+  it('uses the existing raw agentId fallback for waitingFor when the waiting record name differs from the spawn name', () => {
+    const dir = mkRoot('waiting-rawid-fallback')
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', child: 'raw-123', childName: 'X', name: 'X', at: minutesAgo(45) }),
+        JSON.stringify({ t: 'out', agentId: 'raw-123', name: 'general-purpose', tool: 'SendMessage', at: minutesAgo(44) }),
+        JSON.stringify({ t: 'waiting', agentId: 'raw-123', name: 'general-purpose', artifact: 'raw wait', path: '/tmp/raw.wait', at: minutesAgo(44) }),
+      ].join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, ['--quiet-min', '20', '--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    const parsed = JSON.parse(r.stdout) as { flagged: Array<{ name: string; waitingFor: { artifact: string; path: string } | null }> }
+    expect(parsed.flagged.find((f) => f.name === 'X')?.waitingFor).toEqual({ artifact: 'raw wait', path: '/tmp/raw.wait' })
+  })
+
+  it('resets waitingFor on a later spawn that reuses the same name but declares no wait', () => {
+    const dir = mkRoot('waiting-reset-on-respawn')
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', child: 'raw-1', childName: 'worker', name: 'worker', at: minutesAgo(90) }),
+        JSON.stringify({ t: 'out', agentId: 'raw-1', name: 'worker', tool: 'SendMessage', at: minutesAgo(89) }),
+        JSON.stringify({ t: 'waiting', agentId: 'raw-1', name: 'worker', artifact: 'old wait', path: '/tmp/old.wait', at: minutesAgo(89) }),
+        JSON.stringify({ t: 'ack', name: 'worker', at: minutesAgo(88) }),
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', child: 'raw-2', childName: 'worker', name: 'worker', at: minutesAgo(45) }),
+      ].join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, ['--quiet-min', '20', '--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    const parsed = JSON.parse(r.stdout) as { flagged: Array<{ name: string; waitingFor: unknown }> }
+    expect(parsed.flagged.find((f) => f.name === 'worker')?.waitingFor).toBeNull()
+  })
+
   it('human-text mode prints "waiting for: <artifact> @ <path>" under a flagged entry', () => {
     const dir = mkRoot('waiting-text')
     writeFileSync(

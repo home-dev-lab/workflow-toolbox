@@ -197,8 +197,10 @@ check built on that wrong explanation stayed silent through all four stops it wa
 catch, because it verified that the remaining work had been looked at, never that it continued.
 
 **The operative rule: chain within the same turn.** Verify the last result, integrate it, pick
-the next item, start it — only THEN say what needs saying. A report is what gets written AFTER
-work has resumed, never written in place of resuming it.
+the next item, start it — only THEN say what needs saying, and only at a real milestone rather
+than after every completed sub-step. This is an order rule, not a frequency exception: resuming
+the work before speaking does not license continuous reporting. A report is what gets written
+AFTER work has resumed, never written in place of resuming it.
 
 Three roles keep this from recurring when combined, and confusing them is exactly how one ends
 up building two alarms while believing an engine was built:

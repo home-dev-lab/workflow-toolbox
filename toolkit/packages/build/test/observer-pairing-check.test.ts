@@ -15,7 +15,7 @@ type Verdict = {
     status?: string
     reason?: string
     matchedBy?: 'id' | 'name'
-    attachedBy?: 'observerTaskId' | 'mtime-fallback' | 'not-required'
+    attachedBy?: 'observerTaskId' | 'observerTaskId-conflict' | 'mtime-fallback' | 'not-required'
     observerFile?: string
     checked?: number
     malformed?: unknown[]
@@ -359,20 +359,21 @@ describe('wt-check-observer-pairing.mjs', () => {
       })
     })
 
-    it('falls back to mtime correlation when observerTaskId is present but does not resolve to any file', () => {
+    it('returns unknown when observerTaskId is present but does not resolve to any file, even if an unrelated in-window observer exists', () => {
       withTempSubagentsDir((dir) => {
         writeAgentFixture(dir, 'agent-dangling', { agentType: 'pilot', observerTaskId: 'no-such-agent', taskKind: 'async' }, 1_000)
         writeMeta(dir, 'observer.meta.json', { name: 'watchdog', isObserver: true }, 1_005)
 
         const result = runCheck(dir, { agentId: 'agent-dangling' })
 
-        expect(result.exitCode).toBe(0)
-        expect(result.json.status).toBe('pass')
-        expect(result.json.attachedBy).toBe('mtime-fallback')
+        expect(result.exitCode).toBe(2)
+        expect(result.json.status).toBe('unknown')
+        expect(result.json.attachedBy).toBe('observerTaskId-conflict')
+        expect(result.json.reason).toContain('no-such-agent')
       })
     })
 
-    it('falls back to mtime correlation when observerTaskId resolves but the sibling is not isObserver:true', () => {
+    it('returns unknown when observerTaskId resolves but the sibling is not isObserver:true', () => {
       withTempSubagentsDir((dir) => {
         writeAgentFixture(dir, 'agent-badref', { agentType: 'pilot', observerTaskId: 'not-an-observer', taskKind: 'async' }, 1_000)
         writeAgentFixture(dir, 'not-an-observer', { agentType: 'general-purpose' }, 1_000)
@@ -380,9 +381,10 @@ describe('wt-check-observer-pairing.mjs', () => {
 
         const result = runCheck(dir, { agentId: 'agent-badref' })
 
-        expect(result.exitCode).toBe(0)
-        expect(result.json.status).toBe('pass')
-        expect(result.json.attachedBy).toBe('mtime-fallback')
+        expect(result.exitCode).toBe(2)
+        expect(result.json.status).toBe('unknown')
+        expect(result.json.attachedBy).toBe('observerTaskId-conflict')
+        expect(result.json.reason).toContain('not isObserver:true')
       })
     })
 
@@ -399,15 +401,15 @@ describe('wt-check-observer-pairing.mjs', () => {
       })
     })
 
-    it('still flags when observerTaskId is present but unresolved AND no mtime candidate exists either', () => {
+    it('still returns unknown when observerTaskId is present but unresolved AND no mtime candidate exists either', () => {
       withTempSubagentsDir((dir) => {
         writeAgentFixture(dir, 'agent-both-fail', { agentType: 'pilot', observerTaskId: 'ghost', taskKind: 'async' }, 1_000)
 
         const result = runCheck(dir, { agentId: 'agent-both-fail' })
 
-        expect(result.exitCode).toBe(1)
-        expect(result.json.status).toBe('flag')
-        expect(result.json.attachedBy).toBe('mtime-fallback')
+        expect(result.exitCode).toBe(2)
+        expect(result.json.status).toBe('unknown')
+        expect(result.json.attachedBy).toBe('observerTaskId-conflict')
       })
     })
 

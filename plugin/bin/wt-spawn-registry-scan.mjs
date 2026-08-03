@@ -237,13 +237,20 @@ const spokeById = lastByAgentId('out');
 // registration: replays of the SAME real event write the SAME (type, name) pair again in
 // immediate succession, so a chain of identical overwrites lands on the same final value as one.
 const waitingState = new Map(); // name -> {artifact, path} | null, walked in file (chronological) order
+const waitingStateById = new Map(); // raw agent id fallback, same correlation shape as stop/out
 for (const r of records) {
-  if (!r.name) continue;
-  if (r.t === 'out') waitingState.set(r.name, null);
-  else if (r.t === 'waiting') waitingState.set(r.name, { artifact: r.artifact ?? null, path: r.path ?? null });
+  if (r.t === 'spawn') {
+    if (r.childName) waitingState.set(r.childName, null);
+    if (r.child) waitingStateById.set(r.child, null);
+    continue;
+  }
+  const next = r.t === 'out' ? null : r.t === 'waiting' ? { artifact: r.artifact ?? null, path: r.path ?? null } : undefined;
+  if (next === undefined) continue;
+  if (r.name) waitingState.set(r.name, next);
+  if (r.agentId) waitingStateById.set(r.agentId, next);
 }
-function waitingForOf(name) {
-  return waitingState.get(name) || null;
+function waitingForOf(name, rawAgentId) {
+  return waitingState.get(name) || (rawAgentId ? waitingStateById.get(rawAgentId) : null) || null;
 }
 
 const now = Date.now();
@@ -283,7 +290,7 @@ for (const s of spawns) {
     lastOutbound: spokenAt || null,
     quietMin,
     transcriptFreshMin,
-    waitingFor: waitingForOf(name),
+    waitingFor: waitingForOf(name, s.child),
   });
 }
 

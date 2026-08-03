@@ -26,6 +26,9 @@
 // never throw an opaque TypeError.
 
 import { isRecord, strOrNull } from '@workflow-toolbox/std'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import type { CheckResult } from './lib.js'
 
 // ---------------------------------------------------------------------------
@@ -181,6 +184,75 @@ export interface LegVerdict {
   hard?: boolean
 }
 
+export interface ObserverBaselineIo {
+  resolveMarkerPath?: () => string
+  readMarkerFile?: (path: string) => string
+  writeMarkerFile?: (path: string, content: string) => void
+}
+
+interface ObserverBaselineEntry {
+  firstSeenAt: string
+  lastSeenAt: string
+}
+
+type ObserverBaseline = Record<string, ObserverBaselineEntry>
+
+const DEFAULT_BASELINE_IO: Required<ObserverBaselineIo> = {
+  resolveMarkerPath: () => join(process.env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state'), 'wt-observe', 'observer-baseline.json'),
+  readMarkerFile: (path) => readFileSync(path, 'utf8'),
+  writeMarkerFile: (path, content) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, content)
+  },
+}
+
+function baselineIo(io?: ObserverBaselineIo): Required<ObserverBaselineIo> {
+  return { ...DEFAULT_BASELINE_IO, ...io }
+}
+
+function readBaseline(legName: string, io?: ObserverBaselineIo): ObserverBaselineEntry | null {
+  const impl = baselineIo(io)
+  try {
+    const raw = impl.readMarkerFile(impl.resolveMarkerPath())
+    const parsed = JSON.parse(raw)
+    if (!isRecord(parsed)) return null
+    const entry = parsed[legName]
+    if (!isRecord(entry) || typeof entry['firstSeenAt'] !== 'string' || typeof entry['lastSeenAt'] !== 'string') return null
+    return { firstSeenAt: entry['firstSeenAt'], lastSeenAt: entry['lastSeenAt'] }
+  } catch {
+    return null
+  }
+}
+
+function writeBaseline(legName: string, io?: ObserverBaselineIo): void {
+  const impl = baselineIo(io)
+  try {
+    const markerPath = impl.resolveMarkerPath()
+    const now = new Date().toISOString()
+    let baseline: ObserverBaseline = {}
+    try {
+      const parsed = JSON.parse(impl.readMarkerFile(markerPath))
+      if (isRecord(parsed)) {
+        baseline = Object.fromEntries(
+          Object.entries(parsed).filter(
+            ([, value]) => isRecord(value) && typeof value['firstSeenAt'] === 'string' && typeof value['lastSeenAt'] === 'string',
+          ),
+        ) as ObserverBaseline
+      }
+    } catch {
+      baseline = {}
+    }
+    const existing = baseline[legName]
+    baseline[legName] = {
+      firstSeenAt: existing?.firstSeenAt ?? now,
+      lastSeenAt: now,
+    }
+    impl.writeMarkerFile(markerPath, JSON.stringify(baseline, null, 2))
+  } catch {
+    // Baseline bookkeeping must never break the canary.
+  }
+}
+
 /** The minimum number of observed-agent tool calls before a "no digest seen"
  *  result can be trusted as a genuine NOT_ATTACHED rather than "too few turns
  *  to produce one" — the manual PoC's own documented trap. */
@@ -188,30 +260,23 @@ export const MIN_OBSERVED_TOOL_CALLS = 3
 
 /** Classify attachment from a folded tally.
  *
- *  `pathHasWorkingBaseline` is the crux of the 2026-08-03 correction: a clean
- *  negative (enough observed turns, zero attach signal) is NOT_ATTACHED —
- *  loud, gating, "this is a regression" — ONLY on a launch shape that has
- *  independent, out-of-band confirmation it can attach an observer at all.
- *  Confirmed today: this session's own `pilot-watchdog` transcripts prove the
- *  INTERACTIVE Agent-tool spawn path attaches observers in production, right
- *  now, on this SDK version. This probe's positive/named-headless legs drive a
- *  DIFFERENT path — a headless SDK `query()` session in which the model calls
- *  the `Agent`/`Task` tool to spawn a NESTED subagent — which nothing (not the
- *  card, not the observer-agents-matrix fiche, not this probe itself) has ever
- *  independently shown CAN attach. A clean negative on a path with no known-
- *  working baseline cannot be told apart from "this launch shape never
- *  attaches, by design or by an untested gap" — so it reports NOT_MEASURED,
- *  not NOT_ATTACHED, until/unless a baseline for that specific path exists.
- *  `hard` only takes effect when `pathHasWorkingBaseline` is true — it is kept
- *  (not removed) for that future case, e.g. a canary built against the
- *  interactive spawn path itself. */
+ *  A clean negative (enough observed turns, zero attach signal) is only a loud
+ *  NOT_ATTACHED regression on a launch shape that already has a persisted
+ *  working baseline for THIS leg. The baseline marker is written only after a
+ *  real ATTACHED run for that leg, and every marker read/write failure degrades
+ *  silently to "no baseline" rather than throwing. Until a leg has ever been
+ *  seen ATTACHED on this machine, a clean negative stays NOT_MEASURED because
+ *  the probe cannot distinguish "this path never attached" from "attachment
+ *  regressed". `hard` only takes effect when a working baseline exists. */
 export function classifyAttachment(
   tally: RunTally,
   legName: string,
-  opts: { hard: boolean; pathHasWorkingBaseline: boolean },
+  opts: { hard: boolean; pathHasWorkingBaseline?: boolean; baselineIo?: ObserverBaselineIo },
 ): LegVerdict {
+  const pathHasWorkingBaseline = opts.pathHasWorkingBaseline ?? readBaseline(legName, opts.baselineIo) !== null
   const attached = tally.observerActivityDigests > 0 || tally.observerToolUses.length > 0 || tally.observerEnvelopeSeen
   if (attached) {
+    writeBaseline(legName, opts.baselineIo)
     return {
       name: legName,
       state: 'ATTACHED',
@@ -225,7 +290,7 @@ export function classifyAttachment(
       reason: `observed agent made only ${tally.observedToolUseCount} tool call(s) (< ${MIN_OBSERVED_TOOL_CALLS}) — cannot distinguish "not attached" from "too few turns to produce a digest"`,
     }
   }
-  if (!opts.pathHasWorkingBaseline) {
+  if (!pathHasWorkingBaseline) {
     return {
       name: legName,
       state: 'NOT_MEASURED',
@@ -259,10 +324,18 @@ export function observerReportAssertion(tally: RunTally): LegVerdict {
     }
   }
   const ids = uses.map((t) => t.id)
-  const failed = tally.observerToolResults.some((r) => r.toolUseId !== null && ids.includes(r.toolUseId) && r.isError)
+  const results = tally.observerToolResults.filter((r) => r.toolUseId !== null && ids.includes(r.toolUseId))
+  if (results.length === 0) {
+    return {
+      name: 'observer-report-tool',
+      state: 'NOT_MEASURED',
+      reason: `ObserverReport tool_use seen (${uses.length} call(s)) but no matching tool_result was observed`,
+    }
+  }
+  const failed = results.some((r) => r.isError)
   return failed
     ? { name: 'observer-report-tool', state: 'NOT_ATTACHED', reason: 'ObserverReport tool_use returned is_error=true — REGRESSION' }
-    : { name: 'observer-report-tool', state: 'ATTACHED', reason: `ObserverReport tool_use succeeded (${uses.length} call(s), no error tool_result)` }
+    : { name: 'observer-report-tool', state: 'ATTACHED', reason: `ObserverReport tool_use succeeded (${uses.length} call(s), matching non-error tool_result observed)` }
 }
 
 /** Mechanical assertion: SendMessage is expected to be refused for an observer
@@ -281,6 +354,13 @@ export function sendMessageRefusalAssertion(tally: RunTally): LegVerdict {
   }
   const ids = attempts.map((t) => t.id)
   const results = tally.observerToolResults.filter((r) => r.toolUseId !== null && ids.includes(r.toolUseId))
+  if (results.length === 0) {
+    return {
+      name: 'observer-sendmessage-refused',
+      state: 'NOT_MEASURED',
+      reason: `SendMessage attempt seen (${attempts.length} call(s)) but no matching tool_result was observed`,
+    }
+  }
   const anySucceeded = results.some((r) => !r.isError)
   if (anySucceeded) {
     return {

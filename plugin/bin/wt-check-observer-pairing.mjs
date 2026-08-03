@@ -133,9 +133,15 @@ if (typeof observerTaskId === 'string' && observerTaskId.length > 0) {
       malformed,
     })
   }
-  // observerTaskId present but dangling (no such file) or the resolved sibling isn't
-  // isObserver:true — an inconsistent record, not proof of absence. Fall through to the
-  // mtime fallback below rather than flagging on this alone.
+  emit(2, {
+    status: 'unknown',
+    reason: paired
+      ? `observerTaskId points to ${observerTaskId}, but that sibling is not isObserver:true`
+      : `observerTaskId points to ${observerTaskId}, but no matching sibling file exists`,
+    matchedBy,
+    attachedBy: 'observerTaskId-conflict',
+    malformed,
+  })
 }
 
 const taskKind = observed.parsed?.taskKind

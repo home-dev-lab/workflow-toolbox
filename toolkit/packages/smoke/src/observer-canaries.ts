@@ -228,7 +228,7 @@ export async function runObserverCanaries(env: Record<string, string | undefined
   // Agent-tool spawn, which has no independent confirmation it ever attaches at
   // all (2026-08-03 correction — see classifyAttachment's own doc). A clean
   // negative here is therefore NOT_MEASURED, never a loud NOT_ATTACHED regression.
-  const pcVerdict = classifyAttachment(pc.tally, 'observer-positive-control', { hard: true, pathHasWorkingBaseline: false })
+  const pcVerdict = classifyAttachment(pc.tally, 'observer-positive-control', { hard: true })
   checks.push(legVerdictToCheckResult(pcVerdict))
   console.log(`    → ${pcVerdict.state}: ${pcVerdict.reason}`)
 
@@ -253,7 +253,7 @@ export async function runObserverCanaries(env: Record<string, string | undefined
   console.log('  ▶ observer-named-headless (named spawn, forced 3+ tool calls)…')
   const nm = await runSession(opts, spawnPrompt(true), SESSION_TIMEOUT_MS)
   if (nm.error !== null) console.log(`    ⚠ run note: ${nm.error}`)
-  const nmVerdict = classifyAttachment(nm.tally, 'observer-named-headless', { hard: false, pathHasWorkingBaseline: false })
+  const nmVerdict = classifyAttachment(nm.tally, 'observer-named-headless', { hard: false })
   const nmResult = legVerdictToCheckResult(nmVerdict)
   checks.push({ ...nmResult, detail: nmResult.detail + NAMED_HEADLESS_CAVEAT })
   console.log(`    → ${nmVerdict.state}: ${nmVerdict.reason}`)

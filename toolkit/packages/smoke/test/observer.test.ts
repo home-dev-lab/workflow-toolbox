@@ -181,6 +181,110 @@ describe('classifyAttachment', () => {
     const t: RunTally = { ...emptyTally(), observedToolUseCount: MIN_OBSERVED_TOOL_CALLS }
     expect(classifyAttachment(t, 'leg', { hard: false, pathHasWorkingBaseline: true }).hard).toBe(false)
   })
+
+  it('uses NOT_MEASURED for a clean negative when no persisted marker exists', () => {
+    const t: RunTally = { ...emptyTally(), observedToolUseCount: MIN_OBSERVED_TOOL_CALLS }
+    const v = classifyAttachment(t, 'observer-positive-control', {
+      hard: true,
+      baselineIo: {
+        resolveMarkerPath: () => '/tmp/observer-baseline.json',
+        readMarkerFile: () => {
+          throw new Error('missing')
+        },
+        writeMarkerFile: () => {
+          throw new Error('should not write')
+        },
+      },
+    })
+    expect(v.state).toBe('NOT_MEASURED')
+  })
+
+  it('uses NOT_ATTACHED for a clean negative when a persisted marker exists', () => {
+    const t: RunTally = { ...emptyTally(), observedToolUseCount: MIN_OBSERVED_TOOL_CALLS }
+    const v = classifyAttachment(t, 'observer-positive-control', {
+      hard: true,
+      baselineIo: {
+        resolveMarkerPath: () => '/tmp/observer-baseline.json',
+        readMarkerFile: () =>
+          JSON.stringify({
+            'observer-positive-control': { firstSeenAt: '2026-08-03T00:00:00.000Z', lastSeenAt: '2026-08-03T00:00:00.000Z' },
+          }),
+        writeMarkerFile: () => {
+          throw new Error('should not write')
+        },
+      },
+    })
+    expect(v.state).toBe('NOT_ATTACHED')
+  })
+
+  it('writes a persisted marker when the leg is ATTACHED', () => {
+    const writes: Array<{ path: string; content: string }> = []
+    const t: RunTally = { ...emptyTally(), observerActivityDigests: 1 }
+    const v = classifyAttachment(t, 'observer-positive-control', {
+      hard: true,
+      baselineIo: {
+        resolveMarkerPath: () => '/tmp/observer-baseline.json',
+        readMarkerFile: () => {
+          throw new Error('missing')
+        },
+        writeMarkerFile: (path, content) => writes.push({ path, content }),
+      },
+    })
+    expect(v.state).toBe('ATTACHED')
+    expect(writes).toHaveLength(1)
+    expect(writes[0]?.path).toBe('/tmp/observer-baseline.json')
+    expect(JSON.parse(writes[0]!.content)).toMatchObject({
+      'observer-positive-control': {
+        firstSeenAt: expect.any(String),
+        lastSeenAt: expect.any(String),
+      },
+    })
+  })
+
+  it('does not write a persisted marker when the leg is NOT_MEASURED', () => {
+    const writes: Array<{ path: string; content: string }> = []
+    const t: RunTally = { ...emptyTally(), observedToolUseCount: MIN_OBSERVED_TOOL_CALLS }
+    const v = classifyAttachment(t, 'observer-positive-control', {
+      hard: true,
+      baselineIo: {
+        resolveMarkerPath: () => '/tmp/observer-baseline.json',
+        readMarkerFile: () => {
+          throw new Error('missing')
+        },
+        writeMarkerFile: (path, content) => writes.push({ path, content }),
+      },
+    })
+    expect(v.state).toBe('NOT_MEASURED')
+    expect(writes).toEqual([])
+  })
+
+  it('degrades a corrupt persisted marker to NOT_MEASURED without throwing', () => {
+    const t: RunTally = { ...emptyTally(), observedToolUseCount: MIN_OBSERVED_TOOL_CALLS }
+    expect(() =>
+      classifyAttachment(t, 'observer-positive-control', {
+        hard: true,
+        baselineIo: {
+          resolveMarkerPath: () => '/tmp/observer-baseline.json',
+          readMarkerFile: () => '{not json',
+          writeMarkerFile: () => {
+            throw new Error('should not write')
+          },
+        },
+      }),
+    ).not.toThrow()
+    expect(
+      classifyAttachment(t, 'observer-positive-control', {
+        hard: true,
+        baselineIo: {
+          resolveMarkerPath: () => '/tmp/observer-baseline.json',
+          readMarkerFile: () => '{not json',
+          writeMarkerFile: () => {
+            throw new Error('should not write')
+          },
+        },
+      }).state,
+    ).toBe('NOT_MEASURED')
+  })
 })
 
 describe('observerReportAssertion', () => {
@@ -189,8 +293,19 @@ describe('observerReportAssertion', () => {
   })
 
   it('is ATTACHED when ObserverReport succeeded', () => {
-    const t: RunTally = { ...emptyTally(), observerToolUses: [{ id: 'r1', name: 'ObserverReport' }] }
+    const t: RunTally = {
+      ...emptyTally(),
+      observerToolUses: [{ id: 'r1', name: 'ObserverReport' }],
+      observerToolResults: [{ toolUseId: 'r1', isError: false, text: 'ok' }],
+    }
     expect(observerReportAssertion(t).state).toBe('ATTACHED')
+  })
+
+  it('is NOT_MEASURED when ObserverReport was called but no matching tool_result arrived', () => {
+    const t: RunTally = { ...emptyTally(), observerToolUses: [{ id: 'r1', name: 'ObserverReport' }] }
+    const v = observerReportAssertion(t)
+    expect(v.state).toBe('NOT_MEASURED')
+    expect(v.reason).toMatch(/no matching tool_result was observed/)
   })
 
   it('is NOT_ATTACHED when ObserverReport returned an error', () => {
@@ -237,6 +352,16 @@ describe('sendMessageRefusalAssertion', () => {
     const v = sendMessageRefusalAssertion(t)
     expect(v.state).toBe('NOT_ATTACHED')
     expect(v.hard).toBe(true)
+  })
+
+  it('is NOT_MEASURED when SendMessage was attempted but no matching tool_result arrived', () => {
+    const t: RunTally = {
+      ...emptyTally(),
+      observerToolUses: [{ id: 's1', name: 'SendMessage' }],
+    }
+    const v = sendMessageRefusalAssertion(t)
+    expect(v.state).toBe('NOT_MEASURED')
+    expect(v.reason).toMatch(/no matching tool_result was observed/)
   })
 })
 
