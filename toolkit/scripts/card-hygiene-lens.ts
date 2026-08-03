@@ -1,7 +1,8 @@
 // card-hygiene-lens.ts checks INTEGRITY only: label completeness, dependency
-// existence, dependency cycles, and closed-target chain coherence. It NEVER
-// judges dependency QUALITY or relevance; whether a dependency still makes
-// semantic sense is always a human judgment call.
+// existence, dependency cycles, closed-target chain coherence (Done targets),
+// and permanent-block detection (NotDoing targets, which can never resolve).
+// It NEVER judges dependency QUALITY or relevance; whether a dependency still
+// makes semantic sense is always a human judgment call.
 //
 // This is a NEW standalone lens. Its mechanical invocation point (a hook versus
 // an advisory skill-line) is deliberately undecided here because `.claude/hooks/`
@@ -32,7 +33,7 @@ export const CATEGORY_VALUES = ['process', 'tooling', 'product'] as const
 
 export interface HygieneFinding {
   cardId: string
-  kind: 'missing-label' | 'broken-dependency' | 'dependency-cycle'
+  kind: 'missing-label' | 'broken-dependency' | 'dependency-cycle' | 'permanent-block'
   message: string
 }
 
@@ -182,6 +183,14 @@ export function checkBoardHygiene(cards: BoardCard[]): BoardHygieneResult {
     for (const targetId of dependencies.get(dependent.id) ?? []) {
       const target = cardsById.get(targetId)
       if (target === undefined || !CLOSED_LISTS.has(target.listName)) continue
+      if (target.listName === 'NotDoing') {
+        resultFor(dependent.id).findings.push({
+          cardId: dependent.id,
+          kind: 'permanent-block',
+          message: `card #${dependent.id} depends on #${targetId} (${target.name}), which is in NotDoing and will never reach Done — this dependency can never be satisfied, so #${dependent.id} can never become pickable`,
+        })
+        continue
+      }
       resultFor(dependent.id).advisories.push({
         cardId: dependent.id,
         kind: 'chain-coherence',

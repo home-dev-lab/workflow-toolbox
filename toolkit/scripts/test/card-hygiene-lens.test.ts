@@ -77,6 +77,36 @@ describe('card-hygiene-lens', () => {
     ])
   })
 
+  it('flags a permanent-block finding when an open card depends on a NotDoing target', () => {
+    const result = checkBoardHygiene([
+      card('1', { listName: 'NotDoing' }),
+      card('2', { description: 'Depends-on: #1' }),
+    ])
+
+    expect(result.ok).toBe(false)
+    const card2 = result.results.find((entry) => entry.cardId === '2')
+    expect(card2?.advisories).toEqual([])
+    expect(card2?.findings).toContainEqual({
+      cardId: '2',
+      kind: 'permanent-block',
+      message: expect.stringContaining('#2'),
+    })
+    const finding = card2?.findings.find((entry) => entry.kind === 'permanent-block')
+    expect(finding?.message).toContain('#1')
+    expect(finding?.message).toContain('Card 1')
+  })
+
+  it('does not flag permanent-block for a NotDoing target when the dependent is itself closed', () => {
+    const result = checkBoardHygiene([
+      card('1', { listName: 'NotDoing' }),
+      card('2', { description: 'Depends-on: #1', listName: 'NotDoing' }),
+      card('3', { description: 'Depends-on: #1', listName: 'Done' }),
+    ])
+
+    const findings = result.results.flatMap(({ findings }) => findings)
+    expect(findings.filter(({ kind }) => kind === 'permanent-block')).toEqual([])
+  })
+
   it('reports a two-card dependency cycle exactly once', () => {
     const result = checkBoardHygiene([
       card('1', { description: 'Depends-on: #2' }),
@@ -91,6 +121,25 @@ describe('card-hygiene-lens', () => {
         cardId: '1',
         kind: 'dependency-cycle',
         message: 'dependency cycle: #1 -> #2 -> #1',
+      },
+    ])
+  })
+
+  it('reports a longer dependency chain cycle (A -> B -> C -> A), not just a 2-card one', () => {
+    const result = checkBoardHygiene([
+      card('1', { description: 'Depends-on: #2' }),
+      card('2', { description: 'Depends-on: #3' }),
+      card('3', { description: 'Depends-on: #1' }),
+    ])
+    const cycleFindings = result.results.flatMap(({ findings }) => {
+      return findings.filter(({ kind }) => kind === 'dependency-cycle')
+    })
+
+    expect(cycleFindings).toEqual([
+      {
+        cardId: '1',
+        kind: 'dependency-cycle',
+        message: 'dependency cycle: #1 -> #2 -> #3 -> #1',
       },
     ])
   })
