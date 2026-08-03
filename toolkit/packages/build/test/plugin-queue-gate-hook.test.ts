@@ -165,6 +165,84 @@ describe('wt-queue-not-empty-gate-hook — cross-family review finding: malforme
   })
 })
 
+describe('wt-queue-not-empty-gate-hook — card 1833578371640984633: work-possible signal', () => {
+  // The discriminating case, per the card: budget EXHAUSTED / context SATURATED → silent;
+  // budget LOW BUT NOT ZERO → still shouts. All five cases below use the SAME base fixture
+  // (open:5, fresh, nothing in flight) that the first test in this file already proves blocks —
+  // only the work-possible fields differ, so a passing "silent" case here is a genuine control:
+  // remove the fields and the fixture reverts to case 1's proven-blocking shape.
+  it('workPossible:false + workBlockedUntil in the FUTURE ⇒ silent even though work remains', () => {
+    const { env, payload, gateDir, cwd } = scaffold('blocked-future')
+    mkdirSync(gateDir, { recursive: true })
+    writeFileSync(
+      join(gateDir, `queue-${slug(cwd)}.json`),
+      JSON.stringify({
+        open: 5,
+        at: Date.now(),
+        next: 'card #1',
+        workPossible: false,
+        workBlockedUntil: Date.now() + 3_600_000,
+      }),
+    )
+    const r = runHook(payload, env)
+    expect(r.code).toBe(0)
+    expect(r.stderr).toBe('')
+  })
+
+  it('workBlockedUntil in the PAST ⇒ block resumes (self-expiring, not a permanent silence)', () => {
+    const { env, payload, gateDir, cwd } = scaffold('blocked-past')
+    mkdirSync(gateDir, { recursive: true })
+    writeFileSync(
+      join(gateDir, `queue-${slug(cwd)}.json`),
+      JSON.stringify({
+        open: 5,
+        at: Date.now(),
+        next: 'card #1',
+        workPossible: false,
+        workBlockedUntil: Date.now() - 1_000,
+      }),
+    )
+    const r = runHook(payload, env)
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('5 open item')
+  })
+
+  it('workPossible:false with NO workBlockedUntil ⇒ malformed, fails CLOSED (still blocks)', () => {
+    const { env, payload, gateDir, cwd } = scaffold('blocked-no-deadline')
+    mkdirSync(gateDir, { recursive: true })
+    writeFileSync(
+      join(gateDir, `queue-${slug(cwd)}.json`),
+      JSON.stringify({ open: 5, at: Date.now(), next: 'card #1', workPossible: false }),
+    )
+    const r = runHook(payload, env)
+    expect(r.code).toBe(2)
+  })
+
+  it('workBlockedUntil present but workPossible is NOT false ⇒ the deadline alone does nothing', () => {
+    const { env, payload, gateDir, cwd } = scaffold('deadline-without-flag')
+    mkdirSync(gateDir, { recursive: true })
+    writeFileSync(
+      join(gateDir, `queue-${slug(cwd)}.json`),
+      JSON.stringify({
+        open: 5,
+        at: Date.now(),
+        next: 'card #1',
+        workBlockedUntil: Date.now() + 3_600_000,
+      }),
+    )
+    const r = runHook(payload, env)
+    expect(r.code).toBe(2)
+  })
+
+  it('the discriminating case — LOW but nonzero, no work-possible fields set ⇒ still shouts', () => {
+    const { env, payload, gateDir, cwd } = scaffold('low-not-zero')
+    writeSnapshot(gateDir, cwd, 1, 0, 'card #9 (last one)')
+    const r = runHook(payload, env)
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('1 open item')
+  })
+})
+
 describe('wt-queue-not-empty-gate-hook — cross-family review finding: project-slug collision', () => {
   it('two cwds that collide on the READABLE-ONLY slug never share a snapshot', () => {
     // "/…/a/b" and "/…/a-b" both reduce to the same string once every non-alnum character

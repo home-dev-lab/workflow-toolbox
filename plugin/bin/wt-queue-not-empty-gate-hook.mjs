@@ -54,6 +54,33 @@
 // becomes an always-red gate, gets bypassed, then removed, taking with it the adopters where it
 // WAS useful.
 //
+// OPTIONAL "IS WORKING EVEN POSSIBLE" FIELDS on the SAME marker — observed on an adopter's own
+// machine: this hook shouted through a spent usage window and a saturated context alike, both
+// conditions where nothing could act on the queue it kept naming —
+// this hook must NOT shout about a queue nobody can act on right now (an exhausted usage window,
+// a saturated context that can no longer safely verify a result, an unreachable dependency). It
+// also must NOT go silent just because the constraint is merely tight — a resource limit is a
+// door, not a loss, and stopping early while capacity remains is precisely the fault this class
+// of guard exists to catch. So this hook never probes a provider itself (that would make a
+// tracker-agnostic hook specific to one vendor) — it only respects a signal from whatever DOES
+// know, written onto the same marker:
+//   workPossible: false        — set ONLY on a condition that makes ALL further work genuinely
+//                                 impossible right now, never on "getting tight". Absent, or
+//                                 true, means no opinion — normal behavior, unaffected.
+//   workBlockedUntil: <epoch-ms> — REQUIRED alongside workPossible:false. The self-expiring
+//                                 deadline past which the block is assumed lifted (a quota
+//                                 reset time, or a short conservative re-check window for a
+//                                 transient condition like context saturation). A block with no
+//                                 valid future workBlockedUntil is ignored — malformed input
+//                                 must fail CLOSED (keep shouting), never silence the guard.
+//   workBlockedReason: "<string>" — optional, human-readable; this hook never prints it (see
+//                                 next paragraph) — it exists for whoever inspects the marker.
+// When active and unexpired, this hook goes SILENT — not a softer message, nothing at all. When
+// nothing can be decided, there is nothing to say; a quieter warning here would be the same
+// noise in a quieter costume. Writing these fields is entirely the adopter's own business: which
+// provider, which threshold counts as "exhausted" vs "just low", how staleness/context-saturation
+// is measured — none of that belongs in a tracker-agnostic hook.
+//
 // FAIL-CLOSED ONCE A MARKER EXISTS, deliberately: an unreadable or STALE marker counts as "work
 // remains". The self-written-evidence hazard is real — the checked party writes the file — but
 // it only runs one way: writing a marker that claims "0 open" is the only way to silence this,
@@ -64,10 +91,11 @@
 // that blocks because a probe of ITS OWN broke would be failing INTO the thing it protects
 // against.
 //
-// KNOWN BLIND SPOT, INHERITED FROM THE PRIVATE ORIGINAL AND NOT CLOSED HERE: this hook cannot
-// tell "stopping for no reason" from "cannot work right now" (an exhausted usage window, a
-// blocking external dependency). It will still fire in that case, because nothing available to
-// it distinguishes the two. State this in any adopter-facing note.
+// RESIDUAL BLIND SPOT: this hook can only respect a "work is impossible" signal it is TOLD —
+// via workPossible/workBlockedUntil above — it never detects an exhausted window or a saturated
+// context on its own. An adopter who wires nothing to those fields gets the exact prior
+// behavior: the hook still cannot tell "stopping for no reason" from "cannot work right now".
+// State this in any adopter-facing note.
 //
 // Ship / keep-private: this file IS the shipped, generalized copy — see plugin.json's Stop
 // hooks array. It was ported from a private, single-project original (that copy stays wired at
@@ -150,6 +178,18 @@ let openCount = null
 let nextItem = ''
 try {
   const snap = JSON.parse(readFileSync(SNAPSHOT, 'utf8'))
+
+  // --- 3a. Is working even possible right now? -------------------------------------------
+  // See the "IS WORKING EVEN POSSIBLE" header section. Strict on both fields — a malformed or
+  // missing workBlockedUntil must fail CLOSED (keep shouting), never silence the guard. Checked
+  // BEFORE the openCount logic below: a genuine block silences regardless of how many items are
+  // open, and it does NOT borrow the open/next freshness window — it lives and dies by its own
+  // deadline, so a condition that clears exactly at a known time (a quota reset) clears exactly
+  // then, not up to two hours later.
+  const until = snap.workBlockedUntil
+  const validDeadline = typeof until === 'number' && Number.isFinite(until)
+  if (snap.workPossible === false && validDeadline && Date.now() < until) bail()
+
   const age = Date.now() - (snap.at || 0)
   // ⚠ `Number(snap.open)` alone was wrong — found by cross-family review. `Number('')`,
   // `Number(null)`, and `Number(false)` all coerce to 0, so a fresh but MALFORMED snapshot
