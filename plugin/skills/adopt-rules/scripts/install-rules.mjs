@@ -120,11 +120,40 @@ function discoverRegisteredAgents(root) {
     .sort()
 }
 
+function resolvedConfigRoot() {
+  return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+}
+
+function formatMtime(mtime) {
+  return Number.isFinite(mtime?.getTime?.()) ? mtime.toISOString() : '?'
+}
+
+function describeRegisteredAgentShadowing(root, userAgentsDir, name) {
+  const pluginPath = path.join(root, 'agents', `${name}.md`)
+  const userPath = path.join(userAgentsDir, `${name}.md`)
+  try {
+    const userStat = fs.statSync(userPath)
+    if (!userStat.isFile()) return null
+    const pluginStat = fs.statSync(pluginPath)
+    const pluginContent = fs.readFileSync(pluginPath)
+    const userContent = fs.readFileSync(userPath)
+    if (Buffer.compare(pluginContent, userContent) === 0) {
+      return `  - workflow-toolbox:${name} is shadowed by ${userPath} (matches the plugin copy)\n`
+    }
+    return (
+      `  - workflow-toolbox:${name} is shadowed by ${userPath} ` +
+      `(DIVERGED; plugin mtime=${formatMtime(pluginStat.mtime)}; user mtime=${formatMtime(userStat.mtime)})\n`
+    )
+  } catch {
+    return null
+  }
+}
+
 /** Print the note distinguishing "already available, registered" from "adopted, managed
  *  here" — for the `agents` set only, in BOTH --check and --install (it is informational,
  *  not tied to a write). Silent when the registered set is empty (nothing to report),
  *  same convention as the rest of this script's graceful-degradation. */
-function printRegisteredAgentsNote(root) {
+function printRegisteredAgentsNote(root, userAgentsDir) {
   const registered = discoverRegisteredAgents(root)
   if (registered.length === 0) return
   process.stdout.write(
@@ -133,6 +162,10 @@ function printRegisteredAgentsNote(root) {
       `be: only the pilot suite requires a local copy, to keep its observer pairing.\n`,
   )
   for (const name of registered) process.stdout.write(`  - workflow-toolbox:${name}\n`)
+  for (const name of registered) {
+    const shadowing = describeRegisteredAgentShadowing(root, userAgentsDir, name)
+    if (shadowing) process.stdout.write(shadowing)
+  }
 }
 
 /** The two managed sets. `kind` drives banner placement; `srcDir` is the plugin bundle
@@ -862,7 +895,7 @@ function main() {
   // Deliberately one rule in two places rather than an import: these are a shipped hook and
   // a standalone script that must each run alone. They are locked in step by tests, not by
   // a shared module they cannot both reach.
-  const globalRoot = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+  const globalRoot = resolvedConfigRoot()
 
   process.stdout.write(
     `adopt-rules: ${BANNER_TOOL} v${version} · mode=${args.mode}${args.force ? ' --force' : ''} · set=${args.set}\n`,
@@ -889,7 +922,7 @@ function main() {
     anySymlink = anySymlink || r.anySymlink
   }
 
-  if (chosen.includes('agents')) printRegisteredAgentsNote(root)
+  if (chosen.includes('agents')) printRegisteredAgentsNote(root, path.join(globalRoot, 'agents'))
 
   if (args.mode === 'check') {
     if (anyAbsent) process.stdout.write('adopt-rules: run with --install to write the ABSENT item(s).\n')

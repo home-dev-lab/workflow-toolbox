@@ -746,6 +746,11 @@ function runCopy(script: string, args: string[], dir: string): string {
   return (res.stdout ?? '') + (res.stderr ?? '')
 }
 
+function runCopyEnv(script: string, args: string[], dir: string, env: NodeJS.ProcessEnv): string {
+  const res = spawnSync(process.execPath, [script, ...args, '--dir', dir], { encoding: 'utf8', env: { ...process.env, ...env } })
+  return (res.stdout ?? '') + (res.stderr ?? '')
+}
+
 describe('adopt-rules installer — registered-agents note (derived, not hard-coded)', () => {
   it('--set agents lists every plugin/agents/*.md under workflow-toolbox:<name>, distinct from ABSENT pilot-suite items', () => {
     const d = mkDir()
@@ -812,5 +817,63 @@ describe('adopt-rules installer — registered-agents note (derived, not hard-co
     const { script } = makePluginCopy()
     const out = runCopy(script, ['--set', 'rules', '--check'], d)
     expect(out).not.toContain('other agent(s) ship with the plugin')
+  })
+})
+
+describe('adopt-rules installer — registered-agent shadowing note', () => {
+  function firstRegisteredAgentName(agentsDir: string): string {
+    const first = readdirSync(agentsDir)
+      .filter((f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md')
+      .sort()[0]
+    expect(first, 'fixture plugin copy should have at least one registered agent').toBeTruthy()
+    if (!first) throw new Error('fixture plugin copy should have at least one registered agent')
+    return first.replace(/\.md$/, '')
+  }
+
+  it('no user-level copy: the note contains no shadowing line at all', () => {
+    const d = mkDir()
+    const cfg = mkDir()
+    const { script } = makePluginCopy()
+    const out = runCopyEnv(script, ['--set', 'agents', '--check'], d, { CLAUDE_CONFIG_DIR: cfg })
+    expect(out).not.toContain('shadowing')
+    expect(out).not.toContain('DIVERGED')
+  })
+
+  it('an identical user-level copy is reported as shadowing and matching', () => {
+    const d = mkDir()
+    const cfg = mkDir()
+    const { script, agentsDir } = makePluginCopy()
+    const name = firstRegisteredAgentName(agentsDir)
+    mkdirSync(join(cfg, 'agents'), { recursive: true })
+    writeFileSync(join(cfg, 'agents', `${name}.md`), readFileSync(join(agentsDir, `${name}.md`), 'utf8'))
+
+    const out = runCopyEnv(script, ['--set', 'agents', '--check'], d, { CLAUDE_CONFIG_DIR: cfg })
+    expect(out).toContain(`workflow-toolbox:${name} is shadowed by`)
+    expect(out).toContain('(matches the plugin copy)')
+  })
+
+  it('a differing user-level copy is reported as shadowing and DIVERGED, with both mtimes', () => {
+    const d = mkDir()
+    const cfg = mkDir()
+    const { script, agentsDir } = makePluginCopy()
+    const name = firstRegisteredAgentName(agentsDir)
+    mkdirSync(join(cfg, 'agents'), { recursive: true })
+    writeFileSync(join(cfg, 'agents', `${name}.md`), readFileSync(join(agentsDir, `${name}.md`), 'utf8') + '\nlocal divergence\n')
+
+    const out = runCopyEnv(script, ['--set', 'agents', '--check'], d, { CLAUDE_CONFIG_DIR: cfg })
+    expect(out).toContain(`workflow-toolbox:${name} is shadowed by`)
+    expect(out).toContain('DIVERGED')
+    expect(out).toMatch(/plugin mtime=.*user mtime=.*/)
+  })
+
+  it('an absent config agents dir is skipped silently: no throw, no shadowing line', () => {
+    const d = mkDir()
+    const missingCfg = join(mkDir(), 'missing-config-root')
+    const { script } = makePluginCopy()
+    const out = runCopyEnv(script, ['--set', 'agents', '--check'], d, { CLAUDE_CONFIG_DIR: missingCfg })
+    expect(out).toContain('other agent(s) ship with the plugin')
+    expect(out).not.toContain('shadowing')
+    expect(out).not.toContain('DIVERGED')
+    expect(out).not.toContain('adopt-rules: ENOENT')
   })
 })
