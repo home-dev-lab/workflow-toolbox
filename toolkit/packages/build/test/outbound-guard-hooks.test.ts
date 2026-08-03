@@ -89,6 +89,16 @@ const outboundPayload = (agentId: string, sessionId: string, tool: 'SendMessage'
   agent_type: agentType,
   session_id: sessionId,
 })
+const sendMessagePayload = (
+  agentId: string, sessionId: string, message: unknown, agentType = 'some-agent'
+) => ({
+  hook_event_name: 'PostToolUse',
+  tool_name: 'SendMessage',
+  agent_id: agentId,
+  agent_type: agentType,
+  session_id: sessionId,
+  tool_input: { to: 'main', message },
+})
 const spawnPayload = (
   sessionId: string,
   opts: { parentAgentId?: string; childId: string; name: string; subagentType?: string }
@@ -339,6 +349,80 @@ describe('wt-outbound-guard-hook — tolerates a duplicate-registered hook firin
 })
 
 // --------------------------------------------------------------------------
+// WAITING-FOR — card #1828634670422557855: an agent about to go silent can declare, in its own
+// SendMessage, what it is waiting for, so the registry alone (no correlation) can answer "what is
+// this silent agent blocked on". Write side lives in wt-outbound-guard-hook.mjs; the read side
+// (wt-spawn-registry-scan.mjs) is covered further below.
+// --------------------------------------------------------------------------
+describe('wt-outbound-guard-hook — WAITING-FOR declaration (write side)', () => {
+  it('a SendMessage whose first line is "WAITING-FOR: <artifact> @ <path>" writes a waiting record', () => {
+    const { env, dir } = guardEnv('waiting-basic')
+    const r = run(
+      GUARD_HOOK,
+      sendMessagePayload('agent-w1', 'sess-w1', 'WAITING-FOR: run wf_abc123 @ /tmp/runs/wf_abc123.json\n\nrest of the heads-up'),
+      env
+    )
+    expect(r.code).toBe(0)
+    const records = readFileSync(join(dir, 'sess-w1.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+    const waiting = records.find((rec) => rec.t === 'waiting')
+    expect(waiting, `no waiting record in ${JSON.stringify(records)}`).toBeTruthy()
+    expect(waiting).toMatchObject({ artifact: 'run wf_abc123', path: '/tmp/runs/wf_abc123.json' })
+    // still records the ordinary 'out' too -- WAITING-FOR is additive, not a replacement
+    expect(records.some((rec) => rec.t === 'out')).toBe(true)
+  })
+
+  it('a plain SendMessage with no WAITING-FOR line writes NO waiting record', () => {
+    const { env, dir } = guardEnv('waiting-absent')
+    run(GUARD_HOOK, sendMessagePayload('agent-w2', 'sess-w2', 'just a normal heads-up, nothing pending'), env)
+    const records = readFileSync(join(dir, 'sess-w2.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(records.some((rec) => rec.t === 'waiting')).toBe(false)
+  })
+
+  it('a structured protocol message (object, not a string) never crashes and writes NO waiting record', () => {
+    const { env, dir } = guardEnv('waiting-structured')
+    const r = run(
+      GUARD_HOOK,
+      sendMessagePayload('agent-w3', 'sess-w3', { type: 'shutdown_request', reason: 'done' }),
+      env
+    )
+    expect(r.code).toBe(0)
+    const records = readFileSync(join(dir, 'sess-w3.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(records.some((rec) => rec.t === 'waiting')).toBe(false)
+    expect(records.some((rec) => rec.t === 'out')).toBe(true) // the send itself is still recorded
+  })
+
+  // FAILS BEFORE A FIX THAT ACCUMULATES/TOGGLES INSTEAD OF POSING: the same real event fired
+  // TWICE (a hook registered at both plugin and project level) must leave the registry in
+  // EXACTLY the state a single fire would -- this is the idempotence invariant from BRIEF B2,
+  // proven by actually firing the hook twice, never by re-reading the code.
+  it('B2 IDEMPOTENCE LOCK: firing the SAME SendMessage event twice leaves the same waiting state as firing it once', () => {
+    const singleFireDir = mkRoot('waiting-idem-single')
+    const doubleFireDir = mkRoot('waiting-idem-double')
+    const payload = sendMessagePayload('agent-idem', 'sess-idem', 'WAITING-FOR: the nightly build @ /var/log/build.log')
+
+    run(GUARD_HOOK, payload, { ...process.env, WT_OUTBOUND_GUARD_DIR: singleFireDir })
+
+    run(GUARD_HOOK, payload, { ...process.env, WT_OUTBOUND_GUARD_DIR: doubleFireDir })
+    run(GUARD_HOOK, payload, { ...process.env, WT_OUTBOUND_GUARD_DIR: doubleFireDir }) // duplicate fire, same real event
+
+    const readWaiting = (dir: string) =>
+      readFileSync(join(dir, 'sess-idem.jsonl'), 'utf8').trim().split('\n')
+        .map((l) => JSON.parse(l) as Record<string, unknown>)
+        .filter((rec) => rec.t === 'waiting')
+
+    const single = readWaiting(singleFireDir)
+    const double = readWaiting(doubleFireDir)
+    // The double-fired log may carry more RAW lines (append-only, nothing is skipped), but the
+    // DERIVED state -- the set of distinct (artifact, path) values ever declared -- must be
+    // identical: posing the same fact twice is not a new fact.
+    expect(double.length).toBeGreaterThanOrEqual(single.length)
+    const distinct = (recs: Array<Record<string, unknown>>) =>
+      new Set(recs.map((r) => JSON.stringify({ artifact: r.artifact, path: r.path })))
+    expect(distinct(double)).toEqual(distinct(single))
+  })
+})
+
+// --------------------------------------------------------------------------
 // wt-spawn-registry-scan.mjs — read-only reader of the registry the hook above writes
 // --------------------------------------------------------------------------
 describe('wt-spawn-registry-scan.mjs — reports what is unaccounted for', () => {
@@ -534,6 +618,155 @@ describe('wt-spawn-registry-scan.mjs — reports what is unaccounted for', () =>
     const parsed = JSON.parse(r.stdout) as { open: number; flagged: Array<{ name: string }> }
     expect(parsed.open).toBe(1) // not 2 -- one duplicated spawn edge, one real open agent
     expect(parsed.flagged.filter((f) => f.name === 'dup-worker')).toHaveLength(1)
+  })
+})
+
+// --------------------------------------------------------------------------
+// wt-spawn-registry-scan.mjs — WAITING-FOR (read side): closure criterion 1 (identifiable from
+// the registry alone) and criterion 2 (a resumed agent no longer appears waiting).
+// --------------------------------------------------------------------------
+describe('wt-spawn-registry-scan.mjs — WAITING-FOR surfaces on flagged/confirmedAlive entries, and clears on resume', () => {
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
+
+  it('CLOSURE CRITERION 1: a flagged (open+silent) agent with a waiting declaration carries waitingFor, identifiable with no correlation', () => {
+    const dir = mkRoot('waiting-flagged')
+    const spawnAt = minutesAgo(45)
+    const waitAt = minutesAgo(44) // declared shortly after spawn, still the LATEST out/waiting pair
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'awaiter', name: 'awaiter', at: spawnAt }),
+        JSON.stringify({ t: 'out', agentId: 'a1', name: 'awaiter', tool: 'SendMessage', at: waitAt }),
+        JSON.stringify({ t: 'waiting', agentId: 'a1', name: 'awaiter', artifact: 'run wf_xyz', path: '/tmp/wf_xyz.json', at: waitAt }),
+      ].join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, ['--quiet-min', '20', '--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    expect(r.code).toBe(1)
+    const parsed = JSON.parse(r.stdout) as { flagged: Array<{ name: string; waitingFor: { artifact: string; path: string } | null }> }
+    const entry = parsed.flagged.find((f) => f.name === 'awaiter')
+    expect(entry, `no flagged entry in ${JSON.stringify(parsed)}`).toBeTruthy()
+    expect(entry!.waitingFor).toEqual({ artifact: 'run wf_xyz', path: '/tmp/wf_xyz.json' })
+  })
+
+  it('an open+silent agent that NEVER declared a wait carries waitingFor: null', () => {
+    const dir = mkRoot('waiting-null')
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'plain-worker', name: 'plain-worker', at: minutesAgo(45) }) + '\n'
+    )
+    const r = runNoInput(SCAN, ['--quiet-min', '20', '--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    const parsed = JSON.parse(r.stdout) as { flagged: Array<{ name: string; waitingFor: unknown }> }
+    expect(parsed.flagged.find((f) => f.name === 'plain-worker')!.waitingFor).toBeNull()
+  })
+
+  // CLOSURE CRITERION 2, THE ONE THAT MATTERS AS MUCH AS #1: a resumed agent must NOT still
+  // read as waiting. Modeled here by a LATER plain 'out' (no WAITING-FOR line) after the
+  // declaration -- the agent spoke again, so the earlier wait no longer describes it. FAILS
+  // BEFORE THE FIX if waitingFor were computed by mere EXISTENCE of a 'waiting' record instead
+  // of latest-timestamp-wins.
+  it('CLOSURE CRITERION 2: a later plain message (no WAITING-FOR line) ERASES the waiting state', () => {
+    const dir = mkRoot('waiting-erased')
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'resumed-worker', name: 'resumed-worker', at: minutesAgo(45) }),
+        JSON.stringify({ t: 'out', agentId: 'a2', name: 'resumed-worker', tool: 'SendMessage', at: minutesAgo(44) }),
+        JSON.stringify({ t: 'waiting', agentId: 'a2', name: 'resumed-worker', artifact: 'run wf_old', path: '/tmp/wf_old.json', at: minutesAgo(44) }),
+        // resumed: a later message, no WAITING-FOR line -- but still recent enough to stay under
+        // the quiet-min threshold so it does not accidentally get filtered out by staleness.
+        JSON.stringify({ t: 'out', agentId: 'a2', name: 'resumed-worker', tool: 'SendMessage', at: minutesAgo(1) }),
+      ].join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, ['--quiet-min', '20', '--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    const parsed = JSON.parse(r.stdout) as { open: number; flagged: unknown[] }
+    // it spoke 1 min ago -- under the 20 min quiet-min threshold, so it is open but NOT flagged;
+    // read the RAW open state instead via a 0-threshold pass to inspect waitingFor directly.
+    const r0 = runNoInput(SCAN, ['--quiet-min', '0', '--stale-transcript-min', '999', '--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    const parsed0 = JSON.parse(r0.stdout) as { flagged: Array<{ name: string; waitingFor: unknown }>; confirmedAlive: Array<{ name: string; waitingFor: unknown }> }
+    const all = [...parsed0.flagged, ...parsed0.confirmedAlive]
+    const entry = all.find((f) => f.name === 'resumed-worker')
+    expect(entry, `resumed-worker not found in ${JSON.stringify(parsed0)}`).toBeTruthy()
+    expect(entry!.waitingFor).toBeNull()
+    expect(parsed.flagged).toEqual([]) // sanity: confirms it was never flagged in this fixture either
+  })
+
+  // TEST-LOCK for the cross-family review finding (opencode gpt-5.6-terra, card
+  // #1828634670422557855): a pure timestamp comparison for erasure ties toward "still waiting"
+  // when two DISTINCT real events share the same millisecond-resolution `at` — which can and does
+  // happen (two sequential SendMessage calls hook-processed back to back). File order IS
+  // chronological order for records sharing a name (same fix shape as the guard hook's own
+  // arc-slicing-by-position comment), so resolution must follow FILE ORDER, not the `at` value.
+  // FAILS BEFORE THE FIX (a `w.at < lastOutboundAt` timestamp comparison ties toward waiting).
+  it('TEST-LOCK: same-millisecond tie resolves by FILE ORDER, not by the (identical) timestamp value', () => {
+    const dir = mkRoot('waiting-tie-order')
+    const T = minutesAgo(44) // identical `at` on both the 'waiting' and the later 'out'
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'tie-worker', name: 'tie-worker', at: minutesAgo(45) }),
+        // waiting declared FIRST in file order...
+        JSON.stringify({ t: 'out', agentId: 'a5', name: 'tie-worker', tool: 'SendMessage', at: T }),
+        JSON.stringify({ t: 'waiting', agentId: 'a5', name: 'tie-worker', artifact: 'old wait', path: '/tmp/old.log', at: T }),
+        // ...then a LATER real call (a genuine resume, no WAITING-FOR line) that happens to land
+        // on the SAME millisecond `at` value as the declaration above.
+        JSON.stringify({ t: 'out', agentId: 'a5', name: 'tie-worker', tool: 'SendMessage', at: T }),
+      ].join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, ['--quiet-min', '0', '--stale-transcript-min', '999', '--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    const parsed = JSON.parse(r.stdout) as { flagged: Array<{ name: string; waitingFor: unknown }>; confirmedAlive: Array<{ name: string; waitingFor: unknown }> }
+    const entry = [...parsed.flagged, ...parsed.confirmedAlive].find((f) => f.name === 'tie-worker')
+    expect(entry, `tie-worker not found: ${JSON.stringify(parsed)}`).toBeTruthy()
+    expect(entry!.waitingFor).toBeNull() // the LATER (by file order) plain message must win the tie
+
+    // Symmetric case: waiting declared LAST in file order -> must still read as waiting, even
+    // though its `at` is identical to the earlier plain message.
+    const dir2 = mkRoot('waiting-tie-order-2')
+    writeFileSync(
+      join(dir2, 'sess.jsonl'),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'tie-worker-2', name: 'tie-worker-2', at: minutesAgo(45) }),
+        JSON.stringify({ t: 'out', agentId: 'a6', name: 'tie-worker-2', tool: 'SendMessage', at: T }),
+        JSON.stringify({ t: 'out', agentId: 'a6', name: 'tie-worker-2', tool: 'SendMessage', at: T }),
+        JSON.stringify({ t: 'waiting', agentId: 'a6', name: 'tie-worker-2', artifact: 'new wait', path: '/tmp/new.log', at: T }),
+      ].join('\n') + '\n'
+    )
+    const r2 = runNoInput(SCAN, ['--quiet-min', '0', '--stale-transcript-min', '999', '--json'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir2 })
+    const parsed2 = JSON.parse(r2.stdout) as { flagged: Array<{ name: string; waitingFor: { artifact: string; path: string } | null }>; confirmedAlive: Array<{ name: string; waitingFor: { artifact: string; path: string } | null }> }
+    const entry2 = [...parsed2.flagged, ...parsed2.confirmedAlive].find((f) => f.name === 'tie-worker-2')
+    expect(entry2, `tie-worker-2 not found: ${JSON.stringify(parsed2)}`).toBeTruthy()
+    expect(entry2!.waitingFor).toEqual({ artifact: 'new wait', path: '/tmp/new.log' })
+  })
+
+  it('waitingFor also surfaces on a CONFIRMED-ALIVE entry (silent by message but transcript growing)', () => {
+    const { env, dir } = transcriptEnv('waiting-alive', { sessionId: 'sess-wa', cwd: '/fake/waiting-alive', name: 'busy-awaiter', transcriptAgeMin: 1 })
+    writeFileSync(
+      join(dir, 'sess-wa.jsonl'),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'busy-awaiter', name: 'busy-awaiter', at: minutesAgo(45) }),
+        JSON.stringify({ t: 'out', agentId: 'a3', name: 'busy-awaiter', tool: 'SendMessage', at: minutesAgo(44) }),
+        JSON.stringify({ t: 'waiting', agentId: 'a3', name: 'busy-awaiter', artifact: 'delegated run', path: '/tmp/delegated.log', at: minutesAgo(44) }),
+      ].join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, ['--session', 'sess-wa', '--cwd', '/fake/waiting-alive', '--json'], env)
+    const parsed = JSON.parse(r.stdout) as { confirmedAlive: Array<{ name: string; waitingFor: { artifact: string; path: string } | null }> }
+    const entry = parsed.confirmedAlive.find((f) => f.name === 'busy-awaiter')
+    expect(entry, `busy-awaiter not in confirmedAlive: ${JSON.stringify(parsed)}`).toBeTruthy()
+    expect(entry!.waitingFor).toEqual({ artifact: 'delegated run', path: '/tmp/delegated.log' })
+  })
+
+  it('human-text mode prints "waiting for: <artifact> @ <path>" under a flagged entry', () => {
+    const dir = mkRoot('waiting-text')
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'text-awaiter', name: 'text-awaiter', at: minutesAgo(45) }),
+        JSON.stringify({ t: 'out', agentId: 'a4', name: 'text-awaiter', tool: 'SendMessage', at: minutesAgo(44) }),
+        JSON.stringify({ t: 'waiting', agentId: 'a4', name: 'text-awaiter', artifact: 'nightly build', path: '/var/log/build.log', at: minutesAgo(44) }),
+      ].join('\n') + '\n'
+    )
+    const r = runNoInput(SCAN, ['--quiet-min', '20'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    expect(r.code).toBe(1)
+    expect(r.stdout).toContain('waiting for: nightly build @ /var/log/build.log')
   })
 })
 

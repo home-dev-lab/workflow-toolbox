@@ -220,6 +220,32 @@ const lastByAgentId = (t) => {
 const stoppedById = lastByAgentId('stop');
 const spokeById = lastByAgentId('out');
 
+// WAITING-FOR — read side of the convention wt-outbound-guard-hook.mjs writes (see its own
+// comment for the wire format and the idempotence/erasure invariants).
+//
+// ⚠ RESOLVED BY POSITION, NEVER BY TIMESTAMP — same fix shape as the arc-slicing logic in
+// wt-outbound-guard-hook.mjs ("Records written in the same millisecond share an `at`, so a time
+// comparison drops a record that sits exactly on the boundary"). A cross-family review (opencode
+// gpt-5.6-terra) caught the same defect here: two DISTINCT real SendMessage calls landing in the
+// same millisecond (plausible — ISO timestamps are millisecond-resolution and two calls can be
+// hook-processed back to back) would tie under a `w.at < lastOutboundAt` comparison, and the tie
+// resolved toward "still waiting" regardless of which call was ACTUALLY later — silently
+// re-opening the exact false-positive class the erasure design exists to close. File order IS
+// chronological order for records sharing a name (append-only log, sequential tool calls), so a
+// single forward pass that overwrites state on every 'out'/'waiting' record — last write in FILE
+// ORDER wins — is immune to millisecond ties. It is also idempotence-safe under duplicate
+// registration: replays of the SAME real event write the SAME (type, name) pair again in
+// immediate succession, so a chain of identical overwrites lands on the same final value as one.
+const waitingState = new Map(); // name -> {artifact, path} | null, walked in file (chronological) order
+for (const r of records) {
+  if (!r.name) continue;
+  if (r.t === 'out') waitingState.set(r.name, null);
+  else if (r.t === 'waiting') waitingState.set(r.name, { artifact: r.artifact ?? null, path: r.path ?? null });
+}
+function waitingForOf(name) {
+  return waitingState.get(name) || null;
+}
+
 const now = Date.now();
 const open = [];
 // Spawns made without a name return no child identity, so nothing can join them to the stop
@@ -257,6 +283,7 @@ for (const s of spawns) {
     lastOutbound: spokenAt || null,
     quietMin,
     transcriptFreshMin,
+    waitingFor: waitingForOf(name),
   });
 }
 
@@ -311,6 +338,7 @@ if (confirmedAlive.length) {
   console.log('(their transcript is still growing) — not asked about:');
   for (const o of confirmedAlive) {
     console.log(`  ${o.name} — transcript touched ~${Math.round(o.transcriptFreshMin)} min ago`);
+    if (o.waitingFor) console.log(`    waiting for: ${o.waitingFor.artifact} @ ${o.waitingFor.path}`);
   }
   console.log('');
 }
@@ -329,6 +357,7 @@ for (const o of flagged) {
   console.log(`    silent for ~${o.quietMin} min · ${o.lastOutbound ? `last spoke ${o.lastOutbound}` : 'NEVER spoke'}`);
   console.log(`    transcript: ${o.transcriptFreshMin === null ? 'not found (cannot confirm liveness)' : `last grew ~${Math.round(o.transcriptFreshMin)} min ago`}`);
   if (o.purpose) console.log(`    was doing: ${o.purpose}`);
+  if (o.waitingFor) console.log(`    waiting for: ${o.waitingFor.artifact} @ ${o.waitingFor.path}`);
   console.log('');
 }
 console.log('This does NOT mean they are dead. A stale/missing transcript does not PROVE death —');

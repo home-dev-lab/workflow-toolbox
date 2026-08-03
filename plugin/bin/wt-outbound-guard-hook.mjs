@@ -64,6 +64,50 @@ const STATE_DIR = process.env.WT_OUTBOUND_GUARD_DIR
 const OUTBOUND_TOOLS = new Set(['SendMessage']);
 const SPAWN_TOOLS = new Set(['Agent', 'Task']);
 
+// WAITING-FOR — an agent that is about to go silent while it awaits something (a background run,
+// a delegated executor) can say so, IN ITS OWN MESSAGE, so a reader of the registry alone — no
+// correlation, no process inspection — can see what a silent agent is blocked on. The convention
+// is deliberately a plain-text first line, not a new tool or a new SendMessage protocol type: the
+// SendMessage schema only accepts a string or one of a FIXED set of structured protocol shapes
+// (shutdown_request, plan_approval_request, …), so a bespoke object would fail client-side
+// validation before this hook ever saw it. A recognizable first line survives that constraint
+// and keeps the declaration inside a message a human recipient can also read.
+//
+//   WAITING-FOR: <what you are waiting for> @ <path or id a third party can arm a signal on>
+//
+// WHY THIS IS POSED, NEVER ACCUMULATED (the idempotence invariant this file's DOUBLE REGISTRATION
+// note already established for every other record type here). This hook writes a 'waiting' record
+// alongside the 'out' record it already writes for every SendMessage — same event, same `at`
+// timestamp, both appended once per real send. A reader NEVER folds 'waiting' records together
+// (no counter, no stack): it asks "what is the LATEST timestamp among this agent's 'out' and
+// 'waiting' records, and is that latest record a 'waiting' one?" — replaying the same event N
+// times (duplicate registration) writes N copies of the SAME (type, at) pair, which changes
+// nothing about which record has the latest timestamp. See wt-spawn-registry-scan.mjs for the
+// read side.
+//
+// WHY ERASURE NEEDS NO SEPARATE 'CLEARED' RECORD (closure criterion 2 — a resumed agent must not
+// still look asleep). The next thing this agent tells anyone — any further SendMessage, with or
+// without a new WAITING-FOR line — carries a STRICTLY LATER timestamp than the 'waiting' record,
+// so the read-side "latest wins" comparison above stops seeing 'waiting' as the latest record on
+// its own, with no action required from the agent beyond the message it was already going to send
+// per the outbound-guard contract. An agent that stops instead is excluded from the registry's
+// "open" set entirely (it has an ending), so its stale waiting state is moot by construction.
+//
+// RESIDUAL, NAMED HONESTLY: this signal is scoped to MESSAGES, mirroring OUTBOUND_TOOLS above (a
+// Write/Edit/Bash tool call does not clear it). An agent that resumes real work without sending
+// another message keeps showing its last declared wait until it next speaks or stops. That is the
+// same boundary the rest of this file already draws around what counts as "the agent said
+// something" — widening it to every tool call would re-open the noise problem OUTBOUND_TOOLS was
+// narrowed twice to avoid (see the comment above it).
+const WAITING_FOR_RE = /^WAITING-FOR:\s*(.+?)\s*@\s*(\S.*)$/;
+function parseWaitingFor(message) {
+  if (typeof message !== 'string') return null; // structured protocol messages never carry this
+  const firstLine = message.split('\n')[0].trim();
+  const m = WAITING_FOR_RE.exec(firstLine);
+  if (!m) return null;
+  return { artifact: m[1].trim(), path: m[2].trim() };
+}
+
 // DOUBLE REGISTRATION: nothing stops an adopter from ALSO registering this same hook at project
 // level on top of the plugin-level registration — a natural mistake nobody notices, and it makes
 // every hook event fire TWICE. Two 'stop' records per real stop corrupts the arc math further
@@ -225,6 +269,13 @@ try {
         t: 'out', agentId, name: normalizeName(payload?.agent_type ?? agentId),
         tool: payload.tool_name, toolUseId: payload?.tool_use_id ?? null, at: now,
       });
+      const waiting = parseWaitingFor(payload?.tool_input?.message);
+      if (waiting) {
+        append(file, {
+          t: 'waiting', agentId, name: normalizeName(payload?.agent_type ?? agentId),
+          artifact: waiting.artifact, path: waiting.path, at: now,
+        });
+      }
     }
     process.exit(0);
   }
