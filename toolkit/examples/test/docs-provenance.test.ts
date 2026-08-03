@@ -12,10 +12,20 @@ import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { DOCS_PROVENANCE, docsForChangedFiles } from '../docs-provenance.js'
-import type { ProvenanceEntry } from '../docs-provenance.js'
+import {
+  auditPluginBinCoverage,
+  DOCS_PROVENANCE,
+  docsForChangedFiles,
+  PLUGIN_BIN_DOC_DECISIONS,
+} from '../docs-provenance.js'
+import type { PluginBinDocDecision, ProvenanceEntry } from '../docs-provenance.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../..', import.meta.url))
+const PLUGIN_BIN_DIR = join(REPO_ROOT, 'plugin/bin')
+const SHIPPED_PLUGIN_BIN_SCRIPTS = readdirSync(PLUGIN_BIN_DIR)
+  .filter((name) => name.endsWith('.mjs'))
+  .map((name) => `plugin/bin/${name}`)
+  .sort()
 
 describe('docs-provenance — manifest integrity against the real tree', () => {
   it('has entries', () => {
@@ -146,5 +156,81 @@ describe('docsForChangedFiles — explicit manifest parameter (pr-review provena
   it('passing the bundled manifest explicitly behaves exactly like the default', () => {
     const changed = ['toolkit/packages/scaffold/src/scaffold.ts']
     expect(docsForChangedFiles(changed, DOCS_PROVENANCE)).toEqual(docsForChangedFiles(changed))
+  })
+})
+
+describe('plugin/bin documentation classification — shipped executables are accounted for explicitly', () => {
+  const fixtureMappedManifest: readonly ProvenanceEntry[] = [
+    {
+      sources: ['plugin/bin/fixture-mapped.mjs'],
+      docs: ['README.md'],
+    },
+  ]
+
+  it('flags a shipped executable with neither a manifest mapping nor a recorded outcome, by name', () => {
+    expect(
+      auditPluginBinCoverage(['plugin/bin/fixture-gap.mjs'], [], []).unclassified,
+    ).toEqual(['plugin/bin/fixture-gap.mjs'])
+  })
+
+  it('stays silent for a shipped executable with a recorded exemption', () => {
+    const exemptDecision: readonly PluginBinDocDecision[] = [
+      {
+        script: 'plugin/bin/fixture-exempt.mjs',
+        status: 'exempt',
+        reason: 'Fixture-only manifest shim with no user-facing output.',
+      },
+    ]
+    expect(
+      auditPluginBinCoverage(['plugin/bin/fixture-exempt.mjs'], [], exemptDecision),
+    ).toEqual({
+      unclassified: [],
+      unknownRecordedScripts: [],
+      duplicateRecordedScripts: [],
+      mappedWithoutManifest: [],
+      nonMappedDecisionsWithManifestEntry: [],
+      manifestScriptsWithoutMappedDecision: [],
+    })
+  })
+
+  it('stays silent for a shipped executable that is manifest-mapped', () => {
+    const mappedDecision: readonly PluginBinDocDecision[] = [
+      {
+        script: 'plugin/bin/fixture-mapped.mjs',
+        status: 'mapped',
+        reason: 'Fixture-only mapped executable.',
+      },
+    ]
+    expect(
+      auditPluginBinCoverage(
+        ['plugin/bin/fixture-mapped.mjs'],
+        fixtureMappedManifest,
+        mappedDecision,
+      ),
+    ).toEqual({
+      unclassified: [],
+      unknownRecordedScripts: [],
+      duplicateRecordedScripts: [],
+      mappedWithoutManifest: [],
+      nonMappedDecisionsWithManifestEntry: [],
+      manifestScriptsWithoutMappedDecision: [],
+    })
+  })
+
+  it('the real plugin/bin tree is silent after the recorded classification', () => {
+    expect(
+      auditPluginBinCoverage(
+        SHIPPED_PLUGIN_BIN_SCRIPTS,
+        DOCS_PROVENANCE,
+        PLUGIN_BIN_DOC_DECISIONS,
+      ),
+    ).toEqual({
+      unclassified: [],
+      unknownRecordedScripts: [],
+      duplicateRecordedScripts: [],
+      mappedWithoutManifest: [],
+      nonMappedDecisionsWithManifestEntry: [],
+      manifestScriptsWithoutMappedDecision: [],
+    })
   })
 })

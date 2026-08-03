@@ -25,6 +25,188 @@ export interface ProvenanceEntry {
   readonly docs: readonly string[]
 }
 
+export interface PluginBinDocDecision {
+  /** Repo-relative shipped executable path under plugin/bin/. */
+  readonly script: `plugin/bin/${string}.mjs`
+  /** How this shipped executable is accounted for in the doc inventory. */
+  readonly status: 'mapped' | 'exempt' | 'missing-doc-surface'
+  /** One-line reason for the recorded outcome. */
+  readonly reason: string
+}
+
+export interface PluginBinCoverageAudit {
+  /** Shipped plugin/bin scripts with neither a manifest mapping nor a recorded outcome. */
+  readonly unclassified: readonly string[]
+  /** Recorded decisions whose script path is not a shipped plugin/bin executable. */
+  readonly unknownRecordedScripts: readonly string[]
+  /** Duplicate decision entries for the same shipped script. */
+  readonly duplicateRecordedScripts: readonly string[]
+  /** Scripts recorded as mapped but absent from the docs-provenance manifest. */
+  readonly mappedWithoutManifest: readonly string[]
+  /** Scripts recorded as exempt/missing but ALSO mapped in the manifest. */
+  readonly nonMappedDecisionsWithManifestEntry: readonly string[]
+  /** Exact plugin/bin manifest entries lacking a matching `mapped` decision. */
+  readonly manifestScriptsWithoutMappedDecision: readonly string[]
+}
+
+export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
+  {
+    script: 'plugin/bin/wt-actionable-gate-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the shipped Stop gate and its snapshot contract.',
+  },
+  {
+    script: 'plugin/bin/wt-adopt-rules-check-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The SessionStart adoption-state notice is user-facing but no durable doc surface describes this hook.',
+  },
+  {
+    script: 'plugin/bin/wt-arc-watch.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Shipped monitor with its own CLI/output contract, but no durable doc surface describes it.',
+  },
+  {
+    script: 'plugin/bin/wt-check-commit-signatures-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The PostToolUse commit-signature notice is user-facing, but no durable doc surface describes this hook.',
+  },
+  {
+    script: 'plugin/bin/wt-check-commit-signatures.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Standalone CLI with a remediation contract, but no durable doc surface describes it.',
+  },
+  {
+    script: 'plugin/bin/wt-check-observer-pairing.mjs',
+    status: 'mapped',
+    reason: 'Wave-fidelity checker docs tell operators to run and interpret this CLI.',
+  },
+  {
+    script: 'plugin/bin/wt-debug.mjs',
+    status: 'mapped',
+    reason: 'Public debugger CLI described in the README, architecture, toolkit docs, and debugger skill docs.',
+  },
+  {
+    script: 'plugin/bin/wt-delegation-ladder-hook.mjs',
+    status: 'mapped',
+    reason: 'README and plugin docs describe the shipped SessionStart delegation-ladder injection.',
+  },
+  {
+    script: 'plugin/bin/wt-lane-probe.mjs',
+    status: 'mapped',
+    reason: 'Pilot orchestrator docs tell operators to run this probe to verify executor routing.',
+  },
+  {
+    script: 'plugin/bin/wt-memory-index-check-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The SessionStart knowledge-base warning is user-facing, but no durable doc surface describes this hook.',
+  },
+  {
+    script: 'plugin/bin/wt-memory-index-check.mjs',
+    status: 'mapped',
+    reason: 'Fidelity-checker docs instruct operators to run and consume this CLI/report.',
+  },
+  {
+    script: 'plugin/bin/wt-observe.mjs',
+    status: 'mapped',
+    reason: 'Public launcher CLI with durable docs across the README, toolkit docs, and debugger docs.',
+  },
+  {
+    script: 'plugin/bin/wt-outbound-guard-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The shipped spawn-registry writer/nudge hook is user-facing, but no durable doc surface describes it.',
+  },
+  {
+    script: 'plugin/bin/wt-pilot-card-reconcile.mjs',
+    status: 'mapped',
+    reason: 'Pilot orchestrator docs tell operators to run this reconciliation CLI on claimed cards.',
+  },
+  {
+    script: 'plugin/bin/wt-pilot-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Pilot docs explicitly describe this shipped guard and the verbs it refuses.',
+  },
+  {
+    script: 'plugin/bin/wt-push-scope-check.mjs',
+    status: 'mapped',
+    reason: 'Pilot docs instruct operators to run this push-scope guard before escalation/push.',
+  },
+  {
+    script: 'plugin/bin/wt-queue-not-empty-gate-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Shipped tracker-agnostic Stop gate with a marker contract, but no durable doc surface describes it.',
+  },
+  {
+    script: 'plugin/bin/wt-quota-probe.mjs',
+    status: 'mapped',
+    reason: 'README, privacy, and security docs describe this bundled public quota probe.',
+  },
+  {
+    script: 'plugin/bin/wt-quota-watch.mjs',
+    status: 'mapped',
+    reason: 'README, privacy, and security docs describe the bundled quota monitor and probe pairing.',
+  },
+  {
+    script: 'plugin/bin/wt-registry-heartbeat-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the shipped Stop heartbeat and its repeated-block semantics.',
+  },
+  {
+    script: 'plugin/bin/wt-run-gate.mjs',
+    status: 'mapped',
+    reason: 'Pilot docs instruct operators to use this non-bypassable gate runner for repo gates.',
+  },
+  {
+    script: 'plugin/bin/wt-service-watch.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Shipped service monitor with its own output/flag contract, but no durable doc surface describes it.',
+  },
+  {
+    script: 'plugin/bin/wt-session-start-registry-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The SessionStart unfinished-agent notice is user-facing, but no durable doc surface describes this hook.',
+  },
+  {
+    script: 'plugin/bin/wt-spawn-capability-guard-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Shipped PreToolUse guard with direct deny behavior, but no durable doc surface describes it.',
+  },
+  {
+    script: 'plugin/bin/wt-spawn-registry-scan.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Standalone scan/ack CLI for unfinished agent arcs, but no durable doc surface describes it.',
+  },
+  {
+    script: 'plugin/bin/wt-spawn-shape-guard-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Shipped PreToolUse spawn-shape guard with user-visible deny output, but no durable doc surface describes it.',
+  },
+  {
+    script: 'plugin/bin/wt-stale-date-guard-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The PostToolUse stale-deadline notice is user-facing, but no durable doc surface describes this hook.',
+  },
+  {
+    script: 'plugin/bin/wt-stale-date-guard.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Standalone stale-deadline CLI exists, but only changelog prose mentions it today.',
+  },
+  {
+    script: 'plugin/bin/wt-stop-hook.mjs',
+    status: 'mapped',
+    reason: 'README, architecture, privacy, security, and toolkit docs describe this shipped Stop hook.',
+  },
+  {
+    script: 'plugin/bin/wt-verdict-cap-check.mjs',
+    status: 'mapped',
+    reason: 'Fidelity-checker docs tell operators to run this CLI on verifier reports.',
+  },
+  {
+    script: 'plugin/bin/wt-verifier-cli-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Opencode-verifier and routing docs describe the shipped mechanical verifier guard.',
+  },
+]
+
 export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
     // AgentType probing + the leaf fence + lean routing (availability gates,
@@ -213,7 +395,136 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'toolkit/packages/comm/teaching/wt-comm-observer-consumer.md',
     ],
   },
+  {
+    // Public debugger/observability executables shipped under plugin/bin/.
+    sources: [
+      'plugin/bin/wt-debug.mjs',
+      'plugin/bin/wt-observe.mjs',
+      'plugin/bin/wt-stop-hook.mjs',
+    ],
+    docs: [
+      'README.md',
+      'toolkit/README.md',
+      'docs/public/architecture.md',
+      'plugin/skills/workflow-debugger/SKILL.md',
+      'plugin/skills/workflow-composer/references/observing-runs.md',
+      'PRIVACY.md',
+      'SECURITY.md',
+    ],
+  },
+  {
+    // Bundled quota monitor/probe pair.
+    sources: ['plugin/bin/wt-quota-probe.mjs', 'plugin/bin/wt-quota-watch.mjs'],
+    docs: ['README.md', 'PRIVACY.md', 'SECURITY.md'],
+  },
+  {
+    // Pilot operators are instructed to run these helper CLIs/guards directly.
+    sources: [
+      'plugin/bin/wt-run-gate.mjs',
+      'plugin/bin/wt-push-scope-check.mjs',
+      'plugin/bin/wt-pilot-guard-hook.mjs',
+      'plugin/bin/wt-pilot-card-reconcile.mjs',
+      'plugin/bin/wt-lane-probe.mjs',
+    ],
+    docs: [
+      'plugin/agent-templates/pilot.md',
+      'plugin/agent-templates/pilot-orchestrator.md',
+      'plugin/launch-agents/agents/pilot.md',
+      'plugin/launch-agents/agents/pilot-orchestrator.md',
+    ],
+  },
+  {
+    // The verifier backstop is part of the shipped opencode-verifier contract.
+    sources: ['plugin/bin/wt-verifier-cli-guard-hook.mjs'],
+    docs: [
+      'plugin/agents/opencode-verifier.md',
+      'plugin/launch-agents/agents/opencode-verifier.md',
+      'plugin/skills/workflow-composer/references/model-and-agent-routing.md',
+    ],
+  },
+  {
+    // Knowledge-base/report verification helper CLIs used by fidelity checking.
+    sources: ['plugin/bin/wt-memory-index-check.mjs', 'plugin/bin/wt-verdict-cap-check.mjs'],
+    docs: ['plugin/agents/fidelity-checker.md', 'plugin/launch-agents/agents/fidelity-checker.md'],
+  },
+  {
+    // Observer pairing verification CLI used by the wave fidelity checker.
+    sources: ['plugin/bin/wt-check-observer-pairing.mjs'],
+    docs: ['plugin/agents/wave-fidelity-checker.md', 'plugin/launch-agents/agents/wave-fidelity-checker.md'],
+  },
+  {
+    // Shipped SessionStart delegation-ladder injection.
+    sources: ['plugin/bin/wt-delegation-ladder-hook.mjs'],
+    docs: ['README.md', 'plugin/skills/adopt-rules/SKILL.md'],
+  },
+  {
+    // Shipped Stop hooks whose operator-facing semantics are documented as known issues/contracts.
+    sources: [
+      'plugin/bin/wt-actionable-gate-hook.mjs',
+      'plugin/bin/wt-registry-heartbeat-hook.mjs',
+    ],
+    docs: ['docs/public/known-issues.md'],
+  },
 ]
+
+function mappedPluginBinScripts(manifest: readonly ProvenanceEntry[]): Set<string> {
+  return new Set(
+    manifest.flatMap((entry) =>
+      entry.sources.filter(
+        (source) => source.startsWith('plugin/bin/') && source.endsWith('.mjs'),
+      ),
+    ),
+  )
+}
+
+/** Audit whether shipped plugin/bin executables are all either manifest-mapped or explicitly
+ *  recorded with a reason. `missing-doc-surface` is SILENT here on purpose: the gap is then
+ *  explicit and reportable, not invisible by omission. */
+export function auditPluginBinCoverage(
+  shippedScripts: readonly string[],
+  manifest: readonly ProvenanceEntry[] = DOCS_PROVENANCE,
+  decisions: readonly PluginBinDocDecision[] = PLUGIN_BIN_DOC_DECISIONS,
+): PluginBinCoverageAudit {
+  const shipped = [...new Set(shippedScripts)].sort()
+  const mapped = mappedPluginBinScripts(manifest)
+  const decisionCounts = new Map<string, number>()
+  const decisionByScript = new Map<string, PluginBinDocDecision>()
+  for (const decision of decisions) {
+    decisionCounts.set(decision.script, (decisionCounts.get(decision.script) ?? 0) + 1)
+    if (!decisionByScript.has(decision.script)) decisionByScript.set(decision.script, decision)
+  }
+
+  const unclassified = shipped.filter(
+    (script) => !mapped.has(script) && !decisionByScript.has(script),
+  )
+  const unknownRecordedScripts = [...decisionByScript.keys()]
+    .filter((script) => !shipped.includes(script))
+    .sort()
+  const duplicateRecordedScripts = [...decisionCounts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([script]) => script)
+    .sort()
+  const mappedWithoutManifest = decisions
+    .filter((decision) => decision.status === 'mapped' && !mapped.has(decision.script))
+    .map((decision) => decision.script)
+    .sort()
+  const nonMappedDecisionsWithManifestEntry = decisions
+    .filter((decision) => decision.status !== 'mapped' && mapped.has(decision.script))
+    .map((decision) => decision.script)
+    .sort()
+  const manifestScriptsWithoutMappedDecision = [...mapped]
+    .filter((script) => decisionByScript.get(script)?.status !== 'mapped')
+    .sort()
+
+  return {
+    unclassified,
+    unknownRecordedScripts,
+    duplicateRecordedScripts,
+    mappedWithoutManifest,
+    nonMappedDecisionsWithManifestEntry,
+    manifestScriptsWithoutMappedDecision,
+  }
+}
 
 /** The doc surfaces mapped to any of `changedFiles` (repo-relative), deduped,
  *  in manifest order. Empty array = no mapped module touched → the caller

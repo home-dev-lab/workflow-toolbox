@@ -2200,6 +2200,76 @@ ${renderClaim(claim)}`;
         "toolkit/packages/comm/teaching/wt-comm-participant.md",
         "toolkit/packages/comm/teaching/wt-comm-observer-consumer.md"
       ]
+    },
+    {
+      // Public debugger/observability executables shipped under plugin/bin/.
+      sources: [
+        "plugin/bin/wt-debug.mjs",
+        "plugin/bin/wt-observe.mjs",
+        "plugin/bin/wt-stop-hook.mjs"
+      ],
+      docs: [
+        "README.md",
+        "toolkit/README.md",
+        "docs/public/architecture.md",
+        "plugin/skills/workflow-debugger/SKILL.md",
+        "plugin/skills/workflow-composer/references/observing-runs.md",
+        "PRIVACY.md",
+        "SECURITY.md"
+      ]
+    },
+    {
+      // Bundled quota monitor/probe pair.
+      sources: ["plugin/bin/wt-quota-probe.mjs", "plugin/bin/wt-quota-watch.mjs"],
+      docs: ["README.md", "PRIVACY.md", "SECURITY.md"]
+    },
+    {
+      // Pilot operators are instructed to run these helper CLIs/guards directly.
+      sources: [
+        "plugin/bin/wt-run-gate.mjs",
+        "plugin/bin/wt-push-scope-check.mjs",
+        "plugin/bin/wt-pilot-guard-hook.mjs",
+        "plugin/bin/wt-pilot-card-reconcile.mjs",
+        "plugin/bin/wt-lane-probe.mjs"
+      ],
+      docs: [
+        "plugin/agent-templates/pilot.md",
+        "plugin/agent-templates/pilot-orchestrator.md",
+        "plugin/launch-agents/agents/pilot.md",
+        "plugin/launch-agents/agents/pilot-orchestrator.md"
+      ]
+    },
+    {
+      // The verifier backstop is part of the shipped opencode-verifier contract.
+      sources: ["plugin/bin/wt-verifier-cli-guard-hook.mjs"],
+      docs: [
+        "plugin/agents/opencode-verifier.md",
+        "plugin/launch-agents/agents/opencode-verifier.md",
+        "plugin/skills/workflow-composer/references/model-and-agent-routing.md"
+      ]
+    },
+    {
+      // Knowledge-base/report verification helper CLIs used by fidelity checking.
+      sources: ["plugin/bin/wt-memory-index-check.mjs", "plugin/bin/wt-verdict-cap-check.mjs"],
+      docs: ["plugin/agents/fidelity-checker.md", "plugin/launch-agents/agents/fidelity-checker.md"]
+    },
+    {
+      // Observer pairing verification CLI used by the wave fidelity checker.
+      sources: ["plugin/bin/wt-check-observer-pairing.mjs"],
+      docs: ["plugin/agents/wave-fidelity-checker.md", "plugin/launch-agents/agents/wave-fidelity-checker.md"]
+    },
+    {
+      // Shipped SessionStart delegation-ladder injection.
+      sources: ["plugin/bin/wt-delegation-ladder-hook.mjs"],
+      docs: ["README.md", "plugin/skills/adopt-rules/SKILL.md"]
+    },
+    {
+      // Shipped Stop hooks whose operator-facing semantics are documented as known issues/contracts.
+      sources: [
+        "plugin/bin/wt-actionable-gate-hook.mjs",
+        "plugin/bin/wt-registry-heartbeat-hook.mjs"
+      ],
+      docs: ["docs/public/known-issues.md"]
     }
   ];
   function docsForChangedFiles(changedFiles, manifest = DOCS_PROVENANCE) {
