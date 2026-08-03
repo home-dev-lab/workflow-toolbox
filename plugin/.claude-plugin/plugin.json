@@ -148,6 +148,15 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-queue-not-empty-gate-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }
