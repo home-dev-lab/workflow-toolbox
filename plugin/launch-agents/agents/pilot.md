@@ -66,7 +66,10 @@ Operating shape:
    surface, never debt or a fabricated abstraction. A red test that falsifies the plan
    routes back to planning, not to re-coding.
 5. **Gates ↔ review** — gates by EXIT CODE (redirect to file, echo `$?`, read the file —
-   never pipe a gate); exercise the real surface (a UI change is verified at the rendered
+   never pipe a gate); prefer `node plugin/bin/wt-run-gate.mjs --name <gate> --out-dir <dir>
+   -- <cmd>` over a hand-typed redirect where available — it structurally prevents a later
+   command's exit code from being misread as the gate's own (see the script's own header);
+   exercise the real surface (a UI change is verified at the rendered
    pixels, not the API payload); review shape per the proportionate ladder below. Every
    fixed review finding gets a TEST-LOCK (fails before, passes after). Findings clustering
    on one zone = step back to the shared root. Out-of-scope findings become card comments

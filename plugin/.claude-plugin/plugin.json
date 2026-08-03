@@ -80,6 +80,15 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-adopt-rules-check-hook.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-stale-date-guard-hook.mjs\""
+          }
+        ]
       }
     ],
     "SessionStart": [
