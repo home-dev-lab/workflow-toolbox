@@ -205,15 +205,16 @@ up building two alarms while believing an engine was built:
 
 | Role | What it does | What it does NOT do |
 |---|---|---|
-| something that re-paces itself and hands control back on its own, unprompted | the only thing that actually resumes stopped work | does not survive the end of the current working session |
+| something that re-paces itself and hands control back on its own, unprompted | the only thing that actually resumes stopped work | only exists while the process running it exists — it cannot outlive that |
 | something that watches delegated work and raises an alarm if it stalls | catches a delegate that has frozen | restarts nothing by itself |
 | something that makes an unexplained stop loud instead of silent | turns a silent stop into a visible one | cannot force further work to happen |
 
-A stop-detecting alarm that blocks unconditionally would deadlock the very session it is meant
-to protect, so by construction it can only block once and then let the turn proceed — which
-means it can be tripped once and never again for the rest of the stretch. Neither alarm resumes
-anything on its own: without something that hands control back unprompted, the most carefully
-built pair of alarms still leaves the work stopped, only loudly instead of quietly.
+The third row has an inherent limit worth naming: a check that blocked every stop
+unconditionally would deadlock the very work it exists to protect, so it can only object once
+and then has to let the turn proceed regardless — which is exactly why it cannot substitute for
+the first row. Neither the second nor the third role resumes anything on its own: without
+something that hands control back unprompted, the most carefully built pair of alarms still
+leaves the work stopped, only loudly instead of quietly.
 
 ## A pending list without the done items reads as a status quo
 
