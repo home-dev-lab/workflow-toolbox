@@ -4,10 +4,17 @@ If you keep a persistent memory or notes store — an auto-loaded index plus ind
 files it points to — these disciplines keep it usable indefinitely instead of degrading into
 either bloat or silent loss.
 
-- **Keep the index line short — one line per fact, hook only.** Detail (dates, decisions,
-  rationale) lives in the fact's own body, never restated in the index line. The index is what
-  loads automatically every session; its cost is lines × length, so this is the one place to
-  keep lean.
+- **Keep the index line short — hook only.** Detail (dates, decisions, rationale) lives in the
+  fact's own body, never restated in the index line. The index is what loads automatically every
+  session, so this is the one place to keep lean.
+  ⚠ **One line per fact is the FLAT-index shape, not a universal one.** Once a hub layer exists
+  (see below), a new fact's pointer goes wherever the placement test sends it — a direct line, or a
+  member line inside a hub body. **Apply that test on EVERY write, not only during a
+  reorganisation**: treating the direct line as the default rebuilds the flat index one fact at a
+  time, silently undoing the hub layer while the store still looks organised.
+  ⚠ **Under hubs, the budget is the LINE COUNT, not per-line width.** Width is a fair proxy for
+  total size while the index is flat; it INVERTS under hubs, because richer hooks on far fewer lines
+  make a smaller index, not a bigger one. Measure what the harness actually truncates.
 - **Never shrink a fact's body to save space.** Only the index is auto-loaded, so the body's
   size is not the cost that matters — a fresh session must be able to stand on the body alone.
   Shrink the index by archiving stale facts and keeping hooks short, never by gutting bodies.
@@ -41,8 +48,13 @@ either bloat or silent loss.
   rebalanced. Name the count you are aiming for, and leave room to grow into.
 - **Archive closed items by moving them, never by deleting.** When a tracked piece of work is
   finished and has no active follow-up, move its note out of the live index into an archive
-  location and drop its index line — inbound references still resolve there on demand. Move,
+  location and drop its pointer — inbound references still resolve there on demand. Move,
   don't delete: deleting destroys the only record.
+  ⚠ **Drop the pointer from wherever it LIVES**, which under a hub layer is usually not the index:
+  a direct index line, OR a member line inside a hub body. The trap is that a targeted deletion
+  aimed at the index **succeeds while deleting nothing** — the archived note stays listed in its
+  hub, now pointing at a file that has moved. Locate the pointer first, then delete that exact
+  line, then re-run the reachability check below.
 - **Writes are concurrency-unsafe by default — treat the store as shared.** Re-read the target
   file immediately before editing it, and apply a line-level or file-level delta rather than
   overwriting from a stale in-context copy, whenever more than one session could touch the same
@@ -59,10 +71,19 @@ either bloat or silent loss.
   right — no experiential narrative, no incident stories, no dated change banners. Rationale and
   field cases belong in a note, referenced by a short pointer; when a rule's guidance changes,
   rewrite the rule in place rather than stacking a chronicle on top of it.
-- **An unindexed fact does not exist.** Periodically verify the pairing mechanically: every fact
-  file on disk has a matching index line, and every index line resolves to a file that exists. A
-  deliberate de-indexing — a retraction kept only so old references still resolve — is fine and
-  should read as intentional; anything else is an orphan to index, merge, or archive.
+- **An UNREACHABLE fact does not exist.** Periodically verify the pairing mechanically, in both
+  directions: every fact file on disk is REACHABLE from the index, and every reference the index
+  and its hubs contain resolves to a file that exists. A deliberate de-indexing — a retraction kept
+  only so old references still resolve — is fine and should read as intentional; anything else is
+  an orphan to place, merge, or archive.
+  ⚠ **Reachable, not "has an index line".** Once a hub layer exists, most facts deliberately have
+  no index line of their own — a check written as one-line-per-file then reports the CORRECT state
+  as broken, and a reader who trusts it "repairs" the store by restoring exactly the flat index the
+  hub layer existed to escape. Follow the hop: a fact is reachable if the index names it, or if a
+  note the index names lists it.
+  ⚠ **The count is not the check.** A shrinking index is only good news if nothing fell out of it,
+  and losing a fact produces precisely the number you were aiming for. Assert the two emptiness
+  conditions — nothing unreachable, nothing dangling — never the total alone.
 - **One lesson, one operative home — and record the deliberate omissions.** When several facts
   could describe the same lesson, keep exactly one as the operative copy and have the others
   point at it. When you decide not to add a fact because the lesson is already covered
