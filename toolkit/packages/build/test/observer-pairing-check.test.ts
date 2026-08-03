@@ -15,6 +15,7 @@ type Verdict = {
     status?: string
     reason?: string
     matchedBy?: 'id' | 'name'
+    attachedBy?: 'observerTaskId' | 'mtime-fallback' | 'not-required'
     observerFile?: string
     checked?: number
     malformed?: unknown[]
@@ -164,7 +165,9 @@ describe('wt-check-observer-pairing.mjs', () => {
       writeAgentFixture(dir, 'name-would-pass', { name: 'named-target' }, 1_100)
       writeMeta(dir, 'observer.meta.json', { name: 'pilot-orchestrator-watchdog', isObserver: true }, 1_105)
 
-      const result = runCheck(dir, { agentId: 'id-wins', name: 'named-target' })
+      // Explicit narrow window: this test is about id-vs-name precedence, not window
+      // width — pin it so it stays independent of the fallback default.
+      const result = runCheck(dir, { agentId: 'id-wins', name: 'named-target', windowSec: 30 })
 
       expect(result.exitCode).toBe(1)
       expect(result.json.status).toBe('flag')
@@ -316,6 +319,109 @@ describe('wt-check-observer-pairing.mjs', () => {
       expect(result.exitCode).toBe(1)
       expect(result.json.status).toBe('flag')
       expect(result.json.matchedBy).toBe('name')
+    })
+  })
+
+  // Real shapes grounded in production .meta.json files (2026-08-03, atlassian-cli wave
+  // cc4e1f93): { observerTaskId: "ac7f39a67a5aefa87", ... } paired with a sibling
+  // agent-ac7f39a67a5aefa87.meta.json carrying { isObserver: true }. Before this fix the
+  // checker never read this field at all (`grep -c observerTaskId` on the script was 0),
+  // so a real, correctly attached observer landing outside the mtime window was flagged
+  // as missing.
+  describe('observerTaskId — direct ownership link (checked before mtime correlation)', () => {
+    it('confirms pairing via observerTaskId even when the isObserver sibling lands FAR outside the mtime window', () => {
+      withTempSubagentsDir((dir) => {
+        // 211s was the real gap that triggered this card; use a larger one (500s) to prove
+        // the fix does not depend on widening the window either — the field alone decides.
+        writeAgentFixture(dir, 'aaac5ffb5420322e5', { agentType: 'pilot', observerTaskId: 'ac7f39a67a5aefa87' }, 1_000)
+        writeAgentFixture(dir, 'ac7f39a67a5aefa87', { agentType: 'pilot-watchdog', isObserver: true }, 1_000 + 500)
+
+        const result = runCheck(dir, { agentId: 'aaac5ffb5420322e5', windowSec: 30 })
+
+        expect(result.exitCode).toBe(0)
+        expect(result.json.status).toBe('pass')
+        expect(result.json.matchedBy).toBe('id')
+        expect(result.json.attachedBy).toBe('observerTaskId')
+        expect(result.json.observerFile).toContain('agent-ac7f39a67a5aefa87.meta.json')
+      })
+    })
+
+    it('confirms pairing via observerTaskId even when the sibling mtime predates the observed agent (negative delta)', () => {
+      withTempSubagentsDir((dir) => {
+        writeAgentFixture(dir, 'obs-1', { agentType: 'pilot-watchdog', isObserver: true }, 990)
+        writeAgentFixture(dir, 'agent-1', { agentType: 'pilot', observerTaskId: 'obs-1' }, 1_000)
+
+        const result = runCheck(dir, { agentId: 'agent-1' })
+
+        expect(result.exitCode).toBe(0)
+        expect(result.json.status).toBe('pass')
+        expect(result.json.attachedBy).toBe('observerTaskId')
+      })
+    })
+
+    it('falls back to mtime correlation when observerTaskId is present but does not resolve to any file', () => {
+      withTempSubagentsDir((dir) => {
+        writeAgentFixture(dir, 'agent-dangling', { agentType: 'pilot', observerTaskId: 'no-such-agent', taskKind: 'async' }, 1_000)
+        writeMeta(dir, 'observer.meta.json', { name: 'watchdog', isObserver: true }, 1_005)
+
+        const result = runCheck(dir, { agentId: 'agent-dangling' })
+
+        expect(result.exitCode).toBe(0)
+        expect(result.json.status).toBe('pass')
+        expect(result.json.attachedBy).toBe('mtime-fallback')
+      })
+    })
+
+    it('falls back to mtime correlation when observerTaskId resolves but the sibling is not isObserver:true', () => {
+      withTempSubagentsDir((dir) => {
+        writeAgentFixture(dir, 'agent-badref', { agentType: 'pilot', observerTaskId: 'not-an-observer', taskKind: 'async' }, 1_000)
+        writeAgentFixture(dir, 'not-an-observer', { agentType: 'general-purpose' }, 1_000)
+        writeMeta(dir, 'observer.meta.json', { name: 'watchdog', isObserver: true }, 1_005)
+
+        const result = runCheck(dir, { agentId: 'agent-badref' })
+
+        expect(result.exitCode).toBe(0)
+        expect(result.json.status).toBe('pass')
+        expect(result.json.attachedBy).toBe('mtime-fallback')
+      })
+    })
+
+    it('still flags a genuinely unpaired agent — no observerTaskId, no mtime match (the check must still be able to fail)', () => {
+      withTempSubagentsDir((dir) => {
+        writeAgentFixture(dir, 'truly-alone', { agentType: 'general-purpose', description: 'genuinely unobserved spawn', spawnDepth: 1 }, 1_000)
+        writeMeta(dir, 'unrelated.meta.json', { name: 'someone-else', taskKind: 'async' }, 1_100)
+
+        const result = runCheck(dir, { agentId: 'truly-alone' })
+
+        expect(result.exitCode).toBe(1)
+        expect(result.json.status).toBe('flag')
+        expect(result.json.attachedBy).toBe('mtime-fallback')
+      })
+    })
+
+    it('still flags when observerTaskId is present but unresolved AND no mtime candidate exists either', () => {
+      withTempSubagentsDir((dir) => {
+        writeAgentFixture(dir, 'agent-both-fail', { agentType: 'pilot', observerTaskId: 'ghost', taskKind: 'async' }, 1_000)
+
+        const result = runCheck(dir, { agentId: 'agent-both-fail' })
+
+        expect(result.exitCode).toBe(1)
+        expect(result.json.status).toBe('flag')
+        expect(result.json.attachedBy).toBe('mtime-fallback')
+      })
+    })
+
+    it('normal mtime-fallback pass still names its signal as mtime-fallback, not observerTaskId', () => {
+      withTempSubagentsDir((dir) => {
+        writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'async' }, 1_000)
+        writeMeta(dir, 'observer.meta.json', { name: 'pilot-orchestrator-watchdog', isObserver: true }, 1_005)
+
+        const result = runCheck(dir, { name: 'pilot-orchestrator' })
+
+        expect(result.exitCode).toBe(0)
+        expect(result.json.status).toBe('pass')
+        expect(result.json.attachedBy).toBe('mtime-fallback')
+      })
     })
   })
 })
