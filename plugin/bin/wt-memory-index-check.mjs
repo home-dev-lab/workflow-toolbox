@@ -112,7 +112,8 @@ if (args.json) {
     console.log(
       `index: ${report.entryLines} entry line(s) (threshold applied: ${report.threshold}) — ` +
         `${report.diskFiches} fiche(s) on disk, ${report.reachableFiches} reachable, ` +
-        `${report.unreachableFiches.length} invisible; ${report.danglingRefs.length} dangling`,
+        `${report.unreachableFiches.length} invisible; ${report.danglingRefs.length} dangling; ` +
+        `${report.unresolvedCrossRefs.length} unresolved cross-reference(s)`,
     );
     // Only printed when at least one hub exists, and only inside the band —
     // a flat store (no hubs, comfortable headroom) reads exactly as it did
@@ -122,7 +123,13 @@ if (args.json) {
         `largest hub: ${report.largestHub.file} (${report.largestHub.members} member(s), hubMax ${report.hubMax})`,
       );
     }
-    for (const n of report.notices) console.log(n);
+    for (const n of report.notices) {
+      if (n.includes('see unresolvedCrossRefs for per-item detail')) {
+        console.log(n.replace('see unresolvedCrossRefs for per-item detail', 'see --json or --out for per-item detail'));
+        continue;
+      }
+      console.log(n);
+    }
     for (const r of report.reasons) console.log(`FLAG: ${r}`);
     for (const f of report.unreachableFiches) console.log(`  unreachable: ${f}`);
   }

@@ -57,8 +57,9 @@ either bloat or silent loss.
   A declared count is the only cross-check a store has against ITSELF: reachability answers "does
   every fact have a path", the declared count answers "does this hub still describe what it
   actually contains", and they fail differently. The convention is optional — a store that
-  declares no counts is not defective and nothing should report it as such — but a count that is
-  declared and stale is worse than none, because it reads as verified.
+  declares no counts is not defective and nothing should report it as such; it also gets no
+  cross-check, and that silence means not measured, never verified — but a count that is declared
+  and stale is worse than none, because it reads as verified.
 - **Archive closed items by moving them, never by deleting.** When a tracked piece of work is
   finished and has no active follow-up, move its note out of the live index into an archive
   location and drop its pointer — inbound references still resolve there on demand. Move,

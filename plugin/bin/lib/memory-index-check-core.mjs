@@ -72,6 +72,7 @@ const HUB_MEMBER_LINE_RATIO = 0.3;
  *   entryLines: number, overThreshold: boolean,
  *   diskFiches: number, reachableFiches: number, unreachableFiches: string[],
  *   danglingRefs: Array<{ from: string, target: string }>,
+ *   unresolvedCrossRefs: Array<{ from: string, target: string }>,
  *   hubMax: number, hubCount: number,
  *   hubCountMismatches: Array<{ file: string, declared: number, actual: number }>,
  *   largestHub: { file: string, members: number } | null,
@@ -111,6 +112,7 @@ export function checkStore(storeDir, opts = {}) {
       reachableFiches: 0,
       unreachableFiches: [],
       danglingRefs: [],
+      unresolvedCrossRefs: [],
       hubMax,
       hubCount: 0,
       hubCountMismatches: [],
@@ -143,6 +145,7 @@ export function checkStore(storeDir, opts = {}) {
   // Direct links: every `(*.md)` target named anywhere in the index file.
   const directLinks = new Set();
   const danglingRefs = [];
+  const unresolvedCrossRefs = [];
   for (const line of indexLines) {
     LINK_RE.lastIndex = 0;
     let match;
@@ -173,6 +176,8 @@ export function checkStore(storeDir, opts = {}) {
   // disk.
   const hubMemberCounts = new Map(); // file -> distinct resolved member count
   const hubCountMismatches = [];
+  let structuralHubCount = 0;
+  let hubsWithDeclaredCount = 0;
 
   while (queue.length > 0) {
     const current = queue.shift();
@@ -202,25 +207,29 @@ export function checkStore(storeDir, opts = {}) {
     let memberLineCount = 0;
     const memberLineSlugs = new Set();
     const memberSlugs = new Set();
+    const unresolvedMemberLineRefs = [];
     for (const line of bodyLines) {
       const m = MEMBER_LINE_RE.exec(line.trim());
       if (!m) continue;
       memberLineCount++;
       const candidate = `${m[1]}.md`;
       memberLineSlugs.add(candidate);
-      if (!diskFiches.has(candidate)) danglingRefs.push({ from: current, target: candidate });
+      if (!diskFiches.has(candidate)) unresolvedMemberLineRefs.push({ from: current, target: candidate });
       if (diskFiches.has(candidate)) memberSlugs.add(candidate);
     }
     const declaredCount = readDeclaredMemberCount(body);
     if (declaredCount !== null && declaredCount !== memberLineSlugs.size) {
       hubCountMismatches.push({ file: current, declared: declaredCount, actual: memberLineSlugs.size });
     }
-    if (
-      memberSlugs.size > 0 &&
-      nonBlankLineCount > 0 &&
-      memberLineCount / nonBlankLineCount >= HUB_MEMBER_LINE_RATIO
-    ) {
+    const isStructuralHub =
+      memberLineCount > 0 && nonBlankLineCount > 0 && memberLineCount / nonBlankLineCount >= HUB_MEMBER_LINE_RATIO;
+    if (isStructuralHub) {
+      structuralHubCount++;
+      if (declaredCount !== null) hubsWithDeclaredCount++;
+      for (const ref of unresolvedMemberLineRefs) danglingRefs.push(ref);
       hubMemberCounts.set(current, memberSlugs.size);
+    } else {
+      for (const ref of unresolvedMemberLineRefs) unresolvedCrossRefs.push(ref);
     }
   }
 
@@ -269,6 +278,16 @@ export function checkStore(storeDir, opts = {}) {
   if (inWarningBand) {
     notices.push(`index headroom: ${headroom} line(s) before the threshold of ${threshold}`);
   }
+  if (unresolvedCrossRefs.length > 0) {
+    notices.push(
+      `informational only: ${unresolvedCrossRefs.length} unresolved cross-reference(s) in non-hub bodies; see unresolvedCrossRefs for per-item detail`,
+    );
+  }
+  if (structuralHubCount > 0 && hubsWithDeclaredCount === 0) {
+    notices.push(
+      'declared-count cross-check inactive: hubs exist, but none declares member_count; silence here means not measured, not verified',
+    );
+  }
 
   return {
     store: storeDir,
@@ -281,6 +300,7 @@ export function checkStore(storeDir, opts = {}) {
     reachableFiches: reachable.size,
     unreachableFiches,
     danglingRefs,
+    unresolvedCrossRefs,
     hubMax,
     hubCount: hubMemberCounts.size,
     hubCountMismatches,

@@ -60,7 +60,9 @@ interface Report {
   reachableFiches: number
   unreachableFiches: string[]
   danglingRefs: Array<{ from: string; target: string }>
+  unresolvedCrossRefs: Array<{ from: string; target: string }>
   hubCountMismatches: Array<{ file: string; declared: number; actual: number }>
+  notices: string[]
   flagged: boolean
   reasons: string[]
 }
@@ -233,9 +235,28 @@ describe('memory-index-check-core: reachability', () => {
     writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](hub-topic.md) — grouped\n')
     const report = checkStore(dir, { threshold: 200 })
     expect(report.danglingRefs).toEqual([{ from: 'hub-topic.md', target: 'missing.md' }])
+    expect(report.unresolvedCrossRefs).toEqual([])
     expect(report.reasons.join(' ')).toContain('hub-topic.md')
     expect(report.reasons.join(' ')).toContain('missing.md')
     expect(report.flagged).toBe(true)
+  })
+
+  it('a member-shaped missing [[slug]] inside a long ordinary fiche is informational, not a finding', () => {
+    const dir = makeStore()
+    const proseLines = Array.from(
+      { length: 12 },
+      (_, i) => `Narrative line ${i} mentioning context without making this fiche a hub.`,
+    )
+    proseLines.push('- [[missing]] — sibling rule, same session.')
+    fiche(dir, 'ordinary-fiche', `${proseLines.join('\n')}\n`)
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Ordinary](ordinary-fiche.md) — running narrative\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.danglingRefs).toEqual([])
+    expect(report.unresolvedCrossRefs).toEqual([{ from: 'ordinary-fiche.md', target: 'missing.md' }])
+    expect(report.notices).toContain(
+      'informational only: 1 unresolved cross-reference(s) in non-hub bodies; see unresolvedCrossRefs for per-item detail',
+    )
+    expect(report.flagged).toBe(false)
   })
 
   it('a missing [[slug]] mentioned only in prose stays informational, not a finding', () => {
@@ -254,6 +275,9 @@ describe('memory-index-check-core: reachability', () => {
     writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](hub-topic.md) — grouped\n')
     const report = checkStore(dir, { threshold: 200 })
     expect(report.hubCountMismatches).toEqual([])
+    expect(report.notices).not.toContain(
+      'declared-count cross-check inactive: hubs exist, but none declares member_count; silence here means not measured, not verified',
+    )
     expect(report.flagged).toBe(false)
   })
 
@@ -275,6 +299,21 @@ describe('memory-index-check-core: reachability', () => {
     writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](hub-topic.md) — grouped\n')
     const report = checkStore(dir, { threshold: 200 })
     expect(report.hubCountMismatches).toEqual([])
+    expect(report.notices).toContain(
+      'declared-count cross-check inactive: hubs exist, but none declares member_count; silence here means not measured, not verified',
+    )
+    expect(report.flagged).toBe(false)
+  })
+
+  it('multiple hubs with no member_count stay exit 0 but say the declared-count cross-check is inactive', () => {
+    const dir = makeStore()
+    hubWithMembers(dir, 'hub-a', ['member-a'])
+    hubWithMembers(dir, 'hub-b', ['member-b'])
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Hub A](hub-a.md) — grouped\n- [Hub B](hub-b.md) — grouped\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.notices).toContain(
+      'declared-count cross-check inactive: hubs exist, but none declares member_count; silence here means not measured, not verified',
+    )
     expect(report.flagged).toBe(false)
   })
 })
@@ -386,12 +425,14 @@ describe('memory-index-check-core: hub sizing (card follow-up — the ceiling re
     expect(report.flagged).toBe(false)
   })
 
-  it('a healthy store with modest hubs and comfortable headroom stays exit 0, no notices, no flags', () => {
+  it('a healthy store with modest hubs and comfortable headroom stays exit 0 with the count-check inactivity notice, never flags', () => {
     const dir = makeStore()
     makeHub(dir, 'modest-hub', 5)
     const report = checkStore(dir, { threshold: 200, hubMax: 45 })
     expect(report.flagged).toBe(false)
-    expect(report.notices).toEqual([])
+    expect(report.notices).toEqual([
+      'declared-count cross-check inactive: hubs exist, but none declares member_count; silence here means not measured, not verified',
+    ])
     expect(report.inWarningBand).toBe(false)
   })
 })
@@ -414,13 +455,13 @@ describe('wt-memory-index-check.mjs CLI: warning band + hub sizing exit codes an
     expect(stderr).toContain('--hub-max must be a positive number')
   })
 
-  it('a flat store under threshold, comfortably clear of the band, exits 0 with the same output shape as before this change', () => {
+  it('a flat store under threshold, comfortably clear of the band, exits 0 and includes the unresolved-cross-reference count in the summary', () => {
     const dir = makeStore()
     fiche(dir, 'fact-a', 'Fact.\n')
     writeFileSync(join(dir, 'MEMORY.md'), '- [Fact A](fact-a.md) — a fact\n')
     const stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
     expect(stdout).toBe(
-      'index: 1 entry line(s) (threshold applied: 200) — 1 fiche(s) on disk, 1 reachable, 0 invisible; 0 dangling\n',
+      'index: 1 entry line(s) (threshold applied: 200) — 1 fiche(s) on disk, 1 reachable, 0 invisible; 0 dangling; 0 unresolved cross-reference(s)\n',
     )
   })
 
@@ -450,6 +491,23 @@ describe('wt-memory-index-check.mjs CLI: warning band + hub sizing exit codes an
     expect(status).toBe(1)
     expect(stdout).toContain('0 invisible; 1 dangling')
     expect(stdout).toContain('FLAG: dangling reference from hub-topic.md to missing.md')
+  })
+
+  it('an unresolved cross-reference in a non-hub body stays exit 0, appears in the summary count, and prints only an informational pointer', () => {
+    const dir = makeStore()
+    const proseLines = Array.from(
+      { length: 12 },
+      (_, i) => `Narrative line ${i} mentioning context without making this fiche a hub.`,
+    )
+    proseLines.push('- [[missing]] — sibling rule, same session.')
+    fiche(dir, 'ordinary-fiche', `${proseLines.join('\n')}\n`)
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Ordinary](ordinary-fiche.md) — running narrative\n')
+    const stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
+    expect(stdout).toContain('0 invisible; 0 dangling; 1 unresolved cross-reference(s)')
+    expect(stdout).toContain(
+      'informational only: 1 unresolved cross-reference(s) in non-hub bodies; see --json or --out for per-item detail',
+    )
+    expect(stdout).not.toContain('FLAG: dangling reference from ordinary-fiche.md to missing.md')
   })
 
   it('a hub count mismatch exits 1 and the human-readable output names the hub, declared count, and actual count', () => {
