@@ -70,27 +70,55 @@ function safeRealpath(p) {
   }
 }
 
-// Walk the ppid chain up from `startPid`, returning every ancestor pid found (bounded depth).
-// Why this exists, concretely: when this script is invoked as a one-line shell command (e.g.
-// `zsh -c 'node wt-lane-probe.mjs --pattern X ...'`, the exact shape a caller's own Bash tool
-// uses), the WRAPPING SHELL's own argv is that literal command text — which contains the
-// pattern too. `pgrep -f` matches command lines, so that ancestor shell matches its own probe's
-// pattern and would otherwise show up as a false `unattributed` anomaly on every single run.
-// Excluding only `process.pid` (the node process itself) misses this — the match is one level
-// up the process tree, not on the process itself. Reproduced directly on 2026-08-03: a
-// one-line invocation self-matched via its wrapper shell; the identical command run from a
-// multi-line script (invoked by file path, whose argv does not contain the pattern text) did
-// not. Bounded depth guards against a pathological ppid cycle or an unreadable process table.
-function getAncestorPids(startPid, maxDepth = 12) {
+// Read the WHOLE process table's pid->ppid mapping in ONE subprocess call, instead of one
+// `ps -p <pid>` fork per level of the ancestor chain. Measured on this machine (2026-08-03):
+// the real ancestor chain from a probe process to pid 1 is 9 levels deep (Bash-tool wrapper →
+// zsh → tmux/session layers → init) — the original per-level design forked `ps` up to 9 times
+// PER PROBE INVOCATION just to build the exclusion set, on top of the one `pgrep` fork. Across
+// a test suite issuing several probe invocations in a tight window, that is enough real OS
+// process churn to perturb unrelated, timing-sensitive sibling tests running concurrently in
+// other vitest workers (observed directly: two different siblings failed on two different
+// runs, both timing/spawn-shape assertions, while `main` stayed clean under the same load —
+// a process-churn/scheduling-jitter signature, not a logic bug in either side). One `ps -eo`
+// call plus an in-memory walk produces the identical exclusion set with 1 fork instead of up
+// to maxDepth.
+function readPidToPpidMap(maxEntries = 20000) {
+  try {
+    const out = execFileSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf8' })
+    const map = new Map()
+    for (const line of out.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      const [pidStr, ppidStr] = trimmed.split(/\s+/)
+      const pid = Number(pidStr)
+      const ppid = Number(ppidStr)
+      if (Number.isInteger(pid) && Number.isInteger(ppid)) map.set(pid, ppid)
+      if (map.size >= maxEntries) break // pathological table size guard, not expected in practice
+    }
+    return map
+  } catch {
+    return null // caller treats a failed table read as "no ancestor info available", never a crash
+  }
+}
+
+// Walk the ppid chain up from `startPid` using an already-read pid->ppid map (see
+// readPidToPpidMap above), returning every ancestor pid found (bounded depth). Why this exists,
+// concretely: when this script is invoked as a one-line shell command (e.g. `zsh -c 'node
+// wt-lane-probe.mjs --pattern X ...'`, the exact shape a caller's own Bash tool uses), the
+// WRAPPING SHELL's own argv is that literal command text — which contains the pattern too.
+// `pgrep -f` matches command lines, so that ancestor shell matches its own probe's pattern and
+// would otherwise show up as a false `unattributed` anomaly on every single run. Excluding only
+// `process.pid` (the node process itself) misses this — the match is one level up the process
+// tree, not on the process itself. Reproduced directly on 2026-08-03: a one-line invocation
+// self-matched via its wrapper shell; the identical command run from a multi-line script
+// (invoked by file path, whose argv does not contain the pattern text) did not. Bounded depth
+// guards against a pathological ppid cycle or a table read that returned an incomplete map.
+function getAncestorPids(startPid, ppidMap, maxDepth = 32) {
   const ancestors = new Set()
+  if (!ppidMap) return ancestors // table read failed — no ancestor info, exclude nothing extra
   let pid = startPid
   for (let i = 0; i < maxDepth; i += 1) {
-    let ppid
-    try {
-      ppid = Number(execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' }).trim())
-    } catch {
-      break
-    }
+    const ppid = ppidMap.get(pid)
     if (!Number.isInteger(ppid) || ppid <= 1 || ancestors.has(ppid)) break
     ancestors.add(ppid)
     pid = ppid
@@ -108,19 +136,24 @@ function listMatchingPids(pattern) {
   }
   try {
     const out = execFileSync('pgrep', ['-f', pattern], { encoding: 'utf8' })
-    // Exclude THIS process's own pid AND every ancestor of it (see getAncestorPids above):
-    // `pgrep -f <pattern>` matches against the full command line, and both this process's own
-    // argv and — when invoked as a one-line shell command — its wrapping shell's argv carry the
-    // pattern too. Without excluding the whole chain, every probe would find (and misreport)
-    // itself or its own invoking shell as an unrelated anomaly.
-    const selfAndAncestors = new Set([process.pid, ...getAncestorPids(process.pid)])
-    const pids = out
+    const rawPids = out
       .split('\n')
       .map((s) => s.trim())
       .filter(Boolean)
       .map(Number)
       .filter((n) => Number.isInteger(n) && n > 0)
-      .filter((n) => !selfAndAncestors.has(n))
+    // Exclude THIS process's own pid AND every ancestor of it (see getAncestorPids above):
+    // `pgrep -f <pattern>` matches against the full command line, and both this process's own
+    // argv and — when invoked as a one-line shell command — its wrapping shell's argv carry the
+    // pattern too. Without excluding the whole chain, every probe would find (and misreport)
+    // itself or its own invoking shell as an unrelated anomaly. The pid->ppid table is read
+    // ONLY when there is at least one candidate to filter — an empty pgrep result needs no
+    // ancestor info at all, saving that fork on the common "idle" case.
+    const selfAndAncestors =
+      rawPids.length === 0
+        ? new Set([process.pid])
+        : new Set([process.pid, ...getAncestorPids(process.pid, readPidToPpidMap())])
+    const pids = rawPids.filter((n) => !selfAndAncestors.has(n))
     return { supported: true, pids }
   } catch (error) {
     if (error && error.status === 1) return { supported: true, pids: [] }
