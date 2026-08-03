@@ -14,6 +14,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
 import { afterEach, describe, it, expect } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -62,8 +63,13 @@ function scaffold(tag: string) {
   return { root, sessionId, cwd, gateDir, subagentsDir, env, payload }
 }
 
+// Mirrors the hook's OWN projectSlug() exactly (readable prefix + hash of the full cwd) — a
+// naive readable-only slug is what let two different cwds collide on the same snapshot
+// filename (cross-family review finding, fixed in the hook alongside this test).
 function slug(cwd: string): string {
-  return cwd.replace(/[^A-Za-z0-9]/g, '-').slice(0, 200)
+  const readable = cwd.replace(/[^A-Za-z0-9]/g, '-').slice(0, 120)
+  const hash = createHash('sha1').update(cwd).digest('hex').slice(0, 12)
+  return `${readable}-${hash}`
 }
 function writeSnapshot(gateDir: string, cwd: string, open: number, atMsAgo = 0, next = 'next item') {
   mkdirSync(gateDir, { recursive: true })
@@ -137,5 +143,50 @@ describe('wt-queue-not-empty-gate-hook — fail-closed and fail-open edges', () 
     writeSnapshot(gateDir, cwd, 9, 0)
     const r = runHook({ session_id: 'x', cwd }, env) // no transcript_path at all
     expect(r.code).toBe(0)
+  })
+})
+
+// --- Test-locks for the two findings a cross-family review surfaced on the diff -----------
+
+describe('wt-queue-not-empty-gate-hook — cross-family review finding: malformed open coerces to 0', () => {
+  it('fresh snapshot with a non-numeric "open" ⇒ NOT treated as empty ⇒ blocks (fail-closed)', () => {
+    const { env, payload, gateDir, cwd } = scaffold('malformed-open')
+    mkdirSync(gateDir, { recursive: true })
+    // A naive `Number(snap.open)` coerces "" (and null, false) to 0, which would silently read
+    // as "queue empty" and bail — the exact fail-OPEN this section exists to prevent. Only a
+    // real number may silence the guard.
+    writeFileSync(
+      join(gateDir, `queue-${slug(cwd)}.json`),
+      JSON.stringify({ open: '', at: Date.now(), next: 'card #9' }),
+    )
+    const r = runHook(payload, env)
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('UNKNOWN state')
+  })
+})
+
+describe('wt-queue-not-empty-gate-hook — cross-family review finding: project-slug collision', () => {
+  it('two cwds that collide on the READABLE-ONLY slug never share a snapshot', () => {
+    // "/…/a/b" and "/…/a-b" both reduce to the same string once every non-alnum character
+    // becomes "-" — the exact collision shape found by review. The hash suffix in the real
+    // projectSlug() (and mirrored in slug() above) must keep them on separate files.
+    const root = mkRoot('collide')
+    const gateDir = join(root, 'gate-state')
+    const cwdA = join(root, 'a', 'b')
+    const cwdB = join(root, 'a-b')
+    expect(slug(cwdA)).not.toBe(slug(cwdB)) // the fix, asserted directly
+    writeSnapshot(gateDir, cwdA, 9, 0, 'card #1 (project A)') // project A: work remains
+
+    const transcriptDir = join(root, 'transcripts')
+    mkdirSync(transcriptDir, { recursive: true })
+    const sessionId = 'sess-collide-b'
+    const transcriptPath = join(transcriptDir, `${sessionId}.jsonl`)
+    writeFileSync(transcriptPath, '{}\n')
+    const env = { ...process.env, WT_QUEUE_GATE_DIR: gateDir }
+    // Project B never wrote its own snapshot — must be silent, even though project A's
+    // snapshot (claiming work remains) sits in the same state dir.
+    const r = runHook({ transcript_path: transcriptPath, session_id: sessionId, cwd: cwdB }, env)
+    expect(r.code).toBe(0)
+    expect(r.stderr).toBe('')
   })
 })

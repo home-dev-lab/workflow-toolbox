@@ -46,7 +46,8 @@
 //
 // THE MARKER CONTRACT — write this file after checking the queue, whatever your tracker is:
 //   <state-dir>/queue-<project-slug>.json = {"open": <int>, "at": <epoch-ms>, "next": "<string>"}
-// project-slug is this cwd with every non [A-Za-z0-9] character replaced by "-". No tool ever
+// project-slug is derived from this cwd by `projectSlug()` below (a readable prefix plus a hash
+// of the full path, so two different cwds never collide on the same filename). No tool ever
 // writes this file for you — this hook only CONSUMES it. Nothing written, ever ⇒ this hook has
 // nothing to say and never blocks (see "NO TRACKER" below). This is deliberate: better silent
 // wrongly than loud wrongly — a guard that blocks an adopter who structurally cannot satisfy it
@@ -77,6 +78,7 @@ import { readFileSync, statSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { mkdirSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 
 const STATE_DIR = process.env.WT_QUEUE_GATE_DIR
   || join(homedir(), '.local', 'state', 'wt-queue-gate')
@@ -84,8 +86,18 @@ const COOLDOWN_MIN = 45 // never block more often than this, per session
 const INFLIGHT_MIN = 3 // a subagent transcript touched this recently ⇒ work is running
 const SNAPSHOT_MAX_AGE_MIN = 120
 
+// ⚠ A readable slug ALONE is not a safe filename key: a lossy non-alnum→"-" transform plus a
+// length cap means two DIFFERENT cwds can produce the SAME slug (e.g. "/a/b" and "/a-b"; or any
+// two paths that only differ past the truncation point) — found by cross-family review of this
+// file. That collision would let one project's snapshot answer for another's, which can turn
+// "no tracker" into a false block, exactly the case this hook exists to never produce. So the
+// key is the readable slug (for a human skimming the state dir) PLUS a hash of the FULL,
+// untruncated cwd (for uniqueness) — the hash is what actually decides collisions.
 function projectSlug(cwd) {
-  return String(cwd || 'unknown').replace(/[^A-Za-z0-9]/g, '-').slice(0, 200)
+  const c = String(cwd || 'unknown')
+  const readable = c.replace(/[^A-Za-z0-9]/g, '-').slice(0, 120)
+  const hash = createHash('sha1').update(c).digest('hex').slice(0, 12)
+  return `${readable}-${hash}`
 }
 
 function readStdin() {
@@ -139,8 +151,16 @@ let nextItem = ''
 try {
   const snap = JSON.parse(readFileSync(SNAPSHOT, 'utf8'))
   const age = Date.now() - (snap.at || 0)
-  if (age <= SNAPSHOT_MAX_AGE_MIN * 60_000) {
-    openCount = Number(snap.open)
+  // ⚠ `Number(snap.open)` alone was wrong — found by cross-family review. `Number('')`,
+  // `Number(null)`, and `Number(false)` all coerce to 0, so a fresh but MALFORMED snapshot
+  // (a truncated write, a wrong field type) would silently read as "queue empty" and bail —
+  // exactly the fail-OPEN this section's own comment says never to allow. Only a genuine
+  // non-negative finite NUMBER counts; anything else falls through with openCount left null,
+  // which is the same "unknown ⇒ work remains" fail-closed path as an unreadable/stale file.
+  const rawOpen = snap.open
+  const isValidOpen = typeof rawOpen === 'number' && Number.isFinite(rawOpen) && rawOpen >= 0
+  if (age <= SNAPSHOT_MAX_AGE_MIN * 60_000 && isValidOpen) {
+    openCount = rawOpen
     nextItem = String(snap.next || '')
   }
 } catch {
@@ -149,7 +169,14 @@ try {
 if (openCount === 0) bail() // the queue really is empty — stopping needs no justification
 
 // --- 4. Anti-loop / frequency ceiling ------------------------------------------------------
-const stateFile = join(STATE_DIR, `${String(sessionId).replace(/[^A-Za-z0-9._-]/g, '-')}.json`)
+// ⚠ Keyed by session AND project (not session alone) — found by cross-family review: a bare
+// session_id key would let a block recorded under one project's cooldown silence a DIFFERENT
+// project sharing the same session_id. session_id is normally unique per session per project
+// for its whole lifetime, so this was low-probability, but the fix is free.
+const stateFile = join(
+  STATE_DIR,
+  `${String(sessionId).replace(/[^A-Za-z0-9._-]/g, '-')}-${projectSlug(cwd)}.json`,
+)
 let last = 0
 try {
   last = JSON.parse(readFileSync(stateFile, 'utf8')).lastBlockedAt || 0
