@@ -30,6 +30,17 @@ user's project, on explicit request only. It manages two sets:
   closes that gap — every copy carries a version banner + content fingerprint, so a later
   `--check` reports when the plugin has moved ahead.
 
+A THIRD kind of agent exists and this skill does nothing for it, on purpose: the plugin's
+`agents/` directory (`fidelity-checker`, `index-groomer`, `leaf`, `lean`, `opencode-verifier`,
+`wave-fidelity-checker` as of this writing) is **registered directly by the plugin** — each
+is already callable as `workflow-toolbox:<name>` the instant the plugin is installed, with no
+adoption step at all. From an adoptant's side this is easy to confuse with "missing": both
+states look like "the name is absent from `.claude/agents/`". So `--set agents --check` and
+`--install` both end their run with a note listing every currently-registered agent under its
+`workflow-toolbox:<name>` form, DERIVED from `agents/` at run time (never a hard-coded list —
+an agent added there later shows up with nobody editing this skill). Use that note, not a
+guess, to tell "already available, registered" apart from "genuinely absent, needs adopting".
+
 Both sets are stamped, fingerprinted, and yours to edit afterward. Use this skill ONLY when
 the user explicitly asks for such copies, or to check/refresh ones they adopted earlier.
 Never run it as a side effect of other work — writing into a user's config is a deliberate,
