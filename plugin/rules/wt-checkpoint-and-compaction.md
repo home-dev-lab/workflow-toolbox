@@ -31,6 +31,31 @@ Save as late as safely possible, not as a target to rush toward: continuous dura
 during the work (committing increments, updating the tracker) are the real safety net, and the
 threshold checkpoint is the final consolidation, not the only protection.
 
+## A resource limit is a door, not a loss — do not stop short of it
+
+Do not stop working early to avoid being cut off by a budget, a window, or a rate limit. When
+the state is durable — a tracker, a working tree, commits, notes — **an interrupted arc
+resumes**, while budget left unspent inside a window is **gone**: it does not carry over. So the
+mistake is not starting something too large for what remains. The mistake is **stopping short of
+the limit**.
+
+The tell, and it is a sentence forming in your own reasoning: *"I won't start anything else,
+there's only N% left."* At that exact moment the question is not *"can I finish?"* but **"is
+there budget left to spend?"** If there is, work.
+
+This holds for a single account and does not depend on having a spare one: spending down to the
+limit shortly before a window resets, then resuming on the fresh window, comes to the same
+thing. What makes the cut harmless is the DURABILITY OF THE WORK, never the availability of a
+second budget.
+
+Before crossing the door, run the full consolidation once — that is what makes the interruption
+cost nothing, and it is the only thing that must happen first.
+
+**What does not change**: a decision to stop, for any reason, is ANNOUNCED with its reason at
+the moment it is taken. Taking it is legitimate; taking it silently is not — the person who
+asked for the work discovers later that it did not happen, and cannot say whether they would
+have agreed.
+
 ## Let automatic compaction run
 
 When automatic compaction is enabled, never stop and ask to compact manually — keep working;
