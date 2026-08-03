@@ -45,6 +45,38 @@ A source the project genuinely does not use (no tracker configured at all) is
 NOT "unreachable" — that is N/A, and stays a plain mention in part (C) as
 before. Reserve UNREACHABLE for a source you expected to work and it did not.
 
+## Coverage input — a deterministic predicate, not yours to derive
+
+Whether the index resolves, how many fiches exist on disk, how many are
+reachable from it (direct links plus indirection), and the index's
+entry-line count against its threshold are DETERMINISTIC PREDICATES — a
+script answers every one of them in ~130ms with zero ambiguity. **You must
+not re-derive them by hand**: no walking the index to tally fiches, no
+counting how many you personally followed through indirection to produce a
+coverage number, no eyeballing a hub's member count.
+
+- **If the spawn prompt supplies a `COVERAGE_PROBE` block** (the output of
+  `wt-memory-index-check.mjs`, inline or a path to its `--json` report),
+  use it as-is. Read its own fields (`entryLines`, `overThreshold`,
+  `diskFiches`, `reachableFiches`, `unreachableFiches`, `hubCount`,
+  `flagged`) and report from them — do not recompute any of them yourself.
+- **If none was supplied**, run it yourself before reading anything else —
+  it is read-only and cheap, there is no reason to count by hand instead:
+  `node <repoRoot>/plugin/bin/wt-memory-index-check.mjs --store <dir> --json`.
+- **If neither is possible** (the script errors, the repo root is unknown,
+  no store path resolves), coverage is **UNVERIFIED**. Add a line for it to
+  `## Sources probed` using the mechanically-checked token so the `(A)` cap
+  below actually fires: `- Coverage probe (wt-memory-index-check.mjs):
+  UNREACHABLE — <reason>`. **Never silently fall back to counting fiches by
+  hand, and never silently omit the line** — a missing probe and a
+  hand-count that happens to agree produce the exact same visible output
+  today, which is precisely why this must be an explicit, checked state
+  rather than an implied one.
+
+This does not relieve you of READING fiches — the routing test and the
+hook-quality lens below still require opening the index and following
+indirection into hub bodies. It only relieves you of COUNTING them.
+
 ## Sources (full pass) — read ONLY these
 
 1. The project's knowledge-base index — a one-line-per-fact list pointing into fuller
@@ -65,10 +97,12 @@ before. Reserve UNREACHABLE for a source you expected to work and it did not.
    links to other fiches", not that a filename matches some prefix. A prefix-matching detector
    goes silent on a store that named things differently — and its silence looks like a flat
    index, which is exactly the failure it was meant to catch.
-   ⚠ **State your scope in the verdict**: how many fiches you read, and how many of those you
-   reached through indirection. If facts exist in the store that no path reaches, your count
-   reveals it. Without this line you replace a silent blindness with a partial one, equally
-   silent — and the reader cannot tell either from a complete pass.
+   ⚠ **State your scope in the verdict, from the coverage input above — never a hand count**:
+   report `reachableFiches`/`diskFiches` and the `unreachableFiches` list the probe gave you.
+   Separately, name how many fiches you personally OPENED for the routing test and the
+   hook-quality lens below — a different, smaller number, because judgment only needs a
+   sample of the reachable set, not all of it. Conflating the two hides which one you are
+   reporting; keep them on separate lines.
 3. The project's `CLAUDE.md` and `.claude/rules/*.md`.
 4. **Task-tracker check, only when the project has one.** This agent's card-level checks are
    wired to Planka: when the spawn prompt's `TASK_TRACKER`
@@ -111,6 +145,50 @@ before. Reserve UNREACHABLE for a source you expected to work and it did not.
   `awk 'length($0)>150 {print NR": "length($0)" chars"}' <KNOWLEDGE_BASE_INDEX file>` and
   report every flagged line as a finding (the checkpoint session fixes the ones it
   touched; you only report — never edit).
+
+## Routing test — the judgment a script cannot make
+
+Coverage tells you a fact is REACHABLE somewhere in the graph. It says nothing about
+whether a reader who needs that fact would actually FIND it. That is the question this
+test answers, and no probe can answer it for you.
+
+Pick a small handful of facts (aim for 3–5) that the spawn prompt did NOT already name for
+you. For each one, starting from the index alone, try to route to it in **at most two
+hops** (index → fiche, or index → hub fiche → `[[slug]]` member). Report, per fact:
+`<fact>: routed in <n> hop(s) via <path>` or `<fact>: NOT ROUTABLE — searched for <terms>,
+found <what, if anything>`.
+
+⚠ **The trap this exists to catch: reading the whole file list first, then "routing" to
+something you have just seen.** That is a rehearsal, not a test — it proves the fact is
+IN the store, which coverage already told you. The test only means something if you
+approach it the way a session that does not yet know where the fact lives would: pick the
+fact's SYMPTOM or SEARCH TERM first (what would you type, not what you already read), then
+see whether the index's own hooks lead you there. If you caught yourself reading a fiche's
+contents before deciding which fact to test, discard that pick and choose a fresh one you
+have not yet opened.
+
+## Hook-quality lens — flag hooks that would not attract the reader who needs them
+
+A hook can be perfectly indexed, perfectly reachable, and still fail the reader silently
+if nobody who needs it would recognize it as the entry point. No mechanical check can see
+this — it requires reading the hook the way a searcher would, not the way its author did.
+Flag a hook that is:
+
+- **Inverted** — describes the FIX where a reader would search the SYMPTOM. Example: "use
+  an array" instead of "a loop over a quoted string runs once".
+- **Too vague to attract** — a hook that could describe a dozen different fiches equally
+  well and therefore describes none of them in particular. Example: "gotchas about
+  builds".
+- **Describes one member instead of the group it fronts** — a hub hook that names only its
+  first or most memorable member, so a reader looking for a DIFFERENT member of the same
+  hub has no reason to open it.
+
+For each flagged hook, quote it verbatim, name its file, and say what a searcher looking
+for that fact would actually have typed instead. **A well-tended store may legitimately
+produce zero findings here** — that is not evidence you skipped the lens, provided you
+name, per hook you actually read, why it passed (what a searcher would type, and that the
+hook already says it). Report the hooks you evaluated even when none are flagged, the same
+way a clean gate still names what it ran.
 
 ## Second question — ONLY when the spawn prompt lists reversals
 
