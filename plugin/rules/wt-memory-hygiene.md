@@ -46,6 +46,19 @@ either bloat or silent loss.
   looks up while already on the topic belongs in a hub. ⚠ **The target is headroom, not
   minimalism** — one implementation over-compressed to hubs only on its first pass and had to be
   rebalanced. Name the count you are aiming for, and leave room to grow into.
+- **A hub has a size past which it stops routing — split it.** A hub with too many members is a
+  second flat index one hop down: it relocates the ceiling instead of removing it. Tooling that
+  measures this should carry the actual number (a threshold that executes beats one that must be
+  remembered), and the shipped probe here warns past roughly **45 members**; the discipline the
+  number serves is what belongs in this rule. When a hub crosses it, split it along a real
+  distinction between its members — never in half by position, which produces two hubs neither of
+  whose names predicts what is inside.
+- **If a hub declares how many members it has, bump that count in the SAME edit as the member.**
+  A declared count is the only cross-check a store has against ITSELF: reachability answers "does
+  every fact have a path", the declared count answers "does this hub still describe what it
+  actually contains", and they fail differently. The convention is optional — a store that
+  declares no counts is not defective and nothing should report it as such — but a count that is
+  declared and stale is worse than none, because it reads as verified.
 - **Archive closed items by moving them, never by deleting.** When a tracked piece of work is
   finished and has no active follow-up, move its note out of the live index into an archive
   location and drop its pointer — inbound references still resolve there on demand. Move,

@@ -45,6 +45,12 @@ function fiche(dir: string, slug: string, body: string) {
   writeFileSync(join(dir, `${slug}.md`), body)
 }
 
+function hubWithMembers(dir: string, slug: string, memberSlugs: string[], extraBody = '') {
+  for (const memberSlug of memberSlugs) fiche(dir, memberSlug, `Body for ${memberSlug}.\n`)
+  const memberLines = memberSlugs.map((memberSlug) => `- [[${memberSlug}]] — hook for ${memberSlug}`)
+  fiche(dir, slug, `${extraBody}${memberLines.join('\n')}\n`)
+}
+
 interface Report {
   hasIndex: boolean
   threshold: number
@@ -53,6 +59,8 @@ interface Report {
   diskFiches: number
   reachableFiches: number
   unreachableFiches: string[]
+  danglingRefs: Array<{ from: string; target: string }>
+  hubCountMismatches: Array<{ file: string; declared: number; actual: number }>
   flagged: boolean
   reasons: string[]
 }
@@ -207,6 +215,68 @@ describe('memory-index-check-core: reachability', () => {
     expect(report.hasIndex).toBe(true)
     expect(report.reachableFiches).toBe(1)
   })
+
+  it('an index link to a missing file is named as dangling with the index as its source', () => {
+    const dir = makeStore()
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Missing](missing.md) — broken pointer\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.danglingRefs).toEqual([{ from: 'MEMORY.md', target: 'missing.md' }])
+    expect(report.reasons.join(' ')).toContain('dangling reference')
+    expect(report.reasons.join(' ')).toContain('MEMORY.md')
+    expect(report.reasons.join(' ')).toContain('missing.md')
+    expect(report.flagged).toBe(true)
+  })
+
+  it('a member-shaped missing [[slug]] inside a hub body is named as dangling with its source file', () => {
+    const dir = makeStore()
+    fiche(dir, 'hub-topic', '- [[missing]] — broken member line\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](hub-topic.md) — grouped\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.danglingRefs).toEqual([{ from: 'hub-topic.md', target: 'missing.md' }])
+    expect(report.reasons.join(' ')).toContain('hub-topic.md')
+    expect(report.reasons.join(' ')).toContain('missing.md')
+    expect(report.flagged).toBe(true)
+  })
+
+  it('a missing [[slug]] mentioned only in prose stays informational, not a finding', () => {
+    const dir = makeStore()
+    fiche(dir, 'hub-topic', 'Running prose mentions [[missing]] for later.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](hub-topic.md) — grouped\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.reachableFiches).toBe(1)
+    expect(report.danglingRefs).toEqual([])
+    expect(report.flagged).toBe(false)
+  })
+
+  it('a hub declaring a matching member_count is silent', () => {
+    const dir = makeStore()
+    hubWithMembers(dir, 'hub-topic', ['member-a', 'member-b'], '---\nmember_count: 2\n---\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](hub-topic.md) — grouped\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.hubCountMismatches).toEqual([])
+    expect(report.flagged).toBe(false)
+  })
+
+  it('a hub declaring a mismatched member_count is named with both numbers', () => {
+    const dir = makeStore()
+    hubWithMembers(dir, 'hub-topic', ['member-a', 'member-b'], '---\nmember_count: 3\n---\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](hub-topic.md) — grouped\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.hubCountMismatches).toEqual([{ file: 'hub-topic.md', declared: 3, actual: 2 }])
+    expect(report.reasons.join(' ')).toContain('hub-topic.md')
+    expect(report.reasons.join(' ')).toContain('declared 3')
+    expect(report.reasons.join(' ')).toContain('actual 2')
+    expect(report.flagged).toBe(true)
+  })
+
+  it('a hub declaring no member_count stays silent', () => {
+    const dir = makeStore()
+    hubWithMembers(dir, 'hub-topic', ['member-a', 'member-b'])
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](hub-topic.md) — grouped\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.hubCountMismatches).toEqual([])
+    expect(report.flagged).toBe(false)
+  })
 })
 
 describe('memory-index-check-core: warning band (card follow-up — countdown before the flag)', () => {
@@ -350,8 +420,53 @@ describe('wt-memory-index-check.mjs CLI: warning band + hub sizing exit codes an
     writeFileSync(join(dir, 'MEMORY.md'), '- [Fact A](fact-a.md) — a fact\n')
     const stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
     expect(stdout).toBe(
-      'index: 1 entry line(s) (threshold applied: 200) — 1 fiche(s) on disk, 1 reachable, 0 invisible\n',
+      'index: 1 entry line(s) (threshold applied: 200) — 1 fiche(s) on disk, 1 reachable, 0 invisible; 0 dangling\n',
     )
+  })
+
+  it('nothing dangling: exits 0 and the summary states both emptiness conditions explicitly', () => {
+    const dir = makeStore()
+    fiche(dir, 'fact-a', 'Fact.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Fact A](fact-a.md) — a fact\n')
+    const { status } = runCli(dir)
+    expect(status).toBe(0)
+    const stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
+    expect(stdout).toContain('0 invisible; 0 dangling')
+  })
+
+  it('a dangling reference exits 1 and the human-readable output names both source and target', () => {
+    const dir = makeStore()
+    fiche(dir, 'hub-topic', '- [[missing]] — broken member line\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](hub-topic.md) — grouped\n')
+    let status = 0
+    let stdout = ''
+    try {
+      stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
+    } catch (e) {
+      const err = e as ExecError
+      stdout = err.stdout ?? ''
+      status = err.status ?? 1
+    }
+    expect(status).toBe(1)
+    expect(stdout).toContain('0 invisible; 1 dangling')
+    expect(stdout).toContain('FLAG: dangling reference from hub-topic.md to missing.md')
+  })
+
+  it('a hub count mismatch exits 1 and the human-readable output names the hub, declared count, and actual count', () => {
+    const dir = makeStore()
+    hubWithMembers(dir, 'hub-topic', ['member-a', 'member-b'], '---\nmember_count: 3\n---\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](hub-topic.md) — grouped\n')
+    let status = 0
+    let stdout = ''
+    try {
+      stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
+    } catch (e) {
+      const err = e as ExecError
+      stdout = err.stdout ?? ''
+      status = err.status ?? 1
+    }
+    expect(status).toBe(1)
+    expect(stdout).toContain('FLAG: hub hub-topic.md declared 3 member(s); actual 2')
   })
 
   it('inside the band: exits 0, prints a countdown line, JSON carries inWarningBand + notices', () => {

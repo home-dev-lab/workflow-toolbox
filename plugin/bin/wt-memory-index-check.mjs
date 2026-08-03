@@ -12,7 +12,7 @@
 //   2. how many fiches exist on disk vs how many are REACHABLE from the
 //      index, following direct links AND, transitively, any `[[slug]]`
 //      hub-member references inside a linked fiche's own body;
-//   3. the gap, named: "N fiches on disk, M reachable, K invisible".
+//   3. the gaps, named: "N fiches on disk, M reachable, K invisible; D dangling".
 //
 // Point 3 is the actual deliverable. Line-counting alone cannot distinguish
 // a COMPRESSED index (fiches still reachable through a hub) from an
@@ -112,7 +112,7 @@ if (args.json) {
     console.log(
       `index: ${report.entryLines} entry line(s) (threshold applied: ${report.threshold}) — ` +
         `${report.diskFiches} fiche(s) on disk, ${report.reachableFiches} reachable, ` +
-        `${report.unreachableFiches.length} invisible`,
+        `${report.unreachableFiches.length} invisible; ${report.danglingRefs.length} dangling`,
     );
     // Only printed when at least one hub exists, and only inside the band —
     // a flat store (no hubs, comfortable headroom) reads exactly as it did

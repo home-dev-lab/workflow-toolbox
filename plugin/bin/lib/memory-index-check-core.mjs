@@ -42,6 +42,11 @@ const HUBLINK_RE = /\[\[([^[\]]+)\]\]/g;
 // still makes it reachable). This one decides hub CLASSIFICATION, where
 // "anywhere in the text" is the wrong question — see HUB_MEMBER_LINE_RATIO.
 const MEMBER_LINE_RE = /^-\s*\[\[([^[\]]+)\]\]/;
+// Declared hub counts are opt-in and parsed only from an explicit frontmatter
+// field: `member_count: <integer>`. A frontmatter key is unambiguous and keeps
+// this check silent for stores that never adopted the convention; prose like
+// "12 members" is too easy to match accidentally in an ordinary note.
+const DECLARED_MEMBER_COUNT_RE = /^member_count:\s*(\d+)\s*$/m;
 // A body counts as a hub only when member-shaped lines are a substantial
 // share of its non-blank lines — not merely present. Without this ratio, a
 // long narrative fiche that cross-references its neighbours in running
@@ -66,7 +71,9 @@ const HUB_MEMBER_LINE_RATIO = 0.3;
  *   store: string, hasIndex: boolean, indexFile: string, threshold: number,
  *   entryLines: number, overThreshold: boolean,
  *   diskFiches: number, reachableFiches: number, unreachableFiches: string[],
+ *   danglingRefs: Array<{ from: string, target: string }>,
  *   hubMax: number, hubCount: number,
+ *   hubCountMismatches: Array<{ file: string, declared: number, actual: number }>,
  *   largestHub: { file: string, members: number } | null,
  *   inWarningBand: boolean, notices: string[],
  *   flagged: boolean, reasons: string[]
@@ -103,8 +110,10 @@ export function checkStore(storeDir, opts = {}) {
       diskFiches: 0,
       reachableFiches: 0,
       unreachableFiches: [],
+      danglingRefs: [],
       hubMax,
       hubCount: 0,
+      hubCountMismatches: [],
       largestHub: null,
       inWarningBand: false,
       notices: [],
@@ -133,10 +142,14 @@ export function checkStore(storeDir, opts = {}) {
 
   // Direct links: every `(*.md)` target named anywhere in the index file.
   const directLinks = new Set();
+  const danglingRefs = [];
   for (const line of indexLines) {
     LINK_RE.lastIndex = 0;
     let match;
-    while ((match = LINK_RE.exec(line))) directLinks.add(match[1]);
+    while ((match = LINK_RE.exec(line))) {
+      directLinks.add(match[1]);
+      if (!diskFiches.has(match[1])) danglingRefs.push({ from: indexFile, target: match[1] });
+    }
   }
 
   // BFS closure: a directly-linked fiche that is itself a hub lists its
@@ -159,6 +172,7 @@ export function checkStore(storeDir, opts = {}) {
   // `[[slug]]` references its body yields that resolve to a real fiche on
   // disk.
   const hubMemberCounts = new Map(); // file -> distinct resolved member count
+  const hubCountMismatches = [];
 
   while (queue.length > 0) {
     const current = queue.shift();
@@ -186,13 +200,20 @@ export function checkStore(storeDir, opts = {}) {
     const bodyLines = body.split('\n');
     const nonBlankLineCount = bodyLines.filter((l) => l.trim().length > 0).length;
     let memberLineCount = 0;
+    const memberLineSlugs = new Set();
     const memberSlugs = new Set();
     for (const line of bodyLines) {
       const m = MEMBER_LINE_RE.exec(line.trim());
       if (!m) continue;
       memberLineCount++;
       const candidate = `${m[1]}.md`;
+      memberLineSlugs.add(candidate);
+      if (!diskFiches.has(candidate)) danglingRefs.push({ from: current, target: candidate });
       if (diskFiches.has(candidate)) memberSlugs.add(candidate);
+    }
+    const declaredCount = readDeclaredMemberCount(body);
+    if (declaredCount !== null && declaredCount !== memberLineSlugs.size) {
+      hubCountMismatches.push({ file: current, declared: declaredCount, actual: memberLineSlugs.size });
     }
     if (
       memberSlugs.size > 0 &&
@@ -222,10 +243,16 @@ export function checkStore(storeDir, opts = {}) {
       `${unreachableFiches.length} fiche(s) on disk are reachable from the index by no path (hub or direct)`,
     );
   }
+  for (const { from, target } of danglingRefs) {
+    reasons.push(`dangling reference from ${from} to ${target}`);
+  }
   for (const [file, members] of hubMemberCounts) {
     if (members > hubMax) {
       reasons.push(`hub ${file} has ${members} member(s), over hubMax ${hubMax}`);
     }
+  }
+  for (const { file, declared, actual } of hubCountMismatches) {
+    reasons.push(`hub ${file} declared ${declared} member(s); actual ${actual}`);
   }
 
   // The warning band: a countdown toward the threshold, never a flag. The
@@ -253,8 +280,10 @@ export function checkStore(storeDir, opts = {}) {
     diskFiches: diskFiches.size,
     reachableFiches: reachable.size,
     unreachableFiches,
+    danglingRefs,
     hubMax,
     hubCount: hubMemberCounts.size,
+    hubCountMismatches,
     largestHub,
     inWarningBand,
     notices,
@@ -265,4 +294,12 @@ export function checkStore(storeDir, opts = {}) {
     flagged: reasons.length > 0,
     reasons,
   };
+}
+
+function readDeclaredMemberCount(body) {
+  const frontmatterMatch = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(body);
+  if (!frontmatterMatch) return null;
+  const declaredMatch = DECLARED_MEMBER_COUNT_RE.exec(frontmatterMatch[1]);
+  if (!declaredMatch) return null;
+  return Number(declaredMatch[1]);
 }
