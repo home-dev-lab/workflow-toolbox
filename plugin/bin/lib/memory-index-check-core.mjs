@@ -34,23 +34,48 @@ const LINK_RE = /\]\(([^)]+\.md)\)/g;
 // above was meant to close — better to accept whatever the filesystem
 // accepts and let diskFiches (the real on-disk listing) be the filter.
 const HUBLINK_RE = /\[\[([^[\]]+)\]\]/g;
+// A hub-MEMBER line: the whole trimmed line IS a `[[slug]]` list item, e.g.
+// `- [[slug]] — hook`. Anchored at the start (after trimming) and NOT
+// global — deliberately narrower than HUBLINK_RE above, which matches a
+// `[[slug]]` occurrence anywhere in the text (that stays broad on purpose,
+// for reachability: a narrative fiche that mentions a neighbour in prose
+// still makes it reachable). This one decides hub CLASSIFICATION, where
+// "anywhere in the text" is the wrong question — see HUB_MEMBER_LINE_RATIO.
+const MEMBER_LINE_RE = /^-\s*\[\[([^[\]]+)\]\]/;
+// A body counts as a hub only when member-shaped lines are a substantial
+// share of its non-blank lines — not merely present. Without this ratio, a
+// long narrative fiche that cross-references its neighbours in running
+// prose (many `[[link]]` occurrences, almost none of them list items) gets
+// classified as a hub and its citations counted as "members". Measured on
+// the real store: a 2597-line resume-anchor fiche has 75 inline `[[links]]`
+// in prose and exactly 1 line shaped like a member — at "any link present"
+// that scored as a 48-member hub (a false positive that would fire a
+// SessionStart hook on every session against a perfectly healthy store);
+// at this ratio it scores ~0.04% and is correctly not a hub at all. 30% is
+// a deliberately generous floor — a genuine hub (a body that IS a member
+// list) scores near 100%, so the two shapes are nowhere near each other.
+const HUB_MEMBER_LINE_RATIO = 0.3;
 
 /**
  * @param {string} storeDir - absolute or relative path to the memory store
  *   (the directory holding the index file and the fiche .md files). Always
  *   an argument, never guessed — a tool that knows one location only works
  *   on one machine.
- * @param {{ threshold?: number, indexFile?: string }} [opts]
+ * @param {{ threshold?: number, indexFile?: string, hubMax?: number }} [opts]
  * @returns {{
  *   store: string, hasIndex: boolean, indexFile: string, threshold: number,
  *   entryLines: number, overThreshold: boolean,
  *   diskFiches: number, reachableFiches: number, unreachableFiches: string[],
+ *   hubMax: number, hubCount: number,
+ *   largestHub: { file: string, members: number } | null,
+ *   inWarningBand: boolean, notices: string[],
  *   flagged: boolean, reasons: string[]
  * }}
  */
 export function checkStore(storeDir, opts = {}) {
   const threshold = opts.threshold ?? 200;
   const indexFile = opts.indexFile ?? 'MEMORY.md';
+  const hubMax = opts.hubMax ?? 45;
 
   let storeStat;
   try {
@@ -78,6 +103,11 @@ export function checkStore(storeDir, opts = {}) {
       diskFiches: 0,
       reachableFiches: 0,
       unreachableFiches: [],
+      hubMax,
+      hubCount: 0,
+      largestHub: null,
+      inWarningBand: false,
+      notices: [],
       flagged: false,
       reasons: [],
     };
@@ -122,6 +152,14 @@ export function checkStore(storeDir, opts = {}) {
       queue.push(file);
     }
   }
+  // Hub sizing: a hub buys index headroom by pushing facts one hop down,
+  // it does not remove the ceiling — it RELOCATES it. So while walking the
+  // BFS anyway, record for each reachable file that is STRUCTURALLY a hub
+  // (see HUB_MEMBER_LINE_RATIO) the number of DISTINCT member-shaped
+  // `[[slug]]` references its body yields that resolve to a real fiche on
+  // disk.
+  const hubMemberCounts = new Map(); // file -> distinct resolved member count
+
   while (queue.length > 0) {
     const current = queue.shift();
     let body;
@@ -130,6 +168,9 @@ export function checkStore(storeDir, opts = {}) {
     } catch {
       continue; // linked but unreadable — treated as not further expandable, not a crash
     }
+    // Reachability: any `[[slug]]` occurrence ANYWHERE in the body, prose
+    // included — deliberately broad, this is what lets a hub-of-hubs (or a
+    // narrative fiche that simply mentions a neighbour) still resolve.
     HUBLINK_RE.lastIndex = 0;
     let match;
     while ((match = HUBLINK_RE.exec(body))) {
@@ -139,9 +180,38 @@ export function checkStore(storeDir, opts = {}) {
         queue.push(candidate);
       }
     }
+    // Hub classification: STRUCTURE, not "has a link" — see
+    // HUB_MEMBER_LINE_RATIO above for why "any [[link]] present" is the
+    // wrong test.
+    const bodyLines = body.split('\n');
+    const nonBlankLineCount = bodyLines.filter((l) => l.trim().length > 0).length;
+    let memberLineCount = 0;
+    const memberSlugs = new Set();
+    for (const line of bodyLines) {
+      const m = MEMBER_LINE_RE.exec(line.trim());
+      if (!m) continue;
+      memberLineCount++;
+      const candidate = `${m[1]}.md`;
+      if (diskFiches.has(candidate)) memberSlugs.add(candidate);
+    }
+    if (
+      memberSlugs.size > 0 &&
+      nonBlankLineCount > 0 &&
+      memberLineCount / nonBlankLineCount >= HUB_MEMBER_LINE_RATIO
+    ) {
+      hubMemberCounts.set(current, memberSlugs.size);
+    }
   }
 
   const unreachableFiches = [...diskFiches].filter((f) => !reachable.has(f)).sort();
+
+  // Largest hub, for reporting even when nothing is over hubMax — this is
+  // what makes the relocated ceiling visible before it becomes a problem,
+  // the same reasoning the warning band applies to the index itself.
+  let largestHub = null;
+  for (const [file, members] of hubMemberCounts) {
+    if (!largestHub || members > largestHub.members) largestHub = { file, members };
+  }
 
   const reasons = [];
   if (overThreshold) {
@@ -151,6 +221,26 @@ export function checkStore(storeDir, opts = {}) {
     reasons.push(
       `${unreachableFiches.length} fiche(s) on disk are reachable from the index by no path (hub or direct)`,
     );
+  }
+  for (const [file, members] of hubMemberCounts) {
+    if (members > hubMax) {
+      reasons.push(`hub ${file} has ${members} member(s), over hubMax ${hubMax}`);
+    }
+  }
+
+  // The warning band: a countdown toward the threshold, never a flag. The
+  // probe as originally shipped only fires once the index is ALREADY over
+  // the limit — by which point the tail is already invisible to every
+  // session loading it. This gives a reader a heads-up while there is
+  // still time to act, without turning a healthy store noisy: it never
+  // fires once overThreshold is already true (that case has its own,
+  // stronger signal), and it never changes `flagged` or the exit code.
+  const headroom = threshold - entryLineCount;
+  const bandWidth = Math.max(10, Math.round(threshold * 0.15));
+  const inWarningBand = !overThreshold && headroom <= bandWidth;
+  const notices = [];
+  if (inWarningBand) {
+    notices.push(`index headroom: ${headroom} line(s) before the threshold of ${threshold}`);
   }
 
   return {
@@ -163,7 +253,16 @@ export function checkStore(storeDir, opts = {}) {
     diskFiches: diskFiches.size,
     reachableFiches: reachable.size,
     unreachableFiches,
-    flagged: overThreshold || unreachableFiches.length > 0,
+    hubMax,
+    hubCount: hubMemberCounts.size,
+    largestHub,
+    inWarningBand,
+    notices,
+    // Every flagging condition (over-threshold, an unreachable fiche, an
+    // oversized hub) already pushed its own line into `reasons` above —
+    // flagged is exactly "did anything push a reason", not a re-derivation
+    // of the same three conditions a second way that could drift from it.
+    flagged: reasons.length > 0,
     reasons,
   };
 }

@@ -209,6 +209,204 @@ describe('memory-index-check-core: reachability', () => {
   })
 })
 
+describe('memory-index-check-core: warning band (card follow-up — countdown before the flag)', () => {
+  function indexWithNEntries(dir: string, n: number) {
+    const lines = ['# Memory index']
+    for (let i = 1; i <= n; i++) {
+      fiche(dir, `fact-${i}`, `Fact ${i}.\n`)
+      lines.push(`- [Fact ${i}](fact-${i}.md) — fact ${i}`)
+    }
+    writeFileSync(join(dir, 'MEMORY.md'), lines.join('\n') + '\n')
+  }
+
+  it('comfortable headroom → no band, no notice, not flagged', () => {
+    const dir = makeStore()
+    indexWithNEntries(dir, 5) // threshold 200, band width max(10, 30) = 30 → headroom 195, way outside
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.inWarningBand).toBe(false)
+    expect(report.notices).toEqual([])
+    expect(report.flagged).toBe(false)
+  })
+
+  it('inside the band → exit-0 shape (flagged stays false) but a countdown notice fires', () => {
+    const dir = makeStore()
+    // threshold 20 → band width = max(10, round(20*0.15)=3) = 10 → band starts at headroom<=10, i.e. entryLines>=10
+    indexWithNEntries(dir, 12)
+    const report = checkStore(dir, { threshold: 20 })
+    expect(report.overThreshold).toBe(false)
+    expect(report.inWarningBand).toBe(true)
+    expect(report.notices).toEqual(['index headroom: 8 line(s) before the threshold of 20'])
+    expect(report.flagged).toBe(false) // a notice is never a finding
+  })
+
+  it('over threshold → no band notice (the stronger over-threshold signal owns it, not both)', () => {
+    const dir = makeStore()
+    indexWithNEntries(dir, 25)
+    const report = checkStore(dir, { threshold: 20 })
+    expect(report.overThreshold).toBe(true)
+    expect(report.inWarningBand).toBe(false)
+    expect(report.notices).toEqual([])
+    expect(report.flagged).toBe(true)
+  })
+})
+
+describe('memory-index-check-core: hub sizing (card follow-up — the ceiling relocates, it does not vanish)', () => {
+  function makeHub(dir: string, hubSlug: string, memberCount: number) {
+    const memberSlugs = Array.from({ length: memberCount }, (_, i) => `${hubSlug}-member-${i}`)
+    for (const slug of memberSlugs) fiche(dir, slug, `Body for ${slug}.\n`)
+    const body = `${memberSlugs.map((s) => `- [[${s}]] — hook`).join('\n')}\n`
+    fiche(dir, hubSlug, body)
+    writeFileSync(join(dir, 'MEMORY.md'), `# Memory index\n- [Hub](${hubSlug}.md) — grouped\n`)
+    return memberSlugs
+  }
+
+  it('a flat store (no hubs) reports hubCount 0 and largestHub null', () => {
+    const dir = makeStore()
+    fiche(dir, 'fact-a', 'Fact.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Fact A](fact-a.md) — a fact\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.hubCount).toBe(0)
+    expect(report.largestHub).toBeNull()
+    expect(report.flagged).toBe(false)
+  })
+
+  it('a hub under hubMax is reported but not flagged', () => {
+    const dir = makeStore()
+    makeHub(dir, 'hub-topic', 20)
+    const report = checkStore(dir, { threshold: 200, hubMax: 45 })
+    expect(report.hubCount).toBe(1)
+    expect(report.largestHub).toEqual({ file: 'hub-topic.md', members: 20 })
+    expect(report.flagged).toBe(false)
+  })
+
+  it('a hub OVER hubMax is flagged, naming the file and its size', () => {
+    const dir = makeStore()
+    makeHub(dir, 'huge-hub', 50)
+    const report = checkStore(dir, { threshold: 200, hubMax: 45 })
+    expect(report.hubCount).toBe(1)
+    expect(report.largestHub).toEqual({ file: 'huge-hub.md', members: 50 })
+    expect(report.flagged).toBe(true)
+    expect(report.reasons.join(' ')).toContain('huge-hub.md')
+    expect(report.reasons.join(' ')).toContain('50 member(s)')
+    expect(report.reasons.join(' ')).toContain('hubMax 45')
+  })
+
+  it('a NARRATIVE fiche with many inline [[links]] in prose and few list-shaped member lines is NOT counted as a hub — cross-model review finding against the real store', () => {
+    const dir = makeStore()
+    const neighborSlugs = Array.from({ length: 6 }, (_, i) => `neighbor-${i}`)
+    for (const slug of neighborSlugs) fiche(dir, slug, `Body for ${slug}.\n`)
+    // A long resume-anchor style fiche: prose paragraphs that happen to
+    // cross-reference several neighbours inline, plus ONE real list item.
+    // Reachability must still resolve every [[link]] (prose included) —
+    // but classification must NOT call this body a hub, because it is not
+    // structurally a member list.
+    const proseLines = []
+    for (let i = 0; i < 40; i++) {
+      proseLines.push(`Some narrative paragraph mentioning [[${neighborSlugs[i % neighborSlugs.length]}]] in passing.`)
+    }
+    proseLines.push(`- [[${neighborSlugs[0]}]] — the only actual list item`)
+    fiche(dir, 'resume-anchor', proseLines.join('\n') + '\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '# Memory index\n- [Anchor](resume-anchor.md) — running narrative\n')
+    const report = checkStore(dir, { threshold: 200, hubMax: 45 })
+    // Reachability still resolves every mentioned neighbour.
+    expect(report.unreachableFiches).toEqual([])
+    // But the anchor is not classified as a hub at all.
+    expect(report.hubCount).toBe(0)
+    expect(report.largestHub).toBeNull()
+    expect(report.flagged).toBe(false)
+  })
+
+  it('a healthy store with modest hubs and comfortable headroom stays exit 0, no notices, no flags', () => {
+    const dir = makeStore()
+    makeHub(dir, 'modest-hub', 5)
+    const report = checkStore(dir, { threshold: 200, hubMax: 45 })
+    expect(report.flagged).toBe(false)
+    expect(report.notices).toEqual([])
+    expect(report.inWarningBand).toBe(false)
+  })
+})
+
+describe('wt-memory-index-check.mjs CLI: warning band + hub sizing exit codes and output', () => {
+  it('a bad --hub-max exits 2, mirroring --threshold validation', () => {
+    const dir = makeStore()
+    fiche(dir, 'fact-a', 'Fact.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Fact A](fact-a.md) — a fact\n')
+    let status = 0
+    let stderr = ''
+    try {
+      execFileSync('node', [CLI, '--store', dir, '--hub-max', '0'], { encoding: 'utf8' })
+    } catch (e) {
+      const err = e as ExecError & { stderr?: string }
+      status = err.status ?? 1
+      stderr = err.stderr ?? ''
+    }
+    expect(status).toBe(2)
+    expect(stderr).toContain('--hub-max must be a positive number')
+  })
+
+  it('a flat store under threshold, comfortably clear of the band, exits 0 with the same output shape as before this change', () => {
+    const dir = makeStore()
+    fiche(dir, 'fact-a', 'Fact.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Fact A](fact-a.md) — a fact\n')
+    const stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
+    expect(stdout).toBe(
+      'index: 1 entry line(s) (threshold applied: 200) — 1 fiche(s) on disk, 1 reachable, 0 invisible\n',
+    )
+  })
+
+  it('inside the band: exits 0, prints a countdown line, JSON carries inWarningBand + notices', () => {
+    const dir = makeStore()
+    const lines = ['# Memory index']
+    for (let i = 1; i <= 12; i++) {
+      fiche(dir, `fact-${i}`, `Fact ${i}.\n`)
+      lines.push(`- [Fact ${i}](fact-${i}.md) — fact ${i}`)
+    }
+    writeFileSync(join(dir, 'MEMORY.md'), lines.join('\n') + '\n')
+    const { status, report } = runCli(dir, ['--threshold', '20'])
+    expect(status).toBe(0)
+    expect(report.flagged).toBe(false)
+    expect((report as unknown as { inWarningBand: boolean }).inWarningBand).toBe(true)
+    expect((report as unknown as { notices: string[] }).notices).toEqual([
+      'index headroom: 8 line(s) before the threshold of 20',
+    ])
+    const stdout = execFileSync('node', [CLI, '--store', dir, '--threshold', '20'], { encoding: 'utf8' })
+    expect(stdout).toContain('index headroom: 8 line(s) before the threshold of 20')
+  })
+
+  it('a hub over --hub-max exits 1 and names the file + size in the human-readable output', () => {
+    const dir = makeStore()
+    const memberSlugs = Array.from({ length: 5 }, (_, i) => `member-${i}`)
+    for (const slug of memberSlugs) fiche(dir, slug, `Body for ${slug}.\n`)
+    fiche(dir, 'hub-topic', memberSlugs.map((s) => `- [[${s}]] — hook`).join('\n') + '\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '# Memory index\n- [Hub](hub-topic.md) — grouped\n')
+    let status = 0
+    let stdout = ''
+    try {
+      stdout = execFileSync('node', [CLI, '--store', dir, '--hub-max', '3'], { encoding: 'utf8' })
+    } catch (e) {
+      const err = e as ExecError
+      stdout = err.stdout ?? ''
+      status = err.status ?? 1
+    }
+    expect(status).toBe(1)
+    expect(stdout).toContain('largest hub: hub-topic.md (5 member(s), hubMax 3)')
+    expect(stdout).toContain('FLAG: hub hub-topic.md has 5 member(s), over hubMax 3')
+  })
+
+  it('a hub over --hub-max exits 1 (thrown form) and the JSON names the largest hub', () => {
+    const dir = makeStore()
+    const memberSlugs = Array.from({ length: 5 }, (_, i) => `member-${i}`)
+    for (const slug of memberSlugs) fiche(dir, slug, `Body for ${slug}.\n`)
+    fiche(dir, 'hub-topic', memberSlugs.map((s) => `- [[${s}]] — hook`).join('\n') + '\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '# Memory index\n- [Hub](hub-topic.md) — grouped\n')
+    const { status, report } = runCli(dir, ['--hub-max', '3'])
+    expect(status).toBe(1)
+    const r = report as unknown as { largestHub: { file: string; members: number }; hubCount: number }
+    expect(r.hubCount).toBe(1)
+    expect(r.largestHub).toEqual({ file: 'hub-topic.md', members: 5 })
+  })
+})
+
 describe('wt-memory-index-check.mjs CLI: exit codes are the ground truth', () => {
   it('exits 0 on a clean short store', () => {
     const dir = makeStore()

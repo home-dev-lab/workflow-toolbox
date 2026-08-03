@@ -23,7 +23,7 @@
 // one location only works on one machine.
 //
 // Usage:
-//   wt-memory-index-check.mjs --store <dir> [--threshold 200]
+//   wt-memory-index-check.mjs --store <dir> [--threshold 200] [--hub-max 45]
 //                              [--index-file MEMORY.md] [--json] [--out <file>]
 //
 // Exit codes:
@@ -39,7 +39,7 @@ function fail(msg) {
 }
 
 function parseArgs(argv) {
-  const out = { store: null, threshold: 200, indexFile: 'MEMORY.md', json: false, out: null };
+  const out = { store: null, threshold: 200, hubMax: 45, indexFile: 'MEMORY.md', json: false, out: null };
   // A flag that takes a value must actually find one — `--index-file` at
   // the end of argv with nothing after it must fail loudly (usage error),
   // never silently fall back to a default because `undefined` happened to
@@ -52,6 +52,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--store') out.store = nextValue(i++, a);
     else if (a === '--threshold') out.threshold = Number(nextValue(i++, a));
+    else if (a === '--hub-max') out.hubMax = Number(nextValue(i++, a));
     else if (a === '--index-file') out.indexFile = nextValue(i++, a);
     else if (a === '--json') out.json = true;
     else if (a === '--out') out.out = nextValue(i++, a);
@@ -66,16 +67,23 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 if (!args.store) {
   fail(
-    'usage: wt-memory-index-check.mjs --store <dir> [--threshold 200] [--index-file MEMORY.md] [--json] [--out <file>]',
+    'usage: wt-memory-index-check.mjs --store <dir> [--threshold 200] [--hub-max 45] [--index-file MEMORY.md] [--json] [--out <file>]',
   );
 }
 if (!Number.isFinite(args.threshold) || args.threshold <= 0) {
   fail(`--threshold must be a positive number, got: ${args.threshold}`);
 }
+if (!Number.isFinite(args.hubMax) || args.hubMax <= 0) {
+  fail(`--hub-max must be a positive number, got: ${args.hubMax}`);
+}
 
 let report;
 try {
-  report = checkStore(args.store, { threshold: args.threshold, indexFile: args.indexFile });
+  report = checkStore(args.store, {
+    threshold: args.threshold,
+    indexFile: args.indexFile,
+    hubMax: args.hubMax,
+  });
 } catch (e) {
   fail(e instanceof Error ? e.message : String(e));
 }
@@ -106,6 +114,15 @@ if (args.json) {
         `${report.diskFiches} fiche(s) on disk, ${report.reachableFiches} reachable, ` +
         `${report.unreachableFiches.length} invisible`,
     );
+    // Only printed when at least one hub exists, and only inside the band —
+    // a flat store (no hubs, comfortable headroom) reads exactly as it did
+    // before these two lines existed.
+    if (report.hubCount > 0) {
+      console.log(
+        `largest hub: ${report.largestHub.file} (${report.largestHub.members} member(s), hubMax ${report.hubMax})`,
+      );
+    }
+    for (const n of report.notices) console.log(n);
     for (const r of report.reasons) console.log(`FLAG: ${r}`);
     for (const f of report.unreachableFiches) console.log(`  unreachable: ${f}`);
   }
