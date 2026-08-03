@@ -24,6 +24,22 @@ The spawning prompt tells you which mode:
    convention, e.g. `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<slug>/memory/MEMORY.md`).
 2. The fiches it links that read as ACTIVE/current (at minimum any fiche flagged as the
    project's current progress/status tracker, plus any fiche the spawn prompt names).
+   ⚠ **FOLLOW INDIRECTION — an index entry may point at a fiche that is itself a LIST.** A
+   mature store outgrows a flat index (its auto-loaded form is truncated past a limit, silently),
+   so entries get grouped: one index line points at a fiche whose body lists other fiches as
+   `[[slug]]` references. Under that shape most facts are TWO hops away, and a checker that
+   follows only the index's direct links reads a fraction of the store — one measured case: 65
+   fiches out of 217 — then answers "is this resumable?" over that fraction. **That is not an
+   error, it is a clean verdict at an unknown scope**, which is the shape people trust. So:
+   whenever a fiche you read lists `[[slug]]` references to other fiches, follow those too.
+   ⚠ Detect this by STRUCTURE, never by a naming convention: the signal is "this body lists
+   links to other fiches", not that a filename matches some prefix. A prefix-matching detector
+   goes silent on a store that named things differently — and its silence looks like a flat
+   index, which is exactly the failure it was meant to catch.
+   ⚠ **State your scope in the verdict**: how many fiches you read, and how many of those you
+   reached through indirection. If facts exist in the store that no path reaches, your count
+   reveals it. Without this line you replace a silent blindness with a partial one, equally
+   silent — and the reader cannot tell either from a complete pass.
 3. The project's `CLAUDE.md` and `.claude/rules/*.md`.
 4. **Task-tracker check, only when the project has one.** At the START of the run, before
    checking any tracker state, load the harness TaskList tool in ONE ToolSearch call. This
