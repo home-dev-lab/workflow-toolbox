@@ -96,6 +96,45 @@ const MANAGED_AGENTS = [
   { file: 'pilot-orchestrator-watchdog.md' },
 ]
 
+/** The plugin's REGISTERED agents (`plugin/agents/`) — DISCOVERED from the filesystem at
+ *  run time, never hard-coded, so an agent added to that dir later shows up here with
+ *  nobody editing a list (the same discipline `discoverRuleItems` already applies to the
+ *  rules set). These are NOT part of the `agents` managed set above: Claude Code loads
+ *  them directly as `workflow-toolbox:<name>` the moment the plugin is installed, and
+ *  `adopt-rules` does nothing for them — but from an adoptant's side, "not adopted
+ *  because already registered" and "missing" both look like "absent from
+ *  .claude/agents/". Naming them is what tells the two apart (card: an adoptant asked
+ *  why two already-available agents "hadn't been added" — they had, under their
+ *  namespaced form, and nothing said so). */
+function discoverRegisteredAgents(root) {
+  const dir = path.join(root, 'agents')
+  let entries
+  try {
+    entries = fs.readdirSync(dir)
+  } catch {
+    return [] // no bundle dir → nothing to report (graceful, mirrors discoverRuleItems)
+  }
+  return entries
+    .filter((f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md')
+    .map((f) => f.slice(0, -3))
+    .sort()
+}
+
+/** Print the note distinguishing "already available, registered" from "adopted, managed
+ *  here" — for the `agents` set only, in BOTH --check and --install (it is informational,
+ *  not tied to a write). Silent when the registered set is empty (nothing to report),
+ *  same convention as the rest of this script's graceful-degradation. */
+function printRegisteredAgentsNote(root) {
+  const registered = discoverRegisteredAgents(root)
+  if (registered.length === 0) return
+  process.stdout.write(
+    `adopt-rules: ${registered.length} other agent(s) ship with the plugin and are already ` +
+      `available as workflow-toolbox:<name> — they are not adopted because they don't need to ` +
+      `be: only the pilot suite requires a local copy, to keep its observer pairing.\n`,
+  )
+  for (const name of registered) process.stdout.write(`  - workflow-toolbox:${name}\n`)
+}
+
 /** The two managed sets. `kind` drives banner placement; `srcDir` is the plugin bundle
  *  dir each set reads its files from; `resolveItems(root)` lists the managed files (the
  *  rules set discovers them from the bundle; the agents set is a fixed suite). */
@@ -849,6 +888,8 @@ function main() {
     anyEdited = anyEdited || r.anyEdited
     anySymlink = anySymlink || r.anySymlink
   }
+
+  if (chosen.includes('agents')) printRegisteredAgentsNote(root)
 
   if (args.mode === 'check') {
     if (anyAbsent) process.stdout.write('adopt-rules: run with --install to write the ABSENT item(s).\n')

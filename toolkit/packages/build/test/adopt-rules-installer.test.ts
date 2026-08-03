@@ -10,7 +10,18 @@
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, symlinkSync, lstatSync, readdirSync } from 'node:fs'
+import {
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  symlinkSync,
+  lstatSync,
+  readdirSync,
+  mkdirSync,
+  cpSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -702,5 +713,104 @@ describe('adopt-rules installer — a flag with no effect in the resolved mode i
     expect(runRaw(['--check', '--dir', d, '--force']).status).toBe(0)
     expect(runRaw(['--check', '--dir', d, '--replace-symlinks']).status).toBe(0)
     expect(runRaw(['--install', '--dir', d, '--force']).status).toBe(0)
+  })
+})
+
+// The registered-agents note (card: "an adoptant asked why two already-available agents
+// hadn't been added" — they had, under workflow-toolbox:<name>, and nothing said so).
+// The list MUST be derived from plugin/agents/ at run time — never hard-coded — or the 7th
+// agent added there stays invisible, exactly the enumerating-guard defect this closes.
+//
+// Proving the derivation is REAL (not just moved) requires a plugin/agents/ whose contents
+// this test controls. The real plugin/agents/ must stay untouched (a fixture written there
+// would trip the plugin/agents/ ↔ plugin/launch-agents/agents/ byte-identity mirror gate and
+// ship) — so this builds a throwaway COPY of the plugin skeleton (manifest + agents/ +
+// the script itself) under a temp dir, adds a fixture agent to the COPY's agents/, and runs
+// the COPIED script — whose pluginRoot() resolution walks up from ITS OWN location, landing
+// on the temp copy, never the real one.
+function makePluginCopy(): { pluginRoot: string; script: string; agentsDir: string } {
+  const pluginRoot = mkdtempSync(join(tmpdir(), 'wt-adopt-plugin-'))
+  roots.push(pluginRoot)
+  mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true })
+  writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: '0.0.1' }))
+  cpSync(join(REPO_ROOT, 'plugin/agents'), join(pluginRoot, 'agents'), { recursive: true })
+  cpSync(join(REPO_ROOT, 'plugin/agent-templates'), join(pluginRoot, 'agent-templates'), { recursive: true })
+  const scriptDir = join(pluginRoot, 'skills/adopt-rules/scripts')
+  mkdirSync(scriptDir, { recursive: true })
+  cpSync(SCRIPT, join(scriptDir, 'install-rules.mjs'))
+  return { pluginRoot, script: join(scriptDir, 'install-rules.mjs'), agentsDir: join(pluginRoot, 'agents') }
+}
+
+function runCopy(script: string, args: string[], dir: string): string {
+  const res = spawnSync(process.execPath, [script, ...args, '--dir', dir], { encoding: 'utf8' })
+  return (res.stdout ?? '') + (res.stderr ?? '')
+}
+
+describe('adopt-rules installer — registered-agents note (derived, not hard-coded)', () => {
+  it('--set agents lists every plugin/agents/*.md under workflow-toolbox:<name>, distinct from ABSENT pilot-suite items', () => {
+    const d = mkDir()
+    const { script, agentsDir } = makePluginCopy()
+    const realNames = readdirSync(agentsDir)
+      .filter((f) => f.endsWith('.md'))
+      .map((f) => f.replace(/\.md$/, ''))
+      .sort()
+    const out = runCopy(script, ['--set', 'agents', '--check'], d)
+    for (const name of realNames) expect(out, `${name} should be listed as registered`).toContain(`workflow-toolbox:${name}`)
+    // The pilot suite (agent-templates/, a DIFFERENT mechanism) stays a distinct ABSENT line —
+    // this note must never blur the two into looking the same.
+    expect(out).toContain('pilot.md: ABSENT')
+    expect(out).toMatch(/\d+ other agent\(s\) ship with the plugin/)
+  })
+
+  it('an agent ADDED to plugin/agents/ after this fix appears in the note with nobody editing a list', () => {
+    const d = mkDir()
+    const { script, agentsDir } = makePluginCopy()
+    const before = runCopy(script, ['--set', 'agents', '--check'], d)
+    expect(before).not.toContain('workflow-toolbox:brand-new-fixture-agent')
+
+    // Add a fixture agent to the COPY only — the real plugin/agents/ is never touched.
+    writeFileSync(
+      join(agentsDir, 'brand-new-fixture-agent.md'),
+      '---\nname: brand-new-fixture-agent\ndescription: a fixture added mid-test\n---\n\nfixture body\n',
+    )
+    const after = runCopy(script, ['--set', 'agents', '--check'], d)
+    expect(after).toContain('workflow-toolbox:brand-new-fixture-agent')
+    // The count grew by exactly one, and no other line needed touching to make that true.
+    const beforeCount = Number(/(\d+) other agent\(s\) ship with the plugin/.exec(before)?.[1])
+    const afterCount = Number(/(\d+) other agent\(s\) ship with the plugin/.exec(after)?.[1])
+    expect(afterCount).toBe(beforeCount + 1)
+  })
+
+  it('an EMPTY plugin/agents/ prints no note at all (graceful, mirrors discoverRuleItems)', () => {
+    const d = mkDir()
+    const { script, agentsDir } = makePluginCopy()
+    for (const f of readdirSync(agentsDir)) rmSync(join(agentsDir, f))
+    const out = runCopy(script, ['--set', 'agents', '--check'], d)
+    expect(out).not.toContain('other agent(s) ship with the plugin')
+  })
+
+  it('the note is printed for --install too (informational, not tied to a write)', () => {
+    const d = mkDir()
+    const { script, agentsDir } = makePluginCopy()
+    const realNames = readdirSync(agentsDir)
+      .filter((f) => f.endsWith('.md'))
+      .map((f) => f.replace(/\.md$/, ''))
+    const out = runCopy(script, ['--set', 'agents', '--install'], d)
+    for (const name of realNames) expect(out).toContain(`workflow-toolbox:${name}`)
+  })
+
+  it('a README.md dropped into plugin/agents/ is never listed as a registered agent (parity with discoverRuleItems)', () => {
+    const d = mkDir()
+    const { script, agentsDir } = makePluginCopy()
+    writeFileSync(join(agentsDir, 'README.md'), '# not an agent\n')
+    const out = runCopy(script, ['--set', 'agents', '--check'], d)
+    expect(out).not.toContain('workflow-toolbox:README')
+  })
+
+  it('the note is absent from the rules-only set (agents-specific, never printed for --set rules)', () => {
+    const d = mkDir()
+    const { script } = makePluginCopy()
+    const out = runCopy(script, ['--set', 'rules', '--check'], d)
+    expect(out).not.toContain('other agent(s) ship with the plugin')
   })
 })

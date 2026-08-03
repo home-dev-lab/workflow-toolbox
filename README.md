@@ -374,6 +374,16 @@ and the [adopt-rules skill](plugin/skills/adopt-rules/SKILL.md) for the full
 contract — including how to **reconcile existing project rules** before adopting,
 so you don't end up with duplicate, drifting concerns.
 
+The plugin also ships several OTHER agents (`fidelity-checker`, `index-groomer`,
+`leaf`, `lean`, `opencode-verifier`, `wave-fidelity-checker` as of this writing)
+that are registered directly by the plugin and need no adoption step at all —
+they're already callable as `workflow-toolbox:<name>` the moment the plugin is
+installed. Only the pilot suite above needs a project copy, for the
+`observer:` reason just explained. `adopt-rules --set agents --check` (or
+`--install`) prints the current list of these already-available agents at the
+end of its run, so you never have to guess which of the two mechanisms
+explains an agent's absence from `.claude/agents/`.
+
 ## The toolkit
 
 `toolkit/` is a pnpm workspace of three core packages:
