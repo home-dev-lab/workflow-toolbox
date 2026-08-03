@@ -118,6 +118,15 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-memory-index-check-hook.mjs\"",
+            "timeout": 20
+          }
+        ]
       }
     ],
     "SubagentStop": [
