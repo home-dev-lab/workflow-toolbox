@@ -56,6 +56,35 @@ the moment it is taken. Taking it is legitimate; taking it silently is not — t
 asked for the work discovers later that it did not happen, and cannot say whether they would
 have agreed.
 
+## ⚠ ANNOUNCING A STOP IS NOT A SUBSTITUTE FOR NOT STOPPING
+
+The clause above is about HOW to stop. Read alone it is satisfiable **by stopping**, and that is
+exactly how it gets misapplied: state a reason, feel compliant, stop. Measured on one autonomous
+mandate: six stops in a single day, every one of them correctly announced, every one of them
+against what the person waiting actually wanted. The announcement is a floor, never a licence.
+
+**So these two conditions are named NON-reasons. Under an autonomous mandate they do not justify
+stopping, however well the stop is announced:**
+
+- **Budget remaining, however little.** Unspent budget inside a window is gone; an interrupted arc
+  resumes. The question is never "can I finish this?" but **"is there budget left to spend?"** —
+  and if there is, the answer is to work. Only genuine exhaustion is a real constraint, and even
+  then it is a wait, not an ending.
+- **A filling context window.** Where compaction is automatic it fires on its own and the work
+  resumes, so nothing needs to be wound down ahead of it. ⚠ And do not invent a derived reason —
+  *"there is not enough room left to verify what I would start"* is the shape this takes, and it is
+  still a stop dressed as prudence. **Take smaller work, or work that needs no verification budget,
+  and keep going.** The record is durable; that is what makes the interruption free.
+
+**The tell, and it is a sentence forming in your own reasoning**: *"I'll stop here, because X"*
+where X is a budget or a window. At that moment the announcement is already written and it is the
+stop that is wrong, not its wording.
+
+⚠ This does not silence real blockers. A decision only the other party can make, an access you do
+not have, a service that is down — those are genuine, and the rule for them is unchanged: name the
+cause, name the one action that clears it, and say what you did with the rest of the time. **The
+distinction is whether the work is IMPOSSIBLE or merely CONSTRAINED. Constrained means continue.**
+
 ## Let automatic compaction run
 
 When automatic compaction is enabled, never stop and ask to compact manually — keep working;
