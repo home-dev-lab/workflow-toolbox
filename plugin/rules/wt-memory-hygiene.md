@@ -11,6 +11,34 @@ either bloat or silent loss.
 - **Never shrink a fact's body to save space.** Only the index is auto-loaded, so the body's
   size is not the cost that matters — a fresh session must be able to stand on the body alone.
   Shrink the index by archiving stale facts and keeping hooks short, never by gutting bodies.
+- **⚠ The index has a CEILING, and crossing it is SILENT.** An auto-loaded index is truncated
+  past a limit the harness sets, with no error: entries past the cut do not degrade, warn, or
+  visibly truncate — they simply stop existing for every session that loads it. Neither the file
+  nor the session can tell. Measured in one mature store: 217 entry lines, so roughly 17 tail
+  entries had already been invisible for an unknown period, found only because a hook happened to
+  warn on an unrelated write. **This failure has no symptom** — recall quietly gets worse with no
+  event to investigate. Treat approaching the ceiling as a defect, not untidiness, and measure it
+  rather than estimating: a probe that counts entry lines AND checks every fact on disk is still
+  reachable makes it loud. (The exact limit is an observation, not a documented number — state
+  which threshold you applied whenever you report on it.)
+- **Archiving alone cannot hold the ceiling — add an intermediate HUB layer.** Archiving is
+  scoped to closed work, and in a mature store almost nothing qualifies: classified mechanically,
+  one 218-entry store held 92 reference facts, 91 feedback facts, 4 about the user, and **3**
+  archivable project notes. A rule whose only lever reaches 3 entries out of 218 does not scale.
+  The missing lever: group entries into thematic hub notes whose bodies list their members as
+  `- [[slug]] — <hook>`; the index then carries one line per hub plus the entries that must stay
+  directly visible. Recall costs one extra hop for the hub-fronted majority; the index gains
+  headroom without bound. **The hub layer is ADDITIVE** — no fact is moved, edited, or deleted,
+  so nothing becomes unreachable. Keep archiving for closed project work; just stop treating it
+  as the scaling mechanism.
+- **The promotion test is the whole difficulty — over-compressing loses the ability to NOTICE.**
+  An index reduced to a list of hub names no longer tells a session that a fact EXISTS, which is
+  most of what an index is for. The operative criterion: *would a session need this fact on a turn
+  where it does not yet know the subject is involved?* Facts about the user, standing behavioural
+  instructions, and know-before-you-act cautions earn a direct line; a topic-bound gotcha someone
+  looks up while already on the topic belongs in a hub. ⚠ **The target is headroom, not
+  minimalism** — one implementation over-compressed to hubs only on its first pass and had to be
+  rebalanced. Name the count you are aiming for, and leave room to grow into.
 - **Archive closed items by moving them, never by deleting.** When a tracked piece of work is
   finished and has no active follow-up, move its note out of the live index into an archive
   location and drop its index line — inbound references still resolve there on demand. Move,
