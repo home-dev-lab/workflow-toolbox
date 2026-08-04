@@ -78,6 +78,8 @@ const MD_PATH_RE = /(?:\.\.?\/)?(?:[^\s`()[\]]+\/)*[^\s`()[\]]+\.md(?:#[^\s`()[\
  *   diskFiches: number, reachableFiches: number, unreachableFiches: string[],
  *   danglingRefs: Array<{ from: string, target: string }>,
  *   unresolvedCrossRefs: Array<{ from: string, target: string }>,
+ *   archivedRefs: Array<{ from: string, target: string }>,
+ *   staleIndexPointers: Array<{ from: string, target: string }>,
  *   brokenRetractions: Array<{ from: string, target: string }>,
  *   hubMax: number, hubCount: number,
  *   hubCountMismatches: Array<{ file: string, declared: number, actual: number }>,
@@ -119,6 +121,8 @@ export function checkStore(storeDir, opts = {}) {
       unreachableFiches: [],
       danglingRefs: [],
       unresolvedCrossRefs: [],
+      archivedRefs: [],
+      staleIndexPointers: [],
       brokenRetractions: [],
       hubMax,
       hubCount: 0,
@@ -149,17 +153,53 @@ export function checkStore(storeDir, opts = {}) {
     diskFiches.add(entry.name);
   }
 
+  // Archived fiches are NOT live-store members — they stay out of the
+  // reachability graph above, and that is correct. But they still EXIST, and
+  // the hygiene convention says inbound `[[links]]` are deliberately not
+  // rewritten when a fiche is archived, because "archived links resolve on
+  // demand". A checker that cannot see the archive therefore reports a link
+  // that resolves perfectly as unresolved — and, since archiving is the very
+  // mechanism the convention prescribes, that count only ever grows. A line
+  // showing a permanently-nonzero number nobody can act on is a line people
+  // stop reading, which is how a checker loses the cases that matter.
+  //
+  // ⚠ The two link kinds are NOT the same finding, and collapsing them would
+  // trade a false positive for a false negative:
+  //   - a link in a BODY to an archived fiche is CORRECT by the convention;
+  //   - a link in the INDEX to an archived fiche is a real defect the same
+  //     convention names — archiving requires dropping the pointer, and a
+  //     targeted deletion aimed at the index succeeds while deleting nothing
+  //     when the pointer actually lives in a hub body.
+  const archivedFiches = new Set();
+  const archiveDir = join(storeDir, 'archive');
+  if (existsSync(archiveDir)) {
+    for (const entry of readdirSync(archiveDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) continue;
+      if (!entry.name.endsWith('.md')) continue;
+      archivedFiches.add(entry.name);
+    }
+  }
+
   // Direct links: every `(*.md)` target named anywhere in the index file.
   const directLinks = new Set();
   const danglingRefs = [];
   const unresolvedCrossRefs = [];
+  const archivedRefs = [];
+  const staleIndexPointers = [];
   const brokenRetractions = [];
   for (const line of indexLines) {
     LINK_RE.lastIndex = 0;
     let match;
     while ((match = LINK_RE.exec(line))) {
       directLinks.add(match[1]);
-      if (!diskFiches.has(match[1])) danglingRefs.push({ from: indexFile, target: match[1] });
+      if (diskFiches.has(match[1])) continue;
+      // An index pointer at an archived fiche is not dangling — the file is
+      // right there — but it IS the pointer the archiving step was supposed
+      // to drop. Naming it as its own class is what makes it actionable;
+      // folding it into "dangling" would send a reader hunting a missing file
+      // that exists, and folding it into "resolved" would hide a real defect.
+      if (archivedFiches.has(match[1])) staleIndexPointers.push({ from: indexFile, target: match[1] });
+      else danglingRefs.push({ from: indexFile, target: match[1] });
     }
   }
 
@@ -222,8 +262,12 @@ export function checkStore(storeDir, opts = {}) {
       memberLineCount++;
       const candidate = `${m[1]}.md`;
       memberLineSlugs.add(candidate);
-      if (!diskFiches.has(candidate)) unresolvedMemberLineRefs.push({ from: current, target: candidate });
       if (diskFiches.has(candidate)) memberSlugs.add(candidate);
+      // A body link into the archive RESOLVES — the convention says so
+      // explicitly and tells stores not to rewrite these. Counted as its own
+      // class so the distinction stays visible without ever reading as a fault.
+      else if (archivedFiches.has(candidate)) archivedRefs.push({ from: current, target: candidate });
+      else unresolvedMemberLineRefs.push({ from: current, target: candidate });
     }
     const declaredCount = readDeclaredMemberCount(body);
     if (declaredCount !== null && declaredCount !== memberLineSlugs.size) {
@@ -282,6 +326,11 @@ export function checkStore(storeDir, opts = {}) {
   for (const { from, target } of brokenRetractions) {
     reasons.push(`retraction forward pointer from ${from} to ${target} does not resolve`);
   }
+  for (const { from, target } of staleIndexPointers) {
+    reasons.push(
+      `${from} still points at ${target}, which has been archived — drop the pointer (it may live in a hub body, not the index)`,
+    );
+  }
   for (const [file, members] of hubMemberCounts) {
     if (members > hubMax) {
       reasons.push(`hub ${file} has ${members} member(s), over hubMax ${hubMax}`);
@@ -310,6 +359,11 @@ export function checkStore(storeDir, opts = {}) {
       `informational only: ${unresolvedCrossRefs.length} unresolved cross-reference(s) in non-hub bodies; see unresolvedCrossRefs for per-item detail`,
     );
   }
+  if (archivedRefs.length > 0) {
+    notices.push(
+      `${archivedRefs.length} reference(s) resolve in archive/ — correct by the hygiene convention, which does not rewrite inbound links when a fiche is archived; no action`,
+    );
+  }
   if (structuralHubCount > 0 && hubsWithDeclaredCount === 0) {
     notices.push(
       'declared-count cross-check inactive: hubs exist, but none declares member_count; silence here means not measured, not verified',
@@ -328,6 +382,8 @@ export function checkStore(storeDir, opts = {}) {
     unreachableFiches,
     danglingRefs,
     unresolvedCrossRefs,
+    archivedRefs,
+    staleIndexPointers,
     brokenRetractions,
     hubMax,
     hubCount: hubMemberCounts.size,

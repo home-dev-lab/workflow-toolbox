@@ -759,3 +759,102 @@ describe('wt-memory-index-check.mjs CLI: exit codes are the ground truth', () =>
     expect(stdout).toContain('threshold applied: 50')
   })
 })
+
+// ── Archived fiches: a link into archive/ RESOLVES ────────────────────────
+//
+// The hygiene convention this probe serves tells stores to archive closed
+// work by MOVING it into archive/, and explicitly NOT to rewrite inbound
+// `[[links]]` afterward, because "archived links resolve on demand". The
+// probe could not see archive/ at all, so every one of those correct links
+// was reported as an unresolved cross-reference.
+//
+// Measured on a real store before the fix: 47 fiches, 32 archived, and the
+// probe reported "15 unresolved cross-reference(s)". All 15 resolved in
+// archive/. Because archiving is the very mechanism the convention
+// prescribes, that count only ever GROWS — and a line showing a permanently
+// nonzero number nobody can act on is a line people stop reading, which is
+// how a checker loses the cases that matter.
+//
+// ⚠ The two link kinds are deliberately NOT merged. Collapsing them would
+// trade this false positive for a false negative: an INDEX pointer at an
+// archived fiche is a real defect the same convention names (archiving
+// requires dropping the pointer), and it must stay loud.
+describe('archived fiches', () => {
+  function archived(dir: string, slug: string, body = 'archived body\n') {
+    mkdirSync(join(dir, 'archive'), { recursive: true })
+    writeFileSync(join(dir, 'archive', `${slug}.md`), body)
+  }
+
+  it('a BODY link into archive/ is not unresolved — it resolves, and says so without alarm', () => {
+    const dir = makeStore()
+    // A MEMBER-shaped line (`- [[slug]] — hook`) is what the probe collects,
+    // and it is the shape the real store uses — prose mentions are not
+    // classified at all. Kept in a NON-hub body on purpose: that is the branch
+    // that produced the 15 false "unresolved" on the measured store.
+    fiche(dir, 'live-note', 'Narrative body line.\nAnother line.\n- [[closed-work]] — the history\n')
+    archived(dir, 'closed-work')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Live note](live-note.md) — a hook\n')
+
+    const report = checkStore(dir)
+    expect(report.unresolvedCrossRefs).toEqual([])
+    expect(report.archivedRefs).toHaveLength(1)
+    expect(report.archivedRefs[0].target).toBe('closed-work.md')
+    expect(report.flagged).toBe(false)
+    expect(report.notices.join('\n')).toContain('resolve in archive/')
+  })
+
+  it('an INDEX pointer at an archived fiche is FLAGGED — that pointer should have been dropped', () => {
+    const dir = makeStore()
+    fiche(dir, 'live-note', 'body\n')
+    archived(dir, 'closed-work')
+    writeFileSync(
+      join(dir, 'MEMORY.md'),
+      '- [Live note](live-note.md) — a hook\n- [Closed work](closed-work.md) — stale pointer\n',
+    )
+
+    const report = checkStore(dir)
+    expect(report.staleIndexPointers).toHaveLength(1)
+    expect(report.staleIndexPointers[0].target).toBe('closed-work.md')
+    // Not dangling: the file exists. Sending a reader to hunt a missing file
+    // that is sitting in archive/ is its own wasted trip.
+    expect(report.danglingRefs).toEqual([])
+    expect(report.flagged).toBe(true)
+    expect(report.reasons.join('\n')).toContain('has been archived')
+  })
+
+  it('a genuinely missing target is still DANGLING, not excused by the archive lookup', () => {
+    const dir = makeStore()
+    fiche(dir, 'live-note', 'body\n')
+    archived(dir, 'something-else')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Ghost](never-existed.md) — points at nothing\n')
+
+    const report = checkStore(dir)
+    expect(report.danglingRefs).toHaveLength(1)
+    expect(report.danglingRefs[0].target).toBe('never-existed.md')
+    expect(report.staleIndexPointers).toEqual([])
+    expect(report.flagged).toBe(true)
+  })
+
+  it('a store with no archive/ directory behaves exactly as before — no new noise', () => {
+    const dir = makeStore()
+    fiche(dir, 'live-note', 'body\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Live note](live-note.md) — a hook\n')
+
+    const report = checkStore(dir)
+    expect(report.archivedRefs).toEqual([])
+    expect(report.staleIndexPointers).toEqual([])
+    expect(report.flagged).toBe(false)
+    expect(report.notices.join('\n')).not.toContain('archive/')
+  })
+
+  it('archived fiches never join the reachability graph — they are not live-store members', () => {
+    const dir = makeStore()
+    fiche(dir, 'live-note', 'Narrative body line.\nAnother line.\n- [[closed-work]] — the history\n')
+    archived(dir, 'closed-work')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Live note](live-note.md) — a hook\n')
+
+    const report = checkStore(dir)
+    expect(report.diskFiches).toBe(1)
+    expect(report.unreachableFiches).toEqual([])
+  })
+})
