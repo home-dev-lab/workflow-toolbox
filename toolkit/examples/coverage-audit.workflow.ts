@@ -63,6 +63,7 @@ import {
   collectTrail,
   loopUntilDone,
   probeAgentType,
+  relativizeUnder,
   warn,
   withLeafFence,
 } from '@workflow-toolbox/patterns'
@@ -212,8 +213,7 @@ function isInternalSupportKey(key: string): boolean {
  *  relative, or from an unrelated root — resolveEntry's own null-handling
  *  covers that case). */
 function toRepoRelative(repoRoot: string, path: string): string {
-  const prefix = repoRoot.endsWith('/') ? repoRoot : repoRoot + '/'
-  return path.startsWith(prefix) ? path.slice(prefix.length) : path
+  return relativizeUnder(repoRoot, path) ?? path
 }
 
 /** A resolved entry attribution: the canonical key plus HOW it matched —

@@ -752,6 +752,30 @@ describe('coverage-audit entry attribution (alias resolution)', () => {
     expect(out.findings[0]?.entry).toBe('src/multi/first.ts')
   })
 
+  it('transforms a sourcePath only when the complete repo-root form matches', async () => {
+    const DIR_ONLY_ENTRY = { sources: ['src/shared/'], docs: ['docs/shared.md'] }
+    const malformed = makeGap({
+      entry: 'the build pipeline',
+      capability: 'escapedCap',
+      sourcePath: '/repo/src/shared/../escape.ts',
+    })
+    const valid = makeGap({
+      entry: 'the build pipeline',
+      capability: 'salvagedCapAbs',
+      sourcePath: '/repo/src/shared/file.ts',
+    })
+    const rt = makeRuntime({
+      inventory: {},
+      extractRounds: [[malformed, valid], [malformed, valid]],
+    })
+    const out = await wf.run(rt, JSON.stringify({ repoRoot: '/repo', provenance: [DIR_ONLY_ENTRY] }))
+    expect(out.claimsSeen).toBe(1)
+    expect(out.findings).toHaveLength(1)
+    expect(out.findings[0]?.entry).toBe('src/shared/')
+    expect(out.findings[0]?.capability).toBe('salvagedCapAbs')
+    expect(out.warnings.some((w) => w.includes('not in the audited provenance manifest'))).toBe(true)
+  })
+
   it('prefers the exact source-path owner over a dir-prefix owner on overlap', async () => {
     // Mirrors the bundled manifest's real overlap: pr-review.workflow.ts is an
     // EXACT source of one entry while toolkit/examples/ dir-prefixes another.
