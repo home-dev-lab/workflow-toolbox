@@ -19,6 +19,11 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
+function makeTraceFile(tag: string) {
+  const root = mkRoot(`${tag}-trace`)
+  return join(root, 'git-trace.jsonl')
+}
+
 function mkRoot(tag: string) {
   const root = mkdtempSync(join(tmpdir(), `wt-commit-signatures-${tag}-`))
   roots.push(root)
@@ -52,6 +57,21 @@ if (rest[0] === 'rev-parse' && rest[1] === 'HEAD') {
   out((process.env.FAKE_GIT_HEAD || 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') + '\n')
   process.exit(0)
 }
+if (rest[0] === 'rev-parse' && rest[1] === '--symbolic-full-name' && rest[2] === '@{push}') {
+  if (process.env.FAKE_GIT_PUSH_REF === undefined) process.exit(128)
+  out(process.env.FAKE_GIT_PUSH_REF + '\n')
+  process.exit(0)
+}
+if (rest[0] === 'rev-parse' && rest[1] === '--symbolic-full-name' && rest[2] === '@{upstream}') {
+  if (process.env.FAKE_GIT_UPSTREAM_REF === undefined) process.exit(128)
+  out(process.env.FAKE_GIT_UPSTREAM_REF + '\n')
+  process.exit(0)
+}
+if (rest[0] === 'symbolic-ref' && rest[1] === '--quiet' && rest[2] === '--short' && rest[3] === 'HEAD') {
+  if (process.env.FAKE_GIT_BRANCH === undefined) process.exit(128)
+  out(process.env.FAKE_GIT_BRANCH + '\n')
+  process.exit(0)
+}
 if (rest[0] === 'config' && rest[1] === '--get' && rest[2] === '--bool' && rest[3] === 'commit.gpgsign') {
   if (process.env.FAKE_GIT_COMMIT_GPGSIGN === undefined) process.exit(1)
   out(process.env.FAKE_GIT_COMMIT_GPGSIGN + '\n')
@@ -63,6 +83,7 @@ if (rest[0] === 'config' && rest[1] === '--get' && rest[2] === 'user.signingkey'
   process.exit(0)
 }
 if (rest[0] === 'log') {
+  if (process.env.FAKE_GIT_TRACE) require('node:fs').appendFileSync(process.env.FAKE_GIT_TRACE, JSON.stringify(rest) + '\n')
   if (process.env.FAKE_GIT_BAD_RANGE === '1') {
     err('fatal: bad revision range')
     process.exit(128)
@@ -338,9 +359,108 @@ describe('wt-check-commit-signatures-hook.mjs', () => {
     expect(res.status).toBe(0)
     expect(res.stdout).toBe('')
   })
+
+  it('derives the outgoing range from the branch upstream for git push with no explicit remote', () => {
+    const trace = makeTraceFile('hook-range-upstream')
+    const { repo, env } = makeFakeGitEnv('hook-range-upstream', {
+      FAKE_GIT_BRANCH: 'main',
+      FAKE_GIT_PUSH_REF: 'refs/remotes/origin/main',
+      FAKE_GIT_TRACE: trace,
+    })
+    const res = runHook(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: repo,
+        tool_input: { command: 'git push' },
+      },
+      env,
+    )
+    expect(res.status).toBe(0)
+    expect(readFileSync(trace, 'utf8')).toContain('refs/remotes/origin/main..HEAD')
+  })
+
+  it('derives the outgoing range from the push command when the refspec names HEAD explicitly', () => {
+    const trace = makeTraceFile('hook-range-explicit')
+    const { repo, env } = makeFakeGitEnv('hook-range-explicit', {
+      FAKE_GIT_BRANCH: 'release',
+      FAKE_GIT_PUSH_REF: 'refs/remotes/origin/release',
+      FAKE_GIT_TRACE: trace,
+    })
+    const res = runHook(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: repo,
+        tool_input: { command: 'git push origin HEAD' },
+      },
+      env,
+    )
+    expect(res.status).toBe(0)
+    expect(readFileSync(trace, 'utf8')).toContain('refs/remotes/origin/release..HEAD')
+  })
+
+  it('blocks a push before it starts when the derived outgoing range contains an unsigned commit', () => {
+    const trace = makeTraceFile('hook-push-blocks')
+    const { repo, env } = makeFakeGitEnv('hook-push-blocks', {
+      FAKE_GIT_COMMIT_GPGSIGN: 'true',
+      FAKE_GIT_BRANCH: 'main',
+      FAKE_GIT_PUSH_REF: 'refs/remotes/origin/main',
+      FAKE_GIT_LOG: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tN\tunsigned outgoing\n',
+      FAKE_GIT_HEAD: 'dddddddddddddddddddddddddddddddddddddddd',
+      FAKE_GIT_TRACE: trace,
+    })
+    const res = runHook(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: repo,
+        tool_input: { command: 'git push' },
+      },
+      env,
+    )
+    expect(res.status).toBe(0)
+    const payload = JSON.parse(res.stdout)
+    expect(payload.hookSpecificOutput.hookEventName).toBe('PreToolUse')
+    expect(payload.hookSpecificOutput.permissionDecision).toBe('deny')
+    expect(payload.hookSpecificOutput.permissionDecisionReason).toContain('bbbbbbb: N (no signature)')
+    expect(payload.hookSpecificOutput.permissionDecisionReason).toContain('before the network round-trip')
+    expect(readFileSync(trace, 'utf8')).toContain('refs/remotes/origin/main..HEAD')
+  })
+
+  it('stays silent on a fully signed outgoing range and lets the push proceed', () => {
+    const { repo, env } = makeFakeGitEnv('hook-push-signed', {
+      FAKE_GIT_COMMIT_GPGSIGN: 'true',
+      FAKE_GIT_BRANCH: 'main',
+      FAKE_GIT_PUSH_REF: 'refs/remotes/origin/main',
+      FAKE_GIT_LOG: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tG\tsigned outgoing\n',
+    })
+    const res = runHook(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: repo,
+        tool_input: { command: 'git push' },
+      },
+      env,
+    )
+    expect(res.status).toBe(0)
+    expect(res.stdout).toBe('')
+  })
 })
 
 describe('commit-signature wiring and pilot definition-of-done', () => {
+  it('registers the PreToolUse/Bash hook in plugin.json', () => {
+    const manifest = JSON.parse(readFileSync(MANIFEST, 'utf8')) as {
+      hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>
+    }
+    const group = (manifest.hooks?.PreToolUse ?? []).find((entry) =>
+      (entry.hooks ?? []).some((hook) => (hook.command ?? '').includes('wt-check-commit-signatures-hook.mjs')),
+    )
+    expect(group).toBeTruthy()
+    expect(group?.matcher).toBe('Bash')
+  })
+
   it('registers the PostToolUse/Bash hook in plugin.json', () => {
     const manifest = JSON.parse(readFileSync(MANIFEST, 'utf8')) as {
       hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>
