@@ -60,6 +60,26 @@ either bloat or silent loss.
   declares no counts is not defective and nothing should report it as such; it also gets no
   cross-check, and that silence means not measured, never verified — but a count that is declared
   and stale is worse than none, because it reads as verified.
+- **A RETRACTION declares itself in one shape, or no check can ever find it.** A note kept only so
+  old references still resolve has exactly one job: lead a reader from the old name to the current
+  truth. A retraction whose forward pointer does not resolve fails that job completely, and nothing
+  says so.
+  Measured across two independent stores before writing this: 34 texts carried a retraction word,
+  and only 8 were whole-note retractions. The rest were section-level retractions inside live notes,
+  incidental prose ("closed as superseded"), and index mentions. Two languages, one of them with no
+  English keyword at all; three locations; and targets that were sometimes a file path, sometimes a
+  ticket id, sometimes a mechanism described in prose. **A detector built on any one of those shapes
+  would have covered half the real cases and reported clean** — so the convention has to exist
+  before the check can mean anything.
+  The shape: a blockquote at the top of the retracted note, carrying the keyword, the date, and the
+  target. ⚠ **Distinguish a NOTE retraction from a SECTION retraction** — they are different objects,
+  not two intensities of one, and conflating them makes a check fire on live notes. And accept a
+  target that is a link, a path, OR a plain description: content sometimes moves somewhere that is
+  not a note, and forcing a link would make people write a false one.
+  ⚠ A check can only cover retractions written AFTER the convention is adopted. Pre-existing ones
+  become visible only if someone rewrites them — that is content work, and saying so is what stops
+  a clean run from reading as coverage.
+
 - **Archive closed items by moving them, never by deleting.** When a tracked piece of work is
   finished and has no active follow-up, move its note out of the live index into an archive
   location and drop its pointer — inbound references still resolve there on demand. Move,

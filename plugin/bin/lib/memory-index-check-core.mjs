@@ -60,6 +60,11 @@ const DECLARED_MEMBER_COUNT_RE = /^member_count:\s*(\d+)\s*$/m;
 // a deliberately generous floor — a genuine hub (a body that IS a member
 // list) scores near 100%, so the two shapes are nowhere near each other.
 const HUB_MEMBER_LINE_RATIO = 0.3;
+const RETRACTION_KEYWORD_RE = /\bretract(?:ed|ion)?\b/i;
+const RETRACTION_DATE_RE = /\b\d{4}-\d{2}-\d{2}\b/;
+const ANY_LINK_RE = /\[[^\]]*\]\(([^)]+)\)/g;
+const INLINE_CODE_RE = /`([^`]+)`/g;
+const MD_PATH_RE = /(?:\.\.?\/)?(?:[^\s`()[\]]+\/)*[^\s`()[\]]+\.md(?:#[^\s`()[\]]+)?/g;
 
 /**
  * @param {string} storeDir - absolute or relative path to the memory store
@@ -73,6 +78,7 @@ const HUB_MEMBER_LINE_RATIO = 0.3;
  *   diskFiches: number, reachableFiches: number, unreachableFiches: string[],
  *   danglingRefs: Array<{ from: string, target: string }>,
  *   unresolvedCrossRefs: Array<{ from: string, target: string }>,
+ *   brokenRetractions: Array<{ from: string, target: string }>,
  *   hubMax: number, hubCount: number,
  *   hubCountMismatches: Array<{ file: string, declared: number, actual: number }>,
  *   largestHub: { file: string, members: number } | null,
@@ -113,6 +119,7 @@ export function checkStore(storeDir, opts = {}) {
       unreachableFiches: [],
       danglingRefs: [],
       unresolvedCrossRefs: [],
+      brokenRetractions: [],
       hubMax,
       hubCount: 0,
       hubCountMismatches: [],
@@ -146,6 +153,7 @@ export function checkStore(storeDir, opts = {}) {
   const directLinks = new Set();
   const danglingRefs = [];
   const unresolvedCrossRefs = [];
+  const brokenRetractions = [];
   for (const line of indexLines) {
     LINK_RE.lastIndex = 0;
     let match;
@@ -235,6 +243,22 @@ export function checkStore(storeDir, opts = {}) {
 
   const unreachableFiches = [...diskFiches].filter((f) => !reachable.has(f)).sort();
 
+  // Whole-note retractions are detected only by the convention's top-of-note
+  // blockquote shape. Keyword presence elsewhere in the body stays out of
+  // scope so section-level retractions inside live notes do not fire.
+  for (const file of diskFiches) {
+    let body;
+    try {
+      body = readFileSync(join(storeDir, file), 'utf8');
+    } catch {
+      continue;
+    }
+    const target = readRetractionForwardTarget(body);
+    if (target === null) continue;
+    if (retractionTargetResolves(storeDir, target)) continue;
+    brokenRetractions.push({ from: file, target });
+  }
+
   // Largest hub, for reporting even when nothing is over hubMax — this is
   // what makes the relocated ceiling visible before it becomes a problem,
   // the same reasoning the warning band applies to the index itself.
@@ -254,6 +278,9 @@ export function checkStore(storeDir, opts = {}) {
   }
   for (const { from, target } of danglingRefs) {
     reasons.push(`dangling reference from ${from} to ${target}`);
+  }
+  for (const { from, target } of brokenRetractions) {
+    reasons.push(`retraction forward pointer from ${from} to ${target} does not resolve`);
   }
   for (const [file, members] of hubMemberCounts) {
     if (members > hubMax) {
@@ -301,6 +328,7 @@ export function checkStore(storeDir, opts = {}) {
     unreachableFiches,
     danglingRefs,
     unresolvedCrossRefs,
+    brokenRetractions,
     hubMax,
     hubCount: hubMemberCounts.size,
     hubCountMismatches,
@@ -322,4 +350,63 @@ function readDeclaredMemberCount(body) {
   const declaredMatch = DECLARED_MEMBER_COUNT_RE.exec(frontmatterMatch[1]);
   if (!declaredMatch) return null;
   return Number(declaredMatch[1]);
+}
+
+function readRetractionForwardTarget(body) {
+  const content = stripFrontmatter(body).replace(/^\uFEFF/, '');
+  const lines = content.split('\n');
+  let i = 0;
+  while (i < lines.length && lines[i].trim().length === 0) i++;
+  if (i >= lines.length || !/^\s*>/.test(lines[i])) return null;
+
+  const quoteLines = [];
+  while (i < lines.length && /^\s*>/.test(lines[i])) {
+    quoteLines.push(lines[i].replace(/^\s*>\s?/, ''));
+    i++;
+  }
+
+  const block = quoteLines.join('\n').trim();
+  if (!RETRACTION_KEYWORD_RE.test(block) || !RETRACTION_DATE_RE.test(block)) return null;
+  return extractRetractionTarget(block);
+}
+
+function extractRetractionTarget(block) {
+  ANY_LINK_RE.lastIndex = 0;
+  let match;
+  while ((match = ANY_LINK_RE.exec(block))) {
+    const candidate = match[1].trim();
+    if (isResolvableRetractionTarget(candidate)) return candidate;
+  }
+
+  INLINE_CODE_RE.lastIndex = 0;
+  while ((match = INLINE_CODE_RE.exec(block))) {
+    const candidate = match[1].trim();
+    if (isResolvableRetractionTarget(candidate)) return candidate;
+  }
+
+  MD_PATH_RE.lastIndex = 0;
+  match = MD_PATH_RE.exec(block);
+  if (match) return match[0];
+
+  return null;
+}
+
+function isResolvableRetractionTarget(candidate) {
+  if (candidate.length === 0) return false;
+  if (/^[a-z]+:\/\//i.test(candidate)) return false;
+  return candidate.includes('/') || candidate.endsWith('.md');
+}
+
+function retractionTargetResolves(storeDir, target) {
+  const normalized = target.replace(/#.*/, '');
+  if (normalized.length === 0) return false;
+  if (/^[a-z]+:\/\//i.test(normalized)) return true;
+  if (normalized.startsWith('/')) return existsSync(normalized);
+  return existsSync(join(storeDir, normalized));
+}
+
+function stripFrontmatter(body) {
+  const frontmatterMatch = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(body);
+  if (!frontmatterMatch) return body;
+  return body.slice(frontmatterMatch[0].length);
 }

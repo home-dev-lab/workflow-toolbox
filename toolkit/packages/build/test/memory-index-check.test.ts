@@ -61,6 +61,7 @@ interface Report {
   unreachableFiches: string[]
   danglingRefs: Array<{ from: string; target: string }>
   unresolvedCrossRefs: Array<{ from: string; target: string }>
+  brokenRetractions: Array<{ from: string; target: string }>
   hubCountMismatches: Array<{ file: string; declared: number; actual: number }>
   notices: string[]
   flagged: boolean
@@ -83,6 +84,12 @@ function runCli(dir: string, extraArgs: string[] = []) {
     status = err.status ?? 1
   }
   return { status, report: JSON.parse(stdout) as Report }
+}
+
+function retractionBlock(targetLine?: string) {
+  const lines = ['> Retracted 2026-08-04.']
+  if (targetLine !== undefined) lines.push(`> ${targetLine}`)
+  return `${lines.join('\n')}\n\n`
 }
 
 describe('memory-index-check-core: reachability', () => {
@@ -356,6 +363,70 @@ describe('memory-index-check-core: warning band (card follow-up — countdown be
     expect(report.inWarningBand).toBe(false)
     expect(report.notices).toEqual([])
     expect(report.flagged).toBe(true)
+  })
+})
+
+describe('memory-index-check-core: retractions (card #1833831689994896673)', () => {
+  it('TEST-LOCK: retracted note, resolving link target → silent', () => {
+    const dir = makeStore()
+    fiche(dir, 'replacement', 'Current truth.\n')
+    fiche(dir, 'old-note', `${retractionBlock('Target: [replacement](replacement.md)')}Old content kept only for inbound links.\n`)
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Old](old-note.md) — retained name\n- [Replacement](replacement.md) — current truth\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.brokenRetractions).toEqual([])
+    expect(report.flagged).toBe(false)
+  })
+
+  it('TEST-LOCK: retracted note, unresolvable link target → finding with both names', () => {
+    const dir = makeStore()
+    fiche(dir, 'old-note', `${retractionBlock('Target: [replacement](missing.md)')}Old content kept only for inbound links.\n`)
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Old](old-note.md) — retained name\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.brokenRetractions).toEqual([{ from: 'old-note.md', target: 'missing.md' }])
+    expect(report.reasons.join(' ')).toContain('old-note.md')
+    expect(report.reasons.join(' ')).toContain('missing.md')
+    expect(report.flagged).toBe(true)
+  })
+
+  it('TEST-LOCK: retracted note, resolvable PATH target → silent', () => {
+    const dir = makeStore()
+    fiche(dir, 'replacement', 'Current truth.\n')
+    fiche(dir, 'old-note', `${retractionBlock('Target: `./replacement.md`')}Old content kept only for inbound links.\n`)
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Old](old-note.md) — retained name\n- [Replacement](replacement.md) — current truth\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.brokenRetractions).toEqual([])
+    expect(report.flagged).toBe(false)
+  })
+
+  it('TEST-LOCK: retracted note, descriptive target → silent', () => {
+    const dir = makeStore()
+    fiche(dir, 'old-note', `${retractionBlock('Target: replaced by a persistent monitor')}Old content kept only for inbound links.\n`)
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Old](old-note.md) — retained name\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.brokenRetractions).toEqual([])
+    expect(report.flagged).toBe(false)
+  })
+
+  it('TEST-LOCK: retracted note with no forward pointer → silent', () => {
+    const dir = makeStore()
+    fiche(dir, 'old-note', `${retractionBlock()}Old content kept only for inbound links.\n`)
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Old](old-note.md) — retained name\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.brokenRetractions).toEqual([])
+    expect(report.flagged).toBe(false)
+  })
+
+  it('TEST-LOCK: ordinary note with an unresolved see-also stays informational, not a finding', () => {
+    const dir = makeStore()
+    fiche(
+      dir,
+      'ordinary-note',
+      ['# Ordinary note', '', '## Retracted subsection', '', '> Retracted 2026-08-04.', '> Target: [replacement](missing.md)', '', 'Still live overall.'].join('\n'),
+    )
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Ordinary](ordinary-note.md) — running narrative\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.brokenRetractions).toEqual([])
+    expect(report.flagged).toBe(false)
   })
 })
 
