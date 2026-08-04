@@ -138,6 +138,44 @@ describe('wt-pilot-guard-hook — self-scoped destructive-action guard', () => {
     })
   }
 
+  // A command line mixes CODE and DATA. These forms QUOTE a guarded pattern without executing
+  // it — a commit message, an echoed sentence, a heredoc body. Refusing them refuses correct
+  // work, and a guard that refuses correct work gets switched off with its real cases inside.
+  // Measured on this guard's local twin 2026-08-04: an ordinary commit refused because its
+  // message said "npm publish" — its third false refusal.
+  const ALLOW_DATA = [
+    ['a commit message quoting npm publish', 'git commit -m "port the npm publish guard"'],
+    ['a commit message quoting a force push', "git commit -m 'document git push --force'"],
+    ['a commit message quoting a merge of main', 'git commit -m "never merge main mid-arc"'],
+    ['an echoed pattern-kill warning', 'echo "pkill -f is banned, kill by PID"'],
+    ['a heredoc body quoting a publish', 'cat <<EOF > /tmp/notes\nnpm publish is escalated\nEOF'],
+    // The stripping runs BEFORE the segment split, so a `&&` inside the data cannot manufacture
+    // a segment that looks like a command.
+    ['a quoted string containing a sequencing operator', 'echo "build && npm publish"'],
+  ] as const
+  for (const [label, command] of ALLOW_DATA) {
+    it(`ALLOWS (silent) ${label} — data, not code`, () => {
+      const r = runHook(GUARD_HOOK, pilotBash(command))
+      expect(r.stdout, `false refusal on data: ${r.stdout}`).toBe('')
+    })
+  }
+
+  // The other half of the proof, and the one that is easy to skip: relaxing a guard without
+  // re-proving its bite is disarming it. Each of these puts the SAME pattern back as executed
+  // code, adjacent to quoted data, and must still be refused.
+  const DENY_ALONGSIDE_DATA = [
+    ['a real publish after a quoted mention', 'echo "about to publish" && npm publish'],
+    ['a real force push after a commit', 'git commit -m "ready" && git push --force public main'],
+    ['a real publish after a heredoc', 'cat <<EOF > /tmp/n\nnotes\nEOF\npnpm publish'],
+    ['a real pattern-kill after a quoted one', 'echo "pkill -f x" ; pkill -f dev-api.ts'],
+  ] as const
+  for (const [label, command] of DENY_ALONGSIDE_DATA) {
+    it(`still DENIES ${label}`, () => {
+      const r = runHook(GUARD_HOOK, pilotBash(command))
+      expect(permissionDecision(r), `bite lost: ${r.stdout}`).toBe('deny')
+    })
+  }
+
   it('NO-OPs for the MAIN session (no agent_id) even on a bare git push', () => {
     const r = runHook(GUARD_HOOK, {
       hook_event_name: 'PreToolUse',

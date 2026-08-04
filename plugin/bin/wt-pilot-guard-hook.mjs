@@ -62,10 +62,46 @@ function readInput() {
   }
 }
 
+// A command line carries CODE and DATA in the same string, and only the code is executed.
+// A commit message, an echoed sentence, a heredoc body may all legitimately quote one of the
+// forms below — matching the raw string refuses correct work, and a guard that refuses correct
+// work gets switched off, taking its real cases with it. Measured 2026-08-04 on this guard's
+// local twin: a perfectly ordinary commit was refused because its MESSAGE contained the words
+// "npm publish". That was its third false refusal.
+//
+// So the matching below runs on a stripped view: heredoc bodies replaced wholesale, quoted spans
+// emptied in place (the quotes stay, so token positions and the segment split are preserved).
+//
+// ⚠ WHY EVERY rule here may use the stripped view, when the local twin could not.
+// The twin also guards `rm -rf <target>`, where the quotes are part of the NORMAL form
+// (`rm -rf "$HOME/tmp"`) — stripping there would blind it to the case that matters most, so it
+// strips PER RULE. This guard has no such rule: publish, force/delete/mirror push, merge
+// main/master, and pattern-kill are never legitimately quoted as data. If a rule whose target is
+// routinely quoted is ever added here, that rule must opt OUT of the stripping rather than
+// inherit it by position.
+//
+// ⚠ RESIDUAL, stated rather than hidden: `git push "--force"` reads as `git push ""` after
+// stripping and is no longer caught. That is deliberate — it is an obfuscation shape, not a
+// reflex mistake, and this guard is defense-in-depth against reflexes (see the header). The
+// ordinary forms `git push --force` / `-f` are unaffected and stay covered by their tests.
+function stripHeredocs(cmd) {
+  return cmd.replace(
+    /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[\s\S]*?^\s*\2\s*$/gm,
+    '<<HEREDOC-BODY-STRIPPED',
+  )
+}
+function stripQuotedSpans(cmd) {
+  return cmd.replace(/'[^']*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""')
+}
+
 /** Split a shell command into rough segments on the sequencing operators, so each
- *  `git push` / `pkill` etc. is evaluated on its own. */
+ *  `git push` / `pkill` etc. is evaluated on its own. Strips data BEFORE splitting: a
+ *  heredoc body or a quoted message may itself contain `;` or `&&`. */
 function segments(command) {
-  return command.split(/\n|;|&&|\|\||\|/).map((s) => s.trim()).filter(Boolean)
+  return stripQuotedSpans(stripHeredocs(command))
+    .split(/\n|;|&&|\|\||\|/)
+    .map((s) => s.trim())
+    .filter(Boolean)
 }
 
 /** A `git push` in this segment that violates the remote-naming / non-destructive
