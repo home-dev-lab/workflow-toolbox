@@ -24,6 +24,10 @@ Replace "this looks right" with a mechanical check on the signal that actually d
 - Claims about code by READING THE SOURCE at the actual revision, not from memory. To read a
   file at a past revision use `git show <rev>:<file>` (read-only) — never
   `git checkout <rev> -- <file>`, which silently overwrites the working copy.
+- CI conclusions by the JOB that decides the behavior you are claiming, not by the RUN's aggregate
+  status. A run can mix jobs from different operating systems or environments, and the top-level
+  conclusion can therefore read as the inverse of the job that actually proves or refutes your
+  claim. Descend to the job list and read the deciding job directly.
 - Suspicious UI state: triage the DATA SOURCE before claiming a bug — server payload vs client
   state vs a sibling component with its own fetch. One API read often reveals the "bug" is
   another component's unrelated data.
@@ -40,6 +44,21 @@ Replace "this looks right" with a mechanical check on the signal that actually d
   occurrence of a class you have never observed before (a message from an unexpected source, an
   unknown channel, a file or behavior with no known producer) — even mid-flow, off-task,
   harmless-looking. The skip-tell: you are BUSY with something else and the event is peripheral.
+
+When a symptom disappears right after you changed something, report that sequence as correlation
+until you have checked what else could have moved in the same window. Name the other candidate
+variables and what you found when you looked. Cheap decisive checks include listing candidate state
+by modification time, diffing the things you believe differ, and re-running the OLD approach once:
+if the previous method now works too, your change was not the cause.
+
+Environment facts count as candidate variables. If a green result depends on ambient state such as
+`PATH`, a config directory, a pre-existing file, or an installed binary, name that dependency and
+ask whether you created it earlier for some other reason. When several jobs of one CI run disagree,
+compare those environments side by side before reading any one of them deeply.
+
+After claiming a mechanism, grep for the code that would have to exist for that claim to be false,
+then report what you found. This is the fastest guard against an explanation built from a quote that
+actually says the opposite of the conclusion drawn from it.
 
 For a high-impact or high-risk change (a guard, a safety mechanism, anything touching money,
 security, data loss, availability, or a published surface), state your verdict on all three:
