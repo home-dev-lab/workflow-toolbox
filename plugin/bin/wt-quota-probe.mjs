@@ -73,9 +73,24 @@ try {
   }
   const sevenDay = fmtWindow(d.seven_day)
   sevenDay.severity = (d.limits ?? []).find((l) => l.kind === 'weekly_all')?.severity ?? null
+  // ⚠ NOT every account HAS a subscription quota. Usage-billed (pay-per-token) accounts have
+  // no five-hour or seven-day window at all, and the endpoint simply omits them. Left implicit,
+  // `fmtWindow` then yields `{pct: null}` — and a consumer that renders or compares that null
+  // shows a percentage for a limit which does not exist. A monitor reporting a reassuring
+  // number on an account it cannot measure is worse than no monitor: the unmeasurable state
+  // becomes indistinguishable from a healthy one.
+  //
+  // So the distinction is made EXPLICIT and named, rather than left to be inferred from nulls:
+  //   'subscription' — at least one real window exists; percentages mean something
+  //   'none'         — no window at all; this account is usage-billed. Consumers must stay
+  //                    SILENT, not report 0% or null%.
+  // Anything reading this file should branch on `quota_model`, never on the presence of a pct.
+  const hasWindow = (w) => Number.isFinite(w?.utilization) || Boolean(w?.resets_at)
+  const quotaModel = hasWindow(d.five_hour) || hasWindow(d.seven_day) ? 'subscription' : 'none'
   console.log(
     JSON.stringify({
       configDir,
+      quota_model: quotaModel,
       five_hour: fmtWindow(d.five_hour),
       seven_day: sevenDay,
       weekly_scoped: scoped,

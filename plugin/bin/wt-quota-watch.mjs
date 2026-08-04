@@ -540,6 +540,29 @@ while (true) {
 
       const liveWindows = extractWindows(parsed)
 
+      // ⚠ THIS CHECK MUST PRECEDE the completeness gate below, and the ordering is the whole
+      // point. An account with NO subscription quota (usage-billed / pay-per-token) has no
+      // five-hour or seven-day window at all, so it looks EXACTLY like a malformed probe:
+      // "missing window(s): five_hour,seven_day". Placed after the gate, this branch is
+      // unreachable and the watcher instead reports a healthy account as a broken probe,
+      // then polls forever — measured, before this line existed.
+      //
+      // Two states, identical shape, opposite meanings: "cannot measure" and "nothing to
+      // measure". Only the probe can tell them apart, which is why the decision is made on
+      // the explicit `quota_model` it states, never inferred from an absent percentage.
+      //
+      // Stopping (rather than idling quietly) is deliberate: a watcher that stays armed while
+      // watching nothing has silence indistinguishable from "quota is fine".
+      if (parsed?.quota_model === 'none') {
+        writeLine(
+          'QUOTA WATCH STOPPING: this account has no subscription quota (usage-billed), so there ' +
+            'is no five-hour or seven-day window to watch. Nothing is wrong — there is simply ' +
+            'nothing to report, and a watcher that kept polling would look armed while watching ' +
+            'nothing.',
+        )
+        process.exit(0)
+      }
+
       // FINDING 2 fix, extended to this door too (not cited by the review, but the SAME
       // defect shape: a probe returning only ONE window used to be accepted as success,
       // silently dropping the other — see hasCompleteWindows above). A malformed/legacy
