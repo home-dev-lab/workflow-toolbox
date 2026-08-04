@@ -22,6 +22,7 @@
 // wt-spawn-registry-scan.mjs (resolved relative to THIS file, not a hardcoded project path).
 
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,10 +31,20 @@ import { runFailOpenHook } from './lib/fail-open-trace.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCAN = join(HERE, 'wt-spawn-registry-scan.mjs');
 
+let payload = {};
+try {
+  payload = JSON.parse(readFileSync(0, 'utf8')) || {};
+} catch {}
+
 function main() {
   if (!existsSync(SCAN)) process.exit(0);
 
-  const res = spawnSync(process.execPath, [SCAN, '--quiet-min', '20'], {
+  const sessionId = typeof payload?.session_id === 'string' && payload.session_id ? payload.session_id : null;
+  const scanArgs = [SCAN];
+  if (sessionId) scanArgs.push('--session', sessionId);
+  scanArgs.push('--quiet-min', '20');
+
+  const res = spawnSync(process.execPath, scanArgs, {
     encoding: 'utf8',
     timeout: 10_000,
   });
@@ -56,7 +67,7 @@ function main() {
   process.stdout.write(
     'Agent-liveness coverage: the spawn registry is checked at session start (just done). '
     + 'Mid-session silence is NOT covered unless a periodic scan is running — arm one if agents '
-    + `will be working unattended: node ${SCAN} --quiet-min 20\n`
+    + `will be working unattended: node ${SCAN} --session ${sessionId || '<session-id>'} --quiet-min 20\n`
   );
 }
 

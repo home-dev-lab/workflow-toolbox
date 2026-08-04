@@ -182,8 +182,8 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   },
   {
     script: 'plugin/bin/wt-session-start-registry-hook.mjs',
-    status: 'missing-doc-surface',
-    reason: 'The SessionStart unfinished-agent notice is user-facing, but no durable doc surface describes this hook.',
+    status: 'mapped',
+    reason: 'Known-issues documents the SessionStart scan hook and its explicit-session contract.',
   },
   {
     script: 'plugin/bin/wt-spawn-capability-guard-hook.mjs',
@@ -192,8 +192,8 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   },
   {
     script: 'plugin/bin/wt-spawn-registry-scan.mjs',
-    status: 'missing-doc-surface',
-    reason: 'Standalone scan/ack CLI for unfinished agent arcs, but no durable doc surface describes it.',
+    status: 'mapped',
+    reason: 'Known-issues documents the standalone scan/ack CLI and its explicit-session contract.',
   },
   {
     script: 'plugin/bin/wt-spawn-shape-guard-hook.mjs',
@@ -487,6 +487,8 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     sources: [
       'plugin/bin/wt-actionable-gate-hook.mjs',
       'plugin/bin/wt-registry-heartbeat-hook.mjs',
+      'plugin/bin/wt-session-start-registry-hook.mjs',
+      'plugin/bin/wt-spawn-registry-scan.mjs',
     ],
     docs: ['docs/public/known-issues.md'],
   },

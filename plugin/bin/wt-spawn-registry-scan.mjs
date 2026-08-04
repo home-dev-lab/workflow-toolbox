@@ -19,7 +19,7 @@
 //
 // Usage:
 //   node wt-spawn-registry-scan.mjs [--session <id>] [--quiet-min <n>] [--stale-transcript-min <n>] [--cwd <path>] [--json]
-//     --session              which session's registry to read (default: the most recently written)
+//     --session              which session's registry to read (required only when multiple journals exist)
 //     --quiet-min            minutes of message-silence before an open agent is a CANDIDATE (default 20)
 //     --stale-transcript-min minutes with no transcript growth before a candidate is actually
 //                            flagged (default 5) — see LIVENESS below
@@ -48,7 +48,7 @@
 // asks a question, it never asserts a death. See CONFIRMED-ALIVE below for the suppressed set.
 //
 // Exit codes:  0 = nothing to ask about   ·   1 = at least one open+silent agent   ·   2 = no registry
-//              3 = refused ambiguous --ack without --session (new: distinct from "no registry")
+//              3 = refused ambiguous read/--ack without --session (distinct from "no registry")
 
 import { readFileSync, existsSync, readdirSync, statSync, appendFileSync, realpathSync } from 'node:fs';
 import { join, basename } from 'node:path';
@@ -122,14 +122,12 @@ if (file) {
   file = join(STATE_DIR, `${file}.jsonl`);
 } else {
   if (!journals.length) { console.log('Registry directory is empty.'); process.exit(2); }
-  if (ackName && journals.length > 1) {
-    console.error(`Refusing ambiguous --ack: found ${journals.length} journals in ${STATE_DIR}; re-run with --session <id>.`);
+  if (journals.length > 1) {
+    const action = ackName ? '--ack' : 'read';
+    console.error(`Refusing ambiguous ${action}: found ${journals.length} journals in ${STATE_DIR}; re-run with --session <id>.`);
     process.exit(3);
   }
   file = journals[0].f;
-  if (!ackName && journals.length > 1) {
-    console.error(`No --session given; using most recent journal: ${file}`);
-  }
 }
 if (!existsSync(file)) { console.log(`No registry file: ${file}`); process.exit(2); }
 const sessionId = basename(file, '.jsonl');

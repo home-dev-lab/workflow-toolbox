@@ -619,6 +619,46 @@ describe('wt-spawn-registry-scan.mjs — reports what is unaccounted for', () =>
     expect(parsed.open).toBe(1) // not 2 -- one duplicated spawn edge, one real open agent
     expect(parsed.flagged.filter((f) => f.name === 'dup-worker')).toHaveLength(1)
   })
+
+  it('GREEN: refuses ambiguous read without --session when multiple journals exist, naming the ambiguity with exit 3', () => {
+    const dir = mkRoot('scan-read-ambiguous')
+    const older = join(dir, 'asked-for.jsonl')
+    const newer = join(dir, 'other-session.jsonl')
+    writeFileSync(
+      older,
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'asked-worker', name: 'asked-worker', at: new Date(Date.now() - 45 * 60_000).toISOString() }) + '\n'
+    )
+    writeFileSync(
+      newer,
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'other-worker', name: 'other-worker', at: new Date(Date.now() - 45 * 60_000).toISOString() }) + '\n'
+    )
+    const newerMtime = new Date(Date.now() - 60_000)
+    const olderMtime = new Date(Date.now() - 120_000)
+    utimesSync(older, olderMtime, olderMtime)
+    utimesSync(newer, newerMtime, newerMtime)
+
+    const r = runNoInput(SCAN, ['--quiet-min', '20'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+
+    expect(r.code).toBe(3)
+    expect(r.stderr).toContain('Refusing ambiguous read')
+    expect(r.stderr).toContain('found 2 journals')
+    expect(r.stderr).toContain('re-run with --session <id>')
+    expect(r.stdout).toBe('')
+  })
+
+  it('Healthy, unaffected: exactly one journal still proceeds silently with no --session', () => {
+    const dir = mkRoot('scan-read-single-journal')
+    writeFileSync(
+      join(dir, 'only.jsonl'),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'only-worker', name: 'only-worker', at: new Date(Date.now() - 45 * 60_000).toISOString() }) + '\n'
+    )
+
+    const r = runNoInput(SCAN, ['--quiet-min', '20'], { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+
+    expect(r.code).toBe(1)
+    expect(r.stderr).toBe('')
+    expect(r.stdout).toContain('only-worker')
+  })
 })
 
 // --------------------------------------------------------------------------
@@ -1104,13 +1144,13 @@ describe('wt-registry-heartbeat-hook.mjs — liveness end-to-end: confirmed-aliv
 describe('wt-session-start-registry-hook.mjs — runs the scan at session start', () => {
   it('resolves its sibling scan script correctly after the move (no open agents => coverage line only)', () => {
     const dir = mkRoot('sess-start-clean')
-    const r = run(SESSION_START_HOOK, { hook_event_name: 'SessionStart', source: 'startup' }, { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    const r = run(SESSION_START_HOOK, { hook_event_name: 'SessionStart', source: 'startup', session_id: 'sess-start-clean' }, { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
     expect(r.code).toBe(0)
     expect(r.stdout).toContain('Agent-liveness coverage')
     expect(r.stdout).not.toContain('UNFINISHED AGENT ARCS')
     // The advice command must point at the REAL resolved path of the sibling script, not a
     // stale project-relative guess (`.claude/scripts/spawn-registry-scan.mjs`).
-    expect(r.stdout).toContain(SCAN)
+    expect(r.stdout).toContain(`node ${SCAN} --session sess-start-clean --quiet-min 20`)
   })
 
   it('POSITIVE CONTROL: surfaces UNFINISHED AGENT ARCS when the registry has an open+silent entry', () => {
@@ -1120,11 +1160,40 @@ describe('wt-session-start-registry-hook.mjs — runs the scan at session start'
       join(dir, 'sess.jsonl'),
       JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'frozen-worker', name: 'frozen-worker', at: longAgo }) + '\n'
     )
-    const r = run(SESSION_START_HOOK, { hook_event_name: 'SessionStart', source: 'startup' }, { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    const r = run(SESSION_START_HOOK, { hook_event_name: 'SessionStart', source: 'startup', session_id: 'sess' }, { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
     expect(r.code).toBe(0)
     expect(r.stdout).toContain('UNFINISHED AGENT ARCS')
     expect(r.stdout).toContain('frozen-worker')
     expect(r.stdout).toContain('Agent-liveness coverage') // both blocks present, not just one
+  })
+
+  it('uses the hook payload session_id so a newer OTHER journal does not hijack the session-start scan', () => {
+    const dir = mkRoot('sess-start-ambiguous-safe')
+    const askedFile = join(dir, 'sess-current.jsonl')
+    const otherFile = join(dir, 'sess-other.jsonl')
+    writeFileSync(
+      askedFile,
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'current-worker', name: 'current-worker', at: new Date().toISOString() }) + '\n'
+    )
+    writeFileSync(
+      otherFile,
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'other-worker', name: 'other-worker', at: new Date(Date.now() - 45 * 60_000).toISOString() }) + '\n'
+    )
+    const newerMtime = new Date(Date.now() - 60_000)
+    const olderMtime = new Date(Date.now() - 120_000)
+    utimesSync(askedFile, olderMtime, olderMtime)
+    utimesSync(otherFile, newerMtime, newerMtime)
+
+    const r = run(
+      SESSION_START_HOOK,
+      { hook_event_name: 'SessionStart', source: 'startup', session_id: 'sess-current' },
+      { ...process.env, WT_OUTBOUND_GUARD_DIR: dir },
+    )
+
+    expect(r.code).toBe(0)
+    expect(r.stdout).not.toContain('other-worker')
+    expect(r.stdout).not.toContain('UNFINISHED AGENT ARCS')
+    expect(r.stdout).toContain('Agent-liveness coverage')
   })
 
   it('never fails a session start: malformed stdin exits 0 silently', () => {
