@@ -24,6 +24,11 @@ Replace "this looks right" with a mechanical check on the signal that actually d
 - Claims about code by READING THE SOURCE at the actual revision, not from memory. To read a
   file at a past revision use `git show <rev>:<file>` (read-only) — never
   `git checkout <rev> -- <file>`, which silently overwrites the working copy.
+- When you are about to EXCLUDE work, NARROW scope, skip a step, or exempt a mechanism *because a
+  component behaves a certain way*, cite the file that decides that premise in the same sentence,
+  or write `unverified` and check before acting. This applies especially to your OWN prior notes:
+  a note you wrote is a declaration, not a verified fact, and it does not exempt the claim from
+  grounding.
 - CI conclusions by the JOB that decides the behavior you are claiming, not by the RUN's aggregate
   status. A run can mix jobs from different operating systems or environments, and the top-level
   conclusion can therefore read as the inverse of the job that actually proves or refutes your
@@ -65,6 +70,13 @@ Environment facts count as candidate variables. If a green result depends on amb
 `PATH`, a config directory, a pre-existing file, or an installed binary, name that dependency and
 ask whether you created it earlier for some other reason. When several jobs of one CI run disagree,
 compare those environments side by side before reading any one of them deeply.
+
+Anything you ship carries an explicit CROSS-PLATFORM verdict. Name the system dependencies the
+behavior rests on and say, per dependency, whether a platform mismatch throws, degrades to a named
+`unknown`, or silently returns a plausible value. The third case is the dangerous one: a monitor
+that reports a reassuring number on a platform where it cannot actually measure is worse than no
+monitor, because the broken state looks healthy. Linux-only is a legitimate conclusion; leaving the
+reader to assume portability is not.
 
 After claiming a mechanism, grep for the code that would have to exist for that claim to be false,
 then report what you found. This is the fastest guard against an explanation built from a quote that

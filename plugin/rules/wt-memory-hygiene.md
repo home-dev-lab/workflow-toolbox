@@ -132,8 +132,12 @@ either bloat or silent loss.
   separate personal and work profiles), a rule written into one does not propagate to the
   others by itself — copy or link it into every directory it should govern, and treat "the rule
   is written" and "the rule is in force everywhere it should be" as two separate facts to
-  verify, not one. Leave the source note in place afterward as rationale, pointing at the
-  rule as the operative version.
+  verify, not one. A corrected rule also does not refresh a session that is already running:
+  rule text and available agent definitions are both snapshots taken at session start. A session
+  that wrote the change therefore cannot verify that it is now obeying it; verification requires a
+  fresh session. If something must take effect immediately, state it explicitly in the current
+  conversation instead of relying on the file edit alone. Leave the source note in place afterward
+  as rationale, pointing at the rule as the operative version.
 
 This keeps the index small and the store honest regardless of how often a dedicated
 consolidation pass runs.
