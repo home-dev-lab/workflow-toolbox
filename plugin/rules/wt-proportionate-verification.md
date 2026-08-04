@@ -156,8 +156,14 @@ one for irreversible or outward-facing changes, the lower one otherwise.
 <!-- embedded-copy:proportionate-verification-ladder:end -->
 
 <!-- Embedded elsewhere in this plugin (delegated agents run with no ambient rules — only
-     their own definition reaches them): plugin/agents/pilot.md and
-     plugin/agents/pilot-orchestrator.md each carry a byte-identical copy of the block above,
-     between the same `embedded-copy:proportionate-verification-ladder` markers. This file is
-     the canonical source — if you edit the ladder, copy the exact text into those embedded
-     copies too; never edit an embedded copy independently of this source. -->
+     their own definition reaches them): the pilot and pilot-orchestrator definitions each carry
+     a byte-identical copy of the block above, between the same
+     `embedded-copy:proportionate-verification-ladder` markers. This file is the canonical
+     source — if you edit the ladder, copy the exact text into every embedded copy; never edit
+     an embedded copy independently of this source.
+
+     ⚠ Find the copies by SEARCHING FOR THE MARKER, not by the paths that used to hold them:
+       grep -rl "embedded-copy:proportionate-verification-ladder" <plugin dir>
+     This note previously named two paths that a later reorganisation emptied, so it sent a
+     reader to files that no longer existed while reading perfectly plausible. A tree move is
+     exactly the kind of change nobody re-reads as a change to a safety mechanism. -->
