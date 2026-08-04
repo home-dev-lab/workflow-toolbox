@@ -58,16 +58,23 @@ function readDegradedViaChildProcess(flagPath: string): unknown {
   return JSON.parse(res.stdout)
 }
 
+// A stand-in "own config dir" for every test in this file's quota-cache describe block —
+// not a real path, just a stable string every read/write in a given test agrees on, the
+// way a real caller's CLAUDE_CONFIG_DIR would be one value for the whole process.
+const TEST_OWN_CONFIG_DIR = '/test/own-config-dir'
+
 // Same Vite-external-path rationale as readDegradedViaChildProcess above, applied to the
-// two quota-watch helper libs.
-function readQuotaCacheViaChildProcess(cachePath: string, ttlMs?: number): unknown {
+// two quota-watch helper libs. `expectedConfigDir` is REQUIRED (mirrors the production
+// signature — see plugin/bin/lib/quota-cache.mjs) so a test cannot silently exercise a
+// path that skips the provenance check by omission.
+function readQuotaCacheViaChildProcess(cachePath: string, ttlMs?: number, expectedConfigDir: string = TEST_OWN_CONFIG_DIR): unknown {
   const res = spawnSync(
     process.execPath,
     [
       '--input-type=module',
       '-e',
       `import { readQuotaCache } from ${JSON.stringify(pathToFileURL(QUOTA_CACHE_LIB).href)};
-       const r = await readQuotaCache(${JSON.stringify(cachePath)}${ttlMs !== undefined ? `, ${ttlMs}` : ''});
+       const r = await readQuotaCache(${JSON.stringify(cachePath)}, ${ttlMs !== undefined ? ttlMs : 'undefined'}, ${JSON.stringify(expectedConfigDir)});
        process.stdout.write(JSON.stringify(r));`,
     ],
     { encoding: 'utf8' },
@@ -76,14 +83,14 @@ function readQuotaCacheViaChildProcess(cachePath: string, ttlMs?: number): unkno
   return JSON.parse(res.stdout)
 }
 
-function writeQuotaCacheViaChildProcess(cachePath: string, data: unknown): void {
+function writeQuotaCacheViaChildProcess(cachePath: string, data: unknown, expectedConfigDir: string = TEST_OWN_CONFIG_DIR): void {
   const res = spawnSync(
     process.execPath,
     [
       '--input-type=module',
       '-e',
       `import { writeQuotaCacheAtomic } from ${JSON.stringify(pathToFileURL(QUOTA_CACHE_LIB).href)};
-       await writeQuotaCacheAtomic(${JSON.stringify(cachePath)}, ${JSON.stringify(data)});`,
+       await writeQuotaCacheAtomic(${JSON.stringify(cachePath)}, ${JSON.stringify(data)}, ${JSON.stringify(expectedConfigDir)});`,
     ],
     { encoding: 'utf8' },
   )
@@ -184,13 +191,13 @@ function hasCompleteWindowsViaChildProcess(windows: unknown): boolean {
 // property under test is whether several independent PROCESSES writing the same cache
 // path can ever leave a reader with a torn/partial file, which an in-process Promise.all
 // would not exercise faithfully (one process, one fs driver, naturally serialized syscalls).
-function writeQuotaCacheAsync(cachePath: string, data: unknown): Promise<void> {
+function writeQuotaCacheAsync(cachePath: string, data: unknown, expectedConfigDir: string = TEST_OWN_CONFIG_DIR): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [
       '--input-type=module',
       '-e',
       `import { writeQuotaCacheAtomic } from ${JSON.stringify(pathToFileURL(QUOTA_CACHE_LIB).href)};
-       await writeQuotaCacheAtomic(${JSON.stringify(cachePath)}, ${JSON.stringify(data)});`,
+       await writeQuotaCacheAtomic(${JSON.stringify(cachePath)}, ${JSON.stringify(data)}, ${JSON.stringify(expectedConfigDir)});`,
     ])
     let stderr = ''
     child.stderr.on('data', (d) => {
@@ -773,8 +780,8 @@ describe('quota-cache: fail-open on anything but a fresh, structurally valid rea
     const dir = tmpRoot('wt-quota-cache-')
     const cachePath = join(dir, '.quota-cache.json')
     const data = { configDir: dir, five_hour: { pct: 33, reset_local: '12:30' }, seven_day: { pct: 12 } }
-    writeQuotaCacheViaChildProcess(cachePath, data)
-    const read = readQuotaCacheViaChildProcess(cachePath) as { data: unknown; at: number; fresh: boolean }
+    writeQuotaCacheViaChildProcess(cachePath, data, dir)
+    const read = readQuotaCacheViaChildProcess(cachePath, undefined, dir) as { data: unknown; at: number; fresh: boolean }
     expect(read).not.toBeNull()
     expect(read.data).toEqual(data)
     expect(read.fresh).toBe(true)
@@ -784,7 +791,7 @@ describe('quota-cache: fail-open on anything but a fresh, structurally valid rea
   it('a reading older than the TTL is returned but marked NOT fresh', () => {
     const dir = tmpRoot('wt-quota-cache-')
     const cachePath = join(dir, '.quota-cache.json')
-    writeFileSync(cachePath, JSON.stringify({ at: Date.now() - 10_000, data: { five_hour: { pct: 1 } } }))
+    writeFileSync(cachePath, JSON.stringify({ at: Date.now() - 10_000, data: { configDir: TEST_OWN_CONFIG_DIR, five_hour: { pct: 1 } } }))
     const read = readQuotaCacheViaChildProcess(cachePath, 5_000) as { fresh: boolean } // 5s TTL, 10s old
     expect(read).not.toBeNull()
     expect(read.fresh).toBe(false)
@@ -793,7 +800,7 @@ describe('quota-cache: fail-open on anything but a fresh, structurally valid rea
   it('write is atomic: no .tmp leftovers, and the file always parses once present', () => {
     const dir = tmpRoot('wt-quota-cache-')
     const cachePath = join(dir, '.quota-cache.json')
-    writeQuotaCacheViaChildProcess(cachePath, { five_hour: { pct: 1 } })
+    writeQuotaCacheViaChildProcess(cachePath, { configDir: TEST_OWN_CONFIG_DIR, five_hour: { pct: 1 } })
     expect(() => JSON.parse(readFileSync(cachePath, 'utf8'))).not.toThrow()
     const leftovers = readdirSync(dir).filter((f) => f.endsWith('.tmp'))
     expect(leftovers).toEqual([])
@@ -807,7 +814,7 @@ describe('quota-cache: fail-open on anything but a fresh, structurally valid rea
     // implementation (write-in-place instead of tmp+rename) would have a real chance of
     // interleaving two writers' bytes into one unparseable file.
     const writes = Array.from({ length: WRITERS }, (_, i) =>
-      writeQuotaCacheAsync(cachePath, { writer: i, pad: 'x'.repeat(200 + i * 37), five_hour: { pct: i } }),
+      writeQuotaCacheAsync(cachePath, { configDir: TEST_OWN_CONFIG_DIR, writer: i, pad: 'x'.repeat(200 + i * 37), five_hour: { pct: i } }),
     )
 
     // Sample the file WHILE writers are racing: every non-empty read must parse and must

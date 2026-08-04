@@ -176,8 +176,15 @@ function runProbe(probePath, timeoutMs) {
     // stderr is CAPTURED, not discarded: the probe writes the real reason for
     // a failure there (missing or expired credentials). Discarding it turns a
     // named failure into a mystery, and the reader looks in the wrong place.
+    //
+    // CLAUDE_CONFIG_DIR is PINNED, not inherited, even though the child would inherit
+    // the same value today: this watcher's own CONFIG_DIR is itself read from
+    // process.env at startup, so pinning here means the cache PATH (CACHE_PATH, derived
+    // from CONFIG_DIR) and the probe's TARGET can never independently drift apart —
+    // the exact divergence that let a foreign reading reach the cache in the first place.
     const child = spawn(process.execPath, [probePath], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, CLAUDE_CONFIG_DIR: CONFIG_DIR },
     })
 
     let stdout = ''
@@ -453,7 +460,7 @@ while (true) {
     // cache trust is unchanged. Argued explicitly, not left implicit: disabling the cache
     // entirely would defeat SUIVI 1/2 (the whole point of this change); requiring a live
     // probe for EVERY reading was rejected for the same reason.
-    const cachedReading = state.hasReading ? await readQuotaCache(CACHE_PATH, WATCHER_CACHE_TOLERANCE_MS) : null
+    const cachedReading = state.hasReading ? await readQuotaCache(CACHE_PATH, WATCHER_CACHE_TOLERANCE_MS, CONFIG_DIR) : null
     if (cachedReading && cachedReading.fresh) {
       const cachedWindows = extractWindows(cachedReading.data)
       // FINDING 2 fix: completeness, not mere non-emptiness — see hasCompleteWindows.
@@ -586,9 +593,9 @@ while (true) {
       // watcher can use this reading instead of hitting the endpoint again inside the TTL
       // window. Best-effort — a cache write failure must never take the watcher down.
       try {
-        await writeQuotaCacheAtomic(CACHE_PATH, parsed)
+        await writeQuotaCacheAtomic(CACHE_PATH, parsed, CONFIG_DIR)
       } catch {
-        /* best effort */
+        /* best effort — includes a provenance mismatch, which must never take the watcher down */
       }
 
       windows = liveWindows
