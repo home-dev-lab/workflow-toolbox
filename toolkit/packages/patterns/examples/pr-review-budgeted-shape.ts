@@ -17,7 +17,7 @@ export const PR_REVIEW_BUDGETED_SHAPE = makeBudgetedShape({
       fullBudget: 6,
       reducedBudget: 3,
       lost: [
-        '3 of 6 lenses dropped; the reduced form must name which 3 it kept and why (e.g. correctness, security, and the lens matching the diff\'s dominant file type)',
+        'reduced to the first 3 lenses of the diff\'s category; because `maintainability` is last in every four-lens category, the reduced form drops exactly the maintainability lens and nothing else (`docs` has only 3 lenses and is unchanged)',
       ],
     },
     {
@@ -25,7 +25,8 @@ export const PR_REVIEW_BUDGETED_SHAPE = makeBudgetedShape({
       fullBudget: 12,
       reducedBudget: 1,
       lost: [
-        'per-finding independent verification collapses to one verifier covering all findings; the single-vote-per-finding granularity is lost',
+        'independence from the FINDING\'S AUTHOR is preserved — the single verifier produced none of the findings',
+        'independence BETWEEN verifications is lost: N verifier contexts collapse to 1, so one systematic misreading by that verifier now affects every verdict instead of one',
       ],
     },
     {

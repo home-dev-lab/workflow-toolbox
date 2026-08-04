@@ -28,8 +28,9 @@ fresh-context worker/reasoning-only roles to a minimal-ambient-context agent typ
 it), `isExternalBridgeType` (the SAME registry `adversarialVerification` uses to decide
 whether a routed `verifierType` is an external CLI relay — opencode/codex — vs a Claude
 specialist, exposed as a narrow boolean so a composition author can reuse it for their own
-wrapper-model gating instead of re-deriving the answer), and small envelope helpers
-(`collectTrail`, `applyCap`, `warn`, `emitDigest`).
+wrapper-model gating instead of re-deriving the answer), `reducedLenses` (take the first
+`N` review lenses unchanged, for budgeted first-N reductions of an already-prioritized
+lens list), and small envelope helpers (`collectTrail`, `applyCap`, `warn`, `emitDigest`).
 
 ## Example
 

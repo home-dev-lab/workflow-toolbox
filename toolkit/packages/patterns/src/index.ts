@@ -12,6 +12,7 @@
 export type { PatternStats, PatternResult, TrailRecord } from './envelope.js'
 export { warn, applyCap, emitDigest, collectTrail, makeRecord } from './envelope.js'
 export { relativizeUnder } from './paths.js'
+export { reducedLenses } from './reduced-lenses.js'
 export { untrusted, renderSourceRefs } from './untrusted.js'
 export type { RenderSourceRefsOptions } from './untrusted.js'
 
