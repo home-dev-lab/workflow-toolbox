@@ -86,9 +86,20 @@ function detectLaneDefaultMeaning(text) {
   if (/heavy implementation increment[^\n]{0,160}(?:executor lane|cheaper lane)/i.test(text)) {
     reasons.push('heavy-increment routing')
   }
-  if (/standing default|by default|default route/i.test(text) && /(executor lane|cheaper lane|cheaper executor)/i.test(text)) {
-    reasons.push('default-routing wording')
-  }
+  // ⚠ REMOVED: an earlier `default-routing wording` route tested for a default
+  // cue ANYWHERE in the file and a lane cue ANYWHERE else, with no proximity
+  // between them. Two unrelated sentences 1842 characters apart were enough.
+  // Measured on the real corpus: it named machine-calibrations.md, where the
+  // hits are "single-verifier form by default" (verification fan-out shape) and
+  // "at 2 the executor lane dies" (a spawn-depth pin) — neither declares a
+  // routing default, and that weak evidence is precisely what this check was
+  // reported for. The windowed cue route below subsumes it with proximity, so
+  // dropping it costs no recall: every file the old route legitimately matched
+  // still matches on a co-occurrence.
+  //
+  // The general shape, worth keeping in mind before adding another route here:
+  // a true verdict carrying weak evidence is worse than a missed one, because
+  // it teaches the reader to distrust a check that was right.
   if (/heavy mechanical work goes down to a cheaper executor/i.test(text)) {
     reasons.push('heavy-work downrouting')
   }
@@ -117,7 +128,7 @@ function detectLaneDefaultMeaning(text) {
     reasons.push('default-routing cues')
   }
   return {
-    matches: reasons.includes('heavy-increment routing') || reasons.includes('default-routing wording') || reasons.includes('default-routing cues'),
+    matches: reasons.includes('heavy-increment routing') || reasons.includes('default-routing cues'),
     reasons,
   }
 }

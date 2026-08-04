@@ -176,3 +176,45 @@ describe('wt-lane-consent-check', () => {
     expect(res.stdout).toContain('DISAGREEMENT')
   })
 })
+
+// ── Precision: a passing MENTION is not a declaration ─────────────────────
+//
+// The card this check exists for (#1833944282545784187) states precision and
+// recall as EQUAL closure criteria, and for a specific reason: the complaint
+// that opened it was not a missed file, it was that the files the finding
+// NAMED carried weak evidence. A true verdict with weak evidence is worse
+// than a missed verdict, because it teaches the reader to distrust a check
+// that was right.
+//
+// The fixture below is reduced from the real false positive measured on
+// 2026-08-04: machine-calibrations.md matched because "…by default" and
+// "…executor lane…" both appeared somewhere in it, 1842 characters apart and
+// about entirely unrelated subjects. The route that allowed that has been
+// removed; this locks the property rather than that one file.
+describe('rule-side precision', () => {
+  it('two unrelated cues far apart do NOT count as declaring a lane default', () => {
+    const f = fixture('far-apart')
+    writeRule(
+      join(f.config, 'rules'),
+      [
+        'Past ~80% of the weekly window, use the single-verifier form by default, and STATE IT.',
+        'FILLER. '.repeat(220),
+        'The spawn-depth pin matters: at 2 the executor lane dies, at 1 entire waves die.',
+      ].join('\n'),
+    )
+    const res = runCli(f.project, f.env)
+    expect(res.status).toBe(0)
+    expect(res.stdout).toBe('')
+  })
+
+  it('the same two cues CLOSE together do count — proximity is the discriminator', () => {
+    const f = fixture('close-together')
+    writeRule(
+      join(f.config, 'rules'),
+      'Every heavy increment goes to the executor lane by default; that is the standing route.\n',
+    )
+    const res = runCli(f.project, f.env)
+    expect(res.status).toBe(1)
+    expect(res.stdout).toContain('DISAGREEMENT')
+  })
+})
