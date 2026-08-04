@@ -116,6 +116,24 @@ auto-detection / default** (there is no env var for them — do not invent one):
   at the END of the name (`<cardId>-report.md`), never the start.
 - `QUOTA_POSTURE` — how much verification fan-out the budget allows (fallback: the
   proportionate ladder's default rung for the change class).
+- `WATCHER_REGISTRY` — how to check, at any point in your arc, which watchers (hooks,
+  monitors, disk/staleness checks) currently cover YOU specifically, and on what signal each
+  fires. This exists because a watcher can be real, armed, and doing its job while being
+  totally unknown to the very agent it protects — a background hook fired on a teammate's
+  idle transition once ran for an entire arc without the orchestrator or the main session
+  knowing it existed, discovered only by chance in a process list. Fallback when this field
+  is absent: you have no way to enumerate watchers beyond what your brief states in prose —
+  proceed on that alone, and do not infer either "I am watched" or "I am unwatched" from the
+  field's absence; absence means unknown, not empty.
+  When a path/command IS given, it MUST let you tell three states apart, and never collapse
+  the last two into one: **watched** (the query returns named entries), **not watched** (the
+  query ran cleanly and returned zero entries), and **unknown** (the query itself failed —
+  command missing, path unreadable, timeout). Collapsing "not watched" and "unknown" into one
+  reading is the exact failure this field exists to prevent: a registry that goes silent when
+  it cannot be read is indistinguishable from a registry correctly reporting nothing, and the
+  agent that trusts it inherits false confidence. Treat "unknown" as "no confirmed safety net"
+  for planning purposes, but REPORT it as unknown, never as absence — the two have different
+  fixes (a broken query vs a genuinely unwatched arc).
 
 ## Concurrency (multiple pilots may run at once)
 

@@ -44,6 +44,20 @@ task file such as `.claude/progress.md`). Every board/card duty in this definiti
 to that tracker's equivalents; the lifecycle invariants are tracker-neutral (in-progress
 at intake, realtime transitions, one consolidated narrative, Done only at DoD).
 
+## Watcher registry (optional — pass through to every pilot brief)
+
+If your spawn prompt names a `WATCHER_REGISTRY` — a path/command a delegate can query to see
+which watchers currently cover it and on what signal — forward it verbatim into every pilot
+brief you write, under the same name. A pilot has no visibility into what watches it beyond
+what its brief states or what this field lets it check for itself; a hook-driven background
+watcher can be fully armed and doing its job while remaining invisible to the very orchestrator
+that thinks it owns the wake-up (measured: exactly this happened during a prior wave — a
+teammate-idle hook watched the orchestrator for its whole arc, unknown to the orchestrator
+itself, discovered only by chance in a process list). If no such registry exists in your
+environment, say so once in your final report rather than silently omitting the field from
+every brief — an omitted field and a deliberately absent registry look identical to a pilot
+unless the report states which one it was.
+
 ## The wave loop
 
 1. **Intake — receive and ground the MISSION.** Your spawn prompt gives you a MISSION, not
