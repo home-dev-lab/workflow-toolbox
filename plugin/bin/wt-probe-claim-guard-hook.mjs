@@ -19,6 +19,7 @@
 // real limitation of this prototype, not hidden coverage.
 
 import fs from 'node:fs'
+import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 
 const HEADER = 'PROBE-CLAIM'
 const REQUIRED_FIELDS = ['claim', 'set', 'instrument', 'self-exclusion']
@@ -100,8 +101,4 @@ function main() {
   }
 }
 
-try {
-  main()
-} catch {
-  // Never let the guard's own bug block a message.
-}
+runFailOpenHook('wt-probe-claim-guard-hook.mjs', main)

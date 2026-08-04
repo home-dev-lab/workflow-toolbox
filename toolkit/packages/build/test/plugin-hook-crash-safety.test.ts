@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -211,6 +211,11 @@ function runHook(hookPath: string, payload: unknown, sandbox: Sandbox): HookRun 
   }
 }
 
+function sourceUsesFailOpenTrace(hookPath: string): boolean {
+  const source = readFileSync(hookPath, 'utf8')
+  return source.includes('runFailOpenHook(') || source.includes('runFailOpenHookAsync(') || source.includes('FAILED OPEN')
+}
+
 describe('plugin hook crash safety', () => {
   const hookPaths = discoverHookPaths()
 
@@ -287,6 +292,27 @@ describe('plugin hook crash safety', () => {
       expect(hasUncaughtExceptionStack(result.stderr)).toBe(false)
     } finally {
       cleanupSandbox(sandbox)
+    }
+  })
+
+  it('a fail-open hook whose own wiring breaks leaves one trace instead of looking healthy-quiet', () => {
+    for (const hookPath of hookPaths.filter(sourceUsesFailOpenTrace)) {
+      const sandbox = makeSandbox(`fail-open-${basename(hookPath, '.mjs')}`)
+      sandbox.env.WT_FAIL_OPEN_TRACE_SELF_TEST = basename(hookPath)
+
+      try {
+        const result = runHook(hookPath, payloadFor(hookPath, sandbox), sandbox)
+
+        expect(result.error, `${basename(hookPath)} should still spawn under forced fail-open self-test`).toBeUndefined()
+        expect(result.status, `${basename(hookPath)} exited via signal under forced fail-open self-test`).not.toBeNull()
+        expect(result.status, `${basename(hookPath)} should fail open under forced fail-open self-test`).toBe(0)
+        expect(result.stderr, `${basename(hookPath)} should trace its forced fail-open path`).toContain(
+          `${basename(hookPath)}: FAILED OPEN - forced fail-open self-test for ${basename(hookPath)}`,
+        )
+        expect(hasUncaughtExceptionStack(result.stderr)).toBe(false)
+      } finally {
+        cleanupSandbox(sandbox)
+      }
     }
   })
 })

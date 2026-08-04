@@ -27,7 +27,8 @@
 // SAFETY — the guard's OWN failure modes, which are the ones people skip:
 //   * At most ONE nudge per agent per session. A guard that can block twice can block forever.
 //   * The main loop is never nudged (its plain text IS delivered) — but its spawns ARE recorded.
-//   * Any internal error exits 0. A guard that breaks agents is worse than the defect it guards.
+//   * Any internal error fails open with one stderr trace. A guard that breaks agents is worse
+//     than the defect it guards.
 //   * It nudges and records; it never blocks permanently and never rewrites anything.
 //
 // A NUDGE STATES AN OBSERVATION, NOT A VERDICT. It cannot know whether the agent had anything
@@ -41,6 +42,7 @@
 import { appendFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
+import { runFailOpenHook } from './lib/fail-open-trace.mjs';
 
 const STATE_DIR = process.env.WT_OUTBOUND_GUARD_DIR
   || join(homedir(), '.local', 'state', 'wt-outbound-guard');
@@ -196,7 +198,7 @@ try {
   process.exit(0);
 }
 
-try {
+function main() {
   const event = payload?.hook_event_name;
   const agentId = payload?.agent_id;          // absent => this turn belongs to the main loop
   const sessionId = payload?.session_id;
@@ -334,6 +336,6 @@ try {
   }
 
   process.exit(0);
-} catch {
-  process.exit(0); // never let this guard break an agent
 }
+
+runFailOpenHook('wt-outbound-guard-hook.mjs', main);

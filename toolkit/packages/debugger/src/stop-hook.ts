@@ -7,8 +7,8 @@
 // finished (diff against persisted per-session state), and — per the HYBRID design —
 // ALWAYS print a systemMessage notice, plus a decision:"block" + compact reason ONLY when
 // a finished run looks like trouble. The audit FOLDER is written only when
-// $DWT_WORKFLOW_LOG_DIR is set. MUST NEVER break the session: any error → print `{}`,
-// exit 0.
+// $DWT_WORKFLOW_LOG_DIR is set. MUST NEVER break the session: any error → leave one stderr trace,
+// print `{}`, exit 0.
 
 import { findJournalByTaskId, transcriptDirFor } from './source.js'
 import { parseJournal, agentEvents } from './journal.js'
@@ -204,7 +204,17 @@ async function main(): Promise<void> {
   emit(renderHookOutput(mergeStopSurfaces(finalSurfaces)))
 }
 
-main().catch(() => {
+const stopHookSelfTest = process.env.WT_FAIL_OPEN_TRACE_SELF_TEST
+const stopHookEntry = stopHookSelfTest === '*' || stopHookSelfTest === 'wt-stop-hook.mjs'
+  ? Promise.reject(new Error('forced fail-open self-test for wt-stop-hook.mjs'))
+  : main()
+
+stopHookEntry.catch((error) => {
+  try {
+    process.stderr.write(`wt-stop-hook.mjs: FAILED OPEN - ${error instanceof Error ? error.message : String(error)}\n`)
+  } catch {
+    // Writing the trace must not itself become the reason the hook fails closed.
+  }
   process.stdout.write('{}')
   process.exit(0)
 })
