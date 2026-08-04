@@ -36,6 +36,16 @@ Replace "this looks right" with a mechanical check on the signal that actually d
   "X is blocked by Y", verify Y's reach. Scope is spatial, temporal, and semantic.
 - A guard/probe's literal pass-signal is not the invariant it exists to prove: check the property
   in PER-UNIT terms, not the aggregate the mechanism emitted.
+- **A probe result RELAYED to anyone carries the set it scanned and its self-exclusion, or it is
+  not relayed.** The dangerous moment is not the measurement, it is the hand-off: a number stripped
+  of its provenance stops being a reading and becomes a fact, and the next reader has no way to
+  recover what it actually covered. So an outbound claim derived from a measurement states what was
+  claimed, the exact set scanned, the instrument, and how the instrument excluded itself — a probe
+  that counts its own process is the ordinary case, not an exotic one. Repeating the same hollow
+  measurement is not corroboration: two readings from one instrument agree by construction.
+  And when a relayed claim later turns out to rest on a hollow probe, the correction goes back to
+  **the same recipients**, never absorbed into a report nobody re-reads — an uncorrected claim keeps
+  working long after the probe that produced it has been discredited.
 - A delegate's green report, and a plausible result from a routed/bridged executor, are input —
   not proof of the work nor of WHERE it ran. Re-run the gates yourself; verify provenance from
   execution traces.
