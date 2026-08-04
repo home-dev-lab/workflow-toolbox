@@ -57,23 +57,23 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   },
   {
     script: 'plugin/bin/wt-adopt-check-hook.mjs',
-    status: 'missing-doc-surface',
-    reason: 'The SessionStart adoption-state notice is user-facing but no durable doc surface describes this hook.',
+    status: 'mapped',
+    reason: 'Known-issues documents this SessionStart adoption-state notice under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-arc-watch.mjs',
-    status: 'missing-doc-surface',
-    reason: 'Shipped monitor with its own CLI/output contract, but no durable doc surface describes it.',
+    status: 'mapped',
+    reason: 'Known-issues documents this monitor and its terminal-state output contract under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-check-commit-signatures-hook.mjs',
-    status: 'missing-doc-surface',
-    reason: 'The PostToolUse commit-signature notice is user-facing, but no durable doc surface describes this hook.',
+    status: 'mapped',
+    reason: 'Known-issues documents this dual PostToolUse/PreToolUse commit-signature gate under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-check-commit-signatures.mjs',
-    status: 'missing-doc-surface',
-    reason: 'Standalone CLI with a remediation contract, but no durable doc surface describes it.',
+    status: 'mapped',
+    reason: 'Known-issues documents this standalone CLI and its exit-code contract under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-check-observer-pairing.mjs',
@@ -92,13 +92,13 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   },
   {
     script: 'plugin/bin/wt-lane-consent-check-hook.mjs',
-    status: 'missing-doc-surface',
-    reason: 'The SessionStart lane-consent disagreement notice is user-facing, but no durable doc surface describes this hook yet.',
+    status: 'exempt',
+    reason: 'A disagreement detector for wt-lane-consent.mjs (mapped) with no user-facing invocation contract of its own — it only ever surfaces a SessionStart notice when the resolved consent state disagrees with itself; the CLI it complements is the operative surface a reader is pointed at (see the pilot-wave DOCS_PROVENANCE entry).',
   },
   {
     script: 'plugin/bin/wt-lane-consent-check.mjs',
-    status: 'missing-doc-surface',
-    reason: 'Standalone lane-consent audit CLI exists, but no durable doc surface describes its invariant/output contract yet.',
+    status: 'exempt',
+    reason: 'Same disagreement-detector role as its hook sibling, standalone: it audits for drift against wt-lane-consent.mjs (mapped) and has no independent invocation contract that a reader would look up on its own.',
   },
   {
     script: 'plugin/bin/wt-lane-consent.mjs',
@@ -112,8 +112,8 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   },
   {
     script: 'plugin/bin/wt-memory-index-check-hook.mjs',
-    status: 'missing-doc-surface',
-    reason: 'The SessionStart knowledge-base warning is user-facing, but no durable doc surface describes this hook.',
+    status: 'mapped',
+    reason: 'Known-issues documents this SessionStart knowledge-base probe under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-memory-index-check.mjs',
@@ -127,13 +127,13 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   },
   {
     script: 'plugin/bin/wt-outbound-guard-hook.mjs',
-    status: 'missing-doc-surface',
-    reason: 'The shipped spawn-registry writer/nudge hook is user-facing, but no durable doc surface describes it.',
+    status: 'mapped',
+    reason: 'Known-issues documents this spawn-registry writer/nudge hook under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-probe-claim-guard-hook.mjs',
-    status: 'missing-doc-surface',
-    reason: 'The shipped SendMessage probe-claim refusal is user-facing, but no durable doc surface describes this hook yet.',
+    status: 'mapped',
+    reason: 'Known-issues documents this SendMessage probe-claim guard under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-pilot-card-reconcile.mjs',
@@ -152,8 +152,8 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   },
   {
     script: 'plugin/bin/wt-queue-not-empty-gate-hook.mjs',
-    status: 'missing-doc-surface',
-    reason: 'Shipped tracker-agnostic Stop gate with a marker contract, but no durable doc surface describes it.',
+    status: 'mapped',
+    reason: 'Known-issues documents this tracker-agnostic Stop gate and its marker contract under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-quota-probe.mjs',
@@ -177,13 +177,13 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   },
   {
     script: 'plugin/bin/wt-observer-pairing-guard-hook.mjs',
-    status: 'missing-doc-surface',
-    reason: 'Shipped PostToolUse observer-pairing notice delegates to the checker, but no durable doc surface describes this hook.',
+    status: 'mapped',
+    reason: 'Known-issues documents this PostToolUse observer-pairing reporter under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-service-watch.mjs',
-    status: 'missing-doc-surface',
-    reason: 'Shipped service monitor with its own output/flag contract, but no durable doc surface describes it.',
+    status: 'mapped',
+    reason: 'Known-issues documents this service monitor and its degraded-flag contract under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-session-start-registry-hook.mjs',
@@ -192,8 +192,8 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   },
   {
     script: 'plugin/bin/wt-spawn-capability-guard-hook.mjs',
-    status: 'missing-doc-surface',
-    reason: 'Shipped PreToolUse guard with direct deny behavior, but no durable doc surface describes it.',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse unwritable-report spawn blocker under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-spawn-registry-scan.mjs',
@@ -202,18 +202,18 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   },
   {
     script: 'plugin/bin/wt-spawn-shape-guard-hook.mjs',
-    status: 'missing-doc-surface',
-    reason: 'Shipped PreToolUse spawn-shape guard with user-visible deny output, but no durable doc surface describes it.',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse observer-preserving spawn guard under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-stale-date-guard-hook.mjs',
-    status: 'missing-doc-surface',
-    reason: 'The PostToolUse stale-deadline notice is user-facing, but no durable doc surface describes this hook.',
+    status: 'mapped',
+    reason: 'Known-issues documents this PostToolUse stale-deadline advisory under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-stale-date-guard.mjs',
-    status: 'missing-doc-surface',
-    reason: 'Standalone stale-deadline CLI exists, but only changelog prose mentions it today.',
+    status: 'mapped',
+    reason: 'Known-issues documents this standalone CLI, its usage, and its exit codes under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-stop-hook.mjs',
@@ -222,8 +222,8 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   },
   {
     script: 'plugin/bin/wt-command-repeat-check.mjs',
-    status: 'missing-doc-surface',
-    reason: 'Standalone repeat-discrimination CLI exists, but this pass intentionally does not register or document it beyond code/test/report surfaces.',
+    status: 'mapped',
+    reason: 'Known-issues documents this unregistered standalone CLI and its flag/exit-code contract under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-verdict-cap-check.mjs',
@@ -501,6 +501,28 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-registry-heartbeat-hook.mjs',
       'plugin/bin/wt-session-start-registry-hook.mjs',
       'plugin/bin/wt-spawn-registry-scan.mjs',
+    ],
+    docs: ['docs/public/known-issues.md'],
+  },
+  {
+    // The 15 shipped hooks/guards/monitors written up in the "Shipped Hooks, Guards &
+    // Monitors" section — none had a doc surface before.
+    sources: [
+      'plugin/bin/wt-adopt-check-hook.mjs',
+      'plugin/bin/wt-arc-watch.mjs',
+      'plugin/bin/wt-check-commit-signatures-hook.mjs',
+      'plugin/bin/wt-check-commit-signatures.mjs',
+      'plugin/bin/wt-memory-index-check-hook.mjs',
+      'plugin/bin/wt-outbound-guard-hook.mjs',
+      'plugin/bin/wt-probe-claim-guard-hook.mjs',
+      'plugin/bin/wt-queue-not-empty-gate-hook.mjs',
+      'plugin/bin/wt-observer-pairing-guard-hook.mjs',
+      'plugin/bin/wt-service-watch.mjs',
+      'plugin/bin/wt-spawn-capability-guard-hook.mjs',
+      'plugin/bin/wt-spawn-shape-guard-hook.mjs',
+      'plugin/bin/wt-stale-date-guard-hook.mjs',
+      'plugin/bin/wt-stale-date-guard.mjs',
+      'plugin/bin/wt-command-repeat-check.mjs',
     ],
     docs: ['docs/public/known-issues.md'],
   },

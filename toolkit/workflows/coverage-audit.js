@@ -2156,6 +2156,28 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-spawn-registry-scan.mjs"
       ],
       docs: ["docs/public/known-issues.md"]
+    },
+    {
+      // The 15 shipped hooks/guards/monitors written up in the "Shipped Hooks, Guards &
+      // Monitors" section — none had a doc surface before.
+      sources: [
+        "plugin/bin/wt-adopt-check-hook.mjs",
+        "plugin/bin/wt-arc-watch.mjs",
+        "plugin/bin/wt-check-commit-signatures-hook.mjs",
+        "plugin/bin/wt-check-commit-signatures.mjs",
+        "plugin/bin/wt-memory-index-check-hook.mjs",
+        "plugin/bin/wt-outbound-guard-hook.mjs",
+        "plugin/bin/wt-probe-claim-guard-hook.mjs",
+        "plugin/bin/wt-queue-not-empty-gate-hook.mjs",
+        "plugin/bin/wt-observer-pairing-guard-hook.mjs",
+        "plugin/bin/wt-service-watch.mjs",
+        "plugin/bin/wt-spawn-capability-guard-hook.mjs",
+        "plugin/bin/wt-spawn-shape-guard-hook.mjs",
+        "plugin/bin/wt-stale-date-guard-hook.mjs",
+        "plugin/bin/wt-stale-date-guard.mjs",
+        "plugin/bin/wt-command-repeat-check.mjs"
+      ],
+      docs: ["docs/public/known-issues.md"]
     }
   ];
 

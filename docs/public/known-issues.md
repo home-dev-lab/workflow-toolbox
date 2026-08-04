@@ -39,3 +39,76 @@ local use.
 | D | **Agents die mid-reasoning at context limits — systematically.** Several occurrences during development; the dying agent's last mid-thought text arrives as a normal-looking completion. | The four defence layers encoded in the examples + README: a schema at every consumed boundary, fresh-evidence verification, decomposed agent scopes, and `WorkflowOutput.error` + `resumeFromRunId`. A discipline, not a fix. |
 | E | **Top-tier model alias availability is environment- and time-dependent** (plan tiers, access windows, provider policy — `'fable'` has already gone through availability churn) — a verifier (or any agent) pinned to an alias that is not callable where the run executes errors at runtime. | `BEST_MODEL` tracks the strongest *reliably-callable* tier (currently `'opus'`), so `adversarialVerification` verifiers default to a safe tier; the toolkit never pins a volatile alias itself. Verify an alias is callable in the run environment before hand-overriding any `model`/`verifierModel`; bump `BEST_MODEL` when the reliably-callable tier changes. |
 | F | **`dev-implement` `{artifactPath}` very-large-file fidelity** — in `artifactPath` mode the PlanArtifact is read by an agent (the sandbox has no filesystem) and returned through the agent's output. A very large artifact (the JSDoc cites ~60 KB as the motivating case) could in principle be truncated or reworded by the agent. | **Fails loud, never silent-wrong**: a truncated read yields invalid JSON (caught at `JSON.parse`) and structural corruption is caught by the same `validateArtifact`/`validateGraph` gate the inline path uses. The only undetectable residue is a paraphrased *string* field that still parses, whose blast radius is a slightly degraded implementer prompt (the fresh-evidence checker reads real test output, not the prompt). If a large artifact intermittently fails to load, re-run, or inline it via `{ artifact }`. **Path base**: an absolute `artifactPath` is unambiguous; a relative one resolves against the read agent's cwd (the Claude Code session dir, verified live 2026-06-21), *not* the artifact's `projectDir` — prefer absolute. |
+
+## Shipped Hooks, Guards & Monitors
+
+Hooks and monitors shipped under `plugin/bin/` that are not already covered by a section above:
+what fires them, what they check, and their output/exit contract.
+
+### `wt-adopt-check-hook.mjs` — rule-adoption state check (SessionStart + PostToolUse)
+
+Checks BOTH managed sets — `.claude/rules/` and `.claude/agents/` — in the project AND global config dirs, by running the adopt installer in `--check` mode and reusing its absent, clean, stale, edited, symlink, and hand-authored classification. A file counts as OK if either the project or the global copy is current (the union, not an intersection), so an adopted-globally rule never falsely reads as absent. It is silent when everything checked is adopted and current; otherwise it names the absent/stale/edited files per set and suggests the adoption fix (for agents, only `stale` is a finding — the pilot suite's project copies are opt-in by design). It never installs or changes anything: adoption requires the owner's consent. Besides SessionStart, it also re-fires on PostToolUse after a `git push` — the moment the shipped rules can move ahead of the adopted copies — with a preface explaining why the notice appears mid-session. Any internal error exits 0 silently so it cannot break a session or a push.
+
+### `wt-arc-watch.mjs` — delegated-agent transcript watcher (monitor)
+
+Watches subagent transcripts for the current project's sessions and emits only when a transcript has stopped growing or disappeared. It stays silent while agents are writing, so silence means the watched agents are still working. It does not treat staleness as proof of death: a waiting agent can be stale too. It withholds all output until this session has delegated at least once, and never self-terminates while waiting so a later delegation remains covered.
+
+### `wt-check-commit-signatures-hook.mjs` — commit-signature dual gate (PostToolUse + PreToolUse)
+
+Wraps `wt-check-commit-signatures.mjs` at two different points around `git`. After a `git commit` Bash command has already run, it re-checks `HEAD` and, if unsigned, emits a PostToolUse advisory (`additionalContext`) naming the problem — the commit already landed, so this path never blocks. Before a `git push` runs, it derives the outgoing commit range(s) from the push's remote and refspecs and denies the push (`permissionDecision: 'deny'`) only on CONFIRMED unsigned offenders in that range; anything uncertain — no derivable range, a Git error, a malformed push shape — fails open rather than blocking. The goal is an earlier, cheaper failure than the remote's own rejection of the same push.
+
+### `wt-check-commit-signatures.mjs` — commit-signature verifier (standalone CLI)
+
+Checks whether signing is expected from `commit.gpgsign` or `user.signingkey`, then inspects `HEAD` or the supplied revision range with Git's signature status. It exits 0 when signing is not expected or no offending commits are found, exits 1 after printing offending commits and remediation guidance, and exits 2 for argument or Git usage errors. It accepts `--repo` and `--range`; unknown arguments and missing flag values are errors.
+
+### `wt-memory-index-check-hook.mjs` — knowledge-base index probe (SessionStart)
+
+Runs `wt-memory-index-check.mjs` once per session against the current project's derived memory store. It surfaces an index beyond the harness truncation threshold and fiches unreachable from the index or indexed notes. It exits 0 with no output when no store exists, the probe is unavailable or errors, or the probe reports clean; it never blocks session start. Silence is the normal state because a healthy check that speaks gets disabled.
+
+### `wt-outbound-guard-hook.mjs` — delegation delivery guard (PostToolUse / SubagentStop)
+
+Records spawn edges from `PostToolUse` records and nudges a subagent that is about to stop without having delivered a message. A closing failure leaves the registry entry open, preserving the unanswered-spawn signal rather than hiding it. It nudges at most once per agent per session, does not nudge the main loop, and never rewrites anything. Internal errors fail open with one stderr trace.
+
+### `wt-probe-claim-guard-hook.mjs` — probe-provenance validator (PreToolUse)
+
+Intercepts `SendMessage` and validates a leading `PROBE-CLAIM` stanza when one is present. It denies malformed stanzas, missing `claim`, `set`, `instrument`, or `self-exclusion` fields, and hollow self-exclusions, so later readers can reconstruct what was scanned and whether the probe counted itself. Ordinary messages and undeclared probe-derived claims pass through; recognizing undeclared claims is explicitly outside this prototype's coverage. Internal failures use the fail-open hook wrapper.
+
+### `wt-queue-not-empty-gate-hook.mjs` — open-work stop gate (Stop)
+
+Refuses a silent stop when tracked work remains, no work is running, and the marker says the queue is not empty. It consumes `<state-dir>/queue-<project-slug>.json`; it never writes the marker, so a project with no marker remains silent and unblocked. Once a marker exists, unreadable or stale marker data counts as work remaining, but the guard fails open on its own malfunction. It blocks with exit 2 at most once per `COOLDOWN_MIN`, and remains silent while an active `workPossible: false` marker with a valid future `workBlockedUntil` says work is genuinely impossible.
+
+### `wt-observer-pairing-guard-hook.mjs` — observer-pairing reporter (PostToolUse)
+
+Runs after an `Agent` spawn whose agent definition declares an observer and delegates the pairing decision to `wt-check-observer-pairing.mjs`. It emits nothing for a passing checker verdict and surfaces only lost-observer or indeterminate outcomes. The checker remains the source of truth for ownership links, contradictory or dangling states, the `in_process_teammate` exemption, and mtime fallback. Internal errors fail open.
+
+### `wt-service-watch.mjs` — Claude service-status supervisor (monitor)
+
+Polls `https://status.claude.com/api/v2/summary.json` and considers only `Claude API (api.anthropic.com)` and `Claude Code`, deliberately ignoring `claude.ai`. During degradation it maintains `<configDir>/.wt-service-degraded.json` so other monitors can fall silent, and removes the condition on recovery. A failed, timed-out, non-200, or unparsable probe never writes or refreshes that flag; failures go to stderr and stdout is reserved for transition notifications. The flag has `expiresAt` and is refreshed during degradation, so a dead supervisor cannot suppress other monitors indefinitely.
+
+### `wt-spawn-capability-guard-hook.mjs` — unwritable-report spawn blocker (PreToolUse)
+
+Checks an `Agent` spawn's definition and denies it only when the agent has a `tools:` allowlist without `Write` and its brief asks for a file at a path. An agent type with no `tools:` line is allowed because it inherits all tools. The denial explains how to repair the brief before the delegated work runs without a way to write its required report. Internal errors fail open with one stderr trace.
+
+### `wt-spawn-shape-guard-hook.mjs` — observer-preserving spawn guard (PreToolUse)
+
+Refuses a named `Agent` spawn without `isolation` where the spawning session is in a Git repository, because that shape can route through the in-process-teammate path and lose the declared observer. Outside a Git repository it allows the spawn and states what will be lost, since `isolation: worktree` cannot be applied there. This prevents a silent failure where the agent works normally and reports no observer findings because no observer was attached. Internal errors fail open with one stderr trace.
+
+### `wt-stale-date-guard-hook.mjs` — written-deadline advisory (PostToolUse)
+
+Runs `wt-stale-date-guard.mjs` on the single file just touched by `Write` or `Edit`. It checks only `.claude/rules/` and `memory/*.md`, exiting 0 silently for other surfaces because they do not carry the operational deadlines this guard is intended to check. It cannot undo an already completed write, so it is advisory only: findings are emitted through `hookSpecificOutput` and `additionalContext`, while clean results produce no output.
+
+### `wt-stale-date-guard.mjs` — stale operational-deadline scanner (standalone CLI)
+
+Scans Markdown for absolute dates and flags operational deadlines that have passed without treating provenance dates as deadlines. It takes no project-specific paths by default; targets are supplied by the caller. Usage:
+
+```text
+wt-stale-date-guard.mjs --path <dir-or-file> [--path <dir-or-file> ...]
+                         [--today YYYY-MM-DD] [--json] [--out <file>]
+                         [--fail-on-unknown]
+```
+
+It exits 0 when no stale deadline is found, 1 when at least one stale deadline is found, and 2 for usage errors including no `--path`, an invalid `--today`, or an unreadable path.
+
+### `wt-command-repeat-check.mjs` — repeated-command result detector (standalone CLI)
+
+Records one executed command/result pair and flags the same normalized command shape with the same result once it has recurred at least 3 times (the default threshold) in one project/session — the third occurrence and every one after it, not only the third. It is not registered as a hook, so projects can verify its behavior before choosing where to arm it. Required inputs are `--session`, `--command`, and `--exit-code`; it also accepts `--cwd`, `--stdout`, `--stderr`, `--signal`, `--stdout-file`, `--stderr-file`, `--at`, `--state-dir`, `--threshold`, `--ttl-ms`, `--max-pairs`, and `--json`. Missing required values, invalid numeric values, and unknown arguments exit 2.
