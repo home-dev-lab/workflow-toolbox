@@ -47,7 +47,9 @@ function evaluateSettingsFile(filePath) {
   return { filePath, state: env.isTrue ? 'true' : 'not_true', source: env.isTrue ? 'true' : 'not_true' }
 }
 
-function resolveConsent(projectDir, env) {
+export const LANE_CONSENT_KEY = CONSENT_KEY
+
+export function resolveConsent(projectDir, env = process.env) {
   const configDir = resolveConfigDir(env)
   const account = evaluateSettingsFile(path.join(configDir, 'settings.json'))
   const project = evaluateSettingsFile(path.join(projectDir, '.claude', 'settings.local.json'))

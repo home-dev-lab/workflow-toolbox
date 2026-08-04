@@ -1917,7 +1917,14 @@ ${renderClaim(claim)}`;
       sources: [
         "plugin/agent-templates/pilot.md",
         "plugin/agent-templates/pilot-orchestrator.md",
-        "plugin/agent-templates/pilot-watchdog.md"
+        "plugin/agent-templates/pilot-watchdog.md",
+        // The lane-consent CLI is documented by the same skill, because consent is
+        // resolved there (Step 1) and the CLI is what a reader is pointed at to see
+        // or change the switch. Its two siblings (the check CLI and its hook) stay
+        // `missing-doc-surface`: they are DISAGREEMENT detectors with no user-facing
+        // invocation contract, which is a different thing from being undocumented by
+        // oversight.
+        "plugin/bin/wt-lane-consent.mjs"
       ],
       docs: ["plugin/skills/pilot-wave/SKILL.md"]
     },

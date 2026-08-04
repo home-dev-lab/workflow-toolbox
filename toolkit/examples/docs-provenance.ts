@@ -101,6 +101,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Standalone lane-consent audit CLI exists, but no durable doc surface describes its invariant/output contract yet.',
   },
   {
+    script: 'plugin/bin/wt-lane-consent.mjs',
+    status: 'mapped',
+    reason: 'The pilot-wave skill documents this CLI as the way to read and change the executor-lane consent switch.',
+  },
+  {
     script: 'plugin/bin/wt-lane-probe.mjs',
     status: 'mapped',
     reason: 'Pilot orchestrator docs tell operators to run this probe to verify executor routing.',
@@ -260,6 +265,13 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/agent-templates/pilot.md',
       'plugin/agent-templates/pilot-orchestrator.md',
       'plugin/agent-templates/pilot-watchdog.md',
+      // The lane-consent CLI is documented by the same skill, because consent is
+      // resolved there (Step 1) and the CLI is what a reader is pointed at to see
+      // or change the switch. Its two siblings (the check CLI and its hook) stay
+      // `missing-doc-surface`: they are DISAGREEMENT detectors with no user-facing
+      // invocation contract, which is a different thing from being undocumented by
+      // oversight.
+      'plugin/bin/wt-lane-consent.mjs',
     ],
     docs: ['plugin/skills/pilot-wave/SKILL.md'],
   },

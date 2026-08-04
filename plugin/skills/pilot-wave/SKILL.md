@@ -71,6 +71,26 @@ the resolved values in the spawn prompt:
      `<project>/.claude/settings.local.json` `env` block for the SAME key: it may only NARROW (set it
      to something other than `"true"`), never widen a ceiling that is off. A refusal at
      either level wins.
+  **The shipped CLI answers both halves of this without hand-editing JSON**, and it is what
+  you point a user at when they ask how to see or change the switch:
+
+  ```bash
+  wt-lane-consent                       # what is it right now: account, project, effective
+  wt-lane-consent --on | --off          # set the ACCOUNT ceiling
+  wt-lane-consent --project [dir] --off # NARROW it for one project only
+  wt-lane-consent --json                # the same state, machine-readable
+  ```
+
+  It reports the state in words (`ALLOWED` / `REFUSED` / `not set` / `UNKNOWN`), never the
+  raw stored value, and when it refuses it names WHICH level refused — an account that never
+  opted in and a project that narrows an allowing account read identically otherwise. A write
+  backs the file up first and preserves every other key.
+  ⚠ **Two readers, two latencies, and the CLI says so after a write**: anything reading the
+  settings FILE (this CLI, the consent check, this skill) sees the change immediately; anything
+  reading the environment VARIABLE sees it only in a session started afterwards, because the
+  settings `env` block is applied at session start. A correct write can otherwise look like it
+  did nothing.
+
   If BOTH available AND consented → name the bridge as the executor/verifier lane.
   Otherwise (no bridge, OR a bridge present but not consented) → **the lane is absent; the
   pilot/orchestrator SPLITS** (its own tier for design/plan/arbitration, a spawned cheaper
