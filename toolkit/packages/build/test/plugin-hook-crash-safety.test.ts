@@ -83,6 +83,11 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         transcript_path: sandbox.transcriptPath,
       }
     case 'wt-adopt-check-hook.mjs':
+    // The deprecated name is a shim that side-effect-imports the line above, so it takes the
+    // identical payload. Listed explicitly rather than pattern-matched: this switch failing
+    // closed on an unknown file is what forces every new plugin/bin entry to be considered
+    // here, and a wildcard would quietly re-open that.
+    case 'wt-adopt-rules-check-hook.mjs':
       return {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,

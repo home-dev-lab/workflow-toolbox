@@ -2162,6 +2162,10 @@ ${renderClaim(claim)}`;
       // Monitors" section — none had a doc surface before.
       sources: [
         "plugin/bin/wt-adopt-check-hook.mjs",
+        // Deprecated name kept as a shim so sessions already running when the rename landed do
+        // not lose the hook. Same doc surface as the file it delegates to; delete both this line
+        // and the shim one release after the rename.
+        "plugin/bin/wt-adopt-rules-check-hook.mjs",
         "plugin/bin/wt-arc-watch.mjs",
         "plugin/bin/wt-check-commit-signatures-hook.mjs",
         "plugin/bin/wt-check-commit-signatures.mjs",

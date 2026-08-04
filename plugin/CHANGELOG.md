@@ -37,6 +37,23 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   the ownership link (or its absence) decides, and the checker's existing mtime fallback remains
   only for records where no link is present.
 
+- **`wt-adopt-rules-check-hook.mjs` is back as a DEPRECATION SHIM, and every registered hook
+  path is now locked.** Renaming a hook file breaks every session that is ALREADY RUNNING: the
+  manifest is read at session start, so the old path lives on in memory after the file is gone,
+  and node dies in the module loader before any hook code — so the hook cannot even emit its own
+  `FAILED OPEN` trace. The only symptom is a loader line per tool call that names no hook.
+  Measured after the `adopt-rules` → `adopt` rename: **725 failures inside one session**, roughly
+  an hour to attribute, because every reproduction attempt invoked the file that exists.
+  The shim delegates by side-effecting import (same process, same stdin, same exit code) and
+  traces under its OWN name rather than the delegate's. Two locks keep it honest: every
+  `${CLAUDE_PLUGIN_ROOT}` path in the manifest must resolve — asserted over the whole manifest,
+  not a name list, with a non-vacuity check so an extraction bug cannot pass it silently — and
+  the shim's stdout must equal the current hook's for the same payload. Remove the shim, its
+  provenance entry and its crash-safety case one release after the rename.
+  ⚠ Scope, stated so the shim is not over-credited: it helps a rename that ships one. It does
+  nothing for a hook deleted outright, and no repo-level check can see inside a running process,
+  which is where the broken state actually lives.
+
 ## [0.67.0] - 2026-08-03
 
 ### Added
