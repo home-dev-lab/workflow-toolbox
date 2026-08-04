@@ -1,14 +1,7 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { checkCitationMarkers, extractClause, type CitationMarker } from './citation-marker-check.ts'
-
-export const REPO_PROSE_TREES = [
-  'plugin/rules',
-  'plugin/agent-templates',
-  'plugin/launch-agents/agents',
-  'plugin/skills',
-] as const
+import { checkCitationMarkers, extractClause, REPO_PROSE_TREES, type CitationMarker } from './citation-marker-check.ts'
 
 export const PROSE_SURFACES = [
   { kind: 'flat', path: 'plugin/rules', fileName: '.md' },
