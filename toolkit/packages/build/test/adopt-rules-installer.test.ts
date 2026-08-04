@@ -487,6 +487,75 @@ describe('adopt-rules installer — --global targets the config dir, resolved no
   })
 })
 
+describe('adopt-rules installer — account-level env prerequisites in settings.json', () => {
+  function runSettings(args: string[], opts: { cwd: string; configDir: string | null; home?: string }): string {
+    const env = { ...process.env }
+    if (opts.configDir === null) delete env.CLAUDE_CONFIG_DIR
+    else env.CLAUDE_CONFIG_DIR = opts.configDir
+    if (opts.home) env.HOME = opts.home
+    const res = spawnSync(process.execPath, [SCRIPT, ...args], { cwd: opts.cwd, env, encoding: 'utf8' })
+    return (res.stdout ?? '') + (res.stderr ?? '')
+  }
+
+  it('--check proposes the universal spawn-depth prerequisite by NAME only, at the active config profile', () => {
+    const cwd = mkDir()
+    const cfg = mkDir()
+    const out = runSettings(['--set', 'rules', '--check'], { cwd, configDir: cfg })
+    expect(out).toContain(`[settings] target=${join(cfg, 'settings.json')}`)
+    expect(out).toContain('CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: ABSENT')
+    expect(out).not.toContain('CLAUDE_CODE_EXPERIMENTAL_OBSERVER_AGENTS')
+    expect(out).toContain('rerun under each profile')
+    expect(out).not.toContain('=3')
+  })
+
+  it('--check on the agents set proposes the observer gate too, still by NAME only', () => {
+    const cwd = mkDir()
+    const cfg = mkDir()
+    const out = runSettings(['--set', 'agents', '--check'], { cwd, configDir: cfg })
+    expect(out).toContain('CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: ABSENT')
+    expect(out).toContain('CLAUDE_CODE_EXPERIMENTAL_OBSERVER_AGENTS: ABSENT')
+    expect(out).not.toContain('=1')
+  })
+
+  it('--install adds ONLY absent keys, preserves existing structure, creates a backup, and records traceability out of band', () => {
+    const cwd = mkDir()
+    const cfg = mkDir()
+    writeFileSync(
+      join(cfg, 'settings.json'),
+      JSON.stringify({ theme: 'dark', env: { KEEP_ME: 'present', CLAUDE_CODE_EXPERIMENTAL_OBSERVER_AGENTS: 'user-choice' } }),
+    )
+
+    const out = runSettings(['--set', 'agents', '--install'], { cwd, configDir: cfg })
+    expect(out).toContain('CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: WROTE')
+    expect(out).toContain('CLAUDE_CODE_EXPERIMENTAL_OBSERVER_AGENTS: PRESENT (differs from the managed default; left intact)')
+
+    const settings = JSON.parse(readFileSync(join(cfg, 'settings.json'), 'utf8'))
+    expect(settings.theme).toBe('dark')
+    expect(settings.env.KEEP_ME).toBe('present')
+    expect(settings.env.CLAUDE_CODE_EXPERIMENTAL_OBSERVER_AGENTS).toBe('user-choice')
+    expect(settings.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH).toBe('3')
+
+    const backups = readdirSync(cfg).filter((name) => /^settings\.json\.workflow-toolbox\.bak\./.test(name))
+    expect(backups.length).toBe(1)
+
+    const trace = JSON.parse(readFileSync(join(cfg, 'workflow-toolbox', 'adopt-rules-settings-trace.json'), 'utf8'))
+    expect(trace.keys.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH.value).toBe('3')
+    expect(trace.keys.CLAUDE_CODE_EXPERIMENTAL_OBSERVER_AGENTS).toBeUndefined()
+  })
+
+  it('a present DIFFERENT value is left intact and never echoed back to output', () => {
+    const cwd = mkDir()
+    const cfg = mkDir()
+    const secret = 'TOPSECRET_EXISTING_VALUE'
+    writeFileSync(join(cfg, 'settings.json'), JSON.stringify({ env: { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: secret } }))
+
+    const out = runSettings(['--set', 'rules', '--check'], { cwd, configDir: cfg })
+    expect(out).toContain('CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: PRESENT')
+    expect(out).toContain('left intact')
+    expect(out).not.toContain(secret)
+  })
+})
+
 // STALE must mean "the text you hold differs from the text that ships" — not "the plugin
 // released since you installed".
 //
