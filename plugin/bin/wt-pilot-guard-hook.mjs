@@ -140,8 +140,10 @@ function main() {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason:
-          `[workflow-toolbox pilot guard] Refused: ${reason}. This is an escalation, not a ` +
-          `pilot action — relay it to your arbiter (main session) instead of running it.`,
+          `[workflow-toolbox pilot guard] Refused: ${reason}. This would take a user-gated ` +
+          `escalation inside a delegate, so the approval path stops being visible at the main ` +
+          `session. Fix: relay the exact command to your arbiter (main session) instead of ` +
+          `running it here.`,
       },
     }),
   )
