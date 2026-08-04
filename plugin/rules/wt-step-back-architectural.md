@@ -32,6 +32,17 @@ So whenever you edit a file that could have a published counterpart — a rule, 
 a helper, anything you also distribute — answer this in the SAME pass, not in a later one:
 
 > **Does this file have a shipped twin, and must this fix be carried there now?**
+>
+> And, on the same look: **what does that copy already have that this one does not?**
+
+**The drift is not one-directional, and the second direction is the one nobody watches.** A
+review, an issue, or a contribution lands on the DISTRIBUTED copy first and cannot reach a
+private copy it cannot see — so a shipped twin routinely carries a hardening its private
+counterpart lacks. The reason this stays invisible is not laziness: "private is where you
+experiment, shipped is where it lands" is a plausible model of how work flows, and it makes
+"private is ahead" feel like a law rather than a habit. So when you open a twin to place a fix,
+read what it already has. Carrying the fix out and carrying its improvements back are the same
+pass, not two.
 
 Three things make this fail in practice, and each is worth naming:
 

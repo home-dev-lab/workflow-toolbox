@@ -39,6 +39,18 @@ Replace "this looks right" with a mechanical check on the signal that actually d
 - State every verdict at the REACH its evidence has. Before "X doesn't exist anywhere", enumerate
   the possible producers and check the consumer — if something displays X, X exists. Before
   "X is blocked by Y", verify Y's reach. Scope is spatial, temporal, and semantic.
+- **A search proves absence only within the set it was given; an ID LOOKUP proves presence
+  anywhere.** Whenever an identifier is available — from a code comment, a commit body, a report,
+  an error message — resolve it directly instead of searching for it. A lookup ignores whatever
+  partition a search is confined to, so it settles in one call what a search can only bound.
+  ⚠ Two consequences that are easy to state backwards. First, when you COMMISSION a search, the
+  brief chooses the set: a probe told to look in the wrong place is perfectly diligent and
+  perfectly wrong, and no thoroughness inside that set can reach outside it — so ask what would
+  have to be true for the answer to lie outside the set you just named. Second, requiring a probe
+  to state its reach does not protect the person who commissioned it; it protects the next reader,
+  who is the one able to notice that the stated reach and some other evidence cannot both be true.
+  And a keyword search adds its own floor: a target described in different words than the query is
+  invisible to it, whatever set it covers.
 - A guard/probe's literal pass-signal is not the invariant it exists to prove: check the property
   in PER-UNIT terms, not the aggregate the mechanism emitted.
 - **A probe result RELAYED to anyone carries the set it scanned and its self-exclusion, or it is
