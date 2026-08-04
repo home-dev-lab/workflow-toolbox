@@ -368,6 +368,38 @@ export async function scoreAndRank<TItem = string>(
     .map((x) => x.si)
 
   // -------------------------------------------------------------------------
+  // Flattening detector — SCALE-FREE, unlike tournament's.
+  //
+  // Same defect being watched for (a scorer that fails to discriminate, so the
+  // ranking it produces is arbitrary and the cutoff below cuts on noise), but
+  // this pattern cannot use tournament's "spread below one rubric band" test:
+  // `score` here is deliberately UNBOUNDED and its scale belongs to the caller,
+  // because `combine` is arbitrary. A fixed threshold would impose a scale the
+  // pattern refuses on purpose, and would fire constantly on any caller whose
+  // natural range is small.
+  //
+  // So the only scale-free statement is the strongest one: EVERY score is
+  // identical. That needs no units and cannot be wrong about a caller's range.
+  // It under-detects on purpose — a near-flat set slips through — which is the
+  // right trade for a check that must never cry on a legitimate scale.
+  //
+  // Warns and changes nothing: identical scores can be honest, and the cutoff
+  // stays the caller's to define.
+  // -------------------------------------------------------------------------
+
+  if (ranked.length >= 2) {
+    const first = ranked[0]
+    if (first !== undefined && ranked.every((s) => s.score === first.score)) {
+      warn(
+        rt, warnings,
+        `${STAGE}: every one of the ${ranked.length} scored items received the IDENTICAL score ` +
+          `(${first.score}) — the ranking is arbitrary and any cutoff below cuts on order, not merit. ` +
+          `Either the items really are equivalent, or the scoring prompt is not discriminating.`,
+      )
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Cutoff
   // -------------------------------------------------------------------------
 

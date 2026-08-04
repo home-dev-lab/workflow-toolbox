@@ -723,3 +723,64 @@ describe('scoreAndRank — stage salting', () => {
     for (const d of digests) expect(d?.stage).toBe('scoreAndRank')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Flattening detector — SCALE-FREE, and deliberately weaker than tournament's.
+//
+// Same hazard (a scorer that does not discriminate makes the ranking arbitrary,
+// so the cutoff cuts on order rather than merit), but this pattern's `score` is
+// UNBOUNDED and its scale belongs to the caller — `combine` is arbitrary. A
+// fixed "spread below N" threshold would impose a scale the pattern refuses on
+// purpose and would fire constantly on any caller whose natural range is small.
+// So the only statement that needs no units is the strongest one: every score
+// identical. It under-detects by design; that is the right trade for a check
+// that must never cry on a legitimate scale.
+// ---------------------------------------------------------------------------
+
+describe('scoreAndRank — flattening detector', () => {
+  const flatAt = (v: number) => ({ onAgent: ({ opts }: { opts?: { schema?: unknown } }) =>
+    isScoreCall(opts) ? { score: v, reason: 'flat' } : null })
+
+  it('WARNS when every item receives the identical score', async () => {
+    const rt = new FakeRuntime(flatAt(3))
+    const result = await scoreAndRank(rt, makeOptions())
+    expect(result.warnings.filter(w => /IDENTICAL score/.test(w))).toHaveLength(1)
+  })
+
+  it('is SCALE-FREE — fires the same on a tiny range as on a large one', async () => {
+    // 0.001 everywhere is as flat as 1000 everywhere. A threshold-based test
+    // would miss one of these; this is why the check is equality, not spread.
+    const tiny = new FakeRuntime(flatAt(0.001))
+    const huge = new FakeRuntime(flatAt(1000))
+    const a = await scoreAndRank(tiny, makeOptions({ cutoff: { type: 'topK', k: 3 } }))
+    const b = await scoreAndRank(huge, makeOptions({ cutoff: { type: 'topK', k: 3 } }))
+    expect(a.warnings.filter(w => /IDENTICAL score/.test(w))).toHaveLength(1)
+    expect(b.warnings.filter(w => /IDENTICAL score/.test(w))).toHaveLength(1)
+  })
+
+  it('stays SILENT when scores differ, even barely', async () => {
+    // Deliberate: a near-flat set does NOT fire. Under-detection is the accepted
+    // cost of never misreading a caller's legitimate narrow scale.
+    //
+    // ⚠ The score compared is the COMBINED one (product of dimensions by
+    // default), not a single dimension. A first version of this fixture varied
+    // the raw scores per CALL and every item still combined to the identical
+    // product — the detector fired and was right; the fixture was naive. Vary
+    // per ITEM, which is what the detector actually reads.
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt, opts }) => {
+        if (!isScoreCall(opts)) return null
+        const item = String(prompt).trim().split(/\s+/).pop()
+        return { score: item === 'a' ? 1 : item === 'b' ? 1.0001 : 1.0002, reason: 'r' }
+      },
+    })
+    const result = await scoreAndRank(rt, makeOptions({ cutoff: { type: 'topK', k: 3 } }))
+    expect(result.warnings.filter(w => /IDENTICAL score/.test(w))).toHaveLength(0)
+  })
+
+  it('does not fire on a single ranked item — equality needs two to mean anything', async () => {
+    const rt = new FakeRuntime(flatAt(5))
+    const result = await scoreAndRank(rt, makeOptions({ items: ['solo'], cutoff: { type: 'topK', k: 1 } }))
+    expect(result.warnings.filter(w => /IDENTICAL score/.test(w))).toHaveLength(0)
+  })
+})

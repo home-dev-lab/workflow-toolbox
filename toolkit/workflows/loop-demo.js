@@ -1093,6 +1093,16 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       );
     }
     const ranked = scoredItems.map((si, idx) => ({ si, idx })).sort((a, b) => b.si.score - a.si.score || a.idx - b.idx).map((x) => x.si);
+    if (ranked.length >= 2) {
+      const first = ranked[0];
+      if (first !== void 0 && ranked.every((s) => s.score === first.score)) {
+        warn(
+          rt,
+          warnings,
+          `${STAGE3}: every one of the ${ranked.length} scored items received the IDENTICAL score (${first.score}) \u2014 the ranking is arbitrary and any cutoff below cuts on order, not merit. Either the items really are equivalent, or the scoring prompt is not discriminating.`
+        );
+      }
+    }
     const survivors = cutoff.type === "threshold" ? ranked.filter((s) => s.score >= cutoff.min) : ranked.slice(0, cutoff.k);
     const rejectedByCutoff = ranked.length - survivors.length;
     if (rejectedByCutoff > 0) {
