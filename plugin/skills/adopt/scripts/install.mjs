@@ -737,29 +737,39 @@ function parseArgs(argv) {
 // adding one line here; forgetting to is exactly the class of bug this guard exists to catch
 // in every OTHER flag, so it would still be caught the next time this list is audited against
 // the parsing/reading sites.
+// `modes` is the mode scope; the OPTIONAL `sets` narrows a flag further to the
+// --set values that actually read it. A flag effective in a mode but only for
+// SOME sets needs both, or it is accepted and silently ignored for the others —
+// which is the same defect class as a mode-only flag accepted in every mode.
 const FLAG_EFFECTIVE_MODES = {
   userDir: { cli: '--user-dir', modes: ['audit-overlap'] },
   pairsFile: { cli: '--pairs-file', modes: ['audit-overlap'] },
-  declarationsFile: { cli: '--declarations-file', modes: ['audit-overlap'] },
+  declarationsFile: { cli: '--declarations-file', modes: ['audit-overlap'], sets: ['rules'] },
   dir: { cli: '--dir', modes: ['check', 'install'] },
   global: { cli: '--global', modes: ['check', 'install'] },
   force: { cli: '--force', modes: ['install'] },
   replaceSymlinks: { cli: '--replace-symlinks', modes: ['check', 'install'] },
 }
 
-/** Refuse any flag that was passed but has no effect in the resolved mode. */
+/** Refuse any flag that was passed but has no effect in the resolved mode (or set). */
 function checkFlagModeAsymmetry(args) {
-  for (const [key, { cli, modes }] of Object.entries(FLAG_EFFECTIVE_MODES)) {
+  for (const [key, { cli, modes, sets }] of Object.entries(FLAG_EFFECTIVE_MODES)) {
     const passed = args[key] !== null && args[key] !== false
-    if (!passed || modes.includes(args.mode)) continue
-    const modeList = modes.map((m) => `--${m}`).join(' or ')
-    const extra =
-      key === 'userDir'
-        ? ' — to target a directory under --check/--install, use --dir instead'
-        : key === 'force'
-          ? ' — pass --install --force to overwrite locally-edited copies'
-          : ''
-    fail(`${cli} has no effect with --${args.mode} (only honoured with ${modeList})${extra}`)
+    if (!passed) continue
+    if (!modes.includes(args.mode)) {
+      const modeList = modes.map((m) => `--${m}`).join(' or ')
+      const extra =
+        key === 'userDir'
+          ? ' — to target a directory under --check/--install, use --dir instead'
+          : key === 'force'
+            ? ' — pass --install --force to overwrite locally-edited copies'
+            : ''
+      fail(`${cli} has no effect with --${args.mode} (only honoured with ${modeList})${extra}`)
+    }
+    if (sets && !sets.includes(args.set)) {
+      const setList = sets.map((s) => `--set ${s}`).join(' or ')
+      fail(`${cli} has no effect with --set ${args.set} (only honoured with ${setList})`)
+    }
   }
 }
 

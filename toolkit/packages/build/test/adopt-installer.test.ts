@@ -772,6 +772,39 @@ describe('adopt installer — a flag with no effect in the resolved mode is REFU
     expect(res.out).toContain('--user-dir')
   })
 
+  // INVARIANT lock, not an enumeration: the table is the source of truth, so a flag
+  // added later with a `sets` scope is covered without touching this test. A list of
+  // known flag names would stay green the day someone adds the next one.
+  it('every flag declaring a `sets` scope is REFUSED for every set outside it', () => {
+    const src = readFileSync(SCRIPT, 'utf8')
+    const table = src.slice(src.indexOf('const FLAG_EFFECTIVE_MODES'))
+    const allSets = [...src.matchAll(/^const SETS = \{([\s\S]*?)^\}/gm)]
+      .flatMap((m) => [...(m[1] ?? '').matchAll(/^\s{2}(\w+):/gm)].map((e) => e[1] ?? ''))
+      .filter((s): s is string => s.length > 0)
+    expect(allSets.length).toBeGreaterThan(1) // else this test proves nothing
+
+    const scoped = [...table.matchAll(/(\w+): \{ cli: '([^']+)'[^}]*?sets: \[([^\]]+)\]/g)]
+      .map((m) => ({ cli: m[2] ?? '', sets: (m[3] ?? '').split(',').map((s) => s.trim().replace(/'/g, '')) }))
+    expect(scoped.length).toBeGreaterThan(0) // else the mechanism silently vanished
+
+    for (const { cli, sets } of scoped) {
+      for (const s of allSets.filter((x) => !sets.includes(x))) {
+        const d = mkDir()
+        const res = runRaw(['--audit-overlap', '--set', s, '--user-dir', d, cli, join(d, 'x.json')])
+        expect(res.status, `${cli} with --set ${s} must be refused`).not.toBe(0)
+        expect(res.out).toContain(cli)
+        expect(res.out).toContain(`--set ${s}`)
+      }
+    }
+  })
+
+  it('a set-scoped flag still WORKS inside its declared set (the refusal is not blanket)', () => {
+    const d = mkDir()
+    writeFileSync(join(d, 'decl.json'), '[]')
+    const res = runRaw(['--audit-overlap', '--set', 'rules', '--user-dir', d, '--declarations-file', join(d, 'decl.json')])
+    expect(res.status).toBe(0)
+  })
+
   it('sweep: --audit-overlap --dir <x> is refused too (--dir has no effect in that mode)', () => {
     const d = mkDir()
     const res = runRaw(['--audit-overlap', '--user-dir', d, '--dir', d])
