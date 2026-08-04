@@ -118,11 +118,26 @@ export interface Finding {
 
 export interface Warning {
   requirement: Requirement
+  confidence: Confidence
   message: string
   excerpt: string
 }
 
 export type CoverageLabel = 'mechanical' | 'mechanical+heuristic' | 'heuristic'
+
+export interface PrecisionMeasurement {
+  truePositives: number
+  total: number
+  precise: boolean
+}
+
+export interface RulePolicy {
+  requirement: Requirement
+  name: string
+  confidence: Confidence
+  blocking: boolean
+  measuredPrecision: PrecisionMeasurement | null
+}
 
 export interface CheckResult {
   ok: boolean
@@ -137,6 +152,70 @@ const COVERAGE: Record<Requirement, CoverageLabel> = {
   3: 'mechanical+heuristic',
   4: 'heuristic',
   5: 'heuristic',
+}
+
+export const RULE_POLICIES: readonly RulePolicy[] = [
+  {
+    requirement: 1,
+    name: 'lane naming',
+    confidence: 'mechanical',
+    // Unmeasured on the in-tree real narrative corpus available to this card,
+    // so it can speak only as a warning until measured on reports it did not choose.
+    blocking: false,
+    measuredPrecision: null,
+  },
+  {
+    requirement: 2,
+    name: 'absence term without named set',
+    confidence: 'mechanical',
+    // Measured on the in-tree real narrative corpus available here after
+    // exempting quoted mention/self-reference: 1/2 true positives.
+    blocking: false,
+    measuredPrecision: { truePositives: 1, total: 2, precise: false },
+  },
+  {
+    requirement: 3,
+    name: 'percentage without numerator/denominator',
+    confidence: 'mechanical',
+    // Measured on the in-tree real narrative corpus available here: 0/2 true
+    // positives (`20-40%` / `25-35%` in calibration prose are mentions, not report claims).
+    blocking: false,
+    measuredPrecision: { truePositives: 0, total: 2, precise: false },
+  },
+  {
+    requirement: 4,
+    name: 'deferred verification without location',
+    confidence: 'heuristic',
+    // Unmeasured on the in-tree real narrative corpus available to this card.
+    blocking: false,
+    measuredPrecision: null,
+  },
+  {
+    requirement: 5,
+    name: 'green probe result without failure criterion',
+    confidence: 'heuristic',
+    // Measured on the in-tree real narrative corpus available here: 1/2 true positives.
+    blocking: false,
+    measuredPrecision: { truePositives: 1, total: 2, precise: false },
+  },
+] as const
+
+const RULE_POLICY_BY_REQUIREMENT = new Map(RULE_POLICIES.map((policy) => [policy.requirement, policy]))
+
+interface CandidateIssue {
+  requirement: Requirement
+  confidence: Confidence
+  message: string
+  excerpt: string
+}
+
+function pushIssue(candidate: CandidateIssue, findings: Finding[], warnings: Warning[]): void {
+  const policy = RULE_POLICY_BY_REQUIREMENT.get(candidate.requirement)
+  if (policy?.blocking) {
+    findings.push(candidate)
+    return
+  }
+  warnings.push(candidate)
 }
 
 // --- shared helpers ---------------------------------------------------
@@ -167,6 +246,33 @@ function excerptOf(s: string, max = 140): string {
   return s.length > max ? `${s.slice(0, max)}…` : s
 }
 
+function quotedRangesOf(sentence: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = []
+  const patterns = [/`[^`]*`/g, /"[^"]*"/g, /“[^”]*”/g]
+  for (const pattern of patterns) {
+    for (const match of sentence.matchAll(pattern)) {
+      if (match.index === undefined) continue
+      ranges.push([match.index, match.index + match[0].length])
+    }
+  }
+  return ranges
+}
+
+function isQuotedMention(sentence: string, term: RegExp): boolean {
+  const ranges = quotedRangesOf(sentence)
+  if (ranges.length === 0) return false
+  const flags = term.flags.includes('g') ? term.flags : `${term.flags}g`
+  for (const match of sentence.matchAll(new RegExp(term.source, flags))) {
+    if (match.index === undefined) continue
+    const start = match.index
+    const end = start + match[0].length
+    if (ranges.some(([rangeStart, rangeEnd]) => start >= rangeStart && end <= rangeEnd)) {
+      return true
+    }
+  }
+  return false
+}
+
 // --- Req 1: lane d'implémentation / lane de review nommées séparément --
 
 const IMPL_LANE = /\b(lane|voie)\s+d['’]?impl[ée]mentation\b|\bimplementation\s+lane\b/i
@@ -190,7 +296,7 @@ function isPlaceholderLine(line: string): boolean {
   return stripped.length === 0 || PLACEHOLDER_VALUE.test(stripped)
 }
 
-function checkReq1(text: string): Finding[] {
+function checkReq1(text: string): CandidateIssue[] {
   const lines = text.split(/\r?\n/)
   const implLine = lines.find((l) => IMPL_LANE.test(l))
   const reviewLine = lines.find((l) => REVIEW_LANE.test(l))
@@ -250,16 +356,16 @@ function clausesOf(sentence: string): string[] {
     .filter((c) => c.length > 0)
 }
 
-function checkReq2(text: string): { findings: Finding[]; warnings: Warning[] } {
-  const findings: Finding[] = []
-  const warnings: Warning[] = []
+function checkReq2(text: string): CandidateIssue[] {
+  const issues: CandidateIssue[] = []
   for (const sentence of sentencesOf(text)) {
     if (!ABSENCE_TERM.test(sentence)) continue
+    if (isQuotedMention(sentence, ABSENCE_TERM)) continue
     const clause = clausesOf(sentence).find((c) => ABSENCE_TERM.test(c)) ?? sentence
     const hasScope = SCOPE_MARKER.test(clause)
     const hasInstrument = INSTRUMENT_MARKER.test(clause)
     if (!hasScope) {
-      findings.push({
+      issues.push({
         requirement: 2,
         confidence: 'mechanical',
         message:
@@ -267,15 +373,16 @@ function checkReq2(text: string): { findings: Finding[]; warnings: Warning[] } {
         excerpt: excerptOf(sentence),
       })
     } else if (!hasInstrument) {
-      warnings.push({
+      issues.push({
         requirement: 2,
+        confidence: 'heuristic',
         message:
           'ensemble nommé mais aucun instrument reconnu à proximité (vocabulaire ouvert — vérification heuristique seulement)',
         excerpt: excerptOf(sentence),
       })
     }
   }
-  return { findings, warnings }
+  return issues
 }
 
 // --- Req 3: nombre + unité + ensemble ; % avec numérateur/dénominateur --
@@ -292,9 +399,8 @@ const SAME_PASS = /\bm[êe]me\s+(passage|run|ex[ée]cution)\b|\bsame\s+(pass|run
 // mechanically checked here — that general case is out of this lens's reach
 // (see the module header's coverage table for requirement 3).
 
-function checkReq3(text: string): { findings: Finding[]; warnings: Warning[] } {
-  const findings: Finding[] = []
-  const warnings: Warning[] = []
+function checkReq3(text: string): CandidateIssue[] {
+  const issues: CandidateIssue[] = []
   for (const sentence of sentencesOf(text)) {
     if (!PERCENT.test(sentence)) continue
     // Same clause-attachment fix as req 2 (evidence 09, req 3, High): an
@@ -303,7 +409,7 @@ function checkReq3(text: string): { findings: Finding[]; warnings: Warning[] } {
     const clause = clausesOf(sentence).find((c) => PERCENT.test(c)) ?? sentence
     const hasFraction = FRACTION.test(clause)
     if (!hasFraction) {
-      findings.push({
+      issues.push({
         requirement: 3,
         confidence: 'mechanical',
         message:
@@ -311,15 +417,16 @@ function checkReq3(text: string): { findings: Finding[]; warnings: Warning[] } {
         excerpt: excerptOf(sentence),
       })
     } else if (!SAME_PASS.test(sentence)) {
-      warnings.push({
+      issues.push({
         requirement: 3,
+        confidence: 'heuristic',
         message:
           'numérateur/dénominateur présents mais rien ne dit s\'ils viennent du même passage (heuristique, non bloquant — souvent non pertinent)',
         excerpt: excerptOf(sentence),
       })
     }
   }
-  return { findings, warnings }
+  return issues
 }
 
 // --- Req 3b: bare count, GENERAL CASE (card #1827338294346647054) -------
@@ -422,8 +529,8 @@ function stripHeaderLines(text: string): string {
     .join('\n')
 }
 
-function checkReq3bBareCount(text: string): Warning[] {
-  const warnings: Warning[] = []
+function checkReq3bBareCount(text: string): CandidateIssue[] {
+  const issues: CandidateIssue[] = []
   for (const sentence of sentencesOf(stripHeaderLines(text))) {
     // req 3's mechanical percentage check already owns this shape — don't
     // double-report the same sentence under two different requirement paths.
@@ -432,15 +539,16 @@ function checkReq3bBareCount(text: string): Warning[] {
     const grounded =
       SCOPE_MARKER.test(sentence) || INSTRUMENT_MARKER.test(sentence) || TOOL_MARKER.test(sentence)
     if (!grounded) {
-      warnings.push({
+      issues.push({
         requirement: 3,
+        confidence: 'heuristic',
         message:
           'compte nu (ex.: "100 fichiers") sans ensemble ni instrument nommé dans la phrase — ADVISORY seulement (vocabulaire fermé, précision mesurée basse sur prose libre — voir le commentaire de checkReq3bBareCount), jamais bloquant : à confirmer par une lecture humaine',
         excerpt: excerptOf(sentence),
       })
     }
   }
-  return warnings
+  return issues
 }
 
 // --- Req 4: vérification reportée = point ouvert avec un endroit -------
@@ -449,8 +557,8 @@ const DEFERRAL_TERM =
   /\bplus\s+tard\b|\breport[ée]e?(?![A-Za-zÀ-ÖØ-öø-ÿ])|\bult[ée]rieurement\b|\bnot\s+yet\b|\bdeferred\b|\bTODO\b|\bfuture\s+pass\b|\bprochaine\s+review\b|\bsera\s+(fait|faite|v[ée]rifi[ée]e?)(?![A-Za-zÀ-ÖØ-öø-ÿ])/i
 const LOCATION_MARKER = /#\d{2,}|\bcarte\s+#?\d+|\bcard\s+#?\d+|\bpr\s*#\d+|\b[\w-]+\.(ts|md|mjs|js|tsx)\b/i
 
-function checkReq4(text: string): Finding[] {
-  const findings: Finding[] = []
+function checkReq4(text: string): CandidateIssue[] {
+  const findings: CandidateIssue[] = []
   for (const sentence of sentencesOf(text)) {
     if (!DEFERRAL_TERM.test(sentence)) continue
     if (!LOCATION_MARKER.test(sentence)) {
@@ -473,8 +581,8 @@ const RESULT_CLAIM =
 const FAILURE_CRITERION =
   /\baurait\b[\s\S]{0,25}(?<![A-Za-zÀ-ÖØ-öø-ÿ])([ée]chou[A-Za-zÀ-ÖØ-öø-ÿ]*|failli[A-Za-zÀ-ÖØ-öø-ÿ]*)(?![A-Za-zÀ-ÖØ-öø-ÿ])|\bwould\s+(have\s+)?fail\b|\bsi\s+(cass[ée]|absent|manquant|un\s+d[ée]faut)\b|\bcrit[èe]re\s+d['’]?[ée]chec\b|\bred[\s-]?demonstration\b|\bd[ée]monstration\s+rouge\b|\brouge\s+confirm[ée](?![A-Za-zÀ-ÖØ-öø-ÿ])|\bobserv[ée]e?(?![A-Za-zÀ-ÖØ-öø-ÿ])/i
 
-function checkReq5(text: string): Finding[] {
-  const findings: Finding[] = []
+function checkReq5(text: string): CandidateIssue[] {
+  const findings: CandidateIssue[] = []
   for (const paragraph of paragraphsOf(text)) {
     if (!RESULT_CLAIM.test(paragraph)) continue
     if (!FAILURE_CRITERION.test(paragraph)) {
@@ -496,16 +604,12 @@ export function checkReport(text: string): CheckResult {
   const findings: Finding[] = []
   const warnings: Warning[] = []
 
-  findings.push(...checkReq1(text))
-  const r2 = checkReq2(text)
-  findings.push(...r2.findings)
-  warnings.push(...r2.warnings)
-  const r3 = checkReq3(text)
-  findings.push(...r3.findings)
-  warnings.push(...r3.warnings)
-  warnings.push(...checkReq3bBareCount(text))
-  findings.push(...checkReq4(text))
-  findings.push(...checkReq5(text))
+  for (const issue of checkReq1(text)) pushIssue(issue, findings, warnings)
+  for (const issue of checkReq2(text)) pushIssue(issue, findings, warnings)
+  for (const issue of checkReq3(text)) pushIssue(issue, findings, warnings)
+  for (const issue of checkReq3bBareCount(text)) pushIssue(issue, findings, warnings)
+  for (const issue of checkReq4(text)) pushIssue(issue, findings, warnings)
+  for (const issue of checkReq5(text)) pushIssue(issue, findings, warnings)
 
   return { ok: findings.length === 0, findings, warnings, coverage: COVERAGE }
 }

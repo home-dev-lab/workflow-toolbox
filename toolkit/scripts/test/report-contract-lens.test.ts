@@ -11,71 +11,75 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { checkReport } from '../report-contract-lens.ts'
+import { checkReport, RULE_POLICIES } from '../report-contract-lens.ts'
 
 const FIXTURES = fileURLToPath(new URL('./fixtures', import.meta.url))
 const readFixture = (name: string) => readFileSync(join(FIXTURES, name), 'utf8')
 
 describe('report-contract-lens — the RED demonstration', () => {
-  it('flags a deliberately non-scoped report on all 5 requirements', () => {
+  it('speaks on a deliberately non-scoped report on all 5 requirements', () => {
     const result = checkReport(readFixture('sample-noncompliant.md'))
-    const reqsHit = new Set(result.findings.map((f) => f.requirement))
-    expect(result.ok).toBe(false)
+    const reqsHit = new Set(result.warnings.map((f) => f.requirement))
+    expect(result.ok).toBe(true)
     expect(reqsHit).toEqual(new Set([1, 2, 3, 4, 5]))
   })
 
-  it('lets a correctly-scoped report pass clean (the inverse check)', () => {
+  it('stays silent on a correctly-scoped report (the inverse check)', () => {
     const result = checkReport(readFixture('sample-compliant.md'))
     expect(result.findings).toEqual([])
+    expect(result.warnings).toEqual([])
     expect(result.ok).toBe(true)
   })
 })
 
 describe('report-contract-lens — per-requirement precision (no false positive on the compliant half)', () => {
-  it('req 1: flags a single unnamed lane, passes two separately named lanes', () => {
-    expect(checkReport('Lane: Claude a tout fait.').findings.some((f) => f.requirement === 1)).toBe(true)
+  it('req 1: warns on a single unnamed lane, passes two separately named lanes', () => {
+    expect(checkReport('Lane: Claude a tout fait.').warnings.some((f) => f.requirement === 1)).toBe(true)
     expect(
       checkReport(
         "Lane d'implémentation : sonnet.\nLane de review : opencode gpt-5.6-terra.",
-      ).findings.some((f) => f.requirement === 1),
+      ).warnings.some((f) => f.requirement === 1),
     ).toBe(false)
   })
 
-  it('req 2: "aucun" alone is flagged; "aucun ... sur N ..., lu/exécuté via X" passes', () => {
-    expect(checkReport('Aucun défaut trouvé.').findings.some((f) => f.requirement === 2)).toBe(true)
+  it('req 2: "aucun" alone warns; "aucun ... sur N ..., lu/exécuté via X" passes', () => {
+    expect(checkReport('Aucun défaut trouvé.').warnings.some((f) => f.requirement === 2)).toBe(true)
     expect(
       checkReport(
         'Aucun défaut trouvé sur les 12 tests, exécutés via vitest.',
-      ).findings.some((f) => f.requirement === 2),
+      ).warnings.some((f) => f.requirement === 2),
     ).toBe(false)
   })
 
-  it('req 3: a bare percentage is flagged; a percentage with numerator/denominator passes', () => {
-    expect(checkReport('Couverture : 92%.').findings.some((f) => f.requirement === 3)).toBe(true)
+  it('req 3: a bare percentage warns; a percentage with numerator/denominator passes', () => {
+    expect(checkReport('Couverture : 92%.').warnings.some((f) => f.requirement === 3)).toBe(true)
     expect(
-      checkReport('Couverture : 100% (8 sur 8).').findings.some((f) => f.requirement === 3),
+      checkReport('Couverture : 100% (8 sur 8).').warnings.some(
+        (f) =>
+          f.requirement === 3 && f.message.includes('pourcentage sans numérateur ET dénominateur'),
+      ),
     ).toBe(false)
   })
 
-  it('req 4: a deferred check with no location is flagged; one naming a card passes', () => {
-    expect(checkReport('La review sera faite plus tard.').findings.some((f) => f.requirement === 4)).toBe(
+  it('req 4: a deferred check with no location warns; one naming a card passes', () => {
+    expect(checkReport('La review sera faite plus tard.').warnings.some((f) => f.requirement === 4)).toBe(
       true,
     )
     expect(
       checkReport(
         'La review est reportée — point ouvert sur la carte #123, avant clôture.',
-      ).findings.some((f) => f.requirement === 4),
+      ).warnings.some((f) => f.requirement === 4),
     ).toBe(false)
   })
 
-  it('req 5: a bare green claim is flagged; one stating the failure criterion passes', () => {
+  it('req 5: a bare green claim warns; one stating the failure criterion passes', () => {
     expect(
-      checkReport('Les gates sont passés, tout est vert.').findings.some((f) => f.requirement === 5),
+      checkReport('Les gates sont passés, tout est vert.').warnings.some((f) => f.requirement === 5),
     ).toBe(true)
     expect(
       checkReport(
         'Le gate est vert ; il aurait échoué si le fixture bad avait été raté — non observé ici.',
-      ).findings.some((f) => f.requirement === 5),
+      ).warnings.some((f) => f.requirement === 5),
     ).toBe(false)
   })
 })
@@ -83,7 +87,7 @@ describe('report-contract-lens — per-requirement precision (no false positive 
 describe('report-contract-lens — adversarial cases found by cross-family review (opencode/gpt-5.6-terra, direct CLI call, card #1827270233300141550 evidence 09)', () => {
   it('req 1: a lane label with a PLACEHOLDER value ("à renseigner") is still flagged — the label alone is not naming', () => {
     expect(
-      checkReport("Lane d'implémentation / lane de review : à renseigner.").findings.some(
+      checkReport("Lane d'implémentation / lane de review : à renseigner.").warnings.some(
         (f) => f.requirement === 1,
       ),
     ).toBe(true)
@@ -91,7 +95,7 @@ describe('report-contract-lens — adversarial cases found by cross-family revie
 
   it('req 2: an unrelated fraction elsewhere in the same sentence must NOT excuse a scope-less absence claim', () => {
     expect(
-      checkReport('No issues found, but the 1/1 smoke test passed.').findings.some(
+      checkReport('No issues found, but the 1/1 smoke test passed.').warnings.some(
         (f) => f.requirement === 2,
       ),
     ).toBe(true)
@@ -101,13 +105,13 @@ describe('report-contract-lens — adversarial cases found by cross-family revie
     expect(
       checkReport(
         'No issues found in the 12 files, checked by the test script.',
-      ).findings.some((f) => f.requirement === 2),
+      ).warnings.some((f) => f.requirement === 2),
     ).toBe(false)
   })
 
   it('req 3: an unrelated fraction elsewhere in the same sentence must NOT excuse a bare percentage', () => {
     expect(
-      checkReport('Coverage is 92%, and the 1/1 smoke test passed.').findings.some(
+      checkReport('Coverage is 92%, and the 1/1 smoke test passed.').warnings.some(
         (f) => f.requirement === 3,
       ),
     ).toBe(true)
@@ -115,14 +119,17 @@ describe('report-contract-lens — adversarial cases found by cross-family revie
 
   it('req 3: "N of M" (English numerator/denominator form) must be recognized, not just "N/M" or "N sur M"', () => {
     expect(
-      checkReport('Coverage is 92% (46 of 50).').findings.some((f) => f.requirement === 3),
+      checkReport('Coverage is 92% (46 of 50).').warnings.some(
+        (f) =>
+          f.requirement === 3 && f.message.includes('pourcentage sans numérateur ET dénominateur'),
+      ),
     ).toBe(false)
   })
 
   it('req 2: scope AND instrument are each reported independently — a sentence missing both surfaces two things, not one masked by the other', () => {
     const result = checkReport('Aucun défaut trouvé.')
-    // the mechanical scope finding always fires when scope is absent...
-    expect(result.findings.some((f) => f.requirement === 2)).toBe(true)
+    // the scope warning always fires when scope is absent...
+    expect(result.warnings.some((f) => f.requirement === 2)).toBe(true)
     // ...and this must not be an accident of the instrument warning being
     // silently skipped by an `else if` — re-run on a scope-present,
     // instrument-absent sentence to confirm the warning path still fires
@@ -130,6 +137,14 @@ describe('report-contract-lens — adversarial cases found by cross-family revie
     const partial = checkReport('Aucun défaut trouvé sur les 12 tests.')
     expect(partial.findings.some((f) => f.requirement === 2)).toBe(false)
     expect(partial.warnings.some((w) => w.requirement === 2)).toBe(true)
+  })
+
+  it('req 2: the named mention/self-reference case is exempt — mentioning "aucun/zéro/personne" is not using it', () => {
+    expect(
+      checkReport(
+        'The sentence EXPLAINING the rule is caught by the rule ("-zéro" is bordered by a hyphen, therefore captured).',
+      ).warnings.some((w) => w.requirement === 2),
+    ).toBe(false)
   })
 })
 
@@ -141,6 +156,17 @@ describe('report-contract-lens — honest coverage self-report', () => {
     expect(coverage[3]).toBe('mechanical+heuristic')
     expect(coverage[4]).toBe('heuristic')
     expect(coverage[5]).toBe('heuristic')
+  })
+
+  it('locks the invariant: a blocking rule is both measured and marked precise, without enumerating today\'s rules', () => {
+    expect(
+      RULE_POLICIES.filter((policy) => policy.blocking).every(
+        (policy) =>
+          policy.measuredPrecision !== null &&
+          policy.measuredPrecision.total > 0 &&
+          policy.measuredPrecision.precise,
+      ),
+    ).toBe(true)
   })
 })
 
@@ -197,10 +223,10 @@ describe('report-contract-lens — bare count, general case (ADVISORY ONLY, neve
 
   it('a percentage sentence is not double-reported by the bare-count check (already covered mechanically above)', () => {
     const result = checkReport('Couverture : 92%.')
-    // req 3 already fires a mechanical FINDING for this — the advisory
-    // bare-count warning must not ALSO fire on the same sentence.
-    expect(result.findings.some((f) => f.requirement === 3)).toBe(true)
-    expect(result.warnings.filter((w) => w.requirement === 3)).toHaveLength(0)
+    // req 3 already speaks on this shape — the advisory bare-count warning
+    // must not ALSO add a second req-3 warning on the same sentence.
+    expect(result.findings.some((f) => f.requirement === 3)).toBe(false)
+    expect(result.warnings.filter((w) => w.requirement === 3)).toHaveLength(1)
   })
 
   it('a word outside the closed burn-noun vocabulary is not flagged (documented limitation, not a bug)', () => {
