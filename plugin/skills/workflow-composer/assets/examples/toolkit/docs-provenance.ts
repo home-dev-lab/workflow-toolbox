@@ -116,6 +116,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'The shipped spawn-registry writer/nudge hook is user-facing, but no durable doc surface describes it.',
   },
   {
+    script: 'plugin/bin/wt-probe-claim-guard-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The shipped SendMessage probe-claim refusal is user-facing, but no durable doc surface describes this hook yet.',
+  },
+  {
     script: 'plugin/bin/wt-pilot-card-reconcile.mjs',
     status: 'mapped',
     reason: 'Pilot orchestrator docs tell operators to run this reconciliation CLI on claimed cards.',
