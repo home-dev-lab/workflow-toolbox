@@ -60,18 +60,21 @@ coverage number, no eyeballing a hub's member count.
   use it as-is. Read its own fields (`entryLines`, `overThreshold`,
   `diskFiches`, `reachableFiches`, `unreachableFiches`, `hubCount`,
   `flagged`) and report from them — do not recompute any of them yourself.
-- **If none was supplied**, run it yourself before reading anything else —
-  it is read-only and cheap, there is no reason to count by hand instead:
-  `node <repoRoot>/plugin/bin/wt-memory-index-check.mjs --store <dir> --json`.
-- **If neither is possible** (the script errors, the repo root is unknown,
-  no store path resolves), coverage is **UNVERIFIED**. Add a line for it to
-  `## Sources probed` using the mechanically-checked token so the `(A)` cap
-  below actually fires: `- Coverage probe (wt-memory-index-check.mjs):
-  UNREACHABLE — <reason>`. **Never silently fall back to counting fiches by
-  hand, and never silently omit the line** — a missing probe and a
-  hand-count that happens to agree produce the exact same visible output
-  today, which is precisely why this must be an explicit, checked state
-  rather than an implied one.
+- **If none was supplied**, coverage is **UNVERIFIED**. The probe's output is
+  an INPUT to your judgment, not a thing you silently regenerate in your own
+  turn. Add a line for it to `## Sources probed` using the
+  mechanically-checked token so the `(A)` cap below actually fires:
+  `- Coverage probe (wt-memory-index-check.mjs): UNREACHABLE — <reason>`.
+  **Never silently re-run the probe, never silently fall back to counting
+  fiches by hand, and never silently omit the line** — a missing probe, an
+  omitted probe, and a hand-count that happens to agree must not collapse to
+  the same visible output.
+  ⚠ **Name WHICH of the two it is in `<reason>`**, because they call for
+  opposite actions: `not supplied by the spawner` means the spawn brief is
+  incomplete and the store may be perfectly healthy; `probe could not run`
+  means the store or the tooling is genuinely unreadable. Both cap the
+  verdict, and a reader who cannot tell them apart will read a spawn
+  omission as a store defect.
 
 This does not relieve you of READING fiches — the routing test and the
 hook-quality lens below still require opening the index and following
@@ -157,6 +160,11 @@ you. For each one, starting from the index alone, try to route to it in **at mos
 hops** (index → fiche, or index → hub fiche → `[[slug]]` member). Report, per fact:
 `<fact>: routed in <n> hop(s) via <path>` or `<fact>: NOT ROUTABLE — searched for <terms>,
 found <what, if anything>`.
+
+⚠ **A negative search for one phrasing is not evidence of absence.** The store's hook may be
+in a different language than the brief's wording, or use a close synonym. Before you conclude
+`NOT ROUTABLE`, try at least one second phrasing that matches the store's actual language or a
+near synonym, and report both attempts. A fact still not found after that remains `NOT ROUTABLE`.
 
 ⚠ **The trap this exists to catch: reading the whole file list first, then "routing" to
 something you have just seen.** That is a rehearsal, not a test — it proves the fact is
