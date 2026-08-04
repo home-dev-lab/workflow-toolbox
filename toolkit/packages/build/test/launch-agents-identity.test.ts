@@ -46,7 +46,7 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 // agents — leaf/lean/opencode-verifier/…) and plugin/agent-templates/ (the pilot suite,
 // moved out of plugin/agents/ because Claude Code silently ignores a plugin-installed
 // agent's `observer:` field — pilots only get their watchdog when adopted as a project
-// copy under a bare name via adopt-rules). The shim mirrors the UNION of both, byte-for-byte.
+// copy under a bare name via adopt). The shim mirrors the UNION of both, byte-for-byte.
 const CANONICAL_DIRS = [join(REPO_ROOT, 'plugin/agents'), join(REPO_ROOT, 'plugin/agent-templates')]
 const SHIM_DIR = join(REPO_ROOT, 'plugin/launch-agents/agents')
 const SHIM_MANIFEST = join(REPO_ROOT, 'plugin/launch-agents/.claude-plugin/plugin.json')

@@ -108,7 +108,7 @@ should make.
 
 And if you ever do convert an implicit setup, that change is proposed and
 consent-based — never forced at install, the same shape as the shipped
-`adopt-rules` skill: detection → proposal → your consent → conversion.
+`adopt` skill: detection → proposal → your consent → conversion.
 
 ## Where to go from here
 
@@ -337,7 +337,7 @@ what happened and whether resuming is safe.
 | `skills/toolkit-scaffold` | **Start** a new composition: generates a build-clean `.workflow.ts` skeleton wired to the chosen `@workflow-toolbox` pattern, so you fill in prompts instead of boilerplate. | Automatically, or `/workflow-toolbox:toolkit-scaffold` |
 | `skills/workflow-debugger` | **Diagnose** a finished or failed run from its journal: why an agent died, whether schema retries fired, whether resuming is safe. | Automatically, or `/workflow-toolbox:workflow-debugger` |
 | `skills/upgrade-canary` | **Re-verify** the Workflow runtime still behaves the way the toolkit depends on after a Claude Code (or SDK) upgrade, and report what changed. | Automatically, or `/workflow-toolbox:upgrade-canary` |
-| `skills/adopt-rules` | **Adopt** editable, versioned copies of the plugin's cross-cutting rule files (and the pilot agent definitions) into your project or config — on explicit request only, never automatically; each copy is fingerprinted so a later `--check` detects when the plugin has moved ahead. | Automatically when you ask, or `/workflow-toolbox:adopt-rules` |
+| `skills/adopt` | **Adopt** editable, versioned copies of the plugin's cross-cutting rule files (and the pilot agent definitions) into your project or config — on explicit request only, never automatically; each copy is fingerprinted so a later `--check` detects when the plugin has moved ahead. | Automatically when you ask, or `/workflow-toolbox:adopt` |
 
 ### Bundled rules & the delegation ladder
 
@@ -360,7 +360,7 @@ These rules can live at three layers:
 3. **Adopted per-project** — editable copies in the project's
    `.claude/rules/`, the default and least-invasive scope.
 
-Adoption is handled by the `workflow-toolbox:adopt-rules` skill, on explicit
+Adoption is handled by the `workflow-toolbox:adopt` skill, on explicit
 request only. It writes versioned, fingerprinted, editable copies. `--check`
 (the default) writes nothing and reports each target as absent, up-to-date,
 stale, edited, symlinked, or hand-authored; `--install` writes absent copies
@@ -379,7 +379,7 @@ flag is absent, Claude Code silently ignores the pilot watchdog pairing. A
 present key is always left intact, `--check` reports keys by NAME only, and the
 tool writes only the active `CLAUDE_CONFIG_DIR` profile's settings file, so a
 multi-profile setup must be rerun under each profile. See [plugin/rules/README.md](plugin/rules/README.md)
-and the [adopt-rules skill](plugin/skills/adopt-rules/SKILL.md) for the full
+and the [adopt skill](plugin/skills/adopt/SKILL.md) for the full
 contract — including how to **reconcile existing project rules** before adopting,
 so you don't end up with duplicate, drifting concerns.
 
@@ -388,7 +388,7 @@ The plugin also ships several OTHER agents (`fidelity-checker`, `index-groomer`,
 that are registered directly by the plugin and need no adoption step at all —
 they're already callable as `workflow-toolbox:<name>` the moment the plugin is
 installed. Only the pilot suite above needs a project copy, for the
-`observer:` reason just explained. `adopt-rules --set agents --check` (or
+`observer:` reason just explained. `adopt --set agents --check` (or
 `--install`) prints the current list of these already-available agents at the
 end of its run, so you never have to guess which of the two mechanisms
 explains an agent's absence from `.claude/agents/`.

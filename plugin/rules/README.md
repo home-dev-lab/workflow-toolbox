@@ -1,7 +1,7 @@
 # workflow-toolbox bundled rules
 
 This directory is the single source of the **rule files** that the
-`workflow-toolbox:adopt-rules` skill installs as editable copies into a user's
+`workflow-toolbox:adopt` skill installs as editable copies into a user's
 config (the `rules` set — the mirror of the `agents` set, which is sourced from
 `../agents/`).
 
@@ -16,11 +16,11 @@ live elsewhere (in the operator's own notes), never in the shipped file.
 versioned, fingerprinted banner so a later `--check` can tell an adopted copy is
 behind the plugin (and `--install` refreshes only unedited copies).
 
-To adopt these as editable rules, run the `workflow-toolbox:adopt-rules` skill:
+To adopt these as editable rules, run the `workflow-toolbox:adopt` skill:
 
 ```bash
-node scripts/install-rules.mjs --set rules --check     # report status, write nothing
-node scripts/install-rules.mjs --set rules --install   # write absent + refresh unedited copies
+node scripts/install.mjs --set rules --check     # report status, write nothing
+node scripts/install.mjs --set rules --install   # write absent + refresh unedited copies
 ```
 
 If a target `<config-dir>/rules/<name>.md` is a **symlink** (for example a config
@@ -68,7 +68,7 @@ about other branches, other worktrees, or out-of-git copies.
 ## Reconciling your existing project rules
 
 Adopting the bundled rules into a project that already has rules can create
-duplicate concerns that drift apart. `adopt-rules` installs the bundled rules,
+duplicate concerns that drift apart. `adopt` installs the bundled rules,
 but it does not reconcile them against your existing rules, so reconcile first.
 This is a one-shot, per-project procedure, deliberately kept here as
 documentation rather than a rule that would cost permanent context for a

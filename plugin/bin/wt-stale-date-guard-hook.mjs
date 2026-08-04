@@ -9,13 +9,13 @@
 // fiche (memory/*.md). Everything else — source code, docs, task-tracker exports, MEMORY.md
 // itself (an INDEX, not a fiche, and indexes don't carry deadlines) — exits 0 immediately with
 // no output. This is the same "self-disabling on files where the check has nothing to say"
-// shape as this repo's other advisory PostToolUse guards (see wt-adopt-rules-check-hook.mjs):
+// shape as this repo's other advisory PostToolUse guards (see wt-adopt-check-hook.mjs):
 // a guard that talks on every write becomes a guard nobody reads.
 //
 // A hook cannot un-write a file that already landed — Write/Edit already happened by the time
 // PostToolUse fires. So this NEVER tries to block (unlike wt-outbound-guard-hook.mjs's
 // SubagentStop exit-2 path): it only surfaces the guard's own finding lines, advisory-only,
-// modeled on wt-adopt-rules-check-hook.mjs's PostToolUse contract (JSON hookSpecificOutput /
+// modeled on wt-adopt-check-hook.mjs's PostToolUse contract (JSON hookSpecificOutput /
 // additionalContext on a finding, nothing at all when clean).
 //
 // SHIPPED (plugin/bin/): registered on PostToolUse (matcher "Write|Edit") in

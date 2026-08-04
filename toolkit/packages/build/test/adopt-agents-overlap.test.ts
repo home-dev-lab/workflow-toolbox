@@ -6,13 +6,13 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
-const SOURCE_SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt-rules/scripts/install-rules.mjs')
+const SOURCE_SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
 // The REAL shipped declaration — read verbatim, never re-typed, so this fixture cannot
-// silently drift from plugin/skills/adopt-rules/scripts/agent-pairs.json the way a
+// silently drift from plugin/skills/adopt/scripts/agent-pairs.json the way a
 // hand-duplicated constant would (test-lock-invariant-not-enumeration: a copy of the
 // data is not a lock on the data).
 const REAL_AGENT_PAIRS_JSON = readFileSync(
-  join(REPO_ROOT, 'plugin/skills/adopt-rules/scripts/agent-pairs.json'),
+  join(REPO_ROOT, 'plugin/skills/adopt/scripts/agent-pairs.json'),
   'utf8',
 )
 const AGENT_PAIRS = JSON.parse(REAL_AGENT_PAIRS_JSON) as Array<{
@@ -70,17 +70,17 @@ function mkFixture() {
   roots.push(base)
 
   const pluginRoot = join(base, 'plugin')
-  const scriptsDir = join(pluginRoot, 'skills/adopt-rules/scripts')
+  const scriptsDir = join(pluginRoot, 'skills/adopt/scripts')
   mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true })
   // Pilot defs source from plugin/agent-templates/, NOT plugin/agents/ — the pilot suite was
   // moved out of the plugin-registered dir because Claude Code silently ignores `observer:`
-  // on a plugin-installed agent (see install-rules.mjs SETS.agents.srcDir).
+  // on a plugin-installed agent (see install.mjs SETS.agents.srcDir).
   mkdirSync(join(pluginRoot, 'agent-templates'), { recursive: true })
   mkdirSync(join(pluginRoot, 'rules'), { recursive: true })
   mkdirSync(scriptsDir, { recursive: true })
 
   writeFileSync(join(pluginRoot, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'fixture', version: '1.0.0' }, null, 2) + '\n')
-  writeFileSync(join(scriptsDir, 'install-rules.mjs'), readFileSync(SOURCE_SCRIPT, 'utf8'))
+  writeFileSync(join(scriptsDir, 'install.mjs'), readFileSync(SOURCE_SCRIPT, 'utf8'))
   writeFileSync(join(scriptsDir, 'agent-pairs.json'), REAL_AGENT_PAIRS_JSON)
   writeFileSync(join(scriptsDir, 'rule-pairs.json'), JSON.stringify(RULE_PAIRS, null, 2) + '\n')
 
@@ -91,7 +91,7 @@ function mkFixture() {
 
   const userDir = join(base, 'user')
   mkdirSync(userDir)
-  return { script: join(scriptsDir, 'install-rules.mjs'), userDir }
+  return { script: join(scriptsDir, 'install.mjs'), userDir }
 }
 
 function withModel(source: string, model: string): string {
@@ -108,7 +108,7 @@ function run(script: string, userDir: string, extraArgs: string[] = []) {
 }
 
 /** Installs via the REAL --install path, so the resulting user files carry a genuine
- *  adopt-rules banner — the shape the audit-overlap comparison must tolerate on a
+ *  adopt banner — the shape the audit-overlap comparison must tolerate on a
  *  correctly-adopted, unedited copy. `withModel` fixtures (used elsewhere in this file)
  *  never carry a banner, so they cannot exercise this path. */
 function install(script: string, userDir: string) {
@@ -116,7 +116,7 @@ function install(script: string, userDir: string) {
   if (res.status !== 0) throw new Error(`fixture --install failed: ${res.stdout}${res.stderr}`)
 }
 
-describe('adopt-rules audit-overlap --set agents', () => {
+describe('adopt audit-overlap --set agents', () => {
   it('accepts approved model lines as CLEAN for all declared agent pairs', () => {
     const fixture = mkFixture()
     for (const [file, model] of Object.entries(MODELS)) {
@@ -354,7 +354,7 @@ describe('adopt-rules audit-overlap --set agents', () => {
   })
 
   it('does NOT flag a deleted rule line as drift — rules stay additions-only (editable-copy contract)', () => {
-    // Companion negative case: rule copies are explicitly documented, in their own adopt-rules
+    // Companion negative case: rule copies are explicitly documented, in their own adopt
     // banner, as an editable copy users may trim/adapt — the deletion check above must stay
     // scoped to the `agents` set, never applied to `rules`. An EMPTY user file is the purest
     // "deleted everything, added nothing" case — it isolates the deletion axis from the

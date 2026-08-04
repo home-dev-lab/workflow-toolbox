@@ -1,24 +1,24 @@
 #!/usr/bin/env node
-// wt-adopt-rules-check-hook.mjs — a SessionStart check that tells the session the TRUTH
+// wt-adopt-check-hook.mjs — a SessionStart check that tells the session the TRUTH
 // about its rule-adoption state, instead of leaving it to find out the hard way.
 //
 // Rules shipped inside the plugin are INERT: they never load into a session on their
-// own — only a copy written by the adopt-rules skill into a real config dir does. A
+// own — only a copy written by the adopt skill into a real config dir does. A
 // session that never adopted gets none of the shipped methodology and no signal that
 // anything is missing. This hook is the signal.
 //
 // It does NOT install anything, ever. It is read-only, by design (the owner's decision):
 // a hook cannot ask for consent — it only emits text one-way — so writing into someone's
-// project on plugin enable would install without consent, which the adopt-rules skill's
+// project on plugin enable would install without consent, which the adopt skill's
 // own contract forbids. This hook only ever SUGGESTS the skill/command; it never runs it.
 //
-// It REUSES install-rules.mjs's own classification (absent / clean / stale / edited /
+// It REUSES install.mjs's own classification (absent / clean / stale / edited /
 // symlink / hand-authored) by spawning the real script in --check mode and parsing its
 // stdout — never a second, hand-rolled copy of that logic, which would drift from the
 // first and then the two could disagree about the same file.
 //
 // Two locations are checked, unioned per file — the PROJECT rules dir (<cwd>/.claude/rules,
-// where adopt-rules writes by default) and the GLOBAL config rules dir
+// where adopt writes by default) and the GLOBAL config rules dir
 // (CLAUDE_CONFIG_DIR/rules, e.g. ~/.claude/rules) — because adopting globally is a real,
 // supported pattern (this machine's own config does exactly that), and checking only the
 // project dir would falsely cry "absent" for a rule that IS in force via the global copy.
@@ -45,8 +45,8 @@ import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const INSTALL_RULES = path.join(HERE, '..', 'skills', 'adopt-rules', 'scripts', 'install-rules.mjs')
-const SKILL_NAME = 'workflow-toolbox:adopt-rules'
+const INSTALL_RULES = path.join(HERE, '..', 'skills', 'adopt', 'scripts', 'install.mjs')
+const SKILL_NAME = 'workflow-toolbox:adopt'
 
 /** Read the hook's JSON payload from stdin; tolerate empty/malformed input. */
 function readInput() {
@@ -58,7 +58,7 @@ function readInput() {
   }
 }
 
-/** Run the REAL install-rules.mjs in --check mode against one target dir and parse its
+/** Run the REAL install.mjs in --check mode against one target dir and parse its
  *  per-file status lines (`  <file>: <status>`) into a Map<file, status>. Never throws —
  *  a missing/failed child (broken install, no such dir handled fine by install-rules
  *  itself) just yields an empty map, which contributes nothing to the merge. */
@@ -82,7 +82,7 @@ function checkDir(dir, set = 'rules') {
   return map
 }
 
-/** Classify one install-rules.mjs status string into the bucket this hook cares about.
+/** Classify one install.mjs status string into the bucket this hook cares about.
  *  Unknown/unexpected text is treated as 'ok' — fail toward silence, never a false alarm. */
 function bucket(status) {
   if (/^ABSENT/.test(status)) return 'absent'
@@ -216,4 +216,4 @@ function main() {
   )
 }
 
-runFailOpenHook('wt-adopt-rules-check-hook.mjs', main)
+runFailOpenHook('wt-adopt-check-hook.mjs', main)

@@ -82,7 +82,7 @@ function onPath(bin) {
 }
 
 /** Has the user already adopted the ladder as an editable rule (project or global)?
- *  If so, we suppress the one-line adopt-rules suggestion (suggest until adopted,
+ *  If so, we suppress the one-line adopt suggestion (suggest until adopted,
  *  never nag past it). */
 function ladderAdopted(root) {
   const rel = path.join('.claude', 'rules', 'wt-delegation-ladder.md')
@@ -131,7 +131,7 @@ function main() {
   if (!ladderAdopted(root)) {
     context +=
       '\nPrefer editable copies of the workflow-toolbox rule set (this delegation ladder plus the ' +
-      'other shipped guardrails)? Run the workflow-toolbox:adopt-rules skill with --set rules (it ' +
+      'other shipped guardrails)? Run the workflow-toolbox:adopt skill with --set rules (it ' +
       'writes only on explicit request, never automatically).'
   }
 

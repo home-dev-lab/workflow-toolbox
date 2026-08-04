@@ -1,5 +1,5 @@
-// adopt-rules-installer.test.ts — the COMMITTED drift-lock for the adopt-rules
-// installer's edit-safety contract (plugin/skills/adopt-rules/scripts/install-rules.mjs).
+// adopt-installer.test.ts — the COMMITTED drift-lock for the adopt
+// installer's edit-safety contract (plugin/skills/adopt/scripts/install.mjs).
 //
 // The edit-safety logic (content fingerprint + EDITED classification + --force) was
 // added under review pressure precisely so a routine `--install` refresh can never
@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
-const SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt-rules/scripts/install-rules.mjs')
+const SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
 const RULE = 'wt-delegation-ladder.md'
 
 const roots: string[] = []
@@ -62,10 +62,10 @@ const rulePath = (dir: string) => join(dir, RULE)
 function ageRuleCopy(file: string, version = '0.0.1'): void {
   const body = readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
   const fp = createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
-  writeFileSync(file, `<!-- installed from workflow-toolbox v${version} · content sha256:${fp} by the adopt-rules skill -->\n\n${body}`)
+  writeFileSync(file, `<!-- installed from workflow-toolbox v${version} · content sha256:${fp} by the adopt skill -->\n\n${body}`)
 }
 
-describe('adopt-rules installer — edit-safety contract (committed drift lock)', () => {
+describe('adopt installer — edit-safety contract (committed drift lock)', () => {
   it('ABSENT: --install writes the rule with a version banner AND a content fingerprint', () => {
     const d = mkDir()
     expect(run(['--check'], d)).toContain('ABSENT')
@@ -110,7 +110,7 @@ describe('adopt-rules installer — edit-safety contract (committed drift lock)'
     const d = mkDir()
     writeFileSync(
       rulePath(d),
-      '<!-- installed from workflow-toolbox v0.1.0 by the adopt-rules skill -->\n\n# x\n\nold\n',
+      '<!-- installed from workflow-toolbox v0.1.0 by the adopt skill -->\n\n# x\n\nold\n',
     )
     expect(run(['--check'], d)).toMatch(/pre-fingerprint/)
     expect(run(['--install'], d)).toContain('SKIPPED')
@@ -159,7 +159,7 @@ function stripInstalledAgentBanner(text: string): string {
   return text
 }
 
-describe('adopt-rules installer — agent-copies set (--set agents; committed drift lock)', () => {
+describe('adopt installer — agent-copies set (--set agents; committed drift lock)', () => {
   it('ABSENT: --install writes each agent with an HTML banner AFTER the frontmatter (file still starts with ---)', () => {
     const d = mkDir()
     const chk = run(['--set', 'agents', '--check'], d)
@@ -244,7 +244,7 @@ describe('adopt-rules installer — agent-copies set (--set agents; committed dr
     // exercises bannerLine()'s agent-specific (frontmatter-relative) extraction path.
     writeFileSync(
       agentPath(d, 'pilot.md'),
-      '---\nname: pilot\ndescription: x\n---\n<!-- installed from workflow-toolbox v0.1.0 by the adopt-rules skill -->\n\nold body\n',
+      '---\nname: pilot\ndescription: x\n---\n<!-- installed from workflow-toolbox v0.1.0 by the adopt skill -->\n\nold body\n',
     )
     expect(run(['--set', 'agents', '--check'], d)).toMatch(/pilot\.md:.*pre-fingerprint/)
     expect(run(['--set', 'agents', '--install'], d)).toContain('pilot.md: SKIPPED')
@@ -272,7 +272,7 @@ describe('adopt-rules installer — agent-copies set (--set agents; committed dr
 // user controls delegation routing with). Positive sense: a pinned file keeps its pin AND the
 // tool announces what it kept. Negative sense: a file with no local field stays silent — no
 // noise on the common case.
-describe('adopt-rules installer — frontmatter preservation across --force (card #1828669764516447496)', () => {
+describe('adopt installer — frontmatter preservation across --force (card #1828669764516447496)', () => {
   it('a locally-added `model:` pin SURVIVES a --force re-adoption, and the tool announces it', () => {
     const d = mkDir()
     run(['--set', 'agents', '--install'], d)
@@ -365,7 +365,7 @@ describe('adopt-rules installer — frontmatter preservation across --force (car
   })
 })
 
-describe('adopt-rules installer — CLI surface for the two-set engine', () => {
+describe('adopt installer — CLI surface for the two-set engine', () => {
   function untouchedSetLine(out: string): string | undefined {
     return out
       .split(/\r?\n/)
@@ -406,7 +406,7 @@ describe('adopt-rules installer — CLI surface for the two-set engine', () => {
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt-rules: the agents set exists too; it was untouched here, and --set agents covers it.')
+    expect(line).toBe('adopt: the agents set exists too; it was untouched here, and --set agents covers it.')
   })
 
   it('--set agents names the rules set as untouched, factually and in one line', () => {
@@ -415,7 +415,7 @@ describe('adopt-rules installer — CLI surface for the two-set engine', () => {
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt-rules: the rules set exists too; it was untouched here, and --set rules covers it.')
+    expect(line).toBe('adopt: the rules set exists too; it was untouched here, and --set rules covers it.')
   })
 
   it('--set all prints no untouched-set line at all', () => {
@@ -438,7 +438,7 @@ describe('adopt-rules installer — CLI surface for the two-set engine', () => {
 // The fix is mechanical rather than instructional: the engine resolves the config dir
 // itself, using the same rule the SessionStart hook already uses — CLAUDE_CONFIG_DIR, and
 // ~/.claude only when it is unset. A path nobody hand-builds is a path nobody gets wrong.
-describe('adopt-rules installer — --global targets the config dir, resolved not typed', () => {
+describe('adopt installer — --global targets the config dir, resolved not typed', () => {
   // A runner with full control of the environment: `configDir` sets CLAUDE_CONFIG_DIR,
   // and passing null DELETES it so the fallback branch is genuinely exercised (leaving the
   // parent process's own value would test nothing).
@@ -487,7 +487,7 @@ describe('adopt-rules installer — --global targets the config dir, resolved no
   })
 })
 
-describe('adopt-rules installer — account-level env prerequisites in settings.json', () => {
+describe('adopt installer — account-level env prerequisites in settings.json', () => {
   function runSettings(args: string[], opts: { cwd: string; configDir: string | null; home?: string }): string {
     const env = { ...process.env }
     if (opts.configDir === null) delete env.CLAUDE_CONFIG_DIR
@@ -538,7 +538,7 @@ describe('adopt-rules installer — account-level env prerequisites in settings.
     const backups = readdirSync(cfg).filter((name) => /^settings\.json\.workflow-toolbox\.bak\./.test(name))
     expect(backups.length).toBe(1)
 
-    const trace = JSON.parse(readFileSync(join(cfg, 'workflow-toolbox', 'adopt-rules-settings-trace.json'), 'utf8'))
+    const trace = JSON.parse(readFileSync(join(cfg, 'workflow-toolbox', 'adopt-settings-trace.json'), 'utf8'))
     expect(trace.keys.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH.value).toBe('3')
     expect(trace.keys.CLAUDE_CODE_EXPERIMENTAL_OBSERVER_AGENTS).toBeUndefined()
   })
@@ -568,7 +568,7 @@ describe('adopt-rules installer — account-level env prerequisites in settings.
 // The fingerprint needed to answer this was ALREADY in the banner — it was just never
 // consulted for staleness, only for detecting user edits. These lock both directions,
 // because a fix that only silences is indistinguishable from a fix that also blinds.
-describe('adopt-rules installer — STALE tracks CONTENT, not the version number', () => {
+describe('adopt installer — STALE tracks CONTENT, not the version number', () => {
   // Write a managed copy that is internally consistent (its banner fingerprint matches its
   // own body, so it classifies as 'clean' rather than 'edited') but carries an OLD version —
   // i.e. exactly what an adopted copy looks like after the plugin releases again.
@@ -576,7 +576,7 @@ describe('adopt-rules installer — STALE tracks CONTENT, not the version number
     const fp = createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
     writeFileSync(
       join(dir, file),
-      `<!-- installed from workflow-toolbox v${version} · content sha256:${fp} by the adopt-rules skill -->\n${body}`,
+      `<!-- installed from workflow-toolbox v${version} · content sha256:${fp} by the adopt skill -->\n${body}`,
     )
   }
   const shipped = (file: string) => readFileSync(join(REPO_ROOT, 'plugin/rules', file), 'utf8')
@@ -645,7 +645,7 @@ function stripInstalledRuleBanner(text: string): string {
   return text.slice(nl + 1).replace(/^\n+/, '')
 }
 
-describe('adopt-rules installer — rules set sourced from the plugin/rules bundle', () => {
+describe('adopt installer — rules set sourced from the plugin/rules bundle', () => {
   it('the installed rule copy carries the plugin/rules bundle source VERBATIM under its banner (strip === source)', () => {
     const d = mkDir()
     run(['--set', 'rules', '--install'], d)
@@ -668,7 +668,7 @@ describe('adopt-rules installer — rules set sourced from the plugin/rules bund
 // reports the symlink, leaves it (and its target) untouched on a plain --install, and only
 // replaces it under --replace-symlinks (unlink the link, then write a regular managed file
 // in its place — the former target preserved).
-describe('adopt-rules installer — symlink-aware install (never write through a symlink)', () => {
+describe('adopt installer — symlink-aware install (never write through a symlink)', () => {
   const CANON = 'CANONICAL ORIGINAL — MUST STAY UNTOUCHED\n'
   // A symlink whose target is a plain hand-authored file.
   function handAuthoredSymlink(): { dir: string; canonical: string } {
@@ -737,7 +737,7 @@ describe('adopt-rules installer — symlink-aware install (never write through a
 // the same asymmetry (`--dir`/`--global`/`--force`/`--replace-symlinks` under
 // `--audit-overlap`) — the fix is an INVARIANT ("no flag is accepted where it does nothing"),
 // not a special case for `--user-dir` alone, so the sweep is what proves that.
-describe('adopt-rules installer — a flag with no effect in the resolved mode is REFUSED, not ignored', () => {
+describe('adopt installer — a flag with no effect in the resolved mode is REFUSED, not ignored', () => {
   function runRaw(args: string[]) {
     const res = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' })
     return { ...res, out: (res.stdout ?? '') + (res.stderr ?? '') }
@@ -834,10 +834,10 @@ function makePluginCopy(): { pluginRoot: string; script: string; agentsDir: stri
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: '0.0.1' }))
   cpSync(join(REPO_ROOT, 'plugin/agents'), join(pluginRoot, 'agents'), { recursive: true })
   cpSync(join(REPO_ROOT, 'plugin/agent-templates'), join(pluginRoot, 'agent-templates'), { recursive: true })
-  const scriptDir = join(pluginRoot, 'skills/adopt-rules/scripts')
+  const scriptDir = join(pluginRoot, 'skills/adopt/scripts')
   mkdirSync(scriptDir, { recursive: true })
-  cpSync(SCRIPT, join(scriptDir, 'install-rules.mjs'))
-  return { pluginRoot, script: join(scriptDir, 'install-rules.mjs'), agentsDir: join(pluginRoot, 'agents') }
+  cpSync(SCRIPT, join(scriptDir, 'install.mjs'))
+  return { pluginRoot, script: join(scriptDir, 'install.mjs'), agentsDir: join(pluginRoot, 'agents') }
 }
 
 function runCopy(script: string, args: string[], dir: string): string {
@@ -850,7 +850,7 @@ function runCopyEnv(script: string, args: string[], dir: string, env: NodeJS.Pro
   return (res.stdout ?? '') + (res.stderr ?? '')
 }
 
-describe('adopt-rules installer — registered-agents note (derived, not hard-coded)', () => {
+describe('adopt installer — registered-agents note (derived, not hard-coded)', () => {
   it('--set agents lists every plugin/agents/*.md under workflow-toolbox:<name>, distinct from ABSENT pilot-suite items', () => {
     const d = mkDir()
     const { script, agentsDir } = makePluginCopy()
@@ -919,7 +919,7 @@ describe('adopt-rules installer — registered-agents note (derived, not hard-co
   })
 })
 
-describe('adopt-rules installer — registered-agent shadowing note', () => {
+describe('adopt installer — registered-agent shadowing note', () => {
   function firstRegisteredAgentName(agentsDir: string): string {
     const first = readdirSync(agentsDir)
       .filter((f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md')
@@ -973,6 +973,6 @@ describe('adopt-rules installer — registered-agent shadowing note', () => {
     expect(out).toContain('other agent(s) ship with the plugin')
     expect(out).not.toContain('shadowing')
     expect(out).not.toContain('DIVERGED')
-    expect(out).not.toContain('adopt-rules: ENOENT')
+    expect(out).not.toContain('adopt: ENOENT')
   })
 })

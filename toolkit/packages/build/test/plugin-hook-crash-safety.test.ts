@@ -82,7 +82,7 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         cwd: sandbox.projectDir,
         transcript_path: sandbox.transcriptPath,
       }
-    case 'wt-adopt-rules-check-hook.mjs':
+    case 'wt-adopt-check-hook.mjs':
       return {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,

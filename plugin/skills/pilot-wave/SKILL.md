@@ -184,8 +184,8 @@ project copies there is nothing to spawn (the templates are inert on their own),
 what would be installed where (`pilot.md` + `pilot-watchdog.md` — plus `pilot-orchestrator.md`
 and `pilot-orchestrator-watchdog.md` for a wave — from the plugin's `agent-templates/`
 directory into the project's `.claude/agents/`, bare names, trivially reversible). Make the
-copy through the `workflow-toolbox:adopt-rules` skill (`--set agents --install`), NOT a raw
-file copy: adopt-rules stamps each copy with a version banner + content fingerprint, so a
+copy through the `workflow-toolbox:adopt` skill (`--set agents --install`), NOT a raw
+file copy: adopt stamps each copy with a version banner + content fingerprint, so a
 later `--check` DETECTS when the plugin has moved ahead of the copy (a hand copy has no
 staleness detection). Then spawn the bare names. If the user declines the adoption, this
 skill cannot proceed — say so plainly rather than falling back to something that no longer

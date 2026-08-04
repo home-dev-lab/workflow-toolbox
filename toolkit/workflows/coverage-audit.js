@@ -1913,7 +1913,7 @@ ${renderClaim(claim)}`;
       // pilot-wave surface for the three pilot definitions specifically. The pilot
       // suite lives in plugin/agent-templates/, not plugin/agents/ — Claude Code
       // silently ignores `observer:` on a plugin-registered agent, so the pilots stay
-      // unregistered templates, adopted as project copies (see adopt-rules).
+      // unregistered templates, adopted as project copies (see adopt).
       sources: [
         "plugin/agent-templates/pilot.md",
         "plugin/agent-templates/pilot-orchestrator.md",
@@ -1929,14 +1929,14 @@ ${renderClaim(claim)}`;
       docs: ["plugin/skills/pilot-wave/SKILL.md"]
     },
     {
-      // The adopt-rules opt-in installer (writes editable, versioned rule copies of
+      // The adopt opt-in installer (writes editable, versioned rule copies of
       // the cross-cutting guardrails) is described by its own skill.
-      sources: ["plugin/skills/adopt-rules/scripts/"],
-      docs: ["plugin/skills/adopt-rules/SKILL.md", "README.md"]
+      sources: ["plugin/skills/adopt/scripts/"],
+      docs: ["plugin/skills/adopt/SKILL.md", "README.md"]
     },
     {
       // The bundled cross-cutting rule files (the delegation ladder + companions)
-      // that adopt-rules installs; described by their own README and the repo README.
+      // that adopt installs; described by their own README and the repo README.
       sources: ["plugin/rules/"],
       docs: ["plugin/rules/README.md", "README.md"]
     },
@@ -2145,7 +2145,7 @@ ${renderClaim(claim)}`;
     {
       // Shipped SessionStart delegation-ladder injection.
       sources: ["plugin/bin/wt-delegation-ladder-hook.mjs"],
-      docs: ["README.md", "plugin/skills/adopt-rules/SKILL.md"]
+      docs: ["README.md", "plugin/skills/adopt/SKILL.md"]
     },
     {
       // Shipped Stop hooks whose operator-facing semantics are documented as known issues/contracts.

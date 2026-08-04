@@ -8,7 +8,7 @@ This repo has two halves that stand alone but work together:
   (trigger the bias-free analysis workflow when relevant), `deep-grounding`
   (collect + verify evidence against the real sources before asserting/analyzing),
   `pilot-wave` (compose a delegated pilot/orchestrator wave over tracked cards),
-  `adopt-rules` (install editable, versioned copies of the bundled rules),
+  `adopt` (install editable, versioned copies of the bundled rules),
   `planka-tracking` (onboard a project onto a Planka kanban board), and `what-next`
   (propose the logical next step from that board) — the
   **pilot agent suite** (`pilot`, `pilot-orchestrator`, `pilot-watchdog`) that skill drives,

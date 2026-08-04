@@ -24,7 +24,7 @@ const AGENTS_DIR = join(REPO_ROOT, 'plugin/agents')
 // The pilot suite lives here, NOT in AGENTS_DIR — Claude Code silently ignores an
 // `observer:` field on a plugin-REGISTERED agent (AGENTS_DIR is what plugin.json's
 // agents-loading registers), so a pilot's watchdog pairing only works as a project
-// copy under a bare name (adopt-rules). Keeping the pilots out of AGENTS_DIR removes
+// copy under a bare name (adopt). Keeping the pilots out of AGENTS_DIR removes
 // the unwatched path entirely, rather than merely warning about it.
 const AGENT_TEMPLATES_DIR = join(REPO_ROOT, 'plugin/agent-templates')
 
@@ -369,11 +369,11 @@ describe('wt-delegation-ladder-hook — conditional injection + machine calibrat
     expect(r.stdout).toBe('')
   })
 
-  it('SUGGESTS adopt-rules when the ladder is NOT yet adopted', () => {
+  it('SUGGESTS adopt when the ladder is NOT yet adopted', () => {
     const f = fixture('unadopted')
     const r = runHook(LADDER_HOOK, start(f.proj), f.env)
     const ctx = (r.json?.['hookSpecificOutput'] as Record<string, string>)?.['additionalContext'] ?? ''
-    expect(ctx).toContain('adopt-rules')
+    expect(ctx).toContain('adopt')
   })
 
   it('the suggestion offers the FULL rule set (--set rules), not just the ladder', () => {
@@ -384,12 +384,16 @@ describe('wt-delegation-ladder-hook — conditional injection + machine calibrat
     expect(ctx.toLowerCase()).toContain('rule set')
   })
 
-  it('SUPPRESSES the adopt-rules suggestion once adopted (ladder still injected)', () => {
+  it('SUPPRESSES the adopt suggestion once adopted (ladder still injected)', () => {
     const f = fixture('adopted', { adopted: true })
     const r = runHook(LADDER_HOOK, start(f.proj), f.env)
     const ctx = (r.json?.['hookSpecificOutput'] as Record<string, string>)?.['additionalContext'] ?? ''
     expect(ctx).toContain('Delegation ladder')
-    expect(ctx).not.toContain('adopt-rules')
+    // Anchor on the SKILL INVOCATION, not the bare word: the ladder text this
+    // hook always injects legitimately says "an adopted pilot", so asserting
+    // the absence of "adopt" would fail on correct output. What must disappear
+    // once the user has adopted is the suggestion to run the skill.
+    expect(ctx).not.toContain('workflow-toolbox:adopt')
   })
 
   it('detects a cross-family bridge found on PATH', () => {

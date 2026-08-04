@@ -1,8 +1,8 @@
-// adopt-rules-check-hook.test.ts — behavior gate for the SessionStart check
-// (plugin/bin/wt-adopt-rules-check-hook.mjs) that tells a session the truth about its
+// adopt-check-hook.test.ts — behavior gate for the SessionStart check
+// (plugin/bin/wt-adopt-check-hook.mjs) that tells a session the truth about its
 // rule-adoption state. Drives the REAL hook as a child process against isolated
-// PROJECT + GLOBAL-config dirs (never the real ~/.claude), reusing install-rules.mjs
-// itself to seed each fixture — the same technique adopt-rules-installer.test.ts uses
+// PROJECT + GLOBAL-config dirs (never the real ~/.claude), reusing install.mjs
+// itself to seed each fixture — the same technique adopt-installer.test.ts uses
 // (install, then a targeted string edit) rather than hand-rolling a second classifier.
 
 import { spawnSync } from 'node:child_process'
@@ -14,8 +14,8 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
-const HOOK = join(REPO_ROOT, 'plugin/bin/wt-adopt-rules-check-hook.mjs')
-const INSTALL_RULES = join(REPO_ROOT, 'plugin/skills/adopt-rules/scripts/install-rules.mjs')
+const HOOK = join(REPO_ROOT, 'plugin/bin/wt-adopt-check-hook.mjs')
+const INSTALL_RULES = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
 const RULE = 'wt-delegation-ladder.md'
 
 const roots: string[] = []
@@ -66,7 +66,7 @@ function runHook(cwd: string, env: NodeJS.ProcessEnv): { stdout: string; context
   return { stdout, context }
 }
 
-describe('wt-adopt-rules-check-hook — SessionStart rule-adoption truth check', () => {
+describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () => {
   // POSITIVE CONTROL FIRST (per the brief): prove the hook actually speaks in the
   // absent case before trusting the silent case — otherwise a broken invocation and a
   // correct silence read identically.
@@ -75,7 +75,7 @@ describe('wt-adopt-rules-check-hook — SessionStart rule-adoption truth check',
     const r = runHook(f.proj, f.env) // no .claude/rules under proj; empty cfg dir
     expect(r.stdout, 'must not be silent').not.toBe('')
     expect(r.context).toContain('NOT installed')
-    expect(r.context).toContain('workflow-toolbox:adopt-rules')
+    expect(r.context).toContain('workflow-toolbox:adopt')
     // names at least the anchor rule file, so the reader knows WHICH are missing
     expect(r.context).toContain(RULE)
   })
@@ -106,12 +106,12 @@ describe('wt-adopt-rules-check-hook — SessionStart rule-adoption truth check',
     // test would then assert the hook speaks about a file it has nothing to say about.
     const body = readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
     const fp = createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
-    writeFileSync(p, `<!-- installed from workflow-toolbox v0.0.1 · content sha256:${fp} by the adopt-rules skill -->\n\n${body}`)
+    writeFileSync(p, `<!-- installed from workflow-toolbox v0.0.1 · content sha256:${fp} by the adopt skill -->\n\n${body}`)
     const r = runHook(f.proj, f.env)
     expect(r.stdout, 'must not be silent').not.toBe('')
     expect(r.context).toContain('Behind the shipped version')
     expect(r.context).toContain(RULE)
-    expect(r.context).toContain('adopt-rules')
+    expect(r.context).toContain('adopt')
   })
 
   it('SPEAKS for a locally-EDITED file, and does NOT frame it as a problem', () => {

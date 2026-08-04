@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
-const SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt-rules/scripts/install-rules.mjs')
-const RULE_PAIRS = join(REPO_ROOT, 'plugin/skills/adopt-rules/scripts/rule-pairs.json')
+const SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
+const RULE_PAIRS = join(REPO_ROOT, 'plugin/skills/adopt/scripts/rule-pairs.json')
 const roots: string[] = []
 afterEach(() => { for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true }) })
 function mkDir(): string { const r = mkdtempSync(join(tmpdir(), 'wt-audit-')); roots.push(r); return r }
@@ -16,7 +16,7 @@ function run(userDir: string, extraArgs: string[] = [], script = SCRIPT) {
   return { ...res, stdout: (res.stdout ?? '') + (res.stderr ?? ''), error: res.error }
 }
 
-describe('adopt-rules audit-overlap', () => {
+describe('adopt audit-overlap', () => {
   it('reports CLEAN and ABSENT', () => {
     const d = mkDir()
     const shipped = readFileSync(join(REPO_ROOT, 'plugin/rules/wt-step-back-architectural.md'), 'utf8')
@@ -72,7 +72,7 @@ describe('adopt-rules audit-overlap', () => {
     expect(res.status).not.toBe(0); expect((res.stdout ?? '') + (res.stderr ?? '')).toContain('--user-dir is required')
   })
   // Both tests below build a self-contained fixture plugin root and go through the REAL
-  // `--install` path so the resulting userDir file carries a genuine adopt-rules banner —
+  // `--install` path so the resulting userDir file carries a genuine adopt banner —
   // the actual shape a directly-adopted (no local rename) shipped-name file has in
   // production (verified against the real ~/.claude/rules). A raw byte-copy with no banner
   // is NOT that shape (stripBanner treats the shipped source's own first line as disposable
@@ -82,7 +82,7 @@ describe('adopt-rules audit-overlap', () => {
   function mkPairsFixture(shippedFile: string, shippedContent: string, pair: { user: string; shipped: string; partial: boolean }) {
     const base = mkDir()
     const pluginRoot = join(base, 'plugin')
-    const scriptsDir = join(pluginRoot, 'skills/adopt-rules/scripts')
+    const scriptsDir = join(pluginRoot, 'skills/adopt/scripts')
     const rulesDir = join(pluginRoot, 'rules')
     const userDir = join(base, 'user')
     const pairsFile = join(base, 'pairs.json')
@@ -91,7 +91,7 @@ describe('adopt-rules audit-overlap', () => {
     mkdirSync(rulesDir)
     mkdirSync(userDir)
     writeFileSync(join(pluginRoot, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'fixture', version: '1.0.0' }))
-    const script = join(scriptsDir, 'install-rules.mjs')
+    const script = join(scriptsDir, 'install.mjs')
     writeFileSync(script, readFileSync(SCRIPT, 'utf8'))
     writeFileSync(join(rulesDir, shippedFile), shippedContent)
     writeFileSync(pairsFile, JSON.stringify([pair]))

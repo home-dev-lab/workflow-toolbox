@@ -5,6 +5,27 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **The `adopt-rules` skill is renamed to `adopt`. The old name is REMOVED, not aliased.**
+  The skill has always installed two sets — the cross-cutting RULE files and the pilot
+  AGENT-definition copies (`--set rules|agents|all`) — and nothing in its name said the second
+  existed. The name is what a reader uses to decide whether a step applies to them, so having
+  been told "the rules are adopted" a reasonable reader concludes the agent copies were handled
+  too. Observed: the rules were adopted, the agents were not, and the gap surfaced only because
+  someone thought to ask — a question, not a mechanism. The un-run half looked exactly like a
+  completed one.
+
+  Renamed along with it, so no citation points at a dead name: the skill directory
+  (`plugin/skills/adopt-rules/` → `plugin/skills/adopt/`), its engine
+  (`scripts/install-rules.mjs` → `scripts/install.mjs`), and its SessionStart hook
+  (`bin/wt-adopt-rules-check-hook.mjs` → `bin/wt-adopt-check-hook.mjs`).
+
+  **Migration**: invoke `workflow-toolbox:adopt` instead of `workflow-toolbox:adopt-rules`; update
+  any script that calls the engine by path. Already-adopted copies are untouched and keep working
+  — their banners are re-stamped on the next `--install`. No deprecation shim ships: an alias
+  would keep the misleading name alive, which is the whole defect.
+
 ### Added
 
 - **`wt-observer-pairing-guard-hook.mjs` — a PostToolUse Agent hook that asks the shipped
@@ -200,7 +221,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   be re-derived, never widened.
 - **A card whose pilot dies before its intake is no longer invisible.** New
   `plugin/bin/wt-pilot-card-reconcile.mjs` compares claimed cards against live pilots.
-- **`adopt-rules`'s `install-rules.mjs`: a flag with no effect in the current mode is now
+- **`adopt`'s `install.mjs`: a flag with no effect in the current mode is now
   REFUSED, not silently ignored.** `--user-dir` was parsed and stored in every mode but only
   ever read inside `--audit-overlap` — under `--check`/`--install` it did nothing, and the
   target silently fell back to `--dir`/cwd. A near-miss: a session ran `--check --user-dir
@@ -274,7 +295,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - **BREAKING — the `workflow-toolbox:pilot` / `workflow-toolbox:pilot-orchestrator` agent
   types no longer exist.** The pilot suite now ships as unregistered templates under
   `plugin/agent-templates/` and reaches a session only as an adopted project copy under its
-  bare name (`pilot`, `pilot-orchestrator`), installed by `adopt-rules --set agents --install`.
+  bare name (`pilot`, `pilot-orchestrator`), installed by `adopt --set agents --install`.
   Reason: Claude Code silently ignores the `observer:` frontmatter on a plugin-REGISTERED
   agent, so a namespaced pilot spawned fine and ran with NO watchdog attached and no warning
   anywhere. Telling users to prefer the bare name was not enough — a guarantee that depends on
@@ -287,7 +308,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
-- `adopt-rules`: `--global` targets the config directory, resolving `CLAUDE_CONFIG_DIR`
+- `adopt`: `--global` targets the config directory, resolving `CLAUDE_CONFIG_DIR`
   itself (falling back to `~/.claude` only when unset) instead of requiring the caller to
   build that path and pass it via `--dir`. A hand-built `~/.claude` is correct on a default
   machine and silently wrong on one running a second config profile, where the report then
@@ -296,7 +317,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
-- `adopt-rules`: `STALE` now tracks CONTENT, not the version number. Previously every
+- `adopt`: `STALE` now tracks CONTENT, not the version number. Previously every
   release marked every adopted copy stale, including copies byte-identical to the shipped
   file — so a release touching one skill's prose made a dozen untouched rules announce
   themselves as out of date. A warning that cries wolf on each release is not read on the
@@ -308,13 +329,13 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
-- `adopt-rules`: the skill described the bundled rules as already injected ambiently by the
+- `adopt`: the skill described the bundled rules as already injected ambiently by the
   `SessionStart` hook, presenting adoption as the "persistent, editable alternative". That
   reading is wrong and consequential — a plugin's `rules/` directory is inert, and the hook
   emits only a six-line digest of the delegation ladder. Every other bundled rule reaches a
   session ONLY once adopted. The skill now states plainly that adopting is what puts the
   rules in force, not merely what makes them editable.
-- `adopt-rules`: `--check` on a directory whose entries are symlinks (a supported setup —
+- `adopt`: `--check` on a directory whose entries are symlinks (a supported setup —
   two config dirs sharing one rule set) reported `nothing to do.`, which reads as "up to
   date". A symlinked entry is never compared for staleness and a later `--install` there
   silently refreshes nothing. The advisory now names where the managed copies actually live
@@ -366,7 +387,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
-- `adopt-rules --audit-overlap --set agents`: a coherence gate for adopted pilot-suite
+- `adopt --audit-overlap --set agents`: a coherence gate for adopted pilot-suite
   project copies. Compares BOTH directions (an added/changed line, and a shipped line
   silently DELETED from the project copy) so a copy cannot go CLEAN by dropping a
   safety clause instead of contradicting it; scoped to `agents` only (`rules` copies
@@ -404,7 +425,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
-- `adopt-rules` skill: an opt-in installer that writes editable, versioned, fingerprinted
+- `adopt` skill: an opt-in installer that writes editable, versioned, fingerprinted
   copies of the cross-cutting delegation rules and the pilot agent definitions into a
   project, and can later detect and refresh stale copies against the plugin's shipped
   originals.
@@ -423,11 +444,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   `pilot-watchdog`'s tool allowlist is fenced to its read-only contract; the
   cross-family-bridge probe now also scans common rc-file install directories, not PATH
   alone.
-- `adopt-rules --install` no longer overwrites a user's own edits to an adopted copy (a
+- `adopt --install` no longer overwrites a user's own edits to an adopted copy (a
   content-fingerprint check, with `--force` to override deliberately); the fingerprint's
   known blind spot (an edit glued directly onto the banner line) is documented.
 - A pilot spawned from a plugin install now resolves its **project-local** copy correctly
-  when one has been adopted (workaround composability with `adopt-rules`), and the
+  when one has been adopted (workaround composability with `adopt`), and the
   observer-pairing limitation for plugin-installed (non-adopted) pilots is documented.
 - `pilot-watchdog`'s capability fence keeps the `ObserverReport` channel open (an earlier
   fence had closed it).

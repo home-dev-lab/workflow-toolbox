@@ -1,9 +1,9 @@
 ---
-name: adopt-rules
+name: adopt
 description: Invoke ONLY when the user explicitly asks to install / adopt editable copies from workflow-toolbox into their config, or to check adopted copies for updates. Two managed sets — the cross-cutting RULE files (the delegation ladder) and the pilot AGENT-definition copies (pilot / pilot-watchdog / pilot-orchestrator, whose project copies enable the watchdog observer pairing that plugin-installed agents can't). E.g. "adopt the delegation rules", "install the workflow-toolbox rules as editable files", "install project copies of the pilot agents", "adopt the pilot watchdog into this project", "check my adopted workflow-toolbox rules/agents for updates". Writes versioned, fingerprinted, editable files ONLY on explicit request — never automatically. Re-invoke to detect stale copies (installed version behind the plugin) and refresh them. Not for authoring workflows (workflow-composer) or composing a pilot wave (pilot-wave).
 ---
 
-# adopt-rules — install editable copies of workflow-toolbox's guardrails and pilot agents
+# adopt — install editable copies of workflow-toolbox's guardrails and pilot agents
 
 This skill writes **editable, versioned copies** of workflow-toolbox material into the
 user's project, on explicit request only. It manages two sets:
@@ -48,7 +48,7 @@ user-initiated act.
 
 ## Account-level environment prerequisites
 
-`adopt-rules` also checks the active config profile's `settings.json` `env` block and, on
+`adopt` also checks the active config profile's `settings.json` `env` block and, on
 `--install`, adds ONLY the plugin prerequisites whose keys are ABSENT there:
 
 - `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` — required for the pilot/orchestrator/executor chain.
@@ -103,15 +103,15 @@ Safety contract for settings writes:
 
 ## How to run it
 
-The deterministic engine is `scripts/install-rules.mjs`. Orchestrate it, do not re-implement
+The deterministic engine is `scripts/install.mjs`. Orchestrate it, do not re-implement
 its version/banner logic by hand. `--set` picks which managed set (default `rules` for
 backward compatibility):
 
 When adopting into a project that already has rules, reconcile first — see the
 "Reconciling your existing project rules" section in `../../rules/README.md`.
 
-- **Check status (read-only, the default):** `node scripts/install-rules.mjs --set <rules|agents|all> --check`
-- **Install / refresh (absent + unedited only):** `node scripts/install-rules.mjs --set <rules|agents|all> --install`
+- **Check status (read-only, the default):** `node scripts/install.mjs --set <rules|agents|all> --check`
+- **Install / refresh (absent + unedited only):** `node scripts/install.mjs --set <rules|agents|all> --install`
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
 - **Replace a symlinked target (deliberate):** add `--replace-symlinks` to `--install` — a
   symlinked target is otherwise reported and SKIPPED (never written through); this unlinks
@@ -123,7 +123,7 @@ When adopting into a project that already has rules, reconcile first — see the
   via `--dir`: a hardcoded `~/.claude` is correct on a default machine and silently WRONG on
   one with a second config profile, and the report then describes a directory nobody meant.
   Unlike `--dir`, `--global` composes with `--set all`; the two flags cannot be combined.
-- **Audit overlap (read-only):** `node scripts/install-rules.mjs --audit-overlap --user-dir <dir>`
+- **Audit overlap (read-only):** `node scripts/install.mjs --audit-overlap --user-dir <dir>`
   compares the user rules directory mechanically with the plugin's shipped rules bundle.
   Use `--pairs-file <path>` to provide an editable JSON array of user/shipped basename pairs;
   otherwise the bundled `scripts/rule-pairs.json` is used. A concern permanently excluded from

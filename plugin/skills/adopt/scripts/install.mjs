@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// install-rules.mjs — the deterministic engine behind the adopt-rules skill.
+// install.mjs — the deterministic engine behind the adopt skill.
 //
 // Writes EDITABLE copies of workflow-toolbox's managed guardrails into the user's
 // config, each stamped with a versioned banner AND a content fingerprint so a later
@@ -28,11 +28,11 @@
 // never write silently.
 //
 // Usage (the skill orchestrates these; a human can run them directly too):
-//   node install-rules.mjs [--set rules|agents|all] --check   [--dir <dir>]   # report, write nothing
-//   node install-rules.mjs [--set rules|agents|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
-//   node install-rules.mjs [--set rules|agents|all] --install --force [--dir <dir>]  # also overwrite edited copies
-//   node install-rules.mjs [--set …] --install --replace-symlinks [--dir <dir>]      # replace a SYMLINKED target with a managed copy in place
-//   node install-rules.mjs [--set …] --check|--install --global                      # target the CONFIG dir instead of the project
+//   node install.mjs [--set rules|agents|all] --check   [--dir <dir>]   # report, write nothing
+//   node install.mjs [--set rules|agents|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
+//   node install.mjs [--set rules|agents|all] --install --force [--dir <dir>]  # also overwrite edited copies
+//   node install.mjs [--set …] --install --replace-symlinks [--dir <dir>]      # replace a SYMLINKED target with a managed copy in place
+//   node install.mjs [--set …] --check|--install --global                      # target the CONFIG dir instead of the project
 //
 // Default --set is `rules` (backward-compatible with the original rules-only tool).
 // Each set targets its own default dir under <cwd>; `--dir` overrides the target and
@@ -66,7 +66,7 @@ process.stdout.on('error', (err) => {
 const BANNER_TOOL = 'workflow-toolbox'
 const SETTINGS_FILE = 'settings.json'
 const SETTINGS_TRACE_DIR = 'workflow-toolbox'
-const SETTINGS_TRACE_FILE = 'adopt-rules-settings-trace.json'
+const SETTINGS_TRACE_FILE = 'adopt-settings-trace.json'
 const SETTINGS_BACKUP_PREFIX = 'settings.json.workflow-toolbox.bak.'
 
 const UNIVERSAL_ENV_REQUIREMENTS = [
@@ -201,7 +201,7 @@ function writeSettingsTrace(configRoot, settingsPath, version, writes, priorTrac
   const base =
     priorTrace.kind === 'ok' && isPlainObject(priorTrace.value)
       ? cloneJson(priorTrace.value)
-      : { schemaVersion: 1, tool: BANNER_TOOL, owner: 'adopt-rules', keys: {} }
+      : { schemaVersion: 1, tool: BANNER_TOOL, owner: 'adopt', keys: {} }
   if (!isPlainObject(base.keys)) base.keys = {}
   for (const requirement of writes) {
     base.keys[requirement.key] = {
@@ -222,7 +222,7 @@ function processSettings(configRoot, chosen, args, version) {
   const traceRead = readSettingsTrace(configRoot)
   process.stdout.write(`[settings] target=${settingsPath} · trace=${tracePath}\n`)
   process.stdout.write(
-    'adopt-rules: account-level env prerequisites are checked only for the ACTIVE config profile here; if you use other CLAUDE_CONFIG_DIR profiles, rerun under each profile.\n',
+    'adopt: account-level env prerequisites are checked only for the ACTIVE config profile here; if you use other CLAUDE_CONFIG_DIR profiles, rerun under each profile.\n',
   )
   let anyAbsent = false
   let anyProblem = settingsRead.kind === 'invalid' || settingsRead.kind === 'unreadable'
@@ -301,7 +301,7 @@ const MANAGED_AGENTS = [
  *  nobody editing a list (the same discipline `discoverRuleItems` already applies to the
  *  rules set). These are NOT part of the `agents` managed set above: Claude Code loads
  *  them directly as `workflow-toolbox:<name>` the moment the plugin is installed, and
- *  `adopt-rules` does nothing for them — but from an adoptant's side, "not adopted
+ *  `adopt` does nothing for them — but from an adoptant's side, "not adopted
  *  because already registered" and "missing" both look like "absent from
  *  .claude/agents/". Naming them is what tells the two apart (card: an adoptant asked
  *  why two already-available agents "hadn't been added" — they had, under their
@@ -357,7 +357,7 @@ function printRegisteredAgentsNote(root, userAgentsDir) {
   const registered = discoverRegisteredAgents(root)
   if (registered.length === 0) return
   process.stdout.write(
-    `adopt-rules: ${registered.length} other agent(s) ship with the plugin and are already ` +
+    `adopt: ${registered.length} other agent(s) ship with the plugin and are already ` +
       `available as workflow-toolbox:<name> — they are not adopted because they don't need to ` +
       `be: only the pilot suite requires a local copy, to keep its observer pairing.\n`,
   )
@@ -369,8 +369,8 @@ function printRegisteredAgentsNote(root, userAgentsDir) {
 }
 
 function untouchedSetLine(setName) {
-  if (setName === 'rules') return 'adopt-rules: the agents set exists too; it was untouched here, and --set agents covers it.\n'
-  if (setName === 'agents') return 'adopt-rules: the rules set exists too; it was untouched here, and --set rules covers it.\n'
+  if (setName === 'rules') return 'adopt: the agents set exists too; it was untouched here, and --set agents covers it.\n'
+  if (setName === 'agents') return 'adopt: the rules set exists too; it was untouched here, and --set rules covers it.\n'
   return null
 }
 
@@ -411,7 +411,7 @@ const MISSING_FROM_PROJECT = 'missing from project copy'
 const FRONTMATTER_RE = /^(---\r?\n[\s\S]*?\r?\n---\r?\n)/
 
 function fail(msg) {
-  process.stdout.write(`adopt-rules: ${msg}\n`)
+  process.stdout.write(`adopt: ${msg}\n`)
   process.exit(1)
 }
 
@@ -441,8 +441,8 @@ function fingerprint(body) {
 
 function banner(version, fp) {
   return (
-    `<!-- installed from ${BANNER_TOOL} v${version} · content sha256:${fp} by the adopt-rules ` +
-    `skill — editable copy. Re-run the ${BANNER_TOOL}:adopt-rules skill to check for updates; ` +
+    `<!-- installed from ${BANNER_TOOL} v${version} · content sha256:${fp} by the adopt ` +
+    `skill — editable copy. Re-run the ${BANNER_TOOL}:adopt skill to check for updates; ` +
     `--install refreshes only an UNEDITED copy, --force overwrites your local edits. -->`
   )
 }
@@ -1104,7 +1104,7 @@ function main() {
   const globalRoot = resolvedConfigRoot()
 
   process.stdout.write(
-    `adopt-rules: ${BANNER_TOOL} v${version} · mode=${args.mode}${args.force ? ' --force' : ''} · set=${args.set}\n`,
+    `adopt: ${BANNER_TOOL} v${version} · mode=${args.mode}${args.force ? ' --force' : ''} · set=${args.set}\n`,
   )
 
   let anyAbsent = false
@@ -1139,17 +1139,17 @@ function main() {
   if (chosen.includes('agents')) printRegisteredAgentsNote(root, path.join(globalRoot, 'agents'))
 
   if (args.mode === 'check') {
-    if (anyAbsent) process.stdout.write('adopt-rules: run with --install to write the ABSENT item(s).\n')
-    else if (anyStale) process.stdout.write('adopt-rules: run with --install to refresh the STALE item(s).\n')
-    else if (anyEdited) process.stdout.write('adopt-rules: locally-edited item(s) present — --install leaves them; --force overwrites.\n')
-    else if (anySettingsProblem) process.stdout.write('adopt-rules: account-level settings need manual attention before this tool can manage them safely.\n')
-    else process.stdout.write('adopt-rules: nothing to do.\n')
+    if (anyAbsent) process.stdout.write('adopt: run with --install to write the ABSENT item(s).\n')
+    else if (anyStale) process.stdout.write('adopt: run with --install to refresh the STALE item(s).\n')
+    else if (anyEdited) process.stdout.write('adopt: locally-edited item(s) present — --install leaves them; --force overwrites.\n')
+    else if (anySettingsProblem) process.stdout.write('adopt: account-level settings need manual attention before this tool can manage them safely.\n')
+    else process.stdout.write('adopt: nothing to do.\n')
     // Symlinks are an independent advisory (they can coexist with absent/stale items).
     // Suppressed when --replace-symlinks is already set — no point telling the user to
     // pass a flag they passed (the per-item line then previews the replacement).
     if (anySymlink && !args.replaceSymlinks) {
       process.stdout.write(
-        'adopt-rules: symlinked target(s) present — left untouched; pass --replace-symlinks to replace them with managed copies.\n',
+        'adopt: symlinked target(s) present — left untouched; pass --replace-symlinks to replace them with managed copies.\n',
       )
       // The operative half. Without it, a "nothing to do." on a fully-symlinked dir reads as
       // "this dir is up to date", and a later --install here would silently refresh NOTHING —
