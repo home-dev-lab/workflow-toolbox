@@ -97,6 +97,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'README and plugin docs describe the shipped SessionStart delegation-ladder injection.',
   },
   {
+    script: 'plugin/bin/wt-hook-registration-drift-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this SessionStart/UserPromptSubmit stale-registration detector under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-lane-consent-check-hook.mjs',
     status: 'exempt',
     reason: 'A disagreement detector for wt-lane-consent.mjs (mapped) with no user-facing invocation contract of its own — it only ever surfaces a SessionStart notice when the resolved consent state disagrees with itself; the CLI it complements is the operative surface a reader is pointed at (see the pilot-wave DOCS_PROVENANCE entry).',
@@ -516,7 +521,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['docs/public/known-issues.md'],
   },
   {
-    // The 15 shipped hooks/guards/monitors written up in the "Shipped Hooks, Guards &
+    // The 16 shipped hooks/guards/monitors written up in the "Shipped Hooks, Guards &
     // Monitors" section — none had a doc surface before.
     sources: [
       'plugin/bin/wt-adopt-check-hook.mjs',
@@ -527,6 +532,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-arc-watch.mjs',
       'plugin/bin/wt-check-commit-signatures-hook.mjs',
       'plugin/bin/wt-check-commit-signatures.mjs',
+      'plugin/bin/wt-hook-registration-drift-hook.mjs',
       'plugin/bin/wt-memory-index-check-hook.mjs',
       'plugin/bin/wt-outbound-guard-hook.mjs',
       'plugin/bin/wt-probe-claim-guard-hook.mjs',

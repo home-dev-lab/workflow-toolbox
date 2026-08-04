@@ -55,6 +55,7 @@ function makeSandbox(tag: string): Sandbox {
       XDG_STATE_HOME: stateDir,
       CLAUDE_CONFIG_DIR: configDir,
       WT_OUTBOUND_GUARD_DIR: join(stateDir, 'outbound-guard'),
+      WT_HOOK_DRIFT_DIR: join(stateDir, 'hook-drift'),
       WT_QUEUE_GATE_DIR: join(stateDir, 'queue-gate'),
       WT_VERIFIER_MARKER_DIR: join(stateDir, 'verifier-markers'),
       WT_ACTIONABLE_GATE_DIR: join(stateDir, 'actionable-gate'),
@@ -98,6 +99,12 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Bash',
         cwd: sandbox.projectDir,
         tool_input: { command: 'git status' },
+      }
+    case 'wt-hook-registration-drift-hook.mjs':
+      return {
+        hook_event_name: 'SessionStart',
+        session_id: 'selftest-session',
+        cwd: sandbox.projectDir,
       }
     case 'wt-delegation-ladder-hook.mjs':
       return {
