@@ -77,6 +77,14 @@ the resolved values in the spawn prompt:
   sub-agent for the increment) — never "implement inline" on the arbiter's own tier. State
   which of the two ("absent" vs "present but not consented") in the brief you compose, since
   it changes what a later session should check before re-probing.
+  ⚠ **When you name a bridge, name its invocation shape too — a CLI invoked from a shell with
+  no terminal can block on standard input.** An agent's Bash tool is exactly that shell: stdin
+  is open but nothing will ever arrive, so a CLI that waits for it returns ZERO output until
+  something times out. Redirect stdin from the null device (`… < /dev/null`) and bound the call
+  with a timeout. The failure looks INTERMITTENT — an inherited stdin sometimes closes on its
+  own — which sends people hunting through the working directory, the database, the token, and
+  the model before they suspect the shell. State the shape in the brief; a pilot that only
+  receives the bridge's NAME will write the call itself, and write it without this.
 - **`WORKTREES_DIR`** — where pilots create isolation worktrees when the repo may have
   concurrent writers. Resolve: an explicit dir → a sibling worktrees dir next to the repo.
 - **`REPORT_DIR`** — where file-reports land (the nested-routing workaround: a named agent's
