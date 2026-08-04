@@ -116,6 +116,17 @@ the resolved values in the spawn prompt:
 - **`QUOTA_POSTURE`** — how much verification fan-out the budget allows, so reviews scale to
   the change class. Resolve: an explicit posture the user states → "comfortable" default. Under
   pressure, the agents degrade to the single cross-family verifier shape.
+- **`WATCHER_REGISTRY`** — a path/command a delegate can query to see which watchers (hooks,
+  monitors, disk/staleness checks) currently cover it and on what signal each fires — see the
+  three-state contract (watched / not watched / unknown, never collapsed) already carried in
+  `pilot.md` and `pilot-orchestrator.md`. This skill does not ship a concrete instrument: what
+  counts as a "watcher" is entirely project/machine-specific (a systemd timer, a hook-armed
+  marker directory, a cron job — nothing about the shape is portable). Resolve: an explicit
+  command the user gives → a project-level convention documented in the project's own rules
+  (e.g. a private rule naming a reader script) → absent. When absent, **say so once in your own
+  final report** rather than omitting the field from every brief silently — an omitted field
+  and a deliberately absent registry read identically to a pilot unless the report states which
+  one it was.
 
 ## Step 2 — select the wave's cards
 
@@ -249,6 +260,7 @@ and only the spawner knows which is which.
 | `WORKTREES_DIR` | isolation-worktree home | sibling worktrees dir |
 | `REPORT_DIR` | file-report home | a named scratch dir (naming constraint — see Step 1) |
 | `QUOTA_POSTURE` | verification-budget posture | comfortable; degrade under pressure |
+| `WATCHER_REGISTRY` | which watchers cover the delegate + their signal | absent; state so once in the report |
 | publish surface | which repos/dirs are public vs private | assume all private; treat public writes as escalations |
 
 ## Guardrails and non-goals
