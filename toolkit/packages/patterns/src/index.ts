@@ -51,6 +51,15 @@ export type { WithLeanRoutingOptions, LeanRoutingReport } from './lean-routing.j
 export { classifyAndAct } from './classify-and-act.js'
 export type { ClassifyAndActOptions, ActionSpec } from './classify-and-act.js'
 
+export { dagExecute } from './dag-execute.js'
+export type { DagNode, DagExecuteOptions, DagNodeResult, DagExecuteResult } from './dag-execute.js'
+
+export { serializeDagArtifact, parseDagArtifact } from './dag-artifact.js'
+export type { DagArtifact, DagArtifactNode, SerializeDagArtifactInput } from './dag-artifact.js'
+
+export { describeBudgetedShape, budgetTotals, makeBudgetedShape } from './budgeted-shape.js'
+export type { BudgetedStage, BudgetedShape } from './budgeted-shape.js'
+
 export { generateAndFilter } from './generate-and-filter.js'
 export type { GenerateAndFilterOptions } from './generate-and-filter.js'
 

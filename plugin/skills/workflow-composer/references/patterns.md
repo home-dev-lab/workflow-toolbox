@@ -470,6 +470,124 @@ is exported standalone too, for when you only need the deterministic split.
 
 ---
 
+## Rung 3 companions — generic DAG execution, a persisted shape, and budgeted named forms
+
+These three are exported from `@workflow-toolbox/patterns` alongside the nine canonical
+patterns above, but are NOT one of the scaffold tool's nine `PATTERN_NAMES` — they exist
+specifically to make rung 3 (inline, hand-run fan-out in the main conversation loop, see
+`SKILL.md`'s orchestration ladder) practical without hand-rolling the wave/dispatch
+machinery, or the private `dev-implement.workflow.ts` example, every time.
+
+### Generic wave-parallel DAG execution — `dagExecute`
+
+**Use when:** you have an arbitrary set of nodes with `dependsOn` edges (a diamond: two
+independent nodes feeding a third; or wider/deeper graphs) and want independent nodes at
+the same dependency level to run CONCURRENTLY, not one at a time. This generalizes the
+wave computation `dev-implement.workflow.ts`'s worktree mode already does bespoke
+(Kahn-level waves dispatched via `rt.parallel`) into a reusable, typed pattern any
+workflow — or any inline rung-3 fan-out — can call instead of re-deriving it.
+**Do NOT use when:** the graph is a single connected chain (no independent nodes at any
+level) — a plain sequential loop is simpler and identical in wall time; or the "auto"
+mode's shared-worktree-per-lane constraint applies (tasks sharing ONE worktree cannot run
+concurrently regardless of the pattern used — that is a resource constraint, not a
+dispatch-shape one).
+
+```js
+const { value, stats, trail } = await dagExecute(rt, {
+  nodes: [
+    { id: 'A', dependsOn: [] },
+    { id: 'B', dependsOn: [] },
+    { id: 'C', dependsOn: ['A', 'B'] },
+  ],
+  run: async (node) => agent(`do the work for ${node.id}`),
+})
+// value.waves === 2 (A,B concurrent, then C); value.results carries per-node status
+```
+
+**Toolkit:** `dagExecute(rt, options: DagExecuteOptions<TNode, TOut>)` returns the
+standard envelope wrapping a `DagExecuteResult<TNode, TOut>` (`value: { results:
+DagNodeResult<TNode, TOut>[], waves }`, `stats`, `warnings`, `trail`). Config errors
+(empty `nodes`, a duplicate `id`, a `dependsOn` referencing an unknown id, or a CYCLE)
+throw synchronously before any node runs — a cycle is a hard error here, not silently
+dropped, because a general-purpose pattern has no upstream validator guaranteeing
+acyclicity the way `dev-implement`'s L3 boundary does. A node whose dependency did not
+succeed is `'skipped'` (computed in code, never attempted) — the same skip semantics as
+`dev-implement`'s per-task reporting.
+
+**Measured:** a controlled synthetic test (fixed per-node
+latency, isolating the dispatch mechanism from real API-call variance) confirmed the
+theoretical 1.5x speedup for a 2-wave diamond exactly. Two small real runs against the
+production runtime, on a trivial 3-node diamond with one-word replies, were inconclusive
+(1.32x and ~1.0x) — real per-call latency variance swamps the signal at this tiny a
+scale. The mechanism (`rt.parallel` is a genuine `Promise.all`, confirmed by reading
+`@workflow-toolbox/runtime`'s fake and its documented contract) is sound; the practical
+payoff grows with wave WIDTH (more concurrent nodes) and per-node DURATION (real TDD
+loops run minutes, not seconds) — both amortize the fixed per-call overhead that
+dominated the tiny-diamond measurement. This pattern's value proposition is reuse and
+correctness (cycle detection, deterministic waves) as much as raw speed on a small graph.
+
+### A persisted, re-readable DAG shape — `serializeDagArtifact` / `parseDagArtifact`
+
+**Use when:** rung 3's shape should survive the conversation that produced it — a later
+session (yours or someone else's) should be able to re-read a `{name, nodes}` graph shape
+from disk without re-deriving it from a transcript. This is rung 3's missing persisted
+artifact: the shape becomes a file you can diff and reuse weeks later, without the
+build/typecheck/commit ceremony of compiling a full `.workflow.ts`.
+
+```js
+const artifact = serializeDagArtifact({ name: 'my-shape', createdAt: new Date().toISOString(), nodes })
+// write artifact (JSON.stringify) to a <name>.dag.json file yourself — this package
+// never touches disk
+const reloaded = parseDagArtifact(JSON.parse(fs.readFileSync('my-shape.dag.json', 'utf8')))
+```
+
+**Toolkit:** `serializeDagArtifact(input: SerializeDagArtifactInput)` → `DagArtifact`;
+`parseDagArtifact(raw)` → `DagArtifact`, throwing a message naming the exact defect
+(missing field, wrong `schemaVersion`, a malformed node) on bad input — the property that
+makes it re-readable by a fresh session rather than a silent garbage-in/garbage-out
+parse. Neither function calls `Date.now()` — a workflow SANDBOX SCRIPT cannot (it breaks
+resume determinism); `createdAt` is always caller-supplied. Each artifact node
+(`DagArtifactNode`) is a `DagNode` plus an optional `label` for a human-readable name.
+
+### Budgeted named shapes — declaring what a reduced execution keeps and loses
+
+**Use when:** you are reproducing an existing workflow's SHAPE by hand, at rung 3, with
+fewer agents than the full workflow spends — e.g. a `pr-review` run with 3 review lenses
+and one shared finding-verifier instead of ~6 lenses and one verifier per finding.
+Reducing agent counts without saying what was given up is a machine for producing
+verdicts that look like the real ones without the coverage behind them.
+`BudgetedShape` makes the reduction, and its
+cost, an explicit, renderable declaration instead of an implicit one nobody stated.
+
+```js
+const shape = makeBudgetedShape({
+  name: 'pr-review-budgeted',
+  referenceWorkflow: 'pr-review',
+  stages: [
+    { name: 'diff classification', fullBudget: 1, reducedBudget: 0, lost: ["folded into the calling loop's own reasoning"] },
+    { name: 'review lenses', fullBudget: 6, reducedBudget: 3, lost: ['3 of 6 lenses dropped'] },
+    { name: 'finding verification', fullBudget: 12, reducedBudget: 1, lost: ['per-finding independent verification collapses to one shared verifier'] },
+    { name: 'synthesis', fullBudget: 1, reducedBudget: 0, lost: ["folded into the calling loop's own reasoning"] },
+  ],
+})
+console.log(describeBudgetedShape(shape)) // renders the table
+budgetTotals(shape) // { full: 20, reduced: 4 }
+```
+
+**Toolkit:** `makeBudgetedShape(shape)` validates and returns a `BudgetedShape` —
+throwing IMMEDIATELY (not deferred to the first render/totals call) when any stage
+reduces its budget with an empty `lost`; plain object literals skip this check until
+`describeBudgetedShape`/`budgetTotals` runs, so prefer the factory when you control
+construction. `describeBudgetedShape(shape: BudgetedShape)` renders a markdown table
+(one row per `BudgetedStage`: stage, full budget, reduced budget, lost); `budgetTotals(shape)`
+sums both columns. A stage where `reducedBudget < fullBudget` and `lost` is
+empty is a config error, thrown
+synchronously — a reduction with nothing declared lost is exactly the failure mode this
+exists to prevent. A worked `pr-review` example lives in
+`toolkit/packages/patterns/examples/`.
+
+---
+
 ## Tuning at launch — per-role model/effort, and the config helpers
 
 Every pattern exposes **per-role** knobs so you tune each role independently
