@@ -126,7 +126,7 @@ describe('opencode-verifier bridge — task file lives under the agent cwd, not 
       })
 
       it('grounds the per-model variant lists so strict validation is not guesswork', () => {
-        expect(def).toMatch(/glm-5\.2` → `high` · `max`/)
+        expect(def).toMatch(/gpt-5\.4` → `none` · `low` · `medium` · `high` · `xhigh`/)
         expect(def).toMatch(/gpt-5\.6-terra.*`xhigh` · `max`/)
       })
 

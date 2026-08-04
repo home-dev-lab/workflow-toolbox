@@ -39,8 +39,8 @@ describe('probeAgentType — available', () => {
   })
 
   it('tolerates CLI banner noise and ANSI escapes around the expected token', async () => {
-    // Real opencode output shape observed live: '\x1b[0m> build · glm-5.2\x1b[0mPROBE_OK'
-    const rt = new FakeRuntime({ onAgent: () => '[0m> build · glm-5.2[0mPROBE_OK' })
+    // Representative opencode output shape with ANSI banner noise around the success token.
+    const rt = new FakeRuntime({ onAgent: () => '[0m> build · gpt-5.4[0mPROBE_OK' })
     const probe = await probeAgentType(rt, 'workflow-toolbox:opencode-verifier')
     expect(probe.available).toBe(true)
     expect(probe.agentType).toBe('workflow-toolbox:opencode-verifier')
