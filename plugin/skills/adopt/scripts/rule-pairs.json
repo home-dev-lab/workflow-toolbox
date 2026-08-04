@@ -1,19 +1,97 @@
 [
-  { "user": "step-back-architectural.md", "shipped": "wt-step-back-architectural.md", "partial": false },
-  { "user": "concurrent-sessions-worktree.md", "shipped": "wt-concurrent-sessions-worktree.md", "partial": false },
-  { "user": "workflows-as-reasoning.md", "shipped": "wt-workflows-as-reasoning.md", "partial": false },
-  { "user": "proportionate-verification.md", "shipped": "wt-proportionate-verification.md", "partial": false },
-  { "user": "proactive-decision-making.md", "shipped": "wt-proactive-decision-making.md", "partial": false },
-  { "user": "verify-by-ground-truth.md", "shipped": "wt-verify-by-ground-truth.md", "partial": false },
-  { "user": "delegation-lanes.md", "shipped": "wt-delegation-ladder.md", "partial": true },
-  { "user": "outbound-propose-dont-affirm.md", "shipped": "wt-propose-dont-affirm.md", "partial": true },
-  { "user": "checkpoint-and-compaction-policy.md", "shipped": "wt-checkpoint-and-compaction.md", "partial": true },
-  { "user": "measure-context-before-compact.md", "shipped": "wt-checkpoint-and-compaction.md", "partial": true },
-  { "user": "memory-hygiene.md", "shipped": "wt-memory-hygiene.md", "partial": true },
-  { "user": "task-tracking.md", "shipped": "wt-task-tracking.md", "partial": true },
-  { "user": "executor-delegation-briefs.md", "shipped": "wt-delegation-ladder.md", "partial": true },
-  { "user": "communication-refresher-progressive-disclosure.md", "shipped": "wt-answer-first-reporting.md", "partial": true },
-  { "user": "high-impact-three-questions.md", "shipped": "wt-verify-by-ground-truth.md", "partial": true },
-  { "user": "agent-model-selection.md", "shipped": "wt-delegation-ladder.md", "partial": true },
-  { "user": "quota-reset-self-nudge.md", "shipped": "wt-delegation-ladder.md", "partial": true }
+  {
+    "user": "step-back-architectural.md",
+    "shipped": "wt-step-back-architectural.md",
+    "partial": false
+  },
+  {
+    "user": "concurrent-sessions-worktree.md",
+    "shipped": "wt-concurrent-sessions-worktree.md",
+    "partial": false
+  },
+  {
+    "user": "workflows-as-reasoning.md",
+    "shipped": "wt-workflows-as-reasoning.md",
+    "partial": false
+  },
+  {
+    "user": "proportionate-verification.md",
+    "shipped": "wt-proportionate-verification.md",
+    "partial": false
+  },
+  {
+    "user": "proactive-decision-making.md",
+    "shipped": "wt-proactive-decision-making.md",
+    "partial": false
+  },
+  {
+    "user": "verify-by-ground-truth.md",
+    "shipped": "wt-verify-by-ground-truth.md",
+    "partial": false
+  },
+  {
+    "user": "delegation-lanes.md",
+    "shipped": "wt-delegation-ladder.md",
+    "partial": true
+  },
+  {
+    "user": "outbound-propose-dont-affirm.md",
+    "shipped": "wt-propose-dont-affirm.md",
+    "partial": true
+  },
+  {
+    "user": "checkpoint-and-compaction-policy.md",
+    "shipped": "wt-checkpoint-and-compaction.md",
+    "partial": true
+  },
+  {
+    "user": "measure-context-before-compact.md",
+    "shipped": "wt-checkpoint-and-compaction.md",
+    "partial": true
+  },
+  {
+    "user": "memory-hygiene.md",
+    "shipped": "wt-memory-hygiene.md",
+    "partial": true
+  },
+  {
+    "user": "task-tracking.md",
+    "shipped": "wt-task-tracking.md",
+    "partial": true
+  },
+  {
+    "user": "executor-delegation-briefs.md",
+    "shipped": "wt-delegation-ladder.md",
+    "partial": true
+  },
+  {
+    "user": "communication-refresher-progressive-disclosure.md",
+    "shipped": "wt-answer-first-reporting.md",
+    "partial": true
+  },
+  {
+    "user": "high-impact-three-questions.md",
+    "shipped": "wt-verify-by-ground-truth.md",
+    "partial": true
+  },
+  {
+    "user": "agent-model-selection.md",
+    "shipped": "wt-delegation-ladder.md",
+    "partial": true
+  },
+  {
+    "user": "quota-reset-self-nudge.md",
+    "shipped": "wt-delegation-ladder.md",
+    "partial": true
+  },
+  {
+    "user": "fix-now-and-at-the-right-level.md",
+    "shipped": "wt-durable-fix-at-the-right-level.md",
+    "partial": true
+  },
+  {
+    "user": "mechanise-on-sight.md",
+    "shipped": "wt-durable-fix-at-the-right-level.md",
+    "partial": true
+  }
 ]

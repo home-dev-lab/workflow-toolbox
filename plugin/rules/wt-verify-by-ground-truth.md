@@ -107,3 +107,52 @@ question three checks the mechanism's own failure modes, not only the hazard it 
 When a check outgrows a single mechanical read — evidence across several sources, leads to chase,
 a surprise needing a root cause — escalate to the `deep-grounding` skill (the recursive
 collect-verify pass that tags conclusions by evidence tier) rather than chaining ad-hoc reads.
+
+## Before measuring a fix, prove the subject is RUNNING that fix
+
+A fix is worth nothing until it has been observed working, and an observation is worth nothing
+if the observed process is running a different copy of the code. A separate process — another
+session, a daemon, a delegated agent, a packaged artifact — resolves its own copy: an installed
+cache, a published version, a bundled build. Editing a working tree changes none of them.
+
+Two questions, in this order, and they compose:
+
+1. **WHICH FILE does the process load?** Read it off the running process itself — its command
+   line, its resolved module path, its open file handles. A path observed on the process is
+   strong evidence, and a version number INSIDE that path is part of it.
+2. **WHICH VERSION of that file's content?** Grep it for a sentence that exists only in the fix.
+
+⚠ What lies is a DECLARED version — a manifest entry, a `--version` flag, a package field. It
+can be perfectly accurate while the file actually loaded comes from somewhere else entirely.
+That is a different thing from a path read off the process, and conflating the two makes a
+reader discard valid evidence. A local commit proves the edit, never the load.
+
+If the fix's sentence is absent from the loaded file, the measurement answers a question about
+the old code and must be discarded in BOTH directions — a clean result there is not evidence of
+success, it is evidence of nothing. The tell that this was skipped: a result matching the
+hoped-for outcome, obtained from a process nobody checked the provenance of.
+
+## A control must be readable in BOTH outcomes, not only in failure
+
+Design the check so it produces a reading whether the fix worked or not. The trap is specific
+and easy to walk into when the fix's whole purpose is to make something STOP happening: the
+natural control reads an artifact that the fix removes. It then executes only when the fix
+failed, and success becomes indistinguishable from "the check could not run".
+
+Before trusting a control, ask what it reads in the SUCCESS case. If the answer is "nothing —
+the thing it reads no longer exists", it is not a control; find a source that exists either
+way, ideally one the fix does not touch at all. Same family as a probe that fails precisely
+under the condition it exists to report.
+
+## A summary that asserts a guarantee is verified against its body, in the same pass
+
+Whenever a docstring, header, or comment claims a PROPERTY — "this path is literal", "this
+cursor derives from acknowledgements", "this returns everything after X" — read the body under
+it before moving on. Not later, not as a review step: in the same pass, because the claim and
+the code diverge at the moment the code changes and the claim does not.
+
+The failure is not carelessness, and treating it as such is why it repeats: when you rewrite a
+body and then adjust its summary, you describe **what you intended**, not what you wrote. And
+that summary is precisely what the next reader trusts when checking quickly — so it misleads
+exactly when it matters. This is a GESTURE, not an intuition: it needs no suspicion and no
+knowledge of the code's history. The tell that it is needed is that the sentence is reassuring.
