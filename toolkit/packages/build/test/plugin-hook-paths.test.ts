@@ -24,45 +24,30 @@
 // shim as redundant.
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { declaredHookPaths } from '../../../../plugin/bin/lib/hook-manifest.mjs'
+
+type HookPathEntry = { event: string; rel: string }
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const PLUGIN_ROOT = join(REPO_ROOT, 'plugin')
 const MANIFEST = join(PLUGIN_ROOT, '.claude-plugin/plugin.json')
 
-type HookEntry = { command?: string }
-type HookGroup = { matcher?: string; hooks?: HookEntry[] }
-
-function declaredHookPaths(): { event: string; rel: string }[] {
-  const manifest = JSON.parse(readFileSync(MANIFEST, 'utf8')) as {
-    hooks?: Record<string, HookGroup[]>
-  }
-  const out: { event: string; rel: string }[] = []
-  for (const [event, groups] of Object.entries(manifest.hooks ?? {})) {
-    for (const group of groups) {
-      for (const entry of group.hooks ?? []) {
-        const match = /\$\{CLAUDE_PLUGIN_ROOT\}(\/[^"'\s]+)/.exec(entry.command ?? '')
-        if (match?.[1]) out.push({ event, rel: match[1] })
-      }
-    }
-  }
-  return out
-}
-
 describe('plugin manifest — every registered hook entry point resolves', () => {
   it('declares at least one hook (guards against a manifest that silently stopped parsing)', () => {
     // Without this, an extraction bug yields an empty list and the invariant below passes
     // vacuously — the check would report health precisely when it had measured nothing.
-    expect(declaredHookPaths().length).toBeGreaterThan(0)
+    expect((declaredHookPaths(MANIFEST) as HookPathEntry[]).length).toBeGreaterThan(0)
   })
 
   it('every ${CLAUDE_PLUGIN_ROOT} path in the manifest exists on disk', () => {
-    const missing = declaredHookPaths()
-      .filter(({ rel }) => !existsSync(join(PLUGIN_ROOT, rel)))
-      .map(({ event, rel }) => `${event}: ${rel}`)
+    const missing = (declaredHookPaths(MANIFEST) as HookPathEntry[])
+      .filter(({ rel }: HookPathEntry) => !existsSync(join(PLUGIN_ROOT, rel)))
+      .map(({ event, rel }: HookPathEntry) => `${event}: ${rel}`)
     expect(missing).toEqual([])
   })
 })
