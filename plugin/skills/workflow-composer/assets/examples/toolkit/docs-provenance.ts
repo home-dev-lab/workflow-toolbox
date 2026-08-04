@@ -91,6 +91,16 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'README and plugin docs describe the shipped SessionStart delegation-ladder injection.',
   },
   {
+    script: 'plugin/bin/wt-lane-consent-check-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The SessionStart lane-consent disagreement notice is user-facing, but no durable doc surface describes this hook yet.',
+  },
+  {
+    script: 'plugin/bin/wt-lane-consent-check.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Standalone lane-consent audit CLI exists, but no durable doc surface describes its invariant/output contract yet.',
+  },
+  {
     script: 'plugin/bin/wt-lane-probe.mjs',
     status: 'mapped',
     reason: 'Pilot orchestrator docs tell operators to run this probe to verify executor routing.',

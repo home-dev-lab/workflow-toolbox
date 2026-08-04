@@ -1267,7 +1267,7 @@ describe('plugin.json registers the outbound-guard + session-start-registry hook
     expect(groups[0]!.hooks?.[0]?.command ?? '').toContain('wt-outbound-guard-hook.mjs')
   })
 
-  it('SessionStart registers wt-session-start-registry-hook.mjs alongside the delegation-ladder hook', () => {
+  it('SessionStart registers the delegation, registry, and lane-consent hooks', () => {
     const manifest = JSON.parse(readFileSync(PLUGIN_MANIFEST, 'utf8')) as {
       hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>
     }
@@ -1275,6 +1275,7 @@ describe('plugin.json registers the outbound-guard + session-start-registry hook
     const commands = groups.flatMap((g) => g.hooks ?? []).map((h) => h.command ?? '')
     expect(commands.some((c) => c.includes('wt-delegation-ladder-hook.mjs'))).toBe(true)
     expect(commands.some((c) => c.includes('wt-session-start-registry-hook.mjs'))).toBe(true)
+    expect(commands.some((c) => c.includes('wt-lane-consent-check-hook.mjs'))).toBe(true)
   })
 
   it('all three referenced scripts exist in plugin/bin/', () => {

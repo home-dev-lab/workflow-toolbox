@@ -104,6 +104,11 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,
       }
+    case 'wt-lane-consent-check-hook.mjs':
+      return {
+        hook_event_name: 'SessionStart',
+        cwd: sandbox.projectDir,
+      }
     case 'wt-observer-pairing-guard-hook.mjs':
       return {
         hook_event_name: 'PostToolUse',

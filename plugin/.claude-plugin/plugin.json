@@ -163,6 +163,15 @@
             "timeout": 20
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-lane-consent-check-hook.mjs\"",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "SubagentStop": [
