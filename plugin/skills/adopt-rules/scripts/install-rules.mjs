@@ -168,6 +168,12 @@ function printRegisteredAgentsNote(root, userAgentsDir) {
   }
 }
 
+function untouchedSetLine(setName) {
+  if (setName === 'rules') return 'adopt-rules: the agents set exists too; it was untouched here, and --set agents covers it.\n'
+  if (setName === 'agents') return 'adopt-rules: the rules set exists too; it was untouched here, and --set rules covers it.\n'
+  return null
+}
+
 /** The two managed sets. `kind` drives banner placement; `srcDir` is the plugin bundle
  *  dir each set reads its files from; `resolveItems(root)` lists the managed files (the
  *  rules set discovers them from the bundle; the agents set is a fixed suite). */
@@ -921,6 +927,9 @@ function main() {
     anyEdited = anyEdited || r.anyEdited
     anySymlink = anySymlink || r.anySymlink
   }
+
+  const untouchedLine = chosen.length === 1 ? untouchedSetLine(chosen[0]) : null
+  if (untouchedLine) process.stdout.write(untouchedLine)
 
   if (chosen.includes('agents')) printRegisteredAgentsNote(root, path.join(globalRoot, 'agents'))
 

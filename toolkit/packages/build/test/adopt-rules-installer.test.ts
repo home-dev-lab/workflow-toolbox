@@ -366,6 +366,12 @@ describe('adopt-rules installer — frontmatter preservation across --force (car
 })
 
 describe('adopt-rules installer — CLI surface for the two-set engine', () => {
+  function untouchedSetLine(out: string): string | undefined {
+    return out
+      .split(/\r?\n/)
+      .find((line) => line.includes('set exists too; it was untouched here'))
+  }
+
   it('--set all with --dir is rejected (a single dir cannot target two sets)', () => {
     const d = mkDir()
     // run() appends `--dir d`, so this is `--set all --check --dir d`.
@@ -392,6 +398,30 @@ describe('adopt-rules installer — CLI surface for the two-set engine', () => {
     expect(chk).toContain('wt-delegation-ladder.md: UP-TO-DATE')
     expect(chk).toContain('pilot.md: UP-TO-DATE')
     expect(chk).toContain('nothing to do')
+  })
+
+  it('--set rules names the agents set as untouched, factually and in one line', () => {
+    const d = mkDir()
+    const out = run(['--set', 'rules', '--check'], d)
+    const line = untouchedSetLine(out)
+    expect(line).not.toContain('⚠')
+    expect(line).not.toMatch(/\bshould\b/i)
+    expect(line).toBe('adopt-rules: the agents set exists too; it was untouched here, and --set agents covers it.')
+  })
+
+  it('--set agents names the rules set as untouched, factually and in one line', () => {
+    const d = mkDir()
+    const out = run(['--set', 'agents', '--check'], d)
+    const line = untouchedSetLine(out)
+    expect(line).not.toContain('⚠')
+    expect(line).not.toMatch(/\bshould\b/i)
+    expect(line).toBe('adopt-rules: the rules set exists too; it was untouched here, and --set rules covers it.')
+  })
+
+  it('--set all prints no untouched-set line at all', () => {
+    const d = mkDir()
+    const out = runInCwd(['--set', 'all', '--check'], d)
+    expect(untouchedSetLine(out)).toBeUndefined()
   })
 })
 
