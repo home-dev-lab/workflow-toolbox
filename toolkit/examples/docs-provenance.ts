@@ -196,6 +196,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'README, architecture, privacy, security, and toolkit docs describe this shipped Stop hook.',
   },
   {
+    script: 'plugin/bin/wt-command-repeat-check.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Standalone repeat-discrimination CLI exists, but this pass intentionally does not register or document it beyond code/test/report surfaces.',
+  },
+  {
     script: 'plugin/bin/wt-verdict-cap-check.mjs',
     status: 'mapped',
     reason: 'Fidelity-checker docs tell operators to run this CLI on verifier reports.',
