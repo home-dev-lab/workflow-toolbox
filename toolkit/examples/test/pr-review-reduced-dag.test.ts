@@ -153,5 +153,43 @@ describe('pr-review-reduced-dag execution', () => {
 
     const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', category: 'docs' }))
     expect(result.verdict).toBe('approve')
+    expect(result.lensesConcluded).toEqual(result.lenses)
+    expect(result.summary).not.toContain('INCOMPLETE')
+  })
+
+  // The reduced shape buys its saving by running fewer lenses, so losing one costs
+  // proportionally more here than in the full shape — and a lens that dies produces exactly
+  // the same evidence as a lens that ran and found nothing: an empty contribution.
+  it('refuses to approve when a review lens never concluded, and says so in the summary', async () => {
+    let reviewCall = 0
+    const rt = new FakeRuntime({
+      onAgent: ({ prompt }: { prompt: string }) => {
+        if (prompt.includes('shared verifier')) {
+          return {
+            verdicts: [
+              { findingId: 'accuracy:1', verdict: 'refuted', citation: 'docs/readme.md:8', rationale: 'Not an issue' },
+              { findingId: 'completeness:1', verdict: 'refuted', citation: 'docs/readme.md:12', rationale: 'Not an issue' },
+            ],
+          }
+        }
+        reviewCall++
+        // The third lens dies. Every verdict that DOES come back is 'refuted', so without the
+        // completeness check the run would read a clean "approve" over two lenses of three.
+        if (reviewCall === 3) return null
+        return {
+          findings: [
+            { title: 'doc finding', file: 'docs/readme.md', severity: 'low', detail: 'detail' },
+          ],
+        }
+      },
+    })
+
+    const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', category: 'docs' }))
+
+    expect(result.lenses).toHaveLength(3)
+    expect(result.lensesConcluded).toHaveLength(2)
+    expect(result.lensesConcluded).not.toContain('clarity')
+    expect(result.verdict).toBe('request-changes')
+    expect(result.summary).toContain('INCOMPLETE — 1 of 3 lenses did not conclude (clarity)')
   })
 })

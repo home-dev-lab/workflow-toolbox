@@ -85,6 +85,12 @@ interface PrReviewReducedDagOutput {
   category: ReviewCategory
   target: string
   lenses: readonly string[]
+  /**
+   * The lenses that actually returned findings. A lens whose agent dies contributes nothing,
+   * and `lenses` alone would still advertise it — so a reader comparing this shape against the
+   * full one must be able to see that a wave ran short. Equal to `lenses` on a complete run.
+   */
+  lensesConcluded: readonly string[]
   waves: number
   verdict: FinalVerdict
   summary: string
@@ -182,14 +188,26 @@ function verifierPrompt(input: PrReviewReducedDagInput, findings: readonly Reduc
   )
 }
 
-function summarize(verdict: FinalVerdict, findings: PrReviewReducedDagOutput['findings']): string {
-  if (findings.length === 0) return 'No findings were returned by the reduced review lenses.'
+function summarize(
+  verdict: FinalVerdict,
+  findings: PrReviewReducedDagOutput['findings'],
+  lenses: readonly string[],
+  lensesConcluded: readonly string[],
+): string {
+  const missing = lenses.filter((lens) => !lensesConcluded.includes(lens))
+  // Stated FIRST and unconditionally, because an incomplete wave changes what every number
+  // below it means — a count read without it is a count of the lenses that happened to survive.
+  const shortfall =
+    missing.length === 0 ? '' : `INCOMPLETE — ${missing.length} of ${lenses.length} lenses did not conclude (${missing.join(', ')}). `
+  if (findings.length === 0) {
+    return `${shortfall}No findings were returned by the reduced review lenses.`
+  }
   const counts = {
     confirmed: findings.filter((finding) => finding.verifierVerdict === 'confirmed').length,
     refuted: findings.filter((finding) => finding.verifierVerdict === 'refuted').length,
     unverifiable: findings.filter((finding) => finding.verifierVerdict === 'unverifiable').length,
   }
-  return `${verdict}: ${counts.confirmed} confirmed, ${counts.refuted} refuted, ${counts.unverifiable} unverifiable findings.`
+  return `${shortfall}${verdict}: ${counts.confirmed} confirmed, ${counts.refuted} refuted, ${counts.unverifiable} unverifiable findings.`
 }
 
 async function run(rt: WorkflowRuntime, input: PrReviewReducedDagInput): Promise<PrReviewReducedDagOutput> {
@@ -225,7 +243,15 @@ async function run(rt: WorkflowRuntime, input: PrReviewReducedDagInput): Promise
           model: CHEAP_MODEL,
           effort: CHEAP_EFFORT,
         })
-        if (output === null) return null
+        // A dead lens ABSORBS its own failure instead of propagating null, and the reason is
+        // structural rather than defensive. `dagExecute` skips a node whose dependency did not
+        // succeed, and the shared verifier depends on ALL the review lenses — so propagating
+        // null here would skip the whole verification stage and the run would yield nothing at
+        // all. That is the price of fanning three lenses into ONE verifier: the shared node is
+        // a single point of failure the per-finding shape does not have. Returning an empty
+        // result keeps the two surviving lenses verifiable; `lensesConcluded` (below) is what
+        // records that the wave ran short, and the verdict is fail-closed on it.
+        if (output === null) return { findings: [] }
         reviewFindingsByLens.set(
           node.lens,
           output.findings.map((finding, index) => ({
@@ -274,18 +300,27 @@ async function run(rt: WorkflowRuntime, input: PrReviewReducedDagInput): Promise
     }
   })
 
-  const verdict: FinalVerdict = findings.some((finding) => finding.verifierVerdict !== 'refuted')
-    ? 'request-changes'
-    : 'approve'
+  // FAIL-CLOSED on an incomplete wave. A lens whose agent returned null produced no findings,
+  // which is indistinguishable from a lens that ran and found nothing — so an "approve" here
+  // would cover only the lenses that concluded while the output still advertises all of them.
+  // That is the failure this reduced shape is most exposed to: it buys its saving by having
+  // fewer lenses, so losing one silently costs proportionally more than in the full shape.
+  const lensesConcluded = lenses.filter((lens) => reviewFindingsByLens.has(lens))
+  const waveIncomplete = lensesConcluded.length < lenses.length
+  const verdict: FinalVerdict =
+    waveIncomplete || findings.some((finding) => finding.verifierVerdict !== 'refuted')
+      ? 'request-changes'
+      : 'approve'
   const synthesisTrail = { trail: [makeRecord('prReviewReducedDag:synthesize', true, { decision: verdict })] }
 
   return {
     category: input.category,
     target: input.target,
     lenses,
+    lensesConcluded,
     waves: dag.value.waves,
     verdict,
-    summary: summarize(verdict, findings),
+    summary: summarize(verdict, findings, lenses, lensesConcluded),
     findings,
     envelope: { trail: collectTrail(classificationTrail, dag, synthesisTrail) },
   }

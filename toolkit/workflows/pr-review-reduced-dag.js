@@ -595,14 +595,18 @@ ${targetBlock(input.target)}
 ## Output
 Return { "verdicts": [{ "findingId": "...", "verdict": "confirmed|refuted|unverifiable", "citation": "path:line", "rationale": "..." }] }`;
   }
-  function summarize(verdict, findings) {
-    if (findings.length === 0) return "No findings were returned by the reduced review lenses.";
+  function summarize(verdict, findings, lenses, lensesConcluded) {
+    const missing = lenses.filter((lens) => !lensesConcluded.includes(lens));
+    const shortfall = missing.length === 0 ? "" : `INCOMPLETE \u2014 ${missing.length} of ${lenses.length} lenses did not conclude (${missing.join(", ")}). `;
+    if (findings.length === 0) {
+      return `${shortfall}No findings were returned by the reduced review lenses.`;
+    }
     const counts = {
       confirmed: findings.filter((finding) => finding.verifierVerdict === "confirmed").length,
       refuted: findings.filter((finding) => finding.verifierVerdict === "refuted").length,
       unverifiable: findings.filter((finding) => finding.verifierVerdict === "unverifiable").length
     };
-    return `${verdict}: ${counts.confirmed} confirmed, ${counts.refuted} refuted, ${counts.unverifiable} unverifiable findings.`;
+    return `${shortfall}${verdict}: ${counts.confirmed} confirmed, ${counts.refuted} refuted, ${counts.unverifiable} unverifiable findings.`;
   }
   async function run(rt, input) {
     rt.phase("Classify");
@@ -634,7 +638,7 @@ Return { "verdicts": [{ "findingId": "...", "verdict": "confirmed|refuted|unveri
             model: CHEAP_MODEL,
             effort: CHEAP_EFFORT
           });
-          if (output2 === null) return null;
+          if (output2 === null) return { findings: [] };
           reviewFindingsByLens.set(
             node.lens,
             output2.findings.map((finding, index) => ({
@@ -679,15 +683,18 @@ Return { "verdicts": [{ "findingId": "...", "verdict": "confirmed|refuted|unveri
         rationale: verifierVerdict.rationale
       };
     });
-    const verdict = findings.some((finding) => finding.verifierVerdict !== "refuted") ? "request-changes" : "approve";
+    const lensesConcluded = lenses.filter((lens) => reviewFindingsByLens.has(lens));
+    const waveIncomplete = lensesConcluded.length < lenses.length;
+    const verdict = waveIncomplete || findings.some((finding) => finding.verifierVerdict !== "refuted") ? "request-changes" : "approve";
     const synthesisTrail = { trail: [makeRecord("prReviewReducedDag:synthesize", true, { decision: verdict })] };
     return {
       category: input.category,
       target: input.target,
       lenses,
+      lensesConcluded,
       waves: dag.value.waves,
       verdict,
-      summary: summarize(verdict, findings),
+      summary: summarize(verdict, findings, lenses, lensesConcluded),
       findings,
       envelope: { trail: collectTrail(classificationTrail, dag, synthesisTrail) }
     };
