@@ -97,6 +97,10 @@ Refuses a named `Agent` spawn without `isolation` where the spawning session is 
 
 Runs `wt-stale-date-guard.mjs` on the single file just touched by `Write` or `Edit`. It checks only `.claude/rules/` and `memory/*.md`, exiting 0 silently for other surfaces because they do not carry the operational deadlines this guard is intended to check. It cannot undo an already completed write, so it is advisory only: findings are emitted through `hookSpecificOutput` and `additionalContext`, while clean results produce no output.
 
+### `wt-shipped-twin-check-hook.mjs` — shipped-twin question (PostToolUse)
+
+Asks, for the single file just touched by `Write` or `Edit`, whether a conventional local Claude config surface might have a shipped counterpart that needs the same fix. It checks only `.claude/scripts/`, `.claude/hooks/`, and `.claude/rules/` for `.mjs`, `.js`, `.ts`, `.cjs`, `.py`, `.sh`, and `.md` files, while staying silent for `plugin/`, `node_modules/`, `memory/*.md`, `MEMORY.md`, and anything else. It does not attempt filename or content matching; it raises the question only, and throttles itself to once per session per directory via a small state file under `WT_SHIPPED_TWIN_GUARD_DIR` or a safe temp dir fallback.
+
 ### `wt-stale-date-guard.mjs` — stale operational-deadline scanner (standalone CLI)
 
 Scans Markdown for absolute dates and flags operational deadlines that have passed without treating provenance dates as deadlines. It takes no project-specific paths by default; targets are supplied by the caller. Usage:

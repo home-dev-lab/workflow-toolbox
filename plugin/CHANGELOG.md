@@ -37,6 +37,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   the ownership link (or its absence) decides, and the checker's existing mtime fallback remains
   only for records where no link is present.
 
+- **`wt-shipped-twin-check-hook.mjs` — a PostToolUse Write/Edit advisory that raises the
+  shipped-twin question on conventional local Claude config surfaces.** It never guesses the
+  pairing, stays silent for out-of-scope paths, and throttles itself to once per session per
+  directory so the reminder does not turn into background noise.
+
 - **`wt-adopt-rules-check-hook.mjs` is back as a DEPRECATION SHIM, and every registered hook
   path is now locked.** Renaming a hook file breaks every session that is ALREADY RUNNING: the
   manifest is read at session start, so the old path lives on in memory after the file is gone,

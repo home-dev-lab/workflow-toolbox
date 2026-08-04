@@ -217,6 +217,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this PostToolUse stale-deadline advisory under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-shipped-twin-check-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PostToolUse shipped-twin advisory under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-stale-date-guard.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this standalone CLI, its usage, and its exit codes under Shipped Hooks, Guards & Monitors.',
@@ -531,6 +536,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-spawn-capability-guard-hook.mjs',
       'plugin/bin/wt-spawn-shape-guard-hook.mjs',
       'plugin/bin/wt-stale-date-guard-hook.mjs',
+      'plugin/bin/wt-shipped-twin-check-hook.mjs',
       'plugin/bin/wt-stale-date-guard.mjs',
       'plugin/bin/wt-command-repeat-check.mjs',
     ],

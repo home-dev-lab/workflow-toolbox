@@ -2301,6 +2301,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-spawn-capability-guard-hook.mjs",
         "plugin/bin/wt-spawn-shape-guard-hook.mjs",
         "plugin/bin/wt-stale-date-guard-hook.mjs",
+        "plugin/bin/wt-shipped-twin-check-hook.mjs",
         "plugin/bin/wt-stale-date-guard.mjs",
         "plugin/bin/wt-command-repeat-check.mjs"
       ],

@@ -178,6 +178,15 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Write',
         tool_input: { file_path: join(sandbox.projectDir, 'notes.txt') },
       }
+    case 'wt-shipped-twin-check-hook.mjs':
+      mkdirSync(join(sandbox.projectDir, '.claude', 'scripts'), { recursive: true })
+      return {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Write',
+        session_id: 'selftest-session',
+        cwd: sandbox.projectDir,
+        tool_input: { file_path: join(sandbox.projectDir, '.claude', 'scripts', 'foo.mjs') },
+      }
     case 'wt-stop-hook.mjs':
       return {
         hook_event_name: 'Stop',

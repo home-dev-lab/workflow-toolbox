@@ -19,3 +19,32 @@ Ground the premise before a workaround. Before building around "the data/capabil
 or "that's not possible", read the real source (or fan read-only agents for coverage) to confirm
 it — a confident architectural prior is cheap to check and often wrong. The incremental fix can
 still ship; just log the root so the next pass is coherent.
+
+## A fix whose defect has a TWIN elsewhere is carried in the same pass
+
+Fixing one copy of a duplicated defect is point-patching a shared cause, and it has a
+particularly costly shape when the twin lives on the other side of a distribution boundary: a
+local, private copy and a published one. Fix only the private side and the outcome inverts —
+the fix stays with you and the defect ships to everyone who adopted it, with nothing anywhere
+saying so.
+
+So whenever you edit a file that could have a published counterpart — a rule, a script, a hook,
+a helper, anything you also distribute — answer this in the SAME pass, not in a later one:
+
+> **Does this file have a shipped twin, and must this fix be carried there now?**
+
+Three things make this fail in practice, and each is worth naming:
+
+- **Detection is usually not what fails.** The twin is often already known, sometimes already
+  filed. What gets skipped is the immediate half — carrying the fix — usually justified by a
+  conflict or a collision that nobody checked and that takes seconds to check.
+- **The pairing cannot be mechanised.** Twins routinely do not share a filename, so no
+  name-matching guard finds them. A guard can RAISE the question at edit time; it cannot answer
+  it. Build the reminder if you like, but do not credit it with the coverage.
+- **A reminder that fires on every edit gets switched off**, and takes its real case with it. Let
+  it warn until its false-positive rate has been measured on material it did not select.
+
+The judgment that remains is which half of the change is durable and environment-free — that
+part belongs in the published copy — and which half is a local calibration, a private path, or
+an account specific, which stays private. An unstated decision is precisely how the two copies
+drift apart while both look maintained.
