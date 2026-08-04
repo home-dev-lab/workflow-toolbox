@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,8 +11,16 @@ const HOOK = join(REPO_ROOT, 'plugin/bin/wt-actionable-gate-hook.mjs')
 const CORE = join(REPO_ROOT, 'plugin/bin/lib/actionability-core.mjs')
 const MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 const roots: string[] = []
+const laneProcesses: Array<{ pid: number; detached: boolean }> = []
 
 afterEach(() => {
+  for (const lane of laneProcesses.splice(0)) {
+    try {
+      process.kill(lane.pid, 'SIGKILL')
+    } catch {
+      // Already exited.
+    }
+  }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -37,6 +45,36 @@ function runHook(payload: unknown, env: NodeJS.ProcessEnv): { code: number | nul
     stderr: (res.stderr ?? '').trim(),
     stdout: (res.stdout ?? '').trim(),
   }
+}
+
+function launchLane(args0: string, cwd: string, detached = false): number {
+  const child = spawn('bash', ['-lc', `exec -a ${JSON.stringify(args0)} sleep 30`], {
+    cwd,
+    detached,
+    stdio: detached ? 'ignore' : 'pipe',
+  })
+  if (detached) child.unref()
+  if (!child.pid) throw new Error('lane did not start')
+  laneProcesses.push({ pid: child.pid, detached })
+  return child.pid
+}
+
+function launchDetachedLaneViaHelper(args0: string, cwd: string): void {
+  const helper = spawnSync(
+    'bash',
+    ['-lc', `bash -lc 'exec -a ${JSON.stringify(args0)} sleep 30' >/dev/null 2>&1 &`],
+    { cwd, encoding: 'utf8' },
+  )
+  if (helper.status !== 0) throw new Error(helper.stderr || 'detached lane helper failed')
+  const pidLookup = spawnSync('pgrep', ['-f', args0], { encoding: 'utf8' })
+  const pid = (pidLookup.stdout || '')
+    .split('\n')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map(Number)
+    .find((value) => Number.isInteger(value) && value > 0)
+  if (!pid) throw new Error('detached lane pid lookup failed')
+  laneProcesses.push({ pid, detached: true })
 }
 
 function scaffold(tag: string) {
@@ -430,6 +468,103 @@ describe('wt-actionable-gate-hook', () => {
     const r = runHook(payload, env)
     expect(r.code).toBe(2)
     expect(r.stderr).toContain('CARD-53 external lane expired')
+  })
+
+  it('a lane of this session detected by ancestry + cwd -> no block, and the counter resets', () => {
+    const { env, payload, stateDir, cwd } = scaffold('lane-detected')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now(),
+      actionable: 3,
+      next: 'CARD-54 external lane detected',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+    expect(runHook(payload, env).code).toBe(2)
+    const pattern = 'wt-actionable-test same-session lane'
+    launchLane(pattern, cwd)
+    const running = runHook(payload, { ...env, WT_ACTIONABLE_LANE_PATTERNS: pattern })
+    expect(running.code).toBe(0)
+    expect(running.stderr).toBe('')
+    const again = runHook(payload, { ...env, WT_ACTIONABLE_LANE_PATTERNS: 'wt-actionable-test no-match lane' })
+    expect(again.code).toBe(2)
+    expect(again.stderr).toContain('Block 1 of 3')
+  })
+
+  it('blinding the matcher still blocks, proving the gate did not merely stay quiet', () => {
+    const { env, payload, stateDir, cwd } = scaffold('lane-blinded')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now(),
+      actionable: 2,
+      next: 'CARD-55 blinded matcher',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+    const pattern = 'wt-actionable-test blinded matcher lane'
+    launchLane(pattern, cwd)
+    const r = runHook(payload, { ...env, WT_ACTIONABLE_LANE_PATTERNS: 'wt-actionable-test definitely-no-match lane' })
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('CARD-55 blinded matcher')
+  })
+
+  it('a lane from another session is not counted as this session\'s work', () => {
+    const { env, payload, stateDir, cwd } = scaffold('lane-other-session')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now(),
+      actionable: 2,
+      next: 'CARD-56 other session lane',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+    const pattern = 'wt-actionable-test detached lane'
+    launchDetachedLaneViaHelper(pattern, cwd)
+    const r = runHook(payload, { ...env, WT_ACTIONABLE_LANE_PATTERNS: pattern })
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('CARD-56 other session lane')
+  })
+
+  it('platform gap falls back to transcript + declared bound without throwing or claiming a lane', () => {
+    const { env, payload, stateDir, cwd } = scaffold('lane-unsupported')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now(),
+      actionable: 2,
+      next: 'CARD-57 unsupported platform',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+    const pattern = 'wt-actionable-test unsupported mode lane'
+    launchLane(pattern, cwd)
+    const blocked = runHook(payload, {
+      ...env,
+      WT_ACTIONABLE_LANE_DETECTION_MODE: 'unsupported',
+      WT_ACTIONABLE_LANE_PATTERNS: pattern,
+    })
+    expect(blocked.code).toBe(2)
+    expect(blocked.stderr).toContain('CARD-57 unsupported platform')
+
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now(),
+      actionable: 2,
+      next: 'CARD-57 unsupported platform',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: Date.now() + 60_000,
+    })
+    const fallback = runHook(payload, {
+      ...env,
+      WT_ACTIONABLE_LANE_DETECTION_MODE: 'unsupported',
+      WT_ACTIONABLE_LANE_PATTERNS: pattern,
+    })
+    expect(fallback.code).toBe(0)
+    expect(fallback.stderr).toBe('')
   })
 })
 

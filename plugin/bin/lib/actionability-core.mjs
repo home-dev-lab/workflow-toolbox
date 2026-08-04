@@ -88,9 +88,9 @@ export function decide({ snapshot = null, now, staleAfterMs, inFlight = false, c
   const blockedUntil = snapshot.blockedUntil
   const inFlightUntil = snapshot.inFlightUntil
   const liveBlockedUntil = finiteNumber(blockedUntil) && blockedUntil > now
-  // Producers declare external work with a self-expiring bound. If they forget to
-  // write it, or let it expire, the hook may block spuriously; it must never miss
-  // blocking because an absent signal was treated as live.
+  // External lane detection now lives in the hook, because it depends on the host's
+  // process table. This declared bound remains only as the fallback for work that
+  // probe cannot see at all.
   const declaredInFlight = finiteNumber(inFlightUntil) && inFlightUntil > now
 
   if (declaredInFlight) return pass(0, { actionable, next, blockedReason, blockedUntil, inFlightUntil })
