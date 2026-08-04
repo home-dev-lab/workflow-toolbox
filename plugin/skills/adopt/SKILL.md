@@ -125,20 +125,31 @@ When adopting into a project that already has rules, reconcile first — see the
   Unlike `--dir`, `--global` composes with `--set all`; the two flags cannot be combined.
 - **Audit overlap (read-only):** `node scripts/install.mjs --audit-overlap --user-dir <dir>`
   compares the user rules directory mechanically with the plugin's shipped rules bundle.
-  Use `--pairs-file <path>` to provide an editable JSON array of user/shipped basename pairs;
-  otherwise the bundled `scripts/rule-pairs.json` is used. A concern permanently excluded from
+  Use `--pairs-file <path>` to provide an editable JSON array of user/shipped basename pairs
+  (otherwise the bundled `scripts/rule-pairs.json` is used), and `--declarations-file <path>` to
+  provide an editable JSON array of author-declared ship statuses (otherwise the bundled
+  `scripts/ship-declarations.json` is used). A concern permanently excluded from
   the swap by policy (its shipped counterpart is never meant to be installed for it — e.g. a
   machine-specific rule that will never converge with a generic shipped one) should NOT be a
   declared pair at all: leave it out so it reports as `UNMAPPED` like any other machine-only
   rule, rather than as permanent, noisy `DRIFT`. It reports `DUPLICATE` when both
   layers contain a paired file, `DRIFT` for user lines absent from the shipped file,
   `CLEAN` when no such difference is found, and `ABSENT` when a declared user file is not
-  present. It also reports unpaired Markdown files as `UNMAPPED`; none of these findings is
-  auto-classified or auto-ported. A pair marked `"partial": true` in the pairs file (a
+  present. In the declarations file, `private` stays silent and counts as declared-private,
+  `undecided` reports a non-gating `UNDECIDED`, and `shipped-as` requires a `target` basename
+  under `plugin/rules/` and stays silent only while that shipped target exists (otherwise it is
+  a gating `DECLARATION-ERROR`). It also reports unpaired Markdown files as `UNMAPPED`; none of
+  these findings is auto-classified or auto-ported. This deliberately NEVER guesses a private
+  file's status from its prose: an undeclared file behaves exactly as before (`UNMAPPED`,
+  non-gating), and `undecided` does not gate — only a broken `shipped-as` declaration does. A
+  pair marked `"partial": true` in the pairs file (a
   deliberate, bounded, accepted overlap — e.g. machine bindings that intentionally coexist
   with their generic shipped counterpart) reports `DUPLICATE`/`DRIFT` informationally instead of
   as a failing finding. The command exits 1 when any non-partial `DUPLICATE` or `DRIFT` is
-  found, and 0 otherwise.
+  found, when a shipped rule has no pairing entry (`UNPAIRED`), when the `agents` set has a
+  declared pair with no user file present (`ABSENT`), or when a `shipped-as` declaration points
+  at a shipped file that does not exist (`DECLARATION-ERROR`) — 0 otherwise. `UNMAPPED` and
+  `UNDECIDED` are both purely informational and never affect the exit code.
 
 **Target dirs — confirm scope with the user first.** Each set has its own default under the
 current working directory: rules → `.claude/rules/`, agents → `.claude/agents/` (project

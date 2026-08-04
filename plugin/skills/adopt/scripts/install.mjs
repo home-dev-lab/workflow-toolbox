@@ -697,7 +697,17 @@ function cmp(a, b) {
 }
 
 function parseArgs(argv) {
-  const args = { mode: 'check', dir: null, global: false, force: false, set: 'rules', replaceSymlinks: false, userDir: null, pairsFile: null }
+  const args = {
+    mode: 'check',
+    dir: null,
+    global: false,
+    force: false,
+    set: 'rules',
+    replaceSymlinks: false,
+    userDir: null,
+    pairsFile: null,
+    declarationsFile: null,
+  }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--install') args.mode = 'install'
     else if (argv[i] === '--check') args.mode = 'check'
@@ -709,6 +719,7 @@ function parseArgs(argv) {
     else if (argv[i] === '--audit-overlap') args.mode = 'audit-overlap'
     else if (argv[i] === '--user-dir') args.userDir = argv[++i]
     else if (argv[i] === '--pairs-file') args.pairsFile = argv[++i]
+    else if (argv[i] === '--declarations-file') args.declarationsFile = argv[++i]
   }
   return args
 }
@@ -729,6 +740,7 @@ function parseArgs(argv) {
 const FLAG_EFFECTIVE_MODES = {
   userDir: { cli: '--user-dir', modes: ['audit-overlap'] },
   pairsFile: { cli: '--pairs-file', modes: ['audit-overlap'] },
+  declarationsFile: { cli: '--declarations-file', modes: ['audit-overlap'] },
   dir: { cli: '--dir', modes: ['check', 'install'] },
   global: { cli: '--global', modes: ['check', 'install'] },
   force: { cli: '--force', modes: ['check', 'install'] },
@@ -763,7 +775,7 @@ function normalizedLines(text) {
   return text.split(/\r?\n/).map((line) => line.replace(/[ \t]+$/, ''))
 }
 
-function auditOverlap(userDir, root, pairsFile, set = 'rules') {
+function auditOverlap(userDir, root, pairsFile, declarationsFile, set = 'rules') {
   const setConfig = SETS[set]
   if (!setConfig) fail(`unknown audit-overlap set '${set}' (expected rules | agents)`)
   process.stdout.write(`[audit-overlap:${set}] target=${userDir}\n`)
@@ -784,11 +796,16 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
   // the shipped-only file just isn't examined by that branch), or the correct target end
   // state (user side removed, shipped copy installed) — never "no known counterpart".
   const declaredShipped = new Set(pairs.map((pair) => pair.shipped))
+  let declaredStatus = new Map()
   let duplicate = 0
   let drift = 0
   let absent = 0
   let unpaired = 0
   let unmapped = 0
+  let declaredPrivate = 0
+  let undecided = 0
+  let declaredPorted = 0
+  let declarationError = 0
   // Direction breakdown of `drift`: the single `drift`
   // count says a pair diverges, never which way — so "2 drift" cannot tell a reader whether
   // the project is BEHIND the shipped template or has DIVERGED locally ahead of it. Counted
@@ -796,6 +813,58 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
   // double-counted against `drift` itself, which stays the pre-existing gate signal.
   let driftMissingFromShipped = 0
   let driftMissingFromProject = 0
+
+  if (set === 'rules') {
+    const defaultDeclarationsFile = path.join(path.dirname(fileURLToPath(import.meta.url)), 'ship-declarations.json')
+    const declarationsPath = path.resolve(declarationsFile || defaultDeclarationsFile)
+    let declarations = []
+    try {
+      const raw = fs.readFileSync(declarationsPath, 'utf8')
+      declarations = JSON.parse(raw)
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+        declarations = []
+      } else if (error instanceof SyntaxError) {
+        fail(`invalid ship declarations file ${declarationsPath}: invalid JSON`)
+      } else {
+        throw error
+      }
+    }
+    if (!Array.isArray(declarations)) fail(`invalid ship declarations file ${declarationsPath}: root must be a JSON array`)
+    for (const [index, entry] of declarations.entries()) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        fail(`invalid ship declarations file ${declarationsPath}: entry ${index} must be an object`)
+      }
+      if (typeof entry.user !== 'string' || entry.user.trim() === '') {
+        fail(`invalid ship declarations file ${declarationsPath}: entry ${index} field 'user' must be a non-empty string`)
+      }
+      if (!['private', 'undecided', 'shipped-as'].includes(entry.status)) {
+        fail(`invalid ship declarations file ${declarationsPath}: entry ${index} field 'status' must be one of private | undecided | shipped-as`)
+      }
+      const hasTarget = Object.prototype.hasOwnProperty.call(entry, 'target')
+      if (entry.status === 'shipped-as') {
+        if (typeof entry.target !== 'string' || entry.target.trim() === '') {
+          fail(`invalid ship declarations file ${declarationsPath}: entry ${index} field 'target' must be a non-empty string when status is 'shipped-as'`)
+        }
+      } else if (hasTarget) {
+        fail(`invalid ship declarations file ${declarationsPath}: entry ${index} field 'target' is allowed only when status is 'shipped-as'`)
+      }
+      // Collision check covers BOTH sides of a declared pair, not just `user`: the UNMAPPED
+      // loop below only ever consults `declaredStatus` for a file already proven absent from
+      // BOTH `declaredUsers` and `declaredShipped` (a file matching either is handled by the
+      // pairs machinery instead). A declaration whose `user` equals a paired SHIPPED basename
+      // therefore used to be accepted here and then silently never looked up — dead
+      // configuration that read as valid. Review finding, reproduced on this checkout: such an
+      // entry was accepted and the run stayed green with 0 declared-private, i.e. the
+      // declaration had no effect at all.
+      if (declaredUsers.has(entry.user) || declaredShipped.has(entry.user)) {
+        fail(
+          `invalid ship declarations file ${declarationsPath}: entry ${index} user '${entry.user}' collides with a declared pair (user or shipped side) in ${pairsPath}`,
+        )
+      }
+    }
+    declaredStatus = new Map(declarations.map((entry) => [entry.user, entry]))
+  }
 
   for (const item of setConfig.resolveItems(root)) {
     if (!declaredShipped.has(item.file)) {
@@ -898,8 +967,33 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
   }
   for (const file of entries.filter((f) => f.endsWith('.md')).sort()) {
     if (!declaredUsers.has(file) && !declaredShipped.has(file) && realFile(path.join(userDir, file))) {
-      unmapped++
-      process.stdout.write(`UNMAPPED ${path.join(userDir, file)}\n`)
+      if (set !== 'rules') {
+        unmapped++
+        process.stdout.write(`UNMAPPED ${path.join(userDir, file)}\n`)
+        continue
+      }
+      const decl = declaredStatus.get(file)
+      if (!decl) {
+        unmapped++
+        process.stdout.write(`UNMAPPED ${path.join(userDir, file)}\n`)
+      } else if (decl.status === 'private') {
+        declaredPrivate++
+      } else if (decl.status === 'undecided') {
+        undecided++
+        process.stdout.write(
+          `UNDECIDED ${path.join(userDir, file)}: ship/keep-private decision recorded as owed — resolve before the next release\n`,
+        )
+      } else {
+        const targetPath = path.join(shippedDir, decl.target)
+        if (realFile(targetPath)) {
+          declaredPorted++
+        } else {
+          declarationError++
+          process.stdout.write(
+            `DECLARATION-ERROR ${path.join(userDir, file)}: declared shipped-as '${decl.target}', but no such shipped file exists at ${targetPath}\n`,
+          )
+        }
+      }
     }
   }
   if (set === 'agents') {
@@ -907,7 +1001,10 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
       `audit-overlap: ${duplicate} duplicate, ${drift} drift, ${absent} absent, ${unpaired} unpaired, ${unmapped} unmapped\n`,
     )
   } else {
-    process.stdout.write(`audit-overlap: ${duplicate} duplicate, ${drift} drift, ${unpaired} unpaired, ${unmapped} unmapped\n`)
+    process.stdout.write(
+      `audit-overlap: ${duplicate} duplicate, ${drift} drift, ${unpaired} unpaired, ${unmapped} unmapped, ` +
+        `${declaredPrivate} declared-private (silent), ${undecided} undecided, ${declaredPorted} declared-ported (silent), ${declarationError} declaration-error\n`,
+    )
   }
   // The single `drift` count above still decides the exit code (unchanged) — this line adds
   // DIRECTION on top of it, never in place of it, so "2 drift" is never left to mean "behind"
@@ -929,7 +1026,7 @@ function auditOverlap(userDir, root, pairsFile, set = 'rules') {
   // because an unmapped file can just as well be the symptom of an INCOMPLETE adoption — the
   // tool cannot tell intent from omission, so it reports and lets a human judge, it just never
   // blocks a release on that judgment call alone.
-  if (duplicate || drift || unpaired || (set === 'agents' && absent)) process.exitCode = 1
+  if (duplicate || drift || unpaired || (set === 'agents' && absent) || declarationError) process.exitCode = 1
 }
 
 /** Decide the status label and (for --install) whether to write. `force` only ever
@@ -1078,7 +1175,7 @@ function main() {
       fail(`unknown --set '${args.set}' for --audit-overlap (expected rules | agents)`)
     }
     const root = pluginRoot()
-    auditOverlap(path.resolve(args.userDir), root, args.pairsFile, args.set)
+    auditOverlap(path.resolve(args.userDir), root, args.pairsFile, args.declarationsFile, args.set)
     return
   }
   if (!['rules', 'agents', 'all'].includes(args.set)) {

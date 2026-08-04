@@ -168,4 +168,129 @@ describe('adopt audit-overlap', () => {
     expect(res.status).toBe(1)
     expect(res.stdout).toMatch(/DUPLICATE.*step-back-architectural\.md.*wt-step-back-architectural\.md/)
   })
+
+  describe('ship declarations', () => {
+    it('keeps declared private files silent', () => {
+      const d = mkDir()
+      const declarationsFile = join(d, 'declarations.json')
+      writeFileSync(join(d, 'quiet.md'), 'private calibration\n')
+      writeFileSync(declarationsFile, JSON.stringify([{ user: 'quiet.md', status: 'private' }]))
+
+      const res = run(d, ['--declarations-file', declarationsFile])
+      expect(res.status).toBe(0)
+      expect(res.stdout).toContain('1 declared-private')
+      expect(res.stdout).not.toMatch(/^UNMAPPED .*quiet\.md$/m)
+      expect(res.stdout).not.toMatch(/^UNDECIDED .*quiet\.md/m)
+    })
+
+    it('reports declared undecided files without gating', () => {
+      const d = mkDir()
+      const declarationsFile = join(d, 'declarations.json')
+      const todoPath = join(d, 'todo.md')
+      writeFileSync(todoPath, 'decide me\n')
+      writeFileSync(declarationsFile, JSON.stringify([{ user: 'todo.md', status: 'undecided' }]))
+
+      const res = run(d, ['--declarations-file', declarationsFile])
+      expect(res.status).toBe(0)
+      expect(res.stdout).toContain(`UNDECIDED ${todoPath}`)
+    })
+
+    it('keeps declared shipped-as files silent when the target exists', () => {
+      const fixture = mkPairsFixture(
+        'wt-target.md',
+        '# target\n',
+        { user: 'paired-user.md', shipped: 'wt-target.md', partial: false },
+      )
+      const declarationsFile = join(fixture.userDir, 'declarations.json')
+      writeFileSync(join(fixture.userDir, 'ported.md'), 'ported rationale\n')
+      writeFileSync(
+        declarationsFile,
+        JSON.stringify([{ user: 'ported.md', status: 'shipped-as', target: 'wt-target.md' }]),
+      )
+
+      const res = run(fixture.userDir, ['--pairs-file', fixture.pairsFile, '--declarations-file', declarationsFile], fixture.script)
+      expect(res.status).toBe(0)
+      expect(res.stdout).toContain('1 declared-ported')
+      expect(res.stdout).not.toMatch(/^UNMAPPED .*ported\.md$/m)
+      expect(res.stdout).not.toMatch(/^UNDECIDED .*ported\.md/m)
+      expect(res.stdout).not.toMatch(/^DECLARATION-ERROR .*ported\.md/m)
+    })
+
+    it('fails when declared shipped-as points at a missing target', () => {
+      const d = mkDir()
+      const declarationsFile = join(d, 'declarations.json')
+      const brokenPath = join(d, 'broken.md')
+      writeFileSync(brokenPath, 'broken port claim\n')
+      writeFileSync(
+        declarationsFile,
+        JSON.stringify([{ user: 'broken.md', status: 'shipped-as', target: 'does-not-exist.md' }]),
+      )
+
+      const res = run(d, ['--declarations-file', declarationsFile])
+      expect(res.status).toBe(1)
+      expect(res.stdout).toContain('DECLARATION-ERROR')
+      expect(res.stdout).toContain(brokenPath)
+      expect(res.stdout).toContain('does-not-exist.md')
+    })
+
+    it('keeps undeclared files as unchanged UNMAPPED findings', () => {
+      const d = mkDir()
+      const strayPath = join(d, 'fresh-undeclared-local-only.md')
+      writeFileSync(strayPath, 'still local only\n')
+
+      const res = run(d)
+      expect(res.status).toBe(0)
+      expect(res.stdout).toContain(`UNMAPPED ${strayPath}`)
+    })
+
+    it('refuses declarations that collide with a declared pair user', () => {
+      const fixture = mkPairsFixture(
+        'wt-target.md',
+        '# target\n',
+        { user: 'collision.md', shipped: 'wt-target.md', partial: false },
+      )
+      const declarationsFile = join(fixture.userDir, 'declarations.json')
+      writeFileSync(declarationsFile, JSON.stringify([{ user: 'collision.md', status: 'private' }]))
+
+      const res = run(fixture.userDir, ['--pairs-file', fixture.pairsFile, '--declarations-file', declarationsFile], fixture.script)
+      expect(res.status).toBe(1)
+      expect(res.stdout).toContain("user 'collision.md' collides with a declared pair")
+    })
+
+    it('refuses declarations that collide with a declared pair on the SHIPPED side (review finding: this used to be accepted and silently never consulted)', () => {
+      const fixture = mkPairsFixture(
+        'wt-shipped-collision.md',
+        '# shipped side\n',
+        { user: 'local-name.md', shipped: 'wt-shipped-collision.md', partial: false },
+      )
+      const declarationsFile = join(fixture.userDir, 'declarations.json')
+      // The declaration's `user` equals the PAIR's `shipped` basename, not its `user` basename —
+      // this is the collision shape the earlier `declaredUsers`-only check missed entirely.
+      writeFileSync(declarationsFile, JSON.stringify([{ user: 'wt-shipped-collision.md', status: 'private' }]))
+
+      const res = run(fixture.userDir, ['--pairs-file', fixture.pairsFile, '--declarations-file', declarationsFile], fixture.script)
+      expect(res.status).toBe(1)
+      expect(res.stdout).toContain("user 'wt-shipped-collision.md' collides with a declared pair")
+    })
+
+    it('refuses a declaration with a bad status value', () => {
+      const d = mkDir()
+      const declarationsFile = join(d, 'declarations.json')
+      writeFileSync(declarationsFile, JSON.stringify([{ user: 'bad-status.md', status: 'maybe' }]))
+
+      const res = run(d, ['--declarations-file', declarationsFile])
+      expect(res.status).toBe(1)
+      expect(res.stdout).toContain("field 'status'")
+    })
+
+    it('refuses a shipped-as declaration with no target', () => {
+      const d = mkDir()
+      const declarationsFile = join(d, 'declarations.json')
+      writeFileSync(declarationsFile, JSON.stringify([{ user: 'missing-target.md', status: 'shipped-as' }]))
+
+      const res = run(d, ['--declarations-file', declarationsFile])
+      expect(res.status).toBe(1)
+      expect(res.stdout).toContain("field 'target'")
+    })
+  })
 })
