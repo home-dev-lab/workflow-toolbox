@@ -64,6 +64,27 @@ const NON_DEFAULT_RULE = `# Delegation ladder
 Use an executor lane only when explicitly requested and separately consented.
 `
 
+// The exact shape of the missed real-world case: French, "par défaut" (accented, uppercase),
+// nowhere near any of the old detector's English-only phrasing.
+const FRENCH_DEFAULT_RULE = `# Ladder de délégation
+
+Tout le reste descend en lane GPT par DÉFAUT, pas en repli.
+`
+
+// A rule that names the lane but only CONDITIONALLY ("only when explicitly requested"), in
+// French this time — must stay silent, or the precision half of the fix is fake.
+const FRENCH_NON_DEFAULT_RULE = `# Ladder de délégation
+
+Utiliser une lane exécuteur seulement sur demande explicite et consentement séparé.
+`
+
+// Names the consent key literally (language-independent by construction) right next to a
+// default cue — must match without relying on either language's phrasing.
+const CONSENT_KEY_DEFAULT_RULE = `# Ladder
+
+Every heavy increment goes through the lane by default; set WT_EXECUTOR_LANE_CONSENT to opt in.
+`
+
 describe('wt-lane-consent-check', () => {
   it('detects and names both sides when lane-default rules meet absent consent', () => {
     const f = fixture('mismatch')
@@ -98,6 +119,38 @@ describe('wt-lane-consent-check', () => {
 
     expect(res.status).toBe(0)
     expect((res.stdout ?? '').trim()).toBe('')
+  })
+
+  it('names a FRENCH rule that declares the lane a default — the reported real-world miss', () => {
+    const f = fixture('french-mismatch')
+    writeRule(join(f.config, 'rules'), FRENCH_DEFAULT_RULE)
+
+    const res = runCli(f.project, f.env)
+
+    expect(res.status).toBe(1)
+    expect(res.stdout).toContain('DISAGREEMENT')
+    expect(res.stdout).toContain(join(f.config, 'rules', 'wt-delegation-ladder.md'))
+  })
+
+  it('stays silent on a French rule that only mentions the lane conditionally', () => {
+    const f = fixture('french-ordinary')
+    writeRule(join(f.config, 'rules'), FRENCH_NON_DEFAULT_RULE)
+
+    const res = runCli(f.project, f.env)
+
+    expect(res.status).toBe(0)
+    expect((res.stdout ?? '').trim()).toBe('')
+  })
+
+  it('names a rule that declares a default next to the literal consent key, language-independent', () => {
+    const f = fixture('consent-key-mismatch')
+    writeRule(join(f.config, 'rules'), CONSENT_KEY_DEFAULT_RULE)
+
+    const res = runCli(f.project, f.env)
+
+    expect(res.status).toBe(1)
+    expect(res.stdout).toContain('DISAGREEMENT')
+    expect(res.stdout).toContain(join(f.config, 'rules', 'wt-delegation-ladder.md'))
   })
 
   it('reports UNKNOWN on an unreadable or invalid settings link instead of folding it into absent', () => {

@@ -92,8 +92,32 @@ function detectLaneDefaultMeaning(text) {
   if (/heavy mechanical work goes down to a cheaper executor/i.test(text)) {
     reasons.push('heavy-work downrouting')
   }
+  const defaultCues = [
+    /\bby default\b/gi,
+    /\bdefault route\b/gi,
+    /\bstanding default\b/gi,
+    /\bas a default\b/gi,
+    /\bdefaults to\b/gi,
+    /\bpar d[eé]faut\b/gi,
+  ]
+  const laneCues = [
+    /\bexecutor lane\b/gi,
+    /\bcheaper lane\b/gi,
+    /\bcheaper executor\b/gi,
+    /\bexternal lane\b/gi,
+    /\bGPT lane\b/gi,
+    /\blane GPT\b/gi,
+    /\blane externe\b/gi,
+    /\blane ex[ée]cuteur\b/gi,
+    /\bex[ée]cuteur externe\b/gi,
+  ]
+  const cuePositions = (cues) => cues.flatMap((cue) => [...text.matchAll(cue)].map((match) => match.index))
+  const withinDefaultWindow = (positions) => cuePositions(defaultCues).some((defaultPosition) => positions.some((position) => Math.abs(defaultPosition - position) <= 200))
+  if (withinDefaultWindow(cuePositions(laneCues)) || withinDefaultWindow(cuePositions([new RegExp(CONSENT_KEY, 'gi')]))) {
+    reasons.push('default-routing cues')
+  }
   return {
-    matches: reasons.includes('heavy-increment routing') || reasons.includes('default-routing wording'),
+    matches: reasons.includes('heavy-increment routing') || reasons.includes('default-routing wording') || reasons.includes('default-routing cues'),
     reasons,
   }
 }
