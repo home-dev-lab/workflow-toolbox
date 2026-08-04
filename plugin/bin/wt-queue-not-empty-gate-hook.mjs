@@ -176,6 +176,12 @@ if (!existsSync(SNAPSHOT)) bail()
 // reports open:0 silences this guard.
 let openCount = null
 let nextItem = ''
+// ⚠ A COUNT WITHOUT ITS AGE READS AS CURRENT. This snapshot is refreshed only when something
+// actually reads the queue, so a session that closes several items without re-reading it is
+// shown the pre-closure number — accurate when it was measured, wrong now, and indistinguishable
+// from fresh. The age is already computed below to decide staleness; carrying it into the
+// message costs nothing and stops the number from lying by omission.
+let snapshotAgeMin = null
 try {
   const snap = JSON.parse(readFileSync(SNAPSHOT, 'utf8'))
 
@@ -202,6 +208,7 @@ try {
   if (age <= SNAPSHOT_MAX_AGE_MIN * 60_000 && isValidOpen) {
     openCount = rawOpen
     nextItem = String(snap.next || '')
+    snapshotAgeMin = Math.round(age / 60_000)
   }
 } catch {
   /* marker exists but is unreadable/corrupt — treated as "work remains", see FAIL-CLOSED above */
@@ -237,8 +244,8 @@ process.stderr.write(
     "⚠ YOU ARE STOPPING WHILE WORK REMAINS AND NOTHING IS RUNNING.",
     openCount === null
       ? '  queue: UNKNOWN state (no recent marker) — treated as NOT EMPTY.'
-      : `  queue: ${openCount} open item(s).`,
-    nextItem ? `  next: ${nextItem}` : '',
+      : `  queue: ${openCount} open item(s), as measured ${snapshotAgeMin === null ? 'at an unknown time' : snapshotAgeMin === 0 ? 'just now' : `${snapshotAgeMin} min ago`} — this snapshot refreshes only when something reads the queue, so items closed since are still counted here.`,
+    nextItem ? `  next: ${nextItem}   (same snapshot — may already be closed)` : '',
     '',
     "This guard does not check whether you LOOKED at the queue — it checks whether you are",
     'ending a turn to REPORT while work continues. A report is the end of a turn, and the end',
