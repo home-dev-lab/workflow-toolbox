@@ -127,7 +127,14 @@ at intake, realtime transitions, one consolidated narrative, Done only at DoD).
    work on; it never widens what you are ALLOWED to do. Publishing, pushing, destructive
    actions, and business-preference calls remain hard escalations regardless of how the
    mission is phrased.
-6. **Brief & spawn** — ONE pilot per card. Spawn the project's own adopted `pilot` definition
+6. **Brief & spawn** — immediately before briefing a pilot for a card, verify via a FRESH
+   tracker read (e.g. `get_card`) that the card is still genuinely open, not from a card list
+   held in your own context. A list read earlier in your own working memory can be stale
+   while still looking correct — you have no error to catch reading the wrong one, and the
+   cost of skipping this is real: measured twice in one session, ~215k and ~185k tokens spent
+   by a spawned pilot fully re-verifying delivered work on a card already Done. If the fresh
+   read shows it closed, do not brief a pilot for it — reconcile your own scope instead.
+   ONE pilot per card. Spawn the project's own adopted `pilot` definition
    from `.claude/agents/` (a project copy takes the watchdog observer pairing; there is no
    plugin-registered `pilot` type to spawn instead — a registered agent's `observer:` is
    silently ignored, so the def ships unregistered until adopted). If no project copy exists,
@@ -483,6 +490,11 @@ flight: N pilots; watch <dir>; ping me on ticks"), and yield. The main session o
 disk watchers and pings you. On EVERY wake, FIRST poll the report dir and each expected
 report file, then act. A settled-but-unprocessed report found on wake was a missed wake —
 process it; it is not a new instruction. Pilots messaging you by name DO wake you reliably.
+**A turn that merely re-reports "still waiting, nothing changed" is the single most
+expensive turn available to you** — it re-reads your entire transcript to say nothing
+happened, and the cost only grows as the wave lengthens. Do not take one: after the
+one-line status SendMessage above, sleep on it — the main session's watch is what wakes
+you, not a self-scheduled re-check.
 
 **Lane-wait filet — a specific case of the contract above.** When a pilot tells you it is
 running a bounded, in-turn blocking wait on an external lane with its own stated hard cap,
