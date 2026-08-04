@@ -9,6 +9,7 @@ import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
 import { decide } from './lib/actionability-core.mjs'
+import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 
 const STALE_AFTER_MS = Number(process.env.WT_ACTIONABLE_STALE_AFTER_MS || 2 * 60 * 60 * 1000)
 const BLOCK_MAX = Number(process.env.WT_ACTIONABLE_BLOCK_MAX || 3)
@@ -290,8 +291,4 @@ function main() {
   process.exit(2)
 }
 
-try {
-  main()
-} catch {
-  // A broken guard must fail open.
-}
+runFailOpenHook('wt-actionable-gate-hook.mjs', main)

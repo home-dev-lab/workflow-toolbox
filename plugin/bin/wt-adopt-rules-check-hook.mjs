@@ -41,6 +41,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -215,8 +216,4 @@ function main() {
   )
 }
 
-try {
-  main()
-} catch {
-  // A session-start hook that can break session start is not worth its output.
-}
+runFailOpenHook('wt-adopt-rules-check-hook.mjs', main)

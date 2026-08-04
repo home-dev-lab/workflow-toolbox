@@ -2,6 +2,7 @@
 
 import fs from 'node:fs'
 import { analyzeLaneConsent } from './lib/lane-consent-check-core.mjs'
+import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 
 function readInput() {
   try {
@@ -28,18 +29,4 @@ function main() {
   )
 }
 
-try {
-  main()
-} catch (error) {
-  // A SessionStart hook must never block a session starting, so this stays fail-open.
-  // But a catch that swallows silently makes a broken check indistinguishable from a
-  // healthy quiet one — which is the very failure family this check exists to surface.
-  // So: fail open, and leave a trace. stderr does not block the session.
-  try {
-    process.stderr.write(
-      `wt-lane-consent-check-hook: FAILED OPEN — ${error instanceof Error ? error.message : String(error)}\n`,
-    )
-  } catch {
-    // Writing the trace must not itself become a reason the session fails to start.
-  }
-}
+runFailOpenHook('wt-lane-consent-check-hook.mjs', main)

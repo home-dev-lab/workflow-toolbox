@@ -29,13 +29,14 @@
 // AUTO-APPROVE the call and bypass the user's normal permission prompts — the guard
 // must never widen permissions, only refuse. Deny path = exit 0 + stdout JSON with
 // hookSpecificOutput.permissionDecision:"deny" (the current contract; exit 2 would
-// discard stdout). Any internal error is swallowed → exit 0 (never block on a bug).
+// discard stdout). Any internal error fails open with one stderr trace (never block on a bug).
 //
 // This is DEFENSE-IN-DEPTH against reflex mistakes, not an adversarial sandbox: the
 // primary layer is the agent definitions' escalation contract. It matches the common
 // command forms robustly and does not chase deliberate obfuscation.
 
 import fs from 'node:fs'
+import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 
 // ⚠ NOT an allowlist of agent types. It used to be one — `pilot`, `pilot-orchestrator`,
 // `pilot-watchdog` — and that failed OPEN: a copy of the pilot definition under any other name
@@ -146,8 +147,4 @@ function main() {
   )
 }
 
-try {
-  main()
-} catch {
-  // Never block a tool call because the guard itself hit a bug: emit nothing, exit 0.
-}
+runFailOpenHook('wt-pilot-guard-hook.mjs', main)

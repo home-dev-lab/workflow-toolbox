@@ -10,6 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CHECKER = path.join(HERE, 'wt-check-observer-pairing.mjs')
@@ -133,8 +134,4 @@ function main() {
   )
 }
 
-try {
-  main()
-} catch {
-  // A hook that can break the spawn it is auditing is worse than silence.
-}
+runFailOpenHook('wt-observer-pairing-guard-hook.mjs', main)

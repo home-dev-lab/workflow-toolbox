@@ -23,11 +23,12 @@
 // work is a guard people route around. So: refuse only where the remedy exists; elsewhere say
 // what will be lost and allow.
 //
-// Any internal error → emit nothing, exit 0. A guard that can break a spawn because of its own
-// bug is worse than the gap it closes.
+// Any internal error → fail open with one stderr trace. A guard that can break a spawn because of
+// its own bug is worse than the gap it closes.
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 
 function readInput() {
   try {
@@ -99,8 +100,4 @@ function main() {
   )
 }
 
-try {
-  main()
-} catch {
-  // Never block a spawn because the guard itself hit a bug.
-}
+runFailOpenHook('wt-spawn-shape-guard-hook.mjs', main)

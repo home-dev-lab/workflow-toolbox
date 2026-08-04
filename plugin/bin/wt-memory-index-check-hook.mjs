@@ -34,6 +34,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PROBE = path.join(HERE, 'wt-memory-index-check.mjs')
@@ -92,8 +93,4 @@ function main() {
   )
 }
 
-try {
-  main()
-} catch {
-  // A hook that can break a session start is not worth its output.
-}
+runFailOpenHook('wt-memory-index-check-hook.mjs', main)

@@ -13,12 +13,13 @@
 // - Machine-calibrated: it probes PATH for cross-family bridges (codex/opencode)
 //   and names the ones actually present, so the injected ladder reflects THIS
 //   machine's real lanes and degrades cleanly when none is installed.
-// - Robust: any error is swallowed and the hook exits 0 emitting nothing — a
+// - Robust: any internal error fails open and leaves one stderr trace — a
 //   context hook must never disrupt session start.
 
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 
 /** Read the hook's JSON payload from stdin (fd 0); tolerate an empty/absent one. */
 function readInput() {
@@ -144,8 +145,4 @@ function main() {
   )
 }
 
-try {
-  main()
-} catch {
-  // A context hook must never disrupt session start: emit nothing, exit clean.
-}
+runFailOpenHook('wt-delegation-ladder-hook.mjs', main)

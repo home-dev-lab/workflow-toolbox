@@ -41,9 +41,9 @@
 // can block again if the entry is still open and unacked — the finding stays visible until dealt
 // with, it does not get one free pass and then silence.
 //
-// DEGRADES TO SILENT. Any failure anywhere below — malformed stdin, missing scan script, scan
-// timeout/crash — emits `{}` and allows the stop. A guard that can hang a session shut is a worse
-// defect than the silence it watches for.
+// FAILS OPEN. Malformed stdin still emits `{}` silently; internal failures below that allow the
+// stop but leave one stderr trace. A guard that can hang a session shut is a worse defect than the
+// silence it watches for.
 //
 // SHIPPED (plugin/bin/): registered on Stop in plugin/.claude-plugin/plugin.json. Reads the
 // registry via its sibling wt-spawn-registry-scan.mjs (resolved relative to THIS file, never a
@@ -53,6 +53,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runFailOpenHook } from './lib/fail-open-trace.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCAN = join(HERE, 'wt-spawn-registry-scan.mjs');
@@ -71,7 +72,7 @@ try {
   emit({});
 }
 
-try {
+function main() {
   const sessionId = payload?.session_id;
   const cwd = typeof payload?.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd();
   const stopHookActive = payload?.stop_hook_active === true;
@@ -117,6 +118,6 @@ try {
 
   if (stopHookActive) emit({ systemMessage: reason }); // already forced through once this attempt
   emit({ decision: 'block', reason });
-} catch {
-  emit({});
 }
+
+runFailOpenHook('wt-registry-heartbeat-hook.mjs', main, () => emit({}));

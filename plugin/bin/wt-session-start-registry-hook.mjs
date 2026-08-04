@@ -14,8 +14,8 @@
 // Only a periodic loop does, which is why the reminder to arm one is emitted alongside — and
 // stated as what it is, not as coverage already obtained.
 //
-// Never blocks, never fails a session start: any error exits 0 silently. A session-start hook
-// that can break session start is not worth its output.
+// Never blocks, never fails a session start: any internal error exits 0 but leaves one trace on
+// stderr. A session-start hook that can break session start is not worth its output.
 //
 // SHIPPED (plugin/bin/): registered on SessionStart in plugin/.claude-plugin/plugin.json. Reads
 // the registry written by wt-outbound-guard-hook.mjs, via its sibling scan script
@@ -25,11 +25,12 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runFailOpenHook } from './lib/fail-open-trace.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCAN = join(HERE, 'wt-spawn-registry-scan.mjs');
 
-try {
+function main() {
   if (!existsSync(SCAN)) process.exit(0);
 
   const res = spawnSync(process.execPath, [SCAN, '--quiet-min', '20'], {
@@ -57,8 +58,7 @@ try {
     + 'Mid-session silence is NOT covered unless a periodic scan is running — arm one if agents '
     + `will be working unattended: node ${SCAN} --quiet-min 20\n`
   );
-} catch {
-  process.exit(0);
 }
 
+runFailOpenHook('wt-session-start-registry-hook.mjs', main);
 process.exit(0);

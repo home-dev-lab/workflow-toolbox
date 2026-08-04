@@ -26,6 +26,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const GUARD = path.join(HERE, 'wt-stale-date-guard.mjs')
@@ -85,8 +86,4 @@ function main() {
   )
 }
 
-try {
-  main()
-} catch {
-  // A hook that can break a Write/Edit it is advising on is not worth its output.
-}
+runFailOpenHook('wt-stale-date-guard-hook.mjs', main)
