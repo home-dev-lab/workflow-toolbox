@@ -968,15 +968,23 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
 
   // ../packages/patterns/src/tournament.ts
   var STAGE2 = "tournament";
-  var JUDGE_SCHEMA = {
-    type: "object",
-    properties: {
-      score: { type: "number", minimum: 0, maximum: 10 },
-      reason: { type: "string" }
-    },
-    required: ["score", "reason"],
-    additionalProperties: false
-  };
+  var RUBRIC = "Place this on an ABSOLUTE scale; do not guess how others scored. 9-10: fully meets the goal, no reservation worth stating. 7-8: sound, with a named limitation that does not block use. 4-6: partially works, or works with a caveat a user would hit. 1-3: addresses the goal but is wrong, unsafe, or unusable as written. 0: does not address the goal. Reserve 9-10 and 1-3 for cases that genuinely earn them \u2014 a set where everything lands mid-scale hides the one item that actually differs.";
+  function judgeSchema(rubric) {
+    return {
+      type: "object",
+      properties: {
+        score: {
+          type: "number",
+          minimum: 0,
+          maximum: 10,
+          ...rubric ? { description: RUBRIC } : {}
+        },
+        reason: { type: "string" }
+      },
+      required: ["score", "reason"],
+      additionalProperties: false
+    };
+  }
   function median(scores) {
     const sorted = [...scores].sort((a, b) => a - b);
     const upper = sorted[Math.floor(sorted.length / 2)];
@@ -996,6 +1004,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       attemptEffort,
       attemptType,
       judgeCount: judgeCountOpt = 3,
+      judgeRubric = true,
       judgePrompt,
       judgeModel,
       judgeEffort,
@@ -1113,7 +1122,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
         const judgeThunks = Array.from({ length: judgeCountOpt }, (_, judgeIndex) => {
           return async () => {
             const opts = {
-              schema: JUDGE_SCHEMA,
+              schema: judgeSchema(judgeRubric),
               label: `${STAGE2}:judge:${originalIndex}:${judgeIndex}`,
               ...phase !== void 0 ? { phase } : {},
               ...judgeModel !== void 0 ? { model: judgeModel } : {},
@@ -1184,6 +1193,20 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       return { value: null, stats: stats2, warnings, trail };
     }
     ranked.sort((a, b) => b.score - a.score);
+    if (ranked.length >= 2) {
+      const top = ranked[0];
+      const bottom = ranked[ranked.length - 1];
+      if (top !== void 0 && bottom !== void 0) {
+        const spread = top.score - bottom.score;
+        if (spread < 1) {
+          warn(
+            rt,
+            warnings,
+            `tournament: judge scores are FLAT across ${ranked.length} attempts (spread ${spread.toFixed(2)} on 0..10, all near ${top.score.toFixed(1)}) \u2014 the ranking is near-arbitrary and the winner may not be the best attempt. Either the attempts really are equivalent, or the judges did not discriminate.`
+          );
+        }
+      }
+    }
     const synthOpts = {
       label: `${STAGE2}:synthesize`,
       ...phase !== void 0 ? { phase } : {},

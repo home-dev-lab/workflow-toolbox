@@ -79,6 +79,20 @@ export interface TournamentOptions<TAttempt> {
    *  through — e.g. 'codex:codex-rescue' / 'workflow-toolbox:opencode-verifier'
    *  for a cross-family model. Omit for the standard Claude subagent. */
   judgeType?: string
+  /** Ship an ANCHORED RUBRIC in the judge schema, so each judge places its
+   *  attempt against a described scale instead of a bare 0..10. **Default
+   *  true**; set `judgeRubric: false` for absolute scoring where a flat
+   *  distribution is honest — a conformance check where everything may
+   *  legitimately be a 10, for instance.
+   *
+   *  ⚠ The rubric is deliberately ABSOLUTE, never comparative. A judge here
+   *  scores ONE attempt per call and never sees its siblings (see the judging
+   *  stage below), so a quota such as "at most one of K may score 9+" is not
+   *  merely unhelpful — it is unenforceable, and it invites the model to invent
+   *  a comparison it cannot make. Giving judges sibling visibility to enable
+   *  such a quota would pay for it with the panel's independence, which is the
+   *  whole reason the panel exists. */
+  judgeRubric?: boolean
   synthesisPrompt: (ranked: ReadonlyArray<RankedAttempt<TAttempt>>) => string
   synthesisSchema?: JsonSchema
   synthesisModel?: ModelAlias
@@ -109,14 +123,46 @@ export interface TournamentOptions<TAttempt> {
 // Scores [0..10] with a required reason for high-signal debugging.
 // ---------------------------------------------------------------------------
 
-const JUDGE_SCHEMA: JsonSchema = {
-  type: 'object',
-  properties: {
-    score: { type: 'number', minimum: 0, maximum: 10 },
-    reason: { type: 'string' },
-  },
-  required: ['score', 'reason'],
-  additionalProperties: false,
+// The anchored rubric. Measured defect it answers: an external verifier lane,
+// scoring against a bare numeric range, FLATTENED severity — it folded the one
+// correctness regression in a set into a generic presentation item. A second
+// family failed the same axis differently, scoring the identical defect HIGH on
+// one run and MED on the next. Two families, two mechanisms, one axis: a limit
+// of the ROLE, not of a model.
+//
+// ⚠ ABSOLUTE, never comparative, and that constraint is architectural. Judges
+// here score one attempt per call, in isolation (rt.parallel over judgeThunks).
+// A comparative quota — "at most one of K earns the top band" — is the shape the
+// idea arrives in from tree-of-thoughts implementations, which score K siblings
+// in ONE call. Transplanted here it cannot be checked by the judge that receives
+// it, and an unenforceable comparison is worse than none: the model supplies an
+// imagined one. Bands a lone judge can apply are what makes this work, and they
+// also degrade cleanly to a group of one.
+const RUBRIC =
+  'Place this on an ABSOLUTE scale; do not guess how others scored. ' +
+  '9-10: fully meets the goal, no reservation worth stating. ' +
+  '7-8: sound, with a named limitation that does not block use. ' +
+  '4-6: partially works, or works with a caveat a user would hit. ' +
+  '1-3: addresses the goal but is wrong, unsafe, or unusable as written. ' +
+  '0: does not address the goal. ' +
+  'Reserve 9-10 and 1-3 for cases that genuinely earn them — a set where ' +
+  'everything lands mid-scale hides the one item that actually differs.'
+
+function judgeSchema(rubric: boolean): JsonSchema {
+  return {
+    type: 'object',
+    properties: {
+      score: {
+        type: 'number',
+        minimum: 0,
+        maximum: 10,
+        ...(rubric ? { description: RUBRIC } : {}),
+      },
+      reason: { type: 'string' },
+    },
+    required: ['score', 'reason'],
+    additionalProperties: false,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +236,7 @@ export async function tournament<TAttempt = string, TOut = string>(
     attemptEffort,
     attemptType,
     judgeCount: judgeCountOpt = 3,
+    judgeRubric = true,
     judgePrompt,
     judgeModel,
     judgeEffort,
@@ -378,7 +425,7 @@ export async function tournament<TAttempt = string, TOut = string>(
             effort?: EffortAlias
             agentType?: string
           } = {
-            schema: JUDGE_SCHEMA,
+            schema: judgeSchema(judgeRubric),
             label: `${STAGE}:judge:${originalIndex}:${judgeIndex}`,
             ...(phase !== undefined ? { phase } : {}),
             ...(judgeModel !== undefined ? { model: judgeModel } : {}),
@@ -477,6 +524,44 @@ export async function tournament<TAttempt = string, TOut = string>(
   // -------------------------------------------------------------------------
 
   ranked.sort((a, b) => b.score - a.score)
+
+  // -------------------------------------------------------------------------
+  // Flattening detector — pure data, no extra agent call.
+  //
+  // The rubric above is an INSTRUCTION, and an instruction a model can silently
+  // decline is a hope, not a mechanism. This is the half that executes: it
+  // measures whether the panel actually discriminated, and says so when it did
+  // not. It never changes the ranking — a flat set can be honest (two genuinely
+  // equivalent attempts), so this warns and leaves the arbitration where it
+  // belongs.
+  //
+  // Why the SPREAD and not the variance: the failure being watched for is "every
+  // attempt landed in the same band", which is exactly max - min. Variance would
+  // also fire on a wide set with one outlier, which is discrimination working.
+  //
+  // Threshold: a spread below one full band on the 0..10 rubric. Bands are three
+  // points wide (1-3, 4-6, 7-8, 9-10), so < 1.0 means the panel did not even
+  // separate adjacent scores — it is deliberately conservative, because a
+  // detector that cries on real ties gets ignored and takes its true case with
+  // it. Only meaningful with something to compare: skipped below two attempts.
+  // -------------------------------------------------------------------------
+
+  if (ranked.length >= 2) {
+    const top = ranked[0]
+    const bottom = ranked[ranked.length - 1]
+    if (top !== undefined && bottom !== undefined) {
+      const spread = top.score - bottom.score
+      if (spread < 1) {
+        warn(
+          rt, warnings,
+          `tournament: judge scores are FLAT across ${ranked.length} attempts ` +
+            `(spread ${spread.toFixed(2)} on 0..10, all near ${top.score.toFixed(1)}) — ` +
+            `the ranking is near-arbitrary and the winner may not be the best attempt. ` +
+            `Either the attempts really are equivalent, or the judges did not discriminate.`,
+        )
+      }
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Stage 3 — Synthesis over the full ranked list (winner first)

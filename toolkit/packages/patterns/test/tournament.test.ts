@@ -149,7 +149,14 @@ describe('tournament — happy path', () => {
       onAgent: ({ opts }) => {
         const label = opts?.label ?? ''
         if (label.startsWith('tournament:attempt:')) return `attempt-result-${label.split(':').pop()}`
-        if (label.startsWith('tournament:judge:')) return makeJudgeResponse(8)
+        // Scores DIFFER per attempt (label is tournament:judge:<attemptIdx>:<judgeIdx>).
+        // They used to be a flat 8 everywhere, which the flattening detector now
+        // correctly warns about — a happy path should show judges discriminating,
+        // so the fixture was fixed rather than the assertion weakened. The flat
+        // case has its own test below.
+        if (label.startsWith('tournament:judge:')) {
+          return makeJudgeResponse(label.split(':')[2] === '0' ? 9 : 5)
+        }
         if (label === 'tournament:synthesize') return 'synthesis-winner'
         return null
       },
@@ -1073,5 +1080,104 @@ describe('tournament — cacheWarm=true (warmup-agent, two stages)', () => {
     // Both real stages proceeded normally to a winning synthesis.
     expect(result.value).not.toBeNull()
     expect(result.stats.itemsOut).toBe(3) // all 3 attempts ranked
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Anti-flattening: an anchored rubric a lone judge can apply, plus a detector
+// that measures whether the panel actually discriminated.
+//
+// Measured defect these answer: one external lane FLATTENED severity (it folded
+// a correctness regression into a generic presentation item); a second family
+// scored the identical defect HIGH on one run and MED on the next. Two families,
+// two mechanisms, one axis.
+//
+// ⚠ The rubric is ABSOLUTE and must stay so. Judges here score ONE attempt per
+// call, in isolation, so a comparative quota ("at most one of K earns the top
+// band") cannot be checked by the judge that receives it — and an unenforceable
+// comparison is worse than none, since the model invents one.
+// ---------------------------------------------------------------------------
+
+describe('tournament — anti-flattening', () => {
+  const judgeSchemaOf = (rt: FakeRuntime) => {
+    const call = rt.calls.find(c => (c.opts?.label ?? '').startsWith('tournament:judge:'))
+    const props = (call?.opts?.schema as { properties?: Record<string, { description?: string }> } | undefined)?.properties
+    return props?.score
+  }
+
+  const discriminating = ({ opts }: { opts?: { label?: string } }) => {
+    const label = opts?.label ?? ''
+    if (label.startsWith('tournament:attempt:')) return `attempt-${label.split(':').pop()}`
+    if (label.startsWith('tournament:judge:')) {
+      return makeJudgeResponse(label.split(':')[2] === '0' ? 9 : 4)
+    }
+    if (label === 'tournament:synthesize') return 'winner'
+    return null
+  }
+
+  const flat = ({ opts }: { opts?: { label?: string } }) => {
+    const label = opts?.label ?? ''
+    if (label.startsWith('tournament:attempt:')) return `attempt-${label.split(':').pop()}`
+    if (label.startsWith('tournament:judge:')) return makeJudgeResponse(7)
+    if (label === 'tournament:synthesize') return 'winner'
+    return null
+  }
+
+  it('ships the anchored rubric in the judge schema by default', async () => {
+    const rt = new FakeRuntime({ onAgent: discriminating })
+    await tournament(rt, makeOptions({ angles: ['a', 'b'] }))
+    expect(judgeSchemaOf(rt)?.description).toMatch(/ABSOLUTE scale/)
+  })
+
+  it('the rubric is absolute, never a comparative quota over siblings', async () => {
+    const rt = new FakeRuntime({ onAgent: discriminating })
+    await tournament(rt, makeOptions({ angles: ['a', 'b'] }))
+    const d = judgeSchemaOf(rt)?.description ?? ''
+    // A judge sees one attempt and cannot check a quota; instructing one would
+    // make it invent the comparison. This asserts the shape, not just presence.
+    expect(d).toMatch(/do not guess how others scored/i)
+    expect(d).not.toMatch(/at most one|only one .* may/i)
+  })
+
+  it('judgeRubric: false drops the rubric but keeps the bounds', async () => {
+    const rt = new FakeRuntime({ onAgent: discriminating })
+    await tournament(rt, makeOptions({ angles: ['a', 'b'], judgeRubric: false }))
+    const score = judgeSchemaOf(rt)
+    expect(score?.description).toBeUndefined()
+    expect(score).toMatchObject({ minimum: 0, maximum: 10 })
+  })
+
+  it('WARNS when judge scores are flat across attempts', async () => {
+    const rt = new FakeRuntime({ onAgent: flat })
+    const result = await tournament(rt, makeOptions({ angles: ['a', 'b', 'c'] }))
+    expect(result.warnings.filter(w => /FLAT across/.test(w))).toHaveLength(1)
+    // It warns, it never rewrites the ranking — a flat set can be honest.
+    expect(result.value).toBe('winner')
+    expect(result.stats.itemsOut).toBe(3)
+  })
+
+  it('stays SILENT when the judges discriminated — the detector is not noise', async () => {
+    const rt = new FakeRuntime({ onAgent: discriminating })
+    const result = await tournament(rt, makeOptions({ angles: ['a', 'b', 'c'] }))
+    expect(result.warnings.filter(w => /FLAT across/.test(w))).toHaveLength(0)
+  })
+
+  it('does not fire on a single ranked attempt — spread needs two to exist', async () => {
+    // Only attempt 0 survives judging; the rest get no votes, so the ranking
+    // holds one entry and a "flat" verdict would be meaningless.
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label.startsWith('tournament:attempt:')) return `attempt-${label.split(':').pop()}`
+        if (label.startsWith('tournament:judge:')) {
+          return label.split(':')[2] === '0' ? makeJudgeResponse(7) : null
+        }
+        if (label === 'tournament:synthesize') return 'winner'
+        return null
+      },
+    })
+    const result = await tournament(rt, makeOptions({ angles: ['a', 'b'] }))
+    expect(result.stats.itemsOut).toBe(1)
+    expect(result.warnings.filter(w => /FLAT across/.test(w))).toHaveLength(0)
   })
 })
