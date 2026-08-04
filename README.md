@@ -369,7 +369,16 @@ edited; and `--replace-symlinks` replaces a symlinked target in place. The
 skill never writes through a symlink or silently destroys your edits. It can
 also install project copies of the pilot agent definitions, which are needed
 because current Claude Code does not honor `observer:` frontmatter for
-plugin-installed agents. See [plugin/rules/README.md](plugin/rules/README.md)
+plugin-installed agents. It also checks the active config profile's
+`settings.json` `env` block for the plugin prerequisites it needs to work:
+`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` always, plus
+`CLAUDE_CODE_EXPERIMENTAL_OBSERVER_AGENTS` when the pilot agent set is being
+adopted. If the depth key is absent, the remote spawn ceiling can sit below the
+pilot suite's three nested levels and kill the executor lane; if the observer
+flag is absent, Claude Code silently ignores the pilot watchdog pairing. A
+present key is always left intact, `--check` reports keys by NAME only, and the
+tool writes only the active `CLAUDE_CONFIG_DIR` profile's settings file, so a
+multi-profile setup must be rerun under each profile. See [plugin/rules/README.md](plugin/rules/README.md)
 and the [adopt-rules skill](plugin/skills/adopt-rules/SKILL.md) for the full
 contract — including how to **reconcile existing project rules** before adopting,
 so you don't end up with duplicate, drifting concerns.

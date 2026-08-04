@@ -64,6 +64,206 @@ process.stdout.on('error', (err) => {
 })
 
 const BANNER_TOOL = 'workflow-toolbox'
+const SETTINGS_FILE = 'settings.json'
+const SETTINGS_TRACE_DIR = 'workflow-toolbox'
+const SETTINGS_TRACE_FILE = 'adopt-rules-settings-trace.json'
+const SETTINGS_BACKUP_PREFIX = 'settings.json.workflow-toolbox.bak.'
+
+const UNIVERSAL_ENV_REQUIREMENTS = [
+  {
+    key: 'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH',
+    value: '3',
+    sets: ['rules', 'agents'],
+  },
+]
+
+const AGENT_ONLY_ENV_REQUIREMENTS = [
+  {
+    key: 'CLAUDE_CODE_EXPERIMENTAL_OBSERVER_AGENTS',
+    value: '1',
+    sets: ['agents'],
+  },
+]
+
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function settingsTracePath(configRoot) {
+  return path.join(configRoot, SETTINGS_TRACE_DIR, SETTINGS_TRACE_FILE)
+}
+
+function settingsRequirementsFor(chosen) {
+  const names = new Set(chosen)
+  const reqs = [...UNIVERSAL_ENV_REQUIREMENTS, ...AGENT_ONLY_ENV_REQUIREMENTS]
+  return reqs.filter((req) => req.sets.some((set) => names.has(set)))
+}
+
+function readJsonObject(filePath, label) {
+  let raw
+  try {
+    raw = fs.readFileSync(filePath, 'utf8')
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      return { kind: 'missing', filePath, label }
+    }
+    return { kind: 'unreadable', filePath, label }
+  }
+  let value
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    return { kind: 'invalid', filePath, label, reason: 'invalid JSON' }
+  }
+  if (!isPlainObject(value)) {
+    return { kind: 'invalid', filePath, label, reason: 'root must be a JSON object' }
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'env') && !isPlainObject(value.env)) {
+    return { kind: 'invalid', filePath, label, reason: 'env must be a JSON object when present' }
+  }
+  return { kind: 'ok', filePath, label, value }
+}
+
+function readSettingsTrace(configRoot) {
+  const tracePath = settingsTracePath(configRoot)
+  const trace = readJsonObject(tracePath, 'settings trace')
+  if (trace.kind === 'ok') return trace
+  if (trace.kind === 'missing') return { kind: 'missing', filePath: tracePath, label: trace.label }
+  return { kind: 'invalid', filePath: tracePath, label: trace.label, reason: 'trace unavailable' }
+}
+
+function writeJsonFile(filePath, value) {
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`)
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
+function verifySettingsWrite(before, after, addedKeys) {
+  const beforeRoot = before && isPlainObject(before) ? before : {}
+  const afterRoot = after && isPlainObject(after) ? after : null
+  if (!afterRoot) fail('settings write verification failed: root is not a JSON object after writing')
+  const beforeRootCount = Object.keys(beforeRoot).length
+  const afterRootCount = Object.keys(afterRoot).length
+  const beforeEnv = isPlainObject(beforeRoot.env) ? beforeRoot.env : {}
+  const afterEnv = isPlainObject(afterRoot.env) ? afterRoot.env : null
+  if (!afterEnv) fail('settings write verification failed: env is missing or not an object after writing')
+  const expectedRootCount = beforeRootCount + (Object.prototype.hasOwnProperty.call(beforeRoot, 'env') ? 0 : 1)
+  const expectedEnvCount = Object.keys(beforeEnv).length + addedKeys.length
+  if (afterRootCount !== expectedRootCount) fail('settings write verification failed: root key count changed unexpectedly')
+  if (Object.keys(afterEnv).length !== expectedEnvCount) fail('settings write verification failed: env key count changed unexpectedly')
+  for (const key of Object.keys(beforeRoot)) {
+    if (key === 'env') continue
+    if (!Object.prototype.hasOwnProperty.call(afterRoot, key)) fail(`settings write verification failed: root key lost (${key})`)
+    if (JSON.stringify(afterRoot[key]) !== JSON.stringify(beforeRoot[key])) {
+      fail(`settings write verification failed: root key changed unexpectedly (${key})`)
+    }
+  }
+  for (const key of Object.keys(beforeEnv)) {
+    if (!Object.prototype.hasOwnProperty.call(afterEnv, key)) fail(`settings write verification failed: env key lost (${key})`)
+    if (JSON.stringify(afterEnv[key]) !== JSON.stringify(beforeEnv[key])) {
+      fail(`settings write verification failed: env key changed unexpectedly (${key})`)
+    }
+  }
+}
+
+function backupSettingsFile(filePath) {
+  const backupPath = `${filePath}.workflow-toolbox.bak.${Date.now()}`
+  fs.copyFileSync(filePath, backupPath)
+  return backupPath
+}
+
+function classifyEnvRequirement(settingsRead, traceRead, requirement) {
+  if (settingsRead.kind === 'unreadable') return { status: 'UNREADABLE (left untouched)', write: false }
+  if (settingsRead.kind === 'invalid') return { status: `INVALID (${settingsRead.reason}; left untouched)`, write: false }
+  const env = settingsRead.kind === 'ok' && isPlainObject(settingsRead.value.env) ? settingsRead.value.env : {}
+  if (Object.prototype.hasOwnProperty.call(env, requirement.key)) {
+    return {
+      status:
+        env[requirement.key] === requirement.value
+          ? 'PRESENT (matches the managed default; left intact)'
+          : 'PRESENT (differs from the managed default; left intact)',
+      write: false,
+    }
+  }
+  const traceKeys = traceRead.kind === 'ok' && isPlainObject(traceRead.value.keys) ? traceRead.value.keys : {}
+  const previouslyManaged = Object.prototype.hasOwnProperty.call(traceKeys, requirement.key)
+  return {
+    status: previouslyManaged ? 'ABSENT (previously managed here; would be re-added on --install)' : 'ABSENT (would be added on --install)',
+    write: true,
+  }
+}
+
+function writeSettingsTrace(configRoot, settingsPath, version, writes, priorTrace) {
+  const tracePath = settingsTracePath(configRoot)
+  fs.mkdirSync(path.dirname(tracePath), { recursive: true })
+  const base =
+    priorTrace.kind === 'ok' && isPlainObject(priorTrace.value)
+      ? cloneJson(priorTrace.value)
+      : { schemaVersion: 1, tool: BANNER_TOOL, owner: 'adopt-rules', keys: {} }
+  if (!isPlainObject(base.keys)) base.keys = {}
+  for (const requirement of writes) {
+    base.keys[requirement.key] = {
+      value: requirement.value,
+      version,
+      settingsPath,
+    }
+  }
+  writeJsonFile(tracePath, base)
+}
+
+function processSettings(configRoot, chosen, args, version) {
+  const requirements = settingsRequirementsFor(chosen)
+  if (requirements.length === 0) return { anyAbsent: false, anyProblem: false }
+  const settingsPath = path.join(configRoot, SETTINGS_FILE)
+  const tracePath = settingsTracePath(configRoot)
+  const settingsRead = readJsonObject(settingsPath, 'settings')
+  const traceRead = readSettingsTrace(configRoot)
+  process.stdout.write(`[settings] target=${settingsPath} · trace=${tracePath}\n`)
+  process.stdout.write(
+    'adopt-rules: account-level env prerequisites are checked only for the ACTIVE config profile here; if you use other CLAUDE_CONFIG_DIR profiles, rerun under each profile.\n',
+  )
+  let anyAbsent = false
+  let anyProblem = settingsRead.kind === 'invalid' || settingsRead.kind === 'unreadable'
+  const plannedWrites = []
+  const statuses = new Map()
+  for (const requirement of requirements) {
+    const status = classifyEnvRequirement(settingsRead, traceRead, requirement)
+    statuses.set(requirement.key, status.status)
+    if (status.write) {
+      anyAbsent = true
+      plannedWrites.push(requirement)
+    }
+  }
+  if (args.mode !== 'install' || plannedWrites.length === 0) {
+    for (const requirement of requirements) process.stdout.write(`  ${requirement.key}: ${statuses.get(requirement.key)}\n`)
+    return { anyAbsent, anyProblem }
+  }
+  if (!(settingsRead.kind === 'ok' || settingsRead.kind === 'missing')) return { anyAbsent, anyProblem: true }
+  const beforeValue = settingsRead.kind === 'ok' ? settingsRead.value : {}
+  const nextValue = cloneJson(beforeValue)
+  const beforeEnv = isPlainObject(nextValue.env) ? nextValue.env : {}
+  nextValue.env = { ...beforeEnv }
+  for (const requirement of plannedWrites) nextValue.env[requirement.key] = requirement.value
+  fs.mkdirSync(configRoot, { recursive: true })
+  let backupPath = null
+  if (settingsRead.kind === 'ok') backupPath = backupSettingsFile(settingsPath)
+  writeJsonFile(settingsPath, nextValue)
+  const reread = readJsonObject(settingsPath, 'settings')
+  if (reread.kind !== 'ok') fail('settings write verification failed: could not re-read settings.json after writing')
+  verifySettingsWrite(beforeValue, reread.value, plannedWrites.map((item) => item.key))
+  writeSettingsTrace(configRoot, settingsPath, version, plannedWrites, traceRead)
+  for (const requirement of requirements) {
+    const verb = plannedWrites.some((planned) => planned.key === requirement.key)
+      ? backupPath
+        ? `WROTE (backup ${path.basename(backupPath)} created)`
+        : 'WROTE'
+      : statuses.get(requirement.key)
+    process.stdout.write(`  ${requirement.key}: ${verb}\n`)
+  }
+  return { anyAbsent, anyProblem }
+}
 
 /** The rule files this skill installs as editable copies — DISCOVERED from the plugin's
  *  rules/ dir at run time (every *.md except README.md), so the shipped set is exactly
@@ -911,6 +1111,7 @@ function main() {
   let anyStale = false
   let anyEdited = false
   let anySymlink = false
+  let anySettingsProblem = false
   for (const name of chosen) {
     const set = SETS[name]
     // `set.defaultDir` is '.claude/rules' | '.claude/agents'; under --global the config dir
@@ -928,6 +1129,10 @@ function main() {
     anySymlink = anySymlink || r.anySymlink
   }
 
+  const settingsResult = processSettings(globalRoot, chosen, args, version)
+  anyAbsent = anyAbsent || settingsResult.anyAbsent
+  anySettingsProblem = anySettingsProblem || settingsResult.anyProblem
+
   const untouchedLine = chosen.length === 1 ? untouchedSetLine(chosen[0]) : null
   if (untouchedLine) process.stdout.write(untouchedLine)
 
@@ -937,6 +1142,7 @@ function main() {
     if (anyAbsent) process.stdout.write('adopt-rules: run with --install to write the ABSENT item(s).\n')
     else if (anyStale) process.stdout.write('adopt-rules: run with --install to refresh the STALE item(s).\n')
     else if (anyEdited) process.stdout.write('adopt-rules: locally-edited item(s) present — --install leaves them; --force overwrites.\n')
+    else if (anySettingsProblem) process.stdout.write('adopt-rules: account-level settings need manual attention before this tool can manage them safely.\n')
     else process.stdout.write('adopt-rules: nothing to do.\n')
     // Symlinks are an independent advisory (they can coexist with absent/stale items).
     // Suppressed when --replace-symlinks is already set — no point telling the user to
