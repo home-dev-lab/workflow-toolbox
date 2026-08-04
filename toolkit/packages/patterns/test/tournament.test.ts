@@ -1123,28 +1123,35 @@ describe('tournament — anti-flattening', () => {
     return null
   }
 
-  it('ships the anchored rubric in the judge schema by default', async () => {
+  // Default is OPT-IN, and that is a measured decision, not caution. Benched on a
+  // corpus with severities fixed beforehand, judges called directly on a
+  // cross-family CLI (every cell's provenance its own invocation), two passes:
+  // the rubric did NOT improve the security-vs-cosmetic gap (4,5 with vs 7,5
+  // without) — it compressed it — while clearly improving run-to-run stability
+  // (1 vs 3). It answers the instability failure, not the flattening one, so it
+  // does not earn a default that changes every caller's behaviour.
+  it('does NOT ship the rubric unless asked — default is opt-in', async () => {
     const rt = new FakeRuntime({ onAgent: discriminating })
     await tournament(rt, makeOptions({ angles: ['a', 'b'] }))
+    const score = judgeSchemaOf(rt)
+    expect(score?.description).toBeUndefined()
+    expect(score).toMatchObject({ minimum: 0, maximum: 10 })
+  })
+
+  it('ships the anchored rubric when judgeRubric is set', async () => {
+    const rt = new FakeRuntime({ onAgent: discriminating })
+    await tournament(rt, makeOptions({ angles: ['a', 'b'], judgeRubric: true }))
     expect(judgeSchemaOf(rt)?.description).toMatch(/ABSOLUTE scale/)
   })
 
   it('the rubric is absolute, never a comparative quota over siblings', async () => {
     const rt = new FakeRuntime({ onAgent: discriminating })
-    await tournament(rt, makeOptions({ angles: ['a', 'b'] }))
+    await tournament(rt, makeOptions({ angles: ['a', 'b'], judgeRubric: true }))
     const d = judgeSchemaOf(rt)?.description ?? ''
     // A judge sees one attempt and cannot check a quota; instructing one would
     // make it invent the comparison. This asserts the shape, not just presence.
     expect(d).toMatch(/do not guess how others scored/i)
     expect(d).not.toMatch(/at most one|only one .* may/i)
-  })
-
-  it('judgeRubric: false drops the rubric but keeps the bounds', async () => {
-    const rt = new FakeRuntime({ onAgent: discriminating })
-    await tournament(rt, makeOptions({ angles: ['a', 'b'], judgeRubric: false }))
-    const score = judgeSchemaOf(rt)
-    expect(score?.description).toBeUndefined()
-    expect(score).toMatchObject({ minimum: 0, maximum: 10 })
   })
 
   it('WARNS when judge scores are flat across attempts', async () => {

@@ -1004,7 +1004,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       attemptEffort,
       attemptType,
       judgeCount: judgeCountOpt = 3,
-      judgeRubric = true,
+      judgeRubric = false,
       judgePrompt,
       judgeModel,
       judgeEffort,

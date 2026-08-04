@@ -1982,7 +1982,7 @@ ${renderClaim(claim)}`;
       attemptEffort,
       attemptType,
       judgeCount: judgeCountOpt = 3,
-      judgeRubric = true,
+      judgeRubric = false,
       judgePrompt,
       judgeModel,
       judgeEffort,

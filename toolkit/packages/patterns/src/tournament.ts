@@ -80,10 +80,32 @@ export interface TournamentOptions<TAttempt> {
    *  for a cross-family model. Omit for the standard Claude subagent. */
   judgeType?: string
   /** Ship an ANCHORED RUBRIC in the judge schema, so each judge places its
-   *  attempt against a described scale instead of a bare 0..10. **Default
-   *  true**; set `judgeRubric: false` for absolute scoring where a flat
-   *  distribution is honest — a conformance check where everything may
-   *  legitimately be a 10, for instance.
+   *  attempt against a described scale instead of a bare 0..10.
+   *
+   *  **Default FALSE, and the reason is a measurement rather than caution.**
+   *  It shipped default-ON, then was benched against a corpus whose severities
+   *  were fixed before any judge saw it, two passes per condition, judges called
+   *  directly on a cross-family CLI so the provenance of every cell is its own
+   *  invocation. Result, on the metric the rubric exists for — separating a
+   *  security flaw from a cosmetic one:
+   *
+   *    condition   security-vs-nit gap     instability across passes
+   *    rubric      4, 5                    1
+   *    bare        7, 5                    3
+   *
+   *  The rubric did NOT improve discrimination; it compressed it, by being
+   *  harsher on the correct-but-badly-named candidate (6/7 instead of 8) and
+   *  slightly kinder to the actual flaw (2 instead of 1). What it did improve is
+   *  run-to-run STABILITY, clearly.
+   *
+   *  So it addresses the second of the two measured failures (a family that
+   *  scored the same defect HIGH on one run and MED on the next) and not the
+   *  first (a family that fused a correctness regression into a presentation
+   *  item). A default that changes behaviour for every caller needs positive
+   *  evidence for its primary purpose and has none — hence opt-in. Turn it ON
+   *  when run-to-run stability matters more than the sharpest possible ranking.
+   *
+   *  ⚠ n=2 passes. One flip moves the table; this is directional, not settled.
    *
    *  ⚠ The rubric is deliberately ABSOLUTE, never comparative. A judge here
    *  scores ONE attempt per call and never sees its siblings (see the judging
@@ -236,7 +258,7 @@ export async function tournament<TAttempt = string, TOut = string>(
     attemptEffort,
     attemptType,
     judgeCount: judgeCountOpt = 3,
-    judgeRubric = true,
+    judgeRubric = false,
     judgePrompt,
     judgeModel,
     judgeEffort,
