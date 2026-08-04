@@ -807,10 +807,22 @@ describe('adopt installer — a flag with no effect in the resolved mode is REFU
     expect(res.out).toContain('--pairs-file')
   })
 
-  it('--force and --replace-symlinks remain accepted under --check/--install (they ARE read there, informationally)', () => {
+  it('--check --force: refused, message names --install (card #1834247430221072122)', () => {
     const d = mkDir()
-    expect(runRaw(['--check', '--dir', d, '--force']).status).toBe(0)
+    const res = runRaw(['--check', '--dir', d, '--force'])
+    expect(res.status).not.toBe(0)
+    expect(res.out).toContain('--force')
+    expect(res.out).toContain('--install')
+  })
+
+  it('--replace-symlinks remains accepted under --check/--install (informational preview, unaffected by the --force fix)', () => {
+    const d = mkDir()
     expect(runRaw(['--check', '--dir', d, '--replace-symlinks']).status).toBe(0)
+    expect(runRaw(['--install', '--dir', d, '--replace-symlinks']).status).toBe(0)
+  })
+
+  it('--install --force: still accepted and still overwrites normally', () => {
+    const d = mkDir()
     expect(runRaw(['--install', '--dir', d, '--force']).status).toBe(0)
   })
 })

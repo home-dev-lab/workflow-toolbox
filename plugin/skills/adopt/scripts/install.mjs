@@ -743,7 +743,7 @@ const FLAG_EFFECTIVE_MODES = {
   declarationsFile: { cli: '--declarations-file', modes: ['audit-overlap'] },
   dir: { cli: '--dir', modes: ['check', 'install'] },
   global: { cli: '--global', modes: ['check', 'install'] },
-  force: { cli: '--force', modes: ['check', 'install'] },
+  force: { cli: '--force', modes: ['install'] },
   replaceSymlinks: { cli: '--replace-symlinks', modes: ['check', 'install'] },
 }
 
@@ -753,7 +753,12 @@ function checkFlagModeAsymmetry(args) {
     const passed = args[key] !== null && args[key] !== false
     if (!passed || modes.includes(args.mode)) continue
     const modeList = modes.map((m) => `--${m}`).join(' or ')
-    const extra = key === 'userDir' ? ' — to target a directory under --check/--install, use --dir instead' : ''
+    const extra =
+      key === 'userDir'
+        ? ' — to target a directory under --check/--install, use --dir instead'
+        : key === 'force'
+          ? ' — pass --install --force to overwrite locally-edited copies'
+          : ''
     fail(`${cli} has no effect with --${args.mode} (only honoured with ${modeList})${extra}`)
   }
 }
