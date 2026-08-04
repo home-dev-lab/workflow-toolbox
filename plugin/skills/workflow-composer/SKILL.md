@@ -40,7 +40,7 @@ The reference files carry the deep material — read them when a step points you
   silently degrade agent output. Read it before writing the prompts, schemas, or
   `sourceRefs` for any analysis, audit, verification, or decision workflow.
 - `references/orchestrator-pipelines.md` — human-gated multi-workflow jobs (L3).
-- `references/shipped-compositions.md` — the 25 shipped compositions + operational lessons.
+- `references/shipped-compositions.md` — the 26 shipped compositions + operational lessons.
 - `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
 - `references/observer-definitions.md` — authoring an observer (`<name>.observer.json`), the
   abstract-needs boundary, the selector/label coupling, and the `args.observers` launch bridge.
@@ -297,7 +297,7 @@ them.
 
 ### The shipped compositions to read as models
 
-Twenty-five shipped compositions cover every pattern in production shape. **Read
+Twenty-six shipped compositions cover every pattern in production shape. **Read
 [references/shipped-compositions.md](references/shipped-compositions.md) when
 picking a starting model to imitate** — each entry names the patterns it wires
 and why, and the file ends with the operational lessons from production runs of
@@ -490,7 +490,7 @@ review-like workflow.
   complete source listings, neutral framing, named could-not-verify outs, and the
   output failure modes to bound against.
 - `references/orchestrator-pipelines.md` — human-gated multi-workflow jobs (L3).
-- `references/shipped-compositions.md` — the 25 shipped compositions + operational lessons.
+- `references/shipped-compositions.md` — the 26 shipped compositions + operational lessons.
 - `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
 - `references/observer-definitions.md` — authoring an observer (`<name>.observer.json`), the
   abstract-needs boundary, the selector/label coupling, and the `args.observers` launch bridge.

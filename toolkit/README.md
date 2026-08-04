@@ -49,7 +49,7 @@ toolkit/
 │   │               #   coupling point to Claude Code; unstable-surface firewall)
 │   ├── patterns/   # @workflow-toolbox/patterns — the 9 patterns + result envelope
 │   └── build/      # @workflow-toolbox/build    — defineWorkflow + the `workflow-toolbox` CLI (build/check)
-├── examples/       # @workflow-toolbox/examples — 25 teaching workflows (*.workflow.ts; the
+├── examples/       # @workflow-toolbox/examples — 26 teaching workflows (*.workflow.ts; the
 │                   #   monorepo-refactor pair and the dev-workflow family are
 │                   #   multi-workflow L3 compositions — see docs/public/dev-workflow.md)
 └── workflows/      # committed build artifacts (.js) — the runnable deliverable
