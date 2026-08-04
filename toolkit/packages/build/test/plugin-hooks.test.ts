@@ -17,6 +17,7 @@ import { DELEGATION_EXPECTATIONS } from '@workflow-toolbox/debugger/external-del
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LADDER_HOOK = join(REPO_ROOT, 'plugin/bin/wt-delegation-ladder-hook.mjs')
 const GUARD_HOOK = join(REPO_ROOT, 'plugin/bin/wt-pilot-guard-hook.mjs')
+const OBSERVER_PAIRING_HOOK = join(REPO_ROOT, 'plugin/bin/wt-observer-pairing-guard-hook.mjs')
 const VERIFIER_GUARD_HOOK = join(REPO_ROOT, 'plugin/bin/wt-verifier-cli-guard-hook.mjs')
 const DEBUGGER_DELEGATION_SRC = join(REPO_ROOT, 'toolkit/packages/debugger/src/external-delegation.ts')
 const AGENTS_DIR = join(REPO_ROOT, 'plugin/agents')
@@ -74,6 +75,11 @@ function runHook(hookPath: string, payload: unknown, env?: NodeJS.ProcessEnv): R
 function permissionDecision(r: Run): string | undefined {
   const hso = r.json?.['hookSpecificOutput'] as Record<string, unknown> | undefined
   return hso?.['permissionDecision'] as string | undefined
+}
+
+function hookContext(r: Run): string | undefined {
+  const hso = r.json?.['hookSpecificOutput'] as Record<string, unknown> | undefined
+  return hso?.['additionalContext'] as string | undefined
 }
 
 // --------------------------------------------------------------------------
@@ -223,6 +229,97 @@ describe('wt-pilot-guard-hook — self-scoped destructive-action guard', () => {
     const r = runHook(GUARD_HOOK, pilotBash('git push public main'))
     expect(r.stdout).toBe('')
     expect(r.code).toBe(0)
+  })
+})
+
+describe('wt-observer-pairing-guard-hook — delegate to the shipped checker', () => {
+  function pairingFixture(tag: string) {
+    const root = mkRoot(tag)
+    const project = join(root, 'project')
+    const config = join(root, 'config')
+    const sessionId = 'sess-observer'
+    const slug = project.replace(/[^a-zA-Z0-9]/g, '-')
+    const subagentsDir = join(config, 'projects', slug, sessionId, 'subagents')
+    mkdirSync(join(project, '.claude', 'agents'), { recursive: true })
+    mkdirSync(subagentsDir, { recursive: true })
+    writeFileSync(join(project, '.claude', 'agents', 'pilot.md'), '---\nobserver: pilot-watchdog\n---\n# pilot\n')
+    return {
+      project,
+      sessionId,
+      subagentsDir,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: config },
+    }
+  }
+
+  function hookPayload(project: string, sessionId: string, toolResponse: Record<string, unknown>) {
+    return {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Agent',
+      cwd: project,
+      session_id: sessionId,
+      tool_input: { subagent_type: 'pilot', name: 'pair-worker' },
+      tool_response: toolResponse,
+    }
+  }
+
+  it('stays SILENT when observerTaskId resolves to an isObserver:true sibling', () => {
+    const f = pairingFixture('observer-pass')
+    writeFileSync(join(f.subagentsDir, 'agent-worker.meta.json'), JSON.stringify({ name: 'pair-worker', observerTaskId: 'watcher' }))
+    writeFileSync(join(f.subagentsDir, 'agent-worker.jsonl'), '')
+    writeFileSync(join(f.subagentsDir, 'agent-watcher.meta.json'), JSON.stringify({ name: 'pilot-watchdog', isObserver: true }))
+    writeFileSync(join(f.subagentsDir, 'agent-watcher.jsonl'), '')
+
+    const r = runHook(OBSERVER_PAIRING_HOOK, hookPayload(f.project, f.sessionId, { agent_id: 'worker' }), f.env)
+
+    expect(r.stdout).toBe('')
+  })
+
+  it('surfaces checker unknown when observerTaskId is present but dangling', () => {
+    const f = pairingFixture('observer-dangling')
+    writeFileSync(
+      join(f.subagentsDir, 'agent-worker.meta.json'),
+      JSON.stringify({ name: 'pair-worker', observerTaskId: 'missing-watchdog', taskKind: 'async' }),
+    )
+    writeFileSync(join(f.subagentsDir, 'agent-worker.jsonl'), '')
+
+    const r = runHook(OBSERVER_PAIRING_HOOK, hookPayload(f.project, f.sessionId, { agent_id: 'worker' }), f.env)
+
+    expect(hookContext(r)).toContain('checker verdict unknown')
+    expect(hookContext(r)).toContain('missing-watchdog')
+  })
+
+  it('surfaces checker flag when no ownership link or fallback match exists', () => {
+    const f = pairingFixture('observer-flag')
+    writeFileSync(join(f.subagentsDir, 'agent-worker.meta.json'), JSON.stringify({ name: 'pair-worker', taskKind: 'async' }))
+    writeFileSync(join(f.subagentsDir, 'agent-worker.jsonl'), '')
+
+    const r = runHook(OBSERVER_PAIRING_HOOK, hookPayload(f.project, f.sessionId, { agent_id: 'worker' }), f.env)
+
+    expect(hookContext(r)).toContain('appears to have LOST')
+    expect(hookContext(r)).toContain('checker verdict flag')
+  })
+
+  it('stays SILENT for types that do not declare an observer', () => {
+    const root = mkRoot('observer-no-def')
+    const project = join(root, 'project')
+    const config = join(root, 'config')
+    mkdirSync(join(project, '.claude', 'agents'), { recursive: true })
+    writeFileSync(join(project, '.claude', 'agents', 'leaf.md'), '---\n---\n# leaf\n')
+
+    const r = runHook(
+      OBSERVER_PAIRING_HOOK,
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        cwd: project,
+        session_id: 'sess-leaf',
+        tool_input: { subagent_type: 'leaf', name: 'plain-worker' },
+        tool_response: { agent_id: 'plain-worker' },
+      },
+      { ...process.env, CLAUDE_CONFIG_DIR: config },
+    )
+
+    expect(r.stdout).toBe('')
   })
 })
 

@@ -161,6 +161,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Pilot docs instruct operators to use this non-bypassable gate runner for repo gates.',
   },
   {
+    script: 'plugin/bin/wt-observer-pairing-guard-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Shipped PostToolUse observer-pairing notice delegates to the checker, but no durable doc surface describes this hook.',
+  },
+  {
     script: 'plugin/bin/wt-service-watch.mjs',
     status: 'missing-doc-surface',
     reason: 'Shipped service monitor with its own output/flag contract, but no durable doc surface describes it.',

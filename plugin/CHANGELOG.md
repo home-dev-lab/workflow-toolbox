@@ -5,6 +5,17 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- **`wt-observer-pairing-guard-hook.mjs` — a PostToolUse Agent hook that asks the shipped
+  pairing checker what ACTUALLY attached, instead of warning from a spawn-shape guess.** It only
+  runs for agent definitions that declare `observer:` in an adopted/project-visible copy, then
+  delegates to `wt-check-observer-pairing.mjs` on the spawned agent's real subagent metadata.
+  Clean `pass` outcomes stay silent; contradictory `observerTaskId` links and genuine no-pairing
+  reads surface with the checker's own reason. The guard does not reintroduce a named-spawn rule:
+  the ownership link (or its absence) decides, and the checker's existing mtime fallback remains
+  only for records where no link is present.
+
 ## [0.67.0] - 2026-08-03
 
 ### Added
