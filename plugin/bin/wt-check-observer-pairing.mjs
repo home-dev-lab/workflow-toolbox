@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { basename, join, resolve } from 'node:path'
 
 function emit(statusCode, payload) {
   process.stdout.write(`${JSON.stringify(payload)}\n`)
@@ -8,16 +8,72 @@ function emit(statusCode, payload) {
 }
 
 function parseArgs(argv) {
-  const out = { subagentsDir: null, agentId: null, name: null, windowSec: 300 }
+  const out = { subagentsDir: null, agentId: null, name: null, windowSec: 300, captureDir: null }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--subagents-dir') out.subagentsDir = argv[index + 1] ?? null
     else if (arg === '--agent-id') out.agentId = argv[index + 1] ?? null
     else if (arg === '--name') out.name = argv[index + 1] ?? null
     else if (arg === '--window-sec') out.windowSec = argv[index + 1] ?? null
+    // Opt-in by design: with no --capture-dir nothing is ever written, so an existing
+    // caller's behaviour is unchanged byte for byte.
+    else if (arg === '--capture-dir') out.captureDir = argv[index + 1] ?? null
     if (arg.startsWith('--')) index += 1
   }
   return out
+}
+
+/** Archive the two meta.json files of a DECLARED-but-unresolved pairing, so the losing
+ *  direction stops being a memory and becomes a versioned artefact.
+ *
+ *  ⚠ THIS NEVER CHANGES THE VERDICT AND NEVER THROWS. It is evidence collection bolted
+ *  beside the check, not part of it: a full disk, a read-only directory, or a racing
+ *  writer must not turn "the pairing did not resolve" into a crash — that would lose
+ *  both the finding AND the evidence, which is strictly worse than losing the evidence
+ *  alone. Every failure is reported as a `captureError` string in the payload instead.
+ *
+ *  Returns a fragment merged into the emitted payload: `{}` when no capture was asked
+ *  for, `{ captured }` on success, `{ captureError }` on failure. The reader can then
+ *  tell "evidence archived at <path>" from "evidence NOT archived, because <reason>" —
+ *  a distinction that silence would destroy. */
+function captureConflict({ captureDir, observedFile, pairedFile, pairedExists, observerTaskId }) {
+  if (!captureDir) return {}
+  try {
+    // A stamp, not a random name: two conflicts on the same agent are two events worth
+    // keeping side by side, and a name that collides would overwrite the first one.
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const dest = join(captureDir, `${stamp}-${basename(observedFile, '.meta.json')}`)
+    mkdirSync(dest, { recursive: true })
+    copyFileSync(observedFile, join(dest, `observed-${basename(observedFile)}`))
+    if (pairedExists && existsSync(pairedFile)) {
+      copyFileSync(pairedFile, join(dest, `pointed-at-${basename(pairedFile)}`))
+    }
+    // The inputs alone do not say what was concluded from them, and a later reader has
+    // no way to recover that. Archive the verdict beside the evidence, per the same
+    // discipline that requires a measurement to carry the command that produced it.
+    writeFileSync(
+      join(dest, 'conflict.json'),
+      `${JSON.stringify(
+        {
+          capturedAt: stamp,
+          observerTaskId,
+          observedFile: resolve(observedFile),
+          pointedAtFile: resolve(pairedFile),
+          pointedAtExists: pairedExists,
+          finding: pairedExists
+            ? 'the pointed-at sibling exists but is not isObserver:true'
+            : 'the pointed-at sibling does not exist',
+          why: 'A declared-but-unresolved observer pairing. This is the direction the pairing guard has never been able to prove, and the reason a hand-written fixture was refused.',
+        },
+        null,
+        2,
+      )}\n`,
+    )
+    return { captured: resolve(dest) }
+  } catch (error) {
+    const message = error && typeof error === 'object' && 'message' in error ? String(error.message) : String(error)
+    return { captureError: `could not archive the conflicting pair: ${message}` }
+  }
 }
 
 function parseWindowSec(value) {
@@ -40,7 +96,7 @@ function readMeta(filePath) {
   }
 }
 
-const { subagentsDir, agentId, name, windowSec } = parseArgs(process.argv.slice(2))
+const { subagentsDir, agentId, name, windowSec, captureDir } = parseArgs(process.argv.slice(2))
 
 if (!subagentsDir || (!agentId && !name)) {
   emit(2, {
@@ -133,6 +189,25 @@ if (typeof observerTaskId === 'string' && observerTaskId.length > 0) {
       malformed,
     })
   }
+  // ⚠ THE ONE CASE WORTH PRESERVING. Everything else this script reports is either a
+  // healthy pairing or a record too old to carry the link. THIS branch is a pairing that
+  // was DECLARED and did not resolve — the only shape that evidences a real loss.
+  //
+  // It has never been observed on this machine. 182 real pairs were measured, all of
+  // them resolving; the losing direction exists only as prose. That is why a guard built
+  // on this cannot be credited: its silent half is proven, its speaking half is not.
+  //
+  // A hand-written fixture would NOT close that gap — it would be authored from the same
+  // understanding as the code, so it could only ever prove the code matches its author's
+  // belief. So the answer is not to fabricate the artefact but to KEEP it the first time
+  // reality produces one. Waiting to notice is luck; archiving on sight is a mechanism.
+  const capture = captureConflict({
+    captureDir,
+    observedFile: observed.filePath,
+    pairedFile: paired ? paired.filePath : join(subagentsDir, `agent-${observerTaskId}.meta.json`),
+    pairedExists: Boolean(paired),
+    observerTaskId,
+  })
   emit(2, {
     status: 'unknown',
     reason: paired
@@ -141,6 +216,7 @@ if (typeof observerTaskId === 'string' && observerTaskId.length > 0) {
     matchedBy,
     attachedBy: 'observerTaskId-conflict',
     malformed,
+    ...capture,
   })
 }
 

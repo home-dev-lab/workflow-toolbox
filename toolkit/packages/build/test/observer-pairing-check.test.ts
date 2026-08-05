@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,6 +28,8 @@ type Verdict = {
     reason?: string
     matchedBy?: 'id' | 'name'
     attachedBy?: 'observerTaskId' | 'observerTaskId-conflict' | 'mtime-fallback' | 'not-required'
+    captured?: string
+    captureError?: string
     observerFile?: string
     checked?: number
     malformed?: unknown[]
@@ -55,12 +69,13 @@ function writeAgentFixture(dir: string, rawId: string, payload: unknown, atSecon
 
 function runCheck(
   subagentsDir: string,
-  options: { agentId?: string; name?: string; windowSec?: number },
+  options: { agentId?: string; name?: string; windowSec?: number; captureDir?: string },
 ): Verdict {
   const args = [SCRIPT, '--subagents-dir', subagentsDir]
   if (options.agentId) args.push('--agent-id', options.agentId)
   if (options.name) args.push('--name', options.name)
   if (options.windowSec !== undefined) args.push('--window-sec', String(options.windowSec))
+  if (options.captureDir) args.push('--capture-dir', options.captureDir)
   try {
     const stdout = execFileSync(process.execPath, args, { encoding: 'utf8' })
     return { exitCode: 0, stdout, json: JSON.parse(stdout) as Verdict['json'] }
@@ -423,6 +438,107 @@ describe('wt-check-observer-pairing.mjs', () => {
         expect(result.exitCode).toBe(0)
         expect(result.json.status).toBe('pass')
         expect(result.json.attachedBy).toBe('mtime-fallback')
+      })
+    })
+
+    describe('--capture-dir: preserving the one shape that evidences a real loss', () => {
+      // A DECLARED-but-unresolved pairing is the only artefact that could ever credit the
+      // pairing guard's speaking half. 182 real pairs have been measured, all resolving;
+      // the losing direction exists only as prose. A hand-written fixture cannot close
+      // that — it would be authored from the same understanding as the code. So the
+      // mechanism is to KEEP the artefact the first time reality produces one, rather
+      // than to wait and hope someone is looking.
+
+      it('archives both meta files and its own verdict when the pointed-at sibling is not an observer', () => {
+        withTempSubagentsDir((dir) => {
+          const captureDir = join(dir, '..', 'evidence')
+          writeAgentFixture(dir, 'obs1', { agentId: 'obs1', observerTaskId: 'sib1' }, 1000)
+          writeAgentFixture(dir, 'sib1', { agentId: 'sib1', isObserver: false }, 1000)
+
+          const result = runCheck(dir, { agentId: 'obs1', captureDir })
+
+          expect(result.json.attachedBy).toBe('observerTaskId-conflict')
+          expect(result.json.captured, 'the conflicting pair must be archived').toBeTruthy()
+          const files = readdirSync(result.json.captured as string).sort()
+          expect(files).toEqual([
+            'conflict.json',
+            'observed-agent-obs1.meta.json',
+            'pointed-at-agent-sib1.meta.json',
+          ])
+          // The inputs alone do not say what was concluded from them, and a later reader
+          // has no way to recover it — so the verdict is archived beside the evidence.
+          const conflict = JSON.parse(
+            readFileSync(join(result.json.captured as string, 'conflict.json'), 'utf8'),
+          )
+          expect(conflict.observerTaskId).toBe('sib1')
+          expect(conflict.pointedAtExists).toBe(true)
+        })
+      })
+
+      it('archives the observed file alone when the pointed-at sibling does not exist', () => {
+        withTempSubagentsDir((dir) => {
+          const captureDir = join(dir, '..', 'evidence')
+          writeAgentFixture(dir, 'obs2', { agentId: 'obs2', observerTaskId: 'ghost' }, 1000)
+
+          const result = runCheck(dir, { agentId: 'obs2', captureDir })
+
+          expect(result.json.attachedBy).toBe('observerTaskId-conflict')
+          const files = readdirSync(result.json.captured as string).sort()
+          expect(files).toEqual(['conflict.json', 'observed-agent-obs2.meta.json'])
+        })
+      })
+
+      it('writes NOTHING on a healthy pairing, even when a capture dir is supplied', () => {
+        // The capture must be scoped to the losing direction. A capture dir that fills up
+        // with healthy pairs is a directory nobody reads, which is how the one real
+        // artefact would get lost in the noise.
+        withTempSubagentsDir((dir) => {
+          const captureDir = join(dir, '..', 'evidence')
+          writeAgentFixture(dir, 'good1', { agentId: 'good1', observerTaskId: 'good2' }, 1000)
+          writeAgentFixture(dir, 'good2', { agentId: 'good2', isObserver: true }, 1000)
+
+          const result = runCheck(dir, { agentId: 'good1', captureDir })
+
+          expect(result.json.status).toBe('pass')
+          expect(result.json.captured).toBeUndefined()
+          expect(existsSync(captureDir), 'no capture dir should be created').toBe(false)
+        })
+      })
+
+      it('leaves the verdict byte-identical when no capture dir is given', () => {
+        withTempSubagentsDir((dir) => {
+          writeAgentFixture(dir, 'obs3', { agentId: 'obs3', observerTaskId: 'ghost' }, 1000)
+
+          const result = runCheck(dir, { agentId: 'obs3' })
+
+          expect(result.json.attachedBy).toBe('observerTaskId-conflict')
+          expect(result.json.captured).toBeUndefined()
+          expect(result.json.captureError).toBeUndefined()
+        })
+      })
+
+      it('keeps the FINDING when the capture itself fails, and names the failure', () => {
+        // This is the case that decides whether the capture is safe to add at all. Losing
+        // the finding because the evidence could not be written would be strictly worse
+        // than losing the evidence alone — and a silent capture failure would leave a
+        // reader believing an artefact exists somewhere.
+        withTempSubagentsDir((dir) => {
+          const readOnly = join(dir, '..', 'readonly')
+          mkdirSync(readOnly)
+          chmodSync(readOnly, 0o500)
+          try {
+            writeAgentFixture(dir, 'obs4', { agentId: 'obs4', observerTaskId: 'ghost' }, 1000)
+
+            const result = runCheck(dir, { agentId: 'obs4', captureDir: join(readOnly, 'nested') })
+
+            expect(result.exitCode).toBe(2)
+            expect(result.json.attachedBy).toBe('observerTaskId-conflict')
+            expect(result.json.captured).toBeUndefined()
+            expect(result.json.captureError).toContain('could not archive')
+          } finally {
+            chmodSync(readOnly, 0o700)
+          }
+        })
       })
     })
   })
