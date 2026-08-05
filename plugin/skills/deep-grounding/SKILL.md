@@ -2,20 +2,11 @@
 name: deep-grounding
 user-invocable: true
 description: >-
-  Run a deep-grounding pass BEFORE asserting or analyzing — do not answer from
-  priors on the first source or angle that comes to mind. Ask "where could the
-  evidence for this be?", gather the relevant available sources (project memory,
-  READMEs/docs, the actual code/config, tests, logs/telemetry, tickets, git
-  history, the web — whatever fits the question), and follow the leads they
-  reveal RECURSIVELY, even low-odds ones, until the trail runs dry; THEN reason,
-  grounded, tagging each conclusion with its evidence tier and stating what could
-  not be verified. Use this PROACTIVELY whenever you are about to assert a
-  checkable claim, start a non-trivial analysis / design / diagnosis /
-  recommendation, or answer from "what you already know" — ESPECIALLY when you
-  notice yourself reaching for a conclusion from a single source or a single
-  angle, or when a result BEATS your expectation (favorable surprises are the ones
-  that silently skip verification). Evidence, not more reasoning, is what escapes a
-  wrong prior.
+  Invoke when you are about to assert a checkable claim or start a non-trivial analysis, design,
+  diagnosis, or recommendation. Ask "where could the evidence for this be?", read the relevant
+  sources, follow their leads recursively, and report conclusions with evidence tiers plus any
+  residual unknowns. Use this **PROACTIVELY** when you catch yourself answering from memory, from a
+  single source or angle, or when a result beats your expectation and could skip verification.
 ---
 
 # deep-grounding

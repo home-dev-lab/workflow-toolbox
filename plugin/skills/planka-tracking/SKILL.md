@@ -2,14 +2,12 @@
 name: planka-tracking
 user-invocable: true
 description: >-
-  Onboard the CURRENT project onto a Planka kanban board for task tracking — create a
-  project/board/lists/labels via the `planka` MCP, migrate an existing .claude/progress.md
-  into reformulated, classified cards (zero-loss), and write the .claude/planka.json pointer
-  that this skill's companion, `what-next`, reads. Requires the `planka` MCP server to be
-  installed and reachable in the session — this skill cannot run without it. Use when a project
-  has no .claude/planka.json and the user wants to start board-based task tracking, or says
-  things like "onboard this project to Planka", "set up the board here", "start tracking tasks
-  on Planka", "track my tasks on a kanban board".
+  Invoke ONLY when the current project is not yet managed by Planka, the user wants board-based
+  tracking, and says "onboard this project to Planka", "set up the board here", "start tracking
+  tasks on Planka", or "track my tasks on a kanban board". Create the project, board, lists, and
+  labels through the `planka` MCP, migrate any existing .claude/progress.md zero-loss into
+  cards, and write .claude/planka.json. Requires a reachable `planka` MCP server; do not run
+  without it.
 ---
 
 # planka-tracking — onboard a project onto a Planka board

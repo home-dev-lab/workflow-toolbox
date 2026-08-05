@@ -2,16 +2,12 @@
 name: toolkit-scaffold
 user-invocable: true
 description: >-
-  Scaffold a new Claude Code Workflow as a build-clean `.workflow.ts` skeleton from the
-  @workflow-toolbox pattern toolkit, so you never hand-roll the `defineWorkflow` boilerplate. Invoke
-  when the user describes a workflow they want and asks to "scaffold a workflow", "start
-  a new workflow", "generate a workflow skeleton", "set up a .workflow.ts", "wire these
-  patterns together", or "use the toolkit to build a workflow". Given a plain job
-  description, pick the patterns (from the L1 use/don't-use table), write a small JSON
-  spec, run `workflow-toolbox scaffold`, then fill in the placeholder prompts/data and build + check.
-  Out of scope: deep one-off authoring guidance (that is the broader workflow-composer
-  skill), diagnosing a failed RUN (workflow-debugger), and re-verifying the runtime after
-  a Claude Code upgrade (upgrade-canary).
+  Invoke ONLY when the user wants a new build-clean `.workflow.ts` skeleton and says "scaffold a
+  workflow", "start a new workflow", "generate a workflow skeleton", "set up a .workflow.ts",
+  "wire these patterns together", or "use the toolkit to build a workflow". Pick the patterns,
+  write the small JSON spec, run `workflow-toolbox scaffold`, then fill in placeholders and build
+  plus check the result. Not for deep one-off authoring guidance, debugging a failed run, or
+  re-verifying the runtime after an upgrade.
 argument-hint: "<spec.json> [--out-dir <dir>] [--stdout] [--force] [--no-tsconfig]"
 ---
 

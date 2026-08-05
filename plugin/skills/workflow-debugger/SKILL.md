@@ -2,18 +2,12 @@
 name: workflow-debugger
 user-invocable: true
 description: >-
-  Diagnose why a Claude Code Workflow-tool RUN failed or behaved oddly, from its
-  on-disk run journal, and decide whether a `resumeFromRunId` re-launch will actually
-  help. Invoke when a workflow launched but errored, returned a wrong or partial
-  result, seems stuck, or the user asks "why did my workflow fail", "debug my
-  workflow run", "the workflow errored / died", "can I resume this run", "what
-  happened in run wf_…", or wants a run's journal read and explained. It reads the
-  structured journal Claude Code writes for every run (the per-agent `agent-*.jsonl`
-  transcripts are only a fallback), classifies the failure mode, and recommends —
-  honestly — when resuming replays cached work and when it would save nothing. Out of
-  scope: AUTHORING or restructuring a workflow script (that is the workflow-composer
-  skill) and checking whether a Claude Code upgrade changed the runtime surface (that
-  is the upgrade-canary skill).
+  Invoke when a workflow launched but errored, returned a wrong or partial result, seems stuck,
+  or the user asks "why did my workflow fail", "debug my workflow run", "the workflow errored /
+  died", "can I resume this run", or "what happened in run wf_…". Read the on-disk run journal
+  first, use per-agent transcripts only as fallback, classify the failure mode, and say honestly
+  whether `resumeFromRunId` will replay cached work or save nothing. Not for authoring or
+  restructuring a workflow script, or for checking runtime drift after a Claude Code upgrade.
 argument-hint: "[runId|latest|<journal-path>] [--json] [--project <slug>]"
 ---
 

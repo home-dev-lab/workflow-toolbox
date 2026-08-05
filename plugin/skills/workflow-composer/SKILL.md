@@ -2,13 +2,12 @@
 name: workflow-composer
 user-invocable: true
 description: >-
-  Invoke when the user asks to build, generate, repair, or restructure a
-  workflow for Claude Code's Workflow tool ("I want a workflow that…", "turn
-  this process into a workflow", "set up a multi-agent pipeline"), to pick
-  orchestration patterns, or to tune model/effort/agentType routing. Covers
-  writing and debugging the single .js scripts where deterministic JavaScript
-  drives fleets of fresh-context subagents (agent/parallel/pipeline/phase),
-  via the @workflow-toolbox toolkit or the raw single-file path.
+  Invoke ONLY when the user wants to build, generate, repair, or restructure a workflow for
+  Claude Code's Workflow tool, says "I want a workflow that…", "turn this process into a
+  workflow", or "set up a multi-agent pipeline", or needs help picking orchestration patterns or
+  tuning model, effort, or agentType routing. Write or repair the workflow artifact through the
+  `@workflow-toolbox` path for repeatable work or the raw single-file path for one-offs. Not for
+  debugging a specific failed run or re-verifying runtime drift after an upgrade.
 ---
 
 # Authoring workflows for Claude Code's Workflow tool

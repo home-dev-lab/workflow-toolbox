@@ -2,17 +2,13 @@
 name: independent-analysis
 user-invocable: true
 description: >-
-  Run a bias-free, multi-lens adversarial analysis of any non-trivial subject — a
-  design, plan, decision, claim, architecture, root-cause theory, or change set — via
-  the bundled independent-analysis workflow. Fresh agents, each pinned to a distinct
-  lens and blind to the conversation, surface what the driving model overlooked, then
-  refute-first verifiers kill the plausible-but-wrong ones. Use this PROACTIVELY
-  before committing to a non-trivial design or decision, and whenever the user asks to
-  stress-test or red-team thinking, get a second opinion, sanity-check a conclusion,
-  audit docs or a plan for accuracy, or "make sure no angle is forgotten" — even if
-  they never say the words "workflow" or "analysis". Reach for it ESPECIALLY when you
-  suspect your own reasoning may be biased by going fast or by confirming a prior
-  assumption: independent agents are the cheapest way to catch that.
+  Invoke when the user wants a non-trivial design, plan, decision, claim, architecture,
+  root-cause theory, or change set stress-tested, or says "are you sure?", "what am I missing?",
+  "did we forget anything?", or "make sure no angle is forgotten". Run the bundled
+  independent-analysis workflow so fresh, conversation-blind agents surface missing angles and
+  refute-first verifiers kill plausible-but-wrong ones. Use this **PROACTIVELY** before
+  committing to a non-trivial design or decision, especially when you may be moving fast or
+  confirming a prior.
 ---
 
 # independent-analysis

@@ -1,7 +1,14 @@
 ---
 name: adopt
 user-invocable: true
-description: Invoke ONLY when the user explicitly asks to install / adopt editable copies from workflow-toolbox into their config, or to check adopted copies for updates. Two managed sets — the cross-cutting RULE files (the delegation ladder) and the pilot AGENT-definition copies (pilot / pilot-watchdog / pilot-orchestrator, whose project copies enable the watchdog observer pairing that plugin-installed agents can't). E.g. "adopt the delegation rules", "install the workflow-toolbox rules as editable files", "install project copies of the pilot agents", "adopt the pilot watchdog into this project", "check my adopted workflow-toolbox rules/agents for updates". Writes versioned, fingerprinted, editable files ONLY on explicit request — never automatically. Re-invoke to detect stale copies (installed version behind the plugin) and refresh them. Not for authoring workflows (workflow-composer) or composing a pilot wave (pilot-wave).
+description: >-
+  Invoke ONLY when the user explicitly asks to install or check adopted editable copies from
+  workflow-toolbox, such as "adopt the delegation rules", "install the workflow-toolbox rules as
+  editable files", "install project copies of the pilot agents", "adopt the pilot watchdog into
+  this project", or "check my adopted workflow-toolbox rules/agents for updates". Write
+  versioned, fingerprinted files into config or project dirs ONLY on request; never run
+  automatically. Re-invoke to detect stale copies and refresh them. Not for authoring workflows
+  or composing a pilot wave.
 ---
 
 # adopt — install editable copies of workflow-toolbox's guardrails and pilot agents

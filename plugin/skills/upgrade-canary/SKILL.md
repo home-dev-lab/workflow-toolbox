@@ -2,21 +2,12 @@
 name: upgrade-canary
 user-invocable: true
 description: >-
-  Re-verify that Claude Code's Workflow-tool runtime still behaves the way the
-  @workflow-toolbox toolkit depends on, after a Claude Code upgrade — and report what changed.
-  Invoke when the user upgraded (or might have upgraded) Claude Code and asks
-  whether the workflow toolkit / committed artifacts still work, when they say
-  "run the upgrade canary", "did the update break the workflows", "re-check the
-  runtime surface", "what changed in the runtime", or before cutting a plugin
-  release. The canary is version-triggered: the full check runs only when the
-  `claude` CLI or the Agent SDK version changed since it last passed (or when
-  forced), so it is cheap to invoke often. It tests TWO runtimes — the user's
-  interactive `claude` binary AND the SDK-bundled one — and reports their version
-  delta + any behavior drift, which can drive fixes or feature work. This is a
-  MAINTAINER tool — it runs against this repo's `toolkit/` dev tree and needs
-  local Claude Code subscription auth; it is not meant for end users who only
-  installed the plugin. Out of scope: authoring or debugging a specific failing
-  workflow run (that is the workflow-composer / workflow-debugger skill).
+  Invoke ONLY when Claude Code may have upgraded and the user asks "run the upgrade canary",
+  "did the update break the workflows", "re-check the runtime surface", or "what changed in the
+  runtime", or before cutting a plugin release. Re-verify both runtimes the toolkit depends on:
+  the interactive `claude` binary and the SDK-bundled one. Run the full matrix only when versions
+  changed since the last pass, when forced, or when the last verdict failed. Maintainer tool only;
+  requires this repo's `toolkit/` tree plus local Claude Code auth.
 argument-hint: "[--force] [--target system|bundled|both]"
 ---
 

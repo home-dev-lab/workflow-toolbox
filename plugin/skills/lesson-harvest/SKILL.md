@@ -2,16 +2,11 @@
 name: lesson-harvest
 user-invocable: false
 description: >-
-  Detect and extract a closure report's own "## Lessons for the memory" section — the section a
-  pilot or executor already writes at the end of its dev-loop arc — so the session integrating
-  that card doesn't have to read the whole report to find it. Detection and extraction only: it
-  never writes to a knowledge base and never invents wording, a fiche's type, or an index line —
-  it hands back a manifest of candidate items, verbatim, for the session to turn into real fiches
-  with its own judgment. Use at card closure/integration time, once per closed report, right
-  after a pilot's file-report exists and before deciding whether anything from it belongs in the
-  project's memory. Reports a distinct verdict for three cases: the section says "None." (no
-  reusable lesson — do nothing), the section is missing entirely (malformed report — read it by
-  hand), or the section carries content (candidate items follow).
+  Invoke when integrating a closed pilot or executor report and you need its "## Lessons for the
+  memory" section without rereading the whole file. Extract candidate lesson items verbatim and
+  return a distinct verdict for three cases: the section says "None.", the section is missing
+  entirely, or the section carries content. Detection and extraction only: never write to a
+  knowledge base, invent wording, classify a fiche, or decide whether to persist the lesson.
 ---
 
 # lesson-harvest — mechanize finding the lessons a report already wrote

@@ -1,18 +1,13 @@
 ---
 name: stale-card-sweep
-user-invocable: false
+user-invocable: true
 description: >-
-  At the moment a task-tracker card CLOSES, check whether its diff just covered the defect
-  another still-open card describes, and flag that card instead of leaving it to be
-  rediscovered and re-worked later. Use this when moving a card to Done/closed on a Planka-
-  tracked board (or invoke explicitly as "sweep for stale cards", "check what this closes",
-  "did this diff subsume anything else"). This is the symmetric of a removal-sweep: when
-  something is REMOVED, sweep what still cites it; when something is ADDED (a fix, a feature),
-  nothing does the same for what still asks for it — this skill is that missing half. It is
-  advisory only: it flags candidate cards with a comment, it never closes, moves, or edits any
-  card's substance. Do not use this for card creation or for cards long dormant with no diff
-  driving the check — that is `working-methodology.md` clause 1bis (age-triggered), a
-  different trigger from this one (sibling-closure-triggered).
+  Invoke ONLY when a task-tracker card is about to close and you need to check whether its diff
+  already covered the defect another open card still describes, or when the user says "sweep for
+  stale cards", "check what this closes", or "did this diff subsume anything else". Shortlist
+  candidates from the changed files, then judge each one against the diff. Advisory only: flag
+  candidate cards with a comment; never close, move, or rewrite them. Not for card creation or
+  age-triggered dormant-card sweeps.
 ---
 
 # stale-card-sweep — flag what a closing diff just made stale
