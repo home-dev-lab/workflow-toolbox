@@ -172,11 +172,12 @@ export interface ParsedArgs {
   modeValue?: string
   changedFiles: string[]
   closingCardId?: string
+  hook: boolean
 }
 
 export const USAGE =
-  'usage: tsx toolkit/scripts/stale-card-sweep.ts --board <boardId> --changed-file <path> [--changed-file <path> ...] [--closing-card <id>]\n' +
-  '       tsx toolkit/scripts/stale-card-sweep.ts --snapshot <file.json> --changed-file <path> [...] [--closing-card <id>]\n' +
+  'usage: tsx toolkit/scripts/stale-card-sweep.ts --board <boardId> --changed-file <path> [--changed-file <path> ...] [--closing-card <id>] [--hook]\n' +
+  '       tsx toolkit/scripts/stale-card-sweep.ts --snapshot <file.json> --changed-file <path> [...] [--closing-card <id>] [--hook]\n' +
   'at least one --changed-file is required — a diff with no changed files cannot determine anything, and reporting an\n' +
   'empty shortlist in that case would be a silent false-clean verdict.'
 
@@ -188,6 +189,7 @@ export function parseArgs(args: string[]): ParsedArgs {
   let mode: string | undefined
   let modeValue: string | undefined
   let closingCardId: string | undefined
+  let hook = false
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
@@ -202,16 +204,43 @@ export function parseArgs(args: string[]): ParsedArgs {
     } else if (arg === '--closing-card') {
       closingCardId = takeValue(args, index, arg)
       index += 1
+    } else if (arg === '--hook') {
+      hook = true
     } else {
       throw new Error(`unknown argument: ${arg}`)
     }
   }
 
-  return { mode, modeValue, changedFiles, closingCardId }
+  return { mode, modeValue, changedFiles, closingCardId, hook }
+}
+
+/** Format for the commit-time hook: SILENT (returns null) when there is nothing to flag — a
+ * hook that speaks on every commit becomes noise within a day, and noise is what makes the
+ * real case get missed. Non-null only when there is at least one candidate; kept short (this
+ * is a heads-up printed after a commit, not the full closure-time report). */
+export function formatHookOutput(source: string, result: StaleSweepResult): string | null {
+  if (result.candidates.length === 0) return null
+
+  const lines = [
+    `stale-card-sweep — ${source} — ${result.candidates.length} candidate(s) — JUDGMENT REQUIRED, not a verdict`,
+  ]
+
+  for (const candidate of result.candidates) {
+    lines.push(`card ${candidate.cardId} — ${candidate.cardName}`)
+    for (const path of candidate.matchedPaths) lines.push(`  matched: ${path}`)
+  }
+
+  if (result.filtered) {
+    lines.push(
+      `>= ${DIFF_FILTER_THRESHOLD} — diff-shortlist mode (a degradation accepted for volume, never an improvement on reading everything)`,
+    )
+  }
+
+  return lines.join('\n')
 }
 
 export async function main(args = process.argv.slice(2)): Promise<void> {
-  const { mode, modeValue, changedFiles, closingCardId } = parseArgs(args)
+  const { mode, modeValue, changedFiles, closingCardId, hook } = parseArgs(args)
 
   if (!mode || changedFiles.length === 0) {
     console.error(USAGE)
@@ -220,7 +249,12 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 
   const { cards, source } = await resolveCards(mode, modeValue)
   const result = sweep(cards, changedFiles, closingCardId)
-  printResult(source, result)
+  if (hook) {
+    const output = formatHookOutput(source, result)
+    if (output !== null) console.log(output)
+  } else {
+    printResult(source, result)
+  }
   process.exit(0)
 }
 
