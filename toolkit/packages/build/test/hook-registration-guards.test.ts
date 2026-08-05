@@ -23,14 +23,14 @@
 // CI-reproducible tree; the underlying `duplicateScriptRegistrations` function is generic and a
 // project adopting this checker can point it at those paths too (see the module doc).
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { declaredHookPaths } from '../../../../plugin/bin/lib/hook-manifest.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { duplicateScriptRegistrations, extractScriptBasenames, requiredEventOf } from '../../../../plugin/bin/lib/registration-collision-check.mjs'
+import { duplicateScriptRegistrations, extractScriptPaths, requiredEventOf } from '../../../../plugin/bin/lib/registration-collision-check.mjs'
 
 type HookPathEntry = { event: string; rel: string }
 
@@ -38,7 +38,6 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const PLUGIN_ROOT = join(REPO_ROOT, 'plugin')
 const MANIFEST = join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json')
 const MONITORS = join(PLUGIN_ROOT, 'monitors', 'monitors.json')
-const BIN_DIR = join(PLUGIN_ROOT, 'bin')
 
 // --------------------------------------------------------------------------
 // 1. Duplicate script registration across surfaces
@@ -46,16 +45,16 @@ const BIN_DIR = join(PLUGIN_ROOT, 'bin')
 describe('duplicateScriptRegistrations — unit, red-proof against synthetic fixtures', () => {
   it('RED: flags a script invoked by two DIFFERENT surfaces (the arc-watch near-miss shape)', () => {
     const dups = duplicateScriptRegistrations({
-      monitors: ['wt-arc-watch.mjs'],
-      pluginHooks: ['wt-arc-watch.mjs', 'wt-outbound-guard-hook.mjs'],
+      monitors: ['/bin/wt-arc-watch.mjs'],
+      pluginHooks: ['/bin/wt-arc-watch.mjs', '/bin/wt-outbound-guard-hook.mjs'],
     })
-    expect(dups).toEqual([{ script: 'wt-arc-watch.mjs', surfaces: ['monitors', 'pluginHooks'] }])
+    expect(dups).toEqual([{ script: '/bin/wt-arc-watch.mjs', surfaces: ['monitors', 'pluginHooks'] }])
   })
 
   it('GREEN (fixed): removing the duplicate registration clears the finding', () => {
     const dups = duplicateScriptRegistrations({
-      monitors: ['wt-arc-watch.mjs'],
-      pluginHooks: ['wt-outbound-guard-hook.mjs'],
+      monitors: ['/bin/wt-arc-watch.mjs'],
+      pluginHooks: ['/bin/wt-outbound-guard-hook.mjs'],
     })
     expect(dups).toEqual([])
   })
@@ -64,43 +63,57 @@ describe('duplicateScriptRegistrations — unit, red-proof against synthetic fix
     // e.g. wt-verifier-cli-guard-hook.mjs is registered under both PreToolUse and PostToolUse
     // inside plugin.json itself, to do different work per event — one surface, not a duplicate.
     const dups = duplicateScriptRegistrations({
-      pluginHooks: ['wt-verifier-cli-guard-hook.mjs', 'wt-verifier-cli-guard-hook.mjs'],
+      pluginHooks: ['/bin/wt-verifier-cli-guard-hook.mjs', '/bin/wt-verifier-cli-guard-hook.mjs'],
+    })
+    expect(dups).toEqual([])
+  })
+
+  it('does NOT flag two DIFFERENT files that merely share a basename (full-path keying, not basename)', () => {
+    // A basename-only key would wrongly collide plugin/bin/foo.mjs with plugin/bin/lib/foo.mjs —
+    // two genuinely different files. Cross-family review flagged this basename-collision risk;
+    // this locks the fix (full relative path is the identity key, never the bare filename).
+    const dups = duplicateScriptRegistrations({
+      monitors: ['/bin/foo.mjs'],
+      pluginHooks: ['/bin/lib/foo.mjs'],
     })
     expect(dups).toEqual([])
   })
 
   it('honest scope: two DIFFERENT scripts doing the same job are invisible to this check', () => {
     const dups = duplicateScriptRegistrations({
-      monitors: ['wt-lane-saturation-watch.mjs'],
-      pluginHooks: ['wt-lane-saturation-hook.mjs'],
+      monitors: ['/bin/wt-lane-saturation-watch.mjs'],
+      pluginHooks: ['/bin/wt-lane-saturation-hook.mjs'],
     })
-    expect(dups).toEqual([]) // different basenames — not mechanically catchable here
+    expect(dups).toEqual([]) // different paths — not mechanically catchable here
   })
 })
 
-describe('extractScriptBasenames — pulls script paths out of a command/string', () => {
-  it('extracts a ${CLAUDE_PLUGIN_ROOT}-rooted .mjs reference', () => {
-    expect(extractScriptBasenames('node "${CLAUDE_PLUGIN_ROOT}/bin/wt-arc-watch.mjs" --poll 60')).toEqual([
-      'wt-arc-watch.mjs',
+describe('extractScriptPaths — pulls FULL script paths (not basenames) out of a command/string', () => {
+  it('extracts a ${CLAUDE_PLUGIN_ROOT}-rooted .mjs reference as its full relative path', () => {
+    expect(extractScriptPaths('node "${CLAUDE_PLUGIN_ROOT}/bin/wt-arc-watch.mjs" --poll 60')).toEqual([
+      '/bin/wt-arc-watch.mjs',
     ])
   })
 
-  it('extracts every reference in a command with more than one', () => {
+  it('extracts every reference in a command with more than one, keeping directories distinct', () => {
     expect(
-      extractScriptBasenames('node "${CLAUDE_PLUGIN_ROOT}/bin/a.mjs" --lib "${CLAUDE_PLUGIN_ROOT}/bin/lib/b.mjs"'),
-    ).toEqual(['a.mjs', 'b.mjs'])
+      extractScriptPaths('node "${CLAUDE_PLUGIN_ROOT}/bin/a.mjs" --lib "${CLAUDE_PLUGIN_ROOT}/bin/lib/a.mjs"'),
+    ).toEqual(['/bin/a.mjs', '/bin/lib/a.mjs']) // same basename, different path — must NOT collapse
   })
 })
 
 describe('duplicateScriptRegistrations — REAL gate on this repo\'s own registration surfaces', () => {
   it('no script is invoked by BOTH plugin/monitors/monitors.json and plugin/.claude-plugin/plugin.json', () => {
     const monitors = JSON.parse(readFileSync(MONITORS, 'utf8')) as Array<{ command?: string }>
-    const monitorScripts = monitors.flatMap((m) => extractScriptBasenames(m.command))
+    const monitorScripts = monitors.flatMap((m) => extractScriptPaths(m.command))
     const declared = declaredHookPaths(MANIFEST) as HookPathEntry[]
-    const hookScripts = declared.map(({ rel }) => rel.split('/').pop() ?? rel)
+    const hookScripts = declared.map(({ rel }) => rel)
 
     const dups = duplicateScriptRegistrations({ monitors: monitorScripts, pluginHooks: hookScripts })
     expect(dups, `cross-surface duplicate script registrations: ${JSON.stringify(dups)}`).toEqual([])
+    // Sanity: both surfaces actually contributed something (not silently empty).
+    expect(monitorScripts.length).toBeGreaterThan(0)
+    expect(hookScripts.length).toBeGreaterThan(0)
   })
 })
 
@@ -119,12 +132,24 @@ describe('requiredEventOf — unit, red-proof against synthetic fixtures', () =>
   })
 
   it('returns null (ambiguous, skip) when the file names more than one required event', () => {
-    const src = `if (input.hook_event_name !== 'PreToolUse') return []\n// elsewhere...\nif (input.hook_event_name !== 'PostToolUse') doOther()`
+    const src = `if (input.hook_event_name !== 'PreToolUse') return []\nif (input.hook_event_name !== 'PostToolUse') doOther()`
     expect(requiredEventOf(src)).toBeNull()
   })
 
   it('returns null (cannot determine, skip) when the file has no such gate at all', () => {
     expect(requiredEventOf('function main() { doStuff() }')).toBeNull()
+  })
+
+  it('ignores a gate mentioned only in a // line comment (does not mistake prose for code)', () => {
+    // Cross-family review flagged that a naive regex would read a comment as a real gate. A
+    // hook whose code has NO real gate but happens to comment about one must still return null.
+    const src = `function main() {\n  // if (input.hook_event_name !== 'PreToolUse') return\n  doWork()\n}`
+    expect(requiredEventOf(src)).toBeNull()
+  })
+
+  it('reads the real gate correctly even when a misleading comment sits on an earlier line', () => {
+    const src = `// note: unlike wt-foo, this one used to require PreToolUse\nif (input.hook_event_name !== 'PostToolUse') return`
+    expect(requiredEventOf(src)).toBe('PostToolUse')
   })
 })
 
@@ -149,6 +174,7 @@ describe('hook event consistency — REAL gate over every shipped hook (card #18
       }
       const declaredEvent = [...events][0]!
       const abs = join(PLUGIN_ROOT, rel.replace(/^\//, ''))
+      expect(existsSync(abs), `declared hook path does not exist: ${abs}`).toBe(true)
       const source = readFileSync(abs, 'utf8')
       const requiredEvent = requiredEventOf(source)
       if (requiredEvent === null) {
@@ -161,17 +187,9 @@ describe('hook event consistency — REAL gate over every shipped hook (card #18
     }
 
     expect(mismatches, `plugin.json declares an event that the hook's own code refuses: ${JSON.stringify(mismatches)}`).toEqual([])
-    // Sanity: the check actually examined a real, non-trivial set of hooks (not silently a no-op).
+    // Sanity: the check actually examined a real, non-trivial set of hooks (not silently a no-op),
+    // and at least one of them was actually judged rather than skipped.
     expect(eventsByScript.size).toBeGreaterThan(5)
     expect(eventsByScript.size - skipped.length).toBeGreaterThan(0)
-  })
-
-  it('sees every .mjs file under plugin/bin/ that plugin.json registers (sanity: BIN_DIR is real)', () => {
-    const declared = declaredHookPaths(MANIFEST) as HookPathEntry[]
-    for (const { rel } of declared) {
-      if (!rel.endsWith('.mjs')) continue
-      const abs = join(PLUGIN_ROOT, rel.replace(/^\//, ''))
-      expect(abs.startsWith(BIN_DIR) || abs.includes('/bin/'), abs).toBe(true)
-    }
   })
 })

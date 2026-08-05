@@ -21,24 +21,28 @@
 //     rather than pass such a hook.
 
 /**
- * Extract every `${CLAUDE_PLUGIN_ROOT}/...` (or literal-rooted) script path referenced by a
- * command/string, as its basename. Mirrors the reference-collecting regex in hook-manifest.mjs
- * (global match — a command can reference more than one script path).
+ * Extract every `${CLAUDE_PLUGIN_ROOT}/...` script path referenced by a command/string, as its
+ * FULL path relative to the plugin root (e.g. `/bin/wt-arc-watch.mjs`) — never just the
+ * basename. A basename-only key would collide two DIFFERENT files that merely share a filename
+ * (e.g. a top-level script and an unrelated one under `bin/lib/`), producing a false-positive
+ * duplicate; the full relative path is what a registration surface actually names, so it is
+ * what must match for two entries to genuinely be "the same script". Mirrors the
+ * reference-collecting regex in hook-manifest.mjs (global match — a command can reference more
+ * than one script path).
  */
-export function extractScriptBasenames(text) {
+export function extractScriptPaths(text) {
   const out = []
   const re = /(?:\$\{CLAUDE_PLUGIN_ROOT\}|\/)([^"'\s]+\.m?js)/g
   for (const match of String(text ?? '').matchAll(re)) {
     const rel = match[1]
-    const base = rel.split('/').pop()
-    if (base) out.push(base)
+    out.push(rel.startsWith('/') ? rel : `/${rel}`)
   }
   return out
 }
 
 /**
- * surfaces: Record<surfaceName, string[] of script basenames registered on that surface>.
- * Returns [{ script, surfaces: string[] }] for every script basename appearing on 2+ DISTINCT
+ * surfaces: Record<surfaceName, string[] of script paths registered on that surface>.
+ * Returns [{ script, surfaces: string[] }] for every script path appearing on 2+ DISTINCT
  * surface names. Multiple occurrences WITHIN one surface's own array are not duplicates here —
  * dedupe per surface before comparing.
  */
@@ -58,6 +62,23 @@ export function duplicateScriptRegistrations(surfaces) {
 }
 
 /**
+ * Strips `//` line comments before scanning, so a comment or example line mentioning
+ * `hook_event_name !== '...'` cannot be mistaken for a real gate. NAIVE and stated as such: it
+ * does not parse block comments (`/* ... *\/`) or recognize a `//` occurring inside a string
+ * literal — good enough for this repo's actual hook sources (none embed `//` in a matched
+ * string), not a general-purpose JS comment stripper. Extending it would need a real tokenizer.
+ */
+function stripLineComments(source) {
+  return String(source ?? '')
+    .split('\n')
+    .map((line) => {
+      const idx = line.indexOf('//')
+      return idx === -1 ? line : line.slice(0, idx)
+    })
+    .join('\n')
+}
+
+/**
  * Returns the single event a hook file's OWN code requires (via its `hook_event_name !== 'X'`
  * gate), or null when no such gate exists or it names more than one distinct event (ambiguous —
  * the hook deliberately handles multiple events; skip it rather than guess).
@@ -65,7 +86,7 @@ export function duplicateScriptRegistrations(surfaces) {
 export function requiredEventOf(source) {
   const events = new Set()
   const re = /\bhook_event_name\s*!==\s*'([A-Za-z]+)'/g
-  for (const match of String(source ?? '').matchAll(re)) events.add(match[1])
+  for (const match of stripLineComments(source).matchAll(re)) events.add(match[1])
   if (events.size !== 1) return null
   return [...events][0]
 }
