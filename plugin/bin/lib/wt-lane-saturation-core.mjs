@@ -51,9 +51,28 @@ export function boundFromEnvReal(env = process.env) {
   return { bound: parsed, source: 'WT_LANE_MAX_CONCURRENT' }
 }
 
+/** Enforcement mode is a NAMED, independent parameter from the bound itself — a rollback
+ *  lever for the ACT of blocking, separate from the lever that sizes the bound. `deny` is
+ *  the default: an advisory a caller can read and ignore does not meet the card's own
+ *  closing criterion ("a second launcher genuinely bounds itself or waits"), which a
+ *  README-only warning was measured, on this exact card, to fail — a caller who saw the
+ *  message chose to proceed anyway, because nothing forced otherwise. `warn` reverts to
+ *  print-only behavior instantly, without a code change, if this guard's false-positive
+ *  rate under real usage turns out to be a problem: a guard that blocks correct work gets
+ *  switched off and takes its real case with it, so the switch itself must be immediate. */
+export function enforceModeFromEnvReal(env = process.env) {
+  const raw = String(env['WT_LANE_ENFORCE_MODE'] ?? '').trim().toLowerCase()
+  return raw === 'warn' ? 'warn' : 'deny'
+}
+
 export function evaluateLaneCall(
   payload,
-  { countLaneProcesses = countLaneProcessesReal, boundFromEnv = boundFromEnvReal, env = process.env } = {},
+  {
+    countLaneProcesses = countLaneProcessesReal,
+    boundFromEnv = boundFromEnvReal,
+    enforceModeFromEnv = enforceModeFromEnvReal,
+    env = process.env,
+  } = {},
 ) {
   const command = payload?.tool_input?.command
   if (typeof command !== 'string' || !LANE_INVOCATIONS.some((re) => re.test(command))) return { silent: true }
@@ -62,8 +81,12 @@ export function evaluateLaneCall(
   const live = countLaneProcesses()
 
   if (live.state === 'unknown') {
+    // NEVER deny on a measurement failure: "pgrep is missing" and "nothing is running" are
+    // opposite facts, and the one clean thing a broken measurement can do is stay out of
+    // the caller's way rather than block on a guess.
     return {
       silent: false,
+      deny: false,
       message:
         `[wt] lane usage NOT MEASURED before this call — ${live.reason}. ` +
         `This is not a report that the lane is free; it is a report that nothing was counted. ` +
@@ -74,21 +97,33 @@ export function evaluateLaneCall(
   // The count EXCLUDES the call about to be made — it has not started yet.
   if (live.count + 1 <= bound) return { silent: true }
 
+  const mode = enforceModeFromEnv(env)
+  const deny = mode === 'deny'
+
   return {
     silent: false,
+    deny,
     message: [
-      `[wt] the external lane is at or past its bound: ${live.count} call(s) already live, ` +
-        `this one would make ${live.count + 1}, bound ${bound} (${source}).`,
-      `  What happens past the bound is NOT a clean refusal: the lane rate-limits and retries, ` +
-        `latency goes up roughly 5-8x, and then YOUR OWN timeout converts that slowdown into a ` +
-        `dead call. Four batches were lost that way in the incident this guard comes from.`,
+      `[wt] ${deny ? 'Refused: ' : ''}the external lane is at or past its bound: ${live.count} ` +
+        `call(s) already live, this one would make ${live.count + 1}, bound ${bound} (${source}).`,
+      `  What happens past the bound is NOT a clean refusal from the CLI itself: the lane ` +
+        `rate-limits and retries, latency goes up roughly 5-8x, and then YOUR OWN timeout ` +
+        `converts that slowdown into a dead call. Four batches were lost that way in the ` +
+        `incident this guard comes from.`,
       `  ⚠ A 0-byte output file while the process is alive does NOT distinguish "queued" from ` +
         `"about to expire" — both look identical until the last second, so do not read silence ` +
         `as progress.`,
-      `  Options: wait for the live calls to drain, size this call's timeout for latency UNDER ` +
-        `LOAD rather than in isolation, or raise the bound deliberately via WT_LANE_MAX_CONCURRENT ` +
-        `if the subscribed plan supports it.`,
-      `  This is advisory — the call is NOT blocked.`,
+      deny
+        ? `  This call is REFUSED, not merely flagged: an informed caller was measured choosing ` +
+          `to proceed anyway on the advisory form, which is why this now blocks. Later readers ` +
+          `cannot tell "queued" from "about to expire" from the output alone, so the refusal ` +
+          `itself is the only reliable signal. Fix: wait for a live call to drain and retry, or ` +
+          `raise the bound deliberately via WT_LANE_MAX_CONCURRENT if the subscribed plan ` +
+          `supports it. To fall back to advisory-only, set WT_LANE_ENFORCE_MODE=warn.`
+        : `  Options: wait for the live calls to drain, size this call's timeout for latency UNDER ` +
+          `LOAD rather than in isolation, or raise the bound deliberately via WT_LANE_MAX_CONCURRENT ` +
+          `if the subscribed plan supports it.\n  This is advisory (WT_LANE_ENFORCE_MODE=warn) — the ` +
+          `call is NOT blocked.`,
     ].join('\n'),
   }
 }

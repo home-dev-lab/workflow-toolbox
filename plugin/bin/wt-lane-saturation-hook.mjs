@@ -31,13 +31,29 @@
 // orchestrator, pilot, throwaway agent — reaches the lane through Bash, and none of them
 // needs to know this exists.
 //
-// ⚠ IT WARNS, IT NEVER BLOCKS. A new guard's precision is measured on material it did not
-// choose before it is allowed to refuse anything. Blocking a legitimate call here would
-// cost more than the contention it prevents, and a guard that refuses correct work gets
-// switched off — taking its real case with it.
+// ⚠ IT WARNED, IT NEVER BLOCKED — RETIRED. Shipped advisory-only in 161dfa8 on the reasoning
+// that a new guard's precision must be measured before it is allowed to refuse anything.
+// Measured the same day, on this exact card: an informed caller reads the advisory and can
+// still proceed anyway — the founding incident was never a lack of information, it was two
+// arcs with no reason to stop. So DEFAULT is now `permissionDecision:'deny'` on the
+// over-bound branch (same JSON contract wt-pilot-guard-hook.mjs already uses, and the
+// contract already measured to reach subagent Bash calls, not just the main session). The
+// counting/regex logic is UNCHANGED — only the action taken on an already-correct
+// measurement changed. `WT_LANE_ENFORCE_MODE=warn` reverts to the old print-only behavior
+// instantly, without a code change, if this proves too aggressive under real usage — see
+// wt-lane-saturation-core.mjs. The "unknown" (pgrep unavailable) branch NEVER denies: a
+// measurement failure must never be treated as grounds to block.
+//
+// ⚠ NOW THAT THIS CAN DENY, an uncaught exception here must fail OPEN (allow), never
+// closed — a broken entry path in a DENYING guard would otherwise silently block every
+// lane call on the machine, which is a worse outcome than the contention this guard exists
+// to prevent. Wrapped in runFailOpenHook (the same seam every other deny-capable guard in
+// this directory already uses); wt-lane-saturation-core.mjs's OWN failure paths (pgrep
+// unavailable) are handled separately, inside evaluateLaneCall, and never reach here.
 
 import { readFileSync } from 'node:fs'
 import { evaluateLaneCall } from './lib/wt-lane-saturation-core.mjs'
+import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 
 function readPayload() {
   try {
@@ -48,7 +64,31 @@ function readPayload() {
   }
 }
 
-const payload = readPayload()
-const result = evaluateLaneCall(payload)
-if (!result.silent) console.log(result.message)
-process.exit(0)
+function main() {
+  const payload = readPayload()
+  const result = evaluateLaneCall(payload)
+
+  if (result.silent) return
+
+  if (result.deny) {
+    // Built inline (not via a shared helper) deliberately: this project's own
+    // refusal-message-invariant gate audits each deny guard's OWN source for the literal
+    // `permissionDecisionReason:` field, so the reason it delivers is never one
+    // indirection away from the file that claims to deny.
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: result.message,
+        },
+      }),
+    )
+    return
+  }
+
+  // Advisory path (warn mode, or the unknown-measurement branch): print and allow.
+  console.log(result.message)
+}
+
+runFailOpenHook('wt-lane-saturation-hook.mjs', main)
