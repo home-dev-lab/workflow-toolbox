@@ -66,6 +66,35 @@ function runHook(cwd: string, env: NodeJS.ProcessEnv): { stdout: string; context
   return { stdout, context }
 }
 
+function runPostToolUsePushHook(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  tool_response?: unknown,
+): { stdout: string; context: string } {
+  const payload: Record<string, unknown> = {
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Bash',
+    tool_input: { command: 'git push public main' },
+    cwd,
+  }
+  if (tool_response !== undefined) payload.tool_response = tool_response
+  const res = spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    env,
+  })
+  const stdout = (res.stdout ?? '').trim()
+  let context = ''
+  try {
+    const parsed = stdout ? (JSON.parse(stdout) as Record<string, unknown>) : null
+    const hso = parsed?.['hookSpecificOutput'] as Record<string, unknown> | undefined
+    context = (hso?.['additionalContext'] as string | undefined) ?? ''
+  } catch {
+    context = ''
+  }
+  return { stdout, context }
+}
+
 describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () => {
   // POSITIVE CONTROL FIRST (per the brief): prove the hook actually speaks in the
   // absent case before trusting the silent case — otherwise a broken invocation and a
@@ -114,6 +143,52 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(r.context).toContain('adopt')
   })
 
+  it('PostToolUse push wording stays neutral while still naming stale files', () => {
+    const f = fixture('posttooluse-stale')
+    const dir = join(f.proj, '.claude', 'rules')
+    installInto(dir)
+    const p = join(dir, RULE)
+    const body = readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
+    const fp = createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
+    writeFileSync(p, `<!-- installed from workflow-toolbox v0.0.1 · content sha256:${fp} by the adopt skill -->\n\n${body}`)
+    const r = runPostToolUsePushHook(f.proj, f.env)
+    expect(r.stdout, 'must not be silent').not.toBe('')
+    expect(r.context).not.toContain('just landed')
+    expect(r.context).not.toContain('A push just landed and the adopted rule copies are now behind it')
+    expect(r.context).toContain('A `git push` command just ran; this Bash PostToolUse hook cannot tell whether it landed.')
+    expect(r.context).toContain('Behind the shipped version')
+    expect(r.context).toContain(RULE)
+  })
+
+  // Locks the actual design decision: the fix does NOT branch on tool_response (its shape for
+  // the Bash tool is not reliably documented), so the preface must stay byte-identical whether
+  // tool_response looks like a failure, a success, or is absent altogether. A future change that
+  // starts reading tool_response to differentiate the message must consciously update this test,
+  // not slip past it.
+  it('PostToolUse wording is IDENTICAL regardless of what tool_response claims (or omits)', () => {
+    const f = fixture('posttooluse-response-invariant')
+    const dir = join(f.proj, '.claude', 'rules')
+    installInto(dir)
+    const p = join(dir, RULE)
+    const body = readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
+    const fp = createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
+    writeFileSync(p, `<!-- installed from workflow-toolbox v0.0.1 · content sha256:${fp} by the adopt skill -->\n\n${body}`)
+
+    const absent = runPostToolUsePushHook(f.proj, f.env)
+    const failureLike = runPostToolUsePushHook(f.proj, f.env, {
+      success: false,
+      exitCode: 1,
+      stderr: 'refused: out-of-scope ref',
+    })
+    const successLike = runPostToolUsePushHook(f.proj, f.env, { success: true, exitCode: 0, stdout: 'ok' })
+
+    expect(failureLike.context).toBe(absent.context)
+    expect(successLike.context).toBe(absent.context)
+    for (const ctx of [absent.context, failureLike.context, successLike.context]) {
+      expect(ctx).not.toContain('just landed')
+    }
+  })
+
   it('SPEAKS for a locally-EDITED file, and does NOT frame it as a problem', () => {
     const f = fixture('edited')
     const dir = join(f.proj, '.claude', 'rules')
@@ -146,6 +221,13 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     runHook(f.proj, f.env)
     const after = readFileSync(join(dir, RULE), 'utf8')
     expect(after).toBe(before)
+  })
+
+  it('PostToolUse stays SILENT when everything is installed and current', () => {
+    const f = fixture('posttooluse-current')
+    installInto(join(f.proj, '.claude', 'rules'))
+    const r = runPostToolUsePushHook(f.proj, f.env)
+    expect(r.stdout).toBe('')
   })
 
   it('fail-safe SILENT on a payload without cwd', () => {
