@@ -11,6 +11,44 @@ export const LANE_PROCESS_NAMES = ['opencode', 'codex']
  *  every command containing the word becomes noise within a day. */
 export const LANE_INVOCATIONS = [/\bopencode\s+run\b/, /\bcodex\s+exec\b/]
 
+/** Strip quoted-string bodies and shell comments before testing LANE_INVOCATIONS — a
+ *  command line MIXES code and data, and a textual guard that reads a heredoc or a quoted
+ *  string as if the shell would execute it refuses correct work (this project's own
+ *  documented gotcha). Without this, `echo 'opencode run x'`, `printf '%s' 'opencode run'`,
+ *  or a `# opencode run` comment all read as a real invocation — harmless while this guard
+ *  only warned, but a genuine false-deny now that it can refuse the call outright, for ANY
+ *  Bash caller including the main session.
+ *
+ *  Deliberately simple, not a shell parser: strips '...'/"..." bodies (escaped quotes inside
+ *  double quotes respected) and drops everything from an unquoted `#` to end of string. This
+ *  narrows false positives (mention-only text) at essentially no cost to true positives: a
+ *  real invocation is never itself wrapped in quotes or written after a comment marker. */
+export function stripNonExecutedText(command) {
+  let out = ''
+  let i = 0
+  while (i < command.length) {
+    const ch = command[i]
+    if (ch === "'") {
+      const end = command.indexOf("'", i + 1)
+      i = end === -1 ? command.length : end + 1
+      continue
+    }
+    if (ch === '"') {
+      let j = i + 1
+      while (j < command.length && command[j] !== '"') {
+        if (command[j] === '\\') j += 1
+        j += 1
+      }
+      i = j >= command.length ? command.length : j + 1
+      continue
+    }
+    if (ch === '#') break // unquoted '#' starts a comment: nothing after it executes
+    out += ch
+    i += 1
+  }
+  return out
+}
+
 /** Count live lane processes by EXACT PROCESS NAME.
  *
  *  ⚠ THE OBVIOUS FORM IS WRONG AND INFLATES BY CONSTRUCTION. `pgrep -f 'opencode run'`
@@ -75,7 +113,9 @@ export function evaluateLaneCall(
   } = {},
 ) {
   const command = payload?.tool_input?.command
-  if (typeof command !== 'string' || !LANE_INVOCATIONS.some((re) => re.test(command))) return { silent: true }
+  if (typeof command !== 'string' || !LANE_INVOCATIONS.some((re) => re.test(stripNonExecutedText(command)))) {
+    return { silent: true }
+  }
 
   const { bound, source } = boundFromEnv(env)
   const live = countLaneProcesses()

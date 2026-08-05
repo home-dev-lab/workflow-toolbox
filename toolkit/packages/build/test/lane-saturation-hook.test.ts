@@ -20,8 +20,14 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-lane-saturation-hook.mjs')
 
 const roots: string[] = []
+const ORIGINAL_ENFORCE_MODE = process.env.WT_LANE_ENFORCE_MODE
 afterEach(() => {
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true })
+  // A test asserting the real default must delete the env var to observe it — restore
+  // whatever was there before (present or absent) so later tests, or a CI/operator-set
+  // value, are never silently discarded by this file.
+  if (ORIGINAL_ENFORCE_MODE === undefined) delete process.env.WT_LANE_ENFORCE_MODE
+  else process.env.WT_LANE_ENFORCE_MODE = ORIGINAL_ENFORCE_MODE
 })
 
 describe('wt-lane-saturation-hook.mjs', () => {
@@ -47,6 +53,45 @@ describe('wt-lane-saturation-hook.mjs', () => {
     expect(
       evaluateLaneCall({ tool_input: { command: 'git commit -m "document the opencode lane"' } }, { countLaneProcesses }).silent,
     ).toBe(true)
+  })
+
+  it('is silent when the literal phrase "opencode run"/"codex exec" appears only inside quotes or a comment — never a real invocation', () => {
+    // A command line MIXES code and data: text a shell would never execute (a quoted
+    // argument, a shell comment) must not read as if it would. Before this, these each
+    // matched the raw LANE_INVOCATIONS regex and would have DENIED once this guard could
+    // deny — a real false-deny risk for any Bash caller, main session included.
+    const countLaneProcesses = () => {
+      throw new Error('countLaneProcesses should not be called for mention-only commands')
+    }
+    const cases = [
+      "echo 'opencode run x'",
+      `printf '%s\\n' 'opencode run'`,
+      'echo "please do not opencode run this manually"',
+      '# opencode run is documented below',
+      'cat notes.txt # reminder: opencode run needs the model flag',
+    ]
+    for (const command of cases) {
+      expect(evaluateLaneCall({ tool_input: { command } }, { countLaneProcesses }).silent, command).toBe(true)
+    }
+  })
+
+  it('still detects a real invocation chained after another command, or preceded by an unquoted modifier', () => {
+    // The false-positive fix must not become a false-negative regression: a real lane call
+    // is never itself wrapped in quotes or written after a comment marker, so stripping
+    // quoted/commented text must leave true positives untouched. Forced deliberately over
+    // bound so the ONLY way this returns non-silent is that the command was recognized as
+    // an invocation at all — a command missed by detection short-circuits to silent:true
+    // before countLaneProcesses is even consulted, regardless of what it would have said.
+    const countLaneProcesses = () => ({ state: 'ok' as const, count: 100 })
+    const boundFromEnv = () => ({ bound: 1, source: 'default' })
+    const cases = [
+      'cd /tmp && opencode run --model x < /dev/null',
+      'nohup opencode run --model x < /dev/null &',
+      'echo starting; opencode run --model x < /dev/null',
+    ]
+    for (const command of cases) {
+      expect(evaluateLaneCall({ tool_input: { command } }, { countLaneProcesses, boundFromEnv }).silent, command).toBe(false)
+    }
   })
 
   it('is silent on a real lane call while the lane is below its bound', () => {
@@ -227,16 +272,23 @@ describe('wt-lane-saturation-hook.mjs', () => {
   // The discriminating requirement this guard is held to: seeing, on a case built
   // deliberately, BOTH (a) a second launcher genuinely bounds itself or waits because the
   // lane is saturated, and (b) the lane stays usable by both arcs with no lost work. A
-  // mechanism that has never met real contention
-  // is not proven — a green suite of mocked branches does not settle that on its own,
-  // because a mock agrees with whatever the test author already believed.
+  // mechanism that has never met real contention is not proven — a green suite of mocked
+  // branches does not settle that on its own, because a mock agrees with whatever the test
+  // author already believed.
   //
-  // This drives the REAL CLI script (HOOK), through the REAL pgrep-backed counting path,
-  // against a REAL process named exactly `opencode` — the same positive-control technique
-  // as the delta test above — playing "arc A" (already occupying the lane) against "arc B"
-  // (the launcher under test, issuing the actual PreToolUse call the harness would send).
+  // This drives the REAL CLI script (HOOK) — spawned exactly as the harness's PreToolUse
+  // dispatcher would invoke it, stdin JSON in, stdout JSON out — through the REAL
+  // pgrep-backed counting path, against a REAL process named exactly `opencode` — the same
+  // positive-control technique as the delta test above — playing "arc A" (already
+  // occupying the lane) against "arc B" (the launcher under test). ⚠ SCOPE, stated
+  // honestly: this proves the HOOK's own decision (does it emit permissionDecision:'deny'
+  // under real contention, and allow again once it drains) — it does not drive Claude
+  // Code's actual dispatcher or a real `opencode run` process for arc B, so it cannot by
+  // itself prove the harness obeys a `deny` decision (that is the harness's own contract,
+  // not this hook's). "No call ever executes past the bound" is verified at the level this
+  // hook controls: arc B's own `opencode run` process is never spawned by a refused call.
   // Skips (never fails) if pgrep is unavailable, for the same documented reason as above.
-  it('two-arc contention: arc B is denied while arc A saturates the lane, and recovers once arc A drains — no call ever executes past the bound', ({ skip }) => {
+  it('two-arc contention: the hook denies arc B while arc A saturates the lane, and allows again once arc A drains — arc B is never itself spawned by a refused call', ({ skip }) => {
     const baseline = countLaneProcessesReal(['opencode'])
     if (baseline.state === 'unknown') {
       skip()
@@ -279,9 +331,14 @@ describe('wt-lane-saturation-hook.mjs', () => {
     const arcAPid = Number.parseInt(String(arcA.stdout ?? '').trim(), 10)
 
     try {
-      // give the kernel a moment to register the new process under its exact name before
-      // pgrep -x looks for it
-      spawnSync('sleep', ['0.3'])
+      // Poll until pgrep actually sees arc A's process under its exact name, rather than a
+      // blind sleep — the same drain-polling discipline as the recovery half below.
+      const registerDeadline = Date.now() + 5000
+      while (Date.now() < registerDeadline) {
+        const current = countLaneProcessesReal(['opencode'])
+        if (current.state === 'ok' && current.count > baseline.count) break
+        spawnSync('sleep', ['0.1'])
+      }
 
       // --- direction (a): arc B is now DENIED — it must genuinely be refused, not merely
       // told. This is the harness-level refusal (permissionDecision:'deny'); arc B's
@@ -307,8 +364,16 @@ describe('wt-lane-saturation-hook.mjs', () => {
     // --- direction (b), second half: arc A has DRAINED — the lane stays USABLE for arc B,
     // which now proceeds exactly as it would have without ever having lost a batch: no
     // retry loop, no accumulated state, no manual intervention. This is "waits, then
-    // proceeds" made concrete rather than asserted.
-    spawnSync('sleep', ['0.3'])
+    // proceeds" made concrete rather than asserted. Poll for the real count to actually
+    // return to baseline rather than a fixed sleep — killing a process is asynchronous, and
+    // a blind delay either flakes under scheduling pressure or pads every run with slack
+    // that was never needed.
+    const drainDeadline = Date.now() + 5000
+    while (Date.now() < drainDeadline) {
+      const current = countLaneProcessesReal(['opencode'])
+      if (current.state === 'ok' && current.count <= baseline.count) break
+      spawnSync('sleep', ['0.1'])
+    }
     const after = callArcB()
     expect(after.status).toBe(0)
     expect(`${after.stdout ?? ''}`.trim()).toBe('')

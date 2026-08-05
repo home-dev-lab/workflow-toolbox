@@ -25,11 +25,23 @@
 // counter every launcher reads before emitting, or a single queue that enforces the bound
 // itself. A counter is a directive — it depends on each caller remembering, and a
 // directive with no control point does not apply. A queue enforces properly but is
-// infrastructure: a daemon, a protocol, a failure mode of its own. This hook has the
-// queue's property (the bound does not depend on caller discipline) at the counter's cost
-// (nothing to run, nothing to keep alive), because every launcher — main session,
-// orchestrator, pilot, throwaway agent — reaches the lane through Bash, and none of them
-// needs to know this exists.
+// infrastructure: a daemon, a protocol, a failure mode of its own. This hook does NOT
+// depend on caller discipline (the counter's weakness) at the counter's cost (nothing to
+// run, nothing to keep alive) — but it is NOT a true queue either, and the difference is a
+// real, disclosed limitation, not a rounding error:
+//
+// ⚠ CHECK-THEN-ACT, NOT ATOMIC. Counting live processes and deciding are two separate
+// steps with no lock or reservation between them. Two Bash calls dispatched close enough
+// together — genuinely parallel tool calls in one turn, or two different agents' hooks
+// running as separate OS processes at nearly the same instant — can both observe the same
+// live count, both see themselves as the one call that would land exactly at the bound,
+// and both be allowed, jointly landing one over. This does not defeat the guard: it
+// narrows the race window to roughly the time between two hook invocations rather than the
+// unbounded, unmeasured window that existed before this guard shipped, and a call that
+// slips through the race is still counted (and refused) by the NEXT call a few hundred
+// milliseconds later once its process is actually visible to pgrep. A real fix (a file
+// lock or reservation ticket) is exactly the "queue" the card weighed and rejected as
+// infrastructure with its own failure modes — not built here, named instead.
 //
 // ⚠ IT WARNED, IT NEVER BLOCKED — RETIRED. Shipped advisory-only in 161dfa8 on the reasoning
 // that a new guard's precision must be measured before it is allowed to refuse anything.
