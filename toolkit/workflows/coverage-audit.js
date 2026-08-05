@@ -2167,6 +2167,7 @@ ${renderClaim(claim)}`;
         // and the shim one release after the rename.
         "plugin/bin/wt-adopt-rules-check-hook.mjs",
         "plugin/bin/wt-env-prerequisite-drift-hook.mjs",
+        "plugin/bin/wt-lane-saturation-hook.mjs",
         "plugin/bin/wt-arc-watch.mjs",
         "plugin/bin/wt-check-commit-signatures-hook.mjs",
         "plugin/bin/wt-check-commit-signatures.mjs",

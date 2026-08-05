@@ -98,6 +98,13 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,
       }
+    case 'wt-lane-saturation-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: sandbox.projectDir,
+        tool_input: { command: 'ls -la' },
+      }
     case 'wt-check-commit-signatures-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',
