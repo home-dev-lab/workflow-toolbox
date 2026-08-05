@@ -93,6 +93,11 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,
       }
+    case 'wt-env-prerequisite-drift-hook.mjs':
+      return {
+        hook_event_name: 'SessionStart',
+        cwd: sandbox.projectDir,
+      }
     case 'wt-check-commit-signatures-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',

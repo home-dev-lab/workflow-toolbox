@@ -67,6 +67,12 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
       'Deprecated name kept as a shim delegating to wt-adopt-check-hook.mjs, so sessions already running when the rename landed keep the hook; same doc surface as its target. Remove one release after the rename.',
   },
   {
+    script: 'plugin/bin/wt-env-prerequisite-drift-hook.mjs',
+    status: 'mapped',
+    reason:
+      'Known-issues documents this SessionStart post-adoption environment-drift light under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-arc-watch.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this monitor and its terminal-state output contract under Shipped Hooks, Guards & Monitors.',
@@ -534,6 +540,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       // not lose the hook. Same doc surface as the file it delegates to; delete both this line
       // and the shim one release after the rename.
       'plugin/bin/wt-adopt-rules-check-hook.mjs',
+      'plugin/bin/wt-env-prerequisite-drift-hook.mjs',
       'plugin/bin/wt-arc-watch.mjs',
       'plugin/bin/wt-check-commit-signatures-hook.mjs',
       'plugin/bin/wt-check-commit-signatures.mjs',

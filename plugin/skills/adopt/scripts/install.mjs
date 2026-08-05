@@ -69,6 +69,20 @@ const SETTINGS_TRACE_DIR = 'workflow-toolbox'
 const SETTINGS_TRACE_FILE = 'adopt-settings-trace.json'
 const SETTINGS_BACKUP_PREFIX = 'settings.json.workflow-toolbox.bak.'
 
+// ⚠ THIS LIST HAS A TWIN: plugin/bin/lib/env-prerequisites.mjs, which the SessionStart
+// drift check reads. This installer REPAIRS a missing prerequisite; that hook DETECTS
+// one that went missing later — two mechanisms, one fact.
+//
+// The twin is a real duplication and it is DELIBERATE. This script must stay a single
+// relocatable file: the installer tests copy it alone into a synthetic plugin root, so
+// a runtime import of a sibling module breaks it by construction (measured — the import
+// threw ERR_MODULE_NOT_FOUND across six test files). Self-containment wins here.
+//
+// What keeps the two copies honest is therefore a TEST, not an import:
+// packages/build/test/env-prerequisite-drift-hook.test.ts asserts the two declarations
+// are identical, key for key and value for value. Add a requirement to one and that
+// test goes red naming the other — which is the point, because the failure it prevents
+// is the detector going quiet about a requirement only the installer knows.
 const UNIVERSAL_ENV_REQUIREMENTS = [
   {
     key: 'CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH',
