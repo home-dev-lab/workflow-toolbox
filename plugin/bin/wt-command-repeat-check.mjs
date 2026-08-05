@@ -10,6 +10,7 @@ import path, { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 import {
+  DEFAULT_MAX_CLASS_SHAPES,
   DEFAULT_MAX_PAIRS,
   DEFAULT_THRESHOLD,
   DEFAULT_TTL_MS,
@@ -47,8 +48,10 @@ function parseArgs(argv) {
     json: false,
     stateDir: null,
     threshold: DEFAULT_THRESHOLD,
+    classThreshold: DEFAULT_THRESHOLD,
     ttlMs: DEFAULT_TTL_MS,
     maxPairs: DEFAULT_MAX_PAIRS,
+    maxClassShapes: DEFAULT_MAX_CLASS_SHAPES,
   }
 
   for (let i = 0; i < argv.length; i++) {
@@ -65,8 +68,10 @@ function parseArgs(argv) {
     else if (arg === '--at') out.at = parseInteger(nextValue(argv, i++, arg), arg)
     else if (arg === '--state-dir') out.stateDir = nextValue(argv, i++, arg)
     else if (arg === '--threshold') out.threshold = parseInteger(nextValue(argv, i++, arg), arg)
+    else if (arg === '--class-threshold') out.classThreshold = parseInteger(nextValue(argv, i++, arg), arg)
     else if (arg === '--ttl-ms') out.ttlMs = parseInteger(nextValue(argv, i++, arg), arg)
     else if (arg === '--max-pairs') out.maxPairs = parseInteger(nextValue(argv, i++, arg), arg)
+    else if (arg === '--max-class-shapes') out.maxClassShapes = parseInteger(nextValue(argv, i++, arg), arg)
     else if (arg === '--json') out.json = true
     else fail(`unknown argument: ${arg}`)
   }
@@ -131,14 +136,17 @@ function printReport(report, asJson) {
   if (report.degraded) {
     process.stdout.write(
       `[workflow-toolbox command-repeat] silent (${report.degraded}); ` +
-        `count=${report.count}, shape=${report.shapeHash.slice(0, 12)}\n`,
+        `shapeCount=${report.count}, classCount=${report.classCount}, ` +
+        `shape=${report.shapeHash.slice(0, 12)}, class=${report.classKey.slice(0, 12)}\n`,
     )
     return
   }
   const verdict = report.flagged ? 'FLAGGED' : 'silent'
   process.stdout.write(
-    `[workflow-toolbox command-repeat] ${verdict}: count=${report.count}, ` +
-      `shape=${report.shapeHash.slice(0, 12)}, result=${report.resultFingerprint.slice(0, 12)}\n`,
+    `[workflow-toolbox command-repeat] ${verdict}: axis=${report.flaggedAxis || 'none'}, ` +
+      `shapeCount=${report.count}, classCount=${report.classCount}, ` +
+      `shape=${report.shapeHash.slice(0, 12)}, class=${report.classKey.slice(0, 12)}, ` +
+      `result=${report.resultFingerprint.slice(0, 12)}, verdict=${report.verdictBucket}\n`,
   )
 }
 
@@ -157,6 +165,8 @@ function main() {
     signal: args.signal,
     nowMs: args.at,
     threshold: args.threshold,
+    classThreshold: args.classThreshold,
+    maxClassShapes: args.maxClassShapes,
     ttlMs: args.ttlMs,
     maxPairs: args.maxPairs,
   })
@@ -172,12 +182,21 @@ function main() {
     session: args.session,
     statePath: filePath,
     shapeHash: observed.shapeHash,
+    classSignature: observed.classSignature,
+    classKey: observed.classKey,
+    verdictBucket: observed.verdictBucket,
     resultFingerprint: observed.resultFingerprint,
     normalizedCommand: observed.normalizedCommand,
     normalizedCwd: observed.normalizedCwd,
     count: observed.count,
+    classCount: observed.classCount,
+    shapeFlagged: degraded ? false : observed.shapeFlagged,
+    shapeNewlyFlagged: degraded ? false : observed.shapeNewlyFlagged,
+    classFlagged: degraded ? false : observed.classFlagged,
+    classNewlyFlagged: degraded ? false : observed.classNewlyFlagged,
     flagged: degraded ? false : observed.flagged,
     newlyFlagged: degraded ? false : observed.newlyFlagged,
+    flaggedAxis: degraded ? null : observed.flaggedAxis,
     degraded,
   }
 
