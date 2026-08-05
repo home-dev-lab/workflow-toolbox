@@ -105,7 +105,7 @@
 // no blocking findings, 1 otherwise (gate-by-exit-code, per this project's own
 // ground-truth-verification rule: never trust piped/printed output alone).
 
-export type Requirement = 1 | 2 | 3 | 4 | 5
+export type Requirement = 1 | 2 | 3 | 4 | 5 | 6
 
 export type Confidence = 'mechanical' | 'heuristic'
 
@@ -152,6 +152,7 @@ const COVERAGE: Record<Requirement, CoverageLabel> = {
   3: 'mechanical+heuristic',
   4: 'heuristic',
   5: 'heuristic',
+  6: 'mechanical',
 }
 
 export const RULE_POLICIES: readonly RulePolicy[] = [
@@ -197,6 +198,14 @@ export const RULE_POLICIES: readonly RulePolicy[] = [
     // Measured on the in-tree real narrative corpus available here: 1/2 true positives.
     blocking: false,
     measuredPrecision: { truePositives: 1, total: 2, precise: false },
+  },
+  {
+    requirement: 6,
+    name: 'report without a lessons section',
+    confidence: 'mechanical',
+    // NEW guard warns until its precision has been measured on material it did not choose.
+    blocking: false,
+    measuredPrecision: null,
   },
 ] as const
 
@@ -598,6 +607,35 @@ function checkReq5(text: string): CandidateIssue[] {
   return findings
 }
 
+// --- Req 6: the lessons section must be present ------------------------
+
+const LESSONS_HEADING = /^lessons\s+for\s+the\s+memory\s*:?$/i
+
+function headingTextOf(line: string): string | null {
+  const match = line.match(/^\s*#{1,6}\s+(.*?)\s*#*\s*$/)
+  if (!match) return null
+  return match[1].replace(/[*_`]/g, '').trim()
+}
+
+function checkReq6(text: string): CandidateIssue[] {
+  const hasLessonsSection = text
+    .split(/\r?\n/)
+    .some((line) => {
+      const headingText = headingTextOf(line)
+      return headingText !== null && LESSONS_HEADING.test(headingText)
+    })
+  if (hasLessonsSection) return []
+  return [
+    {
+      requirement: 6,
+      confidence: 'mechanical',
+      message:
+        'rapport sans section markdown "Lessons for the memory" (sa présence, même vide, prouve que la question a été posée)',
+      excerpt: excerptOf(text),
+    },
+  ]
+}
+
 // --- entry point ---------------------------------------------------------
 
 export function checkReport(text: string): CheckResult {
@@ -610,6 +648,7 @@ export function checkReport(text: string): CheckResult {
   for (const issue of checkReq3bBareCount(text)) pushIssue(issue, findings, warnings)
   for (const issue of checkReq4(text)) pushIssue(issue, findings, warnings)
   for (const issue of checkReq5(text)) pushIssue(issue, findings, warnings)
+  for (const issue of checkReq6(text)) pushIssue(issue, findings, warnings)
 
   return { ok: findings.length === 0, findings, warnings, coverage: COVERAGE }
 }
@@ -627,7 +666,7 @@ async function main(): Promise<void> {
   const result = checkReport(text)
 
   console.log(`report-contract-lens — ${path}`)
-  console.log(`coverage: 1=${result.coverage[1]} 2=${result.coverage[2]} 3=${result.coverage[3]} 4=${result.coverage[4]} 5=${result.coverage[5]}`)
+  console.log(`coverage: 1=${result.coverage[1]} 2=${result.coverage[2]} 3=${result.coverage[3]} 4=${result.coverage[4]} 5=${result.coverage[5]} 6=${result.coverage[6]}`)
   console.log('')
   if (result.findings.length === 0) {
     console.log('BLOCKING FINDINGS: none')

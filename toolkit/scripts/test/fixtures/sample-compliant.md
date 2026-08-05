@@ -17,3 +17,9 @@ commentaire de clôture.
 Le gate `pnpm test` est vert (exit 0) ; il aurait échoué (exit différent de 0,
 assertion rouge) si un fixture "bad" n'avait pas été détecté — ce cas a été
 observé en TDD avant le fix (rouge confirmé sur le commit précédent).
+
+## Lessons for the memory
+
+Le contrat de rapport se vérifie du côté RÉCEPTION (le fichier écrit), jamais du
+côté ÉMISSION (le texte du brief) : un garde posé à la réception se moque de ce
+que le brief demandait, et couvre donc aussi les délégués briefés à la main.

@@ -17,14 +17,18 @@ const FIXTURES = fileURLToPath(new URL('./fixtures', import.meta.url))
 const readFixture = (name: string) => readFileSync(join(FIXTURES, name), 'utf8')
 
 describe('report-contract-lens — the RED demonstration', () => {
-  it('speaks on a deliberately non-scoped report on all 5 requirements', () => {
+  it('speaks on a deliberately non-scoped report on all 6 requirements', () => {
     const result = checkReport(readFixture('sample-noncompliant.md'))
     const reqsHit = new Set(result.warnings.map((f) => f.requirement))
     expect(result.ok).toBe(true)
-    expect(reqsHit).toEqual(new Set([1, 2, 3, 4, 5]))
+    expect(reqsHit).toEqual(new Set([1, 2, 3, 4, 5, 6]))
   })
 
   it('stays silent on a correctly-scoped report (the inverse check)', () => {
+    // The fixture carries its own lessons section since req 6 landed. It is read
+    // AS-IS deliberately: a file named "compliant" that needs the test to patch it
+    // before it passes is a fixture whose name asserts a property it does not have,
+    // and the next reader trusts the name.
     const result = checkReport(readFixture('sample-compliant.md'))
     expect(result.findings).toEqual([])
     expect(result.warnings).toEqual([])
@@ -156,6 +160,7 @@ describe('report-contract-lens — honest coverage self-report', () => {
     expect(coverage[3]).toBe('mechanical+heuristic')
     expect(coverage[4]).toBe('heuristic')
     expect(coverage[5]).toBe('heuristic')
+    expect(coverage[6]).toBe('mechanical')
   })
 
   it('locks the invariant: a blocking rule is both measured and marked precise, without enumerating today\'s rules', () => {
@@ -167,6 +172,57 @@ describe('report-contract-lens — honest coverage self-report', () => {
           policy.measuredPrecision.precise,
       ),
     ).toBe(true)
+  })
+})
+
+describe('report-contract-lens — req 6 lessons section presence', () => {
+  const baseReport = [
+    "Lane d'implémentation : sonnet.",
+    'Lane de review : opencode gpt-5.6-terra.',
+    '',
+    '## Summary',
+    'Reviewed the report structure and noted the verification boundary.',
+  ].join('\n')
+
+  it('a report without the section produces exactly one req-6 warning and no req-6 finding', () => {
+    const result = checkReport(baseReport)
+    expect(result.findings.filter((f) => f.requirement === 6)).toHaveLength(0)
+    expect(result.warnings.filter((w) => w.requirement === 6)).toHaveLength(1)
+  })
+
+  it('a report with the section and real content produces no req-6 issue', () => {
+    const result = checkReport(
+      `${baseReport}\n\n## Lessons for the memory\nRemember to verify the receiving-side contract, not just the brief.`,
+    )
+    expect(result.findings.some((f) => f.requirement === 6)).toBe(false)
+    expect(result.warnings.some((w) => w.requirement === 6)).toBe(false)
+  })
+
+  it('a report with the section but empty content ("none") produces no req-6 issue', () => {
+    const result = checkReport(`${baseReport}\n\n## Lessons for the memory\nnone`)
+    expect(result.findings.some((f) => f.requirement === 6)).toBe(false)
+    expect(result.warnings.some((w) => w.requirement === 6)).toBe(false)
+  })
+
+  it('heading level does not matter: both ## and ### satisfy the requirement', () => {
+    expect(
+      checkReport(`${baseReport}\n\n## Lessons for the memory\nnone`).warnings.some(
+        (w) => w.requirement === 6,
+      ),
+    ).toBe(false)
+    expect(
+      checkReport(`${baseReport}\n\n### Lessons for the memory\nnone`).warnings.some(
+        (w) => w.requirement === 6,
+      ),
+    ).toBe(false)
+  })
+
+  it('the phrase in ordinary prose does not satisfy the requirement', () => {
+    const result = checkReport(
+      `${baseReport}\n\nThe reviewer mentioned Lessons for the memory in prose, but not as a heading.`,
+    )
+    expect(result.findings.filter((f) => f.requirement === 6)).toHaveLength(0)
+    expect(result.warnings.filter((w) => w.requirement === 6)).toHaveLength(1)
   })
 })
 
