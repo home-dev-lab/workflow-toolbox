@@ -1,5 +1,6 @@
 ---
 name: workflow-composer
+user-invocable: true
 description: >-
   Invoke when the user asks to build, generate, repair, or restructure a
   workflow for Claude Code's Workflow tool ("I want a workflow that…", "turn

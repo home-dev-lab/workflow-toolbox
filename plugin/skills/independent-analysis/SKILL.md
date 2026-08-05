@@ -1,5 +1,6 @@
 ---
 name: independent-analysis
+user-invocable: true
 description: >-
   Run a bias-free, multi-lens adversarial analysis of any non-trivial subject — a
   design, plan, decision, claim, architecture, root-cause theory, or change set — via

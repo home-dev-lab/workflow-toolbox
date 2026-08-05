@@ -1,5 +1,6 @@
 ---
 name: planka-tracking
+user-invocable: true
 description: >-
   Onboard the CURRENT project onto a Planka kanban board for task tracking — create a
   project/board/lists/labels via the `planka` MCP, migrate an existing .claude/progress.md

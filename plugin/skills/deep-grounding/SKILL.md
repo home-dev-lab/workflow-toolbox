@@ -1,5 +1,6 @@
 ---
 name: deep-grounding
+user-invocable: true
 description: >-
   Run a deep-grounding pass BEFORE asserting or analyzing — do not answer from
   priors on the first source or angle that comes to mind. Ask "where could the

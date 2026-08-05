@@ -99,6 +99,19 @@ Ground the resume instruction before acting on it — a resumed session can carr
 already-completed target. Verify that a named artifact still exists, and still means what the
 summary says, against its real source (disk, API, git) before running anything against it.
 
-Rule and instruction text loaded at session start is a snapshot: editing it mid-session doesn't
-refresh what's already been injected into a running session. If a change must take effect
-immediately, state it explicitly in the conversation instead of relying on the file edit alone.
+Rule and instruction text is read from disk whenever the session's context is BUILT — at session
+start, and again at every compaction. Editing it mid-session does not refresh a context already
+running, but the next compaction picks the change up.
+
+Two consequences, and the second is the one nobody watches:
+
+- A session that just edited a rule cannot verify it is obeying it until it restarts **or**
+  compacts. "Verification needs a fresh session" is too strong; a compaction serves as well.
+- **Behaviour can therefore change at a compaction boundary with nothing announcing it.** A rule
+  edited hours earlier — by this session or another one sharing the same files — takes effect at
+  the next compaction, in the middle of work, with no event marking the transition. When a
+  session's behaviour shifts for no reason you can trace, a compaction that reloaded changed rule
+  text is a candidate cause worth checking before more exotic ones.
+
+If a change must take effect immediately, state it explicitly in the conversation instead of
+relying on the file edit alone.

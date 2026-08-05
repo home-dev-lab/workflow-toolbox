@@ -1,5 +1,6 @@
 ---
 name: pilot-wave
+user-invocable: true
 description: Invoke when you want a WAVE of task-tracker cards (or a single card) driven end-to-end through the dev loop by delegation — "run these cards", "pilot this wave", "spawn a pilot for this ticket", "set up the orchestrator for these". Composes the environment brief (knowledge-base index, task tracker, executor lane, worktree + report dirs, quota posture) and the orchestrator/pilot spawn prompt with model elevation, so your main session stays a thin relay. Not for a single mechanical edit — spawn a plain sub-agent for that.
 ---
 

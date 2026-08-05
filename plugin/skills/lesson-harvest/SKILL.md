@@ -1,5 +1,6 @@
 ---
 name: lesson-harvest
+user-invocable: false
 description: >-
   Detect and extract a closure report's own "## Lessons for the memory" section — the section a
   pilot or executor already writes at the end of its dev-loop arc — so the session integrating

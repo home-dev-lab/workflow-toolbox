@@ -1,5 +1,6 @@
 ---
 name: upgrade-canary
+user-invocable: true
 description: >-
   Re-verify that Claude Code's Workflow-tool runtime still behaves the way the
   @workflow-toolbox toolkit depends on, after a Claude Code upgrade — and report what changed.

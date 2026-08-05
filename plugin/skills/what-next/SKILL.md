@@ -1,5 +1,6 @@
 ---
 name: what-next
+user-invocable: true
 description: >-
   Propose the logical next step given the project's task backlog — a Planka board (via
   .claude/planka.json, when the `planka` MCP is reachable) or, failing that, a

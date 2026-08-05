@@ -1,5 +1,6 @@
 ---
 name: workflow-debugger
+user-invocable: true
 description: >-
   Diagnose why a Claude Code Workflow-tool RUN failed or behaved oddly, from its
   on-disk run journal, and decide whether a `resumeFromRunId` re-launch will actually

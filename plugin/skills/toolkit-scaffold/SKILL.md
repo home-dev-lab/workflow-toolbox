@@ -1,5 +1,6 @@
 ---
 name: toolkit-scaffold
+user-invocable: true
 description: >-
   Scaffold a new Claude Code Workflow as a build-clean `.workflow.ts` skeleton from the
   @workflow-toolbox pattern toolkit, so you never hand-roll the `defineWorkflow` boilerplate. Invoke

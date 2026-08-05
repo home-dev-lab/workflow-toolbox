@@ -1,5 +1,6 @@
 ---
 name: stale-card-sweep
+user-invocable: false
 description: >-
   At the moment a task-tracker card CLOSES, check whether its diff just covered the defect
   another still-open card describes, and flag that card instead of leaving it to be
