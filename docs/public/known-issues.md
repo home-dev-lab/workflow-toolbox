@@ -107,6 +107,16 @@ Runs `wt-stale-date-guard.mjs` on the single file just touched by `Write` or `Ed
 
 Asks, for the single file just touched by `Write` or `Edit`, whether a conventional local Claude config surface might have a shipped counterpart that needs the same fix. It checks only `.claude/scripts/`, `.claude/hooks/`, and `.claude/rules/` for `.mjs`, `.js`, `.ts`, `.cjs`, `.py`, `.sh`, and `.md` files, while staying silent for `plugin/`, `node_modules/`, `memory/*.md`, `MEMORY.md`, and anything else. It does not attempt filename or content matching; it raises the question only, and throttles itself to once per session per directory via a small state file under `WT_SHIPPED_TWIN_GUARD_DIR` or a safe temp dir fallback.
 
+### `wt-rule-edit-horizon-hook.mjs` — ambient-rule reload-horizon notice (PostToolUse)
+
+Fires only when `Edit`, `Write`, or `MultiEdit` touches a file under a `.claude`- (or
+`.claude-*`-) named directory's `rules/` subfolder, or under `$CLAUDE_CONFIG_DIR/rules/` when
+that variable is set — the ambient rule surface a session snapshots at startup. On a match it
+emits one `additionalContext` notice stating that the edit is verifiable only from a freshly
+started session, never from the current one or from a spawned sub-agent, both of which inherit
+the snapshot taken when their session began. It stays silent for every other file so the signal
+does not become routine noise. Internal errors fail open with no output.
+
 ### `wt-stale-date-guard.mjs` — stale operational-deadline scanner (standalone CLI)
 
 Scans Markdown for absolute dates and flags operational deadlines that have passed without treating provenance dates as deadlines. It takes no project-specific paths by default; targets are supplied by the caller. Usage:

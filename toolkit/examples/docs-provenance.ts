@@ -217,6 +217,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this PreToolUse observer-preserving spawn guard under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-rule-edit-horizon-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PostToolUse ambient-rule reload-horizon notice under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-stale-date-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this PostToolUse stale-deadline advisory under Shipped Hooks, Guards & Monitors.',
@@ -538,6 +543,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-probe-claim-guard-hook.mjs',
       'plugin/bin/wt-queue-not-empty-gate-hook.mjs',
       'plugin/bin/wt-observer-pairing-guard-hook.mjs',
+      'plugin/bin/wt-rule-edit-horizon-hook.mjs',
       'plugin/bin/wt-service-watch.mjs',
       'plugin/bin/wt-spawn-capability-guard-hook.mjs',
       'plugin/bin/wt-spawn-shape-guard-hook.mjs',

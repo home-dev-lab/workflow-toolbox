@@ -185,6 +185,13 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Write',
         tool_input: { file_path: join(sandbox.projectDir, 'notes.txt') },
       }
+    case 'wt-rule-edit-horizon-hook.mjs':
+      return {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Edit',
+        cwd: sandbox.projectDir,
+        tool_input: { file_path: join(sandbox.projectDir, '.claude', 'rules', 'foo.md') },
+      }
     case 'wt-shipped-twin-check-hook.mjs':
       mkdirSync(join(sandbox.projectDir, '.claude', 'scripts'), { recursive: true })
       return {
