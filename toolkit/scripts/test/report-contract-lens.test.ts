@@ -217,6 +217,28 @@ describe('report-contract-lens — req 6 lessons section presence', () => {
     ).toBe(false)
   })
 
+  // Req 6 tells authors to write a bare "none" under the heading when there is
+  // nothing to record. Req 2 flags bare absence words. Without an exemption the
+  // lens flags its OWN recommended convention — and a guard that fires on correct
+  // work is one that gets ignored. These two lock the exemption in BOTH
+  // directions: it must silence the convention WITHOUT silencing a real claim.
+  it('a bare absence word answering a heading is exempt from req 2 (the convention req 6 recommends)', () => {
+    const result = checkReport(`${baseReport}\n\n## Lessons for the memory\n\nnone\n`)
+    expect(result.warnings.filter((w) => w.requirement === 2)).toHaveLength(0)
+    expect(result.warnings.filter((w) => w.requirement === 6)).toHaveLength(0)
+  })
+
+  it('the exemption does NOT reach a bare absence claim made in prose elsewhere', () => {
+    // Same document carries both shapes: the exempt form-field answer AND a real
+    // unnamed-set claim. Exactly one must be flagged, or the exemption is too wide.
+    const result = checkReport(
+      `${baseReport}\n\n## Findings\n\nI checked the handlers and found no defects.\n\n## Lessons for the memory\n\nnone\n`,
+    )
+    const req2 = result.warnings.filter((w) => w.requirement === 2)
+    expect(req2).toHaveLength(1)
+    expect(req2[0]!.excerpt).toContain('no defects')
+  })
+
   it('the phrase in ordinary prose does not satisfy the requirement', () => {
     const result = checkReport(
       `${baseReport}\n\nThe reviewer mentioned Lessons for the memory in prose, but not as a heading.`,

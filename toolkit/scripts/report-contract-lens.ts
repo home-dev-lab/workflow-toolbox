@@ -97,7 +97,25 @@
 //       criterion is actually CORRECT is a semantic judgment this lens cannot
 //       make — it can catch an absent criterion, never a wrong one.
 //
-// So: 3 requirements have a MECHANICAL, low-false-positive core (1, 2, 3); 2
+//   Req 6 (le rapport porte une section "Lessons for the memory")
+//     → MECHANICAL, and deliberately the WEAKEST possible assertion: it checks
+//       PRESENCE of the heading, never content. A section holding only "none"
+//       passes. That is the design, not a shortcut: a present-but-empty section
+//       proves the question was asked, whereas an absent one proves nothing —
+//       and a check that demanded content would be satisfied by invented
+//       lessons, which is worse than no check at all. Measured motivation: of
+//       five real delegation reports, four had no such section, because the
+//       briefs said WHERE to write but never WHAT to include. Placing the check
+//       on the RECEIVING side (the written file) rather than on the brief means
+//       it fires whatever any brief happened to say.
+//     ⚠ Req 6 RECOMMENDS a bare "none", which req 2 would otherwise flag as an
+//       absence term without a named set. checkReq2 therefore exempts a bare
+//       absence word standing alone directly under a heading (a form-field
+//       answer — the heading names the set). The exemption is narrow on purpose:
+//       a bare "aucun" anywhere else is still flagged, and both directions are
+//       locked by tests.
+//
+// So: 4 requirements have a MECHANICAL, low-false-positive core (1, 2, 3, 6); 2
 // (4, 5) are heuristic best-effort only, and req 4's core half is out of this
 // lens's reach entirely (needs the tracker, not just the report text).
 //
@@ -365,10 +383,40 @@ function clausesOf(sentence: string): string[] {
     .filter((c) => c.length > 0)
 }
 
+// A bare absence word standing ALONE as the whole body under a heading is a
+// form-field answer, not a claim: the heading names the set, and there is no
+// sentence for a scope marker to attach to. Req 6 actively RECOMMENDS this shape
+// ("## Lessons for the memory" followed by "none" proves the question was asked),
+// so without this exemption the lens flags its own recommended convention —
+// noise on correct work, which is exactly how a guard stops being read.
+// Deliberately NARROW: only a standalone line, only directly under a heading.
+// A bare "aucun" anywhere else still gets flagged.
+function headingAnsweredAbsences(text: string): Set<string> {
+  const exempt = new Set<string>()
+  const lines = text.split(/\r?\n/)
+  let lastNonEmpty: string | null = null
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed.length === 0) continue
+    const bare = trimmed.replace(/[.!?;:]+$/, '').replace(/[*_`]/g, '').trim()
+    if (
+      lastNonEmpty !== null &&
+      headingTextOf(lastNonEmpty) !== null &&
+      new RegExp(`^(?:${ABSENCE_TERM.source.replace(/^\\b|\\b$/g, '')})$`, 'i').test(bare)
+    ) {
+      exempt.add(trimmed)
+    }
+    lastNonEmpty = line
+  }
+  return exempt
+}
+
 function checkReq2(text: string): CandidateIssue[] {
   const issues: CandidateIssue[] = []
+  const exemptBareAnswers = headingAnsweredAbsences(text)
   for (const sentence of sentencesOf(text)) {
     if (!ABSENCE_TERM.test(sentence)) continue
+    if (exemptBareAnswers.has(sentence.trim())) continue
     if (isQuotedMention(sentence, ABSENCE_TERM)) continue
     const clause = clausesOf(sentence).find((c) => ABSENCE_TERM.test(c)) ?? sentence
     const hasScope = SCOPE_MARKER.test(clause)
