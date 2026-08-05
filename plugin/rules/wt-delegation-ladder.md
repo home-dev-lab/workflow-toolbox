@@ -229,6 +229,30 @@ isolated worktree with a zero-diff at idle gets reaped while the lane is still r
 which makes that combination unusable for a lane-delegating delegate specifically. State which
 shape a given coordinator uses and why, rather than defaulting to one without saying so.
 
+## Pass LIVENESS_AGENT_ID to every delegate you spawn directly
+
+Whether a spawn goes through `pilot-wave` or you spawn a `pilot`/`pilot-orchestrator` directly
+from your own session, the same discipline applies: a delegate cannot read its own raw agent id
+from inside itself — no environment variable carries it — so if you never hand it over, the
+delegate's liveness file (the arc watcher's third correlation input; see the "Liveness file"
+section of `pilot.md`/`pilot-orchestrator.md`) degrades to a weaker key (its declared name) or,
+for an anonymous spawn, to `UNCORRELATABLE`. Anonymous is not a rare case here — it is the ONLY
+safe shape for a delegate that hands its own increment to an external executor lane (see the
+naming/observer trade-off above), so this is exactly the population most likely to lose
+correlation if the id is never sent.
+
+The `Agent` tool returns the raw id only when the spawn call RETURNS — after you already sent
+the prompt text. So the id is never a field inside the composed brief; it is a follow-up. The
+moment the spawn call returns, before your next action, `SendMessage` the delegate one line:
+
+```
+LIVENESS_AGENT_ID: <raw id>
+```
+
+Do this for every direct spawn of a `pilot` or `pilot-orchestrator`, named or anonymous. It
+costs one short message and closes the gap for exactly the delegates the mechanism most needs
+to cover.
+
 ## A mandate is re-issued, not assumed
 
 A coordinator given a fixed list of items stops when that list is exhausted — nothing
