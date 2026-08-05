@@ -70,16 +70,34 @@ export interface SpawnReadyDeps<H> {
 const POLL_INTERVAL_MS = 500
 
 /** Default spawn-readiness window (ms) — how long `wt-observe start` waits for a fresh
- *  spawn to answer /api/health before declaring failure and reaping the child. Kept
- *  UNCHANGED at 30s — the fix for the underlying incident (a
- *  resumed run's cache-replay flood saturating the server's event loop before the
- *  launcher's own probe could ever succeed) is an ORDERING fix on the SERVER side (the boot
- *  sweep now defers resume dispatch until its own /api/health has answered at least once —
- *  see workflow-observatory's app.ts, `releaseBootResumes`); this window is the operator's
- *  escape hatch for a genuinely slow machine, not the fix itself. Raising the default would
- *  paper over the ordering bug (still fails on a slow enough machine) and silently changes
- *  what every existing user gets by default — a shipped-behavior change, not a bug fix. */
-export const HEALTH_TIMEOUT_DEFAULT_MS = 30_000
+ *  spawn to answer /api/health before declaring failure and reaping the child.
+ *
+ *  History (card #1835240179858670598): this WAS deliberately kept at 30s after the
+ *  cache-replay-flood incident, on the reasoning that the real fix belonged on the SERVER
+ *  side (the boot sweep now defers resume dispatch until its own /api/health has answered
+ *  once — see workflow-observatory's app.ts, `releaseBootResumes`, `setImmediate`-deferred)
+ *  and that raising the window would just paper over a still-broken ordering. That fix is
+ *  confirmed present and correct in the merged tree. Yet the SAME symptom (launcher kills
+ *  its own freshly-spawned server) recurred on a real machine, on a real boot, with that
+ *  fix already in place — so the remaining cause is not the ordering bug but plain
+ *  environmental contention: a heavily-loaded dev machine (many concurrent agent
+ *  processes) makes the synchronous portions of boot (fs scans in createApp/rehydrate)
+ *  slower than 30s allows, even though nothing is actually broken.
+ *
+ *  Measured on the machine that filed the card (real `~/.claude` + `~/.claude-work`
+ *  sources, real `wt-observe start`, 5 trials): ~1.7-2.0s under normal load (avg ~4-5 on
+ *  12 cores), ~7.2s under artificial CPU-bound contention (avg ~10 on 12 cores) — see the
+ *  card's closing comment for the raw numbers. 90s is ~12x that stress-tested worst case:
+ *  comfortable headroom for legitimate contention (this machine's normal high-delegation
+ *  operating mode) without masking a genuine hang — a truly dead child (crashed, port
+ *  never bound) is still caught IMMEDIATELY via the exited/error checks below, which never
+ *  wait out this window at all; only the "alive but slow to answer" case pays the extra
+ *  wait. Deliberately NOT set to the 240s value that was used as a manual workaround for
+ *  the original incident — that number was never derived, only a value that happened to
+ *  work once; picking it here would repeat the same "round number by feel" this fix is
+ *  meant to avoid. `--health-timeout <seconds>` / WT_OBSERVE_HEALTH_TIMEOUT_MS remain the
+ *  escape hatch for a machine (or a night) that needs more. */
+export const HEALTH_TIMEOUT_DEFAULT_MS = 90_000
 
 /** Hard ceiling on the operator-configurable health-check window (10 minutes). An operator
  *  requesting more than this is far more likely masking a genuinely dead/hung process than

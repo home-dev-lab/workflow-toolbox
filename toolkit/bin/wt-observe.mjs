@@ -1164,7 +1164,7 @@ function parseAnnouncedPort(logSlice) {
   return last;
 }
 var POLL_INTERVAL_MS = 500;
-var HEALTH_TIMEOUT_DEFAULT_MS = 3e4;
+var HEALTH_TIMEOUT_DEFAULT_MS = 9e4;
 var HEALTH_TIMEOUT_CEILING_MS = 6e5;
 function resolveHealthTimeoutMs(flagSeconds, envMs) {
   const fromFlag = flagSeconds === void 0 ? NaN : Number(flagSeconds) * 1e3;
@@ -2570,7 +2570,7 @@ var HELP_DETAIL = {
   start: `  --no-resume: park every pending orphaned-run resume this boot instead of dispatching
   it (never discards a launch record \u2014 the next boot without this flag resumes it).
   --health-timeout <seconds>: how long to wait for the fresh spawn to answer
-  /api/health before giving up and reaping the child (default 30s; also settable via
+  /api/health before giving up and reaping the child (default 90s; also settable via
   WT_OBSERVE_HEALTH_TIMEOUT_MS in milliseconds; hard ceiling ${HEALTH_TIMEOUT_CEILING_MS} ms).`,
   launch: "  <workflow.js> is resolved by NAME against the server's OBSERVE_WORKFLOWS_DIR\n  (a registered artifact name, not an arbitrary path).\n  Capabilities: an adjacent <workflow>.capabilities.json sidecar is auto-detected\n  and its declared needs are resolved against the machine capability registry\n  (WT_CAPABILITY_REGISTRY, else the XDG default). --args may carry a capabilities\n  or observers section that composes over the sidecar resolution.\n  --comm-root <dir> sets the wt-comm ROOT for a hint-emitting observer (the server\n  appends the runId and validates the root against its OBSERVE_COMM_ALLOWED_ROOTS);\n  absent = wt-comm hint delivery is not enabled."
 };

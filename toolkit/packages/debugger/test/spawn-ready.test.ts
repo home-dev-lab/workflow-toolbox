@@ -178,14 +178,14 @@ const DEV_API = resolve(OBSERVE_ROOT, 'apps/observe-ui/server/dev-api.ts')
 // ---------------------------------------------------------------------------
 
 describe('resolveHealthTimeoutMs', () => {
-  it('defaults to 30s (HEALTH_TIMEOUT_DEFAULT_MS) with neither flag nor env', () => {
+  it('defaults to 90s (HEALTH_TIMEOUT_DEFAULT_MS) with neither flag nor env', () => {
     expect(resolveHealthTimeoutMs(undefined, undefined)).toEqual({ ms: HEALTH_TIMEOUT_DEFAULT_MS, clampedFrom: null })
-    expect(resolveHealthTimeoutMs(undefined, undefined).ms).toBe(30_000)
+    expect(resolveHealthTimeoutMs(undefined, undefined).ms).toBe(90_000)
   })
 
   it('the --health-timeout flag (SECONDS) wins over the env (MILLISECONDS)', () => {
-    expect(resolveHealthTimeoutMs('90', undefined)).toEqual({ ms: 90_000, clampedFrom: null })
-    expect(resolveHealthTimeoutMs('90', '5000')).toEqual({ ms: 90_000, clampedFrom: null }) // flag beats env
+    expect(resolveHealthTimeoutMs('120', undefined)).toEqual({ ms: 120_000, clampedFrom: null })
+    expect(resolveHealthTimeoutMs('120', '5000')).toEqual({ ms: 120_000, clampedFrom: null }) // flag beats env
   })
 
   it('the env alone is honored when no flag is given', () => {
@@ -193,12 +193,12 @@ describe('resolveHealthTimeoutMs', () => {
   })
 
   it('a non-numeric or non-positive value in EITHER channel is ignored, never a 0/NaN timeout', () => {
-    expect(resolveHealthTimeoutMs('0', undefined).ms).toBe(30_000)
-    expect(resolveHealthTimeoutMs('-5', undefined).ms).toBe(30_000)
-    expect(resolveHealthTimeoutMs('abc', undefined).ms).toBe(30_000)
+    expect(resolveHealthTimeoutMs('0', undefined).ms).toBe(90_000)
+    expect(resolveHealthTimeoutMs('-5', undefined).ms).toBe(90_000)
+    expect(resolveHealthTimeoutMs('abc', undefined).ms).toBe(90_000)
     expect(resolveHealthTimeoutMs('abc', '60000').ms).toBe(60_000) // a bad flag still lets the env through
-    expect(resolveHealthTimeoutMs(undefined, '0').ms).toBe(30_000)
-    expect(resolveHealthTimeoutMs(undefined, 'nope').ms).toBe(30_000)
+    expect(resolveHealthTimeoutMs(undefined, '0').ms).toBe(90_000)
+    expect(resolveHealthTimeoutMs(undefined, 'nope').ms).toBe(90_000)
   })
 
   it('a value ABOVE the ceiling is CLAMPED, not silently honored — clampedFrom names the requested value', () => {

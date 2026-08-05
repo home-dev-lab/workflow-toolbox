@@ -1730,7 +1730,7 @@ const HELP_DETAIL: Partial<Record<Verb, string>> = {
     '  --no-resume: park every pending orphaned-run resume this boot instead of dispatching\n' +
     '  it (never discards a launch record — the next boot without this flag resumes it).\n' +
     '  --health-timeout <seconds>: how long to wait for the fresh spawn to answer\n' +
-    '  /api/health before giving up and reaping the child (default 30s; also settable via\n' +
+    '  /api/health before giving up and reaping the child (default 90s; also settable via\n' +
     `  WT_OBSERVE_HEALTH_TIMEOUT_MS in milliseconds; hard ceiling ${HEALTH_TIMEOUT_CEILING_MS} ms).`,
   launch:
     "  <workflow.js> is resolved by NAME against the server's OBSERVE_WORKFLOWS_DIR\n" +
