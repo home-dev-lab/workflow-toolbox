@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 // Delegated-arc watcher, shipped as a plugin monitor.
 //
-// WHAT IT WATCHES: the subagent transcripts of the CURRENT project's sessions.
-// It emits only on TERMINAL states — a transcript that stopped growing, or one
-// that disappeared. It stays silent while agents are writing, so its silence
-// means "everyone is still working", which is a checkable claim.
+// WHAT IT WATCHES: the subagent transcripts of the CURRENT project's sessions,
+// corroborated by the outbound-guard stop journal and, when a delegate chooses
+// to leave one, its own liveness declaration file. It emits only on TERMINAL
+// states — a transcript that stopped growing, or one that disappeared. It stays
+// silent while agents are writing, so its silence means "everyone is still
+// working", which is a checkable claim. A liveness file with no usable transcript
+// correlation key is surfaced separately as UNCORRELATABLE rather than read as silence.
 //
 // WHY A MONITOR AND NOT A REMINDER: a delegated agent that dies to a quota wall,
 // a lost turn, or a crash produces NO completion event. Transcript staleness is
@@ -47,6 +50,7 @@ import { lstat, readdir } from 'node:fs/promises'
 import { writeSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
+import { defaultLivenessDir, sanitizeLivenessKey, readLivenessRecord, worktreeRecentlyActive } from './lib/liveness.mjs'
 import { isServiceDegraded } from './lib/service-flag.mjs'
 import { hasRecordedStop, lastStopTimestamps, lastRealRecordTimestampMs } from './lib/stop-correlation.mjs'
 
@@ -187,6 +191,7 @@ const sessionsRoot = path.join(configDir, 'projects', projectSlug(projectDir))
 // ordinary STALE line, unchanged.
 const OUTBOUND_GUARD_DIR = process.env.WT_OUTBOUND_GUARD_DIR
   || path.join(homedir(), '.local', 'state', 'wt-outbound-guard')
+const LIVENESS_DIR = process.env.WT_LIVENESS_DIR || defaultLivenessDir(homedir())
 
 function loadLastStopTimestamps(sessionName) {
   try {
@@ -207,6 +212,38 @@ function readTranscriptMeta(sessionName, transcriptFile) {
   } catch {
     return null
   }
+}
+
+async function readLivenessForTranscript(name) {
+  const slash = name.indexOf('/')
+  if (slash < 0) return null
+  const sessionName = name.slice(0, slash)
+  const transcriptFile = name.slice(slash + 1)
+  // TRANSCRIPT_RAW_ID_RE is defined further down this file (used by isAccountedForByStop) but is
+  // already assigned by the time this function is ever CALLED — module top-level evaluation
+  // completes before the main polling loop runs. Referencing it here, ahead of its textual
+  // definition, is safe; it is not hoisted-but-undefined the way a `var` would be.
+  const rawId = TRANSCRIPT_RAW_ID_RE.exec(transcriptFile)?.[1] ?? null
+  const rawIdKey = rawId ? sanitizeLivenessKey(rawId) : null
+  if (rawIdKey) {
+    const record = await readLivenessRecord(LIVENESS_DIR, rawIdKey)
+    // The filename alone is not treated as sufficient proof of correlation: also require the
+    // record's OWN declared identity to agree with the candidate it was looked up under. This
+    // guards against a stale/orphaned file left under a raw id it no longer describes (raw ids
+    // are effectively unique per spawn, so a real collision is unlikely, but a leftover file from
+    // a prior, unrelated run at the same path is not) — a record that fails this check is treated
+    // exactly like "no record found" and falls through to the name-based lookup, then to ordinary
+    // STALE. Losing a valid correlation this way only ever costs coverage, never causes a false
+    // silence, so it is the safe direction to err in.
+    if (record && record.agentIdSource === 'brief' && record.agentId === rawId) return record
+  }
+  const meta = readTranscriptMeta(sessionName, transcriptFile)
+  const key = meta?.name ? sanitizeLivenessKey(meta.name) : null
+  if (!key) return null
+  const record = await readLivenessRecord(LIVENESS_DIR, key)
+  // Same identity guard as the raw-id branch above, mirrored for the name-tier candidate.
+  if (record && record.agentIdSource === 'name' && record.agentId === meta.name) return record
+  return null
 }
 
 // ⚠⚠⚠ WHY THIS READS THE TRANSCRIPT'S OWN CONTENT, NOT THE FILE'S mtime — the THIRD correction on
@@ -380,6 +417,8 @@ if (reportsDir) {
 const announcedStale = new Set()
 const announcedGone = new Set()
 const announcedFuture = new Set()
+const announcedWaitingOnSpawner = new Map()
+const announcedUncorrelatable = new Map()
 // Reports present at arming are already known to the user; only NEW ones matter.
 const announcedReports = new Set(previousReports)
 const degraded = new Set()
@@ -406,6 +445,57 @@ function makeBudget() {
     close() {
       if (suppressed > 0) write(`ARC WATCH TRUNCATED: ${suppressed} further event(s) this poll were counted, not listed`)
     },
+  }
+}
+
+async function sweepWaitingOnSpawner(budget) {
+  let entries
+  try {
+    entries = await readdir(LIVENESS_DIR, { withFileTypes: true })
+  } catch (error) {
+    if (error?.code === 'ENOENT') return
+    return
+  }
+  const stillWaiting = new Set()
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+    const key = entry.name.slice(0, -'.json'.length)
+    const record = await readLivenessRecord(LIVENESS_DIR, key)
+    if (!record || record.complete === true || record.waitingOn !== 'spawner') continue
+    stillWaiting.add(key)
+    const marker = record.updatedAt || 'unknown'
+    if (announcedWaitingOnSpawner.get(key) !== marker) {
+      budget.emit(`WAITING-ON-SPAWNER: ${safeName(record.agentId)} — ${safeName(record.scope)}`)
+      announcedWaitingOnSpawner.set(key, marker)
+    }
+  }
+  for (const key of announcedWaitingOnSpawner.keys()) {
+    if (!stillWaiting.has(key)) announcedWaitingOnSpawner.delete(key)
+  }
+}
+
+async function sweepUncorrelatable(budget) {
+  let entries
+  try {
+    entries = await readdir(LIVENESS_DIR, { withFileTypes: true })
+  } catch {
+    return
+  }
+  const stillUncorrelatable = new Set()
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+    const key = entry.name.slice(0, -'.json'.length)
+    const record = await readLivenessRecord(LIVENESS_DIR, key)
+    if (!record || record.complete === true || record.agentIdSource !== 'none') continue
+    stillUncorrelatable.add(key)
+    const marker = record.updatedAt || 'unknown'
+    if (announcedUncorrelatable.get(key) !== marker) {
+      budget.emit(`UNCORRELATABLE: ${safeName(record.scope)} — liveness file declares no correlation key, cannot be matched to a transcript`)
+      announcedUncorrelatable.set(key, marker)
+    }
+  }
+  for (const key of announcedUncorrelatable.keys()) {
+    if (!stillUncorrelatable.has(key)) announcedUncorrelatable.delete(key)
   }
 }
 
@@ -546,7 +636,17 @@ while (true) {
         // emitting guarantee. `announcedStale` is still marked either way, so a suppressed entry
         // is not re-checked every poll — only a fresh write (which clears it above) re-arms it.
         if (!isAccountedForByStop(name, modifiedAt)) {
-          budget.emit(`STALE: ${safeName(name)} — no write for ${staleMinutes}+ min`)
+          const liveness = await readLivenessForTranscript(name)
+          if (liveness?.complete === true) {
+            // declared complete — silence, same as an accounted-for stop.
+          } else if (liveness?.waitingOn === 'lane' && liveness.worktree
+              && (await worktreeRecentlyActive(liveness.worktree, now - staleMs)) === true) {
+            // legitimate executor-lane wait, worktree shows real activity — silence.
+          } else if (liveness) {
+            budget.emit(`IDLE-MID-MISSION: ${safeName(name)} — declared not complete, no write for ${staleMinutes}+ min`)
+          } else {
+            budget.emit(`STALE: ${safeName(name)} — no write for ${staleMinutes}+ min`)
+          }
         }
         announcedStale.add(name)
       }
@@ -568,6 +668,9 @@ while (true) {
     }
     previousReports = currentReports
   }
+
+  await sweepWaitingOnSpawner(budget)
+  await sweepUncorrelatable(budget)
 
   budget.close()
 

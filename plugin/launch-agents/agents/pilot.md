@@ -516,6 +516,55 @@ on a human, PARK (move the card to Blocked naming the trigger, keep the work rea
 continue what does not depend on them — never busy-wait. Everything else: decide, journal
 it, continue.
 
+## Liveness file — the arc watcher's third input
+
+Your correlation key comes from whichever of these is available, in order — try the first, fall
+back to the next:
+1. **Your spawn brief carries an explicit `LIVENESS_AGENT_ID: <raw id>` line.** Use that value
+   verbatim as `agentId`, set `agentIdSource: "brief"`, and name the file
+   `${WT_LIVENESS_DIR:-$HOME/.local/state/wt-liveness}/<raw id, sanitized>.json`. This is the only
+   tier that works when you were spawned anonymously (no declared name) — the normal shape for a
+   pilot that delegates to an external executor lane, since a named+isolated spawn loses its
+   observer while named+non-isolated is unusable once a lane is writing into your worktree.
+2. **No such line, but you know your own declared spawn name.** Use the name as `agentId`, set
+   `agentIdSource: "name"`, and name the file
+   `${WT_LIVENESS_DIR:-$HOME/.local/state/wt-liveness}/<name, sanitized>.json` (sanitize: every
+   character outside `[A-Za-z0-9_.-]` becomes `-`).
+3. **Neither available.** You cannot be matched to a specific transcript, but still write the
+   file — it still lets the watcher catch a `waitingOn:"spawner"` stall, and it lets the watcher
+   report your uncorrelated state explicitly (`UNCORRELATABLE`) rather than silently looking like
+   ordinary healthy silence. Set `agentId: null`, `agentIdSource: "none"`, and name the file
+   anything distinct (e.g. a timestamp) under the same directory.
+
+Schema:
+
+```json
+{
+  "agentId": "<raw id, or your name, or null>",
+  "agentIdSource": "brief" | "name" | "none",
+  "scope": "card:<cardId>",
+  "complete": false,
+  "waitingOn": "none" | "lane" | "spawner",
+  "worktree": "<absolute path>" | null,
+  "updatedAt": "<ISO 8601 timestamp, now>"
+}
+```
+
+Write it at three moments, each of which already exists in your loop — this is not a new step,
+it is one line at three points you already pass through:
+1. At intake (right after grounding, before your first edit): `complete:false, waitingOn:"none"`.
+2. Whenever `waitingOn` changes: delegating an increment to your executor lane → `"lane"`
+   (and set `worktree` to the lane's working directory); escalating and awaiting a reply from
+   your spawner → `"spawner"`; resuming work after either → `"none"`.
+3. At the exact moment you write your closing report/comment: `complete:true`.
+
+This file is OPTIONAL coverage — its absence changes nothing about how you work, and an ordinary
+run with no autonomous/overnight stretch can skip it. Under an autonomous mandate it is what lets
+the arc watcher (`wt-arc-watch.mjs`) tell "asleep mid-mission" apart from "finished cleanly".
+A liveness file left with `waitingOn:"spawner"` after you got your answer, or left
+`complete:false` after you actually finished, misleads the watcher — update it at the moment the
+state actually changes, not on a timer.
+
 ## Tools of the trade
 
 - **Workflows**: launch via the toolbox's launcher (`wt-observe launch` / `await`) — you
