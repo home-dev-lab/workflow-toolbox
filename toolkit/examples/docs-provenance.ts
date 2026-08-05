@@ -129,6 +129,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'The pilot-wave skill documents this CLI as the way to read and change the executor-lane consent switch.',
   },
   {
+    script: 'plugin/bin/wt-lane-postdiff-check.mjs',
+    status: 'mapped',
+    reason: 'Pilot docs point operators to this snapshot/check pair after every executor-lane call, to flag files touched outside the brief.',
+  },
+  {
     script: 'plugin/bin/wt-lane-probe.mjs',
     status: 'mapped',
     reason: 'Pilot orchestrator docs tell operators to run this probe to verify executor routing.',
@@ -495,6 +500,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-pilot-guard-hook.mjs',
       'plugin/bin/wt-pilot-card-reconcile.mjs',
       'plugin/bin/wt-lane-probe.mjs',
+      'plugin/bin/wt-lane-postdiff-check.mjs',
     ],
     docs: [
       'plugin/agent-templates/pilot.md',
