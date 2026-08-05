@@ -34,6 +34,16 @@
 //     into a multi-second-or-worse one on every single lane call. That cost was judged
 //     not worth it for this tool's purpose; name it explicitly if a brief's scope
 //     legitimately includes an ignored path.
+//   - a lane that COMMITS its out-of-brief edit is ALSO invisible. The comparison is
+//     `git status`-based: a file clean at snapshot time, edited by the lane, then
+//     committed by the lane, is clean again at check time — it appears in neither
+//     snapshot as touched, so this exits 0 on precisely the case where the edit is
+//     hardest to undo. Bounded in practice (briefs tell lanes not to commit, and this
+//     check is advisory anyway), but "the brief says not to" is the same class of
+//     assurance this tool exists to stop relying on. Found in the integrating review
+//     of card 1835017482180494996; not yet closed. Cheapest fix: record
+//     `git rev-parse HEAD` in the snapshot and compare it at check time — a moved HEAD
+//     is a one-line detection, and the range can then widen to `before..HEAD`.
 //
 // ⚠ SELF-ARTIFACT EXCLUSION: `check` excludes its own --before/--after/@brief-paths files
 // from the comparison whenever they were written INSIDE the worktree — otherwise running
