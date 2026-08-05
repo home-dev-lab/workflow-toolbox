@@ -519,6 +519,22 @@ by name with the OBSERVATION ("no report at <path>, N minutes past your own stat
 alive?"), never assert it is dead: a pilot mid-wait writes nothing, which is indistinguishable
 from a killed one until it answers.
 
+⚠ **Arm the filet on a CHANGE, never on a file's EXISTENCE.** Measured: a filet polling "does
+`pilot-trace.md` exist?" watched a file the pilot had created at spawn time, so it saw
+"present" on every tick from the first one — it could never distinguish "progressing" from
+"stalled", and it ended up firing on its own deadline regardless of what the pilot did. A
+watcher that fires the same way in both outcomes has measured nothing; its firing is not a
+catch. Poll an mtime, a line count, or a content marker — something that DIFFERS between the
+two states you are trying to tell apart, and prefer a signal the stalled path cannot produce.
+
+⚠ **If you spawned ANONYMOUSLY, your pilots have no name for you** — put your RAW ID in every
+brief. "Report back to whoever sent you this brief" is not an address: the pilot falls back to
+`main`, its `SendMessage` returns success, and your signal lands in the top-level session while
+you wait for it. Measured end to end on a three-level chain: the pilot's hard cap fired
+correctly and its signal was sent correctly, and it still never reached the layer that had
+armed the filet — the only reason the stall was caught at all was the filet's own timer. A hop
+that succeeds at both ends and still skips a layer leaves no trace saying so.
+
 ## File-report contract (nested-routing workaround — non-negotiable)
 
 A named agent's FINAL message routes to the MAIN session, not to you. Every pilot/verifier

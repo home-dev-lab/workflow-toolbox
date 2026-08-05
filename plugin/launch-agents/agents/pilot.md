@@ -574,6 +574,21 @@ it, continue.
   above** — a plain `general-purpose` sub-agent has no definition of its own to fall back on,
   so a brief that omits it leaves the sub-agent to independently discover the same trap: it
   will arm its own watcher, announce it is waiting, and never wake (observed once, verbatim).
+  ⚠⚠ **Pass the PERMITTED form, never the prohibitions alone — a brief that forbids every way
+  of waiting CORNERS the sub-agent.** Measured: a sub-agent briefed to wait ~10 minutes was
+  told not to background and not to arm a Monitor (correct), while the harness separately
+  refuses a raw long `sleep` and refuses chaining short ones. Every route it could see was
+  closed, so it deliberated, drifted after a compaction into reading unrelated transcripts,
+  and died on an auto-compaction breaker without ever doing its task. The prohibitions were
+  each right; their SUM was unsatisfiable. So spell out the route that works — a bounded poll
+  loop of SHORT sleeps the agent stays awake through (`until [ -f "$ART" ]; do sleep 5; done`
+  under an explicit cap) — in the same breath as the "never arm a watcher and yield" clause.
+  A prohibition without a named alternative reads as "there is no way to do this".
+  ⚠ **If you spawned ANONYMOUSLY, you have no name to be addressed by** — pass your RAW ID in
+  every brief instead. "Report to whoever sent you this" is not an address: the sub-agent will
+  fall back to "main", its send will SUCCEED, and your signal reaches the top-level session
+  instead of you. Measured end to end; nothing in either party's output says the hop was
+  skipped.
 - **Waiting on ANY external result you do not produce yourself** — a CI run, a tracked
   build, a webhook, anything beyond the two specific cases above — is governed by the same
   rule as those two, generalized: a turn spent reporting "still waiting, nothing changed" is
