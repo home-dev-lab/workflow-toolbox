@@ -2,12 +2,13 @@
 name: toolkit-scaffold
 user-invocable: true
 description: >-
-  Invoke ONLY when the user wants a new build-clean `.workflow.ts` skeleton and says "scaffold a
-  workflow", "start a new workflow", "generate a workflow skeleton", "set up a .workflow.ts",
-  "wire these patterns together", or "use the toolkit to build a workflow". Pick the patterns,
-  write the small JSON spec, run `workflow-toolbox scaffold`, then fill in placeholders and build
-  plus check the result. Not for deep one-off authoring guidance, debugging a failed run, or
-  re-verifying the runtime after an upgrade.
+  Invoke ONLY when you are about to turn a job description into a new build-clean `.workflow.ts`
+  skeleton through the toolkit path, or when the user says "scaffold a workflow", "start a new
+  workflow", "generate a workflow skeleton", "set up a .workflow.ts", "wire these patterns
+  together", or "use the toolkit to build a workflow". Pick the patterns, write the small JSON
+  spec, run `workflow-toolbox scaffold`, then fill in placeholders and build plus check the
+  result. Not for deep one-off authoring guidance, debugging a failed run, or re-verifying the
+  runtime after an upgrade.
 argument-hint: "<spec.json> [--out-dir <dir>] [--stdout] [--force] [--no-tsconfig]"
 ---
 

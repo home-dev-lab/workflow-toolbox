@@ -2,13 +2,13 @@
 name: adopt
 user-invocable: true
 description: >-
-  Invoke ONLY when the user explicitly asks to install or check adopted editable copies from
-  workflow-toolbox, such as "adopt the delegation rules", "install the workflow-toolbox rules as
-  editable files", "install project copies of the pilot agents", "adopt the pilot watchdog into
-  this project", or "check my adopted workflow-toolbox rules/agents for updates". Write
-  versioned, fingerprinted files into config or project dirs ONLY on request; never run
-  automatically. Re-invoke to detect stale copies and refresh them. Not for authoring workflows
-  or composing a pilot wave.
+  Invoke ONLY when you are about to install, check, refresh, or propose adopted editable copies
+  from workflow-toolbox into a config or project directory and need the versioned,
+  fingerprinted path, or when the user explicitly asks to "adopt the delegation rules",
+  "install the workflow-toolbox rules as editable files", "install project copies of the pilot
+  agents", "adopt the pilot watchdog into this project", or "check my adopted
+  workflow-toolbox rules/agents for updates". Write ONLY on request; never run automatically.
+  Not for authoring workflows or composing a pilot wave.
 ---
 
 # adopt — install editable copies of workflow-toolbox's guardrails and pilot agents

@@ -3,10 +3,11 @@ name: deep-grounding
 user-invocable: true
 description: >-
   Invoke when you are about to assert a checkable claim or start a non-trivial analysis, design,
-  diagnosis, or recommendation. Ask "where could the evidence for this be?", read the relevant
-  sources, follow their leads recursively, and report conclusions with evidence tiers plus any
-  residual unknowns. Use this **PROACTIVELY** when you catch yourself answering from memory, from a
-  single source or angle, or when a result beats your expectation and could skip verification.
+  diagnosis, or recommendation and need to ground it against the real sources before committing.
+  Ask "where could the evidence for this be?", read the relevant sources, follow their leads
+  recursively, and report conclusions with evidence tiers plus any residual unknowns. Use this
+  **PROACTIVELY** when you catch yourself answering from memory, from a single source or angle, or
+  when a result beats your expectation and could skip verification.
 ---
 
 # deep-grounding

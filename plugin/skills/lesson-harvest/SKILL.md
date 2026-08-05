@@ -2,9 +2,10 @@
 name: lesson-harvest
 user-invocable: false
 description: >-
-  Invoke when integrating a closed pilot or executor report and you need its "## Lessons for the
-  memory" section without rereading the whole file. Extract candidate lesson items verbatim and
-  return a distinct verdict for three cases: the section says "None.", the section is missing
+  Invoke **PROACTIVELY** whenever you are integrating a closed pilot or executor report — nobody
+  will ask you to — to get its "## Lessons for the memory" section without rereading the whole
+  file. Extract candidate lesson items verbatim
+  and return a distinct verdict for three cases: the section says "None.", the section is missing
   entirely, or the section carries content. Detection and extraction only: never write to a
   knowledge base, invent wording, classify a fiche, or decide whether to persist the lesson.
 ---

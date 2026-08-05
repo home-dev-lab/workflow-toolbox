@@ -2,12 +2,13 @@
 name: upgrade-canary
 user-invocable: true
 description: >-
-  Invoke ONLY when Claude Code may have upgraded and the user asks "run the upgrade canary",
-  "did the update break the workflows", "re-check the runtime surface", or "what changed in the
-  runtime", or before cutting a plugin release. Re-verify both runtimes the toolkit depends on:
-  the interactive `claude` binary and the SDK-bundled one. Run the full matrix only when versions
-  changed since the last pass, when forced, or when the last verdict failed. Maintainer tool only;
-  requires this repo's `toolkit/` tree plus local Claude Code auth.
+  Invoke ONLY when you suspect Claude Code may have upgraded, when you are about to cut a plugin
+  release, or when the user says "run the upgrade canary", "did the update break the
+  workflows", "re-check the runtime surface", or "what changed in the runtime". Re-verify both
+  runtimes the toolkit depends on: the interactive `claude` binary and the SDK-bundled one. Run
+  the full matrix only when versions changed since the last pass, when forced, or when the last
+  verdict failed. Maintainer tool only; requires this repo's `toolkit/` tree plus local Claude
+  Code auth.
 argument-hint: "[--force] [--target system|bundled|both]"
 ---
 

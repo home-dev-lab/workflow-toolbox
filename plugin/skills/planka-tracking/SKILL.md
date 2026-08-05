@@ -2,12 +2,12 @@
 name: planka-tracking
 user-invocable: true
 description: >-
-  Invoke ONLY when the current project is not yet managed by Planka, the user wants board-based
-  tracking, and says "onboard this project to Planka", "set up the board here", "start tracking
-  tasks on Planka", or "track my tasks on a kanban board". Create the project, board, lists, and
-  labels through the `planka` MCP, migrate any existing .claude/progress.md zero-loss into
-  cards, and write .claude/planka.json. Requires a reachable `planka` MCP server; do not run
-  without it.
+  Invoke ONLY when the current project is not yet managed by Planka and you are about to onboard
+  it to board-based tracking, or when the user says "onboard this project to Planka", "set up
+  the board here", "start tracking tasks on Planka", or "track my tasks on a kanban board".
+  Create the project, board, lists, and labels through the `planka` MCP, migrate any existing
+  .claude/progress.md zero-loss into cards, and write .claude/planka.json. Requires a reachable
+  `planka` MCP server; do not run without it.
 ---
 
 # planka-tracking — onboard a project onto a Planka board

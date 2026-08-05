@@ -2,13 +2,13 @@
 name: independent-analysis
 user-invocable: true
 description: >-
-  Invoke when the user wants a non-trivial design, plan, decision, claim, architecture,
-  root-cause theory, or change set stress-tested, or says "are you sure?", "what am I missing?",
+  Invoke when you are about to commit to a non-trivial design, plan, decision, claim,
+  architecture, root-cause theory, or change set and want it stress-tested by fresh,
+  conversation-blind analysis, or when the user says "are you sure?", "what am I missing?",
   "did we forget anything?", or "make sure no angle is forgotten". Run the bundled
-  independent-analysis workflow so fresh, conversation-blind agents surface missing angles and
-  refute-first verifiers kill plausible-but-wrong ones. Use this **PROACTIVELY** before
-  committing to a non-trivial design or decision, especially when you may be moving fast or
-  confirming a prior.
+  independent-analysis workflow so missing angles surface and refute-first verifiers kill
+  plausible-but-wrong ones. Use this **PROACTIVELY** when you may be moving fast or confirming a
+  prior.
 ---
 
 # independent-analysis

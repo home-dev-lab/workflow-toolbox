@@ -2,12 +2,12 @@
 name: pilot-wave
 user-invocable: true
 description: >-
-  Invoke when the user wants tracked cards driven end-to-end by delegation and says "run these
-  cards", "pilot this wave", "spawn a pilot for this ticket", or "set up the orchestrator for
-  these". Compose the environment brief, select the cards, and spawn the adopted `pilot` or
-  `pilot-orchestrator` with explicit model elevation so the main session stays the arbiter and
-  wake-up relay. Require adopted project copies first; if they are missing, propose `adopt`
-  before spawning. Not for a single mechanical edit.
+  Invoke when you are about to drive tracked cards end-to-end through delegated execution and
+  need to compose the environment brief, select the cards, and spawn the adopted `pilot` or
+  `pilot-orchestrator`, or when the user says "run these cards", "pilot this wave", "spawn a
+  pilot for this ticket", or "set up the orchestrator for these". Keep the main session as the
+  arbiter and wake-up relay, require adopted project copies first, and if they are missing,
+  propose `adopt` before spawning. Not for a single mechanical edit.
 ---
 
 # pilot-wave — compose and launch a delegated card/wave

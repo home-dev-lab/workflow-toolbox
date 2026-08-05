@@ -2,8 +2,9 @@
 name: stale-card-sweep
 user-invocable: true
 description: >-
-  Invoke ONLY when a task-tracker card is about to close and you need to check whether its diff
-  already covered the defect another open card still describes, or when the user says "sweep for
+  Invoke **PROACTIVELY** whenever you are about to close a task-tracker card — nobody will ask
+  you to — to check whether its diff already covered the defect another open card still
+  describes. Also invoke when the user says "sweep for
   stale cards", "check what this closes", or "did this diff subsume anything else". Shortlist
   candidates from the changed files, then judge each one against the diff. Advisory only: flag
   candidate cards with a comment; never close, move, or rewrite them. Not for card creation or

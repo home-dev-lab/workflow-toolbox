@@ -2,12 +2,13 @@
 name: what-next
 user-invocable: true
 description: >-
-  Invoke when the user types /what-next or asks "what's next", "what should I tackle now", or
-  "what comes after this", or has just finished a chunk of work and wants a recommendation
-  grounded in the tracked backlog. Read the project's Planka board through .claude/planka.json
-  when the `planka` MCP is reachable, otherwise fall back to .claude/progress.md, plus the
-  current conversation and any existing knowledge index such as `MEMORY.md`. Read-only: propose a
-  next step, never mutate the board, `progress.md`, or task state.
+  Invoke when you have just finished a chunk of work or need the next recommendation grounded in
+  the tracked backlog, or when the user types /what-next or asks "what's next", "what should I
+  tackle now", or "what comes after this". Read the project's Planka board through
+  .claude/planka.json when the `planka` MCP is reachable, otherwise fall back to
+  .claude/progress.md, plus the current conversation and any existing knowledge index such as
+  `MEMORY.md`. Read-only: propose a next step, never mutate the board, `progress.md`, or task
+  state.
 argument-hint: "[topic-filter]"
 ---
 
