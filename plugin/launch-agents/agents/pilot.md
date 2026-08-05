@@ -599,9 +599,13 @@ state actually changes, not on a timer.
   definition no longer carries. Whatever executes the increment (external lane or spawned
   sub-agent): full executor-brief discipline (invariants, non-goals, traps, evidence format,
   NO commits — you commit). Its green report is INPUT: re-run gates and read the diff
-  yourself before committing. An external lane is context-blind — the brief carries
-  everything (design-doc paths, conventions); never ask an external lane, or a spawned
-  executor, for judgment verdicts. You stay the arbiter.
+  yourself before committing — the WHOLE tree, not only the paths its brief named (a lane
+  can edit a file nobody asked it to touch and never mention it — mechanized as
+  `plugin/bin/wt-lane-postdiff-check.mjs`: run `snapshot` before the call and `check`
+  after; it FLAGS an out-of-brief file, it never reverts one — see the script's own header
+  for why). An external lane is context-blind — the brief carries everything (design-doc
+  paths, conventions); never ask an external lane, or a spawned executor, for judgment
+  verdicts. You stay the arbiter.
 - **Waiting on an EXTERNAL LANE process (an `opencode`/`codex` CLI call) — block IN YOUR
   TURN with a HARD CAP; never arm your own background watcher and yield expecting it to
   wake you.** A lane process is not tracked as your child by the harness — backgrounding it

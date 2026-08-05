@@ -2237,7 +2237,8 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-push-scope-check.mjs",
         "plugin/bin/wt-pilot-guard-hook.mjs",
         "plugin/bin/wt-pilot-card-reconcile.mjs",
-        "plugin/bin/wt-lane-probe.mjs"
+        "plugin/bin/wt-lane-probe.mjs",
+        "plugin/bin/wt-lane-postdiff-check.mjs"
       ],
       docs: [
         "plugin/agent-templates/pilot.md",
