@@ -114,6 +114,8 @@ function buildLadder() {
     'One tracked card → an adopted pilot; several cards → an adopted pilot-orchestrator;',
     'compose either (environment brief + model elevation) via the workflow-toolbox:pilot-wave skill.',
     laneLine,
+    'Before spawning a delegate, arming a watcher, or reasoning about what wakes a session:',
+    'load workflow-toolbox:delegation-chain — the spawn-shape/observer/wake/watcher map in one place.',
   ].join('\n')
 }
 

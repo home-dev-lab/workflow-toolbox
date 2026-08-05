@@ -120,6 +120,7 @@ function inlineCodeTokens(md: string): string[] {
 const EXTERNAL_VOCABULARY = new Set([
   'additionalContext', // Claude Code hook output field (architecture.md's Stop-hook note)
   'waitForApproval', // durable-execution product API cited as a comparison (P8 / HITL)
+  'idleReason', // Claude Code idle_notification field (delegation-chain skill, Section 3)
 ])
 
 /** Identifiers owned by Workflow Observatory (the closed-source companion —
