@@ -40,8 +40,8 @@
 //     snapshot as touched, so this exits 0 on precisely the case where the edit is
 //     hardest to undo. Bounded in practice (briefs tell lanes not to commit, and this
 //     check is advisory anyway), but "the brief says not to" is the same class of
-//     assurance this tool exists to stop relying on. Found in the integrating review
-//     of card 1835017482180494996; not yet closed. Cheapest fix: record
+//     assurance this tool exists to stop relying on. Found in this tool's own
+//     integrating review; not yet closed. Cheapest fix: record
 //     `git rev-parse HEAD` in the snapshot and compare it at check time — a moved HEAD
 //     is a one-line detection, and the range can then widen to `before..HEAD`.
 //
