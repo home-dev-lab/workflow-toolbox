@@ -173,8 +173,20 @@ decision is a decision that never earns automation.
 
 ## Spawned critic/verifier reports (nested-routing workaround — non-negotiable)
 
-A named agent YOU spawn reports its FINAL message to your MAIN session, not to you. Every
-critic/verifier brief you write MUST carry the file-report contract: "write your full
+**The teammate roster is FLAT, not a tree.** A named agent you spawn cannot itself spawn or
+address another named agent — there is no nesting of "who reports to whom". So a named agent
+YOU spawn reports its FINAL message to your MAIN session, not to you, and its task-completion
+notification lands there too. This is why the file-report contract below exists at all: the
+file is the only channel that actually reaches you, so it is what you poll and read, never the
+message routing.
+
+The same fact has a second consequence, and it is the expensive one to get wrong: **if you try
+to address a spawned agent by name and the name fails to resolve, that means "wrong channel",
+never "agent gone".** Nothing about a flat roster kills the agent — it is still running, still
+producing its file — so read the file before concluding anything died. A failed/idle/
+unreachable-by-name state describes a TURN or a routing gap, not the agent's existence.
+
+Every critic/verifier brief you write MUST carry the file-report contract: "write your full
 report to <path under the card's work repo>; your final message is ONE line: REPORT
 WRITTEN: <verdict>". Name that path per the `REPORT_DIR` naming constraint above — a
 basename starting with `report`/`summary`/`findings`/`analysis` is hard-blocked, so a brief
