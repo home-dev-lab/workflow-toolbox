@@ -14,6 +14,10 @@ import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 const STALE_AFTER_MS = Number(process.env.WT_ACTIONABLE_STALE_AFTER_MS || 2 * 60 * 60 * 1000)
 const BLOCK_MAX = Number(process.env.WT_ACTIONABLE_BLOCK_MAX || 3)
 const INFLIGHT_MS = Number(process.env.WT_ACTIONABLE_INFLIGHT_MS || 3 * 60 * 1000)
+// Caps a DECLARED inFlightUntil from the moment the snapshot was WRITTEN (snapshot.at), never
+// from "now" — see actionability-core.mjs for why the asymmetry matters (a generous bound
+// silences the gate for its whole window; capping from `at` makes a stale claim expire).
+const INFLIGHT_CAP_MS = Number(process.env.WT_ACTIONABLE_INFLIGHT_CAP_MS || 10 * 60 * 1000)
 const LANE_ANCESTOR_DEPTH = Number(process.env.WT_ACTIONABLE_LANE_ANCESTOR_DEPTH || 4)
 const LANE_SELF_EXCLUDE_DEPTH = 32
 
@@ -271,6 +275,7 @@ function main() {
     inFlight: hasInFlightWork(transcriptPath, sessionId, now) || externalLane.kind === 'running',
     consecutiveBlocks,
     blockMax: BLOCK_MAX,
+    inFlightCapMs: INFLIGHT_CAP_MS,
   })
 
   if (!decision.block) {
