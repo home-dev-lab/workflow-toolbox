@@ -194,6 +194,59 @@ describe('actionability-core', () => {
     expect(decision.block).toBe(false)
     expect(decision.nextConsecutiveBlocks).toBe(0)
   })
+
+  it('a GENEROUS inFlightUntil written long ago is CAPPED from the snapshot write time, not from now', () => {
+    // The failure this locks: a bound reaching far into the future silences the gate for its
+    // whole length, however stale the snapshot that declared it has become. The bound must be
+    // honoured only up to a cap measured from `at` (when it was WRITTEN), never from `now` —
+    // otherwise a stale file re-derives a fresh window merely by being read.
+    const now = Date.now()
+    const writtenAt = now - 40 * 60_000 // snapshot written 40 minutes ago
+    const decision = runDecide({
+      now,
+      staleAfterMs: 24 * 60 * 60_000, // not stale by the ordinary staleness check
+      inFlight: false,
+      consecutiveBlocks: 0,
+      blockMax: 3,
+      inFlightCapMs: 10 * 60_000,
+      snapshot: {
+        status: 'present',
+        at: writtenAt,
+        actionable: 3,
+        next: 'CARD-9 generous bound written long ago',
+        workPossible: true,
+        reason: '',
+        blockedUntil: null,
+        inFlightUntil: writtenAt + 50 * 60_000, // 50 min window: still > now if taken at face value
+      },
+    })
+    expect(decision.block).toBe(true)
+    expect(decision.reason).toBe('actionable-work-remains')
+  })
+
+  it('a FRESH inFlightUntil within the cap stays silent', () => {
+    const now = Date.now()
+    const decision = runDecide({
+      now,
+      staleAfterMs: 24 * 60 * 60_000,
+      inFlight: false,
+      consecutiveBlocks: 2,
+      blockMax: 3,
+      inFlightCapMs: 10 * 60_000,
+      snapshot: {
+        status: 'present',
+        at: now,
+        actionable: 3,
+        next: 'CARD-10 lane just declared',
+        workPossible: true,
+        reason: '',
+        blockedUntil: null,
+        inFlightUntil: now + 5 * 60_000,
+      },
+    })
+    expect(decision.block).toBe(false)
+    expect(decision.nextConsecutiveBlocks).toBe(0)
+  })
 })
 
 describe('wt-actionable-gate-hook', () => {
@@ -468,6 +521,23 @@ describe('wt-actionable-gate-hook', () => {
     const r = runHook(payload, env)
     expect(r.code).toBe(2)
     expect(r.stderr).toContain('CARD-53 external lane expired')
+  })
+
+  it('a generous inFlightUntil written long ago is capped and the hook blocks anyway', () => {
+    const { env, payload, stateDir, cwd } = scaffold('declared-inflight-capped')
+    const writtenAt = Date.now() - 40 * 60_000
+    writeSnapshot(stateDir, cwd, {
+      at: writtenAt,
+      actionable: 3,
+      next: 'CARD-54 generous bound written long ago',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: writtenAt + 50 * 60_000,
+    })
+    const r = runHook(payload, env)
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('CARD-54 generous bound written long ago')
   })
 
   it('a lane of this session detected by ancestry + cwd -> no block, and the counter resets', () => {
