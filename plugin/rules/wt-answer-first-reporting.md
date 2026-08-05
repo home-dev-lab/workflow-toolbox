@@ -207,16 +207,36 @@ up building two alarms while believing an engine was built:
 
 | Role | What it does | What it does NOT do |
 |---|---|---|
-| something that re-paces itself and hands control back on its own, unprompted | the only thing that actually resumes stopped work | only exists while the process running it exists — it cannot outlive that |
-| something that watches delegated work and raises an alarm if it stalls | catches a delegate that has frozen | restarts nothing by itself |
+| something that re-paces itself and hands control back on its own, unprompted | resumes stopped work without anyone asking | only exists while the process running it exists — it cannot outlive that |
+| something that watches delegated work and raises an alarm if it stalls | catches a delegate that has frozen | nothing, IF its alarm cannot reach an idle session — see below |
 | something that makes an unexplained stop loud instead of silent | turns a silent stop into a visible one | cannot force further work to happen |
 
 The third row has an inherent limit worth naming: a check that blocked every stop
 unconditionally would deadlock the very work it exists to protect, so it can only object once
 and then has to let the turn proceed regardless — which is exactly why it cannot substitute for
-the first row. Neither the second nor the third role resumes anything on its own: without
-something that hands control back unprompted, the most carefully built pair of alarms still
-leaves the work stopped, only loudly instead of quietly.
+the first row.
+
+**The second row's limit is NOT inherent — it depends on a property of your harness, and that
+property is worth measuring rather than assuming.** The question is: when a watcher emits while
+the session is IDLE (its turn ended, nothing pending), does the session get a turn? If it does,
+the watcher IS an engine in practice — it hands control back, the session then resumes the
+delegate, and no self-paced loop is needed at all. If it does not, the alarm reaches nobody
+until a human speaks, and only the first row can restart anything.
+
+The measurement is cheap and readable in both outcomes: arm a watcher that emits once after a
+short delay AND writes a timestamped marker to disk, then deliberately end the turn. A turn
+arriving on its own proves delivery; no turn arriving still leaves the marker, which proves the
+watcher fired and isolates the failure to delivery rather than to emission. Without the marker
+the two are indistinguishable.
+
+Where the harness does deliver, the sufficient shape for long autonomous work is a **delegate
+that advances on its own** plus a **watcher on its liveness** — not a loop. That combination is
+also cheaper, because a loop hands a turn to the coordinator on a fixed cadence whether or not
+anything happened, and each of those turns re-reads the coordinator's whole accumulated context;
+a watcher only ever costs a turn when something actually changed. This also assumes a delegate
+that can be resumed rather than one that must be recreated — verify that too: on many harnesses a
+"stopped" delegate has merely run out of active work and resumes, with its context intact, on the
+next message addressed to it.
 
 ## A pending list without the done items reads as a status quo
 
