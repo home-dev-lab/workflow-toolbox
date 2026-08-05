@@ -52,7 +52,7 @@
 // recovers on its own as soon as a probe (or the cache) succeeds again.
 
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, writeSync, appendFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, writeSync, appendFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { basename, dirname, join } from 'node:path'
@@ -306,7 +306,7 @@ function nextDegradedReminderMs(currentReminderMs) {
 
 function maybeWriteDegradedReminder(state) {
   if (state.degradedElapsedMs < state.nextDegradedReminderMs) return
-  writeLine(`QUOTA WATCH DEGRADED: still blind after ${formatDurationMs(state.degradedElapsedMs)} without a fresh reading`)
+  flushArmed(); writeLine(`QUOTA WATCH DEGRADED: still blind after ${formatDurationMs(state.degradedElapsedMs)} without a fresh reading`)
   state.nextDegradedReminderMs = nextDegradedReminderMs(state.nextDegradedReminderMs)
 }
 
@@ -428,10 +428,113 @@ const state = {
   nextDegradedReminderMs: DEGRADED_REMINDER_STEPS_MS[0],
 }
 
-writeLine(`QUOTA WATCH ARMED: thresholds=${thresholds.join(',')} poll=${poll}s probe=${basename(probe.path)} source=${probe.source}`)
+// ── Single-instance guard ────────────────────────────────────────────────────────────────
+// Refuse to arm when this PROJECT already has a live watcher.
+//
+// What a duplicate actually costs is worth stating, because it is not what it looks like:
+// two watchers share the on-disk quota cache, so they barely add requests. What they double
+// is the NOTIFICATIONS — and a channel that reports the same event twice stops being read,
+// which costs exactly the alerts the watcher exists to deliver. The damage is to attention,
+// not to the API.
+//
+// KEYED ON THE WORKING DIRECTORY, not the config dir. The quota belongs to an ACCOUNT, but a
+// watcher can only wake the session that armed it — so two different projects on one account
+// each legitimately need their own and must not refuse each other. `process.cwd()` is the
+// portable proxy for "project": no /proc, no parent-chain walk, no session id (the harness
+// exposes none to a spawned monitor).
+//
+// LIVENESS IS PROVED BY SIGNAL 0, never by an entry's age. A stale entry left by a killed
+// process would otherwise lock a project out of ever arming again — a worse failure than the
+// duplicate this prevents, and a silent one. That check is also why no cleanup handler is
+// registered here: correctness must not depend on a tidy shutdown, and a SIGTERM'd watcher
+// cannot run one anyway. Stale entries are pruned on the next arm, by the same read.
+//
+// CROSS-PLATFORM: `process.kill(pid, 0)`, `process.cwd()` and a JSON file are all portable —
+// on Windows signal 0 throws ESRCH for a dead pid exactly as it does on POSIX. No platform
+// degrades to a plausible-but-wrong answer here.
+const INSTANCES_PATH = join(CONFIG_DIR, '.quota-watch-instances.json')
+
+function readWatchInstances() {
+  try {
+    const parsed = JSON.parse(readFileSync(INSTANCES_PATH, 'utf8'))
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    // Absent, unreadable or corrupt — treat as empty. A guard that dies on its own
+    // bookkeeping file would take the watcher down with it, turning a cosmetic problem
+    // into the blind watcher this whole file exists to avoid.
+    return []
+  }
+}
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    // EPERM means the process EXISTS but belongs to someone else — alive for our purposes.
+    return err?.code === 'EPERM'
+  }
+}
+
+const watchCwd = process.cwd()
+const liveInstances = readWatchInstances().filter((e) => e?.pid !== process.pid && isPidAlive(e?.pid))
+const sameProjectWatcher = liveInstances.find((e) => e?.cwd === watchCwd)
+
+if (sameProjectWatcher && process.env.WT_QUOTA_WATCH_ALLOW_DUPLICATE !== '1') {
+  writeLine(
+    `QUOTA WATCH NOT ARMED: this project already has a live watcher (pid ${sameProjectWatcher.pid}` +
+      `${sameProjectWatcher.startedAt ? `, armed ${sameProjectWatcher.startedAt}` : ''}). ` +
+      'A second one would double every notification without watching anything more. ' +
+      'Quota IS being watched — by that one. Set WT_QUOTA_WATCH_ALLOW_DUPLICATE=1 to arm anyway.',
+  )
+  // Exit 0, not 1: nothing failed. The watcher a monitor asked for already exists, and a
+  // non-zero code here would read as "quota is not being watched", which is the opposite
+  // of what just happened.
+  process.exit(0)
+}
+
+try {
+  writeFileSync(
+    INSTANCES_PATH,
+    `${JSON.stringify([...liveInstances, { pid: process.pid, cwd: watchCwd, startedAt: new Date().toISOString() }], null, 2)}\n`,
+  )
+} catch {
+  // Registering is best-effort: failing to record this instance makes a future duplicate
+  // possible, which is a nuisance. Refusing to WATCH over it would be a real failure.
+}
+
+// The arming confirmation is HELD, not written yet, so it can be merged into the first reading.
+// Two notifications a second apart, saying "I armed" then "here is the state", read as a
+// DUPLICATE to whoever is watching the channel — and a channel that looks like it repeats itself
+// stops being read, which costs the alerts this watcher exists to deliver. One line carries both
+// facts with no loss.
+//
+// Holding it is safe because silence is impossible: every probe-failure path calls `flushArmed()`
+// immediately before its own `QUOTA WATCH DEGRADED:` line, so a watcher whose probe never yields a
+// reading still announces that it armed AND which probe it selected — the operator needs the
+// second fact most precisely when the first one is going wrong.
+//
+// ⚠ An earlier version deferred the flush to the SECOND poll cycle instead. That looked
+// equivalent and was not: a watcher stopped inside its first cycle — which is the shape of every
+// bounded test run, and of a short-lived diagnostic run — never announced itself at all. The
+// guarantee has to be "before any other output", never "eventually".
+const ARMED_LINE = `QUOTA WATCH ARMED: thresholds=${thresholds.join(',')} poll=${poll}s probe=${basename(probe.path)} source=${probe.source}`
+let armedPending = true
+
+/** Emit the held arming line on its own — used by every path that is NOT the first reading. */
+function flushArmed() {
+  if (!armedPending) return
+  armedPending = false
+  writeLine(ARMED_LINE)
+}
 if (TEST_SEAM_ACTIVE) writeLine(testSeamBanner())
 
 while (true) {
+  // If a whole cycle passed without producing a reading, the held arming line has waited long
+  // enough — put it out on its own. Merging exists to remove a same-second duplicate, never to
+  // delay the confirmation that the watcher started: a reader left in silence would reasonably
+  // conclude nothing armed at all, which is the exact state this file exists to make impossible.
   try {
     let windows = {}
     let sourceData = null
@@ -480,7 +583,7 @@ while (true) {
         state.consecutiveFailures += 1
         if (!state.probeTimeoutSignaled) {
           state.probeTimeoutSignaled = true
-          writeLine(`QUOTA WATCH DEGRADED: probe exceeded its ${timeout}s timeout and was stopped (reported once)`)
+          flushArmed(); writeLine(`QUOTA WATCH DEGRADED: probe exceeded its ${timeout}s timeout and was stopped (reported once)`)
         }
         maybeWriteDegradedReminder(state)
         const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
@@ -493,7 +596,7 @@ while (true) {
         state.consecutiveFailures += 1
         if (!state.probeKoSignaled) {
           state.probeKoSignaled = true
-          writeLine(`QUOTA WATCH DEGRADED: probe could not START: ${spawnError} (reported once)`)
+          flushArmed(); writeLine(`QUOTA WATCH DEGRADED: probe could not START: ${spawnError} (reported once)`)
         }
         maybeWriteDegradedReminder(state)
         const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
@@ -507,7 +610,7 @@ while (true) {
         if (!state.probeKoSignaled) {
           state.probeKoSignaled = true
           const reason = probeStderr.length > 0 ? redact(probeStderr.split('\n')[0]).slice(0, 200) : 'no reason given'
-          writeLine(`QUOTA WATCH DEGRADED: probe returned nothing (${reason}) (reported once)`)
+          flushArmed(); writeLine(`QUOTA WATCH DEGRADED: probe returned nothing (${reason}) (reported once)`)
         }
         maybeWriteDegradedReminder(state)
         const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
@@ -523,7 +626,7 @@ while (true) {
         state.consecutiveFailures += 1
         if (!state.probeKoSignaled) {
           state.probeKoSignaled = true
-          writeLine('QUOTA WATCH DEGRADED: probe output UNPARSEABLE (invalid JSON) (reported once)')
+          flushArmed(); writeLine('QUOTA WATCH DEGRADED: probe output UNPARSEABLE (invalid JSON) (reported once)')
         }
         maybeWriteDegradedReminder(state)
         const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
@@ -536,7 +639,7 @@ while (true) {
         state.consecutiveFailures += 1
         if (!state.probeKoSignaled) {
           state.probeKoSignaled = true
-          writeLine('QUOTA WATCH DEGRADED: probe output INVALID (expected a JSON object with a usable window) (reported once)')
+          flushArmed(); writeLine('QUOTA WATCH DEGRADED: probe output INVALID (expected a JSON object with a usable window) (reported once)')
         }
         maybeWriteDegradedReminder(state)
         const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
@@ -580,7 +683,7 @@ while (true) {
         if (!state.probeKoSignaled) {
           state.probeKoSignaled = true
           const missing = WINDOWS.filter(({ key }) => !(key in liveWindows)).map(({ key }) => key)
-          writeLine(`QUOTA WATCH DEGRADED: probe output INVALID (missing window(s): ${missing.join(',')}) (reported once)`)
+          flushArmed(); writeLine(`QUOTA WATCH DEGRADED: probe output INVALID (missing window(s): ${missing.join(',')}) (reported once)`)
         }
         maybeWriteDegradedReminder(state)
         const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
@@ -624,7 +727,15 @@ while (true) {
       setBaseline(state, windows, thresholds)
       state.fingerprint = readAccountFingerprint(sourceData?.configDir)
       state.hasReading = true
-      if (line) writeLine(line)
+      // ONE line, not two: the arming confirmation and the first reading are the same event from
+      // the reader's side. `line` can legitimately be empty (nothing worth reporting yet), in
+      // which case the arming line still goes out alone — the reader must always learn it armed.
+      if (armedPending) {
+        armedPending = false
+        writeLine(line ? `${ARMED_LINE} | ${line.replace(/^QUOTA STATUS: /, '')}` : ARMED_LINE)
+      } else if (line) {
+        writeLine(line)
+      }
       await sleep(poll * 1000)
       continue
     }
@@ -715,7 +826,7 @@ while (true) {
     // monitor auto-stopped, manufacturing the very silence this net exists to avoid.
     if (!state.internalErrorSignaled) {
       state.internalErrorSignaled = true
-      writeLine(`QUOTA WATCH DEGRADED: internal watcher error, cycles skipped: ${redact(error?.message ?? error)} (reported once)`)
+      flushArmed(); writeLine(`QUOTA WATCH DEGRADED: internal watcher error, cycles skipped: ${redact(error?.message ?? error)} (reported once)`)
     }
     maybeWriteDegradedReminder(state)
     const pollMs = poll * 1000

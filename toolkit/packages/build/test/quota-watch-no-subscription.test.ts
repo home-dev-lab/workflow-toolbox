@@ -36,6 +36,14 @@ function fakeProbe(payload: unknown): string {
 }
 
 function runWatch(probePath: string) {
+  // ISOLATE THE CONFIG DIR. Without this the watcher reads the DEVELOPER'S real `~/.claude`,
+  // and this suite's result then depends on what that machine happens to be doing. Measured
+  // 2026-08-05: once the watcher grew a single-instance guard, all three cases here failed on a
+  // machine that had a live watcher armed from this same directory — a true refusal by a
+  // correct guard, reported as a broken test. Nothing about these cases concerns the real
+  // config dir: they decide on the probe's payload, which is injected via `--probe`.
+  const configDir = mkdtempSync(join(tmpdir(), 'wt-quota-watch-cfg-'))
+  roots.push(configDir)
   return spawnSync(
     process.execPath,
     [WATCH, '--probe', probePath, '--poll', '5', '--timeout', '3'],
@@ -44,7 +52,12 @@ function runWatch(probePath: string) {
       timeout: 20_000,
       // Bound the loop so a REGRESSION (the watcher failing to stop) shows up as a
       // timeout/cycle cap rather than hanging this suite forever.
-      env: { ...process.env, WT_QUOTA_WATCH_TEST_MAX_CYCLES: '3', WT_QUOTA_WATCH_TEST_SLEEP_LOG: '' },
+      env: {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: configDir,
+        WT_QUOTA_WATCH_TEST_MAX_CYCLES: '3',
+        WT_QUOTA_WATCH_TEST_SLEEP_LOG: '',
+      },
     },
   )
 }
