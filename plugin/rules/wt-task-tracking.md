@@ -16,6 +16,23 @@ without native dependency links need a written convention (e.g. `Depends-on: #<i
 description) plus a mechanical check that only proposes or starts a card once all of its
 dependencies are Done.
 
+That check covers only one direction: not starting too early. It says nothing about the moment a
+dependency actually closes — nothing moves the dependent out of Blocked on its own, so a card can
+sit there fully unblocked and unnoticed. Closing a card sweeps the cards that name it in a
+`Depends-on:` line and releases the ones with no remaining blocker — the same discipline the
+removal sweep below applies to a retired concept, applied here to a satisfied dependency instead.
+A periodic sweep over the whole Blocked list runs the identical check without waiting for a
+closure to trigger it: resolve each blocked card's dependency ids and read their list, a
+deterministic check rather than a judgment call.
+
+The sweep's output is a candidate list, never a verdict. A card can be legitimately blocked on
+something no `Depends-on:` line expresses — an external gate, a locked credential, a decision only
+a human can make — so releasing every candidate on the mechanical signal alone is wrong; read each
+one before releasing it. And a card with no `Depends-on:` line at all is not evidence of nothing to
+report: it is the sweep's largest blind spot, since its blocker lives in prose no check can confirm
+or refute — reporting only on the parseable cards while staying silent about the rest reads as full
+coverage when it is not.
+
 When a queue spans categories of work that trade off against each other (e.g. process/tooling
 infrastructure vs. product features), state the category priority explicitly and apply it when
 composing a batch — not case by case. Pick a rule (such as "drain the higher-priority category
