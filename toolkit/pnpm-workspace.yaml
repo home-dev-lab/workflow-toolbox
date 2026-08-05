@@ -28,11 +28,28 @@ minimumReleaseAgeExclude:
 #   Transitive via express@5 <- @modelcontextprotocol/sdk <- @anthropic-ai/claude-agent-sdk
 #   (a devDependency of @workflow-toolbox/smoke's upgrade-canary tooling only — not
 #   part of `pnpm test`, not shipped/runtime-served).
-# - brace-expansion >=3.0.0 <5.0.7 -> 5.0.7: GHSA-3jxr-9vmj-r5cp / CVE-2026-13149
+# - brace-expansion >=3.0.0 <5.0.8 -> 5.0.8: GHSA-3jxr-9vmj-r5cp / CVE-2026-13149
 #   (high, dev-only). DoS via exponential expansion of consecutive non-expanding {}
-#   groups. Transitive via minimatch@10 <- @typescript-eslint (lint tooling). The
-#   lower bound preserves the brace-expansion 1.1.x/2.1.x copies used by
-#   minimatch@3/@5 (outside the advisory range).
+#   groups. Transitive via minimatch@10 <- @typescript-eslint (lint tooling).
+#   ⚠ FLOOR RAISED 2026-08-05: the previous `<5.0.7 -> 5.0.7` was still SATISFIED while a
+#   newer advisory had moved the bar to 5.0.8, so the override stayed green and the install
+#   stayed green with nothing able to say otherwise. That is the failure mode of every `>=X`
+#   floor — a satisfied floor and a current floor are indistinguishable from inside the repo.
+#   The SELECTOR moves with the floor: pinning 5.0.8 under a `<5.0.7` selector would put the
+#   pinned version outside the range it exists to rewrite, which reads as a fix and rewrites
+#   nothing.
+# - brace-expansion <1.1.18 -> 1.1.18: same advisory family.
+#   ⚠ ADDED 2026-08-05, correcting a REFUTED premise this file carried. The previous comment
+#   said the lower bound "preserves the brace-expansion 1.1.x/2.1.x copies … (outside the
+#   advisory range)". That claim was measured WRONG on 2026-07-24 in the sibling private
+#   repo — GitHub's advisory covers those branches too — and the correction was applied
+#   there and never carried here. Measured on this tree 2026-08-05: it resolves
+#   brace-expansion@1.1.15, which the `< 1.1.18` advisory covers, and NOTHING pinned it.
+#   So this repo was not merely behind on a floor; it was relying on a premise its own twin
+#   had already disproved. Reachability is unchanged (lint tooling, no attacker-reachable
+#   input), and the bump is a same-branch patch.
+#   ⚠ NOT ADDED: a 2.x override. This tree resolves no 2.x copy — adding a pin for a version
+#   that is not present would look like coverage and buy nothing. Re-check if one appears.
 # - @types/node -> 24.13.1: @changesets/cli's dependency tree drags in the ancient
 #   @types/node@12.20.55, whose node:module typings trip TS2497 ("can only be
 #   referenced with ECMAScript imports/exports") on smoke/src/runtimes.ts under a
@@ -43,5 +60,6 @@ minimumReleaseAgeExclude:
 overrides:
   esbuild: ~0.28.1
   body-parser@>=2.0.0 <2.3.0: 2.3.0
-  brace-expansion@>=3.0.0 <5.0.7: 5.0.7
+  brace-expansion@>=3.0.0 <5.0.8: 5.0.8
+  brace-expansion@<1.1.18: 1.1.18
   '@types/node': 24.13.1
