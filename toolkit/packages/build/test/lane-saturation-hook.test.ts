@@ -8,11 +8,13 @@
 // commands becomes noise within a day and takes its real case with it.
 
 import { spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { countLaneProcessesReal, evaluateLaneCall } from '../../../../plugin/bin/lib/wt-lane-saturation-core.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-lane-saturation-hook.mjs')
@@ -22,111 +24,141 @@ afterEach(() => {
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true })
 })
 
-function run(command: string, env: Record<string, string> = {}): { out: string; code: number | null } {
-  const res = spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
-    encoding: 'utf8',
-    env: { ...process.env, ...env },
-  })
-  return { out: `${res.stdout ?? ''}${res.stderr ?? ''}`, code: res.status }
-}
-
 describe('wt-lane-saturation-hook.mjs', () => {
   it('is silent on a command that has nothing to do with the lane', () => {
-    expect(run('ls -la').out).toBe('')
+    const result = evaluateLaneCall(
+      { tool_input: { command: 'ls -la' } },
+      {
+        countLaneProcesses: () => {
+          throw new Error('countLaneProcesses should not be called for unrelated commands')
+        },
+      },
+    )
+    expect(result.silent).toBe(true)
   })
 
   it('is silent on a command that MENTIONS the lane without invoking it', () => {
     // The distinction that keeps this usable: a grep, a doc edit, or a commit message
     // about the lane must not trip a contention warning.
-    expect(run('grep -rn opencode docs/').out).toBe('')
-    expect(run('git commit -m "document the opencode lane"').out).toBe('')
+    const countLaneProcesses = () => {
+      throw new Error('countLaneProcesses should not be called for non-invocations')
+    }
+    expect(evaluateLaneCall({ tool_input: { command: 'grep -rn opencode docs/' } }, { countLaneProcesses }).silent).toBe(true)
+    expect(
+      evaluateLaneCall({ tool_input: { command: 'git commit -m "document the opencode lane"' } }, { countLaneProcesses }).silent,
+    ).toBe(true)
   })
 
   it('is silent on a real lane call while the lane is below its bound', () => {
-    // Nothing named `opencode`/`codex` is running in the test environment, so a generous
-    // bound must produce no output at all.
-    const { out, code } = run('opencode run --model openai/gpt-5.4 review < /dev/null', {
-      WT_LANE_MAX_CONCURRENT: '8',
-    })
-    expect(out).toBe('')
-    expect(code).toBe(0)
+    const result = evaluateLaneCall(
+      { tool_input: { command: 'opencode run --model openai/gpt-5.4 review < /dev/null' } },
+      {
+        countLaneProcesses: () => ({ state: 'ok', count: 0 }),
+        boundFromEnv: () => ({ bound: 8, source: 'WT_LANE_MAX_CONCURRENT' }),
+      },
+    )
+    expect(result.silent).toBe(true)
   })
 
   it('speaks — naming the count, the bound and the real failure mode — when the call would cross the bound', () => {
-    // A real process whose EXACT NAME is `opencode`, so the hook counts something true
-    // rather than a fixture of its own beliefs.
-    const root = mkdtempSync(join(tmpdir(), 'wt-lane-'))
-    roots.push(root)
-    const fake = join(root, 'opencode')
-    copyFileSync('/bin/sleep', fake)
-    chmodSync(fake, 0o755)
-    const child = spawnSync(process.execPath, [
-      '-e',
-      `const {spawn}=require('node:child_process');const c=spawn(${JSON.stringify(fake)},['3'],{detached:true,stdio:'ignore'});c.unref();console.log(c.pid)`,
-    ], { encoding: 'utf8' })
-    const pid = Number.parseInt(String(child.stdout ?? '').trim(), 10)
-    try {
-      const { out, code } = run('opencode run -m x y < /dev/null', { WT_LANE_MAX_CONCURRENT: '1' })
-      expect(out).toContain('at or past its bound')
-      expect(out).toContain('bound 1')
-      // The reader must be told what actually goes wrong: not a clean refusal, but a
-      // slowdown that the CALLER's own timeout turns into a dead call.
-      expect(out).toContain('converts that slowdown into a dead call')
-      // And that a 0-byte output file proves nothing while the process is alive.
-      expect(out).toContain('does NOT distinguish "queued" from "about to expire"')
-      // Advisory, never a gate.
-      expect(out).toContain('NOT blocked')
-      expect(code).toBe(0)
-    } finally {
-      try {
-        process.kill(pid)
-      } catch {
-        /* already gone — the sleep is short by design */
-      }
-    }
+    const result = evaluateLaneCall(
+      { tool_input: { command: 'opencode run -m x y < /dev/null' } },
+      {
+        countLaneProcesses: () => ({ state: 'ok', count: 1 }),
+        boundFromEnv: () => ({ bound: 1, source: 'WT_LANE_MAX_CONCURRENT' }),
+      },
+    )
+    expect(result.silent).toBe(false)
+    expect(result.message).toContain('at or past its bound')
+    expect(result.message).toContain('bound 1')
+    // The reader must be told what actually goes wrong: not a clean refusal, but a
+    // slowdown that the CALLER's own timeout turns into a dead call.
+    expect(result.message).toContain('converts that slowdown into a dead call')
+    // And that a 0-byte output file proves nothing while the process is alive.
+    expect(result.message).toContain('does NOT distinguish "queued" from "about to expire"')
+    // Advisory, never a gate.
+    expect(result.message).toContain('NOT blocked')
   })
 
-  it('reports NOT MEASURED — never a zero — when the counting tool is unavailable', () => {
+  it('reports NOT MEASURED — never a zero — when counting is unavailable', () => {
     // The failure this closes: "pgrep is missing" and "nothing is running" are opposite
     // facts, and reporting the first as the second tells a caller the lane is free at
     // exactly the moment nobody can tell.
-    const root = mkdtempSync(join(tmpdir(), 'wt-lane-nopgrep-'))
-    roots.push(root)
-    const { out, code } = run('opencode run -m x y < /dev/null', { PATH: root })
-    expect(out).toContain('NOT MEASURED')
-    expect(out).toContain('not a report that the lane is free')
-    expect(out).not.toContain('at or past its bound')
-    expect(code).toBe(0)
+    const result = evaluateLaneCall(
+      { tool_input: { command: 'opencode run -m x y < /dev/null' } },
+      {
+        countLaneProcesses: () => ({ state: 'unknown', reason: 'pgrep is unavailable (ENOENT)' }),
+        boundFromEnv: () => ({ bound: 8, source: 'default' }),
+      },
+    )
+    expect(result.silent).toBe(false)
+    expect(result.message).toContain('NOT MEASURED')
+    expect(result.message).toContain('not a report that the lane is free')
+    expect(result.message).not.toContain('at or past its bound')
   })
 
-  it('counts by exact process name, so a shell merely carrying the string is not counted', () => {
-    // This is the trap the hook exists to avoid, and it is worth asserting directly:
-    // measured on a machine with ZERO lane calls running, `pgrep -c -f 'opencode run'`
-    // returned 2 (its own shells) while `pgrep -c -x opencode` returned 0. A guard built
-    // on the command-line form would warn about contention that does not exist.
-    const root = mkdtempSync(join(tmpdir(), 'wt-lane-selfmatch-'))
+  // This is the one test in this suite that exercises the real, ambient-dependent `pgrep`
+  // mechanism; it is deliberately built to tolerate other real `opencode`/`codex` processes
+  // already running on this machine via a before/after delta, and if `pgrep` itself is
+  // unavailable it skips rather than fails. This is NOT a silent flake tolerance — it is a
+  // documented, deliberate scope limitation.
+  it('counts by exact process name in the real pgrep path, using a delta robust to ambient usage', ({ skip }) => {
+    const baseline = countLaneProcessesReal(['opencode'])
+    if (baseline.state === 'unknown') {
+      skip()
+      return
+    }
+
+    const root = mkdtempSync(join(tmpdir(), 'wt-lane-real-'))
     roots.push(root)
-    const marker = join(root, 'holder.sh')
-    writeFileSync(marker, '#!/bin/sh\n# opencode run --model x\nsleep 3\n')
+    const fake = join(root, 'opencode')
+    const marker = join(root, 'marker.sh')
+    copyFileSync('/bin/sleep', fake)
+    chmodSync(fake, 0o755)
+    writeFileSync(marker, '#!/bin/sh\n# opencode run --model x\nsleep 5\n')
     chmodSync(marker, 0o755)
-    const child = spawnSync(process.execPath, [
+
+    const laneChild = spawnSync(process.execPath, [
       '-e',
-      `const {spawn}=require('node:child_process');const c=spawn('/bin/sh',[${JSON.stringify(marker)}],{detached:true,stdio:'ignore'});c.unref();console.log(c.pid)`,
+      `const {spawn}=require('node:child_process');const c=spawn(${JSON.stringify(fake)},['5'],{detached:true,stdio:'ignore'});c.unref();console.log(c.pid)`,
     ], { encoding: 'utf8' })
-    const pid = Number.parseInt(String(child.stdout ?? '').trim(), 10)
+    const lanePid = Number.parseInt(String(laneChild.stdout ?? '').trim(), 10)
+
+    let shellPid = Number.NaN
+
     try {
-      // A process whose command line carries the lane string but whose NAME is `sh`.
-      // With a bound of 1 the hook must still stay silent: nothing named opencode runs.
-      expect(existsSync(marker)).toBe(true)
-      const { out } = run('opencode run -m x y < /dev/null', { WT_LANE_MAX_CONCURRENT: '1' })
-      expect(out).toBe('')
+      const withLane = countLaneProcessesReal(['opencode'])
+      expect(withLane.state).toBe('ok')
+      if (withLane.state === 'ok') expect(withLane.count - baseline.count).toBe(1)
+
+      const shellChild = spawnSync(process.execPath, [
+        '-e',
+        `const {spawn}=require('node:child_process');const c=spawn('/bin/sh',[${JSON.stringify(marker)}],{detached:true,stdio:'ignore'});c.unref();console.log(c.pid)`,
+      ], { encoding: 'utf8' })
+      shellPid = Number.parseInt(String(shellChild.stdout ?? '').trim(), 10)
+
+      const withShellMention = countLaneProcessesReal(['opencode'])
+      expect(withShellMention.state).toBe('ok')
+      if (withShellMention.state === 'ok') expect(withShellMention.count - baseline.count).toBe(1)
     } finally {
-      try {
-        process.kill(pid)
-      } catch {
-        /* already gone */
+      for (const pid of [lanePid, shellPid]) {
+        if (!Number.isFinite(pid)) continue
+        try {
+          process.kill(pid)
+        } catch {
+          /* already gone */
+        }
       }
     }
+  })
+
+  it('the CLI wrapper stays silent on a non-lane command and exits 0', () => {
+    const res = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls -la' } }),
+      encoding: 'utf8',
+      env: process.env,
+    })
+    expect(`${res.stdout ?? ''}${res.stderr ?? ''}`).toBe('')
+    expect(res.status).toBe(0)
   })
 })
