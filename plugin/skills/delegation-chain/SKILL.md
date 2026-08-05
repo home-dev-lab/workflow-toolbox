@@ -32,6 +32,39 @@ wake), and the table at the end names which of the shipped watchers covers which
 | `name` alone (no `isolation`) | yes | **no — dropped silently** | n/a | avoid |
 | installed via a PLUGIN (a namespaced type) | — | **no — pairing skipped silently, no warning** | n/a | never, if the observer matters — adopt an editable project copy instead |
 
+**A user-level local copy of the same bare name silently WINS over a plugin registration**,
+qualifying every row above: `<config-dir>/agents/<name>.md` shadows `plugin/agents/<name>.md`
+on a bare-name spawn, with no version banner and no fingerprint marking it as a shadow. It
+never updates when the plugin ships a fix, and it sits outside every staleness check the
+plugin's own adoption tooling performs — a bare-name spawn that "looks like the current
+plugin version" can silently be running a stale local file instead, months out of date, with
+nothing in the spawn result or the agent listing distinguishing the two. Before trusting that
+a bare-name spawn resolves to the plugin's current definition, check whether a same-named file
+exists in the local agent directory first.
+
+**A plugin-registered agent's `permissionMode`, `hooks`, and `mcpServers` frontmatter fields
+are silently NEUTERED — read, then ignored, with only a warning for these three; `observer`
+and `observerMessage` are ignored with NO warning at all.** A reader who declares
+`permissionMode: <restrictive>` on a plugin-registered agent, expecting it to fence the
+agent's behaviour, is trusting a field the loader discards. The one mechanical fence that
+survives plugin registration is `disallowedTools` (a pattern-based denylist, matched against
+the literal tool invocation) — everything else requiring `permissionMode`, a custom `hooks:`
+entry, a scoped `mcpServers:` list, or a paired `observer` needs an editable, non-plugin-
+registered copy (a local `.claude/agents/` file) to actually take effect. This is exactly why
+a suite that ships an `observer:` watchdog distributes its definitions unregistered and
+requires project adoption — a plugin-registered copy would run with no watchdog and no error
+telling you so.
+
+⚠ **`disallowedTools` is not the safe fence it looks like either, for one specific shape: a
+`Bash(<pattern>)` entry removes the ENTIRE Bash tool, not the matched invocation.** A single
+entry like `disallowedTools: ["Bash(git push --force:*)"]` makes every Bash command fail with
+"No such tool available: Bash" — while the agent's own listing still reads "All tools except
+Bash(git push --force:*)", giving no hint that the tool is gone rather than narrowed. This
+directly undercuts the previous paragraph's "disallowedTools is the one mechanical fence" —
+it is, for any non-Bash tool pattern, but a Bash-scoped entry is a trap disguised as the
+fix. Refuse a dangerous Bash verb with a `PreToolUse` hook instead: it refuses the
+INVOCATION and leaves the tool intact.
+
 Two mechanisms explain the middle two rows, and both are read from the harness, not guessed:
 
 - **A named spawn with no `isolation`, once the session already has a team context, is routed
@@ -79,6 +112,26 @@ checker) degrades along this same cascade, and a spawner that skips step 1's fol
 silently loses the strongest tier for every anonymous delegate it spawns — not only the
 lane-delegating ones; singling out one spawn shape for the follow-up is how the discipline gets
 forgotten on the rest.
+
+### Two more spawn-shape traps: a cost trap and a capability lie
+
+- **`subagent_type: "fork"` clones the ENTIRE spawner conversation on every spawn, paid as a
+  cache-write.** It is tempting to reach for as a cheap placeholder — "spawn something to wait
+  for this event" — but a fork copies the whole accumulated conversation regardless of what the
+  forked agent actually does with it; a noop/placeholder fork used this way has cost hundreds of
+  thousands of tokens for work that a zero-cost background Bash tick (a bounded sleep loop
+  exiting on a condition) would have done for free. Reach for `fork` only when the task genuinely
+  needs the accumulated reasoning history, never as a lightweight wait-primitive or relay.
+- **`TaskList`/`TaskGet`/`TaskCreate`/`TaskUpdate` are gated by AGENT ROLE, not by a `tools:`
+  allowlist — no configuration grants them to an ordinary subagent, and declaring them in a
+  definition's `tools:` is a promise the agent can never keep.** The strip happens AFTER
+  allowlist resolution, so even an unrestricted `tools: *` does not restore them; a subagent
+  whose `tools:` is additionally *restricted* gets nothing at all back from `ToolSearch` for
+  them either — not an error, just silence indistinguishable from "not deferred yet", which
+  invites retrying a call that will never succeed. The two working routes are: the spawner
+  relays task state in the prompt (no side effects, the one to prefer), or the agent is spawned
+  as an agent-team teammate — which keeps the task tools but is a named spawn, trading away
+  observer pairing exactly as described above unless it is also isolated.
 
 ### What this section does NOT cover
 
@@ -154,6 +207,28 @@ forgotten on the rest.
   opposed to addressing it with `SendMessage`) returns "not found" and proves nothing either way
   — it is not a wake mechanism and not a liveness check.
 
+### Two things that reroute or hide the whole chain above
+
+- **The user can talk directly to an in-flight delegate — a side channel invisible to whoever
+  spawned it.** A message sent to a delegate mid-turn arrives exactly like an ordinary next
+  instruction, and nothing about it distinguishes "the user" from "the spawner" from the
+  delegate's own side. The spawner sees only the delegate's OUTPUTS (its results, its task
+  notifications) — never its INPUTS. A delegate that seems to reopen a closed topic, change
+  direction, or "disobey" a brief may simply be obeying six direct messages from the user that
+  the spawner has no visibility into at all. Before diagnosing a delegate's behaviour as drift
+  or disobedience from its outputs alone, read its own transcript for incoming messages — the
+  correct diagnosis can be the opposite of what the outputs alone suggest.
+- **`Workflow` is reachable ONLY by the main loop — never by a typed subagent, and only
+  partially by an in-loop fork.** A typed subagent (even one with an unrestricted `tools: *`)
+  does not have `Workflow` in its tool surface at all — it is absent from `ToolSearch` too, and
+  an explicit `tools: Workflow` grant in a custom agent definition is silently IGNORED. Team
+  membership strips `Workflow` even from an in-loop fork that would otherwise inherit it. A
+  fork with no team CAN launch a run — it clones the full main-loop tool surface — but it
+  never receives the completion notification: that routes to the PARENT session regardless of
+  who launched the run. So the only entity that both launches and follows a `Workflow` run to
+  completion is the main session itself; do not grant the tool to a subagent expecting it to
+  work, and do not expect a fork's own launch to be the thing that wakes it back up.
+
 ### What this section does NOT cover
 
 - Whether an `idle_notification`'s `idleReason` enumeration has grown additional values since
@@ -168,12 +243,13 @@ only informative within the scope it actually covers.
 
 | Tool | Watches | Does NOT cover |
 |---|---|---|
-| the arc watcher (`--project`, `--reports`, `--stale`, `--poll`) | transcript/journal staleness against recorded spawns, correlating by identifier first and declared name as fallback | a spawn record with neither an identifier nor a name; an unrecognized flag now fails LOUD (non-zero exit, one stderr-style line naming the flag) rather than silently starting degraded — verify this against the running copy before trusting an older description of it, since exactly this behavior is a documented case of drifting between what was written down and what the code does |
+| the arc watcher (`--project`, `--reports`, `--stale`, `--poll`) | transcript/journal staleness against recorded spawns, correlating by identifier first and declared name as fallback | a spawn record with neither an identifier nor a name; an unrecognized flag now fails LOUD (non-zero exit, one line naming the flag, written to stdout — not stderr, so redirecting stderr away still shows it, but merging streams the other way loses it) rather than silently starting degraded |
 | the liveness file (three-tier `agentId` cascade — Section 1) | idle-mid-mission vs. genuinely finished, per delegate, via `waitingOn`/`complete` fields the delegate itself updates | it is OPTIONAL coverage a short ordinary run can skip entirely, and nothing forces a delegate to keep it current — a file left at `waitingOn:"spawner"` after the answer already arrived misleads a reader exactly as much as one genuinely stuck there |
-| the observer-pairing checker | whether a spawned agent's declared observer actually attached, keyed primarily on a harness-written ownership link between the two agents' own metadata, falling back to a declared `--name` | its fallback path requires a `--name` — an ANONYMOUS delegate (the exact shape a lane-delegating one must use, per Section 1) is unverifiable through the fallback; only the metadata-link path covers it |
+| the observer-pairing checker (`wt-check-observer-pairing.mjs`) | whether a spawned agent's declared observer actually attached, keyed primarily on a harness-written ownership link between the two agents' own metadata, falling back to a declared `--name` | **currently, everything, as an AUTOMATIC check.** The checker's logic is correct, but its only automatic caller — a hook registered under `PreToolUse` in the plugin manifest — requires `hook_event_name === 'PostToolUse'` in its own code, so it never actually fires. Invoke the checker script manually until the hook's registered event is corrected to match the code it guards. Once that is fixed, its fallback path still requires a `--name`, so an ANONYMOUS delegate (the exact shape a lane-delegating one must use, per Section 1) stays unverifiable through the fallback — only the metadata-link path covers it |
 | the lane probe (`--worktree`, repeatable; `--pattern`; `--archive`) | whether a named executor-lane process is CURRENTLY working inside a given worktree, resolved live from the OS process table, never by asking the delegate | one invocation is a single snapshot — a lane can start or stop between two sweeps unseen; a probe result MUST be archived to survive past the process it describes, or nothing later can distinguish "verified" from "claimed" |
 | the card/pilot reconciler (`--cards`, `--session`, `--tolerance-min`) | cards claimed on the tracker vs. delegates actually alive in the spawn registry, matched by the card id appearing inside a spawn's own recorded purpose string | a brief that never names its card id anywhere in the spawn description is invisible to this match — the reconciler cannot discover a link the spawn itself never recorded |
 | `Monitor` (persistent, no ongoing model cost) | a named condition on files/state, fired as a discrete event | must be armed explicitly, by something that is already awake, before it exists at all — an unarmed watcher and a healthy silent one are indistinguishable from outside; arming it is not implied by anything in this document |
+| the idle-detection hook (fires on the harness's own teammate-idle event) | when one of the SESSION'S OWN first-level teammates goes idle | it covers first-level teammates only — a pilot's own sub-agent (a grandchild of the session that ultimately cares) is structurally invisible to it, however long it sits idle; coverage of deeper levels has to come from the intermediate agent's own contract (a hard cap, its own watcher), never from this hook |
 
 ### The composite reading
 
