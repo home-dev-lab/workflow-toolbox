@@ -107,18 +107,40 @@ jobs:
             # number of unsigned ancestors underneath it (found in review). Fall back
             # to the merge-base with the default branch, which `fetch-depth: 0`
             # already fetched, so every commit unique to this branch gets checked.
-            MERGE_BASE=""
+            #
+            # ⚠ "the default branch ref resolves" and "a merge-base with it exists"
+            # are DIFFERENT facts (found in a second review round): an orphan branch
+            # — one sharing no history with the default branch at all — resolves the
+            # ref fine but produces no merge-base, and the first version of this fix
+            # silently fell back to tip-only for that case too, which is exactly the
+            # bypass being closed. The empty-tree object (a constant every git repo
+            # has: `git hash-object -t tree /dev/null`) makes `EMPTY..HEAD` list the
+            # entire branch history, so an orphan branch gets a FULL check instead of
+            # a narrower one — the honest tip-only fallback is now reserved for the
+            # one case that actually has no other option: the default branch ref
+            # itself cannot be resolved at all.
+            EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
             if [ -n "${DEFAULT_BRANCH:-}" ] && git rev-parse --verify "origin/$DEFAULT_BRANCH" > /dev/null 2>&1; then
               MERGE_BASE=$(git merge-base "origin/$DEFAULT_BRANCH" "$HEAD_SHA" 2>/dev/null || true)
-            fi
-            if [ -n "$MERGE_BASE" ] && [ "$MERGE_BASE" != "$HEAD_SHA" ]; then
-              RANGE="$MERGE_BASE..$HEAD_SHA"
-              echo "::notice::No event-supplied base; using the merge-base with $DEFAULT_BRANCH ($MERGE_BASE) so every commit unique to this branch is checked."
+              if [ -n "$MERGE_BASE" ] && [ "$MERGE_BASE" != "$HEAD_SHA" ]; then
+                RANGE="$MERGE_BASE..$HEAD_SHA"
+                echo "::notice::No event-supplied base; using the merge-base with $DEFAULT_BRANCH ($MERGE_BASE) so every commit unique to this branch is checked."
+              elif [ "$MERGE_BASE" != "$HEAD_SHA" ]; then
+                # No common ancestor with the default branch (an orphan branch) —
+                # check this branch's ENTIRE history, not just its tip.
+                RANGE="$EMPTY_TREE..$HEAD_SHA"
+                echo "::notice::No common ancestor with $DEFAULT_BRANCH (orphan branch); checking this branch's full history instead of the tip alone."
+              else
+                # HEAD_SHA is already an ancestor of the default branch — nothing new
+                # to check beyond what the default branch's own pushes already cover.
+                echo "::notice::HEAD is already reachable from $DEFAULT_BRANCH; nothing new to verify."
+                RANGE=""
+              fi
             else
-              # Only reachable when the default branch itself is unresolvable (e.g.
-              # this push IS the repository's very first commit) — a genuinely honest
-              # tip-only case, not a shortcut taken for convenience.
-              echo "::notice::No base commit could be established (default branch unavailable or this is the root commit); checking the tip commit only, not a range."
+              # Only reachable when the default branch ref itself cannot be resolved
+              # at all — a genuinely honest tip-only case, not a shortcut taken for
+              # convenience.
+              echo "::notice::No base commit could be established (default branch ref unavailable); checking the tip commit only, not a range."
               RANGE=""
             fi
           fi

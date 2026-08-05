@@ -147,6 +147,31 @@ describe('signatures.yml verification step — new-branch merge-base fallback', 
     expect(out).toContain('carry a good signature')
   })
 
+  it('checks an ORPHAN branch\'s full history, not just its tip (no common ancestor with the default branch)', () => {
+    const root = initSignableRepo('orphan-branch')
+    commit(root, 'f.txt', 'a', 'main c1 signed', true)
+    git(root, ['update-ref', 'refs/remotes/origin/main', 'HEAD'])
+    // A branch with NO shared history with main — merge-base with origin/main exists as
+    // a ref but produces no common ancestor. The first version of this fix silently fell
+    // back to tip-only here too, which was the exact bypass this locks.
+    git(root, ['checkout', '-q', '--orphan', 'orphanbranch'])
+    git(root, ['rm', '-qf', '--cached', '-r', '.'])
+    commit(root, 'g.txt', 'x', 'orphan c1 UNSIGNED', false)
+    const tip = commit(root, 'g.txt', 'xy', 'orphan c2 signed tip', true)
+
+    const { out, code } = runStep(root, {
+      BEFORE: '0000000000000000000000000000000000000000',
+      HEAD_SHA: tip,
+      PR_BASE: '',
+      PR_HEAD: '',
+      DEFAULT_BRANCH: 'main',
+    })
+
+    expect(code).toBe(1)
+    expect(out).toContain('orphan c1 UNSIGNED')
+    expect(out).toContain('orphan branch')
+  })
+
   it('falls back to honest tip-only checking when the default branch cannot be resolved (root commit)', () => {
     const root = initSignableRepo('root-commit')
     const tip = commit(root, 'f.txt', 'a', 'root commit signed', true)
