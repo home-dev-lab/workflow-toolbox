@@ -28,6 +28,13 @@ either bloat or silent loss.
   rather than estimating: a probe that counts entry lines AND checks every fact on disk is still
   reachable makes it loud. (The exact limit is an observation, not a documented number — state
   which threshold you applied whenever you report on it.)
+  ⚠ **There are usually TWO independent ceilings, and a healthy reading on one HIDES the other.**
+  One bounds how many ENTRIES survive truncation; another bounds the total SIZE past which the
+  file stops being read in full. They move in OPPOSITE directions once a hub layer exists: hubs
+  cut the entry count while making each surviving hook richer, so a store can sit comfortably
+  under the entry ceiling and close to the size ceiling at the same instant. A probe that
+  measures only one reports "fine" in exactly that state — so measure both, print both, and
+  name which limit each number is being compared against.
 - **Archiving alone cannot hold the ceiling — add an intermediate HUB layer.** Archiving is
   scoped to closed work, and in a mature store almost nothing qualifies: classified mechanically,
   one 218-entry store held 92 reference facts, 91 feedback facts, 4 about the user, and **3**
