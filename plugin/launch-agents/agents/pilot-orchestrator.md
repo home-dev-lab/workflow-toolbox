@@ -166,6 +166,14 @@ unless the report states which one it was.
    a hard cap; never arm-and-yield on a self-owned watcher) — a pilot brief that authorizes a
    lane without this is the exact incomplete-brief shape that has already produced a silently
    dormant delegate.
+
+   Immediately after each `Agent` call returns, before anything else, `SendMessage` the
+   newly-spawned pilot one line: `LIVENESS_AGENT_ID: <raw id from the Agent tool's return
+   value>`. The id only exists once the call returns, so it is a follow-up message, never a
+   field inside the brief text itself. This is the sending half of the liveness cascade your
+   own "Liveness file" section documents on the receiving side — skip it and a pilot's
+   correlation key degrades to its declared name, or to `UNCORRELATABLE` for the anonymous
+   spawns a lane-delegating pilot must use.
 7. **In-flight lane verification — run WHILE pilots work, never only at their report.** A
    wave once discovered, only in the final report, that a mandate to route every increment
    to an executor lane had not been honored — both pilots had coded in place and used the
@@ -550,12 +558,19 @@ addressed to you by name) do reach you and wake you.
 
 Your correlation key comes from whichever of these is available, in order — try the first, fall
 back to the next:
-1. **Your spawn brief carries an explicit `LIVENESS_AGENT_ID: <raw id>` line.** Use that value
-   verbatim as `agentId`, set `agentIdSource: "brief"`, and name the file
-   `${WT_LIVENESS_DIR:-$HOME/.local/state/wt-liveness}/<raw id, sanitized>.json`. This is the only
-   tier that works when you were spawned anonymously (no declared name) — the normal shape for a
-   pilot that delegates to an external executor lane, since a named+isolated spawn loses its
-   observer while named+non-isolated is unusable once a lane is writing into your worktree.
+1. **You have an explicit `LIVENESS_AGENT_ID: <raw id>` line — either inline in your spawn
+   prompt, or as a SendMessage that arrives right after you were spawned.** The raw id does not
+   exist until your spawner's `Agent` call returns, one step after the prompt text was already
+   sent — so a spawner following the shipped discipline sends it as an immediate follow-up
+   message instead of embedding it, and it is still tier 1: treat it exactly like a brief field.
+   If you reach the intake step below and have not yet seen this line, CHECK YOUR INBOX for it
+   before falling back to tier 2 — do not assume its absence from the initial prompt means it
+   was never sent. Use the value verbatim as `agentId`, set `agentIdSource: "brief"`, and name
+   the file `${WT_LIVENESS_DIR:-$HOME/.local/state/wt-liveness}/<raw id, sanitized>.json`. This
+   is the only tier that works when you were spawned anonymously (no declared name) — the normal
+   shape for a pilot that delegates to an external executor lane, since a named+isolated spawn
+   loses its observer while named+non-isolated is unusable once a lane is writing into your
+   worktree.
 2. **No such line, but you know your own declared spawn name.** Use the name as `agentId`, set
    `agentIdSource: "name"`, and name the file
    `${WT_LIVENESS_DIR:-$HOME/.local/state/wt-liveness}/<name, sanitized>.json` (sanitize: every

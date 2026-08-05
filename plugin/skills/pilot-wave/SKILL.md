@@ -221,6 +221,36 @@ The spawn prompt must carry:
    its basename does NOT start with `report`/`summary`/`findings`/`analysis` (e.g.
    `<cardId>-report.md`); your final message is ONE line: REPORT WRITTEN: <verdict>".
 6. "Address escalations to <the spawning agent> via SendMessage."
+7. `LIVENESS_AGENT_ID` is deliberately NOT in this list's prompt text — the raw agent id does
+   not exist until the spawn call returns, one step after the prompt is composed. See the
+   subsection right below for how it actually reaches the delegate.
+
+### LIVENESS_AGENT_ID — sent as the first follow-up message, never inside the composed brief
+
+The `Agent` tool hands you the raw agent id only in its RETURN value, after the spawn call has
+already gone out with the prompt text you composed. So the id cannot literally be a field
+inside that prompt — treating it as one is the actual trap here (see the knowledge-base fiche
+`delegate-cannot-name-itself`: a constraint written before the mechanism it serves is tested
+can read as reasonable and still be unsatisfiable).
+
+**The resolved shape**: the moment the `Agent` call returns, before doing anything else,
+`SendMessage` the newly-spawned agent one line:
+
+```
+LIVENESS_AGENT_ID: <raw id from the Agent tool's return value>
+```
+
+Queued messages are delivered at the delegate's next tool round, so this reaches it before its
+own first tool call in the overwhelming majority of cases — early enough for the intake-time
+liveness write `pilot.md`'s tier-1 cascade step expects. Do this for EVERY spawn this skill
+composes — named, anonymous, isolated — not only the lane-delegating case that motivates it;
+singling out one spawn shape is how the discipline gets forgotten on the others.
+
+This is the SENDING half of the cascade `pilot.md` and `pilot-orchestrator.md` already document
+on the RECEIVING side (`agentIdSource: "brief" | "name" | "none"`). Skip this message and every
+delegate spawned through this skill falls back to tier 2 (its own declared name) or tier 3
+(`UNCORRELATABLE`) — silently losing exactly the correlation coverage the mechanism exists to
+provide for anonymous, lane-delegating pilots.
 
 ## Step 4 — own the wake-ups, relay, integrate
 
