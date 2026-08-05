@@ -39,11 +39,25 @@
 #
 # The public key below is exactly that — public. `.github/allowed_signers` is
 # the file; this job points `gpg.ssh.allowedSignersFile` at it.
+#
+# ⚠ KNOWN, ACCEPTED GAP (from review, not fixed here — see the card): on
+# `pull_request`, both this policy file and the checker script itself are read
+# from the PR's OWN checkout, so a PR could in principle add its own key to
+# `allowed_signers` or edit the checker to always pass. `pull_request` (never
+# `pull_request_target`) means this job gets no elevated token/secrets, so it
+# cannot itself do anything privileged — but a REQUIRED status built on this
+# job should not be trusted against an adversarial PR author without loading
+# the policy/checker from a protected ref instead of the PR head. That is a
+# larger redesign (a reusable/trusted workflow) than this card's scope; track
+# it separately rather than rushing it in under time pressure.
 name: signatures
 
 on:
   push:
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   verify:
@@ -69,6 +83,7 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           # ⚠ GitHub Actions invokes this block as `bash -e {0}` — `-e` is already
           # active before this script's own `set` line runs, so `set -uo pipefail`
@@ -86,11 +101,26 @@ jobs:
           elif [ -n "${BEFORE:-}" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
             RANGE="$BEFORE..$HEAD_SHA"
           else
-            # A brand-new branch (or the very first push) has no remote-side base,
-            # so no honest range exists. Say so out loud and check the tip alone —
-            # a check that cannot run its full form must never read as one that ran.
-            echo "::notice::No base commit for this event; checking the tip commit only, not a range."
-            RANGE=""
+            # A brand-new branch (or the very first push) has no remote-side base
+            # from the event itself — but "no event base" does not mean "no honest
+            # range exists". Checking the tip ALONE lets a signed tip smuggle in any
+            # number of unsigned ancestors underneath it (found in review). Fall back
+            # to the merge-base with the default branch, which `fetch-depth: 0`
+            # already fetched, so every commit unique to this branch gets checked.
+            MERGE_BASE=""
+            if [ -n "${DEFAULT_BRANCH:-}" ] && git rev-parse --verify "origin/$DEFAULT_BRANCH" > /dev/null 2>&1; then
+              MERGE_BASE=$(git merge-base "origin/$DEFAULT_BRANCH" "$HEAD_SHA" 2>/dev/null || true)
+            fi
+            if [ -n "$MERGE_BASE" ] && [ "$MERGE_BASE" != "$HEAD_SHA" ]; then
+              RANGE="$MERGE_BASE..$HEAD_SHA"
+              echo "::notice::No event-supplied base; using the merge-base with $DEFAULT_BRANCH ($MERGE_BASE) so every commit unique to this branch is checked."
+            else
+              # Only reachable when the default branch itself is unresolvable (e.g.
+              # this push IS the repository's very first commit) — a genuinely honest
+              # tip-only case, not a shortcut taken for convenience.
+              echo "::notice::No base commit could be established (default branch unavailable or this is the root commit); checking the tip commit only, not a range."
+              RANGE=""
+            fi
           fi
 
           CODE=0
