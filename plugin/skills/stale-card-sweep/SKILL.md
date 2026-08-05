@@ -31,6 +31,24 @@ At the moment a card is about to move to its terminal "closed" list (`Done`/`Not
 project's board convention — adapt to whatever the tracker calls closed). Run it **before**
 the move, using the closing card's own diff.
 
+## A second trigger: at COMMIT time, advisory and silent
+
+The mechanism above only ever fires at card CLOSURE. Work done outside any card — an inline
+instruction, done directly, closing nothing — never triggers it, and cards it just made
+obsolete stay open. `toolkit/scripts/git-hooks/post-commit-stale-card-sweep.sh` closes that
+gap: it runs the SAME layer-1 `sweep()` mechanism after every commit, opt-in (see the script's
+own header for the install step), silent unless there is something to flag.
+
+The ~200-open-card threshold below does NOT apply at commit time. Reading every open card on
+every commit has no "there is time" budget the way a closure sweep does, so the commit-time
+hook ALWAYS filters mechanically by changed file, even below 200 open cards. Accepted cost:
+it can miss a reformulated card whose description never mentions the changed path or filename.
+That is a known, accepted gap, not implied coverage.
+
+The commit-time hook still only ever produces a candidate LIST — flagging, never fixing, never
+touching a card. Layer 2 is unchanged: a human/pilot still reads a flagged card's description
+against the diff before treating it as subsumed.
+
 ## The two layers — mechanical shortlist, then judgment
 
 **Layer 1 (mechanical, free)** — the closing diff's changed files are the only reliable,

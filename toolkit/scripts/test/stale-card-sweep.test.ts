@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DIFF_FILTER_THRESHOLD,
   findStaleCandidates,
+  formatHookOutput,
   parseArgs,
   shouldFilterByDiff,
   sweep,
@@ -139,7 +140,47 @@ describe('parseArgs — CLI input validation, unit-testable without a subprocess
       modeValue: 'b1',
       changedFiles: ['a.ts', 'b.ts'],
       closingCardId: 'c1',
+      hook: false,
     })
+  })
+
+  it('parses --hook when present', () => {
+    const parsed = parseArgs(['--board', 'b1', '--changed-file', 'a.ts', '--hook'])
+    expect(parsed).toEqual({
+      mode: '--board',
+      modeValue: 'b1',
+      changedFiles: ['a.ts'],
+      closingCardId: undefined,
+      hook: true,
+    })
+  })
+})
+
+describe('formatHookOutput — silent unless there is something to flag', () => {
+  const changedPath = 'apps/observe-ui/src/lib/TokenUsage.svelte'
+
+  it('returns a non-null heads-up that names the card id and matched path when a commit touches a mentioned path', () => {
+    const result = sweep([card('pos-1', { description: `Touches ${changedPath} directly.` })], [changedPath])
+    const output = formatHookOutput('board b1', result)
+
+    expect(output).not.toBeNull()
+    expect(output).toContain('card pos-1')
+    expect(output).toContain(changedPath)
+  })
+
+  it('returns null when a commit touches no path any open card mentions', () => {
+    const result = sweep([card('neg-1', { description: 'A completely unrelated defect in the CLI wrapper.' })], [changedPath])
+    expect(formatHookOutput('board b1', result)).toBeNull()
+  })
+
+  it('mentions diff-shortlist mode when the sweep result was filtered', () => {
+    const output = formatHookOutput('board b1', {
+      candidates: [{ cardId: 'pos-1', cardName: 'Card pos-1', matchedPaths: [changedPath] }],
+      filtered: true,
+      openCardCount: DIFF_FILTER_THRESHOLD,
+    })
+
+    expect(output).toContain('diff-shortlist mode')
   })
 })
 
