@@ -143,9 +143,10 @@ function buildMessage(perFile, installCmd, set = 'rules', event = 'SessionStart'
   return lines.join('\n')
 }
 
-// A `git push` is the moment the shipped rules move ahead of the adopted copies. Narrow
-// on purpose: every OTHER Bash command must cost nothing, or a guard that runs on each
-// call becomes a guard someone turns off.
+// This hook fires on a `git push`-shaped COMMAND, not a confirmed push outcome; for Bash
+// PostToolUse does not tell us whether the push landed or was refused. Narrow on purpose:
+// every OTHER Bash command must cost nothing, or a guard that runs on each call becomes
+// a guard someone turns off.
 const PUSH = /\bgit\s+(?:-C\s+\S+\s+)?push\b/
 
 /** Which event are we serving, and should we do anything at all? Returns the event name
@@ -196,14 +197,16 @@ function main() {
   const message = sections.length ? sections.join('\n') : null
   if (!message) return // everything adopted & current somewhere → silent
 
-  // After a push, the reader needs to know WHY they are being told now: they just moved
-  // the shipped rules ahead of the copies that are actually in force. Without that line
-  // the same text reads as a stale session-start notice and gets skipped.
+  // After a push attempt, the reader needs to know WHY they are being told now: a
+  // `git push`-shaped command just ran, but this Bash PostToolUse hook cannot confirm
+  // whether it landed. Without that line the same text reads as a stale session-start
+  // notice and gets skipped.
   const preface =
     event === 'PostToolUse'
-      ? 'A push just landed and the adopted rule copies are now behind it. A shipped rule ' +
-        'that is not adopted is INERT — it is on disk, it can be read and quoted, and it ' +
-        'governs nothing. Refresh before relying on it:\n'
+      ? 'A `git push` command just ran; this Bash PostToolUse hook cannot tell whether it ' +
+        'landed. If the adopted rule copies are behind, that gap is real either way. A ' +
+        'shipped rule that is not adopted is INERT — it is on disk, it can be read and ' +
+        'quoted, and it governs nothing. Refresh before relying on it:\n'
       : ''
 
   process.stdout.write(
