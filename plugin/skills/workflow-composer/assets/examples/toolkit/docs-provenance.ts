@@ -70,7 +70,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     script: 'plugin/bin/wt-lane-saturation-hook.mjs',
     status: 'mapped',
     reason:
-      'Known-issues documents this PreToolUse external-lane contention advisory under Shipped Hooks, Guards & Monitors.',
+      'Known-issues documents this PreToolUse external-lane contention guard (deny-by-default as of 0.118.0) under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-env-prerequisite-drift-hook.mjs',
