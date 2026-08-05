@@ -170,19 +170,33 @@ took the same name (latest wins). Do not treat the raw id as the primary or requ
 both routes were exercised end-to-end (message delivered AND acted on, not just accepted by the
 tool) and both worked.
 
-⚠ **One dated, unreproduced exception**: in one session, after a full session restart (not
-just an agent completing), addressing a previously-alive agent by its short name failed while
-the same agent's raw id succeeded. This is a single observation, not a confirmed behavior — do
-not generalize it into "always use the raw id after a restart". It does mean the raw id is worth
-knowing regardless of whether the name works, which is the next point.
+⚠ **Cross-restart revival by raw id is REPRODUCED, not a one-off — the short name may still
+fail.** After a full session restart (not just an agent completing its own turn), a previously-
+alive agent addressed by its short name has been seen to fail while the same agent's raw id
+succeeded, and — corrected from an earlier draft of this rule that called this "a single
+unreproduced observation" — it has since been reproduced twice in the same day, from a cold main
+session after a deliberate restart: a wave orchestrator carrying ~290k tokens of context was
+revived by raw id with its full mission scope, open card ids, and worktree state intact, and it
+then revived its own subordinate the same way with 178 prior messages intact. **The operative
+order is therefore probe before re-spawning**: one `SendMessage` by raw id costs nothing and
+reads in both directions — a substantive reply means the context survived, a routing failure
+means fall back to a fresh spawn. Re-spawning first, on the assumption that a restart always
+kills a delegate, throws away exactly the context this probe would have recovered.
 
-⚠ **The TUI does not show a resumed agent.** An agent revived from a previous session's
-transcript — alive, responsive, carrying its full prior context — does not appear anywhere in
-the interactive agent list. This is what makes the failure mode expensive: if the short name
-also happens to fail, everything visible says "gone", with nothing to contradict it. Knowing the
-raw-id fallback only helps if you know to reach for it despite the UI showing nothing — that is
-the reason this is worth stating explicitly rather than leaving it as an implied detail of the
-addressing contract.
+**The raw id is recoverable even when it was never recorded**: the `subagents/` directory's
+filenames (`agent-<raw-id>.jsonl`) ARE the ids, so a lookup there always has a fallback — but a
+handover note should still carry the id explicitly, since without it the only route is that
+directory scan.
+
+⚠ **The TUI's silence is not evidence either way — it never shows a resumed agent.** A revived
+agent — alive, responsive, carrying its full prior context — does not appear anywhere in the
+interactive agent list, so "nothing is listed" is never proof it is gone; check by probing
+(above), never by reading the list.
+
+⚠ **Honest scope**: what is reproduced is REACHABILITY-WITH-CONTEXT across a restart, on this
+harness version, in the cases actually observed. Treat it as a probe worth running first, not as
+a permanent guarantee — do not generalize it into "a restart never loses an agent" any more than
+the retired wording generalized the opposite.
 
 ## A delegated agent's transcript is a DIFFERENT file from the session's own
 

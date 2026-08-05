@@ -545,14 +545,27 @@ that succeeds at both ends and still skips a layer leaves no trace saying so.
 
 ## File-report contract (nested-routing workaround — non-negotiable)
 
-A named agent's FINAL message routes to the MAIN session, not to you. Every pilot/verifier
-brief you write MUST say: "write your full report to `<REPORT_DIR>/<cardId>-report.md`;
-your final message is ONE line: REPORT WRITTEN: <verdict>". **Keep `report` at the END of
-the basename, never the start** — the CLI hard-blocks a sub-agent's `Write` when a basename
-starts with `report`, `summary`, `findings`, or `analysis` (case-insensitive), so
-`report-<cardId>.md` would silently fail while `<cardId>-report.md` succeeds. You read the
-files; you never depend on final-message routing. Mid-arc escalations (SendMessage
-addressed to you by name) do reach you and wake you.
+**The teammate roster is FLAT, not a tree.** A pilot you spawn cannot itself spawn or address
+another named agent as a sub-report target — there is no nesting of "who reports to whom". A
+named agent's FINAL message routes to the MAIN session, not to you, and its task-completion
+notification lands there too. This is why the file is the real channel: you poll and read it,
+you never depend on the message routing back.
+
+The same fact has a second consequence, and it is the expensive one to get wrong: **if you try
+to address a spawned pilot by name and the name fails to resolve, that means "wrong channel",
+never "pilot gone".** Nothing about a flat roster kills the pilot — it is likely still running,
+still writing its file — so read the file (and check the liveness file above, and the pilot's
+worktree/commits) before concluding anything died. A failed/idle/unreachable-by-name state
+describes a TURN or a routing gap, not the agent's existence, and a premature respawn into the
+same worktree corrupts it under a live writer.
+
+Every pilot/verifier brief you write MUST say: "write your full report to
+`<REPORT_DIR>/<cardId>-report.md`; your final message is ONE line: REPORT WRITTEN: <verdict>".
+**Keep `report` at the END of the basename, never the start** — the CLI hard-blocks a
+sub-agent's `Write` when a basename starts with `report`, `summary`, `findings`, or `analysis`
+(case-insensitive), so `report-<cardId>.md` would silently fail while `<cardId>-report.md`
+succeeds. You read the files; you never depend on final-message routing. Mid-arc escalations
+(SendMessage addressed to you by name) do reach you and wake you.
 
 ## Liveness file — the arc watcher's third input
 
