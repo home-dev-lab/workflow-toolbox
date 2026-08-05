@@ -1,0 +1,173 @@
+# Commit-signature verification — the DETECT half of the signing guard.
+#
+# Why this exists even though a local pre-push hook already checks signatures:
+# that hook lives in `.git/hooks/`, which is NOT versioned. It guards exactly one
+# door — pushes to the `public` remote from this one checkout. A fresh clone has
+# no hooks at all, and CI, scripts, and any other remote were uncovered. This job
+# is the only mechanism in the set that survives a clone, because it lives in the
+# repository instead of beside it.
+#
+# Prevent and detect COMPOSE here; this is not a replacement for the local hook.
+# The hook refuses before anything leaves the machine; this job speaks after the
+# commit has landed. Neither one covers the other's case.
+#
+# ⚠ THE LINE THAT MAKES THIS NOT-THEATRE IS `git config commit.gpgsign true`.
+# The checker only reports offenders when signing is EXPECTED, and it derives
+# that from git config. A CI runner has no global or system git config, so on a
+# fresh checkout the expectation is absent and the checker exits 0 writing ZERO
+# bytes — on an unsigned commit. Measured, both directions, before wiring this:
+#
+#   fresh-checkout shape (no config anywhere)  → exit 0, 0 bytes   ← hollow
+#   same tree + commit.gpgsign declared        → exit 1, offender named
+#
+# So the config line is not tidiness: without it this job can never fail, and its
+# green would mean "the check could not run" while reading as "all signed".
+#
+# ⚠ A SECOND, INDEPENDENT hollow-guard trap sits under the first one, found (and
+# measured) only after this job's own first real CI run: our commits are signed
+# with SSH (ED25519 via 1Password), and git CANNOT verify an SSH signature at
+# all without `gpg.ssh.allowedSignersFile` pointing at a file mapping identities
+# to public keys. A CI runner has no such file by default, so EVERY commit —
+# genuinely signed or not — comes back with git-log status `N` ("no signature"),
+# which the checker correctly treats as an offender. Without the allowed-signers
+# file below, this job cannot ever go green, on any commit. Measured with a
+# HOME-isolated scratch repo:
+#
+#   gpg.format=ssh, signingkey set, NO allowedSignersFile   → status N (hollow: flags a genuinely signed commit)
+#   same tree + allowedSignersFile pointing at the pubkey   → status G (correct)
+#   same tree, commit made with gpgsign=false               → status N (correctly flagged — the true negative)
+#
+# The public key below is exactly that — public. `.github/allowed_signers` is
+# the file; this job points `gpg.ssh.allowedSignersFile` at it.
+#
+# ⚠ KNOWN, ACCEPTED GAP (from review, not fixed here — see the card): on
+# `pull_request`, both this policy file and the checker script itself are read
+# from the PR's OWN checkout, so a PR could in principle add its own key to
+# `allowed_signers` or edit the checker to always pass. `pull_request` (never
+# `pull_request_target`) means this job gets no elevated token/secrets, so it
+# cannot itself do anything privileged — but a REQUIRED status built on this
+# job should not be trusted against an adversarial PR author without loading
+# the policy/checker from a protected ref instead of the PR head. That is a
+# larger redesign (a reusable/trusted workflow) than this card's scope; track
+# it separately rather than rushing it in under time pressure.
+name: signatures
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Full history: the range below must resolve on both ends. A shallow clone
+      # makes `git log <base>..<head>` fail rather than under-report, but failing
+      # for the wrong reason is still a wrong verdict.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Declare the signing policy for this checkout
+        run: |
+          git config commit.gpgsign true
+          git config gpg.format ssh
+          git config gpg.ssh.allowedSignersFile "$GITHUB_WORKSPACE/.github/allowed_signers"
+
+      - name: Verify every commit in the range is signed
+        env:
+          BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          # ⚠ GitHub Actions invokes this block as `bash -e {0}` — `-e` is already
+          # active before this script's own `set` line runs, so `set -uo pipefail`
+          # alone does NOT stop a non-zero exit from the checker aborting the
+          # script before CODE=$? is ever reached. Measured: the checker's exit
+          # code was read as if the checker had never run, and none of the
+          # messages below were printed. `|| CODE=$?` neutralises `-e` for this
+          # one command regardless of whether `-e` is set, because bash does not
+          # apply `-e` to a command that is part of an `||` list.
+          set -uo pipefail
+          CHECKER=plugin/bin/wt-check-commit-signatures.mjs
+
+          if [ -n "${PR_BASE:-}" ] && [ -n "${PR_HEAD:-}" ]; then
+            RANGE="$PR_BASE..$PR_HEAD"
+          elif [ -n "${BEFORE:-}" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            RANGE="$BEFORE..$HEAD_SHA"
+          else
+            # A brand-new branch (or the very first push) has no remote-side base
+            # from the event itself — but "no event base" does not mean "no honest
+            # range exists". Checking the tip ALONE lets a signed tip smuggle in any
+            # number of unsigned ancestors underneath it (found in review). Fall back
+            # to the merge-base with the default branch, which `fetch-depth: 0`
+            # already fetched, so every commit unique to this branch gets checked.
+            #
+            # ⚠ "the default branch ref resolves" and "a merge-base with it exists"
+            # are DIFFERENT facts (found in a second review round): an orphan branch
+            # — one sharing no history with the default branch at all — resolves the
+            # ref fine but produces no merge-base, and the first version of this fix
+            # silently fell back to tip-only for that case too, which is exactly the
+            # bypass being closed. The empty-tree object (a constant every git repo
+            # has: `git hash-object -t tree /dev/null`) makes `EMPTY..HEAD` list the
+            # entire branch history, so an orphan branch gets a FULL check instead of
+            # a narrower one — the honest tip-only fallback is now reserved for the
+            # one case that actually has no other option: the default branch ref
+            # itself cannot be resolved at all.
+            EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+            if [ -n "${DEFAULT_BRANCH:-}" ] && git rev-parse --verify "origin/$DEFAULT_BRANCH" > /dev/null 2>&1; then
+              MERGE_BASE=$(git merge-base "origin/$DEFAULT_BRANCH" "$HEAD_SHA" 2>/dev/null || true)
+              if [ -n "$MERGE_BASE" ] && [ "$MERGE_BASE" != "$HEAD_SHA" ]; then
+                RANGE="$MERGE_BASE..$HEAD_SHA"
+                echo "::notice::No event-supplied base; using the merge-base with $DEFAULT_BRANCH ($MERGE_BASE) so every commit unique to this branch is checked."
+              elif [ "$MERGE_BASE" != "$HEAD_SHA" ]; then
+                # No common ancestor with the default branch (an orphan branch) —
+                # check this branch's ENTIRE history, not just its tip.
+                RANGE="$EMPTY_TREE..$HEAD_SHA"
+                echo "::notice::No common ancestor with $DEFAULT_BRANCH (orphan branch); checking this branch's full history instead of the tip alone."
+              else
+                # HEAD_SHA is already an ancestor of the default branch — nothing new
+                # to check beyond what the default branch's own pushes already cover.
+                echo "::notice::HEAD is already reachable from $DEFAULT_BRANCH; nothing new to verify."
+                RANGE=""
+              fi
+            else
+              # Only reachable when the default branch ref itself cannot be resolved
+              # at all — a genuinely honest tip-only case, not a shortcut taken for
+              # convenience.
+              echo "::notice::No base commit could be established (default branch ref unavailable); checking the tip commit only, not a range."
+              RANGE=""
+            fi
+          fi
+
+          CODE=0
+          if [ -n "$RANGE" ]; then
+            node "$CHECKER" --range "$RANGE" > sigcheck.log 2>&1 || CODE=$?
+          else
+            node "$CHECKER" > sigcheck.log 2>&1 || CODE=$?
+          fi
+
+          # Read the code that belongs to the CHECKER, before anything else runs.
+          cat sigcheck.log
+
+          # ⚠ Exit 1 alone does NOT mean "unsigned commit". A crash inside the
+          # checker (a missing module, a bad git invocation) also exits 1, and
+          # reporting that as an unsigned commit sends the reader after a problem
+          # that is not there. Hit while proving this job red: the checker died on
+          # a missing lib and the job announced an unsigned commit it never found.
+          # So corroborate the code with a SECOND signal that fails differently —
+          # the checker's own verdict line, which a crash cannot produce.
+          if [ "$CODE" -ne 0 ]; then
+            if grep -q 'Commit signature check failed' sigcheck.log; then
+              echo "::error::Unsigned commit(s) found in ${RANGE:-HEAD} (checker exit $CODE)."
+            else
+              echo "::error::The signature checker itself failed in ${RANGE:-HEAD} (exit $CODE) without reaching a verdict — this is NOT a finding about the commits. See the log above."
+            fi
+            exit "$CODE"
+          fi
+          echo "All commits in ${RANGE:-HEAD} carry a good signature."
