@@ -53,9 +53,40 @@ every report indiscriminately, and not as a substitute for the session-level che
 still covers what arrives outside any card (a correction made mid-conversation has no report to
 harvest from at all).
 
+## ⚠ TRIAGE EVERY CANDIDATE BEFORE WRITING ANYTHING — a note is the FALLBACK, not the default
+
+The candidates this tool returns are not "fiches waiting to be written". Extracting them and
+filing them all as notes quietly converts every mechanisable defect into a note that only
+fires for someone already suspecting the problem — which is the person NOT looking it up.
+So ask this of each candidate, in order, and act on the first answer that fits:
+
+1. **Could a mechanism make this impossible to repeat?** A hook, a gate, a test, a guard, a
+   check in the tool that produced the lesson. If yes, **that mechanism is the deliverable**,
+   built in the same pass — and the note, if any, becomes its rationale rather than its
+   substitute. Do not file the note and move on.
+2. **Is it a FACT?** A path, an option name, a measured number, an API's real shape. Nothing
+   to mechanise; a note is exactly right.
+3. **Is it a behaviour that must apply every time?** Then it belongs in whatever your setup
+   auto-loads (a rule, a standing instruction), not in a recall-on-demand note — a note does
+   not trigger.
+4. **Is it already covered?** Say where, and write nothing. Recording the deliberate omission
+   is what stops a later pass from creating a second, drifting copy.
+
+⚠ **When a lesson is mechanisable but you file it as a note anyway** — because the mechanism
+is large, or needs a judgment a guard would get wrong — say so explicitly in the note and name
+what is left unmechanised. The failure this closes is not laziness: it is that a tidy note
+LOOKS like the problem was handled, and nothing anywhere says otherwise.
+
+Category 1 is the one this triage exists for, and it is easy to miss precisely because a
+harvested lesson arrives already phrased as a lesson — the shape of a note, not the shape of a
+defect. Read past the phrasing to what actually went wrong.
+
 ## What this does NOT do
 
 - It does not write a fiche, an index line, or any file in a knowledge base.
+- **It does not perform the triage above for you.** It detects and extracts; deciding whether
+  a candidate earns a mechanism, a rule, a note, or nothing is the session's judgment, and it
+  is the step that decides whether harvesting was worth doing at all.
 - It does not classify a lesson's type (user / feedback / project / reference) or judge whether
   it duplicates an existing fiche — that stays the session's call.
 - It does not run automatically at every report write; the session invokes it deliberately at
