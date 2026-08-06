@@ -317,6 +317,24 @@ describe('memory-index-check-core: reachability', () => {
     expect(report.flagged).toBe(false)
   })
 
+  it('a hub declaring member_count nested under metadata: (the real on-disk shape) is caught, not silently skipped', () => {
+    // Byte-faithful to a real hub frontmatter shape observed in the field:
+    // `member_count` sits two spaces under a `metadata:` key, not at column 0.
+    // A regex anchored to column 0 never matches this shape, so the mismatch
+    // below went undetected on every real hub carrying it.
+    const dir = makeStore()
+    hubWithMembers(
+      dir,
+      'hub-topic',
+      ['member-a', 'member-b'],
+      '---\nmetadata: \n  node_type: memory\n  member_count: 3\n  type: reference\n---\n',
+    )
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](hub-topic.md) — grouped\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.hubCountMismatches).toEqual([{ file: 'hub-topic.md', declared: 3, actual: 2 }])
+    expect(report.flagged).toBe(true)
+  })
+
   it('a hub declaring a mismatched member_count is named with both numbers', () => {
     const dir = makeStore()
     hubWithMembers(dir, 'hub-topic', ['member-a', 'member-b'], '---\nmember_count: 3\n---\n')

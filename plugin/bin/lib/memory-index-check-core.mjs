@@ -46,7 +46,14 @@ const MEMBER_LINE_RE = /^-\s*\[\[([^[\]]+)\]\]/;
 // field: `member_count: <integer>`. A frontmatter key is unambiguous and keeps
 // this check silent for stores that never adopted the convention; prose like
 // "12 members" is too easy to match accidentally in an ordinary note.
-const DECLARED_MEMBER_COUNT_RE = /^member_count:\s*(\d+)\s*$/m;
+//
+// Leading whitespace is deliberately optional: real hub files write this key
+// BOTH at column 0 (directly under the frontmatter block) AND nested two
+// spaces under a `metadata:` key (`  member_count: 11`) — a column-0-only
+// anchor never matched the nested shape, so every hub carrying it went
+// unchecked: the probe ran at every session start and never once fired on a
+// real hub using that shape (measured 2026-08-06).
+const DECLARED_MEMBER_COUNT_RE = /^[ \t]*member_count:\s*(\d+)\s*$/m;
 // A body counts as a hub only when member-shaped lines are a substantial
 // share of its non-blank lines — not merely present. Without this ratio, a
 // long narrative fiche that cross-references its neighbours in running
