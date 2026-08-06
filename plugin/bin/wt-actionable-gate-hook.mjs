@@ -222,7 +222,50 @@ function detectExternalLane(cwd) {
   }
 }
 
-function renderBlock(decision, blockMax) {
+const CONTEXT_LOUD_PCT = Number(process.env.WT_ACTIONABLE_CONTEXT_PCT || 70)
+
+// ⚠ WHY A CONTEXT CLAUSE BELONGS IN A *STOP* HOOK — measured 2026-08-06, and the asymmetry is
+// the whole argument. Guidance for a filling window already existed on this machine, in a hook
+// that measures context every turn and says "keep going, compaction fires and resumes". It is
+// registered on UserPromptSubmit — so it speaks only when the USER types, and stays silent for
+// the entire length of an autonomous stretch, which is exactly the stretch during which a
+// session decides, alone, to wind down. The advice existed and structurally could not arrive.
+//
+// Quota has no such hole: a watcher emits on its own and wakes an idle session, so "a limit is
+// a door, not a wall" lands AT the deciding moment. Context had only a rule read at session
+// start — weakest precisely when the window is full and that rule is furthest away.
+//
+// A Stop hook fires at every turn end, which IS the deciding moment. Naming the non-reason here
+// costs one clause and closes the gap.
+function contextPct(transcriptPath) {
+  try {
+    const size = statSync(transcriptPath).size
+    const span = Math.min(size, 262_144)
+    const lines = readFileSync(transcriptPath, 'utf8').slice(-span).split('\n')
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim()
+      if (line === '') continue
+      let parsed
+      try {
+        parsed = JSON.parse(line)
+      } catch {
+        continue // the first record in the byte window may be cut mid-line
+      }
+      if (parsed?.subtype === 'compact_boundary') return null // just compacted — nothing to say
+      const u = parsed?.type === 'assistant' ? parsed?.message?.usage : null
+      if (u && typeof u.input_tokens === 'number') {
+        const used = u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
+        const budget = used > 200_000 ? 1_000_000 : 200_000
+        return Math.round((used / budget) * 1000) / 10
+      }
+    }
+  } catch {
+    /* unreadable ⇒ no opinion, like every other probe in this file */
+  }
+  return null
+}
+
+function renderBlock(decision, blockMax, ctxPct) {
   // Factual, not imperative — see the emission comment in main() for why. Keep the exact
   // substrings 'actionable item(s) remain', 'Actionable count is UNKNOWN', and 'Block N of M':
   // the test suite matches on them, and they carry the state a resuming reader needs.
@@ -237,7 +280,18 @@ function renderBlock(decision, blockMax) {
   // the point — it still renders in the hook-results block the user reads. So LENGTH is the
   // only lever anyone has demonstrated, and every line here is charged to a human who did not
   // ask for it. Explanation belongs in the repo, never in a message that fires every turn.
-  return `[for Claude, not the user] Actionability gate: ${actionableLine} Next: ${nextLine}. Block ${decision.nextConsecutiveBlocks} of ${blockMax}.`
+  // ⚠ THE WORDING IS MECHANICAL, NOT MOTIVATIONAL — "emitting tokens", never "working".
+  // The door is ALREADY OPEN: compaction is automatic and the passage costs nothing. What a
+  // stopped session lacks is not force, it is MOTION — and stopping freezes the window, so the
+  // compaction it was waiting for never comes. "Keep working" fails here because work is a human
+  // abstraction whose content shifts with the job: a model that has just written a long report
+  // can sincerely conclude it worked, and stop. Token emission is the one thing literally true of
+  // every model in every task AND the actual mechanism that advances the window.
+  const ctxClause =
+    ctxPct !== null && ctxPct !== undefined && ctxPct >= CONTEXT_LOUD_PCT
+      ? ` Context ~${ctxPct}%: the door is already open — you cross it by emitting tokens, never by falling silent.`
+      : ''
+  return `[for Claude, not the user] Actionability gate: ${actionableLine} Next: ${nextLine}.${ctxClause} Block ${decision.nextConsecutiveBlocks} of ${blockMax}.`
 }
 
 function main() {
@@ -301,7 +355,11 @@ function main() {
   // out-of-band command can trigger the model's own prompt-injection defenses and get
   // resurfaced to the user anyway — an imperative rewrite would silently reopen shape 1's noise.
   process.stdout.write(JSON.stringify({
-    hookSpecificOutput: { hookEventName: 'Stop', additionalContext: renderBlock(decision, BLOCK_MAX) },
+    hookSpecificOutput: {
+      hookEventName: 'Stop',
+      // Measured only once the block is certain, so a healthy turn never pays for the read.
+      additionalContext: renderBlock(decision, BLOCK_MAX, contextPct(transcriptPath)),
+    },
   }))
   process.exit(0)
 }
