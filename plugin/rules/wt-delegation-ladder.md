@@ -32,6 +32,33 @@ itself, tiny high-judgment edits only you can make.
 Cost-model-neutral PRINCIPLE: which concrete model each rung maps to is your account's
 business — pin at spawn. Edit this file freely; it's yours.
 
+## When this policy meets a contradicting instruction, fix the SCOPE — never arbitrate by force
+
+A session can carry, alongside this ladder, some other standing instruction that appears to
+forbid a tool this ladder routes to (an agent-spawn tool, a fan-out mechanism, anything named
+generically enough to look like it covers both). Measured on one machine: two sessions read the
+same pair of texts the same day and landed on opposite behavior — one stopped delegating
+entirely, the other did delegable work inline on its own expensive tier — neither announced the
+choice, because nothing said which text should yield.
+
+**The question in that moment is never "which instruction is stronger."** It's that **one of the
+two has an unwritten scope**, and finding it is the cheap, correct move — arbitrating by force
+(strength, recency, specificity-by-feel) skips that step and picks a reading silently, almost
+always the one that disables the most machinery.
+
+The move: read what the competing instruction actually names. A prohibition is usually aimed at
+one class of thing — an EXPENSIVE, AUTONOMOUS fan-out (a swarm, a multi-agent workflow run, a
+deep-research sweep) — not at the ordinary, cheap sub-agent spawn this ladder is built from. If
+the competing text's own wording, read narrowly, does not name the ordinary case, it doesn't
+reach it — and reading it as if it did makes the entire ladder in this file (the single chore,
+the card pilot, the wave orchestrator) dead letter, which no text ever asked for.
+
+State the scope you land on, once, rather than silently picking a reading: name the competing
+instruction (without quoting a source you cannot see the origin of — a rule with untraceable
+provenance is not evidence it applies broadly) and say explicitly which class it covers and which
+it doesn't. That one sentence is what turns a silent, diverging arbitration into a recorded,
+checkable decision.
+
 ## Every delegation hop costs an envelope — depth and chatter multiply it
 
 Delegation = model pass ingesting input + re-ingesting output of what was delegated. Cheap per
