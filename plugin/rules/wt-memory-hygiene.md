@@ -1,154 +1,127 @@
 # Memory hygiene — keep the index light, the bodies rich, and rules pure
 
-If you keep a persistent memory or notes store — an auto-loaded index plus individual fact
-files it points to — these disciplines keep it usable indefinitely instead of degrading into
-either bloat or silent loss.
+Persistent memory store — auto-loaded index + fact files it points to → these disciplines keep it
+usable indefinitely, not bloating or silently losing facts.
 
-- **Keep the index line short — hook only.** Detail (dates, decisions, rationale) lives in the
-  fact's own body, never restated in the index line. The index is what loads automatically every
-  session, so this is the one place to keep lean.
-  ⚠ **One line per fact is the FLAT-index shape, not a universal one.** Once a hub layer exists
-  (see below), a new fact's pointer goes wherever the placement test sends it — a direct line, or a
-  member line inside a hub body. **Apply that test on EVERY write, not only during a
-  reorganisation**: treating the direct line as the default rebuilds the flat index one fact at a
-  time, silently undoing the hub layer while the store still looks organised.
-  ⚠ **Under hubs, the budget is the LINE COUNT, not per-line width.** Width is a fair proxy for
-  total size while the index is flat; it INVERTS under hubs, because richer hooks on far fewer lines
-  make a smaller index, not a bigger one. Measure what the harness actually truncates.
-- **Never shrink a fact's body to save space.** Only the index is auto-loaded, so the body's
-  size is not the cost that matters — a fresh session must be able to stand on the body alone.
-  Shrink the index by archiving stale facts and keeping hooks short, never by gutting bodies.
-- **⚠ The index has a CEILING, and crossing it is SILENT.** An auto-loaded index is truncated
-  past a limit the harness sets, with no error: entries past the cut do not degrade, warn, or
-  visibly truncate — they simply stop existing for every session that loads it. Neither the file
-  nor the session can tell. Measured in one mature store: 217 entry lines, so roughly 17 tail
-  entries had already been invisible for an unknown period, found only because a hook happened to
-  warn on an unrelated write. **This failure has no symptom** — recall quietly gets worse with no
-  event to investigate. Treat approaching the ceiling as a defect, not untidiness, and measure it
-  rather than estimating: a probe that counts entry lines AND checks every fact on disk is still
-  reachable makes it loud. (The exact limit is an observation, not a documented number — state
-  which threshold you applied whenever you report on it.)
-  ⚠ **There are usually TWO independent ceilings, and a healthy reading on one HIDES the other.**
-  One bounds how many ENTRIES survive truncation; another bounds the total SIZE past which the
-  file stops being read in full. They move in OPPOSITE directions once a hub layer exists: hubs
-  cut the entry count while making each surviving hook richer, so a store can sit comfortably
-  under the entry ceiling and close to the size ceiling at the same instant. A probe that
-  measures only one reports "fine" in exactly that state — so measure both, print both, and
-  name which limit each number is being compared against.
-- **Archiving alone cannot hold the ceiling — add an intermediate HUB layer.** Archiving is
-  scoped to closed work, and in a mature store almost nothing qualifies: classified mechanically,
-  one 218-entry store held 92 reference facts, 91 feedback facts, 4 about the user, and **3**
-  archivable project notes. A rule whose only lever reaches 3 entries out of 218 does not scale.
-  The missing lever: group entries into thematic hub notes whose bodies list their members as
-  `- [[slug]] — <hook>`; the index then carries one line per hub plus the entries that must stay
-  directly visible. Recall costs one extra hop for the hub-fronted majority; the index gains
-  headroom without bound. **The hub layer is ADDITIVE** — no fact is moved, edited, or deleted,
-  so nothing becomes unreachable. Keep archiving for closed project work; just stop treating it
-  as the scaling mechanism.
+- **Index line short — hook only.** Detail (dates, decisions, rationale) lives in the fact's
+  body, never restated in the index line — index auto-loads every session, the one place to stay
+  lean.
+  ⚠ **One line per fact = FLAT-index shape, not universal.** Once a hub layer exists (below), a
+  new fact's pointer goes wherever the placement test sends it — direct line, or a member line in
+  a hub body. **Apply the test on EVERY write, not only during reorganisation**: treating
+  direct-line as default rebuilds the flat index one fact at a time, silently undoing the hub
+  layer while the store still looks organised.
+  ⚠ **Under hubs, budget = LINE COUNT, not per-line width.** Width's a fair proxy for total size
+  while flat; INVERTS under hubs — richer hooks on fewer lines = smaller index, not bigger.
+  Measure what the harness actually truncates.
+- **Never shrink a body to save space.** Only the index auto-loads — body size isn't the cost
+  that matters, a fresh session must stand on the body alone. Shrink by archiving stale facts,
+  short hooks — never gutting bodies.
+- **⚠ Index has a CEILING, crossing it is SILENT.** Auto-loaded index truncated past a
+  harness-set limit, no error: entries past the cut don't degrade/warn/visibly truncate — simply
+  stop existing for every session loading it. Neither file nor session tells. Measured in one
+  mature store: **217 entry lines**, roughly **17 tail entries** already invisible for an unknown
+  period — found only because a hook warned on an unrelated write. **Failure has no symptom** —
+  recall quietly worsens, nothing to investigate. Treat ceiling-approach as a defect, not
+  untidiness — measure, don't estimate: a probe counting entries AND checking every disk fact
+  still reachable makes it loud. (Exact limit = observation not documented — state the threshold
+  applied.)
+  ⚠ **Usually TWO independent ceilings — a healthy reading on one HIDES the other.** One bounds
+  ENTRIES surviving truncation; another bounds total SIZE past which the file stops reading in
+  full. Move OPPOSITE directions once a hub layer exists: hubs cut entry count while richening
+  each surviving hook — a store sits under the entry ceiling, close to the size ceiling, at once.
+  A probe measuring only one reports "fine" in that state — measure both, print both, name which
+  limit each number compares against.
+- **Archiving alone can't hold the ceiling — add an intermediate HUB layer.** Archiving scoped to
+  closed work; in a mature store almost nothing qualifies: classified mechanically, one
+  **218-entry** store held **92** reference facts, **91** feedback facts, **4** about the user,
+  **3** archivable project notes. A rule whose only lever reaches 3 of 218 doesn't scale. Missing
+  lever: group entries into thematic hub notes listing members as `- [[slug]] — <hook>`; index
+  carries one line per hub plus entries staying directly visible. Recall costs one extra hop for
+  the hub-fronted majority; index gains headroom without bound. **Hub layer is ADDITIVE** — no
+  fact moved/edited/deleted, nothing unreachable. Keep archiving for closed work; stop treating
+  it as the scaling mechanism.
 - **The promotion test is the whole difficulty — over-compressing loses the ability to NOTICE.**
-  An index reduced to a list of hub names no longer tells a session that a fact EXISTS, which is
-  most of what an index is for. The operative criterion: *would a session need this fact on a turn
-  where it does not yet know the subject is involved?* Facts about the user, standing behavioural
-  instructions, and know-before-you-act cautions earn a direct line; a topic-bound gotcha someone
-  looks up while already on the topic belongs in a hub. ⚠ **The target is headroom, not
-  minimalism** — one implementation over-compressed to hubs only on its first pass and had to be
-  rebalanced. Name the count you are aiming for, and leave room to grow into.
-- **A hub has a size past which it stops routing — split it.** A hub with too many members is a
-  second flat index one hop down: it relocates the ceiling instead of removing it. Tooling that
-  measures this should carry the actual number (a threshold that executes beats one that must be
-  remembered), and the shipped probe here warns past roughly **45 members**; the discipline the
-  number serves is what belongs in this rule. When a hub crosses it, split it along a real
-  distinction between its members — never in half by position, which produces two hubs neither of
-  whose names predicts what is inside.
-- **If a hub declares how many members it has, bump that count in the SAME edit as the member.**
-  A declared count is the only cross-check a store has against ITSELF: reachability answers "does
-  every fact have a path", the declared count answers "does this hub still describe what it
-  actually contains", and they fail differently. The convention is optional — a store that
-  declares no counts is not defective and nothing should report it as such; it also gets no
-  cross-check, and that silence means not measured, never verified — but a count that is declared
-  and stale is worse than none, because it reads as verified.
-- **A RETRACTION declares itself in one shape, or no check can ever find it.** A note kept only so
-  old references still resolve has exactly one job: lead a reader from the old name to the current
-  truth. A retraction whose forward pointer does not resolve fails that job completely, and nothing
-  says so.
-  Measured across two independent stores before writing this: 34 texts carried a retraction word,
-  and only 8 were whole-note retractions. The rest were section-level retractions inside live notes,
-  incidental prose ("closed as superseded"), and index mentions. Two languages, one of them with no
-  English keyword at all; three locations; and targets that were sometimes a file path, sometimes a
-  ticket id, sometimes a mechanism described in prose. **A detector built on any one of those shapes
-  would have covered half the real cases and reported clean** — so the convention has to exist
-  before the check can mean anything.
-  The shape: a blockquote at the top of the retracted note, carrying the keyword, the date, and the
-  target. ⚠ **Distinguish a NOTE retraction from a SECTION retraction** — they are different objects,
-  not two intensities of one, and conflating them makes a check fire on live notes. And accept a
-  target that is a link, a path, OR a plain description: content sometimes moves somewhere that is
-  not a note, and forcing a link would make people write a false one.
-  ⚠ A check can only cover retractions written AFTER the convention is adopted. Pre-existing ones
-  become visible only if someone rewrites them — that is content work, and saying so is what stops
-  a clean run from reading as coverage.
+  An index reduced to hub names no longer tells a session a fact EXISTS — most of what an index
+  is for. Criterion: *would a session need this fact on a turn not yet knowing the subject's
+  involved?* User facts, standing behavioural instructions, know-before-you-act cautions earn a
+  direct line; a topic gotcha looked up while already on-topic → a hub. ⚠ **Target = headroom,
+  not minimalism** — one implementation over-compressed to hubs first pass, needed rebalancing.
+  Name the count aimed for, leave room to grow.
+- **A hub has a size past which it stops routing — split it.** Too many members = a second flat
+  index one hop down: relocates the ceiling, doesn't remove it. Tooling carries the actual number
+  (a threshold executing beats one to remember); shipped probe warns past roughly **45 members**.
+  Crosses it → split along a real distinction between members, never in half by position —
+  predicts nothing.
+- **Hub declares member count → bump it in the SAME edit as the member.** Declared count = the
+  only cross-check a store has against ITSELF: reachability answers "does every fact have a
+  path", declared count answers "does this hub still describe its contents" — fail differently.
+  Optional — a no-counts store isn't defective, gets no cross-check, silence = not measured,
+  never verified — a stale declared count is worse than none: reads verified.
+- **A RETRACTION declares itself in one shape, or no check finds it.** A note kept only so old
+  references resolve has one job: lead reader from old name to current truth. A retraction whose
+  forward pointer doesn't resolve fails that job, nothing says so. Measured across two
+  independent stores before writing this: **34 texts** carried a retraction word, only **8**
+  whole-note. Rest: section-level retractions inside live notes, incidental prose ("closed as
+  superseded"), index mentions. Two languages, one with no English keyword at all; three
+  locations; targets sometimes a file path, a ticket id, a prose mechanism. **A detector built on
+  any one shape covers half the real cases, reports clean** — convention must exist before the
+  check means anything.
+  Shape: blockquote atop the retracted note, carrying keyword, date, target. ⚠ **Distinguish
+  NOTE from SECTION retraction** — different objects, not two intensities of one; conflate →
+  check fires on live notes. Accept a link, a path, OR plain description as target: content
+  sometimes moves somewhere not a note, forcing a link would make a false one.
+  ⚠ Check only covers retractions written AFTER convention adopted. Pre-existing ones visible
+  only if rewritten — content work; saying so stops a clean run reading as coverage.
 
-- **Archive closed items by moving them, never by deleting.** When a tracked piece of work is
-  finished and has no active follow-up, move its note out of the live index into an archive
-  location and drop its pointer — inbound references still resolve there on demand. Move,
-  don't delete: deleting destroys the only record.
-  ⚠ **Drop the pointer from wherever it LIVES**, which under a hub layer is usually not the index:
-  a direct index line, OR a member line inside a hub body. The trap is that a targeted deletion
-  aimed at the index **succeeds while deleting nothing** — the archived note stays listed in its
-  hub, now pointing at a file that has moved. Locate the pointer first, then delete that exact
-  line, then re-run the reachability check below.
+- **Archive closed items by moving, never deleting.** Work finished, no active follow-up → move
+  its note out of the live index into archive, drop pointer — inbound refs still resolve on
+  demand. Move, don't delete: deleting destroys the only record.
+  ⚠ **Drop the pointer from wherever it LIVES**, usually not the index under a hub layer: a
+  direct index line, OR a member line in a hub body. Trap: a targeted index deletion **succeeds
+  while deleting nothing** — archived note stays listed in its hub, pointing at a moved file.
+  Locate the pointer, delete it, re-run the reachability check below.
 - **Writes are concurrency-unsafe by default — treat the store as shared.** Re-read the target
-  file immediately before editing it, and apply a line-level or file-level delta rather than
-  overwriting from a stale in-context copy, whenever more than one session could touch the same
-  store.
-- **Route a behavior-changing correction to a RULE, in the same pass as recording it.** A fact
-  parked only in a note body may never be reloaded, because only the index line is auto-loaded
-  and the body is recall-on-demand — a correction that should change behavior every session
-  belongs in whatever mechanism your setup auto-loads (a rule, a standing instruction), written
-  at the same time the fact is recorded, not left for a later pass to maybe promote. Facts,
-  gotchas, and references are fine to leave recall-on-demand; a procedure with a crisp, reliable
-  trigger is a candidate for a skill or macro instead — description-matching activation is
-  probabilistic and unfit for a correction that must always apply.
-- **A rule is a pure directive.** State the operative principle and the invariant that makes it
-  right — no experiential narrative, no incident stories, no dated change banners. Rationale and
-  field cases belong in a note, referenced by a short pointer; when a rule's guidance changes,
-  rewrite the rule in place rather than stacking a chronicle on top of it.
-- **An UNREACHABLE fact does not exist.** Periodically verify the pairing mechanically, in both
-  directions: every fact file on disk is REACHABLE from the index, and every reference the index
-  and its hubs contain resolves to a file that exists. A deliberate de-indexing — a retraction kept
-  only so old references still resolve — is fine and should read as intentional; anything else is
-  an orphan to place, merge, or archive.
+  file before editing, apply a line/file-level delta rather than overwrite a stale copy, whenever
+  >1 session could touch the store.
+- **Route a behavior-changing correction to a RULE, same pass as recording it.** A fact parked
+  only in a note body may never reload — only the index line auto-loads, body's recall-on-demand.
+  A correction changing behavior every session belongs in whatever the setup auto-loads (rule,
+  standing instruction), written when recorded, not left for a later maybe-promote.
+  Facts/gotchas/references: fine recall-on-demand; a crisp-trigger procedure = a skill/macro
+  candidate instead — description-matching is probabilistic, unfit for an always-apply
+  correction.
+- **A rule is a pure directive.** State the operative principle and invariant making it right —
+  no narrative, incident stories, dated banners. Rationale/field cases → a note, short pointer;
+  guidance changes → rewrite the rule in place, don't stack a chronicle.
+- **An UNREACHABLE fact doesn't exist.** Periodically verify pairing mechanically, both
+  directions: every disk fact file REACHABLE from the index; every index/hub reference resolves
+  to an existing file. A deliberate de-indexing — a retraction kept only so old references
+  resolve — fine, reads intentional; else an orphan to place, merge, or archive.
   ⚠ **Reachable, not "has an index line".** Once a hub layer exists, most facts deliberately have
-  no index line of their own — a check written as one-line-per-file then reports the CORRECT state
-  as broken, and a reader who trusts it "repairs" the store by restoring exactly the flat index the
-  hub layer existed to escape. Follow the hop: a fact is reachable if the index names it, or if a
-  note the index names lists it.
-  ⚠ **The count is not the check.** A shrinking index is only good news if nothing fell out of it,
-  and losing a fact produces precisely the number you were aiming for. Assert the two emptiness
-  conditions — nothing unreachable, nothing dangling — never the total alone.
-- **One lesson, one operative home — and record the deliberate omissions.** When several facts
-  could describe the same lesson, keep exactly one as the operative copy and have the others
-  point at it. When you decide not to add a fact because the lesson is already covered
-  elsewhere, say so and where — otherwise a later pass rediscovers the lesson with no obvious
-  home and creates a second copy that quietly drifts from the first.
-- **Promoting a note into an auto-loaded rule has two constraints.** First, a rule meant to
-  apply broadly must stay free of narrow specifics (paths, names, one-off tokens) that only make
-  sense in a single project or setup — those stay local, in a project-scoped file the broad rule
-  can point to. Second, an auto-loaded rule only fires where it's actually loaded — after
-  promoting, make sure it reaches every scope it's meant to cover instead of assuming one copy
-  covers all of them. If your setup keeps more than one configuration directory (for example,
-  separate personal and work profiles), a rule written into one does not propagate to the
-  others by itself — copy or link it into every directory it should govern, and treat "the rule
-  is written" and "the rule is in force everywhere it should be" as two separate facts to
-  verify, not one. A corrected rule also does not refresh a context that is already running — but
-  it is reloaded whenever that context is REBUILT, which happens at a restart **and** at a
-  compaction. So a session that wrote the change cannot verify it is obeying it until one of the
-  two occurs; "it needs a fresh session" is too strong. ⚠ Scope this claim carefully: it covers
-  rule and instruction TEXT. Whether the list of available agent definitions refreshes on the same
-  event is a separate question — treat that one as session-start-only until measured, because a
-  newly-written agent type has been observed unspawnable in the session that created it. If
-  something must take effect immediately, state it explicitly in the current conversation instead
-  of relying on the file edit alone. Leave the source note in place afterward
-  as rationale, pointing at the rule as the operative version.
+  no index line of their own — a one-line-per-file check reports the CORRECT state as broken, a
+  trusting reader "repairs" the store by restoring exactly the flat index the hub layer existed
+  to escape. Follow the hop: reachable if the index names it, or a note it names lists it.
+  ⚠ **The count isn't the check.** A shrinking index is only good news if nothing fell out —
+  losing a fact produces precisely the number aimed for. Assert both emptiness conditions —
+  nothing unreachable, nothing dangling — never the total.
+- **One lesson, one operative home — record deliberate omissions.** Several facts describe one
+  lesson → keep exactly one operative, others point at it. Not adding a fact because covered
+  elsewhere → say so, and where — else a later pass rediscovers it with no home, creates a
+  drifting second copy.
+- **Promoting a note into an auto-loaded rule has two constraints.** First: a broad rule stays
+  free of narrow specifics (paths, names, tokens) making sense only in one project/setup — those
+  stay local, in a project-scoped file the broad rule points to. Second: an auto-loaded rule
+  fires only where loaded — after promoting, confirm it reaches every scope meant, don't assume
+  one copy covers all. >1 config dir (personal/work) → a rule written into one doesn't propagate
+  to others by itself — copy/link into every directory it should govern; "written" and "in force
+  everywhere" are two separate facts to verify. A corrected rule doesn't refresh an
+  already-running context — but IS reloaded whenever REBUILT: a restart **and** a compaction. A
+  session that wrote the change can't verify obeying it until one occurs; "needs a fresh session"
+  too strong. ⚠ Scope carefully: covers rule/instruction TEXT. Whether the agent-definition list
+  refreshes on the same event is separate — treat session-start-only until measured, since a
+  newly-written agent type's been observed unspawnable in the session that created it. Must take
+  effect immediately → state so in conversation, don't rely on the file edit alone. Leave the
+  source note as rationale, pointing at the rule as operative.
 
-This keeps the index small and the store honest regardless of how often a dedicated
-consolidation pass runs.
+Keeps the index small, the store honest, regardless of pass frequency.

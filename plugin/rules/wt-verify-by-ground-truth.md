@@ -1,170 +1,151 @@
 # Verify by ground truth, not plausibility
 
-Plausibility judgment degrades under pressure and across model tiers; ground truth does not.
-Replace "this looks right" with a mechanical check on the signal that actually decides the claim:
+Plausibility break under pressure. Ground truth not break. Check signal that decide claim.
 
-- Gates by EXIT CODE, not visible output. Redirect the command to a file, echo `$?`, then read
-  the file — never pipe a gate (a pipe's own exit 0 masks the failure, and `PIPESTATUS` is
-  shell-specific and easy to misread).
-  ⚠ **The code you read must belong to the GATE, never to something that ran AFTER it.**
-  Redirect-then-`$?` is necessary but not sufficient: any command placed between the gate and
-  the read replaces the value, and a wrapping script's final `echo` succeeds even when the
-  gate it wraps failed — the last command in a chain is almost always the one whose code
-  survives to be read, and it is rarely the one that matters. A real case: a batch reported
-  `exit 0` for a gate run where `typecheck` had actually failed with `exit 2`, because the
-  number read back was a wrapper's trailing `echo`, not the gate's. **Corroborate with a
-  second signal that would fail differently** — the tool's own summary line, a failure count,
-  a grep for its error marker in the captured log — read BESIDE the code, not instead of it.
-  A misread code does not spoil one result: it retroactively voids every "gates green" claim
-  built on the same capture path. Where available, prefer a runner that makes this
-  structurally impossible rather than merely disciplined (no shell, no chaining, the code
-  written to its own file the instant the gate returns) over a hand-typed redirect-and-echo.
-- UI claims by RENDERED PIXELS, not API payloads — a field can be in the JSON and dropped before
-  the DOM. Drive the real browser.
-- Claims about code by READING THE SOURCE at the actual revision, not from memory. To read a
-  file at a past revision use `git show <rev>:<file>` (read-only) — never
-  `git checkout <rev> -- <file>`, which silently overwrites the working copy.
-- When you are about to EXCLUDE work, NARROW scope, skip a step, or exempt a mechanism *because a
-  component behaves a certain way*, cite the file that decides that premise in the same sentence,
-  or write `unverified` and check before acting. This applies especially to your OWN prior notes:
-  a note you wrote is a declaration, not a verified fact, and it does not exempt the claim from
-  grounding.
-- CI conclusions by the JOB that decides the behavior you are claiming, not by the RUN's aggregate
-  status. A run can mix jobs from different operating systems or environments, and the top-level
-  conclusion can therefore read as the inverse of the job that actually proves or refutes your
-  claim. Descend to the job list and read the deciding job directly.
-- Suspicious UI state: triage the DATA SOURCE before claiming a bug — server payload vs client
-  state vs a sibling component with its own fetch. One API read often reveals the "bug" is
-  another component's unrelated data.
-- State every verdict at the REACH its evidence has. Before "X doesn't exist anywhere", enumerate
-  the possible producers and check the consumer — if something displays X, X exists. Before
-  "X is blocked by Y", verify Y's reach. Scope is spatial, temporal, and semantic.
-- **A search proves absence only within the set it was given; an ID LOOKUP proves presence
-  anywhere.** Whenever an identifier is available — from a code comment, a commit body, a report,
-  an error message — resolve it directly instead of searching for it. A lookup ignores whatever
-  partition a search is confined to, so it settles in one call what a search can only bound.
-  ⚠ Two consequences that are easy to state backwards. First, when you COMMISSION a search, the
-  brief chooses the set: a probe told to look in the wrong place is perfectly diligent and
-  perfectly wrong, and no thoroughness inside that set can reach outside it — so ask what would
-  have to be true for the answer to lie outside the set you just named. Second, requiring a probe
-  to state its reach does not protect the person who commissioned it; it protects the next reader,
-  who is the one able to notice that the stated reach and some other evidence cannot both be true.
-  And a keyword search adds its own floor: a target described in different words than the query is
-  invisible to it, whatever set it covers.
-- A guard/probe's literal pass-signal is not the invariant it exists to prove: check the property
-  in PER-UNIT terms, not the aggregate the mechanism emitted.
-- **A probe result RELAYED to anyone carries the set it scanned and its self-exclusion, or it is
-  not relayed.** The dangerous moment is not the measurement, it is the hand-off: a number stripped
-  of its provenance stops being a reading and becomes a fact, and the next reader has no way to
-  recover what it actually covered. So an outbound claim derived from a measurement states what was
-  claimed, the exact set scanned, the instrument, and how the instrument excluded itself — a probe
-  that counts its own process is the ordinary case, not an exotic one. Repeating the same hollow
-  measurement is not corroboration: two readings from one instrument agree by construction.
-  And when a relayed claim later turns out to rest on a hollow probe, the correction goes back to
-  **the same recipients**, never absorbed into a report nobody re-reads — an uncorrected claim keeps
-  working long after the probe that produced it has been discredited.
-- A delegate's green report, and a plausible result from a routed/bridged executor, are input —
-  not proof of the work nor of WHERE it ran. Re-run the gates yourself; verify provenance from
-  execution traces.
-- ANY surprise — good, bad, or novel — is an anomaly to EXPLAIN before you label it; the
-  favorable surprise is the one that silently skips verification. This includes the FIRST
-  occurrence of a class you have never observed before (a message from an unexpected source, an
-  unknown channel, a file or behavior with no known producer) — even mid-flow, off-task,
-  harmless-looking. The skip-tell: you are BUSY with something else and the event is peripheral.
+**Gate = EXIT CODE. Not printed text.** Redirect command to file. Write `$?` to same file right
+after. Read file back.
 
-When a symptom disappears right after you changed something, report that sequence as correlation
-until you have checked what else could have moved in the same window. Name the other candidate
-variables and what you found when you looked. Cheap decisive checks include listing candidate state
-by modification time, diffing the things you believe differ, and re-running the OLD approach once:
-if the previous method now works too, your change was not the cause.
+Never pipe gate. Pipe exit status belong to LAST element. Failing gate piped anywhere report
+success.
 
-Environment facts count as candidate variables. If a green result depends on ambient state such as
-`PATH`, a config directory, a pre-existing file, or an installed binary, name that dependency and
-ask whether you created it earlier for some other reason. When several jobs of one CI run disagree,
-compare those environments side by side before reading any one of them deeply.
+⚠ Code you read must belong to GATE. Not to thing that ran AFTER. Any command between gate and
+read replace value. Wrapper script final `echo` succeed even when gate it wrap failed. Last
+command in chain almost always the one whose code survive. Rarely the one that matter.
+Real case: batch report `exit 0`. Typecheck had failed `exit 2`. Number read back was wrapper
+trailing `echo`, not gate.
+**Corroborate with SECOND signal that fail differently** — tool own summary line, failure count,
+error marker in log. Read BESIDE code. Not instead of code.
+One instrument agree with itself = not corroboration.
+Misread code not spoil one result. It retroactively VOID every "gates green" claim built on same
+capture path.
 
-Anything you ship carries an explicit CROSS-PLATFORM verdict. Name the system dependencies the
-behavior rests on and say, per dependency, whether a platform mismatch throws, degrades to a named
-`unknown`, or silently returns a plausible value. The third case is the dangerous one: a monitor
-that reports a reassuring number on a platform where it cannot actually measure is worse than no
-monitor, because the broken state looks healthy. Linux-only is a legitimate conclusion; leaving the
-reader to assume portability is not.
+**UI claim = RENDERED PIXELS.** Not API payload. Field can sit in JSON and be dropped before DOM.
+Drive real browser.
 
-After claiming a mechanism, grep for the code that would have to exist for that claim to be false,
-then report what you found. This is the fastest guard against an explanation built from a quote that
-actually says the opposite of the conclusion drawn from it.
+**Code claim = SOURCE at actual revision.** Not memory. Read past revision with
+`git show <rev>:<file>`. Read-only. Never `git checkout <rev> -- <file>` — it overwrite working
+copy, uncommitted work gone.
 
-For a high-impact or high-risk change (a guard, a safety mechanism, anything touching money,
-security, data loss, availability, or a published surface), state your verdict on all three:
-was the failure it prevents actually exercised (not just a happy-path test written from the
-same understanding as the code); did it run under real conditions/volume or only fixtures; and
-what can go wrong in the mechanism itself, not just the problem it addresses. Shipping with a
-"no" is legitimate — leaving the reader to assume it was asked is not, so say explicitly which
-of the three you can answer and which you cannot, at the same prominence as the result. A check
-deferred to a later step ("the integrating review will cover it") is not done until that later
-step's own record names it — read the executing system's own trace before crediting it, never a
-summary's silence.
+**Excluding work, narrowing scope, skipping step, exempting mechanism because component behave
+some way?** Cite file that decide premise, same sentence. Else write `unverified`, then check.
+Your OWN note = declaration, not verified fact. Note not exempt claim from grounding.
 
-Evidence must OUTLIVE the process that produced it: a check run at execution time and not
-archived is not re-verifiable — the proof dies with the process, and every later reader is left
-with the claim alone. Archive the input beside the output — the file itself, or its hash, plus
-the exact command — so a later reader can tell VERIFIED apart from ASSERTED BY WHOEVER RAN IT.
-Corroboration can make a claim likely; likely-by-corroboration is still not verified, and a
-report must say which one it is.
+**CI claim = the JOB that exercise behaviour.** Not RUN aggregate status. Run mix jobs from
+different OS. Top-level conclusion can read as INVERSE of deciding job. Descend to job list.
 
-A guard whose model of the system it protects is wrong does not degrade gracefully — it
-INVERTS, granting confidence exactly when the thing it guards is about to break. That is why
-question three checks the mechanism's own failure modes, not only the hazard it addresses.
+**Suspicious UI state?** Triage DATA SOURCE first. Server payload vs client state vs sibling
+component with own fetch. One API read often show "bug" is other component unrelated data.
 
-When a check outgrows a single mechanical read — evidence across several sources, leads to chase,
-a surprise needing a root cause — escalate to the `deep-grounding` skill (the recursive
-collect-verify pass that tags conclusions by evidence tier) rather than chaining ad-hoc reads.
+**State verdict at REACH its evidence has.** Before "X exist nowhere": enumerate producers, check
+consumer. If something display X, X exist. Scope is spatial, temporal, semantic.
 
-## Before measuring a fix, prove the subject is RUNNING that fix
+**Search prove absence only inside set it was given. ID LOOKUP prove presence anywhere.**
+Identifier available? Resolve it. Do not search for it.
+⚠ When you COMMISSION search, brief choose the set. Probe told to look wrong place is perfectly
+diligent and perfectly wrong. No thoroughness inside that set reach outside it.
+⚠ Requiring probe to state reach not protect commissioner. It protect NEXT reader — the one who
+can notice stated reach and other evidence cannot both be true.
+⚠ Keyword search own floor: target described in different words than query is invisible to it.
 
-A fix is worth nothing until it has been observed working, and an observation is worth nothing
-if the observed process is running a different copy of the code. A separate process — another
-session, a daemon, a delegated agent, a packaged artifact — resolves its own copy: an installed
-cache, a published version, a bundled build. Editing a working tree changes none of them.
+**Guard pass-signal ≠ the invariant it prove.** Check property PER UNIT. Not aggregate mechanism
+emitted.
 
-Two questions, in this order, and they compose:
+**Probe result RELAYED carry set it scanned and its self-exclusion. Else not relayed.**
+Danger moment is hand-off, not measurement. Number stripped of provenance stop being reading,
+become fact. Next reader cannot recover what it covered.
+Probe that count its own process = ordinary case, not exotic.
+Same hollow measurement twice = not corroboration. Two readings, one instrument, agree by
+construction.
+Relayed claim later shown hollow → correction go back to SAME recipients. Not absorbed into
+report nobody re-read.
 
-1. **WHICH FILE does the process load?** Read it off the running process itself — its command
-   line, its resolved module path, its open file handles. A path observed on the process is
-   strong evidence, and a version number INSIDE that path is part of it.
-2. **WHICH VERSION of that file's content?** Grep it for a sentence that exists only in the fix.
+**Delegate green report = input. Not proof of work. Not proof of WHERE it ran.** Re-run gates
+yourself. Verify provenance from execution traces.
 
-⚠ What lies is a DECLARED version — a manifest entry, a `--version` flag, a package field. It
-can be perfectly accurate while the file actually loaded comes from somewhere else entirely.
-That is a different thing from a path read off the process, and conflating the two makes a
-reader discard valid evidence. A local commit proves the edit, never the load.
+**ANY surprise — good, bad, novel — is anomaly to EXPLAIN before you label it.** Favorable
+surprise is the one that silently skip verification. Include FIRST occurrence of class never
+observed before. Even mid-flow, off-task, harmless-looking. Skip-tell: you are BUSY and event is
+peripheral.
 
-If the fix's sentence is absent from the loaded file, the measurement answers a question about
-the old code and must be discarded in BOTH directions — a clean result there is not evidence of
-success, it is evidence of nothing. The tell that this was skipped: a result matching the
-hoped-for outcome, obtained from a process nobody checked the provenance of.
+**Symptom vanish right after your change = CORRELATION.** Name other variables that could move in
+same window. Say what you found when you looked.
+Cheapest decisive check: re-run OLD approach once. Old approach work now too → your change was
+never the cause.
+Environment count as variable. Green result depend on `PATH`, config dir, pre-existing file,
+installed binary? Name that dependency. Ask if YOU created it earlier for other reason.
 
-## A control must be readable in BOTH outcomes, not only in failure
+**Ship anything → explicit CROSS-PLATFORM verdict.** Name system dependencies. Per dependency say:
+throw, degrade to named `unknown`, or silently return plausible value.
+Third case is the dangerous one. Monitor reporting reassuring number on platform where it cannot
+measure is WORSE than no monitor — broken state look healthy.
+Linux-only is legitimate conclusion. Letting reader assume portability is not.
 
-Design the check so it produces a reading whether the fix worked or not. The trap is specific
-and easy to walk into when the fix's whole purpose is to make something STOP happening: the
-natural control reads an artifact that the fix removes. It then executes only when the fix
-failed, and success becomes indistinguishable from "the check could not run".
+**After claiming mechanism, grep for code that must exist for claim to be FALSE.** Report what you
+found. Fastest guard against explanation built from quote that say opposite of conclusion drawn
+from it.
 
-Before trusting a control, ask what it reads in the SUCCESS case. If the answer is "nothing —
-the thing it reads no longer exists", it is not a control; find a source that exists either
-way, ideally one the fix does not touch at all. Same family as a probe that fails precisely
-under the condition it exists to report.
+**High impact or high risk — guard, safety mechanism, money, security, data loss, availability,
+published surface — answer all three:**
+1. Was the failure it prevent actually exercised? Not happy-path test written from same
+   understanding as the code.
+2. Did it run under real conditions and volume, or only fixtures? Name which.
+3. What can go wrong in the MECHANISM itself? Not the problem it address.
+Shipping with a "no" is legitimate. Letting reader assume the questions were asked is not.
+Say which of the three you can answer and which you cannot, SAME prominence as result.
+Check deferred to later step is NOT done until that step own record name it. Read executing
+system trace. Never a summary silence.
 
-## A summary that asserts a guarantee is verified against its body, in the same pass
+**Evidence must OUTLIVE the process that produced it.** Check run at execution time and not
+archived is not re-verifiable. Proof die with process. Later reader left with claim alone.
+Archive input beside output — the file, or its hash, plus exact command. Later reader can then
+separate VERIFIED from ASSERTED-BY-WHOEVER-RAN-IT.
+Corroboration make claim likely. Likely-by-corroboration is still NOT verified. Report must say
+which one it is.
 
-Whenever a docstring, header, or comment claims a PROPERTY — "this path is literal", "this
-cursor derives from acknowledgements", "this returns everything after X" — read the body under
-it before moving on. Not later, not as a review step: in the same pass, because the claim and
-the code diverge at the moment the code changes and the claim does not.
+**Guard with wrong model of system it protect does not degrade. It INVERTS.** It grant confidence
+exactly when guarded thing is about to break. That is why question 3 check the mechanism, not the
+hazard.
 
-The failure is not carelessness, and treating it as such is why it repeats: when you rewrite a
-body and then adjust its summary, you describe **what you intended**, not what you wrote. And
-that summary is precisely what the next reader trusts when checking quickly — so it misleads
-exactly when it matters. This is a GESTURE, not an intuition: it needs no suspicion and no
-knowledge of the code's history. The tell that it is needed is that the sentence is reassuring.
+**One mechanical read not enough — evidence across sources, leads to chase, surprise needing root
+cause?** Escalate to `deep-grounding` skill. Do not chain ad-hoc reads.
+
+## Before measuring fix, prove subject RUN that fix
+
+Separate process resolve its OWN copy: installed cache, published version, bundled build. Editing
+working tree change none of them.
+
+1. **WHICH FILE does process load?** Read off running process — command line, resolved module
+   path, open file handles. Path observed on process is strong evidence. Version number INSIDE
+   that path is part of it.
+2. **WHICH VERSION of that file content?** Grep for sentence that exist only in the fix.
+
+⚠ What lie is a DECLARED version — manifest entry, `--version`, package field. Can be perfectly
+accurate while file actually loaded come from elsewhere. Path read off process is a DIFFERENT
+thing. Conflating the two make reader discard valid evidence. Local commit prove the edit, never
+the load.
+
+Fix sentence absent from loaded file → measurement answer question about OLD code. Discard it in
+BOTH directions. Clean result there is not evidence of success. It is evidence of NOTHING.
+
+## Control must be readable in BOTH outcomes, not only in failure
+
+Trap appear when fix purpose is to make something STOP happening. Natural control read artifact
+the fix REMOVE. It then execute only when fix FAILED. Success become indistinguishable from
+"check could not run".
+
+Before trusting control, ask what it read in SUCCESS case. Answer "nothing — thing it read no
+longer exist"? Not a control. Find source that exist either way.
+
+## Summary asserting a guarantee is verified against its body, SAME pass
+
+Docstring, header, comment claim a PROPERTY — "this path is literal", "cursor derive from
+acknowledgements", "return everything after X"? Read the body under it before moving on. Not
+later. Not as review step. Same pass — claim and code diverge at the moment code change and claim
+does not.
+
+Failure is not carelessness. Treating it as carelessness is why it repeat. Rewrite body, then
+adjust summary → you describe what you INTENDED, not what you WROTE. That summary is exactly what
+next reader trust when checking quickly. So it mislead exactly when it matter.
+
+This is a GESTURE. No suspicion needed. No knowledge of code history needed. Tell that it is
+needed: the sentence is reassuring.

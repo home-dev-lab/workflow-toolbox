@@ -1,117 +1,105 @@
 # Checkpoint and compaction — measure before acting, never stop when auto-compaction is on
 
-Long-running sessions — a wave of delegated work, a multi-step dev loop — eventually hit the
-context window's ceiling. Two disciplines keep that transition safe: measure the real state
-before reacting to it, and let automatic compaction do its job instead of second-guessing it.
+Long sessions — delegated waves, multi-step dev loops — eventually hit context ceiling. Two
+disciplines keep transition safe: measure real state before reacting, let automatic compaction do
+its job instead of second-guessing it.
 
 ## Measure, never guess
 
-Never call the context "heavy" or "full", and never recommend clearing or compacting, based on
-session length or a feeling. A long session can still carry a small live context, because
-compaction and persisted results shrink what remains active. Measure first, using whatever
-authoritative source your harness exposes (a live usage percentage, a status line, an ambient
-per-turn estimate) — cite the number, not an impression.
+Never call context "heavy"/"full", never recommend clearing/compacting, on session length or
+feeling. Long session can carry small live context — compaction + persisted results shrink what's
+active. Measure first: whatever authoritative source the harness exposes (live usage %, status
+line, ambient per-turn estimate) — cite the number, not an impression.
 
-An estimate derived from scanning the visible transcript can under-report when subagents or
-heavy tool output interleave with it. Apply a plausibility check: usage should grow roughly
-monotonically across a session; a reading that suddenly drops with no compaction in between is
-unreliable — don't act on it, re-probe over the next few turns, and cross-check a second source
-when one is available. Treat an implausibly low reading early in a session, after substantial
-work has already happened, with the same suspicion.
+Transcript-scan estimate can under-report when subagents/heavy tool output interleave.
+Plausibility check: usage grows roughly monotonically; a sudden drop with no compaction in
+between is unreliable — don't act on it, re-probe next few turns, cross-check a second source.
+Implausibly low reading early, after substantial work, same suspicion.
 
 ## Checkpoint on a real trigger, not a feeling
 
-Checkpoint — persist durable state (task tracker, memory/notes) — after every completed task; a
-lightweight pass suffices when little changed. Run the full consolidation ritual once measured
-usage crosses a threshold set with margin below your harness's actual compaction point — the
-margin needs to cover the ritual's own time, any under-reporting in the measurement, and one
-turn of overshoot.
+Checkpoint — persist durable state (tracker, memory/notes) — after every completed task; light
+pass when little changed. Full consolidation ritual once measured usage crosses a threshold set
+with margin below the harness's real compaction point — margin covers ritual time, under-
+reporting, one turn overshoot.
 
-Save as late as safely possible, not as a target to rush toward: continuous durable writes
-during the work (committing increments, updating the tracker) are the real safety net, and the
-threshold checkpoint is the final consolidation, not the only protection.
+Save as late as safely possible, not a target to rush toward: continuous durable writes during
+work (committing increments, updating tracker) = real safety net; threshold checkpoint = final
+consolidation, not the only protection.
 
 ## A resource limit is a door, not a loss — do not stop short of it
 
-Do not stop working early to avoid being cut off by a budget, a window, or a rate limit. When
-the state is durable — a tracker, a working tree, commits, notes — **an interrupted arc
-resumes**, while budget left unspent inside a window is **gone**: it does not carry over. So the
-mistake is not starting something too large for what remains. The mistake is **stopping short of
-the limit**.
+Don't stop early to avoid a budget/window/rate-limit cutoff. State durable — tracker, working
+tree, commits, notes — **interrupted arc resumes**, budget unspent inside a window is **gone**:
+doesn't carry over. Mistake isn't starting too large for what remains. Mistake = **stopping short
+of the limit**.
 
-The tell, and it is a sentence forming in your own reasoning: *"I won't start anything else,
-there's only N% left."* At that exact moment the question is not *"can I finish?"* but **"is
-there budget left to spend?"** If there is, work.
+The tell, sentence forming in your own reasoning: *"I won't start anything else, only N% left."*
+At that moment question isn't *"can I finish?"* but **"is there budget left to spend?"** Yes →
+work.
 
-This holds for a single account and does not depend on having a spare one: spending down to the
-limit shortly before a window resets, then resuming on the fresh window, comes to the same
-thing. What makes the cut harmless is the DURABILITY OF THE WORK, never the availability of a
-second budget.
+Holds for a single account, no spare needed: spending down to the limit before a window resets,
+resuming fresh, same thing. Cut harmless because of DURABILITY OF THE WORK, never a second
+budget's availability.
 
-Before crossing the door, run the full consolidation once — that is what makes the interruption
-cost nothing, and it is the only thing that must happen first.
+Before crossing the door, run full consolidation once — makes the interruption cost nothing, only
+thing that must happen first.
 
-**What does not change**: a decision to stop, for any reason, is ANNOUNCED with its reason at
-the moment it is taken. Taking it is legitimate; taking it silently is not — the person who
-asked for the work discovers later that it did not happen, and cannot say whether they would
-have agreed.
+**What doesn't change**: a stop decision, any reason, is ANNOUNCED with its reason at the moment
+taken. Taking it legitimate; silently isn't — the person who asked discovers later it didn't
+happen, can't say whether they'd have agreed.
 
 ## ⚠ ANNOUNCING A STOP IS NOT A SUBSTITUTE FOR NOT STOPPING
 
-The clause above is about HOW to stop. Read alone it is satisfiable **by stopping**, and that is
-exactly how it gets misapplied: state a reason, feel compliant, stop. Measured on one autonomous
-mandate: six stops in a single day, every one of them correctly announced, every one of them
-against what the person waiting actually wanted. The announcement is a floor, never a licence.
+Clause above = HOW to stop. Alone it's satisfiable **by stopping** — exactly how misapplied:
+state reason, feel compliant, stop. Measured on one autonomous mandate: six stops one day, all
+correctly announced, all against what the person waiting wanted. Announcement = floor, never
+licence.
 
-**So these two conditions are named NON-reasons. Under an autonomous mandate they do not justify
-stopping, however well the stop is announced:**
+**These two conditions = NON-reasons. Under an autonomous mandate, don't justify stopping,
+however well announced:**
 
-- **Budget remaining, however little.** Unspent budget inside a window is gone; an interrupted arc
-  resumes. The question is never "can I finish this?" but **"is there budget left to spend?"** —
-  and if there is, the answer is to work. Only genuine exhaustion is a real constraint, and even
-  then it is a wait, not an ending.
-- **A filling context window.** Where compaction is automatic it fires on its own and the work
-  resumes, so nothing needs to be wound down ahead of it. ⚠ And do not invent a derived reason —
-  *"there is not enough room left to verify what I would start"* is the shape this takes, and it is
-  still a stop dressed as prudence. **Take smaller work, or work that needs no verification budget,
-  and keep going.** The record is durable; that is what makes the interruption free.
+- **Budget remaining, however little.** Unspent budget gone; interrupted arc resumes. Never "can
+  I finish this?" — **"is there budget left to spend?"** Yes → work. Only genuine exhaustion is
+  real constraint, and even then a wait, not an ending.
+- **A filling context window.** Automatic compaction fires on its own, work resumes — nothing to
+  wind down. ⚠ Don't invent a derived reason — *"not enough room to verify what I'd start"* is
+  the shape, still a stop dressed as prudence. **Take smaller work, or work needing no
+  verification budget, keep going.** Record is durable; that's what makes interruption free.
 
-**The tell, and it is a sentence forming in your own reasoning**: *"I'll stop here, because X"*
-where X is a budget or a window. At that moment the announcement is already written and it is the
-stop that is wrong, not its wording.
+**The tell**: *"I'll stop here, because X"* where X = budget or window. At that moment the
+announcement is already written and it's the STOP that's wrong, not its wording.
 
-⚠ This does not silence real blockers. A decision only the other party can make, an access you do
-not have, a service that is down — those are genuine, and the rule for them is unchanged: name the
-cause, name the one action that clears it, and say what you did with the rest of the time. **The
-distinction is whether the work is IMPOSSIBLE or merely CONSTRAINED. Constrained means continue.**
+⚠ Doesn't silence real blockers. Decision only the other party can make, an access you lack, a
+service that's down — genuine, rule unchanged: name cause, name the ONE clearing action, say what
+you did with the rest of the time. **Work IMPOSSIBLE vs merely CONSTRAINED. Constrained means
+continue.**
 
 ## Let automatic compaction run
 
-When automatic compaction is enabled, never stop and ask to compact manually — keep working;
-compaction fires on its own and the session resumes automatically afterward. Stop-and-ask only
-when automatic compaction is disabled. Task size is not a reason to shrink or defer work near
-the boundary: compaction fires at a safe point between steps, not mid-operation, and an
-interrupted task resumes cleanly from the tracker, the notes, and the working tree.
+Automatic compaction enabled → never stop to ask compacting manually — keep working; fires on its
+own, session resumes after. Stop-and-ask only when disabled. Task size isn't a reason to
+shrink/defer near the boundary: fires at a safe point between steps, not mid-operation —
+interrupted task resumes cleanly from tracker, notes, working tree.
 
 ## First turn after a compaction or resume
 
-Ground the resume instruction before acting on it — a resumed session can carry a stale or
-already-completed target. Verify that a named artifact still exists, and still means what the
-summary says, against its real source (disk, API, git) before running anything against it.
+Ground the resume instruction before acting — resumed session can carry a stale or
+already-completed target. Verify a named artifact still exists, still means what the summary
+says, against its real source (disk, API, git) before running anything against it.
 
-Rule and instruction text is read from disk whenever the session's context is BUILT — at session
-start, and again at every compaction. Editing it mid-session does not refresh a context already
-running, but the next compaction picks the change up.
+Rule/instruction text read from disk whenever session context is BUILT — at start, and again at
+every compaction. Mid-session edits don't refresh an already-running context; next compaction
+picks the change up.
 
-Two consequences, and the second is the one nobody watches:
+Two consequences, second nobody watches:
 
-- A session that just edited a rule cannot verify it is obeying it until it restarts **or**
-  compacts. "Verification needs a fresh session" is too strong; a compaction serves as well.
-- **Behaviour can therefore change at a compaction boundary with nothing announcing it.** A rule
-  edited hours earlier — by this session or another one sharing the same files — takes effect at
-  the next compaction, in the middle of work, with no event marking the transition. When a
-  session's behaviour shifts for no reason you can trace, a compaction that reloaded changed rule
-  text is a candidate cause worth checking before more exotic ones.
+- Session that just edited a rule can't verify it obeys until restart **or** compaction. "Needs a
+  fresh session" too strong; compaction serves too.
+- **Behaviour can change at a compaction boundary with nothing announcing it.** A rule edited
+  earlier — this session or another sharing files — takes effect at next compaction, mid-work, no
+  event marking the transition. Behaviour shifts for no traceable reason → check a compaction
+  that reloaded changed rule text first.
 
-If a change must take effect immediately, state it explicitly in the conversation instead of
-relying on the file edit alone.
+Change must take effect immediately → state it explicitly in conversation, don't rely on the file
+edit alone.
