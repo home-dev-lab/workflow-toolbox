@@ -160,6 +160,24 @@ function buildMessage(perFile, installCmd, set = 'rules', event = 'SessionStart'
       `Locally modified (supported, left untouched by any refresh): ${buckets.edited.sort().join(', ')}.`,
     )
   }
+  // ⚠ NAME THE ACTION, AND NAME WHOSE IT IS. Everything above is a measurement, and a
+  // measurement nobody acts on is worse than none — it costs attention and buys nothing.
+  //
+  // But the action is NOT the model's to take alone. This hook refuses to install precisely
+  // because it cannot ask for consent; a model that reads "Fix: run the adopt skill" and
+  // silently runs it launders that same missing consent one layer down — the install still
+  // happens without anyone being asked, only now it looks deliberate.
+  //
+  // So the instruction is to SURFACE it. The reader here is the model; the decider is the
+  // human. Without this line the message had numbers, a command, and no addressee for the
+  // decision — which is how a correct finding ends as a line nobody ever acted on.
+  if (lines.length) {
+    lines.push(
+      `TELL THE USER about this in your next reply — name the files and what is not in force, ` +
+        `and let them decide. Do NOT run the install on your own: this hook stays read-only ` +
+        `because adopting writes into their config, and that is their call, not yours.`,
+    )
+  }
   return lines.join('\n')
 }
 
