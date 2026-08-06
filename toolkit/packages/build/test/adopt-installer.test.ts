@@ -391,7 +391,7 @@ describe('adopt installer — CLI surface for the two-set engine', () => {
     expect(out).toMatch(/\[agents\] target=.*[/\\]\.claude[/\\]agents/)
     expect(out).toContain('wt-delegation-ladder.md: WROTE')
     expect(out).toContain('pilot.md: WROTE')
-    expect(existsSync(join(d, '.claude/rules/wt-delegation-ladder.md'))).toBe(true)
+    expect(existsSync(join(d, '.claude/rules/wt/wt-delegation-ladder.md'))).toBe(true)
     for (const f of AGENTS) expect(existsSync(join(d, '.claude/agents', f))).toBe(true)
     // A re-check sees every item in BOTH sets as UP-TO-DATE (the loop ran end to end).
     const chk = runInCwd(['--set', 'all', '--check'], d)
@@ -464,16 +464,16 @@ describe('adopt installer — --global targets the config dir, resolved not type
     const cwd = mkDir()
     const home = mkDir()
     const out = runEnv(['--set', 'rules', '--check', '--global'], { cwd, configDir: null, home })
-    expect(out).toContain(`[rules] target=${join(home, '.claude', 'rules')}`)
+    expect(out).toContain(`[rules] target=${join(home, '.claude', 'rules', 'wt')}`)
   })
 
   it('--global --install writes into the config dir, and --set all splits by set', () => {
     const cwd = mkDir()
     const cfg = mkDir()
     const out = runEnv(['--set', 'all', '--install', '--global'], { cwd, configDir: cfg })
-    expect(out).toContain(`[rules] target=${join(cfg, 'rules')}`)
+    expect(out).toContain(`[rules] target=${join(cfg, 'rules', 'wt')}`)
     expect(out).toContain(`[agents] target=${join(cfg, 'agents')}`)
-    expect(existsSync(join(cfg, 'rules', RULE))).toBe(true)
+    expect(existsSync(join(cfg, 'rules', 'wt', RULE))).toBe(true)
     for (const f of AGENTS) expect(existsSync(join(cfg, 'agents', f))).toBe(true)
     // Nothing leaked into the project dir — --global means the config dir, exclusively.
     expect(existsSync(join(cwd, '.claude'))).toBe(false)

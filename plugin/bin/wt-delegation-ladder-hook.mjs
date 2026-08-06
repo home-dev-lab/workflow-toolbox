@@ -85,9 +85,18 @@ function onPath(bin) {
  *  If so, we suppress the one-line adopt suggestion (suggest until adopted,
  *  never nag past it). */
 function ladderAdopted(root) {
-  const rel = path.join('.claude', 'rules', 'wt-delegation-ladder.md')
   const cfg = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-  for (const p of [path.join(root, rel), path.join(cfg, 'rules', 'wt-delegation-ladder.md')]) {
+  // Two candidate FILES per location (card 1835727457, rules/wt/ migration): the
+  // pre-migration flat path and the new default. Checking only the flat one would nag a
+  // fully-migrated project to re-adopt something it already has; checking only the new one
+  // would nag a project that adopted correctly and simply hasn't migrated yet.
+  const candidates = [
+    path.join(root, '.claude', 'rules', 'wt-delegation-ladder.md'),
+    path.join(root, '.claude', 'rules', 'wt', 'wt-delegation-ladder.md'),
+    path.join(cfg, 'rules', 'wt-delegation-ladder.md'),
+    path.join(cfg, 'rules', 'wt', 'wt-delegation-ladder.md'),
+  ]
+  for (const p of candidates) {
     try {
       if (fs.existsSync(p)) return true
     } catch {
