@@ -140,6 +140,87 @@ describe('wt-observer-pairing-guard-hook.mjs', () => {
     expect(context).toBe('')
   })
 
+  it('distinguishes a PATH-RESOLUTION unknown (the checker could not resolve its own directory) from a meta-lookup unknown', () => {
+    // Card 1835862067: this failure class is a fact about the CHECKER (it could not even
+    // find the directory it was told to read), not about the observed agent's own
+    // record. Before the fix this collapsed into the exact same sentence as the
+    // meta-lookup case below — a path bug dressed in the words of a safety property.
+    const root = mkRoot('path-unknown')
+    const cfg = join(root, 'cfg')
+    const projectRoot = join(root, 'proj')
+    mkdirSync(projectRoot, { recursive: true })
+    const agentsDir = join(projectRoot, '.claude', 'agents')
+    mkdirSync(agentsDir, { recursive: true })
+    writeFileSync(
+      join(agentsDir, 'pilot-orchestrator.md'),
+      '---\nname: pilot-orchestrator\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
+    )
+    // Deliberately do NOT create the subagents directory (or even the slug/session dir)
+    // the transcript_path implies — the checker's own readdirSync must fail with ENOENT.
+    const slugDir = join(cfg, 'projects', 'slug-path-unknown')
+    const transcriptPath = join(slugDir, `${SESSION_ID}.jsonl`)
+
+    const { context } = runHook(
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { subagent_type: 'pilot-orchestrator' },
+        tool_response: { agent_id: AGENT_ID },
+        cwd: projectRoot,
+        session_id: SESSION_ID,
+        transcript_path: transcriptPath,
+      },
+      cfg,
+    )
+
+    expect(context).toContain('PAIRING UNKNOWN')
+    expect(context).toContain('the checker could not resolve its own path')
+    expect(context).not.toContain('metadata was not found or was ambiguous')
+    expect(context).not.toContain('LOST its declared observer')
+  })
+
+  it('distinguishes a META-LOOKUP unknown (the directory read fine, but the observed record is missing) from a path-resolution unknown', () => {
+    // Same visible sentence before the fix, entirely different cause: the checker DID
+    // resolve its directory (readdirSync succeeded) but found no matching agent-<id>
+    // meta.json for the just-spawned agent.
+    const root = mkRoot('meta-unknown')
+    const cfg = join(root, 'cfg')
+    const projectRoot = join(root, 'proj')
+    mkdirSync(projectRoot, { recursive: true })
+    const agentsDir = join(projectRoot, '.claude', 'agents')
+    mkdirSync(agentsDir, { recursive: true })
+    writeFileSync(
+      join(agentsDir, 'pilot-orchestrator.md'),
+      '---\nname: pilot-orchestrator\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
+    )
+    const slugDir = join(cfg, 'projects', 'slug-meta-unknown')
+    const subagentsDir = join(slugDir, SESSION_ID, 'subagents')
+    mkdirSync(subagentsDir, { recursive: true }) // directory exists and is readable...
+    // ...but carries no meta.json at all for AGENT_ID — the observed record is absent.
+    const transcriptPath = join(slugDir, `${SESSION_ID}.jsonl`)
+
+    const { context } = runHook(
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { subagent_type: 'pilot-orchestrator' },
+        tool_response: { agent_id: AGENT_ID },
+        cwd: projectRoot,
+        session_id: SESSION_ID,
+        transcript_path: transcriptPath,
+      },
+      cfg,
+    )
+
+    expect(context).toContain('PAIRING UNKNOWN')
+    expect(context).toContain("the observed agent's metadata was not found or was ambiguous")
+    expect(context).not.toContain('could not resolve its own path')
+    expect(context).not.toContain('LOST its declared observer')
+    // The "where to look" hint is the second half of the fix — a reader must be able to
+    // verify independently instead of guessing.
+    expect(context).toContain('agentType')
+  })
+
   it('still flags a genuinely absent observer (three-state output: attached/absent/unreadable never collapses to two)', () => {
     const root = mkRoot('absent')
     const cfg = join(root, 'cfg')

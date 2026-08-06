@@ -101,6 +101,7 @@ const { subagentsDir, agentId, name, windowSec, captureDir } = parseArgs(process
 if (!subagentsDir || (!agentId && !name)) {
   emit(2, {
     status: 'unknown',
+    failureClass: 'usage',
     reason: 'usage: wt-check-observer-pairing.mjs --subagents-dir <dir> (--agent-id <rawId> | --name <observedAgentName>) [--window-sec 300]',
   })
 }
@@ -109,6 +110,7 @@ const parsedWindowSec = parseWindowSec(windowSec)
 if (parsedWindowSec === null) {
   emit(2, {
     status: 'unknown',
+    failureClass: 'usage',
     reason: `invalid --window-sec: ${String(windowSec)}`,
   })
 }
@@ -117,8 +119,14 @@ let filenames
 try {
   filenames = readdirSync(subagentsDir)
 } catch (error) {
+  // A LOCATION failure, not a fact about the observed agent: the checker itself could
+  // not find/read the directory it was told to look in. Kept as its own failureClass so
+  // a caller (the guard hook) can say "I couldn't work out where to look" instead of
+  // dressing a path bug in the vocabulary of a safety property ("your observer may be
+  // missing"). See card 1835862067 — the two read the same to a user without this field.
   emit(2, {
     status: 'unknown',
+    failureClass: 'path-resolution',
     reason: `could not read subagents dir: ${error instanceof Error ? error.message : String(error)}`,
   })
 }
@@ -153,8 +161,12 @@ if (!observed && name) {
 }
 
 if (!observed) {
+  // The checker DID resolve its own directory (readdirSync above succeeded) — this is a
+  // fact about the OBSERVED AGENT's own record, distinct from the path-resolution
+  // failure above even though both surface as the same 'unknown' status upstream.
   emit(2, {
     status: 'unknown',
+    failureClass: 'meta-lookup',
     reason: 'observed agent meta not found or ambiguous',
     triedAgentId: agentId,
     triedName: name,
@@ -210,6 +222,7 @@ if (typeof observerTaskId === 'string' && observerTaskId.length > 0) {
   })
   emit(2, {
     status: 'unknown',
+    failureClass: 'observer-conflict',
     reason: paired
       ? `observerTaskId points to ${observerTaskId}, but that sibling is not isObserver:true`
       : `observerTaskId points to ${observerTaskId}, but no matching sibling file exists`,
@@ -270,6 +283,7 @@ if (taskKind === undefined || taskKind === 'async') {
   if (observerCandidates.length > 1) {
     emit(2, {
       status: 'unknown',
+      failureClass: 'mtime-ambiguous',
       reason: `async spawn — ${observerCandidates.length} isObserver siblings found within ${parsedWindowSec}s window, mtime fallback correlation is ambiguous`,
       matchedBy,
       attachedBy: 'mtime-fallback',
@@ -289,6 +303,7 @@ if (taskKind === undefined || taskKind === 'async') {
 
 emit(2, {
   status: 'unknown',
+  failureClass: 'unrecognized-taskkind',
   reason: `unrecognized taskKind: ${String(taskKind)}`,
   matchedBy,
   malformed,

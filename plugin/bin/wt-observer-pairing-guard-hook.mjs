@@ -123,7 +123,8 @@ function main() {
   const observerName = declaredObserver(source)
   if (!observerName) return
 
-  const args = [CHECKER, '--subagents-dir', subagentsDirFor(cwd, sessionId, transcriptPath)]
+  const subagentsDir = subagentsDirFor(cwd, sessionId, transcriptPath)
+  const args = [CHECKER, '--subagents-dir', subagentsDir]
   if (agentId) args.push('--agent-id', agentId)
   if (name) args.push('--name', name)
   const verdict = runCheck(args)
@@ -134,17 +135,43 @@ function main() {
 
   const reason = typeof verdict.json.reason === 'string' ? verdict.json.reason : 'no reason reported'
   const subject = name ? `"${name}" (${type})` : `${type} (${agentId})`
-  const summary =
-    verdict.exitCode === 1
-      ? `appears to have LOST its declared observer '${observerName}'`
-      : `could not establish the state of its declared observer '${observerName}'`
+
+  // Two 'unknown' causes read as the SAME sentence to a reader unless distinguished here:
+  // a path-resolution failure (the checker could not even find its own directory) is a
+  // fact about the CHECKER; a meta-lookup failure (the directory read fine, but the
+  // observed agent's own record wasn't in it, or matched more than one) is a fact about
+  // the OBSERVED AGENT. Neither is evidence the observer itself is missing — that is
+  // exitCode 1 (LOST), handled separately below. Card 1835862067: naming WHOSE state is
+  // unknown, plus where to verify by hand, is the actual fix — the checker already
+  // distinguishes these via `failureClass` (wt-check-observer-pairing.mjs); this hook
+  // only needed to stop collapsing them into one vague phrase.
+  let summary
+  let lookHere = ''
+  if (verdict.exitCode === 1) {
+    summary = `appears to have LOST its declared observer '${observerName}'`
+  } else {
+    const failureClass = typeof verdict.json.failureClass === 'string' ? verdict.json.failureClass : null
+    if (failureClass === 'path-resolution') {
+      summary = `PAIRING UNKNOWN — the checker could not resolve its own path (${subagentsDir})`
+      lookHere =
+        ` To verify by hand: check whether that directory exists and is readable, then read its ` +
+        `agent-*.meta.json siblings' "agentType" field.`
+    } else if (failureClass === 'meta-lookup') {
+      summary = `PAIRING UNKNOWN — the observed agent's metadata was not found or was ambiguous`
+      lookHere =
+        ` To verify by hand: read the sibling agent-*.meta.json files under ${subagentsDir} ` +
+        `and check the "agentType" field.`
+    } else {
+      summary = `could not establish the state of its declared observer '${observerName}'`
+    }
+  }
 
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
         additionalContext:
-          `[workflow-toolbox observer-pairing] ${subject} ${summary}. ` +
+          `[workflow-toolbox observer-pairing] ${subject} ${summary}.${lookHere} ` +
           `Delegated to wt-check-observer-pairing.mjs after spawn; checker verdict ${status}: ${reason}`,
       },
     }),
