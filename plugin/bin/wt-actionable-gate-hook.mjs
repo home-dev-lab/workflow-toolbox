@@ -6,10 +6,15 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
-import { homedir } from 'node:os'
 
 import { decide } from './lib/actionability-core.mjs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import {
+  stateRoot,
+  projectStatePath,
+  sessionStatePath as sharedSessionStatePath,
+  snapshotPath as sharedSnapshotPath,
+} from './lib/actionability-state-paths.mjs'
 
 const STALE_AFTER_MS = Number(process.env.WT_ACTIONABLE_STALE_AFTER_MS || 2 * 60 * 60 * 1000)
 const BLOCK_MAX = Number(process.env.WT_ACTIONABLE_BLOCK_MAX || 3)
@@ -33,35 +38,18 @@ function finiteNumber(value) {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
-function projectSlug(cwd) {
-  return String(cwd).replace(/[^A-Za-z0-9-]/g, '-')
-}
-
-function stateRoot() {
-  const base = process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state')
-  return join(base, 'wt-actionable')
-}
-
 function lanePatterns() {
   const raw = process.env.WT_ACTIONABLE_LANE_PATTERNS
   const patterns = typeof raw === 'string' && raw.trim() ? raw.split(',').map((value) => value.trim()).filter(Boolean) : ['opencode run', 'codex exec']
   return patterns.length > 0 ? patterns : ['opencode run', 'codex exec']
 }
 
-function safeSessionId(sessionId) {
-  return String(sessionId || 'unknown').replace(/[^A-Za-z0-9._-]/g, '-')
-}
-
 function snapshotPath(root, cwd) {
-  return join(root, `${projectSlug(cwd)}.json`)
-}
-
-function projectStatePath(root, cwd) {
-  return join(root, `${projectSlug(cwd)}.project-state.json`)
+  return sharedSnapshotPath(root, cwd)
 }
 
 function sessionStatePath(root, cwd, sessionId) {
-  return join(root, `${projectSlug(cwd)}--${safeSessionId(sessionId)}.session-state.json`)
+  return sharedSessionStatePath(root, cwd, sessionId)
 }
 
 function readJson(path) {
