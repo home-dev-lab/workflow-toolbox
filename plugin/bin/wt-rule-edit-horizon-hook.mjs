@@ -83,11 +83,24 @@ function main() {
   const file = normalizeFile(sourceFile, payload.cwd)
   if (!file || !isAmbientRule(file)) return
 
+  // ⚠ TWO things, and the second is why this hook is the right home for it.
+  //
+  // The reload horizon is the original job. The WRITING CONVENTIONS ride along because they
+  // apply every single time a rule is written and nowhere else — and a convention that lives
+  // only in a note is recall-on-demand, so it reaches whoever already suspects it and never
+  // the person about to break it. This hook already fires on exactly that event, so carrying
+  // the directive costs no new mechanism, no new rule file, and no noise on any other edit.
+  //
+  // ⚠ Keep it SHORT. This fires on EVERY ambient-rule edit; the moment it grows into a
+  // paragraph it becomes the routine noise this file's header promises it is not, and the
+  // reload horizon — the part that is genuinely easy to miss — drowns with it.
   const context =
-    `L'édition de ${file} ne sera vérifiable QU'À PARTIR D'UNE SESSION NEUVE. ` +
-    `Pas dans la session courante, ni via un spawn d'agent : un spawn hérite de ` +
-    `l'instantané pris au démarrage de sa session ; seul un nouveau démarrage de ` +
-    `session recharge les règles ambiantes.`
+    `Editing ${file} is verifiable ONLY FROM A NEW SESSION: an agent spawn inherits its ` +
+    `session's rule snapshot, so neither this session nor a spawn can confirm the change. ` +
+    `Writing conventions for a rule file: telegraphic register — strip GRAMMAR, never CONTENT. ` +
+    `A clause you can only shorten by losing a nuance stays long: compressed into a one-liner it ` +
+    `survives in the file and STOPS ACTING (measured 3/3 to 1/3). And a rule is a DIRECTIVE — ` +
+    `dates, incident stories and field cases go to a note, not here.`
 
   process.stdout.write(
     JSON.stringify({

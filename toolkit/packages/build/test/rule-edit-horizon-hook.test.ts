@@ -57,7 +57,13 @@ describe('wt-rule-edit-horizon-hook — ambient rule edit horizon', () => {
     }, f.env)
 
     expect(r.stdout, 'must not be silent').not.toBe('')
-    expect(r.context.toLowerCase()).toContain('session neuve')
+    expect(r.context.toLowerCase()).toContain('only from a new session')
+    // The writing conventions ride on this same message and are locked here on purpose:
+    // without an assertion a later edit drops them silently, and the whole reason they live
+    // in a hook rather than a note is that nobody re-reads a note.
+    expect(r.context.toLowerCase()).toContain('telegraphic')
+    expect(r.context.toLowerCase()).toContain('stops acting')
+    expect(r.context.toLowerCase()).toContain('go to a note')
     expect(r.context).toContain('some-rule.md')
   })
 
@@ -72,7 +78,13 @@ describe('wt-rule-edit-horizon-hook — ambient rule edit horizon', () => {
     }, f.env)
 
     expect(r.stdout, 'must not be silent').not.toBe('')
-    expect(r.context.toLowerCase()).toContain('session neuve')
+    expect(r.context.toLowerCase()).toContain('only from a new session')
+    // The writing conventions ride on this same message and are locked here on purpose:
+    // without an assertion a later edit drops them silently, and the whole reason they live
+    // in a hook rather than a note is that nobody re-reads a note.
+    expect(r.context.toLowerCase()).toContain('telegraphic')
+    expect(r.context.toLowerCase()).toContain('stops acting')
+    expect(r.context.toLowerCase()).toContain('go to a note')
     expect(r.context).toContain('new-rule.md')
   })
 
