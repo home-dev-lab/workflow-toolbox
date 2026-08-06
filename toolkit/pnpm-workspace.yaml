@@ -57,9 +57,23 @@ minimumReleaseAgeExclude:
 #   the workspace's own 24.x line (what every other consumer already resolves) purges
 #   v12 from the tree entirely, so no hoisting outcome can reintroduce the failure.
 #   Type-only, dev-time; @changesets/cli itself resolves fine against 24.x.
+# ⚠ FLOOR RAISED 2026-08-06 (card #1834610605760185674): brace-expansion's 5.x floor had
+#   gone stale the same way as the observatory's — the advisory moved from 5.0.8 to 5.0.9
+#   (GHSA-rgw5-rvv9-x895) while the pin stayed satisfied. The selector's range moves with
+#   the pin, or a satisfied-but-outdated pin silently stops rewriting anything.
+# ⚠ fast-uri and hono ADDED 2026-08-06 — this repo has Dependabot DISABLED (card
+#   #1834753073910646308), so neither gap was visible from the GitHub alerts API; both were
+#   found only by querying the GHSA advisory database directly (`gh api advisories?...`)
+#   and comparing against this tree's resolved versions in pnpm-lock.yaml:
+#   - fast-uri resolved 3.1.2, vulnerable to GHSA-7p8r-x3mc-p8w7 (>=3.0.0 <3.1.5, high).
+#     No override existed for it at all before this pass.
+#   - hono resolved 4.12.25, vulnerable to several advisories up to GHSA-8j4g-w8fx-2239
+#     (<4.12.34, medium) — same floor already carried by the observatory's own override.
 overrides:
   esbuild: ~0.28.1
   body-parser@>=2.0.0 <2.3.0: 2.3.0
-  brace-expansion@>=3.0.0 <5.0.8: 5.0.8
+  brace-expansion@>=3.0.0 <5.0.9: 5.0.9
   brace-expansion@<1.1.18: 1.1.18
+  fast-uri: '>=4.1.2'
+  hono: '>=4.12.34'
   '@types/node': 24.13.1
