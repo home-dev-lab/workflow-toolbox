@@ -23,7 +23,7 @@
 // one location only works on one machine.
 //
 // Usage:
-//   wt-memory-index-check.mjs --store <dir> [--threshold 200] [--hub-max 45]
+//   wt-memory-index-check.mjs --store <dir> [--threshold 200] [--size-threshold 25000] [--hub-max 45]
 //                              [--index-file MEMORY.md] [--json] [--out <file>]
 //
 // Exit codes:
@@ -39,7 +39,7 @@ function fail(msg) {
 }
 
 function parseArgs(argv) {
-  const out = { store: null, threshold: 200, hubMax: 45, indexFile: 'MEMORY.md', json: false, out: null };
+  const out = { store: null, threshold: 200, sizeThreshold: 25000, hubMax: 45, indexFile: 'MEMORY.md', json: false, out: null };
   // A flag that takes a value must actually find one — `--index-file` at
   // the end of argv with nothing after it must fail loudly (usage error),
   // never silently fall back to a default because `undefined` happened to
@@ -52,6 +52,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--store') out.store = nextValue(i++, a);
     else if (a === '--threshold') out.threshold = Number(nextValue(i++, a));
+    else if (a === '--size-threshold') out.sizeThreshold = Number(nextValue(i++, a));
     else if (a === '--hub-max') out.hubMax = Number(nextValue(i++, a));
     else if (a === '--index-file') out.indexFile = nextValue(i++, a);
     else if (a === '--json') out.json = true;
@@ -67,11 +68,14 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv.slice(2));
 if (!args.store) {
   fail(
-    'usage: wt-memory-index-check.mjs --store <dir> [--threshold 200] [--hub-max 45] [--index-file MEMORY.md] [--json] [--out <file>]',
+    'usage: wt-memory-index-check.mjs --store <dir> [--threshold 200] [--size-threshold 25000] [--hub-max 45] [--index-file MEMORY.md] [--json] [--out <file>]',
   );
 }
 if (!Number.isFinite(args.threshold) || args.threshold <= 0) {
   fail(`--threshold must be a positive number, got: ${args.threshold}`);
+}
+if (!Number.isFinite(args.sizeThreshold) || args.sizeThreshold <= 0) {
+  fail(`--size-threshold must be a positive number, got: ${args.sizeThreshold}`);
 }
 if (!Number.isFinite(args.hubMax) || args.hubMax <= 0) {
   fail(`--hub-max must be a positive number, got: ${args.hubMax}`);
@@ -81,6 +85,7 @@ let report;
 try {
   report = checkStore(args.store, {
     threshold: args.threshold,
+    sizeThreshold: args.sizeThreshold,
     indexFile: args.indexFile,
     hubMax: args.hubMax,
   });
@@ -110,7 +115,8 @@ if (args.json) {
     console.log(`no index found at ${args.store}/${report.indexFile} — nothing to check (no index convention in use)`);
   } else {
     console.log(
-      `index: ${report.entryLines} entry line(s) (threshold applied: ${report.threshold}) — ` +
+      `index: ${report.entryLines} entry line(s) (threshold applied: ${report.threshold}), ` +
+        `${report.indexBytes} byte(s) (size threshold applied: ${report.sizeThreshold}) — ` +
         `${report.diskFiches} fiche(s) on disk, ${report.reachableFiches} reachable, ` +
         `${report.unreachableFiches.length} invisible; ${report.danglingRefs.length} dangling; ` +
         `${report.unresolvedCrossRefs.length} unresolved cross-reference(s)`,
