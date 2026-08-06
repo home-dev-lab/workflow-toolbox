@@ -62,6 +62,7 @@ interface Report {
   diskFiches: number
   reachableFiches: number
   unreachableFiches: string[]
+  retractedFiches: string[]
   danglingRefs: Array<{ from: string; target: string }>
   unresolvedCrossRefs: Array<{ from: string; target: string }>
   brokenRetractions: Array<{ from: string; target: string }>
@@ -463,6 +464,30 @@ describe('memory-index-check-core: retractions (card #1833831689994896673)', () 
     expect(report.flagged).toBe(false)
   })
 
+  it('TEST-LOCK card #1835690485 — a well-formed retracted fiche, deliberately DE-INDEXED (not linked from MEMORY.md), is EXEMPT from unreachableFiches: wt-memory-hygiene.md calls this intentional, the probe must agree', () => {
+    const dir = makeStore()
+    fiche(dir, 'replacement', 'Current truth.\n')
+    fiche(dir, 'old-note', `${retractionBlock('Target: [replacement](replacement.md)')}Old content kept only for inbound links.\n`)
+    // old-note.md is deliberately NOT linked from MEMORY.md or any hub —
+    // the exact "kept only so old references still resolve" case.
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Replacement](replacement.md) — current truth\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.unreachableFiches).toEqual([])
+    expect(report.retractedFiches).toEqual(['old-note.md'])
+    expect(report.flagged).toBe(false)
+  })
+
+  it('TEST-LOCK card #1835690485 — a de-indexed fiche whose retraction pointer does NOT resolve earns no exemption and stays flagged unreachable, on top of the brokenRetractions finding it already produced', () => {
+    const dir = makeStore()
+    fiche(dir, 'old-note', `${retractionBlock('Target: [replacement](missing.md)')}Old content kept only for inbound links.\n`)
+    writeFileSync(join(dir, 'MEMORY.md'), '# Memory index\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.unreachableFiches).toEqual(['old-note.md'])
+    expect(report.retractedFiches).toEqual([])
+    expect(report.brokenRetractions).toEqual([{ from: 'old-note.md', target: 'missing.md' }])
+    expect(report.flagged).toBe(true)
+  })
+
   it('TEST-LOCK: ordinary note with an unresolved see-also stays informational, not a finding', () => {
     const dir = makeStore()
     fiche(
@@ -713,6 +738,41 @@ describe('wt-memory-index-check.mjs CLI: warning band + hub sizing exit codes an
     const r = report as unknown as { largestHub: { file: string; members: number }; hubCount: number }
     expect(r.hubCount).toBe(1)
     expect(r.largestHub).toEqual({ file: 'hub-topic.md', members: 5 })
+  })
+})
+
+describe('wt-memory-index-check.mjs CLI: retraction exemption stays legible (card #1835690485)', () => {
+  it('a well-formed retracted fiche is excluded from "invisible" but named in a visible notice — never a bare 0', () => {
+    const dir = makeStore()
+    fiche(dir, 'replacement', 'Current truth.\n')
+    fiche(dir, 'old-note', `${retractionBlock('Target: [replacement](replacement.md)')}Old content kept only for inbound links.\n`)
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Replacement](replacement.md) — current truth\n')
+    const stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
+    expect(stdout).toContain('0 invisible; 0 dangling')
+    expect(stdout).toContain(
+      '1 fiche(s) excluded from unreachable — a deliberate retraction whose forward pointer resolves (see wt-memory-hygiene.md); not a defect',
+    )
+    const { status } = runCli(dir)
+    expect(status).toBe(0)
+  })
+
+  it('a broken retraction earns no exemption: still counted invisible AND still flagged, exit 1', () => {
+    const dir = makeStore()
+    fiche(dir, 'old-note', `${retractionBlock('Target: [replacement](missing.md)')}Old content kept only for inbound links.\n`)
+    writeFileSync(join(dir, 'MEMORY.md'), '# Memory index\n')
+    let status = 0
+    let stdout = ''
+    try {
+      stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
+    } catch (e) {
+      const err = e as ExecError
+      stdout = err.stdout ?? ''
+      status = err.status ?? 1
+    }
+    expect(status).toBe(1)
+    expect(stdout).toContain('1 invisible')
+    expect(stdout).not.toContain('excluded from unreachable')
+    expect(stdout).toContain('FLAG: retraction forward pointer from old-note.md to missing.md does not resolve')
   })
 })
 
