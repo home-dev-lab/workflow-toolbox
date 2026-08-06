@@ -71,10 +71,11 @@ const MD_PATH_RE = /(?:\.\.?\/)?(?:[^\s`()[\]]+\/)*[^\s`()[\]]+\.md(?:#[^\s`()[\
  *   (the directory holding the index file and the fiche .md files). Always
  *   an argument, never guessed — a tool that knows one location only works
  *   on one machine.
- * @param {{ threshold?: number, indexFile?: string, hubMax?: number }} [opts]
+ * @param {{ threshold?: number, sizeThreshold?: number, indexFile?: string, hubMax?: number }} [opts]
  * @returns {{
  *   store: string, hasIndex: boolean, indexFile: string, threshold: number,
- *   entryLines: number, overThreshold: boolean,
+ *   sizeThreshold: number, entryLines: number, indexBytes: number,
+ *   overThreshold: boolean, overSizeThreshold: boolean,
  *   diskFiches: number, reachableFiches: number, unreachableFiches: string[],
  *   danglingRefs: Array<{ from: string, target: string }>,
  *   unresolvedCrossRefs: Array<{ from: string, target: string }>,
@@ -90,6 +91,7 @@ const MD_PATH_RE = /(?:\.\.?\/)?(?:[^\s`()[\]]+\/)*[^\s`()[\]]+\.md(?:#[^\s`()[\
  */
 export function checkStore(storeDir, opts = {}) {
   const threshold = opts.threshold ?? 200;
+  const sizeThreshold = opts.sizeThreshold ?? 25000;
   const indexFile = opts.indexFile ?? 'MEMORY.md';
   const hubMax = opts.hubMax ?? 45;
 
@@ -114,8 +116,11 @@ export function checkStore(storeDir, opts = {}) {
       hasIndex: false,
       indexFile,
       threshold,
+      sizeThreshold,
       entryLines: 0,
+      indexBytes: 0,
       overThreshold: false,
+      overSizeThreshold: false,
       diskFiches: 0,
       reachableFiches: 0,
       unreachableFiches: [],
@@ -136,9 +141,11 @@ export function checkStore(storeDir, opts = {}) {
   }
 
   const indexText = readFileSync(indexPath, 'utf8');
+  const indexBytes = statSync(indexPath).size;
   const indexLines = indexText.split('\n');
   const entryLineCount = indexLines.filter((line) => ENTRY_LINE_RE.test(line.trim())).length;
   const overThreshold = entryLineCount > threshold;
+  const overSizeThreshold = indexBytes > sizeThreshold;
 
   // Fiches on disk: *.md files directly inside storeDir, excluding the
   // index itself. A subdirectory (e.g. archive/) is NOT descended into —
@@ -315,6 +322,9 @@ export function checkStore(storeDir, opts = {}) {
   if (overThreshold) {
     reasons.push(`index has ${entryLineCount} entry line(s), over threshold ${threshold}`);
   }
+  if (overSizeThreshold) {
+    reasons.push(`index is ${indexBytes} byte(s), over threshold ${sizeThreshold}`);
+  }
   if (unreachableFiches.length > 0) {
     reasons.push(
       `${unreachableFiches.length} fiche(s) on disk are reachable from the index by no path (hub or direct)`,
@@ -375,8 +385,11 @@ export function checkStore(storeDir, opts = {}) {
     hasIndex: true,
     indexFile,
     threshold,
+    sizeThreshold,
     entryLines: entryLineCount,
+    indexBytes,
     overThreshold,
+    overSizeThreshold,
     diskFiches: diskFiches.size,
     reachableFiches: reachable.size,
     unreachableFiches,

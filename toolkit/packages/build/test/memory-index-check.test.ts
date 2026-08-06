@@ -54,8 +54,11 @@ function hubWithMembers(dir: string, slug: string, memberSlugs: string[], extraB
 interface Report {
   hasIndex: boolean
   threshold: number
+  sizeThreshold: number
   entryLines: number
+  indexBytes: number
   overThreshold: boolean
+  overSizeThreshold: boolean
   diskFiches: number
   reachableFiches: number
   unreachableFiches: string[]
@@ -134,6 +137,32 @@ describe('memory-index-check-core: reachability', () => {
     expect(report.diskFiches).toBe(21) // 20 members + the hub itself
     expect(report.reachableFiches).toBe(21)
     expect(report.unreachableFiches).toEqual([])
+    expect(report.flagged).toBe(false)
+  })
+
+  it('case 3c — few entry lines but oversized index is flagged by byte threshold', () => {
+    const dir = makeStore()
+    fiche(dir, 'hub-topic', '- [[member-a]] — hook\n')
+    fiche(dir, 'member-a', 'Reachable.\n')
+    const indexText = '# Memory index\n- [Hub: topic](hub-topic.md) — grouped facts with a long enough hook to exceed the byte ceiling\n'
+    writeFileSync(join(dir, 'MEMORY.md'), indexText)
+    const report = checkStore(dir, { threshold: 200, sizeThreshold: 50 })
+    expect(report.entryLines).toBe(1)
+    expect(report.overThreshold).toBe(false)
+    expect(report.overSizeThreshold).toBe(true)
+    expect(report.flagged).toBe(true)
+    expect(report.reasons).toContain(`index is ${report.indexBytes} byte(s), over threshold 50`)
+  })
+
+  it('case 3d — under both thresholds reports indexBytes and stays silent', () => {
+    const dir = makeStore()
+    fiche(dir, 'fact-a', 'Fact.\n')
+    const indexText = '# Memory index\n- [Fact A](fact-a.md) — a fact\n'
+    writeFileSync(join(dir, 'MEMORY.md'), indexText)
+    const report = checkStore(dir, { threshold: 200, sizeThreshold: 1000 })
+    expect(report.overThreshold).toBe(false)
+    expect(report.overSizeThreshold).toBe(false)
+    expect(report.indexBytes).toBe(Buffer.byteLength(indexText))
     expect(report.flagged).toBe(false)
   })
 
@@ -526,13 +555,31 @@ describe('wt-memory-index-check.mjs CLI: warning band + hub sizing exit codes an
     expect(stderr).toContain('--hub-max must be a positive number')
   })
 
-  it('a flat store under threshold, comfortably clear of the band, exits 0 and includes the unresolved-cross-reference count in the summary', () => {
+  it('a bad --size-threshold exits 2, mirroring --threshold validation', () => {
     const dir = makeStore()
     fiche(dir, 'fact-a', 'Fact.\n')
     writeFileSync(join(dir, 'MEMORY.md'), '- [Fact A](fact-a.md) — a fact\n')
+    let status = 0
+    let stderr = ''
+    try {
+      execFileSync('node', [CLI, '--store', dir, '--size-threshold', '0'], { encoding: 'utf8' })
+    } catch (e) {
+      const err = e as ExecError & { stderr?: string }
+      status = err.status ?? 1
+      stderr = err.stderr ?? ''
+    }
+    expect(status).toBe(2)
+    expect(stderr).toContain('--size-threshold must be a positive number')
+  })
+
+  it('a flat store under threshold, comfortably clear of the band, exits 0 and includes the unresolved-cross-reference count in the summary', () => {
+    const dir = makeStore()
+    fiche(dir, 'fact-a', 'Fact.\n')
+    const indexText = '- [Fact A](fact-a.md) — a fact\n'
+    writeFileSync(join(dir, 'MEMORY.md'), indexText)
     const stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
     expect(stdout).toBe(
-      'index: 1 entry line(s) (threshold applied: 200) — 1 fiche(s) on disk, 1 reachable, 0 invisible; 0 dangling; 0 unresolved cross-reference(s)\n',
+      `index: 1 entry line(s) (threshold applied: 200), ${Buffer.byteLength(indexText)} byte(s) (size threshold applied: 25000) — 1 fiche(s) on disk, 1 reachable, 0 invisible; 0 dangling; 0 unresolved cross-reference(s)\n`,
     )
   })
 
@@ -757,6 +804,17 @@ describe('wt-memory-index-check.mjs CLI: exit codes are the ground truth', () =>
     writeFileSync(join(dir, 'MEMORY.md'), '- [Fact A](fact-a.md) — a fact\n')
     const stdout = execFileSync('node', [CLI, '--store', dir, '--threshold', '50'], { encoding: 'utf8' })
     expect(stdout).toContain('threshold applied: 50')
+  })
+
+  it('the human-readable (non --json) output names both entry and byte thresholds', () => {
+    const dir = makeStore()
+    fiche(dir, 'fact-a', 'Fact.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Fact A](fact-a.md) — a fact\n')
+    const stdout = execFileSync('node', [CLI, '--store', dir, '--threshold', '50', '--size-threshold', '75'], {
+      encoding: 'utf8',
+    })
+    expect(stdout).toContain('1 entry line(s) (threshold applied: 50)')
+    expect(stdout).toContain('byte(s) (size threshold applied: 75)')
   })
 })
 
