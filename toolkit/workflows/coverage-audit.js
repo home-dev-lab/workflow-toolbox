@@ -1942,10 +1942,12 @@ ${renderClaim(claim)}`;
     },
     {
       // The nine patterns + the result envelope (options, caps, envelope shape,
-      // pattern count claims).
+      // pattern count claims) plus their execution/tuning knobs (per-role
+      // model/effort/agentType, cache-warm, stageKey), split across two files.
       sources: ["toolkit/packages/patterns/src/"],
       docs: [
         "plugin/skills/workflow-composer/references/patterns.md",
+        "plugin/skills/workflow-composer/references/patterns-execution.md",
         "toolkit/README.md",
         "README.md"
       ]

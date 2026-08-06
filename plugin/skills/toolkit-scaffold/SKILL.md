@@ -138,7 +138,7 @@ per-role `<role>Model`/`<role>Effort` on any pattern; `adversarialVerification`'
 `verifierType` for a cross-model (e.g. `codex:codex-rescue`, GPT) verifier; or, for
 launch-time tuning without editing the source, wrap once with
 `withAgentDefaults(rt, defaults)` and/or parse an `args` config via `parseConfig`. See
-the **workflow-composer** skill's `references/patterns.md` ("Tuning at launch").
+the **workflow-composer** skill's `references/patterns-execution.md` ("Tuning at launch").
 
 **Consider an observer.** If the job has long-running roles, doc/spec surfaces to keep
 aligned, drift risk across a fan-out, or a human gate, the workflow may benefit from an

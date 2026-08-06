@@ -43,7 +43,7 @@ spawned agent). [documented]
 > `toolkit/README.md`. The rest of this reference describes the raw runtime
 > surface every workflow ultimately targets.
 >
-> **Toolkit-level tuning (not raw runtime) lives in `references/patterns.md`:**
+> **Toolkit-level tuning (not raw runtime) lives in `references/patterns-execution.md`:**
 > per-role `<role>Model`/`<role>Effort`/`<role>Type` knobs on every pattern (the
 > `<role>Type` routes that role to a subagent type — the cross-family lever); the
 > `adversarialVerification` **`verifierType`** option for a cross-family (e.g.
