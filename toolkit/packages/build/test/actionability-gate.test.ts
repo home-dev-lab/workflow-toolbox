@@ -47,6 +47,23 @@ function runHook(payload: unknown, env: NodeJS.ProcessEnv): { code: number | nul
   }
 }
 
+// The hook now emits its block text as stdout JSON (hookSpecificOutput.additionalContext, see
+// wt-actionable-gate-hook.mjs main()) rather than on stderr with exit 2. This is the
+// discriminator every test below uses in place of the old `code === 2` / non-empty-stderr check:
+// blocked cases carry a non-empty additionalContext, passed cases carry ''. Malformed or
+// fieldless stdout also returns '' rather than throwing, since a PASS case legitimately emits no
+// stdout at all.
+function blockText(r: { stdout: string }): string {
+  if (!r.stdout) return ''
+  try {
+    const parsed = JSON.parse(r.stdout) as { hookSpecificOutput?: { additionalContext?: unknown } }
+    const text = parsed?.hookSpecificOutput?.additionalContext
+    return typeof text === 'string' ? text : ''
+  } catch {
+    return ''
+  }
+}
+
 function launchLane(args0: string, cwd: string, detached = false): number {
   const child = spawn('bash', ['-lc', `exec -a ${JSON.stringify(args0)} sleep 30`], {
     cwd,
@@ -270,10 +287,11 @@ describe('wt-actionable-gate-hook', () => {
       inFlightUntil: null,
     })
     const r = runHook(payload, env)
-    expect(r.code).toBe(2)
-    expect(r.stderr).toContain('3 actionable item(s) remain')
-    expect(r.stderr).toContain('CARD-42 fix the parser')
-    expect(r.stderr).toContain('Block 1 of 3')
+    expect(r.code).toBe(0)
+    const text = blockText(r)
+    expect(text).toContain('3 actionable item(s) remain')
+    expect(text).toContain('CARD-42 fix the parser')
+    expect(text).toContain('Block 1 of 3')
   })
 
   it('actionable:3, work in flight -> no block, and the counter resets', () => {
@@ -288,18 +306,19 @@ describe('wt-actionable-gate-hook', () => {
       inFlightUntil: null,
     })
     const first = runHook(payload, env)
-    expect(first.code).toBe(2)
+    expect(first.code).toBe(0)
+    expect(blockText(first)).toContain('actionable item(s) remain')
     mkdirSync(subagentsDir, { recursive: true })
     const subagent = join(subagentsDir, 'agent-a.jsonl')
     writeFileSync(subagent, '{}\n')
     const running = runHook(payload, env)
     expect(running.code).toBe(0)
-    expect(running.stderr).toBe('')
+    expect(blockText(running)).toBe('')
     const old = new Date(Date.now() - 5 * 60_000)
     utimesSync(subagent, old, old)
     const again = runHook(payload, env)
-    expect(again.code).toBe(2)
-    expect(again.stderr).toContain('Block 1 of 3')
+    expect(again.code).toBe(0)
+    expect(blockText(again)).toContain('Block 1 of 3')
   })
 
   it('actionable:0 -> no block, counter resets', () => {
@@ -314,7 +333,8 @@ describe('wt-actionable-gate-hook', () => {
       inFlightUntil: null,
     })
     const first = runHook(payload, env)
-    expect(first.code).toBe(2)
+    expect(first.code).toBe(0)
+    expect(blockText(first)).toContain('actionable item(s) remain')
     writeSnapshot(stateDir, cwd, {
       at: Date.now(),
       actionable: 0,
@@ -326,6 +346,7 @@ describe('wt-actionable-gate-hook', () => {
     })
     const drained = runHook(payload, env)
     expect(drained.code).toBe(0)
+    expect(blockText(drained)).toBe('')
     writeSnapshot(stateDir, cwd, {
       at: Date.now(),
       actionable: 3,
@@ -336,8 +357,8 @@ describe('wt-actionable-gate-hook', () => {
       inFlightUntil: null,
     })
     const again = runHook(payload, env)
-    expect(again.code).toBe(2)
-    expect(again.stderr).toContain('Block 1 of 3')
+    expect(again.code).toBe(0)
+    expect(blockText(again)).toContain('Block 1 of 3')
   })
 
   it('workPossible:false + reason + future blockedUntil -> no block', () => {
@@ -353,7 +374,7 @@ describe('wt-actionable-gate-hook', () => {
     })
     const r = runHook(payload, env)
     expect(r.code).toBe(0)
-    expect(r.stderr).toBe('')
+    expect(blockText(r)).toBe('')
   })
 
   it('workPossible:false + reason + past blockedUntil -> block', () => {
@@ -368,8 +389,8 @@ describe('wt-actionable-gate-hook', () => {
       inFlightUntil: null,
     })
     const r = runHook(payload, env)
-    expect(r.code).toBe(2)
-    expect(r.stderr).toContain('CARD-47 blocked item')
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toContain('CARD-47 blocked item')
   })
 
   it('workPossible:false with no reason -> block', () => {
@@ -384,8 +405,8 @@ describe('wt-actionable-gate-hook', () => {
       inFlightUntil: null,
     })
     const r = runHook(payload, env)
-    expect(r.code).toBe(2)
-    expect(r.stderr).toContain('CARD-48 blocked item')
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toContain('CARD-48 blocked item')
   })
 
   it('snapshot older than the staleness bound -> block', () => {
@@ -400,8 +421,8 @@ describe('wt-actionable-gate-hook', () => {
       inFlightUntil: null,
     })
     const r = runHook(payload, env)
-    expect(r.code).toBe(2)
-    expect(r.stderr).toContain('Actionable count is UNKNOWN')
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toContain('Actionable count is UNKNOWN')
   })
 
   it('consecutive blocks reach the ceiling -> passes', () => {
@@ -419,11 +440,14 @@ describe('wt-actionable-gate-hook', () => {
     const r2 = runHook(payload, env)
     const r3 = runHook(payload, env)
     const r4 = runHook(payload, env)
-    expect(r1.code).toBe(2)
-    expect(r2.code).toBe(2)
-    expect(r3.code).toBe(2)
+    expect(r1.code).toBe(0)
+    expect(blockText(r1)).toContain('actionable item(s) remain')
+    expect(r2.code).toBe(0)
+    expect(blockText(r2)).toContain('actionable item(s) remain')
+    expect(r3.code).toBe(0)
+    expect(blockText(r3)).toContain('actionable item(s) remain')
     expect(r4.code).toBe(0)
-    expect(r4.stderr).toBe('')
+    expect(blockText(r4)).toBe('')
   })
 
   it('malformed JSON -> no block, no throw', () => {
@@ -446,11 +470,11 @@ describe('wt-actionable-gate-hook', () => {
       blockedUntil: null,
       inFlightUntil: null,
     })
-    expect(runHook(payload, env).code).toBe(2)
+    expect(runHook(payload, env).code).toBe(0)
     rmSync(join(stateDir, `${slug(cwd)}.json`), { force: true })
     const missing = runHook(payload, env)
-    expect(missing.code).toBe(2)
-    expect(missing.stderr).toContain('Actionable count is UNKNOWN')
+    expect(missing.code).toBe(0)
+    expect(blockText(missing)).toContain('Actionable count is UNKNOWN')
   })
 
   it('reads only subagent mtimes, not the main transcript touched by the turn', () => {
@@ -466,7 +490,8 @@ describe('wt-actionable-gate-hook', () => {
     })
     utimesSync(transcriptPath, new Date(), new Date())
     const r = runHook(payload, env)
-    expect(r.code).toBe(2)
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toContain('actionable item(s) remain')
   })
 
   it('future inFlightUntil -> no block, and the counter resets', () => {
@@ -480,7 +505,7 @@ describe('wt-actionable-gate-hook', () => {
       blockedUntil: null,
       inFlightUntil: null,
     })
-    expect(runHook(payload, env).code).toBe(2)
+    expect(runHook(payload, env).code).toBe(0)
     writeSnapshot(stateDir, cwd, {
       at: Date.now(),
       actionable: 3,
@@ -492,7 +517,7 @@ describe('wt-actionable-gate-hook', () => {
     })
     const running = runHook(payload, env)
     expect(running.code).toBe(0)
-    expect(running.stderr).toBe('')
+    expect(blockText(running)).toBe('')
     writeSnapshot(stateDir, cwd, {
       at: Date.now(),
       actionable: 3,
@@ -503,8 +528,8 @@ describe('wt-actionable-gate-hook', () => {
       inFlightUntil: null,
     })
     const again = runHook(payload, env)
-    expect(again.code).toBe(2)
-    expect(again.stderr).toContain('Block 1 of 3')
+    expect(again.code).toBe(0)
+    expect(blockText(again)).toContain('Block 1 of 3')
   })
 
   it('expired inFlightUntil -> block', () => {
@@ -519,8 +544,8 @@ describe('wt-actionable-gate-hook', () => {
       inFlightUntil: Date.now() - 1_000,
     })
     const r = runHook(payload, env)
-    expect(r.code).toBe(2)
-    expect(r.stderr).toContain('CARD-53 external lane expired')
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toContain('CARD-53 external lane expired')
   })
 
   it('a generous inFlightUntil written long ago is capped and the hook blocks anyway', () => {
@@ -536,8 +561,8 @@ describe('wt-actionable-gate-hook', () => {
       inFlightUntil: writtenAt + 50 * 60_000,
     })
     const r = runHook(payload, env)
-    expect(r.code).toBe(2)
-    expect(r.stderr).toContain('CARD-54 generous bound written long ago')
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toContain('CARD-54 generous bound written long ago')
   })
 
   it('a lane of this session detected by ancestry + cwd -> no block, and the counter resets', () => {
@@ -551,15 +576,15 @@ describe('wt-actionable-gate-hook', () => {
       blockedUntil: null,
       inFlightUntil: null,
     })
-    expect(runHook(payload, env).code).toBe(2)
+    expect(runHook(payload, env).code).toBe(0)
     const pattern = 'wt-actionable-test same-session lane'
     launchLane(pattern, cwd)
     const running = runHook(payload, { ...env, WT_ACTIONABLE_LANE_PATTERNS: pattern })
     expect(running.code).toBe(0)
-    expect(running.stderr).toBe('')
+    expect(blockText(running)).toBe('')
     const again = runHook(payload, { ...env, WT_ACTIONABLE_LANE_PATTERNS: 'wt-actionable-test no-match lane' })
-    expect(again.code).toBe(2)
-    expect(again.stderr).toContain('Block 1 of 3')
+    expect(again.code).toBe(0)
+    expect(blockText(again)).toContain('Block 1 of 3')
   })
 
   it('blinding the matcher still blocks, proving the gate did not merely stay quiet', () => {
@@ -576,8 +601,8 @@ describe('wt-actionable-gate-hook', () => {
     const pattern = 'wt-actionable-test blinded matcher lane'
     launchLane(pattern, cwd)
     const r = runHook(payload, { ...env, WT_ACTIONABLE_LANE_PATTERNS: 'wt-actionable-test definitely-no-match lane' })
-    expect(r.code).toBe(2)
-    expect(r.stderr).toContain('CARD-55 blinded matcher')
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toContain('CARD-55 blinded matcher')
   })
 
   it('a lane from another session is not counted as this session\'s work', () => {
@@ -594,8 +619,8 @@ describe('wt-actionable-gate-hook', () => {
     const pattern = 'wt-actionable-test detached lane'
     launchDetachedLaneViaHelper(pattern, cwd)
     const r = runHook(payload, { ...env, WT_ACTIONABLE_LANE_PATTERNS: pattern })
-    expect(r.code).toBe(2)
-    expect(r.stderr).toContain('CARD-56 other session lane')
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toContain('CARD-56 other session lane')
   })
 
   it('platform gap falls back to transcript + declared bound without throwing or claiming a lane', () => {
@@ -616,8 +641,8 @@ describe('wt-actionable-gate-hook', () => {
       WT_ACTIONABLE_LANE_DETECTION_MODE: 'unsupported',
       WT_ACTIONABLE_LANE_PATTERNS: pattern,
     })
-    expect(blocked.code).toBe(2)
-    expect(blocked.stderr).toContain('CARD-57 unsupported platform')
+    expect(blocked.code).toBe(0)
+    expect(blockText(blocked)).toContain('CARD-57 unsupported platform')
 
     writeSnapshot(stateDir, cwd, {
       at: Date.now(),
@@ -634,7 +659,24 @@ describe('wt-actionable-gate-hook', () => {
       WT_ACTIONABLE_LANE_PATTERNS: pattern,
     })
     expect(fallback.code).toBe(0)
-    expect(fallback.stderr).toBe('')
+    expect(blockText(fallback)).toBe('')
+  })
+
+  it('the emitted additionalContext is at most 6 lines', () => {
+    const { env, payload, stateDir, cwd } = scaffold('length-lock')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now(),
+      actionable: 3,
+      next: 'CARD-58 length lock',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+    const r = runHook(payload, env)
+    const text = blockText(r)
+    expect(text).not.toBe('')
+    expect(text.split('\n').length).toBeLessThanOrEqual(6)
   })
 })
 

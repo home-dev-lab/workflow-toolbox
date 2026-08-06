@@ -235,17 +235,19 @@ function detectExternalLane(cwd) {
 }
 
 function renderBlock(decision, blockMax) {
+  // Factual, not imperative — see the emission comment in main() for why. Keep the exact
+  // substrings 'actionable item(s) remain', 'Actionable count is UNKNOWN', and 'Block N of M':
+  // the test suite matches on them, and they carry the state a resuming reader needs.
   const actionableLine = finiteNumber(decision.actionable)
     ? `${decision.actionable} actionable item(s) remain.`
     : 'Actionable count is UNKNOWN (snapshot missing or stale after opt-in).'
   const nextLine = decision.next ? decision.next : 'unknown'
   return [
-    `ACTIONABILITY GATE: ${actionableLine}`,
+    `Actionability gate state: ${actionableLine}`,
     `Next: ${nextLine}`,
-    'Ending the turn again will NOT clear this.',
-    'Only work running, or nothing actionable, clears it.',
+    'Repeating a turn-end does not change this state.',
+    'It resolves once work is running, or once nothing is actionable.',
     `Block ${decision.nextConsecutiveBlocks} of ${blockMax}.`,
-    'A gate makes stopping loud; it does not make work happen. Only a self-paced loop hands a turn back.',
   ].join('\n')
 }
 
@@ -292,8 +294,27 @@ function main() {
   } catch {
     return
   }
-  process.stderr.write(renderBlock(decision, BLOCK_MAX))
-  process.exit(2)
+  // Emission shape — three exist for a Stop hook, and this is a deliberate choice among them,
+  // not the original one:
+  //   1. stderr + exit 2            — blocks; renders to BOTH the model AND the user's
+  //                                    terminal transcript. This is what this hook used to do,
+  //                                    and it is the noisiest form.
+  //   2. stdout {"decision":"block","reason":...} + exit 0 — blocks; `reason` STILL renders to
+  //                                    the user as a "<hook> hook error", measured FALSE against
+  //                                    the earlier belief that this shape was model-only.
+  //   3. stdout {"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":...}} + exit 0
+  //                                    — blocks (per the official docs: "the conversation
+  //                                    continues so Claude can act on the feedback"), and the
+  //                                    text is injected as a system reminder that does NOT
+  //                                    appear as a chat message in the user's terminal.
+  // Shape 3 is used here: it keeps the exact refusal behaviour while dropping the noise. Its
+  // phrasing is deliberately FACTUAL rather than imperative, because text that reads as an
+  // out-of-band command can trigger the model's own prompt-injection defenses and get
+  // resurfaced to the user anyway — an imperative rewrite would silently reopen shape 1's noise.
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: { hookEventName: 'Stop', additionalContext: renderBlock(decision, BLOCK_MAX) },
+  }))
+  process.exit(0)
 }
 
 runFailOpenHook('wt-actionable-gate-hook.mjs', main)
