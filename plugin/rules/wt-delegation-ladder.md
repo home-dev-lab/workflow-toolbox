@@ -117,19 +117,17 @@ regardless.
 
 The executor's green report is EVIDENCE, not proof: rerun the gates by exit code and read the
 diff yourself before committing. Release an agent (shutdown request) only when its arc is
-complete; a terminated or quota-killed agent resumes from its transcript on the next message,
-so try resuming a dead agent before respawning a replacement — and never spawn a successor
-into the same worktree before the predecessor's death is confirmed (two writers corrupt one
-tree). Before assuming an agent is stuck, check observable state (git status, file mtimes,
-HEAD) rather than nudging blindly — and even then, silence alone does not mean it is dead:
-an agent legitimately waiting on something writes nothing, which looks identical to one
-that died. The signal that discriminates is the agent's response, not how long it has
-stayed quiet, so a check-in states the observation and asks rather than asserting death —
-asserting it forces a live agent to spend a turn correcting a wrong premise. Do not poll a
-spawned agent's completion through a status- or task-lookup tool either: its display name
-is not an id such tools accept, and a lookup that finds nothing proves nothing. Wait for
-the completion notification, or arm your own watcher on a real signal (file changes,
-process state) for an independent wake-up.
+complete; a terminated or quota-killed agent resumes from its transcript on the next message, so
+try resuming before respawning — never spawn a successor into the same worktree before the
+predecessor's death is confirmed (two writers corrupt one tree). Before assuming an agent is
+stuck, check observable state (git status, file mtimes, HEAD) rather than nudging blindly — and
+even then, silence alone does not mean it is dead: a legitimately-waiting agent writes nothing,
+identical to one that died. The signal that discriminates is the agent's response, not how long
+it stayed quiet, so a check-in states the observation and asks rather than asserting death —
+asserting it forces a live agent to spend a turn correcting a wrong premise. Do not poll
+completion through a status/task-lookup tool: its display name is not an id such tools accept,
+and a lookup finding nothing proves nothing. Wait for the completion notification, or arm your
+own watcher on a real signal (file changes, process state) for an independent wake-up.
 
 ## Four prohibitions that sharpen the ladder
 
@@ -162,13 +160,11 @@ harness stays quiet either way. Both come from directly exercising the surface; 
 undocumented and may change without notice, so treat the specifics below as a dated
 measurement, not a permanent contract.
 
-**Addressing.** The short `name` is the normal address, and it keeps working after the agent's
-own turn ends — sending to a completed agent's name resumes it from its transcript, per the
-tool's own contract. The raw id (shape `a<name>-<hash>` for a named agent, `a<hex>` for an
-anonymous one) is the fallback: use it only when the agent has no name, or when a newer agent
-took the same name (latest wins). Do not treat the raw id as the primary or required address —
-both routes were exercised end-to-end (message delivered AND acted on, not just accepted by the
-tool) and both worked.
+**Addressing.** The short `name` is the normal address and keeps working after the agent's own
+turn ends — messaging a completed agent's name resumes it from its transcript. The raw id
+(`a<name>-<hash>` named, `a<hex>` anonymous) is the fallback: use it only when the agent has no
+name, or a newer one took the same name (latest wins). Both routes were exercised end-to-end
+(delivered AND acted on) and both worked — the raw id is not the primary address.
 
 ⚠ **Cross-restart revival by raw id is REPRODUCED, not a one-off — the short name may still
 fail.** After a full session restart (not just an agent completing its own turn), a previously-
@@ -183,10 +179,9 @@ reads in both directions — a substantive reply means the context survived, a r
 means fall back to a fresh spawn. Re-spawning first, on the assumption that a restart always
 kills a delegate, throws away exactly the context this probe would have recovered.
 
-**The raw id is recoverable even when it was never recorded**: the `subagents/` directory's
-filenames (`agent-<raw-id>.jsonl`) ARE the ids, so a lookup there always has a fallback — but a
-handover note should still carry the id explicitly, since without it the only route is that
-directory scan.
+**The raw id is recoverable even unrecorded**: the `subagents/` directory's filenames
+(`agent-<raw-id>.jsonl`) ARE the ids — a handover note should still carry it explicitly, since
+otherwise the only route is that directory scan.
 
 ⚠ **The TUI's silence is not evidence either way — it never shows a resumed agent.** A revived
 agent — alive, responsive, carrying its full prior context — does not appear anywhere in the
@@ -209,11 +204,10 @@ because the natural guess — the session's own conversation log — is not it. 
 ```
 
 ⚠ **A watcher armed on the top-level file is a hollow guard.** It measures the session's own
-writes, not the delegate's — so it reports "active" for as long as the session keeps talking,
-regardless of whether the delegate is working, stuck, or gone. It can never fire, and its
-silence is indistinguishable from a healthy delegate. Point any freshness check at the
-`subagents/agent-<raw-id>.jsonl` path, and confirm the file exists before arming: an absent file
-means the watcher never armed, not that the delegate is quiet.
+writes, not the delegate's — it reports "active" as long as the session keeps talking regardless
+of whether the delegate is working, stuck, or gone, and its silence is indistinguishable from a
+healthy delegate. Point any freshness check at `subagents/agent-<raw-id>.jsonl` and confirm the
+file exists before arming: an absent file means the watcher never armed, not a quiet delegate.
 
 **Side benefit**: the filenames under `subagents/` ARE the raw ids (`agent-<raw-id>.jsonl`) —
 this is the dependency-free way to recover a delegate's raw id when its name stops resolving,
@@ -230,34 +224,32 @@ whether the observer attaches, on this same undocumented surface:
 | `name` **+** an isolated worktree | yes | yes | yes |
 | `name` alone | **no** (drops silently) | yes | yes |
 
-The third row's drop is conditional, not absolute: it happens once the session already has
-other addressable teammates, because that team context initializes lazily — so the very first
-named spawn of a session can still land the observer even without isolation. Don't reason about
-whether the condition holds for a given spawn; pick a shape that is safe either way.
+The third row's drop is conditional: it happens once the session already has other addressable
+teammates (team context initializes lazily), so a session's very first named spawn can still
+land the observer even without isolation. Don't reason about whether the condition holds for a
+given spawn; pick a shape that is safe either way.
 
-This makes the choice a real three-way trade-off, not a rule to prescribe once: anonymous spawns
-keep the observer at the cost of name-based addressing (recoverable via the raw id above); named
-spawns without isolation risk losing the observer silently; named-plus-isolated spawns keep
-both — except when the delegate hands its own increment to an external executor lane, because an
-isolated worktree with a zero-diff at idle gets reaped while the lane is still running inside it,
-which makes that combination unusable for a lane-delegating delegate specifically. State which
-shape a given coordinator uses and why, rather than defaulting to one without saying so.
+Real three-way trade-off, not a rule to prescribe once: anonymous keeps the observer at the cost
+of name-based addressing (recoverable via the raw id above); named-without-isolation risks
+losing the observer silently; named-plus-isolated keeps both — except when the delegate hands
+its own increment to an external executor lane, because an isolated worktree with a zero-diff at
+idle gets reaped while the lane still runs inside it, making that combination unusable for a
+lane-delegating delegate specifically. State which shape a coordinator uses and why, rather than
+defaulting to one without saying so.
 
 ## Pass LIVENESS_AGENT_ID to every delegate you spawn directly
 
-Whether a spawn goes through `pilot-wave` or you spawn a `pilot`/`pilot-orchestrator` directly
-from your own session, the same discipline applies: a delegate cannot read its own raw agent id
-from inside itself — no environment variable carries it — so if you never hand it over, the
-delegate's liveness file (the arc watcher's third correlation input; see the "Liveness file"
-section of `pilot.md`/`pilot-orchestrator.md`) degrades to a weaker key (its declared name) or,
-for an anonymous spawn, to `UNCORRELATABLE`. Anonymous is not a rare case here — it is the ONLY
-safe shape for a delegate that hands its own increment to an external executor lane (see the
-naming/observer trade-off above), so this is exactly the population most likely to lose
-correlation if the id is never sent.
+Whether via `pilot-wave` or a direct spawn of `pilot`/`pilot-orchestrator`, the same discipline
+applies: a delegate cannot read its own raw agent id from inside itself — no environment
+variable carries it — so if you never hand it over, its liveness file (the arc watcher's third
+correlation input; see "Liveness file" in `pilot.md`/`pilot-orchestrator.md`) degrades to a
+weaker key (its declared name) or, for an anonymous spawn, to `UNCORRELATABLE`. Anonymous is not
+rare — it is the ONLY safe shape for a delegate handing its increment to an external executor
+lane (see the trade-off above), exactly the population most likely to lose correlation.
 
-The `Agent` tool returns the raw id only when the spawn call RETURNS — after you already sent
-the prompt text. So the id is never a field inside the composed brief; it is a follow-up. The
-moment the spawn call returns, before your next action, `SendMessage` the delegate one line:
+The `Agent` tool returns the raw id only when the spawn call RETURNS, after the prompt is
+already sent — so the id is never a field inside the brief, it is a follow-up. The moment the
+spawn call returns, before your next action, `SendMessage` the delegate one line:
 
 ```
 LIVENESS_AGENT_ID: <raw id>
