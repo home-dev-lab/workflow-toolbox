@@ -297,13 +297,13 @@ process.stdout.write(
       // save characters was caught by the suite: a reader could no longer tell "nobody measured
       // the queue" from "the queue is small", which is the whole reason the gate assumes
       // non-empty in that state.
-      // ⚠ The `[for Claude, not you]` prefix is NOT decoration. This text is addressed to the
+      // ⚠ The `[for Claude, not the user]` prefix is NOT decoration. This text is addressed to the
       // model, and the harness renders it in the user's terminal with nothing saying so — a
       // human reading it cannot tell whether they are being asked to act, and the trailing file
       // path actively invites them to go and read it. Reported by a user who did exactly that.
       // Anything that cannot be hidden must at least name its addressee.
       additionalContext:
-        `[for Claude, not you] open work remains, nothing running · ` +
+        `[for Claude, not the user] open work remains, nothing running · ` +
         (openCount === null ? 'Queue size is unknown (stale snapshot)' : `${openCount} open`) +
         `${nextItem ? ` · next: ${nextItem}` : ''} — chain or say why · ${HELP_PATH}`,
     },

@@ -237,7 +237,7 @@ function renderBlock(decision, blockMax) {
   // the point — it still renders in the hook-results block the user reads. So LENGTH is the
   // only lever anyone has demonstrated, and every line here is charged to a human who did not
   // ask for it. Explanation belongs in the repo, never in a message that fires every turn.
-  return `[for Claude, not you] Actionability gate: ${actionableLine} Next: ${nextLine}. Block ${decision.nextConsecutiveBlocks} of ${blockMax}.`
+  return `[for Claude, not the user] Actionability gate: ${actionableLine} Next: ${nextLine}. Block ${decision.nextConsecutiveBlocks} of ${blockMax}.`
 }
 
 function main() {
