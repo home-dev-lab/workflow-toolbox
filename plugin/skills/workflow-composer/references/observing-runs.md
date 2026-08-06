@@ -12,8 +12,9 @@
 > against the server, not assumptions.
 
 The server (`wt-observe start`, on `http://localhost:5174`) renders a run as a
-**phase → agent DAG**. There are two ways to see a run: **live** (as it executes) and
-**post-mortem** (replayed from disk after it finishes).
+**phase → agent DAG**. There are three ways to see a run: **live via server launch**,
+**live via attach** (a compiled workflow you run from your own session with the Workflow
+tool), and **post-mortem** (replayed from disk after it finishes).
 
 ## Live — delegated SDK launch (the rich pathway)
 
@@ -32,9 +33,21 @@ the live model out to every viewer.
   compiled** workflows (author in `.workflow.ts`, build, point `OBSERVE_WORKFLOWS_DIR` at
   the output dir, then launch the artifact by name). No arbitrary-path exec.
 
-This is the only pathway that shows the genuine per-pattern structure *as it happens* — so it is
-the meaningful way to **watch** a pattern run. An **inline / non-compiled** fan-out you drive
-from a conversation has no `.js` to delegate, so it has **no live UI** — *compile to observe*.
+This pathway shows the genuine per-pattern structure *as it happens*, from the moment the server
+launches it. A **compiled** workflow run from your own session via the harness `Workflow` tool is
+discovered on disk and attaches to the same live stream — see *Live — own-session attach* below.
+Only a genuinely **inline / non-compiled** fan-out (no `.js` artifact at all) has **no live UI**
+— *compile to observe*.
+
+## Live — own-session attach (compiled workflow, run via the Workflow tool)
+
+A compiled artifact launched from your own Claude session with the harness `Workflow` tool is
+discovered **mid-run** on disk by the observe server and fed into the same `/api/stream` a
+server launch uses: the browser sees it as an **attached** run — a first-class run source
+alongside a server-launched one — with agents streaming live and the phase skeleton seeded
+from the artifact at the start, rather than appearing only at completion.
+
+This is a **live** view, not disk replay. Only a non-compiled inline fan-out has no live UI.
 
 ## Post-mortem — disk replay (any finished run)
 
@@ -89,11 +102,14 @@ cannot drift apart silently:
 - **Watch a saved/compiled workflow live:** build it into `toolkit/workflows/` (or point
   `OBSERVE_WORKFLOWS_DIR` at it), then `POST /api/launch { script }` (or the Launcher) and open
   `/api/stream?runId=…`. Full DAG.
-- **Inspect a finished run (incl. your own Workflow-tool runs):** open the RunPicker (it reads
-  `/api/timeline`), pick the run — the full model is replayed from disk.
-- **Educate the user on the limit:** live observation requires a **compiled artifact** the
-  server can launch; an inline workflow run in your own session is observable only **after** it
-  finishes, via disk replay.
+- **Watch your OWN session's compiled run live:** launch it with the harness `Workflow` tool —
+  the server discovers it mid-run and attaches it to the same stream. No launch call needed.
+- **Inspect a finished run:** open the RunPicker (it reads `/api/timeline`), pick the run — the
+  full model is replayed from disk.
+- **Educate the user on the limit:** live observation requires a **compiled artifact** — either
+  server-launched or attached from your own session. A genuinely inline, non-compiled fan-out
+  has no live UI, and is not observable at all afterwards either, since there is no artifact to
+  discover.
 
 ## Removed: the hook-fed own-session pathway
 
@@ -105,5 +121,12 @@ merged), and an `agent_type` reused across phases collapsed into one column. The
 everything tried (prefix filter, `p<N>` name encoding, declared shape, `agent_type→phase` map,
 the `declare-shape` CLI) and why it was dropped — is
 Workflow Observatory ADR 0006 (an observe-product decision record, shipped with that
-product's own repository). Net today:
-**live = compiled artifact via the SDK; own-session / inline = disk replay after it finishes.**
+product's own repository).
+
+⚠ **What replaced it is not the same thing, and the distinction is the whole point.** That
+pathway tried to reconstruct a run from lifecycle hooks, which carry no phases, edges, or
+tokens. The live-attach path instead discovers the run's own on-disk artifacts mid-run and
+feeds the real model into the same stream — so an own-session run of a **compiled** workflow is
+now genuinely live, at full fidelity. Net today:
+**live = a compiled artifact, either server-launched or attached from your own session;
+genuinely inline / non-compiled = no live UI and nothing to replay.**
