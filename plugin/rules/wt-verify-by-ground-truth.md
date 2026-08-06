@@ -19,6 +19,20 @@ One instrument agree with itself = not corroboration.
 Misread code not spoil one result. It retroactively VOID every "gates green" claim built on same
 capture path.
 
+**Exit code answer for the COMMAND, never the SUBJECT.** Gate can genuinely belong to gate, run
+un-piped, code read correctly — and still certify the WRONG TREE. A merge that aborts leaves
+subject unchanged; gate chained right after runs honestly on the stale tree, reports real
+success about a subject nobody intended to certify. Before trusting a green: establish WHICH
+TREE it ran on. Distinct question from "did the gate succeed".
+
+**Branch adds tests → merged count must be STRICTLY GREATER, never merely not-lower.** Equal
+count after a merge is the tell the merge never landed, whatever the gate's own exit code says.
+State this one mechanically, not as a thing to remember — a threshold that EXECUTES beats a
+check that depends on recall.
+
+**Never chain a merge with its gates in one command.** `;`, or a newline, hand the next command
+a stale tree to certify — same failure as piping a gate, one step earlier.
+
 **UI claim = RENDERED PIXELS.** Not API payload. Field can sit in JSON and be dropped before DOM.
 Drive real browser.
 
