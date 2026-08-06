@@ -56,6 +56,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents the shipped Stop gate and its snapshot contract.',
   },
   {
+    script: 'plugin/bin/wt-actionable-snapshot-producer-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the shipped Planka producer and what it deliberately stays silent on.',
+  },
+  {
     script: 'plugin/bin/wt-adopt-check-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this SessionStart adoption-state notice under Shipped Hooks, Guards & Monitors.',
@@ -542,6 +547,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     // Shipped Stop hooks whose operator-facing semantics are documented as known issues/contracts.
     sources: [
       'plugin/bin/wt-actionable-gate-hook.mjs',
+      'plugin/bin/wt-actionable-snapshot-producer-hook.mjs',
       'plugin/bin/wt-registry-heartbeat-hook.mjs',
       'plugin/bin/wt-session-start-registry-hook.mjs',
       'plugin/bin/wt-spawn-registry-scan.mjs',

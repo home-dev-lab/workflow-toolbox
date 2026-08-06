@@ -235,6 +235,20 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         transcript_path: sandbox.transcriptPath,
         tool_input: { command: 'git status' },
       }
+    case 'wt-actionable-snapshot-producer-hook.mjs':
+      // No .claude/scripts/lib/depends-on-parser.mjs in this sandbox project — the hook
+      // must no-op cleanly rather than crash, which is exactly what a project without the
+      // dependency-parser convention should see (see actionability-planka-producer.test.ts
+      // for the full write/no-write behavior matrix).
+      return {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'mcp__planka__get_board',
+        cwd: sandbox.projectDir,
+        tool_input: { boardId: 'b1' },
+        tool_response: {
+          content: [{ type: 'text', text: JSON.stringify({ id: 'board-1', lists: [{ name: 'Next', cards: [] }] }) }],
+        },
+      }
     default:
       throw new Error(`No synthetic payload defined for ${file}`)
   }
