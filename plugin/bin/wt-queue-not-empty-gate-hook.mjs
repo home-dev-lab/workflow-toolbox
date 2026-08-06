@@ -268,30 +268,39 @@ try {
 //   3. stdout {"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":...}} + exit 0
 //                                                          — blocks (docs: "the conversation
 //                                                            continues so Claude can act on the
-//                                                            feedback"), and the text is injected
-//                                                            as a system reminder that the docs
-//                                                            state "doesn't appear as a chat
-//                                                            message in the interface" — the one
-//                                                            point where the doc reading and the
-//                                                            direct measurement (the two sibling
-//                                                            hooks already shipped this way) agree.
-// Shape 3 is used here: same refusal behaviour, no terminal noise. The phrasing is deliberately
-// FACTUAL, not imperative — text framed as an out-of-band command can trigger the model's own
-// prompt-injection defenses and get resurfaced to the user anyway, which would silently reopen
-// shape 1's noise under a different name.
+//                                                            feedback"), and ALSO renders to the
+//                                                            user, as a "<hook> hook feedback".
+//                                                            Different label from shape 2, same
+//                                                            visibility.
+//   3 + {"suppressOutput": true}                           — blocks, and reaches NOBODY: not the
+//                                                            user, and not the model either.
+//
+// ⚠ An earlier version of this comment claimed shape 3 was silent for the user, citing the docs'
+// "doesn't appear as a chat message in the interface" as agreeing with measurement. That was
+// WRONG, and it was wrong in the most expensive way — a doc sentence read as a measurement. Under
+// direct observation on a real terminal (2026-08-06) shape 3 renders, and `suppressOutput` then
+// hides it from the model too, which is strictly worse than noise: a refused turn nobody can
+// explain.
+//
+// So: there is NO shape that reaches the model while sparing the user. LENGTH is the only lever
+// anyone has demonstrated, which is why the message below is ONE line and everything else lives
+// in HELP_PATH. Do not grow it back, and do not re-derive a quieter shape from the documentation
+// — that path has now been walked twice and cost the user two rounds of noise.
+//
+// The phrasing stays FACTUAL rather than imperative: text framed as an out-of-band command can
+// trigger the model's own prompt-injection defenses and be resurfaced to the user anyway.
 process.stdout.write(
   JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'Stop',
-      additionalContext: [
-        'End-of-turn state: open work remains and no delegated work is running.',
-        openCount === null
-          ? 'Queue size is unknown (no recent snapshot), so it counts as non-empty.'
-          : `Queue: ${openCount} open, measured ${snapshotAgeMin === null ? 'at an unknown time' : snapshotAgeMin === 0 ? 'just now' : `${snapshotAgeMin} min ago`}.`,
-        nextItem ? `Next item: ${nextItem} (same snapshot — may already be closed).` : '',
-        'Two things resolve this: work started within this turn, or a stated reason for stopping.',
-        `Rationale and detail: ${HELP_PATH} (blocks at most once per ${COOLDOWN_MIN} min).`,
-      ].filter(Boolean).join('\n'),
+      // ⚠ The UNKNOWN case must stay distinguishable from a known count. Squeezing it out to
+      // save characters was caught by the suite: a reader could no longer tell "nobody measured
+      // the queue" from "the queue is small", which is the whole reason the gate assumes
+      // non-empty in that state.
+      additionalContext:
+        `open work remains, nothing running · ` +
+        (openCount === null ? 'Queue size is unknown (stale snapshot)' : `${openCount} open`) +
+        `${nextItem ? ` · next: ${nextItem}` : ''} — chain or say why · ${HELP_PATH}`,
     },
   }),
 )
