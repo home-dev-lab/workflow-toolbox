@@ -2179,6 +2179,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-queue-not-empty-gate-hook.mjs",
         "plugin/bin/wt-observer-pairing-guard-hook.mjs",
         "plugin/bin/wt-rule-edit-horizon-hook.mjs",
+        "plugin/bin/wt-live-config-tree-guard-hook.mjs",
         "plugin/bin/wt-service-watch.mjs",
         "plugin/bin/wt-spawn-capability-guard-hook.mjs",
         "plugin/bin/wt-spawn-shape-guard-hook.mjs",
