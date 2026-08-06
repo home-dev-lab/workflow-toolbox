@@ -115,6 +115,23 @@ Runs `wt-stale-date-guard.mjs` on the single file just touched by `Write` or `Ed
 
 Asks, for the single file just touched by `Write` or `Edit`, whether a conventional local Claude config surface might have a shipped counterpart that needs the same fix. It checks only `.claude/scripts/`, `.claude/hooks/`, and `.claude/rules/` for `.mjs`, `.js`, `.ts`, `.cjs`, `.py`, `.sh`, and `.md` files, while staying silent for `plugin/`, `node_modules/`, `memory/*.md`, `MEMORY.md`, and anything else. It does not attempt filename or content matching; it raises the question only, and throttles itself to once per session per directory via a small state file under `WT_SHIPPED_TWIN_GUARD_DIR` or a safe temp dir fallback.
 
+### `wt-live-config-tree-guard-hook.mjs` — live ambient-rules-tree switch guard (PreToolUse)
+
+Fires on a `Bash` `git checkout`/`switch`/`reset --hard` (branch-shaped, not a pathspec restore)
+whose target directory resolves to the live ambient rules directory — the same directory
+`wt-rule-edit-horizon-hook.mjs` matches: an explicit `CLAUDE_CONFIG_DIR/rules`, or any
+`.claude`/`.claude-*`-named ancestor's `rules/` child. It also warns (never denies) on
+`merge`/`rebase`/`stash`/`cherry-pick` at the same location. Splitting the target across a
+leading `cd` (`cd <dir> && git reset --hard`) is tracked across `&&`/`;`/`|`/newline segments,
+not just read from the invocation's own directory. It is INERT — no output at all — when the
+resolved directory is not itself a git working tree, or when the target cannot be resolved (a
+shell variable, a glob); run the file directly with `--diagnose` to see whether it is active
+for the current environment rather than trusting its silence. It only sees git commands: a
+direct file write or delete inside the live rules directory is invisible to it. Defaults to
+WARN (`systemMessage`, never blocks); set `WT_LIVE_CONFIG_TREE_GUARD_MODE=deny` to escalate the
+matched-but-not-ambiguous commands to a denial, or `=off` to disable. Internal errors fail open
+with no output.
+
 ### `wt-rule-edit-horizon-hook.mjs` — ambient-rule reload-horizon notice (PostToolUse)
 
 Fires only when `Edit`, `Write`, or `MultiEdit` touches a file under a `.claude`- (or

@@ -112,6 +112,13 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         cwd: sandbox.projectDir,
         tool_input: { command: 'git status' },
       }
+    case 'wt-live-config-tree-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: sandbox.projectDir,
+        tool_input: { command: 'git status' },
+      }
     case 'wt-hook-registration-drift-hook.mjs':
       return {
         hook_event_name: 'SessionStart',
