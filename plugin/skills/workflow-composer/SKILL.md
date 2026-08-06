@@ -34,7 +34,8 @@ The reference files carry the deep material — read them when a step points you
 
 - `references/api-reference.md` — every global, option, cap, and constant, each
   tagged with its evidence tier (documented / observed / verified).
-- `references/patterns.md` — the nine orchestration patterns as copy-paste recipes.
+- [references/patterns.md](references/patterns.md) — the nine orchestration patterns as copy-paste recipes.
+- [references/patterns-execution.md](references/patterns-execution.md) — running and tuning those patterns.
 - `references/premise-quality.md` — the authoring doctrine: how the quality of what
   you feed your agents (evidence, framing, complete source listings, a named
   "could-not-verify" out) caps what a fan-out can return, plus the failure modes that
@@ -189,7 +190,7 @@ These are the rules the library follows; follow them in your own `run` body:
    receiving agent parse the brief.
 7. **Consider the `cacheWarm` trade-off on any fan-out pattern call** (the eight
    patterns that launch >1 agent concurrently — see "Cache-warm" in
-   `references/patterns.md`). It defaults to `true` (staggers the burst to save
+   [references/patterns-execution.md](references/patterns-execution.md)). It defaults to `true` (staggers the burst to save
    redundant prompt-cache writes, at the cost of a bit more latency per burst).
    When it's not obvious which way a workflow should go, ASK: does latency or
    token/cache cost matter more here? Set `cacheWarm: false` on that call if the
@@ -484,18 +485,6 @@ review-like workflow.
 
 ## Learning more
 
-- `references/api-reference.md` — the evidence-tiered runtime reference: every global,
-  option, cap, and failure mode, each tagged documented / observed / verified.
-- `references/patterns.md` — the nine orchestration patterns as copy-paste recipes.
-- `references/premise-quality.md` — premise quality caps the fan-out result: evidence,
-  complete source listings, neutral framing, named could-not-verify outs, and the
-  output failure modes to bound against.
-- `references/orchestrator-pipelines.md` — human-gated multi-workflow jobs (L3).
-- `references/shipped-compositions.md` — the 26 shipped compositions + operational lessons.
-- `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
-- `references/observer-definitions.md` — authoring an observer (`<name>.observer.json`), the
-  abstract-needs boundary, the selector/label coupling, and the `args.observers` launch bridge.
-- `references/capability-needs.md` — giving a role more than the bare default via a
-  workflow-owned `<name>.capabilities.json` sidecar of ABSTRACT needs (`$cap:<need>`),
-  resolved per-machine at launch; the derivation pass, the machine-agnostic lint, adoption.
-- `references/worked-example-pr-review.md` — the annotated pr-review walk-through.
+The full reference-file index — every `references/*.md` file and what it covers —
+is listed once, near the top of this skill, right after "There are **two ways to
+author one**". Same files; not repeated here.
