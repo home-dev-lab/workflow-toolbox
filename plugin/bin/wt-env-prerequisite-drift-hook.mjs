@@ -2,7 +2,7 @@
 // wt-env-prerequisite-drift-hook.mjs — SessionStart warning light for an environment
 // prerequisite that drifted AFTER adoption.
 //
-// `adopt-rules` is the wrench: it names a missing prerequisite and writes it on an
+// `adopt` is the wrench: it names a missing prerequisite and writes it on an
 // explicit flag. This is the warning light. Someone who adopted months ago, whose
 // settings have since been edited — by them, by another tool, by a machine restore —
 // gets a plugin that behaves worse with nothing anywhere saying so:

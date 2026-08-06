@@ -2,7 +2,7 @@
 // the adopted sets require, plus the three-state reader and the drift evaluator built
 // on it.
 //
-// ⚠ THIS LIST HAS A TWIN, and the duplication is deliberate. `adopt-rules`
+// ⚠ THIS LIST HAS A TWIN, and the duplication is deliberate. `adopt`
 // (plugin/skills/adopt/scripts/install.mjs) REPAIRS a missing prerequisite; this module
 // backs the SessionStart hook that DETECTS one which drifted afterwards. Two mechanisms,
 // one fact — so the obvious move is for the installer to import from here.
