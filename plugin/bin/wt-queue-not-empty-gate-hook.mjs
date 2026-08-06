@@ -23,7 +23,8 @@
 // was looked at.
 //
 // ⚠ THE TWO WAYS THIS CLASS OF GUARD DIES, both deliberately designed against:
-//   1. It merely PRINTS a reminder → ignorable → a hope with a filename. So it BLOCKS (exit 2).
+//   1. It merely PRINTS a reminder → ignorable → a hope with a filename. So it BLOCKS (see the
+//      emission-shape comment near the bottom of this file for exactly how).
 //   2. It blocks too often → becomes an always-red gate → gets bypassed, then removed. So it
 //      fires on a narrow, checkable conjunction, and at most once per COOLDOWN_MIN.
 //      Silence is its normal state; if it ever becomes chatty, that is a defect in IT.
@@ -97,10 +98,17 @@
 // behavior: the hook still cannot tell "stopping for no reason" from "cannot work right now".
 // State this in any adopter-facing note.
 //
-// Ship / keep-private: this file IS the shipped, generalized copy — see plugin.json's Stop
-// hooks array. It was ported from a private, single-project original (that copy stays wired at
-// PROJECT scope, never machine-wide: a project with no tracker at all must never inherit a
-// guard it cannot satisfy).
+// Ship / keep-private: this file IS the shipped, generalized copy, ported from a private,
+// single-project original (that copy stays wired at PROJECT scope, never machine-wide — a
+// project with no tracker at all must never inherit a guard it cannot satisfy).
+//
+// ⚠ SUPERSEDED, KEPT FOR BACKWARD COMPATIBILITY — this file is deliberately NOT wired into
+// plugin.json's Stop hooks array. It was replaced there by wt-actionable-gate-hook.mjs, a
+// consecutive-block, tracker-agnostic successor with the same silent-block emission shape. This
+// file was restored after a deletion attempt broke live sessions whose own settings.json still
+// references it directly by path — an adopter migrating off it should point their Stop hook at
+// wt-actionable-gate-hook.mjs instead. It still gets the same noise fix here because a
+// still-shipped, still-invocable file is still a defect for whoever invokes it.
 
 import { readFileSync, statSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -110,6 +118,7 @@ import { createHash } from 'node:crypto'
 
 const STATE_DIR = process.env.WT_QUEUE_GATE_DIR
   || join(homedir(), '.local', 'state', 'wt-queue-gate')
+const HELP_PATH = new URL('wt-queue-not-empty-gate-hook.help.md', import.meta.url).pathname
 const COOLDOWN_MIN = 45 // never block more often than this, per session
 const INFLIGHT_MIN = 3 // a subagent transcript touched this recently ⇒ work is running
 const SNAPSHOT_MAX_AGE_MIN = 120
@@ -239,22 +248,51 @@ try {
   bail() // cannot record the block ⇒ cannot bound it ⇒ do not block at all
 }
 
-process.stderr.write(
-  [
-    "⚠ YOU ARE STOPPING WHILE WORK REMAINS AND NOTHING IS RUNNING.",
-    openCount === null
-      ? '  queue: UNKNOWN state (no recent marker) — treated as NOT EMPTY.'
-      : `  queue: ${openCount} open item(s), as measured ${snapshotAgeMin === null ? 'at an unknown time' : snapshotAgeMin === 0 ? 'just now' : `${snapshotAgeMin} min ago`} — this snapshot refreshes only when something reads the queue, so items closed since are still counted here.`,
-    nextItem ? `  next: ${nextItem}   (same snapshot — may already be closed)` : '',
-    '',
-    "This guard does not check whether you LOOKED at the queue — it checks whether you are",
-    'ending a turn to REPORT while work continues. A report is the end of a turn, and the end',
-    "of a turn is a full stop: nothing resumes until the user speaks again.",
-    '',
-    'So: CONTINUE in THIS turn (take the next item), or STATE why you are stopping. This guard',
-    'never judges the reason; it only makes it impossible to give none.',
-    '',
-    `Stop again and the turn passes: this blocks at most once per ${COOLDOWN_MIN} min.`,
-  ].filter(Boolean).join('\n'),
+// Emission shape — three exist for a Stop hook; this is a deliberate choice among them, not the
+// original one. Grounded against the official hook docs (2026-08-06) AND a direct terminal
+// measurement, because the two disagree on one point:
+//   1. stderr + exit 2                                    — blocks; renders to BOTH the model
+//                                                            AND the user's terminal transcript.
+//                                                            This is what this hook used to do,
+//                                                            and it is the noisiest form.
+//   2. stdout {"decision":"block","reason":...} + exit 0  — blocks; the docs describe `reason`
+//                                                            as context fed to the model, not a
+//                                                            user-facing message — but a direct
+//                                                            terminal measurement on this harness
+//                                                            (the sibling actionability gate, and
+//                                                            this project's own private copy)
+//                                                            showed `reason` STILL renders to the
+//                                                            user as a "<hook> hook error". The
+//                                                            measurement wins over the doc's
+//                                                            paraphrase here.
+//   3. stdout {"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":...}} + exit 0
+//                                                          — blocks (docs: "the conversation
+//                                                            continues so Claude can act on the
+//                                                            feedback"), and the text is injected
+//                                                            as a system reminder that the docs
+//                                                            state "doesn't appear as a chat
+//                                                            message in the interface" — the one
+//                                                            point where the doc reading and the
+//                                                            direct measurement (the two sibling
+//                                                            hooks already shipped this way) agree.
+// Shape 3 is used here: same refusal behaviour, no terminal noise. The phrasing is deliberately
+// FACTUAL, not imperative — text framed as an out-of-band command can trigger the model's own
+// prompt-injection defenses and get resurfaced to the user anyway, which would silently reopen
+// shape 1's noise under a different name.
+process.stdout.write(
+  JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'Stop',
+      additionalContext: [
+        'End-of-turn state: open work remains and no delegated work is running.',
+        openCount === null
+          ? 'Queue size is unknown (no recent snapshot), so it counts as non-empty.'
+          : `Queue: ${openCount} open, measured ${snapshotAgeMin === null ? 'at an unknown time' : snapshotAgeMin === 0 ? 'just now' : `${snapshotAgeMin} min ago`}.`,
+        nextItem ? `Next item: ${nextItem} (same snapshot — may already be closed).` : '',
+        'Two things resolve this: work started within this turn, or a stated reason for stopping.',
+        `Rationale and detail: ${HELP_PATH} (blocks at most once per ${COOLDOWN_MIN} min).`,
+      ].filter(Boolean).join('\n'),
+    },
+  }),
 )
-process.exit(2)
+process.exit(0)
