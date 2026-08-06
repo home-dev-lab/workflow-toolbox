@@ -91,6 +91,18 @@ const MD_PATH_RE = /(?:\.\.?\/)?(?:[^\s`()[\]]+\/)*[^\s`()[\]]+\.md(?:#[^\s`()[\
  */
 export function checkStore(storeDir, opts = {}) {
   const threshold = opts.threshold ?? 200;
+  // Both defaults are OBSERVATIONS of one harness's behaviour, never a read of
+  // any loader's source — state which number you applied whenever you report on
+  // this, because neither is a documented constant and both may differ elsewhere.
+  //
+  // 25000 bytes: an index measured at ~24.4 KB was reported truncated at read
+  // time, so the ceiling sits at or just below that. The default is placed just
+  // ABOVE the observation on purpose — a threshold set below a real, working
+  // size would fire on a healthy store, and a check that refuses correct work is
+  // worse than no check: it gets switched off, taking its real case with it.
+  // The consequence is deliberate and worth naming: this flags a store that has
+  // CROSSED the ceiling, it does not warn one approaching it. Pass a lower
+  // --size-threshold to get margin.
   const sizeThreshold = opts.sizeThreshold ?? 25000;
   const indexFile = opts.indexFile ?? 'MEMORY.md';
   const hubMax = opts.hubMax ?? 45;
