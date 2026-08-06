@@ -662,7 +662,7 @@ describe('wt-actionable-gate-hook', () => {
     expect(blockText(fallback)).toBe('')
   })
 
-  it('the emitted additionalContext is at most 6 lines', () => {
+  it('the emitted additionalContext is at most 2 lines', () => {
     const { env, payload, stateDir, cwd } = scaffold('length-lock')
     writeSnapshot(stateDir, cwd, {
       at: Date.now(),
@@ -676,7 +676,7 @@ describe('wt-actionable-gate-hook', () => {
     const r = runHook(payload, env)
     const text = blockText(r)
     expect(text).not.toBe('')
-    expect(text.split('\n').length).toBeLessThanOrEqual(6)
+    expect(text.split('\n').length).toBeLessThanOrEqual(2)
   })
 })
 

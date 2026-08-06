@@ -230,13 +230,14 @@ function renderBlock(decision, blockMax) {
     ? `${decision.actionable} actionable item(s) remain.`
     : 'Actionable count is UNKNOWN (snapshot missing or stale after opt-in).'
   const nextLine = decision.next ? decision.next : 'unknown'
-  return [
-    `Actionability gate state: ${actionableLine}`,
-    `Next: ${nextLine}`,
-    'Repeating a turn-end does not change this state.',
-    'It resolves once work is running, or once nothing is actionable.',
-    `Block ${decision.nextConsecutiveBlocks} of ${blockMax}.`,
-  ].join('\n')
+  // ⚠ ONE LINE, and the length lock below is what keeps it that way.
+  // Measured 2026-08-06 on this harness: NO Stop-hook emission shape hides its text from the
+  // USER's terminal. `decision:block` renders as "Stop hook error"; `additionalContext` renders
+  // as "Stop hook feedback". The docs' "does not appear as a chat message" is true and beside
+  // the point — it still renders in the hook-results block the user reads. So LENGTH is the
+  // only lever anyone has demonstrated, and every line here is charged to a human who did not
+  // ask for it. Explanation belongs in the repo, never in a message that fires every turn.
+  return `Actionability gate: ${actionableLine} Next: ${nextLine}. Block ${decision.nextConsecutiveBlocks} of ${blockMax}.`
 }
 
 function main() {
