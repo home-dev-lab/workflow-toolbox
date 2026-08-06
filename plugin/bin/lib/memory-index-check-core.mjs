@@ -15,6 +15,14 @@
 // many resolve from the index (following direct links AND, transitively,
 // any `[[slug]]` references inside a linked fiche's own body — the hub
 // pattern), and which ones do not resolve by any path.
+//
+// An unreachable fiche is not automatically a defect: wt-memory-hygiene.md
+// names a deliberate de-indexing (a retraction kept only so old references
+// still resolve) as intentional, not an orphan. A well-formed retraction
+// block whose forward pointer resolves is therefore EXEMPT from
+// unreachableFiches (see retractedFiches below) — but only that narrow
+// case: a retraction with a broken pointer earns no exemption and stays
+// counted, on top of the brokenRetractions finding it already produces.
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
 
@@ -84,6 +92,7 @@ const MD_PATH_RE = /(?:\.\.?\/)?(?:[^\s`()[\]]+\/)*[^\s`()[\]]+\.md(?:#[^\s`()[\
  *   sizeThreshold: number, entryLines: number, indexBytes: number,
  *   overThreshold: boolean, overSizeThreshold: boolean,
  *   diskFiches: number, reachableFiches: number, unreachableFiches: string[],
+ *   retractedFiches: string[],
  *   danglingRefs: Array<{ from: string, target: string }>,
  *   unresolvedCrossRefs: Array<{ from: string, target: string }>,
  *   archivedRefs: Array<{ from: string, target: string }>,
@@ -143,6 +152,7 @@ export function checkStore(storeDir, opts = {}) {
       diskFiches: 0,
       reachableFiches: 0,
       unreachableFiches: [],
+      retractedFiches: [],
       danglingRefs: [],
       unresolvedCrossRefs: [],
       archivedRefs: [],
@@ -311,11 +321,26 @@ export function checkStore(storeDir, opts = {}) {
     }
   }
 
-  const unreachableFiches = [...diskFiches].filter((f) => !reachable.has(f)).sort();
+  const rawUnreachableFiches = [...diskFiches].filter((f) => !reachable.has(f)).sort();
 
   // Whole-note retractions are detected only by the convention's top-of-note
   // blockquote shape. Keyword presence elsewhere in the body stays out of
   // scope so section-level retractions inside live notes do not fire.
+  //
+  // A deliberate de-indexing is exactly what wt-memory-hygiene.md calls
+  // intentional: "a retraction kept only so old references still resolve —
+  // fine, reads intentional; else an orphan to place, merge, or archive."
+  // Before this pass, `unreachableFiches` counted every unreachable fiche
+  // with no exemption, so the two on this store were flagged EVERY session —
+  // exactly the "always-red gate gets ignored" failure the rule itself warns
+  // about. The exemption is narrow on purpose: only a WELL-FORMED retraction
+  // block (`readRetractionForwardTarget` returns non-null) whose forward
+  // pointer actually RESOLVES earns it — a retracted fiche with a broken
+  // pointer gets no exemption and stays counted as unreachable, on top of
+  // the brokenRetractions finding it already produces below. Trading one
+  // false positive (the intentional retraction) for a hole (an unverified
+  // retraction claim) would be the wrong trade.
+  const retractedResolving = new Set();
   for (const file of diskFiches) {
     let body;
     try {
@@ -325,9 +350,19 @@ export function checkStore(storeDir, opts = {}) {
     }
     const target = readRetractionForwardTarget(body);
     if (target === null) continue;
-    if (retractionTargetResolves(storeDir, target)) continue;
+    if (retractionTargetResolves(storeDir, target)) {
+      retractedResolving.add(file);
+      continue;
+    }
     brokenRetractions.push({ from: file, target });
   }
+
+  // Only an unreachable fiche's retraction status matters here — a fiche
+  // that IS reachable (still linked from the index or a hub) needs no
+  // exemption in the first place, so this never widens the exemption beyond
+  // the de-indexed case the rule actually describes.
+  const retractedFiches = rawUnreachableFiches.filter((f) => retractedResolving.has(f)).sort();
+  const unreachableFiches = rawUnreachableFiches.filter((f) => !retractedResolving.has(f));
 
   // Largest hub, for reporting even when nothing is over hubMax — this is
   // what makes the relocated ceiling visible before it becomes a problem,
@@ -398,6 +433,15 @@ export function checkStore(storeDir, opts = {}) {
       'declared-count cross-check inactive: hubs exist, but none declares member_count; silence here means not measured, not verified',
     );
   }
+  // A count that only ever reads "0 unreachable" loses the ability to say
+  // what it exempted — its silence becomes indistinguishable from "nothing
+  // to report" again, the exact failure this exemption exists to close.
+  // Only printed when it applies (empty case reads exactly as before).
+  if (retractedFiches.length > 0) {
+    notices.push(
+      `${retractedFiches.length} fiche(s) excluded from unreachable — a deliberate retraction whose forward pointer resolves (see wt-memory-hygiene.md); not a defect`,
+    );
+  }
 
   return {
     store: storeDir,
@@ -412,6 +456,7 @@ export function checkStore(storeDir, opts = {}) {
     diskFiches: diskFiches.size,
     reachableFiches: reachable.size,
     unreachableFiches,
+    retractedFiches,
     danglingRefs,
     unresolvedCrossRefs,
     archivedRefs,
