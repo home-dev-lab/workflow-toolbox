@@ -64,8 +64,24 @@ function projectSlug(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, '-')
 }
 
-function subagentsDirFor(cwd, sessionId) {
+// The project-slug directory a session's subagents live under MUST come from the
+// SESSION ROOT, never from cwd at check time. cwd is the shell's working directory at
+// the moment of the spawn — inside an umbrella project (a root holding several repos,
+// e.g. wt-suite/workflow-toolbox) the shell is routinely sitting in a SUBDIRECTORY of
+// the session root, and re-deriving the slug from that subdirectory produces a
+// directory that has never existed (…-wt-suite-workflow-toolbox instead of …-wt-suite).
+// The harness hands every hook a `transcript_path` pointing at
+// <configDir>/projects/<slug>/<sessionId>.jsonl — its PARENT directory IS the real
+// project-slug directory the session actually lives under, unaffected by cwd drift.
+// Prefer it; fall back to the cwd-derived slug only when transcript_path is absent
+// (never observed on a real PostToolUse Agent event, but the fallback keeps this
+// fail-open rather than fail-silent on an unexpected harness payload shape).
+function subagentsDirFor(cwd, sessionId, transcriptPath) {
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+  if (transcriptPath) {
+    const projectDir = path.dirname(path.resolve(transcriptPath))
+    return path.join(projectDir, sessionId, 'subagents')
+  }
   return path.join(configDir, 'projects', projectSlug(cwd), sessionId, 'subagents')
 }
 
@@ -90,6 +106,7 @@ function main() {
 
   const cwd = typeof input.cwd === 'string' ? input.cwd : ''
   const sessionId = typeof input.session_id === 'string' ? input.session_id : ''
+  const transcriptPath = typeof input.transcript_path === 'string' ? input.transcript_path : ''
   const ti = input.tool_input && typeof input.tool_input === 'object' ? input.tool_input : {}
   const tr = input.tool_response && typeof input.tool_response === 'object' ? input.tool_response : {}
   const type = typeof ti.subagent_type === 'string' ? ti.subagent_type.trim() : ''
@@ -106,7 +123,7 @@ function main() {
   const observerName = declaredObserver(source)
   if (!observerName) return
 
-  const args = [CHECKER, '--subagents-dir', subagentsDirFor(cwd, sessionId)]
+  const args = [CHECKER, '--subagents-dir', subagentsDirFor(cwd, sessionId, transcriptPath)]
   if (agentId) args.push('--agent-id', agentId)
   if (name) args.push('--name', name)
   const verdict = runCheck(args)
