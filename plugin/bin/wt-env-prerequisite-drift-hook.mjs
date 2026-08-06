@@ -86,7 +86,15 @@ function main() {
     typeof payload['cwd'] === 'string' && payload['cwd'].trim() !== '' ? payload['cwd'] : process.cwd()
 
   const adoptedSets = []
-  if (setIsAdopted(path.join(projectRoot, '.claude', 'rules'))) adoptedSets.push('rules')
+  // Two candidate dirs for rules (card 1835727457, rules/wt/ migration): the pre-migration
+  // flat dir and the new default. readdirSync does not recurse, so after migration the
+  // flat dir alone would read as un-adopted (nothing but a `wt/` subfolder in it) — the
+  // exact false negative the migration's own drift-guard exists to close.
+  if (
+    setIsAdopted(path.join(projectRoot, '.claude', 'rules')) ||
+    setIsAdopted(path.join(projectRoot, '.claude', 'rules', 'wt'))
+  )
+    adoptedSets.push('rules')
   if (setIsAdopted(path.join(projectRoot, '.claude', 'agents'))) adoptedSets.push('agents')
 
   const settingsPath = path.join(configRoot(), 'settings.json')

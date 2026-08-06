@@ -123,6 +123,35 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(r.stdout).toBe('')
   })
 
+  // Card 1835727457 (rules/wt/ subfolder migration): the hook must search BOTH the
+  // pre-migration flat location AND the new default, or a migrated project reads as
+  // "nothing adopted" (checking only the old flat dir) or an un-migrated one reads the
+  // same way (checking only the new one) — either is the exact false negative this pair
+  // of tests locks against.
+  it('is SILENT when adopted at the NEW default location (.claude/rules/wt/, already migrated)', () => {
+    const f = fixture('migrated')
+    installInto(join(f.proj, '.claude', 'rules', 'wt'))
+    const r = runHook(f.proj, f.env)
+    expect(r.stdout).toBe('')
+  })
+
+  it('a genuinely un-migrated flat install is never double-counted or masked at the new location', () => {
+    const f = fixture('unmigrated')
+    const dir = join(f.proj, '.claude', 'rules')
+    installInto(dir) // still at the flat root, nothing under rules/wt/ yet
+    // A real STALE finding at the flat root must still surface — the wt/ side's own
+    // MIGRATION-PENDING classification (install.mjs's legacy fallback) must never read as
+    // 'ok' and silently outvote it.
+    const p = join(dir, RULE)
+    const body = readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
+    const fp = createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
+    writeFileSync(p, `<!-- installed from workflow-toolbox v0.0.1 · content sha256:${fp} by the adopt skill -->\n\n${body}`)
+    const r = runHook(f.proj, f.env)
+    expect(r.stdout, 'must not be silent').not.toBe('')
+    expect(r.context).toContain('Behind the shipped version')
+    expect(r.context).toContain(RULE)
+  })
+
   it('SPEAKS and names WHICH files are STALE (installed, behind the shipped version)', () => {
     const f = fixture('stale')
     const dir = join(f.proj, '.claude', 'rules')

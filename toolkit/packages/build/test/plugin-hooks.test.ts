@@ -434,6 +434,25 @@ describe('wt-delegation-ladder-hook — conditional injection + machine calibrat
     expect(ctx).not.toContain('workflow-toolbox:adopt')
   })
 
+  // Card 1835727457 (rules/wt/ subfolder migration): a project migrated to the new default
+  // location must ALSO suppress the suggestion — checking only the old flat path would nag
+  // a correctly-migrated project to re-adopt something it already has.
+  it('SUPPRESSES the adopt suggestion when adopted at the NEW rules/wt/ location', () => {
+    const f = mkRoot('adopted-wt')
+    const proj = join(f, 'proj')
+    mkdirSync(join(proj, '.claude', 'rules', 'wt'), { recursive: true })
+    writeFileSync(join(proj, '.claude', 'planka.json'), '{}')
+    writeFileSync(join(proj, '.claude', 'rules', 'wt', 'wt-delegation-ladder.md'), 'x')
+    const home = join(f, 'home')
+    const cfg = join(f, 'cfg')
+    mkdirSync(home, { recursive: true })
+    mkdirSync(cfg, { recursive: true })
+    const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: cfg }
+    const r = runHook(LADDER_HOOK, start(proj), env)
+    const ctx = (r.json?.['hookSpecificOutput'] as Record<string, string>)?.['additionalContext'] ?? ''
+    expect(ctx).not.toContain('workflow-toolbox:adopt')
+  })
+
   it('detects a cross-family bridge found on PATH', () => {
     const f = fixture('bridge-path')
     const bin = join(f.root, 'bin')

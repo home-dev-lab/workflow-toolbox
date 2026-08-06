@@ -160,12 +160,74 @@ When adopting into a project that already has rules, reconcile first — see the
   `UNDECIDED` are both purely informational and never affect the exit code.
 
 **Target dirs — confirm scope with the user first.** Each set has its own default under the
-current working directory: rules → `.claude/rules/`, agents → `.claude/agents/` (project
+current working directory: rules → `.claude/rules/wt/`, agents → `.claude/agents/` (project
 scope, least invasive — they apply only in this project). For a machine-wide RULE install,
-pass `--set rules --global` and let the script resolve the config dir — do NOT type a path
-yourself. Agent copies are almost always project-scoped (the watchdog
-pairing is a per-project concern) — the default `.claude/agents/` is normally right; ask
-before overriding it.
+pass `--set rules --global` and let the script resolve the config dir (rules land under
+`<config dir>/rules/wt/`) — do NOT type a path yourself. Agent copies are almost always
+project-scoped (the watchdog pairing is a per-project concern) — the default
+`.claude/agents/` is normally right; ask before overriding it.
+
+### Rules live under a `wt/` subfolder (card 1835727457)
+
+Adopted rule copies default to `.claude/rules/wt/`, not the flat `.claude/rules/` root. The
+boundary between "my rules" and "the plugin's adopted rules" then exists in the directory
+tree itself, instead of only in the `wt-` filename prefix nothing enforced:
+
+```
+~/.claude/rules/
+├── delegation-lanes.md          ← the user's own rules
+├── machine-calibrations.md
+└── wt/                          ← the plugin's, adopted
+    ├── wt-delegation-ladder.md
+    └── …
+```
+
+`--dir` still targets any directory outright, including the flat pre-migration root, for
+inspection during the transition.
+
+**During the transition, `--check` and `--audit-overlap` search BOTH locations** for the
+rules set — the pre-migration flat dir and the new `wt/` default — and union the results.
+Checking only the new location would read a perfectly healthy, simply-not-yet-migrated
+project as "nothing adopted"; checking only the flat one would miss a project that already
+migrated. A file found ONLY at the flat location reports as `MIGRATION-PENDING` under
+`--check` rather than `ABSENT` — and a plain `--install` never writes a fresh copy over it
+(that would create exactly the duplicate the migration exists to avoid: the same rule
+loaded from two places at once). The `wt-adopt-check-hook` SessionStart hook and the
+delegation-ladder injection hook apply the same dual-location search, so neither nags a
+correctly-migrated project nor stays silent on an un-migrated one.
+
+**Moving an existing flat install to `rules/wt/` is a SEPARATE, explicit step — this skill's
+`--install` never does it automatically.** Preview it first, read-only:
+
+```bash
+node scripts/install.mjs --migrate --dry-run [--dir <…/rules/wt>] [--global] \
+  [--secondary-dir <path-to-a-second-config-dir's-rules-dir>]
+```
+
+This is the ONLY form `--migrate` supports in this version — `--migrate` without `--dry-run`
+refuses outright, on purpose: the actual move needs a human decision (stop other sessions
+that might compact mid-move and read a half-migrated directory, then read this report)
+that the script does not make for you. The dry-run writes nothing and reports, in order: (1)
+every file it would move, source → destination, absolute paths; (2) every file it would
+LEAVE at the root, with the reason (hand-authored, locally edited, symlinked, or a name
+collision with an existing destination file); (3) the set LOADED before vs. after, in file
+count and bytes, so a doubling reads as a number rather than an intuition; (4) what happens
+to a second config dir's per-file symlinks, when `--secondary-dir` names one. It exits
+non-zero whenever it would produce a duplicate (a file loaded from both locations at once)
+— a dry-run that describes a dangerous state and exits 0 would be a report, not a guard.
+
+**Design decision — the second config dir's symlink arrangement.** This machine's own setup
+(`~/.claude-work/rules/` symlinking each managed file individually into `~/.claude/rules/`)
+predates the `wt/` subfolder and cannot survive it unchanged: a per-file symlink does not
+follow a rename. The decision, made for this card and applying to any similar setup: replace
+the per-file symlinks with ONE directory symlink, `<secondary>/rules/wt -> <primary>/rules/wt`.
+Reason — a per-file link has to be re-created by hand every time a rule is added or removed
+(a hand-placed mechanism that goes silently stale the moment someone forgets the second
+half of an edit); a directory symlink covers the whole managed set at once and needs no
+maintenance as it grows or shrinks. Any locally-authored, non-`wt/` rules in the secondary
+dir are unaffected and stay as direct files (never covered by a directory symlink meant for
+the managed subset alone). `--migrate --dry-run --secondary-dir <dir>` names each existing
+per-file symlink into the migrating set and states whether it goes stale.
 
 Recommended flow:
 1. Run `--check` first (for the relevant set, or `--set all`) and show the user the status

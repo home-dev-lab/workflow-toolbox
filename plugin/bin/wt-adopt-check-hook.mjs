@@ -83,9 +83,20 @@ function checkDir(dir, set = 'rules') {
 }
 
 /** Classify one install.mjs status string into the bucket this hook cares about.
- *  Unknown/unexpected text is treated as 'ok' — fail toward silence, never a false alarm. */
+ *  Unknown/unexpected text is treated as 'ok' — fail toward silence, never a false alarm.
+ *
+ *  MIGRATION-PENDING (card 1835727457) is the ONE deliberate exception to that fail-open
+ *  default: it means "absent at THIS candidate location, but present un-migrated at the
+ *  legacy one" — install.mjs's own legacy-fallback only ever fires when checking a `wt/`
+ *  dir specifically. Reading it as 'ok' here would let the wt/ check's finding silently
+ *  win over a genuinely stale/edited status the SAME file gets from the flat-dir check run
+ *  right alongside it (mergeAll treats 'ok' as an unconditional win) — measured: it
+ *  swallowed a real STALE finding in this suite's own fixtures before this line existed.
+ *  Treating it as 'absent' instead lets the OTHER checked location's real classification
+ *  through the merge undisturbed. */
 function bucket(status) {
   if (/^ABSENT/.test(status)) return 'absent'
+  if (/^MIGRATION-PENDING/.test(status)) return 'absent'
   if (/^STALE/.test(status)) return 'stale'
   if (/^EDITED/.test(status)) return 'edited'
   return 'ok' // UP-TO-DATE, AHEAD, SYMLINK, PRESENT (hand-authored), or anything unrecognized
@@ -97,11 +108,20 @@ function bucket(status) {
 // beats stale (needs a refresh) beats absent (nothing installed at all).
 const RANK = { ok: 0, edited: 1, stale: 2, absent: 3 }
 
-function mergeFile(a, b) {
-  const ba = a ? bucket(a) : 'absent'
-  const bb = b ? bucket(b) : 'absent'
-  if (ba === 'ok' || bb === 'ok') return 'ok'
-  return RANK[ba] <= RANK[bb] ? ba : bb
+/** "A file counts ok if ANY checked location says so" — folded across N maps rather than
+ *  just two, since the rules set now has a second candidate LOCATION on top of the
+ *  pre-existing project-vs-global axis (the pre-migration flat dir AND the new rules/wt/
+ *  subfolder, card 1835727457). Four maps in the common case (project flat, project wt,
+ *  global flat, global wt). */
+function mergeAll(maps, file) {
+  let best = 'absent'
+  for (const map of maps) {
+    const status = map.get(file)
+    const b = status ? bucket(status) : 'absent'
+    if (b === 'ok') return 'ok'
+    if (RANK[b] < RANK[best]) best = b
+  }
+  return best
 }
 
 function buildMessage(perFile, installCmd, set = 'rules', event = 'SessionStart') {
@@ -175,20 +195,30 @@ function main() {
   // copies are the ones that WIN over the plugin's own types, so a stale agent copy keeps
   // winning silently. Checking only rules left that half unguarded, which was noticed the day
   // this hook shipped, by a commit that changed agent definitions and drew no warning at all.
+  //
+  // `subdirs` (plural) for the rules set: TWO candidate locations during the flat-root →
+  // rules/wt/ migration (card 1835727457) — the pre-migration flat dir AND the new default.
+  // Checking only the new location would read a perfectly healthy, simply-not-yet-migrated
+  // project as "rules NOT installed here" — a false alarm on a project that adopted correctly
+  // and just hasn't run the migration. Checking only the flat dir would miss a project that
+  // HAS migrated. Union of both, same "ok wins" rule already used for project-vs-global.
   const SETS = [
-    { set: 'rules', subdir: 'rules' },
-    { set: 'agents', subdir: 'agents' },
+    { set: 'rules', subdirs: ['rules', path.join('rules', 'wt')] },
+    { set: 'agents', subdirs: ['agents'] },
   ]
 
   const sections = []
-  for (const { set, subdir } of SETS) {
-    const projectMap = checkDir(path.join(root, '.claude', subdir), set)
-    const globalMap = checkDir(path.join(configDir, subdir), set)
-    if (projectMap.size === 0 && globalMap.size === 0) continue // couldn't check → skip this set
+  for (const { set, subdirs } of SETS) {
+    const maps = []
+    for (const subdir of subdirs) {
+      maps.push(checkDir(path.join(root, '.claude', subdir), set))
+      maps.push(checkDir(path.join(configDir, subdir), set))
+    }
+    if (maps.every((m) => m.size === 0)) continue // couldn't check any location → skip this set
 
-    const files = new Set([...projectMap.keys(), ...globalMap.keys()])
+    const files = new Set(maps.flatMap((m) => [...m.keys()]))
     const perFile = new Map()
-    for (const file of files) perFile.set(file, mergeFile(projectMap.get(file), globalMap.get(file)))
+    for (const file of files) perFile.set(file, mergeAll(maps, file))
 
     const built = buildMessage(perFile, INSTALL_RULES, set, event)
     if (built) sections.push(built)

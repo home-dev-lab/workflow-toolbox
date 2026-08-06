@@ -392,7 +392,18 @@ function untouchedSetLine(setName) {
  *  dir each set reads its files from; `resolveItems(root)` lists the managed files (the
  *  rules set discovers them from the bundle; the agents set is a fixed suite). */
 const SETS = {
-  rules: { kind: 'rules', srcDir: 'rules', defaultDir: '.claude/rules', resolveItems: discoverRuleItems },
+  // defaultDir = default target under the project cwd. globalSubdir = default target under
+  // the resolved CONFIG dir (--global) — kept as its OWN field rather than derived from
+  // defaultDir's basename, because that derivation broke the moment defaultDir grew a
+  // subfolder: `path.basename('.claude/rules/wt')` is `wt`, not `rules/wt`, and would have
+  // resolved --global installs to `<configRoot>/wt` instead of `<configRoot>/rules/wt`.
+  //
+  // rules → `.claude/rules/wt/` is the DEFAULT since the rules/wt/ subfolder migration
+  // (card 1835727457): the boundary between "my rules" and "the plugin's adopted rules"
+  // now exists in the tree, not only in the `wt-` filename convention nothing enforced.
+  // `--dir` still overrides this outright for a caller who wants a different location
+  // (e.g. the flat pre-migration root, for read-only inspection during the transition).
+  rules: { kind: 'rules', srcDir: 'rules', defaultDir: '.claude/rules/wt', globalSubdir: 'rules/wt', resolveItems: discoverRuleItems },
   // srcDir is `agent-templates/`, NOT `agents/`: a plugin's agents/ dir is what REGISTERS an
   // agent type, and a registered pilot is a broken pilot — Claude Code ignores `observer:` on
   // plugin-installed agents, so `workflow-toolbox:pilot` spawns and runs with no watchdog and
@@ -400,7 +411,15 @@ const SETS = {
   // exist to be taken; they reach a session only as project copies under their bare names,
   // which is the only form where the pairing attaches. The other shipped agents (leaf, lean,
   // …) stay in agents/ — they declare no observer, so registration serves them correctly.
-  agents: { kind: 'agents', srcDir: 'agent-templates', defaultDir: '.claude/agents', resolveItems: () => MANAGED_AGENTS },
+  agents: { kind: 'agents', srcDir: 'agent-templates', defaultDir: '.claude/agents', globalSubdir: 'agents', resolveItems: () => MANAGED_AGENTS },
+}
+
+// The pre-migration location for the rules set — the direct parent of the new default
+// (`.claude/rules/wt` → `.claude/rules`). Used ONLY as a heuristic for the legacy-fallback
+// check in processSet() and by the migrate-dry-run report: it is tied structurally to the
+// `rules/wt` default above, not to any hard-coded machine path.
+function legacyRulesDir(dir) {
+  return path.basename(dir) === 'wt' ? path.dirname(dir) : null
 }
 
 // Match only against the banner line, never the body — a body mention of the phrase
@@ -721,6 +740,8 @@ function parseArgs(argv) {
     userDir: null,
     pairsFile: null,
     declarationsFile: null,
+    dryRun: false,
+    secondaryDir: null,
   }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--install') args.mode = 'install'
@@ -734,6 +755,9 @@ function parseArgs(argv) {
     else if (argv[i] === '--user-dir') args.userDir = argv[++i]
     else if (argv[i] === '--pairs-file') args.pairsFile = argv[++i]
     else if (argv[i] === '--declarations-file') args.declarationsFile = argv[++i]
+    else if (argv[i] === '--migrate') args.mode = 'migrate'
+    else if (argv[i] === '--dry-run') args.dryRun = true
+    else if (argv[i] === '--secondary-dir') args.secondaryDir = argv[++i]
   }
   return args
 }
@@ -759,10 +783,12 @@ const FLAG_EFFECTIVE_MODES = {
   userDir: { cli: '--user-dir', modes: ['audit-overlap'] },
   pairsFile: { cli: '--pairs-file', modes: ['audit-overlap'] },
   declarationsFile: { cli: '--declarations-file', modes: ['audit-overlap'], sets: ['rules'] },
-  dir: { cli: '--dir', modes: ['check', 'install'] },
-  global: { cli: '--global', modes: ['check', 'install'] },
+  dir: { cli: '--dir', modes: ['check', 'install', 'migrate'] },
+  global: { cli: '--global', modes: ['check', 'install', 'migrate'] },
   force: { cli: '--force', modes: ['install'] },
   replaceSymlinks: { cli: '--replace-symlinks', modes: ['check', 'install'] },
+  dryRun: { cli: '--dry-run', modes: ['migrate'] },
+  secondaryDir: { cli: '--secondary-dir', modes: ['migrate'] },
 }
 
 /** Refuse any flag that was passed but has no effect in the resolved mode (or set). */
@@ -804,15 +830,46 @@ function normalizedLines(text) {
   return text.split(/\r?\n/).map((line) => line.replace(/[ \t]+$/, ''))
 }
 
+// The two candidate locations for the RULES set during the flat-root → rules/wt/
+// transition (card 1835727457): whichever of {userDir, its 'wt' opposite} the caller
+// pointed at, plus the other one. Checking only `userDir` during the transition is exactly
+// how a project that has genuinely adopted the rules (just not yet migrated, or already
+// migrated and left an orphan behind) reads as "nothing adopted" or "everything drifted" —
+// a false negative/positive that looks identical to a real one. Agents never moved, so this
+// widening applies to the rules set only.
+function rulesSearchDirs(userDir) {
+  const alt = path.basename(userDir) === 'wt' ? path.dirname(userDir) : path.join(userDir, 'wt')
+  return [userDir, alt]
+}
+
+/** The first candidate dir (in search order) actually holding `filename`, or null. */
+function findFile(searchDirs, filename) {
+  for (const dir of searchDirs) {
+    const p = path.join(dir, filename)
+    if (realFile(p)) return p
+  }
+  return null
+}
+
 function auditOverlap(userDir, root, pairsFile, declarationsFile, set = 'rules') {
   const setConfig = SETS[set]
   if (!setConfig) fail(`unknown audit-overlap set '${set}' (expected rules | agents)`)
+  const searchDirs = set === 'rules' ? rulesSearchDirs(userDir) : [userDir]
   process.stdout.write(`[audit-overlap:${set}] target=${userDir}\n`)
-  let entries
-  try {
-    entries = fs.readdirSync(userDir)
-  } catch {
-    fail(`user directory does not exist: ${userDir}`)
+  if (searchDirs.length > 1) process.stdout.write(`  ↳ also searching ${searchDirs[1]} (flat-root/rules-wt transition, card 1835727457)\n`)
+  let entries = []
+  let anyDirFound = false
+  for (const dir of searchDirs) {
+    try {
+      for (const f of fs.readdirSync(dir)) entries.push(f)
+      anyDirFound = true
+    } catch {
+      /* this candidate location doesn't exist — fine as long as at least one search dir does */
+    }
+  }
+  entries = [...new Set(entries)]
+  if (!anyDirFound) {
+    fail(`user directory does not exist: ${searchDirs.join(' nor ')}`)
   }
   const defaultPairsFile = set === 'agents' ? 'agent-pairs.json' : 'rule-pairs.json'
   const pairsPath = path.resolve(pairsFile || path.join(path.dirname(fileURLToPath(import.meta.url)), defaultPairsFile))
@@ -904,12 +961,33 @@ function auditOverlap(userDir, root, pairsFile, declarationsFile, set = 'rules')
     }
   }
 
+  // Dual-location duplicate: the SAME basename present at BOTH search dirs at once (the
+  // pre-migration flat root AND rules/wt/) — the exact "loaded twice" hazard the migration
+  // dry-run projects, caught here as ground truth on whatever is actually on disk today.
+  // Orthogonal to the pair-based DUPLICATE check below (which compares a DIFFERENT pair of
+  // basenames — a local override vs the shipped name — not two locations of the same file).
+  if (set === 'rules' && searchDirs.length > 1 && searchDirs[0] !== searchDirs[1]) {
+    for (const item of setConfig.resolveItems(root)) {
+      const primaryPath = path.join(searchDirs[0], item.file)
+      const otherPath = path.join(searchDirs[1], item.file)
+      if (realFile(primaryPath) && realFile(otherPath)) {
+        duplicate++
+        process.stdout.write(
+          `DUPLICATE-LOCATION ${item.file}: present at BOTH ${primaryPath} and ${otherPath} — loaded ` +
+            'twice (pre-migration copy not yet removed)\n',
+        )
+      }
+    }
+  }
+
   for (const pair of pairs) {
-    const declaredUserPath = path.join(userDir, pair.user)
+    const foundUserPath = findFile(searchDirs, pair.user)
+    const declaredUserPath = foundUserPath || path.join(userDir, pair.user)
     const shippedPath = path.join(shippedDir, pair.shipped)
-    const userExists = realFile(declaredUserPath)
-    const shippedInUserPath = path.join(userDir, pair.shipped)
-    const shippedAdoptedDirectly = pair.shipped !== pair.user && realFile(shippedInUserPath)
+    const userExists = foundUserPath !== null
+    const foundShippedInUserPath = pair.shipped !== pair.user ? findFile(searchDirs, pair.shipped) : null
+    const shippedInUserPath = foundShippedInUserPath || path.join(userDir, pair.shipped)
+    const shippedAdoptedDirectly = foundShippedInUserPath !== null
     if (!userExists && !shippedAdoptedDirectly) {
       if (set === 'agents') absent++
       process.stdout.write(`ABSENT ${pair.user}: ABSENT (declared pair, no user file present)\n`)
@@ -995,22 +1073,23 @@ function auditOverlap(userDir, root, pairsFile, declarationsFile, set = 'rules')
     }
   }
   for (const file of entries.filter((f) => f.endsWith('.md')).sort()) {
-    if (!declaredUsers.has(file) && !declaredShipped.has(file) && realFile(path.join(userDir, file))) {
+    const foundPath = findFile(searchDirs, file)
+    if (!declaredUsers.has(file) && !declaredShipped.has(file) && foundPath) {
       if (set !== 'rules') {
         unmapped++
-        process.stdout.write(`UNMAPPED ${path.join(userDir, file)}\n`)
+        process.stdout.write(`UNMAPPED ${foundPath}\n`)
         continue
       }
       const decl = declaredStatus.get(file)
       if (!decl) {
         unmapped++
-        process.stdout.write(`UNMAPPED ${path.join(userDir, file)}\n`)
+        process.stdout.write(`UNMAPPED ${foundPath}\n`)
       } else if (decl.status === 'private') {
         declaredPrivate++
       } else if (decl.status === 'undecided') {
         undecided++
         process.stdout.write(
-          `UNDECIDED ${path.join(userDir, file)}: ship/keep-private decision recorded as owed — resolve before the next release\n`,
+          `UNDECIDED ${foundPath}: ship/keep-private decision recorded as owed — resolve before the next release\n`,
         )
       } else {
         const targetPath = path.join(shippedDir, decl.target)
@@ -1019,7 +1098,7 @@ function auditOverlap(userDir, root, pairsFile, declarationsFile, set = 'rules')
         } else {
           declarationError++
           process.stdout.write(
-            `DECLARATION-ERROR ${path.join(userDir, file)}: declared shipped-as '${decl.target}', but no such shipped file exists at ${targetPath}\n`,
+            `DECLARATION-ERROR ${foundPath}: declared shipped-as '${decl.target}', but no such shipped file exists at ${targetPath}\n`,
           )
         }
       }
@@ -1129,11 +1208,37 @@ function processSet(set, dir, args, version, root) {
   let anyStale = false
   let anyEdited = false
   let anySymlink = false
+  let anyMigrationPending = false
   for (const item of set.resolveItems(root)) {
     const target = path.join(dir, item.file)
     const c = classify(target, set)
     const shippedFp = shippedFingerprint(set, item, root)
-    const p = plan(c, version, args.force, args.replaceSymlinks, shippedFp)
+    let p = plan(c, version, args.force, args.replaceSymlinks, shippedFp)
+
+    // LEGACY-LOCATION FALLBACK (rules/wt/ migration, card 1835727457): an item ABSENT at the
+    // new default target may simply be UN-MIGRATED, still sitting at the pre-migration flat
+    // location (dir's own parent, when dir itself is a `wt` subfolder). Without this check, a
+    // project that has not migrated yet reads as "nothing adopted" here — a false negative
+    // indistinguishable from a genuinely fresh machine, on a perfectly healthy pre-migration
+    // install. It is deliberately a REPORT-ONLY finding: --install must NEVER auto-write a
+    // fresh copy at the new location while the legacy one is still there un-migrated — doing
+    // so is exactly how a project ends up with the same rule loaded twice (see the
+    // `adopt:migrate --dry-run` mode, which is the only place a move is even PLANNED, and
+    // still never executed by this script).
+    if (c.state === 'absent' && set.kind === 'rules') {
+      const legacyDir = legacyRulesDir(dir)
+      if (legacyDir) {
+        const legacyClassified = classify(path.join(legacyDir, item.file), set)
+        if (legacyClassified.state !== 'absent') {
+          anyMigrationPending = true
+          const legacyNote =
+            legacyClassified.state === 'symlink'
+              ? `MIGRATION-PENDING (found as a SYMLINK at the pre-migration location ${legacyDir}/${item.file}; not yet migrated to ${dir}/ — run the adopt:migrate skill's --dry-run before --install here, or --install would write a fresh copy here and leave the old one in place, loading it twice)`
+              : `MIGRATION-PENDING (found at the pre-migration location ${legacyDir}/${item.file}; not yet migrated to ${dir}/ — run the adopt:migrate skill's --dry-run before --install here, or --install would write a fresh copy here and leave the old one in place, loading it twice)`
+          p = { status: legacyNote, write: false }
+        }
+      }
+    }
     if (c.state === 'absent') anyAbsent = true
     // Mirrors plan()'s own condition exactly, so the per-file lines and the closing hint can
     // never disagree — a summary that says "refresh the STALE item(s)" above a list with no
@@ -1192,12 +1297,273 @@ function processSet(set, dir, args, version, root) {
       process.stdout.write(`  ${item.file}: ${p.status}\n`)
     }
   }
-  return { anyAbsent, anyStale, anyEdited, anySymlink }
+  return { anyAbsent, anyStale, anyEdited, anySymlink, anyMigrationPending }
+}
+
+// --- --migrate --dry-run --------------------------------------------------------------------
+//
+// Card 1835727457 scope split (Frederic, 06/08 evening): "if we're very careful, I can stop
+// my sessions and run a batch. But we need a dry-run mode to really see what it's going to
+// do." This is that mode, and ONLY that mode — the actual move is deliberately NOT
+// implemented anywhere in this script. `--migrate` without `--dry-run` refuses outright
+// (see main()) so the code cannot be run "because it's ready"; running the real migration
+// needs a human decision this script does not make.
+//
+// What the dry-run must show, per Frederic's own second comment on the card, in this order:
+//   1. every file it would move, source → destination, absolute paths
+//   2. every file it would LEAVE at the root, WITH THE REASON
+//   3. the set LOADED before/after, in file count AND bytes
+//   4. what happens to the second config dir's per-file symlinks
+//   5. locally-edited copies (which stay put — never silently overwritten/moved)
+// and it must exit NON-ZERO when it would produce a duplicate (loaded twice) after migration —
+// a dry-run that describes a dangerous state and exits 0 is a report, not a guard.
+
+/** Recursively list every managed-looking `*.md` file under `dir` (excluding README.md at
+ *  any depth, mirroring discoverRuleItems' own filter) — this is what a rules loader that
+ *  recurses into subdirectories (measured fact, card 1835727457's own description) actually
+ *  reads, so it is the right shape for a "what's loaded" count. Returns [] for a dir that
+ *  does not exist (nothing loaded from there yet, not an error). */
+function listMdFilesRecursive(dir) {
+  const out = []
+  let entries
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const entry of entries) {
+    const p = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      out.push(...listMdFilesRecursive(p))
+    } else if (entry.isFile() && entry.name.endsWith('.md') && entry.name.toLowerCase() !== 'readme.md') {
+      let bytes = 0
+      try {
+        bytes = fs.statSync(p).size
+      } catch {
+        /* file vanished between readdir and stat — count as 0, do not crash a read-only report */
+      }
+      out.push({ file: p, bytes })
+    }
+  }
+  return out
+}
+
+function sumBytes(list) {
+  return list.reduce((total, item) => total + item.bytes, 0)
+}
+
+/** Per-file plan for the flat-root → rules/wt/ migration. Read-only: classifies what is
+ *  ALREADY on disk and reports what a future move would do; writes nothing. */
+function planMigrationItems(flatDir, wtDir, set) {
+  const moves = []
+  const stays = []
+  let entries
+  try {
+    entries = fs.readdirSync(flatDir, { withFileTypes: true })
+  } catch {
+    return { moves, stays } // nothing at the flat root — nothing to migrate (graceful)
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.md') || entry.name.toLowerCase() === 'readme.md') continue
+    const file = entry.name
+    const from = path.join(flatDir, file)
+    const to = path.join(wtDir, file)
+    const c = classify(from, set)
+    if (c.state === 'hand-authored') {
+      stays.push({ file, from, reason: 'hand-authored — no workflow-toolbox banner; adopt never manages or moves it', duplicateRisk: false })
+      continue
+    }
+    if (c.state === 'symlink') {
+      stays.push({
+        file,
+        from,
+        reason: `symlink → ${c.linkTarget || '?'} — migration does not follow or move symlinks; see the second-config-dir section`,
+        duplicateRisk: false,
+      })
+      continue
+    }
+    if (c.state === 'edited' || c.state === 'edited-unknown') {
+      // adopt NEVER overwrites or moves a locally-edited copy (the same rule --install
+      // follows). It stays at the flat root. But a later bare `--install --set rules` targets
+      // the NEW default (rules/wt/) and, finding this file ABSENT there, WOULD write a fresh
+      // shipped copy — so the edited copy and the fresh copy both end up loaded. That is the
+      // duplicate Frederic's comment names explicitly, and it exists independent of whether
+      // rules/wt/<file> happens to already be there today.
+      stays.push({
+        file,
+        from,
+        reason:
+          'locally edited — adopt never overwrites or moves an edited copy. Move it by hand once ' +
+          'you are satisfied with the diff, or it stays loaded from BOTH locations the next time ' +
+          '--install runs (it writes a fresh copy at the new default location, since this file is ' +
+          'absent there)',
+        duplicateRisk: true,
+      })
+      continue
+    }
+    // clean — the only state eligible for an actual move.
+    if (realFile(to)) {
+      stays.push({
+        file,
+        from,
+        reason: `destination already exists at ${to} — migration never overwrites; resolve the duplicate by hand first`,
+        duplicateRisk: true,
+      })
+      continue
+    }
+    moves.push({ file, from, to })
+  }
+  return { moves, stays }
+}
+
+/** Report what a `<secondary>/rules/<file>` per-file symlink (this machine's pre-migration
+ *  arrangement — `~/.claude-work/rules/` symlinking each file individually into
+ *  `~/.claude/rules/`) becomes after the flat→wt/ move. Generic: takes the secondary rules
+ *  dir as an explicit argument rather than a hard-coded machine path, so the shipped script
+ *  carries no account-specific path — only the caller (a human, or a project rule) knows
+ *  which second config dir exists here. Silent (returns []) when `secondaryDir` is not given:
+ *  the DESIGN DECISION is documented in the adopt SKILL.md regardless of whether this flag is
+ *  passed on a given run. */
+function planSecondaryDirSymlinks(secondaryDir, flatDir, wtDir, moves, stays) {
+  if (!secondaryDir) return []
+  const lines = []
+  const allFiles = [...moves.map((m) => m.file), ...stays.map((s) => s.file)]
+  for (const file of allFiles) {
+    const secondaryPath = path.join(secondaryDir, file)
+    let lst
+    try {
+      lst = fs.lstatSync(secondaryPath)
+    } catch {
+      continue // no symlink for this file at the secondary dir — nothing to report
+    }
+    if (!lst.isSymbolicLink()) continue
+    let linkTarget = ''
+    try {
+      linkTarget = fs.readlinkSync(secondaryPath)
+    } catch {
+      /* unreadable link — still report its path */
+    }
+    const isMoved = moves.some((m) => m.file === file)
+    lines.push(
+      isMoved
+        ? `${secondaryPath} (→ ${linkTarget || '?'}): STALE after migration — its target moved to ` +
+          `${path.join(wtDir, file)}. Per-file symlinks do not follow a rename; replace this one ` +
+          `(and every sibling) with a SINGLE directory symlink ${secondaryDir}/wt → ${wtDir} instead ` +
+          `of re-linking file by file (see the design decision in the adopt SKILL.md).`
+        : `${secondaryPath} (→ ${linkTarget || '?'}): unaffected by this migration (its target file ` +
+          `is staying at the flat root) — still worth folding into the same directory-symlink ` +
+          `cleanup once you decide to migrate hand-authored/edited files too.`,
+    )
+  }
+  return lines
+}
+
+function migrateDryRun(dir, args) {
+  const wtDir = dir
+  const flatDir = legacyRulesDir(wtDir)
+  if (!flatDir) {
+    fail(
+      `adopt:migrate expects a rules/wt/ target — resolved dir was ${wtDir}, whose basename is not ` +
+        `'wt'. Pass --dir <…/rules/wt> or rely on the default (no --dir, no --global).`,
+    )
+  }
+  process.stdout.write(`[migrate --dry-run] flat root=${flatDir}  →  new location=${wtDir}\n`)
+  process.stdout.write('adopt:migrate NEVER writes to disk — this is a report, not an executor. ' + 'Nothing below has happened yet.\n\n')
+
+  const set = SETS.rules
+  const { moves, stays } = planMigrationItems(flatDir, wtDir, set)
+
+  process.stdout.write(`1. Files that would MOVE (${moves.length}):\n`)
+  if (moves.length === 0) process.stdout.write('  (none)\n')
+  for (const m of moves) process.stdout.write(`  MOVE ${m.file}: ${m.from} -> ${m.to}\n`)
+
+  process.stdout.write(`\n2. Files that would stay AT THE ROOT (${stays.length}):\n`)
+  if (stays.length === 0) process.stdout.write('  (none)\n')
+  for (const s of stays) process.stdout.write(`  STAY ${s.file}: ${s.from} — ${s.reason}\n`)
+
+  const before = listMdFilesRecursive(flatDir)
+  const afterList = before.map((entry) => {
+    const move = moves.find((m) => m.from === entry.file)
+    return move ? { file: move.to, bytes: entry.bytes } : entry
+  })
+  // Project the duplicate this migration would eventually cause: a stay with duplicateRisk
+  // means a FUTURE bare --install would additionally write a fresh copy at the wt/ location,
+  // so the projected "after" set counts that file twice — the number IS the intuition Frederic
+  // asked this report to replace.
+  const projectedExtra = stays.filter((s) => s.duplicateRisk).map((s) => {
+    let bytes = 0
+    try {
+      bytes = fs.statSync(s.from).size
+    } catch {
+      /* best-effort projection only */
+    }
+    return { file: path.join(wtDir, s.file) + ' (projected — a later --install would write it here)', bytes }
+  })
+  const afterProjected = [...afterList, ...projectedExtra]
+
+  process.stdout.write(
+    `\n3. Set LOADED, before vs after (recursive under ${flatDir}):\n` +
+      `  before: ${before.length} file(s), ${sumBytes(before)} byte(s)\n` +
+      `  after (projected, incl. what a following --install would add): ${afterProjected.length} file(s), ` +
+      `${sumBytes(afterProjected)} byte(s)\n`,
+  )
+
+  process.stdout.write('\n4. Second config dir (per-file symlinks):\n')
+  if (args.secondaryDir) {
+    const symlinkLines = planSecondaryDirSymlinks(args.secondaryDir, flatDir, wtDir, moves, stays)
+    if (symlinkLines.length === 0) {
+      process.stdout.write(`  no per-file symlink into ${flatDir} found under ${args.secondaryDir}\n`)
+    } else {
+      for (const line of symlinkLines) process.stdout.write(`  ${line}\n`)
+    }
+  } else {
+    process.stdout.write(
+      '  no --secondary-dir passed — nothing scanned. DESIGN DECISION (documented in the adopt ' +
+        'SKILL.md, "Reconciling a second config dir"): replace any per-file symlink into the ' +
+        'flat rules/ root with ONE directory symlink <secondary>/rules/wt -> <primary>/rules/wt. ' +
+        'A per-file link needs re-doing by hand every time a rule is added or removed (a ' +
+        'hand-placed mechanism that goes silently stale); a directory symlink covers the whole ' +
+        'managed set at once and needs no maintenance as it grows or shrinks. Pass ' +
+        '--secondary-dir <path-to-its-rules-dir> to have this report name each existing link and ' +
+        'what becomes of it.\n',
+    )
+  }
+
+  const wouldDuplicate = stays.some((s) => s.duplicateRisk)
+  process.stdout.write(
+    `\nadopt:migrate --dry-run: ${moves.length} move(s), ${stays.length} stay(s), ` +
+      `duplicate-after-migration risk: ${wouldDuplicate ? 'YES' : 'no'}\n`,
+  )
+  if (wouldDuplicate) {
+    process.stdout.write(
+      'adopt:migrate: EXITING NON-ZERO — at least one file would be loaded from two locations ' +
+        'after migration (see the STAY reasons marked above). Resolve those before running any ' +
+        'real migration.\n',
+    )
+    process.exitCode = 1
+  }
 }
 
 function main() {
   const args = parseArgs(process.argv.slice(2))
   checkFlagModeAsymmetry(args)
+  if (args.mode === 'migrate') {
+    if (!args.dryRun) {
+      fail(
+        'adopt:migrate has no --install/execute path in this version — only --migrate --dry-run is ' +
+          'implemented. The real move is a deliberate, separate step (card 1835727457, item 2): it ' +
+          'needs you to stop your other sessions and read this dry-run\'s real output first.',
+      )
+    }
+    if (args.set !== 'rules') fail(`adopt:migrate only applies to the rules set (got --set ${args.set})`)
+    const globalRoot = resolvedConfigRoot()
+    const set = SETS.rules
+    const dir = path.resolve(
+      args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
+    )
+    migrateDryRun(dir, args)
+    return
+  }
   if (args.mode === 'audit-overlap') {
     if (!args.userDir) fail('--user-dir is required with --audit-overlap')
     if (!['rules', 'agents'].includes(args.set)) {
@@ -1238,14 +1604,17 @@ function main() {
   let anyEdited = false
   let anySymlink = false
   let anySettingsProblem = false
+  let anyMigrationPending = false
   for (const name of chosen) {
     const set = SETS[name]
-    // `set.defaultDir` is '.claude/rules' | '.claude/agents'; under --global the config dir
-    // IS the '.claude' layer already, so only its LAST segment is appended.
+    // `set.defaultDir` is project-relative ('.claude/rules/wt' | '.claude/agents'); under
+    // --global the config dir IS the '.claude' layer already, so `globalSubdir` (its own
+    // field, NOT derived from defaultDir's basename — see the SETS comment above) is
+    // appended instead.
     const dir = path.resolve(
       args.dir ||
         (args.global
-          ? path.join(globalRoot, path.basename(set.defaultDir))
+          ? path.join(globalRoot, set.globalSubdir)
           : path.join(process.cwd(), set.defaultDir)),
     )
     const r = processSet(set, dir, args, version, root)
@@ -1253,6 +1622,7 @@ function main() {
     anyStale = anyStale || r.anyStale
     anyEdited = anyEdited || r.anyEdited
     anySymlink = anySymlink || r.anySymlink
+    anyMigrationPending = anyMigrationPending || r.anyMigrationPending
   }
 
   const settingsResult = processSettings(globalRoot, chosen, args, version)
@@ -1270,6 +1640,15 @@ function main() {
     else if (anyEdited) process.stdout.write('adopt: locally-edited item(s) present — --install leaves them; --force overwrites.\n')
     else if (anySettingsProblem) process.stdout.write('adopt: account-level settings need manual attention before this tool can manage them safely.\n')
     else process.stdout.write('adopt: nothing to do.\n')
+    // Migration-pending is an independent advisory, printed regardless of the branch above
+    // (it can coexist with absent/stale/edited items that have nothing to do with migration).
+    if (anyMigrationPending) {
+      process.stdout.write(
+        'adopt: item(s) found only at the pre-migration rules/ location — run the adopt:migrate ' +
+          'skill\'s --dry-run before --install here (a bare --install would write a fresh copy at ' +
+          'the new location and leave the old one in place, loading it twice).\n',
+      )
+    }
     // Symlinks are an independent advisory (they can coexist with absent/stale items).
     // Suppressed when --replace-symlinks is already set — no point telling the user to
     // pass a flag they passed (the per-item line then previews the replacement).
