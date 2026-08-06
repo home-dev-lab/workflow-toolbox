@@ -2,15 +2,18 @@
 
 This repo has two halves that stand alone but work together:
 
-- **`plugin/`** — the Claude Code plugin. Ships **ten skills** — `workflow-composer`
+- **`plugin/`** — the Claude Code plugin. Ships **thirteen skills** — `workflow-composer`
   (author), `toolkit-scaffold` (start), `workflow-debugger` (diagnose a run),
   `upgrade-canary` (re-verify the runtime after an upgrade), `independent-analysis`
   (trigger the bias-free analysis workflow when relevant), `deep-grounding`
   (collect + verify evidence against the real sources before asserting/analyzing),
+  `delegation-chain` (spawn shapes, report routing, what wakes whom),
   `pilot-wave` (compose a delegated pilot/orchestrator wave over tracked cards),
   `adopt` (install editable, versioned copies of the bundled rules),
-  `planka-tracking` (onboard a project onto a Planka kanban board), and `what-next`
-  (propose the logical next step from that board) — the
+  `planka-tracking` (onboard a project onto a Planka kanban board), `what-next`
+  (propose the logical next step from that board), `stale-card-sweep` (does this diff
+  subsume another open card?), and `lesson-harvest` (extract a closing report's
+  reusable lessons) — the
   **pilot agent suite** (`pilot`, `pilot-orchestrator`, `pilot-watchdog`) that skill drives,
   a `Stop` hook that auto-surfaces a finished run's audit report, a `SessionStart` hook that
   injects the generic delegation ladder where a project does tracked/delegated work, and
