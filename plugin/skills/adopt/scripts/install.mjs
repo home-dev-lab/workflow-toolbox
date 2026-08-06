@@ -742,6 +742,7 @@ function parseArgs(argv) {
     declarationsFile: null,
     dryRun: false,
     secondaryDir: null,
+    execute: false,
   }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--install') args.mode = 'install'
@@ -758,6 +759,7 @@ function parseArgs(argv) {
     else if (argv[i] === '--migrate') args.mode = 'migrate'
     else if (argv[i] === '--dry-run') args.dryRun = true
     else if (argv[i] === '--secondary-dir') args.secondaryDir = argv[++i]
+    else if (argv[i] === '--execute') args.execute = true
   }
   return args
 }
@@ -789,6 +791,7 @@ const FLAG_EFFECTIVE_MODES = {
   replaceSymlinks: { cli: '--replace-symlinks', modes: ['check', 'install'] },
   dryRun: { cli: '--dry-run', modes: ['migrate'] },
   secondaryDir: { cli: '--secondary-dir', modes: ['migrate'] },
+  execute: { cli: '--execute', modes: ['migrate'] },
 }
 
 /** Refuse any flag that was passed but has no effect in the resolved mode (or set). */
@@ -1368,7 +1371,24 @@ function planMigrationItems(flatDir, wtDir, set) {
     const file = entry.name
     const from = path.join(flatDir, file)
     const to = path.join(wtDir, file)
-    const c = classify(from, set)
+    // classify() reads the file (fs.readFileSync) after its own lstat — an existing-but-
+    // unreadable source (permissions, a race that removed it after readdir) throws there.
+    // That is a plan property, not a crash: an unreadable source is exactly the "unsafe
+    // plan" case --migrate --execute must refuse on, so it is folded into `stays` with
+    // duplicateRisk so BOTH modes treat it the same way dry-run's own exit-nonzero check and
+    // execute's pre-flight refusal already read.
+    let c
+    try {
+      c = classify(from, set)
+    } catch (e) {
+      stays.push({
+        file,
+        from,
+        reason: `unreadable source — ${e instanceof Error ? e.message : String(e)}`,
+        duplicateRisk: true,
+      })
+      continue
+    }
     if (c.state === 'hand-authored') {
       stays.push({ file, from, reason: 'hand-authored — no workflow-toolbox banner; adopt never manages or moves it', duplicateRisk: false })
       continue
@@ -1544,15 +1564,149 @@ function migrateDryRun(dir, args) {
   }
 }
 
+// --- --migrate --execute ----------------------------------------------------------------
+//
+// Consumes the SAME plan planMigrationItems() computes for --dry-run — that function is the
+// single source of truth for "what would move and what stays, and why". Both modes call it;
+// neither recomputes its own answer. That is the whole point of the split: a dry-run and an
+// execute that disagree about the plan would mean the dry-run stopped predicting the real
+// move, and a dry-run that does not predict is worse than none, because the user reads it
+// and trusts it.
+
+/** Move `from` to `to`, verifying byte-identity afterward. `fs.renameSync` is a
+ *  directory-entry change on the same filesystem, not a content rewrite, so nothing should
+ *  be able to alter the bytes — but the managed files carry a content-fingerprinted banner
+ *  (see `classify()`/`fingerprint()`) that the installer uses to detect local edits, and a
+ *  byte-changing "move" would silently opt every rule out of future updates. So this
+ *  verifies rather than trusts the OS call. Falls back to copy+unlink on EXDEV (crossing a
+ *  filesystem boundary, where rename cannot work atomically). Throws on any mismatch or
+ *  filesystem error — the caller stops the whole run rather than continue past an unverified
+ *  move. */
+function moveFileVerified(from, to) {
+  const before = fs.readFileSync(from) // Buffer — byte-exact, unlike classify()'s 'utf8' read
+  fs.mkdirSync(path.dirname(to), { recursive: true })
+  try {
+    fs.renameSync(from, to)
+  } catch (e) {
+    if (e && e.code === 'EXDEV') {
+      fs.copyFileSync(from, to)
+      fs.unlinkSync(from)
+    } else {
+      throw e
+    }
+  }
+  const after = fs.readFileSync(to)
+  if (!before.equals(after)) {
+    throw new Error(`byte mismatch after move: ${from} -> ${to} — moved content differs from the original`)
+  }
+  if (fs.existsSync(from)) {
+    throw new Error(`source still present after move: ${from} — the move did not remove the origin`)
+  }
+}
+
+function executeMigration(dir, args) {
+  const wtDir = dir
+  const flatDir = legacyRulesDir(wtDir)
+  if (!flatDir) {
+    fail(
+      `adopt:migrate expects a rules/wt/ target — resolved dir was ${wtDir}, whose basename is not ` +
+        `'wt'. Pass --dir <…/rules/wt> or rely on the default (no --dir, no --global).`,
+    )
+  }
+  process.stdout.write(`[migrate --execute] flat root=${flatDir}  →  new location=${wtDir}\n`)
+
+  const set = SETS.rules
+  const { moves, stays } = planMigrationItems(flatDir, wtDir, set)
+
+  // Refuse BEFORE moving anything if the plan is not safe. duplicateRisk is the SAME flag
+  // migrateDryRun's own exit-nonzero check reads (planMigrationItems sets it for: a file
+  // present at both the old and new location — 'destination already exists', and a locally
+  // edited copy that a later --install would duplicate) — one plan, one notion of "safe",
+  // read by both modes. Adds the read-failure case, which is a plan property too: a file
+  // planMigrationItems could not even classify is exactly the "unreadable source" case this
+  // increment must refuse on, so it is folded into the plan itself rather than special-cased
+  // here.
+  const blockers = stays.filter((s) => s.duplicateRisk)
+  if (blockers.length > 0) {
+    process.stdout.write(
+      `adopt:migrate --execute: REFUSING — the plan is not safe (${blockers.length} blocker(s)). ` +
+        'Nothing has been moved.\n',
+    )
+    for (const b of blockers) process.stdout.write(`  REFUSE ${b.file}: ${b.from} — ${b.reason}\n`)
+    process.stdout.write(
+      '\nResolve every file named above by hand, then re-run --migrate --dry-run to confirm before ' +
+        '--migrate --execute.\n',
+    )
+    process.exitCode = 1
+    return
+  }
+
+  if (moves.length === 0) {
+    process.stdout.write(
+      `adopt:migrate --execute: nothing to move — the plan is empty. No-op (not an error): either ` +
+        `already migrated, or nothing was ever at the flat root.\n  ${stays.length} file(s) left in ` +
+        `place by design (hand-authored — never managed).\n  destination: ${wtDir}\n`,
+    )
+    return
+  }
+
+  const plannedCount = moves.length
+  let movedCount = 0
+  let firstFailure = null
+  for (const m of moves) {
+    if (firstFailure) break // stop moving once one move is unverified — do not compound the doubt
+    try {
+      moveFileVerified(m.from, m.to)
+      movedCount++
+      process.stdout.write(`  MOVED ${m.file}: ${m.from} -> ${m.to}\n`)
+    } catch (e) {
+      firstFailure = { file: m.file, message: e instanceof Error ? e.message : String(e) }
+      process.stdout.write(`  FAILED ${m.file}: ${firstFailure.message}\n`)
+    }
+  }
+  const notReached = moves.slice(movedCount + (firstFailure ? 1 : 0))
+
+  // Count before, count after, compare — a move that silently loses a file is the failure
+  // this whole increment exists to prevent, so this is not decorative: verify each PLANNED
+  // move actually landed, source gone and destination present, independent of the per-move
+  // verification above.
+  let confirmed = 0
+  for (const m of moves) {
+    if (!fs.existsSync(m.from) && realFile(m.to)) confirmed++
+  }
+  process.stdout.write(
+    `\nadopt:migrate --execute: ${movedCount} of ${plannedCount} planned file(s) moved, ` +
+      `${confirmed} of ${plannedCount} confirmed present at destination and absent from origin.\n`,
+  )
+  if (stays.length > 0) {
+    process.stdout.write(`${stays.length} file(s) left in place by design:\n`)
+    for (const s of stays) process.stdout.write(`  STAY ${s.file}: ${s.reason}\n`)
+  }
+  if (notReached.length > 0) {
+    process.stdout.write(`${notReached.length} file(s) NOT REACHED (a prior move failed; stopped):\n`)
+    for (const n of notReached) process.stdout.write(`  NOT REACHED ${n.file}\n`)
+  }
+  process.stdout.write(`destination: ${wtDir}\n`)
+
+  if (firstFailure || confirmed !== plannedCount) {
+    process.stdout.write('adopt:migrate --execute: EXITING NON-ZERO — not every planned move is confirmed.\n')
+    process.exitCode = 1
+  }
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2))
   checkFlagModeAsymmetry(args)
   if (args.mode === 'migrate') {
-    if (!args.dryRun) {
+    if (args.dryRun && args.execute) {
+      fail('adopt:migrate: pass exactly one of --dry-run or --execute, never both in the same run.')
+    }
+    if (!args.dryRun && !args.execute) {
       fail(
-        'adopt:migrate has no --install/execute path in this version — only --migrate --dry-run is ' +
-          'implemented. The real move is a deliberate, separate step (card 1835727457, item 2): it ' +
-          'needs you to stop your other sessions and read this dry-run\'s real output first.',
+        'adopt:migrate needs --dry-run (read-only preview) or --execute (perform the real move) — ' +
+          'bare --migrate does nothing. Run --migrate --dry-run first and read its real output before ' +
+          'ever passing --migrate --execute (card 1835727457, item 2): the real move is a deliberate, ' +
+          'separate step this script does not take on its own.',
       )
     }
     if (args.set !== 'rules') fail(`adopt:migrate only applies to the rules set (got --set ${args.set})`)
@@ -1561,7 +1715,11 @@ function main() {
     const dir = path.resolve(
       args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
     )
-    migrateDryRun(dir, args)
+    if (args.execute) {
+      executeMigration(dir, args)
+    } else {
+      migrateDryRun(dir, args)
+    }
     return
   }
   if (args.mode === 'audit-overlap') {
