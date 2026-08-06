@@ -51,6 +51,25 @@ function normalizeFile(file, cwd) {
 
 const CLAUDE_DIR_SEGMENT = /^\.claude(-.*)?$/
 
+// A rule at the PLUGIN SOURCE — `<plugin>/rules/*.md` — is a different object from an adopted
+// one, and the difference decides the message rather than merely widening the predicate.
+//
+// An adopted copy is LOADED by sessions, so its edit has a reload horizon. A plugin source is
+// loaded by NOBODY: it is inert until `adopt` writes a copy somewhere. Telling its author "this
+// is verifiable from a new session" would be a false claim about the file they are holding —
+// no session, new or old, will ever read it.
+//
+// What its author needs instead is that the file is DISTRIBUTED: what goes wrong here goes
+// wrong for every adopter, the shipped set is English-only, and machine-specific detail (paths,
+// accounts, one-off tokens) belongs in a private rule rather than in something everyone gets.
+// The writing conventions are common to both and stay in one place below.
+function isPluginSourceRule(file) {
+  const segments = file.split(/[\\/]+/).filter(Boolean)
+  const rulesIndex = segments.lastIndexOf('rules')
+  if (rulesIndex < 1 || rulesIndex === segments.length - 1) return false
+  return segments[rulesIndex - 1] === 'plugin' && file.endsWith('.md')
+}
+
 // Ambient rules live one level under a `.claude`-named (or `.claude-*`, e.g. `.claude-work`)
 // directory: `<config-dir>/rules/*.md`. `rules` must be the DIRECT child of that segment —
 // `.claude/agents/rules/x.md` or `.claude/rules-backup/rules/x.md` are NOT the ambient rules
@@ -81,7 +100,9 @@ function main() {
   const sourceFile = editedFile(payload)
   if (!sourceFile) return
   const file = normalizeFile(sourceFile, payload.cwd)
-  if (!file || !isAmbientRule(file)) return
+  if (!file) return
+  const plugin = isPluginSourceRule(file)
+  if (!plugin && !isAmbientRule(file)) return
 
   // ⚠ TWO things, and the second is why this hook is the right home for it.
   //
@@ -94,9 +115,15 @@ function main() {
   // ⚠ Keep it SHORT. This fires on EVERY ambient-rule edit; the moment it grows into a
   // paragraph it becomes the routine noise this file's header promises it is not, and the
   // reload horizon — the part that is genuinely easy to miss — drowns with it.
+  const horizon = plugin
+    ? `${file} is a SHIPPED rule source: no session loads it — it is inert until adopt writes a ` +
+      `copy, so nothing here is verifiable by editing alone, and what goes wrong goes wrong for ` +
+      `every adopter. English only, and machine-specific paths, accounts or tokens belong in a ` +
+      `private rule instead. `
+    : `Editing ${file} is verifiable ONLY FROM A NEW SESSION: an agent spawn inherits its ` +
+      `session's rule snapshot, so neither this session nor a spawn can confirm the change. `
   const context =
-    `Editing ${file} is verifiable ONLY FROM A NEW SESSION: an agent spawn inherits its ` +
-    `session's rule snapshot, so neither this session nor a spawn can confirm the change. ` +
+    horizon +
     `Writing conventions for a rule file: telegraphic register — strip GRAMMAR, never CONTENT. ` +
     `A clause you can only shorten by losing a nuance stays long: compressed into a one-liner it ` +
     `survives in the file and STOPS ACTING (measured 3/3 to 1/3). And a rule is a DIRECTIVE — ` +

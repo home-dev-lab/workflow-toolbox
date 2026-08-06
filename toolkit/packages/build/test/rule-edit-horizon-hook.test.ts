@@ -114,6 +114,28 @@ describe('wt-rule-edit-horizon-hook — ambient rule edit horizon', () => {
     expect(r.context).toContain('first-edit.md')
   })
 
+  it('signals a PLUGIN SOURCE rule with a DIFFERENT horizon — it is loaded by nobody', () => {
+    const f = fixture('plugin-src')
+    const r = runHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Edit',
+      tool_input: { file_path: 'plugin/rules/wt-some-rule.md' },
+      cwd: f.root,
+    }, f.env)
+
+    expect(r.stdout, 'a shipped rule source must not be silent — it reaches every adopter').not.toBe('')
+    // ⚠ The two horizons are DIFFERENT CLAIMS, and asserting the difference is the point of this
+    // test. An adopted copy is loaded by sessions, so its edit has a reload horizon. A plugin
+    // source is loaded by nobody until adopt copies it, so telling its author "verifiable from a
+    // new session" would be false about the file in their hands.
+    expect(r.context.toLowerCase()).toContain('inert until adopt')
+    expect(r.context.toLowerCase()).not.toContain('only from a new session')
+    expect(r.context.toLowerCase()).toContain('every adopter')
+    // Shared half: the writing conventions apply to both.
+    expect(r.context.toLowerCase()).toContain('telegraphic')
+    expect(r.context.toLowerCase()).toContain('stops acting')
+  })
+
   it('stays silent for an agent definition', () => {
     const f = fixture('agent')
     const r = runHook({
