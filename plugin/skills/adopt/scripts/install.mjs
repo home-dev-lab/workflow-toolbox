@@ -749,6 +749,220 @@ function cmp(a, b) {
   return 0
 }
 
+// === CHANGELOG-SPAN CORE START — kept BYTE-IDENTICAL between changelog-span.mjs and
+// install.mjs; locked by adopt-changelog-span-drift.test.ts. Duplicated rather than
+// imported because install.mjs must stay a single relocatable script — its own tests
+// copy it alone into a synthetic plugin root, so a runtime import of a sibling module
+// breaks it there (measured elsewhere in this codebase: the same reason
+// UNIVERSAL_ENV_REQUIREMENTS is duplicated against plugin/bin/lib/env-prerequisites.mjs,
+// kept honest by env-prerequisite-drift-hook.test.ts's own text-equality check rather
+// than an import). Every helper name is prefixed `changelogSpan*` so pasting this block
+// into install.mjs cannot collide with that file's OWN `cmp()` (different signature:
+// string-vs-string, not tuple-vs-tuple). ===
+const CHANGELOG_SPAN_HEADING_RE = /^##\s+\[?(\d+)\.(\d+)\.(\d+)\]?/
+
+/** Parse a semver-ish string 'x.y.z' into a comparable [x,y,z] tuple. Throws on a
+ *  malformed string — callers only ever pass adopt's own installed/current versions,
+ *  both of which are validated elsewhere (VERSION_RE / plugin.json's own manifest
+ *  check) before they ever reach here. */
+function changelogSpanParseVersion(v) {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(v).trim())
+  if (!m) throw new Error(`changelogSpan: not a valid x.y.z version: ${JSON.stringify(v)}`)
+  return [Number(m[1]), Number(m[2]), Number(m[3])]
+}
+
+function changelogSpanCmp(a, b) {
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1
+  }
+  return 0
+}
+
+/** Every `## [x.y.z]` heading in `changelog`, in FILE order (newest-first, the normal
+ *  Keep-a-Changelog convention — never assumed by callers, only used here to find each
+ *  heading's line range). Each item carries the exact line index its heading starts at,
+ *  so the caller can slice the body down to (but not including) the NEXT heading of any
+ *  version — an `## [Unreleased]` section has no version token and is correctly never
+ *  matched, matching the plugin-changelog-gate's own `changelogRecordsVersion`. */
+function changelogSpanParseHeadings(changelog) {
+  const lines = changelog.split(/\r?\n/)
+  const headings = []
+  for (let i = 0; i < lines.length; i++) {
+    const m = CHANGELOG_SPAN_HEADING_RE.exec(lines[i])
+    if (!m) continue
+    headings.push({
+      version: `${Number(m[1])}.${Number(m[2])}.${Number(m[3])}`,
+      versionTuple: [Number(m[1]), Number(m[2]), Number(m[3])],
+      lineIndex: i,
+      headingLine: lines[i],
+    })
+  }
+  return { lines, headings }
+}
+
+/**
+ * Slice `changelog` (plugin/CHANGELOG.md's text, Keep a Changelog format) for every
+ * heading strictly newer than `fromVersion` up to and including `toVersion`.
+ *
+ * @param {string} changelog        raw CHANGELOG.md text
+ * @param {string} fromVersion      the stale copy's installed version, e.g. '0.112.0'
+ * @param {string} toVersion        the current plugin version, e.g. '0.144.0'
+ * @param {{maxEntries?: number}} [opts]  cap on entries returned (default 10); the
+ *   MOST RECENT entries are kept and the rest are counted in `omittedCount` — never
+ *   silently dropped, per the card's invariant 4.
+ *
+ * @returns {{recorded:true, entries:Array<{version:string, heading:string, body:string}>,
+ *            totalCount:number, omittedCount:number, missingVersionCount:number|null}
+ *          |{recorded:false, oldestRecordedVersion:string|null}}
+ */
+function changelogSpan(changelog, fromVersion, toVersion, opts = {}) {
+  const maxEntries = opts.maxEntries ?? 10
+  const from = changelogSpanParseVersion(fromVersion)
+  const to = changelogSpanParseVersion(toVersion)
+  const { lines, headings } = changelogSpanParseHeadings(changelog)
+
+  if (headings.length === 0) {
+    return { recorded: false, oldestRecordedVersion: null }
+  }
+
+  // Oldest/newest by VALUE, never by file position — a hand-edited or reordered
+  // changelog must not silently invert this via list order.
+  let oldest = headings[0]
+  for (const h of headings) {
+    if (changelogSpanCmp(h.versionTuple, oldest.versionTuple) < 0) oldest = h
+  }
+
+  if (changelogSpanCmp(from, oldest.versionTuple) < 0) {
+    // fromVersion predates every heading this changelog carries — nothing to slice,
+    // and saying so is the whole point: this is NOT "no changes", it is "no record".
+    return { recorded: false, oldestRecordedVersion: oldest.version }
+  }
+
+  // Headings strictly after `from`, up to and including `to` — sorted NEWEST FIRST
+  // (the useful reading order for "what did I miss"), independent of file order.
+  const inRange = headings
+    .filter((h) => changelogSpanCmp(h.versionTuple, from) > 0 && changelogSpanCmp(h.versionTuple, to) <= 0)
+    .sort((a, b) => -changelogSpanCmp(a.versionTuple, b.versionTuple))
+
+  // COVERAGE, computed only from the two REQUESTED versions — never from the file's
+  // oldest/newest heading, which is exactly the reading that missed the interior gap
+  // (see the file-header comment). Minor-version arithmetic: the plugin's whole history
+  // sits under major 0 and every release bumps a minor by exactly one number (patch
+  // bumps are rare, in-place hotfixes that share their minor with a sibling heading),
+  // so "expected minors between from and to" is `to.minor - from.minor`, compared
+  // against the count of DISTINCT minors actually represented among `inRange`'s
+  // headings. A major mismatch invalidates that arithmetic outright — reported as
+  // `null` (cannot determine), never guessed at as complete.
+  let missingVersionCount = null
+  if (from[0] === to[0]) {
+    const expectedMinors = to[1] - from[1]
+    const recordedMinors = new Set(inRange.map((h) => h.versionTuple[1])).size
+    missingVersionCount = Math.max(0, expectedMinors - recordedMinors)
+  }
+
+  // Body = from this heading's line, up to (not including) the next heading of ANY
+  // version in the whole file (not just those in-range) — so a body never swallows a
+  // sibling entry that happened to fall outside the requested range.
+  const allByLine = [...headings].sort((a, b) => a.lineIndex - b.lineIndex)
+  function bodyFor(h) {
+    const pos = allByLine.findIndex((x) => x.lineIndex === h.lineIndex)
+    const nextLineIndex = pos + 1 < allByLine.length ? allByLine[pos + 1].lineIndex : lines.length
+    return lines
+      .slice(h.lineIndex, nextLineIndex)
+      .join('\n')
+      .replace(/\n+$/, '')
+  }
+
+  const totalCount = inRange.length
+  const shown = inRange.slice(0, maxEntries)
+  const omittedCount = totalCount - shown.length
+
+  const entries = shown.map((h) => ({
+    version: h.version,
+    heading: h.headingLine,
+    body: bodyFor(h),
+  }))
+
+  return { recorded: true, entries, totalCount, omittedCount, missingVersionCount }
+}
+// === CHANGELOG-SPAN CORE END ===
+
+/** Cached text of plugin/CHANGELOG.md, read once per process — several stale items in
+ *  one run must not each pay a fresh read. `null` means "not yet attempted",
+ *  `''` means "attempted and unreadable" (a missing/unreadable changelog degrades to a
+ *  stated line, never a crash of the whole --check report). */
+let cachedPluginChangelog = null
+
+function pluginChangelogText(root) {
+  if (cachedPluginChangelog !== null) return cachedPluginChangelog
+  try {
+    cachedPluginChangelog = fs.readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8')
+  } catch {
+    cachedPluginChangelog = ''
+  }
+  return cachedPluginChangelog
+}
+
+/** Print the changelog span for a STALE item, right under its own status line — the
+ *  payoff the card names: a reading session sees not just that a copy is behind, but
+ *  what the intervening versions actually SHIPPED, in enough words to notice an overlap
+ *  with its own local machinery. Never called for anything but a STALE item — an
+ *  up-to-date or hand-authored file has no span to show. */
+function printChangelogSpan(root, fromVersion, toVersion) {
+  const changelog = pluginChangelogText(root)
+  if (!changelog) {
+    process.stdout.write(
+      `    CHANGELOG: plugin/CHANGELOG.md not found next to the plugin manifest — cannot show what shipped.\n`,
+    )
+    return
+  }
+  let span
+  try {
+    span = changelogSpan(changelog, fromVersion, toVersion)
+  } catch (err) {
+    process.stdout.write(`    CHANGELOG: could not compute the span (${err && err.message ? err.message : err}).\n`)
+    return
+  }
+  if (!span.recorded) {
+    process.stdout.write(
+      `    CHANGELOG v${fromVersion} → v${toVersion}: NO RECORD for this range — v${fromVersion} predates ` +
+        `every heading the changelog carries (oldest recorded: v${span.oldestRecordedVersion ?? 'none'}). ` +
+        `This does NOT mean nothing changed; it means the changelog has no entry that far back.\n`,
+    )
+    return
+  }
+  // Coverage is a THIRD, independent signal from totalCount — a query can have entries
+  // AND still be missing part of its own range (an interior gap the boundary check above
+  // cannot see; see the CHANGELOG-SPAN CORE header comment). So it is always stated
+  // explicitly, never left to be inferred from "did it print any warning": a reader must
+  // not be able to mistake an incomplete span for a complete one just because neither
+  // said so.
+  const coverageLine =
+    span.missingVersionCount === null
+      ? '    COVERAGE: cannot determine — v' + fromVersion + ' and v' + toVersion + ' are different major versions.\n'
+      : span.missingVersionCount === 0
+        ? '    COVERAGE: complete — every version between v' + fromVersion + ' and v' + toVersion + ' has a changelog entry.\n'
+        : `    COVERAGE: INCOMPLETE — approx. ${span.missingVersionCount} version(s) between v${fromVersion} ` +
+          `and v${toVersion} have NO changelog entry at all. The entries below are everything recorded, ` +
+          `not everything that shipped.\n`
+  if (span.totalCount === 0) {
+    process.stdout.write(`    CHANGELOG v${fromVersion} → v${toVersion}: no changes recorded in this range.\n`)
+    process.stdout.write(coverageLine)
+    return
+  }
+  process.stdout.write(
+    `    CHANGELOG v${fromVersion} → v${toVersion} (${span.totalCount} entr${span.totalCount === 1 ? 'y' : 'ies'}` +
+      (span.omittedCount > 0
+        ? `, showing the ${span.entries.length} most recent, ${span.omittedCount} older omitted`
+        : '') +
+      `):\n`,
+  )
+  process.stdout.write(coverageLine)
+  for (const entry of span.entries) {
+    for (const line of entry.body.split('\n')) process.stdout.write(`    | ${line}\n`)
+  }
+}
+
 function parseArgs(argv) {
   const args = {
     mode: 'check',
@@ -1318,6 +1532,12 @@ function processSet(set, dir, args, version, root) {
       }
     } else {
       process.stdout.write(`  ${item.file}: ${p.status}\n`)
+      // The payoff the card exists for: a STALE report by itself is a number moving,
+      // rationally ignored. `c.installedVer` is only ever set for a 'clean'/'edited'-family
+      // classification (never 'absent'), which is exactly the set STALE can be true for.
+      if (p.status.startsWith('STALE') && c.installedVer) {
+        printChangelogSpan(root, c.installedVer, version)
+      }
     }
   }
   return { anyAbsent, anyStale, anyEdited, anySymlink, anyMigrationPending }
