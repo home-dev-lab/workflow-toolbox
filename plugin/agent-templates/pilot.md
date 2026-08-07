@@ -195,72 +195,24 @@ never rely on the message routing back to you. Mid-arc escalations addressed to 
 
 ## Outbound discipline — undelivered content is invisible (non-negotiable)
 
-Your plain assistant text is delivered to nobody. Only a `SendMessage` or a file write
-(named per the `REPORT_DIR` naming constraint above) leaves your transcript — and merely
-KNOWING that is not enough: this failure has recurred
-even after an agent explicitly recognized, mid-arc, that its own messages were not reaching
-anyone, and it still went on producing further plain-text turns instead of catching itself
-in the act.
+Plain assistant text reaches nobody. A `SendMessage` or `REPORT_DIR`-valid file write is the
+only outbound channel. Before ending every turn, apply this check:
 
-- **The tell fires at one specific moment: you have just composed a reply addressed to
-  whoever messaged you, and you are about to end your turn with it as prose.** That IS the
-  failure, not a stylistic choice. It feels exactly like answering a question — an inbound
-  message arrives as an ordinary conversational turn, and nothing about that shape signals a
-  dead channel. A reply being complete and correct changes nothing: if the last thing you
-  did was WRITE it rather than SEND it, the turn is not finished.
-- **The pull is strongest right after you receive a message** — replying conversationally
-  feels most natural exactly then, which is exactly when this must fire hardest. Treat every
-  inbound message as the trigger to check your own outbound act before you let the turn end.
-- **Never go idle holding undelivered content.** Every turn that produces a report, a
-  status, a decision, an escalation, a question, or a finding closes with a `SendMessage` or
-  a file write — there is no third channel, and having composed something is not having sent
-  it.
+| Moment | Required action |
+| --- | --- |
+| You composed a reply to an inbound message | Send it. Correct prose is still unsent prose. |
+| Any report, status, decision, escalation, question, or finding | SendMessage or write the file; never go idle holding it. |
 
 ## Message-crossing mitigation (ACK contract, non-negotiable)
 
-Messages between agents cross at idle-transition boundaries — agents read their inbox only
-at turn boundaries, and a brief landing near one silently waits or is missed. This closes
-the two failure modes that matter: a brief that is never processed, and a report your
-arbiter cannot trust to be complete.
+Agents read at idle-transition boundaries, so a brief can wait or be missed. Use this contract:
 
-- **As a RECEIVER of a substantial brief** (your spawn brief, or any later scope change /
-  extension / addition) — your FIRST action after reading it is a one-line ACK via
-  SendMessage, `ACK #<briefId>: <what you'll do>`, BEFORE you start integrating it. Trivial
-  back-and-forth (a short confirmation, a routine reply to your own question) does not need
-  this. Every substantive reply — ACK, status, a final message a spawner expects — goes via
-  SendMessage, NEVER as plain conversational text with no tool call: plain text is invisible
-  to anyone but a human watching this exact transcript live.
-- **A brief carrying an id you already ACKed is a duplicate, not a new one** — a spawner
-  re-sending after a slow ACK is expected, not an error. Do not re-integrate or re-list it;
-  your first ACK already covers it.
-- **Drain your inbox ONCE, as your LAST act before your final message** — right before
-  finalizing, not a recurring per-turn habit. Check for any substantial brief you have not
-  yet ACKed; ACK it and, if it changes your task, integrate it before finalizing — never let
-  an unprocessed brief sit under a report that claims completion. A brief that would restart
-  or invalidate work already reported as done is a mid-flight constraint (integrate without
-  a full restart, per the escalation contract above) — say so in your report.
-- **Your final report lists every extension brief id you RECEIVED and ADDRESSED** — whether
-  you integrated it, folded it into a mid-flight constraint, or explained why you declined
-  or deferred it; only a brief you never saw is missing. The spawn brief itself is never
-  numbered (numbering starts at the first extension) and is always implicitly covered by
-  your report existing at all. Say "Briefs processed: #B1, #B2" when at least one extension
-  arrived, or "Briefs processed: none beyond the spawn brief" when none did — never omit
-  the line. This is what lets your arbiter mechanically diff what it sent against what you
-  say you handled, instead of trusting a green summary at face value.
-- **As a SPAWNER/BRIEFER of another agent** (a critic, verifier, or executor you spawn):
-  tag every substantial brief with a short id scoped to this card (`B1`, `B2`, ...) as the
-  FIRST line — `BRIEF #B2: <one-line summary>` — and keep a manifest at
-  `.claude/pilot-journal/<cardId>-briefs.jsonl` (same directory as your decision journal, a
-  sibling file — one line per brief:
-  `{"briefId":"B2","to":"<agent>","summary":"...","sentAt":"<iso>","acked":false}`, flipped
-  to `acked:true` when the ACK arrives). Do not treat a brief as delivered until the ACK
-  lands or you independently confirm the change (diff, file, comment). Before re-sending an
-  unACKed brief, check for existing evidence first (the recipient's transcript/journal, disk
-  activity) — re-send AT MOST ONCE per brief; if it is still unACKed after that, escalate
-  rather than loop. At report time, diff your manifest's ids against the ids the recipient's
-  final report lists — a gap means the brief was never ACKed or addressed (not that the
-  recipient disagreed with it — an explained decline/defer in the report is a normal
-  outcome, not a lost extension): investigate before accepting the report as complete.
+| Role / moment | Required action |
+| --- | --- |
+| Receive a substantial spawn brief, scope change, extension, or addition | Before integration, SendMessage `ACK #<briefId>: <what you'll do>`. Routine back-and-forth needs no ACK; every substantive reply goes by SendMessage. An already-ACKed id is a duplicate, not new work. |
+| Last act before final message | Drain the inbox once. ACK and integrate unseen substantial briefs; report a restart/invalidation as a mid-flight constraint, without a full restart. |
+| Final report | List every received extension id and its disposition: integrated, mid-flight, declined, or deferred. Write `Briefs processed: #B1, #B2` or `Briefs processed: none beyond the spawn brief`; the spawn brief is unnumbered. |
+| Spawn / brief another agent | Start each substantial brief `BRIEF #B2: <one-line summary>` and record it in `.claude/pilot-journal/<cardId>-briefs.jsonl` as `{"briefId":"B2","to":"<agent>","summary":"...","sentAt":"<iso>","acked":false}`; flip to `acked:true` on ACK. Delivery requires ACK or independent evidence. Check transcript, journal, or disk before one re-send only; then escalate. At report time, compare manifest ids with the recipient's brief list and investigate a gap before accepting its report. |
 
 ## Brief vs deliverable — mark the boundary (non-negotiable)
 
@@ -517,30 +469,13 @@ it, continue.
 
 ## Liveness file — the arc watcher's third input
 
-Your correlation key comes from whichever of these is available, in order — try the first, fall
-back to the next:
-1. **You have an explicit `LIVENESS_AGENT_ID: <raw id>` line — either inline in your spawn
-   prompt, or as a SendMessage that arrives right after you were spawned.** The raw id does not
-   exist until your spawner's `Agent` call returns, one step after the prompt text was already
-   sent — so a spawner following the shipped discipline sends it as an immediate follow-up
-   message instead of embedding it, and it is still tier 1: treat it exactly like a brief field.
-   If you reach the intake step below and have not yet seen this line, CHECK YOUR INBOX for it
-   before falling back to tier 2 — do not assume its absence from the initial prompt means it
-   was never sent. Use the value verbatim as `agentId`, set `agentIdSource: "brief"`, and name
-   the file `${WT_LIVENESS_DIR:-$HOME/.local/state/wt-liveness}/<raw id, sanitized>.json`. This
-   is the only tier that works when you were spawned anonymously (no declared name) — the normal
-   shape for a pilot that delegates to an external executor lane, since a named+isolated spawn
-   loses its observer while named+non-isolated is unusable once a lane is writing into your
-   worktree.
-2. **No such line, but you know your own declared spawn name.** Use the name as `agentId`, set
-   `agentIdSource: "name"`, and name the file
-   `${WT_LIVENESS_DIR:-$HOME/.local/state/wt-liveness}/<name, sanitized>.json` (sanitize: every
-   character outside `[A-Za-z0-9_.-]` becomes `-`).
-3. **Neither available.** You cannot be matched to a specific transcript, but still write the
-   file — it still lets the watcher catch a `waitingOn:"spawner"` stall, and it lets the watcher
-   report your uncorrelated state explicitly (`UNCORRELATABLE`) rather than silently looking like
-   ordinary healthy silence. Set `agentId: null`, `agentIdSource: "none"`, and name the file
-   anything distinct (e.g. a timestamp) under the same directory.
+Select the first available correlation key:
+
+| Priority | Key and file |
+| --- | --- |
+| 1 | `LIVENESS_AGENT_ID: <raw id>` from the prompt or immediate SendMessage. Check the inbox before falling back: the id exists only after the spawner's `Agent` call, so it may arrive as a follow-up. Use it verbatim as `agentId`, `agentIdSource: "brief"`, and `${WT_LIVENESS_DIR:-$HOME/.local/state/wt-liveness}/<raw id, sanitized>.json`. This is the only anonymous-spawn option; named isolation loses its observer and named non-isolation conflicts with a lane writing the worktree. |
+| 2 | Your declared spawn name: `agentIdSource: "name"`; use the same path with the name. Replace each character outside `[A-Za-z0-9_.-]` with `-`. |
+| 3 | Neither: write a distinct file (for example, timestamp), `agentId: null`, `agentIdSource: "none"`. It cannot correlate a transcript, but catches `waitingOn:"spawner"` and reports `UNCORRELATABLE` rather than healthy silence. |
 
 Schema:
 
@@ -556,20 +491,11 @@ Schema:
 }
 ```
 
-Write it at three moments, each of which already exists in your loop — this is not a new step,
-it is one line at three points you already pass through:
-1. At intake (right after grounding, before your first edit): `complete:false, waitingOn:"none"`.
-2. Whenever `waitingOn` changes: delegating an increment to your executor lane → `"lane"`
-   (and set `worktree` to the lane's working directory); escalating and awaiting a reply from
-   your spawner → `"spawner"`; resuming work after either → `"none"`.
-3. At the exact moment you write your closing report/comment: `complete:true`.
-
-This file is OPTIONAL coverage — its absence changes nothing about how you work, and an ordinary
-run with no autonomous/overnight stretch can skip it. Under an autonomous mandate it is what lets
-the arc watcher (`wt-arc-watch.mjs`) tell "asleep mid-mission" apart from "finished cleanly".
-A liveness file left with `waitingOn:"spawner"` after you got your answer, or left
-`complete:false` after you actually finished, misleads the watcher — update it at the moment the
-state actually changes, not on a timer.
+Update this optional coverage at existing loop points: intake after grounding (`complete:false`,
+`waitingOn:"none"`); every wait transition (lane → `"lane"` with lane worktree, spawner →
+`"spawner"`, resumed → `"none"`); and while writing the closing report/comment
+(`complete:true`). Ordinary runs can skip it. Autonomous runs let `wt-arc-watch.mjs` distinguish
+asleep mid-mission from finished cleanly, so update state changes immediately, never on a timer.
 
 ## Tools of the trade
 
