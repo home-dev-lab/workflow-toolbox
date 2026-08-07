@@ -3,6 +3,28 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.133.0] - 2026-08-07
+
+### Fixed
+
+- **The watchdog templates pointed at a file only the maintainer's machine has.** Both instructed
+  the observer to read `~/.claude/rules/delegation-lanes.md`, which no adopter possesses. It
+  INVERTED rather than failed: the clause exists because observers once flagged a legitimate direct
+  CLI invocation by citing a stale paraphrase instead of the live rule, so the fix was "read the
+  source, never quote it". For an adopter the pointer resolved to nothing, so the instruction did
+  nothing and the observer fell back on the paraphrase — exactly the failure it was written to
+  prevent. It worked here, which is why nobody saw it.
+
+  They now point at `wt-delegation-ladder.md`, which adopters receive and which already carries the
+  same distinction as its fourth prohibition — including the half that matters most: a direct
+  invocation is not the prohibited shape, because invocation is its own provenance. One source of
+  truth, one pointer change. The remaining `DD/MM` provenance stamps went in the same pass.
+
+  The durable half is a check refusing any shipped agent template that references a home-anchored
+  path, proven RED by adding one. Detection was never the problem — the pointer was plainly
+  visible to anyone reading the file — so the fix that matters is the one that fires with nobody
+  looking.
+
 ## [0.132.0] - 2026-08-07
 
 ### Added
