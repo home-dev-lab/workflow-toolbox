@@ -26,8 +26,8 @@ import {
 const baseStage = (name: string): StageSpecV2 => ({ name, workflow: `${name}.js` })
 
 describe('constants', () => {
-  it('INPUT_REF_SOURCES lists the three recognized sources', () => {
-    expect(INPUT_REF_SOURCES).toEqual(['artifactPath', 'goal', 'projectDir'])
+  it('INPUT_REF_SOURCES lists the four recognized sources', () => {
+    expect(INPUT_REF_SOURCES).toEqual(['artifactPath', 'goal', 'projectDir', 'artifactContent'])
   })
 
   it('EXTRACTOR_KEYS lists the two recognized extractor keys', () => {
@@ -63,13 +63,37 @@ describe('validateStageList', () => {
     expect(validateStageList([baseStage('a'), baseStage('a')])).toMatch(/duplicate stage name/)
   })
 
-  it('rejects a stage with neither "workflow" nor "pipeline"', () => {
-    expect(validateStageList([{ name: 'a' } as StageSpecV2])).toMatch(/exactly one of "workflow" or "pipeline"/)
+  it('rejects a stage with none of "workflow", "pipeline", "scripted"', () => {
+    expect(validateStageList([{ name: 'a' } as StageSpecV2])).toMatch(/exactly one of "workflow", "pipeline", or "scripted"/)
+    expect(validateStageList([{ name: 'a' } as StageSpecV2])).toMatch(/got none/)
   })
 
   it('rejects a stage with BOTH "workflow" and "pipeline"', () => {
     const spec: PipelineSpec = { goal: 'g', projectDir: '/repo', stages: [baseStage('x')] }
-    expect(validateStageList([{ name: 'a', workflow: 'a.js', pipeline: spec }])).toMatch(/exactly one of "workflow" or "pipeline"/)
+    expect(validateStageList([{ name: 'a', workflow: 'a.js', pipeline: spec }])).toMatch(/exactly one of "workflow", "pipeline", or "scripted"/)
+  })
+
+  it('rejects a stage with BOTH "workflow" and "scripted"', () => {
+    expect(
+      validateStageList([{ name: 'a', workflow: 'a.js', scripted: { model: 'openai/gpt-5.4', prompt: { from: 'goal' } } }]),
+    ).toMatch(/exactly one of "workflow", "pipeline", or "scripted"/)
+  })
+
+  it('rejects a stage with ALL THREE of "workflow", "pipeline", "scripted"', () => {
+    const spec: PipelineSpec = { goal: 'g', projectDir: '/repo', stages: [baseStage('x')] }
+    expect(
+      validateStageList([{ name: 'a', workflow: 'a.js', pipeline: spec, scripted: { model: 'm', prompt: { from: 'goal' } } }]),
+    ).toMatch(/exactly one of "workflow", "pipeline", or "scripted"/)
+  })
+
+  it('accepts a stage with ONLY "scripted" set', () => {
+    expect(validateStageList([{ name: 'a', scripted: { model: 'openai/gpt-5.4', prompt: { from: 'goal' } } }])).toBeNull()
+  })
+
+  it('rejects "input" set together with "scripted" — the prompt InputRef is the only input a scripted stage takes, an "input" record would be silently unconsulted', () => {
+    expect(
+      validateStageList([{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' } }, input: { x: { from: 'goal' } } }]),
+    ).toMatch(/"input" is disallowed on a scripted stage/)
   })
 
   it('rejects gateAfter:true on the LAST stage (no downstream stage to gate into)', () => {
@@ -177,6 +201,57 @@ describe('parsePipelineSpec', () => {
     expect(
       parsePipelineSpec({ ...base, stages: [{ name: 'a', workflow: 'a.js', artifact: { extract: 'bogus' } }, { name: 'b', workflow: 'b.js' }] }),
     ).toBeNull()
+  })
+
+  it('parses a valid scripted stage (model + prompt InputRef)', () => {
+    const parsed = parsePipelineSpec({
+      ...base,
+      stages: [{ name: 'a', scripted: { model: 'openai/gpt-5.4', prompt: { from: 'artifactContent' } } }],
+    })
+    expect(parsed?.stages[0]).toEqual({ name: 'a', scripted: { model: 'openai/gpt-5.4', prompt: { from: 'artifactContent' } } })
+  })
+
+  it('a "scripted" stage round-trips alongside "workflow" and "pipeline" stages in the same list', () => {
+    const parsed = parsePipelineSpec({
+      ...base,
+      stages: [
+        { name: 'a', workflow: 'a.js', gateAfter: true },
+        { name: 'b', scripted: { model: 'openai/gpt-5.4', prompt: { from: 'artifactPath' } } },
+        { name: 'c', pipeline: { goal: 'child', projectDir: '/repo', stages: [{ name: 'x', workflow: 'x.js' }] } },
+      ],
+    })
+    expect(parsed?.stages.map((s) => s.name)).toEqual(['a', 'b', 'c'])
+    expect(parsed?.stages[1]).toEqual({ name: 'b', scripted: { model: 'openai/gpt-5.4', prompt: { from: 'artifactPath' } } })
+  })
+
+  it('rejects a scripted stage missing "model"', () => {
+    expect(parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { prompt: { from: 'goal' } } }] })).toBeNull()
+  })
+
+  it('rejects a scripted stage with a non-string "model"', () => {
+    expect(parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 42, prompt: { from: 'goal' } } }] })).toBeNull()
+  })
+
+  it('rejects a scripted stage missing "prompt"', () => {
+    expect(parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm' } }] })).toBeNull()
+  })
+
+  it('rejects a scripted stage whose "prompt" has an unrecognized "from" source', () => {
+    expect(
+      parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'bogus' } } }] }),
+    ).toBeNull()
+  })
+
+  it('rejects "scripted" that is not an object', () => {
+    expect(parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: 'nope' }] })).toBeNull()
+  })
+
+  it('accepts an "artifactContent"-sourced input ref on an ordinary workflow stage too (the source is shared, not scripted-only)', () => {
+    const parsed = parsePipelineSpec({
+      ...base,
+      stages: [{ name: 'a', workflow: 'a.js', input: { text: { from: 'artifactContent' } } }],
+    })
+    expect(parsed?.stages[0]?.input).toEqual({ text: { from: 'artifactContent' } })
   })
 
   it('parses a valid nested pipeline-stage', () => {
