@@ -3,6 +3,28 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.128.0] - 2026-08-07
+
+### Fixed
+
+- **The delegated-arc watcher now says WHOSE delegate it is alarming about.** Two of its sweeps
+  had different scopes and only one was project-scoped: transcript staleness reads this project's
+  sessions, while the liveness sweeps read `~/.local/state/wt-liveness`, which every project on
+  the machine shares. A session was therefore woken by a `WAITING-ON-SPAWNER` line for a delegate
+  belonging to a different project, with nothing in the line to say so and nothing it could do
+  about it. Emissions now carry `(foreign to this project)` when the record's agent id is not
+  among the watcher's own transcripts, and `(project unknown)` for a record that declares no
+  correlation key at all — those being different states, not two shades of one.
+
+  It **labels rather than filters**, deliberately: `lib/liveness.mjs` must never suppress a real
+  stall because a side input could not be checked, and liveness records carry no project field,
+  so a filter would silently drop exactly the records that lack one. The emission count is
+  unchanged and a test asserts it, so the label can never quietly become a filter.
+
+  The identifier set is derived only when the transcript baseline is replaced, never per poll —
+  measured at ~710 ms for 1606 transcript metadata parses on a real project, which a 60-second
+  poll loop would otherwise pay to recompute an identical answer.
+
 ## [Unreleased]
 
 ### Changed — BREAKING
