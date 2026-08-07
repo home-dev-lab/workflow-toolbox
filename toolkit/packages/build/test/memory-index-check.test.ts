@@ -53,6 +53,7 @@ function hubWithMembers(dir: string, slug: string, memberSlugs: string[], extraB
 
 interface Report {
   hasIndex: boolean
+  scopeNote?: string
   threshold: number
   sizeThreshold: number
   entryLines: number
@@ -622,8 +623,45 @@ describe('wt-memory-index-check.mjs CLI: warning band + hub sizing exit codes an
     writeFileSync(join(dir, 'MEMORY.md'), indexText)
     const stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
     expect(stdout).toBe(
-      `index: 1 entry line(s) (threshold applied: 200), ${Buffer.byteLength(indexText)} byte(s) (size threshold applied: 25000) — 1 fiche(s) on disk, 1 reachable, 0 invisible; 0 dangling; 0 unresolved cross-reference(s)\n`,
+      `index: 1 entry line(s) (threshold applied: 200), ${Buffer.byteLength(indexText)} byte(s) (size threshold applied: 25000) — 1 fiche(s) on disk, 1 reachable, 0 invisible; 0 dangling; 0 unresolved cross-reference(s)\n` +
+        `scope: this run verified REACHABILITY (a path exists from the index to every fiche, direct or via a hub) and the index/hub size ceilings — it did NOT verify DISCOVERABILITY (whether a session scanning the index would know a given subject sits behind a given line).\n`,
     )
+  })
+
+  it('CARD (bound-naming): a healthy/clean store still prints what was verified AND what was not — the exact defect this closes is a clean run reading as full coverage', () => {
+    const dir = makeStore()
+    fiche(dir, 'fact-a', 'Fact.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Fact A](fact-a.md) — a fact\n')
+    const { status, report } = runCli(dir)
+    expect(status).toBe(0)
+    expect(report.scopeNote).toMatch(/REACHABILITY/)
+    expect(report.scopeNote).toMatch(/DISCOVERABILITY/)
+    const stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
+    expect(stdout).toContain('scope:')
+    expect(stdout).toContain('REACHABILITY')
+    expect(stdout).toContain('DISCOVERABILITY')
+  })
+
+  it('CARD (bound-naming): an unhealthy store (unreachable fiche) is UNCHANGED — the existing FLAG/unreachable reporting still fires, and the scope line is additive, not a replacement', () => {
+    const dir = makeStore()
+    fiche(dir, 'orphan', 'Nobody points at this.\n')
+    fiche(dir, 'fact-a', 'Fact.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Fact A](fact-a.md) — a fact\n')
+    let status = 0
+    let stdout = ''
+    try {
+      stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
+    } catch (e) {
+      const err = e as ExecError
+      stdout = err.stdout ?? ''
+      status = err.status ?? 1
+    }
+    expect(status).toBe(1)
+    expect(stdout).toContain('1 invisible')
+    expect(stdout).toContain('FLAG: 1 fiche(s) on disk are reachable from the index by no path (hub or direct)')
+    expect(stdout).toContain('  unreachable: orphan.md')
+    // additive, not a replacement: the scope line is still present on the flagged path too
+    expect(stdout).toContain('scope:')
   })
 
   it('nothing dangling: exits 0 and the summary states both emptiness conditions explicitly', () => {

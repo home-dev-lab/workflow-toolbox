@@ -19,6 +19,13 @@
 // AMPUTATED one (fiches genuinely lost) — a probe that only counts lines
 // can be satisfied by deleting entries, which is the defect itself.
 //
+// ⚠ WHAT THIS DOES NOT CHECK, on every run including the clean one: REACHABLE
+// means a path exists (a direct link, or transitively through a hub); it does
+// NOT mean a session scanning the index would know to take that path. A
+// two-line index with 0 unreachable can still front a note covering fifteen
+// subjects while naming three — every run prints its own scope line so this
+// can't be over-read as "the index is fine".
+//
 // The store path is always an argument, never guessed — a tool that knows
 // one location only works on one machine.
 //
@@ -121,6 +128,11 @@ if (args.json) {
         `${report.unreachableFiches.length} invisible; ${report.danglingRefs.length} dangling; ` +
         `${report.unresolvedCrossRefs.length} unresolved cross-reference(s)`,
     );
+    // Printed on EVERY run that actually checked a store — the clean run
+    // included. "0 invisible, 0 dangling" reads as "the index is fine"; this
+    // names the narrower question the numbers above actually answer, so a
+    // green run cannot be over-read into a claim about discoverability.
+    console.log(report.scopeNote);
     // Only printed when at least one hub exists, and only inside the band —
     // a flat store (no hubs, comfortable headroom) reads exactly as it did
     // before these two lines existed.
