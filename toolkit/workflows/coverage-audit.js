@@ -2162,7 +2162,7 @@ ${renderClaim(claim)}`;
       docs: ["docs/public/known-issues.md"]
     },
     {
-      // The 16 shipped hooks/guards/monitors written up in the "Shipped Hooks, Guards &
+      // The shipped hooks/guards/monitors written up in the "Shipped Hooks, Guards &
       // Monitors" section — none had a doc surface before.
       sources: [
         "plugin/bin/wt-adopt-check-hook.mjs",
@@ -2173,6 +2173,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-env-prerequisite-drift-hook.mjs",
         "plugin/bin/wt-lane-saturation-hook.mjs",
         "plugin/bin/wt-arc-watch.mjs",
+        "plugin/bin/wt-autonomy-watch.mjs",
         "plugin/bin/wt-check-commit-signatures-hook.mjs",
         "plugin/bin/wt-check-commit-signatures.mjs",
         "plugin/bin/wt-hook-registration-drift-hook.mjs",

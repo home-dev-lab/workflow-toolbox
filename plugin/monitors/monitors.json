@@ -16,5 +16,11 @@
     "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-quota-watch.mjs",
     "description": "Account quota watch — reports five-hour/seven-day usage crossing a threshold and window resets, so a long delegated arc gets a wake-up before hitting the wall",
     "when": "always"
+  },
+  {
+    "name": "autonomy-watch",
+    "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-autonomy-watch.mjs",
+    "description": "Autonomy watch — wakes a mandated session that still has queued work, nothing in flight, and no new turn for long enough",
+    "when": "always"
   }
 ]
