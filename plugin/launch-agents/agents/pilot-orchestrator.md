@@ -200,6 +200,15 @@ unless the report states which one it was.
      report-time gap this step exists to catch early: relay it to that pilot as a non-gating
      concern (with your own grounded read) while it keeps working — never wait for its final
      report to discover it.
+   - **When a worktree reports `active`, `wt-lane-activity.mjs` answers what the lane is
+     actually doing**, not just that something is: `node plugin/bin/wt-lane-activity.mjs
+     --worktree <its-worktree> --pattern <lane-cli-name>` names the current sub-task from the
+     lane's own log line, and the running token total + model from its session store (opencode's
+     local SQLite DB, opened read-only — nothing here writes anywhere). Its stall verdict only
+     ever says `stalled` when the process is alive AND both the store and the log independently
+     agree nothing moved for the stall window; disagreement, or either source being unreadable,
+     reports `unknown` rather than guessing — a single-source stall check can invert (a lane that
+     just finished a turn can show a stale store while its log is still live, and vice versa).
    - **A process the probe reports under `unattributed` is an anomaly to NAME, not explain
      away.** Its `cwd`, `ppid`, and a truncated command line are already captured at the
      instant the probe ran — carry those three fields into whatever you relay or record. A

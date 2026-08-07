@@ -2240,6 +2240,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-pilot-guard-hook.mjs",
         "plugin/bin/wt-pilot-card-reconcile.mjs",
         "plugin/bin/wt-lane-probe.mjs",
+        "plugin/bin/wt-lane-activity.mjs",
         "plugin/bin/wt-lane-postdiff-check.mjs"
       ],
       docs: [
