@@ -97,6 +97,8 @@ It does not close the underlying failure — the hook whose file went missing st
 
 Runs `wt-memory-index-check.mjs` once per session against the current project's derived memory store. It surfaces an index beyond the harness truncation threshold and fiches unreachable from the index or indexed notes. It exits 0 with no output when no store exists, the probe is unavailable or errors, or the probe reports clean; it never blocks session start. Silence is the normal state because a healthy check that speaks gets disabled.
 
+**Scope, stated on every run of the underlying probe (including a clean one):** it checks REACHABILITY — that a path exists from the index to a fiche, direct or via a hub — and the index/hub size ceilings. It does NOT check DISCOVERABILITY — whether a session scanning the index would actually know a given subject sits behind a given line. A two-line index with zero unreachable fiches can still front a note covering fifteen subjects while naming three; the probe reports that store as clean, because reachability is the only thing it measures.
+
 ### `wt-outbound-guard-hook.mjs` — delegation delivery guard (PostToolUse / SubagentStop)
 
 Records spawn edges from `PostToolUse` records and nudges a subagent that is about to stop without having delivered a message. A closing failure leaves the registry entry open, preserving the unanswered-spawn signal rather than hiding it. It nudges at most once per agent per session, does not nudge the main loop, and never rewrites anything. Internal errors fail open with one stderr trace.

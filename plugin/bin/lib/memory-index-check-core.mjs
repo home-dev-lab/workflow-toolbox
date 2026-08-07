@@ -75,6 +75,23 @@ const DECLARED_MEMBER_COUNT_RE = /^[ \t]*member_count:\s*(\d+)\s*$/m;
 // a deliberately generous floor — a genuine hub (a body that IS a member
 // list) scores near 100%, so the two shapes are nowhere near each other.
 const HUB_MEMBER_LINE_RATIO = 0.3;
+// The bound this probe is honest about, on EVERY run that actually checked a
+// store — including the clean one. "0 unreachable, 0 dangling" reads as "the
+// index is fine", and that is not the question this probe answers.
+// REACHABLE means a path exists from the index to a fiche (a direct link, or
+// transitively through a hub's `[[slug]]` members); it says nothing about
+// whether a session SCANNING the index would know that path is there to
+// follow. A real store measured at 2 index lines, 0 unreachable, green on
+// every run, while one of those two lines fronted a 103 KB note covering
+// fifteen subjects and naming three — twelve subjects were written, correct,
+// and undiscoverable, and this probe would have called that store healthy.
+// Deliberately NOT a new metric (a per-hub "how much of your body did you
+// name" score fires on 13 of this project's own 13 hubs at once — see
+// wt-memory-hygiene.md's placement-test note — noise that gets switched off
+// before it ever earns its keep). This is a naming of the existing green's
+// limit, not a new check.
+const SCOPE_NOTE =
+  'scope: this run verified REACHABILITY (a path exists from the index to every fiche, direct or via a hub) and the index/hub size ceilings — it did NOT verify DISCOVERABILITY (whether a session scanning the index would know a given subject sits behind a given line).';
 const RETRACTION_KEYWORD_RE = /\bretract(?:ed|ion)?\b/i;
 const RETRACTION_DATE_RE = /\b\d{4}-\d{2}-\d{2}\b/;
 const ANY_LINK_RE = /\[[^\]]*\]\(([^)]+)\)/g;
@@ -88,7 +105,7 @@ const MD_PATH_RE = /(?:\.\.?\/)?(?:[^\s`()[\]]+\/)*[^\s`()[\]]+\.md(?:#[^\s`()[\
  *   on one machine.
  * @param {{ threshold?: number, sizeThreshold?: number, indexFile?: string, hubMax?: number }} [opts]
  * @returns {{
- *   store: string, hasIndex: boolean, indexFile: string, threshold: number,
+ *   store: string, hasIndex: boolean, scopeNote?: string, indexFile: string, threshold: number,
  *   sizeThreshold: number, entryLines: number, indexBytes: number,
  *   overThreshold: boolean, overSizeThreshold: boolean,
  *   diskFiches: number, reachableFiches: number, unreachableFiches: string[],
@@ -446,6 +463,7 @@ export function checkStore(storeDir, opts = {}) {
   return {
     store: storeDir,
     hasIndex: true,
+    scopeNote: SCOPE_NOTE,
     indexFile,
     threshold,
     sizeThreshold,
