@@ -303,6 +303,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     status: 'mapped',
     reason: 'Opencode-verifier and routing docs describe the shipped mechanical verifier guard.',
   },
+  {
+    script: 'plugin/bin/wt-unquoted-tool-glob-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse unquoted-glob blocking guard under Shipped Hooks, Guards & Monitors.',
+  },
 ]
 
 export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
@@ -609,6 +614,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-shipped-twin-check-hook.mjs',
       'plugin/bin/wt-stale-date-guard.mjs',
       'plugin/bin/wt-command-repeat-check.mjs',
+      'plugin/bin/wt-unquoted-tool-glob-guard-hook.mjs',
     ],
     docs: ['docs/public/known-issues.md'],
   },

@@ -253,6 +253,12 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         transcript_path: sandbox.transcriptPath,
         tool_input: { command: 'git status' },
       }
+    case 'wt-unquoted-tool-glob-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: "grep -rn foo --include=*.ts ." },
+      }
     case 'wt-actionable-snapshot-producer-hook.mjs':
       // No .claude/scripts/lib/depends-on-parser.mjs in this sandbox project — the hook
       // must no-op cleanly rather than crash, which is exactly what a project without the
