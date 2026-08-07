@@ -308,6 +308,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     status: 'mapped',
     reason: 'Known-issues documents this PreToolUse unquoted-glob blocking guard under Shipped Hooks, Guards & Monitors.',
   },
+  {
+    script: 'plugin/bin/wt-var-colon-modifier-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse var-colon-modifier warn-only guard under Shipped Hooks, Guards & Monitors.',
+  },
 ]
 
 export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
@@ -615,6 +620,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-stale-date-guard.mjs',
       'plugin/bin/wt-command-repeat-check.mjs',
       'plugin/bin/wt-unquoted-tool-glob-guard-hook.mjs',
+      'plugin/bin/wt-var-colon-modifier-guard-hook.mjs',
     ],
     docs: ['docs/public/known-issues.md'],
   },

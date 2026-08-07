@@ -2194,7 +2194,8 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-shipped-twin-check-hook.mjs",
         "plugin/bin/wt-stale-date-guard.mjs",
         "plugin/bin/wt-command-repeat-check.mjs",
-        "plugin/bin/wt-unquoted-tool-glob-guard-hook.mjs"
+        "plugin/bin/wt-unquoted-tool-glob-guard-hook.mjs",
+        "plugin/bin/wt-var-colon-modifier-guard-hook.mjs"
       ],
       docs: ["docs/public/known-issues.md"]
     }
