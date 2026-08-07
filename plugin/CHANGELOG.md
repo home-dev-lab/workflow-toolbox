@@ -3,6 +3,47 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.140.0] - 2026-08-07
+
+### Added
+
+- **Three shell-trap guards ported from private machine-local hooks into the shipped
+  plugin, all PreToolUse on Bash, all warn-only.** Every one of these is a property of a
+  common shell/tool combination, not of any one machine — every adopter meets it
+  unguarded.
+
+  - **`wt-pipestatus-bash-only-guard-hook.mjs`** — warns on a bare `PIPESTATUS` reference:
+    bash-only, expands EMPTY with no error under zsh (a piped gate's exit code then reads
+    as nothing). Measured against 163 distinct real commands referencing `PIPESTATUS`
+    across every session transcript on this machine: 163/163 fired. The guard cannot
+    distinguish a genuine reference from prose merely discussing the trap, the same known
+    false-positive family as the sibling guards here — ships warn-only.
+  - **`wt-find-newermt-format-guard-hook.mjs`** — warns when a `find … -newermt <arg>`
+    argument is not ISO-8601: some `find` builds accept only ISO-8601 there, reject a
+    natural-language date on stderr, and a swallowed/piped stderr then reads as "no recent
+    files" instead of "the date format was rejected". Measured against 555 distinct real
+    `find … -newermt` commands: 256 fired, dominated by genuine natural-language/relative
+    forms plus a residual class of bare shell-variable arguments the guard cannot evaluate
+    — an intentionally conservative posture. Ships warn-only.
+  - **`wt-git-commit-backtick-guard-hook.mjs`** — warns on an unescaped backtick inside a
+    double-quoted `git commit`/`tag`/`notes` `-m`/`--message` argument: inside double
+    quotes a backtick pair IS command substitution, silently splicing empty output into
+    the stored message with no error. Measured against 466 distinct real candidates: a
+    first pass without heredoc-awareness fired on 16/466, and reading all 16 showed 12
+    were the `-m "$(cat <<'EOF' … EOF)"` heredoc-in-command-substitution form — this
+    project's own dominant commit convention, where the backtick sits inside a
+    quoted-delimiter heredoc body the shell never expands (75% false-positive rate on the
+    fired set). Fixed by stripping heredoc bodies before matching, the same technique
+    `wt-unquoted-tool-glob-guard-hook.mjs` already uses; re-measured: 4/4 fired, all 4
+    genuine, 0 false positives. Ships warn-only (4 true positives over 466 candidates is
+    real signal, far short of the scale this repo requires before a guard denies).
+
+  All three registered in `plugin/.claude-plugin/plugin.json`, documented under "Shipped
+  Hooks, Guards & Monitors" in `docs/public/known-issues.md`, mapped in
+  `toolkit/examples/docs-provenance.ts` (both the shipped-hooks doc-surface entry and the
+  per-script mapped list), and covered by a synthetic crash-safety payload each in
+  `plugin-hook-crash-safety.test.ts`.
+
 ## [0.139.0] - 2026-08-07
 
 ### Added

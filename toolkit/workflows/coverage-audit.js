@@ -2197,7 +2197,10 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-unquoted-tool-glob-guard-hook.mjs",
         "plugin/bin/wt-var-colon-modifier-guard-hook.mjs",
         "plugin/bin/wt-merge-chain-guard-hook.mjs",
-        "plugin/bin/wt-main-guard-hook.mjs"
+        "plugin/bin/wt-main-guard-hook.mjs",
+        "plugin/bin/wt-pipestatus-bash-only-guard-hook.mjs",
+        "plugin/bin/wt-find-newermt-format-guard-hook.mjs",
+        "plugin/bin/wt-git-commit-backtick-guard-hook.mjs"
       ],
       docs: ["docs/public/known-issues.md"]
     }

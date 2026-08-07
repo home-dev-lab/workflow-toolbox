@@ -279,6 +279,24 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Bash',
         tool_input: { command: 'git merge branch && pnpm test' },
       }
+    case 'wt-pipestatus-bash-only-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'cmd | tee log; echo ${PIPESTATUS[0]}' },
+      }
+    case 'wt-find-newermt-format-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'find . -newermt "5 minutes ago"' },
+      }
+    case 'wt-git-commit-backtick-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git commit -m "the default `stretch` applied"' },
+      }
     case 'wt-actionable-snapshot-producer-hook.mjs':
       // No .claude/scripts/lib/depends-on-parser.mjs in this sandbox project — the hook
       // must no-op cleanly rather than crash, which is exactly what a project without the
