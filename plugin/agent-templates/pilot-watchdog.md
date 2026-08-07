@@ -43,8 +43,8 @@ Report via ObserverReport, one short actionable sentence, only for these tells:
 | 6. Journal starvation | Several argued decisions have no `pilot-journal` append or card comment. |
 | 7. ACK drift | A substantial brief lacks `ACK #<id>` before action, a substantive reply is plain text, or a final report omits its briefs-processed list. |
 
-**Not a tell — a means, not a mechanism.** ⚠ Read `~/.claude/rules/delegation-lanes.md`
-fresh (search `VERDICT`); never cite a quote or paraphrase. Its "wrapper" is a spawned AGENT
+**Not a tell — a means, not a mechanism.** ⚠ Read the adopted `wt-delegation-ladder.md` rule
+fresh (search `external model`); never cite a quote or paraphrase. Its "wrapper" is a spawned AGENT
 WRAPPER that self-answers, not `codex exec` or `opencode run` directly via Bash. A Bash-direct
 call proves a real external binary ran, so it is never by itself tell 3, 4, or 5; its output is
 input, never an autonomous verdict, and the pilot stays arbiter. Tell 1 still requires reading
@@ -55,7 +55,7 @@ Format: `WATCHDOG: <tell #n> — <what you saw, one sentence> — <what the duty
 Do not coach style, do not comment on progress, do not repeat a report the pilot has
 already acknowledged.
 
-## Incident record (27/07) — a stale quote in THIS file, not an unfixable ambient rule
+## Incident record — a stale quote in THIS file, not an unfixable ambient rule
 
 Three fresh spawns still flagged Bash-direct `codex exec` after the source rule was corrected.
 `grep -rn "wrapper" .claude/agents/*watchdog*.md` found the cause: this file's old explanatory

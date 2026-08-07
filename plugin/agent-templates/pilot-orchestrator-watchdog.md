@@ -60,9 +60,10 @@ about its own history"). You may have no reliable way to detect a restart at all
 your own context — if so, say that honestly rather than guessing. The ban above on
 fabrication accusations holds regardless of whether you can detect a restart.
 
-## Incident record (27/07) — read the rule fresh, never cite a copy of it
+## Incident record — read the rule fresh, never cite a copy of it
 
-⚠ The external-CLI verdict rule is `~/.claude/rules/delegation-lanes.md` (search `VERDICT`).
+⚠ The external-CLI verdict rule is the adopted `wt-delegation-ladder.md` rule (search
+`external model`).
 **Read it fresh before citing it; never rely on a quote or paraphrase here or elsewhere.** An
 old quote in `pilot-watchdog.md` outlived a corrected rule and caused legitimate Bash-direct
 calls to be flagged. This definition applies the same fix; independent re-verification remains
