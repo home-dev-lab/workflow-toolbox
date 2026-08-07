@@ -3,6 +3,36 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.138.0] - 2026-08-07
+
+### Added
+
+- **`wt-merge-chain-guard-hook.mjs` — warns when a `git merge` is chained with what verifies it.**
+  A merge can do nothing — `Already up to date` when run from the wrong tree, or an abort — and the
+  commands after it then run on the **unmerged** tree and return 0. Three gates green, three honest
+  exit codes, certifying a subject nobody intended to certify.
+
+  ⚠ The exit code cannot detect this, and that is the point: it belonged to the gate, the gate
+  genuinely passed, and it answered a question about the wrong **subject**.
+
+  A shipped rule already stated the invariant. Adopters have had that rule for weeks with nothing
+  enforcing it — this is the rung below a rule, and the reason the hook exists.
+
+  **Warn-only, and measurement is why rather than caution.** 1,140 real `git merge` commands were
+  replayed from every session transcript on this machine — 21,503 files, 172,497 Bash calls scanned
+  — against the guard's own executable. 376 matched, and the large majority are the *safe* pattern:
+  capture the merge's own exit code or log, then inspect it. A literal "anything after a merge"
+  predicate cannot tell that apart from the blind chain, so it stays far short of the 197/0 bar the
+  sibling glob guard cleared before earning a deny.
+
+  That replay also found a defect reading had not: a bare word boundary after `merge` matched
+  `git merge-base`, `merge-tree` and `merge-file`. It was present in a version that looked correct
+  on inspection.
+
+  ⚠ **It covers the CHAINED shape only.** A merge run from the wrong tree — the variant that
+  actually recurred four times the day this shipped — is a sibling defect this does not catch, and
+  its silence there must not be read as coverage.
+
 ## [0.137.0] - 2026-08-07
 
 ### Added
