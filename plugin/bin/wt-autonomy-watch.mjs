@@ -366,10 +366,17 @@ const nowAtArming = Date.now()
 const mandateState = mandateArmedState(context.mandatePath)
 const queueState = queueArmedState(context.queuePath, context.queueStaleMs, nowAtArming)
 const canFire = mandateState === 'present' && queueState.startsWith('fresh')
+// ⚠ A DIAGNOSIS CARRIES ITS REMEDY. Naming what is missing without naming what supplies it moves a
+// reader from "I cannot tell whether this works" to "I know it is broken and not what to do" —
+// better, but still short of actionable, and the second state is where a reader gives up. So each
+// missing piece names the thing that provides it.
+const remedies = []
+if (mandateState !== 'present') remedies.push('run `wt-autonomy-arm.mjs` to declare a mandate')
+if (!queueState.startsWith('fresh')) remedies.push('register `wt-queue-not-empty-gate-hook.mjs` (Stop) to write the queue snapshot')
 write(
   `AUTONOMY WATCH ARMED: idle=${DEFAULT_IDLE_MINUTES}min poll=${pollSeconds}s · ` +
     `mandate=${mandateState} · queue=${queueState}` +
-    (canFire ? '' : ' · CANNOT FIRE until both are present and the queue snapshot is fresh'),
+    (canFire ? '' : ` · CANNOT FIRE — ${remedies.join('; ')}`),
 )
 
 for (;;) {

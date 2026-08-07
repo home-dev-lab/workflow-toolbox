@@ -3,6 +3,37 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.132.0] - 2026-08-07
+
+### Added
+
+- **`wt-autonomy-arm.mjs` — the mandate the autonomy watcher refuses to run without can now be
+  declared with a shipped command.** Until now the watcher could name what was missing and no
+  adopter had any way to supply it: `mandate=absent` with nothing in the plugin able to write that
+  marker. A diagnosis with no remedy.
+
+  Run it to arm, `--disarm` to withdraw, `--status` to report. The exit code carries the verdict so
+  a caller need not parse prose. It refuses to guess a session id rather than write a marker
+  nothing will ever read.
+
+  ⚠ **It is deliberately not a hook.** A hook stamping the marker at session start would declare a
+  mandate for every session whether or not anyone wanted one, reintroducing exactly the noise the
+  watcher's gate exists to prevent. Declaring a mandate is an act; this is the act. The marker is
+  per session and does not survive a restart — stated rather than worked around, because a mandate
+  silently inherited by a later session could keep waking somebody after the intent behind it had
+  expired.
+
+### Changed
+
+- **The autonomy watcher's banner now names what supplies each missing precondition**, not just
+  which one is missing: the arming command for an absent mandate, the queue-snapshot hook for an
+  absent or stale snapshot. Naming the gap without naming its remedy moves a reader from "I cannot
+  tell whether this works" to "I know it is broken and not what to do" — better, and still short of
+  actionable.
+
+  Raised by a session on another project, which read the 0.130.0 banner, went looking for the tool
+  that would arm it, and found none.
+
 ## [0.131.0] - 2026-08-07
 
 ### Changed

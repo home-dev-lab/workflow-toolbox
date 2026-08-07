@@ -2173,6 +2173,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-env-prerequisite-drift-hook.mjs",
         "plugin/bin/wt-lane-saturation-hook.mjs",
         "plugin/bin/wt-arc-watch.mjs",
+        "plugin/bin/wt-autonomy-arm.mjs",
         "plugin/bin/wt-autonomy-watch.mjs",
         "plugin/bin/wt-check-commit-signatures-hook.mjs",
         "plugin/bin/wt-check-commit-signatures.mjs",
