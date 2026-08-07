@@ -19,6 +19,10 @@
 //     `wt-stale-date-guard.mjs` is a report-generating CLI, not a PreToolUse/PostToolUse hook
 //     that decides block/warn on a tool call.
 //
+// PARSING lives in plugin/bin/lib/guard-journal-read.mjs — shared with the SessionStart
+// recurrence surface (wt-guard-recurrence-hook.mjs) so the two readers can never disagree about
+// what a record means. This file is presentation only.
+//
 // Usage:
 //   node wt-guard-journal-scan.mjs [--weeks N] [--all] [--json]
 //     --weeks N   how many of the most recent week-files to include (default 1 = this week)
@@ -30,11 +34,7 @@
 //             (permission error, not-a-directory, ...) — DISTINCT from "zero events": a reader
 //             that can't see the data must never print 0 and let it read as "clean".
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-
-const BASE_DIR = process.env.WT_GUARD_JOURNAL_DIR || join(homedir(), '.local', 'state', 'wt-guard-journal')
+import { readGuardJournal } from './lib/guard-journal-read.mjs'
 
 const argv = process.argv.slice(2)
 const arg = (flag, dflt) => {
@@ -45,90 +45,29 @@ const WEEKS = Number(arg('--weeks', '1'))
 const ALL = argv.includes('--all')
 const AS_JSON = argv.includes('--json')
 
-function fail(exitCode, message) {
+const result = readGuardJournal({ weeks: WEEKS, all: ALL })
+
+if (!result.ok) {
   if (AS_JSON) {
-    console.log(JSON.stringify({ ok: false, exitCode, message, baseDir: BASE_DIR }))
+    console.log(JSON.stringify({ ok: false, exitCode: result.exitCode, message: result.message, baseDir: result.baseDir }))
   } else {
-    console.log(message)
+    console.log(result.message)
   }
-  process.exit(exitCode)
+  process.exit(result.exitCode)
 }
 
-if (!existsSync(BASE_DIR)) {
-  fail(2, `No guard journal at ${BASE_DIR} — no guard has recorded a block or warning yet.`)
-}
-
-let files
-try {
-  files = readdirSync(BASE_DIR)
-    .filter((f) => f.endsWith('.ndjson'))
-    .map((f) => ({ name: f, path: join(BASE_DIR, f) }))
-    .sort((a, b) => (a.name < b.name ? 1 : -1)) // newest ISO-week filename first, lexicographic == chronological
-} catch (error) {
-  fail(3, `Guard journal directory ${BASE_DIR} exists but could not be read: ${error.message}`)
-}
-
-const selected = ALL ? files : files.slice(0, Math.max(1, WEEKS))
-
-const perGuard = new Map() // guard -> { blocked, warned, classes: Map<class,count> }
-let unreadableLines = 0
-let totalLines = 0
-
-for (const f of selected) {
-  let text
-  try {
-    text = readFileSync(f.path, 'utf8')
-  } catch {
-    continue // one unreadable week-file must not sink the whole report
-  }
-  for (const line of text.split('\n')) {
-    if (!line.trim()) continue
-    totalLines += 1
-    let entry
-    try {
-      entry = JSON.parse(line)
-    } catch {
-      unreadableLines += 1
-      continue
-    }
-    if (!entry || typeof entry.guard !== 'string') {
-      unreadableLines += 1
-      continue
-    }
-    if (!perGuard.has(entry.guard)) {
-      perGuard.set(entry.guard, { blocked: 0, warned: 0, classes: new Map() })
-    }
-    const g = perGuard.get(entry.guard)
-    if (entry.decision === 'blocked') g.blocked += 1
-    else if (entry.decision === 'warned') g.warned += 1
-    if (typeof entry.class === 'string') {
-      g.classes.set(entry.class, (g.classes.get(entry.class) || 0) + 1)
-    }
-  }
-}
-
-const rows = [...perGuard.entries()]
-  .map(([guard, g]) => ({
-    guard,
-    blocked: g.blocked,
-    warned: g.warned,
-    total: g.blocked + g.warned,
-    classes: Object.fromEntries(g.classes),
-  }))
-  .sort((a, b) => b.total - a.total)
-
-const windowLabel = ALL ? 'all recorded weeks' : `last ${Math.max(1, WEEKS)} week-file(s)`
+const { baseDir, window: windowLabel, weekFiles, totalLines, unreadableLines, rows } = result
 
 if (AS_JSON) {
   console.log(
     JSON.stringify({
       ok: true,
-      baseDir: BASE_DIR,
+      baseDir,
       window: windowLabel,
-      weekFiles: selected.map((f) => f.name),
-      totalEvents: rows.reduce((s, r) => s + r.total, 0),
+      weekFiles,
+      totalEvents: result.totalEvents,
       unreadableLines,
-      guards: rows,
+      guards: rows.map(({ guard, blocked, warned, total, classes }) => ({ guard, blocked, warned, total, classes })),
       caveat:
         'A count is an EVENT count, not a confirmed-defect count — a guard firing on correct ' +
         'work looks identical to one catching a real recurrence. Only guards wired to this ' +
@@ -138,8 +77,8 @@ if (AS_JSON) {
   process.exit(0)
 }
 
-console.log(`Guard journal — ${windowLabel} (${BASE_DIR})`)
-console.log(`Week-files read: ${selected.map((f) => f.name).join(', ') || '(none)'}`)
+console.log(`Guard journal — ${windowLabel} (${baseDir})`)
+console.log(`Week-files read: ${weekFiles.join(', ') || '(none)'}`)
 if (rows.length === 0) {
   console.log('No blocked or warned events recorded in this window.')
 } else {

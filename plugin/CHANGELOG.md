@@ -3,6 +3,22 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.143.0] - 2026-08-07
+
+### Added
+
+- `wt-guard-recurrence-hook.mjs`: a SessionStart surface that turns the guard journal's
+  recorded firing COUNT into something a session meets unasked. `wt-guard-journal-scan.mjs`
+  could already answer "has this guard recurred", but nothing invoked it — a counter nobody
+  reads is not a trigger. This hook reuses the scan CLI's parser (now extracted to
+  `plugin/bin/lib/guard-journal-read.mjs`, shared by both readers) and speaks only when the
+  same guard's firings for the same "reason" (its own `class`, or one shared `(unclassed)`
+  bucket per guard) cross the durable-fix rule's own threshold — more than twice in one week.
+  It names the count and the guard, never an instruction to reflect, carries the journal's own
+  two bounds every time it speaks (event count ≠ confirmed-defect count; only guards wired to
+  the journal are counted), and is silent on the common path and on any read failure (missing
+  or unreadable journal directory, malformed line, unrecognised record shape) — never an error.
+
 ## [0.142.0] - 2026-08-07
 
 ### Changed
