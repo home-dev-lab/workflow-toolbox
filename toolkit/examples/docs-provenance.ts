@@ -323,6 +323,21 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     status: 'mapped',
     reason: 'Known-issues documents this PreToolUse merge-chain warning guard under Shipped Hooks, Guards & Monitors.',
   },
+  {
+    script: 'plugin/bin/wt-pipestatus-bash-only-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse PIPESTATUS warn-only guard under Shipped Hooks, Guards & Monitors.',
+  },
+  {
+    script: 'plugin/bin/wt-find-newermt-format-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse find-newermt-format warn-only guard under Shipped Hooks, Guards & Monitors.',
+  },
+  {
+    script: 'plugin/bin/wt-git-commit-backtick-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse git-commit-backtick warn-only guard under Shipped Hooks, Guards & Monitors.',
+  },
 ]
 
 export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
@@ -633,6 +648,9 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-var-colon-modifier-guard-hook.mjs',
       'plugin/bin/wt-merge-chain-guard-hook.mjs',
       'plugin/bin/wt-main-guard-hook.mjs',
+      'plugin/bin/wt-pipestatus-bash-only-guard-hook.mjs',
+      'plugin/bin/wt-find-newermt-format-guard-hook.mjs',
+      'plugin/bin/wt-git-commit-backtick-guard-hook.mjs',
     ],
     docs: ['docs/public/known-issues.md'],
   },
