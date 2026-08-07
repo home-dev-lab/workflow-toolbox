@@ -4,7 +4,7 @@
 // Writes EDITABLE copies of workflow-toolbox's managed guardrails into the user's
 // config, each stamped with a versioned banner AND a content fingerprint so a later
 // run can tell (a) whether the copy is behind the plugin and (b) whether the USER has
-// edited it. Two managed SETS share one engine:
+// edited it. Three managed SETS share one engine:
 //
 //   • rules  — the cross-cutting guardrail rule files (content SOURCED from the
 //              plugin's rules/ dir at run time — every *.md there except README.md,
@@ -21,6 +21,9 @@
 //              pairing attach (plugin-installed agents do not honor it), and the
 //              fingerprint is what makes a stale copy DETECTABLE after a plugin bump —
 //              the hazard a raw manual copy has no defence against.
+//   • autonomy — the session-autonomy mandate markdown, sourced from the plugin's
+//                autonomy/ dir at run time. Target: <cwd>/.claude. Banner is line 1,
+//                same plain-markdown prepend shape as the rules set.
 //
 // It is safe BY CONSTRUCTION: `--install` never overwrites a locally-edited (or
 // hand-authored) file — that needs an explicit `--force`. `--check` is always
@@ -28,9 +31,9 @@
 // never write silently.
 //
 // Usage (the skill orchestrates these; a human can run them directly too):
-//   node install.mjs [--set rules|agents|all] --check   [--dir <dir>]   # report, write nothing
-//   node install.mjs [--set rules|agents|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
-//   node install.mjs [--set rules|agents|all] --install --force [--dir <dir>]  # also overwrite edited copies
+//   node install.mjs [--set rules|agents|autonomy|all] --check   [--dir <dir>]   # report, write nothing
+//   node install.mjs [--set rules|agents|autonomy|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
+//   node install.mjs [--set rules|agents|autonomy|all] --install --force [--dir <dir>]  # also overwrite edited copies
 //   node install.mjs [--set …] --install --replace-symlinks [--dir <dir>]      # replace a SYMLINKED target with a managed copy in place
 //   node install.mjs [--set …] --check|--install --global                      # target the CONFIG dir instead of the project
 //
@@ -310,6 +313,8 @@ const MANAGED_AGENTS = [
   { file: 'pilot-orchestrator-watchdog.md' },
 ]
 
+const MANAGED_AUTONOMY = [{ file: 'AUTONOMY.md' }]
+
 /** The plugin's REGISTERED agents (`plugin/agents/`) — DISCOVERED from the filesystem at
  *  run time, never hard-coded, so an agent added to that dir later shows up here with
  *  nobody editing a list (the same discipline `discoverRuleItems` already applies to the
@@ -382,13 +387,25 @@ function printRegisteredAgentsNote(root, userAgentsDir) {
   }
 }
 
-function untouchedSetLine(setName) {
-  if (setName === 'rules') return 'adopt: the agents set exists too; it was untouched here, and --set agents covers it.\n'
-  if (setName === 'agents') return 'adopt: the rules set exists too; it was untouched here, and --set rules covers it.\n'
-  return null
+function formatSetList(names) {
+  if (names.length === 0) return ''
+  if (names.length === 1) return names[0]
+  if (names.length === 2) return `${names[0]} and ${names[1]}`
+  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`
 }
 
-/** The two managed sets. `kind` drives banner placement; `srcDir` is the plugin bundle
+function formatSetFlags(names) {
+  return names.map((name) => `--set ${name}`).join(names.length === 2 ? ' or ' : ', ')
+}
+
+function untouchedSetLine(chosenSet, allSetNames) {
+  const untouched = allSetNames.filter((name) => name !== chosenSet)
+  if (untouched.length === 0) return null
+  const noun = untouched.length === 1 ? 'set exists too; it was' : 'sets exist too; they were'
+  return `adopt: the ${formatSetList(untouched)} ${noun} untouched here, and ${formatSetFlags(untouched)} covers ${untouched.length === 1 ? 'it' : 'them'}.\n`
+}
+
+/** The managed sets. `kind` drives banner placement; `srcDir` is the plugin bundle
  *  dir each set reads its files from; `resolveItems(root)` lists the managed files (the
  *  rules set discovers them from the bundle; the agents set is a fixed suite). */
 const SETS = {
@@ -412,7 +429,10 @@ const SETS = {
   // which is the only form where the pairing attaches. The other shipped agents (leaf, lean,
   // …) stay in agents/ — they declare no observer, so registration serves them correctly.
   agents: { kind: 'agents', srcDir: 'agent-templates', defaultDir: '.claude/agents', globalSubdir: 'agents', resolveItems: () => MANAGED_AGENTS },
+  autonomy: { kind: 'autonomy', srcDir: 'autonomy', defaultDir: '.claude', globalSubdir: '', resolveItems: () => MANAGED_AUTONOMY },
 }
+
+const MANAGED_SET_NAMES = Object.keys(SETS)
 
 // The pre-migration location for the rules set — the direct parent of the new default
 // (`.claude/rules/wt` → `.claude/rules`). Used ONLY as a heuristic for the legacy-fallback
@@ -552,7 +572,7 @@ function stripRuleBanner(text) {
 function renderItem(set, item, version, root) {
   const content = itemContent(set, item, root)
   const b = banner(version, fingerprint(content))
-  return set.kind === 'rules' ? `${b}\n\n${content}` : insertAgentBanner(content, b)
+  return set.kind === 'agents' ? insertAgentBanner(content, b) : `${b}\n\n${content}`
 }
 
 // --- Frontmatter preservation across a re-adoption -------------------------------------------
@@ -1731,14 +1751,14 @@ function main() {
     auditOverlap(path.resolve(args.userDir), root, args.pairsFile, args.declarationsFile, args.set)
     return
   }
-  if (!['rules', 'agents', 'all'].includes(args.set)) {
-    fail(`unknown --set '${args.set}' (expected rules | agents | all)`)
+  if (![...MANAGED_SET_NAMES, 'all'].includes(args.set)) {
+    fail(`unknown --set '${args.set}' (expected ${MANAGED_SET_NAMES.join(' | ')} | all)`)
   }
   const root = pluginRoot()
   const version = currentVersion(root)
-  const chosen = args.set === 'all' ? ['rules', 'agents'] : [args.set]
+  const chosen = args.set === 'all' ? MANAGED_SET_NAMES : [args.set]
   if (args.dir && chosen.length > 1) {
-    fail('--dir requires a single --set (use --set rules or --set agents; with --set all each set uses its own default dir)')
+    fail(`--dir requires a single --set (use one of: ${MANAGED_SET_NAMES.map((name) => `--set ${name}`).join(', ')}; with --set all each set uses its own default dir)`)
   }
   // Refuse rather than let one silently win: the two flags express DIFFERENT intents (an
   // explicit path vs "wherever this machine's config dir is"), and a caller who passed both
@@ -1787,7 +1807,7 @@ function main() {
   anyAbsent = anyAbsent || settingsResult.anyAbsent
   anySettingsProblem = anySettingsProblem || settingsResult.anyProblem
 
-  const untouchedLine = chosen.length === 1 ? untouchedSetLine(chosen[0]) : null
+  const untouchedLine = chosen.length === 1 ? untouchedSetLine(chosen[0], MANAGED_SET_NAMES) : null
   if (untouchedLine) process.stdout.write(untouchedLine)
 
   if (chosen.includes('agents')) printRegisteredAgentsNote(root, path.join(globalRoot, 'agents'))

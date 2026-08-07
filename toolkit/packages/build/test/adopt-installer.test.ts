@@ -30,6 +30,7 @@ import { afterEach, describe, it, expect } from 'vitest'
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
 const RULE = 'wt-delegation-ladder.md'
+const AUTONOMY = 'AUTONOMY.md'
 
 const roots: string[] = []
 afterEach(() => {
@@ -52,6 +53,7 @@ function runInCwd(args: string[], cwd: string): string {
   return (res.stdout ?? '') + (res.stderr ?? '')
 }
 const rulePath = (dir: string) => join(dir, RULE)
+const autonomyPath = (dir: string) => join(dir, '.claude', AUTONOMY)
 
 // Age a managed RULE copy into "installed from an older release whose text has since
 // changed": an older banner version, a body that genuinely differs from what ships now, and
@@ -365,14 +367,45 @@ describe('adopt installer — frontmatter preservation across --force (card #182
   })
 })
 
-describe('adopt installer — CLI surface for the two-set engine', () => {
+describe('adopt installer — autonomy set (--set autonomy; committed drift lock)', () => {
+  it('ABSENT: --install writes .claude/AUTONOMY.md with the rule-style versioned fingerprint banner', () => {
+    const d = mkDir()
+    expect(runInCwd(['--set', 'autonomy', '--check'], d)).toContain('AUTONOMY.md: ABSENT')
+    const out = runInCwd(['--set', 'autonomy', '--install'], d)
+    expect(out).toContain(`[autonomy] target=${join(d, '.claude')}`)
+    expect(out).toContain('AUTONOMY.md: WROTE')
+    const body = readFileSync(autonomyPath(d), 'utf8')
+    expect(body).toMatch(/installed from workflow-toolbox v\d+\.\d+\.\d+/)
+    expect(body).toMatch(/content sha256:[0-9a-f]{12}/)
+  })
+
+  it('a fresh autonomy install is UP-TO-DATE', () => {
+    const d = mkDir()
+    runInCwd(['--set', 'autonomy', '--install'], d)
+    expect(runInCwd(['--set', 'autonomy', '--check'], d)).toContain('AUTONOMY.md: UP-TO-DATE')
+  })
+
+  it('EDITED autonomy content SURVIVES --install; overwritten ONLY with --force', () => {
+    const d = mkDir()
+    runInCwd(['--set', 'autonomy', '--install'], d)
+    const p = autonomyPath(d)
+    writeFileSync(p, readFileSync(p, 'utf8') + '\nMY LOCAL AUTONOMY EDIT\n')
+    expect(runInCwd(['--set', 'autonomy', '--check'], d)).toContain('AUTONOMY.md: EDITED')
+    expect(runInCwd(['--set', 'autonomy', '--install'], d)).toContain('AUTONOMY.md: SKIPPED')
+    expect(readFileSync(p, 'utf8')).toContain('MY LOCAL AUTONOMY EDIT')
+    expect(runInCwd(['--set', 'autonomy', '--install', '--force'], d)).toContain('AUTONOMY.md: OVERWROTE')
+    expect(readFileSync(p, 'utf8')).not.toContain('MY LOCAL AUTONOMY EDIT')
+  })
+})
+
+describe('adopt installer — CLI surface for the managed-set engine', () => {
   function untouchedSetLine(out: string): string | undefined {
     return out
       .split(/\r?\n/)
-      .find((line) => line.includes('set exists too; it was untouched here'))
+      .find((line) => line.includes('untouched here, and --set'))
   }
 
-  it('--set all with --dir is rejected (a single dir cannot target two sets)', () => {
+  it('--set all with --dir is rejected (a single dir cannot target multiple sets)', () => {
     const d = mkDir()
     // run() appends `--dir d`, so this is `--set all --check --dir d`.
     expect(run(['--set', 'all', '--check'], d)).toMatch(/--dir requires a single --set/)
@@ -383,39 +416,52 @@ describe('adopt installer — CLI surface for the two-set engine', () => {
     expect(run(['--set', 'bogus', '--check'], d)).toMatch(/unknown --set/)
   })
 
-  it('--set all SUCCESS path: one invocation installs BOTH sets into their own default dirs', () => {
+  it('--set all SUCCESS path: one invocation installs ALL managed sets into their own default dirs', () => {
     const d = mkDir()
     const out = runInCwd(['--set', 'all', '--install'], d)
-    // Both sets processed, each into its own default subdir under the cwd.
+    // All sets processed, each into its own default subdir under the cwd.
     expect(out).toMatch(/\[rules\] target=.*[/\\]\.claude[/\\]rules/)
     expect(out).toMatch(/\[agents\] target=.*[/\\]\.claude[/\\]agents/)
+    expect(out).toMatch(/\[autonomy\] target=.*[/\\]\.claude/)
     expect(out).toContain('wt-delegation-ladder.md: WROTE')
     expect(out).toContain('pilot.md: WROTE')
+    expect(out).toContain('AUTONOMY.md: WROTE')
     expect(existsSync(join(d, '.claude/rules/wt/wt-delegation-ladder.md'))).toBe(true)
     for (const f of AGENTS) expect(existsSync(join(d, '.claude/agents', f))).toBe(true)
-    // A re-check sees every item in BOTH sets as UP-TO-DATE (the loop ran end to end).
+    expect(existsSync(autonomyPath(d))).toBe(true)
+    // A re-check sees every item in every set as UP-TO-DATE (the loop ran end to end).
     const chk = runInCwd(['--set', 'all', '--check'], d)
     expect(chk).toContain('wt-delegation-ladder.md: UP-TO-DATE')
     expect(chk).toContain('pilot.md: UP-TO-DATE')
+    expect(chk).toContain('AUTONOMY.md: UP-TO-DATE')
     expect(chk).toContain('nothing to do')
   })
 
-  it('--set rules names the agents set as untouched, factually and in one line', () => {
+  it('--set rules names the untouched agents and autonomy sets, factually and in one line', () => {
     const d = mkDir()
     const out = run(['--set', 'rules', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the agents set exists too; it was untouched here, and --set agents covers it.')
+    expect(line).toBe('adopt: the agents and autonomy sets exist too; they were untouched here, and --set agents or --set autonomy covers them.')
   })
 
-  it('--set agents names the rules set as untouched, factually and in one line', () => {
+  it('--set agents names the untouched rules and autonomy sets, factually and in one line', () => {
     const d = mkDir()
     const out = run(['--set', 'agents', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the rules set exists too; it was untouched here, and --set rules covers it.')
+    expect(line).toBe('adopt: the rules and autonomy sets exist too; they were untouched here, and --set rules or --set autonomy covers them.')
+  })
+
+  it('--set autonomy names the untouched rules and agents sets, factually and in one line', () => {
+    const d = mkDir()
+    const out = runInCwd(['--set', 'autonomy', '--check'], d)
+    const line = untouchedSetLine(out)
+    expect(line).not.toContain('⚠')
+    expect(line).not.toMatch(/\bshould\b/i)
+    expect(line).toBe('adopt: the rules and agents sets exist too; they were untouched here, and --set rules or --set agents covers them.')
   })
 
   it('--set all prints no untouched-set line at all', () => {
@@ -473,8 +519,10 @@ describe('adopt installer — --global targets the config dir, resolved not type
     const out = runEnv(['--set', 'all', '--install', '--global'], { cwd, configDir: cfg })
     expect(out).toContain(`[rules] target=${join(cfg, 'rules', 'wt')}`)
     expect(out).toContain(`[agents] target=${join(cfg, 'agents')}`)
+    expect(out).toContain(`[autonomy] target=${cfg}`)
     expect(existsSync(join(cfg, 'rules', 'wt', RULE))).toBe(true)
     for (const f of AGENTS) expect(existsSync(join(cfg, 'agents', f))).toBe(true)
+    expect(existsSync(join(cfg, AUTONOMY))).toBe(true)
     // Nothing leaked into the project dir — --global means the config dir, exclusively.
     expect(existsSync(join(cwd, '.claude'))).toBe(false)
   })
