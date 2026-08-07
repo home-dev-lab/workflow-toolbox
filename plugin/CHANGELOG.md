@@ -3,6 +3,19 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.142.0] - 2026-08-07
+
+### Changed
+
+- `wt-durable-fix-at-the-right-level`: the "mechanise on sight" trigger is now a COUNT, not a
+  judgement. The former test — *could a hook/gate/test/check make this impossible to repeat?* —
+  was evaluated mid-task by whoever had just worked around the problem, which is the same
+  unenforceable shape the ladder forbids in an escalation clause. It now reads: the same guard
+  firing for the same reason more than twice in one week means mechanise what it guards, or fix
+  the guard.
+- The rule now states its own bound explicitly: a count covers RECIDIVISM only, and the first
+  occurrence of a class is invisible to it.
+
 ## [0.141.1] - 2026-08-07
 
 ### Fixed

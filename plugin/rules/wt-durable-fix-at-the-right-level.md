@@ -38,8 +38,21 @@ pick second. Only first available → say so, don't present as closed.
 ## Mechanise at the moment you meet it — not later, not as a filed task
 
 Mechanism could prevent problem permanently → build it **same pass** — before moving on,
-reporting, next task. One test: *could a hook/gate/test/check make this impossible to repeat?*
-Yes → part of the deliverable, task unfinished without it.
+reporting, next task. Mechanism is part of the deliverable; task unfinished without it.
+
+⚠ **Trigger is a COUNT, never a judgement.** *"Could a hook/gate/test/check make this impossible
+to repeat?"* gets evaluated mid-task by whoever just succeeded at working AROUND the problem —
+unenforceable, silently skipped, the exact shape an escalation clause may not use. Operative form:
+**same guard fired for the same reason more than twice in one week → mechanise what it guards, or
+fix the guard.** READ the number, never recall it.
+
+⚠ Read what a rising count MATCHED before acting. Guard firing on correct work writes the same
+record as one catching a real recurrence — "fix the guard" is as legitimate an outcome as
+"mechanise the defect".
+
+⚠ Count covers RECIDIVISM only. **First occurrence of a class is invisible to it** — inaugurations
+are caught by reading and noticing, or not at all. State that bound wherever a count is reported: a
+count implying full coverage is the reassuring-green failure this rule exists to remove.
 
 Filing for later is the failure this closes — structural, not diligence: note is recall-on-
 demand, read only by someone already suspecting the problem. Person about to repeat the mistake
