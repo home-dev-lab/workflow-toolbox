@@ -71,7 +71,10 @@ function scaffold(tag: string) {
   // like a working one with nothing to report.
   const queueSlug = `${projectDir.replace(/[^A-Za-z0-9]/g, '-').slice(0, 120)}-${createHash('sha1').update(projectDir).digest('hex').slice(0, 12)}`
   const queuePath = join(stateDir, `queue-${queueSlug}.json`)
-  const mandatePath = join(stateDir, `engine-${sessionId}.json`)
+  // ⚠ PROJECT-KEYED, matching wt-autonomy-arm.mjs's contract: `engine-<projectSlug>.json`, never
+  // session-keyed — that is the whole point of the fix under test (a restart must inherit the
+  // marker the OLD session wrote, which is impossible if the path carries the session id).
+  const mandatePath = join(stateDir, `engine-${projectSlug(projectDir)}.json`)
   const markerPath = join(stateDir, `autonomy-watch-${sessionId}.json`)
   mkdirSync(projectDir, { recursive: true })
   mkdirSync(subagentsDir, { recursive: true })
@@ -93,6 +96,22 @@ function scaffold(tag: string) {
 
 function writeQueue(queuePath: string, snapshot: Record<string, unknown>) {
   writeFileSync(queuePath, `${JSON.stringify(snapshot)}\n`)
+}
+
+// The marker's freshness and provenance are read from ITS CONTENT (`declaredAtMs`, `sessionId`),
+// never its mtime — so fixtures must write real JSON, not merely touch a file into existence.
+// `declaredAtMs` defaults to `now`; pass an older value to simulate a mandate declared earlier
+// (own-session re-arm) or a stale one, and a different `sessionId` to simulate inheritance.
+function writeMandate(mandatePath: string, sessionId: string, declaredAtMs: number) {
+  writeFileSync(mandatePath, `${JSON.stringify({ sessionId, declaredAtMs, declaredAt: new Date(declaredAtMs).toISOString() })}\n`)
+}
+
+// The watcher's idle check reads the CURRENT session's own transcript, never the mandate
+// declarer's — a restarted session has its own, freshly started conversation. A restart fixture
+// must therefore touch the transcript at the RESTARTED session's own path, not the scaffold's
+// default one (which belongs to a DIFFERENT, earlier session).
+function transcriptPathFor(configDir: string, projectDir: string, sessionId: string): string {
+  return join(configDir, 'projects', projectSlug(projectDir), `${sessionId}.jsonl`)
 }
 
 function runWatch(
@@ -144,7 +163,7 @@ describe('wt-autonomy-watch', () => {
     const s = scaffold('wake')
     const now = Date.now()
     touch(s.transcriptPath, now - 20 * 60_000)
-    touch(s.mandatePath, now - 5 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
     writeQueue(s.queuePath, { at: now, open: 2, next: 'CARD-2 implement watcher' })
 
     const result = runWatch(s.projectDir, {
@@ -166,7 +185,7 @@ describe('wt-autonomy-watch', () => {
     const s = scaffold('delegate-active')
     const now = Date.now()
     touch(s.transcriptPath, now - 20 * 60_000)
-    touch(s.mandatePath, now - 5 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
     touch(join(s.subagentsDir, 'agent-live.jsonl'), now - 60_000)
     writeQueue(s.queuePath, { at: now, open: 2, next: 'CARD-3 wait for delegate' })
 
@@ -188,9 +207,9 @@ describe('wt-autonomy-watch', () => {
     const stale = scaffold('queue-stale')
     const now = Date.now()
     touch(missing.transcriptPath, now - 20 * 60_000)
-    touch(missing.mandatePath, now - 5 * 60_000)
+    writeMandate(missing.mandatePath, missing.sessionId, now - 5 * 60_000)
     touch(stale.transcriptPath, now - 20 * 60_000)
-    touch(stale.mandatePath, now - 5 * 60_000)
+    writeMandate(stale.mandatePath, stale.sessionId, now - 5 * 60_000)
     writeQueue(stale.queuePath, { at: now - 3 * 60 * 60_000, open: 9, next: 'CARD-4 stale snapshot' })
 
     const missingResult = runWatch(missing.projectDir, {
@@ -218,7 +237,7 @@ describe('wt-autonomy-watch', () => {
     const s = scaffold('reemit')
     const now = Date.now()
     touch(s.transcriptPath, now - 20 * 60_000)
-    touch(s.mandatePath, now - 5 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
     writeQueue(s.queuePath, { at: now, open: 4, next: 'CARD-5 emit once' })
     const env = {
       ...process.env,
@@ -259,7 +278,7 @@ describe('wt-autonomy-watch', () => {
     const s = scaffold('lane-active')
     const now = Date.now()
     touch(s.transcriptPath, now - 20 * 60_000)
-    touch(s.mandatePath, now - 5 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
     writeQueue(s.queuePath, { at: now, open: 2, next: 'CARD-7 lane running' })
     launchLane('opencode run', s.projectDir)
 
@@ -272,6 +291,85 @@ describe('wt-autonomy-watch', () => {
 
     expect(result.stdout).toBe('')
     expect(existsSync(s.markerPath)).toBe(false)
+  })
+})
+
+// The whole point of the fix under test: a marker keyed on the PROJECT survives a session
+// restart (a new CLAUDE_CODE_SESSION_ID), where the old per-session key could not. Both
+// directions are asserted, deliberately — a suite that only proved recovery could not see a
+// mandate that never expires, which is exactly the failure this route was chosen to avoid.
+describe('wt-autonomy-watch inherits a project-keyed mandate across a session restart', () => {
+  it('a restarted session (different CLAUDE_CODE_SESSION_ID) still fires on a fresh mandate, and announces the inheritance', () => {
+    const s = scaffold('restart-inherits')
+    const now = Date.now()
+    const restartedSessionId = 'session-after-restart'
+    const originalSessionId = 'session-before-restart'
+    // The RESTARTED session's own transcript — a fresh session has its own conversation file,
+    // distinct from the one the original (now-dead) session was writing to.
+    touch(transcriptPathFor(s.configDir, s.projectDir, restartedSessionId), now - 20 * 60_000)
+    // The mandate was declared by a DIFFERENT session than the one polling now — simulating a
+    // restart that minted a fresh CLAUDE_CODE_SESSION_ID while the marker (keyed on the project)
+    // stayed put.
+    writeMandate(s.mandatePath, originalSessionId, now - 45 * 60_000)
+    writeQueue(s.queuePath, { at: now, open: 1, next: 'CARD-8 resume after restart' })
+
+    const result = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: restartedSessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(result.armed).toContain('mandate=present(inherited)')
+    expect(result.stdout).toContain('AUTONOMY WAKE:')
+    expect(result.stdout).toContain('inherited from session session-before-restart')
+    expect(result.stdout).toContain('mandate declared 45min ago')
+  })
+
+  it('a mandate older than the freshness window does NOT fire, and the banner says stale, not absent', () => {
+    const s = scaffold('restart-stale')
+    const now = Date.now()
+    const restartedSessionId = 'session-yet-another-restart'
+    touch(transcriptPathFor(s.configDir, s.projectDir, restartedSessionId), now - 20 * 60_000)
+    // Declared 9 hours ago — past the default 8h freshness window. The human who declared this
+    // has, by every reasonable reading, stopped caring; the marker must stop counting on its own.
+    writeMandate(s.mandatePath, 'session-long-gone', now - 9 * 60 * 60_000)
+    writeQueue(s.queuePath, { at: now, open: 1, next: 'CARD-9 should not wake anyone' })
+
+    const result = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: restartedSessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(result.stdout).toBe('')
+    expect(existsSync(s.markerPath)).toBe(false)
+    expect(result.armed).toContain('mandate=stale(')
+    expect(result.armed).not.toContain('mandate=absent')
+    expect(result.armed).toContain('CANNOT FIRE')
+  })
+
+  it('a mandate stamped by the SAME session (own re-arm) fires with no inheritance wording — existing behaviour unchanged', () => {
+    const s = scaffold('restart-own')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
+    writeQueue(s.queuePath, { at: now, open: 1, next: 'CARD-10 own session, own mandate' })
+
+    const result = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(result.armed).toContain('mandate=present(own)')
+    expect(result.stdout).toBe('AUTONOMY WAKE: idle session with mandate, 1 open, next: CARD-10 own session, own mandate')
+    expect(result.stdout).not.toContain('inherited')
   })
 })
 
@@ -304,7 +402,7 @@ describe('wt-autonomy-watch says whether it can actually fire', () => {
     const s = scaffold('armed-ready')
     const now = Date.now()
     touch(s.transcriptPath, now - 20 * 60_000)
-    touch(s.mandatePath, now - 5 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
     writeQueue(s.queuePath, { at: now, open: 2, next: 'CARD-2 implement watcher' })
 
     const result = runWatch(s.projectDir, {
@@ -324,7 +422,7 @@ describe('wt-autonomy-watch says whether it can actually fire', () => {
     const s = scaffold('armed-stale-queue')
     const now = Date.now()
     touch(s.transcriptPath, now - 20 * 60_000)
-    touch(s.mandatePath, now - 5 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
     writeQueue(s.queuePath, { at: now - 200 * 60_000, open: 2, next: 'CARD-2 implement watcher' })
 
     const stale = runWatch(s.projectDir, {
@@ -341,7 +439,7 @@ describe('wt-autonomy-watch says whether it can actually fire', () => {
 
     const s2 = scaffold('armed-absent-queue')
     touch(s2.transcriptPath, now - 20 * 60_000)
-    touch(s2.mandatePath, now - 5 * 60_000)
+    writeMandate(s2.mandatePath, s2.sessionId, now - 5 * 60_000)
 
     const absent = runWatch(s2.projectDir, {
       ...process.env,

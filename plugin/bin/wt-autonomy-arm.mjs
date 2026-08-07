@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Declares — or withdraws — an autonomous mandate for THIS session.
+// Declares — or withdraws — an autonomous mandate for THIS PROJECT.
 //
 // WHY THIS EXISTS AS A SEPARATE TOOL. `wt-autonomy-watch.mjs` refuses to wake a session that has
 // not declared a mandate, deliberately: a watcher that woke every session, including ordinary
@@ -12,13 +12,31 @@
 // declare a mandate for every session whether or not anyone wanted one — reintroducing exactly the
 // noise the watcher's gate exists to prevent. Declaring a mandate is an ACT; this is the act.
 //
-// ⚠ THE MARKER IS PER SESSION, so it does not survive a restart. That is a real limitation and it
-// is stated rather than worked around: a mandate silently inherited by a later session could keep
-// waking somebody days after the intent that set it expired. Re-arm after a restart.
+// ⚠ THE MARKER IS KEYED ON THE PROJECT, NOT THE SESSION — and that is a fix, not the original
+// design. A per-session marker died the instant its session restarted: a restart mints a new
+// `CLAUDE_CODE_SESSION_ID`, so the marker the old session wrote became permanently unreachable,
+// and the watcher read `mandate=absent` for a session that still believed it held a mandate —
+// silently, forever, until someone re-armed by hand. Keying on the project instead means a
+// restarted session inherits whatever mandate is still fresh for THIS PROJECT, with no gesture.
 //
-//   node wt-autonomy-arm.mjs              # declare a mandate for this session
-//   node wt-autonomy-arm.mjs --disarm     # withdraw it
-//   node wt-autonomy-arm.mjs --status     # report without writing
+// That inheritance is bounded by a FRESHNESS WINDOW (default 8h, `--freshness-minutes` /
+// `WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES`), read by the watcher from the `declaredAtMs`
+// this tool stamps, never from the file's mtime — a file can be copied or touched without the
+// mandate having been re-declared. Past the window the marker stops counting, on its own,
+// nothing to remember: the failure mode this trades into is a STALE mandate that could wake a
+// session after the human genuinely stopped caring — loud and killable (the wake is visible,
+// `--disarm` clears it), which beats the silent alternative it replaces, where a session simply
+// never wakes and nobody notices. See `plugin/autonomy/AUTONOMY.md` for the full trade-off.
+//
+// One project can only ever have ONE live mandate marker: arming again — from the same session or
+// a different one — overwrites it. That is the existing re-arm behaviour, unchanged; it is also
+// how a session inherits deliberately (arm once, let every session in the project pick it up)
+// rather than by accident.
+//
+//   node wt-autonomy-arm.mjs                          # declare a mandate for this project
+//   node wt-autonomy-arm.mjs --disarm                 # withdraw it
+//   node wt-autonomy-arm.mjs --status                 # report without writing
+//   node wt-autonomy-arm.mjs --project <dir>           # target a project other than cwd (tests, tooling)
 //
 // Every line goes to STDOUT and the exit code carries the verdict: 0 armed/disarmed/armed-status,
 // 1 not armed (for --status), 2 for a usage or environment error. A caller can therefore branch on
@@ -40,35 +58,53 @@ function fail(detail) {
 const args = process.argv.slice(2)
 const disarm = args.includes('--disarm')
 const statusOnly = args.includes('--status')
-for (const a of args) {
-  if (!['--disarm', '--status'].includes(a)) fail(`unknown option: ${a.replace(/[\r\n]+/g, ' ').slice(0, 60)}`)
+let projectDir = process.cwd()
+for (let i = 0; i < args.length; i += 1) {
+  const a = args[i]
+  if (a === '--disarm' || a === '--status') continue
+  if (a === '--project') {
+    const value = args[i + 1]
+    if (!value || value.startsWith('--')) fail('missing value for --project')
+    projectDir = value
+    i += 1
+    continue
+  }
+  fail(`unknown option: ${a.replace(/[\r\n]+/g, ' ').slice(0, 60)}`)
 }
 if (disarm && statusOnly) fail('--disarm and --status are mutually exclusive')
 
-// The harness sets this on every process it spawns. Without it there is no session to arm, and
-// guessing one would write a marker no watcher will ever look for.
+// The harness sets this on every process it spawns. Without it there is no session to attribute
+// the declaration to, and guessing one would stamp a marker whose "who declared this" is a lie.
 const sessionId = process.env.CLAUDE_CODE_SESSION_ID
 if (!sessionId) fail('CLAUDE_CODE_SESSION_ID is not set — run this from inside a Claude Code session')
 if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) fail('CLAUDE_CODE_SESSION_ID has an unexpected shape')
 
 // ⚠ SAME RESOLUTION AS THE WATCHER, and the pair is a contract: the watcher reads
-// `${XDG_STATE_HOME:-~/.local/state}/wt-queue-gate/engine-<sessionId>.json`, overridable by
+// `${XDG_STATE_HOME:-~/.local/state}/wt-queue-gate/engine-<projectSlug>.json`, overridable by
 // WT_AUTONOMY_WATCH_MANDATE_DIR. A divergence here writes a marker to a path nothing reads, and
 // the failure is silent in both directions — the watcher stays quiet and this tool reports success.
+function projectSlug(dir) {
+  return path.resolve(dir).replace(/[^A-Za-z0-9-]/g, '-')
+}
+
 const stateHome = process.env.XDG_STATE_HOME || path.join(homedir(), '.local', 'state')
 const stateDir = path.join(stateHome, 'wt-queue-gate')
 const mandateDir = process.env.WT_AUTONOMY_WATCH_MANDATE_DIR || stateDir
-const mandatePath = path.join(mandateDir, `engine-${sessionId}.json`)
+const mandatePath = path.join(mandateDir, `engine-${projectSlug(projectDir)}.json`)
 
 if (statusOnly) {
   if (existsSync(mandatePath)) {
     let declaredAt = 'unknown'
+    let declaredBy = 'unknown'
     try {
-      declaredAt = JSON.parse(readFileSync(mandatePath, 'utf8'))?.declaredAt ?? 'unknown'
+      const parsed = JSON.parse(readFileSync(mandatePath, 'utf8'))
+      declaredAt = parsed?.declaredAt ?? 'unknown'
+      declaredBy = parsed?.sessionId ?? 'unknown'
     } catch {
       declaredAt = 'unreadable'
     }
-    out(`AUTONOMY MANDATE: armed (declared ${declaredAt}) — ${mandatePath}`)
+    const inherited = declaredBy !== 'unknown' && declaredBy !== sessionId
+    out(`AUTONOMY MANDATE: armed (declared ${declaredAt} by session ${declaredBy}${inherited ? ', inherited by this session' : ''}) — ${mandatePath}`)
     process.exit(0)
   }
   out(`AUTONOMY MANDATE: not armed — nothing at ${mandatePath}`)
@@ -81,13 +117,23 @@ if (disarm) {
     process.exit(0)
   }
   rmSync(mandatePath, { force: true })
-  out('AUTONOMY MANDATE: withdrawn — the autonomy watcher will no longer wake this session')
+  out('AUTONOMY MANDATE: withdrawn — the autonomy watcher will no longer wake any session for this project')
   process.exit(0)
 }
 
 mkdirSync(mandateDir, { recursive: true })
 // Rewriting it is the normal case, not an error: re-arming refreshes the declaration, which is
-// what a session does after a compaction or a long stretch of inline work.
-writeFileSync(mandatePath, `${JSON.stringify({ sessionId, declaredAt: new Date().toISOString() }, null, 2)}\n`, 'utf8')
+// what a session does after a compaction or a long stretch of inline work — and it is also how a
+// mandate stays alive across a RESTART without anyone re-running this tool: the marker is keyed
+// on the project, so the restarted session (new CLAUDE_CODE_SESSION_ID, same project) reads the
+// SAME marker the old session wrote, as long as it is still inside the freshness window.
+const declaredAtMs = Date.now()
+writeFileSync(
+  mandatePath,
+  `${JSON.stringify({ sessionId, projectDir, declaredAt: new Date(declaredAtMs).toISOString(), declaredAtMs }, null, 2)}\n`,
+  'utf8',
+)
 out(`AUTONOMY MANDATE: armed — ${mandatePath}`)
-out('The autonomy watcher will wake this session when work remains, nothing is in flight, and no turn has happened for its idle window.')
+out(
+  'The autonomy watcher will wake this session — and any session that restarts inside this project while the mandate stays fresh — when work remains, nothing is in flight, and no turn has happened for its idle window.',
+)

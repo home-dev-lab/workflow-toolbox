@@ -3,6 +3,25 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.147.0] - 2026-08-08
+
+### Fixed
+
+- **A restart no longer kills your autonomy mandate.** `wt-autonomy-arm.mjs` used to key its
+  marker on `CLAUDE_CODE_SESSION_ID` — a restart mints a new session id, so the marker the old
+  session wrote became permanently unreachable, and `wt-autonomy-watch.mjs` read
+  `mandate=absent` for a session that still believed it held one. Silent, and it never
+  recovered on its own; the reported case was three restarts in one day, each one needing a
+  manual re-arm nobody remembered to do. The marker is now keyed on the **project**, not the
+  session: a restarted session inherits whatever mandate is still fresh for that project, with
+  no gesture required. Inheritance is bounded by an 8-hour freshness window
+  (`WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES`), read from the marker's own timestamp rather
+  than its file mtime, so a mandate declared this afternoon does not still count tonight — and
+  when a session picks up a mandate it did not itself declare, the wake and the arming banner
+  both say so explicitly (`mandate=present(inherited)`, `inherited from session <id>, mandate
+  declared NNmin ago`), rather than waking anyone silently. `wt-autonomy-arm.mjs` gained a
+  `--project <dir>` option (defaults to `cwd`) to target a project explicitly.
+
 ## [0.146.0] - 2026-08-08
 
 ### Fixed
