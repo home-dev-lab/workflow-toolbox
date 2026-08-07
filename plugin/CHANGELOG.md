@@ -3,6 +3,32 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.137.0] - 2026-08-07
+
+### Added
+
+- **`wt-var-colon-modifier-guard-hook.mjs` — warns when a colon follows an unbraced parameter
+  name.** In zsh that starts a *modifier*, not concatenation: `git show "$s:src/file.ts"` fails with
+  `bad substitution`, and the empty result reads as "not found" rather than as an error. Other
+  letters mutate the value silently instead of erroring.
+
+  **Two measurements ship in its header, not one**, because the first is what makes the second
+  credible. Over 125 distinct commands from real history, each fed to the guard's own executable: an
+  ad-hoc 34-letter set gave 22 warnings of which 6 were genuine — **27% precision**. Narrowed to the
+  13 letters `man zshexpn` documents, warnings fell to 6, **all 6 genuine**.
+
+  ⚠ **Warn-only despite 100% on that sample**, and the reason ships with it: narrowing raised
+  precision without raising recall. An unrecognised letter after the colon does not reliably fall
+  back to literal — zsh's parser can skip it and try the next character — and it cannot see inside a
+  command substitution. The blocking bar here is the sibling glob guard's 197/0 over 82,015
+  commands; this does not clear it and does not pretend to.
+
+  Its exclusions came from measurement rather than design: quoted-delimiter heredocs and
+  single-quoted spans — including ones containing nested double quotes, found in a real PowerShell
+  invocation — were producing false positives on commit messages that merely *described* the trap.
+  An unquoted heredoc delimiter does expand and is still matched; a test pins that, because
+  inverting it would silence the guard on a real case.
+
 ## [0.136.0] - 2026-08-07
 
 ### Fixed
