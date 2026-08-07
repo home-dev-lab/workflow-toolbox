@@ -3,6 +3,34 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.136.0] - 2026-08-07
+
+### Fixed
+
+- **The memory-index probe now names what it did NOT verify, on the green path too.** It reported
+  `0 unreachable, 0 dangling`, and a session read that as *"the index is fine"*. That is not what
+  was checked.
+
+  **Reachable** answers *does a path exist from the index to this fact*. The question that decides
+  recall is *would a session know to take that path*. Those are different, and the gap is invisible
+  from the probe's side — it prints healthy on precisely the defect it appears to cover. A real
+  store sat at two index lines with zero unreachable, green on every run, while one of those lines
+  fronted a 103 KB note covering fifteen subjects and naming three of them.
+
+  The probe now states on every run, clean ones included, that it verified reachability and the
+  size ceilings and did **not** verify discoverability. On the green path specifically: a bound
+  named only in the failure branch is a bound nobody reads, and the whole defect is that a clean
+  run reads as full coverage.
+
+  ⚠ **No new metric, and that is a measured decision rather than a scope cut.** All 13 hubs in this
+  project's own store under-describe their contents, 6% to 57%, none above 60%. A check firing on
+  13 of 13 flags nothing — it is noise that gets switched off and takes any real case with it. The
+  condition is normal, not exceptional, which is what makes the honest-wording fix the right one.
+
+  Reported by a session on another project whose store passed both checks continuously while being
+  unusable. Worth noting which instrument caught it: the fidelity-checker's routing test, which runs
+  only when spawned. The probe, which runs on a hook continuously, is the one with the blind spot.
+
 ## [0.135.0] - 2026-08-07
 
 ### Added
