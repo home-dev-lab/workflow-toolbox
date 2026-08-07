@@ -57,6 +57,48 @@ describe('adopt --check — CHANGELOG span for a STALE rule copy', () => {
     expect(out).not.toMatch(/CHANGELOG v0\.140\.0 → v[\d.]+: NO RECORD/)
   })
 
+  // Regression lock for the arbiter-found defect: a version well ABOVE the file's oldest
+  // heading (so the boundary guard alone would report recorded:true with no warning) can
+  // still sit on the far side of a large INTERIOR gap. v0.70.0 lands inside the real,
+  // permanent 61-minor gap this card's own invariant is built around (0.68..0.135ish carry
+  // no heading) — the exact shape that used to render as a confident, complete-looking span.
+  it('a version INSIDE a real interior gap gets an explicit COVERAGE: INCOMPLETE line, never a silent partial span', () => {
+    const d = mkDir()
+    mkdirSync(d, { recursive: true })
+    ageRuleCopy(join(d, RULE), '0.70.0')
+    const out = run(['--check'], d)
+    expect(out).toContain('STALE')
+    // Recorded (has entries) AND flagged incomplete — the two are not mutually exclusive,
+    // which is the whole point: an empty span alone can't represent this case honestly.
+    expect(out).toMatch(/CHANGELOG v0\.70\.0 → v[\d.]+ \(\d+ entr/)
+    expect(out).toMatch(/COVERAGE: INCOMPLETE — approx\. \d+ version\(s\) between v0\.70\.0/)
+  })
+
+  it('a version whose range genuinely has every minor documented reports COVERAGE: complete', () => {
+    const d = mkDir()
+    mkdirSync(d, { recursive: true })
+    // One minor behind current — the mechanical changelog gate guarantees every NEW release
+    // (this one included) carries its own heading, so a one-step-behind copy's range can
+    // never have an interior gap.
+    const pluginJson = JSON.parse(
+      readFileSync(join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json'), 'utf8'),
+    ) as { version: string }
+    const parts = pluginJson.version.split('.').map(Number)
+    const maj = parts[0] ?? 0
+    const min = parts[1] ?? 0
+    const patch = parts[2] ?? 0
+    const oneMinorBehind = `${maj}.${min - 1}.${patch}`
+    ageRuleCopy(join(d, RULE), oneMinorBehind)
+    const out = run(['--check'], d)
+    expect(out).toContain('STALE')
+    expect(out).toMatch(new RegExp(`COVERAGE: complete — every version between v${oneMinorBehind.replace(/\./g, '\\.')}`))
+    // Match the exact COVERAGE-line shape, never a bare substring: this very entry's own
+    // changelog prose (below, in the real plugin/CHANGELOG.md) legitimately quotes the words
+    // "COVERAGE: INCOMPLETE" describing the feature — the same self-referential collision
+    // already fixed once above for "NO RECORD for this range".
+    expect(out).not.toMatch(/^ {4}COVERAGE: INCOMPLETE/m)
+  })
+
   it('a version BELOW every recorded heading gets the explicit "NO RECORD" shape, not a blank slice', () => {
     const d = mkDir()
     mkdirSync(d, { recursive: true })

@@ -812,7 +812,7 @@ function changelogSpanParseHeadings(changelog) {
  *   silently dropped, per the card's invariant 4.
  *
  * @returns {{recorded:true, entries:Array<{version:string, heading:string, body:string}>,
- *            totalCount:number, omittedCount:number}
+ *            totalCount:number, omittedCount:number, missingVersionCount:number|null}
  *          |{recorded:false, oldestRecordedVersion:string|null}}
  */
 function changelogSpan(changelog, fromVersion, toVersion, opts = {}) {
@@ -844,6 +844,22 @@ function changelogSpan(changelog, fromVersion, toVersion, opts = {}) {
     .filter((h) => changelogSpanCmp(h.versionTuple, from) > 0 && changelogSpanCmp(h.versionTuple, to) <= 0)
     .sort((a, b) => -changelogSpanCmp(a.versionTuple, b.versionTuple))
 
+  // COVERAGE, computed only from the two REQUESTED versions — never from the file's
+  // oldest/newest heading, which is exactly the reading that missed the interior gap
+  // (see the file-header comment). Minor-version arithmetic: the plugin's whole history
+  // sits under major 0 and every release bumps a minor by exactly one number (patch
+  // bumps are rare, in-place hotfixes that share their minor with a sibling heading),
+  // so "expected minors between from and to" is `to.minor - from.minor`, compared
+  // against the count of DISTINCT minors actually represented among `inRange`'s
+  // headings. A major mismatch invalidates that arithmetic outright — reported as
+  // `null` (cannot determine), never guessed at as complete.
+  let missingVersionCount = null
+  if (from[0] === to[0]) {
+    const expectedMinors = to[1] - from[1]
+    const recordedMinors = new Set(inRange.map((h) => h.versionTuple[1])).size
+    missingVersionCount = Math.max(0, expectedMinors - recordedMinors)
+  }
+
   // Body = from this heading's line, up to (not including) the next heading of ANY
   // version in the whole file (not just those in-range) — so a body never swallows a
   // sibling entry that happened to fall outside the requested range.
@@ -867,7 +883,7 @@ function changelogSpan(changelog, fromVersion, toVersion, opts = {}) {
     body: bodyFor(h),
   }))
 
-  return { recorded: true, entries, totalCount, omittedCount }
+  return { recorded: true, entries, totalCount, omittedCount, missingVersionCount }
 }
 // === CHANGELOG-SPAN CORE END ===
 
@@ -915,10 +931,23 @@ function printChangelogSpan(root, fromVersion, toVersion) {
     )
     return
   }
+  // Coverage is a THIRD, independent signal from totalCount — a query can have entries
+  // AND still be missing part of its own range (an interior gap the boundary check above
+  // cannot see; see the CHANGELOG-SPAN CORE header comment). So it is always stated
+  // explicitly, never left to be inferred from "did it print any warning": a reader must
+  // not be able to mistake an incomplete span for a complete one just because neither
+  // said so.
+  const coverageLine =
+    span.missingVersionCount === null
+      ? '    COVERAGE: cannot determine — v' + fromVersion + ' and v' + toVersion + ' are different major versions.\n'
+      : span.missingVersionCount === 0
+        ? '    COVERAGE: complete — every version between v' + fromVersion + ' and v' + toVersion + ' has a changelog entry.\n'
+        : `    COVERAGE: INCOMPLETE — approx. ${span.missingVersionCount} version(s) between v${fromVersion} ` +
+          `and v${toVersion} have NO changelog entry at all. The entries below are everything recorded, ` +
+          `not everything that shipped.\n`
   if (span.totalCount === 0) {
-    process.stdout.write(
-      `    CHANGELOG v${fromVersion} → v${toVersion}: no changes recorded in this range.\n`,
-    )
+    process.stdout.write(`    CHANGELOG v${fromVersion} → v${toVersion}: no changes recorded in this range.\n`)
+    process.stdout.write(coverageLine)
     return
   }
   process.stdout.write(
@@ -928,6 +957,7 @@ function printChangelogSpan(root, fromVersion, toVersion) {
         : '') +
       `):\n`,
   )
+  process.stdout.write(coverageLine)
   for (const entry of span.entries) {
     for (const line of entry.body.split('\n')) process.stdout.write(`    | ${line}\n`)
   }

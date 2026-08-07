@@ -17,13 +17,34 @@
 // historical gap is real and permanent. A range that falls entirely inside that gap
 // slices to zero headings — and rendering that the same way as "nothing changed" is an
 // INVERTING failure: it reads as calm at exactly the moment ~100 versions went past.
-// So this module returns two structurally different shapes, never conflatable by a
-// caller that only checks "is the entries array empty":
 //
-//   { recorded: true,  entries: [...] }   — the range is inside the changelog's
+// ⚠ THE GAP IS NOT ONLY AT THE BOUNDARY — IT IS INTERIOR TOO, and a first version of
+// this module (card 1836356654, arbiter review) only guarded the boundary: it checked
+// whether fromVersion predated the OLDEST heading in the whole file. Measured against
+// the real changelog, a query from v0.70.0 (well ABOVE the oldest heading, v0.41.0)
+// returned `recorded: true` with 17 entries — a confident, well-formatted span
+// presented as the record for a range that actually spans ~75 minor versions of
+// movement, most of them undocumented. That is worse than the boundary failure this
+// module originally guarded against: an empty span at least looks suspicious, a
+// PARTIAL span looks complete. So every recorded span also reports its OWN coverage,
+// computed only from what actually sits between the two REQUESTED versions — never
+// from a comparison against the file's extremes, which is exactly the reading that
+// missed the interior case:
+//
+//   { recorded: true,  entries: [...], missingVersionCount }
+//                                          — the range is inside the changelog's
 //                                            recorded span; entries may still be [],
 //                                            meaning genuinely nothing was recorded
-//                                            in that exact window.
+//                                            in that exact window. `missingVersionCount`
+//                                            is 0 when every minor version between the
+//                                            two requested versions has a heading, a
+//                                            positive count when some do not (computed
+//                                            from minor-version arithmetic: to.minor -
+//                                            from.minor vs the distinct minors actually
+//                                            found in range), or `null` when the two
+//                                            versions don't share a major (the
+//                                            arithmetic doesn't apply across a major
+//                                            bump and this module will not guess).
 //   { recorded: false, oldestRecordedVersion }
 //                                          — fromVersion predates every heading the
 //                                            changelog carries at all: there is no
@@ -94,7 +115,7 @@ function changelogSpanParseHeadings(changelog) {
  *   silently dropped, per the card's invariant 4.
  *
  * @returns {{recorded:true, entries:Array<{version:string, heading:string, body:string}>,
- *            totalCount:number, omittedCount:number}
+ *            totalCount:number, omittedCount:number, missingVersionCount:number|null}
  *          |{recorded:false, oldestRecordedVersion:string|null}}
  */
 function changelogSpan(changelog, fromVersion, toVersion, opts = {}) {
@@ -126,6 +147,22 @@ function changelogSpan(changelog, fromVersion, toVersion, opts = {}) {
     .filter((h) => changelogSpanCmp(h.versionTuple, from) > 0 && changelogSpanCmp(h.versionTuple, to) <= 0)
     .sort((a, b) => -changelogSpanCmp(a.versionTuple, b.versionTuple))
 
+  // COVERAGE, computed only from the two REQUESTED versions — never from the file's
+  // oldest/newest heading, which is exactly the reading that missed the interior gap
+  // (see the file-header comment). Minor-version arithmetic: the plugin's whole history
+  // sits under major 0 and every release bumps a minor by exactly one number (patch
+  // bumps are rare, in-place hotfixes that share their minor with a sibling heading),
+  // so "expected minors between from and to" is `to.minor - from.minor`, compared
+  // against the count of DISTINCT minors actually represented among `inRange`'s
+  // headings. A major mismatch invalidates that arithmetic outright — reported as
+  // `null` (cannot determine), never guessed at as complete.
+  let missingVersionCount = null
+  if (from[0] === to[0]) {
+    const expectedMinors = to[1] - from[1]
+    const recordedMinors = new Set(inRange.map((h) => h.versionTuple[1])).size
+    missingVersionCount = Math.max(0, expectedMinors - recordedMinors)
+  }
+
   // Body = from this heading's line, up to (not including) the next heading of ANY
   // version in the whole file (not just those in-range) — so a body never swallows a
   // sibling entry that happened to fall outside the requested range.
@@ -149,7 +186,7 @@ function changelogSpan(changelog, fromVersion, toVersion, opts = {}) {
     body: bodyFor(h),
   }))
 
-  return { recorded: true, entries, totalCount, omittedCount }
+  return { recorded: true, entries, totalCount, omittedCount, missingVersionCount }
 }
 // === CHANGELOG-SPAN CORE END ===
 

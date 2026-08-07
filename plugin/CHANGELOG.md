@@ -3,29 +3,45 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.146.0] - 2026-08-08
+
+### Fixed
+
+- **A STALE span could look complete while quietly skipping most of what actually shipped —
+  the span now says so.** 0.145.0's changelog span (below) guarded only the file's own
+  boundary: whether the installed version predated the OLDEST heading in the whole file. That
+  misses the sharper case: this repo's own changelog has a real, permanent gap INSIDE its
+  recorded span, not only at its edge — 61 of the minor versions between 0.68 and 0.144 never
+  got a `## [x.y.z]` heading (a mechanical gate now forces every new release to carry one, but
+  history is what it is). Measured: a stale copy at v0.70.0 got a confident, well-formatted
+  17-entry span presented as the record for a range that actually spans roughly 75 versions of
+  movement — a partial span dressed as a complete one, which is worse than an empty span
+  because it doesn't even look suspicious. Every recorded span now reports its own coverage,
+  computed only from the two requested versions — never from the file's oldest or newest
+  heading, which is exactly the comparison that missed this: `COVERAGE: complete` when every
+  version between them has an entry, `COVERAGE: INCOMPLETE — approx. N version(s) … have NO
+  changelog entry at all` when some don't, `null` when the two versions don't share a major
+  (the arithmetic doesn't apply across a major bump, and this reports "cannot determine" rather
+  than guess).
+
 ## [0.145.0] - 2026-08-08
 
 ### Added
 
-- `adopt --check` ships X, which replaces a hand-rolled Y: a STALE rule now shows the
-  `plugin/CHANGELOG.md` entries between the copy's installed version and the current one,
-  instead of just the version numbers moving. A session on a project with a stale adopted
-  copy used to see `STALE (installed v0.112.0 < v0.125.2)` and nothing else — thirteen
-  versions of delta with no word of what shipped, rationally ignored, which is how a stale
-  set stays stale. It now sees the actual headings and bodies, newest first, capped at 10
-  entries with an explicit omitted-count when the span is large. Measured on this repo's
-  own changelog: 61 of the minor versions between 0.68 and 0.144 carry no `## [x.y.z]`
-  heading at all, so a range landing entirely inside that historical gap slices to zero
-  headings — rendered plainly, that reads as "nothing changed" at exactly the moment ~100
-  versions went past. So the new section distinguishes two shapes a reader can tell apart
-  without knowing anything about the gap: "no changes recorded in this range" (the range is
-  inside the changelog's recorded span, genuinely empty) versus "NO RECORD for this range"
-  (the installed version predates every heading the changelog carries at all). Pure logic
-  lives in `plugin/skills/adopt/scripts/changelog-span.mjs`, with a byte-identical inlined
-  copy in `install.mjs` itself (which must stay a single relocatable script — its own tests
-  copy it alone into a synthetic plugin root) kept honest by a drift-lock test rather than
-  an import. Report-only: it never acts, never writes, and the existing `--check`/`--install`
-  output for every other state (ABSENT, UP-TO-DATE, EDITED, …) is unchanged.
+- **A session on a project with a STALE adopted rule now sees what it actually missed, not
+  just that it missed something.** `adopt --check` used to report `STALE (installed v0.112.0
+  < v0.125.2)` and stop there — a version number moved, nothing said what changed, and a
+  session with no way to weigh the delta rationally ignores it, which is how a stale copy
+  stays stale. It now prints the real `plugin/CHANGELOG.md` entries for that exact span,
+  newest first, so a session reading "0.127.0 ships an always-on autonomy watcher" can decide
+  for itself: *I have a hand-rolled equivalent at project level — I can adopt this and delete
+  mine.* Capped at 10 entries with an explicit omitted-count on a very large span, so the
+  section stays readable without ever dropping a count silently. Report-only: it never writes
+  or acts, and every other `--check`/`--install` status (ABSENT, UP-TO-DATE, EDITED, …) is
+  unchanged. Pure logic lives in `plugin/skills/adopt/scripts/changelog-span.mjs`, with a
+  byte-identical inlined copy in `install.mjs` itself (which must stay a single relocatable
+  script — its own tests copy it alone into a synthetic plugin root) kept honest by a
+  drift-lock test rather than an import.
 
 ## [0.144.0] - 2026-08-07
 

@@ -16,6 +16,14 @@
 //   - "no record exists for this range" (the FROM version predates every heading the
 //     changelog carries at all — the gap case above).
 //
+// ⚠ A SECOND, sharper shape of the same gap: the gap is not only at the file's boundary,
+// it is INTERIOR too. A first version of this module only guarded the boundary (fromVersion
+// vs the file's oldest heading) and, measured against the real changelog, presented a
+// confident 17-entry span for a query that actually spanned ~75 versions of undocumented
+// movement — a PARTIAL span dressed as a complete one, worse than the empty-span case
+// because it doesn't even look suspicious. `missingVersionCount` below locks that a span
+// reports its OWN coverage, computed only from the two requested versions.
+//
 // Fixtures are hand-built here, never read off the repo's real CHANGELOG.md: a lock built on
 // today's version numbers rots at the next release (rule: "lock the invariant, not an
 // enumeration").
@@ -70,6 +78,10 @@ describe('changelogSpan — recorded range: entries between two versions', () =>
     expect(result.entries.some((e: { body: string }) => e.body.includes('a second line of detail'))).toBe(true)
     expect(result.totalCount).toBe(3)
     expect(result.omittedCount).toBe(0)
+    // 1.1.0 → 1.5.0 spans minors 2,3,4,5 (four expected slots); only 3,4,5 have headings —
+    // the fixture's OWN documented gap (1.2.0, deliberately absent) must surface here as a
+    // real, non-zero missing count, not silently pass as a "complete" span.
+    expect(result.missingVersionCount).toBe(1)
   })
 
   it('fromVersion == toVersion yields a recorded, empty span (already current)', () => {
@@ -132,5 +144,58 @@ describe('changelogSpan — truncation of an enormous span stays explicit, never
     if (!result.recorded) return
     expect(result.omittedCount).toBe(0)
     expect(result.entries).toHaveLength(1)
+  })
+})
+
+describe('changelogSpan — coverage: a recorded span states whether it is COMPLETE', () => {
+  it('no interior gap in range ⇒ missingVersionCount is exactly 0', () => {
+    // 1.3.0 → 1.4.0: one expected slot, one heading present. No gap in THIS sub-range
+    // (the fixture's gap, 1.2.0, sits entirely outside it).
+    const result = changelogSpan(FIXTURE, '1.3.0', '1.4.0')
+    expect(result.recorded).toBe(true)
+    if (!result.recorded) return
+    expect(result.missingVersionCount).toBe(0)
+  })
+
+  it('fromVersion AT the oldest heading, landing on a real interior gap further up, still counts it', () => {
+    // 1.0.0 → 1.5.0 covers the WHOLE fixture, gap (1.2.0) included: minors 1..5 expected,
+    // only {1,3,4,5} present via headings after 1.0 (1.1,1.3,1.4,1.5) ⇒ exactly 1 missing.
+    const result = changelogSpan(FIXTURE, '1.0.0', '1.5.0')
+    expect(result.recorded).toBe(true)
+    if (!result.recorded) return
+    expect(result.missingVersionCount).toBe(1)
+  })
+
+  it('a major-version mismatch between fromVersion and toVersion reports missingVersionCount as null (cannot determine), never a guess', () => {
+    const crossMajor = `# Changelog\n\n## [2.0.0] - 2026-04-01\n\n- Entry.\n\n## [1.0.0] - 2026-02-28\n\n- Entry.\n`
+    const result = changelogSpan(crossMajor, '1.0.0', '2.0.0')
+    expect(result.recorded).toBe(true)
+    if (!result.recorded) return
+    expect(result.missingVersionCount).toBeNull()
+  })
+
+  // Replicates the exact class of defect found by the arbiter against the real changelog:
+  // a query well ABOVE the file's oldest heading (so the boundary guard alone reports
+  // recorded:true) can still span a large INTERIOR gap the boundary check cannot see.
+  // Built at a smaller, fixture-controlled scale so the lock does not depend on the real
+  // changelog's current shape.
+  it('an interior gap FAR from the file boundary is still caught (the defect this section exists to close)', () => {
+    const lines: string[] = ['# Changelog', '']
+    // Headings at every minor from 40 to 50 (11 headings) — the "old, well-documented" era.
+    for (let m = 50; m >= 40; m--) lines.push(`## [1.${m}.0] - 2026-01-01`, '', `- Entry ${m}.`, '')
+    // A real interior gap: minors 51..99 carry NO heading at all (49 undocumented minors).
+    // Headings resume at 100 and run to 110 (11 headings) — the "recent, gate-enforced" era.
+    for (let m = 110; m >= 100; m--) lines.push(`## [1.${m}.0] - 2026-06-01`, '', `- Entry ${m}.`, '')
+    const bigFixture = lines.join('\n') + '\n'
+
+    // A query starting well ABOVE the oldest heading (1.40.0) — the boundary guard alone
+    // reports recorded:true and would, pre-fix, present this as a complete span.
+    const result = changelogSpan(bigFixture, '1.45.0', '1.110.0', { maxEntries: 100 })
+    expect(result.recorded).toBe(true)
+    if (!result.recorded) return
+    // Present: minors 46..50 (5, the tail of the old era, still > 45) plus 100..110 (11) = 16
+    // distinct. Expected: 110-45 = 65. Missing: 65-16 = 49 — the undocumented 51..99 band.
+    expect(result.totalCount).toBe(16)
+    expect(result.missingVersionCount).toBe(49)
   })
 })
