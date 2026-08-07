@@ -3,6 +3,39 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.135.0] - 2026-08-07
+
+### Added
+
+- **`wt-unquoted-tool-glob-guard-hook.mjs` — ships BLOCKING, which no other new guard does, because
+  this one was measured first.** In zsh an unquoted glob passed as a *tool option value* fails two
+  ways and **both look like a clean result**: with no match zsh aborts the command before any
+  redirection, so nothing runs and the empty output reads as "no hits" or "the feature is absent";
+  with a match it expands against the current directory, so `--include=*.ts` silently becomes
+  `--include=app.ts` and the search covers one file instead of a tree.
+
+  The failure does not look like a failure. It looks like a finding.
+
+  Measured on material it did not choose: 5,193 session transcripts, 82,015 Bash commands, 206
+  distinct after dedup, each fed to the guard's own executable as a real PreToolUse payload —
+  **197 true positives, 0 false positives**, 9 correct silences from its heredoc and prose
+  exclusions. Those figures are in the file's header so the next reader inherits the evidence
+  rather than the conclusion.
+
+  What makes blocking safe is the narrowness of the population, and it is checkable in two regexes:
+  only `--include`/`--exclude`/`--include-dir`/`--exclude-dir` and
+  `-name`/`-iname`/`-path`/`-ipath`/`-wholename`. An ordinary argument glob (`ls *.ts`,
+  `for f in *.md`) cannot match either — and that form is normally correct, so flagging it is
+  exactly the false-positive class that gets a guard switched off.
+
+  ⚠ Its non-coverage ships with it, so its silence is not read as coverage: a bare unquoted glob as
+  an ordinary argument is deliberately not flagged, and it says nothing about the sibling zsh traps
+  — unquoted word-splitting, or `$var:path` read as a parameter modifier.
+
+  Filed as a ticket by a session on another project, which also ran the measurement and rejected the
+  tempting shell-level alternative: `unsetopt nomatch` closes the abort half and leaves the
+  expansion half, turning a loud failure into a silent wrong answer.
+
 ## [0.134.0] - 2026-08-07
 
 ### Added
