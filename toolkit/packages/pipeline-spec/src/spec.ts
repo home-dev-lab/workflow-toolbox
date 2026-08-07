@@ -12,10 +12,15 @@
 /** The single source of truth for InputRef's `from` values — parseInputRef validates against
  *  this SAME array (imported, not hand-duplicated), so adding a source is a one-place change
  *  the compiler enforces via InputRef's derived type. */
-export const INPUT_REF_SOURCES = ['artifactPath', 'goal', 'projectDir'] as const
+export const INPUT_REF_SOURCES = ['artifactPath', 'goal', 'projectDir', 'artifactContent'] as const
 
 /** A declarative reference to a runtime value a stage's args template pulls in at launch —
- *  never a function, so the whole spec round-trips through JSON untouched. */
+ *  never a function, so the whole spec round-trips through JSON untouched. `artifactContent`
+ *  resolves to the prior stage's handoff artifact read OFF DISK as text (as opposed to
+ *  `artifactPath`, which resolves to the path itself) — added for a `scripted` stage's
+ *  `prompt` (see ScriptedStageSpec), which needs the artifact's actual content rather than a
+ *  path a Claude Code workflow would resolve on its own; usable from an ordinary workflow
+ *  stage's `input` too, since the source is a general one, not scripted-only. */
 export type InputRef = { from: (typeof INPUT_REF_SOURCES)[number] }
 
 /** The single source of truth for the named extractor keys a StageSpecV2 can select —
@@ -35,14 +40,37 @@ export type ExtractorKey = (typeof EXTRACTOR_KEYS)[number]
 // parser at author time and will fail consumers' builds otherwise (a type-only field addition
 // compiles fine but throws at the very next `workflow-toolbox pipeline` build).
 
+/** One stage that runs a scripted EXTERNAL-LANE call (an opencode CLI invocation today, card
+ *  #1836599777) instead of a Claude Code workflow — mutually exclusive with `workflow`/
+ *  `pipeline` on the owning StageSpecV2. Deliberately minimal: the scripted lane has no
+ *  phase/agent DAG of its own to configure, so a model plus a prompt source is the whole
+ *  authoring surface. The runner adapts this to the SAME `LaunchedStage` contract a workflow
+ *  stage's launch produces (see the companion app's pipeline.ts / pipeline-core.ts,
+ *  `deps.launchScripted`) — everything downstream (gate, artifact extraction, settlement)
+ *  therefore treats a scripted stage exactly like a workflow stage; it never learns the
+ *  difference. */
+export interface ScriptedStageSpec {
+  /** The external model identifier passed straight through to the lane's own model flag
+   *  (e.g. "openai/gpt-5.4" for the bundled opencode adapter). Never checked against a Claude
+   *  Code model allowlist — it names a different model family entirely, and the runner has no
+   *  business validating it beyond "non-empty string" (parseStageSpecV2's job). */
+  model: string
+  /** Where the call's single prompt string comes from — the SAME declarative InputRef
+   *  vocabulary a workflow stage's `input` uses, resolved to one string rather than an args
+   *  record. `{ from: 'artifactContent' }` is the common case: hand the PRIOR stage's handoff
+   *  artifact, read off disk, straight to the external model as its whole prompt. */
+  prompt: InputRef
+}
+
 /** One stage in a v2 pipeline spec: which workflow to run, how to build its args from prior
  *  state (`input`), how to extract its handoff artifact for the NEXT stage (`artifact`,
  *  default 'raw'), and whether a human gate follows it before the next stage launches
  *  (`gateAfter`). */
 export interface StageSpecV2 {
   name: string
-  /** Exactly one of `workflow`/`pipeline` (validateStageList enforces this — a stage either
-   *  launches a single workflow directly, or recurses into a nested sub-pipeline). */
+  /** Exactly one of `workflow`/`pipeline`/`scripted` (validateStageList enforces this — a
+   *  stage either launches a single workflow directly, recurses into a nested sub-pipeline,
+   *  or runs a scripted external-lane call). */
   workflow?: string
   /** An INLINE (v1: no by-reference child specs) nested pipeline this stage
    *  recurses into via the SAME runner, as a full first-class pipeline (own pipelineId, own
@@ -53,6 +81,12 @@ export interface StageSpecV2 {
    *  doc for why a non-'raw' extractor would silently diverge between live and reconciled
    *  paths). */
   pipeline?: PipelineSpec
+  /** A stage that runs a scripted external-lane call instead of a Claude Code workflow —
+   *  mutually exclusive with `workflow`/`pipeline`. See ScriptedStageSpec's own doc.
+   *  `input` is disallowed alongside it (validateStageList) — the prompt InputRef IS its one
+   *  input; an `input` record here would be silently unconsulted, the same posture this file
+   *  already takes toward `artifact` on a pipeline-stage. */
+  scripted?: ScriptedStageSpec
   input?: Record<string, InputRef>
   gateAfter?: boolean
   /** Named extractor key into the server-side registry (extract-artifact.ts) — NOT a
@@ -247,8 +281,15 @@ export function validateStageList(stages: readonly StageSpecV2[], limits?: Pipel
 
     const hasWorkflow = stage.workflow !== undefined
     const hasPipeline = stage.pipeline !== undefined
-    if (hasWorkflow === hasPipeline) {
-      return `stage "${stage.name}" must set exactly one of "workflow" or "pipeline" (got ${hasWorkflow ? 'both' : 'neither'})`
+    const hasScripted = stage.scripted !== undefined
+    const kindCount = Number(hasWorkflow) + Number(hasPipeline) + Number(hasScripted)
+    if (kindCount !== 1) {
+      const present = [hasWorkflow && '"workflow"', hasPipeline && '"pipeline"', hasScripted && '"scripted"'].filter((v): v is string => v !== false)
+      const got = kindCount === 0 ? 'none' : kindCount === 3 ? 'all three' : `both ${present.join(' and ')}`
+      return `stage "${stage.name}" must set exactly one of "workflow", "pipeline", or "scripted" (got ${got})`
+    }
+    if (hasScripted && stage.input !== undefined) {
+      return `stage "${stage.name}" is a scripted stage — "input" is disallowed on a scripted stage (its "scripted.prompt" InputRef is its one input; an "input" record here would be silently unconsulted)`
     }
     if (hasPipeline) {
       if (stage.gateAfter === true) {
@@ -391,6 +432,20 @@ function parseInputRef(v: unknown): InputRef | null {
   return typeof from === 'string' && VALID_INPUT_FROM.has(from) ? { from: from as InputRef['from'] } : null
 }
 
+/** Parse an untrusted `scripted` value into a ScriptedStageSpec, or null — all-or-nothing like
+ *  every other malformed-field check in this parser. `model` must be a non-empty string;
+ *  `prompt` must be a shape-valid InputRef (parseInputRef re-checked against the SAME
+ *  VALID_INPUT_FROM set every other InputRef in this file validates against). */
+function parseScriptedStageSpec(v: unknown): ScriptedStageSpec | null {
+  if (typeof v !== 'object' || v === null) return null
+  const s = v as Record<string, unknown>
+  const model = s['model']
+  if (typeof model !== 'string' || model.length === 0) return null
+  const prompt = parseInputRef(s['prompt'])
+  if (prompt === null) return null
+  return { model, prompt }
+}
+
 function parseStageSpecV2(v: unknown): StageSpecV2 | null {
   if (typeof v !== 'object' || v === null) return null
   const s = v as Record<string, unknown>
@@ -403,15 +458,20 @@ function parseStageSpecV2(v: unknown): StageSpecV2 | null {
   // other malformed field.
   const hasWorkflow = typeof s['workflow'] === 'string'
   const hasPipelineField = s['pipeline'] !== undefined
-  if (hasWorkflow === hasPipelineField) return null
+  const hasScriptedField = s['scripted'] !== undefined
+  if (Number(hasWorkflow) + Number(hasPipelineField) + Number(hasScriptedField) !== 1) return null
 
   let stage: StageSpecV2
   if (hasWorkflow) {
     stage = { name, workflow: s['workflow'] as string }
-  } else {
+  } else if (hasPipelineField) {
     const nested = parsePipelineSpec(s['pipeline'])
     if (nested === null) return null
     stage = { name, pipeline: nested }
+  } else {
+    const scripted = parseScriptedStageSpec(s['scripted'])
+    if (scripted === null) return null
+    stage = { name, scripted }
   }
 
   if (s['input'] !== undefined) {

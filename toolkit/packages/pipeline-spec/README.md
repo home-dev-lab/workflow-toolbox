@@ -20,11 +20,20 @@ pnpm add @workflow-toolbox/pipeline-spec
 
 - `PipelineSpec` — `{ goal, projectDir, stages }`: the full declarative pipeline
   definition.
-- `StageSpecV2` — one stage: which workflow to run (or a nested sub-pipeline), how to
-  build its args from prior state (`input`), how to extract its handoff artifact for the
-  next stage, and whether a human gate follows it (`gateAfter`).
+- `StageSpecV2` — one stage: which workflow to run, which nested sub-pipeline to recurse
+  into, or which scripted external-lane call to run (exactly one of `workflow` /
+  `pipeline` / `scripted`), how to build its args from prior state (`input`), how to
+  extract its handoff artifact for the next stage, and whether a human gate follows it
+  (`gateAfter`).
+- `ScriptedStageSpec` — a stage that runs a scripted external-lane call (an opencode CLI
+  invocation, in the companion runtime) instead of a Claude Code workflow: a `model`
+  identifier plus a `prompt` InputRef. The runner adapts it to the same launch contract a
+  workflow stage's launch produces, so gate/artifact-extraction/settlement never learn the
+  difference.
 - `InputRef` — a declarative reference to a runtime value pulled in at launch, restricted
-  to `INPUT_REF_SOURCES` (`'artifactPath' | 'goal' | 'projectDir'`).
+  to `INPUT_REF_SOURCES` (`'artifactPath' | 'goal' | 'projectDir' | 'artifactContent'` —
+  the last resolves to the prior stage's handoff artifact read off disk as TEXT, as
+  opposed to `'artifactPath'`, which resolves to the path itself).
 - `ExtractorKey` — the named handoff-artifact extractor a stage selects, restricted to
   `EXTRACTOR_KEYS`.
 - `PipelineLoopSpec` / `LoopUntil` — an optional spec-level `loop`: re-run the whole stage
