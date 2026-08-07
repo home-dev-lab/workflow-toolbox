@@ -98,6 +98,14 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,
       }
+    // No WT_GUARD_JOURNAL_DIR in this sandbox and the real journal path (under sandbox.env's
+    // HOME) does not exist — the exact "no guard has ever fired" case this hook must meet with
+    // silence, never a crash.
+    case 'wt-guard-recurrence-hook.mjs':
+      return {
+        hook_event_name: 'SessionStart',
+        cwd: sandbox.projectDir,
+      }
     case 'wt-lane-saturation-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',

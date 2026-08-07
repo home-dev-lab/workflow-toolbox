@@ -2294,6 +2294,7 @@ ${renderClaim(claim)}`;
         // and the shim one release after the rename.
         "plugin/bin/wt-adopt-rules-check-hook.mjs",
         "plugin/bin/wt-env-prerequisite-drift-hook.mjs",
+        "plugin/bin/wt-guard-recurrence-hook.mjs",
         "plugin/bin/wt-lane-saturation-hook.mjs",
         "plugin/bin/wt-arc-watch.mjs",
         "plugin/bin/wt-autonomy-arm.mjs",

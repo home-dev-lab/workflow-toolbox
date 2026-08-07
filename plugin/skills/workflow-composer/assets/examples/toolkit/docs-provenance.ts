@@ -343,6 +343,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     status: 'mapped',
     reason: 'Known-issues documents this standalone read CLI, its exit codes, and the shared guard-journal.mjs write side under Shipped Hooks, Guards & Monitors.',
   },
+  {
+    script: 'plugin/bin/wt-guard-recurrence-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this SessionStart recurrence surface (threshold, grouping, silence contract) under Shipped Hooks, Guards & Monitors.',
+  },
 ]
 
 export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
@@ -626,6 +631,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       // and the shim one release after the rename.
       'plugin/bin/wt-adopt-rules-check-hook.mjs',
       'plugin/bin/wt-env-prerequisite-drift-hook.mjs',
+      'plugin/bin/wt-guard-recurrence-hook.mjs',
       'plugin/bin/wt-lane-saturation-hook.mjs',
       'plugin/bin/wt-arc-watch.mjs',
       'plugin/bin/wt-autonomy-arm.mjs',
