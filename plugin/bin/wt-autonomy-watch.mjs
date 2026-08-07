@@ -321,6 +321,57 @@ const context = {
   queueStaleMs: DEFAULT_QUEUE_STALE_MINUTES * 60_000,
 }
 
+// ⚠ ARMED BANNER, and it is not decoration. This watcher's whole purpose is to close a silence
+// gap, and until this line existed it had the very defect it was built to remove: an unarmed
+// watcher and a watcher with nothing to report produced the identical observation — nothing. A
+// reader could not tell "running and quiet because all is well" from "running and structurally
+// unable to ever fire here".
+//
+// So the line names the two preconditions a session can actually get WRONG, with their live
+// state, rather than merely announcing that a process started. Both are absent by default: a
+// session that never declared a mandate has no marker, and a project whose stop gate never ran
+// has no queue snapshot. Either one absent means this watcher can never emit, however healthy
+// its process looks.
+//
+// It prints in EVERY session, including ordinary interactive ones with no mandate — one line,
+// matching what the other three monitors already cost. That is deliberate: the case worth
+// seeing is exactly `mandate=absent`, and a banner suppressed in that case would be silent in
+// the only situation it exists for.
+function mandateArmedState(filePath) {
+  return readMtimeMs(filePath) === null ? 'absent' : 'present'
+}
+
+// ⚠ Freshness is read the SAME WAY `poll()` reads it — from the snapshot's own `at` field, never
+// from the file's mtime. Those two can disagree (a file copied or touched carries a new mtime over
+// an old `at`), and a banner that judged freshness differently from the code it describes would
+// announce "fresh" about a snapshot the watcher itself treats as stale. A banner that lies about
+// why the watcher is quiet is worse than no banner: it moves the reader's suspicion somewhere else.
+// It deliberately does NOT reuse readQueueSnapshot(): that function collapses absent, unreadable
+// and stale into one `unknown`, which is exactly right for deciding whether to fire and exactly
+// wrong for telling a reader WHY nothing will happen. Those three call for three different
+// actions — write a snapshot, fix a malformed one, refresh an old one.
+function queueArmedState(queuePath, staleMs, now) {
+  if (!existsSync(queuePath)) return 'absent'
+  try {
+    const at = JSON.parse(readFileSync(queuePath, 'utf8'))?.at
+    if (typeof at !== 'number' || !Number.isFinite(at)) return 'unreadable'
+    const ageMin = (now - at) / 60_000
+    return now - at > staleMs ? `stale(${ageMin.toFixed(0)}min)` : `fresh(${ageMin.toFixed(0)}min)`
+  } catch {
+    return 'unreadable'
+  }
+}
+
+const nowAtArming = Date.now()
+const mandateState = mandateArmedState(context.mandatePath)
+const queueState = queueArmedState(context.queuePath, context.queueStaleMs, nowAtArming)
+const canFire = mandateState === 'present' && queueState.startsWith('fresh')
+write(
+  `AUTONOMY WATCH ARMED: idle=${DEFAULT_IDLE_MINUTES}min poll=${pollSeconds}s · ` +
+    `mandate=${mandateState} · queue=${queueState}` +
+    (canFire ? '' : ' · CANNOT FIRE until both are present and the queue snapshot is fresh'),
+)
+
 for (;;) {
   try {
     if (!(await isServiceDegraded())) poll(context)

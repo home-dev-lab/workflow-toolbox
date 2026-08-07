@@ -99,16 +99,24 @@ function runWatch(
   projectDir: string,
   env: NodeJS.ProcessEnv,
   extraArgs: string[] = [],
-): { status: number | null; stdout: string; stderr: string } {
+): { status: number | null; stdout: string; stderr: string; armed: string } {
   const res = spawnSync(process.execPath, [WATCH, '--once', '--project', projectDir, ...extraArgs], {
     encoding: 'utf8',
     env,
     timeout: 10_000,
   })
+  // The watcher now writes ONE unconditional banner at arming, on the same stream as its wakes.
+  // It is split out here rather than folded into `stdout` so that every silence assertion below
+  // keeps asserting exactly what it always asserted — "no WAKE was emitted" — instead of being
+  // quietly relaxed to "no wake, plus whatever else the process decided to print". The banner
+  // gets its own assertions; the silence guarantees are untouched.
+  const lines = res.stdout.trim().split('\n').filter(Boolean)
+  const armed = lines.find((l) => l.startsWith('AUTONOMY WATCH ARMED:')) ?? ''
   return {
     status: res.status,
-    stdout: res.stdout.trim(),
+    stdout: lines.filter((l) => l !== armed).join('\n').trim(),
     stderr: res.stderr.trim(),
+    armed,
   }
 }
 
@@ -264,6 +272,87 @@ describe('wt-autonomy-watch', () => {
 
     expect(result.stdout).toBe('')
     expect(existsSync(s.markerPath)).toBe(false)
+  })
+})
+
+// An unarmed watcher and a watcher with nothing to report produce the identical observation —
+// nothing. That is the defect this monitor exists to remove elsewhere, and it had it itself: a
+// reader could not tell "running and quiet because all is well" from "running and structurally
+// unable to ever fire here". These lock the banner that separates the two.
+describe('wt-autonomy-watch says whether it can actually fire', () => {
+  it('always announces itself, even in a session with no mandate — the case a silent watcher hides', () => {
+    const s = scaffold('armed-no-mandate')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    writeQueue(s.queuePath, { at: now, open: 2, next: 'CARD-2 implement watcher' })
+
+    const result = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(result.armed).toContain('AUTONOMY WATCH ARMED:')
+    expect(result.armed).toContain('mandate=absent')
+    expect(result.armed).toContain('CANNOT FIRE')
+    expect(result.stdout).toBe('')
+  })
+
+  it('does NOT claim it cannot fire when both preconditions are satisfied', () => {
+    const s = scaffold('armed-ready')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    touch(s.mandatePath, now - 5 * 60_000)
+    writeQueue(s.queuePath, { at: now, open: 2, next: 'CARD-2 implement watcher' })
+
+    const result = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(result.armed).toContain('mandate=present')
+    expect(result.armed).toContain('queue=fresh')
+    expect(result.armed).not.toContain('CANNOT FIRE')
+  })
+
+  it('names a stale queue snapshot distinctly from an absent one — they need different actions', () => {
+    const s = scaffold('armed-stale-queue')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    touch(s.mandatePath, now - 5 * 60_000)
+    writeQueue(s.queuePath, { at: now - 200 * 60_000, open: 2, next: 'CARD-2 implement watcher' })
+
+    const stale = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(stale.armed).toContain('queue=stale')
+    expect(stale.armed).toContain('CANNOT FIRE')
+    expect(stale.stdout).toBe('')
+
+    const s2 = scaffold('armed-absent-queue')
+    touch(s2.transcriptPath, now - 20 * 60_000)
+    touch(s2.mandatePath, now - 5 * 60_000)
+
+    const absent = runWatch(s2.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s2.configDir,
+      CLAUDE_CODE_SESSION_ID: s2.sessionId,
+      XDG_STATE_HOME: s2.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(absent.armed).toContain('queue=absent')
+    expect(absent.armed).not.toContain('queue=stale')
   })
 })
 

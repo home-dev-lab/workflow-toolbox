@@ -3,6 +3,33 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.130.0] - 2026-08-07
+
+### Fixed
+
+- **`autonomy-watch` now says whether it can actually fire.** It had the exact defect it exists to
+  remove elsewhere: an unarmed watcher and a watcher with nothing to report produced the identical
+  observation — nothing. A session could not tell "running and quiet because all is well" from
+  "running and structurally unable to ever fire here", and the second is the common case: the
+  monitor needs a mandate marker the session must write and a queue snapshot the stop gate must
+  have written, and both are absent by default.
+
+  It now writes one line at arming, on the same stream as its wakes, naming the idle threshold, the
+  poll interval, and the LIVE state of both preconditions — plus `CANNOT FIRE` when either is
+  missing. The line prints in every session including ordinary interactive ones with no mandate,
+  which is deliberate: `mandate=absent` is precisely the reading worth seeing, and a banner
+  suppressed in that case would be silent in the only situation it exists for.
+
+  `absent`, `unreadable` and `stale` are reported as three distinct states rather than collapsed,
+  because they call for three different actions — write a snapshot, fix a malformed one, refresh an
+  old one. Freshness is read from the snapshot's own `at` field, the same way the polling code reads
+  it, never from file mtime: a banner that judged freshness differently from the code it describes
+  would announce `fresh` about a snapshot the watcher itself treats as stale, and a banner that lies
+  about why the watcher is quiet is worse than no banner.
+
+  Reported by a session on another project, which went looking for the monitor on disk, found it
+  running, and could not determine from any output whether it had ever been able to do anything.
+
 ## [0.129.0] - 2026-08-07
 
 ### Added
