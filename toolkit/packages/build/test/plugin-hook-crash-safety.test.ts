@@ -167,6 +167,16 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'SendMessage',
         tool_input: { message: 'ordinary message' },
       }
+    case 'wt-rule-convention-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        cwd: sandbox.projectDir,
+        tool_input: {
+          file_path: join(sandbox.projectDir, '.claude', 'rules', 'foo.md'),
+          content: 'Keep the directive and the invariant.',
+        },
+      }
     case 'wt-queue-not-empty-gate-hook.mjs':
       return {
         hook_event_name: 'Stop',

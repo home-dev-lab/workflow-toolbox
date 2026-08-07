@@ -142,6 +142,37 @@ started session, never from the current one or from a spawned sub-agent, both of
 the snapshot taken when their session began. It stays silent for every other file so the signal
 does not become routine noise. Internal errors fail open with no output.
 
+### `wt-rule-convention-guard-hook.mjs` — rule-writing-convention blocker (PreToolUse)
+
+**This one REFUSES the write** — it is the only shipped hook that does, so know what it costs
+you before adopting the plugin.
+
+It fires on `Edit`, `Write`, or `MultiEdit` against a rule file (`.md` one or two levels under
+a directory named `rules`) or an agent definition (`.md` directly under `agents` or
+`agent-templates`). It inspects ONLY the text being ADDED — never the file as it stands — and
+denies the call when that text carries a calendar date, a person's name, or a narrative
+formula such as "standing instruction from". The reason it returns names the detector, the
+exact matched text, and the offending line.
+
+The invariant behind it: a rule states what to DO plus the invariant that makes it right. The
+date, the name, and the story of how the rule came to exist belong in a note, and a rule that
+accumulates them stops being read.
+
+**Why it inspects the addition rather than the file**: many existing rule sets already contain
+dates and names. Checking the whole file would refuse every edit to such a file — including the
+edits that REMOVE the offending text — so the guard would block its own remedy.
+
+**Escape hatch**: a line carrying `<!-- rule-lint: allow -->` is exempt. A rule may legitimately
+need to quote a dated example verbatim, and a guard with no exit gets disabled wholesale the
+first time it is wrong.
+
+**What it deliberately does NOT check**: writing style, sentence length, and whether a
+compression lost a nuance. Those need judgment, and a mechanical guard that attempted them
+would refuse correct work.
+
+Internal errors fail open — the guard emits nothing, exits 0, and writes one line to stderr
+naming itself. A guard that failed closed on its own bug would block all rule editing.
+
 ### `wt-stale-date-guard.mjs` — stale operational-deadline scanner (standalone CLI)
 
 Scans Markdown for absolute dates and flags operational deadlines that have passed without treating provenance dates as deadlines. It takes no project-specific paths by default; targets are supplied by the caller. Usage:
