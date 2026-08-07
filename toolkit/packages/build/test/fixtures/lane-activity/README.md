@@ -19,19 +19,28 @@ select * from part where session_id='$SID' order by time_created limit 6;
 SQL
 ```
 
-Then two path-sanitizing `sed` passes, nothing else: the machine's real worktree path
-(`/home/doublefx/projects/wt-suite/worktrees/card-lane-token-split` → `/tmp/fixture-worktree`)
-and the real home directory (`/home/doublefx` → `/home/fixture-user`, for the paths that survive
-inside JSON payloads and log lines that reference OTHER worktrees/snapshots), because this repo
-is public and both are personal directory layout, not schema shape. Every key, type, nesting
-level, and value (including the `part.data.type` split between `text`/`reasoning`/`step-finish`
-the reader depends on) is untouched.
+Then sanitized, because this repo is PUBLIC. Two path passes replace the capturing machine's
+worktree path with `/tmp/fixture-worktree` and its home directory with `/home/fixture-user` —
+personal directory layout is not schema shape, and a fixture has no reason to carry it.
+
+⚠ One value is REDACTED rather than sanitized: the provider's `reasoningEncryptedContent`, an
+opaque base64 payload nobody here — author or reviewer — can inspect. It carries no test value
+(the reader identifies a reasoning part by its `type`, never by its content), and shipping an
+unreadable blob into a public repo means publishing something that was never read. Its key and
+nesting are preserved so the shape stays honest.
+
+Everything else — every key, type, nesting level and value, including the `part.data.type` split
+between `text`/`reasoning`/`step-finish` that the reader depends on — is untouched.
+
+⚠ This note deliberately does NOT quote the real paths it replaced. An earlier draft did, which
+published in its own sanitization notice exactly the home directory and project layout the
+sanitization existed to remove.
 
 `schema.sql` is the matching `CREATE TABLE` statements, copied verbatim from
 `.schema session` / `.schema message` / `.schema part` against the same real store.
 
 `real-log-tail.txt` is 8 real lines tailed from `~/.local/share/opencode/log/opencode.log` via
-`grep -a card-lane-token-split opencode.log | tail -15`, sanitized the same way — it is the
+`grep -a <the-lane-worktree-name> opencode.log | tail -15`, sanitized the same way — it is the
 source for `extractLatestLogActivity`'s real-fixture test.
 
 Tests load the SQL fixtures into a fresh tmp-file `node:sqlite` `DatabaseSync` at run time (a
