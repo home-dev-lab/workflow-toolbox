@@ -3,6 +3,35 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.129.0] - 2026-08-07
+
+### Added
+
+- **`adopt --set autonomy` — a project can now adopt an autonomy mandate the same way it adopts
+  the rules.** The new `plugin/autonomy/AUTONOMY.md` is a project-agnostic template: it names no
+  tracker product, no board, no path and no per-machine quirk, and where a project must supply its
+  own facts — what may leave the machine, which branch is protected — it asks for them by name
+  rather than assuming any one setup's.
+
+  Its purpose is structural rather than documentary. An autonomy mandate written into a `/loop`
+  prompt is authored once and is stale within the hour; written into a FILE the wake re-reads, the
+  instruction that matters most — re-arm the wakeup as the last action of the turn — is read at the
+  moment it must be executed. The adopted copy carries the same versioned banner and content
+  fingerprint as the rules set, so a stale copy is detectable after a plugin bump and a locally
+  edited one is never overwritten without `--force`.
+
+### Changed
+
+- **The adopt engine derives its set list instead of repeating it.** `--set all`, the unknown-set
+  error, the `--dir` rejection and the "these other sets exist too" advisory all read from the
+  `SETS` map, so a future set needs none of those five edits. The advisory in particular was
+  written for exactly two sets and would have been wrong in every branch with three; it now names
+  the untouched sets with correct grammar for one, two or more.
+
+  `renderItem`'s banner choice is inverted rather than extended — plain-markdown prepend is now the
+  default any new kind receives, instead of silently falling into the frontmatter-aware path meant
+  for agent definitions. Behaviour for the `rules` and `agents` sets is unchanged.
+
 ## [0.128.0] - 2026-08-07
 
 ### Fixed
