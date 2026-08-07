@@ -3,6 +3,39 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.139.0] - 2026-08-07
+
+### Added
+
+- **`wt-main-guard-hook.mjs` — guards the MAIN session against a set of irreversible Bash
+  actions, mirroring `wt-pilot-guard-hook.mjs` for the one actor that guard deliberately
+  no-ops on.** `wt-pilot-guard-hook.mjs` guards every subagent but skips any call with no
+  `agent_id`, i.e. the main session itself — on the theory that the main session is the
+  arbiter that already holds the gate. That was aspirational, not mechanical: nothing
+  actually executed when the main session ran `npm publish`, a force-push, a remote branch
+  deletion, or a catastrophic `rm -rf` — only prose rules did.
+
+  **Posture is a measured split, not one verdict for the whole guard.** Four classes ship
+  blocking (`permissionDecision: 'deny'`): publish, force-push, remote branch deletion, and
+  `rm -rf` on the filesystem root or the home directory. Measured against 2,788 distinct real
+  Bash commands drawn from every session transcript on this machine: publish 16/16, force-push
+  13/13, remote branch deletion 4/4 — 0 false positives across all three; root/home `rm -rf` had
+  zero occurrences in the sample and stays blocking structurally (no legitimate use exists).
+
+  Two classes matched the same trigger shapes and measured the opposite way, so they ship
+  journal-only instead (allowed, logged, never denied): `rm -rf` on a git repository root was
+  10/10 false positives — every match was a disposable clone or a worktree purge about to be
+  recreated; `rm -rf` on an unresolvable target (`"$VAR"`, a glob) was 319 candidates, sampled
+  and found to be `rm -rf "$VAR"` where `$VAR` was bound earlier in the same multi-line command
+  to a scratch path this segment-local classifier cannot see. Both stay detected and journaled
+  to `~/.local/state/wt-main-guard/journal.jsonl`, so the gap is visible rather than silent.
+
+  A `git merge` integrating a branch INTO `main`/`master` while on `main`/`master` — the
+  opposite direction from what the pilot guard blocks — is journal-only by design, legitimate
+  for the arbiter, recorded for traceability. Denials carry a one-time, file-based escape hatch
+  (`~/.local/state/wt-main-guard/allow-once.json`, byte-exact match, single-use). See
+  `docs/public/known-issues.md` for the full per-class breakdown.
+
 ## [0.138.0] - 2026-08-07
 
 ### Added
