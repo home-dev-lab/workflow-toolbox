@@ -35,6 +35,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -135,6 +136,12 @@ function main() {
   if (hasWrite) return
   if (!asksToWriteAFile(prompt)) return
 
+  recordGuardEvent({
+    guard: 'wt-spawn-capability-guard-hook.mjs',
+    decision: 'blocked',
+    class: 'no-write-tool',
+    reason: `agent type "${type}" has no Write tool`,
+  })
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

@@ -11,6 +11,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CHECKER = path.join(HERE, 'wt-check-observer-pairing.mjs')
@@ -166,6 +167,12 @@ function main() {
     }
   }
 
+  recordGuardEvent({
+    guard: 'wt-observer-pairing-guard-hook.mjs',
+    decision: 'warned',
+    class: 'observer-pairing',
+    reason: summary,
+  })
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

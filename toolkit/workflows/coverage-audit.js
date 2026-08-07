@@ -2200,7 +2200,8 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-main-guard-hook.mjs",
         "plugin/bin/wt-pipestatus-bash-only-guard-hook.mjs",
         "plugin/bin/wt-find-newermt-format-guard-hook.mjs",
-        "plugin/bin/wt-git-commit-backtick-guard-hook.mjs"
+        "plugin/bin/wt-git-commit-backtick-guard-hook.mjs",
+        "plugin/bin/wt-guard-journal-scan.mjs"
       ],
       docs: ["docs/public/known-issues.md"]
     }

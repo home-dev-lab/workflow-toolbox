@@ -34,6 +34,7 @@
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -69,6 +70,11 @@ function main() {
         'shell-independent and never piped.',
     },
   }
+  recordGuardEvent({
+    guard: 'wt-pipestatus-bash-only-guard-hook.mjs',
+    decision: 'warned',
+    class: 'pipestatus-bash-only',
+  })
   process.stdout.write(JSON.stringify(payload))
 }
 

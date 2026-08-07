@@ -56,6 +56,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 const STATE_DIR = path.join(os.homedir(), '.local', 'state', 'wt-main-guard')
 const JOURNAL_PATH = path.join(STATE_DIR, 'journal.jsonl')
@@ -404,6 +405,13 @@ function main() {
   }
 
   journal({ class: result.class, command: truncated, cwd, decision: 'denied', reason: result.reason })
+  recordGuardEvent({
+    guard: 'wt-main-guard-hook.mjs',
+    decision: 'blocked',
+    class: result.class,
+    reason: result.reason,
+    cwd,
+  })
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

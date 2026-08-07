@@ -34,6 +34,7 @@
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -100,6 +101,12 @@ function main() {
         'MSG`), single quotes, or an escaped backtick (`\\``).',
     },
   }
+  recordGuardEvent({
+    guard: 'wt-git-commit-backtick-guard-hook.mjs',
+    decision: 'warned',
+    class: 'unescaped-backtick',
+    reason: flagged,
+  })
   process.stdout.write(JSON.stringify(payload))
 }
 

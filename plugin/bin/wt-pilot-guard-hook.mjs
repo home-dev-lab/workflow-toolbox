@@ -37,6 +37,7 @@
 
 import fs from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 // ⚠ NOT an allowlist of agent types. It used to be one — `pilot`, `pilot-orchestrator`,
 // `pilot-watchdog` — and that failed OPEN: a copy of the pilot definition under any other name
@@ -170,6 +171,11 @@ function main() {
   const reason = firstViolation(command)
   if (!reason) return // allow: SILENT exit 0, so normal permission flow is untouched
 
+  recordGuardEvent({
+    guard: 'wt-pilot-guard-hook.mjs',
+    decision: 'blocked',
+    reason,
+  })
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

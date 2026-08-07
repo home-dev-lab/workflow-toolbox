@@ -3,7 +3,26 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.140.0] - 2026-08-07
+## [0.141.0] - 2026-08-07
+
+### Added
+
+- **A shared, durable guard-refusal/warning journal, and its read CLI.** Sixteen of the
+  eighteen `plugin/bin/*guard*.mjs` guards now call one shared helper,
+  `plugin/bin/lib/guard-journal.mjs`, the moment they decide to block or warn — an
+  append-only NDJSON line per event, rotated one file per ISO-8601 week under
+  `~/.local/state/wt-guard-journal/`. The insight "this recurring defect deserves a
+  mechanism" is a judgement call and cannot itself be mechanised; repetition can — this
+  turns "I think this happened before" into a number a new read CLI,
+  `wt-guard-journal-scan.mjs`, can print per guard for the current week. The write is
+  fail-open by construction (same posture as `writeFailOpenTrace()`): every failure mode
+  is swallowed inside `recordGuardEvent()`, proven by a test that points the journal at an
+  uncreatable directory and asserts the guard's own decision output is unchanged. Two
+  files are deliberately not wired — `wt-outbound-guard-hook.mjs` (its own durable
+  registry answers a different question) and `wt-stale-date-guard.mjs` (a report CLI, not
+  a hook) — named with reasons in a family test that globs `plugin/bin/*guard*.mjs` itself,
+  so a future guard shipped without instrumentation fails the suite rather than going
+  unnoticed.
 
 ### Added
 

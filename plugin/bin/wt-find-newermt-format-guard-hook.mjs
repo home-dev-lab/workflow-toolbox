@@ -39,6 +39,7 @@
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -93,6 +94,12 @@ function main() {
         'erroring. Safe form: `-newermt "$(date -d \'5 minutes ago\' +%Y-%m-%dT%H:%M:%S)"`.',
     },
   }
+  recordGuardEvent({
+    guard: 'wt-find-newermt-format-guard-hook.mjs',
+    decision: 'warned',
+    class: 'non-iso-newermt',
+    reason: flagged,
+  })
   process.stdout.write(JSON.stringify(payload))
 }
 

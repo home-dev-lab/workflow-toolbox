@@ -20,6 +20,7 @@
 
 import fs from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 const HEADER = 'PROBE-CLAIM'
 const REQUIRED_FIELDS = ['claim', 'set', 'instrument', 'self-exclusion']
@@ -56,6 +57,11 @@ function parseProbeClaim(message) {
 }
 
 function deny(reason) {
+  recordGuardEvent({
+    guard: 'wt-probe-claim-guard-hook.mjs',
+    decision: 'blocked',
+    reason,
+  })
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
