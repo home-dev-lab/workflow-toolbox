@@ -3,6 +3,29 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.144.0] - 2026-08-07
+
+### Added
+
+- `wt-lane-activity.mjs`: a read-only sibling to `wt-lane-probe.mjs` that answers "what is
+  this GPT lane actually DOING", not just "is something running on it". `wt-lane-probe.mjs`
+  proves WHERE a lane is running (cwd attribution); this reads the two sources it never
+  touches — the opencode CLI's own log (names the current sub-task from the latest matching
+  line) and its local SQLite session store, opened read-only (running token total + model).
+  A stall verdict is emitted only when the process is alive AND both sources independently
+  agree nothing moved for the stall window; either source being unreadable, or the two
+  disagreeing, reports `unknown` rather than guessing — a single-source stall check inverts
+  instead of degrading (measured on a live lane: the store's newest row said `finish:stop`
+  26 minutes earlier while the process had been alive 29 and the log showed live sub-agent
+  activity — database alone would have called it stuck, elapsed time alone would have called
+  it healthy). Every field is a measurement or an explicit `unavailable`/`unknown` reason,
+  never a zero standing in for "could not read". Data-dir resolution is Linux-only by
+  default (XDG data dir) — macOS/Windows report `dataDirSupported:false` explicitly rather
+  than a guessed path; `--data-dir`/`OPENCODE_DATA_DIR` overrides it. `node:sqlite` (Node
+  ≥22.5) degrades to a stated `storeReadable:false` reason on this plugin's Node ≥20 floor,
+  never a crash. Pilot orchestrator docs (`plugin/agent-templates/pilot-orchestrator.md`)
+  point operators to it right after `wt-lane-probe.mjs`.
+
 ## [0.143.0] - 2026-08-07
 
 ### Added
