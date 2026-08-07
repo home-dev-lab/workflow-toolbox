@@ -3,6 +3,30 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.145.0] - 2026-08-08
+
+### Added
+
+- `adopt --check` ships X, which replaces a hand-rolled Y: a STALE rule now shows the
+  `plugin/CHANGELOG.md` entries between the copy's installed version and the current one,
+  instead of just the version numbers moving. A session on a project with a stale adopted
+  copy used to see `STALE (installed v0.112.0 < v0.125.2)` and nothing else — thirteen
+  versions of delta with no word of what shipped, rationally ignored, which is how a stale
+  set stays stale. It now sees the actual headings and bodies, newest first, capped at 10
+  entries with an explicit omitted-count when the span is large. Measured on this repo's
+  own changelog: 61 of the minor versions between 0.68 and 0.144 carry no `## [x.y.z]`
+  heading at all, so a range landing entirely inside that historical gap slices to zero
+  headings — rendered plainly, that reads as "nothing changed" at exactly the moment ~100
+  versions went past. So the new section distinguishes two shapes a reader can tell apart
+  without knowing anything about the gap: "no changes recorded in this range" (the range is
+  inside the changelog's recorded span, genuinely empty) versus "NO RECORD for this range"
+  (the installed version predates every heading the changelog carries at all). Pure logic
+  lives in `plugin/skills/adopt/scripts/changelog-span.mjs`, with a byte-identical inlined
+  copy in `install.mjs` itself (which must stay a single relocatable script — its own tests
+  copy it alone into a synthetic plugin root) kept honest by a drift-lock test rather than
+  an import. Report-only: it never acts, never writes, and the existing `--check`/`--install`
+  output for every other state (ABSENT, UP-TO-DATE, EDITED, …) is unchanged.
+
 ## [0.144.0] - 2026-08-07
 
 ### Added
