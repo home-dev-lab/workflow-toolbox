@@ -3,6 +3,32 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.134.0] - 2026-08-07
+
+### Added
+
+- **`wt-lesson-harvest-hook.mjs` — the lesson harvest now fires by itself.** The extraction already
+  shipped as a skill, and a rule already named the script and said when to run it. Neither fired:
+  measured here, **0 skill invocations out of 37** came from description matching alone, and the
+  rule that names the script records its own failure rate — eight reports carrying three to six
+  lessons each, three harvested by hand, the rest never read again.
+
+  Improving the description could not have fixed that: description matching is probabilistic and
+  its non-firing is silent, so a better description raises a probability rather than creating a
+  trigger. Naming it in a rule had already been tried — that is rung two, auto-loaded and still
+  skippable. This is the first rung: something that executes.
+
+  What makes it hook-shaped rather than another instruction is that its trigger needs no judgment —
+  a report file exists and is newer than the last run.
+
+  ⚠ **It only surfaces.** It never writes to a knowledge base; that stays with the single session
+  integrating the card, which is the constraint the extractor was built around. It names report
+  paths and counts rather than lesson text, because a Stop hook's output reaches the human too.
+
+  ⚠ **Honest scope, and the uncovered half is the larger one**: this covers lessons that reached a
+  REPORT. A correction arriving mid-conversation has none, and three of the most useful facts of one
+  measured night belonged to no card at all.
+
 ## [0.133.0] - 2026-08-07
 
 ### Fixed

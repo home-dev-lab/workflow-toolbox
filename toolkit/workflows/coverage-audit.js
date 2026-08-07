@@ -2178,6 +2178,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-check-commit-signatures-hook.mjs",
         "plugin/bin/wt-check-commit-signatures.mjs",
         "plugin/bin/wt-hook-registration-drift-hook.mjs",
+        "plugin/bin/wt-lesson-harvest-hook.mjs",
         "plugin/bin/wt-memory-index-check-hook.mjs",
         "plugin/bin/wt-outbound-guard-hook.mjs",
         "plugin/bin/wt-probe-claim-guard-hook.mjs",

@@ -154,6 +154,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Pilot orchestrator docs tell operators to run this probe to verify executor routing.',
   },
   {
+    script: 'plugin/bin/wt-lesson-harvest-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this Stop hook, its surface-never-persist boundary and its silence conditions under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-memory-index-check-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this SessionStart knowledge-base probe under Shipped Hooks, Guards & Monitors.',
@@ -588,6 +593,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-check-commit-signatures-hook.mjs',
       'plugin/bin/wt-check-commit-signatures.mjs',
       'plugin/bin/wt-hook-registration-drift-hook.mjs',
+      'plugin/bin/wt-lesson-harvest-hook.mjs',
       'plugin/bin/wt-memory-index-check-hook.mjs',
       'plugin/bin/wt-outbound-guard-hook.mjs',
       'plugin/bin/wt-probe-claim-guard-hook.mjs',

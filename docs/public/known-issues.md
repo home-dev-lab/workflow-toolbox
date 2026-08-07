@@ -53,6 +53,14 @@ Checks BOTH managed sets — `.claude/rules/` and `.claude/agents/` — in the p
 
 Watches subagent transcripts for the current project's sessions and emits only when a transcript has stopped growing or disappeared. It stays silent while agents are writing, so silence means the watched agents are still working. It does not treat staleness as proof of death: a waiting agent can be stale too. It withholds all output until this session has delegated at least once, and never self-terminates while waiting so a later delegation remains covered.
 
+### `wt-lesson-harvest-hook.mjs` — closure-report lesson surfacing (Stop)
+
+At each turn end it walks the project's report directories (`.claude/reports`, `.claude/pilots` by default, overridable with `WT_LESSON_HARVEST_DIRS`), runs the bundled `lesson-harvest` extractor over any markdown report it has not already seen at that modification time, and emits one advisory naming the reports that carry lessons and how many. It records every file examined — including reports with no lessons — so the same walk is not repeated at every turn end, and it speaks again for a report that changes, because a rewritten report is new material. `WT_LESSON_HARVEST_OFF` disables it.
+
+It **only surfaces**. It never writes to a knowledge base: deciding what becomes a durable note, under what name, deduplicated against what already exists, stays with the single session that integrates the card — the constraint the extractor itself was built around. It names the report paths rather than the lesson text, because a Stop hook's output is visible to the human as well as the model and several verbatim lessons per turn end would become the thing people silence.
+
+⚠ **Honest scope, and the uncovered half is the larger one.** This covers lessons that reached a REPORT. A correction arriving mid-conversation has no report to harvest from, and the hook's existence must not be read as full coverage. A report with no lessons section at all, and an unreadable one, both stay silent by design — the overwhelming majority of markdown a report tree contains is neither, and a hook that spoke about each would be switched off within a day, taking its real case with it.
+
 ### `wt-autonomy-arm.mjs` — autonomy mandate declaration (standalone CLI)
 
 Writes, withdraws or reports the per-session marker `engine-<sessionId>.json` that `wt-autonomy-watch.mjs` refuses to run without, under `${XDG_STATE_HOME:-$HOME/.local/state}/wt-queue-gate/` (overridable by `WT_AUTONOMY_WATCH_MANDATE_DIR`, resolved identically by both scripts). Run with no argument it arms, `--disarm` withdraws, `--status` reports without writing. The exit code carries the verdict so a caller need not parse prose: 0 armed, disarmed, or armed-status; 1 not armed on `--status`; 2 for a usage error or a missing `CLAUDE_CODE_SESSION_ID`, which it refuses to guess rather than write a marker nothing will read.

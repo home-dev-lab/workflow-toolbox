@@ -135,6 +135,14 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,
       }
+    // The sandbox project has no report directories, which is the case this hook meets in most
+    // sessions: it must walk nothing, find nothing, and exit silently rather than throw on a
+    // directory that is not there.
+    case 'wt-lesson-harvest-hook.mjs':
+      return {
+        hook_event_name: 'Stop',
+        cwd: sandbox.projectDir,
+      }
     case 'wt-lane-consent-check-hook.mjs':
       return {
         hook_event_name: 'SessionStart',
