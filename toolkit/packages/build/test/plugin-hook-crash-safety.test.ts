@@ -169,6 +169,14 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Bash',
         tool_input: { command: 'git status' },
       }
+    case 'wt-main-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        // No agent_id: this guard is main-session-scoped, the opposite of the pilot guard above.
+        tool_name: 'Bash',
+        cwd: sandbox.projectDir,
+        tool_input: { command: 'git status' },
+      }
     case 'wt-probe-claim-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',

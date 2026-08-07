@@ -194,6 +194,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Pilot docs explicitly describe this shipped guard and the verbs it refuses.',
   },
   {
+    script: 'plugin/bin/wt-main-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse main-session guard, its measured-BLOCKING and journal-only classes, and the allow-once escape hatch under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-push-scope-check.mjs',
     status: 'mapped',
     reason: 'Pilot docs instruct operators to run this push-scope guard before escalation/push.',
@@ -627,6 +632,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-unquoted-tool-glob-guard-hook.mjs',
       'plugin/bin/wt-var-colon-modifier-guard-hook.mjs',
       'plugin/bin/wt-merge-chain-guard-hook.mjs',
+      'plugin/bin/wt-main-guard-hook.mjs',
     ],
     docs: ['docs/public/known-issues.md'],
   },
