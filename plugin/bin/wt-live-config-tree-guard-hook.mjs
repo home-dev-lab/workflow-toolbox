@@ -46,6 +46,7 @@
 import { existsSync, readFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve, sep } from 'node:path'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 const CLAUDE_DIR_SEGMENT = /^\.claude(-.*)?$/
 
@@ -221,6 +222,13 @@ function main() {
   ].join('\n')
 
   if (worst === 'deny') {
+    recordGuardEvent({
+      guard: 'wt-live-config-tree-guard-hook.mjs',
+      decision: 'blocked',
+      class: 'live-config-tree',
+      reason: hitSeg,
+      cwd: hitDir,
+    })
     writeSync(
       1,
       JSON.stringify({
@@ -233,6 +241,13 @@ function main() {
     )
     return
   }
+  recordGuardEvent({
+    guard: 'wt-live-config-tree-guard-hook.mjs',
+    decision: 'warned',
+    class: 'live-config-tree',
+    reason: hitSeg,
+    cwd: hitDir,
+  })
   writeSync(
     1,
     JSON.stringify({

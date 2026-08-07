@@ -51,6 +51,7 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { pathToFileURL } from 'node:url'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 // The external-CLI delegation signatures — a DELIBERATE byte-identical COPY of
 // @workflow-toolbox/patterns' provenance-gate EXTERNAL_CLI_SIGNATURES (itself a copy of the
@@ -530,6 +531,11 @@ export function run() {
   if (!reason) return // allow: SILENT exit 0, so normal permission flow is untouched
   // A deny was decided → count it per-subagent and escalate to a TERMINAL refusal at the cap.
   const finalReason = escalateDeny(input, reason)
+  recordGuardEvent({
+    guard: 'wt-verifier-cli-guard-hook.mjs',
+    decision: 'blocked',
+    reason: finalReason,
+  })
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

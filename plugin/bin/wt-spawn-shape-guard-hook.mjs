@@ -29,6 +29,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -72,6 +73,13 @@ function main() {
   // No git repo under the session's cwd ⇒ `isolation` would itself fail, so there is no fix to
   // demand. Say what is being lost and get out of the way.
   if (!cwd || !insideGitRepo(cwd)) {
+    recordGuardEvent({
+      guard: 'wt-spawn-shape-guard-hook.mjs',
+      decision: 'warned',
+      class: 'named-without-isolation-no-repo',
+      reason: `"${name}" (${type}) named without isolation, no git repo at cwd`,
+      cwd,
+    })
     process.stdout.write(
       JSON.stringify({
         systemMessage:
@@ -84,6 +92,13 @@ function main() {
     return
   }
 
+  recordGuardEvent({
+    guard: 'wt-spawn-shape-guard-hook.mjs',
+    decision: 'blocked',
+    class: 'named-without-isolation',
+    reason: `"${name}" (${type}) named but not isolated`,
+    cwd,
+  })
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

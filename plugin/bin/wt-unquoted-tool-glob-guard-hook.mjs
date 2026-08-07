@@ -46,6 +46,7 @@
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -102,6 +103,12 @@ function main() {
   const shown = eq ? `${eq[1]}${eq[2]}` : `${sp[2].trim()} ${sp[3]}`
   const fixed = eq ? `${eq[1]}'${eq[2]}'` : `${sp[2].trim()} '${sp[3]}'`
 
+  recordGuardEvent({
+    guard: 'wt-unquoted-tool-glob-guard-hook.mjs',
+    decision: 'blocked',
+    class: 'unquoted-glob',
+    reason: shown,
+  })
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

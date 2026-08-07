@@ -53,6 +53,7 @@
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -131,6 +132,12 @@ function main() {
   const found = findChainedMerge(segments)
   if (!found) return
 
+  recordGuardEvent({
+    guard: 'wt-merge-chain-guard-hook.mjs',
+    decision: 'warned',
+    class: 'chained-merge',
+    reason: found.segment,
+  })
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

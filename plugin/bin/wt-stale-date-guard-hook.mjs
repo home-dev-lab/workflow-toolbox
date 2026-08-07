@@ -27,6 +27,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const GUARD = path.join(HERE, 'wt-stale-date-guard.mjs')
@@ -74,6 +75,12 @@ function main() {
   if (res.status !== 1) return
 
   const stdout = res.stdout || ''
+  recordGuardEvent({
+    guard: 'wt-stale-date-guard-hook.mjs',
+    decision: 'warned',
+    class: 'stale-date',
+    reason: filePath,
+  })
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {

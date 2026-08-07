@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 const SELF = 'wt-rule-convention-guard-hook.mjs'
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit'])
@@ -158,6 +159,11 @@ function detectViolations(text) {
 }
 
 function deny(reason) {
+  recordGuardEvent({
+    guard: 'wt-rule-convention-guard-hook.mjs',
+    decision: 'blocked',
+    reason,
+  })
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',

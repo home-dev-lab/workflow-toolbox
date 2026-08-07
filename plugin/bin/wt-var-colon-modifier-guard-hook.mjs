@@ -55,6 +55,7 @@
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 // Strip spans where the shell performs NO expansion, so text merely describing the trap (a
 // commit message, a doc comment) doesn't trip the same regex the trap itself would. Order
@@ -126,6 +127,12 @@ function main() {
         '`"${var}:path"` (braces), or single quotes if no expansion is needed.',
     },
   }
+  recordGuardEvent({
+    guard: 'wt-var-colon-modifier-guard-hook.mjs',
+    decision: 'warned',
+    class: 'var-colon-modifier',
+    reason: `$${m[1]}:${m[2]}`,
+  })
   process.stdout.write(JSON.stringify(payload))
 }
 
