@@ -305,6 +305,35 @@ function isAccountedForByStop(name, modifiedAt) {
   return hasRecordedStop(stops, meta, anchorMs, rawId)
 }
 
+// ⚠ EXPENSIVE — call this ONLY when the transcript baseline is replaced, never once per poll.
+// It parses one `.meta.json` per tracked transcript; measured on the real project, 1606 parses
+// take ~710 ms, which would block the watcher's event loop every 60s to recompute an identical
+// answer. The two call sites below are the only ones, and both sit where the baseline changes.
+function ownTranscriptIds(transcriptsMap) {
+  const ids = { brief: new Set(), name: new Set() }
+  for (const transcriptName of transcriptsMap.keys()) {
+    const slash = transcriptName.indexOf('/')
+    if (slash < 0) continue
+    const sessionName = transcriptName.slice(0, slash)
+    const transcriptFile = transcriptName.slice(slash + 1)
+    const rawId = TRANSCRIPT_RAW_ID_RE.exec(transcriptFile)?.[1]
+    if (rawId) ids.brief.add(rawId)
+    const meta = readTranscriptMeta(sessionName, transcriptFile)
+    if (typeof meta?.name === 'string' && meta.name) ids.name.add(meta.name)
+  }
+  return ids
+}
+
+function projectScopeLabel(record, transcriptIds) {
+  if (record.agentIdSource === 'none') return ' (project unknown)'
+  const isLocal = record.agentIdSource === 'brief'
+    ? transcriptIds.brief.has(record.agentId)
+    : record.agentIdSource === 'name'
+      ? transcriptIds.name.has(record.agentId)
+      : transcriptIds.brief.has(record.agentId) || transcriptIds.name.has(record.agentId)
+  return isLocal ? '' : ' (foreign to this project)'
+}
+
 // The gate this file's header describes: has THIS session (identified by the
 // env var the harness sets on every process it spawns, monitors included)
 // delegated at least once? `currentSessionId` empty means the check cannot be
@@ -397,9 +426,11 @@ async function reportFiles() {
 
 let previousTranscripts
 let previousComplete = true
+let previousTranscriptIds
 try {
   const initial = await transcripts()
   previousTranscripts = initial.found
+  previousTranscriptIds = ownTranscriptIds(previousTranscripts)
   previousComplete = initial.complete
 } catch (error) {
   fail(`sessions directory unreadable: ${redact(sessionsRoot)} (${redact(error?.message ?? error)})`, 1)
@@ -448,7 +479,7 @@ function makeBudget() {
   }
 }
 
-async function sweepWaitingOnSpawner(budget) {
+async function sweepWaitingOnSpawner(budget, transcriptIds) {
   let entries
   try {
     entries = await readdir(LIVENESS_DIR, { withFileTypes: true })
@@ -465,7 +496,7 @@ async function sweepWaitingOnSpawner(budget) {
     stillWaiting.add(key)
     const marker = record.updatedAt || 'unknown'
     if (announcedWaitingOnSpawner.get(key) !== marker) {
-      budget.emit(`WAITING-ON-SPAWNER: ${safeName(record.agentId)} — ${safeName(record.scope)}`)
+      budget.emit(`WAITING-ON-SPAWNER: ${safeName(record.agentId)} — ${safeName(record.scope)}${projectScopeLabel(record, transcriptIds)}`)
       announcedWaitingOnSpawner.set(key, marker)
     }
   }
@@ -474,7 +505,7 @@ async function sweepWaitingOnSpawner(budget) {
   }
 }
 
-async function sweepUncorrelatable(budget) {
+async function sweepUncorrelatable(budget, transcriptIds) {
   let entries
   try {
     entries = await readdir(LIVENESS_DIR, { withFileTypes: true })
@@ -490,7 +521,7 @@ async function sweepUncorrelatable(budget) {
     stillUncorrelatable.add(key)
     const marker = record.updatedAt || 'unknown'
     if (announcedUncorrelatable.get(key) !== marker) {
-      budget.emit(`UNCORRELATABLE: ${safeName(record.scope)} — liveness file declares no correlation key, cannot be matched to a transcript`)
+      budget.emit(`UNCORRELATABLE: ${safeName(record.scope)} — liveness file declares no correlation key, cannot be matched to a transcript${projectScopeLabel(record, transcriptIds)}`)
       announcedUncorrelatable.set(key, marker)
     }
   }
@@ -654,7 +685,10 @@ while (true) {
 
     // Only a COMPLETE scan may become the new baseline; adopting a partial one
     // would make the missing entries look like they had never existed.
-    if (currentComplete) previousTranscripts = currentTranscripts
+    if (currentComplete) {
+      previousTranscripts = currentTranscripts
+      previousTranscriptIds = ownTranscriptIds(previousTranscripts)
+    }
   }
 
   if (currentReports) {
@@ -669,8 +703,8 @@ while (true) {
     previousReports = currentReports
   }
 
-  await sweepWaitingOnSpawner(budget)
-  await sweepUncorrelatable(budget)
+  await sweepWaitingOnSpawner(budget, previousTranscriptIds)
+  await sweepUncorrelatable(budget, previousTranscriptIds)
 
   budget.close()
 

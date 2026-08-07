@@ -51,7 +51,8 @@ type WatchScenarioOptions = {
   transcriptAgeMs?: number
   staleMinutes?: number
   transcriptAfterArm?: boolean
-  afterArmed?: () => void
+  manualTranscript?: boolean
+  afterArmed?: (paths: { transcriptPath: string, metaPath: string }) => void
   waitFor?: RegExp | null
   runForMs?: number
   cwd?: string
@@ -67,6 +68,7 @@ async function runWatchScenario(options: WatchScenarioOptions = {}): Promise<str
     transcriptAgeMs = 2_000,
     staleMinutes = 0,
     transcriptAfterArm = true,
+    manualTranscript = false,
     cwd,
     afterArmed,
     waitFor = /(STALE|IDLE-MID-MISSION|WAITING-ON-SPAWNER): /,
@@ -92,7 +94,7 @@ async function runWatchScenario(options: WatchScenarioOptions = {}): Promise<str
     if (metaName !== null) writeFileSync(metaPath, JSON.stringify(metaName ? { name: metaName } : {}))
   }
 
-  if (!transcriptAfterArm) prepareTranscript()
+  if (!manualTranscript && !transcriptAfterArm) prepareTranscript()
 
   const env = {
     ...process.env,
@@ -137,8 +139,8 @@ async function runWatchScenario(options: WatchScenarioOptions = {}): Promise<str
       stdout += chunk
       if (!armed && stdout.includes('ARC WATCH ARMED')) {
         armed = true
-        if (transcriptAfterArm) prepareTranscript()
-        afterArmed?.()
+        if (!manualTranscript && transcriptAfterArm) prepareTranscript()
+        afterArmed?.({ transcriptPath, metaPath })
       }
       if (waitFor && waitFor.test(stdout)) {
         clearTimeout(timer)
@@ -576,6 +578,183 @@ describe('wt-arc-watch liveness integration', () => {
     expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl')
   }, 12_000)
 
+  it('labels WAITING-ON-SPAWNER records from other projects on the same line', async () => {
+    const dir = tmpRoot('wt-liveness-spawner-foreign')
+    const out = await runWatchScenario({
+      metaName: 'pilot/local-only',
+      livenessDir: dir,
+      livenessRecord: {
+        agentId: 'pilot/foreign-agent',
+        agentIdSource: 'name',
+        scope: 'card:foreign',
+        complete: false,
+        waitingOn: 'spawner',
+        worktree: null,
+        updatedAt: '2026-08-05T00:00:00.000Z',
+      },
+      transcriptAgeMs: 0,
+      transcriptAfterArm: false,
+      waitFor: /WAITING-ON-SPAWNER: /,
+    })
+    expect(out).toContain('WAITING-ON-SPAWNER: pilot/foreign-agent — card:foreign (foreign to this project)')
+  }, 12_000)
+
+  it('keeps local WAITING-ON-SPAWNER wording unchanged for this project\'s own delegates', async () => {
+    const dir = tmpRoot('wt-liveness-spawner-local')
+    const out = await runWatchScenario({
+      metaName: 'pilot/local-spawner',
+      livenessDir: dir,
+      livenessRecord: {
+        agentId: 'pilot/local-spawner',
+        agentIdSource: 'name',
+        scope: 'mission:local wait',
+        complete: false,
+        waitingOn: 'spawner',
+        worktree: null,
+        updatedAt: '2026-08-05T00:00:00.000Z',
+      },
+      transcriptAgeMs: 0,
+      transcriptAfterArm: false,
+      waitFor: /WAITING-ON-SPAWNER: /,
+    })
+    expect(out).toContain('WAITING-ON-SPAWNER: pilot/local-spawner — mission:local wait')
+    expect(out).not.toContain('WAITING-ON-SPAWNER: pilot/local-spawner — mission:local wait (foreign to this project)')
+  }, 12_000)
+
+  it('keeps local WAITING-ON-SPAWNER wording unchanged for this project\'s own brief-sourced delegates', async () => {
+    const dir = tmpRoot('wt-liveness-spawner-local-brief')
+    const transcriptName = 'agent-brieflocal123.jsonl'
+    const rawId = /^agent-(.+)\.jsonl$/.exec(transcriptName)?.[1]
+    expect(rawId).toBe('brieflocal123')
+    const out = await runWatchScenario({
+      transcriptName,
+      metaName: null,
+      livenessDir: dir,
+      livenessFileName: `${sanitizeLivenessKey(rawId ?? '')}.json`,
+      livenessRecord: {
+        agentId: rawId,
+        agentIdSource: 'brief',
+        scope: 'mission:brief local wait',
+        complete: false,
+        waitingOn: 'spawner',
+        worktree: null,
+        updatedAt: '2026-08-05T00:00:00.000Z',
+      },
+      transcriptAgeMs: 0,
+      transcriptAfterArm: false,
+      waitFor: /WAITING-ON-SPAWNER: /,
+    })
+    expect(out).toContain(`WAITING-ON-SPAWNER: ${rawId} — mission:brief local wait`)
+    expect(out).not.toContain(`WAITING-ON-SPAWNER: ${rawId} — mission:brief local wait (foreign to this project)`)
+  }, 12_000)
+
+  it('labels WAITING-ON-SPAWNER brief-sourced records from other projects on the same line', async () => {
+    const dir = tmpRoot('wt-liveness-spawner-foreign-brief')
+    const transcriptName = 'agent-brieflocal123.jsonl'
+    const localRawId = /^agent-(.+)\.jsonl$/.exec(transcriptName)?.[1]
+    expect(localRawId).toBe('brieflocal123')
+    const foreignRawId = 'briefforeign456'
+    const out = await runWatchScenario({
+      transcriptName,
+      metaName: null,
+      livenessDir: dir,
+      livenessFileName: `${sanitizeLivenessKey(foreignRawId)}.json`,
+      livenessRecord: {
+        agentId: foreignRawId,
+        agentIdSource: 'brief',
+        scope: 'card:brief foreign',
+        complete: false,
+        waitingOn: 'spawner',
+        worktree: null,
+        updatedAt: '2026-08-05T00:00:00.000Z',
+      },
+      transcriptAgeMs: 0,
+      transcriptAfterArm: false,
+      waitFor: /WAITING-ON-SPAWNER: /,
+    })
+    expect(out).toContain('WAITING-ON-SPAWNER: briefforeign456 — card:brief foreign (foreign to this project)')
+  }, 12_000)
+
+  it('refreshes the cached local transcript ids when a newly-seen project transcript becomes part of the baseline', async () => {
+    const dir = tmpRoot('wt-liveness-spawner-refresh')
+    const out = await runWatchScenario({
+      metaName: 'pilot/cached-refresh',
+      livenessDir: dir,
+      livenessRecord: {
+        agentId: 'pilot/cached-refresh',
+        agentIdSource: 'name',
+        scope: 'card:refresh',
+        complete: false,
+        waitingOn: 'spawner',
+        worktree: null,
+        updatedAt: '2026-08-05T00:00:00.000Z',
+      },
+      transcriptAgeMs: 0,
+      manualTranscript: true,
+      waitFor: null,
+      afterArmed: ({ transcriptPath, metaPath }) => {
+        setTimeout(() => {
+          touchFile(transcriptPath, Date.now())
+          writeFileSync(metaPath, JSON.stringify({ name: 'pilot/cached-refresh' }))
+        }, 1_000)
+        setTimeout(() => {
+          writeFileSync(path.join(dir, `${sanitizeLivenessKey('pilot/cached-refresh')}.json`), JSON.stringify({
+            agentId: 'pilot/cached-refresh',
+            agentIdSource: 'name',
+            scope: 'card:refresh',
+            complete: false,
+            waitingOn: 'spawner',
+            worktree: null,
+            updatedAt: '2026-08-05T00:00:10.000Z',
+          }))
+        }, 6_000)
+      },
+      runForMs: 12_500,
+    })
+
+    const waitingLines = out.split('\n').filter((line) => line.startsWith('WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh'))
+    expect(waitingLines).toEqual([
+      'WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh (foreign to this project)',
+      'WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh',
+    ])
+  }, 15_000)
+
+  it('keeps the same emission count while labeling uncorrelatable records as project unknown', async () => {
+    const dir = tmpRoot('wt-liveness-emission-count')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, `${sanitizeLivenessKey('pilot/local-count')}.json`), JSON.stringify({
+      agentId: 'pilot/local-count',
+      agentIdSource: 'name',
+      scope: 'mission:local count',
+      complete: false,
+      waitingOn: 'spawner',
+      worktree: null,
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    }))
+    writeFileSync(path.join(dir, 'orphan-count.json'), JSON.stringify({
+      agentId: null,
+      agentIdSource: 'none',
+      scope: 'mission:uncorrelated count',
+      complete: false,
+      waitingOn: 'none',
+      worktree: null,
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    }))
+
+    const out = await runWatchScenario({
+      metaName: 'pilot/local-count',
+      livenessDir: dir,
+      transcriptAgeMs: 0,
+      transcriptAfterArm: false,
+      waitFor: null,
+      runForMs: 7_500,
+    })
+
+    const emissionCount = out.split('\n').filter((line) => /^(WAITING-ON-SPAWNER|UNCORRELATABLE): /.test(line)).length
+    expect(emissionCount).toBe(2)
+    expect(out).toContain('UNCORRELATABLE: mission:uncorrelated count — liveness file declares no correlation key, cannot be matched to a transcript (project unknown)')
+  }, 12_000)
+
   it('emits UNCORRELATABLE once per distinct updatedAt for tier-none records', async () => {
     const dir = tmpRoot('wt-liveness-uncorrelatable')
     const file = path.join(dir, 'orphan-record.json')
@@ -622,7 +801,7 @@ describe('wt-arc-watch liveness integration', () => {
       runForMs: 12_500,
     })
 
-    const marker = 'UNCORRELATABLE: mission:uncorrelated — liveness file declares no correlation key, cannot be matched to a transcript'
+    const marker = 'UNCORRELATABLE: mission:uncorrelated — liveness file declares no correlation key, cannot be matched to a transcript \(project unknown\)'
     expect(out.match(new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))).toHaveLength(2)
   }, 15_000)
 })
