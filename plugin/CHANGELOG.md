@@ -3,6 +3,29 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.131.0] - 2026-08-07
+
+### Changed
+
+- **The four pilot agent definitions are rewritten in a telegraphic register — 11% smaller, with
+  every content unit accounted for.** These files are read by an agent under pressure that must act
+  correctly on the first read, so the gain came from STRUCTURE, not from shortening words: prose
+  describing a set of cases and their outcomes became tables, state-transition explanations became
+  imperative sequences, and duplicated incident explanations collapsed into one causal chain.
+
+  The largest single reduction, `pilot-watchdog.md` at 51%, is one prose list of tells becoming a
+  seven-row evidence table. Its warning markers, headings and list items are unchanged in number,
+  and the wrapper-versus-direct-invocation nuance survives intact, including the clause that tells
+  an observer to stay silent when its digest cannot distinguish the two.
+
+  ⚠ **Abbreviation was tried and rejected.** An intermediate attempt reached 5% by substituting
+  symbols for words (`+`, `w/`, `w/o`). That buys bytes by making each sentence slower to parse,
+  which is the opposite of what these files are for.
+
+  Four content locks in the test suite — assertions that a specific normative clause is still
+  present and still says what it said — caught an earlier attempt that had rephrased them. They are
+  the reason this rewrite can be trusted to have preserved meaning rather than merely counted units.
+
 ## [0.130.0] - 2026-08-07
 
 ### Fixed
