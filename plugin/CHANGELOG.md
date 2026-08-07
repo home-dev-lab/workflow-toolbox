@@ -3,7 +3,26 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.141.0] - 2026-08-07
+## [0.141.1] - 2026-08-07
+
+### Fixed
+
+- **The guard journal shipped in 0.141.0 was polluting its own test suite's real journal.**
+  17 of the 19 `toolkit/packages/build/test/*.test.ts` files that spawn a real
+  `plugin/bin/*guard*.mjs` process never redirected `WT_GUARD_JOURNAL_DIR`, so every
+  `pnpm test` run wrote real records into the operator's own
+  `~/.local/state/wt-guard-journal/` (measured: 670 junk records, in bursts of 64, from one
+  run). Fixed with two layers rather than 17 edits: a vitest `setupFiles` module
+  (`toolkit/test-support/guard-journal-isolation.setup.ts`) makes the redirect the DEFAULT
+  for every test worker, so every existing call site that inherits `process.env` (the
+  pattern all of them use) is fixed without being touched; a `globalSetup` module
+  (`toolkit/test-support/guard-journal-isolation.global-setup.ts`) snapshots the real
+  journal directory before and after the whole run and fails the suite loudly if it
+  changed, so a future test that bypasses the redirect (e.g. constructs its own `env: {}`)
+  cannot silently reintroduce the leak. A full `pnpm test` run now leaves the real journal
+  location byte-for-byte unchanged (verified: identical file list and MD5 before/after).
+
+
 
 ### Added
 
