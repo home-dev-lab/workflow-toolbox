@@ -60,7 +60,26 @@ export interface ScriptedStageSpec {
    *  record. `{ from: 'artifactContent' }` is the common case: hand the PRIOR stage's handoff
    *  artifact, read off disk, straight to the external model as its whole prompt. */
   prompt: InputRef
+  /** How many concurrent external-lane calls this stage issues, all resolving the SAME
+   *  `prompt` — a stage of N independent verdicts (redundant review passes, N-of-M voting)
+   *  rather than a single sequential call. Omitted or 1 is today's exact single-call
+   *  behaviour, byte-for-byte unchanged — the fan-out path is entered only for `calls >= 2`.
+   *  Integer in [1, MAX_SCRIPTED_STAGE_CALLS]; a value outside that range is a REJECTED spec
+   *  at author time, never silently clamped or dropped (parseScriptedStageSpec's job). See
+   *  MAX_SCRIPTED_STAGE_CALLS's own doc for why 8. */
+  calls?: number
 }
+
+/** Hard cap on ScriptedStageSpec.calls — not overridable via PipelineSpec.limits (unlike
+ *  MAX_STAGES/MAX_PIPELINE_DEPTH/MAX_LOOP_ITERATIONS above), because the constraint it
+ *  protects is external and fixed, not a property of any one pipeline's shape: measured
+ *  concurrency wall of the bundled opencode CLI sits at roughly 8-16 simultaneous processes
+ *  before requests start queueing behind 429/retry (see this project's own operational
+ *  notes). 8 keeps a single stage's fan-out safely under that wall even alongside other
+ *  concurrent traffic the same machine may already be running (another stage, another
+ *  pipeline, an unrelated review). Authors who need more must reduce concurrency, not raise
+ *  this ceiling — it is not exposed as a `limits` override. */
+export const MAX_SCRIPTED_STAGE_CALLS = 8
 
 /** One stage in a v2 pipeline spec: which workflow to run, how to build its args from prior
  *  state (`input`), how to extract its handoff artifact for the NEXT stage (`artifact`,
@@ -291,6 +310,21 @@ export function validateStageList(stages: readonly StageSpecV2[], limits?: Pipel
     if (hasScripted && stage.input !== undefined) {
       return `stage "${stage.name}" is a scripted stage — "input" is disallowed on a scripted stage (its "scripted.prompt" InputRef is its one input; an "input" record here would be silently unconsulted)`
     }
+    // The MAX_SCRIPTED_STAGE_CALLS bound is ALSO checked here, not only in
+    // parseScriptedStageSpec (cross-family review finding, card #1837121171) — a caller that
+    // builds a StageSpecV2 in-process and calls validateStageList/validatePipelineSpec/
+    // runner.start() directly (definePipeline()'s author-time path, or any non-HTTP caller)
+    // never goes through the untrusted-JSON parser, so a bound checked ONLY there is bypassed
+    // structurally, not just in theory — the exact "same rules for authored and live-launched"
+    // invariant this package's own header comment states as its purpose. parseScriptedStageSpec
+    // keeps its own check too (defense in depth, and it runs BEFORE a value even reaches this
+    // already-typed function) — this is not a relocation, it is closing the second door.
+    if (hasScripted) {
+      const calls = stage.scripted!.calls
+      if (calls !== undefined && (!Number.isInteger(calls) || calls < 1 || calls > MAX_SCRIPTED_STAGE_CALLS)) {
+        return `stage "${stage.name}" has scripted.calls=${calls} — must be an integer in [1, ${MAX_SCRIPTED_STAGE_CALLS}] (MAX_SCRIPTED_STAGE_CALLS), never silently clamped`
+      }
+    }
     if (hasPipeline) {
       if (stage.gateAfter === true) {
         return `stage "${stage.name}" is a sub-pipeline stage and has gateAfter:true — a human gate after a nested pipeline is disallowed in v1 (gates INSIDE the child work unchanged; a design decision, not a technical limitation)`
@@ -435,7 +469,12 @@ function parseInputRef(v: unknown): InputRef | null {
 /** Parse an untrusted `scripted` value into a ScriptedStageSpec, or null — all-or-nothing like
  *  every other malformed-field check in this parser. `model` must be a non-empty string;
  *  `prompt` must be a shape-valid InputRef (parseInputRef re-checked against the SAME
- *  VALID_INPUT_FROM set every other InputRef in this file validates against). */
+ *  VALID_INPUT_FROM set every other InputRef in this file validates against). `calls`, when
+ *  present, must be an integer in [1, MAX_SCRIPTED_STAGE_CALLS] — anything else (a float, a
+ *  string, 0, a value past the cap) is rejected here, same all-or-nothing posture, never
+ *  silently clamped. Omitted `calls` is dropped from the returned object entirely (never set
+ *  to `undefined`) so a round-tripped single-call spec is byte-identical to one authored
+ *  before this field existed. */
 function parseScriptedStageSpec(v: unknown): ScriptedStageSpec | null {
   if (typeof v !== 'object' || v === null) return null
   const s = v as Record<string, unknown>
@@ -443,6 +482,11 @@ function parseScriptedStageSpec(v: unknown): ScriptedStageSpec | null {
   if (typeof model !== 'string' || model.length === 0) return null
   const prompt = parseInputRef(s['prompt'])
   if (prompt === null) return null
+  if (s['calls'] !== undefined) {
+    const calls = s['calls']
+    if (typeof calls !== 'number' || !Number.isInteger(calls) || calls < 1 || calls > MAX_SCRIPTED_STAGE_CALLS) return null
+    return { model, prompt, calls }
+  }
   return { model, prompt }
 }
 
