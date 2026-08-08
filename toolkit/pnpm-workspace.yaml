@@ -76,6 +76,15 @@ overrides:
   brace-expansion@<1.1.18: 1.1.18
   fast-uri: '>=4.1.2'
   hono: '>=4.12.34'
+  # GHSA-frvp-7c67-39w9 (medium, card #1836392997323801751): path traversal in serve-static
+  # on Windows via an encoded backslash (%5C). Pulled in transitively, dev-only, via
+  # packages/smoke's devDependency on @anthropic-ai/claude-agent-sdk ->
+  # @modelcontextprotocol/sdk -> @hono/node-server@1.19.14. No shipped package (runtime,
+  # patterns, build, pipeline-spec, std) depends on it. The SDK's own package.json pins
+  # '@hono/node-server': '^1.19.9' (so this override crosses that peer's major line on
+  # purpose) — smoke is private, excluded from `pnpm test`, so a breaking change here has
+  # no blast radius beyond that one dev-only canary script.
+  '@hono/node-server': '>=2.0.5'
   # Surfaced 2026-08-06, in the first minute after Dependabot alerts were enabled on this repo.
   # Manual GHSA polling had missed all three, because you can only query the packages you think of.
   ip-address: '>=10.3.1'   # GHSA high: leading-zero octets decoded as decimal, resolvers read octal
