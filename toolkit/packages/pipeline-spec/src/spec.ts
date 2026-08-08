@@ -93,14 +93,32 @@ export interface ScriptedStageSpec {
 }
 
 /** Hard cap on ScriptedStageSpec.calls — not overridable via PipelineSpec.limits (unlike
- *  MAX_STAGES/MAX_PIPELINE_DEPTH/MAX_LOOP_ITERATIONS above), because the constraint it
- *  protects is external and fixed, not a property of any one pipeline's shape: measured
- *  concurrency wall of the bundled opencode CLI sits at roughly 8-16 simultaneous processes
- *  before requests start queueing behind 429/retry (see this project's own operational
- *  notes). 8 keeps a single stage's fan-out safely under that wall even alongside other
- *  concurrent traffic the same machine may already be running (another stage, another
- *  pipeline, an unrelated review). Authors who need more must reduce concurrency, not raise
- *  this ceiling — it is not exposed as a `limits` override. */
+ *  MAX_STAGES/MAX_PIPELINE_DEPTH/MAX_LOOP_ITERATIONS above).
+ *
+ *  ⚠ The reason is NOT that the constraint is fixed. An earlier version of this comment said
+ *  so, and it contradicted this project's own operational notes, which record the external
+ *  concurrency wall as MOVING with the subscribed plan (measured 8-16 simultaneous opencode
+ *  processes before requests queue behind 429/retry — and the failure is not a clean refusal
+ *  but a 5-8x slowdown the caller's own timeout then converts into a dead call).
+ *
+ *  The reason is that this cap and the runtime wall are TWO DIFFERENT CONCERNS, deliberately
+ *  enforced by two mechanisms:
+ *
+ *  - the RUNTIME wall belongs to the lane guard (`WT_LANE_MAX_CONCURRENT`, a named parameter
+ *    with the same default of 8). It bounds how many external processes exist on THIS machine
+ *    at once, across every stage, pipeline and unrelated caller. It is tunable precisely
+ *    because the wall moves with the plan;
+ *  - THIS cap is an authoring-time sanity bound on ONE stage of a PORTABLE spec. A spec is
+ *    JSON that travels: making its validity depend on the reader's environment would let the
+ *    same file parse here and fail there, which is a worse defect than a conservative bound.
+ *
+ *  So 8 here is not a claim about any machine's capacity. It is the value past which a single
+ *  stage's declared fan-out stops being reasonable on its own terms, chosen at the low end of
+ *  the measured range so it cannot alone exhaust a wall it does not know the size of.
+ *
+ *  Authors needing more concurrency raise it at the lane guard, where the wall actually lives.
+ *  ⚠ And an out-of-range value here stays REJECTED, never silently clamped — a cap that
+ *  quietly truncates is how a fan-out ships doing less than its author declared. */
 export const MAX_SCRIPTED_STAGE_CALLS = 8
 
 /** The primitive field types a declared ScriptedResultShape can name — deliberately NOT a full
