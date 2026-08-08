@@ -193,3 +193,16 @@ describe('hook event consistency — REAL gate over every shipped hook (card #18
     expect(eventsByScript.size - skipped.length).toBeGreaterThan(0)
   })
 })
+
+// card #1836444900401349850: the extractor and its Stop hook both existed, tested, documented
+// in known-issues.md and the CHANGELOG as already firing — and plugin.json never registered the
+// hook. Nothing invoked it. This is the same failure class as the events-consistency gate above
+// (a declaration surface silently diverging from what actually ships) applied one level up: a
+// hook FILE existing is not a hook being WIRED.
+describe('wt-lesson-harvest-hook.mjs is registered as a Stop hook (card #1836444900401349850)', () => {
+  it('plugin.json declares it under Stop, not merely present on disk', () => {
+    const declared = declaredHookPaths(MANIFEST) as HookPathEntry[]
+    const stopScripts = declared.filter((d) => d.event === 'Stop').map((d) => d.rel)
+    expect(stopScripts).toContain('/bin/wt-lesson-harvest-hook.mjs')
+  })
+})

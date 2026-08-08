@@ -688,6 +688,7 @@ describe('plugin manifest wiring', () => {
       'node "${CLAUDE_PLUGIN_ROOT}/bin/wt-stop-hook.mjs"',
       'node "${CLAUDE_PLUGIN_ROOT}/bin/wt-registry-heartbeat-hook.mjs"',
       'node "${CLAUDE_PLUGIN_ROOT}/bin/wt-actionable-gate-hook.mjs"',
+      'node "${CLAUDE_PLUGIN_ROOT}/bin/wt-lesson-harvest-hook.mjs"',
     ])
   })
 })
