@@ -181,11 +181,36 @@ mutually exclusive with `workflow`/`pipeline` on that stage:
   single `InputRef` (e.g. `{ from: 'artifactContent' }` to hand the prior stage's
   handoff artifact straight to the external model) makes one call, optionally repeated
   `calls` times for N-of-M redundant voting on the SAME question. An ARRAY of
-  `InputRef`s makes N *distinct* concurrent calls — N different questions rather than N
-  redundant verdicts — and `calls` is rejected alongside an array (only one field ever
-  says "how many"). Both shapes are capped at `MAX_SCRIPTED_STAGE_CALLS` (8), the
-  measured concurrency wall of the bundled opencode CLI before requests start queueing
-  behind 429/retry.
+  `InputRef`s (and/or `ComposedPrompt`s, see below) makes N *distinct* concurrent
+  calls — N different questions rather than N redundant verdicts — and `calls` is
+  rejected alongside an array (only one field ever says "how many"). Both shapes are
+  capped at `MAX_SCRIPTED_STAGE_CALLS` (8), the measured concurrency wall of the
+  bundled opencode CLI before requests start queueing behind 429/retry.
+- **Composed prompts** (`ComposedPrompt`, `{ compose: [...] }`) assemble ONE prompt
+  from several of the four fixed `InputRef` sources plus author-written literal text —
+  the shape that's missing when a prompt needs, say, the prior stage's handoff artifact
+  AND a fixed judging instruction:
+  ```ts
+  prompt: {
+    compose: [
+      { text: 'Diff:\n\n' },
+      { from: 'artifactContent' },
+      { text: '\n\nJudge each finding as valid or not, and say why.' },
+    ],
+  }
+  ```
+  Each element of `compose` is a `PromptPart` — either an `InputRef` or a literal
+  `{ text: string }`. Parts concatenate in the array's own order with **no implicit
+  separator**: every byte of whitespace between two parts is a `{ text: ... }` part the
+  author wrote themselves. A composition cannot nest — a part cannot itself be a
+  `{ compose: [...] }`, one level only. `ComposedPrompt` is structurally distinct from
+  the distinct-prompt fan above: the fan is a bare array (its length IS the call
+  count), a composition is an object carrying a `compose` key, so the two readings
+  never collide — `prompt: [a, b]` is always two calls, `prompt: { compose: [a, b] }`
+  is always one call built from two parts. The two features compose freely: one
+  element of a distinct-prompt array may itself be a `ComposedPrompt`
+  (`prompt: [{ from: 'goal' }, { compose: [...] }]`), giving N independent calls each
+  potentially built from several sources.
 - **`resultShape`** requests a structured, comparable verdict from every call the stage
   issues, instead of leaving the caller to parse prose.
 - The runner adapts a scripted stage to the SAME `LaunchedStage` contract a workflow

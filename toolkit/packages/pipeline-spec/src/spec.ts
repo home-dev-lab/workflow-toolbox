@@ -23,6 +23,38 @@ export const INPUT_REF_SOURCES = ['artifactPath', 'goal', 'projectDir', 'artifac
  *  stage's `input` too, since the source is a general one, not scripted-only. */
 export type InputRef = { from: (typeof INPUT_REF_SOURCES)[number] }
 
+/** One part of a ComposedPrompt (see below) — either a declarative InputRef (the SAME
+ *  vocabulary as everywhere else) or a literal string the author writes verbatim. Deliberately
+ *  NOT itself a ComposedPrompt: composing a composition buys nothing and would add a recursion
+ *  case to a parser whose whole posture is flat `typeof`/`Array.isArray` checks — a `compose`
+ *  nested inside a part is REJECTED, one level only (parsePromptPart / describeComposedPromptError). */
+export type PromptPart = InputRef | { text: string }
+
+/** A single prompt assembled from several sources plus author-written literal text — card
+ *  #1837410995: `InputRef`'s four fixed sources can each name only ONE value, so a prompt that
+ *  needs, say, the prior stage's handoff artifact AND a fixed instruction has no way to express
+ *  that today short of a throwaway stage whose only job is concatenation.
+ *
+ *  Parts concatenate in the array's own order with NO IMPLICIT SEPARATOR: every byte of
+ *  whitespace between two parts is something the author wrote as its own `{text:"..."}` part.
+ *  This is deliberate, not an omission — an implicit joiner is a rule a reader has to remember;
+ *  an explicit `{text:"\n\n"}` part is a rule that is simply read off the spec.
+ *
+ *  Distinct from the existing distinct-prompt fan (`ScriptedStageSpec.prompt` as a bare
+ *  `InputRef[]`, card #1837144459) STRUCTURALLY, not by convention: the fan is a bare array
+ *  (`Array.isArray(prompt)`) — its length IS the call count; this is an object carrying a
+ *  `compose` key, so neither a parser nor a reader ever has to guess which reading applies
+ *  before looking past the outermost shape. That distinction is load-bearing precisely because
+ *  the two readings can otherwise collide in practice: this very package's own
+ *  `examples/scripted-mixed.pipeline.ts` uses `prompt: [{from:'goal'}, {from:'artifactContent'}]`,
+ *  which READS like a two-part composed prompt and MEANS a two-call fan (confirmed by a runtime
+ *  failure reporting "all 2 distinct-prompt call(s) failed") — a `{compose:[...]}` wrapper is
+ *  what keeps the composed reading from ever being mistaken for that line, at a glance, without
+ *  reading a doc. */
+export interface ComposedPrompt {
+  compose: PromptPart[]
+}
+
 /** The single source of truth for the named extractor keys a StageSpecV2 can select —
  *  parseStageSpecV2 validates against this SAME array (imported, not hand-duplicated), so
  *  adding an extractor is a one-place change the compiler enforces via ExtractorKey's derived
@@ -56,20 +88,26 @@ export interface ScriptedStageSpec {
    *  business validating it beyond "non-empty string" (parseStageSpecV2's job). */
   model: string
   /** Where the call's prompt string(s) come from — the SAME declarative InputRef vocabulary a
-   *  workflow stage's `input` uses. Two shapes:
+   *  workflow stage's `input` uses. Three shapes:
    *  - a SINGLE InputRef (today's exact behaviour, byte-for-byte unchanged): one prompt,
    *    resolved once, optionally repeated `calls` times via `calls` below.
-   *  - an ARRAY of InputRefs (card #1837144459, distinct-prompt fan): each element becomes
-   *    ITS OWN concurrent call, resolved independently — N different questions rather than N
-   *    redundant verdicts on the same one. The array's own length IS the call count, so
-   *    `calls` is REJECTED alongside it (validateStageList) — two fields that could disagree
-   *    on N is exactly the contradiction the card's own design section warns against; there is
-   *    only ever one source of truth for "how many calls", whichever shape `prompt` takes.
-   *    Bounded by MAX_SCRIPTED_STAGE_CALLS, same as `calls`, checked at both the parse and the
-   *    validate layers (see validateStageList's own comment for why both).
+   *  - a ComposedPrompt (card #1837410995, `{ compose: [...] }`): one prompt assembled from
+   *    several sources plus literal text, resolved once — same `calls` interaction as a single
+   *    InputRef (it is just a different way to produce ONE prompt string). See ComposedPrompt's
+   *    own doc for why it cannot be a bare array.
+   *  - an ARRAY of InputRefs and/or ComposedPrompts (card #1837144459, distinct-prompt fan):
+   *    each element becomes ITS OWN concurrent call, resolved independently — N different
+   *    questions rather than N redundant verdicts on the same one. The array's own length IS
+   *    the call count, so `calls` is REJECTED alongside it (validateStageList) — two fields
+   *    that could disagree on N is exactly the contradiction the card's own design section
+   *    warns against; there is only ever one source of truth for "how many calls", whichever
+   *    shape `prompt` takes. Bounded by MAX_SCRIPTED_STAGE_CALLS, same as `calls`, checked at
+   *    both the parse and the validate layers (see validateStageList's own comment for why
+   *    both). A fan element being itself a ComposedPrompt is how the two features compose: N
+   *    independent calls, each built from several sources.
    *  `{ from: 'artifactContent' }` is the common single-prompt case: hand the PRIOR stage's
    *  handoff artifact, read off disk, straight to the external model as its whole prompt. */
-  prompt: InputRef | InputRef[]
+  prompt: InputRef | ComposedPrompt | (InputRef | ComposedPrompt)[]
   /** How many concurrent external-lane calls this stage issues, all resolving the SAME
    *  `prompt` — a stage of N independent verdicts (redundant review passes, N-of-M voting)
    *  rather than a single sequential call. Omitted or 1 is today's exact single-call
@@ -454,10 +492,24 @@ export function validateStageList(stages: readonly StageSpecV2[], limits?: Pipel
         if (sc.calls !== undefined) {
           return `stage "${stage.name}" has both scripted.prompt as an array and scripted.calls set — the array's length already determines the call count, so the two must not be able to disagree`
         }
+        // Card #1837410995: a fan element may itself be a ComposedPrompt. Re-checked here
+        // (not only at parseComposedPrompt's untrusted-JSON boundary) as defense-in-depth for a
+        // directly-constructed spec that bypassed the parser — same posture as every other
+        // runtime re-check of a typed field in this file.
+        for (let i = 0; i < sc.prompt.length; i++) {
+          const composeError = describeComposedPromptError(sc.prompt[i])
+          if (composeError !== null) {
+            return `stage "${stage.name}" has an invalid scripted.prompt[${i}]: ${composeError}`
+          }
+        }
       } else {
         const calls = sc.calls
         if (calls !== undefined && (!Number.isInteger(calls) || calls < 1 || calls > MAX_SCRIPTED_STAGE_CALLS)) {
           return `stage "${stage.name}" has scripted.calls=${calls} — must be an integer in [1, ${MAX_SCRIPTED_STAGE_CALLS}] (MAX_SCRIPTED_STAGE_CALLS), never silently clamped`
+        }
+        const composeError = describeComposedPromptError(sc.prompt)
+        if (composeError !== null) {
+          return `stage "${stage.name}" has an invalid scripted.prompt: ${composeError}`
         }
       }
     }
@@ -622,17 +674,84 @@ function parseInputRef(v: unknown): InputRef | null {
   return typeof from === 'string' && VALID_INPUT_FROM.has(from) ? { from: from as InputRef['from'] } : null
 }
 
+/** Parse one PromptPart (an element of a ComposedPrompt's `compose` array) — either an
+ *  InputRef or a `{text: string}` literal. A nested `compose` key is rejected outright, one
+ *  level only (see ComposedPrompt's own doc for why). Extra, unrecognized keys are dropped
+ *  silently, same posture as every other whitelist-rebuilding parser in this file. */
+function parsePromptPart(v: unknown): PromptPart | null {
+  if (typeof v !== 'object' || v === null) return null
+  if ('compose' in (v as Record<string, unknown>)) return null // nesting a composition inside a part is rejected, one level only
+  const ref = parseInputRef(v)
+  if (ref !== null) return ref
+  const text = (v as Record<string, unknown>)['text']
+  return typeof text === 'string' ? { text } : null
+}
+
+/** Parse an untrusted `{ compose: [...] }` value into a ComposedPrompt, or null —
+ *  all-or-nothing like every other malformed-field check in this parser. An empty `compose`
+ *  array is rejected: it names zero parts, which is meaningless and almost certainly a bug in
+ *  whatever generated it (see describeComposedPromptError for the message-carrying validate-
+ *  layer twin of this same rule). No cap on the NUMBER of parts is imposed here — this package
+ *  already bounds the things that actually scale a pipeline's cost (MAX_SCRIPTED_STAGE_CALLS,
+ *  MAX_STAGES, MAX_PIPELINE_DEPTH); a part-count ceiling chosen with no measurement behind it
+ *  would repeat exactly the mistake MAX_SCRIPTED_STAGE_CALLS's own doc comment records having
+ *  corrected once already. */
+function parseComposedPrompt(v: unknown): ComposedPrompt | null {
+  if (typeof v !== 'object' || v === null) return null
+  const raw = (v as Record<string, unknown>)['compose']
+  if (!Array.isArray(raw)) return null
+  if (raw.length === 0) return null
+  const parts: PromptPart[] = []
+  for (const rawPart of raw) {
+    const part = parsePromptPart(rawPart)
+    if (part === null) return null // one bad element invalidates the whole composition (all-or-nothing, same posture as the prompt fan)
+    parts.push(part)
+  }
+  return { compose: parts }
+}
+
+/** Parse a single (non-fan) `prompt` value into an InputRef or a ComposedPrompt, or null.
+ *  Tries the InputRef reading first (an object with `from`), then the ComposedPrompt reading
+ *  (an object with `compose`) — the two are mutually exclusive by their own required key, so
+ *  trying one before the other never masks a valid instance of the other. */
+function parseSinglePromptSpec(v: unknown): InputRef | ComposedPrompt | null {
+  const ref = parseInputRef(v)
+  if (ref !== null) return ref
+  return parseComposedPrompt(v)
+}
+
+/** Structural check for a value that MAY be a ComposedPrompt — shared by validateStageList
+ *  (defense-in-depth for a directly-constructed spec that bypassed parseComposedPrompt, e.g.
+ *  definePipeline()'s author-time TS path or any other non-HTTP caller) as the message-carrying
+ *  twin of parseComposedPrompt's silent null. Returns null both when `v` is well-formed AND
+ *  when `v` is not a composition at all (a plain InputRef, or anything else — not this
+ *  function's business; validateStageList only calls it where a ComposedPrompt is one of the
+ *  legal shapes). Returns a human-readable reason naming what was wrong otherwise. */
+function describeComposedPromptError(v: unknown): string | null {
+  if (typeof v !== 'object' || v === null || !('compose' in (v as Record<string, unknown>))) return null
+  const raw = (v as Record<string, unknown>)['compose']
+  if (!Array.isArray(raw)) return `"compose" must be an array of parts`
+  if (raw.length === 0) return `"compose" must name at least one part — an empty composition is meaningless`
+  for (let i = 0; i < raw.length; i++) {
+    const part = raw[i]
+    if (typeof part === 'object' && part !== null && 'compose' in (part as Record<string, unknown>)) {
+      return `compose[${i}] is itself a composition — nesting "compose" inside a part is rejected, one level only`
+    }
+  }
+  return null
+}
+
 /** Parse an untrusted `scripted` value into a ScriptedStageSpec, or null — all-or-nothing like
  *  every other malformed-field check in this parser. `model` must be a non-empty string.
- *  `prompt` is either a shape-valid single InputRef, or an ARRAY of them (card #1837144459,
- *  distinct-prompt fan — each element re-checked against the SAME parseInputRef/
- *  VALID_INPUT_FROM every other InputRef in this file validates against; ONE malformed element
- *  invalidates the whole array, same all-or-nothing posture). An array is bounded by
- *  [1, MAX_SCRIPTED_STAGE_CALLS] — same cap `calls` uses, checked here at the untrusted-JSON
- *  boundary AND again in validateStageList (see that function's own comment for why both) —
- *  and `calls` is REJECTED when `prompt` is an array (the array's length already says how
- *  many; two disagreeing sources of "N" is exactly the contradiction this field's own doc
- *  warns against). When `prompt` is a single InputRef, `calls` — when present — must be an
+ *  `prompt` is either a shape-valid single InputRef or ComposedPrompt (card #1837410995, via
+ *  parseSinglePromptSpec), or an ARRAY of either (card #1837144459, distinct-prompt fan — each
+ *  element re-checked against parseSinglePromptSpec; ONE malformed element invalidates the
+ *  whole array, same all-or-nothing posture). An array is bounded by [1, MAX_SCRIPTED_STAGE_CALLS]
+ *  — same cap `calls` uses, checked here at the untrusted-JSON boundary AND again in
+ *  validateStageList (see that function's own comment for why both) — and `calls` is REJECTED
+ *  when `prompt` is an array (the array's length already says how many; two disagreeing
+ *  sources of "N" is exactly the contradiction this field's own doc warns against). When
+ *  `prompt` is a single InputRef or ComposedPrompt, `calls` — when present — must be an
  *  integer in [1, MAX_SCRIPTED_STAGE_CALLS] — anything else (a float, a string, 0, a value
  *  past the cap) is rejected here, same all-or-nothing posture, never silently clamped.
  *  Omitted `calls` is dropped from the returned object entirely (never set to `undefined`) so
@@ -648,9 +767,9 @@ function parseScriptedStageSpec(v: unknown): ScriptedStageSpec | null {
     if (rawPrompt.length < 1 || rawPrompt.length > MAX_SCRIPTED_STAGE_CALLS) return null
     // "calls" is meaningless (and disallowed) once "prompt" names its own count via length.
     if (s['calls'] !== undefined) return null
-    const prompts: InputRef[] = []
+    const prompts: (InputRef | ComposedPrompt)[] = []
     for (const rawRef of rawPrompt) {
-      const ref = parseInputRef(rawRef)
+      const ref = parseSinglePromptSpec(rawRef) // card #1837410995: a fan element may be an InputRef or a ComposedPrompt
       if (ref === null) return null // one bad element invalidates the whole array
       prompts.push(ref)
     }
@@ -662,7 +781,7 @@ function parseScriptedStageSpec(v: unknown): ScriptedStageSpec | null {
     }
     return arrayResult
   }
-  const prompt = parseInputRef(rawPrompt)
+  const prompt = parseSinglePromptSpec(rawPrompt)
   if (prompt === null) return null
   const result: ScriptedStageSpec = { model, prompt }
   if (s['calls'] !== undefined) {
