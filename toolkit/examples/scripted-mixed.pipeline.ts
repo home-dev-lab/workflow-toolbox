@@ -32,7 +32,7 @@ export default definePipeline({
   stages: [
     {
       name: 'e2e-fixture',
-      workflow: 'wt-shape-e2e',
+      workflow: 'wt-shape-e2e.js',
     },
     {
       name: 'external-review',
