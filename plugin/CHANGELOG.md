@@ -3,7 +3,31 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.150.1] - 2026-08-08
+## [0.151.0] - 2026-08-08
+
+### Added
+
+- **Three private-machine guards ported to the shipped set, warn-only, from an inventory
+  that first ruled out most private hooks as machine calibrations.** All three read as
+  pure prose/shape heuristics with no machine-specific string:
+  - `wt-isolated-spawn-report-path-hook.mjs` (PreToolUse on `Agent`) — warns when an
+    isolated spawn's brief names an absolute write/report target that is not already
+    inside a worktree, so the spawner is told BEFORE the tree gets reaped that the
+    delivery will not land where it looks like it should.
+  - `wt-pgrep-env-dump-guard-hook.mjs` (PreToolUse on `Bash`) — warns on a full-listing
+    `pgrep`/`ps` (`-a`/`-l`/`-af`/`-ef`/`aux`/`-o args=` without a `-p` filter), which can
+    dump an entire wrapped shell's exported environment into the transcript. Its flag
+    matcher was hardened during the port: the original regex read any hyphenated
+    argument word (`pgrep my-pattern`) as if it contained a flag — fixed to require the
+    dash be preceded by whitespace or the string start.
+  - `wt-propagation-reminder-hook.mjs` (PostToolUse on `Write`/`Edit`/`MultiEdit`) — asks
+    the propagation question (who/when/what/shipped-twin) the moment a shipped or
+    machine-tooling path is edited; deliberately silent on `<config-dir>/rules/*.md`,
+    already covered by `wt-rule-edit-horizon-hook.mjs`.
+
+  All three are journalled via the shared `recordGuardEvent()` and test-locked in BOTH
+  directions (fires on the real case, silent on correct work), proven by a mutation in
+  each direction on a copy outside the repo.
 
 ### Fixed
 
