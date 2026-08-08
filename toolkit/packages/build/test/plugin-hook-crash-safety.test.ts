@@ -113,6 +113,13 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         cwd: sandbox.projectDir,
         tool_input: { command: 'ls -la' },
       }
+    case 'wt-lane-consent-gate-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: sandbox.projectDir,
+        tool_input: { command: 'ls -la' },
+      }
     case 'wt-check-commit-signatures-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',

@@ -2298,6 +2298,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-env-prerequisite-drift-hook.mjs",
         "plugin/bin/wt-guard-recurrence-hook.mjs",
         "plugin/bin/wt-lane-saturation-hook.mjs",
+        "plugin/bin/wt-lane-consent-gate-hook.mjs",
         "plugin/bin/wt-arc-watch.mjs",
         "plugin/bin/wt-autonomy-arm.mjs",
         "plugin/bin/wt-autonomy-watch.mjs",

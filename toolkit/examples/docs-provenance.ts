@@ -134,6 +134,12 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this SessionStart/UserPromptSubmit stale-registration detector under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-lane-consent-gate-hook.mjs',
+    status: 'mapped',
+    reason:
+      'Known-issues documents this PreToolUse external-lane consent gate (fail-closed on unreadable settings and on its own internal errors) under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-lane-consent-check-hook.mjs',
     status: 'exempt',
     reason: 'A disagreement detector for wt-lane-consent.mjs (mapped) with no user-facing invocation contract of its own — it only ever surfaces a SessionStart notice when the resolved consent state disagrees with itself; the CLI it complements is the operative surface a reader is pointed at (see the pilot-wave DOCS_PROVENANCE entry).',
@@ -665,6 +671,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-env-prerequisite-drift-hook.mjs',
       'plugin/bin/wt-guard-recurrence-hook.mjs',
       'plugin/bin/wt-lane-saturation-hook.mjs',
+      'plugin/bin/wt-lane-consent-gate-hook.mjs',
       'plugin/bin/wt-arc-watch.mjs',
       'plugin/bin/wt-autonomy-arm.mjs',
       'plugin/bin/wt-autonomy-watch.mjs',
