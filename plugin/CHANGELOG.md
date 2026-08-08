@@ -3,6 +3,36 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.155.0] - 2026-08-08
+
+### Changed
+
+- **`wt-queue-not-empty-gate-hook.mjs` is now REGISTERED as a Stop hook, alongside
+  `wt-actionable-gate-hook.mjs` — resolving the register-or-retire decision the previous
+  release (`0.154.0`) left open.** A side-by-side comparison of the two hooks' predicates
+  refuted the "superseded" claim this file's own header used to carry: `wt-actionable-gate-hook.mjs`
+  is Planka-only, only produces its snapshot from specific unfiltered board reads, requires a
+  project-local `depends-on-parser.mjs`, and gives up unconditionally after `BLOCK_MAX=3`
+  consecutive blocks; `wt-queue-not-empty-gate-hook.mjs` is tracker-agnostic (any adopter can
+  wire a marker writer, on any tracker or none), has no give-up cap, and structurally reaches
+  cases the registered hook cannot — no tracker wired, a filtered last board read, a missing
+  dependency parser, or a registered-hook snapshot stale past its own give-up ceiling. Ground
+  truth on this project's own disk state showed the gap open: the registered hook's snapshot
+  was ~29 hours stale (past its 2h staleness window and past its 3-block give-up cap) while 58
+  tracked items remained open.
+
+  Removed the corresponding entry from `hook-registration-exclusions.mjs` (it named this as
+  "NOT a deliberate exclusion — a register-or-retire decision pending", which is now resolved).
+  Both hooks can refuse the same stop when both markers exist for a project — deliberate, not
+  a bug, and each throttles independently; their emitted messages were already distinguishable
+  before this change (`"Actionability gate: …"` vs `"open work remains, nothing running · N
+  open …"`), so no message-text change was needed to tell them apart.
+
+  New test asserts the registration directly against `plugin.json`'s `Stop` array, not merely
+  the exclusions map shrinking (`hook-registration-coverage.test.ts`); updated the manifest-shape
+  assertions in `actionability-gate.test.ts` and flipped `queue-not-empty-gate.test.ts`'s own
+  "does NOT register" test to assert registration.
+
 ## [0.154.0] - 2026-08-08
 
 ### Added

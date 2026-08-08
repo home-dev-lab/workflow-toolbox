@@ -147,14 +147,14 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
 })
 
 describe('plugin manifest wiring', () => {
-  it('does NOT register wt-queue-not-empty-gate-hook.mjs on Stop (superseded, kept for back-compat only)', () => {
+  it('registers wt-queue-not-empty-gate-hook.mjs on Stop, alongside wt-actionable-gate-hook.mjs (register-not-retire)', () => {
     const manifest = JSON.parse(
       readFileSync(join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json'), 'utf8'),
     ) as { hooks?: { Stop?: Array<{ hooks?: Array<{ command?: string }> }> } }
     const commands = (manifest.hooks?.Stop ?? [])
       .flatMap((group) => group.hooks ?? [])
       .map((hook) => hook.command ?? '')
-    expect(commands.some((c) => c.includes('wt-queue-not-empty-gate-hook.mjs'))).toBe(false)
+    expect(commands.some((c) => c.includes('wt-queue-not-empty-gate-hook.mjs'))).toBe(true)
     expect(commands.some((c) => c.includes('wt-actionable-gate-hook.mjs'))).toBe(true)
   })
 })
