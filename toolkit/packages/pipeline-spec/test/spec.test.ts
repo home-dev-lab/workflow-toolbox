@@ -119,6 +119,42 @@ describe('validateStageList', () => {
     expect(validateStageList([{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, calls: 2.5 } }])).not.toBeNull()
   })
 
+  // Card #1837144459 — distinct-prompt fan: scripted.prompt may be authored as an ARRAY of
+  // InputRefs instead of one, each element becoming its own concurrent call. The array's own
+  // length IS the call count, so "calls" is disallowed alongside it — two fields that could
+  // disagree is exactly what the card's own design-decision section warns against.
+  describe('scripted.prompt as an array (distinct-prompt fan, card #1837144459)', () => {
+    it('accepts a scripted stage whose "prompt" is an array of 2 InputRefs', () => {
+      expect(
+        validateStageList([{ name: 'a', scripted: { model: 'm', prompt: [{ from: 'goal' }, { from: 'projectDir' }] } }]),
+      ).toBeNull()
+    })
+
+    it('accepts a prompt array at exactly MAX_SCRIPTED_STAGE_CALLS elements', () => {
+      const prompt = Array.from({ length: MAX_SCRIPTED_STAGE_CALLS }, () => ({ from: 'goal' as const }))
+      expect(validateStageList([{ name: 'a', scripted: { model: 'm', prompt } }])).toBeNull()
+    })
+
+    it('rejects a prompt array of 0 elements — a stage that issues zero calls is not a stage', () => {
+      expect(validateStageList([{ name: 'a', scripted: { model: 'm', prompt: [] } }])).toMatch(
+        /scripted\.prompt array length=0.*between 1 and 8/,
+      )
+    })
+
+    it('rejects a prompt array ONE PAST MAX_SCRIPTED_STAGE_CALLS via validateStageList DIRECTLY', () => {
+      const prompt = Array.from({ length: MAX_SCRIPTED_STAGE_CALLS + 1 }, () => ({ from: 'goal' as const }))
+      expect(validateStageList([{ name: 'a', scripted: { model: 'm', prompt } }])).toMatch(
+        new RegExp(`scripted\\.prompt array length=${MAX_SCRIPTED_STAGE_CALLS + 1}.*MAX_SCRIPTED_STAGE_CALLS`),
+      )
+    })
+
+    it('rejects "calls" set ALONGSIDE an array "prompt" — the two must not be able to disagree', () => {
+      expect(
+        validateStageList([{ name: 'a', scripted: { model: 'm', prompt: [{ from: 'goal' }, { from: 'projectDir' }], calls: 2 } }]),
+      ).toMatch(/both scripted\.prompt as an array and scripted\.calls set/)
+    })
+  })
+
   it('rejects gateAfter:true on the LAST stage (no downstream stage to gate into)', () => {
     expect(validateStageList([{ ...baseStage('a'), gateAfter: true }])).toMatch(/LAST stage.*gateAfter/)
   })
@@ -302,6 +338,49 @@ describe('parsePipelineSpec', () => {
 
   it('rejects a non-numeric "calls"', () => {
     expect(parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, calls: '3' } }] })).toBeNull()
+  })
+
+  // Card #1837144459 — distinct-prompt fan, parse boundary.
+  describe('scripted.prompt as an array (distinct-prompt fan, card #1837144459)', () => {
+    it('parses and round-trips a 2-element prompt array, ORDER preserved', () => {
+      const parsed = parsePipelineSpec({
+        ...base,
+        stages: [{ name: 'a', scripted: { model: 'openai/gpt-5.4', prompt: [{ from: 'goal' }, { from: 'artifactContent' }] } }],
+      })
+      expect(parsed?.stages[0]).toEqual({
+        name: 'a',
+        scripted: { model: 'openai/gpt-5.4', prompt: [{ from: 'goal' }, { from: 'artifactContent' }] },
+      })
+    })
+
+    it('accepts a prompt array at exactly MAX_SCRIPTED_STAGE_CALLS elements', () => {
+      const prompt = Array.from({ length: MAX_SCRIPTED_STAGE_CALLS }, () => ({ from: 'goal' }))
+      expect(parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt } }] })).not.toBeNull()
+    })
+
+    it('rejects a prompt array ONE PAST MAX_SCRIPTED_STAGE_CALLS — never silently truncated', () => {
+      const prompt = Array.from({ length: MAX_SCRIPTED_STAGE_CALLS + 1 }, () => ({ from: 'goal' }))
+      expect(parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt } }] })).toBeNull()
+    })
+
+    it('rejects an empty prompt array', () => {
+      expect(parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: [] } }] })).toBeNull()
+    })
+
+    it('rejects a prompt array containing one malformed InputRef — all-or-nothing like every other field here', () => {
+      expect(
+        parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: [{ from: 'goal' }, { from: 'bogus' }] } }] }),
+      ).toBeNull()
+    })
+
+    it('rejects "calls" set ALONGSIDE an array "prompt" at the untrusted-JSON boundary too', () => {
+      expect(
+        parsePipelineSpec({
+          ...base,
+          stages: [{ name: 'a', scripted: { model: 'm', prompt: [{ from: 'goal' }, { from: 'projectDir' }], calls: 2 } }],
+        }),
+      ).toBeNull()
+    })
   })
 
   it('accepts an "artifactContent"-sourced input ref on an ordinary workflow stage too (the source is shared, not scripted-only)', () => {
