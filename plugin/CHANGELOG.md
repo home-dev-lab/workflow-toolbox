@@ -3,6 +3,34 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.154.0] - 2026-08-08
+
+### Added
+
+- **A mechanical gate closes the OTHER arrow of hook registration drift: a shipped
+  `plugin/bin/*-hook.mjs` script that `plugin.json` never declares.** The existing
+  registration-drift checks (`wt-hook-registration-drift-hook.mjs`,
+  `plugin-hook-registration-drift.test.ts`) verify that every DECLARED path resolves to a real
+  file — that direction fails loudly, at load time. The opposite direction fails silently: a
+  file can exist, carry its own tests and documentation, and simply never run, because nothing
+  is broken. That is exactly how `wt-lesson-harvest-hook.mjs` shipped unregistered in `0.134.0`
+  (fixed in `0.151.0`) and how `wt-lesson-harvest-hook.mjs`'s sibling audit found a second
+  instance, `wt-queue-not-empty-gate-hook.mjs`.
+
+  New: `hook-registration-coverage-core.mjs` derives the shipped hook set from the
+  `plugin/bin/` directory (never a hand-maintained list) and compares it against the manifest's
+  declared set plus a new exclusions map, `hook-registration-exclusions.mjs` — same shape as
+  the existing `docs-provenance.ts` decision list, one entry per deliberately-unregistered
+  script with its reason. The gate (`hook-registration-coverage.test.ts`) also refuses a STALE
+  exclusion (naming a script that no longer ships) and a REDUNDANT one (naming a script that
+  IS declared), so the map itself cannot silently drift from what it claims.
+
+  Two entries are excluded today: `wt-adopt-rules-check-hook.mjs` (a deliberate deprecation
+  shim, invoked directly by name rather than through the manifest) and
+  `wt-queue-not-empty-gate-hook.mjs` (NOT a deliberate exclusion — a register-or-retire
+  decision against `wt-actionable-gate-hook.mjs`, a second Stop hook answering an overlapping
+  question, left to the maintainer rather than resolved by this gate).
+
 ## [0.153.0] - 2026-08-08
 
 ### Added
