@@ -9,12 +9,19 @@ subagents directory and reports paired / declared-but-unresolved / not-applicabl
 
 Usage:
   node wt-check-observer-pairing.mjs --subagents-dir <dir> (--agent-id <rawId> | --name <observedAgentName>)
-    [--window-sec 300] [--capture-dir <dir>]
-    --subagents-dir  the session's subagents/ directory (required)
-    --agent-id       the raw agent id to check (or --name)
-    --name           the declared spawn name to check (or --agent-id)
-    --window-sec     mtime-fallback correlation window in seconds (default 300)
-    --capture-dir    opt-in: archive the two meta.json files of an unresolved pairing here
+    [--window-sec 300] [--capture-dir <dir>] [--retry-ms 1500] [--retry-interval-ms 500]
+    --subagents-dir     the session's subagents/ directory (required)
+    --agent-id          the raw agent id to check (or --name)
+    --name              the declared spawn name to check (or --agent-id)
+    --window-sec        mtime-fallback correlation window in seconds (default 300)
+    --capture-dir       opt-in: archive the two meta.json files of an unresolved pairing here
+    --retry-ms          bounded retry window (ms) before an observerTaskId conflict is
+                         reported as 'unknown' (default 1500). Only catches the FAST edge
+                         of the race — the observer's own meta.json write is measured to
+                         land minutes after the observed agent's, median ~463s on this
+                         machine's 2026-08-08 sample — a longer retry would block the
+                         calling hook, not fix the verdict. Set 0 to disable.
+    --retry-interval-ms poll interval (ms) within the retry window (default 500)
 
 Exit codes carried on stdout JSON (\`status\`), never inferred from the process exit code alone.
 `
@@ -24,9 +31,26 @@ function emit(statusCode, payload) {
   process.exit(statusCode)
 }
 
+// Synchronous, cross-platform, no subprocess: blocks the current thread for `ms`
+// milliseconds via Atomics.wait on a throwaway SharedArrayBuffer. Node >= 20 (this
+// repo's floor) supports Atomics.wait on the main thread; no `sleep` binary dependency,
+// so this works identically on Linux, macOS and Windows.
+function sleepMs(ms) {
+  if (!(ms > 0)) return
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
 function parseArgs(argv) {
   handleHelpFlag(argv, HELP)
-  const out = { subagentsDir: null, agentId: null, name: null, windowSec: 300, captureDir: null }
+  const out = {
+    subagentsDir: null,
+    agentId: null,
+    name: null,
+    windowSec: 300,
+    captureDir: null,
+    retryMs: 1500,
+    retryIntervalMs: 500,
+  }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--subagents-dir') out.subagentsDir = argv[index + 1] ?? null
@@ -36,6 +60,8 @@ function parseArgs(argv) {
     // Opt-in by design: with no --capture-dir nothing is ever written, so an existing
     // caller's behaviour is unchanged byte for byte.
     else if (arg === '--capture-dir') out.captureDir = argv[index + 1] ?? null
+    else if (arg === '--retry-ms') out.retryMs = argv[index + 1] ?? null
+    else if (arg === '--retry-interval-ms') out.retryIntervalMs = argv[index + 1] ?? null
     if (arg.startsWith('--')) index += 1
   }
   return out
@@ -114,7 +140,8 @@ function readMeta(filePath) {
   }
 }
 
-const { subagentsDir, agentId, name, windowSec, captureDir } = parseArgs(process.argv.slice(2))
+const { subagentsDir, agentId, name, windowSec, captureDir, retryMs: rawRetryMs, retryIntervalMs: rawRetryIntervalMs } =
+  parseArgs(process.argv.slice(2))
 
 if (!subagentsDir || (!agentId && !name)) {
   emit(2, {
@@ -132,6 +159,16 @@ if (parsedWindowSec === null) {
     reason: `invalid --window-sec: ${String(windowSec)}`,
   })
 }
+
+function parseNonNegativeMs(value, flagName) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    emit(2, { status: 'unknown', failureClass: 'usage', reason: `invalid ${flagName}: ${String(value)}` })
+  }
+  return parsed
+}
+const retryMs = parseNonNegativeMs(rawRetryMs, '--retry-ms')
+const retryIntervalMs = Math.max(1, parseNonNegativeMs(rawRetryIntervalMs, '--retry-interval-ms'))
 
 let filenames
 try {
@@ -208,7 +245,7 @@ if (!observed) {
 const observerTaskId = observed.parsed?.observerTaskId
 if (typeof observerTaskId === 'string' && observerTaskId.length > 0) {
   const pairedFilePath = join(subagentsDir, `agent-${observerTaskId}.meta.json`)
-  const paired = records.find((record) => record.ok && record.filePath === pairedFilePath)
+  let paired = records.find((record) => record.ok && record.filePath === pairedFilePath)
   if (paired && paired.parsed?.isObserver === true) {
     emit(0, {
       status: 'pass',
@@ -219,13 +256,53 @@ if (typeof observerTaskId === 'string' && observerTaskId.length > 0) {
       malformed,
     })
   }
+
+  // ⚠ SHORT, BOUNDED RETRY — catches only the FAST edge of the race, never the whole of it.
+  // This checker runs synchronously inside a PostToolUse hook, at essentially the same
+  // instant the observed agent's own .meta.json is written (measured delta: single-digit
+  // milliseconds). The observer is a SEPARATE spawn whose own .meta.json write lands
+  // whenever the harness actually starts running it — measured across 387 real
+  // observerTaskId→isObserver pairs on this machine on 2026-08-08: deltas ranged from
+  // -12735s to +6031s, MEDIAN ~463s, p90 ~1870s. Only ~6% of real pairs resolved within 2s
+  // of the observed write. A retry long enough to catch most of that distribution would
+  // block this hook — and the spawning turn behind it — for MINUTES, which is worse than
+  // the false 'unknown' it would prevent. So this retry is kept deliberately small: it
+  // buys back the free, sub-2s fraction of cases for near-zero added latency, and is not
+  // pretending to close the gap for the rest. The rest is handled by wording, not timing —
+  // see the comment on the emitted reason below.
+  if (retryMs > 0 && !(paired && paired.parsed?.isObserver === true)) {
+    const deadline = Date.now() + retryMs
+    while (Date.now() < deadline) {
+      sleepMs(Math.min(retryIntervalMs, deadline - Date.now()))
+      const retryMeta = readMeta(pairedFilePath)
+      if (retryMeta.ok) {
+        paired = retryMeta
+        if (retryMeta.parsed?.isObserver === true) {
+          emit(0, {
+            status: 'pass',
+            reason: 'observerTaskId field present and resolves to an isObserver:true sibling — resolved during the bounded retry window',
+            matchedBy,
+            attachedBy: 'observerTaskId',
+            observerFile: resolve(retryMeta.filePath),
+            malformed,
+          })
+        }
+      }
+    }
+  }
+
   // ⚠ THE ONE CASE WORTH PRESERVING. Everything else this script reports is either a
   // healthy pairing or a record too old to carry the link. THIS branch is a pairing that
-  // was DECLARED and did not resolve — the only shape that evidences a real loss.
+  // was DECLARED and did not resolve within the retry window — the only shape that
+  // evidences a real loss, OR (far more often, per the measured distribution above) an
+  // observer that simply has not started yet and will resolve minutes from now.
   //
-  // It has never been observed on this machine. 182 real pairs were measured, all of
-  // them resolving; the losing direction exists only as prose. That is why a guard built
-  // on this cannot be credited: its silent half is proven, its speaking half is not.
+  // A confirmed PERMANENT loss has never been observed on this machine. 387 real pairs
+  // were measured on 2026-08-08 (up from 182 on 2026-08-03), all of them eventually
+  // resolving; the losing direction exists only as prose. That is why the reason string
+  // below states the empirical asymmetry explicitly, and why the guard hook downstream
+  // must not read this verdict as a confirmed failure — it is an HONEST 'unknown', not a
+  // 'not-watched'. See card 1837275085.
   //
   // A hand-written fixture would NOT close that gap — it would be authored from the same
   // understanding as the code, so it could only ever prove the code matches its author's
@@ -242,8 +319,8 @@ if (typeof observerTaskId === 'string' && observerTaskId.length > 0) {
     status: 'unknown',
     failureClass: 'observer-conflict',
     reason: paired
-      ? `observerTaskId points to ${observerTaskId}, but that sibling is not isObserver:true`
-      : `observerTaskId points to ${observerTaskId}, but no matching sibling file exists`,
+      ? `observerTaskId points to ${observerTaskId}, but that sibling is not isObserver:true yet — usually still starting (median ~8 min on this machine's measured history), not a confirmed loss`
+      : `observerTaskId points to ${observerTaskId}, but no matching sibling file exists yet — usually still starting (median ~8 min on this machine's measured history), not a confirmed loss`,
     matchedBy,
     attachedBy: 'observerTaskId-conflict',
     malformed,

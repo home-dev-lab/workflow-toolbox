@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import {
   chmodSync,
   existsSync,
@@ -67,15 +67,32 @@ function writeAgentFixture(dir: string, rawId: string, payload: unknown, atSecon
   return metaPath
 }
 
-function runCheck(
-  subagentsDir: string,
-  options: { agentId?: string; name?: string; windowSec?: number; captureDir?: string },
-): Verdict {
+type RunOptions = {
+  agentId?: string
+  name?: string
+  windowSec?: number
+  captureDir?: string
+  retryMs?: number
+  retryIntervalMs?: number
+}
+
+function buildArgs(subagentsDir: string, options: RunOptions): string[] {
   const args = [SCRIPT, '--subagents-dir', subagentsDir]
   if (options.agentId) args.push('--agent-id', options.agentId)
   if (options.name) args.push('--name', options.name)
   if (options.windowSec !== undefined) args.push('--window-sec', String(options.windowSec))
   if (options.captureDir) args.push('--capture-dir', options.captureDir)
+  // Every fixture-based conflict test below asserts the STATIC verdict, not the retry
+  // mechanism — default this to 0 so those tests stay fast and deterministic. The retry
+  // mechanism itself gets its own dedicated tests further down, with the flag passed
+  // explicitly.
+  args.push('--retry-ms', String(options.retryMs ?? 0))
+  if (options.retryIntervalMs !== undefined) args.push('--retry-interval-ms', String(options.retryIntervalMs))
+  return args
+}
+
+function runCheck(subagentsDir: string, options: RunOptions): Verdict {
+  const args = buildArgs(subagentsDir, options)
   try {
     const stdout = execFileSync(process.execPath, args, { encoding: 'utf8' })
     return { exitCode: 0, stdout, json: JSON.parse(stdout) as Verdict['json'] }
@@ -87,6 +104,39 @@ function runCheck(
       stdout,
       json: JSON.parse(stdout) as Verdict['json'],
     }
+  }
+}
+
+// Async variant — needed only by the retry tests, where the TEST process must write a
+// fixture file WHILE the checker's own process is mid-poll. execFileSync would block the
+// test process for the whole duration, making that impossible.
+function runCheckAsync(subagentsDir: string, options: RunOptions): Promise<Verdict> {
+  const args = buildArgs(subagentsDir, options)
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk)
+    })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      try {
+        resolvePromise({ exitCode: code ?? 2, stdout, json: JSON.parse(stdout) as Verdict['json'] })
+      } catch (error) {
+        reject(error)
+      }
+    })
+  })
+}
+
+async function withTempSubagentsDirAsync(run: (dir: string) => Promise<void>): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), 'wt-observer-pairing-'))
+  const dir = join(root, 'subagents')
+  mkdirSync(dir)
+  try {
+    await run(dir)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
   }
 }
 
@@ -438,6 +488,58 @@ describe('wt-check-observer-pairing.mjs', () => {
         expect(result.exitCode).toBe(0)
         expect(result.json.status).toBe('pass')
         expect(result.json.attachedBy).toBe('mtime-fallback')
+      })
+    })
+
+    // Card 1837275085: the guard journal showed 19/20 real observer-pairing firings in
+    // one week, ALL reading as the same race — the checker runs synchronously at the
+    // instant the observed agent's own meta.json is written, before the separately
+    // spawned observer's meta.json exists yet. Measured across 387 real pairs on
+    // 2026-08-08: only the FAST edge of that race (median ~463s) is closeable without
+    // blocking the calling hook for minutes, so the retry only buys back that edge.
+    describe('bounded retry — the fast edge of the race, never the whole of it', () => {
+      it('resolves to pass when the sibling appears WITHIN the retry window', async () => {
+        await withTempSubagentsDirAsync(async (dir) => {
+          writeAgentFixture(dir, 'agent-race-fast', { agentType: 'pilot', observerTaskId: 'obs-race-fast' }, 1_000)
+          // No sibling yet — write it shortly after the checker starts polling, well
+          // inside the retry window, proving the retry (not the initial read) is what
+          // resolves it.
+          setTimeout(() => {
+            writeAgentFixture(dir, 'obs-race-fast', { agentType: 'pilot-watchdog', isObserver: true }, 1_000)
+          }, 150)
+
+          const result = await runCheckAsync(dir, { agentId: 'agent-race-fast', retryMs: 1500, retryIntervalMs: 50 })
+
+          expect(result.exitCode).toBe(0)
+          expect(result.json.status).toBe('pass')
+          expect(result.json.attachedBy).toBe('observerTaskId')
+        })
+      })
+
+      it('still reports unknown, with a wording that names the empirical asymmetry, when the sibling never appears', () => {
+        withTempSubagentsDir((dir) => {
+          writeAgentFixture(dir, 'agent-race-slow', { agentType: 'pilot', observerTaskId: 'obs-never' }, 1_000)
+
+          const result = runCheck(dir, { agentId: 'agent-race-slow', retryMs: 200 })
+
+          expect(result.exitCode).toBe(2)
+          expect(result.json.status).toBe('unknown')
+          expect(result.json.attachedBy).toBe('observerTaskId-conflict')
+          expect(result.json.reason).toContain('usually still starting')
+          expect(result.json.reason).not.toContain('not isObserver:true')
+        })
+      })
+
+      it('does not retry at all when --retry-ms is 0 (existing behaviour preserved byte for byte in verdict shape)', () => {
+        withTempSubagentsDir((dir) => {
+          writeAgentFixture(dir, 'agent-no-retry', { agentType: 'pilot', observerTaskId: 'obs-never' }, 1_000)
+
+          const result = runCheck(dir, { agentId: 'agent-no-retry', retryMs: 0 })
+
+          expect(result.exitCode).toBe(2)
+          expect(result.json.status).toBe('unknown')
+          expect(result.json.attachedBy).toBe('observerTaskId-conflict')
+        })
       })
     })
 
