@@ -323,4 +323,46 @@ describe('wt-observer-pairing-guard-hook.mjs', () => {
     )
     expect(context).toContain('LOST its declared observer')
   })
+
+  it('still checks when session_id is EMPTY but transcript_path is present and sufficient', () => {
+    // Cross-family review finding on this same fix: the top-level guard required
+    // `session_id` truthy unconditionally, even though the transcript_path branch of
+    // subagentsDirFor() no longer needs it. An empty session_id with a valid
+    // transcript_path used to skip the check entirely — a silent no-check, worse than an
+    // honest `unknown`, for a case the fix's own logic already had everything to answer.
+    //
+    // Uses the GENUINELY-ABSENT-OBSERVER fixture deliberately: a silently-attached pass
+    // and a silently-SKIPPED check both produce empty stdout, so that shape cannot tell
+    // "the check ran and passed" from "the check never ran" apart. An absent observer
+    // can: skipped → empty context; actually ran → a LOST warning.
+    const root = mkRoot('empty-session-id')
+    const cfg = join(root, 'cfg')
+    const projectRoot = join(root, 'proj')
+    mkdirSync(projectRoot, { recursive: true })
+    const agentsDir = join(projectRoot, '.claude', 'agents')
+    mkdirSync(agentsDir, { recursive: true })
+    writeFileSync(
+      join(agentsDir, 'pilot-orchestrator.md'),
+      '---\nname: pilot-orchestrator\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
+    )
+    const slugDir = join(cfg, 'projects', 'empty-session-id-slug')
+    const subagentsDir = join(slugDir, SESSION_ID, 'subagents')
+    mkdirSync(subagentsDir, { recursive: true })
+    writeFileSync(join(subagentsDir, `agent-${AGENT_ID}.meta.json`), JSON.stringify({ agentType: 'pilot-orchestrator' }))
+    const transcriptPath = join(slugDir, `${SESSION_ID}.jsonl`)
+
+    const { context } = runHook(
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { subagent_type: 'pilot-orchestrator' },
+        tool_response: { agent_id: AGENT_ID },
+        cwd: projectRoot,
+        session_id: '', // empty, not merely stale
+        transcript_path: transcriptPath,
+      },
+      cfg,
+    )
+    expect(context).toContain('LOST its declared observer')
+  })
 })

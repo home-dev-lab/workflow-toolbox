@@ -132,7 +132,12 @@ function main() {
       : typeof tr.teammate_id === 'string' && tr.teammate_id ? tr.teammate_id
         : typeof tr.agentId === 'string' && tr.agentId ? tr.agentId
           : null
-  if (!cwd || !sessionId || !type || (!agentId && !name)) return
+  // session_id is required only as the FALLBACK path's session segment (no transcript_path
+  // case, never observed on a real event). Whenever transcript_path is present it alone
+  // is sufficient for subagentsDirFor() — requiring sessionId here too used to skip the
+  // whole check silently on an empty session_id, even though transcript_path already had
+  // everything needed to answer. See subagentsDirFor()'s own comment (card 1837122444).
+  if (!cwd || (!sessionId && !transcriptPath) || !type || (!agentId && !name)) return
 
   const source = findDefinition(type, cwd)
   if (!source) return
