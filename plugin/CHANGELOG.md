@@ -3,6 +3,31 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.156.0] - 2026-08-08
+
+### Added
+
+- **`wt-label-intent-producer-hook.mjs` — a `PostToolUse` hook (matching `mcp__planka__get_board`)
+  that mechanically runs `toolkit/scripts/label-intent-lens.ts` on a real board read**, instead
+  of relying on the `what-next` skill's own "MANDATORY" prose line telling a model to run it.
+  Measured, fresh session, 2026-07-27: that line's anti-false-verdict half held (a session
+  correctly refused to claim "zero label gap" without having run the lens), but the "run it"
+  half did not reliably trigger the actual invocation — a text instruction can refuse a false
+  claim, it cannot make an action happen. The hook shells out to a project's own vendored
+  `toolkit/node_modules/.bin/tsx` against the real script as a genuine child process, and
+  parses ONLY that script's own printed summary line — it never recomputes the check itself,
+  never touches a card or a label, and stays silent (no `additionalContext`) on every failure
+  direction: no vendored `toolkit/`, no `tsx` binary, a timeout, unparsable output, or a
+  genuinely clean board all produce nothing, never a guessed verdict or manufactured noise.
+  New pure module `plugin/bin/lib/label-intent-runner.mjs` (locate `tsx` + the script, run it,
+  parse its summary) is unit-tested independently of any real child process, plus an
+  integration layer spawning the real hook against a fake-but-executable toolkit fixture.
+  Registered in `plugin/.claude-plugin/plugin.json`'s `PostToolUse` hooks. Documented in
+  `docs/public/known-issues.md` item 11, and in `plugin/skills/what-next/SKILL.md`'s Step 0,
+  which now marks its own long-standing reserved caveat CLOSED for `label-intent-lens.ts`
+  specifically (the sibling `card-hygiene-lens.ts` remains skill-invoked only, a named open
+  follow-up).
+
 ## [0.155.0] - 2026-08-08
 
 ### Changed

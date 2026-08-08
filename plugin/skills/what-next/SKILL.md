@@ -95,8 +95,19 @@ replace it.
 rule above held (the session correctly declined to claim "zero gap" when it had not run the
 lens) — but the "run it" instruction alone did NOT reliably trigger the actual invocation; the
 session investigated other things and never called the script. Treat this MANDATORY step as
-advisory-strength in practice until it is backed by a mechanical hook, not a skill line alone —
-this exact gap is a standing reserved caveat, not yet closed.
+advisory-strength in practice until it is backed by a mechanical hook, not a skill line alone.
+
+✅ **CLOSED for `label-intent-lens.ts`** — the "checker nothing invokes" gap named above: a `PostToolUse` hook
+(`plugin/bin/wt-label-intent-producer-hook.mjs`, registered on `mcp__planka__get_board`) now
+runs the real script for real, as a genuine child process, the moment Input 1 above reads the
+whole board — no separate gesture, nothing for a model to forget. It stays silent when the lens
+found nothing (never manufactures noise) and never edits a card; when it finds something it
+injects the finding into context for you to report. This skill step remains the backstop for the
+cases the hook cannot cover — the hook fires only on an unfiltered `get_board` call with a real
+`toolkit/` vendored at the project root, so run this command by hand whenever those conditions
+don't hold (`progress.md` fallback, a filtered board read, or a project that vendors `toolkit/`
+under a different path). The reserve above is **retired for `label-intent-lens.ts` specifically**
+— it still applies to `card-hygiene-lens.ts` below, whose mechanical hook wiring remains open.
 
 ### Step 1 (MANDATORY first) — scan for stalls
 
