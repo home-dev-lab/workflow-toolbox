@@ -109,7 +109,12 @@ function main() {
           `isolated. A named spawn is rerouted to the in-process-teammate path, which rebuilds ` +
           `the definition and never reads its observer: — the watchdog is silently never ` +
           `attached, and the agent's own report will honestly say "no observer findings". ` +
-          `Fix: add isolation: "worktree" to keep the name AND the pairing, or drop the name.`,
+          `Two fixes, and they are NOT interchangeable — pick by what this agent will do: ` +
+          `if it hands an increment to an EXTERNAL EXECUTOR LANE (a CLI bridge) and then waits, ` +
+          `DROP THE NAME (spawn anonymously; address it later by the raw id the spawn returns), ` +
+          `because an isolated worktree sitting unchanged while the lane still writes in it gets ` +
+          `reaped out from under that lane. Otherwise add isolation: "worktree" to keep the name ` +
+          `AND the pairing.`,
       },
     }),
   )
