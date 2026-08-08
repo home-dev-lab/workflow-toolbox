@@ -121,6 +121,7 @@ const EXTERNAL_VOCABULARY = new Set([
   'additionalContext', // Claude Code hook output field (architecture.md's Stop-hook note)
   'waitForApproval', // durable-execution product API cited as a comparison (P8 / HITL)
   'idleReason', // Claude Code idle_notification field (delegation-chain skill, Section 3)
+  'canUseTool', // Claude Agent SDK query() callback (model-and-agent-routing.md's bridge caveat, card #1837086183117555184)
 ])
 
 /** Identifiers owned by Workflow Observatory (the closed-source companion —
@@ -131,6 +132,7 @@ const COMPANION_VOCABULARY = new Set([
   'OBSERVE_WORKFLOWS_DIR', // env var the observatory server reads; launcher only forwards it
   'OBSERVE_COMM_ALLOWED_ROOTS', // env var the observatory server reads to allow/deny a launch `commRoot`; the launcher only passes the root, never reads this
   'lastArtifactPath', // observatory pipeline-manifest field the loop runner-contract threads across iterations (orchestrator-pipelines.md)
+  'externalSessionId', // observatory scripted-stage record field (opencode's own session id, not minted by this repo) — orchestrator-pipelines.md's Scripted stages, workflow-debugger's reached-no-external-model section
 ])
 
 /** Repo-relative path bases a doc may resolve from — its own dir, the repo

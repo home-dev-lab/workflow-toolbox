@@ -152,6 +152,67 @@ to a rebuild). A few things worth knowing before you write one:
   what typechecked at the call site), `json` (the pretty-printed JSON, what gets written
   to disk), and `bytes` (`Buffer.byteLength(json)`).
 
+#### Scripted stages — reaching an external model with zero Claude
+
+Every `agent()` call, in every workflow, is a Claude Code subagent — there is no
+workflow-level primitive that runs a process or reaches another model directly
+(`toolkit/packages/runtime/globals.d.ts` declares exactly eight globals; none of them
+spawns anything but a Claude agent). So "route this role to an external model" is not
+a workflow-composition question at all when the requirement is a run with **no Claude
+model in that role's turn** — it is a pipeline question, answered by a `scripted`
+stage (`StageSpecV2.scripted`, `ScriptedStageSpec` in `@workflow-toolbox/pipeline-spec`).
+
+A scripted stage is authored the same way as any other stage in `definePipeline()`,
+mutually exclusive with `workflow`/`pipeline` on that stage:
+
+```ts
+{
+  scripted: {
+    model: 'openai/gpt-5.4',                       // the external lane's own model flag
+    prompt: { from: 'artifactContent' },            // the prior stage's handoff, as text
+  },
+}
+```
+
+- **`model`** is passed straight through to the external lane's model flag — never
+  checked against a Claude Code allowlist, because it names a different model family
+  entirely.
+- **`prompt`** is the same `InputRef` vocabulary a workflow stage's `input` uses. A
+  single `InputRef` (e.g. `{ from: 'artifactContent' }` to hand the prior stage's
+  handoff artifact straight to the external model) makes one call, optionally repeated
+  `calls` times for N-of-M redundant voting on the SAME question. An ARRAY of
+  `InputRef`s makes N *distinct* concurrent calls — N different questions rather than N
+  redundant verdicts — and `calls` is rejected alongside an array (only one field ever
+  says "how many"). Both shapes are capped at `MAX_SCRIPTED_STAGE_CALLS` (8), the
+  measured concurrency wall of the bundled opencode CLI before requests start queueing
+  behind 429/retry.
+- **`resultShape`** requests a structured, comparable verdict from every call the stage
+  issues, instead of leaving the caller to parse prose.
+- The runner adapts a scripted stage to the SAME `LaunchedStage` contract a workflow
+  stage's launch produces — gate, artifact extraction, and settlement never learn the
+  difference, so a pipeline can freely mix `workflow` and `scripted` stages (a Claude
+  planning stage feeding a `scripted` external-model judge via its handoff artifact).
+
+**Status, stated at the reach its evidence has (2026-08-08):** a single-call scripted
+stage, and a mixed pipeline (one `workflow` stage → one `scripted` stage consuming its
+handoff via `{ from: 'artifactContent' }`), are **verified** — both ran live through the
+observe server, zero Claude model in the scripted stage's own turn, real external
+`externalSessionId` and reasoning-token accounting in the record. The `prompt` array /
+`calls` fan-out is **supported, not verified reliable**: an authored array-prompt spec
+validates and dispatches real concurrent calls, but the first live run of it failed at
+runtime (one call hit the external CLI's own `database is locked`, the other a 120 s
+timeout) before a later run succeeded — the mechanism is open, not proven, and a stage
+using it should not be described as dependable until that is resolved.
+
+**When to reach for this instead of the workflow-level `agentTypes` bridge**
+(`references/model-and-agent-routing.md`'s "Cross-family routing"): that bridge still
+runs a Claude subagent that shells out — useful for a narrow, decorrelated verifier
+role INSIDE an otherwise-Claude workflow, and it is slated for removal, not hardening.
+A scripted stage is the answer when the requirement is genuinely "no Claude model at
+all" for that role, or when the workflow-level bridge's unreliability (a self-answering
+wrapper, a badge that shows the wrapper's model rather than the lane's) is the exact
+failure you are trying to design out.
+
 #### Looping a pipeline — `loop` (re-run the stage list until done)
 
 A spec — the ROOT one, or any nested `pipeline`-stage's child spec — may carry a `loop`

@@ -111,6 +111,11 @@ Four standalone analysis/verification compositions:
   Matching opencode's own rules / MCP / plugins to your project is the user's
   responsibility (configure `AGENTS.md` / `opencode.json`) — opencode reads a repo's
   `CLAUDE.md` + `.claude/skills/` by default but NOT its `.claude/rules/`, MCP, or plugins.
+  ⚠ Both routes above still run a Claude subagent that shells out to the external CLI —
+  the workflow keeps a Claude turn in that role, it is not a zero-Claude run, and the
+  pattern is slated for removal (`references/model-and-agent-routing.md`'s caveat). A
+  review that must run with no Claude model in it is a pipeline's `scripted` stage
+  (`references/orchestrator-pipelines.md`), not a workflow.
 - `docs-audit.workflow.ts` — pre-release semantic docs audit: inventory the doc
   surfaces (or take them as `args.surfaces`), extract checkable claims in
   angle-cycled `loopUntilDone` rounds until a full sweep finds nothing new
