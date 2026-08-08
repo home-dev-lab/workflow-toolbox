@@ -159,6 +159,82 @@ describe('validateStageList', () => {
     })
   })
 
+  // Card #1837410995 — composed prompt: scripted.prompt (or a fan element) may be
+  // { compose: [...] }, a single prompt assembled from several InputRefs plus literal text.
+  // Structurally distinct from the array fan above: the fan is a BARE array, a composition is
+  // an OBJECT carrying a "compose" key — so the two readings can never collide, which is the
+  // whole point (this package's own scripted-mixed.pipeline.ts example, prompt:
+  // [{from:'goal'},{from:'artifactContent'}], reads like a composed two-part prompt and means a
+  // two-call fan; {compose:[...]} is what keeps a real composition from ever being confused
+  // with that line).
+  describe('scripted.prompt as a ComposedPrompt (card #1837410995)', () => {
+    it('accepts a scripted stage whose "prompt" is a composition of an InputRef and literal text', () => {
+      expect(
+        validateStageList([
+          { name: 'a', scripted: { model: 'm', prompt: { compose: [{ text: 'Diff:\n\n' }, { from: 'artifactContent' }] } } },
+        ]),
+      ).toBeNull()
+    })
+
+    it('rejects an EMPTY compose array — a composition naming zero parts is meaningless', () => {
+      expect(validateStageList([{ name: 'a', scripted: { model: 'm', prompt: { compose: [] } } }])).toMatch(
+        /"compose" must name at least one part/,
+      )
+    })
+
+    it('accepts a SINGLE-element compose array — pointless but harmless, and a generated spec can produce one', () => {
+      expect(validateStageList([{ name: 'a', scripted: { model: 'm', prompt: { compose: [{ from: 'goal' }] } } }])).toBeNull()
+    })
+
+    it('rejects a NESTED compose — a part cannot itself be a composition, one level only', () => {
+      expect(
+        validateStageList([
+          {
+            name: 'a',
+            scripted: { model: 'm', prompt: { compose: [{ from: 'goal' }, { compose: [{ from: 'projectDir' }] }] } as never },
+          },
+        ]),
+      ).toMatch(/compose\[1\] is itself a composition/)
+    })
+
+    it('composes with the fan: a fan element may itself be a ComposedPrompt, and the two readings stay separate', () => {
+      // The case a positional convention would have collapsed: a fan (bare array, 2 calls)
+      // whose SECOND element is a composition (one call built from two parts). If the two
+      // readings could be confused, this is exactly where it would show up.
+      expect(
+        validateStageList([
+          {
+            name: 'a',
+            scripted: {
+              model: 'm',
+              prompt: [{ from: 'goal' }, { compose: [{ text: 'Findings:\n\n' }, { from: 'artifactContent' }] }],
+            },
+          },
+        ]),
+      ).toBeNull()
+    })
+
+    it('rejects a nested compose inside a fan element too — defense-in-depth applies per element', () => {
+      expect(
+        validateStageList([
+          {
+            name: 'a',
+            scripted: {
+              model: 'm',
+              prompt: [{ from: 'goal' }, { compose: [{ compose: [{ from: 'goal' }] }] }] as never,
+            },
+          },
+        ]),
+      ).toMatch(/scripted\.prompt\[1\].*compose\[0\] is itself a composition/)
+    })
+
+    it('accepts "calls" alongside a single ComposedPrompt "prompt" — same interaction as a single InputRef', () => {
+      expect(
+        validateStageList([{ name: 'a', scripted: { model: 'm', prompt: { compose: [{ from: 'goal' }] }, calls: 3 } }]),
+      ).toBeNull()
+    })
+  })
+
   it('rejects gateAfter:true on the LAST stage (no downstream stage to gate into)', () => {
     expect(validateStageList([{ ...baseStage('a'), gateAfter: true }])).toMatch(/LAST stage.*gateAfter/)
   })
@@ -384,6 +460,109 @@ describe('parsePipelineSpec', () => {
           stages: [{ name: 'a', scripted: { model: 'm', prompt: [{ from: 'goal' }, { from: 'projectDir' }], calls: 2 } }],
         }),
       ).toBeNull()
+    })
+  })
+
+  // Card #1837410995 — composed prompt, parse boundary.
+  describe('scripted.prompt as a ComposedPrompt (card #1837410995)', () => {
+    it('parses and round-trips a composition of literal text and two InputRefs, ORDER preserved', () => {
+      const composed = {
+        compose: [{ text: 'Diff:\n\n' }, { from: 'artifactContent' }, { text: '\n\nFindings:\n\n' }, { from: 'goal' }],
+      }
+      const parsed = parsePipelineSpec({
+        ...base,
+        stages: [{ name: 'a', scripted: { model: 'openai/gpt-5.4', prompt: composed } }],
+      })
+      expect(parsed?.stages[0]).toEqual({ name: 'a', scripted: { model: 'openai/gpt-5.4', prompt: composed } })
+    })
+
+    it('a composed prompt round-trips through JSON.parse(JSON.stringify(x)) unchanged — the portability the whole spec depends on', () => {
+      const spec = {
+        ...base,
+        stages: [
+          {
+            name: 'a',
+            scripted: {
+              model: 'openai/gpt-5.4',
+              prompt: { compose: [{ text: 'Diff:\n\n' }, { from: 'artifactContent' }, { text: '\n\nJudge it.' }] },
+            },
+          },
+        ],
+      }
+      const parsedOnce = parsePipelineSpec(spec)
+      const roundTripped = parsePipelineSpec(JSON.parse(JSON.stringify(spec)))
+      expect(roundTripped).toEqual(parsedOnce)
+      expect(JSON.parse(JSON.stringify(parsedOnce))).toEqual(parsedOnce)
+    })
+
+    it('rejects an EMPTY compose array at the untrusted-JSON boundary', () => {
+      expect(parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: { compose: [] } } }] })).toBeNull()
+    })
+
+    it('accepts a SINGLE-element compose array at the untrusted-JSON boundary', () => {
+      expect(
+        parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: { compose: [{ from: 'goal' }] } } }] }),
+      ).not.toBeNull()
+    })
+
+    it('rejects a compose part with an unrecognized "from" source — same all-or-nothing posture as everywhere else', () => {
+      expect(
+        parsePipelineSpec({
+          ...base,
+          stages: [{ name: 'a', scripted: { model: 'm', prompt: { compose: [{ from: 'bogus' }] } } }],
+        }),
+      ).toBeNull()
+    })
+
+    it('rejects a NESTED compose at the untrusted-JSON boundary — one level only', () => {
+      expect(
+        parsePipelineSpec({
+          ...base,
+          stages: [{ name: 'a', scripted: { model: 'm', prompt: { compose: [{ compose: [{ from: 'goal' }] }] } } }],
+        }),
+      ).toBeNull()
+    })
+
+    it('rejects "compose" that is not an array', () => {
+      expect(
+        parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: { compose: 'nope' } } }] }),
+      ).toBeNull()
+    })
+
+    it('THE TWO READINGS STAY SEPARATE: a bare prompt array (fan, N calls) is never confused with a compose object (1 call, N parts) for the same InputRefs', () => {
+      const fan = parsePipelineSpec({
+        ...base,
+        stages: [{ name: 'a', scripted: { model: 'm', prompt: [{ from: 'goal' }, { from: 'artifactContent' }] } }],
+      })
+      const composed = parsePipelineSpec({
+        ...base,
+        stages: [{ name: 'a', scripted: { model: 'm', prompt: { compose: [{ from: 'goal' }, { from: 'artifactContent' }] } } }],
+      })
+      expect(Array.isArray((fan?.stages[0] as { scripted: { prompt: unknown } }).scripted.prompt)).toBe(true)
+      expect(Array.isArray((composed?.stages[0] as { scripted: { prompt: unknown } }).scripted.prompt)).toBe(false)
+      expect(fan).not.toEqual(composed)
+    })
+
+    it('composes with the fan at the untrusted-JSON boundary: a fan element may itself be a compose object', () => {
+      const parsed = parsePipelineSpec({
+        ...base,
+        stages: [
+          {
+            name: 'a',
+            scripted: {
+              model: 'm',
+              prompt: [{ from: 'goal' }, { compose: [{ text: 'Findings:\n\n' }, { from: 'artifactContent' }] }],
+            },
+          },
+        ],
+      })
+      expect(parsed?.stages[0]).toEqual({
+        name: 'a',
+        scripted: {
+          model: 'm',
+          prompt: [{ from: 'goal' }, { compose: [{ text: 'Findings:\n\n' }, { from: 'artifactContent' }] }],
+        },
+      })
     })
   })
 
