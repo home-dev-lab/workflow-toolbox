@@ -55,18 +55,29 @@ export interface ScriptedStageSpec {
    *  Code model allowlist — it names a different model family entirely, and the runner has no
    *  business validating it beyond "non-empty string" (parseStageSpecV2's job). */
   model: string
-  /** Where the call's single prompt string comes from — the SAME declarative InputRef
-   *  vocabulary a workflow stage's `input` uses, resolved to one string rather than an args
-   *  record. `{ from: 'artifactContent' }` is the common case: hand the PRIOR stage's handoff
-   *  artifact, read off disk, straight to the external model as its whole prompt. */
-  prompt: InputRef
+  /** Where the call's prompt string(s) come from — the SAME declarative InputRef vocabulary a
+   *  workflow stage's `input` uses. Two shapes:
+   *  - a SINGLE InputRef (today's exact behaviour, byte-for-byte unchanged): one prompt,
+   *    resolved once, optionally repeated `calls` times via `calls` below.
+   *  - an ARRAY of InputRefs (card #1837144459, distinct-prompt fan): each element becomes
+   *    ITS OWN concurrent call, resolved independently — N different questions rather than N
+   *    redundant verdicts on the same one. The array's own length IS the call count, so
+   *    `calls` is REJECTED alongside it (validateStageList) — two fields that could disagree
+   *    on N is exactly the contradiction the card's own design section warns against; there is
+   *    only ever one source of truth for "how many calls", whichever shape `prompt` takes.
+   *    Bounded by MAX_SCRIPTED_STAGE_CALLS, same as `calls`, checked at both the parse and the
+   *    validate layers (see validateStageList's own comment for why both).
+   *  `{ from: 'artifactContent' }` is the common single-prompt case: hand the PRIOR stage's
+   *  handoff artifact, read off disk, straight to the external model as its whole prompt. */
+  prompt: InputRef | InputRef[]
   /** How many concurrent external-lane calls this stage issues, all resolving the SAME
    *  `prompt` — a stage of N independent verdicts (redundant review passes, N-of-M voting)
    *  rather than a single sequential call. Omitted or 1 is today's exact single-call
    *  behaviour, byte-for-byte unchanged — the fan-out path is entered only for `calls >= 2`.
    *  Integer in [1, MAX_SCRIPTED_STAGE_CALLS]; a value outside that range is a REJECTED spec
    *  at author time, never silently clamped or dropped (parseScriptedStageSpec's job). See
-   *  MAX_SCRIPTED_STAGE_CALLS's own doc for why 8. */
+   *  MAX_SCRIPTED_STAGE_CALLS's own doc for why 8. ONLY meaningful when `prompt` is a single
+   *  InputRef — REJECTED when `prompt` is an array (its length already says how many). */
   calls?: number
 }
 
@@ -320,9 +331,23 @@ export function validateStageList(stages: readonly StageSpecV2[], limits?: Pipel
     // keeps its own check too (defense in depth, and it runs BEFORE a value even reaches this
     // already-typed function) — this is not a relocation, it is closing the second door.
     if (hasScripted) {
-      const calls = stage.scripted!.calls
-      if (calls !== undefined && (!Number.isInteger(calls) || calls < 1 || calls > MAX_SCRIPTED_STAGE_CALLS)) {
-        return `stage "${stage.name}" has scripted.calls=${calls} — must be an integer in [1, ${MAX_SCRIPTED_STAGE_CALLS}] (MAX_SCRIPTED_STAGE_CALLS), never silently clamped`
+      const sc = stage.scripted!
+      // Distinct-prompt fan (card #1837144459): an array `prompt` names its OWN call count via
+      // its length — `calls` is a second, independent way to say "how many", so the two are
+      // mutually exclusive by construction, never reconciled or preferred over one another.
+      if (Array.isArray(sc.prompt)) {
+        const n = sc.prompt.length
+        if (n < 1 || n > MAX_SCRIPTED_STAGE_CALLS) {
+          return `stage "${stage.name}" has scripted.prompt array length=${n} — must be between 1 and ${MAX_SCRIPTED_STAGE_CALLS} (MAX_SCRIPTED_STAGE_CALLS)`
+        }
+        if (sc.calls !== undefined) {
+          return `stage "${stage.name}" has both scripted.prompt as an array and scripted.calls set — the array's length already determines the call count, so the two must not be able to disagree`
+        }
+      } else {
+        const calls = sc.calls
+        if (calls !== undefined && (!Number.isInteger(calls) || calls < 1 || calls > MAX_SCRIPTED_STAGE_CALLS)) {
+          return `stage "${stage.name}" has scripted.calls=${calls} — must be an integer in [1, ${MAX_SCRIPTED_STAGE_CALLS}] (MAX_SCRIPTED_STAGE_CALLS), never silently clamped`
+        }
       }
     }
     if (hasPipeline) {
@@ -467,20 +492,40 @@ function parseInputRef(v: unknown): InputRef | null {
 }
 
 /** Parse an untrusted `scripted` value into a ScriptedStageSpec, or null — all-or-nothing like
- *  every other malformed-field check in this parser. `model` must be a non-empty string;
- *  `prompt` must be a shape-valid InputRef (parseInputRef re-checked against the SAME
- *  VALID_INPUT_FROM set every other InputRef in this file validates against). `calls`, when
- *  present, must be an integer in [1, MAX_SCRIPTED_STAGE_CALLS] — anything else (a float, a
- *  string, 0, a value past the cap) is rejected here, same all-or-nothing posture, never
- *  silently clamped. Omitted `calls` is dropped from the returned object entirely (never set
- *  to `undefined`) so a round-tripped single-call spec is byte-identical to one authored
- *  before this field existed. */
+ *  every other malformed-field check in this parser. `model` must be a non-empty string.
+ *  `prompt` is either a shape-valid single InputRef, or an ARRAY of them (card #1837144459,
+ *  distinct-prompt fan — each element re-checked against the SAME parseInputRef/
+ *  VALID_INPUT_FROM every other InputRef in this file validates against; ONE malformed element
+ *  invalidates the whole array, same all-or-nothing posture). An array is bounded by
+ *  [1, MAX_SCRIPTED_STAGE_CALLS] — same cap `calls` uses, checked here at the untrusted-JSON
+ *  boundary AND again in validateStageList (see that function's own comment for why both) —
+ *  and `calls` is REJECTED when `prompt` is an array (the array's length already says how
+ *  many; two disagreeing sources of "N" is exactly the contradiction this field's own doc
+ *  warns against). When `prompt` is a single InputRef, `calls` — when present — must be an
+ *  integer in [1, MAX_SCRIPTED_STAGE_CALLS] — anything else (a float, a string, 0, a value
+ *  past the cap) is rejected here, same all-or-nothing posture, never silently clamped.
+ *  Omitted `calls` is dropped from the returned object entirely (never set to `undefined`) so
+ *  a round-tripped single-call spec is byte-identical to one authored before this field
+ *  existed. */
 function parseScriptedStageSpec(v: unknown): ScriptedStageSpec | null {
   if (typeof v !== 'object' || v === null) return null
   const s = v as Record<string, unknown>
   const model = s['model']
   if (typeof model !== 'string' || model.length === 0) return null
-  const prompt = parseInputRef(s['prompt'])
+  const rawPrompt = s['prompt']
+  if (Array.isArray(rawPrompt)) {
+    if (rawPrompt.length < 1 || rawPrompt.length > MAX_SCRIPTED_STAGE_CALLS) return null
+    // "calls" is meaningless (and disallowed) once "prompt" names its own count via length.
+    if (s['calls'] !== undefined) return null
+    const prompts: InputRef[] = []
+    for (const rawRef of rawPrompt) {
+      const ref = parseInputRef(rawRef)
+      if (ref === null) return null // one bad element invalidates the whole array
+      prompts.push(ref)
+    }
+    return { model, prompt: prompts }
+  }
+  const prompt = parseInputRef(rawPrompt)
   if (prompt === null) return null
   if (s['calls'] !== undefined) {
     const calls = s['calls']
