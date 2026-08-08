@@ -946,6 +946,14 @@ describe('describeScriptedResultShape', () => {
     const shape: ScriptedResultShape = { fields: { verdict: 'string' } }
     expect(describeScriptedResultShape(shape)).toBe(describeScriptedResultShape(shape))
   })
+
+  // Cross-family review finding (card #1837198164): checkScriptedResult deliberately accepts
+  // EXTRA undeclared fields (a subset match) — the instruction text must say so, or it asks
+  // for something stricter than what is actually checked.
+  it('does NOT claim "exactly these fields" — the checker accepts extras, so the instruction must not promise an exact match', () => {
+    const text = describeScriptedResultShape({ fields: { verdict: 'string' } })
+    expect(text).not.toMatch(/exactly these fields/i)
+  })
 })
 
 describe('checkScriptedResult — the runtime conformance check', () => {
@@ -992,5 +1000,20 @@ describe('checkScriptedResult — the runtime conformance check', () => {
     const numShape: ScriptedResultShape = { fields: { severity: 'number' } }
     expect(checkScriptedResult(numShape, { severity: NaN }).ok).toBe(false)
     expect(checkScriptedResult(numShape, { severity: Infinity }).ok).toBe(false)
+  })
+
+  // Cross-family review finding (card #1837198164): checkScriptedResult is a PUBLIC pure
+  // function, callable directly — never routed only through the parser that already restricts
+  // field types to SCRIPTED_RESULT_FIELD_TYPES. Without an explicit check, an UNRECOGNIZED type
+  // string silently falls through the ternary chain's final branch (the string[] check),
+  // producing a false {ok:true} for a shape that never should have been considered valid.
+  it('rejects an UNRECOGNIZED field type — never silently treated as string[] via the ternary fallthrough', () => {
+    // A cast bypasses TypeScript, the same way a directly-constructed spec bypasses the parser
+    // everywhere else in this file's validateStageList-vs-parse posture.
+    const bogusShape = { fields: { verdict: 'symbol' } } as unknown as ScriptedResultShape
+    expect(checkScriptedResult(bogusShape, { verdict: 'approve' }).ok).toBe(false)
+    // The false-positive shape the review flagged: an unrecognized type combined with a value
+    // that IS a string array would otherwise slip through as {ok:true}.
+    expect(checkScriptedResult(bogusShape, { verdict: ['x'] }).ok).toBe(false)
   })
 })

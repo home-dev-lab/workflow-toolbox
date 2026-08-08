@@ -136,9 +136,14 @@ export function describeScriptedResultShape(shape: ScriptedResultShape): string 
   const fieldLines = Object.entries(shape.fields)
     .map(([name, type]) => `- ${name}: ${type === 'string[]' ? 'an array of strings' : type}`)
     .join('\n')
+  // "including at least" — never "exactly these fields": checkScriptedResult deliberately
+  // performs a SUBSET match (extra, undeclared fields are ignored, see its own doc). The
+  // instruction sent to the model must describe what is actually checked, or a model reading
+  // it carefully is asked for something stricter than the code enforces (review finding,
+  // card #1837198164).
   return (
     `Respond with ONLY a single JSON object — no prose before or after it, no markdown code ` +
-    `fences — with exactly these fields:\n${fieldLines}`
+    `fences — including at least these fields:\n${fieldLines}`
   )
 }
 
@@ -155,6 +160,16 @@ export function checkScriptedResult(shape: ScriptedResultShape, value: unknown):
   }
   const obj = value as Record<string, unknown>
   for (const [field, type] of Object.entries(shape.fields)) {
+    // This function is PUBLIC and pure — callable directly, never routed only through the
+    // parser that already restricts field types to SCRIPTED_RESULT_FIELD_TYPES. Without this
+    // explicit membership check, an unrecognized `type` string (a directly-constructed shape
+    // that bypasses TypeScript via a cast, the same way a directly-constructed spec bypasses
+    // parseScriptedStageSpec elsewhere in this file) would silently fall through the type
+    // switch below into the `string[]` branch — a false {ok:true} for a shape that was never
+    // valid to begin with (review finding, card #1837198164).
+    if (!VALID_SCRIPTED_RESULT_FIELD_TYPES.has(type)) {
+      return { ok: false, reason: `field "${field}" declares an unrecognized type "${String(type)}"` }
+    }
     if (!(field in obj)) return { ok: false, reason: `missing required field "${field}"` }
     const v = obj[field]
     const typeOk =
