@@ -8,13 +8,17 @@ import {
   MAX_LOOP_ITERATIONS,
   MAX_LOOP_ITERATIONS_CEILING,
   MAX_SCRIPTED_STAGE_CALLS,
+  SCRIPTED_RESULT_FIELD_TYPES,
   EXTRACTOR_KEYS,
   validateStageList,
   validatePipelineSpec,
   parsePipelineSpec,
+  describeScriptedResultShape,
+  checkScriptedResult,
   type StageSpecV2,
   type PipelineSpec,
   type PipelineLoopSpec,
+  type ScriptedResultShape,
 } from '../src/index.js'
 
 // Single source of truth for pipeline-spec authoring/validation, shared verbatim between
@@ -820,5 +824,196 @@ describe('PipelineLimits — user-configurable caps', () => {
     // overriding maxPipelineDepth is broken outright.
     const accepted = nestSpec(9)
     expect(validateStageList(accepted.stages, { maxPipelineDepth: 9 })).toBeNull()
+  })
+})
+
+// card #1837198164 — structured output from a scripted call.
+describe('ScriptedStageSpec.resultShape — parsing', () => {
+  const base: PipelineSpec = { goal: 'g', projectDir: '/repo', stages: [] }
+
+  it('SCRIPTED_RESULT_FIELD_TYPES lists the four recognized field types', () => {
+    expect(SCRIPTED_RESULT_FIELD_TYPES).toEqual(['string', 'number', 'boolean', 'string[]'])
+  })
+
+  it('round-trips a resultShape on a single-InputRef prompt', () => {
+    const parsed = parsePipelineSpec({
+      ...base,
+      stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, resultShape: { fields: { verdict: 'string', severity: 'number' } } } }],
+    })
+    expect(parsed?.stages[0]).toEqual({
+      name: 'a',
+      scripted: { model: 'm', prompt: { from: 'goal' }, resultShape: { fields: { verdict: 'string', severity: 'number' } } },
+    })
+  })
+
+  it('a scripted stage with no resultShape round-trips WITHOUT the key at all (backward compat)', () => {
+    const parsed = parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' } } }] })
+    expect(Object.keys((parsed?.stages[0] as { scripted: object }).scripted)).toEqual(['model', 'prompt'])
+  })
+
+  it('round-trips a resultShape ALONGSIDE calls', () => {
+    const parsed = parsePipelineSpec({
+      ...base,
+      stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, calls: 3, resultShape: { fields: { verdict: 'string' } } } }],
+    })
+    expect(parsed?.stages[0]).toEqual({
+      name: 'a',
+      scripted: { model: 'm', prompt: { from: 'goal' }, calls: 3, resultShape: { fields: { verdict: 'string' } } },
+    })
+  })
+
+  it('round-trips a resultShape on an ARRAY prompt (composition with the distinct-prompt fan)', () => {
+    const parsed = parsePipelineSpec({
+      ...base,
+      stages: [
+        {
+          name: 'a',
+          scripted: { model: 'm', prompt: [{ from: 'goal' }, { from: 'projectDir' }], resultShape: { fields: { verdict: 'string' } } },
+        },
+      ],
+    })
+    expect(parsed?.stages[0]).toEqual({
+      name: 'a',
+      scripted: { model: 'm', prompt: [{ from: 'goal' }, { from: 'projectDir' }], resultShape: { fields: { verdict: 'string' } } },
+    })
+  })
+
+  it('accepts every recognized field type, including string[]', () => {
+    const parsed = parsePipelineSpec({
+      ...base,
+      stages: [
+        {
+          name: 'a',
+          scripted: {
+            model: 'm',
+            prompt: { from: 'goal' },
+            resultShape: { fields: { verdict: 'string', severity: 'number', ok: 'boolean', findings: 'string[]' } },
+          },
+        },
+      ],
+    })
+    expect(parsed).not.toBeNull()
+  })
+
+  it('rejects a resultShape with an unrecognized field type', () => {
+    expect(
+      parsePipelineSpec({
+        ...base,
+        stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, resultShape: { fields: { verdict: 'symbol' } } } }],
+      }),
+    ).toBeNull()
+  })
+
+  it('rejects a resultShape with zero fields — nothing checkable is not a shape', () => {
+    expect(
+      parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, resultShape: { fields: {} } } }] }),
+    ).toBeNull()
+  })
+
+  it('rejects a resultShape that is not an object, and one missing "fields"', () => {
+    expect(
+      parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, resultShape: 'nope' } }] }),
+    ).toBeNull()
+    expect(
+      parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, resultShape: {} } }] }),
+    ).toBeNull()
+  })
+
+  it('validateStageList accepts a well-formed resultShape directly (defense-in-depth path, not just the JSON parser)', () => {
+    expect(
+      validateStageList([{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, resultShape: { fields: { verdict: 'string' } } } }]),
+    ).toBeNull()
+  })
+})
+
+describe('describeScriptedResultShape', () => {
+  it('renders one line per field, primitives named plainly and string[] spelled out', () => {
+    const shape: ScriptedResultShape = { fields: { verdict: 'string', severity: 'number', urgent: 'boolean', findings: 'string[]' } }
+    const text = describeScriptedResultShape(shape)
+    expect(text).toContain('- verdict: string')
+    expect(text).toContain('- severity: number')
+    expect(text).toContain('- urgent: boolean')
+    expect(text).toContain('- findings: an array of strings')
+  })
+
+  it('instructs against prose and markdown fences, and names the fields exactly', () => {
+    const text = describeScriptedResultShape({ fields: { verdict: 'string' } })
+    expect(text).toMatch(/no prose/i)
+    expect(text).toMatch(/no markdown code fences/i)
+  })
+
+  it('is deterministic — same shape in, same string out', () => {
+    const shape: ScriptedResultShape = { fields: { verdict: 'string' } }
+    expect(describeScriptedResultShape(shape)).toBe(describeScriptedResultShape(shape))
+  })
+
+  // Cross-family review finding (card #1837198164): checkScriptedResult deliberately accepts
+  // EXTRA undeclared fields (a subset match) — the instruction text must say so, or it asks
+  // for something stricter than what is actually checked.
+  it('does NOT claim "exactly these fields" — the checker accepts extras, so the instruction must not promise an exact match', () => {
+    const text = describeScriptedResultShape({ fields: { verdict: 'string' } })
+    expect(text).not.toMatch(/exactly these fields/i)
+  })
+})
+
+describe('checkScriptedResult — the runtime conformance check', () => {
+  const shape: ScriptedResultShape = { fields: { verdict: 'string', severity: 'number' } }
+
+  it('accepts a conforming object and returns it as `data`', () => {
+    const result = checkScriptedResult(shape, { verdict: 'approve', severity: 1 })
+    expect(result).toEqual({ ok: true, data: { verdict: 'approve', severity: 1 } })
+  })
+
+  it('accepts a conforming object carrying EXTRA undeclared fields — subset match, not exact', () => {
+    const result = checkScriptedResult(shape, { verdict: 'approve', severity: 1, extra: 'volunteered' })
+    expect(result.ok).toBe(true)
+  })
+
+  it('rejects prose (a string) instead of an object — the COMMON non-compliance case', () => {
+    const result = checkScriptedResult(shape, 'Looking at this diff, I would say it looks fine overall.')
+    expect(result).toEqual({ ok: false, reason: expect.stringMatching(/expected a JSON object/) })
+  })
+
+  it('rejects a missing required field', () => {
+    const result = checkScriptedResult(shape, { verdict: 'approve' })
+    expect(result).toEqual({ ok: false, reason: expect.stringMatching(/missing required field "severity"/) })
+  })
+
+  it('rejects a field of the wrong type — never coerced', () => {
+    const result = checkScriptedResult(shape, { verdict: 'approve', severity: 'high' })
+    expect(result).toEqual({ ok: false, reason: expect.stringMatching(/field "severity" must be number, got string/) })
+  })
+
+  it('rejects null and an array at the top level', () => {
+    expect(checkScriptedResult(shape, null).ok).toBe(false)
+    expect(checkScriptedResult(shape, ['not', 'an', 'object']).ok).toBe(false)
+  })
+
+  it('checks string[] element-wise — a mixed array does not conform', () => {
+    const listShape: ScriptedResultShape = { fields: { findings: 'string[]' } }
+    expect(checkScriptedResult(listShape, { findings: ['a', 'b'] }).ok).toBe(true)
+    expect(checkScriptedResult(listShape, { findings: ['a', 2] }).ok).toBe(false)
+    expect(checkScriptedResult(listShape, { findings: 'not-an-array' }).ok).toBe(false)
+  })
+
+  it('rejects NaN/Infinity for a "number" field — Number.isFinite, not just typeof', () => {
+    const numShape: ScriptedResultShape = { fields: { severity: 'number' } }
+    expect(checkScriptedResult(numShape, { severity: NaN }).ok).toBe(false)
+    expect(checkScriptedResult(numShape, { severity: Infinity }).ok).toBe(false)
+  })
+
+  // Cross-family review finding (card #1837198164): checkScriptedResult is a PUBLIC pure
+  // function, callable directly — never routed only through the parser that already restricts
+  // field types to SCRIPTED_RESULT_FIELD_TYPES. Without an explicit check, an UNRECOGNIZED type
+  // string silently falls through the ternary chain's final branch (the string[] check),
+  // producing a false {ok:true} for a shape that never should have been considered valid.
+  it('rejects an UNRECOGNIZED field type — never silently treated as string[] via the ternary fallthrough', () => {
+    // A cast bypasses TypeScript, the same way a directly-constructed spec bypasses the parser
+    // everywhere else in this file's validateStageList-vs-parse posture.
+    const bogusShape = { fields: { verdict: 'symbol' } } as unknown as ScriptedResultShape
+    expect(checkScriptedResult(bogusShape, { verdict: 'approve' }).ok).toBe(false)
+    // The false-positive shape the review flagged: an unrecognized type combined with a value
+    // that IS a string array would otherwise slip through as {ok:true}.
+    expect(checkScriptedResult(bogusShape, { verdict: ['x'] }).ok).toBe(false)
   })
 })

@@ -31,7 +31,15 @@ pnpm add @workflow-toolbox/pipeline-spec
   workflow stage's launch produces, so gate/artifact-extraction/settlement never learn the
   difference. An optional `calls` (default 1, capped by `MAX_SCRIPTED_STAGE_CALLS`) fans
   the stage out into that many CONCURRENT calls of the same prompt, all collected before
-  the stage settles — a single call's behavior is byte-for-byte unchanged.
+  the stage settles — a single call's behavior is byte-for-byte unchanged. An optional
+  `resultShape` (`ScriptedResultShape` — `{ fields: Record<string, ScriptedResultFieldType>
+  }`, field types restricted to `SCRIPTED_RESULT_FIELD_TYPES`) declares an expected JSON
+  result: the external lane is a CLI with no tool-call/schema protocol, so compliance is
+  REQUESTED via a prompt-convention instruction (`describeScriptedResultShape`) and CHECKED
+  after the fact against the raw response text (`checkScriptedResult`, which returns a
+  `ScriptedResultCheck` — `{ok:true, data}` on conformance, `{ok:false, reason}` otherwise,
+  never a fabricated value). Applies to every call the stage issues, whichever fan shape is
+  in play — one shape, N attempts, never a per-call shape. Omitted: today's exact behaviour.
 - `InputRef` — a declarative reference to a runtime value pulled in at launch, restricted
   to `INPUT_REF_SOURCES` (`'artifactPath' | 'goal' | 'projectDir' | 'artifactContent'` —
   the last resolves to the prior stage's handoff artifact read off disk as TEXT, as
