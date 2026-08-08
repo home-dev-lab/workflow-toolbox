@@ -29,7 +29,9 @@ pnpm add @workflow-toolbox/pipeline-spec
   invocation, in the companion runtime) instead of a Claude Code workflow: a `model`
   identifier plus a `prompt` InputRef. The runner adapts it to the same launch contract a
   workflow stage's launch produces, so gate/artifact-extraction/settlement never learn the
-  difference.
+  difference. An optional `calls` (default 1, capped by `MAX_SCRIPTED_STAGE_CALLS`) fans
+  the stage out into that many CONCURRENT calls of the same prompt, all collected before
+  the stage settles — a single call's behavior is byte-for-byte unchanged.
 - `InputRef` — a declarative reference to a runtime value pulled in at launch, restricted
   to `INPUT_REF_SOURCES` (`'artifactPath' | 'goal' | 'projectDir' | 'artifactContent'` —
   the last resolves to the prior stage's handoff artifact read off disk as TEXT, as
@@ -41,8 +43,12 @@ pnpm add @workflow-toolbox/pipeline-spec
   boundary — or `{ criterion: '<key>' }`, a runner-evaluated predicate), hard-capped by
   `maxIterations`.
 - `MAX_STAGES` (12) — hard cap on stages per spec, `MAX_PIPELINE_DEPTH` (8) — hard cap
-  on nested-pipeline depth, and `MAX_LOOP_ITERATIONS` (10) — hard cap on a loop's
-  `maxIterations`.
+  on nested-pipeline depth, `MAX_LOOP_ITERATIONS` (10) — hard cap on a loop's
+  `maxIterations`, and `MAX_SCRIPTED_STAGE_CALLS` (8) — hard cap on a scripted stage's
+  `calls` fan-out, chosen to stay under the bundled opencode CLI's measured concurrency
+  wall (~8-16 simultaneous processes before requests start queueing behind 429/retry).
+  Not overridable via `limits` — the constraint is external, not a property of any one
+  pipeline's shape.
 - `validateStageList` / `validatePipelineSpec` / `parsePipelineSpec` — structural
   validation of a stage list, the full-spec check (stage list + loop rules, all nesting
   levels), and parsing/validating an untrusted `PipelineSpec` from JSON.

@@ -7,6 +7,7 @@ import {
   MAX_PIPELINE_DEPTH_CEILING,
   MAX_LOOP_ITERATIONS,
   MAX_LOOP_ITERATIONS_CEILING,
+  MAX_SCRIPTED_STAGE_CALLS,
   EXTRACTOR_KEYS,
   validateStageList,
   validatePipelineSpec,
@@ -94,6 +95,28 @@ describe('validateStageList', () => {
     expect(
       validateStageList([{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' } }, input: { x: { from: 'goal' } } }]),
     ).toMatch(/"input" is disallowed on a scripted stage/)
+  })
+
+  // Cross-family review finding (card #1837121171): a caller building a StageSpecV2
+  // in-process (definePipeline()'s author-time path, or any direct runner.start() caller)
+  // reaches validateStageList WITHOUT ever going through parseScriptedStageSpec's own
+  // bound check — so the cap must be enforced HERE too, not only at the untrusted-JSON
+  // parse boundary.
+  it('rejects scripted.calls past MAX_SCRIPTED_STAGE_CALLS via validateStageList DIRECTLY — the bound is not enforced only by the untrusted-JSON parser', () => {
+    expect(
+      validateStageList([{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, calls: MAX_SCRIPTED_STAGE_CALLS + 1 } }]),
+    ).toMatch(/scripted\.calls=9.*MAX_SCRIPTED_STAGE_CALLS/)
+  })
+
+  it('accepts scripted.calls at exactly MAX_SCRIPTED_STAGE_CALLS via validateStageList directly', () => {
+    expect(
+      validateStageList([{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, calls: MAX_SCRIPTED_STAGE_CALLS } }]),
+    ).toBeNull()
+  })
+
+  it('rejects scripted.calls:0 and a non-integer via validateStageList directly', () => {
+    expect(validateStageList([{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, calls: 0 } }])).not.toBeNull()
+    expect(validateStageList([{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, calls: 2.5 } }])).not.toBeNull()
   })
 
   it('rejects gateAfter:true on the LAST stage (no downstream stage to gate into)', () => {
@@ -244,6 +267,41 @@ describe('parsePipelineSpec', () => {
 
   it('rejects "scripted" that is not an object', () => {
     expect(parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: 'nope' }] })).toBeNull()
+  })
+
+  it('a scripted stage with no "calls" round-trips WITHOUT the key at all (byte-identical to a pre-fan-out spec)', () => {
+    const parsed = parsePipelineSpec({
+      ...base,
+      stages: [{ name: 'a', scripted: { model: 'openai/gpt-5.4', prompt: { from: 'goal' } } }],
+    })
+    expect(parsed?.stages[0]).toEqual({ name: 'a', scripted: { model: 'openai/gpt-5.4', prompt: { from: 'goal' } } })
+    expect(Object.keys((parsed?.stages[0] as { scripted: object }).scripted)).toEqual(['model', 'prompt'])
+  })
+
+  it('accepts "calls" at the MAX_SCRIPTED_STAGE_CALLS ceiling (8) and round-trips it', () => {
+    const parsed = parsePipelineSpec({
+      ...base,
+      stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, calls: MAX_SCRIPTED_STAGE_CALLS } }],
+    })
+    expect(parsed?.stages[0]).toEqual({ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, calls: MAX_SCRIPTED_STAGE_CALLS } })
+  })
+
+  it('rejects "calls" ONE PAST the ceiling — never silently clamped', () => {
+    expect(
+      parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, calls: MAX_SCRIPTED_STAGE_CALLS + 1 } }] }),
+    ).toBeNull()
+  })
+
+  it('rejects "calls: 0" — a stage that issues zero calls is not a stage', () => {
+    expect(parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, calls: 0 } }] })).toBeNull()
+  })
+
+  it('rejects a non-integer "calls"', () => {
+    expect(parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, calls: 2.5 } }] })).toBeNull()
+  })
+
+  it('rejects a non-numeric "calls"', () => {
+    expect(parsePipelineSpec({ ...base, stages: [{ name: 'a', scripted: { model: 'm', prompt: { from: 'goal' }, calls: '3' } }] })).toBeNull()
   })
 
   it('accepts an "artifactContent"-sourced input ref on an ordinary workflow stage too (the source is shared, not scripted-only)', () => {
