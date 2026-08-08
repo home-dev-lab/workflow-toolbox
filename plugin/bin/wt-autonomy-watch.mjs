@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { isServiceDegraded } from './lib/service-flag.mjs'
+import { classifyMandate } from './lib/autonomy-mandate.mjs'
 
 const MAX_TIMER_MS = 0x7fffffff
 const MAX_POLL_SECONDS = Math.floor(MAX_TIMER_MS / 1000)
@@ -247,25 +248,6 @@ function readMtimeMs(filePath) {
   }
 }
 
-// Reads the mandate marker's CONTENT — never its mtime. The marker is keyed on the project so a
-// restarted session can inherit it; a content-carried `declaredAtMs` is what makes freshness and
-// "who declared this" survive a `cp`/`touch` that would otherwise bump the mtime with no real
-// re-declaration behind it. Malformed or missing → not armed, exactly like `readQueueSnapshot`'s
-// `unknown` — a watcher that guesses stays silent, it does not wake on a guess.
-function readMandate(mandatePath) {
-  if (!existsSync(mandatePath)) return null
-  try {
-    const parsed = JSON.parse(readFileSync(mandatePath, 'utf8'))
-    const declaredAtMs = parsed?.declaredAtMs
-    const sessionId = parsed?.sessionId
-    if (typeof declaredAtMs !== 'number' || !Number.isFinite(declaredAtMs)) return null
-    if (typeof sessionId !== 'string' || sessionId.length === 0) return null
-    return { declaredAtMs, sessionId }
-  } catch {
-    return null
-  }
-}
-
 function readMarker(markerPath) {
   if (!existsSync(markerPath)) return null
   try {
@@ -286,9 +268,11 @@ function writeMarker(markerPath, payload) {
 
 function poll(context) {
   const now = Date.now()
-  const mandate = readMandate(context.mandatePath)
-  if (!mandate) return
-  if (now - mandate.declaredAtMs > context.mandateFreshnessMs) return
+  // ⚠ SAME CLASSIFICATION THE BANNER USES — see lib/autonomy-mandate.mjs for why this is a shared
+  // function rather than a second copy of "is this marker still fresh". Only 'live' proceeds;
+  // 'absent' and 'expired' both stay silent, for different reasons the banner distinguishes.
+  const mandate = classifyMandate(context.mandatePath, context.mandateFreshnessMs, now, context.sessionId)
+  if (mandate.kind !== 'live') return
 
   const transcriptMtimeMs = readMtimeMs(context.transcriptPath)
   if (transcriptMtimeMs === null) return
@@ -314,18 +298,17 @@ function poll(context) {
   // A session picking up a mandate it did not itself stamp says so, and says how old the mandate
   // is and which session stamped it — a reader can then judge whether that inheritance is still
   // wanted, rather than discovering only that "something woke me".
-  const inherited = mandate.sessionId !== context.sessionId
-  const ageMin = Math.round((now - mandate.declaredAtMs) / 60_000)
-  const provenance = inherited
-    ? ` (inherited from session ${mandate.sessionId}, mandate declared ${ageMin}min ago)`
+  const ageMin = Math.round(mandate.ageMin)
+  const provenance = mandate.inherited
+    ? ` (inherited from session ${mandate.declaredBy}, mandate declared ${ageMin}min ago)`
     : ''
 
   writeMarker(context.markerPath, {
     emittedAt: new Date(now).toISOString(),
     transcriptMtimeMs,
     mandateDeclaredAtMs: mandate.declaredAtMs,
-    mandateSessionId: mandate.sessionId,
-    inherited,
+    mandateSessionId: mandate.declaredBy,
+    inherited: mandate.inherited,
     idleForMs: now - transcriptMtimeMs,
     open: queue.open,
     next: queue.next,
@@ -396,28 +379,17 @@ const context = {
 // matching what the other three monitors already cost. That is deliberate: the case worth
 // seeing is exactly `mandate=absent`, and a banner suppressed in that case would be silent in
 // the only situation it exists for.
-// ⚠ Freshness AND provenance are read from the marker's CONTENT (`declaredAtMs`, `sessionId`),
-// never its mtime — the same discipline `readMandate` follows, for the same reason: a banner
-// judging freshness differently from the code it describes would announce "fresh" about a mandate
-// the watcher itself would treat as stale, which is worse than no banner — it moves the reader's
-// suspicion somewhere else. `present(own)` / `present(inherited)` / `stale(NNmin)` / `absent` /
-// `unreadable` are five distinct states because each calls for a different reader action: nothing,
-// nothing (but worth knowing), re-arm, `wt-autonomy-arm.mjs`, and fix a malformed file.
+// ⚠ SAME `classifyMandate` THE GATE USES (lib/autonomy-mandate.mjs), and that sentence is the
+// whole fix for the defect this replaces: `--status` and this banner used to each carry their own
+// freshness check, and they drifted — the gate correctly refused to fire on an expired mandate
+// while `--status` still reported `armed`, because it only ever checked the file's EXISTENCE.
+// Routing both readouts through one classifier makes that kind of drift structurally impossible —
+// there is no second copy left to disagree with this one.
 function mandateArmedState(mandatePath, freshnessMs, now, currentSessionId) {
-  if (!existsSync(mandatePath)) return 'absent'
-  let parsed
-  try {
-    parsed = JSON.parse(readFileSync(mandatePath, 'utf8'))
-  } catch {
-    return 'unreadable'
-  }
-  const declaredAtMs = parsed?.declaredAtMs
-  const declaredBy = parsed?.sessionId
-  if (typeof declaredAtMs !== 'number' || !Number.isFinite(declaredAtMs)) return 'unreadable'
-  if (typeof declaredBy !== 'string' || declaredBy.length === 0) return 'unreadable'
-  const ageMin = (now - declaredAtMs) / 60_000
-  if (now - declaredAtMs > freshnessMs) return `stale(${ageMin.toFixed(0)}min)`
-  return `present(${declaredBy === currentSessionId ? 'own' : 'inherited'})`
+  const mandate = classifyMandate(mandatePath, freshnessMs, now, currentSessionId)
+  if (mandate.kind === 'absent') return 'absent'
+  if (mandate.kind === 'expired') return `stale(${mandate.ageMin.toFixed(0)}min)`
+  return `present(${mandate.inherited ? 'inherited' : 'own'})`
 }
 
 // ⚠ Freshness is read the SAME WAY `poll()` reads it — from the snapshot's own `at` field, never

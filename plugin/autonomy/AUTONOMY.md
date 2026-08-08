@@ -86,6 +86,12 @@ still fresh for this project rather than losing it. Inheritance is bounded by a 
 itself declare, the wake it produces says so explicitly (`inherited from session <id>, mandate
 declared NNmin ago`) — so this never wakes anyone silently.
 
+⚠ **Checking `wt-autonomy-arm.mjs --status` and the watcher's own banner never disagree**, because
+both read one shared classification of the same marker. Asking "do I still have a mandate?" gets
+one of three honest answers — `armed` (live), `expired` (present but past the window, will not
+fire — re-arm with no arguments), or `not armed` (nothing declared) — never `armed` about a
+mandate that has already stopped counting.
+
 ## 6. A budget limit is a door, not a wall
 
 Cross it, do not wait in front of it. Unspent budget inside a window is gone; an interrupted arc

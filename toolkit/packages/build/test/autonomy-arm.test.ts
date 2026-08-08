@@ -161,3 +161,93 @@ describe('the watcher banner names what supplies each missing precondition', () 
     expect(result.stdout).not.toContain('wt-autonomy-arm.mjs')
   })
 })
+
+// `--status` and the watcher used to each carry their own freshness check, and disagreed about the
+// SAME marker at the SAME instant: the watcher correctly reported `mandate=stale(540min) · CANNOT
+// FIRE` while `--status` still said `armed`. Both now share one classifier
+// (lib/autonomy-mandate.mjs) — these lock the three states `--status` must distinguish, and that
+// it never again reports "armed" about a marker the watcher would refuse to honour.
+function writeMandate(mandatePath: string, sessionId: string, declaredAtMs: number) {
+  writeFileSync(
+    mandatePath,
+    `${JSON.stringify({ sessionId, declaredAtMs, declaredAt: new Date(declaredAtMs).toISOString() })}\n`,
+  )
+}
+
+describe('--status distinguishes live, expired and absent — and agrees with the watcher', () => {
+  it('a fresh mandate reports armed/live through exit code 0', () => {
+    const s = scaffold()
+    writeMandate(s.mandatePath, s.sessionId, Date.now() - 5 * 60_000)
+
+    const result = run(ARM, s.env, [...s.args, '--status'])
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('AUTONOMY MANDATE: armed')
+    expect(result.stdout).not.toContain('expired')
+  })
+
+  it('a mandate past the freshness window reports EXPIRED — never armed — through a DISTINCT exit code', () => {
+    const s = scaffold()
+    writeMandate(s.mandatePath, s.sessionId, Date.now() - 9 * 60 * 60_000) // 9h ago, default window is 8h
+
+    const result = run(ARM, s.env, [...s.args, '--status'])
+
+    // ⚠ The regression this whole block exists to lock: this line must NEVER read "armed" about a
+    // marker that has already expired — that was the exact defect reported (watcher said
+    // `CANNOT FIRE`, --status said `armed`, same file, same instant).
+    expect(result.stdout).not.toContain('AUTONOMY MANDATE: armed')
+    expect(result.stdout).toContain('AUTONOMY MANDATE: expired')
+    expect(result.stdout).toContain('will NOT fire')
+    expect(result.status).toBe(3)
+    expect(result.status).not.toBe(0)
+    expect(result.status).not.toBe(1) // distinct from "no marker at all"
+  })
+
+  it('no marker at all reports not armed through exit code 1 — distinct from expired', () => {
+    const s = scaffold()
+
+    const result = run(ARM, s.env, [...s.args, '--status'])
+
+    expect(result.stdout).toContain('AUTONOMY MANDATE: not armed')
+    expect(result.stdout).not.toContain('expired')
+    expect(result.status).toBe(1)
+  })
+
+  it('the watcher banner and --status AGREE about the same expired marker at the same instant — the regression this locks', () => {
+    const s = scaffold()
+    const now = Date.now()
+    writeMandate(s.mandatePath, s.sessionId, now - 9 * 60 * 60_000)
+
+    const status = run(ARM, s.env, [...s.args, '--status'])
+    const watch = run(WATCH, { ...s.env, CLAUDE_CONFIG_DIR: join(s.root, 'config') }, ['--once', '--project', s.projectDir])
+
+    // The watcher's banner says CANNOT FIRE / stale; --status must say the equivalent, never
+    // "armed" — the two tools reporting on one file must never contradict each other.
+    expect(watch.stdout).toContain('mandate=stale(')
+    expect(watch.stdout).toContain('CANNOT FIRE')
+    expect(status.stdout).not.toContain('AUTONOMY MANDATE: armed')
+    expect(status.stdout).toContain('expired')
+  })
+
+  it('the watcher banner and --status AGREE about the same LIVE marker at the same instant', () => {
+    const s = scaffold()
+    const now = Date.now()
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
+    // A fresh queue snapshot too, so the watcher's banner isn't independently blocked by the
+    // OTHER precondition (queue) — this test is about the mandate readout agreeing, not about
+    // whether every precondition happens to be satisfied.
+    const queueSlug = `${s.projectDir.replace(/[^A-Za-z0-9]/g, '-').slice(0, 120)}-${createHash('sha1').update(s.projectDir).digest('hex').slice(0, 12)}`
+    writeFileSync(
+      join(s.stateHome, 'wt-queue-gate', `queue-${queueSlug}.json`),
+      `${JSON.stringify({ at: now, open: 1, next: 'CARD-X keep going' })}\n`,
+    )
+
+    const status = run(ARM, s.env, [...s.args, '--status'])
+    const watch = run(WATCH, { ...s.env, CLAUDE_CONFIG_DIR: join(s.root, 'config') }, ['--once', '--project', s.projectDir])
+
+    expect(watch.stdout).toContain('mandate=present')
+    expect(watch.stdout).not.toContain('CANNOT FIRE')
+    expect(status.stdout).toContain('AUTONOMY MANDATE: armed')
+    expect(status.status).toBe(0)
+  })
+})

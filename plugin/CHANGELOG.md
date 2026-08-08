@@ -3,6 +3,25 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.148.0] - 2026-08-08
+
+### Fixed
+
+- **`wt-autonomy-arm.mjs --status` no longer says `armed` about a mandate the watcher has
+  already refused to fire on.** 0.147.0 keyed the mandate marker on the project so a restart
+  can inherit it, but shipped the freshness check TWICE — once in the watcher's own poll and
+  banner, once in `--status`'s own report. They drifted immediately: given the same 9-hour-old
+  marker at the same instant, the watcher correctly printed `mandate=stale(540min) · CANNOT
+  FIRE`, while `--status` still printed `AUTONOMY MANDATE: armed`, because it only ever checked
+  whether the file existed, never its age. A person asking "do I still have a mandate?" got a
+  confident, wrong answer at the one moment they thought to check. Both readouts now call one
+  shared classifier (`plugin/bin/lib/autonomy-mandate.mjs`), so there is no second copy left to
+  disagree. `--status` reports exactly one of three states, each with its own exit code: `0`
+  armed and live, `3` present but **expired** — past the freshness window, will not fire, named
+  with its age and told to re-arm — and `1` no marker at all. `3` is new and distinct from `1`
+  on purpose: "no mandate" and "a mandate that will not fire" are different facts a caller may
+  need to branch on differently.
+
 ## [0.147.0] - 2026-08-08
 
 ### Fixed

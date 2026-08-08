@@ -38,13 +38,24 @@
 //   node wt-autonomy-arm.mjs --status                 # report without writing
 //   node wt-autonomy-arm.mjs --project <dir>           # target a project other than cwd (tests, tooling)
 //
-// Every line goes to STDOUT and the exit code carries the verdict: 0 armed/disarmed/armed-status,
-// 1 not armed (for --status), 2 for a usage or environment error. A caller can therefore branch on
-// the code without parsing prose.
+// Every line goes to STDOUT and the exit code carries the verdict: 0 armed/disarmed/live-status,
+// 1 no marker at all (for --status), 2 for a usage or environment error, 3 a marker exists but is
+// EXPIRED — past the freshness window, present on disk, will not fire (for --status). 3 is a
+// distinct code from 1 deliberately: "no marker" and "a marker that will not fire" are different
+// facts a caller may need to branch on differently, and collapsing them back into one code would
+// re-create in the exit status the exact ambiguity this file's `--status` text now refuses to
+// carry in prose. A caller can therefore branch on the code without parsing prose.
+//
+// ⚠ `--status` and the watcher used to each carry their OWN freshness check, and they drifted: the
+// watcher correctly refused to fire on an expired mandate while `--status` still reported `armed`,
+// because it only checked the marker's EXISTENCE, never its age. Both now call the SAME
+// `classifyMandate` in lib/autonomy-mandate.mjs — see that file for why a shared classifier is the
+// actual fix, not a second, more careful copy of the same check.
 
-import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import { writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
+import { classifyMandate } from './lib/autonomy-mandate.mjs'
 
 function out(line) {
   process.stdout.write(`${line}\n`)
@@ -91,21 +102,32 @@ const stateHome = process.env.XDG_STATE_HOME || path.join(homedir(), '.local', '
 const stateDir = path.join(stateHome, 'wt-queue-gate')
 const mandateDir = process.env.WT_AUTONOMY_WATCH_MANDATE_DIR || stateDir
 const mandatePath = path.join(mandateDir, `engine-${projectSlug(projectDir)}.json`)
+// ⚠ SAME DEFAULT AND SAME ENV VAR AS THE WATCHER — a status readout that used its own default (or
+// its own env var name) could report "live" past the instant the watcher would call it expired,
+// which is exactly the class of drift this file exists to close.
+const mandateFreshnessMs = Number(process.env.WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES || 480) * 60_000
 
 if (statusOnly) {
-  if (existsSync(mandatePath)) {
-    let declaredAt = 'unknown'
-    let declaredBy = 'unknown'
-    try {
-      const parsed = JSON.parse(readFileSync(mandatePath, 'utf8'))
-      declaredAt = parsed?.declaredAt ?? 'unknown'
-      declaredBy = parsed?.sessionId ?? 'unknown'
-    } catch {
-      declaredAt = 'unreadable'
-    }
-    const inherited = declaredBy !== 'unknown' && declaredBy !== sessionId
-    out(`AUTONOMY MANDATE: armed (declared ${declaredAt} by session ${declaredBy}${inherited ? ', inherited by this session' : ''}) — ${mandatePath}`)
+  const mandate = classifyMandate(mandatePath, mandateFreshnessMs, Date.now(), sessionId)
+  if (mandate.kind === 'live') {
+    const declaredAt = new Date(mandate.declaredAtMs).toISOString()
+    out(
+      `AUTONOMY MANDATE: armed (declared ${declaredAt} by session ${mandate.declaredBy}` +
+        `${mandate.inherited ? ', inherited by this session' : ''}) — ${mandatePath}`,
+    )
     process.exit(0)
+  }
+  if (mandate.kind === 'expired') {
+    const declaredAt = new Date(mandate.declaredAtMs).toISOString()
+    // ⚠ NEVER "armed". A marker that exists but will not fire is closer to "not armed" than to
+    // "armed" for a reader deciding whether to act — the whole defect this replaces was exactly
+    // this readout saying `armed` about a mandate the gate had already refused to honour.
+    out(
+      `AUTONOMY MANDATE: expired (declared ${declaredAt} by session ${mandate.declaredBy}, ` +
+        `${mandate.ageMin.toFixed(0)}min ago — past the freshness window, will NOT fire) — ${mandatePath}. ` +
+        'Run with no arguments to re-arm.',
+    )
+    process.exit(3)
   }
   out(`AUTONOMY MANDATE: not armed — nothing at ${mandatePath}`)
   process.exit(1)
