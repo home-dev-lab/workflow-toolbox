@@ -55,6 +55,15 @@ spawned agent). [documented]
 > `parseConfig(args)` → `WorkflowConfig`. The raw-runtime primitives those build on
 > (`agentType`, `effort`, per-agent `model`) are documented below.
 >
+> ⚠ Every route above still launches a Claude subagent — `codex:codex-rescue` and
+> `workflow-toolbox:opencode-verifier` shell out to an external CLI from inside a
+> Claude agent's own turn, so a workflow using them never runs with zero Claude
+> models, and the pattern is slated for removal
+> (`references/model-and-agent-routing.md`'s caveat). `agent()` has no primitive that
+> reaches an external model directly — a stage with no Claude model at all is a
+> pipeline's `scripted` stage (`references/orchestrator-pipelines.md`), a different
+> artifact from a workflow.
+>
 > **Scaffolding a workflow programmatically:** `scaffoldWorkflow(spec)` (from
 > `@workflow-toolbox/scaffold`, the emitter behind `workflow-toolbox scaffold` — see
 > the `toolkit-scaffold` skill for the authoring workflow) is a pure function —

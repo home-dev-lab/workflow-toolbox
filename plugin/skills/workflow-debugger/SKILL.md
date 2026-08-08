@@ -123,6 +123,36 @@ The run therefore lands as a `script-throw`; the debugger matches that error sig
 and attaches a **schema-hint** finding telling you to fix the schema and re-run — the
 "done" agent's cache holds no usable result, so resuming buys nothing for that call.
 
+## Reached no external model (a diagnosable class, not a mystery)
+
+A run that was supposed to route a role to a cross-family bridge (`codex:codex-rescue`,
+`workflow-toolbox:opencode-verifier`) and quietly never called out is a known cause,
+not an open question — check it directly rather than re-reading the whole journal.
+
+⚠ **A non-empty answer is NOT evidence a call happened.** The wrapper agent has a
+model of its own and can self-answer instead of shelling out — measured. **The badge
+shown in the run UI is uninformative too, and for two different reasons depending on
+the lane shape**: on the wrapper path it shows the WRAPPER's OWN model (e.g. `haiku`)
+whether or not the CLI ran; on a `scripted` pipeline stage it shows the model STRING
+your own spec sent, which confirms only that your code recorded what it asked for.
+Neither badge tells you whether the external call actually happened.
+
+What DOES discriminate — read the per-agent transcript (or the pipeline's stage
+record) directly:
+
+- **Wrapper agentType (a workflow role routed to `codex:codex-rescue` /
+  `opencode-verifier`)**: look for a real external-CLI `tool_use` in that agent's own
+  transcript, quoted with its `--model` flag. No such call in the transcript = no
+  external model reached, whatever the agent's final answer reads like.
+- **Scripted pipeline stage**: the model string alone proves nothing (see above); what
+  travels across lane shapes is `externalSessionId` (the external tool's OWN id
+  format, not something our code mints) plus non-trivial, non-round token accounting —
+  `reasoning_tokens` especially. A self-answer has no reason to produce those.
+
+If the class fires, name it plainly rather than describing the run as merely "wrong" —
+"the external model was never reached; the wrapper answered in its place" is a
+different, more actionable finding than "the review missed something."
+
 ## Degraded runs — silently-denied tool calls (blind reviews/plans/impls)
 
 A subagent whose tool call is **silently denied** — the auto-mode permission classifier
