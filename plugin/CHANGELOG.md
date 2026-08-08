@@ -3,6 +3,35 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.150.1] - 2026-08-08
+
+### Fixed
+
+- **`capability-scout` (a shipped, `whenToUse`-advertised example workflow) failed
+  immediately with `agent type 'code-scout' not found`, on both the Workflow tool and a
+  minimal single-stage control run.** Its one agentType (`code-scout`) is a hand-authored
+  capability-registry stand-in, resolved ONLY by `wt-observe launch` from the sidecar
+  `capability-scout.capabilities.json` — the Workflow tool (Path A) has no capability-
+  resolution hook, so an adopter following the workflow's own invitation to "launch it"
+  through the ordinary Workflow tool met a hard, unexplained failure on first contact with
+  the capability-registry example. Its `whenToUse` now states the `wt-observe launch`
+  requirement as its first sentence, in REQUIRES language, instead of a plain suggestion.
+  The custom agentType itself is kept — it is the point of the example — rather than
+  silently swapped for a stock type, which would have removed the very mechanism the
+  workflow exists to demonstrate.
+- **New mechanical gate,
+  `toolkit/packages/build/test/workflow-agent-resolvability.test.ts`**: every workflow
+  under `toolkit/examples/*.workflow.ts` (derived from the directory, never a hardcoded
+  list) is checked for a literal, hardcoded `agentType` a stock install cannot resolve.
+  A workflow may deliberately require one, named in the test's own
+  `JUSTIFIED_NONSTOCK_AGENT_TYPES` map with a reason (mirrors the existing
+  `guard-journal-family.test.ts` justified-exclusions shape) — but only when its own
+  `whenToUse` states the requirement in its first sentence, checked by the same gate. A
+  survey of every shipped example confirmed `capability-scout` was the ONLY one hardcoding
+  a non-stock agentType with no user opt-in; every other custom-routing knob in this repo
+  (`agentTypes.review`, `agentTypes.verify`, `agentTypes.inventory`, …) is optional,
+  probe-gated, and falls back to a stock Claude type by construction.
+
 ## [0.150.0] - 2026-08-08
 
 ### Added

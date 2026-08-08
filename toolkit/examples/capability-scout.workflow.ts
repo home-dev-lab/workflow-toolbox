@@ -45,7 +45,7 @@ export default defineWorkflow({
     description:
       'Reference example for the per-role capability registry: one code-intelligence agent whose provider is resolved at launch from a hand-written sidecar — runs unchanged whether the machine resolves a symbolic code-intelligence provider or degrades to grep/glob.',
     whenToUse:
-      'Study or e2e the capability sidecar/resolver path. Launch it with wt-observe launch capability-scout, WT_CAPABILITY_REGISTRY set (resolved) or unset (degraded). Not production work — the locate task is a fixture.',
+      'REQUIRES wt-observe launch capability-scout — its one agent (code-scout) is resolved ONLY from the launch-time capability sidecar and this script FAILS immediately (unknown agent type) under the Workflow tool or any other launch path. Study or e2e the capability sidecar/resolver path, with WT_CAPABILITY_REGISTRY set (resolved) or unset (degraded). Not production work — the locate task is a fixture.',
     phases: [
       {
         title: 'Scout',
