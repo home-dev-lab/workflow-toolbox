@@ -568,11 +568,23 @@ function stripRuleBanner(text) {
   return text.slice(nl + 1).replace(/^\n+/, '')
 }
 
-/** The full installed file: content + a banner stamped with content's fingerprint. */
-function renderItem(set, item, version, root) {
-  const content = itemContent(set, item, root)
+/** The full installed file: content + a banner stamped with the fingerprint of the content
+ *  ACTUALLY WRITTEN. When `oldContent` is given (the file about to be overwritten, agents set
+ *  only), any local single-line frontmatter field it carries — one the shipped def does not
+ *  itself define — is spliced into the content BEFORE the banner is computed, so the stamped
+ *  fingerprint covers exactly what lands on disk. Stamping the SHIPPED-ONLY content's hash and
+ *  splicing a preserved field in afterward (the prior shape) writes a file that can never
+ *  reproduce its own banner — `classify()` reads it back as EDITED forever, even though the
+ *  installer just wrote it from its own template a moment earlier. Returns
+ *  `{ text, preserved }`; `preserved` is `[]` when there is nothing local to carry (the common
+ *  case, and the only case for the rules/autonomy sets, which pass no `oldContent`). */
+function renderItem(set, item, version, root, oldContent = null) {
+  const rawContent = itemContent(set, item, root)
+  const { content, preserved } =
+    set.kind === 'agents' ? preserveLocalFrontmatter(rawContent, oldContent) : { content: rawContent, preserved: [] }
   const b = banner(version, fingerprint(content))
-  return set.kind === 'agents' ? insertAgentBanner(content, b) : `${b}\n\n${content}`
+  const text = set.kind === 'agents' ? insertAgentBanner(content, b) : `${b}\n\n${content}`
+  return { text, preserved }
 }
 
 // --- Frontmatter preservation across a re-adoption -------------------------------------------
@@ -654,18 +666,24 @@ function spliceIntoFrontmatter(frontmatterSource, extraLines) {
 }
 
 /** Carry any LOCAL, single-line frontmatter key from `oldContent` (the file about to be
- *  overwritten) into `shippedRendered` (the fresh banner+content about to replace it), for
- *  every key the shipped def does not itself define. Returns `{ text, preserved }` — `text` is
- *  `shippedRendered` unchanged and `preserved` is `[]` when there is nothing local to carry
+ *  overwritten) into `rawShippedContent` (the PLAIN shipped text — no banner yet), for every
+ *  key the shipped def does not itself define. Returns `{ content, preserved }` — `content` is
+ *  `rawShippedContent` unchanged and `preserved` is `[]` when there is nothing local to carry
  *  (silent, common case — the second sense of the card's closure criterion). `oldContent` may
  *  be a previously-banner-stamped copy; its banner line is stripped first so the banner's own
  *  HTML-comment line is never mistaken for a frontmatter key (it lives after the frontmatter
- *  anyway, so this only matters for defensiveness). */
-function preserveLocalFrontmatter(shippedRendered, oldContent) {
-  if (oldContent == null) return { text: shippedRendered, preserved: [] }
-  const shippedBlock = frontmatterBlock(shippedRendered)
+ *  anyway, so this only matters for defensiveness).
+ *
+ *  ⚠ Deliberately operates on the UNBANNERED content, before `renderItem` stamps the banner —
+ *  a caller that spliced a preserved field in AFTER the banner was computed would ship a
+ *  banner whose fingerprint covers content the file does not actually hold, which is exactly
+ *  the defect this function used to cause: the installer would write a file from its own
+ *  template and `--check` would immediately read it back as EDITED. */
+function preserveLocalFrontmatter(rawShippedContent, oldContent) {
+  if (oldContent == null) return { content: rawShippedContent, preserved: [] }
+  const shippedBlock = frontmatterBlock(rawShippedContent)
   const oldBlock = frontmatterBlock(stripAgentBanner(oldContent))
-  if (!shippedBlock || !oldBlock) return { text: shippedRendered, preserved: [] }
+  if (!shippedBlock || !oldBlock) return { content: rawShippedContent, preserved: [] }
   const shippedKeys = simpleFrontmatterKeys(shippedBlock)
   const oldKeys = simpleFrontmatterKeys(oldBlock)
   const extraLines = []
@@ -676,8 +694,8 @@ function preserveLocalFrontmatter(shippedRendered, oldContent) {
       preserved.push(key)
     }
   }
-  if (extraLines.length === 0) return { text: shippedRendered, preserved: [] }
-  return { text: spliceIntoFrontmatter(shippedRendered, extraLines), preserved }
+  if (extraLines.length === 0) return { content: rawShippedContent, preserved: [] }
+  return { content: spliceIntoFrontmatter(rawShippedContent, extraLines), preserved }
 }
 
 /** The line carrying the banner: line 1 for a rule, the line after the frontmatter for
@@ -1510,8 +1528,7 @@ function processSet(set, dir, args, version, root) {
         // A symlink is REPLACED, never written THROUGH: unlink the link first (its real
         // target is left untouched), then write a regular managed file in its place.
         if (c.state === 'symlink') fs.rmSync(target, { force: true })
-        const shippedRendered = renderItem(set, item, version, root)
-        const { text: finalText, preserved } = preserveLocalFrontmatter(shippedRendered, oldContent)
+        const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent)
         if (preserved.length > 0) {
           process.stdout.write(
             `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,

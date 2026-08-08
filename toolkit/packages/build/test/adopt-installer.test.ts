@@ -297,6 +297,78 @@ describe('adopt installer — frontmatter preservation across --force (card #182
     expect(frontmatter).toContain('model: sonnet')
   })
 
+  // Card #1837055541864564170: the banner used to be stamped with the SHIPPED-ONLY content's
+  // fingerprint, then the preserved field was spliced in AFTER — so a file the installer had
+  // just written from its own template could never reproduce its own stamp. `--check`
+  // immediately read it back as EDITED, permanently excluding it from every future `--install`
+  // (only `--force` could touch it again, and `--force` re-created the same divergence).
+  it('a preserved pin re-reads UP-TO-DATE immediately after the --force that wrote it (round trip)', () => {
+    const d = mkDir()
+    run(['--set', 'agents', '--install'], d)
+    const p = agentPath(d, 'pilot.md')
+    const withPin = readFileSync(p, 'utf8').replace(/^(description:.*\n)/m, '$1model: sonnet\n')
+    writeFileSync(p, withPin)
+
+    const out = run(['--set', 'agents', '--install', '--force'], d)
+    expect(out).toMatch(/pilot\.md: OVERWROTE/)
+    expect(out).toContain('pilot.md: PRESERVING local frontmatter field(s) not defined by the shipped def: model')
+
+    // The install-then-check the card's definition of done names: the file the installer just
+    // wrote, re-checked in the very next invocation.
+    const check = run(['--set', 'agents', '--check'], d)
+    expect(check, 'a copy the installer just wrote must read back UP-TO-DATE, not EDITED').toContain(
+      'pilot.md: UP-TO-DATE',
+    )
+    expect(check).not.toContain('pilot.md: EDITED')
+    // The pin itself must still be there — a passing check on an empty/truncated file would be
+    // a false green.
+    expect(readFileSync(p, 'utf8')).toContain('model: sonnet')
+  })
+
+  // Direction 2 of the round-trip lock: proves the fix did not simply blind the detector. A
+  // genuine hand edit to the BODY (never touched by frontmatter preservation) must still read
+  // EDITED after the fix, exactly as before it.
+  it('a genuine body edit on a preserved-pin copy still reads EDITED (the fix does not blind the detector)', () => {
+    const d = mkDir()
+    run(['--set', 'agents', '--install'], d)
+    const p = agentPath(d, 'pilot.md')
+    const withPin = readFileSync(p, 'utf8').replace(/^(description:.*\n)/m, '$1model: sonnet\n')
+    writeFileSync(p, withPin)
+    run(['--set', 'agents', '--install', '--force'], d)
+    expect(run(['--set', 'agents', '--check'], d)).toContain('pilot.md: UP-TO-DATE')
+
+    // Now hand-edit the BODY of the freshly round-tripped, UP-TO-DATE copy.
+    writeFileSync(p, readFileSync(p, 'utf8') + '\nA GENUINE HAND EDIT TO THE BODY\n')
+    const check = run(['--set', 'agents', '--check'], d)
+    expect(check, 'a real body edit must still be detected').toContain('pilot.md: EDITED')
+    expect(check).not.toContain('pilot.md: UP-TO-DATE')
+  })
+
+  // Direction 3: staleness against a NEWER plugin release must still be detectable on a
+  // preserved-pin copy — the fix must not make every future release read as "unchanged" just
+  // because the banner now reproduces itself right after install.
+  it('a preserved-pin copy installed at an older release is still detected STALE and refreshes', () => {
+    const d = mkDir()
+    run(['--set', 'agents', '--install'], d)
+    const p = agentPath(d, 'pilot.md')
+    const withPin = readFileSync(p, 'utf8').replace(/^(description:.*\n)/m, '$1model: sonnet\n')
+    writeFileSync(p, withPin)
+    run(['--set', 'agents', '--install', '--force'], d)
+    expect(run(['--set', 'agents', '--check'], d)).toContain('pilot.md: UP-TO-DATE')
+
+    // Simulate "this pin-carrying copy was installed at an older release": lower ONLY the
+    // banner's version token — the stamped fingerprint stays self-consistent with the file's
+    // own content, exactly like a copy genuinely installed under an earlier release and never
+    // touched since.
+    const before = readFileSync(p, 'utf8')
+    writeFileSync(p, before.replace(/(installed from workflow-toolbox )v\d+\.\d+\.\d+/, '$1v0.0.1'))
+
+    expect(run(['--set', 'agents', '--check'], d)).toMatch(/pilot\.md: STALE/)
+    const out = run(['--set', 'agents', '--install'], d) // no --force: STALE always refreshes
+    expect(out).toMatch(/pilot\.md: REFRESHED/)
+    expect(run(['--set', 'agents', '--check'], d)).toContain('pilot.md: UP-TO-DATE')
+  })
+
   it('a --force re-adoption on a file with NO local frontmatter field stays silent (no PRESERVING noise)', () => {
     const d = mkDir()
     run(['--set', 'agents', '--install'], d)
