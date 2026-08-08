@@ -17,14 +17,4 @@ export const HOOK_REGISTRATION_EXCLUSIONS = [
       'snapshotted the OLD path at session start still gets the adoption-staleness notice — never ' +
       'through the manifest itself, so it cannot appear there.',
   },
-  {
-    script: 'wt-queue-not-empty-gate-hook.mjs',
-    reason:
-      'NOT a deliberate exclusion — a register-or-retire decision pending against ' +
-      'wt-actionable-gate-hook.mjs, which may already supersede it (both are Stop hooks refusing ' +
-      'a silent stop while tracked work remains, and wt-actionable-gate-hook.mjs has a shipped ' +
-      'producer while this one has none). Registering it blindly would ship two Stop hooks ' +
-      'answering overlapping questions — that decision is the maintainer’s to make, tracked ' +
-      'on the hook-registration-audit project card.',
-  },
 ]

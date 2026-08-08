@@ -133,4 +133,21 @@ describe('hook registration coverage — REAL gate (card #1836844219583432122)',
       expect(entry.reason.trim().length, `empty reason for ${entry.script}`).toBeGreaterThan(10)
     }
   })
+
+  it('wt-queue-not-empty-gate-hook.mjs is DECLARED as a Stop hook — not merely absent from the exclusions map (card #1836844219583432122, register-not-retire)', () => {
+    // A shrinking exclusions map is not proof of registration: an entry could be removed while
+    // plugin.json is never touched, and the earlier gate above would not catch that (it only
+    // checks the shipped file is EITHER declared OR excluded). This asserts the stronger, real
+    // claim directly against the manifest — the one this whole card exists to make true.
+    const declared = declaredHookPaths(MANIFEST) as HookPathEntry[]
+    const stopHookBasenames = declared
+      .filter(({ event }) => event === 'Stop')
+      .map(({ rel }) => rel.split('/').pop())
+
+    expect(stopHookBasenames).toContain('wt-queue-not-empty-gate-hook.mjs')
+    expect(
+      (HOOK_REGISTRATION_EXCLUSIONS as Exclusion[]).some((e) => e.script === 'wt-queue-not-empty-gate-hook.mjs'),
+      'wt-queue-not-empty-gate-hook.mjs must no longer appear in the exclusions map once registered',
+    ).toBe(false)
+  })
 })

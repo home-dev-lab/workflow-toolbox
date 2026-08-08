@@ -102,13 +102,19 @@
 // single-project original (that copy stays wired at PROJECT scope, never machine-wide — a
 // project with no tracker at all must never inherit a guard it cannot satisfy).
 //
-// ⚠ SUPERSEDED, KEPT FOR BACKWARD COMPATIBILITY — this file is deliberately NOT wired into
-// plugin.json's Stop hooks array. It was replaced there by wt-actionable-gate-hook.mjs, a
-// consecutive-block, tracker-agnostic successor with the same silent-block emission shape. This
-// file was restored after a deletion attempt broke live sessions whose own settings.json still
-// references it directly by path — an adopter migrating off it should point their Stop hook at
-// wt-actionable-gate-hook.mjs instead. It still gets the same noise fix here because a
-// still-shipped, still-invocable file is still a defect for whoever invokes it.
+// ⚠ REGISTERED ALONGSIDE wt-actionable-gate-hook.mjs, NOT SUPERSEDED BY IT — a register-or-retire
+// decision resolved by a side-by-side comparison of the two hooks' predicates.
+// An earlier version of this comment called this file superseded and
+// deliberately unregistered — a side-by-side comparison refuted that: wt-actionable-gate-hook.mjs
+// is Planka-only, requires a project-local dependency parser, only PRODUCES its snapshot from
+// specific unfiltered board reads, and gives up unconditionally after BLOCK_MAX=3 consecutive
+// blocks. This file is tracker-agnostic, has no give-up cap, and fires on whatever marker an
+// adopter wires — coverage the registered hook structurally cannot reach (no tracker, a filtered
+// last read, a missing dependency parser, or a stale registered-hook snapshot past its own
+// give-up ceiling). Both are now wired into plugin.json's Stop hooks array; they can both refuse
+// the same stop, which is harmless (each throttles independently) and deliberate, not a bug.
+// Their emitted messages are already distinguishable ("Actionability gate: …" vs "open work
+// remains, nothing running · N open …") so a reader can tell which one spoke.
 
 import { readFileSync, statSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
