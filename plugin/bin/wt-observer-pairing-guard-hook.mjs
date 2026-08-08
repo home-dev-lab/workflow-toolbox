@@ -77,11 +77,26 @@ function projectSlug(cwd) {
 // Prefer it; fall back to the cwd-derived slug only when transcript_path is absent
 // (never observed on a real PostToolUse Agent event, but the fallback keeps this
 // fail-open rather than fail-silent on an unexpected harness payload shape).
+//
+// Card 1837122444: the SESSION ID segment of that directory must ALSO come from
+// transcript_path — never from the separate `session_id` hook-input field — for the
+// same reason. Measured 2026-08-08: a pilot's real agent-*.meta.json files sat under
+// the directory transcript_path's own filename implied (the session the resumed
+// conversation keeps writing to), while the hook input's `session_id` field carried a
+// DIFFERENT value at the moment the guard fired shortly after a restart. The previous
+// code already treated transcript_path as authoritative for the PARENT directory but
+// still joined it with the possibly-stale `sessionId` variable — half the fix. Reading
+// the session id from transcript_path's own basename closes the gap: it is the same
+// harness-provided field, already trusted for the parent directory, and needs no
+// cross-session search (which could match another session's directory and report a
+// pairing that never happened — the one thing this check must never do).
 function subagentsDirFor(cwd, sessionId, transcriptPath) {
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
   if (transcriptPath) {
-    const projectDir = path.dirname(path.resolve(transcriptPath))
-    return path.join(projectDir, sessionId, 'subagents')
+    const resolved = path.resolve(transcriptPath)
+    const projectDir = path.dirname(resolved)
+    const transcriptSessionId = path.basename(resolved, '.jsonl')
+    return path.join(projectDir, transcriptSessionId, 'subagents')
   }
   return path.join(configDir, 'projects', projectSlug(cwd), sessionId, 'subagents')
 }

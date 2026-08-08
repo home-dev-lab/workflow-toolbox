@@ -103,6 +103,17 @@ function runHook(payload: Record<string, unknown>, cfg: string): { stdout: strin
   return { stdout, context }
 }
 
+// The RESTART defect (card 1837122444): the guard's subagentsDirFor() joined
+// transcript_path's PARENT directory (correct, harness-provided, cwd-drift-proof) with
+// the SEPARATE `session_id` hook-input field — not with transcript_path's own filename.
+// After a session restart the harness can hand a hook a `session_id` that no longer
+// matches the session actually still being written to (the resumed conversation keeps
+// appending to its ORIGINAL transcript file, named by the ORIGINAL id). The observed
+// agent's real meta.json sits under the directory transcript_path implies; the guard
+// went looking under the (stale) session_id instead and found nothing — a checker
+// failure indistinguishable from "the observer really is missing".
+const STALE_SESSION_ID = '99999999-8888-7777-6666-555555555555'
+
 describe('wt-observer-pairing-guard-hook.mjs', () => {
   it('stays silent for a genuinely attached observer when cwd is a SUBDIRECTORY of the session root (umbrella-project shape)', () => {
     // THE bug case: the slug that would be re-derived from `subDir` (…-proj-workflow-toolbox)
@@ -249,6 +260,64 @@ describe('wt-observer-pairing-guard-hook.mjs', () => {
         cwd: projectRoot,
         session_id: SESSION_ID,
         transcript_path: transcriptPath,
+      },
+      cfg,
+    )
+    expect(context).toContain('LOST its declared observer')
+  })
+
+  it('stays silent for a genuinely attached observer even when the session_id hook field is STALE (post-restart shape) — resolves from transcript_path alone', () => {
+    // The real meta files sit under the directory transcript_path implies (SESSION_ID).
+    // The hook input's own `session_id` field carries a DIFFERENT, non-existent id — the
+    // exact shape measured after a restart: the resumed conversation keeps writing to its
+    // original transcript file while some other value shows up in `session_id`.
+    const f = fixture('restart-attached', 'restart-slug')
+    const { context } = runHook(
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { subagent_type: 'pilot-orchestrator' },
+        tool_response: { agent_id: AGENT_ID },
+        cwd: f.projectRoot,
+        session_id: STALE_SESSION_ID, // deliberately does not match SESSION_ID
+        transcript_path: f.transcriptPath, // still names SESSION_ID via its own filename
+      },
+      f.cfg,
+    )
+    expect(context).toBe('')
+  })
+
+  it('still WARNS on a genuinely absent observer under the same stale session_id shape — the fix does not become a blanket silencer', () => {
+    // Proves the restart-mismatch fix is not indistinguishable from "always trust the
+    // spawn": construct a real, resolvable directory (via transcript_path) whose observed
+    // agent genuinely has no observer, under the exact same stale-session_id payload shape
+    // as the passing test above. A fix that widened the search until something matched
+    // would report `pass` here; a correct one still flags the absence.
+    const root = mkRoot('restart-absent')
+    const cfg = join(root, 'cfg')
+    const projectRoot = join(root, 'proj')
+    mkdirSync(projectRoot, { recursive: true })
+    const agentsDir = join(projectRoot, '.claude', 'agents')
+    mkdirSync(agentsDir, { recursive: true })
+    writeFileSync(
+      join(agentsDir, 'pilot-orchestrator.md'),
+      '---\nname: pilot-orchestrator\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
+    )
+    const slugDir = join(cfg, 'projects', 'restart-absent-slug')
+    const subagentsDir = join(slugDir, SESSION_ID, 'subagents')
+    mkdirSync(subagentsDir, { recursive: true })
+    writeFileSync(join(subagentsDir, `agent-${AGENT_ID}.meta.json`), JSON.stringify({ agentType: 'pilot-orchestrator' }))
+    const transcriptPath = join(slugDir, `${SESSION_ID}.jsonl`)
+
+    const { context } = runHook(
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { subagent_type: 'pilot-orchestrator' },
+        tool_response: { agent_id: AGENT_ID },
+        cwd: projectRoot,
+        session_id: STALE_SESSION_ID, // stale, same as the passing test above
+        transcript_path: transcriptPath, // names SESSION_ID, where the real (empty) record lives
       },
       cfg,
     )
