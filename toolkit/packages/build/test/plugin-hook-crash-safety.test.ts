@@ -287,6 +287,13 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Bash',
         tool_input: { command: 'git merge branch && pnpm test' },
       }
+    case 'wt-missing-package-script-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'pnpm totally-made-up-script' },
+        cwd: sandbox.projectDir,
+      }
     case 'wt-pipestatus-bash-only-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',

@@ -3,6 +3,28 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.150.0] - 2026-08-08
+
+### Added
+
+- **`wt-missing-package-script-guard-hook.mjs` — warns when a `pnpm`/`npm run`/`yarn` command
+  invokes a script that isn't defined where it will actually run.** In a workspace, running a
+  workspace-root gate (`pnpm test`, `pnpm lint`) from inside a sub-package that doesn't define
+  that script fails with a package-manager error and a non-zero exit — and that failure reads,
+  most often right after a merge, as a real regression rather than the wrong-directory mistake
+  it actually is.
+
+  It tracks `cd`/`&&` chains across the command instead of reading the Bash tool's own reported
+  cwd once, so `cd toolkit && pnpm test` resolves against `toolkit`. This tracking exists
+  because an earlier, untracked version of this guard (in a private precursor) warned on that
+  exact correct command within minutes of shipping — the dominant real shape, missed by a
+  verification set written alongside the code it was verifying. Ships **warn-only**: it never
+  refuses a command, only names the script, the directory that doesn't define it, and — when an
+  ancestor package.json does — where to run it from instead.
+
+  See `docs/public/known-issues.md` for the full contract, including what it deliberately does
+  not cover.
+
 ## [0.149.0] - 2026-08-08
 
 ### Fixed
