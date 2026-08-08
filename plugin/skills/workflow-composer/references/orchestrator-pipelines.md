@@ -202,6 +202,13 @@ Build either with `npx workflow-toolbox pipeline examples/scripted-mixed.pipelin
 `pipelines/scripted-mixed.json`) and launch with `POST /api/pipeline { spec: <the built JSON> }`
 against the observe-ui server.
 
+⚠ **When the server serves more than one config dir, that route 404s.** It replies
+`unknown hub route /api/pipeline — multi-source mode requires a source prefix` and NAMES the
+valid prefixes in the same response, so the fix is one read away: post to
+`/s/<source-prefix>/api/pipeline` instead. The auth header is `x-observe-token`, never
+`Authorization: Bearer`. Measured 2026-08-08 — a first attempt with the unprefixed route was
+rejected exactly this way.
+
 **Status, stated at the reach its evidence has (2026-08-08):** a single-call scripted
 stage, and a mixed pipeline (one `workflow` stage → one `scripted` stage consuming its
 handoff via `{ from: 'artifactContent' }`), are **verified** — both ran live through the
