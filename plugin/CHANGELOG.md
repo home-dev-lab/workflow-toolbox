@@ -3,6 +3,19 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.153.0] - 2026-08-08
+
+### Added
+
+- **Two brief-quality clauses added to `wt-delegation-ladder.md`'s "Briefing an executor"
+  section, ported from a private rule after they proved durable and environment-free.**
+  The first: quote a task's definition of done as an unedited block in every brief — a brief
+  written from the briefer's own reading, rather than the task's text, can invert a closure
+  criterion, and the executor has only the brief to obey. The second: an example shown to
+  illustrate a register in a brief gets pasted into the delivered artifact verbatim, because
+  the executor cannot tell a demonstrated style from real content — show the shape in a form
+  that would be wrong to paste instead.
+
 ## [0.152.0] - 2026-08-08
 
 ### Fixed

@@ -146,6 +146,35 @@ Don't poll completion through a status/task-lookup tool: display name isn't an i
 accept, a lookup finding nothing proves nothing. Wait for completion notification, or arm own
 watcher on a real signal (file changes, process state) for independent wake-up.
 
+## Paste the definition of done verbatim — a paraphrase can invert a criterion
+
+A brief written from the briefer's reading of a task, not its text, can state the opposite of
+one of its closure criteria. Executor has one authoritative source — the brief — so it obeys
+correctly, gates green, lock proven red-then-green, report honest: a partial delivery that reads
+complete, because the missed criterion was never in front of it.
+
+Mechanism is compression, not carelessness: a brief keeps what feels load-bearing while the main
+mechanism occupies the mind; edge criteria — the legitimate empty, the zero result, the degraded
+path — read as peripheral, get rewritten into a scope fence. Same sentence, sign flipped.
+
+Quote the definition of done as an unedited block in the brief. Add invariants, traps and fences
+freely; never rewrite the criteria themselves. A criterion genuinely not applying this round is
+named NEXT TO the quoted text, so the deviation is visible instead of invisible by omission.
+
+Neither the gates nor the executor's own report can catch this — both are honest about what they
+knew. Only the arbiter's diff-read against the task holds both documents at once — a second,
+independent reason that read stays unconditional even on a clean-reporting delivery.
+
+## An example shown to illustrate a style is indistinguishable from one shown to use
+
+A brief that demonstrates a register with a filler sentence gets that sentence pasted into the
+artifact, verbatim, as real content — executor has one authoritative source, and a
+concrete-looking string in it reads as material, not metaphor. Nothing in the phrasing says which.
+
+Show the shape in a form that would be WRONG to paste: a real example already in the artifact, or
+a description with no quotable sentence in it. Never a plausible-looking template. Tell: a brief
+containing a sentence that could survive copy-paste into the deliverable unchanged.
+
 ## Four prohibitions that sharpen the ladder
 
 1. **Executing a fully-specified design = executor-lane work, not inline on a strong model.**
