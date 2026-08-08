@@ -79,6 +79,17 @@ export interface ScriptedStageSpec {
    *  MAX_SCRIPTED_STAGE_CALLS's own doc for why 8. ONLY meaningful when `prompt` is a single
    *  InputRef — REJECTED when `prompt` is an array (its length already says how many). */
   calls?: number
+  /** The expected result shape for THIS STAGE's call(s) — card #1837198164. Applies
+   *  UNIFORMLY to every call the stage issues, whichever fan shape (a single call, `calls`
+   *  redundant calls, or a distinct-prompt `prompt` array): one shape, N attempts, never a
+   *  per-call shape. A multi-lens review (distinct prompts) still wants ONE comparable verdict
+   *  shape back from every lens — that is the composition this field is FOR. Omitted (the
+   *  default): today's exact behaviour, byte-for-byte — no shape is requested, no `structured`
+   *  field appears on any call's result. See ScriptedResultShape's own doc for what "conform"
+   *  means and describeScriptedResultShape/checkScriptedResult for how compliance is
+   *  requested and checked (both pure — the runner owns getting from CLI text to a JSON value
+   *  and stitching the `structured` field onto each call's result). */
+  resultShape?: ScriptedResultShape
 }
 
 /** Hard cap on ScriptedStageSpec.calls — not overridable via PipelineSpec.limits (unlike
@@ -91,6 +102,73 @@ export interface ScriptedStageSpec {
  *  pipeline, an unrelated review). Authors who need more must reduce concurrency, not raise
  *  this ceiling — it is not exposed as a `limits` override. */
 export const MAX_SCRIPTED_STAGE_CALLS = 8
+
+/** The primitive field types a declared ScriptedResultShape can name — deliberately NOT a full
+ *  JSON-schema (this package stays zero-dependency, plain `typeof` checks only, same posture
+ *  as every other validator here). `'string[]'` is the one composite allowed, because a
+ *  findings/severity-list result is the common review shape this exists for. */
+export const SCRIPTED_RESULT_FIELD_TYPES = ['string', 'number', 'boolean', 'string[]'] as const
+
+export type ScriptedResultFieldType = (typeof SCRIPTED_RESULT_FIELD_TYPES)[number]
+
+/** An expected result shape for a scripted stage's external-lane call(s) — card #1837198164.
+ *  The lane is a CLI with no tool-call/schema protocol to lean on (opencode's own `--format
+ *  json` is telemetry NDJSON, never a validated verdict — see this project's own operational
+ *  notes): compliance can only be REQUESTED, via a prompt convention the runner appends to
+ *  every call this shape governs, and CHECKED after the fact against the model's raw response
+ *  text. A field named here is REQUIRED — an object missing it, or carrying the wrong
+ *  primitive type for it, does not conform (see checkScriptedResult). Extra, undeclared
+ *  fields in the response are ignored (a subset match, not an exact one) — the model
+ *  volunteering more than asked is not the failure mode this exists to catch. */
+export interface ScriptedResultShape {
+  fields: Record<string, ScriptedResultFieldType>
+}
+
+/** Render a ScriptedResultShape as the plain-language instruction appended to a call's prompt
+ *  — pure and deterministic (same shape in, same string out) so it can be unit-tested and
+ *  shared between the runner (which sends it) and any authoring-time preview. Field order is
+ *  the object's own insertion order (Object.entries), so an author who writes short/required
+ *  fields first controls the generation order the same way the structured-output capitulation
+ *  note recommends for StructuredOutput schemas — this convention rests on the SAME failure
+ *  mode (a long free-text field generated first starves a short required sibling), just
+ *  requested by prose instead of enforced by a schema validator. */
+export function describeScriptedResultShape(shape: ScriptedResultShape): string {
+  const fieldLines = Object.entries(shape.fields)
+    .map(([name, type]) => `- ${name}: ${type === 'string[]' ? 'an array of strings' : type}`)
+    .join('\n')
+  return (
+    `Respond with ONLY a single JSON object — no prose before or after it, no markdown code ` +
+    `fences — with exactly these fields:\n${fieldLines}`
+  )
+}
+
+export type ScriptedResultCheck = { ok: true; data: Record<string, unknown> } | { ok: false; reason: string }
+
+/** Check a parsed JSON value against a declared ScriptedResultShape — the runtime half of the
+ *  "conforming vs visibly-marked-as-not" invariant (card #1837198164's whole point). Pure: the
+ *  runner is responsible for getting from raw CLI text to a JSON value (JSON.parse, tolerant
+ *  of a markdown fence wrapper) BEFORE calling this — a parse failure is reported by the
+ *  runner itself as `{ok:false}`, never routed through here with a fabricated value. */
+export function checkScriptedResult(shape: ScriptedResultShape, value: unknown): ScriptedResultCheck {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return { ok: false, reason: `expected a JSON object, got ${value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value}` }
+  }
+  const obj = value as Record<string, unknown>
+  for (const [field, type] of Object.entries(shape.fields)) {
+    if (!(field in obj)) return { ok: false, reason: `missing required field "${field}"` }
+    const v = obj[field]
+    const typeOk =
+      type === 'string'
+        ? typeof v === 'string'
+        : type === 'number'
+          ? typeof v === 'number' && Number.isFinite(v)
+          : type === 'boolean'
+            ? typeof v === 'boolean'
+            : Array.isArray(v) && v.every((x) => typeof x === 'string')
+    if (!typeOk) return { ok: false, reason: `field "${field}" must be ${type}, got ${Array.isArray(v) ? 'array' : typeof v}` }
+  }
+  return { ok: true, data: obj }
+}
 
 /** One stage in a v2 pipeline spec: which workflow to run, how to build its args from prior
  *  state (`input`), how to extract its handoff artifact for the NEXT stage (`artifact`,
@@ -485,6 +563,26 @@ export function validatePipelineSpec(spec: PipelineSpec): string | null {
 const VALID_INPUT_FROM = new Set<string>(INPUT_REF_SOURCES)
 const VALID_EXTRACTOR_KEYS = new Set<string>(EXTRACTOR_KEYS)
 
+const VALID_SCRIPTED_RESULT_FIELD_TYPES = new Set<string>(SCRIPTED_RESULT_FIELD_TYPES)
+
+/** Parse an untrusted `resultShape` value into a ScriptedResultShape, or null — all-or-nothing
+ *  like every other malformed-field check in this parser. `fields` must be a non-empty object
+ *  whose every value is one of SCRIPTED_RESULT_FIELD_TYPES; a shape declaring zero fields
+ *  would request nothing checkable, so it is rejected rather than silently accepted as a no-op. */
+function parseScriptedResultShape(v: unknown): ScriptedResultShape | null {
+  if (typeof v !== 'object' || v === null) return null
+  const rawFields = (v as Record<string, unknown>)['fields']
+  if (typeof rawFields !== 'object' || rawFields === null || Array.isArray(rawFields)) return null
+  const entries = Object.entries(rawFields as Record<string, unknown>)
+  if (entries.length === 0) return null
+  const fields: Record<string, ScriptedResultFieldType> = Object.create(null) as Record<string, ScriptedResultFieldType>
+  for (const [name, rawType] of entries) {
+    if (typeof rawType !== 'string' || !VALID_SCRIPTED_RESULT_FIELD_TYPES.has(rawType)) return null
+    fields[name] = rawType as ScriptedResultFieldType
+  }
+  return { fields }
+}
+
 function parseInputRef(v: unknown): InputRef | null {
   if (typeof v !== 'object' || v === null) return null
   const from = (v as Record<string, unknown>)['from']
@@ -523,16 +621,28 @@ function parseScriptedStageSpec(v: unknown): ScriptedStageSpec | null {
       if (ref === null) return null // one bad element invalidates the whole array
       prompts.push(ref)
     }
-    return { model, prompt: prompts }
+    const arrayResult: ScriptedStageSpec = { model, prompt: prompts }
+    if (s['resultShape'] !== undefined) {
+      const resultShape = parseScriptedResultShape(s['resultShape'])
+      if (resultShape === null) return null
+      arrayResult.resultShape = resultShape
+    }
+    return arrayResult
   }
   const prompt = parseInputRef(rawPrompt)
   if (prompt === null) return null
+  const result: ScriptedStageSpec = { model, prompt }
   if (s['calls'] !== undefined) {
     const calls = s['calls']
     if (typeof calls !== 'number' || !Number.isInteger(calls) || calls < 1 || calls > MAX_SCRIPTED_STAGE_CALLS) return null
-    return { model, prompt, calls }
+    result.calls = calls
   }
-  return { model, prompt }
+  if (s['resultShape'] !== undefined) {
+    const resultShape = parseScriptedResultShape(s['resultShape'])
+    if (resultShape === null) return null
+    result.resultShape = resultShape
+  }
+  return result
 }
 
 function parseStageSpecV2(v: unknown): StageSpecV2 | null {
