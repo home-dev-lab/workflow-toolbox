@@ -61,6 +61,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents the shipped Planka producer and what it deliberately stays silent on.',
   },
   {
+    script: 'plugin/bin/wt-label-intent-producer-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the shipped label-intent-lens producer, its trigger, and what it deliberately stays silent on.',
+  },
+  {
     script: 'plugin/bin/wt-adopt-check-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this SessionStart adoption-state notice under Shipped Hooks, Guards & Monitors.',
@@ -652,6 +657,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     // Monitors" section — none had a doc surface before.
     sources: [
       'plugin/bin/wt-adopt-check-hook.mjs',
+      'plugin/bin/wt-label-intent-producer-hook.mjs',
       // Deprecated name kept as a shim so sessions already running when the rename landed do
       // not lose the hook. Same doc surface as the file it delegates to; delete both this line
       // and the shim one release after the rename.

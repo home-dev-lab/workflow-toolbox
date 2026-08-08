@@ -348,6 +348,19 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
           content: [{ type: 'text', text: JSON.stringify({ id: 'board-1', lists: [{ name: 'Next', cards: [] }] }) }],
         },
       }
+    case 'wt-label-intent-producer-hook.mjs':
+      // No toolkit/ vendored in this sandbox project — the hook must no-op cleanly rather
+      // than crash, exactly what a project that doesn't vendor label-intent-lens.ts should
+      // see (see label-intent-producer-hook.test.ts for the full ran/ok/notice matrix).
+      return {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'mcp__planka__get_board',
+        cwd: sandbox.projectDir,
+        tool_input: { boardId: 'b1' },
+        tool_response: {
+          content: [{ type: 'text', text: JSON.stringify({ id: 'board-1', lists: [{ name: 'Next', cards: [] }] }) }],
+        },
+      }
     default:
       throw new Error(`No synthetic payload defined for ${file}`)
   }
