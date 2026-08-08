@@ -32,6 +32,15 @@ All `toolkit/…` entries are reading-material sources (see
 the same-named file under `toolkit/workflows/` in the repo (e.g.
 `toolkit/workflows/pr-review.js`).
 
+**Need to chain whole workflow files with a human gate, or route a stage to an
+external model with zero Claude in it?** That's a different, higher-level
+construct — an **orchestrator pipeline** (`definePipeline()`, not
+`defineWorkflow()`) — not in this table. Four examples ship at
+`toolkit/examples/*.pipeline.ts` (not bundled here — a different family from
+the `.workflow.ts` sources above); read them via
+`plugin/skills/workflow-composer/references/shipped-compositions.md`
+(catalog) and `references/orchestrator-pipelines.md` (authoring contract).
+
 Whether to run any of this **as a workflow at all**, versus handing the goal
 to a `pilot` agent instead, is a separate question — see the "Which rung —
 dev-workflow family or a pilot?" section of `docs/public/dev-workflow.md`
