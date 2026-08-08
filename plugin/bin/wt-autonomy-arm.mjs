@@ -56,6 +56,7 @@ import { writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { classifyMandate } from './lib/autonomy-mandate.mjs'
+import { handleHelpFlag } from './lib/cli-help.mjs'
 
 function out(line) {
   process.stdout.write(`${line}\n`)
@@ -66,7 +67,22 @@ function fail(detail) {
   process.exit(2)
 }
 
+const HELP = `wt-autonomy-arm — declare or withdraw an autonomous mandate for THIS PROJECT, so
+wt-autonomy-watch.mjs is allowed to wake a session for it. Keyed on the project, not the
+session, so a restarted session inherits whatever mandate is still fresh.
+
+Usage:
+  node wt-autonomy-arm.mjs                  # declare a mandate for this project
+  node wt-autonomy-arm.mjs --disarm         # withdraw it
+  node wt-autonomy-arm.mjs --status         # report without writing
+  node wt-autonomy-arm.mjs --project <dir>  # target a project other than cwd (tests, tooling)
+
+Exit codes: 0 armed/disarmed/live-status · 1 no marker at all (--status) · 2 usage/env error ·
+3 a marker exists but is EXPIRED (--status).
+`
+
 const args = process.argv.slice(2)
+handleHelpFlag(args, HELP)
 const disarm = args.includes('--disarm')
 const statusOnly = args.includes('--status')
 let projectDir = process.cwd()

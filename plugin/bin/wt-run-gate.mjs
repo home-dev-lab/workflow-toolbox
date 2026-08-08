@@ -34,6 +34,19 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { handleHelpFlag } from './lib/cli-help.mjs'
+
+const HELP = `wt-run-gate — run ONE gate command and make its exit code non-bypassable: writes
+the gate's real exit code to <out-dir>/<name>.exit and its combined output to <name>.log, with
+no shell construct between the child finishing and that write.
+
+Usage:
+  node wt-run-gate.mjs --name typecheck --out-dir .claude/gate-logs \\
+    [--fail-pattern 'error TS\\d'] -- pnpm typecheck
+
+Exit code of this process = the gate's own exit code (forced to 1 if --fail-pattern matches the
+log despite exit 0). <out-dir>/<name>.exit holds the ground truth for a caller to read.
+`
 
 function fail(msg) {
   process.stderr.write(`wt-run-gate: ${msg}\n`)
@@ -41,6 +54,11 @@ function fail(msg) {
 }
 
 function parseArgs(argv) {
+  // --help must be recognised only BEFORE a literal '--' — anything after that marker is the
+  // gate command itself (e.g. `-- some-tool --help` must run some-tool, not print this usage).
+  const dashDashIndex = argv.indexOf('--')
+  const ownArgs = dashDashIndex === -1 ? argv : argv.slice(0, dashDashIndex)
+  handleHelpFlag(ownArgs, HELP)
   const args = { name: null, outDir: '.', failPattern: null, cmd: [] }
   let i = 0
   for (; i < argv.length; i++) {

@@ -1,6 +1,23 @@
 #!/usr/bin/env node
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
+import { handleHelpFlag } from './lib/cli-help.mjs'
+
+const HELP = `wt-check-observer-pairing — did a spawned agent actually get the read-only
+watchdog its definition declares via \`observer:\`? Reads meta.json files under a session's
+subagents directory and reports paired / declared-but-unresolved / not-applicable, per agent.
+
+Usage:
+  node wt-check-observer-pairing.mjs --subagents-dir <dir> (--agent-id <rawId> | --name <observedAgentName>)
+    [--window-sec 300] [--capture-dir <dir>]
+    --subagents-dir  the session's subagents/ directory (required)
+    --agent-id       the raw agent id to check (or --name)
+    --name           the declared spawn name to check (or --agent-id)
+    --window-sec     mtime-fallback correlation window in seconds (default 300)
+    --capture-dir    opt-in: archive the two meta.json files of an unresolved pairing here
+
+Exit codes carried on stdout JSON (\`status\`), never inferred from the process exit code alone.
+`
 
 function emit(statusCode, payload) {
   process.stdout.write(`${JSON.stringify(payload)}\n`)
@@ -8,6 +25,7 @@ function emit(statusCode, payload) {
 }
 
 function parseArgs(argv) {
+  handleHelpFlag(argv, HELP)
   const out = { subagentsDir: null, agentId: null, name: null, windowSec: 300, captureDir: null }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]

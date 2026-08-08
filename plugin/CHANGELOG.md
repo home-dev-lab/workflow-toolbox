@@ -3,6 +3,28 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.149.0] - 2026-08-08
+
+### Fixed
+
+- **`--help` and `-h` now work on every operator-facing `wt-*` CLI in `plugin/bin/`, instead
+  of being refused as an unknown flag.** Eighteen binaries — `wt-arc-watch.mjs`,
+  `wt-autonomy-arm.mjs`, `wt-autonomy-watch.mjs`, `wt-check-commit-signatures.mjs`,
+  `wt-check-observer-pairing.mjs`, `wt-command-repeat-check.mjs`, `wt-guard-journal-scan.mjs`,
+  `wt-lane-activity.mjs`, `wt-lane-consent-check.mjs`, `wt-lane-probe.mjs`,
+  `wt-memory-index-check.mjs`, `wt-pilot-card-reconcile.mjs`, `wt-push-scope-check.mjs`,
+  `wt-quota-watch.mjs`, `wt-run-gate.mjs`, `wt-spawn-registry-scan.mjs`,
+  `wt-stale-date-guard.mjs`, `wt-verdict-cap-check.mjs` — used to exit non-zero on `--help`,
+  the same as any typo'd flag; a script probing one of them for availability would read that as
+  "broken". They now print their own usage (most of it already existed as a header comment
+  nobody saw) and exit 0, while an actually-unknown flag still refuses with a non-zero exit —
+  the parser was not made permissive to get there. `wt-debug.mjs`, `wt-observe.mjs`,
+  `wt-lane-consent.mjs`, `wt-lane-postdiff-check.mjs`, and `wt-service-watch.mjs` already
+  behaved this way and needed no change. `wt-quota-probe.mjs` is the one deliberate exclusion —
+  it takes no arguments at all. A new gate, `cli-help.test.ts`, globs `plugin/bin/*.mjs` (minus
+  hooks and a named-and-justified exclusion list) so a CLI added later ships this by
+  construction, not by remembering to add it.
+
 ## [0.148.0] - 2026-08-08
 
 ### Fixed

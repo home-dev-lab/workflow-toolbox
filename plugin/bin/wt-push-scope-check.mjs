@@ -24,8 +24,21 @@
 // is being pushed; the script will not infer it for you.
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { handleHelpFlag } from './lib/cli-help.mjs';
+
+const HELP = `wt-push-scope-check — push-time guard: nothing lands in a publishable tree beyond
+what was actually authorized. Computes the commits about to be pushed (remote/branch..ref) and
+checks every one against an authorized scope ({"commits":[...]} or {"maxCount":N}).
+
+Usage:
+  wt-push-scope-check.mjs --remote <name> --branch <branch> --ref <refspec> --authorized <path.json>
+    --ref must be the EXACT ref about to be pushed (e.g. HEAD) — never omitted or assumed.
+
+Exit codes: 0 every commit is covered · non-zero: usage error or an uncovered commit was found.
+`;
 
 function parseArgs(argv) {
+  handleHelpFlag(argv, HELP);
   const out = { remote: null, branch: null, authorized: null, ref: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];

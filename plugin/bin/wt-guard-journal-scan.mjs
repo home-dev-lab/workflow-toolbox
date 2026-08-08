@@ -35,8 +35,33 @@
 //             that can't see the data must never print 0 and let it read as "clean".
 
 import { readGuardJournal } from './lib/guard-journal-read.mjs'
+import { handleHelpFlag } from './lib/cli-help.mjs'
+
+const HELP = `wt-guard-journal-scan — read the shared guard journal and report, per guard, how
+many times it BLOCKED or WARNED this week (or a chosen window). Presentation only — parsing
+lives in lib/guard-journal-read.mjs, shared with the SessionStart recurrence surface.
+
+Usage:
+  node wt-guard-journal-scan.mjs [--weeks N] [--all] [--json]
+    --weeks N   how many of the most recent week-files to include (default 1 = this week)
+    --all       include every week-file found, regardless of age
+    --json      machine-readable output
+
+Exit codes: 0 read cleanly (even if zero events) · 2 journal directory does not exist yet ·
+3 journal directory exists but is unreadable.
+`
 
 const argv = process.argv.slice(2)
+handleHelpFlag(argv, HELP)
+
+const KNOWN_FLAGS = new Set(['--weeks', '--all', '--json'])
+for (const token of argv) {
+  if (token.startsWith('--') && !KNOWN_FLAGS.has(token)) {
+    console.error(`wt-guard-journal-scan: unknown flag '${token}'`)
+    process.exit(2)
+  }
+}
+
 const arg = (flag, dflt) => {
   const i = argv.indexOf(flag)
   return i >= 0 && argv[i + 1] ? argv[i + 1] : dflt

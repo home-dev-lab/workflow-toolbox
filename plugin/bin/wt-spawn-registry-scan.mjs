@@ -53,11 +53,41 @@
 import { readFileSync, existsSync, readdirSync, statSync, appendFileSync, realpathSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
+import { handleHelpFlag } from './lib/cli-help.mjs';
+
+const HELP = `wt-spawn-registry-scan — read the spawn registry (written by
+wt-outbound-guard-hook.mjs) and report what is UNACCOUNTED FOR: an agent whose spawn record has
+no matching stop. It asks, it never concludes — silent-but-alive and dead look identical here.
+
+Usage:
+  node wt-spawn-registry-scan.mjs [--session <id>] [--quiet-min <n>] [--stale-transcript-min <n>]
+                                   [--cwd <path>] [--json] [--ack <name>]
+    --session               which session's registry to read (required when multiple exist)
+    --quiet-min             minutes of message-silence before an open agent is a CANDIDATE (default 20)
+    --stale-transcript-min  minutes with no transcript growth before a candidate is flagged (default 5)
+    --cwd                   project cwd used to locate this session's transcripts (default: cwd)
+    --json                  machine-readable output
+    --ack <name>            mark one agent as dealt with, so later scans stop reporting it
+    --reason <text>         optional note recorded alongside --ack
+
+Exit codes: 0 nothing to ask about · 1 at least one open+silent agent · 2 no registry ·
+3 refused ambiguous read/--ack without --session.
+`;
 
 const STATE_DIR = process.env.WT_OUTBOUND_GUARD_DIR
   || join(homedir(), '.local', 'state', 'wt-outbound-guard');
 
 const argv = process.argv.slice(2);
+handleHelpFlag(argv, HELP);
+
+const KNOWN_FLAGS = new Set(['--session', '--quiet-min', '--stale-transcript-min', '--cwd', '--json', '--ack', '--reason']);
+for (const token of argv) {
+  if (token.startsWith('--') && !KNOWN_FLAGS.has(token)) {
+    console.error(`wt-spawn-registry-scan: unknown flag '${token}'`);
+    process.exit(2);
+  }
+}
+
 const arg = (flag, dflt) => {
   const i = argv.indexOf(flag);
   return i >= 0 && argv[i + 1] ? argv[i + 1] : dflt;

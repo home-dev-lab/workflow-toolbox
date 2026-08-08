@@ -61,10 +61,23 @@ import { readQuotaCache, writeQuotaCacheAtomic, defaultQuotaCachePath } from './
 import { computeBackoffMs } from './lib/quota-backoff.mjs'
 import { computeWatcherCacheToleranceMs } from './lib/quota-cache-tolerance.mjs'
 import { hasCompleteWindows } from './lib/quota-window-completeness.mjs'
+import { handleHelpFlag } from './lib/cli-help.mjs'
 
 const DEFAULT_THRESHOLDS = '80,90,95'
 const DEFAULT_POLL_SECONDS = 300
 const DEFAULT_TIMEOUT_SECONDS = 60
+
+const HELP = `wt-quota-watch — poll the account's five-hour and seven-day usage windows and emit
+only on threshold crossing (80/90/95 default, ascending) and on RESET. Meant to be armed as a
+persistent Monitor. Model-token cost: zero, it is a script.
+
+Options:
+  --thresholds <csv>  ascending percent thresholds to cross (default: ${DEFAULT_THRESHOLDS})
+  --poll <seconds>    poll interval (default ${DEFAULT_POLL_SECONDS})
+  --timeout <seconds> probe subprocess timeout, must be < --poll (default ${DEFAULT_TIMEOUT_SECONDS})
+  --probe <path>      override the probe script (default: user config probe, else bundled)
+  --help, -h          print this text and exit 0
+`
 const MAX_PROBE_OUTPUT_BYTES = 64 * 1024
 const MAX_TIMER_SECONDS = Math.floor(0x7fffffff / 1000)
 const MINUTE_MS = 60 * 1000
@@ -119,6 +132,7 @@ function resolveProbePath(probeOverride) {
 }
 
 function parseArgs(argv) {
+  handleHelpFlag(argv, HELP)
   let thresholdsArg = DEFAULT_THRESHOLDS
   let poll = DEFAULT_POLL_SECONDS
   let timeout = DEFAULT_TIMEOUT_SECONDS
