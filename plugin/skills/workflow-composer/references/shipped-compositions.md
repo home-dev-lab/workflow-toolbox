@@ -173,13 +173,14 @@ not run directly as raw workflows. Their committed artifacts live under
 `toolkit/workflows/` (e.g. `toolkit/workflows/pr-review.js`) and run via
 `Workflow({ scriptPath: '…/pr-review.js' })`.
 
-### Two orchestrator-pipeline compositions (`definePipeline`, not `defineWorkflow`)
+### Four orchestrator-pipeline compositions (`definePipeline`, not `defineWorkflow`)
 
 Separate from the twenty-six `.workflow.ts` compositions above, `toolkit/examples/` also
-ships two `definePipeline()` sources — N whole workflow artifacts, optionally nested,
-optionally human-gated (see [orchestrator-pipelines.md](orchestrator-pipelines.md) for
-the authoring contract). They build via the `pipeline` CLI subcommand to
-`toolkit/pipelines/*.json`, not via `build` to `toolkit/workflows/`:
+ships four `definePipeline()` sources — N whole workflow artifacts, optionally nested,
+optionally human-gated, and optionally routed to a `scripted` (external-lane, zero-Claude)
+stage (see [orchestrator-pipelines.md](orchestrator-pipelines.md) for the authoring
+contract). They build via the `pipeline` CLI subcommand to `toolkit/pipelines/*.json`, not
+via `build` to `toolkit/workflows/`:
 
 - `feature-review.pipeline.ts` — the toolkit's own living documentation for
   `definePipeline()`: a nested plan → gate → implement stage, then a gated review
@@ -191,6 +192,20 @@ the authoring contract). They build via the `pipeline` CLI subcommand to
   workflow cannot show: three nested pipeline levels (root → L2 → L3) distributing all
   nine patterns across their stage workflows, a real human gate after the first root
   stage, and `loopUntilDone` used at both the outermost and innermost levels.
+- `scripted-fully.pipeline.ts` — the minimal proof that a pipeline can put **zero
+  Claude models** in the loop: one `scripted` stage, one call, the whole run on the
+  external (opencode/GPT) lane. **Verified**: ran live through the observe server with
+  a real external session id and reasoning-token accounting. See
+  [orchestrator-pipelines.md](orchestrator-pipelines.md#scripted-stages--reaching-an-external-model-with-zero-claude)
+  for the `scripted` stage's field shapes.
+- `scripted-mixed.pipeline.ts` — a Claude `workflow` stage (`wt-shape-e2e`, pinned
+  cheap: haiku + low effort in its own source) handing its result to a `scripted`
+  stage on the external lane via `{ from: 'artifactContent' }` — the model of "keep
+  cheap Claude work, send judging to an external model" in one pipeline. Also
+  exercises the `scripted` stage's distinct-prompt array (two independent external
+  calls from one stage). **Verified**: the single-`workflow`-into-`scripted` handoff
+  ran live and settled correctly; the array-prompt fan is supported but not yet
+  proven reliable (see the stage's own file header).
 
 ### Operational lessons (from production runs of the dev-workflow family)
 

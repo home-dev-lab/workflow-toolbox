@@ -193,6 +193,15 @@ mutually exclusive with `workflow`/`pipeline` on that stage:
   difference, so a pipeline can freely mix `workflow` and `scripted` stages (a Claude
   planning stage feeding a `scripted` external-model judge via its handoff artifact).
 
+**Two buildable examples exist for this** — `toolkit/examples/scripted-fully.pipeline.ts`
+(every stage `scripted`, zero Claude anywhere in the run) and
+`toolkit/examples/scripted-mixed.pipeline.ts` (one Claude `workflow` stage, pinned cheap
+in its own source, handing its result to one `scripted` stage). Both are listed with what
+they prove in [shipped-compositions.md](shipped-compositions.md#four-orchestrator-pipeline-compositions-definepipeline-not-defineworkflow).
+Build either with `npx workflow-toolbox pipeline examples/scripted-mixed.pipeline.ts` (→
+`pipelines/scripted-mixed.json`) and launch with `POST /api/pipeline { spec: <the built JSON> }`
+against the observe-ui server.
+
 **Status, stated at the reach its evidence has (2026-08-08):** a single-call scripted
 stage, and a mixed pipeline (one `workflow` stage → one `scripted` stage consuming its
 handoff via `{ from: 'artifactContent' }`), are **verified** — both ran live through the
