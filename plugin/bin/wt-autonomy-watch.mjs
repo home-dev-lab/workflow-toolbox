@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { isServiceDegraded } from './lib/service-flag.mjs'
+import { classifyMandate } from './lib/autonomy-mandate.mjs'
 
 const MAX_TIMER_MS = 0x7fffffff
 const MAX_POLL_SECONDS = Math.floor(MAX_TIMER_MS / 1000)
@@ -23,6 +24,26 @@ const DEFAULT_POLL_SECONDS = 60
 const DEFAULT_IDLE_MINUTES = Number(process.env.WT_AUTONOMY_WATCH_IDLE_MINUTES || 15)
 const DEFAULT_INFLIGHT_MINUTES = Number(process.env.WT_AUTONOMY_WATCH_INFLIGHT_MINUTES || 3)
 const DEFAULT_QUEUE_STALE_MINUTES = Number(process.env.WT_AUTONOMY_WATCH_QUEUE_STALE_MINUTES || 120)
+// ⚠ THE FRESHNESS WINDOW, and why 8 hours. The mandate marker is keyed on the PROJECT, not the
+// session, precisely so a restart (a new CLAUDE_CODE_SESSION_ID) inherits whatever mandate is
+// still live rather than losing it — see wt-autonomy-arm.mjs. That inheritance needs a ceiling, or
+// it becomes the silent failure it replaces, wearing a louder costume: a mandate declared once and
+// never revisited would keep waking sessions indefinitely, long after the human stopped caring.
+//
+// Both directions of getting this wrong are real, and neither is free:
+//   - TOO SHORT defeats the whole point of keying on the project: a session restarted after a
+//     lunch break, a crash, or a routine version bump loses the mandate exactly like the old
+//     per-session scheme did, and the fix collapses back into "re-arm by hand".
+//   - TOO LONG reintroduces the failure this route was chosen over — see AUTONOMY.md's
+//     loud-vs-silent argument — but LOUD, not silent: a stale wake is visible in the transcript
+//     and killable with `--disarm`, where the old per-session bug woke nobody and said nothing.
+//
+// 8 hours covers a full working day of restarts (the reported case: three restarts in one day)
+// while resetting overnight — a mandate declared this afternoon should not still be walking
+// tonight. Override with WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES for a project that needs a
+// different rhythm; the watcher and `--status`/arm side never need to agree on this number because
+// only the watcher enforces it — the marker itself carries no opinion about its own expiry.
+const DEFAULT_MANDATE_FRESHNESS_MINUTES = Number(process.env.WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES || 480)
 const DEFAULT_LANE_PATTERNS = ['opencode run', 'codex exec']
 
 function write(line) {
@@ -232,10 +253,10 @@ function readMarker(markerPath) {
   try {
     const parsed = JSON.parse(readFileSync(markerPath, 'utf8'))
     const transcriptMtimeMs = parsed?.transcriptMtimeMs
-    const mandateMtimeMs = parsed?.mandateMtimeMs
+    const mandateDeclaredAtMs = parsed?.mandateDeclaredAtMs
     if (typeof transcriptMtimeMs !== 'number' || !Number.isFinite(transcriptMtimeMs)) return null
-    if (typeof mandateMtimeMs !== 'number' || !Number.isFinite(mandateMtimeMs)) return null
-    return { transcriptMtimeMs, mandateMtimeMs }
+    if (typeof mandateDeclaredAtMs !== 'number' || !Number.isFinite(mandateDeclaredAtMs)) return null
+    return { transcriptMtimeMs, mandateDeclaredAtMs }
   } catch {
     return null
   }
@@ -247,8 +268,11 @@ function writeMarker(markerPath, payload) {
 
 function poll(context) {
   const now = Date.now()
-  const mandateMtimeMs = readMtimeMs(context.mandatePath)
-  if (mandateMtimeMs === null) return
+  // ⚠ SAME CLASSIFICATION THE BANNER USES — see lib/autonomy-mandate.mjs for why this is a shared
+  // function rather than a second copy of "is this marker still fresh". Only 'live' proceeds;
+  // 'absent' and 'expired' both stay silent, for different reasons the banner distinguishes.
+  const mandate = classifyMandate(context.mandatePath, context.mandateFreshnessMs, now, context.sessionId)
+  if (mandate.kind !== 'live') return
 
   const transcriptMtimeMs = readMtimeMs(context.transcriptPath)
   if (transcriptMtimeMs === null) return
@@ -265,19 +289,31 @@ function poll(context) {
   if (now - transcriptMtimeMs < context.idleMs) return
 
   const previousMarker = readMarker(context.markerPath)
-  if (previousMarker && previousMarker.transcriptMtimeMs === transcriptMtimeMs && previousMarker.mandateMtimeMs === mandateMtimeMs) {
+  if (previousMarker && previousMarker.transcriptMtimeMs === transcriptMtimeMs && previousMarker.mandateDeclaredAtMs === mandate.declaredAtMs) {
     return
   }
+
+  // ⚠ INHERITANCE IS ANNOUNCED, NEVER SILENT — this is the half that keeps the chosen failure
+  // shape (loud, killable) loud rather than letting it decay back into the silent one it replaced.
+  // A session picking up a mandate it did not itself stamp says so, and says how old the mandate
+  // is and which session stamped it — a reader can then judge whether that inheritance is still
+  // wanted, rather than discovering only that "something woke me".
+  const ageMin = Math.round(mandate.ageMin)
+  const provenance = mandate.inherited
+    ? ` (inherited from session ${mandate.declaredBy}, mandate declared ${ageMin}min ago)`
+    : ''
 
   writeMarker(context.markerPath, {
     emittedAt: new Date(now).toISOString(),
     transcriptMtimeMs,
-    mandateMtimeMs,
+    mandateDeclaredAtMs: mandate.declaredAtMs,
+    mandateSessionId: mandate.declaredBy,
+    inherited: mandate.inherited,
     idleForMs: now - transcriptMtimeMs,
     open: queue.open,
     next: queue.next,
   })
-  write(`AUTONOMY WAKE: idle session with mandate, ${queue.open} open, next: ${queue.next}`)
+  write(`AUTONOMY WAKE: idle session with mandate${provenance}, ${queue.open} open, next: ${queue.next}`)
 }
 
 function wait(ms) {
@@ -306,11 +342,16 @@ const subagentsDir = path.join(projectStateRoot, sessionId, 'subagents')
 // worse than silence: it would wake a session about another project's queue.
 const queuePath = path.join(watchStateDir, `queue-${queueSnapshotSlug(projectDir)}.json`)
 const mandateDir = process.env.WT_AUTONOMY_WATCH_MANDATE_DIR || watchStateDir
-const mandatePath = path.join(mandateDir, `engine-${sessionId}.json`)
+// ⚠ KEYED ON THE PROJECT, NOT THE SESSION — the contract with wt-autonomy-arm.mjs. A per-session
+// path died the instant its session restarted (new CLAUDE_CODE_SESSION_ID, marker unreachable);
+// this reads whatever mandate is still fresh for THIS PROJECT, however many sessions have come
+// and gone since it was declared. See wt-autonomy-arm.mjs for the full rationale.
+const mandatePath = path.join(mandateDir, `engine-${projectSlug(projectDir)}.json`)
 const markerPath = path.join(watchStateDir, `autonomy-watch-${sessionId}.json`)
 
 const context = {
   projectDir,
+  sessionId,
   transcriptPath,
   subagentsDir,
   queuePath,
@@ -319,6 +360,7 @@ const context = {
   idleMs: DEFAULT_IDLE_MINUTES * 60_000,
   inflightMs: DEFAULT_INFLIGHT_MINUTES * 60_000,
   queueStaleMs: DEFAULT_QUEUE_STALE_MINUTES * 60_000,
+  mandateFreshnessMs: DEFAULT_MANDATE_FRESHNESS_MINUTES * 60_000,
 }
 
 // ⚠ ARMED BANNER, and it is not decoration. This watcher's whole purpose is to close a silence
@@ -337,8 +379,17 @@ const context = {
 // matching what the other three monitors already cost. That is deliberate: the case worth
 // seeing is exactly `mandate=absent`, and a banner suppressed in that case would be silent in
 // the only situation it exists for.
-function mandateArmedState(filePath) {
-  return readMtimeMs(filePath) === null ? 'absent' : 'present'
+// ⚠ SAME `classifyMandate` THE GATE USES (lib/autonomy-mandate.mjs), and that sentence is the
+// whole fix for the defect this replaces: `--status` and this banner used to each carry their own
+// freshness check, and they drifted — the gate correctly refused to fire on an expired mandate
+// while `--status` still reported `armed`, because it only ever checked the file's EXISTENCE.
+// Routing both readouts through one classifier makes that kind of drift structurally impossible —
+// there is no second copy left to disagree with this one.
+function mandateArmedState(mandatePath, freshnessMs, now, currentSessionId) {
+  const mandate = classifyMandate(mandatePath, freshnessMs, now, currentSessionId)
+  if (mandate.kind === 'absent') return 'absent'
+  if (mandate.kind === 'expired') return `stale(${mandate.ageMin.toFixed(0)}min)`
+  return `present(${mandate.inherited ? 'inherited' : 'own'})`
 }
 
 // ⚠ Freshness is read the SAME WAY `poll()` reads it — from the snapshot's own `at` field, never
@@ -363,15 +414,15 @@ function queueArmedState(queuePath, staleMs, now) {
 }
 
 const nowAtArming = Date.now()
-const mandateState = mandateArmedState(context.mandatePath)
+const mandateState = mandateArmedState(context.mandatePath, context.mandateFreshnessMs, nowAtArming, sessionId)
 const queueState = queueArmedState(context.queuePath, context.queueStaleMs, nowAtArming)
-const canFire = mandateState === 'present' && queueState.startsWith('fresh')
+const canFire = mandateState.startsWith('present') && queueState.startsWith('fresh')
 // ⚠ A DIAGNOSIS CARRIES ITS REMEDY. Naming what is missing without naming what supplies it moves a
 // reader from "I cannot tell whether this works" to "I know it is broken and not what to do" —
 // better, but still short of actionable, and the second state is where a reader gives up. So each
 // missing piece names the thing that provides it.
 const remedies = []
-if (mandateState !== 'present') remedies.push('run `wt-autonomy-arm.mjs` to declare a mandate')
+if (!mandateState.startsWith('present')) remedies.push('run `wt-autonomy-arm.mjs` to declare a mandate')
 if (!queueState.startsWith('fresh')) remedies.push('register `wt-queue-not-empty-gate-hook.mjs` (Stop) to write the queue snapshot')
 write(
   `AUTONOMY WATCH ARMED: idle=${DEFAULT_IDLE_MINUTES}min poll=${pollSeconds}s · ` +
