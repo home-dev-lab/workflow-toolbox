@@ -358,6 +358,21 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     status: 'mapped',
     reason: 'Known-issues documents this SessionStart recurrence surface (threshold, grouping, silence contract) under Shipped Hooks, Guards & Monitors.',
   },
+  {
+    script: 'plugin/bin/wt-isolated-spawn-report-path-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse isolated-spawn out-of-tree-write warn-only guard under Shipped Hooks, Guards & Monitors.',
+  },
+  {
+    script: 'plugin/bin/wt-pgrep-env-dump-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse full-listing pgrep/ps env-dump warn-only guard under Shipped Hooks, Guards & Monitors.',
+  },
+  {
+    script: 'plugin/bin/wt-propagation-reminder-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PostToolUse tooling/plugin-edit propagation reminder under Shipped Hooks, Guards & Monitors.',
+  },
 ]
 
 export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
@@ -675,6 +690,9 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-find-newermt-format-guard-hook.mjs',
       'plugin/bin/wt-git-commit-backtick-guard-hook.mjs',
       'plugin/bin/wt-guard-journal-scan.mjs',
+      'plugin/bin/wt-isolated-spawn-report-path-hook.mjs',
+      'plugin/bin/wt-pgrep-env-dump-guard-hook.mjs',
+      'plugin/bin/wt-propagation-reminder-hook.mjs',
     ],
     docs: ['docs/public/known-issues.md'],
   },

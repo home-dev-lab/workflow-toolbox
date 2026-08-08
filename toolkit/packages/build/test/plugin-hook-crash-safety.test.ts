@@ -312,6 +312,28 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Bash',
         tool_input: { command: 'git commit -m "the default `stretch` applied"' },
       }
+    case 'wt-isolated-spawn-report-path-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Agent',
+        tool_input: {
+          name: 'selftest-agent',
+          isolation: 'worktree',
+          prompt: 'Write your report to /home/selftest/report.md when done.',
+        },
+      }
+    case 'wt-pgrep-env-dump-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'pgrep -af zsh' },
+      }
+    case 'wt-propagation-reminder-hook.mjs':
+      return {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: join(sandbox.projectDir, 'plugin', 'bin', 'foo-hook.mjs') },
+      }
     case 'wt-actionable-snapshot-producer-hook.mjs':
       // No .claude/scripts/lib/depends-on-parser.mjs in this sandbox project — the hook
       // must no-op cleanly rather than crash, which is exactly what a project without the
