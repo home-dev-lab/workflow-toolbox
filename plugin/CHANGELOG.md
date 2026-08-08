@@ -3,6 +3,31 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.152.0] - 2026-08-08
+
+### Fixed
+
+- **`wt-lesson-harvest-hook.mjs` is now actually registered as a Stop hook.** It shipped in
+  0.134.0 with its own tests, its own crash-safety coverage, and a known-issues.md entry and
+  CHANGELOG line both describing it as already firing "at each turn end" — and
+  `plugin/.claude-plugin/plugin.json` never listed it under `hooks.Stop`. Nothing in the harness
+  invoked it; the file existing and being tested was not the same fact as it being wired, and
+  the shipped prose asserted the latter without checking it.
+
+  Caught the same way the card that reported it was framed: `declaredHookPaths()` against the
+  real manifest returned no `/bin/wt-lesson-harvest-hook.mjs` entry under `Stop`, for any event.
+  A new test in `hook-registration-guards.test.ts` locks it — RED before this fix (asserted the
+  entry, got the three unrelated Stop scripts back), GREEN after.
+
+  ⚠ **Two more `*-hook.mjs` files under `plugin/bin/` are unregistered the same way** —
+  `wt-adopt-rules-check-hook.mjs` is a deliberate deprecation shim (documented in its own header,
+  invoked directly by name for sessions that snapshotted the old path, never through the
+  manifest) and is correctly excluded. `wt-queue-not-empty-gate-hook.mjs` is not: it is actively
+  maintained, documented in `known-issues.md` as a Stop hook, and absent from `plugin.json`
+  exactly like this one was. Left unfixed here — it is a different mechanism from
+  `wt-actionable-gate-hook.mjs` (which IS registered and may or may not supersede it), and
+  deciding that needs its own card rather than riding this one's fix.
+
 ## [0.151.0] - 2026-08-08
 
 ### Added
