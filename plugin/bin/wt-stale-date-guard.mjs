@@ -21,8 +21,23 @@
 import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { scanText } from './lib/stale-date-guard-core.mjs';
+import { handleHelpFlag } from './lib/cli-help.mjs';
+
+const HELP = `wt-stale-date-guard — scan markdown files for absolute dates and flag any
+OPERATIONAL DEADLINE that has already passed, without flagging a PROVENANCE date
+("measured on 31/07") that never expires. Targets are always passed as arguments, never
+hard-coded, so this tool works on any user's rules/memory dir.
+
+Usage:
+  wt-stale-date-guard.mjs --path <dir-or-file> [--path <dir-or-file> ...]
+                           [--today YYYY-MM-DD] [--json] [--out <file>] [--fail-on-unknown]
+
+Exit codes: 0 no stale deadline found (unknowns may still exist) · 1 at least one stale
+deadline found · 2 usage error.
+`;
 
 function parseArgs(argv) {
+  handleHelpFlag(argv, HELP);
   const out = { paths: [], today: null, json: false, out: null, failOnUnknown: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];

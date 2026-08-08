@@ -1,6 +1,19 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import { checkSignatures, statusMeaning } from './lib/commit-signature-core.mjs';
+import { handleHelpFlag } from './lib/cli-help.mjs';
+
+const HELP = `wt-check-commit-signatures — verify that the commits a signature policy expects
+signed (per git's own commit.gpgsign / user.signingkey config) actually carry a valid signature,
+and print the offending commits plus a ready-to-run fix.
+
+Usage:
+  node wt-check-commit-signatures.mjs [--repo <path>] [--range <git-range>]
+    --repo <path>    git repo to check (default: cwd)
+    --range <range>  a git revision range (e.g. origin/main..HEAD); default: just HEAD
+
+Exit codes: 0 nothing to report · 1 unsigned commit(s) found (printed to stdout) · 2 usage/git error.
+`;
 
 function fail(message) {
   console.error(message);
@@ -8,6 +21,7 @@ function fail(message) {
 }
 
 function parseArgs(argv) {
+  handleHelpFlag(argv, HELP);
   const out = { repo: process.cwd(), range: null };
   const nextValue = (i, flag) => {
     if (i + 1 >= argv.length) fail(`${flag} requires a value`);

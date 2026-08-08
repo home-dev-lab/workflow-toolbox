@@ -53,6 +53,20 @@ import path from 'node:path'
 import { defaultLivenessDir, sanitizeLivenessKey, readLivenessRecord, worktreeRecentlyActive } from './lib/liveness.mjs'
 import { isServiceDegraded } from './lib/service-flag.mjs'
 import { hasRecordedStop, lastStopTimestamps, lastRealRecordTimestampMs } from './lib/stop-correlation.mjs'
+import { handleHelpFlag } from './lib/cli-help.mjs'
+
+const HELP = `wt-arc-watch — delegated-arc watcher: watches this project's subagent transcripts
+(corroborated by the outbound-guard stop journal and any liveness declaration file) and
+emits ONLY on terminal states (STALE, GONE) — never on progress. Silence means everyone is
+still writing. Meant to be armed as a persistent Monitor.
+
+Options:
+  --project <dir>    project whose sessions to watch (default: cwd)
+  --reports <dir>    optional REPORT_DIR to also watch for new file-reports
+  --stale <minutes>  minutes with no transcript growth before a candidate is flagged (default 10)
+  --poll <seconds>   poll interval (default 60, minimum 5)
+  --help, -h         print this text and exit 0
+`
 
 const MAX_TIMER_MS = 0x7fffffff
 const MAX_POLL_SECONDS = Math.floor(MAX_TIMER_MS / 1_000)
@@ -115,6 +129,8 @@ function readNumber(value) {
   const n = Number(value)
   return Number.isFinite(n) && n >= 0 ? n : null
 }
+
+handleHelpFlag(process.argv.slice(2), HELP)
 
 let staleMinutes = 10
 let pollSeconds = 60

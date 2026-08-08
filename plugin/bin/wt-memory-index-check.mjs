@@ -39,6 +39,20 @@
 //   2 — usage error (no --store, bad path, bad --threshold)
 import { writeFileSync } from 'node:fs';
 import { checkStore } from './lib/memory-index-check-core.mjs';
+import { handleHelpFlag } from './lib/cli-help.mjs';
+
+const HELP = `wt-memory-index-check — make a silent memory-index truncation ceiling LOUD.
+Reports the index's entry-line count against a threshold, how many fiches on disk are
+REACHABLE from the index (direct links + transitive hub-member references), and names the
+gap: "N fiches on disk, M reachable, K invisible; D dangling".
+
+Usage:
+  wt-memory-index-check.mjs --store <dir> [--threshold 200] [--size-threshold 25000] [--hub-max 45]
+                             [--index-file MEMORY.md] [--json] [--out <file>]
+
+Exit codes: 0 no index (nothing to check) or index present and clean · 1 flagged (over
+threshold and/or unreachable fiches) · 2 usage error.
+`;
 
 function fail(msg) {
   console.error(msg);
@@ -46,6 +60,7 @@ function fail(msg) {
 }
 
 function parseArgs(argv) {
+  handleHelpFlag(argv, HELP);
   const out = { store: null, threshold: 200, sizeThreshold: 25000, hubMax: 45, indexFile: 'MEMORY.md', json: false, out: null };
   // A flag that takes a value must actually find one — `--index-file` at
   // the end of argv with nothing after it must fail loudly (usage error),

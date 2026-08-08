@@ -52,6 +52,24 @@ import { fileURLToPath } from 'node:url'
 const require = createRequire(import.meta.url)
 
 import { computeStallVerdict, extractLatestLogActivity, normalizeSessionRow, pickLatestSessionRow } from './lib/lane-activity-core.mjs'
+import { handleHelpFlag } from './lib/cli-help.mjs'
+
+const HELP = `wt-lane-activity — answer "what is this GPT lane actually DOING" for one or more
+worktrees: names the current sub-task from opencode's own log, the running token total and
+model from its SQLite store, and a genuine-stall verdict (process alive, no new turn AND no new
+log line for N minutes). Every field is a measurement or an explicit "unavailable" reason.
+
+Usage:
+  node wt-lane-activity.mjs --worktree /abs/path/one [--worktree /abs/path/two ...]
+    [--pattern opencode] [--stall-minutes 10] [--data-dir <abs>] [--archive <path>]
+    --worktree <path>      a worktree to check (repeatable, at least one required)
+    --pattern <name>       lane CLI process-name pattern (default: opencode)
+    --stall-minutes <n>    idle minutes before flagging a stall (default: 10)
+    --data-dir <abs>       override the opencode data-dir (Linux-only default)
+    --archive <path>       also append the JSON result line to this file
+
+Exit codes: 0 the probe ran (findings are not a gate) · 2 usage error. Read the JSON on stdout.
+`
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const DEFAULT_LANE_PROBE = path.join(HERE, 'wt-lane-probe.mjs')
@@ -69,6 +87,7 @@ function fail(msg) {
 }
 
 function parseArgs(argv) {
+  handleHelpFlag(argv, HELP)
   const args = {
     worktrees: [],
     pattern: 'opencode',

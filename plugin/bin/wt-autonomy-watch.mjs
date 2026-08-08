@@ -17,6 +17,19 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { isServiceDegraded } from './lib/service-flag.mjs'
 import { classifyMandate } from './lib/autonomy-mandate.mjs'
+import { handleHelpFlag } from './lib/cli-help.mjs'
+
+const HELP = `wt-autonomy-watch — wakes an autonomous session (one that declared a mandate via
+wt-autonomy-arm.mjs) when it still has actionable queued work, nothing else in flight, and has
+gone idle long enough that the harness should hand it another turn. Meant to be armed as a
+persistent Monitor; refuses to fire for a project with no live mandate.
+
+Options:
+  --project <dir>  project whose mandate/queue to watch (default: cwd)
+  --poll <seconds>  poll interval (default 60)
+  --once            run a single poll iteration then exit (used by tests)
+  --help, -h        print this text and exit 0
+`
 
 const MAX_TIMER_MS = 0x7fffffff
 const MAX_POLL_SECONDS = Math.floor(MAX_TIMER_MS / 1000)
@@ -76,6 +89,7 @@ function readNumber(value) {
 }
 
 function parseArgs(argv) {
+  handleHelpFlag(argv, HELP)
   let pollSeconds = DEFAULT_POLL_SECONDS
   let projectDir = process.cwd()
   let once = false

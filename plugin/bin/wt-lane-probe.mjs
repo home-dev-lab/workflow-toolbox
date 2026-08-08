@@ -39,6 +39,21 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { handleHelpFlag } from './lib/cli-help.mjs'
+
+const HELP = `wt-lane-probe — prove an executor LANE is routing to a worktree WHILE IT RUNS, not
+by asking at report time. Lists live processes matching --pattern, resolves each one's cwd, and
+reports per named worktree whether a matching process is CURRENTLY working inside it.
+
+Usage:
+  node wt-lane-probe.mjs --worktree /abs/path/one [--worktree /abs/path/two ...]
+    [--pattern opencode] [--archive .claude/lane-probe/wave-20260803.jsonl]
+    --worktree <path>  a worktree to check (repeatable, at least one required)
+    --pattern <name>   lane CLI process-name pattern (default: opencode)
+    --archive <path>   also append the JSON result line to this file
+
+Exit codes: 0 the probe ran (findings are not a gate) · 2 usage error. Read the JSON on stdout.
+`
 
 function fail(msg) {
   process.stderr.write(`wt-lane-probe: ${msg}\n`)
@@ -46,6 +61,7 @@ function fail(msg) {
 }
 
 function parseArgs(argv) {
+  handleHelpFlag(argv, HELP)
   const args = { worktrees: [], pattern: 'opencode', archive: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]

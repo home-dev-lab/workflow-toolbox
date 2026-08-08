@@ -18,6 +18,31 @@ import {
   observeCommandRepeat,
   pruneState,
 } from './lib/command-repeat-core.mjs'
+import { handleHelpFlag } from './lib/cli-help.mjs'
+
+const HELP = `wt-command-repeat-check — record one executed command/result pair and flag only
+when the SAME normalized command shape produced the SAME result for the third time in one
+session. Standalone CLI, not registered as a hook — arm it wherever the project decides.
+
+Usage:
+  node wt-command-repeat-check.mjs --session <id> --command <cmd> --exit-code <n> [options]
+    --session <id>       session identifier this observation belongs to (required)
+    --command <cmd>       the executed command text (required)
+    --exit-code <n>       its exit code (required)
+    --cwd <dir>            working directory (default: cwd)
+    --stdout / --stderr    captured output (or --stdout-file / --stderr-file to read from disk)
+    --signal <name>        terminating signal, if any
+    --at <epoch-ms>        observation timestamp (default: now)
+    --state-dir <dir>      where to persist state (default: XDG state dir)
+    --threshold <n>        repeats before flagging (default ${DEFAULT_THRESHOLD})
+    --class-threshold <n>  repeats of the broader shape class before flagging (default ${DEFAULT_THRESHOLD})
+    --ttl-ms <n>           state entry time-to-live (default ${DEFAULT_TTL_MS})
+    --max-pairs <n>        cap on tracked command/result pairs (default ${DEFAULT_MAX_PAIRS})
+    --max-class-shapes <n> cap on tracked shape classes (default ${DEFAULT_MAX_CLASS_SHAPES})
+    --json                 machine-readable output
+
+Exit codes: 0 ok · 2 usage error.
+`
 
 function fail(message) {
   process.stderr.write(`${message}\n`)
@@ -36,6 +61,7 @@ function parseInteger(raw, flag) {
 }
 
 function parseArgs(argv) {
+  handleHelpFlag(argv, HELP)
   const out = {
     session: '',
     command: '',

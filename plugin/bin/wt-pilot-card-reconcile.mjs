@@ -50,11 +50,34 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
+import { handleHelpFlag } from './lib/cli-help.mjs';
+
+const HELP = `wt-pilot-card-reconcile — compare cards reputedly taken against pilots actually
+in flight (via the spawn registry), and name the mismatch: a pilot that died between spawn
+and its own intake leaves a card claimed while nobody works it.
+
+Usage:
+  node wt-pilot-card-reconcile.mjs --cards <path> [--session <id>] [--tolerance-min 5] [--json]
+    --cards <path>         JSON array of {cardId, title?, list, claimedAt}
+    --session <id>         which session's registry to read (default: most recently modified)
+    --tolerance-min <n>    grace window before a claimed card with no live pilot is flagged
+    --json                 machine-readable output
+`;
 
 const STATE_DIR = process.env.WT_OUTBOUND_GUARD_DIR
   || join(homedir(), '.local', 'state', 'wt-outbound-guard');
 
 const argv = process.argv.slice(2);
+handleHelpFlag(argv, HELP);
+
+const KNOWN_FLAGS = new Set(['--cards', '--tolerance-min', '--session', '--json']);
+for (const token of argv) {
+  if (token.startsWith('--') && !KNOWN_FLAGS.has(token)) {
+    console.error(`wt-pilot-card-reconcile: unknown flag '${token}'`);
+    process.exit(2);
+  }
+}
+
 const arg = (flag, dflt) => {
   const i = argv.indexOf(flag);
   return i >= 0 && argv[i + 1] ? argv[i + 1] : dflt;

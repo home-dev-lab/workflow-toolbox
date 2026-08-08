@@ -17,6 +17,19 @@
 //
 // Always prints exactly one line of JSON to stdout, in every case.
 import { readFileSync } from 'node:fs';
+import { handleHelpFlag } from './lib/cli-help.mjs';
+
+const HELP = `wt-verdict-cap-check — enforce ONE invariant: a verifier report must not present a
+"clean" best verdict when it has itself declared a source UNREACHABLE — the verdict line must
+carry a DEGRADED cap naming the reason.
+
+Usage: node wt-verdict-cap-check.mjs <path-to-report.md>
+
+Exit codes: 0 compliant · 1 VIOLATION (uncapped "yes" despite a declared-unreachable source) ·
+2 malformed (required sections missing, or the file could not be read).
+`;
+
+handleHelpFlag(process.argv.slice(2), HELP);
 
 function out(obj, code) {
   process.stdout.write(JSON.stringify(obj) + '\n');
