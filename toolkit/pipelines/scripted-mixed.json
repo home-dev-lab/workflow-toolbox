@@ -1,0 +1,25 @@
+{
+  "goal": "Reply with exactly: OK. Nothing else.",
+  "projectDir": ".",
+  "name": "scripted-mixed",
+  "stages": [
+    {
+      "name": "e2e-fixture",
+      "workflow": "wt-shape-e2e.js"
+    },
+    {
+      "name": "external-review",
+      "scripted": {
+        "model": "openai/gpt-5.4",
+        "prompt": [
+          {
+            "from": "goal"
+          },
+          {
+            "from": "artifactContent"
+          }
+        ]
+      }
+    }
+  ]
+}
