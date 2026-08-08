@@ -3,7 +3,28 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.156.0] - 2026-08-08
+## [0.157.0] - 2026-08-08
+
+### Added
+
+- **`wt-lane-consent-gate-hook.mjs` — a `PreToolUse` hook that ENFORCES the executor-lane
+  consent switch (`WT_EXECUTOR_LANE_CONSENT`) at the moment a lane call actually runs**,
+  closing the gap the card behind this release was opened for: the switch existed
+  (`wt-lane-consent.mjs`, read/write) and disagreement between it and the auto-loaded rules was
+  already detected at session start (`wt-lane-consent-check-hook.mjs`), but nothing mechanical
+  ever consulted it AT CALL TIME — `opencode-verifier` shells out unconditionally, and the
+  pilot-wave skill's "check consent first" step is prose a model can silently skip. The new hook
+  fires only on a command that actually invokes the lane (`opencode run` / `codex exec`,
+  quote/comment-stripped — the same detection `wt-lane-saturation-hook.mjs` already uses) and
+  denies it (`permissionDecision:'deny'`) unless the account/project consent chain resolves to
+  consented, naming which level refused.
+  ⚠ **Fails CLOSED, not open** — the deliberate exception among this directory's guards: every
+  other deny-capable hook here fails OPEN on its own internal error (a broken entry path must
+  never itself block a command). A consent gate protects the opposite property — an unreadable
+  or malformed settings file must never be silently read as "yes" — so both the 'unknown' branch
+  of the underlying consent resolution and this hook's own top-level errors resolve to a denial.
+  This does not change what any project's rules describe as policy; it makes the existing opt-in
+  switch enforceable at the one place it previously had no effect.
 
 ### Added
 
