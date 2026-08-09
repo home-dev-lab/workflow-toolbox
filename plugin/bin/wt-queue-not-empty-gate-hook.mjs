@@ -192,17 +192,47 @@ try {
 // this project. This is a plain existence check, never a tool-name match: it works identically
 // whatever wrote the marker.
 //
-// ⚠ This early bail is DELIBERATELY UNCHANGED by the fix below it.
-// Files under STATE_DIR are never deleted once a producer writes one — so "absent" here can only
-// mean "nothing has EVER adopted this hook for this project", never "a producer used to run and
-// stopped" (that is STALE, below, and it already has its own snapshot to read). Making this path
+// An exact-key miss can also mean this session is working below a project root whose snapshot is
+// present — measured on an umbrella repo holding two checkouts, where the same session, same
+// state directory and same instant produced "118 open" from the root and the not-found branch
+// from a sub-repo one level down. The key is a path plus a hash of that path, so every directory
+// is a different key and a session that has stepped into a sub-repo loses its own snapshot.
+//
+// Regenerate the collision-safe key for each actual ancestor and use the nearest match. Never
+// accept the readable prefix alone: it is capped at 120 characters, so two deep siblings can
+// share it while differing past the cap. Walking real ancestors and rebuilding the WHOLE slug —
+// hash included — makes that ambiguity unrepresentable rather than merely unlikely.
+//
+// ⚠ When neither an exact nor an ancestor key exists, the original SILENT bail remains, and that
+// silence is deliberate — this is the one part of this block that must not be "improved" later.
+// Files under STATE_DIR are never deleted once a producer writes one, so a genuine absence here
+// can only mean "nothing has EVER adopted this hook for this project", never "a producer used to
+// run and stopped" (that is STALE, below, which has its own snapshot to read). Making this path
 // speak would turn every adopter who never wires a producer into a PERMANENT always-red gate —
-// exactly the failure the header above warns against, and the private twin avoids the same way
-// via its own, differently-shaped, "no tracker" check. So "no producer has ever written a
-// snapshot" stays silent by design, same as before; what changes is that STALE and MALFORMED
-// (below), which used to collapse into one identical message, now say different things.
-const SNAPSHOT = join(STATE_DIR, `queue-${projectSlug(cwd)}.json`)
-if (!existsSync(SNAPSHOT)) bail()
+// exactly the failure the header above warns against, and the same one the private twin avoids
+// through its own differently-shaped "no tracker" check.
+let snapshot = join(STATE_DIR, `queue-${projectSlug(cwd)}.json`)
+let snapshotAncestor = ''
+if (!existsSync(snapshot)) {
+  try {
+    const entries = new Set(readdirSync(STATE_DIR))
+    let ancestor = dirname(String(cwd))
+    while (true) {
+      const name = `queue-${projectSlug(ancestor)}.json`
+      if (entries.has(name)) {
+        snapshot = join(STATE_DIR, name)
+        snapshotAncestor = ancestor
+        break
+      }
+      const parent = dirname(ancestor)
+      if (parent === ancestor) break
+      ancestor = parent
+    }
+  } catch {
+    bail() // a failed fallback lookup must never make the guard block
+  }
+  if (!snapshotAncestor) bail()
+}
 
 // --- 3. Is there open work? ---------------------------------------------------------------
 // ⚠ A marker that exists but is UNREADABLE/MALFORMED and one that is simply STALE used to
@@ -225,7 +255,7 @@ let nextItem = ''
 let snapshotAgeMin = null
 let queueStatus = 'known'
 try {
-  const snap = JSON.parse(readFileSync(SNAPSHOT, 'utf8'))
+  const snap = JSON.parse(readFileSync(snapshot, 'utf8'))
 
   // --- 3a. Is working even possible right now? -------------------------------------------
   // See the "IS WORKING EVEN POSSIBLE" header section. Strict on both fields — a malformed or
@@ -348,6 +378,7 @@ process.stdout.write(
       // Anything that cannot be hidden must at least name its addressee.
       additionalContext:
         `[for Claude, not the user] open work remains, nothing running · ` +
+        (snapshotAncestor ? `using ancestor snapshot from ${snapshotAncestor} · ` : '') +
         (openCount === null
           ? (queueStatus === 'stale'
               ? `Queue size is unknown — snapshot is stale (${snapshotAgeMin}min old)`

@@ -86,6 +86,63 @@ function blockText(r: { stdout: string }): string {
 }
 
 describe('wt-queue-not-empty-gate-hook: emission shape', () => {
+  it('reaches the same queue verdict from a project root and every nested directory', () => {
+    const { env, payload, stateDir, cwd } = scaffold('ancestor-family')
+    writeSnapshot(stateDir, cwd, { open: 7, at: Date.now(), next: 'CARD-7 inherited item' })
+
+    const directories = [cwd, join(cwd, 'repository'), join(cwd, 'repository', 'packages', 'core')]
+    const verdicts = directories.map((directory, index) => {
+      mkdirSync(directory, { recursive: true })
+      const r = runHook({
+        ...(payload as Record<string, unknown>),
+        cwd: directory,
+        session_id: `session-ancestor-family-${index}`,
+      }, env)
+      expect(r.code).toBe(0)
+      return blockText(r)
+    })
+
+    for (const verdict of verdicts) {
+      expect(verdict).toContain('7 open')
+      expect(verdict).toContain('next: CARD-7 inherited item')
+    }
+    expect(verdicts[0]).not.toContain('using ancestor snapshot')
+    for (const verdict of verdicts.slice(1)) {
+      expect(verdict).toContain(`using ancestor snapshot from ${cwd}`)
+    }
+  })
+
+  it('uses the most specific ancestor snapshot', () => {
+    const { env, payload, stateDir, cwd } = scaffold('specific-ancestor')
+    const repository = join(cwd, 'repository')
+    const nested = join(repository, 'packages', 'core')
+    mkdirSync(nested, { recursive: true })
+    writeSnapshot(stateDir, cwd, { open: 11, at: Date.now(), next: 'root item' })
+    writeSnapshot(stateDir, repository, { open: 3, at: Date.now(), next: 'repository item' })
+
+    const r = runHook({ ...(payload as Record<string, unknown>), cwd: nested }, env)
+    const text = blockText(r)
+    expect(text).toContain('3 open')
+    expect(text).toContain('next: repository item')
+    expect(text).toContain(`using ancestor snapshot from ${repository}`)
+    expect(text).not.toContain('11 open')
+  })
+
+  it('ignores a truncated readable-prefix match without the full ancestor hash', () => {
+    const { env, payload, stateDir, cwd } = scaffold('truncated-prefix')
+    const shared = 'x'.repeat(140)
+    const current = join(cwd, shared, 'current', 'nested')
+    const sibling = join(cwd, shared, 'sibling')
+    mkdirSync(current, { recursive: true })
+    mkdirSync(sibling, { recursive: true })
+    writeSnapshot(stateDir, sibling, { open: 9, at: Date.now(), next: 'sibling item' })
+    expect(slug(current).slice(0, 120)).toBe(slug(sibling).slice(0, 120))
+
+    const r = runHook({ ...(payload as Record<string, unknown>), cwd: current }, env)
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toBe('')
+  })
+
   it('blocks via stdout hookSpecificOutput.additionalContext + exit 0, never stderr + exit 2', () => {
     const { env, payload, stateDir, cwd } = scaffold('emission-shape')
     writeSnapshot(stateDir, cwd, { open: 3, at: Date.now(), next: 'CARD-1 next item' })
