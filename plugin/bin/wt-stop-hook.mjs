@@ -1001,7 +1001,7 @@ function formatAuditReportMarkdown(r, ctx = {}) {
   } else {
     for (const t of r.transcripts) {
       lines.push(
-        t.present ? `- \u2713 ${t.relativePath}` : `- \u2717 ${t.relativePath} \u2014 not captured (may have been pruned by the >30-day cleanup)`
+        t.present ? `- \u2713 ${t.relativePath}` : `- \u2717 ${t.relativePath} \u2014 not captured (no transcript file; cause not recorded)`
       );
     }
   }

@@ -244,7 +244,11 @@ export function formatAuditReportMarkdown(r: AuditReport, ctx: AuditFormatContex
       lines.push(
         t.present
           ? `- ✓ ${t.relativePath}`
-          : `- ✗ ${t.relativePath} — not captured (may have been pruned by the >30-day cleanup)`,
+          // Deliberately names NO cause. The report has no run timestamp, so it cannot tell a
+          // pruned transcript (>30-day cleanup) from one that never existed — an agent whose
+          // call errored before writing anything leaves the same absence. Naming the cleanup
+          // here told readers a specific, plausible, wrong cause on minutes-old runs.
+          : `- ✗ ${t.relativePath} — not captured (no transcript file; cause not recorded)`,
       )
     }
   }

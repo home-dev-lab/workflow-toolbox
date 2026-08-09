@@ -91,11 +91,29 @@ describe('formatAuditReportMarkdown — honest empty states', () => {
     expect(md).toMatch(/no transcripts|pruned/i)
   })
 
-  it('marks each transcript present/absent with the cleanup note for absent ones', () => {
+  it('marks each transcript present/absent', () => {
     const md = formatAuditReportMarkdown(report())
     expect(md).toContain('transcripts/agent-ac83de77485e77ad1.jsonl')
     expect(md).toContain('transcripts/agent-a29e57ea76ae2941e.jsonl')
-    expect(md).toMatch(/pruned|not captured/i)
+    expect(md).toMatch(/not captured/i)
+  })
+
+  // The report carries no run timestamp, so a per-transcript line CANNOT distinguish a pruned
+  // transcript from one that never existed (the agent's call errored before writing). Naming
+  // the >30-day cleanup on that line asserted a specific, wrong cause on minutes-old runs.
+  // Lock the property over EVERY absent line, not the one line this fix happened to touch.
+  it('names no cause on a per-transcript absent line', () => {
+    const md = formatAuditReportMarkdown(
+      report({
+        transcripts: [
+          { agentId: 'a1', relativePath: 'transcripts/agent-a1.jsonl', present: false },
+          { agentId: 'a2', relativePath: 'transcripts/agent-a2.jsonl', present: false },
+        ],
+      }),
+    )
+    const absentLines = md.split('\n').filter((l) => l.startsWith('- ✗ transcripts/'))
+    expect(absentLines).toHaveLength(2)
+    for (const line of absentLines) expect(line).not.toMatch(/prune|cleanup|30-day/i)
   })
 })
 
