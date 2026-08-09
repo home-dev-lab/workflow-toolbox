@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, renameSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, renameSync, watch } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -10,8 +10,12 @@ const spool =
     'inbox',
   )
 const consumed = join(spool, 'consumed')
-const configuredPollMs = Number(process.env.WT_WAKE_POLL_MS || 5000)
-const pollMs = Number.isFinite(configuredPollMs) && configuredPollMs > 0 ? configuredPollMs : 5000
+// ⚠ 60s, not 5s, and the number changed because the ROLE changed. While polling was the only
+// way a message was noticed, the cadence WAS the latency. Now `fs.watch` carries the normal case
+// and this interval is only the floor under a dropped event, so a short cadence would buy almost
+// nothing and cost a wakeup twelve times a minute for a session's entire life.
+const configuredPollMs = Number(process.env.WT_WAKE_POLL_MS || 60_000)
+const pollMs = Number.isFinite(configuredPollMs) && configuredPollMs > 0 ? configuredPollMs : 60_000
 const debugEnabled = Boolean(process.env.WT_WAKE_DEBUG)
 
 let initialized = false
@@ -135,6 +139,45 @@ try {
   mkdirSync(consumed, { recursive: true })
 } catch (error) {
   // A broken spool is deliberately silent: supervision must never take down its host session.
+  debug(error)
+}
+
+// Event-driven first, slow poll as a BACKSTOP — not the other way round.
+//
+// A five-second poll was the original design and it is the wrong instrument twice over: it adds
+// up to five seconds of latency to every wake, and it burns a wakeup every five seconds for the
+// overwhelming majority of a session's life, during which the spool is empty.
+//
+// ⚠ `fs.watch` cannot simply REPLACE it, and the reason is the cross-platform verdict this repo
+// requires. The three platforms this ships to do not agree:
+//   Linux   — inotify. Reliable for this use, but the watch is lost if the directory is
+//             replaced (deleted and recreated) rather than written into.
+//   macOS   — FSEvents. Coalesces rapid events; a burst can surface as one.
+//   Windows — ReadDirectoryChangesW. Documented to drop events under load, and rename
+//             semantics differ.
+// On every one of them a missed event is SILENT — indistinguishable from an empty spool, which
+// is the failure shape this whole channel exists to avoid. So the poll stays, at a cadence where
+// it costs nothing (default 60s) and serves only as the floor under a watch that may miss.
+//
+// The result: a normal wake arrives in milliseconds via the watch; a wake whose event was
+// dropped still arrives, at worst one backstop period late, instead of never.
+let watcher = null
+try {
+  watcher = watch(spool, { persistent: false }, () => {
+    try {
+      drain()
+    } catch (error) {
+      debug(error)
+    }
+  })
+  watcher.on('error', (error) => {
+    // A watch that dies must not take the backstop with it — the interval below keeps running,
+    // so the channel degrades to the old polling behaviour rather than going deaf.
+    debug(error)
+  })
+} catch (error) {
+  // No watch available (the spool may not exist yet, or the platform refused): the backstop alone
+  // is a correct, slower channel. Never fatal.
   debug(error)
 }
 
