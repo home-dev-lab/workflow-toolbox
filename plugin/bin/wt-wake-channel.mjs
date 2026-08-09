@@ -20,6 +20,12 @@ const debugEnabled = Boolean(process.env.WT_WAKE_DEBUG)
 
 let initialized = false
 let input = Buffer.alloc(0)
+// Declared HERE, not next to the `watch()` call that assigns it, because `shutdown()` below
+// closes it and is registered as a stdin handler long before that call runs. A `let` declared
+// after its reader sits in the temporal dead zone until evaluation reaches it — so a stdin close
+// arriving during module load would throw a ReferenceError out of a shutdown path, which is the
+// one path that must never fail.
+let watcher = null
 
 function debug(error) {
   if (!debugEnabled) return
@@ -135,6 +141,27 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('error', debug)
 process.stdout.on('error', debug)
 
+// When the session goes, this process goes with it — stated, not left to emerge.
+//
+// Today it would probably exit anyway: the backstop interval is unref'd and the watch is
+// non-persistent, so nothing holds the event loop open once stdin ends. "Probably" is the problem.
+// That lifetime is an accident of three unrelated flags, and any one of them changing — a
+// persistent watch, a ref'd timer added later for a good reason — turns this into a process that
+// outlives its session, keeps consuming spooled messages, and emits them into a closed pipe.
+//
+// A channel whose far end is gone must CLOSE rather than keep trying: a dead reader retried
+// forever is how a roster ends up listing agents that no longer exist.
+function shutdown() {
+  try {
+    watcher?.close()
+  } catch (error) {
+    debug(error)
+  }
+  process.exit(0)
+}
+process.stdin.on('end', shutdown)
+process.stdin.on('close', shutdown)
+
 try {
   mkdirSync(consumed, { recursive: true })
 } catch (error) {
@@ -161,7 +188,6 @@ try {
 //
 // The result: a normal wake arrives in milliseconds via the watch; a wake whose event was
 // dropped still arrives, at worst one backstop period late, instead of never.
-let watcher = null
 try {
   watcher = watch(spool, { persistent: false }, () => {
     try {
