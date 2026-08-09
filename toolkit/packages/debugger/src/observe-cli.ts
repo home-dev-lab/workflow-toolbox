@@ -90,6 +90,7 @@ import {
   type SourceSearchResult,
 } from './source-resolve.js'
 import { resolveConfigDir, resolveDir } from './config-dir.js'
+import { findObserveRoot } from './observe-checkout.js'
 import {
   selectRuns,
   runNameFromScript,
@@ -189,44 +190,6 @@ function bestEffortPortHolders(port: number): number[] {
 }
 
 // ── spawn target (interim: a local checkout) ────────────────────────────────────
-
-/** Locate the dir that DIRECTLY contains apps/observe-ui/server/dev-api.ts — a
- *  Workflow Observatory checkout root, or a legacy monorepo's toolkit/ dir.
- *  $DWT_OBSERVE_ROOT wins (either shape accepted, with or without the toolkit/
- *  segment); else walk up from cwd, probing each ancestor itself, its toolkit/,
- *  and a workflow-observatory/ checkout sitting under it (the sibling-dir case:
- *  walking up from the public repo reaches the common parent, which contains
- *  the observatory checkout). Returns the SERVER BASE, not the repo root. */
-function findObserveRoot(cwd: string, env: Record<string, string | undefined>): string | null {
-  // Identity gate (review finding, 2026-07-11): the walk EXECUTES what it finds, so mere
-  // existence of the dev-api.ts path is not enough on a shared filesystem — require the
-  // app manifest to identify itself before trusting the base. Not a cryptographic
-  // boundary (a writer in your ancestor path can forge it), but it stops accidental and
-  // low-effort lookalikes; DWT_OBSERVE_ROOT stays the explicit override.
-  const isObserveApp = (d: string): boolean => {
-    try {
-      const pkg: unknown = JSON.parse(readFileSync(join(d, 'apps', 'observe-ui', 'package.json'), 'utf8'))
-      return typeof pkg === 'object' && pkg !== null && (pkg as Record<string, unknown>)['name'] === '@workflow-toolbox/observe-ui'
-    } catch {
-      return false
-    }
-  }
-  const hasServer = (d: string): boolean =>
-    existsSync(join(d, 'apps', 'observe-ui', 'server', 'dev-api.ts')) && isObserveApp(d)
-  const probe = (d: string): string | null =>
-    hasServer(d) ? d : hasServer(join(d, 'toolkit')) ? join(d, 'toolkit') : null
-  const forced = env['DWT_OBSERVE_ROOT']
-  if (forced !== undefined && forced.length > 0) return probe(forced)
-  let dir = cwd
-  for (let depth = 0; depth < 64; depth++) { // bounded — a cwd 64 dirs deep is not a checkout
-    const hit = probe(dir) ?? probe(join(dir, 'workflow-observatory'))
-    if (hit !== null) return hit
-    const parent = dirname(dir)
-    if (parent === dir) return null
-    dir = parent
-  }
-  return null
-}
 
 // ── logfile (one rotation generation) ───────────────────────────────────────────
 

@@ -4,9 +4,9 @@
 import { spawn, execFileSync as execFileSync2 } from "node:child_process";
 import { createRequire } from "node:module";
 import { randomBytes } from "node:crypto";
-import { existsSync as existsSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync4, readdirSync as readdirSync3, realpathSync as realpathSync2, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, openSync } from "node:fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync5, readdirSync as readdirSync3, realpathSync as realpathSync2, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, openSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
-import { delimiter, dirname, join as join6, resolve as resolvePath } from "node:path";
+import { delimiter, dirname as dirname2, join as join7, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // packages/debugger/src/observe-lifecycle.ts
@@ -1476,6 +1476,33 @@ async function resolveSource(healthSources, wanted, fetchSourcesList, sleep) {
   return { prefix: `/s/${pick.key}`, key: pick.key, label: pick.label };
 }
 
+// packages/debugger/src/observe-checkout.ts
+import { existsSync as existsSync2, readFileSync as readFileSync4 } from "node:fs";
+import { dirname, join as join6 } from "node:path";
+function findObserveRoot(cwd, env) {
+  const isObserveApp = (dir2) => {
+    try {
+      const pkg = JSON.parse(readFileSync4(join6(dir2, "apps", "observe-ui", "package.json"), "utf8"));
+      return typeof pkg === "object" && pkg !== null && pkg["name"] === "@workflow-toolbox/observe-ui";
+    } catch {
+      return false;
+    }
+  };
+  const hasServer = (dir2) => existsSync2(join6(dir2, "apps", "observe-ui", "server", "dev-api.ts")) && isObserveApp(dir2);
+  const probe = (dir2) => hasServer(dir2) ? dir2 : hasServer(join6(dir2, "toolkit")) ? join6(dir2, "toolkit") : null;
+  const forced = env["DWT_OBSERVE_ROOT"];
+  if (forced !== void 0 && forced.length > 0) return probe(forced);
+  let dir = cwd;
+  for (let depth = 0; depth < 64; depth++) {
+    const hit = probe(dir) ?? probe(join6(dir, "workflow-observatory"));
+    if (hit !== null) return hit;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return null;
+}
+
 // packages/debugger/src/observe-prune.ts
 var DEFAULT_TEST_PREFIXES = ["probe-", "_probe-", "_test-"];
 function selectRuns(records, criteria) {
@@ -1543,33 +1570,10 @@ function bestEffortPortHolders(port) {
     return [];
   }
 }
-function findObserveRoot(cwd, env) {
-  const isObserveApp = (d) => {
-    try {
-      const pkg = JSON.parse(readFileSync4(join6(d, "apps", "observe-ui", "package.json"), "utf8"));
-      return typeof pkg === "object" && pkg !== null && pkg["name"] === "@workflow-toolbox/observe-ui";
-    } catch {
-      return false;
-    }
-  };
-  const hasServer = (d) => existsSync2(join6(d, "apps", "observe-ui", "server", "dev-api.ts")) && isObserveApp(d);
-  const probe = (d) => hasServer(d) ? d : hasServer(join6(d, "toolkit")) ? join6(d, "toolkit") : null;
-  const forced = env["DWT_OBSERVE_ROOT"];
-  if (forced !== void 0 && forced.length > 0) return probe(forced);
-  let dir = cwd;
-  for (let depth = 0; depth < 64; depth++) {
-    const hit = probe(dir) ?? probe(join6(dir, "workflow-observatory"));
-    if (hit !== null) return hit;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-  return null;
-}
 function openLogFileAt(path) {
-  mkdirSync3(dirname(path), { recursive: true, mode: 448 });
+  mkdirSync3(dirname2(path), { recursive: true, mode: 448 });
   try {
-    if (existsSync2(path) && statSync2(path).size > LOG_ROTATE_BYTES) {
+    if (existsSync3(path) && statSync2(path).size > LOG_ROTATE_BYTES) {
       renameSync3(path, `${path}.1`);
     }
   } catch {
@@ -1578,13 +1582,13 @@ function openLogFileAt(path) {
 }
 function readPidfileAt(path) {
   try {
-    return parseObservePidfile(readFileSync4(path, "utf8"));
+    return parseObservePidfile(readFileSync5(path, "utf8"));
   } catch {
     return null;
   }
 }
 function writePidfileAt(path, pf) {
-  mkdirSync3(dirname(path), { recursive: true, mode: 448 });
+  mkdirSync3(dirname2(path), { recursive: true, mode: 448 });
   writeFileSync3(path, serializeObservePidfile(pf), { mode: 384 });
 }
 function clearPidfileAt(path) {
@@ -1595,7 +1599,7 @@ function clearPidfileAt(path) {
 }
 function clearLegacyHubPidfile(stateRoot) {
   try {
-    unlinkSync3(join6(stateRoot, "hub.json"));
+    unlinkSync3(join7(stateRoot, "hub.json"));
   } catch {
   }
 }
@@ -1642,12 +1646,12 @@ async function probeFor(ctx) {
 function resolveStartSources(explicitRaw) {
   const explicit = explicitRaw.map(resolveDir);
   for (const [i, dir] of explicit.entries()) {
-    if (!existsSync2(dir)) throw new Error(`--source ${explicitRaw[i]}: directory does not exist (resolved to ${dir})`);
+    if (!existsSync3(dir)) throw new Error(`--source ${explicitRaw[i]}: directory does not exist (resolved to ${dir})`);
   }
   const configRoot = observeConfigRoot(process.env, homedir3(), process.platform);
   const { sources: configSources } = readObserveConfig(configRoot);
   const discoveryCandidates = discoverConfigDirCandidates(process.env, homedir3());
-  const resolved = resolveHubSources(explicit, configSources, discoveryCandidates, existsSync2, resolveDir);
+  const resolved = resolveHubSources(explicit, configSources, discoveryCandidates, existsSync3, resolveDir);
   if (resolved.length > 0) return resolved;
   const fallback = resolveConfigDir();
   if (configSources.length > 0 || discoveryCandidates.length > 0) {
@@ -1675,13 +1679,13 @@ function resolveStartRemotes() {
 function resolveLaunchAgentsDir() {
   let selfDir;
   try {
-    selfDir = dirname(realpathSync2(fileURLToPath(import.meta.url)));
+    selfDir = dirname2(realpathSync2(fileURLToPath(import.meta.url)));
   } catch {
     return null;
   }
   for (const rel of ["../launch-agents", "../../../../plugin/launch-agents"]) {
     const candidate = resolvePath(selfDir, rel);
-    if (existsSync2(join6(candidate, ".claude-plugin", "plugin.json"))) return candidate;
+    if (existsSync3(join7(candidate, ".claude-plugin", "plugin.json"))) return candidate;
   }
   return null;
 }
@@ -1705,7 +1709,7 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
   const launchAgentsDir = resolveLaunchAgentsDir();
   const tsxCli = (() => {
     try {
-      return createRequire(join6(base, "package.json")).resolve("tsx/cli");
+      return createRequire(join7(base, "package.json")).resolve("tsx/cli");
     } catch {
       throw new Error(`observe base ${base} has no resolvable 'tsx' \u2014 run pnpm install in ${base}`);
     }
@@ -1780,7 +1784,7 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
 }
 function readLogSliceFrom(path, offset) {
   try {
-    const buf = readFileSync4(path);
+    const buf = readFileSync5(path);
     return buf.subarray(Math.min(offset, buf.length)).toString("utf8");
   } catch {
     return "";
@@ -1788,7 +1792,7 @@ function readLogSliceFrom(path, offset) {
 }
 function logTail(logPath, lines = 5) {
   try {
-    const text = readFileSync4(logPath, "utf8");
+    const text = readFileSync5(logPath, "utf8");
     const tail = text.split("\n").filter(Boolean).slice(-lines).join("\n");
     return tail.length > 0 ? `log tail (${logPath}):
 ${tail}` : `log is empty (${logPath})`;
@@ -2034,7 +2038,7 @@ async function applySidecarCapabilities(input) {
   const sidecarPath = sidecarPathFor(workflowPath);
   let rawSidecar;
   try {
-    rawSidecar = readFileSync4(sidecarPath, "utf8");
+    rawSidecar = readFileSync5(sidecarPath, "utf8");
   } catch (e) {
     if (e.code === "ENOENT") return args;
     throw new Error(`capability sidecar ${sidecarPath} is present but unreadable: ${String(e)}`);
@@ -2366,7 +2370,7 @@ async function cmdResume(ctx, runId, sourceFlag) {
 }
 async function cmdConfigShow() {
   const configRoot = observeConfigRoot(process.env, homedir3(), process.platform);
-  const configPath = join6(configRoot, "config.json");
+  const configPath = join7(configRoot, "config.json");
   const { sources, remotes } = readObserveConfig(configRoot);
   const discovered = [...new Set(discoverConfigDirCandidates(process.env, homedir3()).map(resolveDir))];
   process.stdout.write(`config file : ${configPath}
@@ -2383,7 +2387,7 @@ async function cmdConfigShow() {
 }
 async function cmdConfigAddSource(dirRaw) {
   const dir = resolveDir(dirRaw);
-  if (!existsSync2(dir)) throw new Error(`config add-source ${dirRaw}: directory does not exist (resolved to ${dir})`);
+  if (!existsSync3(dir)) throw new Error(`config add-source ${dirRaw}: directory does not exist (resolved to ${dir})`);
   const configRoot = observeConfigRoot(process.env, homedir3(), process.platform);
   const config = readObserveConfig(configRoot);
   const already = config.sources.some((s) => resolveDir(s) === dir);
@@ -2475,25 +2479,25 @@ function scanRunsForPrune(configDirs) {
   const records = [];
   const seen = /* @__PURE__ */ new Set();
   for (const configDir of new Set(configDirs)) {
-    const projectsDir = join6(configDir, "projects");
+    const projectsDir = join7(configDir, "projects");
     const scriptByRun = /* @__PURE__ */ new Map();
     for (const slug of subdirs(projectsDir)) {
-      for (const session of subdirs(join6(projectsDir, slug))) {
-        const scriptsDir = join6(projectsDir, slug, session, "workflows", "scripts");
+      for (const session of subdirs(join7(projectsDir, slug))) {
+        const scriptsDir = join7(projectsDir, slug, session, "workflows", "scripts");
         for (const f of filesIn(scriptsDir)) {
           const m = RUNID_IN_SCRIPT.exec(f);
-          if (m) scriptByRun.set(m[1], { name: runNameFromScript(f, m[1]), scriptPath: join6(scriptsDir, f) });
+          if (m) scriptByRun.set(m[1], { name: runNameFromScript(f, m[1]), scriptPath: join7(scriptsDir, f) });
         }
       }
     }
     for (const slug of subdirs(projectsDir)) {
-      for (const session of subdirs(join6(projectsDir, slug))) {
-        const wfDir = join6(projectsDir, slug, session, "workflows");
+      for (const session of subdirs(join7(projectsDir, slug))) {
+        const wfDir = join7(projectsDir, slug, session, "workflows");
         for (const f of filesIn(wfDir)) {
           const m = RUN_JSON.exec(f);
           if (!m) continue;
           const runId = m[1];
-          const jsonPath = join6(wfDir, f);
+          const jsonPath = join7(wfDir, f);
           if (seen.has(jsonPath)) continue;
           seen.add(jsonPath);
           let mtimeMs;
@@ -2509,7 +2513,7 @@ function scanRunsForPrune(configDirs) {
             mtimeMs,
             jsonPath,
             scriptPath: sc?.scriptPath ?? null,
-            sidecarDir: join6(projectsDir, slug, session, "subagents", "workflows", runId)
+            sidecarDir: join7(projectsDir, slug, session, "subagents", "workflows", runId)
           });
         }
       }
