@@ -96,4 +96,12 @@ overrides:
   # on the first install — a whole major past what the advisory asks for, taken silently because
   # the range allowed it. Fix what the advisory names, nothing more.
   js-yaml@>=4.0.0 <4.3.0: '>=4.3.0 <5'
+  # ⚠ The 3.x line turned out to have an advisory of its OWN — GHSA-5p4m-2wfm-xmqj (high,
+  # dev-only scope), surfaced 2026-08-09 on the push that fixed something else entirely.
+  # The comment above says "the 3.x line is NOT affected", and that was true OF THAT ADVISORY;
+  # it was never a statement about the 3.x line's safety in general. Read it that way — one
+  # bounded override per advisory, never one range trying to cover both.
+  # Resolved was exactly 3.15.0 against a bar of 3.15.1: a same-patch bump inside 3.x, and the
+  # upper bound keeps it from drifting onto 4.x for consumers written against 3.
+  js-yaml@>=3.0.0 <3.15.1: '>=3.15.1 <4'
   '@types/node': 24.13.1
