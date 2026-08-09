@@ -27,7 +27,12 @@ type Verdict = {
     status?: string
     reason?: string
     matchedBy?: 'id' | 'name'
-    attachedBy?: 'observerTaskId' | 'observerTaskId-conflict' | 'mtime-fallback' | 'not-required'
+    attachedBy?:
+      | 'observerTaskId'
+      | 'observerTaskId-conflict'
+      | 'observerTaskId-pending'
+      | 'mtime-fallback'
+      | 'structural-no-observer'
     captured?: string
     captureError?: string
     observerFile?: string
@@ -158,14 +163,21 @@ describe('wt-check-observer-pairing.mjs', () => {
     })
   })
 
-  it('passes for in_process_teammate with no siblings at all', () => {
+  // Card 1837360811689903959: a named, non-isolated spawn structurally never gets an
+  // observer (measured by construction — its own meta.json carries no observerTaskId at
+  // all). This must be its OWN status, distinct from `pass` — a reader treating it as an
+  // ordinary pass would read this branch as silent, exactly the shape the card's guard
+  // exists to avoid.
+  it('reports in_process_teammate as structurally observer-less, not a pass, when no siblings exist at all', () => {
     withTempSubagentsDir((dir) => {
       writeMeta(dir, 'observed.meta.json', { name: 'pilot-orchestrator', taskKind: 'in_process_teammate' }, 1_000)
 
       const result = runCheck(dir, { name: 'pilot-orchestrator' })
 
       expect(result.exitCode).toBe(0)
-      expect(result.json.status).toBe('pass')
+      expect(result.json.status).toBe('not-applicable')
+      expect(result.json.attachedBy).toBe('structural-no-observer')
+      expect(result.json.reason).toContain('structurally has no observer')
       expect(result.json.matchedBy).toBe('name')
     })
   })
@@ -424,7 +436,7 @@ describe('wt-check-observer-pairing.mjs', () => {
       })
     })
 
-    it('returns unknown when observerTaskId is present but does not resolve to any file, even if an unrelated in-window observer exists', () => {
+    it('returns pending (not unknown) when observerTaskId is present but does not resolve to any file yet, even if an unrelated in-window observer exists', () => {
       withTempSubagentsDir((dir) => {
         writeAgentFixture(dir, 'agent-dangling', { agentType: 'pilot', observerTaskId: 'no-such-agent', taskKind: 'async' }, 1_000)
         writeMeta(dir, 'observer.meta.json', { name: 'watchdog', isObserver: true }, 1_005)
@@ -432,8 +444,8 @@ describe('wt-check-observer-pairing.mjs', () => {
         const result = runCheck(dir, { agentId: 'agent-dangling' })
 
         expect(result.exitCode).toBe(2)
-        expect(result.json.status).toBe('unknown')
-        expect(result.json.attachedBy).toBe('observerTaskId-conflict')
+        expect(result.json.status).toBe('pending')
+        expect(result.json.attachedBy).toBe('observerTaskId-pending')
         expect(result.json.reason).toContain('no-such-agent')
       })
     })
@@ -466,15 +478,15 @@ describe('wt-check-observer-pairing.mjs', () => {
       })
     })
 
-    it('still returns unknown when observerTaskId is present but unresolved AND no mtime candidate exists either', () => {
+    it('still returns pending when observerTaskId is present but unresolved AND no mtime candidate exists either', () => {
       withTempSubagentsDir((dir) => {
         writeAgentFixture(dir, 'agent-both-fail', { agentType: 'pilot', observerTaskId: 'ghost', taskKind: 'async' }, 1_000)
 
         const result = runCheck(dir, { agentId: 'agent-both-fail' })
 
         expect(result.exitCode).toBe(2)
-        expect(result.json.status).toBe('unknown')
-        expect(result.json.attachedBy).toBe('observerTaskId-conflict')
+        expect(result.json.status).toBe('pending')
+        expect(result.json.attachedBy).toBe('observerTaskId-pending')
       })
     })
 
@@ -516,29 +528,32 @@ describe('wt-check-observer-pairing.mjs', () => {
         })
       })
 
-      it('still reports unknown, with a wording that names the empirical asymmetry, when the sibling never appears', () => {
+      it('reports pending, with a wording that names the empirical asymmetry, when the sibling never appears', () => {
         withTempSubagentsDir((dir) => {
           writeAgentFixture(dir, 'agent-race-slow', { agentType: 'pilot', observerTaskId: 'obs-never' }, 1_000)
 
           const result = runCheck(dir, { agentId: 'agent-race-slow', retryMs: 200 })
 
           expect(result.exitCode).toBe(2)
-          expect(result.json.status).toBe('unknown')
-          expect(result.json.attachedBy).toBe('observerTaskId-conflict')
-          expect(result.json.reason).toContain('usually still starting')
+          expect(result.json.status).toBe('pending')
+          expect(result.json.attachedBy).toBe('observerTaskId-pending')
+          expect(result.json.reason).toContain('lands later')
           expect(result.json.reason).not.toContain('not isObserver:true')
         })
       })
 
-      it('does not retry at all when --retry-ms is 0 (existing behaviour preserved byte for byte in verdict shape)', () => {
+      // Card 1837360811689903959 changed the STATUS this shape reports ('unknown' →
+      // 'pending') but not the exit-code/retry mechanics — this test still locks that
+      // --retry-ms: 0 skips the retry loop entirely (no sleep, no poll).
+      it('does not retry at all when --retry-ms is 0 (retry mechanics unchanged; only the verdict status changed under card 1837360811689903959)', () => {
         withTempSubagentsDir((dir) => {
           writeAgentFixture(dir, 'agent-no-retry', { agentType: 'pilot', observerTaskId: 'obs-never' }, 1_000)
 
           const result = runCheck(dir, { agentId: 'agent-no-retry', retryMs: 0 })
 
           expect(result.exitCode).toBe(2)
-          expect(result.json.status).toBe('unknown')
-          expect(result.json.attachedBy).toBe('observerTaskId-conflict')
+          expect(result.json.status).toBe('pending')
+          expect(result.json.attachedBy).toBe('observerTaskId-pending')
         })
       })
     })
@@ -577,16 +592,22 @@ describe('wt-check-observer-pairing.mjs', () => {
         })
       })
 
-      it('archives the observed file alone when the pointed-at sibling does not exist', () => {
+      // Card 1837360811689903959: "sibling does not exist yet" is now PENDING, not a
+      // conflict — and pending is no longer evidence of anything worth archiving (0 of
+      // 387 measured pairs ever failed to resolve). Capture is scoped to the shape that
+      // still evidences a real anomaly (a sibling that exists but is not the observer);
+      // this case must write nothing, even with a capture dir supplied.
+      it('writes NOTHING for a pending (sibling-not-yet-written) shape, even when a capture dir is supplied', () => {
         withTempSubagentsDir((dir) => {
           const captureDir = join(dir, '..', 'evidence')
           writeAgentFixture(dir, 'obs2', { agentId: 'obs2', observerTaskId: 'ghost' }, 1000)
 
           const result = runCheck(dir, { agentId: 'obs2', captureDir })
 
-          expect(result.json.attachedBy).toBe('observerTaskId-conflict')
-          const files = readdirSync(result.json.captured as string).sort()
-          expect(files).toEqual(['conflict.json', 'observed-agent-obs2.meta.json'])
+          expect(result.json.status).toBe('pending')
+          expect(result.json.attachedBy).toBe('observerTaskId-pending')
+          expect(result.json.captured).toBeUndefined()
+          expect(existsSync(captureDir), 'no capture dir should be created for a pending verdict').toBe(false)
         })
       })
 
@@ -607,18 +628,23 @@ describe('wt-check-observer-pairing.mjs', () => {
         })
       })
 
-      it('leaves the verdict byte-identical when no capture dir is given', () => {
+      it('leaves the pending verdict byte-identical when no capture dir is given', () => {
         withTempSubagentsDir((dir) => {
           writeAgentFixture(dir, 'obs3', { agentId: 'obs3', observerTaskId: 'ghost' }, 1000)
 
           const result = runCheck(dir, { agentId: 'obs3' })
 
-          expect(result.json.attachedBy).toBe('observerTaskId-conflict')
+          expect(result.json.status).toBe('pending')
+          expect(result.json.attachedBy).toBe('observerTaskId-pending')
           expect(result.json.captured).toBeUndefined()
           expect(result.json.captureError).toBeUndefined()
         })
       })
 
+      // Capture-failure handling is exercised on the CONFLICT shape (sibling exists but
+      // is not the observer) — the only shape that still attempts a capture. The
+      // sibling-absent (pending) shape never calls captureConflict at all since card
+      // 1837360811689903959, so it cannot exhibit a capture failure.
       it('keeps the FINDING when the capture itself fails, and names the failure', () => {
         // This is the case that decides whether the capture is safe to add at all. Losing
         // the finding because the evidence could not be written would be strictly worse
@@ -629,11 +655,13 @@ describe('wt-check-observer-pairing.mjs', () => {
           mkdirSync(readOnly)
           chmodSync(readOnly, 0o500)
           try {
-            writeAgentFixture(dir, 'obs4', { agentId: 'obs4', observerTaskId: 'ghost' }, 1000)
+            writeAgentFixture(dir, 'obs4', { agentId: 'obs4', observerTaskId: 'sib4' }, 1000)
+            writeAgentFixture(dir, 'sib4', { agentId: 'sib4', isObserver: false }, 1000)
 
             const result = runCheck(dir, { agentId: 'obs4', captureDir: join(readOnly, 'nested') })
 
             expect(result.exitCode).toBe(2)
+            expect(result.json.status).toBe('unknown')
             expect(result.json.attachedBy).toBe('observerTaskId-conflict')
             expect(result.json.captured).toBeUndefined()
             expect(result.json.captureError).toContain('could not archive')

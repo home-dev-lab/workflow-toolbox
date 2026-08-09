@@ -312,7 +312,12 @@ describe('wt-observer-pairing-guard-hook — delegate to the shipped checker', (
     expect(r.stdout).toBe('')
   })
 
-  it('surfaces checker unknown when observerTaskId is present but dangling', () => {
+  // The checker now reports this shape as 'pending', not 'unknown' — a dangling
+  // observerTaskId with no sibling file yet is the race the pairing guard used to fire
+  // on ~19 times a week, every one a false alarm (established by construction: a spawn
+  // that genuinely drops its observer never writes an observerTaskId at all, so this
+  // branch can only mean "not written yet").
+  it('surfaces checker pending when observerTaskId is present but its sibling has not landed yet', () => {
     const f = pairingFixture('observer-dangling')
     writeFileSync(
       join(f.subagentsDir, 'agent-worker.meta.json'),
@@ -322,7 +327,7 @@ describe('wt-observer-pairing-guard-hook — delegate to the shipped checker', (
 
     const r = runHook(OBSERVER_PAIRING_HOOK, hookPayload(f.project, f.sessionId, { agent_id: 'worker' }), f.env)
 
-    expect(hookContext(r)).toContain('checker verdict unknown')
+    expect(hookContext(r)).toContain('checker verdict pending')
     expect(hookContext(r)).toContain('missing-watchdog')
   })
 

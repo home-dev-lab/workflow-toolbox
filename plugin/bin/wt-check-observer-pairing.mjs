@@ -291,50 +291,80 @@ if (typeof observerTaskId === 'string' && observerTaskId.length > 0) {
     }
   }
 
-  // ⚠ THE ONE CASE WORTH PRESERVING. Everything else this script reports is either a
-  // healthy pairing or a record too old to carry the link. THIS branch is a pairing that
-  // was DECLARED and did not resolve within the retry window — the only shape that
-  // evidences a real loss, OR (far more often, per the measured distribution above) an
-  // observer that simply has not started yet and will resolve minutes from now.
+  // ⚠ TWO DIFFERENT SHAPES BELOW — established 2026-08-09, do not collapse them back
+  // into one 'unknown'/'observer-conflict' bucket.
   //
-  // A confirmed PERMANENT loss has never been observed on this machine. 387 real pairs
-  // were measured on 2026-08-08 (up from 182 on 2026-08-03), all of them eventually
-  // resolving; the losing direction exists only as prose. That is why the reason string
-  // below states the empirical asymmetry explicitly, and why the guard hook downstream
-  // must not read this verdict as a confirmed failure — it is an HONEST 'unknown', not a
-  // 'not-watched'. See card 1837275085.
-  //
-  // A hand-written fixture would NOT close that gap — it would be authored from the same
-  // understanding as the code, so it could only ever prove the code matches its author's
-  // belief. So the answer is not to fabricate the artefact but to KEEP it the first time
-  // reality produces one. Waiting to notice is luck; archiving on sight is a mechanism.
-  const capture = captureConflict({
-    captureDir,
-    observedFile: observed.filePath,
-    pairedFile: paired ? paired.filePath : join(subagentsDir, `agent-${observerTaskId}.meta.json`),
-    pairedExists: Boolean(paired),
-    observerTaskId,
-  })
+  // The deciding question was: does a spawn that genuinely DROPS its observer write an
+  // observerTaskId at all? Measured by construction (a named, non-isolated
+  // spawn's own meta.json, captured live): it writes NONE. So once we are inside this
+  // `if (observerTaskId)` block, an observer WAS created — the only open question is
+  // whether its own write has landed yet. That makes "no sibling file at all" a
+  // fundamentally different, and safe, shape from "a sibling exists but is not the
+  // observer" — the latter is the one case that still evidences a real anomaly.
+  if (paired) {
+    // ⚠ THE ONE CASE WORTH PRESERVING. A sibling file EXISTS at the pointed-at id but is
+    // not isObserver:true — id collision, wrong ownership, or a genuinely malformed
+    // observer record. This is the only shape that ever evidences a real problem; a
+    // hand-written fixture could not close the gap on whether it happens (it would be
+    // authored from the same understanding as the code), so the mechanism is to KEEP the
+    // artefact the first time reality produces one rather than fabricate it.
+    const capture = captureConflict({
+      captureDir,
+      observedFile: observed.filePath,
+      pairedFile: paired.filePath,
+      pairedExists: true,
+      observerTaskId,
+    })
+    emit(2, {
+      status: 'unknown',
+      failureClass: 'observer-conflict',
+      reason: `observerTaskId points to ${observerTaskId}, but that sibling is not isObserver:true yet — usually still starting (median ~8 min on this machine's measured history), not a confirmed loss`,
+      matchedBy,
+      attachedBy: 'observerTaskId-conflict',
+      malformed,
+      ...capture,
+    })
+  }
+
+  // ⚠ PENDING, not unknown. No sibling file exists yet at the pointed-at id. The
+  // observed agent's own write (this record) happens synchronously, single-digit ms
+  // after the spawn call; the observer is a SEPARATE spawn whose own .meta.json write
+  // lands whenever the harness actually starts it — measured across 387 real pairs on
+  // 2026-08-08: median ~463s, p90 ~1870s, 0 of 387 ever failed to resolve eventually.
+  // Reporting this as 'unknown' was the exact shape the pairing guard fired on ~19 times
+  // a week, every one a false alarm (per the measured guard journal). Since a genuinely
+  // dropped observer writes no observerTaskId at all (see the block comment above), this
+  // branch can ONLY mean "not written yet" — never a loss. No capture here: capture
+  // exists to preserve evidence of a loss, and this is no longer that.
   emit(2, {
-    status: 'unknown',
-    failureClass: 'observer-conflict',
-    reason: paired
-      ? `observerTaskId points to ${observerTaskId}, but that sibling is not isObserver:true yet — usually still starting (median ~8 min on this machine's measured history), not a confirmed loss`
-      : `observerTaskId points to ${observerTaskId}, but no matching sibling file exists yet — usually still starting (median ~8 min on this machine's measured history), not a confirmed loss`,
+    status: 'pending',
+    failureClass: 'observer-pending',
+    reason: `observerTaskId points to ${observerTaskId}, but no matching sibling file exists yet — the observer is a separately spawned agent whose own write lands later (median ~8 min on this machine's measured history); this resolves on its own, it is not a confirmed loss`,
     matchedBy,
-    attachedBy: 'observerTaskId-conflict',
+    attachedBy: 'observerTaskId-pending',
     malformed,
-    ...capture,
   })
 }
 
 const taskKind = observed.parsed?.taskKind
+// ⚠ STRUCTURAL, not a fault — established 2026-08-09: a
+// NAMED spawn without isolation runs as an in-process teammate, and the harness never
+// creates an observer for it at all (measured by construction: its own meta.json
+// carries no observerTaskId field, full stop — confirmed against a real captured
+// record). On this same path the harness also rewrites `agentType` to the spawn's own
+// NAME and demotes the real requested type under `customAgentType` — so a reader (or a
+// checker) hunting for `agentType: "pilot"` finds the spawn's name instead and misreads
+// this as a lookup failure, when it is a fact about the spawn SHAPE.
+// This gets its OWN status, distinct from `pass`/`watched` (the observer really is
+// absent here — reporting it silently would mask exactly the case this guard exists to
+// name) and distinct from `unknown` (nothing here is uncertain; the absence is expected
+// and permanent for this shape, not a race to wait out).
 if (taskKind === 'in_process_teammate') {
   emit(0, {
-    status: 'pass',
-    reason: 'in_process_teammate spawn — observer pairing not expected for this mode',
+    status: 'not-applicable',
+    reason: 'in_process_teammate spawn (named, no isolation) — this agent structurally has no observer; the harness never creates one on this spawn path, so this is expected, not a lookup failure',
     matchedBy,
-    attachedBy: 'not-required',
+    attachedBy: 'structural-no-observer',
     malformed,
   })
 }
