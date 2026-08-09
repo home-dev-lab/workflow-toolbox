@@ -20,6 +20,9 @@ const JUSTIFIED_EXCLUSIONS: Record<string, string> = {
     'Takes no arguments at all (usage is `node wt-quota-probe.mjs`, no flags) — it reads only ' +
     'the active config dir\'s stored OAuth credentials. Nothing to parse or describe beyond ' +
     'its own header comment; "every argument-parsing CLI" does not reach a CLI that parses none.',
+  'wt-wake-channel.mjs':
+    'MCP stdio server invoked only through plugin/.mcp.json, not an operator CLI. Its stdout is ' +
+    'exclusively newline-delimited JSON-RPC, so emitting help text would corrupt the protocol.',
 }
 
 /**

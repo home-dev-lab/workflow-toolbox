@@ -255,6 +255,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this service monitor and its degraded-flag contract under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-wake-channel.mjs',
+    status: 'exempt',
+    reason: 'Internal dependency-free MCP transport whose complete invocation contract is the adjacent plugin/.mcp.json registration.',
+  },
+  {
     script: 'plugin/bin/wt-session-start-registry-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents the SessionStart scan hook and its explicit-session contract.',
