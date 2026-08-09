@@ -3,6 +3,67 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.159.0] - 2026-08-10
+
+### Added
+
+- **`wt-wake-floor` — a monitor that measures nothing, so nothing can silence it.** It waits, emits
+  one line, and waits again. It reads no queue, no cards, no delegates, no transcript, no git state.
+- Registered in `plugin/monitors/monitors.json`, so the harness places it at session start like the
+  others; it dies with its session and returns with the next one, and nobody has to re-arm it.
+
+### Why a monitor that knows nothing is worth shipping
+
+`wt-autonomy-watch` fires on a conjunction — live mandate, queued work remains, nothing in flight,
+idle long enough. The second term reads a queue snapshot. When that snapshot is stale the term is
+unverifiable, the conjunction cannot hold, and the watcher stays quiet.
+
+That is correct behaviour, and it is the problem: **a watcher right to stay quiet and a broken one
+emit the same nothing.** Worse, the two correlate — an idle session is precisely one that has
+stopped refreshing the inputs its own alarm depends on, so the alarm goes blind as a consequence of
+the state it exists to report.
+
+Measured on the development machine: a mandated session stopped with 118 open cards and nothing in
+flight; the conditional watcher was armed the entire time and never emitted; no turn came back for
+**3 h 24**.
+
+So the conditions are kept, but their role changes: `wt-autonomy-watch` stays above this one and
+wakes EARLIER when it can see work, carrying the count and the next item. **It refines; it no
+longer authorises.**
+
+### Notes for adopters
+
+- ⚠ **Silent unless a project-scoped autonomous mandate is declared** (`wt-autonomy-arm`). Absent,
+  malformed or expired mandate: nothing is ever emitted. Ordinary interactive sessions never hear
+  from it.
+- That mandate gate is the one thing it reads, and it is deliberately **not a measurement of work**:
+  it is a declaration of intent, and unlike a queue snapshot it does not go stale as a side effect
+  of the session being idle.
+- Cadence defaults to 15 minutes; `--poll <seconds>`, or `WT_WAKE_FLOOR_IDLE_MINUTES` at process
+  start.
+- ⚠ **An empty wake costs a full turn** that re-reads the session's accumulated context. That is the
+  price of not being silenceable, and it is the trade this monitor makes on purpose.
+
+### What its message deliberately does NOT claim
+
+```
+FLOOR: N minutes elapsed on my interval. I measure only that — not whether you are idle,
+and not whether work remains. Check the queue yourself.
+```
+
+An earlier draft said "no turn for N minutes". This process cannot know that — it measures its own
+cadence — so a session working steadily would have been told it had been idle. The second sentence
+exists because an unconditional ping carries no evidence that anything is pending, and without it
+the ping gets read as one.
+
+### ⚠ Not established
+
+That the harness arms this monitor at session start. It follows the same manifest path as the four
+existing monitors, which are observably placed thirteen seconds into a session — but this one has
+not been through a restart yet, and the end-to-end proof (a turn arriving in the exact state that
+failed: mandate live, snapshot stale, nothing in flight) is deliberately left open rather than
+assumed.
+
 ## [0.158.0] - 2026-08-09
 
 ### Added
