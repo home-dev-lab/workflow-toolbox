@@ -3,6 +3,18 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.159.1] - 2026-08-10
+
+### Changed
+
+- `plugin/bin/wt-observe.mjs` rebuilt. Its sibling-checkout resolution moved out of the launcher
+  into a shared module so a second caller could use it instead of copying it — **no behaviour
+  change to `wt-observe` itself**, which is why this is a patch and not a minor.
+
+The second caller is a development-only gate that does not ship: this repo's own `pnpm test` now
+compiles the private companion app's consuming surface against this working tree, so a widened type
+here fails HERE rather than in whichever repo happens to run its gates next.
+
 ## [0.159.0] - 2026-08-10
 
 ### Added
