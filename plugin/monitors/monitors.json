@@ -22,5 +22,11 @@
     "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-autonomy-watch.mjs",
     "description": "Autonomy watch — wakes a mandated session that still has queued work, nothing in flight, and no new turn for long enough",
     "when": "always"
+  },
+  {
+    "name": "wake-floor",
+    "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-wake-floor.mjs",
+    "description": "Wake floor — periodically hands a turn back to a mandated session based only on elapsed time",
+    "when": "always"
   }
 ]

@@ -104,6 +104,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this monitor, its mandate gate, and its once-per-idle-stretch wake contract under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-wake-floor.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this elapsed-time-only floor, its mandate gate, and its unconditional cadence under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-check-commit-signatures-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this dual PostToolUse/PreToolUse commit-signature gate under Shipped Hooks, Guards & Monitors.',
@@ -680,6 +685,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-arc-watch.mjs',
       'plugin/bin/wt-autonomy-arm.mjs',
       'plugin/bin/wt-autonomy-watch.mjs',
+      'plugin/bin/wt-wake-floor.mjs',
       'plugin/bin/wt-check-commit-signatures-hook.mjs',
       'plugin/bin/wt-check-commit-signatures.mjs',
       'plugin/bin/wt-hook-registration-drift-hook.mjs',
