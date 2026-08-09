@@ -3,6 +3,54 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.158.0] - 2026-08-09
+
+### Added
+
+- **`plugin/bin/wt-wake-channel.mjs` plus `plugin/.mcp.json` — a wake channel, so a process
+  OUTSIDE a session can hand that session a turn.** Until now nothing could: there is no session
+  id to address and no socket to knock on, and the harness wake reaches only the session that
+  LOADED the MCP server. So the doorbell has to live inside the house. An observer stays outside,
+  drops a file into a spool directory, and this server — loaded by the observed session — turns
+  it into a turn.
+- The server speaks JSON-RPC 2.0 over stdio **by hand**. It has to: this plugin ships with zero
+  third-party dependencies, so the MCP SDK cannot travel. The framing was grounded against the
+  SDK already running on the development machine rather than inferred —
+  `dist/esm/shared/stdio.js:9-19` splits the read buffer on `\n`,
+  `dist/esm/shared/stdio.js:28-30` serialises as `JSON.stringify(message) + '\n'`.
+  Newline-delimited, not LSP `Content-Length`.
+- Spool location is `WT_WAKE_SPOOL`, else `${XDG_STATE_HOME:-$HOME/.local/state}/wt-wake-channel/inbox`,
+  with a `consumed/` subdirectory; poll interval `WT_WAKE_POLL_MS` (default 5000); diagnostics on
+  stderr only, and only under `WT_WAKE_DEBUG`.
+
+### Notes for adopters
+
+- ⚠ **This is the first `mcpServers` entry this plugin has ever declared.** Installing the plugin
+  now starts one extra Node process per session. It holds no tools, answers `tools/list` with an
+  empty list, and emits nothing at all unless something writes into its spool — but it is a new
+  process, and that is worth knowing before upgrading.
+- ⚠ **It is inert without a host-side opt-in.** The wake requires the plugin to be listed in the
+  machine's `allowedChannelPlugins` (a root-owned managed-settings file) *and* named in the
+  session's `--channels` tag at launch. Neither is done by installing. Absent them, the server
+  loads, answers the protocol, and never wakes anything.
+- ⚠ **What is NOT established**: that Claude Code turns this server's notification into a turn.
+  The emission is proven at the process level, and the harness path was measured on the
+  development machine through a different plugin — evidence about the harness, not about this
+  code. Treat the end-to-end wake as unverified until you see it.
+
+### Design choices worth naming, because each one costs something
+
+- **stdout is the protocol**, so nothing else may ever be written there — one stray byte corrupts
+  the stream for the whole session. That is also why the executable is excluded from the
+  operator-CLI help sweep: even valid help text would break its transport.
+- **A broken spool is silent.** A supervision channel that crashes what it supervises is worse
+  than one that stays quiet, so every filesystem failure is swallowed. The cost is that a
+  misconfigured spool reports nothing; `WT_WAKE_DEBUG` is the way to see it.
+- **Move-then-emit.** A crash between the two must not replay a wake — losing one is recoverable,
+  repeating one forever is not.
+- **Nothing is emitted before `notifications/initialized`**, so a session never gets a spurious
+  wake at startup.
+
 ## [0.157.0] - 2026-08-08
 
 ### Added
