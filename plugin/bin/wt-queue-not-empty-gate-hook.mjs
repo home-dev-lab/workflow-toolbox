@@ -102,6 +102,15 @@
 // single-project original (that copy stays wired at PROJECT scope, never machine-wide — a
 // project with no tracker at all must never inherit a guard it cannot satisfy).
 //
+// ⚠ FIX (2026-08-09): this file used to say the identical "Queue size is unknown (stale
+// snapshot)" for a marker that was merely OLD and one that was UNREADABLE or structurally
+// MALFORMED — two different remedies hidden behind one word. Section 3 below now computes a
+// `queueStatus` of 'malformed' | 'stale' | 'known' and the emitted text distinguishes them. The
+// third state this class of condition can be in — no marker EVER written for this project — is
+// unaffected and stays a silent, fail-open bail at the top of section 2: it is not a "collapsed"
+// case here, it never reached the message at all, and deliberately still does not — see the
+// comment on that bail for why turning it loud would recreate an always-red gate.
+//
 // ⚠ REGISTERED ALONGSIDE wt-actionable-gate-hook.mjs, NOT SUPERSEDED BY IT — a register-or-retire
 // decision resolved by a side-by-side comparison of the two hooks' predicates.
 // An earlier version of this comment called this file superseded and
@@ -182,13 +191,30 @@ try {
 // ⚠ THE ABSTRACTION POINT — see the header. No marker ever written ⇒ silent, permanently, for
 // this project. This is a plain existence check, never a tool-name match: it works identically
 // whatever wrote the marker.
+//
+// ⚠ This early bail is DELIBERATELY UNCHANGED by the fix below it.
+// Files under STATE_DIR are never deleted once a producer writes one — so "absent" here can only
+// mean "nothing has EVER adopted this hook for this project", never "a producer used to run and
+// stopped" (that is STALE, below, and it already has its own snapshot to read). Making this path
+// speak would turn every adopter who never wires a producer into a PERMANENT always-red gate —
+// exactly the failure the header above warns against, and the private twin avoids the same way
+// via its own, differently-shaped, "no tracker" check. So "no producer has ever written a
+// snapshot" stays silent by design, same as before; what changes is that STALE and MALFORMED
+// (below), which used to collapse into one identical message, now say different things.
 const SNAPSHOT = join(STATE_DIR, `queue-${projectSlug(cwd)}.json`)
 if (!existsSync(SNAPSHOT)) bail()
 
 // --- 3. Is there open work? ---------------------------------------------------------------
-// A marker that exists but is unreadable or older than SNAPSHOT_MAX_AGE_MIN counts as "work
-// remains" (FAIL-CLOSED — see header). Only a snapshot that is BOTH readable AND fresh AND
-// reports open:0 silences this guard.
+// ⚠ A marker that exists but is UNREADABLE/MALFORMED and one that is simply STALE used to
+// collapse into the identical text "Queue size is unknown (stale snapshot)" — literally false
+// for the malformed case, and two different remedies (repair a broken write vs. just re-read
+// the queue) hidden behind one word. `queueStatus` keeps them apart all the way to the emitted
+// message, mirroring the same distinction already made in the private, single-project original
+// this file is ported from:
+//   'malformed' — the marker exists but is unreadable JSON, or fails the field-shape checks.
+//   'stale'     — it exists, parses, has valid fields, but is older than SNAPSHOT_MAX_AGE_MIN.
+//   'known'     — it exists, parses, is fresh, and openCount is meaningful.
+// (There is no 'absent' value here — that case bails above, before this section ever runs.)
 let openCount = null
 let nextItem = ''
 // ⚠ A COUNT WITHOUT ITS AGE READS AS CURRENT. This snapshot is refreshed only when something
@@ -197,6 +223,7 @@ let nextItem = ''
 // from fresh. The age is already computed below to decide staleness; carrying it into the
 // message costs nothing and stops the number from lying by omission.
 let snapshotAgeMin = null
+let queueStatus = 'known'
 try {
   const snap = JSON.parse(readFileSync(SNAPSHOT, 'utf8'))
 
@@ -220,13 +247,20 @@ try {
   // which is the same "unknown ⇒ work remains" fail-closed path as an unreadable/stale file.
   const rawOpen = snap.open
   const isValidOpen = typeof rawOpen === 'number' && Number.isFinite(rawOpen) && rawOpen >= 0
-  if (age <= SNAPSHOT_MAX_AGE_MIN * 60_000 && isValidOpen) {
+  const validAt = typeof snap.at === 'number' && Number.isFinite(snap.at)
+  if (!validAt || !isValidOpen || typeof snap.next !== 'string') {
+    queueStatus = 'malformed'
+  } else if (age > SNAPSHOT_MAX_AGE_MIN * 60_000) {
+    queueStatus = 'stale'
+    snapshotAgeMin = Math.round(age / 60_000)
+  } else {
     openCount = rawOpen
     nextItem = String(snap.next || '')
     snapshotAgeMin = Math.round(age / 60_000)
+    queueStatus = 'known'
   }
 } catch {
-  /* marker exists but is unreadable/corrupt — treated as "work remains", see FAIL-CLOSED above */
+  queueStatus = 'malformed' // exists, but unreadable/corrupt JSON — see FAIL-CLOSED above
 }
 if (openCount === 0) bail() // the queue really is empty — stopping needs no justification
 
@@ -303,6 +337,10 @@ process.stdout.write(
       // save characters was caught by the suite: a reader could no longer tell "nobody measured
       // the queue" from "the queue is small", which is the whole reason the gate assumes
       // non-empty in that state.
+      // ⚠ Within the UNKNOWN case, STALE and MALFORMED used to be the
+      // SAME text ("stale snapshot") even when the marker was corrupt, not old. `queueStatus`
+      // (computed above) keeps them apart here — the only place a reader/model actually sees it,
+      // not just in an internal variable nothing surfaces.
       // ⚠ The `[for Claude, not the user]` prefix is NOT decoration. This text is addressed to the
       // model, and the harness renders it in the user's terminal with nothing saying so — a
       // human reading it cannot tell whether they are being asked to act, and the trailing file
@@ -310,7 +348,11 @@ process.stdout.write(
       // Anything that cannot be hidden must at least name its addressee.
       additionalContext:
         `[for Claude, not the user] open work remains, nothing running · ` +
-        (openCount === null ? 'Queue size is unknown (stale snapshot)' : `${openCount} open`) +
+        (openCount === null
+          ? (queueStatus === 'stale'
+              ? `Queue size is unknown — snapshot is stale (${snapshotAgeMin}min old)`
+              : 'Queue size is unknown — snapshot is unreadable/malformed')
+          : `${openCount} open`) +
         `${nextItem ? ` · next: ${nextItem}` : ''} — chain or say why · ${HELP_PATH}`,
     },
   }),
