@@ -60,7 +60,7 @@ process.stdin.on('end', () => {
 })
 `
 
-function scaffoldProject(tag: string, opts: { withParser: boolean }) {
+function scaffoldProject(tag: string, opts: { withParser: boolean; withBoardPointer?: boolean }) {
   const root = mkRoot(tag)
   const home = join(root, 'home')
   const state = join(root, 'state')
@@ -68,6 +68,10 @@ function scaffoldProject(tag: string, opts: { withParser: boolean }) {
   mkdirSync(home, { recursive: true })
   mkdirSync(state, { recursive: true })
   mkdirSync(cwd, { recursive: true })
+  if (opts.withBoardPointer !== false) {
+    mkdirSync(join(cwd, '.claude'), { recursive: true })
+    writeFileSync(join(cwd, '.claude/planka.json'), JSON.stringify({ boardId: 'b1' }), 'utf8')
+  }
   if (opts.withParser) {
     const parserDir = join(cwd, '.claude/scripts/lib')
     mkdirSync(parserDir, { recursive: true })
@@ -99,6 +103,17 @@ function readSnapshot(stateDir: string, cwd: string): Record<string, unknown> | 
     return JSON.parse(readFileSync(join(stateDir, `${slug(cwd)}.json`), 'utf8'))
   } catch {
     return null
+  }
+}
+
+function readFailureRecords(stateDir: string): Array<Record<string, unknown>> {
+  try {
+    return readFileSync(join(stateDir, 'actionable-producer-journal.jsonl'), 'utf8')
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+  } catch {
+    return []
   }
 }
 
@@ -204,6 +219,75 @@ describe('actionability-planka-producer-core', () => {
 })
 
 describe('wt-actionable-snapshot-producer-hook (integration)', () => {
+  it('records distinct reasons when measurement is impossible, but no failure on success', () => {
+    const diverted = scaffoldProject('diverted', { withParser: true })
+    const divertedResult = runProducerHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__find_cards',
+      tool_input: { boardId: 'b1' },
+      cwd: diverted.cwd,
+    }, diverted.env)
+    expect(divertedResult.status).toBe(0)
+    const divertedRecords = readFailureRecords(diverted.stateDir)
+    expect(divertedRecords).toHaveLength(1)
+    expect(divertedRecords[0]).toMatchObject({ ok: false, reason: 'payload-diverted-or-too-large' })
+
+    const unparseable = scaffoldProject('unparseable', { withParser: true })
+    const unparseableResult = runProducerHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__find_cards',
+      tool_input: { boardId: 'b1' },
+      tool_response: { content: [{ type: 'text', text: 'not JSON' }] },
+      cwd: unparseable.cwd,
+    }, unparseable.env)
+    expect(unparseableResult.status).toBe(0)
+    const unparseableRecords = readFailureRecords(unparseable.stateDir)
+    expect(unparseableRecords).toHaveLength(1)
+    expect(unparseableRecords[0]).toMatchObject({ ok: false, reason: 'payload-unparseable' })
+    expect(unparseableRecords[0]!.reason).not.toBe(divertedRecords[0]!.reason)
+
+    const noBoard = scaffoldProject('no-board', { withParser: false, withBoardPointer: false })
+    expect(runProducerHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__find_cards',
+      tool_input: {},
+      cwd: noBoard.cwd,
+    }, noBoard.env).status).toBe(0)
+    expect(readFailureRecords(noBoard.stateDir)[0]).toMatchObject({ ok: false, reason: 'no-board-pointer' })
+
+    const success = scaffoldProject('journal-success', { withParser: true })
+    expect(runProducerHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__get_board',
+      tool_input: { boardId: 'b1' },
+      tool_response: boardResponse([{ name: 'Next', cards: [] }]),
+      cwd: success.cwd,
+    }, success.env).status).toBe(0)
+    expect(readSnapshot(success.stateDir, success.cwd)).not.toBeNull()
+    expect(readFailureRecords(success.stateDir)).toEqual([])
+  })
+
+  it('never throws on malformed hook input', () => {
+    const { env } = scaffoldProject('malformed', { withParser: true })
+    for (const payload of [null, [], 'broken', 42, { hook_event_name: 'PostToolUse' }]) {
+      expect(runProducerHook(payload, env).status).toBe(0)
+    }
+    const raw = spawnSync(process.execPath, [PRODUCER_HOOK], { input: '{', encoding: 'utf8', env })
+    expect(raw.status).toBe(0)
+  })
+
+  it('bounds the failure journal to the latest 100 records', () => {
+    const project = scaffoldProject('bounded-journal', { withParser: true })
+    const payload = {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__find_cards',
+      tool_input: { boardId: 'b1' },
+      cwd: project.cwd,
+    }
+    for (let i = 0; i < 105; i += 1) expect(runProducerHook(payload, project.env).status).toBe(0)
+    expect(readFailureRecords(project.stateDir)).toHaveLength(100)
+  })
+
   it('writes a snapshot from a real get_board response, using the real (fixture) dependency parser subprocess', () => {
     const { cwd, stateDir, env } = scaffoldProject('write', { withParser: true })
     const payload = {

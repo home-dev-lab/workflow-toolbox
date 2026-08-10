@@ -22,7 +22,8 @@
 // board — computing "actionable" from a subset is exactly the plausible-but-
 // wrong number the card calls out by name. See extractCards() in
 // actionability-planka-producer-core.mjs: a partial/unreadable/unparseable
-// response makes this hook a no-op, never a guess.
+// response makes this hook skip the snapshot, never a guess. It records why in
+// a bounded state-directory journal so that refusal is no longer silent.
 //
 // DEPENDENCY RESOLUTION REUSES THE PROJECT'S OWN PARSER, NOT A RESTATEMENT OF
 // ITS RULES. An adopting project's own what-next skill has already measured
@@ -51,7 +52,40 @@ import { stateRoot, snapshotPath } from './lib/actionability-state-paths.mjs'
 import { extractCards, computeSnapshot } from './lib/actionability-planka-producer-core.mjs'
 
 const DEPENDS_ON_PARSER_RELATIVE = '.claude/scripts/lib/depends-on-parser.mjs'
+const BOARD_POINTER_RELATIVE = '.claude/planka.json'
 const DEPENDS_ON_TIMEOUT_MS = Number(process.env.WT_ACTIONABLE_DEPS_TIMEOUT_MS || 5000)
+const JOURNAL_MAX_ENTRIES = 100
+const JOURNAL_FIELD_MAX_CHARS = 500
+
+function boundedText(value) {
+  return String(value ?? '').slice(0, JOURNAL_FIELD_MAX_CHARS)
+}
+
+// Keep only the latest 100 one-line attempts. Fields are also truncated, so a
+// malformed hook payload cannot defeat the entry-count bound with one huge line.
+function recordFailure(cwd, reason, detail) {
+  try {
+    const root = stateRoot()
+    const path = join(root, 'actionable-producer-journal.jsonl')
+    mkdirSync(root, { recursive: true })
+    let lines = []
+    try {
+      lines = readFileSync(path, 'utf8').split(/\r?\n/).filter(Boolean).slice(-(JOURNAL_MAX_ENTRIES - 1))
+    } catch {
+      // A missing or unreadable old journal must not suppress the current record.
+    }
+    lines.push(JSON.stringify({
+      at: Date.now(),
+      ok: false,
+      reason: boundedText(reason),
+      detail: boundedText(detail),
+      projectDir: boundedText(cwd),
+    }))
+    writeFileSync(path, `${lines.join('\n')}\n`, 'utf8')
+  } catch {
+    // Observed tool calls must remain fail-open even when diagnostics cannot be written.
+  }
+}
 
 // Spawns the project's own dependency parser, one call per card. A missing
 // binary, a timeout, a non-JSON reply, OR a reply whose `ids`/`unparseable`
@@ -114,15 +148,34 @@ function main() {
   if (!cwd) return
 
   const extraction = extractCards({ toolName, toolInput: input.tool_input, toolResponse: input.tool_response })
-  if (!extraction.ok) return // partial/unreadable read — never write a guess
+  if (!extraction.ok) {
+    if (!existsSync(join(cwd, BOARD_POINTER_RELATIVE))) {
+      recordFailure(cwd, 'no-board-pointer', `no ${BOARD_POINTER_RELATIVE} for this project`)
+    } else if (extraction.reason === 'no readable tool_response text') {
+      recordFailure(cwd, 'payload-diverted-or-too-large', extraction.reason)
+    } else if (extraction.reason.includes('result is a subset')) {
+      recordFailure(cwd, 'partial-payload', extraction.reason)
+    } else {
+      recordFailure(cwd, 'payload-unparseable', extraction.reason)
+    }
+    return // partial/unreadable read — never write a guess
+  }
 
   const parserPath = join(cwd, DEPENDS_ON_PARSER_RELATIVE)
-  if (!existsSync(parserPath)) return // no known dependency convention here — stay silent, not wrong
+  if (!existsSync(parserPath)) {
+    if (!existsSync(join(cwd, BOARD_POINTER_RELATIVE))) {
+      recordFailure(cwd, 'no-board-pointer', `no ${BOARD_POINTER_RELATIVE} for this project`)
+    } else {
+      recordFailure(cwd, 'dependency-parser-unavailable', `no ${DEPENDS_ON_PARSER_RELATIVE} for this project`)
+    }
+    return // no known dependency convention here — never write a wrong count
+  }
 
   let resolveDeps
   try {
     resolveDeps = makeDepsResolver(parserPath)
-  } catch {
+  } catch (error) {
+    recordFailure(cwd, 'dependency-parser-unavailable', error?.message ?? error)
     return
   }
 
@@ -134,7 +187,8 @@ function main() {
   let snapshot
   try {
     snapshot = computeSnapshot({ cards: extraction.cards, resolveDeps, boardId, now: Date.now() })
-  } catch {
+  } catch (error) {
+    recordFailure(cwd, 'snapshot-computation-failed', error?.message ?? error)
     return // a card's dependency line could not be resolved (parser died mid-scan) — write nothing
   }
 
@@ -148,11 +202,15 @@ function main() {
     inFlightUntil: snapshot.inFlightUntil,
     countedScope: snapshot.countedScope,
   }
-  if (!isValidSnapshotFields(fields)) return
+  if (!isValidSnapshotFields(fields)) {
+    recordFailure(cwd, 'snapshot-invalid', 'computed snapshot failed field validation')
+    return
+  }
 
   try {
     writeSnapshot(cwd, fields)
-  } catch {
+  } catch (error) {
+    recordFailure(cwd, 'snapshot-write-failed', error?.message ?? error)
     // Writing must never turn this hook into a blocker — the consumer's own
     // fail-closed missing/stale path is the safety net if this write fails.
   }
