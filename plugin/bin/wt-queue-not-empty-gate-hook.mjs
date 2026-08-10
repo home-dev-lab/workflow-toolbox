@@ -129,7 +129,7 @@ import { readFileSync, statSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { queueSnapshotFileName, queueSnapshotSlug, resolveQueueSnapshotPath } from './lib/queue-snapshot-path.mjs'
 
 const STATE_DIR = process.env.WT_QUEUE_GATE_DIR
   || join(homedir(), '.local', 'state', 'wt-queue-gate')
@@ -137,20 +137,6 @@ const HELP_PATH = new URL('wt-queue-not-empty-gate-hook.help.md', import.meta.ur
 const COOLDOWN_MIN = 45 // never block more often than this, per session
 const INFLIGHT_MIN = 3 // a subagent transcript touched this recently ⇒ work is running
 const SNAPSHOT_MAX_AGE_MIN = 120
-
-// ⚠ A readable slug ALONE is not a safe filename key: a lossy non-alnum→"-" transform plus a
-// length cap means two DIFFERENT cwds can produce the SAME slug (e.g. "/a/b" and "/a-b"; or any
-// two paths that only differ past the truncation point) — found by cross-family review of this
-// file. That collision would let one project's snapshot answer for another's, which can turn
-// "no tracker" into a false block, exactly the case this hook exists to never produce. So the
-// key is the readable slug (for a human skimming the state dir) PLUS a hash of the FULL,
-// untruncated cwd (for uniqueness) — the hash is what actually decides collisions.
-function projectSlug(cwd) {
-  const c = String(cwd || 'unknown')
-  const readable = c.replace(/[^A-Za-z0-9]/g, '-').slice(0, 120)
-  const hash = createHash('sha1').update(c).digest('hex').slice(0, 12)
-  return `${readable}-${hash}`
-}
 
 function readStdin() {
   try {
@@ -211,22 +197,14 @@ try {
 // speak would turn every adopter who never wires a producer into a PERMANENT always-red gate —
 // exactly the failure the header above warns against, and the same one the private twin avoids
 // through its own differently-shaped "no tracker" check.
-let snapshot = join(STATE_DIR, `queue-${projectSlug(cwd)}.json`)
+let snapshot = join(STATE_DIR, queueSnapshotFileName(cwd))
 let snapshotAncestor = ''
 if (!existsSync(snapshot)) {
   try {
-    const entries = new Set(readdirSync(STATE_DIR))
-    let ancestor = dirname(String(cwd))
-    while (true) {
-      const name = `queue-${projectSlug(ancestor)}.json`
-      if (entries.has(name)) {
-        snapshot = join(STATE_DIR, name)
-        snapshotAncestor = ancestor
-        break
-      }
-      const parent = dirname(ancestor)
-      if (parent === ancestor) break
-      ancestor = parent
+    const resolved = resolveQueueSnapshotPath(STATE_DIR, cwd)
+    if (resolved) {
+      snapshot = resolved.path
+      snapshotAncestor = resolved.ancestor
     }
   } catch {
     bail() // a failed fallback lookup must never make the guard block
@@ -301,7 +279,7 @@ if (openCount === 0) bail() // the queue really is empty — stopping needs no j
 // for its whole lifetime, so this was low-probability, but the fix is free.
 const stateFile = join(
   STATE_DIR,
-  `${String(sessionId).replace(/[^A-Za-z0-9._-]/g, '-')}-${projectSlug(cwd)}.json`,
+  `${String(sessionId).replace(/[^A-Za-z0-9._-]/g, '-')}-${queueSnapshotSlug(cwd)}.json`,
 )
 let last = 0
 try {
