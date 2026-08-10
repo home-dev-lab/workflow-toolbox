@@ -2180,6 +2180,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-autonomy-arm.mjs",
         "plugin/bin/wt-autonomy-watch.mjs",
         "plugin/bin/wt-wake-floor.mjs",
+        "plugin/bin/wt-observer.mjs",
         "plugin/bin/wt-check-commit-signatures-hook.mjs",
         "plugin/bin/wt-check-commit-signatures.mjs",
         "plugin/bin/wt-hook-registration-drift-hook.mjs",
