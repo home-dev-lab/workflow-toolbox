@@ -3,6 +3,32 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.160.0] - 2026-08-10
+
+### Added
+
+- **The memory index probe now shows how many fiches sit behind each index line.** It verified
+  REACHABILITY and said so, but nothing showed how much sat behind a single line — a store can pass
+  every check while most of its content is, in practice, unknown to any session reading the index.
+- The count is **one hop and member-shaped**, deliberately. A transitive count read 138 on nearly
+  every line of a 353-fiche store, because fiches cross-reference each other liberally, and a leaf
+  and a 44-member hub then printed the same number.
+- The count no longer consults the hub CLASSIFICATION either: that ratio answers "do the hub-only
+  checks apply", a different question, and gating on it made a genuine three-member hub report zero.
+
+### Fixed
+
+- **An entry the probe could not measure prints as unmeasured, never as `0`.** A missing
+  measurement and a genuine zero are different facts, and collapsing them produced the one number a
+  reader takes as measured.
+- Unreadable fiches are surfaced as an explicit reason instead of being skipped in silence, so a
+  partially-read store cannot render as a fully-measured one.
+
+⚠ This is an EXPOSURE, not a guard: a number with no verdict and no threshold. A discoverability
+ratio was considered and rejected — its numerator requires reading a sentence, which would put a
+model inside a guard. An index line that fronts three fiches but describes them badly is still
+invisible; the probe simply no longer implies otherwise.
+
 ## [0.159.2] - 2026-08-10
 
 ### Fixed
