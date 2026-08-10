@@ -148,6 +148,15 @@ if (args.json) {
     // names the narrower question the numbers above actually answer, so a
     // green run cannot be over-read into a claim about discoverability.
     console.log(report.scopeNote);
+    for (const entry of report.indexEntries) {
+      if (entry.complete) {
+        console.log(`index entry line ${entry.line}: ${entry.target} fronts ${entry.behindCount} fiche(s) behind it`);
+        continue;
+      }
+      console.log(
+        `index entry line ${entry.line}: ${entry.target} could not be fully measured behind this line (blocked by: ${entry.blockedBy.join(', ')})`,
+      );
+    }
     // Only printed when at least one hub exists, and only inside the band —
     // a flat store (no hubs, comfortable headroom) reads exactly as it did
     // before these two lines existed.

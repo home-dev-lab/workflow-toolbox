@@ -18,7 +18,7 @@
 //      even when the line count is low
 //   5. a store with no index at all                  → silent, exit 0
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -63,6 +63,8 @@ interface Report {
   diskFiches: number
   reachableFiches: number
   unreachableFiches: string[]
+  unreadableFiches: string[]
+  indexEntries: Array<{ line: number; target: string; behindCount: number | null; complete: boolean; blockedBy: string[] }>
   retractedFiches: string[]
   danglingRefs: Array<{ from: string; target: string }>
   unresolvedCrossRefs: Array<{ from: string; target: string }>
@@ -139,6 +141,7 @@ describe('memory-index-check-core: reachability', () => {
     expect(report.diskFiches).toBe(21) // 20 members + the hub itself
     expect(report.reachableFiches).toBe(21)
     expect(report.unreachableFiches).toEqual([])
+    expect(report.indexEntries).toEqual([{ line: 2, target: 'hub-topic.md', behindCount: 20, complete: true, blockedBy: [] }])
     expect(report.flagged).toBe(false)
   })
 
@@ -178,6 +181,61 @@ describe('memory-index-check-core: reachability', () => {
     expect(report.diskFiches).toBe(3)
     expect(report.reachableFiches).toBe(3)
     expect(report.unreachableFiches).toEqual([])
+    expect(report.indexEntries).toEqual([
+      { line: 1, target: 'top-hub.md', behindCount: 1, complete: true, blockedBy: [] },
+    ])
+  })
+
+  it('per-entry counts include only direct member-shaped lines, not prose cross-references', () => {
+    const dir = makeStore()
+    fiche(dir, 'referenced-fact', 'Referenced fact.\n')
+    fiche(dir, 'narrative-fact', 'This narrative points to [[referenced-fact]] in prose.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Narrative](narrative-fact.md) — narrative fact\n')
+    const report = checkStore(dir, { threshold: 200 })
+    expect(report.reachableFiches).toBe(2)
+    expect(report.indexEntries).toEqual([
+      { line: 1, target: 'narrative-fact.md', behindCount: 0, complete: true, blockedBy: [] },
+    ])
+  })
+
+  it('per-entry measurement is independent of hub classification and distinguishes zero from unmeasured', () => {
+    if (process.platform === 'win32') return
+    const dir = makeStore()
+    for (const slug of ['member-a', 'member-b', 'member-c']) fiche(dir, slug, `${slug} body.\n`)
+    fiche(
+      dir,
+      'below-ratio',
+      [
+        '# Mostly narrative',
+        'Context one.',
+        'Context two.',
+        'Context three.',
+        'Context four.',
+        'Context five.',
+        'Context six.',
+        'Context seven.',
+        'Context eight.',
+        '- [[member-a]] — first member',
+        '- [[member-b]] — second member',
+        '- [[member-c]] — third member',
+      ].join('\n') + '\n',
+    )
+    fiche(dir, 'leaf', 'No member-shaped references.\n')
+    fiche(dir, 'locked', 'Cannot be measured.\n')
+    writeFileSync(
+      join(dir, 'MEMORY.md'),
+      '- [Below ratio](below-ratio.md) — members in a narrative body\n' +
+        '- [Leaf](leaf.md) — no members\n' +
+        '- [Locked](locked.md) — unreadable\n',
+    )
+    chmodSync(join(dir, 'locked.md'), 0o000)
+    const report = checkStore(dir, { threshold: 200 })
+    chmodSync(join(dir, 'locked.md'), 0o644)
+    expect(report.indexEntries).toEqual([
+      { line: 1, target: 'below-ratio.md', behindCount: 3, complete: true, blockedBy: [] },
+      { line: 2, target: 'leaf.md', behindCount: 0, complete: true, blockedBy: [] },
+      { line: 3, target: 'locked.md', behindCount: null, complete: false, blockedBy: ['locked.md'] },
+    ])
   })
 
   it('a [[slug]] containing a space resolves — cross-model review finding: an earlier version enumerated a filename character class and dropped it', () => {
@@ -202,6 +260,25 @@ describe('memory-index-check-core: reachability', () => {
     expect(report.unreachableFiches).toEqual(['orphan-fact.md'])
     expect(report.flagged).toBe(true) // decided by reachability, not line count
     expect(report.reasons.join(' ')).toContain('1 fiche(s)')
+  })
+
+  it('a reachable fiche that cannot be read is named as not fully measured, never reported as clean', () => {
+    if (process.platform === 'win32') return
+    const dir = makeStore()
+    fiche(dir, 'locked-fact', 'Reachable but unreadable for expansion.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Locked](locked-fact.md) — reachable fact\n')
+    chmodSync(join(dir, 'locked-fact.md'), 0o000)
+    const report = checkStore(dir, { threshold: 200 })
+    chmodSync(join(dir, 'locked-fact.md'), 0o644)
+    expect(report.unreachableFiches).toEqual([])
+    expect(report.unreadableFiches).toEqual(['locked-fact.md'])
+    expect(report.indexEntries).toEqual([
+      { line: 1, target: 'locked-fact.md', behindCount: null, complete: false, blockedBy: ['locked-fact.md'] },
+    ])
+    expect(report.flagged).toBe(true)
+    expect(report.reasons).toContain(
+      'could not fully read 1 reachable fiche(s); reachability was verified only where those files could be read',
+    )
   })
 
   it('case 4b — deleting an index entry to shrink the count does NOT clear the flag', () => {
@@ -624,7 +701,8 @@ describe('wt-memory-index-check.mjs CLI: warning band + hub sizing exit codes an
     const stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
     expect(stdout).toBe(
       `index: 1 entry line(s) (threshold applied: 200), ${Buffer.byteLength(indexText)} byte(s) (size threshold applied: 25000) — 1 fiche(s) on disk, 1 reachable, 0 invisible; 0 dangling; 0 unresolved cross-reference(s)\n` +
-        `scope: this run verified REACHABILITY (a path exists from the index to every fiche, direct or via a hub) and the index/hub size ceilings — it did NOT verify DISCOVERABILITY (whether a session scanning the index would know a given subject sits behind a given line).\n`,
+        `scope: this run verified REACHABILITY (a path exists from the index to every fiche, direct or via a hub) and the index/hub size ceilings — it did NOT verify DISCOVERABILITY (whether a session scanning the index would know a given subject sits behind a given line).\n` +
+        `index entry line 1: fact-a.md fronts 0 fiche(s) behind it\n`,
     )
   })
 
@@ -662,6 +740,54 @@ describe('wt-memory-index-check.mjs CLI: warning band + hub sizing exit codes an
     expect(stdout).toContain('  unreachable: orphan.md')
     // additive, not a replacement: the scope line is still present on the flagged path too
     expect(stdout).toContain('scope:')
+    expect(stdout).toContain('index entry line 1: fact-a.md fronts 0 fiche(s) behind it')
+  })
+
+  it('per index entry, the CLI prints how many fiches sit behind that line with no verdict attached', () => {
+    const dir = makeStore()
+    const memberSlugs = ['member-a', 'member-b', 'member-c']
+    hubWithMembers(dir, 'hub-topic', memberSlugs)
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](hub-topic.md) — grouped\n')
+    const stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
+    expect(stdout).toContain('index entry line 1: hub-topic.md fronts 3 fiche(s) behind it')
+    expect(stdout).not.toContain('warning')
+  })
+
+  it('a store the probe could not fully read prints a visibly different line and exits 1, never a clean-looking result', () => {
+    if (process.platform === 'win32') return
+    const dir = makeStore()
+    fiche(dir, 'locked-fact', 'Reachable but unreadable for expansion.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Locked](locked-fact.md) — reachable fact\n')
+    chmodSync(join(dir, 'locked-fact.md'), 0o000)
+    let status = 0
+    let stdout = ''
+    try {
+      stdout = execFileSync('node', [CLI, '--store', dir], { encoding: 'utf8' })
+    } catch (e) {
+      const err = e as ExecError
+      stdout = err.stdout ?? ''
+      status = err.status ?? 1
+    } finally {
+      chmodSync(join(dir, 'locked-fact.md'), 0o644)
+    }
+    expect(status).toBe(1)
+    expect(stdout).toContain('FLAG: could not fully read 1 reachable fiche(s); reachability was verified only where those files could be read')
+    expect(stdout).toContain(
+      'index entry line 1: locked-fact.md could not be fully measured behind this line (blocked by: locked-fact.md)',
+    )
+  })
+
+  it('JSON output serializes an unmeasurable entry as null, never zero', () => {
+    if (process.platform === 'win32') return
+    const dir = makeStore()
+    fiche(dir, 'locked-fact', 'Reachable but unreadable for expansion.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Locked](locked-fact.md) — reachable fact\n')
+    chmodSync(join(dir, 'locked-fact.md'), 0o000)
+    const { report } = runCli(dir)
+    chmodSync(join(dir, 'locked-fact.md'), 0o644)
+    expect(report.indexEntries).toEqual([
+      { line: 1, target: 'locked-fact.md', behindCount: null, complete: false, blockedBy: ['locked-fact.md'] },
+    ])
   })
 
   it('nothing dangling: exits 0 and the summary states both emptiness conditions explicitly', () => {

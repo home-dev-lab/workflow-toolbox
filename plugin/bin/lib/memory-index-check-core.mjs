@@ -109,6 +109,8 @@ const MD_PATH_RE = /(?:\.\.?\/)?(?:[^\s`()[\]]+\/)*[^\s`()[\]]+\.md(?:#[^\s`()[\
  *   sizeThreshold: number, entryLines: number, indexBytes: number,
  *   overThreshold: boolean, overSizeThreshold: boolean,
  *   diskFiches: number, reachableFiches: number, unreachableFiches: string[],
+ *   unreadableFiches: string[],
+ *   indexEntries: Array<{ line: number, target: string, behindCount: number | null, complete: boolean, blockedBy: string[] }>,
  *   retractedFiches: string[],
  *   danglingRefs: Array<{ from: string, target: string }>,
  *   unresolvedCrossRefs: Array<{ from: string, target: string }>,
@@ -169,6 +171,8 @@ export function checkStore(storeDir, opts = {}) {
       diskFiches: 0,
       reachableFiches: 0,
       unreachableFiches: [],
+      unreadableFiches: [],
+      indexEntries: [],
       retractedFiches: [],
       danglingRefs: [],
       unresolvedCrossRefs: [],
@@ -189,6 +193,12 @@ export function checkStore(storeDir, opts = {}) {
   const indexText = readFileSync(indexPath, 'utf8');
   const indexBytes = statSync(indexPath).size;
   const indexLines = indexText.split('\n');
+  const indexEntries = [];
+  for (let i = 0; i < indexLines.length; i++) {
+    const match = ENTRY_LINE_RE.exec(indexLines[i].trim());
+    if (!match) continue;
+    indexEntries.push({ line: i + 1, target: match[1] });
+  }
   const entryLineCount = indexLines.filter((line) => ENTRY_LINE_RE.test(line.trim())).length;
   const overThreshold = entryLineCount > threshold;
   const overSizeThreshold = indexBytes > sizeThreshold;
@@ -263,18 +273,19 @@ export function checkStore(storeDir, opts = {}) {
   // ceiling one layer down instead of removing it.
   const reachable = new Set();
   const queue = [];
+  const unreadableFiches = new Set();
   for (const file of directLinks) {
     if (diskFiches.has(file) && !reachable.has(file)) {
       reachable.add(file);
       queue.push(file);
     }
   }
+  // Per-entry exposure counts member-shaped references for every readable
+  // fiche. Hub sizing separately applies the structural ratio below; the
+  // ratio answers whether hub-only checks apply, not whether members exist.
+  const entryMemberCounts = new Map(); // file -> distinct resolved member count
   // Hub sizing: a hub buys index headroom by pushing facts one hop down,
-  // it does not remove the ceiling — it RELOCATES it. So while walking the
-  // BFS anyway, record for each reachable file that is STRUCTURALLY a hub
-  // (see HUB_MEMBER_LINE_RATIO) the number of DISTINCT member-shaped
-  // `[[slug]]` references its body yields that resolve to a real fiche on
-  // disk.
+  // it does not remove the ceiling — it RELOCATES it.
   const hubMemberCounts = new Map(); // file -> distinct resolved member count
   const hubCountMismatches = [];
   let structuralHubCount = 0;
@@ -286,15 +297,18 @@ export function checkStore(storeDir, opts = {}) {
     try {
       body = readFileSync(join(storeDir, current), 'utf8');
     } catch {
+      unreadableFiches.add(current);
       continue; // linked but unreadable — treated as not further expandable, not a crash
     }
     // Reachability: any `[[slug]]` occurrence ANYWHERE in the body, prose
     // included — deliberately broad, this is what lets a hub-of-hubs (or a
     // narrative fiche that simply mentions a neighbour) still resolve.
+    const bodyLinks = new Set();
     HUBLINK_RE.lastIndex = 0;
     let match;
     while ((match = HUBLINK_RE.exec(body))) {
       const candidate = `${match[1]}.md`;
+      if (diskFiches.has(candidate)) bodyLinks.add(candidate);
       if (diskFiches.has(candidate) && !reachable.has(candidate)) {
         reachable.add(candidate);
         queue.push(candidate);
@@ -322,6 +336,7 @@ export function checkStore(storeDir, opts = {}) {
       else if (archivedFiches.has(candidate)) archivedRefs.push({ from: current, target: candidate });
       else unresolvedMemberLineRefs.push({ from: current, target: candidate });
     }
+    entryMemberCounts.set(current, memberSlugs.size);
     const declaredCount = readDeclaredMemberCount(body);
     if (declaredCount !== null && declaredCount !== memberLineSlugs.size) {
       hubCountMismatches.push({ file: current, declared: declaredCount, actual: memberLineSlugs.size });
@@ -339,6 +354,12 @@ export function checkStore(storeDir, opts = {}) {
   }
 
   const rawUnreachableFiches = [...diskFiches].filter((f) => !reachable.has(f)).sort();
+  // Per-entry exposure is deliberately one hop and member-shaped. The
+  // transitive graph above answers whole-store reachability; using it here
+  // makes nearly every cross-referenced entry appear to front the whole store.
+  const perEntryCounts = indexEntries.map(({ line, target }) =>
+    measureEntryMembers(target, line, diskFiches, entryMemberCounts, unreadableFiches),
+  );
 
   // Whole-note retractions are detected only by the convention's top-of-note
   // blockquote shape. Keyword presence elsewhere in the body stays out of
@@ -399,6 +420,11 @@ export function checkStore(storeDir, opts = {}) {
   if (unreachableFiches.length > 0) {
     reasons.push(
       `${unreachableFiches.length} fiche(s) on disk are reachable from the index by no path (hub or direct)`,
+    );
+  }
+  if (unreadableFiches.size > 0) {
+    reasons.push(
+      `could not fully read ${unreadableFiches.size} reachable fiche(s); reachability was verified only where those files could be read`,
     );
   }
   for (const { from, target } of danglingRefs) {
@@ -474,6 +500,8 @@ export function checkStore(storeDir, opts = {}) {
     diskFiches: diskFiches.size,
     reachableFiches: reachable.size,
     unreachableFiches,
+    unreadableFiches: [...unreadableFiches].sort(),
+    indexEntries: perEntryCounts,
     retractedFiches,
     danglingRefs,
     unresolvedCrossRefs,
@@ -492,6 +520,28 @@ export function checkStore(storeDir, opts = {}) {
     // of the same three conditions a second way that could drift from it.
     flagged: reasons.length > 0,
     reasons,
+  };
+}
+
+function measureEntryMembers(target, line, diskFiches, entryMemberCounts, unreadableFiches) {
+  if (!diskFiches.has(target)) {
+    return { line, target, behindCount: null, complete: false, blockedBy: [target] };
+  }
+
+  if (unreadableFiches.has(target)) {
+    return { line, target, behindCount: null, complete: false, blockedBy: [target] };
+  }
+
+  if (!entryMemberCounts.has(target)) {
+    return { line, target, behindCount: null, complete: false, blockedBy: [target] };
+  }
+
+  return {
+    line,
+    target,
+    behindCount: entryMemberCounts.get(target),
+    complete: true,
+    blockedBy: [],
   };
 }
 
