@@ -3,6 +3,26 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.159.2] - 2026-08-10
+
+### Fixed
+
+- **`wt-actionable-snapshot-producer-hook.mjs` now records WHY it could not measure.** It has always
+  stayed silent rather than guess from a partial read — correct — but that silence was
+  indistinguishable from the hook never firing, not being installed, the project having no board, or
+  the tool call not being one it watches.
+- The three real conditions are now named separately (unreadable payload, unparseable payload, no
+  board pointer), because they have three different remedies and one shared message would rebuild
+  the defect this closes.
+- The record is bounded, and the bound is asserted by a test: a hook that fills a disk over a long
+  session is worse than one that says nothing.
+
+⚠ On a board large enough that every read exceeds the tool-result limit, this hook cannot compute a
+snapshot at all — measured at 2,957,161 characters with the narrowest possible query, both filters
+silently ignored. **This change does not fix that**; it makes it visible instead of silent, so the
+frequency can be counted before deciding whether a fallback is worth its cost. No network access
+was added.
+
 ## [0.159.1] - 2026-08-10
 
 ### Changed
