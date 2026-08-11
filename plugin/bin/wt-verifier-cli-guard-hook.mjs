@@ -281,6 +281,71 @@ export function runDirForSessionTranscript(transcriptPath, readdir = (d) => fs.r
   return path.join(workflowsDir, runs[0])
 }
 
+/** The model an external-CLI command targets, read off the command itself (`--model <x>` or
+ *  `--model=<x>`). Returns null when the command names none — the lane's own default then applies
+ *  and we must not invent a name for it, because a wrong model label on a cost figure is worse
+ *  than an absent one. */
+export function modelFromCommand(command) {
+  if (typeof command !== 'string') return null
+  const m = command.match(/--model[=\s]+["']?([A-Za-z0-9._\-]+\/[A-Za-z0-9._\-]+)["']?/)
+  return m === null ? null : (m[1] ?? null)
+}
+
+/** The external lane's own token counts and session id, parsed from a `--format json` stream.
+ *
+ *  ⚠ Returns null when the output is NOT that stream — the ordinary case today, since the command
+ *  is written by whoever authored the workflow. A null here means "not measured" and must travel
+ *  as such: a zero would render as a measurement, which is the exact failure the cost-split card
+ *  names (a lane whose cost cannot be read shows a labelled unknown, never a zero).
+ *
+ *  ⚠ The LAST tokens object wins: the stream reports cumulative usage as it goes, so an earlier
+ *  line carries a partial count. Taking the first would under-report, silently and plausibly. */
+export function laneUsageFromOutput(text) {
+  if (typeof text !== 'string' || text.length === 0) return null
+  let tokens = null
+  let sessionId = null
+  for (const line of text.split('\n')) {
+    const t = line.trim()
+    if (t.length === 0 || t[0] !== '{') continue
+    let parsed
+    try {
+      parsed = JSON.parse(t)
+    } catch {
+      continue // a non-JSON line in a JSON stream is not an error worth failing a run over
+    }
+    const found = findUsage(parsed)
+    if (found.tokens !== null) tokens = found.tokens
+    if (found.sessionId !== null) sessionId = found.sessionId
+  }
+  if (tokens === null && sessionId === null) return null
+  return { tokens, sessionId }
+}
+
+/** Walk a parsed line for the two fields worth having. Shallow-recursive by design: the stream
+ *  nests them under varying parents and pinning a path would break on the next CLI version. */
+function findUsage(node, depth = 0) {
+  const out = { tokens: null, sessionId: null }
+  if (node === null || typeof node !== 'object' || depth > 6) return out
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'tokens' && value !== null && typeof value === 'object' && typeof value.input === 'number') {
+      out.tokens = {
+        input: value.input ?? 0,
+        output: value.output ?? 0,
+        reasoning: value.reasoning ?? 0,
+        cacheRead: value.cache?.read ?? 0,
+        cacheWrite: value.cache?.write ?? 0,
+      }
+    } else if (key === 'sessionID' && typeof value === 'string' && value.length > 0) {
+      out.sessionId = value
+    } else if (value !== null && typeof value === 'object') {
+      const deeper = findUsage(value, depth + 1)
+      if (deeper.tokens !== null) out.tokens = deeper.tokens
+      if (deeper.sessionId !== null) out.sessionId = deeper.sessionId
+    }
+  }
+  return out
+}
+
 /** The text a Bash tool_response carries, whatever shape the harness used. `tool_response` is typed
  *  `unknown` in the SDK, so every shape is narrowed rather than assumed: a bare string, or an object
  *  with stdout (the observed shape), or neither — in which case there is nothing to write and the
@@ -492,12 +557,37 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
         isSidechain: true,
       })
       fs.appendFileSync(path.join(runDir, `agent-${laneId}.jsonl`), `${line}\n`, 'utf8')
-      fs.writeFileSync(
-        path.join(runDir, `agent-${laneId}.meta.json`),
-        JSON.stringify({ agentType: `scripted:${sig.id}`, description: `external CLI call by ${agentId}` }),
-        'utf8',
-      )
-      dbg('PostToolUse', input, 'lane-artefacts-written', { runDir, laneId, chars: text.length })
+
+      // The facts a reader needs about this call, each recorded ONLY when it is genuinely known.
+      //  • parentAgentId — the envelope that made the call. Without it a renderer cannot place the
+      //    node in the phase the call belongs to, and it lands in a disconnected side column.
+      //  • model — read off the command; absent when the command names none, never guessed.
+      //  • durationMs — the harness measures it (`duration_ms`), so a node need not claim 0.0s.
+      //  • usage — present ONLY for a `--format json` command. ⚠ Deliberately NOT merged into the
+      //    transcript's own usage field: these are EXTERNAL-lane tokens, and a shape the existing
+      //    token reader understands would silently add them to the Claude total. A GPT count
+      //    carries `reasoning`, which has no Claude equivalent — the sum would invent a unit.
+      const usage = laneUsageFromOutput(text)
+      const model = modelFromCommand(command)
+      const meta = {
+        agentType: `scripted:${sig.id}`,
+        description: model === null ? `external CLI call by ${agentId}` : `${model} — called by ${agentId}`,
+        parentAgentId: agentId,
+        lane: sig.id,
+      }
+      if (model !== null) meta.model = model
+      if (typeof input.duration_ms === 'number') meta.durationMs = input.duration_ms
+      if (usage !== null && usage.tokens !== null) meta.laneTokens = usage.tokens
+      if (usage !== null && usage.sessionId !== null) meta.laneSessionId = usage.sessionId
+
+      fs.writeFileSync(path.join(runDir, `agent-${laneId}.meta.json`), JSON.stringify(meta), 'utf8')
+      dbg('PostToolUse', input, 'lane-artefacts-written', {
+        runDir,
+        laneId,
+        chars: text.length,
+        model,
+        measuredTokens: usage !== null && usage.tokens !== null,
+      })
     }
   } catch {
     /* best-effort, exactly like the marker above: a run must never fail because a hook could not

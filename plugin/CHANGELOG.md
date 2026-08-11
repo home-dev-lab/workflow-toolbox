@@ -3,6 +3,25 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.163.0] - 2026-08-11
+
+### Added
+
+- **An external call now records what a renderer needs to place and price it**: the parent agent
+  that made it, the model read off the command, the real duration from the harness's own
+  `duration_ms`, and — when the command used `--format json` — the lane's token counts and session
+  id.
+- **The parent link is the load-bearing one.** Without it a call cannot be shown inside the phase
+  it belongs to, and lands in a disconnected side column: 16 identical nodes, each claiming `0.0s`,
+  beside the phase that actually made them.
+- **Every field is recorded only when genuinely known.** A command naming no model records no
+  model; a call that emitted no usage records no tokens. The alternative to an absent field is an
+  invented one, and a zero renders as a measurement.
+- **External tokens are deliberately NOT merged into the transcript's own usage.** They would be
+  added to the Claude total by the existing reader, and a GPT count carries a `reasoning` component
+  Claude has no equivalent for — the sum would invent a unit.
+- The cumulative stream's **last** usage line wins; taking the first under-reports silently.
+
 ## [0.162.0] - 2026-08-11
 
 ### Added

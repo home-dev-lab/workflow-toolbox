@@ -996,11 +996,12 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
     expect(entry['agentId']).toBe(LANE)
     expect(entry['isSidechain']).toBe(true)
     expect((entry['message'] as Record<string, unknown>)['content']).toBe('VERDICT: confirmed\nthe claim holds')
-    // The meta is what names the node — without it the transcript renders untyped.
-    expect(JSON.parse(readFileSync(join(dir, `agent-${LANE}.meta.json`), 'utf8'))).toEqual({
-      agentType: 'scripted:opencode',
-      description: `external CLI call by ${AID}`,
-    })
+    // The meta is what names the node — without it the transcript renders untyped. Asserted by
+    // PROPERTY, not by deep equality: the meta gains fields as more about a call becomes knowable,
+    // and a whole-object match would fail on every one of them while testing nothing extra.
+    const meta = JSON.parse(readFileSync(join(dir, `agent-${LANE}.meta.json`), 'utf8')) as Record<string, unknown>
+    expect(meta['agentType']).toBe('scripted:opencode')
+    expect(meta['description']).toContain(AID)
   })
 
   // RED before the derived-id fix, and the only test that could have caught it: measured on run
@@ -1052,6 +1053,50 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
     for (const b of bodies) expect(b.trim().split('\n')).toHaveLength(1)
     // and each node is named, so the graph can label them
     expect(readdirSync(dir).filter((f) => f.includes('-lane') && f.endsWith('.meta.json'))).toHaveLength(2)
+  })
+
+  // The facts a renderer needs to place the node in its phase and price it. Each is recorded ONLY
+  // when genuinely known — the alternative to an absent field is an invented one.
+  it('records the PARENT, the model and the real duration on the node', () => {
+    const s = session('lane-facts', ['wf_facts'])
+    const payload = {
+      ...post(s.transcriptPath, { stdout: 'review text' }),
+      tool_use_id: 'toolu_FACTS',
+      duration_ms: 20767,
+    }
+    runHook(VERIFIER_GUARD_HOOK, payload, isolated('facts'))
+    const metaFile = readdirSync(s.runDir('wf_facts')).find((f) => f.includes('-lane') && f.endsWith('.meta.json'))
+    const meta = JSON.parse(readFileSync(join(s.runDir('wf_facts'), metaFile ?? ''), 'utf8')) as Record<string, unknown>
+    expect(meta['parentAgentId']).toBe(AID) // without this the node cannot be placed in its phase
+    expect(meta['model']).toBe('openai/gpt-5.4')
+    expect(meta['durationMs']).toBe(20767) // never 0.0s when the harness measured it
+    expect(meta['lane']).toBe('opencode')
+    expect(meta['description']).toContain('openai/gpt-5.4')
+  })
+
+  it('records external tokens when the call emitted them, and NOTHING when it did not', () => {
+    const jsonStream = [
+      JSON.stringify({ type: 'start', sessionID: 'ses_abc123' }),
+      JSON.stringify({ type: 'step', metadata: { tokens: { total: 10, input: 5, output: 1, reasoning: 0, cache: { read: 4, write: 0 } } } }),
+      JSON.stringify({ type: 'end', metadata: { tokens: { total: 7420, input: 231, output: 8, reasoning: 13, cache: { read: 7168, write: 0 } } } }),
+    ].join('\n')
+
+    const s1 = session('lane-tok', ['wf_tok'])
+    runHook(VERIFIER_GUARD_HOOK, { ...post(s1.transcriptPath, { stdout: jsonStream }), tool_use_id: 'toolu_T1' }, isolated('tok'))
+    const f1 = readdirSync(s1.runDir('wf_tok')).find((f) => f.includes('-lane') && f.endsWith('.meta.json'))
+    const m1 = JSON.parse(readFileSync(join(s1.runDir('wf_tok'), f1 ?? ''), 'utf8')) as Record<string, unknown>
+    // the LAST usage line wins: the stream is cumulative, so the first would under-report
+    expect(m1['laneTokens']).toEqual({ input: 231, output: 8, reasoning: 13, cacheRead: 7168, cacheWrite: 0 })
+    expect(m1['laneSessionId']).toBe('ses_abc123')
+
+    // A plain-text call measures nothing. The field must be ABSENT, never zero — a zero renders as
+    // a measurement, which is the failure the cost-split card exists to prevent.
+    const s2 = session('lane-notok', ['wf_notok'])
+    runHook(VERIFIER_GUARD_HOOK, { ...post(s2.transcriptPath, { stdout: 'plain output' }), tool_use_id: 'toolu_T2' }, isolated('notok'))
+    const f2 = readdirSync(s2.runDir('wf_notok')).find((f) => f.includes('-lane') && f.endsWith('.meta.json'))
+    const m2 = JSON.parse(readFileSync(join(s2.runDir('wf_notok'), f2 ?? ''), 'utf8')) as Record<string, unknown>
+    expect(m2).not.toHaveProperty('laneTokens')
+    expect(m2['parentAgentId']).toBe(AID) // the rest is still recorded
   })
 
   it('accepts a bare-string tool_response (the shape is narrowed, never assumed)', () => {
