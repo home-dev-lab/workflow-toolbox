@@ -455,25 +455,35 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
   // ⚠ TRANSCRIPT ONLY, no tokens: the wrapper's command omits `--format json`, so its output
   // carries no per-step totals. Adding them is a separate decision with an unsolved attribution
   // question — writing a zero here would be worse than writing nothing, because a zero renders.
+  //
+  // ⚠⚠ A DERIVED id (`<agentId>-lane`), never `agentId` itself — measured, run wf_aa4fb03d-e90:
+  // the harness writes the ENVELOPE's own transcript and meta at `agent-<agentId>.*` in this very
+  // directory. Writing there does two silent damages at once: `writeFileSync` TRUNCATES, so the
+  // envelope's turns are destroyed, and the meta overwrite RELABELS the envelope's node as the
+  // external one. The point is a SECOND node beside the envelope, never a node replacing it.
+  //
+  // ⚠ APPEND, not write: a wrapper making two lane calls must produce two entries in one node, and
+  // the second call must not erase the first. The meta is a constant, so rewriting it is harmless.
   try {
     const runDir = runDirForSessionTranscript(transcriptPath)
     const text = bashOutputText(input.tool_response)
     if (runDir !== null && text.length > 0) {
+      const laneId = `${agentId}-lane`
       const line = JSON.stringify({
         type: 'assistant',
         timestamp: new Date().toISOString(),
         message: { role: 'assistant', content: text },
         uuid: crypto.randomUUID(),
-        agentId,
+        agentId: laneId,
         isSidechain: true,
       })
-      fs.writeFileSync(path.join(runDir, `agent-${agentId}.jsonl`), `${line}\n`, 'utf8')
+      fs.appendFileSync(path.join(runDir, `agent-${laneId}.jsonl`), `${line}\n`, 'utf8')
       fs.writeFileSync(
-        path.join(runDir, `agent-${agentId}.meta.json`),
-        JSON.stringify({ agentType: `scripted:${sig.id}` }),
+        path.join(runDir, `agent-${laneId}.meta.json`),
+        JSON.stringify({ agentType: `scripted:${sig.id}`, description: `external CLI call by ${agentId}` }),
         'utf8',
       )
-      dbg('PostToolUse', input, 'lane-artefacts-written', { runDir, chars: text.length })
+      dbg('PostToolUse', input, 'lane-artefacts-written', { runDir, laneId, chars: text.length })
     }
   } catch {
     /* best-effort, exactly like the marker above: a run must never fail because a hook could not

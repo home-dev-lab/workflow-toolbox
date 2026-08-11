@@ -980,6 +980,8 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
   })
   const isolated = (tag: string): NodeJS.ProcessEnv => ({ ...process.env, WT_VERIFIER_MARKER_DIR: mkRoot(`lane-${tag}`) })
 
+  const LANE = `${AID}-lane`
+
   it('writes the transcript line AND its meta into the single run dir, carrying the lane output verbatim', () => {
     const s = session('lane-one', ['wf_abc123'])
     const r = runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, { stdout: 'VERDICT: confirmed\nthe claim holds' }), isolated('one'))
@@ -987,21 +989,53 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
     expect(r.stdout).toBe('') // PostToolUse never speaks; it only records
 
     const dir = s.runDir('wf_abc123')
-    const lines = readFileSync(join(dir, `agent-${AID}.jsonl`), 'utf8').trim().split('\n')
+    const lines = readFileSync(join(dir, `agent-${LANE}.jsonl`), 'utf8').trim().split('\n')
     expect(lines).toHaveLength(1)
     const entry = JSON.parse(lines[0] ?? '') as Record<string, unknown>
     expect(entry['type']).toBe('assistant')
-    expect(entry['agentId']).toBe(AID)
+    expect(entry['agentId']).toBe(LANE)
     expect(entry['isSidechain']).toBe(true)
     expect((entry['message'] as Record<string, unknown>)['content']).toBe('VERDICT: confirmed\nthe claim holds')
     // The meta is what names the node — without it the transcript renders untyped.
-    expect(JSON.parse(readFileSync(join(dir, `agent-${AID}.meta.json`), 'utf8'))).toEqual({ agentType: 'scripted:opencode' })
+    expect(JSON.parse(readFileSync(join(dir, `agent-${LANE}.meta.json`), 'utf8'))).toEqual({
+      agentType: 'scripted:opencode',
+      description: `external CLI call by ${AID}`,
+    })
+  })
+
+  // RED before the derived-id fix, and the only test that could have caught it: measured on run
+  // wf_aa4fb03d-e90, writing at `agent-<agentId>.*` TRUNCATED the envelope's own transcript and
+  // relabelled its node. A second node beside the envelope, never a node replacing it.
+  it('LEAVES THE ENVELOPE ALONE: the harness\'s own transcript and meta for that agent are untouched', () => {
+    const s = session('lane-envelope', ['wf_env'])
+    const dir = s.runDir('wf_env')
+    // What the harness has already written for the wrapper agent by the time the lane call returns.
+    writeFileSync(join(dir, `agent-${AID}.jsonl`), '{"type":"user","message":{"role":"user","content":"the brief"}}\n')
+    writeFileSync(join(dir, `agent-${AID}.meta.json`), JSON.stringify({ agentType: 'workflow-toolbox:opencode-verifier' }))
+
+    runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, { stdout: 'lane output' }), isolated('envelope'))
+
+    expect(readFileSync(join(dir, `agent-${AID}.jsonl`), 'utf8')).toContain('the brief')
+    expect(JSON.parse(readFileSync(join(dir, `agent-${AID}.meta.json`), 'utf8'))).toEqual({
+      agentType: 'workflow-toolbox:opencode-verifier',
+    })
+    expect(existsSync(join(dir, `agent-${LANE}.jsonl`))).toBe(true) // and the lane node exists beside it
+  })
+
+  it('APPENDS: a second lane call adds an entry instead of erasing the first', () => {
+    const s = session('lane-twice', ['wf_twice'])
+    runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, { stdout: 'first call' }), isolated('twice-a'))
+    runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, { stdout: 'second call' }), isolated('twice-b'))
+    const body = readFileSync(join(s.runDir('wf_twice'), `agent-${LANE}.jsonl`), 'utf8')
+    expect(body.trim().split('\n')).toHaveLength(2)
+    expect(body).toContain('first call')
+    expect(body).toContain('second call')
   })
 
   it('accepts a bare-string tool_response (the shape is narrowed, never assumed)', () => {
     const s = session('lane-str', ['wf_str'])
     runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, 'plain output'), isolated('str'))
-    const entry = JSON.parse(readFileSync(join(s.runDir('wf_str'), `agent-${AID}.jsonl`), 'utf8').trim()) as Record<string, unknown>
+    const entry = JSON.parse(readFileSync(join(s.runDir('wf_str'), `agent-${LANE}.jsonl`), 'utf8').trim()) as Record<string, unknown>
     expect((entry['message'] as Record<string, unknown>)['content']).toBe('plain output')
   })
 
@@ -1013,15 +1047,15 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
     const r = runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, { stdout: 'output' }), isolated('two'))
     expect(r.code).toBe(0) // still a clean no-op — a hook never fails a run
     for (const id of ['wf_first', 'wf_second']) {
-      expect(existsSync(join(s.runDir(id), `agent-${AID}.jsonl`))).toBe(false)
-      expect(existsSync(join(s.runDir(id), `agent-${AID}.meta.json`))).toBe(false)
+      expect(existsSync(join(s.runDir(id), `agent-${AID}-lane.jsonl`))).toBe(false)
+      expect(existsSync(join(s.runDir(id), `agent-${AID}-lane.meta.json`))).toBe(false)
     }
   })
 
   it('writes NOTHING when the lane produced no output (an empty transcript would render as a blank node)', () => {
     const s = session('lane-empty', ['wf_empty'])
     runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, { stdout: '' }), isolated('empty'))
-    expect(existsSync(join(s.runDir('wf_empty'), `agent-${AID}.jsonl`))).toBe(false)
+    expect(existsSync(join(s.runDir('wf_empty'), `agent-${AID}-lane.jsonl`))).toBe(false)
   })
 
   it('an ORDINARY session (no delegated-run layout) is untouched — exit 0, no directories created', () => {
