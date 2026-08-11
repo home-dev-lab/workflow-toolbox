@@ -1099,6 +1099,33 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
     expect(m2['parentAgentId']).toBe(AID) // the rest is still recorded
   })
 
+  // The transcript is what a human opens the node to READ. A `--format json` call — the one that
+  // carries the tokens — would otherwise leave a stream of step markers, ids and timestamps there.
+  it('the transcript carries the model ANSWER, not the raw JSON transport', () => {
+    const stream = [
+      JSON.stringify({ type: 'step_start', sessionID: 'ses_x', part: { type: 'step-start' } }),
+      JSON.stringify({ type: 'text', sessionID: 'ses_x', part: { type: 'text', text: 'the claim holds, here is why' } }),
+      JSON.stringify({ type: 'step_finish', sessionID: 'ses_x', part: { type: 'step-finish' }, metadata: { tokens: { input: 5, output: 2, reasoning: 0, cache: { read: 1, write: 0 } } } }),
+    ].join('\n')
+
+    const s = session('lane-answer', ['wf_answer'])
+    runHook(VERIFIER_GUARD_HOOK, { ...post(s.transcriptPath, { stdout: stream }), tool_use_id: 'toolu_ANS' }, isolated('answer'))
+    const f = readdirSync(s.runDir('wf_answer')).find((x) => x.includes('-lane') && x.endsWith('.jsonl'))
+    const entry = JSON.parse(readFileSync(join(s.runDir('wf_answer'), f ?? ''), 'utf8').trim()) as Record<string, unknown>
+    const content = (entry['message'] as Record<string, unknown>)['content']
+    expect(content).toBe('the claim holds, here is why')
+    expect(content).not.toContain('step_start') // the transport must not reach the reader
+    expect(content).not.toContain('sessionID')
+  })
+
+  it('keeps the RAW output when nothing text-shaped is in it — an empty transcript is worse than a noisy one', () => {
+    const s = session('lane-raw', ['wf_raw'])
+    runHook(VERIFIER_GUARD_HOOK, { ...post(s.transcriptPath, { stdout: 'plain non-json answer' }), tool_use_id: 'toolu_RAW' }, isolated('raw'))
+    const f = readdirSync(s.runDir('wf_raw')).find((x) => x.includes('-lane') && x.endsWith('.jsonl'))
+    const entry = JSON.parse(readFileSync(join(s.runDir('wf_raw'), f ?? ''), 'utf8').trim()) as Record<string, unknown>
+    expect((entry['message'] as Record<string, unknown>)['content']).toBe('plain non-json answer')
+  })
+
   it('accepts a bare-string tool_response (the shape is narrowed, never assumed)', () => {
     const s = session('lane-str', ['wf_str'])
     runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, 'plain output'), isolated('str'))

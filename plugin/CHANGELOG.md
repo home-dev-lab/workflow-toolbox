@@ -3,6 +3,18 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.164.0] - 2026-08-11
+
+### Fixed
+
+- **An external call's transcript now carries the model's ANSWER, not the JSON transport.** A
+  `--format json` invocation — the one that carries the token counts — was writing its whole event
+  stream into the node's transcript, so a reader opening that node met step markers, ids and
+  timestamps instead of what the model said. The tokens are why the command asks for JSON; the
+  answer is why a human opens the transcript, and both now survive.
+- Falls back to the raw output when nothing text-shaped is present: an empty transcript would be
+  worse than a noisy one.
+
 ## [0.163.0] - 2026-08-11
 
 ### Added

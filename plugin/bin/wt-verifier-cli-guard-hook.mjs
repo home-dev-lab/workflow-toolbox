@@ -321,6 +321,36 @@ export function laneUsageFromOutput(text) {
   return { tokens, sessionId }
 }
 
+/** The model's ACTUAL ANSWER, pulled out of a `--format json` event stream.
+ *
+ *  ⚠ Without this the transcript of an external call is the raw stream — every `step_start`,
+ *  `step_finish`, every id and timestamp — so a reader opening that node meets a wall of JSON
+ *  instead of what the model said. The tokens are the reason the command asks for JSON; the answer
+ *  is the reason a human opens the transcript. Both have to survive.
+ *
+ *  Returns null when the output is not that stream (an ordinary text call) or carries no text part
+ *  at all — the caller then keeps the raw output, because dropping it would trade a noisy
+ *  transcript for an empty one. */
+export function laneTextFromOutput(text) {
+  if (typeof text !== 'string' || text.length === 0) return null
+  const parts = []
+  for (const line of text.split('\n')) {
+    const t = line.trim()
+    if (t.length === 0 || t[0] !== '{') continue
+    let parsed
+    try {
+      parsed = JSON.parse(t)
+    } catch {
+      continue
+    }
+    const part = parsed?.part
+    if (part !== null && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string' && part.text.length > 0) {
+      parts.push(part.text)
+    }
+  }
+  return parts.length === 0 ? null : parts.join('\n')
+}
+
 /** Walk a parsed line for the two fields worth having. Shallow-recursive by design: the stream
  *  nests them under varying parents and pinning a path would break on the next CLI version. */
 function findUsage(node, depth = 0) {
@@ -548,10 +578,15 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
           ? crypto.createHash('sha1').update(input.tool_use_id).digest('hex').slice(0, 6)
           : null
       const laneId = callKey === null ? `${agentId}-lane` : `${agentId}-lane-${callKey}`
+      // What a HUMAN opens this node to read: the model's answer, not the transport. A
+      // `--format json` call (the one that carries the tokens) would otherwise leave a stream of
+      // step markers and ids here. Falls back to the raw output when nothing text-shaped is in it,
+      // because an empty transcript is worse than a noisy one.
+      const content = laneTextFromOutput(text) ?? text
       const line = JSON.stringify({
         type: 'assistant',
         timestamp: new Date().toISOString(),
-        message: { role: 'assistant', content: text },
+        message: { role: 'assistant', content },
         uuid: crypto.randomUUID(),
         agentId: laneId,
         isSidechain: true,
