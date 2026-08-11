@@ -3,6 +3,20 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.165.0] - 2026-08-11
+
+### Added
+
+- **An external call's node now records what was ASKED, not only what came back.** Its transcript
+  carries the invoking command as a user turn ahead of the model's answer, so the node's
+  Input/Output panel stops reading "No input/output captured" — a reader could see the verdict and
+  not the question, which is the half that makes a verdict judgeable.
+- The whole command is recorded rather than a prompt excerpted from it: the model flag, the working
+  directory and the redirections are part of what was actually asked, and a prettier excerpt drops
+  exactly what someone re-running the call would need.
+- The hook is the only place that has it — the command sits in its own `tool_input`, and nothing
+  downstream ever sees it.
+
 ## [0.164.0] - 2026-08-11
 
 ### Fixed

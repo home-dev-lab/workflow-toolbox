@@ -990,8 +990,13 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
 
     const dir = s.runDir('wf_abc123')
     const lines = readFileSync(join(dir, `agent-${LANE}.jsonl`), 'utf8').trim().split('\n')
-    expect(lines).toHaveLength(1)
-    const entry = JSON.parse(lines[0] ?? '') as Record<string, unknown>
+    // TWO lines: what was asked, then what came back. A node showing only the answer leaves its
+    // reader unable to judge it — the Input/Output panel reads "No input/output captured".
+    expect(lines).toHaveLength(2)
+    const asked = JSON.parse(lines[0] ?? '') as Record<string, unknown>
+    expect(asked['type']).toBe('user')
+    expect((asked['message'] as Record<string, unknown>)['content']).toContain('opencode')
+    const entry = JSON.parse(lines[1] ?? '') as Record<string, unknown>
     expect(entry['type']).toBe('assistant')
     expect(entry['agentId']).toBe(LANE)
     expect(entry['isSidechain']).toBe(true)
@@ -1028,7 +1033,7 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
     runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, { stdout: 'first call' }), isolated('twice-a'))
     runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, { stdout: 'second call' }), isolated('twice-b'))
     const body = readFileSync(join(s.runDir('wf_twice'), `agent-${LANE}.jsonl`), 'utf8')
-    expect(body.trim().split('\n')).toHaveLength(2)
+    expect(body.trim().split('\n')).toHaveLength(4) // two calls x (asked + answered)
     expect(body).toContain('first call')
     expect(body).toContain('second call')
   })
@@ -1050,7 +1055,7 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
     // each node holds exactly its own call, and neither absorbed the other
     expect(bodies.filter((b) => b.includes('review of file one'))).toHaveLength(1)
     expect(bodies.filter((b) => b.includes('review of file two'))).toHaveLength(1)
-    for (const b of bodies) expect(b.trim().split('\n')).toHaveLength(1)
+    for (const b of bodies) expect(b.trim().split('\n')).toHaveLength(2) // asked + answered
     // and each node is named, so the graph can label them
     expect(readdirSync(dir).filter((f) => f.includes('-lane') && f.endsWith('.meta.json'))).toHaveLength(2)
   })
@@ -1111,7 +1116,7 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
     const s = session('lane-answer', ['wf_answer'])
     runHook(VERIFIER_GUARD_HOOK, { ...post(s.transcriptPath, { stdout: stream }), tool_use_id: 'toolu_ANS' }, isolated('answer'))
     const f = readdirSync(s.runDir('wf_answer')).find((x) => x.includes('-lane') && x.endsWith('.jsonl'))
-    const entry = JSON.parse(readFileSync(join(s.runDir('wf_answer'), f ?? ''), 'utf8').trim()) as Record<string, unknown>
+    const entry = JSON.parse(readFileSync(join(s.runDir('wf_answer'), f ?? ''), 'utf8').trim().split('\n').at(-1) ?? '') as Record<string, unknown>
     const content = (entry['message'] as Record<string, unknown>)['content']
     expect(content).toBe('the claim holds, here is why')
     expect(content).not.toContain('step_start') // the transport must not reach the reader
@@ -1122,14 +1127,14 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
     const s = session('lane-raw', ['wf_raw'])
     runHook(VERIFIER_GUARD_HOOK, { ...post(s.transcriptPath, { stdout: 'plain non-json answer' }), tool_use_id: 'toolu_RAW' }, isolated('raw'))
     const f = readdirSync(s.runDir('wf_raw')).find((x) => x.includes('-lane') && x.endsWith('.jsonl'))
-    const entry = JSON.parse(readFileSync(join(s.runDir('wf_raw'), f ?? ''), 'utf8').trim()) as Record<string, unknown>
+    const entry = JSON.parse(readFileSync(join(s.runDir('wf_raw'), f ?? ''), 'utf8').trim().split('\n').at(-1) ?? '') as Record<string, unknown>
     expect((entry['message'] as Record<string, unknown>)['content']).toBe('plain non-json answer')
   })
 
   it('accepts a bare-string tool_response (the shape is narrowed, never assumed)', () => {
     const s = session('lane-str', ['wf_str'])
     runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, 'plain output'), isolated('str'))
-    const entry = JSON.parse(readFileSync(join(s.runDir('wf_str'), `agent-${LANE}.jsonl`), 'utf8').trim()) as Record<string, unknown>
+    const entry = JSON.parse(readFileSync(join(s.runDir('wf_str'), `agent-${LANE}.jsonl`), 'utf8').trim().split('\n').at(-1) ?? '') as Record<string, unknown>
     expect((entry['message'] as Record<string, unknown>)['content']).toBe('plain output')
   })
 

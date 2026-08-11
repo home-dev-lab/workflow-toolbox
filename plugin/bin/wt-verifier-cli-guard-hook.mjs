@@ -583,15 +583,33 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
       // step markers and ids here. Falls back to the raw output when nothing text-shaped is in it,
       // because an empty transcript is worse than a noisy one.
       const content = laneTextFromOutput(text) ?? text
+      const at = new Date().toISOString()
+
+      // ⚠ The INPUT, written first. Without it the node's Input/Output panel reads
+      // "No input/output captured" — the reader can see what the model ANSWERED and not what it was
+      // ASKED, which is the half that makes a verdict judgeable. The hook is the only place that
+      // has it: the command is right here in `tool_input`, and nothing downstream ever sees it.
+      //
+      // The whole command, not a prompt extracted from it: the model flag, the working directory
+      // and the redirections are part of what was actually asked, and a prettier excerpt would drop
+      // exactly the details someone re-running this call would need.
+      const askedLine = JSON.stringify({
+        type: 'user',
+        timestamp: at,
+        message: { role: 'user', content: command },
+        uuid: crypto.randomUUID(),
+        agentId: laneId,
+        isSidechain: true,
+      })
       const line = JSON.stringify({
         type: 'assistant',
-        timestamp: new Date().toISOString(),
+        timestamp: at,
         message: { role: 'assistant', content },
         uuid: crypto.randomUUID(),
         agentId: laneId,
         isSidechain: true,
       })
-      fs.appendFileSync(path.join(runDir, `agent-${laneId}.jsonl`), `${line}\n`, 'utf8')
+      fs.appendFileSync(path.join(runDir, `agent-${laneId}.jsonl`), `${askedLine}\n${line}\n`, 'utf8')
 
       // The facts a reader needs about this call, each recorded ONLY when it is genuinely known.
       //  • parentAgentId — the envelope that made the call. Without it a renderer cannot place the
