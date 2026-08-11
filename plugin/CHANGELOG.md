@@ -3,6 +3,26 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.161.0] - 2026-08-11
+
+### Added
+
+- **A workflow's external-CLI call now leaves a node behind.** When the verifier-CLI guard sees an
+  `opencode run` complete, it writes the two artefacts an observatory builds an agent node from —
+  the transcript line and its meta — into the delegated session's run directory. Until now that
+  call left nothing on disk, so a run surfaced its Claude agents and never its external work.
+- The guard is the only vantage point that sees it: hooks are **per session**, so a launcher's own
+  hooks observe neither the spawn nor the tool calls of a workflow's agents (measured: zero of
+  each). A plugin hook does, because it is loaded into the delegated session.
+- **It refuses to guess.** The run directory is derived from the session transcript path, and the
+  write happens only when exactly ONE run directory exists — the real case, since a second launch
+  in one session is aborted upstream. Were that to relax, picking the newest would file one run's
+  lane call inside another run's DAG, silently; refusing is the correct degradation.
+- **Transcript only — no tokens.** The wrapper's command omits `--format json`, so its output
+  carries no per-step totals. A zero would render as a measurement; nothing renders as nothing.
+- Best-effort throughout, exactly like the provenance marker beside it: a run never fails because
+  an observability artefact could not be written.
+
 ## [0.160.0] - 2026-08-10
 
 ### Added

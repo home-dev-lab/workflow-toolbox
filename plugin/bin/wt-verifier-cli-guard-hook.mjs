@@ -251,6 +251,51 @@ function markerDir() {
  *  marker per-VOTE (and per-run). Both hook events derive the SAME path for the SAME subagent
  *  (same transcript_path + same agent_id). agent_id is present in both events (re-probe census:
  *  60 distinct agent_ids on marker-writes). */
+/** The RUN directory a delegated session's agent transcripts live in, derived from the session's own
+ *  transcript path: `…/<session>.jsonl` → `…/<session>/subagents/workflows/<runId>/`.
+ *
+ *  ⚠ `transcript_path` names the SESSION, never the agent — the doc above `markerPathFor` says so,
+ *  and folding `agent_id` into the marker key exists precisely because of it. No hook input carries
+ *  a run id (`BaseHookInput` is session_id · transcript_path · cwd · prompt_id? · permission_mode? ·
+ *  agent_id?), so the run has to be found on disk.
+ *
+ *  ⚠⚠ Returns null unless EXACTLY ONE run dir exists. That is not caution for its own sake: it is
+ *  only ever one because app.ts's anti-runaway guard aborts a second Workflow launch in one session.
+ *  **If that guard is relaxed, this must keep returning null rather than guess** — picking the
+ *  newest would write a run's artefacts into another run's directory, silently, since both paths
+ *  exist and both are writable. Never sort by mtime here.
+ *
+ *  Returns null on anything unexpected; the caller treats that as "nothing to write". */
+export function runDirForSessionTranscript(transcriptPath, readdir = (d) => fs.readdirSync(d, { withFileTypes: true })) {
+  if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return null
+  const sessionDir = transcriptPath.replace(/\.jsonl$/, '')
+  const workflowsDir = path.join(sessionDir, 'subagents', 'workflows')
+  let entries
+  try {
+    entries = readdir(workflowsDir)
+  } catch {
+    return null // no delegated-run layout here — an ordinary session, nothing to do
+  }
+  const runs = entries.filter((e) => e.isDirectory()).map((e) => e.name)
+  if (runs.length !== 1) return null // zero, or an ambiguity we refuse to resolve — see above
+  return path.join(workflowsDir, runs[0])
+}
+
+/** The text a Bash tool_response carries, whatever shape the harness used. `tool_response` is typed
+ *  `unknown` in the SDK, so every shape is narrowed rather than assumed: a bare string, or an object
+ *  with stdout (the observed shape), or neither — in which case there is nothing to write and the
+ *  caller skips rather than writing an empty transcript that would render as a silent node. */
+export function bashOutputText(toolResponse) {
+  if (typeof toolResponse === 'string') return toolResponse
+  if (toolResponse !== null && typeof toolResponse === 'object') {
+    const out = toolResponse.stdout
+    if (typeof out === 'string') return out
+    const content = toolResponse.content
+    if (typeof content === 'string') return content
+  }
+  return ''
+}
+
 export function markerPathFor(transcriptPath, agentId) {
   const key = crypto
     .createHash('sha1')
@@ -393,6 +438,48 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
   } catch {
     /* best-effort: a marker we couldn't write just falls back to the transcript scan */
   }
+
+  // Make a WORKFLOW's lane call VISIBLE. Until now an `opencode run`
+  // made by the wrapper agent left nothing on disk, so the observatory had nothing to draw: a
+  // workflow surfaced its Claude agents (from the run journal) and never its external work.
+  //
+  // This is the only place that sees the call: hooks are PER SESSION, so neither the launcher's
+  // hooks nor anything outside observes a workflow agent's tool calls — measured, both zero. A
+  // plugin hook does, because it is loaded INTO the delegated session. That is why this lives here
+  // and not in the server.
+  //
+  // ⚠ Writes the two files a node is built from, and nothing else — no journal entry. A journal is
+  // the harness's artefact; producing one here would put a second writer on a file we do not own,
+  // and the next reader could not tell which entries were real.
+  //
+  // ⚠ TRANSCRIPT ONLY, no tokens: the wrapper's command omits `--format json`, so its output
+  // carries no per-step totals. Adding them is a separate decision with an unsolved attribution
+  // question — writing a zero here would be worse than writing nothing, because a zero renders.
+  try {
+    const runDir = runDirForSessionTranscript(transcriptPath)
+    const text = bashOutputText(input.tool_response)
+    if (runDir !== null && text.length > 0) {
+      const line = JSON.stringify({
+        type: 'assistant',
+        timestamp: new Date().toISOString(),
+        message: { role: 'assistant', content: text },
+        uuid: crypto.randomUUID(),
+        agentId,
+        isSidechain: true,
+      })
+      fs.writeFileSync(path.join(runDir, `agent-${agentId}.jsonl`), `${line}\n`, 'utf8')
+      fs.writeFileSync(
+        path.join(runDir, `agent-${agentId}.meta.json`),
+        JSON.stringify({ agentType: `scripted:${sig.id}` }),
+        'utf8',
+      )
+      dbg('PostToolUse', input, 'lane-artefacts-written', { runDir, chars: text.length })
+    }
+  } catch {
+    /* best-effort, exactly like the marker above: a run must never fail because a hook could not
+       write an observability artefact. */
+  }
+
   reapOldMarkers()
 }
 

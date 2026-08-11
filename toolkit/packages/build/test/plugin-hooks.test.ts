@@ -948,3 +948,89 @@ describe('wt-verifier-cli-guard-hook — safeTmpDir rejects a project-rooted os.
     expect(evalInHook('mod.safeTmpDir()')).toBe(tmpdir())
   })
 })
+
+// --------------------------------------------------------------------------
+// A workflow's LANE CALL becomes a node: on PostToolUse the guard writes the two artefacts the
+// observatory builds an agent node from (a transcript line + its meta), into the delegated
+// session's single run directory. Hooks are PER SESSION, so this is the only vantage point that
+// sees a workflow agent's `opencode run` at all.
+// --------------------------------------------------------------------------
+describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run', () => {
+  const LANE_RUN = '/home/x/.opencode/bin/opencode run "verify the claim" --model openai/gpt-5.4 < /dev/null'
+  const AID = 'EEEEEEEEEEEEEEEE'
+
+  /** Build `<root>/<session>.jsonl` plus `<root>/<session>/subagents/workflows/<runId>/` for each
+   *  id given — zero, one, or several, which is what the refuse-to-guess branch turns on. */
+  function session(tag: string, runIds: string[]): { transcriptPath: string; runDir: (id: string) => string } {
+    const root = mkRoot(tag)
+    const transcriptPath = join(root, 'sess.jsonl')
+    writeFileSync(transcriptPath, '')
+    const workflows = join(root, 'sess', 'subagents', 'workflows')
+    for (const id of runIds) mkdirSync(join(workflows, id), { recursive: true })
+    return { transcriptPath, runDir: (id: string) => join(workflows, id) }
+  }
+  const post = (transcriptPath: string, toolResponse: unknown) => ({
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Bash',
+    tool_input: { command: LANE_RUN },
+    tool_response: toolResponse,
+    agent_id: AID,
+    agent_type: 'workflow-toolbox:opencode-verifier',
+    transcript_path: transcriptPath,
+  })
+  const isolated = (tag: string): NodeJS.ProcessEnv => ({ ...process.env, WT_VERIFIER_MARKER_DIR: mkRoot(`lane-${tag}`) })
+
+  it('writes the transcript line AND its meta into the single run dir, carrying the lane output verbatim', () => {
+    const s = session('lane-one', ['wf_abc123'])
+    const r = runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, { stdout: 'VERDICT: confirmed\nthe claim holds' }), isolated('one'))
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe('') // PostToolUse never speaks; it only records
+
+    const dir = s.runDir('wf_abc123')
+    const lines = readFileSync(join(dir, `agent-${AID}.jsonl`), 'utf8').trim().split('\n')
+    expect(lines).toHaveLength(1)
+    const entry = JSON.parse(lines[0] ?? '') as Record<string, unknown>
+    expect(entry['type']).toBe('assistant')
+    expect(entry['agentId']).toBe(AID)
+    expect(entry['isSidechain']).toBe(true)
+    expect((entry['message'] as Record<string, unknown>)['content']).toBe('VERDICT: confirmed\nthe claim holds')
+    // The meta is what names the node — without it the transcript renders untyped.
+    expect(JSON.parse(readFileSync(join(dir, `agent-${AID}.meta.json`), 'utf8'))).toEqual({ agentType: 'scripted:opencode' })
+  })
+
+  it('accepts a bare-string tool_response (the shape is narrowed, never assumed)', () => {
+    const s = session('lane-str', ['wf_str'])
+    runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, 'plain output'), isolated('str'))
+    const entry = JSON.parse(readFileSync(join(s.runDir('wf_str'), `agent-${AID}.jsonl`), 'utf8').trim()) as Record<string, unknown>
+    expect((entry['message'] as Record<string, unknown>)['content']).toBe('plain output')
+  })
+
+  it('REFUSES TO GUESS: two run dirs ⇒ nothing is written into EITHER (never sort by mtime)', () => {
+    // The anti-runaway guard makes one run per delegated session the real case. If that ever
+    // relaxes, writing into the newest would put one run's lane call inside another run's DAG —
+    // silently, since both dirs exist and both are writable. Refusing is the correct degradation.
+    const s = session('lane-two', ['wf_first', 'wf_second'])
+    const r = runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, { stdout: 'output' }), isolated('two'))
+    expect(r.code).toBe(0) // still a clean no-op — a hook never fails a run
+    for (const id of ['wf_first', 'wf_second']) {
+      expect(existsSync(join(s.runDir(id), `agent-${AID}.jsonl`))).toBe(false)
+      expect(existsSync(join(s.runDir(id), `agent-${AID}.meta.json`))).toBe(false)
+    }
+  })
+
+  it('writes NOTHING when the lane produced no output (an empty transcript would render as a blank node)', () => {
+    const s = session('lane-empty', ['wf_empty'])
+    runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, { stdout: '' }), isolated('empty'))
+    expect(existsSync(join(s.runDir('wf_empty'), `agent-${AID}.jsonl`))).toBe(false)
+  })
+
+  it('an ORDINARY session (no delegated-run layout) is untouched — exit 0, no directories created', () => {
+    const root = mkRoot('lane-plain')
+    const tp = join(root, 'sess.jsonl')
+    writeFileSync(tp, '')
+    const r = runHook(VERIFIER_GUARD_HOOK, post(tp, { stdout: 'output' }), isolated('plain'))
+    expect(r.code).toBe(0)
+    expect(existsSync(join(root, 'sess'))).toBe(false)
+    expect(readdirSync(root)).toEqual(['sess.jsonl'])
+  })
+})
