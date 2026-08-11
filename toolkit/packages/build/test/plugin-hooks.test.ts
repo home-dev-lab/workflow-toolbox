@@ -1032,6 +1032,28 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
     expect(body).toContain('second call')
   })
 
+  // The batching shape: ONE envelope, N external calls, N nodes. Keyed by tool_use_id because the
+  // calls of a batch complete concurrently — a counter over existing files would let two hook
+  // processes pick the same index and silently merge two calls into one node.
+  it('ONE NODE PER CALL: two calls with distinct tool_use_ids write two separate lane nodes', () => {
+    const s = session('lane-percall', ['wf_percall'])
+    const dir = s.runDir('wf_percall')
+    const withId = (id: string, out: string) => ({ ...post(s.transcriptPath, { stdout: out }), tool_use_id: id })
+
+    runHook(VERIFIER_GUARD_HOOK, withId('toolu_AAA', 'review of file one'), isolated('percall-a'))
+    runHook(VERIFIER_GUARD_HOOK, withId('toolu_BBB', 'review of file two'), isolated('percall-b'))
+
+    const laneFiles = readdirSync(dir).filter((f) => f.includes('-lane') && f.endsWith('.jsonl'))
+    expect(laneFiles).toHaveLength(2)
+    const bodies = laneFiles.map((f) => readFileSync(join(dir, f), 'utf8'))
+    // each node holds exactly its own call, and neither absorbed the other
+    expect(bodies.filter((b) => b.includes('review of file one'))).toHaveLength(1)
+    expect(bodies.filter((b) => b.includes('review of file two'))).toHaveLength(1)
+    for (const b of bodies) expect(b.trim().split('\n')).toHaveLength(1)
+    // and each node is named, so the graph can label them
+    expect(readdirSync(dir).filter((f) => f.includes('-lane') && f.endsWith('.meta.json'))).toHaveLength(2)
+  })
+
   it('accepts a bare-string tool_response (the shape is narrowed, never assumed)', () => {
     const s = session('lane-str', ['wf_str'])
     runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, 'plain output'), isolated('str'))

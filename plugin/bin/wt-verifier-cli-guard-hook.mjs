@@ -462,13 +462,27 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
   // envelope's turns are destroyed, and the meta overwrite RELABELS the envelope's node as the
   // external one. The point is a SECOND node beside the envelope, never a node replacing it.
   //
-  // ⚠ APPEND, not write: a wrapper making two lane calls must produce two entries in one node, and
-  // the second call must not erase the first. The meta is a constant, so rewriting it is harmless.
+  // ⚠ ONE NODE PER CALL, keyed by `tool_use_id`. A single envelope making N external calls is the
+  // shape that makes batching worth anything (the ~27k system-prompt cost is paid per AGENT, not
+  // per call) — but only if each call still renders as its OWN node. A single accumulating node
+  // holding N transcripts is precisely what a reader cannot use.
+  //
+  // ⚠⚠ Keyed by id, never by a COUNTER over existing files. The calls of one batch are issued in a
+  // single message and therefore complete CONCURRENTLY: two hook processes counting the same
+  // directory at the same instant both see the same number and pick the same index, so one node
+  // silently absorbs the other. `tool_use_id` is unique per call and needs no coordination.
+  //
+  // ⚠ APPEND, not write: cheap insurance if the same call is ever reported twice. The meta is a
+  // constant, so rewriting it is harmless.
   try {
     const runDir = runDirForSessionTranscript(transcriptPath)
     const text = bashOutputText(input.tool_response)
     if (runDir !== null && text.length > 0) {
-      const laneId = `${agentId}-lane`
+      const callKey =
+        typeof input.tool_use_id === 'string' && input.tool_use_id.length > 0
+          ? crypto.createHash('sha1').update(input.tool_use_id).digest('hex').slice(0, 6)
+          : null
+      const laneId = callKey === null ? `${agentId}-lane` : `${agentId}-lane-${callKey}`
       const line = JSON.stringify({
         type: 'assistant',
         timestamp: new Date().toISOString(),

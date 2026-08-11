@@ -3,6 +3,21 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.162.0] - 2026-08-11
+
+### Added
+
+- **One envelope, N external calls, N nodes.** The lane node is now keyed per CALL
+  (`tool_use_id`) instead of per agent, so a single wrapper agent issuing several `opencode run`
+  calls in one message renders as one node per call rather than one node accumulating everything.
+- **Why it matters:** the ~26k system-prompt cost of a wrapper is paid per AGENT, not per call.
+  Measured across four runs of the same probe — 1, 3, 8 and 16 concurrent calls from one agent —
+  the fixed cost stayed flat (26 281 → 25 550 cache-read) while the node count matched N exactly.
+  Cost per external call fell from **27 759** tokens at N=1 to **2 074** at N=16.
+- **Keyed by id, never by a counter.** The calls of a batch complete concurrently, so two hook
+  processes counting files in the same directory would pick the same index and one node would
+  silently absorb the other.
+
 ## [0.161.0] - 2026-08-11
 
 ### Added
