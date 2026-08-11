@@ -1123,6 +1123,32 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
     expect(content).not.toContain('sessionID')
   })
 
+  // The raw stream is kept beside the transcript so the OBSERVATORY's own converter can format it —
+  // it emits a properly chained transcript and maps the usage into the shape every agent's header
+  // already renders. Duplicating that here would fork a format with one owner.
+  it('keeps the RAW event stream beside the transcript when the call emitted one', () => {
+    const stream = [
+      JSON.stringify({ type: 'step_start', sessionID: 'ses_side', part: { type: 'step-start' } }),
+      JSON.stringify({ type: 'text', sessionID: 'ses_side', part: { type: 'text', text: 'the answer' } }),
+    ].join('\n')
+    const s = session('lane-side', ['wf_side'])
+    runHook(VERIFIER_GUARD_HOOK, { ...post(s.transcriptPath, { stdout: stream }), tool_use_id: 'toolu_SIDE' }, isolated('side'))
+    const dir = s.runDir('wf_side')
+    const side = readdirSync(dir).find((f) => f.endsWith('.opencode.jsonl'))
+    expect(side, 'the raw stream must be kept for the converter that owns this format').toBeDefined()
+    const body = readFileSync(join(dir, side ?? ''), 'utf8')
+    expect(body).toContain('step_start') // RAW — the events, not the extracted text
+    expect(body.endsWith('\n')).toBe(true)
+    // and the hook's own fallback transcript still exists beside it
+    expect(readdirSync(dir).some((f) => f.includes('-lane') && f.endsWith('.jsonl') && !f.endsWith('.opencode.jsonl'))).toBe(true)
+  })
+
+  it('writes NO sidecar for a plain-text call — an empty one would read as "converted to nothing"', () => {
+    const s = session('lane-noside', ['wf_noside'])
+    runHook(VERIFIER_GUARD_HOOK, { ...post(s.transcriptPath, { stdout: 'plain answer' }), tool_use_id: 'toolu_NOSIDE' }, isolated('noside'))
+    expect(readdirSync(s.runDir('wf_noside')).some((f) => f.endsWith('.opencode.jsonl'))).toBe(false)
+  })
+
   it('keeps the RAW output when nothing text-shaped is in it — an empty transcript is worse than a noisy one', () => {
     const s = session('lane-raw', ['wf_raw'])
     runHook(VERIFIER_GUARD_HOOK, { ...post(s.transcriptPath, { stdout: 'plain non-json answer' }), tool_use_id: 'toolu_RAW' }, isolated('raw'))

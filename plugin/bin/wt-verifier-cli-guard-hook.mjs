@@ -611,6 +611,20 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
       })
       fs.appendFileSync(path.join(runDir, `agent-${laneId}.jsonl`), `${askedLine}\n${line}\n`, 'utf8')
 
+      // ⚠⚠ The RAW event stream, kept beside the transcript, because the reader already knows how to
+      // format it and this hook does not. `@workflow-toolbox/observe`'s `opencodeEventsToTranscriptLines`
+      // turns these events into a properly chained transcript — a `user` turn, then assistant turns,
+      // with the external session id and with the usage mapped into the shape every other agent's
+      // header already renders. Duplicating any of that here would fork a format that has one owner.
+      //
+      // So: this hook's own two lines above are the FALLBACK (they must exist for a plain-text call,
+      // which has no events at all), and this sidecar is what a reader should prefer when present.
+      // Written only when the output genuinely parses as that stream — never as an empty file, which
+      // would read as "converted to nothing" rather than "not an opencode stream".
+      if (laneTextFromOutput(text) !== null) {
+        fs.writeFileSync(path.join(runDir, `agent-${laneId}.opencode.jsonl`), text.endsWith('\n') ? text : `${text}\n`, 'utf8')
+      }
+
       // The facts a reader needs about this call, each recorded ONLY when it is genuinely known.
       //  • parentAgentId — the envelope that made the call. Without it a renderer cannot place the
       //    node in the phase the call belongs to, and it lands in a disconnected side column.

@@ -3,6 +3,18 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.166.0] - 2026-08-11
+
+### Added
+
+- **The raw opencode event stream is kept beside an external call's transcript** (`agent-<id>.opencode.jsonl`),
+  because the reader already owns a converter for it — `opencodeEventsToTranscriptLines` emits a
+  chained transcript and maps the usage into the shape every agent's header already renders.
+  Duplicating any of that in this hook would fork a format that has one owner.
+- The hook's own two lines remain the FALLBACK, for a plain-text call that emits no events at all.
+- The sidecar is written only when the output genuinely parses as that stream — never as an empty
+  file, which would read as "converted to nothing" rather than "not an opencode stream".
+
 ## [0.165.0] - 2026-08-11
 
 ### Added
