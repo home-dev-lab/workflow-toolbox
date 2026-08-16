@@ -43,22 +43,91 @@
 // own parser rather than restating its rules (see above), not a bug to patch;
 // it is a trust decision an adopter makes the moment they open a project here.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { dirname, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { stateRoot, snapshotPath } from './lib/actionability-state-paths.mjs'
-import { extractCards, computeSnapshot } from './lib/actionability-planka-producer-core.mjs'
+import { extractCards, computeSnapshot, extractResponseText } from './lib/actionability-planka-producer-core.mjs'
 
 const DEPENDS_ON_PARSER_RELATIVE = '.claude/scripts/lib/depends-on-parser.mjs'
 const BOARD_POINTER_RELATIVE = '.claude/planka.json'
 const DEPENDS_ON_TIMEOUT_MS = Number(process.env.WT_ACTIONABLE_DEPS_TIMEOUT_MS || 5000)
 const JOURNAL_MAX_ENTRIES = 100
 const JOURNAL_FIELD_MAX_CHARS = 500
+const MAX_SPILL_BYTES = Number(process.env.WT_ACTIONABLE_MAX_SPILL_BYTES || (8 * 1024 * 1024))
 
 function boundedText(value) {
   return String(value ?? '').slice(0, JOURNAL_FIELD_MAX_CHARS)
+}
+
+function canonicalPath(path) {
+  try {
+    return realpathSync(path)
+  } catch {
+    return resolve(path)
+  }
+}
+
+function isWithin(root, candidate) {
+  const rel = relative(root, candidate)
+  return rel === '' || (!rel.startsWith('..') && rel !== '..' && !rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`))
+}
+
+function allowedSpillRoots() {
+  return [canonicalPath(tmpdir()), canonicalPath(dirname(stateRoot()))]
+}
+
+function extractSavedOutputPath(text) {
+  const match = /saved[\s\S]{0,200}?\bto\b[^\S\r\n]*(\/[^\r\n]+)$/im.exec(text)
+  if (!match) return null
+  return match[1].trim().replace(/[.)]+$/, '')
+}
+
+function readSpilledToolResponse(toolResponse) {
+  const text = extractResponseText(toolResponse)
+  if (!text) return { ok: true, toolResponse }
+  try {
+    JSON.parse(text)
+    return { ok: true, toolResponse }
+  } catch {
+    // Not inline JSON; it still might be the harness's "saved output to file" placeholder.
+  }
+
+  const spillPath = extractSavedOutputPath(text)
+  if (!spillPath) return { ok: true, toolResponse }
+  if (!isAbsolute(spillPath)) {
+    return { ok: false, reason: `spill-path validation failed: not absolute (${spillPath})` }
+  }
+
+  const roots = allowedSpillRoots()
+  const canonicalSpillPath = canonicalPath(spillPath)
+  if (!roots.some((root) => isWithin(root, canonicalSpillPath))) {
+    return {
+      ok: false,
+      reason: `spill-path validation failed: ${spillPath} is outside allowed temp/state roots (${roots.join(', ')})`,
+    }
+  }
+
+  let stat
+  try {
+    stat = lstatSync(spillPath)
+  } catch (error) {
+    return { ok: false, reason: `spill-file unreadable: ${error?.message ?? error}` }
+  }
+  if (!stat.isFile()) return { ok: false, reason: `spill-path validation failed: ${spillPath} is not a plain file` }
+  if (stat.size > MAX_SPILL_BYTES) {
+    return { ok: false, reason: `spill-file too large: ${stat.size} bytes exceeds ${MAX_SPILL_BYTES}-byte bound` }
+  }
+
+  try {
+    const payload = readFileSync(spillPath, 'utf8')
+    return { ok: true, toolResponse: { content: [{ type: 'text', text: payload }] } }
+  } catch (error) {
+    return { ok: false, reason: `spill-file read failed: ${error?.message ?? error}` }
+  }
 }
 
 // Keep only the latest 100 one-line attempts. Fields are also truncated, so a
@@ -147,7 +216,13 @@ function main() {
   const cwd = typeof input.cwd === 'string' && input.cwd ? resolve(input.cwd) : ''
   if (!cwd) return
 
-  const extraction = extractCards({ toolName, toolInput: input.tool_input, toolResponse: input.tool_response })
+  const hydratedToolResponse = readSpilledToolResponse(input.tool_response)
+  if (!hydratedToolResponse.ok) {
+    recordFailure(cwd, 'payload-unparseable', hydratedToolResponse.reason)
+    return
+  }
+
+  const extraction = extractCards({ toolName, toolInput: input.tool_input, toolResponse: hydratedToolResponse.toolResponse })
   if (!extraction.ok) {
     if (!existsSync(join(cwd, BOARD_POINTER_RELATIVE))) {
       recordFailure(cwd, 'no-board-pointer', `no ${BOARD_POINTER_RELATIVE} for this project`)
