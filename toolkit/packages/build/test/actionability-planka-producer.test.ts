@@ -476,6 +476,20 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
       readFileSync(join(REPO_ROOT, 'plugin/bin/lib/actionability-state-paths.mjs'), 'utf8'),
       'utf8',
     )
+    // The producer hook also writes the prior-art title index (a SEPARATE, unmutated concern —
+    // see prior-art-index.test.ts) — its two lib files must exist under the mutated bin dir too,
+    // or the standalone hook process fails to resolve them and this test's own assertion
+    // (`res.status).toBe(0)`) would fail for a reason unrelated to the filter-guard mutation.
+    writeFileSync(
+      join(mutatedLibDir, 'prior-art-state-paths.mjs'),
+      readFileSync(join(REPO_ROOT, 'plugin/bin/lib/prior-art-state-paths.mjs'), 'utf8'),
+      'utf8',
+    )
+    writeFileSync(
+      join(mutatedLibDir, 'prior-art-index-core.mjs'),
+      readFileSync(join(REPO_ROOT, 'plugin/bin/lib/prior-art-index-core.mjs'), 'utf8'),
+      'utf8',
+    )
     const hookSrc = readFileSync(PRODUCER_HOOK, 'utf8')
     writeFileSync(join(mutatedBinDir, 'wt-actionable-snapshot-producer-hook.mjs'), hookSrc, 'utf8')
 

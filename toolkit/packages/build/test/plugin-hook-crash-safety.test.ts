@@ -349,6 +349,16 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Bash',
         tool_input: { command: 'pgrep -af zsh' },
       }
+    case 'wt-prior-art-launch-guard-hook.mjs':
+      // No prior-art index on disk in this sandbox project — the guard must no-op cleanly
+      // (its "no index on disk" silence branch) rather than crash; see
+      // prior-art-launch-guard-hook.test.ts for the full match/silence-A/silence-B matrix.
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: sandbox.projectDir,
+        tool_input: { command: 'node plugin/bin/wt-observe.mjs launch pr-review.js' },
+      }
     case 'wt-propagation-reminder-hook.mjs':
       return {
         hook_event_name: 'PostToolUse',

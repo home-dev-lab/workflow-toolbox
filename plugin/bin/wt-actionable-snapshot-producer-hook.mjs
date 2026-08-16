@@ -51,6 +51,8 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { stateRoot, snapshotPath } from './lib/actionability-state-paths.mjs'
 import { extractCards, computeSnapshot, extractResponseText } from './lib/actionability-planka-producer-core.mjs'
+import { stateRoot as priorArtStateRoot, cardIndexPath } from './lib/prior-art-state-paths.mjs'
+import { buildCardIndex } from './lib/prior-art-index-core.mjs'
 
 const DEPENDS_ON_PARSER_RELATIVE = '.claude/scripts/lib/depends-on-parser.mjs'
 const BOARD_POINTER_RELATIVE = '.claude/planka.json'
@@ -191,6 +193,18 @@ function isValidSnapshotFields(f) {
   )
 }
 
+// Writes the {id, name, listName} index wt-prior-art-launch-guard-hook.mjs
+// reads. Only ever called with a `buildCardIndex()` result computed from a
+// SUCCESSFUL extraction — never on a partial/unreadable read (main() does
+// not call this function at all in that case), so this function itself has
+// no "degrade gracefully" branch: an empty `cards: []` array reaching here
+// is a genuinely empty board, not a degraded read, and is written as such.
+function writeCardIndex(cwd, index) {
+  const path = cardIndexPath(priorArtStateRoot(), cwd)
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, JSON.stringify(index), 'utf8')
+}
+
 function writeSnapshot(cwd, fields) {
   const path = snapshotPath(stateRoot(), cwd)
   mkdirSync(dirname(path), { recursive: true })
@@ -234,6 +248,22 @@ function main() {
       recordFailure(cwd, 'payload-unparseable', extraction.reason)
     }
     return // partial/unreadable read — never write a guess
+  }
+
+  // PRIOR-ART CARD-TITLE INDEX. Deliberately independent of the
+  // dependency-parser / board-pointer gating below: the title index needs
+  // only {id, name, listName}, which extraction() already guarantees on
+  // `ok` — it is written on ANY successful read, including a project with
+  // no `.claude/planka.json` and no Depends-on convention at all (the
+  // actionability snapshot below stays silent for such a project; this
+  // index does not have to, because it answers a different question). A
+  // write failure here must never affect the actionability snapshot logic
+  // that follows, and vice versa — same fail-open posture as every other
+  // write in this hook.
+  try {
+    writeCardIndex(cwd, buildCardIndex(extraction.cards, Date.now()))
+  } catch (error) {
+    recordFailure(cwd, 'prior-art-index-write-failed', error?.message ?? error)
   }
 
   const parserPath = join(cwd, DEPENDS_ON_PARSER_RELATIVE)

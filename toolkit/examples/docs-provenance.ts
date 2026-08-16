@@ -205,6 +205,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Internal helper invoked only by the opencode-verifier bridge to strip the model answer out of a redirected JSON event stream; no standalone operator-facing contract of its own.',
   },
   {
+    script: 'plugin/bin/wt-opencode-envelope.mjs',
+    status: 'exempt',
+    reason: 'Internal batch-fanout helper invoked only by the opencode-envelope agent to run N opencode CLI calls behind one Bash tool call; no standalone operator-facing contract of its own.',
+  },
+  {
     script: 'plugin/bin/wt-outbound-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this spawn-registry writer/nudge hook under Shipped Hooks, Guards & Monitors.',
@@ -403,6 +408,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     script: 'plugin/bin/wt-pgrep-env-dump-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this PreToolUse full-listing pgrep/ps env-dump warn-only guard under Shipped Hooks, Guards & Monitors.',
+  },
+  {
+    script: 'plugin/bin/wt-prior-art-launch-guard-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'PreToolUse warn-only guard printing related board-card titles before a launch command runs, paired with the title index wt-actionable-snapshot-producer-hook.mjs writes — not yet documented in known-issues; its own file header states scope, coverage gaps, and the two-silences contract.',
   },
   {
     script: 'plugin/bin/wt-propagation-reminder-hook.mjs',

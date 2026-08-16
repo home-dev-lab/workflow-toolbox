@@ -1,0 +1,66 @@
+{
+  "tasksFile": "/home/doublefx/projects/wt-suite/workflow-toolbox/.oc-envelope-tasks-1090516.json",
+  "dir": "/home/doublefx/projects/wt-suite/workflow-toolbox",
+  "concurrency": 4,
+  "total": 8,
+  "answered": 8,
+  "errored": 0,
+  "tasks": [
+    {
+      "id": "q1",
+      "status": "answer",
+      "answerFile": "/home/doublefx/projects/wt-suite/workflow-toolbox/q1.answer.txt",
+      "model": "openai/gpt-5.4",
+      "log": "/home/doublefx/.local/state/wt-observe/external-lane-streams/wt-opencode-envelope-stream-q1-1090519-1786903790852-e75c48e2.jsonl"
+    },
+    {
+      "id": "q2",
+      "status": "answer",
+      "answerFile": "/home/doublefx/projects/wt-suite/workflow-toolbox/q2.answer.txt",
+      "model": "openai/gpt-5.4",
+      "log": "/home/doublefx/.local/state/wt-observe/external-lane-streams/wt-opencode-envelope-stream-q2-1090519-1786903790857-ffd88751.jsonl"
+    },
+    {
+      "id": "q3",
+      "status": "answer",
+      "answerFile": "/home/doublefx/projects/wt-suite/workflow-toolbox/q3.answer.txt",
+      "model": "openai/gpt-5.4",
+      "log": "/home/doublefx/.local/state/wt-observe/external-lane-streams/wt-opencode-envelope-stream-q3-1090519-1786903790858-e1ccead9.jsonl"
+    },
+    {
+      "id": "q4",
+      "status": "answer",
+      "answerFile": "/home/doublefx/projects/wt-suite/workflow-toolbox/q4.answer.txt",
+      "model": "openai/gpt-5.4",
+      "log": "/home/doublefx/.local/state/wt-observe/external-lane-streams/wt-opencode-envelope-stream-q4-1090519-1786903790860-52db8fe5.jsonl"
+    },
+    {
+      "id": "q5",
+      "status": "answer",
+      "answerFile": "/home/doublefx/projects/wt-suite/workflow-toolbox/q5.answer.txt",
+      "model": "openai/gpt-5.4",
+      "log": "/home/doublefx/.local/state/wt-observe/external-lane-streams/wt-opencode-envelope-stream-q5-1090519-1786903797981-ae4008f6.jsonl"
+    },
+    {
+      "id": "q6",
+      "status": "answer",
+      "answerFile": "/home/doublefx/projects/wt-suite/workflow-toolbox/q6.answer.txt",
+      "model": "openai/gpt-5.4",
+      "log": "/home/doublefx/.local/state/wt-observe/external-lane-streams/wt-opencode-envelope-stream-q6-1090519-1786903798601-adf78a53.jsonl"
+    },
+    {
+      "id": "q7",
+      "status": "answer",
+      "answerFile": "/home/doublefx/projects/wt-suite/workflow-toolbox/q7.answer.txt",
+      "model": "openai/gpt-5.4",
+      "log": "/home/doublefx/.local/state/wt-observe/external-lane-streams/wt-opencode-envelope-stream-q7-1090519-1786903798625-22d0927b.jsonl"
+    },
+    {
+      "id": "q8",
+      "status": "answer",
+      "answerFile": "/home/doublefx/projects/wt-suite/workflow-toolbox/q8.answer.txt",
+      "model": "openai/gpt-5.4",
+      "log": "/home/doublefx/.local/state/wt-observe/external-lane-streams/wt-opencode-envelope-stream-q8-1090519-1786903798755-c4e30a76.jsonl"
+    }
+  ]
+}
