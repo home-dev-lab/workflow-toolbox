@@ -60,7 +60,7 @@ function runHook(hookPath: string, payload: unknown, env?: NodeJS.ProcessEnv): R
   const res = spawnSync(process.execPath, [hookPath], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    env: env ?? process.env,
+    env: { ...process.env, WT_GUARD_JOURNAL_DIR: mkRoot('guard-journal'), ...(env ?? {}) },
   })
   const stdout = (res.stdout ?? '').trim()
   let json: Record<string, unknown> | null = null
@@ -403,7 +403,11 @@ describe('wt-delegation-ladder-hook — conditional injection + machine calibrat
   })
 
   it('fail-safe SILENT on empty stdin', () => {
-    const res = spawnSync(process.execPath, [LADDER_HOOK], { input: '', encoding: 'utf8' })
+    const res = spawnSync(process.execPath, [LADDER_HOOK], {
+      input: '',
+      encoding: 'utf8',
+      env: { ...process.env, WT_GUARD_JOURNAL_DIR: mkRoot('guard-journal-ladder-empty') },
+    })
     expect((res.stdout ?? '').trim()).toBe('')
   })
 
@@ -525,9 +529,10 @@ describe('wt-verifier-cli-guard-hook — deny a self-answered verdict until the 
   // this ran successfully but its Bash tool_use line was not yet in the per-subagent transcript
   // when the StructuredOutput PreToolUse fired. The fix is a PostToolUse marker (flush-immune).
   const PROBE_OPENCODE_RUN =
-    'BIN="/home/x/.opencode/bin/opencode"\nTASKFILE="$PWD/.oc-verify-$$.md"\n' +
+    'BIN="/home/x/.opencode/bin/opencode"\nTASKFILE="$PWD/.oc-verify-$$.md"\nSTREAMFILE="/tmp/wt-opencode-json-stream-probe.jsonl"\n' +
     "trap 'rm -f \"$TASKFILE\"' EXIT\ntimeout 570 \"$BIN\" run \"Adversarially verify the claim\" " +
-    '-f "$TASKFILE" --model openai/gpt-5.6-sol < /dev/null'
+    '--agent plan --model openai/gpt-5.6-sol --format json -f "$TASKFILE" > "$STREAMFILE" < /dev/null\nEXIT=$?\n' +
+    'if [ "$EXIT" -eq 0 ]; then node "$CLAUDE_PLUGIN_ROOT/bin/wt-opencode-json-extractor.mjs" "$STREAMFILE"; fi'
   const postBash = (agentType: string, command: string, transcriptPath: string, agentId = 'a1b2c3d4') => ({
     hook_event_name: 'PostToolUse',
     tool_name: 'Bash',
@@ -909,7 +914,10 @@ describe('wt-verifier-cli-guard-hook — safeTmpDir rejects a project-rooted os.
       const result = (${expr})
       process.stdout.write(JSON.stringify(result === undefined ? null : result))
     `
-    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
+    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      encoding: 'utf8',
+      env: { ...process.env, WT_GUARD_JOURNAL_DIR: mkRoot('guard-journal-eval') },
+    })
     if (res.status !== 0) throw new Error(`subprocess failed: ${res.stderr}`)
     return JSON.parse(res.stdout)
   }
@@ -1102,6 +1110,41 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
     const m2 = JSON.parse(readFileSync(join(s2.runDir('wf_notok'), f2 ?? ''), 'utf8')) as Record<string, unknown>
     expect(m2).not.toHaveProperty('laneTokens')
     expect(m2['parentAgentId']).toBe(AID) // the rest is still recorded
+  })
+
+  it('prefers the redirected JSON stream file named in the command, then unlinks it', () => {
+    const s = session('lane-streamfile', ['wf_streamfile'])
+    const dir = mkRoot('lane-stream-src')
+    const streamPath = join(dir, 'wt-opencode-json-stream-test.jsonl')
+    const stream = [
+      JSON.stringify({ type: 'start', sessionID: 'ses_stream' }),
+      JSON.stringify({ type: 'text', part: { type: 'text', text: 'streamed answer' } }),
+      JSON.stringify({ type: 'end', metadata: { tokens: { input: 11, output: 7, reasoning: 3, cache: { read: 5, write: 0 } } } }),
+    ].join('\n')
+    writeFileSync(streamPath, stream)
+    const payload = {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: {
+        command:
+          'STREAMFILE=' + JSON.stringify(streamPath) + '\n' +
+          'timeout 570 "/home/x/.opencode/bin/opencode" run "verify" --format json -f "$TASKFILE" > "$STREAMFILE" < /dev/null',
+      },
+      tool_response: { stdout: 'fallback plain output' },
+      tool_use_id: 'toolu_STREAMFILE',
+      duration_ms: 123,
+      agent_id: AID,
+      agent_type: 'workflow-toolbox:opencode-verifier',
+      transcript_path: s.transcriptPath,
+    }
+    runHook(VERIFIER_GUARD_HOOK, payload, isolated('streamfile'))
+    const metaFile = readdirSync(s.runDir('wf_streamfile')).find((f) => f.includes('-lane') && f.endsWith('.meta.json'))
+    const meta = JSON.parse(readFileSync(join(s.runDir('wf_streamfile'), metaFile ?? ''), 'utf8')) as Record<string, unknown>
+    expect(meta['laneTokens']).toEqual({ input: 11, output: 7, reasoning: 3, cacheRead: 5, cacheWrite: 0 })
+    const transcriptFile = readdirSync(s.runDir('wf_streamfile')).find((f) => f.includes('-lane') && f.endsWith('.jsonl') && !f.endsWith('.opencode.jsonl'))
+    const entry = JSON.parse(readFileSync(join(s.runDir('wf_streamfile'), transcriptFile ?? ''), 'utf8').trim().split('\n').at(-1) ?? '') as Record<string, unknown>
+    expect((entry['message'] as Record<string, unknown>)['content']).toBe('streamed answer')
+    expect(existsSync(streamPath)).toBe(false)
   })
 
   // The transcript is what a human opens the node to READ. A `--format json` call — the one that

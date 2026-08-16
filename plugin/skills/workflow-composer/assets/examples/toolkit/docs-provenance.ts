@@ -200,6 +200,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Public launcher CLI with durable docs across the README, toolkit docs, and debugger docs.',
   },
   {
+    script: 'plugin/bin/wt-opencode-json-extractor.mjs',
+    status: 'exempt',
+    reason: 'Internal helper invoked only by the opencode-verifier bridge to strip the model answer out of a redirected JSON event stream; no standalone operator-facing contract of its own.',
+  },
+  {
     script: 'plugin/bin/wt-outbound-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this spawn-registry writer/nudge hook under Shipped Hooks, Guards & Monitors.',

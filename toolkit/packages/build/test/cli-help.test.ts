@@ -4,13 +4,23 @@
 // covered automatically — a hardcoded list would stay green the day a 25th binary ships with
 // no --help, exactly the convention nobody enforced that this test exists to replace.
 import { spawnSync } from 'node:child_process'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const BIN_DIR = join(REPO_ROOT, 'plugin/bin')
+const roots: string[] = []
+afterEach(() => {
+  for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true })
+})
+function tempRoot(tag: string): string {
+  const r = mkdtempSync(join(tmpdir(), `wt-cli-help-${tag}-`))
+  roots.push(r)
+  return r
+}
 
 // Files that legitimately do NOT get an operator --help, and WHY — never a silent exclusion.
 // Both are `plugin/bin/*.mjs` matches (not filtered by the -hook.mjs discovery rule below), so
@@ -41,7 +51,10 @@ function allOperatorCliFiles(): string[] {
 }
 
 function runCli(file: string, args: string[]) {
-  const r = spawnSync(process.execPath, [join(BIN_DIR, file), ...args], { encoding: 'utf8' })
+  const r = spawnSync(process.execPath, [join(BIN_DIR, file), ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, WT_GUARD_JOURNAL_DIR: tempRoot('journal') },
+  })
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
 }
 

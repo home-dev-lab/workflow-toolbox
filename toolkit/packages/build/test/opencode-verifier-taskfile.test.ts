@@ -23,6 +23,9 @@ const DEF_COPIES = [
   join(REPO_ROOT, 'plugin/agents/opencode-verifier.md'),
   join(REPO_ROOT, 'plugin/launch-agents/agents/opencode-verifier.md'),
 ]
+const ROUND1_CONSTANT_STREAMFILE = 'STREAMFILE="$STREAMDIR/wt-opencode-json-stream.jsonl"'
+const ROUND1_NON_RETRY_RETURN =
+  '- **Not present (this includes every OTHER kind of failure — timeout, crash, malformed output, permission denial):** return the model\'s stdout VERBATIM as your result, or the error/timeout text verbatim on failure. Do NOT re-judge, soften, embellish, or add your own opinion. Do NOT retry.'
 
 describe('opencode-verifier bridge — task file lives under the agent cwd, not /tmp', () => {
   for (const path of DEF_COPIES) {
@@ -41,6 +44,42 @@ describe('opencode-verifier bridge — task file lives under the agent cwd, not 
 
       it('passes the cwd-internal task file to opencode via -f "$TASKFILE"', () => {
         expect(def).toContain('-f "$TASKFILE"')
+      })
+
+      it('runs opencode with `--format json` so the hook can recover per-call tokens from the redirected stream', () => {
+        expect(def).toContain('--format json')
+      })
+
+      it('redirects only the JSON stream to a STREAMFILE under the wt-observe state dir, outside $PWD', () => {
+        expect(def).toContain('wt-observe state directory')
+        expect(def).toContain('> "$STREAMFILE"')
+      })
+
+      it('makes the redirected JSON stream path unique per CLI invocation (concurrency regression)', () => {
+        expect(def).toContain('STREAMFILE="$STREAMDIR/wt-opencode-json-stream-$$.jsonl"')
+        expect(def).not.toContain(ROUND1_CONSTANT_STREAMFILE)
+      })
+
+      it('the concurrency matcher goes RED on the round-1 constant stream path', () => {
+        expect(ROUND1_CONSTANT_STREAMFILE).not.toContain('wt-opencode-json-stream-$$.jsonl')
+      })
+
+      it('captures the CLI exit code immediately on the next line, never through a pipe', () => {
+        expect(def.split('EXIT=$?').length - 1).toBeGreaterThanOrEqual(2)
+        expect(def).toContain('VERY NEXT line capture `EXIT=$?` immediately')
+        expect(def).toContain('never pipe the CLI')
+      })
+
+      it('relays the extracted model answer via the shipped JSON-stream extractor', () => {
+        expect(def.split('wt-opencode-json-extractor.mjs').length - 1).toBeGreaterThanOrEqual(2)
+      })
+
+      it('runs the extractor on the normal non-retry path too (happy-path regression)', () => {
+        expect(def).toContain('if `EXIT` is 0, run `node "$CLAUDE_PLUGIN_ROOT/bin/wt-opencode-json-extractor.mjs" "$STREAMFILE"` and return ITS stdout verbatim as your final result')
+      })
+
+      it('the happy-path extractor matcher goes RED on the round-1 non-retry text', () => {
+        expect(ROUND1_NON_RETRY_RETURN).not.toContain('wt-opencode-json-extractor.mjs')
       })
 
       it('cleans the task file up in-invocation so nothing is left in the repo', () => {

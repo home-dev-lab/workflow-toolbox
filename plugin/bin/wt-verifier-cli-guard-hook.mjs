@@ -135,6 +135,8 @@ const COMMAND_SCAN_MAX = 20_000
 // delegated session), overridable via WT_VERIFIER_MARKER_DIR for isolated tests.
 const MARKER_PREFIX = 'wt-verifier-cli-seen-'
 const MARKER_TTL_MS = 6 * 60 * 60 * 1000 // opportunistically reap markers older than this
+const STREAM_PREFIX = 'wt-opencode-json-stream-'
+const STREAM_TTL_MS = 6 * 60 * 60 * 1000
 
 // Per-subagent DENY counter: a sibling file (SAME key family as the
 // cli-seen marker — sha1(transcript_path + ':' + agent_id)) holding how many verdicts THIS wrapper
@@ -351,6 +353,55 @@ export function laneTextFromOutput(text) {
   return parts.length === 0 ? null : parts.join('\n')
 }
 
+export function observeStateRootForEnv(env = process.env, home = os.homedir(), platform = process.platform) {
+  const xdg = typeof env['XDG_STATE_HOME'] === 'string' && env['XDG_STATE_HOME'].length > 0 ? env['XDG_STATE_HOME'] : null
+  const base =
+    xdg !== null
+      ? xdg
+      : platform === 'darwin'
+        ? path.join(home, 'Library', 'Application Support')
+        : platform === 'win32'
+          ? (typeof env['LOCALAPPDATA'] === 'string' && env['LOCALAPPDATA'].length > 0
+              ? env['LOCALAPPDATA']
+              : path.join(home, 'AppData', 'Local'))
+          : path.join(home, '.local', 'state')
+  return path.join(base, 'wt-observe')
+}
+
+export function verifierStreamDirForEnv(env = process.env, home = os.homedir(), platform = process.platform) {
+  return path.join(observeStateRootForEnv(env, home, platform), 'external-lane-streams')
+}
+
+function stripQuoted(value) {
+  if (typeof value !== 'string' || value.length < 2) return value
+  const q = value[0]
+  if ((q === '"' || q === "'") && value[value.length - 1] === q) return value.slice(1, -1)
+  return value
+}
+
+function shellValueFor(name, assignments, depth = 0) {
+  if (depth > 8) return null
+  const raw = assignments.get(name)
+  if (typeof raw !== 'string' || raw.length === 0) return null
+  const home = os.homedir()
+  const value = stripQuoted(raw)
+  return value
+    .replace(/\$HOME\b/g, home)
+    .replace(/\$([A-Za-z_][A-Za-z0-9_]*)\b/g, (_, ref) => shellValueFor(ref, assignments, depth + 1) ?? process.env[ref] ?? '')
+}
+
+export function streamFilePathFromCommand(command) {
+  if (typeof command !== 'string' || command.length === 0) return null
+  const assignments = new Map()
+  for (const m of command.matchAll(/(?:^|\n)([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g)) {
+    assignments.set(m[1], m[2])
+  }
+  const redirect = command.match(/>\s*"\$STREAMFILE"(?:\s|$)/)
+  if (redirect === null) return null
+  const streamFile = shellValueFor('STREAMFILE', assignments)
+  return typeof streamFile === 'string' && path.isAbsolute(streamFile) ? streamFile : null
+}
+
 /** Walk a parsed line for the two fields worth having. Shallow-recursive by design: the stream
  *  nests them under varying parents and pinning a path would break on the next CLI version. */
 function findUsage(node, depth = 0) {
@@ -424,6 +475,24 @@ function reapOldMarkers() {
         if (now - fs.statSync(fp).mtimeMs > MARKER_TTL_MS) fs.rmSync(fp, { force: true })
       } catch {
         /* ignore a single unstattable/unremovable marker */
+      }
+    }
+  } catch {
+    /* dir unreadable ⇒ skip cleanup */
+  }
+}
+
+function reapOldStreamFiles() {
+  try {
+    const dir = verifierStreamDirForEnv()
+    const now = Date.now()
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.startsWith(STREAM_PREFIX)) continue
+      const fp = path.join(dir, f)
+      try {
+        if (now - fs.statSync(fp).mtimeMs > STREAM_TTL_MS) fs.rmSync(fp, { force: true })
+      } catch {
+        /* ignore one stale/unremovable stream */
       }
     }
   } catch {
@@ -571,7 +640,21 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
   // constant, so rewriting it is harmless.
   try {
     const runDir = runDirForSessionTranscript(transcriptPath)
-    const text = bashOutputText(input.tool_response)
+    const streamPath = streamFilePathFromCommand(command)
+    let text = bashOutputText(input.tool_response)
+    if (streamPath !== null) {
+      try {
+        const streamed = fs.readFileSync(streamPath, 'utf8')
+        if (streamed.length > 0) text = streamed
+      } catch {
+        /* fall back to the tool response text */
+      }
+      try {
+        fs.unlinkSync(streamPath)
+      } catch {
+        /* best-effort cleanup: the age sweep below is the backstop */
+      }
+    }
     if (runDir !== null && text.length > 0) {
       const callKey =
         typeof input.tool_use_id === 'string' && input.tool_use_id.length > 0
@@ -662,6 +745,7 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
   }
 
   reapOldMarkers()
+  reapOldStreamFiles()
 }
 
 /** The refusal reason for one wrapper signature. */
