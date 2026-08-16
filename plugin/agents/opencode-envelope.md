@@ -23,8 +23,9 @@ Do exactly this, as ONE single compound Bash command (heredoc write of the tasks
 2. Write a JSON ARRAY to `$TASKSFILE` via a heredoc, one object per task: `{"id": "<short-id>", "prompt": "<the full task text for that question>"}`. Give each task a distinct, short `id` (used only for filenames — `t1`, `t2`, … or a descriptive slug). A task MAY carry its own `"model"`, `"variant"`, `"agent"`, or `"fallbackModel"` to override the batch defaults.
 3. Run:
    ```
-   node "$CLAUDE_PLUGIN_ROOT/bin/wt-opencode-envelope.mjs" "$TASKSFILE" --dir "<workdir>" [--model <model>] [--fallback-model <fallback>] [--variant <variant>] [--agent <agent>] [--concurrency <n>] ; rm -f "$TASKSFILE"
+   node "${CLAUDE_PLUGIN_ROOT:-$WT_PLUGIN_ROOT}/bin/wt-opencode-envelope.mjs" "$TASKSFILE" --dir "<workdir>" [--model <model>] [--fallback-model <fallback>] [--variant <variant>] [--agent <agent>] [--concurrency <n>] ; rm -f "$TASKSFILE"
    ```
+   A delegated session has no `CLAUDE_PLUGIN_ROOT` — the plugin loader only substitutes it into manifest hook commands, never into an agent's shell — so the server exports `WT_PLUGIN_ROOT` instead; the fallback picks that up while leaving an interactive session (which does have `CLAUDE_PLUGIN_ROOT`) unchanged.
    The script itself handles binary resolution, the availability gate (checked ONCE for the whole batch), the CLI invocation per task (each with `< /dev/null`, `--auto`, the explicit `--dir`, its own unique log, and its own timeout + `EXIT=` marker), bounded concurrency, the one 429 retry per task, and JSON-stream extraction per task — all inside its own single process. You make no other tool call, regardless of how many tasks you gave it.
 
 The script prints EXACTLY ONE line to stdout:

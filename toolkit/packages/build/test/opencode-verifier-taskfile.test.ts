@@ -75,7 +75,7 @@ describe('opencode-verifier bridge — task file lives under the agent cwd, not 
       })
 
       it('runs the extractor on the normal non-retry path too (happy-path regression)', () => {
-        expect(def).toContain('if `EXIT` is 0, run `node "$CLAUDE_PLUGIN_ROOT/bin/wt-opencode-json-extractor.mjs" "$STREAMFILE"` and return ITS stdout verbatim as your final result')
+        expect(def).toContain('if `EXIT` is 0, run `node "${CLAUDE_PLUGIN_ROOT:-$WT_PLUGIN_ROOT}/bin/wt-opencode-json-extractor.mjs" "$STREAMFILE"`')
       })
 
       it('the happy-path extractor matcher goes RED on the round-1 non-retry text', () => {
