@@ -184,6 +184,26 @@ export function signatureForCommand(command) {
   return null
 }
 
+// Card #1839472753 — the BATCH envelope (wt-opencode-envelope.mjs) makes N external calls behind
+// ONE Bash tool call. `signatureForCommand` above never matches its command line — the script
+// spawns `opencode run` itself, in a CHILD PROCESS the Bash tool never sees the argv of — so the
+// single-call path above is structurally blind to it. This is a substring check, not a linear
+// scanner like `matchesOpencodeRun`: the risk this guards is observability (a missed batch draws
+// no nodes), never a security decision, so a coincidental substring match is harmless — the worst
+// case is reading a manifest that then fails its own JSON.parse and no-ops.
+export function matchesEnvelopeInvocation(command) {
+  return typeof command === 'string' && command.includes('wt-opencode-envelope.mjs')
+}
+
+/** The path the envelope script printed after `MANIFEST:` on its one stdout line, or null when
+ *  the batch never reached that point (e.g. OPENCODE_UNAVAILABLE / OPENCODE_ERROR — no manifest
+ *  was written, and there is nothing to draw). */
+export function manifestPathFromOutput(text) {
+  if (typeof text !== 'string') return null
+  const m = text.match(/^MANIFEST:\s*(.+)$/m)
+  return m === null ? null : (m[1] ?? '').trim() || null
+}
+
 /** Count REAL external-CLI invocations in one transcript's Bash tool_use commands (the flushed
  *  fallback signal). Mirrors the provenance gate's scanner (parseTranscriptExternalCalls shape).
  *  Routes each command through `matchesCli(cmd, sig)` — the FULL command for opencode's linear
@@ -453,6 +473,7 @@ export function writeLaneArtefacts({
   model = null,
   durationMs,
   usage = null,
+  status = 'answer',
 }) {
   const at = new Date().toISOString()
   const askedLine = JSON.stringify({
@@ -479,10 +500,16 @@ export function writeLaneArtefacts({
 
   const meta = {
     agentType: `scripted:${sig}`,
-    description: model === null ? `external CLI call by ${parentAgentId}` : `${model} — called by ${parentAgentId}`,
+    description:
+      status === 'error'
+        ? `call FAILED — ${String(answerContent).split('\n')[0]?.slice(0, 160) ?? 'no message'}`
+        : model === null
+          ? `external CLI call by ${parentAgentId}`
+          : `${model} — called by ${parentAgentId}`,
     parentAgentId,
     lane: sig,
   }
+  if (status === 'error') meta.status = 'error'
   if (model !== null) meta.model = model
   if (typeof durationMs === 'number') meta.durationMs = durationMs
   if (usage !== null && usage.tokens !== null) meta.laneTokens = usage.tokens
@@ -630,13 +657,88 @@ function matcherHitArm(command) {
 /** PostToolUse: when a real external-CLI invocation COMPLETES, write its per-transcript marker.
  *  Never denies/blocks — it only records provenance. Self-scoped by the command regex (only a
  *  real `opencode run`/`codex …` matches); an agent_type, if present, must be a wrapper. */
+/** ONE NODE PER TASK for a batch envelope call. The envelope makes N external calls behind ONE
+ *  Bash tool call — the very shape that makes batching cheap — so `tool_use_id` alone (the key
+ *  the single-call path uses) cannot distinguish task 1 from task 8 of the SAME call: every task
+ *  finishes inside the same PostToolUse event. Fold the task's OWN id into the key instead.
+ *
+ *  Reads exactly what the script already wrote to disk: the manifest (whose path is the hook's
+ *  ONLY handle — the script's stdout is deliberately one line, never the answers themselves), each
+ *  task's answer file, and each task's own stream log — never re-runs anything, never guesses a
+ *  field the manifest didn't carry. `usage` and `durationMs` are taken from the manifest as-is:
+ *  when the manifest omits `usage` (a plain-text call measured nothing), the node's meta omits
+ *  `laneTokens` too — the same "absent, never zero" rule the single-call path already keeps. */
+function handleEnvelopeBatch(input, runDir) {
+  const agentId = input.agent_id
+  const text = bashOutputText(input.tool_response)
+  const manifestPath = manifestPathFromOutput(text)
+  if (manifestPath === null) return
+  let manifest
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  } catch {
+    return // batch never wrote a manifest, or it's unreadable — nothing to draw
+  }
+  if (manifest === null || typeof manifest !== 'object' || !Array.isArray(manifest.tasks)) return
+  const toolUseId = typeof input.tool_use_id === 'string' ? input.tool_use_id : ''
+
+  for (const task of manifest.tasks) {
+    if (task === null || typeof task !== 'object' || typeof task.id !== 'string' || task.id.length === 0) continue
+    const callKey = crypto.createHash('sha1').update(`${toolUseId}:${task.id}`).digest('hex').slice(0, 6)
+    const laneId = `${agentId}-lane-${callKey}`
+    const status = task.status === 'error' ? 'error' : 'answer'
+
+    let rawStreamText = null
+    if (typeof task.log === 'string' && task.log.length > 0) {
+      try {
+        rawStreamText = fs.readFileSync(task.log, 'utf8')
+      } catch {
+        /* best-effort: the log may already be gone (age sweep, ephemeral fs) */
+      }
+    }
+
+    let answerContent = null
+    if (status === 'error') {
+      answerContent = `ERROR: ${typeof task.reason === 'string' && task.reason.length > 0 ? task.reason : 'unknown error'}`
+    } else if (typeof task.answerFile === 'string' && task.answerFile.length > 0) {
+      try {
+        answerContent = fs.readFileSync(task.answerFile, 'utf8')
+      } catch {
+        /* fall through to the raw stream below */
+      }
+    }
+    // A failed call must still become a node (never a silent gap), and an answer whose own file
+    // vanished falls back to its raw stream rather than being dropped — dropping either would
+    // under-report exactly the outcome (a failure, a lost file) most worth seeing.
+    if (answerContent === null) answerContent = (rawStreamText ?? '').length > 0 ? rawStreamText : '[no output captured]'
+
+    const usage = task.usage !== null && typeof task.usage === 'object' ? task.usage : null
+
+    writeLaneArtefacts({
+      runDir,
+      laneId,
+      askedContent: typeof task.prompt === 'string' && task.prompt.length > 0 ? task.prompt : `opencode envelope task ${task.id}`,
+      answerContent,
+      rawStreamText,
+      sig: 'opencode',
+      parentAgentId: agentId,
+      model: typeof task.model === 'string' ? task.model : null,
+      durationMs: typeof task.durationMs === 'number' ? task.durationMs : undefined,
+      usage,
+      status,
+    })
+  }
+}
+
 export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p, String(Date.now()))) {
   if (input.tool_name !== 'Bash') return
   const command = input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : ''
+  const isEnvelopeBatch = matchesEnvelopeInvocation(command)
   const sig = signatureForCommand(command)
-  if (sig === null) return // not a real external-CLI invocation
+  if (sig === null && !isEnvelopeBatch) return // not a real external-CLI invocation
   // If agent_type IS present, only a wrapper marks (avoid stray markers); if absent (undocumented
-  // in PostToolUse), the specific command regex above is the scope.
+  // in PostToolUse), the specific command regex above is the scope. The envelope's own agentType
+  // (`workflow-toolbox:opencode-envelope`) still contains "opencode", so it passes this same check.
   if (input.agent_type !== undefined && signatureForAgentType(input.agent_type) === null) return
   const transcriptPath = input.transcript_path
   const agentId = input.agent_id
@@ -645,6 +747,22 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
   // that a sibling self-answer could ride.
   if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return
   if (!agentId) return
+
+  // The batch envelope never emits a StructuredOutput verdict (see opencode-envelope.md), so the
+  // provenance-gate marker below is not its concern — only turning its manifest into N nodes is.
+  if (isEnvelopeBatch) {
+    try {
+      const runDir = runDirForSessionTranscript(transcriptPath)
+      if (runDir !== null) handleEnvelopeBatch(input, runDir)
+    } catch {
+      /* best-effort, exactly like the single-call path: a run must never fail because a hook
+         could not write an observability artefact. */
+    }
+    reapOldMarkers()
+    reapOldStreamFiles()
+    return
+  }
+
   try {
     writeMarker(markerPathFor(transcriptPath, agentId))
     dbg('PostToolUse', input, 'marker-written', { matcher_hit: sig.id === 'opencode' ? matcherHitArm(command) : null })

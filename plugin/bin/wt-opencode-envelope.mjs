@@ -19,7 +19,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { laneTextFromOutput, verifierStreamDirForEnv } from './wt-verifier-cli-guard-hook.mjs'
+import { laneTextFromOutput, laneUsageFromOutput, verifierStreamDirForEnv } from './wt-verifier-cli-guard-hook.mjs'
 
 const DEFAULT_MODEL = 'openai/gpt-5.4'
 const DEFAULT_AGENT = 'plan'
@@ -138,6 +138,7 @@ function isRateLimited(text) {
  * exits (never a separate, reusable path — every invocation gets its own unique stream file). */
 function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSec, taskId }) {
   return new Promise((resolve) => {
+    const startedAt = Date.now()
     const streamFile = uniqueStreamFile(taskId)
     const args = [
       'run',
@@ -167,7 +168,7 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
       fs.writeFileSync(streamFile, stdout, 'utf8')
       fs.appendFileSync(streamFile, `\nEXIT=${exitCode}\n`, 'utf8')
       fs.appendFileSync(streamFile, `\n--- spawn error ---\n${String(err)}\n`, 'utf8')
-      resolve({ streamFile, stdout, stderr, exitCode, timedOut: false })
+      resolve({ streamFile, stdout, stderr, exitCode, timedOut: false, durationMs: Date.now() - startedAt })
     })
     child.on('close', (code, signal) => {
       clearTimeout(timer)
@@ -175,7 +176,7 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
       fs.writeFileSync(streamFile, stdout, 'utf8')
       fs.appendFileSync(streamFile, `\nEXIT=${exitCode}\n`, 'utf8')
       if (stderr.length > 0) fs.appendFileSync(streamFile, `\n--- stderr ---\n${stderr}\n`, 'utf8')
-      resolve({ streamFile, stdout, stderr, exitCode, timedOut: timedOut || signal === 'SIGKILL' })
+      resolve({ streamFile, stdout, stderr, exitCode, timedOut: timedOut || signal === 'SIGKILL', durationMs: Date.now() - startedAt })
     })
   })
 }
@@ -207,18 +208,27 @@ async function runTask(task, opts, outDir) {
 
   const answerFile = path.join(outDir, `${safeId}.answer.txt`)
 
+  // Card #1839472753 — the two facts an observability NODE needs beyond "did it answer": how
+  // long the call took, and what it cost. Both are read from data the run already produced (the
+  // process's own wall-clock, the CLI's `--format json` usage lines) — never invented. `usage` is
+  // OMITTED entirely when the stream carried no measurable tokens (a plain-text call), because a
+  // zero here would render as a measurement, which is precisely the failure this exists to avoid.
+  const base = { id, prompt: String(task.prompt ?? ''), model: modelUsed, log: result.streamFile, durationMs: result.durationMs }
+  const usage = laneUsageFromOutput(result.stdout)
+  const withUsage = usage !== null ? { ...base, usage } : base
+
   if (result.exitCode !== 0) {
     const reason = result.timedOut ? `timed out after ${timeoutSec}s` : `opencode exited ${result.exitCode}`
-    return { id, status: 'error', reason: `${reason} (model ${modelUsed})`, model: modelUsed, log: result.streamFile }
+    return { ...withUsage, status: 'error', reason: `${reason} (model ${modelUsed})` }
   }
 
   const answer = laneTextFromOutput(result.stdout)
   if (answer === null || answer.length === 0) {
-    return { id, status: 'error', reason: `no answer text found in CLI output (model ${modelUsed})`, model: modelUsed, log: result.streamFile }
+    return { ...withUsage, status: 'error', reason: `no answer text found in CLI output (model ${modelUsed})` }
   }
 
   fs.writeFileSync(answerFile, answer, 'utf8')
-  return { id, status: 'answer', answerFile, model: modelUsed, log: result.streamFile }
+  return { ...withUsage, status: 'answer', answerFile }
 }
 
 /** Bounded-concurrency pool: at most `limit` tasks run at once. Async only (network-bound CLI

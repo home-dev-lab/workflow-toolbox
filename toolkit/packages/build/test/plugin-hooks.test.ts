@@ -1238,6 +1238,167 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
   })
 })
 
+// --------------------------------------------------------------------------
+// The BATCH envelope (wt-opencode-envelope.mjs) makes N external calls behind ONE Bash tool call.
+// `signatureForCommand` never matches ITS command line — the script spawns `opencode run` itself,
+// in a child process the Bash tool never sees the argv of — so the single-call path above is
+// structurally blind to it (card #1839472753636279587: N calls, ZERO nodes, measured on
+// wf_fa4afff2-f74). This describe block covers the fix: reading the manifest the script already
+// writes and turning each of its tasks into its own node, the same two artefacts per task.
+// --------------------------------------------------------------------------
+describe('wt-verifier-cli-guard-hook — batch envelope: N external calls become N nodes', () => {
+  const AID = 'BBBBBBBBBBBBBBBB'
+
+  function session(tag: string, runIds: string[]): { transcriptPath: string; runDir: (id: string) => string } {
+    const root = mkRoot(tag)
+    const transcriptPath = join(root, 'sess.jsonl')
+    writeFileSync(transcriptPath, '')
+    const workflows = join(root, 'sess', 'subagents', 'workflows')
+    for (const id of runIds) mkdirSync(join(workflows, id), { recursive: true })
+    return { transcriptPath, runDir: (id: string) => join(workflows, id) }
+  }
+  const isolated = (tag: string): NodeJS.ProcessEnv => ({ ...process.env, WT_VERIFIER_MARKER_DIR: mkRoot(`envbatch-${tag}`) })
+
+  const ENVELOPE_COMMAND =
+    'TASKSFILE="/repo/.oc-envelope-tasks-$$.json"\n' +
+    'cat > "$TASKSFILE" <<\'EOF\'\n[]\nEOF\n' +
+    'node "$CLAUDE_PLUGIN_ROOT/bin/wt-opencode-envelope.mjs" "$TASKSFILE" --dir "/repo" ; rm -f "$TASKSFILE"'
+
+  function writeManifest(root: string, tasks: unknown[]): string {
+    const manifestPath = join(root, 'tasks.json.manifest.json')
+    writeFileSync(manifestPath, JSON.stringify({ tasks }), 'utf8')
+    return manifestPath
+  }
+
+  function post(transcriptPath: string, manifestPath: string, toolUseId = 'toolu_BATCH') {
+    return {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: ENVELOPE_COMMAND },
+      tool_response: { stdout: `MANIFEST: ${manifestPath}\n` },
+      tool_use_id: toolUseId,
+      agent_id: AID,
+      agent_type: 'workflow-toolbox:opencode-envelope',
+      transcript_path: transcriptPath,
+    }
+  }
+
+  it('writes ONE node per task — the shape a batch of N calls needs to be visible', () => {
+    const s = session('envbatch-basic', ['wf_batch'])
+    const root = s.runDir('wf_batch')
+    const answerFile1 = join(root, 'q1.answer.txt')
+    const answerFile2 = join(root, 'q2.answer.txt')
+    writeFileSync(answerFile1, 'answer to question one', 'utf8')
+    writeFileSync(answerFile2, 'answer to question two', 'utf8')
+    const manifestPath = writeManifest(root, [
+      { id: 'q1', prompt: 'what is question one', status: 'answer', answerFile: answerFile1, model: 'openai/gpt-5.4', durationMs: 1200 },
+      { id: 'q2', prompt: 'what is question two', status: 'answer', answerFile: answerFile2, model: 'openai/gpt-5.4', durationMs: 900 },
+    ])
+
+    const r = runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, manifestPath), isolated('basic'))
+    expect(r.code).toBe(0)
+
+    const laneJsonl = readdirSync(root).filter((f) => f.includes('-lane') && f.endsWith('.jsonl') && !f.endsWith('.opencode.jsonl'))
+    const laneMeta = readdirSync(root).filter((f) => f.includes('-lane') && f.endsWith('.meta.json'))
+    expect(laneJsonl).toHaveLength(2) // two tasks, two nodes — never one accumulating node
+    expect(laneMeta).toHaveLength(2)
+
+    const bodies = laneJsonl.map((f) => readFileSync(join(root, f), 'utf8'))
+    expect(bodies.some((b) => b.includes('answer to question one'))).toBe(true)
+    expect(bodies.some((b) => b.includes('answer to question two'))).toBe(true)
+    expect(bodies.some((b) => b.includes('what is question one'))).toBe(true) // the ASK, not just the answer
+
+    const metas = laneMeta.map((f) => JSON.parse(readFileSync(join(root, f), 'utf8')) as Record<string, unknown>)
+    for (const m of metas) {
+      expect(m['parentAgentId']).toBe(AID)
+      expect(m['model']).toBe('openai/gpt-5.4')
+      expect(m['lane']).toBe('opencode')
+    }
+    expect((metas.map((m) => m['durationMs']) as number[]).sort((a, b) => a - b)).toEqual([900, 1200])
+  })
+
+  it('a FAILED task still becomes a node, marked as failed', () => {
+    const s = session('envbatch-fail', ['wf_fail'])
+    const root = s.runDir('wf_fail')
+    const manifestPath = writeManifest(root, [
+      { id: 'q1', prompt: 'a question', status: 'error', reason: 'opencode exited 1 (model openai/gpt-5.4)', model: 'openai/gpt-5.4' },
+    ])
+    runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, manifestPath), isolated('fail'))
+
+    const metaFile = readdirSync(root).find((f) => f.includes('-lane') && f.endsWith('.meta.json'))
+    expect(metaFile, 'a failed task must still produce a node').toBeDefined()
+    const meta = JSON.parse(readFileSync(join(root, metaFile ?? ''), 'utf8')) as Record<string, unknown>
+    expect(meta['status']).toBe('error')
+    expect(meta['description']).toContain('FAILED')
+
+    const jsonlFile = readdirSync(root).find((f) => f.includes('-lane') && f.endsWith('.jsonl') && !f.endsWith('.opencode.jsonl'))
+    const body = readFileSync(join(root, jsonlFile ?? ''), 'utf8')
+    expect(body).toContain('opencode exited 1')
+  })
+
+  it('records tokens when the manifest carries usage, and OMITS the field when it does not', () => {
+    const s = session('envbatch-tok', ['wf_tok'])
+    const root = s.runDir('wf_tok')
+    const answerFile = join(root, 'q1.answer.txt')
+    writeFileSync(answerFile, 'the answer', 'utf8')
+    const manifestPath = writeManifest(root, [
+      {
+        id: 'q1',
+        prompt: 'a question',
+        status: 'answer',
+        answerFile,
+        model: 'openai/gpt-5.4',
+        usage: { tokens: { input: 12, output: 4, reasoning: 0, cacheRead: 3, cacheWrite: 0 }, sessionId: 'ses_x' },
+      },
+      { id: 'q2', prompt: 'a plain question', status: 'answer', answerFile: join(root, 'missing.answer.txt'), model: 'openai/gpt-5.4' },
+    ])
+    runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, manifestPath), isolated('tok'))
+
+    const metaFiles = readdirSync(root).filter((f) => f.includes('-lane') && f.endsWith('.meta.json'))
+    const metas = metaFiles.map((f) => JSON.parse(readFileSync(join(root, f), 'utf8')) as Record<string, unknown>)
+    const withTokens = metas.find((m) => 'laneTokens' in m)
+    const withoutTokens = metas.find((m) => !('laneTokens' in m))
+    expect(withTokens?.['laneTokens']).toEqual({ input: 12, output: 4, reasoning: 0, cacheRead: 3, cacheWrite: 0 })
+    expect(withTokens?.['laneSessionId']).toBe('ses_x')
+    expect(withoutTokens).toBeDefined() // present as a node, just with no measurable tokens
+  })
+
+  it('a batch with NO manifest line (OPENCODE_UNAVAILABLE) writes nothing — no crash either', () => {
+    const s = session('envbatch-unavail', ['wf_unavail'])
+    const payload = {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: ENVELOPE_COMMAND },
+      tool_response: { stdout: 'OPENCODE_UNAVAILABLE: opencode binary not found\n' },
+      tool_use_id: 'toolu_UNAVAIL',
+      agent_id: AID,
+      agent_type: 'workflow-toolbox:opencode-envelope',
+      transcript_path: s.transcriptPath,
+    }
+    const r = runHook(VERIFIER_GUARD_HOOK, payload, isolated('unavail'))
+    expect(r.code).toBe(0)
+    expect(readdirSync(s.runDir('wf_unavail'))).toEqual([])
+  })
+
+  it('two calls in the SAME batch never collide on the same node key (task id folded into it)', () => {
+    const s = session('envbatch-nocollide', ['wf_nocollide'])
+    const root = s.runDir('wf_nocollide')
+    const a1 = join(root, 'a.answer.txt')
+    const a2 = join(root, 'b.answer.txt')
+    writeFileSync(a1, 'first', 'utf8')
+    writeFileSync(a2, 'second', 'utf8')
+    const manifestPath = writeManifest(root, [
+      { id: 'a', prompt: 'q-a', status: 'answer', answerFile: a1, model: 'openai/gpt-5.4' },
+      { id: 'b', prompt: 'q-b', status: 'answer', answerFile: a2, model: 'openai/gpt-5.4' },
+    ])
+    // SAME tool_use_id for both — realistic, since both tasks come from ONE Bash call — proving
+    // the key is not just tool_use_id alone (that would collide the two tasks into one node).
+    runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, manifestPath, 'toolu_SAME'), isolated('nocollide'))
+    const laneFiles = readdirSync(root).filter((f) => f.includes('-lane') && f.endsWith('.meta.json'))
+    expect(laneFiles).toHaveLength(2)
+  })
+})
+
 describe('wt-envelope-intercept-hook — Path B opencode envelope interception', () => {
   function session(tag: string, runIds: string[]): { transcriptPath: string; runDir: (id: string) => string } {
     const root = mkRoot(tag)
