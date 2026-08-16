@@ -16,23 +16,19 @@
 //   with no missing and no orphan files — otherwise the delegated sessions run
 //   DIFFERENT agent shapes than interactive ones and every conclusion drawn on
 //   one path silently stops holding on the other.
-// - it ships NO context-injecting surfaces (skills / commands / MCP), and EXACTLY ONE
-//   guard hook — the verifier-CLI guard (bin/wt-verifier-cli-guard-hook.mjs, referenced
-//   via ../bin from the parent plugin so the shim keeps NO bin/ dir of its own) that is
-//   MATCHER-NARROWED (to the StructuredOutput tool) AND SELF-SCOPED (to the opencode/codex
-//   verifier wrapper agent). AGENT-SCOPED, not session-broad: the exception is invisible to
-//   every agent but the one it guards — a leaf/lean agent never even spawns the hook except
-//   on its own StructuredOutput call, which then instantly no-ops (wrong agentType) and emits
-//   the verdict untouched, so leaf/lean agents stay effectively BARE. LETTER vs PURPOSE: the
-//   lean posture's real invariant is ambient TOKEN cost (the −32%/spawn came from stripping
-//   tool/skill/MCP prompt INJECTION); a matcher-narrowed process-side `command` hook adds
-//   ~ZERO prompt tokens, so it violates the letter of "no hooks" but NOT the purpose (token
-//   economy). It earns the exception: the Path-B audit is the very context the self-answer
-//   BURN was observed in (card #1825163461588419933), the post-hoc provenance gate only fires
-//   AFTER the wrapper spent its budget, and this hook is the only way to deny a self-answered
-//   verdict EARLY in a delegated run. Do NOT over-generalize this into "hooks are fine now":
-//   everything ELSE (skills / commands / MCP / any OTHER hook, and any un-narrowed matcher)
-//   still must never leak into launched sessions.
+// - it ships NO context-injecting surfaces (skills / commands / MCP), and EXACTLY TWO
+//   matcher-narrowed process hooks, both referenced via ../bin from the parent plugin so the
+//   shim keeps NO bin/ dir of its own:
+//     1. the verifier-CLI guard on PreToolUse/StructuredOutput + PostToolUse/Bash
+//     2. the envelope-intercept hook on PreToolUse/Agent
+//   Both stay AGENT-SCOPED, not session-broad: they wake only on their matched tool, then
+//   self-scope immediately to the exact routed bridge case they own. A leaf/lean agent still
+//   stays effectively BARE. LETTER vs PURPOSE: the lean posture's real invariant is ambient
+//   TOKEN cost (the −32%/spawn came from stripping tool/skill/MCP prompt INJECTION); a
+//   matcher-narrowed process-side `command` hook adds ~ZERO prompt tokens, so it violates the
+//   letter of "no hooks" but NOT the purpose (token economy). Do NOT over-generalize this into
+//   "hooks are fine now": everything ELSE (skills / commands / MCP / any OTHER hook, and any
+//   un-narrowed matcher) still must never leak into launched sessions.
 //
 // Remedy on failure: cp plugin/agents/<name>.md plugin/launch-agents/agents/
 
@@ -87,45 +83,39 @@ describe('plugin/launch-agents — agents-only shim plugin for delegated launche
     }
   })
 
-  it('ships NO context-injecting surfaces: no extra dirs, no bin/ (the one hook is referenced via ../bin)', () => {
+  it('ships NO context-injecting surfaces: no extra dirs, no bin/ (the hooks are referenced via ../bin)', () => {
     const root = join(REPO_ROOT, 'plugin/launch-agents')
     const entries = readdirSync(root).sort()
-    // The verifier-CLI-guard hook lives in the PARENT plugin's bin/ and is referenced from
-    // the shim manifest via ${CLAUDE_PLUGIN_ROOT}/../bin — so the shim itself adds NO bin/
-    // dir and no skills/commands. Nothing context-injecting leaks structurally into
-    // launched sessions (the one process-side hook adds ~zero prompt tokens — see below).
+    // The shim's hooks live in the PARENT plugin's bin/ and are referenced from the manifest
+    // via ${CLAUDE_PLUGIN_ROOT}/../bin — so the shim itself adds NO bin/ dir and no
+    // skills/commands. Nothing context-injecting leaks structurally into launched sessions.
     expect(entries).toEqual(['.claude-plugin', 'agents'])
   })
 
-  it('declares EXACTLY the verifier-CLI-guard on two matcher-narrowed events (PreToolUse/StructuredOutput + PostToolUse/Bash)', () => {
+  it('declares ONLY the verifier-CLI guard and envelope-intercept hook, all matcher-narrowed', () => {
     const manifest = JSON.parse(readFileSync(SHIM_MANIFEST, 'utf8')) as {
       hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ type?: string; command?: string }> }>>
     }
     const events = Object.keys(manifest.hooks ?? {}).sort()
-    // ONLY PreToolUse + PostToolUse — no SessionStart/Stop/etc. Both are matcher-narrowed
+    // ONLY PreToolUse + PostToolUse — no SessionStart/Stop/etc. All are matcher-narrowed
     // PROCESS-side `command` hooks (a node script spawned only on the matched tool; ~ZERO
     // prompt-token cost), so they violate the LETTER of the lean shim's "no hooks" but NOT its
-    // PURPOSE (the −32%/spawn token economy) — and stay AGENT-SCOPED: they only run on a
-    // StructuredOutput or Bash call, and no-op for any non-wrapper agent. PostToolUse/Bash writes
-    // the flush-immune CLI marker; PreToolUse/StructuredOutput enforces it. These are the ONE
-    // deliberate guard; a future edit adding any OTHER hook, a context-injecting surface, or an
-    // UN-narrowed matcher must NOT ride this allowance.
+    // PURPOSE (the −32%/spawn token economy). A future edit adding any OTHER hook, a
+    // context-injecting surface, or an UN-narrowed matcher must NOT ride this allowance.
     expect(events).toEqual(['PostToolUse', 'PreToolUse'])
     const pre = manifest.hooks?.['PreToolUse'] ?? []
     const post = manifest.hooks?.['PostToolUse'] ?? []
-    expect(pre).toHaveLength(1)
+    expect(pre).toHaveLength(2)
     expect(post).toHaveLength(1)
-    // MATCHER-NARROWED — the hook never spawns except on its matched tool (leaf/lean stay bare).
-    // A dropped/widened matcher (session-broad hook) fails here.
-    expect(pre[0]!.matcher).toBe('StructuredOutput')
+    const preMatchers = pre.map((g) => g.matcher).sort()
+    expect(preMatchers).toEqual(['Agent', 'StructuredOutput'])
     expect(post[0]!.matcher).toBe('Bash')
-    const commands = [...pre, ...post].flatMap((g) => g.hooks ?? []).map((h) => h.command ?? '')
-    expect(commands).toHaveLength(2)
-    // Both reference the parent plugin's bin via ../bin (the guard has no copy in the shim) — a
-    // rename/drop of the Path-B self-answer guard fails here.
-    for (const c of commands) expect(c).toContain('../bin/wt-verifier-cli-guard-hook.mjs')
-    // Prove the referenced hook file actually exists at that resolved location.
+    const commands = [...pre, ...post].flatMap((g) => g.hooks ?? []).map((h) => h.command ?? '').sort()
+    expect(commands).toHaveLength(3)
+    expect(commands.filter((c) => c.includes('../bin/wt-verifier-cli-guard-hook.mjs'))).toHaveLength(2)
+    expect(commands.filter((c) => c.includes('../bin/wt-envelope-intercept-hook.mjs'))).toHaveLength(1)
     expect(existsSync(join(REPO_ROOT, 'plugin/bin/wt-verifier-cli-guard-hook.mjs'))).toBe(true)
+    expect(existsSync(join(REPO_ROOT, 'plugin/bin/wt-envelope-intercept-hook.mjs'))).toBe(true)
   })
 
   it('the INTERACTIVE plugin registers the verifier-CLI-guard on BOTH events, each matcher-narrowed', () => {

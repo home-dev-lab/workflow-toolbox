@@ -19,6 +19,7 @@ const LADDER_HOOK = join(REPO_ROOT, 'plugin/bin/wt-delegation-ladder-hook.mjs')
 const GUARD_HOOK = join(REPO_ROOT, 'plugin/bin/wt-pilot-guard-hook.mjs')
 const OBSERVER_PAIRING_HOOK = join(REPO_ROOT, 'plugin/bin/wt-observer-pairing-guard-hook.mjs')
 const VERIFIER_GUARD_HOOK = join(REPO_ROOT, 'plugin/bin/wt-verifier-cli-guard-hook.mjs')
+const ENVELOPE_INTERCEPT_HOOK = join(REPO_ROOT, 'plugin/bin/wt-envelope-intercept-hook.mjs')
 const DEBUGGER_DELEGATION_SRC = join(REPO_ROOT, 'toolkit/packages/debugger/src/external-delegation.ts')
 const AGENTS_DIR = join(REPO_ROOT, 'plugin/agents')
 // The pilot suite lives here, NOT in AGENTS_DIR — Claude Code silently ignores an
@@ -1234,5 +1235,115 @@ describe('wt-verifier-cli-guard-hook — lane-call artefacts for a workflow run'
     expect(r.code).toBe(0)
     expect(existsSync(join(root, 'sess'))).toBe(false)
     expect(readdirSync(root)).toEqual(['sess.jsonl'])
+  })
+})
+
+describe('wt-envelope-intercept-hook — Path B opencode envelope interception', () => {
+  function session(tag: string, runIds: string[]): { transcriptPath: string; runDir: (id: string) => string } {
+    const root = mkRoot(tag)
+    const transcriptPath = join(root, 'sess.jsonl')
+    writeFileSync(transcriptPath, '')
+    const workflows = join(root, 'sess', 'subagents', 'workflows')
+    for (const id of runIds) mkdirSync(join(workflows, id), { recursive: true })
+    return { transcriptPath, runDir: (id: string) => join(workflows, id) }
+  }
+
+  function spawnPayload(transcriptPath: string, prompt: string, extra: Record<string, unknown> = {}) {
+    return {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Agent',
+      agent_id: 'ENVAAAAAAAAAAAAA',
+      transcript_path: transcriptPath,
+      cwd: '/repo',
+      tool_input: {
+        subagent_type: 'workflow-toolbox:opencode-verifier',
+        prompt,
+        ...extra,
+      },
+    }
+  }
+
+  it('rewrites the spawn so the envelope never receives the real task, and the lane node carries the task instead', () => {
+    const s = session('env-int-one', ['wf_env_one'])
+    const prompt = 'REAL TASK: inspect src/x.ts and report the bug'
+    const env = {
+      ...process.env,
+      WT_ENVELOPE_INTERCEPT_TEST_STDOUT: 'lane verdict',
+      WT_ENVELOPE_INTERCEPT_TEST_MODEL: 'openai/gpt-5.4',
+    }
+    const r = runHook(ENVELOPE_INTERCEPT_HOOK, spawnPayload(s.transcriptPath, prompt), env)
+    const hso = r.json?.['hookSpecificOutput'] as Record<string, unknown> | undefined
+    const updated = hso?.['updatedInput'] as Record<string, unknown> | undefined
+    expect(hso?.['permissionDecision']).toBe('allow')
+    expect(updated?.['prompt']).toContain('lane verdict')
+    expect(updated?.['prompt']).not.toContain(prompt)
+    expect(updated?.['subagent_type']).toBe('workflow-toolbox:leaf')
+
+    const dir = s.runDir('wf_env_one')
+    const laneTranscript = readdirSync(dir).find((f) => f.includes('-lane') && f.endsWith('.jsonl'))
+    expect(laneTranscript).toBeDefined()
+    const lines = readFileSync(join(dir, laneTranscript ?? ''), 'utf8').trim().split('\n')
+    expect(lines).toHaveLength(2)
+    const asked = JSON.parse(lines[0] ?? '') as Record<string, unknown>
+    expect((asked['message'] as Record<string, unknown>)['content']).toBe(prompt)
+    const answered = JSON.parse(lines[1] ?? '') as Record<string, unknown>
+    expect((answered['message'] as Record<string, unknown>)['content']).toBe('lane verdict')
+  })
+
+  it('when a schema is present, rewrites the prompt to relay the returned JSON object instead of the task', () => {
+    const s = session('env-int-schema', ['wf_env_schema'])
+    const prompt = 'REAL TASK: verify the claim and emit schema output'
+    const env = {
+      ...process.env,
+      WT_ENVELOPE_INTERCEPT_TEST_STDOUT: '{"verdict":"confirmed","reason":"grounded"}',
+      WT_ENVELOPE_INTERCEPT_TEST_MODEL: 'openai/gpt-5.4',
+    }
+    const r = runHook(
+      ENVELOPE_INTERCEPT_HOOK,
+      spawnPayload(s.transcriptPath, prompt, {
+        schema: {
+          type: 'object',
+          required: ['verdict', 'reason'],
+          properties: {
+            verdict: { type: 'string' },
+            reason: { type: 'string' },
+          },
+        },
+      }),
+      env,
+    )
+    const updated = ((r.json?.['hookSpecificOutput'] as Record<string, unknown> | undefined)?.['updatedInput'] as Record<string, unknown> | undefined)
+    expect(updated?.['prompt']).toContain('StructuredOutput')
+    expect(updated?.['prompt']).toContain('{"verdict":"confirmed","reason":"grounded"}')
+    expect(updated?.['prompt']).not.toContain(prompt)
+  })
+
+  it('one phase spawning two intercepted calls leaves one envelope transcript untouched plus two call nodes', () => {
+    const s = session('env-int-two', ['wf_env_two'])
+    const dir = s.runDir('wf_env_two')
+    writeFileSync(join(dir, 'agent-ENVAAAAAAAAAAAAA.jsonl'), '{"type":"user","message":{"role":"user","content":"envelope brief"}}\n')
+    writeFileSync(join(dir, 'agent-ENVAAAAAAAAAAAAA.meta.json'), JSON.stringify({ agentType: 'workflow-toolbox:opencode-verifier' }))
+
+    runHook(
+      ENVELOPE_INTERCEPT_HOOK,
+      { ...spawnPayload(s.transcriptPath, 'REAL TASK #1'), tool_use_id: 'toolu_env_1' },
+      { ...process.env, WT_ENVELOPE_INTERCEPT_TEST_STDOUT: 'answer one', WT_ENVELOPE_INTERCEPT_TEST_MODEL: 'openai/gpt-5.4' },
+    )
+    runHook(
+      ENVELOPE_INTERCEPT_HOOK,
+      { ...spawnPayload(s.transcriptPath, 'REAL TASK #2'), tool_use_id: 'toolu_env_2' },
+      { ...process.env, WT_ENVELOPE_INTERCEPT_TEST_STDOUT: 'answer two', WT_ENVELOPE_INTERCEPT_TEST_MODEL: 'openai/gpt-5.4' },
+    )
+
+    expect(readFileSync(join(dir, 'agent-ENVAAAAAAAAAAAAA.jsonl'), 'utf8')).toContain('envelope brief')
+    expect(JSON.parse(readFileSync(join(dir, 'agent-ENVAAAAAAAAAAAAA.meta.json'), 'utf8'))).toEqual({
+      agentType: 'workflow-toolbox:opencode-verifier',
+    })
+
+    const laneFiles = readdirSync(dir).filter((f) => f.includes('-lane') && f.endsWith('.jsonl'))
+    expect(laneFiles).toHaveLength(2)
+    const laneBodies = laneFiles.map((f) => readFileSync(join(dir, f), 'utf8'))
+    expect(laneBodies.filter((b) => b.includes('answer one'))).toHaveLength(1)
+    expect(laneBodies.filter((b) => b.includes('answer two'))).toHaveLength(1)
   })
 })

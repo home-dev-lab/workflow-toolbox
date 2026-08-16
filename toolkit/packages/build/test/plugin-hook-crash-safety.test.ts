@@ -58,6 +58,8 @@ function makeSandbox(tag: string): Sandbox {
       WT_HOOK_DRIFT_DIR: join(stateDir, 'hook-drift'),
       WT_QUEUE_GATE_DIR: join(stateDir, 'queue-gate'),
       WT_VERIFIER_MARKER_DIR: join(stateDir, 'verifier-markers'),
+      WT_ENVELOPE_INTERCEPT_TEST_STDOUT: 'selftest envelope answer',
+      WT_ENVELOPE_INTERCEPT_TEST_MODEL: 'openai/gpt-5.4',
       WT_ACTIONABLE_GATE_DIR: join(stateDir, 'actionable-gate'),
       DWT_WORKFLOW_LOG_DIR: join(stateDir, 'workflow-logs'),
     },
@@ -275,6 +277,18 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         agent_id: 'agent-verifier-1',
         transcript_path: sandbox.transcriptPath,
         tool_input: { command: 'git status' },
+      }
+    case 'wt-envelope-intercept-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Agent',
+        agent_id: 'agent-envelope-1',
+        transcript_path: sandbox.transcriptPath,
+        cwd: sandbox.projectDir,
+        tool_input: {
+          subagent_type: 'workflow-toolbox:opencode-verifier',
+          prompt: 'Inspect the repo and report the issue.',
+        },
       }
     case 'wt-unquoted-tool-glob-guard-hook.mjs':
       return {
