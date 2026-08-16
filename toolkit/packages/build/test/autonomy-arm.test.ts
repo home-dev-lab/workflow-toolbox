@@ -213,6 +213,17 @@ describe('--status distinguishes live, expired and absent — and agrees with th
     expect(result.status).toBe(1)
   })
 
+  it('a malformed marker reports UNKNOWN, never not armed, through a distinct exit code', () => {
+    const s = scaffold()
+    writeFileSync(s.mandatePath, '{not json}\n')
+
+    const result = run(ARM, s.env, [...s.args, '--status'])
+
+    expect(result.stdout).toContain('AUTONOMY MANDATE: unknown')
+    expect(result.stdout).not.toContain('not armed')
+    expect(result.status).toBe(4)
+  })
+
   it('the watcher banner and --status AGREE about the same expired marker at the same instant — the regression this locks', () => {
     const s = scaffold()
     const now = Date.now()

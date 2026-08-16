@@ -114,6 +114,10 @@ function transcriptPathFor(configDir: string, projectDir: string, sessionId: str
   return join(configDir, 'projects', projectSlug(projectDir), `${sessionId}.jsonl`)
 }
 
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 function runWatch(
   projectDir: string,
   env: NodeJS.ProcessEnv,
@@ -291,6 +295,77 @@ describe('wt-autonomy-watch', () => {
 
     expect(result.stdout).toBe('')
     expect(existsSync(s.markerPath)).toBe(false)
+  })
+
+  it('a fresh mandate produces no expiry event, and no marker at all still stays silent', () => {
+    const absent = scaffold('expiry-absent')
+    const fresh = scaffold('expiry-fresh')
+    const now = Date.now()
+    touch(absent.transcriptPath, now - 20 * 60_000)
+    touch(fresh.transcriptPath, now - 20 * 60_000)
+    writeMandate(fresh.mandatePath, fresh.sessionId, now)
+
+    const absentResult = runWatch(absent.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: absent.configDir,
+      CLAUDE_CODE_SESSION_ID: absent.sessionId,
+      XDG_STATE_HOME: absent.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+    const freshResult = runWatch(fresh.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: fresh.configDir,
+      CLAUDE_CODE_SESSION_ID: fresh.sessionId,
+      XDG_STATE_HOME: fresh.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+      WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES: '1',
+    })
+
+    expect(absentResult.stdout).toBe('')
+    expect(freshResult.stdout).toBe('')
+  })
+
+  it('a mandate that crosses its freshness window mid-session emits exactly once at the crossing', async () => {
+    const s = scaffold('expiry-crossing')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now)
+    const env = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+      WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES: '0.001',
+    }
+
+    const beforeExpiry = runWatch(s.projectDir, env)
+    await delay(120)
+    const atCrossing = runWatch(s.projectDir, env)
+    const afterCrossing = runWatch(s.projectDir, env)
+
+    expect(beforeExpiry.stdout).toBe('')
+    expect(atCrossing.stdout).toBe('AUTONOMY MANDATE EXPIRED: mandate freshness window elapsed; nothing is watching this session now. Re-arm with `wt-autonomy-arm.mjs` if autonomy should continue.')
+    expect(afterCrossing.stdout).toBe('')
+  })
+
+  it('an unreadable marker is reported as unknown, never absent', () => {
+    const s = scaffold('expiry-unknown')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    writeFileSync(s.mandatePath, '{not json}\n')
+
+    const result = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(result.armed).toContain('mandate=unknown')
+    expect(result.armed).not.toContain('mandate=absent')
+    expect(result.stdout).toBe('')
   })
 })
 

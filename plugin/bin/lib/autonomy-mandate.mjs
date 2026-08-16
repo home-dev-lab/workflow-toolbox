@@ -12,44 +12,50 @@
 // does not fail loudly; it drifts silently until two readouts disagree, which is what happened
 // here. This module is the fix: one classification, two callers, no second copy to drift again.
 //
-// THREE STATES, distinct because each calls for a different reader action:
+// FOUR STATES, distinct because each calls for a different reader action:
 //   'live'    — present, inside the freshness window. Nothing to do.
 //   'expired' — present on disk, past the freshness window. Will NOT fire. Re-arm.
-//   'absent'  — no marker, or the file could not be parsed as one. Arm it.
-// 'absent' also covers an unreadable/malformed file — a marker this module cannot trust to state
-// its own age is treated exactly like no marker at all, never as a guessed 'live'.
+//   'absent'  — no marker at all. Arm it.
+//   'unknown' — a marker exists but cannot be read or trusted. Inspect/re-arm, but never claim
+//               "not armed" about a file this module could not actually classify.
 
 import { existsSync, readFileSync } from 'node:fs'
 
-/** Reads and validates the marker's content. Returns null on anything short of a well-formed
- *  record — missing file, unparseable JSON, or either required field absent/wrong-typed. Never
+/** Reads and validates the marker's content. Returns:
+ *    { kind: 'missing' }
+ *    { kind: 'invalid' }
+ *    { kind: 'ok', declaredAtMs, sessionId }
+ *  on the three meaningful file states — no file, unreadable/untrustworthy file, or a well-formed
+ *  record. Never
  *  reads mtime: a marker's freshness and provenance live in its CONTENT (`declaredAtMs`,
  *  `sessionId`), because a file can be copied or touched without a real re-declaration behind it. */
 export function readMandateRecord(mandatePath) {
-  if (!existsSync(mandatePath)) return null
+  if (!existsSync(mandatePath)) return { kind: 'missing' }
   let parsed
   try {
     parsed = JSON.parse(readFileSync(mandatePath, 'utf8'))
   } catch {
-    return null
+    return { kind: 'invalid' }
   }
   const declaredAtMs = parsed?.declaredAtMs
   const sessionId = parsed?.sessionId
-  if (typeof declaredAtMs !== 'number' || !Number.isFinite(declaredAtMs)) return null
-  if (typeof sessionId !== 'string' || sessionId.length === 0) return null
-  return { declaredAtMs, sessionId }
+  if (typeof declaredAtMs !== 'number' || !Number.isFinite(declaredAtMs)) return { kind: 'invalid' }
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return { kind: 'invalid' }
+  return { kind: 'ok', declaredAtMs, sessionId }
 }
 
 /** Classifies a mandate marker at `mandatePath` as of `now`, against `freshnessMs`, from the point
  *  of view of `currentSessionId` (used only to tell own-session vs inherited apart — it never
  *  affects live/expired/absent). Returns:
  *    { kind: 'absent' }
+ *    { kind: 'unknown' }
  *    { kind: 'live'    | 'expired', declaredBy, declaredAtMs, ageMin, inherited }
  *  `ageMin` is unrounded (minutes) — callers format it (`.toFixed(0)`) so both readouts render the
  *  SAME age string for the SAME record, rather than each rounding independently. */
 export function classifyMandate(mandatePath, freshnessMs, now, currentSessionId) {
   const record = readMandateRecord(mandatePath)
-  if (!record) return { kind: 'absent' }
+  if (record.kind === 'missing') return { kind: 'absent' }
+  if (record.kind === 'invalid') return { kind: 'unknown' }
   const ageMin = (now - record.declaredAtMs) / 60_000
   const inherited = record.sessionId !== currentSessionId
   const kind = now - record.declaredAtMs > freshnessMs ? 'expired' : 'live'
