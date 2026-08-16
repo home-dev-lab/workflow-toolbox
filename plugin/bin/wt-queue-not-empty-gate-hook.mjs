@@ -137,6 +137,58 @@ const HELP_PATH = new URL('wt-queue-not-empty-gate-hook.help.md', import.meta.ur
 const COOLDOWN_MIN = 45 // never block more often than this, per session
 const INFLIGHT_MIN = 3 // a subagent transcript touched this recently ⇒ work is running
 const SNAPSHOT_MAX_AGE_MIN = 120
+const ACTIVITY_MAX_ENTRIES = 4000
+const ACTIVITY_SKIP_DIRS = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', 'coverage', '.next'])
+
+function resolveActivityRoot(start) {
+  try {
+    let current = start
+    for (;;) {
+      if (existsSync(join(current, '.git'))) return current
+      const parent = dirname(current)
+      if (parent === current) return null
+      current = parent
+    }
+  } catch {
+    return null
+  }
+}
+
+function hasRecentWorktreeActivity(root, cutoff) {
+  if (!root) return false
+
+  const stack = [root]
+  let visited = 0
+  while (stack.length > 0) {
+    const dir = stack.pop()
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+
+    for (const entry of entries) {
+      visited += 1
+      if (visited > ACTIVITY_MAX_ENTRIES) return false
+      if (ACTIVITY_SKIP_DIRS.has(entry.name)) continue
+
+      const fullPath = join(dir, entry.name)
+      try {
+        const info = statSync(fullPath)
+        if (info.mtimeMs >= cutoff) return true
+        if (entry.isDirectory()) {
+          stack.push(fullPath)
+          continue
+        }
+      } catch {
+        continue
+      }
+    }
+  }
+
+  return false
+}
 
 function readStdin() {
   try {
@@ -160,11 +212,20 @@ if (!transcriptPath || !existsSync(transcriptPath)) bail()
 // --- 1. Is work in flight? --------------------------------------------------------------
 // A delegated agent writes to <session>/subagents/agent-*.jsonl. A recent write there means the
 // arc is alive and stopping is just yielding between turns — never a decision to stop.
+// An external lane writes to the driven worktree instead, so recent file activity in the
+// nearest enclosing git worktree also counts as in-flight work without claiming anything about
+// the coordinator process itself. If `cwd` is only an umbrella directory and no single worktree
+// can be identified from it, this hook chooses the conservative side and treats filesystem
+// activity as unknown rather than letting a sibling worktree silence the gate.
 // ⚠ This reads the SUBAGENTS dir, never the session's own transcript: the session's own file is
 // touched by this very turn, so it would always look "active" and the guard could never fire.
+// ⚠ The filesystem scan is explicitly BOUNDED: at most ACTIVITY_MAX_ENTRIES entry stats/readdir
+// steps, with known heavy/build trees skipped first. Worst case is therefore O(ACTIVITY_MAX_ENTRIES)
+// regardless of repo size; once the budget is spent the answer degrades to "not recently active"
+// rather than walking the rest of the tree.
+const cutoff = Date.now() - INFLIGHT_MIN * 60_000
 const subagentsDir = join(dirname(transcriptPath), sessionId, 'subagents')
 try {
-  const cutoff = Date.now() - INFLIGHT_MIN * 60_000
   for (const f of readdirSync(subagentsDir)) {
     if (!f.endsWith('.jsonl')) continue
     if (statSync(join(subagentsDir, f)).mtimeMs >= cutoff) bail() // something is running
@@ -172,6 +233,8 @@ try {
 } catch {
   /* no subagents dir yet — nothing in flight, keep going */
 }
+
+if (hasRecentWorktreeActivity(resolveActivityRoot(cwd), cutoff)) bail()
 
 // --- 2. Does this project have a tracker wired to this guard at all? ---------------------
 // ⚠ THE ABSTRACTION POINT — see the header. No marker ever written ⇒ silent, permanently, for
@@ -355,7 +418,7 @@ process.stdout.write(
       // path actively invites them to go and read it. Reported by a user who did exactly that.
       // Anything that cannot be hidden must at least name its addressee.
       additionalContext:
-        `[for Claude, not the user] open work remains, nothing running · ` +
+        `[for Claude, not the user] open work remains, no recent worktree activity · ` +
         (snapshotAncestor ? `using ancestor snapshot from ${snapshotAncestor} · ` : '') +
         (openCount === null
           ? (queueStatus === 'stale'
