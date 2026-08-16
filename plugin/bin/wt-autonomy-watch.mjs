@@ -12,7 +12,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, writeSync, readlinkSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, writeSync, readlinkSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { isServiceDegraded } from './lib/service-flag.mjs'
@@ -58,6 +58,7 @@ const DEFAULT_QUEUE_STALE_MINUTES = Number(process.env.WT_AUTONOMY_WATCH_QUEUE_S
 // only the watcher enforces it — the marker itself carries no opinion about its own expiry.
 const DEFAULT_MANDATE_FRESHNESS_MINUTES = Number(process.env.WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES || 480)
 const DEFAULT_LANE_PATTERNS = ['opencode run', 'codex exec']
+const BOOTSTRAP_OBSERVATION_GRACE_MS = 1_000
 
 function write(line) {
   process.stdout.write(`${line}\n`)
@@ -280,13 +281,97 @@ function writeMarker(markerPath, payload) {
   writeFileSync(markerPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
 }
 
+function readMandateState(mandateStatePath) {
+  if (!existsSync(mandateStatePath)) return null
+  try {
+    const parsed = JSON.parse(readFileSync(mandateStatePath, 'utf8'))
+    const lastMandateKind = parsed?.lastMandateKind
+    const lastMandateDeclaredAtMs = parsed?.lastMandateDeclaredAtMs
+    const expiryNotifiedForDeclaredAtMs = parsed?.expiryNotifiedForDeclaredAtMs
+    return {
+      lastMandateKind: typeof lastMandateKind === 'string' ? lastMandateKind : null,
+      lastMandateDeclaredAtMs:
+        typeof lastMandateDeclaredAtMs === 'number' && Number.isFinite(lastMandateDeclaredAtMs)
+          ? lastMandateDeclaredAtMs
+          : null,
+      expiryNotifiedForDeclaredAtMs:
+        typeof expiryNotifiedForDeclaredAtMs === 'number' && Number.isFinite(expiryNotifiedForDeclaredAtMs)
+          ? expiryNotifiedForDeclaredAtMs
+          : null,
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeMandateState(mandateStatePath, payload) {
+  writeFileSync(mandateStatePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+}
+
+function clearMandateState(mandateStatePath) {
+  try {
+    rmSync(mandateStatePath, { force: true })
+  } catch {
+    // Best-effort only.
+  }
+}
+
 function poll(context) {
   const now = Date.now()
   // ⚠ SAME CLASSIFICATION THE BANNER USES — see lib/autonomy-mandate.mjs for why this is a shared
-  // function rather than a second copy of "is this marker still fresh". Only 'live' proceeds;
-  // 'absent' and 'expired' both stay silent, for different reasons the banner distinguishes.
+  // function rather than a second copy of "is this marker still fresh". 'live' may proceed to a
+  // wake; 'expired' may emit ONE transition notice if this watcher previously observed the same
+  // declaration as live; 'absent' and 'unknown' stay otherwise silent.
   const mandate = classifyMandate(context.mandatePath, context.mandateFreshnessMs, now, context.sessionId)
-  if (mandate.kind !== 'live') return
+  const previousMandateState = readMandateState(context.mandateStatePath)
+  if (mandate.kind === 'unknown') {
+    writeMandateState(context.mandateStatePath, {
+      observedAt: new Date(now).toISOString(),
+      lastMandateKind: 'unknown',
+      lastMandateDeclaredAtMs: null,
+      expiryNotifiedForDeclaredAtMs: null,
+    })
+    return
+  }
+  if (mandate.kind === 'absent') {
+    clearMandateState(context.mandateStatePath)
+    return
+  }
+  if (mandate.kind === 'expired') {
+    if (
+      previousMandateState === null &&
+      mandate.declaredBy === context.sessionId &&
+      now - mandate.declaredAtMs <= BOOTSTRAP_OBSERVATION_GRACE_MS
+    ) {
+      writeMandateState(context.mandateStatePath, {
+        observedAt: new Date(now).toISOString(),
+        lastMandateKind: 'live',
+        lastMandateDeclaredAtMs: mandate.declaredAtMs,
+        expiryNotifiedForDeclaredAtMs: null,
+      })
+      return
+    }
+    const crossedIntoExpiry =
+      previousMandateState?.lastMandateKind === 'live' &&
+      previousMandateState.lastMandateDeclaredAtMs === mandate.declaredAtMs &&
+      previousMandateState.expiryNotifiedForDeclaredAtMs !== mandate.declaredAtMs
+    writeMandateState(context.mandateStatePath, {
+      observedAt: new Date(now).toISOString(),
+      lastMandateKind: 'expired',
+      lastMandateDeclaredAtMs: mandate.declaredAtMs,
+      expiryNotifiedForDeclaredAtMs: mandate.declaredAtMs,
+    })
+    if (crossedIntoExpiry) {
+      write('AUTONOMY MANDATE EXPIRED: mandate freshness window elapsed; nothing is watching this session now. Re-arm with `wt-autonomy-arm.mjs` if autonomy should continue.')
+    }
+    return
+  }
+  writeMandateState(context.mandateStatePath, {
+    observedAt: new Date(now).toISOString(),
+    lastMandateKind: 'live',
+    lastMandateDeclaredAtMs: mandate.declaredAtMs,
+    expiryNotifiedForDeclaredAtMs: null,
+  })
 
   const transcriptMtimeMs = readMtimeMs(context.transcriptPath)
   if (transcriptMtimeMs === null) return
@@ -362,6 +447,7 @@ const mandateDir = process.env.WT_AUTONOMY_WATCH_MANDATE_DIR || watchStateDir
 // and gone since it was declared. See wt-autonomy-arm.mjs for the full rationale.
 const mandatePath = path.join(mandateDir, `engine-${projectSlug(projectDir)}.json`)
 const markerPath = path.join(watchStateDir, `autonomy-watch-${sessionId}.json`)
+const mandateStatePath = path.join(watchStateDir, `autonomy-watch-mandate-${sessionId}.json`)
 
 const context = {
   projectDir,
@@ -371,6 +457,7 @@ const context = {
   queuePath,
   mandatePath,
   markerPath,
+  mandateStatePath,
   idleMs: DEFAULT_IDLE_MINUTES * 60_000,
   inflightMs: DEFAULT_INFLIGHT_MINUTES * 60_000,
   queueStaleMs: DEFAULT_QUEUE_STALE_MINUTES * 60_000,
@@ -402,6 +489,7 @@ const context = {
 function mandateArmedState(mandatePath, freshnessMs, now, currentSessionId) {
   const mandate = classifyMandate(mandatePath, freshnessMs, now, currentSessionId)
   if (mandate.kind === 'absent') return 'absent'
+  if (mandate.kind === 'unknown') return 'unknown'
   if (mandate.kind === 'expired') return `stale(${mandate.ageMin.toFixed(0)}min)`
   return `present(${mandate.inherited ? 'inherited' : 'own'})`
 }
@@ -436,13 +524,26 @@ const canFire = mandateState.startsWith('present') && queueState.startsWith('fre
 // better, but still short of actionable, and the second state is where a reader gives up. So each
 // missing piece names the thing that provides it.
 const remedies = []
-if (!mandateState.startsWith('present')) remedies.push('run `wt-autonomy-arm.mjs` to declare a mandate')
+if (mandateState === 'unknown') remedies.push('inspect the unreadable mandate marker, then re-arm with `wt-autonomy-arm.mjs` if autonomy should continue')
+else if (!mandateState.startsWith('present')) remedies.push('run `wt-autonomy-arm.mjs` to declare a mandate')
 if (!queueState.startsWith('fresh')) remedies.push('register `wt-queue-not-empty-gate-hook.mjs` (Stop) to write the queue snapshot')
 write(
   `AUTONOMY WATCH ARMED: idle=${DEFAULT_IDLE_MINUTES}min poll=${pollSeconds}s · ` +
     `mandate=${mandateState} · queue=${queueState}` +
     (canFire ? '' : ` · CANNOT FIRE — ${remedies.join('; ')}`),
 )
+
+// Seed a live observation at arming time so a mandate that expires during process startup still
+// crosses through an observable live -> expired transition on the first poll.
+const mandateAtArming = classifyMandate(context.mandatePath, context.mandateFreshnessMs, nowAtArming, sessionId)
+if (mandateAtArming.kind === 'live') {
+  writeMandateState(context.mandateStatePath, {
+    observedAt: new Date(nowAtArming).toISOString(),
+    lastMandateKind: 'live',
+    lastMandateDeclaredAtMs: mandateAtArming.declaredAtMs,
+    expiryNotifiedForDeclaredAtMs: null,
+  })
+}
 
 for (;;) {
   try {
