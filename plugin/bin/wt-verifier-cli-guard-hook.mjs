@@ -184,6 +184,46 @@ export function signatureForCommand(command) {
   return null
 }
 
+/** The `phaseIndex` the workflow journal recorded for a given agentId — the SAME grouping an
+ *  ordinary agent node renders under — or null when it cannot be established. Never a default or
+ *  a zero: an unreadable/unmatched journal must not manufacture a false phase-0 grouping (a wrong
+ *  phase asserts a grouping that is false, which is worse than a visible absence).
+ *
+ *  Layout: `runDir` (from `runDirForSessionTranscript`) is `<sessionDir>/subagents/workflows/
+ *  <runId>/`; the journal sits two levels up at `<sessionDir>/workflows/wf_<runId>.json` — the
+ *  SAME runId as runDir's own basename. Verified against @workflow-toolbox/debugger's
+ *  `transcriptDirFor` (toolkit/packages/debugger/src/source.ts: `join(journalPath, '..', '..',
+ *  'subagents', 'workflows', runId)`, the inverse of this derivation) and `WorkflowAgentEvent`
+ *  (toolkit/packages/debugger/src/journal.ts), which carries `agentId` + `phaseIndex` per entry.
+ *  This hook is bare node (no bundler, no TS) so it cannot import that package — the two-line
+ *  derivation is inlined here instead, same reason EXTERNAL_CLI_SIGNATURES is a copy above. */
+export function phaseIndexForAgentInRunDir(runDir, agentId) {
+  if (typeof runDir !== 'string' || runDir.length === 0) return null
+  if (typeof agentId !== 'string' || agentId.length === 0) return null
+  const sessionDir = path.join(runDir, '..', '..', '..')
+  const runId = path.basename(runDir)
+  const journalPath = path.join(sessionDir, 'workflows', `wf_${runId}.json`)
+  let journal
+  try {
+    journal = JSON.parse(fs.readFileSync(journalPath, 'utf8'))
+  } catch {
+    return null // no journal on disk yet, or unreadable — absent, never guessed
+  }
+  if (journal === null || typeof journal !== 'object' || !Array.isArray(journal.workflowProgress)) return null
+  for (const event of journal.workflowProgress) {
+    if (
+      event !== null &&
+      typeof event === 'object' &&
+      event.type === 'workflow_agent' &&
+      event.agentId === agentId &&
+      typeof event.phaseIndex === 'number'
+    ) {
+      return event.phaseIndex
+    }
+  }
+  return null // journal read fine but named no matching phased agent — still absent, not zero
+}
+
 // Card #1839472753 — the BATCH envelope (wt-opencode-envelope.mjs) makes N external calls behind
 // ONE Bash tool call. `signatureForCommand` above never matches its command line — the script
 // spawns `opencode run` itself, in a CHILD PROCESS the Bash tool never sees the argv of — so the
@@ -474,11 +514,24 @@ export function writeLaneArtefacts({
   durationMs,
   usage = null,
   status = 'answer',
+  phaseIndex = null,
 }) {
-  const at = new Date().toISOString()
+  // The call's own two turns are NOT simultaneous, but writeLaneArtefacts only ever runs once,
+  // at PostToolUse — after the call has already finished. There is no observed absolute START
+  // instant on disk anywhere (the manifest carries a DURATION per task, never a start timestamp),
+  // so the write-time instant is the only real anchor available, and it is anchored as the
+  // FINISH: `durationMs`, when present, is subtracted from it to place the ask strictly before
+  // the answer. Without a usable `durationMs` there is nothing truthful to subtract — asserting a
+  // spread would be inventing a number nobody measured — so a minimal 1ms floor is used instead,
+  // just enough to keep the ask ordered before the answer (the one fact that is always true of a
+  // question and its own reply) without asserting any particular elapsed time.
+  const finishedAt = new Date()
+  const askOffsetMs = typeof durationMs === 'number' && durationMs > 0 ? durationMs : 1
+  const askedAt = new Date(finishedAt.getTime() - askOffsetMs).toISOString()
+  const at = finishedAt.toISOString()
   const askedLine = JSON.stringify({
     type: 'user',
-    timestamp: at,
+    timestamp: askedAt,
     message: { role: 'user', content: askedContent },
     uuid: crypto.randomUUID(),
     agentId: laneId,
@@ -511,6 +564,7 @@ export function writeLaneArtefacts({
   }
   if (status === 'error') meta.status = 'error'
   if (model !== null) meta.model = model
+  if (typeof phaseIndex === 'number') meta.phaseIndex = phaseIndex
   if (typeof durationMs === 'number') meta.durationMs = durationMs
   if (usage !== null && usage.tokens !== null) meta.laneTokens = usage.tokens
   if (usage !== null && usage.sessionId !== null) meta.laneSessionId = usage.sessionId
@@ -681,6 +735,9 @@ function handleEnvelopeBatch(input, runDir) {
   }
   if (manifest === null || typeof manifest !== 'object' || !Array.isArray(manifest.tasks)) return
   const toolUseId = typeof input.tool_use_id === 'string' ? input.tool_use_id : ''
+  // Same phase for every task in this batch: they are all children of the SAME envelope call, so
+  // one journal lookup (not one per task) is both correct and cheaper.
+  const phaseIndex = phaseIndexForAgentInRunDir(runDir, agentId)
 
   for (const task of manifest.tasks) {
     if (task === null || typeof task !== 'object' || typeof task.id !== 'string' || task.id.length === 0) continue
@@ -726,6 +783,7 @@ function handleEnvelopeBatch(input, runDir) {
       durationMs: typeof task.durationMs === 'number' ? task.durationMs : undefined,
       usage,
       status,
+      phaseIndex,
     })
   }
 }
