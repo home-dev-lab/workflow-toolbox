@@ -345,6 +345,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Opencode-verifier and routing docs describe the shipped mechanical verifier guard.',
   },
   {
+    script: 'plugin/bin/wt-envelope-intercept-hook.mjs',
+    status: 'mapped',
+    reason: 'Opencode-verifier and routing docs describe the shipped Path-B mechanical envelope relay.',
+  },
+  {
     script: 'plugin/bin/wt-unquoted-tool-glob-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this PreToolUse unquoted-glob blocking guard under Shipped Hooks, Guards & Monitors.',
@@ -644,8 +649,9 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     ],
   },
   {
-    // The verifier backstop is part of the shipped opencode-verifier contract.
-    sources: ['plugin/bin/wt-verifier-cli-guard-hook.mjs'],
+    // The Path-B verifier relay contract: the wrapper self-answer guard plus the spawn-time
+    // envelope interception that keeps the Claude envelope blind to the real task.
+    sources: ['plugin/bin/wt-verifier-cli-guard-hook.mjs', 'plugin/bin/wt-envelope-intercept-hook.mjs'],
     docs: [
       'plugin/agents/opencode-verifier.md',
       'plugin/launch-agents/agents/opencode-verifier.md',

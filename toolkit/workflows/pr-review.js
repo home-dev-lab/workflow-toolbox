@@ -2251,8 +2251,9 @@ ${renderClaim(claim)}`;
       ]
     },
     {
-      // The verifier backstop is part of the shipped opencode-verifier contract.
-      sources: ["plugin/bin/wt-verifier-cli-guard-hook.mjs"],
+      // The Path-B verifier relay contract: the wrapper self-answer guard plus the spawn-time
+      // envelope interception that keeps the Claude envelope blind to the real task.
+      sources: ["plugin/bin/wt-verifier-cli-guard-hook.mjs", "plugin/bin/wt-envelope-intercept-hook.mjs"],
       docs: [
         "plugin/agents/opencode-verifier.md",
         "plugin/launch-agents/agents/opencode-verifier.md",

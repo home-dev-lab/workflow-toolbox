@@ -17,4 +17,11 @@ export const HOOK_REGISTRATION_EXCLUSIONS = [
       'snapshotted the OLD path at session start still gets the adoption-staleness notice — never ' +
       'through the manifest itself, so it cannot appear there.',
   },
+  {
+    script: 'wt-envelope-intercept-hook.mjs',
+    reason:
+      'Deliberately registered only in plugin/launch-agents/.claude-plugin/plugin.json, not the ' +
+      'interactive plugin manifest: the Path-B delegated session is the measured surface that loads ' +
+      'plugin agentTypes through the server\'s SDK plugins option, and the port must live there.',
+  },
 ]

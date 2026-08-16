@@ -5,9 +5,19 @@
     "name": "Frederic Thomas",
     "email": "fthomas@apache.org"
   },
-  "description": "Agents-only shim of the workflow-toolbox plugin, loaded by the observe server into delegated (server-launched) SDK sessions so workflow-toolbox:* agentTypes resolve there despite settingSources: []. Byte-identity-mirrored from plugin/agents/ (launch-agents-identity gate). It ships no context-injecting surfaces and ONE guard (the verifier-CLI guard, referenced via ../bin from the parent plugin, no bin/ dir of its own) wired on two matcher-narrowed events: PostToolUse/Bash records a flush-immune marker when a real external CLI invocation completes, and PreToolUse/StructuredOutput denies a self-answered verdict from the opencode/codex wrapper unless that marker (or the flushed transcript) proves the CLI ran — the fail-fast that STOPS the self-answer burn in these delegated (Path B) runs — the context it was measured in. EVERY OTHER agent (leaf/lean/etc.) runs effectively bare: the hook only spawns on a StructuredOutput or Bash call, instantly no-ops for any non-wrapper agent, and PostToolUse only ever WRITES (never blocks) — the provenance marker, plus, when the delegated session has exactly one workflow run directory, the transcript line and meta that make that external call visible as a node. Not for interactive install — the full workflow-toolbox plugin already provides these agents + hooks.",
+  "description": "Agents-only shim of the workflow-toolbox plugin, loaded by the observe server into delegated (server-launched) SDK sessions so workflow-toolbox:* agentTypes resolve there despite settingSources: []. Byte-identity-mirrored from plugin/agents/ (launch-agents-identity gate). It ships no context-injecting surfaces and only matcher-narrowed process hooks referenced via ../bin from the parent plugin (no bin/ dir of its own): the verifier-CLI guard on PostToolUse/Bash + PreToolUse/StructuredOutput, and the Path-B envelope-intercept hook on PreToolUse/Agent for workflow-toolbox:opencode-verifier. EVERY OTHER agent (leaf/lean/etc.) runs effectively bare: the hooks spawn only on their matched tools, then self-scope immediately to the narrow bridge case they own. Not for interactive install — the full workflow-toolbox plugin already provides these agents + hooks.",
   "hooks": {
     "PreToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/../bin/wt-envelope-intercept-hook.mjs\"",
+            "timeout": 610
+          }
+        ]
+      },
       {
         "matcher": "StructuredOutput",
         "hooks": [

@@ -442,6 +442,55 @@ export function bashOutputText(toolResponse) {
   return ''
 }
 
+export function writeLaneArtefacts({
+  runDir,
+  laneId,
+  askedContent,
+  answerContent,
+  rawStreamText = null,
+  sig,
+  parentAgentId,
+  model = null,
+  durationMs,
+  usage = null,
+}) {
+  const at = new Date().toISOString()
+  const askedLine = JSON.stringify({
+    type: 'user',
+    timestamp: at,
+    message: { role: 'user', content: askedContent },
+    uuid: crypto.randomUUID(),
+    agentId: laneId,
+    isSidechain: true,
+  })
+  const line = JSON.stringify({
+    type: 'assistant',
+    timestamp: at,
+    message: { role: 'assistant', content: answerContent },
+    uuid: crypto.randomUUID(),
+    agentId: laneId,
+    isSidechain: true,
+  })
+  fs.appendFileSync(path.join(runDir, `agent-${laneId}.jsonl`), `${askedLine}\n${line}\n`, 'utf8')
+
+  if (typeof rawStreamText === 'string' && laneTextFromOutput(rawStreamText) !== null) {
+    fs.writeFileSync(path.join(runDir, `agent-${laneId}.opencode.jsonl`), rawStreamText.endsWith('\n') ? rawStreamText : `${rawStreamText}\n`, 'utf8')
+  }
+
+  const meta = {
+    agentType: `scripted:${sig}`,
+    description: model === null ? `external CLI call by ${parentAgentId}` : `${model} — called by ${parentAgentId}`,
+    parentAgentId,
+    lane: sig,
+  }
+  if (model !== null) meta.model = model
+  if (typeof durationMs === 'number') meta.durationMs = durationMs
+  if (usage !== null && usage.tokens !== null) meta.laneTokens = usage.tokens
+  if (usage !== null && usage.sessionId !== null) meta.laneSessionId = usage.sessionId
+
+  fs.writeFileSync(path.join(runDir, `agent-${laneId}.meta.json`), JSON.stringify(meta), 'utf8')
+}
+
 export function markerPathFor(transcriptPath, agentId) {
   const key = crypto
     .createHash('sha1')
@@ -665,72 +714,21 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
       // `--format json` call (the one that carries the tokens) would otherwise leave a stream of
       // step markers and ids here. Falls back to the raw output when nothing text-shaped is in it,
       // because an empty transcript is worse than a noisy one.
-      const content = laneTextFromOutput(text) ?? text
-      const at = new Date().toISOString()
-
-      // ⚠ The INPUT, written first. Without it the node's Input/Output panel reads
-      // "No input/output captured" — the reader can see what the model ANSWERED and not what it was
-      // ASKED, which is the half that makes a verdict judgeable. The hook is the only place that
-      // has it: the command is right here in `tool_input`, and nothing downstream ever sees it.
-      //
-      // The whole command, not a prompt extracted from it: the model flag, the working directory
-      // and the redirections are part of what was actually asked, and a prettier excerpt would drop
-      // exactly the details someone re-running this call would need.
-      const askedLine = JSON.stringify({
-        type: 'user',
-        timestamp: at,
-        message: { role: 'user', content: command },
-        uuid: crypto.randomUUID(),
-        agentId: laneId,
-        isSidechain: true,
-      })
-      const line = JSON.stringify({
-        type: 'assistant',
-        timestamp: at,
-        message: { role: 'assistant', content },
-        uuid: crypto.randomUUID(),
-        agentId: laneId,
-        isSidechain: true,
-      })
-      fs.appendFileSync(path.join(runDir, `agent-${laneId}.jsonl`), `${askedLine}\n${line}\n`, 'utf8')
-
-      // ⚠⚠ The RAW event stream, kept beside the transcript, because the reader already knows how to
-      // format it and this hook does not. `@workflow-toolbox/observe`'s `opencodeEventsToTranscriptLines`
-      // turns these events into a properly chained transcript — a `user` turn, then assistant turns,
-      // with the external session id and with the usage mapped into the shape every other agent's
-      // header already renders. Duplicating any of that here would fork a format that has one owner.
-      //
-      // So: this hook's own two lines above are the FALLBACK (they must exist for a plain-text call,
-      // which has no events at all), and this sidecar is what a reader should prefer when present.
-      // Written only when the output genuinely parses as that stream — never as an empty file, which
-      // would read as "converted to nothing" rather than "not an opencode stream".
-      if (laneTextFromOutput(text) !== null) {
-        fs.writeFileSync(path.join(runDir, `agent-${laneId}.opencode.jsonl`), text.endsWith('\n') ? text : `${text}\n`, 'utf8')
-      }
-
-      // The facts a reader needs about this call, each recorded ONLY when it is genuinely known.
-      //  • parentAgentId — the envelope that made the call. Without it a renderer cannot place the
-      //    node in the phase the call belongs to, and it lands in a disconnected side column.
-      //  • model — read off the command; absent when the command names none, never guessed.
-      //  • durationMs — the harness measures it (`duration_ms`), so a node need not claim 0.0s.
-      //  • usage — present ONLY for a `--format json` command. ⚠ Deliberately NOT merged into the
-      //    transcript's own usage field: these are EXTERNAL-lane tokens, and a shape the existing
-      //    token reader understands would silently add them to the Claude total. A GPT count
-      //    carries `reasoning`, which has no Claude equivalent — the sum would invent a unit.
       const usage = laneUsageFromOutput(text)
       const model = modelFromCommand(command)
-      const meta = {
-        agentType: `scripted:${sig.id}`,
-        description: model === null ? `external CLI call by ${agentId}` : `${model} — called by ${agentId}`,
+      const content = laneTextFromOutput(text) ?? text
+      writeLaneArtefacts({
+        runDir,
+        laneId,
+        askedContent: command,
+        answerContent: content,
+        rawStreamText: text,
+        sig: sig.id,
         parentAgentId: agentId,
-        lane: sig.id,
-      }
-      if (model !== null) meta.model = model
-      if (typeof input.duration_ms === 'number') meta.durationMs = input.duration_ms
-      if (usage !== null && usage.tokens !== null) meta.laneTokens = usage.tokens
-      if (usage !== null && usage.sessionId !== null) meta.laneSessionId = usage.sessionId
-
-      fs.writeFileSync(path.join(runDir, `agent-${laneId}.meta.json`), JSON.stringify(meta), 'utf8')
+        model,
+        durationMs: input.duration_ms,
+        usage,
+      })
       dbg('PostToolUse', input, 'lane-artefacts-written', {
         runDir,
         laneId,
