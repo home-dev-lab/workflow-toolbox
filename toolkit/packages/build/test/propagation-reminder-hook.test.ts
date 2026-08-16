@@ -10,24 +10,33 @@ const HOOK = join(REPO_ROOT, 'plugin/bin/wt-propagation-reminder-hook.mjs')
 const PLUGIN_MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 
 let journalDir: string
+let dedupDir: string
 
 beforeEach(() => {
   journalDir = mkdtempSync(join(tmpdir(), 'wt-propagation-journal-'))
+  dedupDir = mkdtempSync(join(tmpdir(), 'wt-propagation-dedup-'))
 })
 
 afterEach(() => {
   rmSync(journalDir, { recursive: true, force: true })
+  rmSync(dedupDir, { recursive: true, force: true })
 })
 
-function run(toolName: string, filePath: string) {
+function run(toolName: string, filePath: string, sessionId?: string) {
+  const payload: Record<string, unknown> = {
+    hook_event_name: 'PostToolUse',
+    tool_name: toolName,
+    tool_input: { file_path: filePath },
+  }
+  if (sessionId !== undefined) payload.session_id = sessionId
   const res = spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify({
-      hook_event_name: 'PostToolUse',
-      tool_name: toolName,
-      tool_input: { file_path: filePath },
-    }),
+    input: JSON.stringify(payload),
     encoding: 'utf8',
-    env: { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir },
+    env: {
+      ...process.env,
+      WT_GUARD_JOURNAL_DIR: journalDir,
+      WT_PROPAGATION_REMINDER_DIR: dedupDir,
+    },
   })
   return {
     warned: res.stdout.trim() !== '',
@@ -80,6 +89,36 @@ describe('wt-propagation-reminder-hook', () => {
       env: { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir },
     })
     expect(res.stdout).toBe('')
+  })
+
+  it('DEDUP: repeated edit of the SAME file in ONE session fires only once', () => {
+    const file = '/home/x/repo/plugin/bin/wt-something-hook.mjs'
+    const first = run('Write', file, 'session-A')
+    const second = run('Edit', file, 'session-A')
+    expect(first.warned).toBe(true)
+    expect(second.warned).toBe(false)
+    expect(second.status).toBe(0)
+  })
+
+  it('DEDUP: a DIFFERENT file in the same session still fires', () => {
+    run('Write', '/home/x/repo/plugin/bin/wt-one-hook.mjs', 'session-B')
+    const r = run('Write', '/home/x/repo/plugin/bin/wt-two-hook.mjs', 'session-B')
+    expect(r.warned).toBe(true)
+  })
+
+  it('DEDUP: the SAME file in a NEW session fires again', () => {
+    const file = '/home/x/repo/plugin/bin/wt-something-hook.mjs'
+    run('Write', file, 'session-C')
+    const r = run('Edit', file, 'session-D')
+    expect(r.warned).toBe(true)
+  })
+
+  it('DEDUP: an UNRESOLVABLE session (no session_id) always fires, never suppressed', () => {
+    const file = '/home/x/repo/plugin/bin/wt-something-hook.mjs'
+    const first = run('Write', file) // no session_id at all
+    const second = run('Edit', file) // still no session_id
+    expect(first.warned).toBe(true)
+    expect(second.warned).toBe(true)
   })
 
   it('is registered as a PostToolUse hook on Write|Edit|MultiEdit in the plugin manifest', () => {

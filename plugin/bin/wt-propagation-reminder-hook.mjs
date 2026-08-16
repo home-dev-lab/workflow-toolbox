@@ -17,8 +17,29 @@
 // reminder gets switched off. Its own path test matches only `rules` as a direct child of a
 // `.claude`-named segment — so scripts and plugin files fall through it entirely, which is the
 // gap this fills.
+//
+// ⚠ DEDUP, PER SESSION PER FILE — WHY. Measured 2026-08-16: 198 firings in one week from this
+// hook alone, over only 72 distinct files (one file fired 11 times). Every individual firing was
+// a legitimate answer to a legitimate trigger — the defect is the REPETITION, which is exactly
+// the failure `mechanise-on-sight.md` names: a guard that fires identically on every edit becomes
+// indistinguishable from tool chatter and stops being read, taking its real case with it. So the
+// question is asked at most ONCE per (session, file) — the SAME sibling shape already used by
+// `wt-shipped-twin-check-hook.mjs` (session-scoped seen-set on disk), narrowed to per-file here
+// because two DIFFERENT shipped files raise two genuinely different questions.
+//
+// ⚠ FAILS OPEN, NEVER SILENTLY SUPPRESSES. Three boundaries, each load-bearing:
+//   1. per FILE, never per session/directory — editing a second shipped file in the same session
+//      still fires.
+//   2. a NEW session (a different `session_id`) fires again — the dedup key is the session id,
+//      never a wall-clock window and never a global store.
+//   3. an UNRESOLVABLE session (no `session_id` in the payload, or state read/write fails) skips
+//      dedup entirely and ALWAYS fires — a dedup mechanism that fails closed would turn a noisy
+//      guard into a silent one, which is strictly worse than the problem it exists to fix.
 
-import { readFileSync, writeSync } from 'node:fs'
+import crypto from 'node:crypto'
+import { mkdirSync, readFileSync, writeFileSync, writeSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
 
@@ -82,11 +103,87 @@ function classify(file) {
   return null
 }
 
+// Mirrors wt-shipped-twin-check-hook.mjs's safeTmpDir(): a project cwd can (rarely) coincide
+// with os.tmpdir() on some setups; never let the dedup state land inside the repo being edited.
+function looksLikeProjectDir(candidate, cwd = process.cwd()) {
+  if (typeof candidate !== 'string' || candidate.length === 0) return false
+  try {
+    if (candidate === cwd) return true
+    const withSep = candidate.endsWith(path.sep) ? candidate : candidate + path.sep
+    return cwd.startsWith(withSep)
+  } catch {
+    return false
+  }
+}
+
+function safeTmpDir() {
+  const candidate = os.tmpdir()
+  if (looksLikeProjectDir(candidate)) {
+    return process.platform === 'win32'
+      ? (process.env['SystemRoot'] ? path.join(process.env['SystemRoot'], 'Temp') : 'C:\\Windows\\Temp')
+      : '/tmp'
+  }
+  return candidate
+}
+
+function stateDir() {
+  return process.env['WT_PROPAGATION_REMINDER_DIR'] || safeTmpDir()
+}
+
+// null when the session cannot be identified — the caller then skips dedup entirely (fires
+// always) rather than guessing a fallback key that could dedup ACROSS unrelated sessions.
+function sessionId(payload) {
+  return typeof payload?.session_id === 'string' && payload.session_id ? payload.session_id : null
+}
+
+function stateFileFor(session) {
+  const hash = crypto.createHash('sha1').update(session).digest('hex')
+  return path.join(stateDir(), `propagation-seen-${hash}.json`)
+}
+
+function readSeen(filePath) {
+  try {
+    const parsed = JSON.parse(readFileSync(filePath, 'utf8'))
+    return Array.isArray(parsed?.seen) ? parsed.seen.filter((v) => typeof v === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function markSeen(filePath, seen) {
+  try {
+    mkdirSync(path.dirname(filePath), { recursive: true })
+    writeFileSync(filePath, JSON.stringify({ seen }), 'utf8')
+    return true
+  } catch {
+    // Best effort only — never break Write/Edit over dedup bookkeeping. Returning false tells
+    // the caller the write did not stick, so it fires now instead of silently swallowing the
+    // question: a dedup that can neither read nor persist its seen-set must fail OPEN.
+    return false
+  }
+}
+
+function alreadyWarned(payload, file) {
+  const session = sessionId(payload)
+  if (!session) return false // unresolvable session: never dedup, always fire
+
+  const stateFile = stateFileFor(session)
+  const seen = readSeen(stateFile)
+  if (seen.includes(file)) return true
+
+  // markSeen()'s own return value decides nothing here: whether or not the write stuck, THIS
+  // firing has not yet been reported, so this call always returns false. A failed write simply
+  // means readSeen() will come back empty again next time too — fires every time, fails open.
+  markSeen(stateFile, [...seen, file])
+  return false
+}
+
 function main() {
   const payload = readInput()
   const file = payload ? editedPath(payload) : null
   const hit = file ? classify(file) : null
   if (!hit) return
+  if (alreadyWarned(payload, file)) return
 
   const lines = [
     `⚠ PROPAGATION — ${hit.why}: ${file}`,
