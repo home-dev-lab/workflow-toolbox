@@ -28,7 +28,7 @@ Do exactly this, as ONE single compound Bash command (heredoc write of the tasks
    The script itself handles binary resolution, the availability gate (checked ONCE for the whole batch), the CLI invocation per task (each with `< /dev/null`, `--auto`, the explicit `--dir`, its own unique log, and its own timeout + `EXIT=` marker), bounded concurrency, the one 429 retry per task, and JSON-stream extraction per task — all inside its own single process. You make no other tool call, regardless of how many tasks you gave it.
 
 The script prints EXACTLY ONE line to stdout:
-- `MANIFEST: <path>` — every task was attempted; per-task results (`id`, `status`, `answerFile` or `reason`, `model`, `log`) live in that JSON file, which you did NOT read.
+- `MANIFEST: <path>` — every task was attempted; per-task results (`id`, `prompt`, `status`, `answerFile` or `reason`, `model`, `log`, `durationMs`, `usage`) live in that JSON file, which you did NOT read.
 - `OPENCODE_UNAVAILABLE: <reason>` — no binary or no authenticated provider (no task ran at all).
 - `OPENCODE_ERROR: <reason>` — a setup/usage problem (bad tasks JSON, missing `--dir`, etc.) before any task ran.
 
