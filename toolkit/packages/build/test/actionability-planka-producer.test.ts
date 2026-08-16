@@ -98,6 +98,17 @@ function findCardsResponse(cards: Array<{ id: string; name: string; description?
   return { content: [{ type: 'text', text: JSON.stringify(cards) }] }
 }
 
+function spilledResponse(spillPath: string) {
+  return {
+    content: [{
+      type: 'text',
+      text:
+        `Error: result (3233813 characters across 37256 lines) exceeds maximum allowed tokens.\n` +
+        `Output has been saved to ${spillPath}.`,
+    }],
+  }
+}
+
 function readSnapshot(stateDir: string, cwd: string): Record<string, unknown> | null {
   try {
     return JSON.parse(readFileSync(join(stateDir, `${slug(cwd)}.json`), 'utf8'))
@@ -316,6 +327,31 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
     expect(String(snap!.countedScope)).toMatch(/2 scanned/)
   })
 
+  it('writes a snapshot when the board payload was spilled to a file named by a placeholder tool_response', () => {
+    const { cwd, stateDir, env, root } = scaffoldProject('spilled', { withParser: true })
+    const spillPath = join(root, 'spill', 'planka-board.json')
+    mkdirSync(dirname(spillPath), { recursive: true })
+    writeFileSync(spillPath, JSON.stringify({
+      id: 'board-1',
+      lists: [
+        { name: 'Done', cards: [{ id: '100010', name: 'Done dep', position: 0 }] },
+        { name: 'Next', cards: [{ id: '100020', name: 'Ready', description: 'Depends-on: #100010', position: 1 }] },
+      ],
+    }), 'utf8')
+    const payload = {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__get_board',
+      tool_input: { boardId: 'b1' },
+      tool_response: spilledResponse(spillPath),
+      cwd,
+    }
+    const res = runProducerHook(payload, env)
+    expect(res.status).toBe(0)
+    const snap = readSnapshot(stateDir, cwd)
+    expect(snap).not.toBeNull()
+    expect(snap!.actionable).toBe(1)
+  })
+
   it('writes NOTHING when the dependency-parser convention does not exist in this project (no wrong count)', () => {
     const { cwd, stateDir, env } = scaffoldProject('noparser', { withParser: false })
     const payload = {
@@ -342,6 +378,40 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
     const res = runProducerHook(payload, env)
     expect(res.status).toBe(0)
     expect(readSnapshot(stateDir, cwd)).toBeNull()
+  })
+
+  it('writes NOTHING when a placeholder names a missing spill file in the temp/state area, and journals why', () => {
+    const { cwd, stateDir, env, root } = scaffoldProject('spilled-missing', { withParser: true })
+    const spillPath = join(root, 'spill', 'missing-board.json')
+    const payload = {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__get_board',
+      tool_input: { boardId: 'b1' },
+      tool_response: spilledResponse(spillPath),
+      cwd,
+    }
+    const res = runProducerHook(payload, env)
+    expect(res.status).toBe(0)
+    expect(readSnapshot(stateDir, cwd)).toBeNull()
+    expect(readFailureRecords(stateDir)[0]).toMatchObject({ ok: false })
+    expect(String(readFailureRecords(stateDir)[0]!.detail)).toMatch(/spill/i)
+  })
+
+  it('writes NOTHING when a placeholder names a path outside the allowed temp/state area, and journals why', () => {
+    const { cwd, stateDir, env } = scaffoldProject('spilled-invalid-path', { withParser: true })
+    const spillPath = '/etc/hosts'
+    const payload = {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__get_board',
+      tool_input: { boardId: 'b1' },
+      tool_response: spilledResponse(spillPath),
+      cwd,
+    }
+    const res = runProducerHook(payload, env)
+    expect(res.status).toBe(0)
+    expect(readSnapshot(stateDir, cwd)).toBeNull()
+    expect(readFailureRecords(stateDir)[0]).toMatchObject({ ok: false })
+    expect(String(readFailureRecords(stateDir)[0]!.detail)).toMatch(/validation/i)
   })
 
   it('writes NOTHING when the dependency-parser replies with non-array ids/unparseable — review finding 3', () => {
