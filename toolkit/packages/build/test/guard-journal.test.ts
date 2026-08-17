@@ -131,4 +131,57 @@ describe('guard-journal — recordGuardEvent', () => {
     const entries = readAllEntries()
     expect((entries[0]!.reason as string).length).toBeLessThanOrEqual(400)
   })
+
+  it('keeps well-formed bounded evidence and session fields', () => {
+    record({
+      guard: 'wt-example-guard-hook.mjs',
+      decision: 'warned',
+      session: 'session-123/example',
+      evidence: { after: 'pnpm,git', count: 2 },
+    })
+    expect(readAllEntries()[0]).toMatchObject({
+      session: 'session-123/example',
+      evidence: { after: 'pnpm,git', count: '2' },
+    })
+  })
+
+  it('truncates an over-long evidence value after coercion', () => {
+    record({ guard: 'wt-example-guard-hook.mjs', decision: 'blocked', evidence: { after: 'x'.repeat(40) } })
+    expect(readAllEntries()[0]!.evidence).toEqual({ after: 'x'.repeat(24) })
+  })
+
+  // Two properties in one case, deliberately: the COMMA survives (it is a guard's own list
+  // separator and cannot carry a secret), while the run of spaces around it collapses to a
+  // single '?'. An earlier version excluded the comma too, which mangled `pnpm,git` into
+  // `pnpm?git` — readable-ish, and wrong about what the charset is for.
+  it('collapses each run of disallowed evidence characters to one question mark, keeping the comma', () => {
+    record({ guard: 'wt-example-guard-hook.mjs', decision: 'blocked', evidence: { after: 'pnpm,  --filter' } })
+    expect(readAllEntries()[0]!.evidence).toEqual({ after: 'pnpm,?--filter' })
+  })
+
+  it('drops a seventh valid evidence key', () => {
+    record({
+      guard: 'wt-example-guard-hook.mjs',
+      decision: 'blocked',
+      evidence: { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7 },
+    })
+    expect(readAllEntries()[0]!.evidence).toEqual({ a: '1', b: '2', c: '3', d: '4', e: '5', f: '6' })
+  })
+
+  it('omits evidence when every key or value is unusable', () => {
+    record({
+      guard: 'wt-example-guard-hook.mjs',
+      decision: 'blocked',
+      session: 'session-garbage',
+      evidence: {
+        ['k'.repeat(25)]: 'value',
+        'bad$key': 'value',
+        object: { secret: 'not-flat' },
+        boolean: true,
+        empty: '',
+      },
+    })
+    expect(readAllEntries()[0]).toMatchObject({ session: 'session-garbage' })
+    expect(readAllEntries()[0]).not.toHaveProperty('evidence')
+  })
 })
