@@ -5,10 +5,9 @@
 //
 // WHAT THIS CANNOT TELL YOU, stated up front because it is the whole reason this script prints
 // a caveat rather than a bare table:
-//   - A guard that fires on CORRECT work (a false positive) writes the exact same record shape
-//     as one that caught a real, repeated defect. This journal counts EVENTS, not confirmed
-//     defects — a rising count for one guard is a prompt to go read what it actually matched,
-//     never proof that N real mistakes happened.
+//   - This journal counts EVENTS, not confirmed defects. A guard may include bounded `evidence`
+//     that makes its own real-catch/false-positive distinction inspectable, but the scanner does
+//     not classify that evidence — a rising count is never proof that N real mistakes happened.
 //   - Only guards that HAVE a journal call show up here at all. A defect with no guard watching
 //     it is invisible by construction — this mechanises recidivism (a KNOWN check firing
 //     again), never inauguration (a brand-new class of mistake nobody has written a check for
@@ -94,9 +93,9 @@ if (AS_JSON) {
       unreadableLines,
       guards: rows.map(({ guard, blocked, warned, total, classes }) => ({ guard, blocked, warned, total, classes })),
       caveat:
-        'A count is an EVENT count, not a confirmed-defect count — a guard firing on correct ' +
-        'work looks identical to one catching a real recurrence. Only guards wired to this ' +
-        'journal appear here; a defect with no guard is invisible by construction.',
+        'A count is an EVENT count, not a confirmed-defect count. Some guards include bounded ' +
+        'evidence that lets a reader classify a firing, but this scanner does not classify it. ' +
+        'Only guards wired to this journal appear here; a defect with no guard is invisible by construction.',
     }),
   )
   process.exit(0)
@@ -117,9 +116,9 @@ if (unreadableLines > 0) {
   console.log(`\n⚠ ${unreadableLines} of ${totalLines} lines in the read window were malformed and skipped.`)
 }
 console.log(
-  '\n⚠ These are EVENT counts, not confirmed-defect counts: a guard firing on correct work ' +
-    '(a false positive) writes the same record shape as one catching a real recurrence — read ' +
-    "what a rising count actually matched before concluding N real mistakes happened. Only " +
+  '\n⚠ These are EVENT counts, not confirmed-defect counts. Some guards include bounded ' +
+    'evidence that lets a reader classify a firing, but this scanner does not classify it — read ' +
+    'the records before concluding N real mistakes happened. Only ' +
     'guards wired to this journal appear here; a defect nobody has a guard for is absent by ' +
     'construction, not evidence nothing went wrong.',
 )

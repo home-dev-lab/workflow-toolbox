@@ -96,8 +96,8 @@ function buildMessage(result, groups) {
     lines.push(`  ${g.guard} [${g.label}] — ${g.count} firings this week`)
   }
   lines.push(
-    '⚠ Event count, not a confirmed-defect count: a guard firing on correct work writes the ' +
-      'same record as one catching a real recurrence — read what it matched before acting. ' +
+    '⚠ Event count, not a confirmed-defect count: some guards include bounded evidence that ' +
+      'lets a reader classify a firing, but this summary does not — read the records before acting. ' +
       'Only guards wired to this journal appear here; a defect with no guard is invisible by ' +
       'construction, never evidence nothing went wrong.',
   )
