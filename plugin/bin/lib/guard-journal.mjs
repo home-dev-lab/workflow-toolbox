@@ -54,6 +54,41 @@ import os from 'node:os'
 import path from 'node:path'
 
 const MAX_REASON_LEN = 400
+const MAX_SAFE_FIELD_LEN = 24
+const MAX_EVIDENCE_KEYS = 6
+// Keys stay strict; VALUES also allow a comma, which is how a guard lists several items in one
+// field (`after: "pnpm,git"`). A comma cannot carry a secret — the protection against that is
+// that arguments are never SELECTED in the first place, not the charset. Excluding it only
+// mangled a separator into `?` and made the record harder to read.
+const SAFE_FIELD = /^[A-Za-z0-9._/-]+$/
+const SAFE_VALUE_STRIP = /[^A-Za-z0-9._/,-]+/g
+
+function sanitiseValue(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null
+  const sanitised = String(value)
+    .slice(0, MAX_SAFE_FIELD_LEN)
+    .replace(SAFE_VALUE_STRIP, '?')
+  return sanitised || null
+}
+
+function sanitiseEvidence(evidence) {
+  try {
+    if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return null
+    const out = {}
+    let count = 0
+    for (const [key, value] of Object.entries(evidence)) {
+      if (!key || key.length > MAX_SAFE_FIELD_LEN || !SAFE_FIELD.test(key)) continue
+      const sanitised = sanitiseValue(value)
+      if (sanitised === null) continue
+      out[key] = sanitised
+      count++
+      if (count === MAX_EVIDENCE_KEYS) break
+    }
+    return Object.keys(out).length > 0 ? out : null
+  } catch {
+    return null
+  }
+}
 
 function baseDir() {
   const override = process.env.WT_GUARD_JOURNAL_DIR
@@ -102,12 +137,17 @@ function journalPath() {
  * @param {string} [event.class]  - the guard's own classification of what it matched, if any.
  * @param {string} [event.reason] - free text, truncated to 400 chars.
  * @param {string} [event.cwd]    - the cwd the decision was made in, if known.
+ * @param {string} [event.session] - bounded session id, if known.
+ * @param {object} [event.evidence] - up to six bounded string/number fields chosen by the guard.
  */
-export function recordGuardEvent({ guard, decision, class: cls, reason, cwd } = {}) {
+export function recordGuardEvent(event = {}) {
   try {
+    const { guard, decision, class: cls, reason, cwd, session, evidence } = event || {}
     if (!guard || (decision !== 'blocked' && decision !== 'warned')) return
     const dir = baseDir()
     fs.mkdirSync(dir, { recursive: true })
+    const safeSession = typeof session === 'string' ? sanitiseValue(session) : null
+    const safeEvidence = sanitiseEvidence(evidence)
     const entry = {
       ts: now().toISOString(),
       guard,
@@ -115,6 +155,8 @@ export function recordGuardEvent({ guard, decision, class: cls, reason, cwd } = 
       ...(cls ? { class: cls } : {}),
       ...(reason ? { reason: String(reason).slice(0, MAX_REASON_LEN) } : {}),
       ...(cwd ? { cwd } : {}),
+      ...(safeSession ? { session: safeSession } : {}),
+      ...(safeEvidence ? { evidence: safeEvidence } : {}),
     }
     fs.appendFileSync(journalPath(), `${JSON.stringify(entry)}\n`)
   } catch {
