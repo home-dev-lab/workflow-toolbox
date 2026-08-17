@@ -567,7 +567,7 @@ function matchesOpencodeRun(cmd = "") {
   if (envAt !== -1) {
     let segStart = -1;
     segStart = s.lastIndexOf("\n", envAt);
-    if (/(?:^|[\s"'/])node(?:\.exe|\.cmd)?["']?\s/.test(s.slice(segStart + 1, envAt))) return true;
+    if (/(?:^|[\s;|&(=/'"])node(?:\.exe|\.cmd)?["']?\s/.test(s.slice(segStart + 1, envAt))) return true;
   }
   const AFTER_QUOTED = /^(?:\.exe|\.cmd)?["']\s+run\b/;
   const AFTER_BARE = /^(?:\.exe|\.cmd)?\s+run\b/;

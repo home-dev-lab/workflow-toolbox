@@ -89,7 +89,7 @@ function matchesOpencodeRun(cmd = '') {
     // so a naive split cut the invocation away from its own `node` and rejected the real call.
     // A line is the unit an invocation cannot straddle without saying so.
     segStart = s.lastIndexOf('\n', envAt)
-    if (/(?:^|[\s"'/])node(?:\.exe|\.cmd)?["']?\s/.test(s.slice(segStart + 1, envAt))) return true
+    if (/(?:^|[\s;|&(=/'"])node(?:\.exe|\.cmd)?["']?\s/.test(s.slice(segStart + 1, envAt))) return true
   }
   const AFTER_QUOTED = /^(?:\.exe|\.cmd)?["']\s+run\b/
   const AFTER_BARE = /^(?:\.exe|\.cmd)?\s+run\b/

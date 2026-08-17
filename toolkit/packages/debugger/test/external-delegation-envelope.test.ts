@@ -65,6 +65,20 @@ describe('opencode envelope provenance lock', () => {
     expect(isExternalCliCommand(shipped, OPENCODE)).toBe(true)
   })
 
+  // ⚠ The SECOND real shape, from run wf_f455960a-e1f — the rule-driven mode. The agent captured
+  // the script's output, so the whole invocation sits inside a command substitution and the token
+  // before `node` is an OPENING PARENTHESIS. The first version of the invocation check allowed only
+  // whitespace, a quote or a slash before `node`, so a genuine call read as a mention again — the
+  // same defect as the semicolon one, one shape further along, and again invisible to every
+  // hand-written example. The character class now matches the one this file already uses for
+  // `opencode` itself, a few lines down.
+  it('accepts the real rule-driven invocation captured in a command substitution', () => {
+    const shipped =
+      'OUTPUT=$(node "${CLAUDE_PLUGIN_ROOT:-${WT_PLUGIN_ROOT:-$(node -e \'const p=j.plugins||j;console.log(p[k][0].installPath)\' 2>/dev/null)}}/bin/wt-opencode-envelope.mjs" --each-json "/tmp/src.json" --prompt-template "ask {{item}}" --id-template "id-{{item}}" --dir "/tmp/w")'
+
+    expect(isExternalCliCommand(shipped, OPENCODE)).toBe(true)
+  })
+
   it('accepts the real invocation whatever shell substitution the plugin-root expansion carries', () => {
     const withGitRevParse =
       'node "${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugin}/bin/wt-opencode-envelope.mjs" "$TASKSFILE" --dir "/tmp/w"'
