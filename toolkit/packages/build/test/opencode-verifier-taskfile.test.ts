@@ -74,8 +74,27 @@ describe('opencode-verifier bridge — task file lives under the agent cwd, not 
         expect(def.split('wt-opencode-json-extractor.mjs').length - 1).toBeGreaterThanOrEqual(2)
       })
 
+      // Asserts the PROPERTY, not the literal expression. An earlier version of this test
+      // pinned the whole shell one-liner byte-for-byte: it then went RED on every correction
+      // to the resolver — including the one that made it work on the real registry shape —
+      // while its green had never been evidence that the path resolves at all. Resolution
+      // correctness is locked EXECUTABLY in opencode-plugin-root-resolution.test.ts; what
+      // belongs here is that the happy path uses the same three-fallback root as the retry
+      // path, rather than quietly keeping a narrower one.
       it('runs the extractor on the normal non-retry path too (happy-path regression)', () => {
-        expect(def).toContain('if `EXIT` is 0, run `node "${CLAUDE_PLUGIN_ROOT:-$WT_PLUGIN_ROOT}/bin/wt-opencode-json-extractor.mjs" "$STREAMFILE"`')
+        const happyPath = def.slice(def.indexOf('if `EXIT` is 0, run `node "'))
+        expect(happyPath).toContain('wt-opencode-json-extractor.mjs')
+        expect(happyPath.slice(0, 600)).toContain('${CLAUDE_PLUGIN_ROOT:-${WT_PLUGIN_ROOT:-')
+        expect(happyPath.slice(0, 600)).toContain('installed_plugins.json')
+      })
+
+      // TEST-LOCK for card <opencode-envelope Workflow-tool plugin-root defect>: the OLD
+      // two-variable fallback (${CLAUDE_PLUGIN_ROOT:-$WT_PLUGIN_ROOT}) never appears anywhere —
+      // every occurrence must have grown the THIRD, installed_plugins.json-reading fallback.
+      // A regex match here means the round-1 (broken-under-Workflow-tool) text crept back in.
+      it('never regresses to the two-variable fallback that is unset under the Workflow tool', () => {
+        expect(def).not.toMatch(/\$\{CLAUDE_PLUGIN_ROOT:-\$WT_PLUGIN_ROOT\}/)
+        expect(def.split('installed_plugins.json').length - 1).toBeGreaterThanOrEqual(2)
       })
 
       it('the happy-path extractor matcher goes RED on the round-1 non-retry text', () => {

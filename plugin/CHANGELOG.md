@@ -3,6 +3,37 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.167.0] - 2026-08-17
+
+### Fixed
+
+- **`opencode-envelope` and `opencode-verifier` no longer die under the Workflow tool (Path A).**
+  Both agents located their wrapper script via `${CLAUDE_PLUGIN_ROOT:-$WT_PLUGIN_ROOT}` — a
+  two-variable fallback that covers an interactive session (which has `CLAUDE_PLUGIN_ROOT`) and a
+  Path B delegated session (which the server backfills with `WT_PLUGIN_ROOT`), but NEITHER
+  variable is set for an agent spawned through the Workflow tool. Measured on run `wf_7d40d5d6-086`:
+  the path collapsed to `/bin/wt-opencode-envelope.mjs`, `MODULE_NOT_FOUND`, and the agent burned
+  its entire `maxTurns: 3` budget on a `find` before returning empty.
+- Both definitions now carry a THIRD fallback: when neither variable is set, read the harness's
+  own `installed_plugins.json` registry (`${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json`)
+  for the `workflow-toolbox@…` entry's `installPath` — the same content root `CLAUDE_PLUGIN_ROOT`
+  would have pointed to. The whole resolution is one self-contained shell expression inside the
+  already-required single Bash call, so it costs no extra turn.
+  The registry is read through its `{version, plugins}` envelope, with a fallback to the legacy
+  flat map, so both shapes resolve. An earlier draft of this fix read only the flat shape and
+  therefore threw on every real config directory — the executable lock covering it had been
+  written from the same understanding and agreed with it, which is why the lock now builds its
+  fixture from the enveloped shape and exercises both branches.
+
+### Changed
+
+- The `opencode-verifier` task-file lock now asserts the PROPERTY of the extractor's happy path —
+  that it resolves the plugin root through the same three fallbacks as the retry path — instead of
+  pinning the entire shell expression byte-for-byte. The literal form went red on every correction
+  to the resolver, including the one that made it work, while its green had never been evidence
+  that the path resolved at all. Resolution correctness is locked executably in
+  `opencode-plugin-root-resolution.test.ts`.
+
 ## [0.166.0] - 2026-08-11
 
 ### Added
