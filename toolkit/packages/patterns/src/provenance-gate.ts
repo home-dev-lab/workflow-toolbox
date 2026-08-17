@@ -74,6 +74,22 @@ function matchesOpencodeRun(cmd = '') {
   if (typeof cmd !== 'string' || cmd.length === 0) return false
   const WIN = 20000
   const s = cmd.length <= 2 * WIN ? cmd : cmd.slice(0, WIN) + '\n' + cmd.slice(-WIN)
+  // The envelope wrapper counts as a real invocation (the script fans out to the CLI in its own
+  // process), but only when it is INVOKED -- `node <path>/wt-opencode-envelope.mjs <tasks>`. A
+  // `grep`, an `ls` or an echoed instruction NAMES the script with the identical trailing shape
+  // (quote, space, argument), and this guard's false-positive direction certifies fabrication:
+  // it would report a self-answering agent as having called out. So require a `node` command word
+  // ahead of it within the same shell segment, mirroring how the codex expectation anchors its own
+  // wrapper on the `task` subcommand rather than on the filename alone.
+  const envAt = s.indexOf('wt-opencode-envelope.mjs')
+  if (envAt !== -1) {
+    let segStart = -1
+    for (const ch of ['\n', ';', '|', '&']) {
+      const at = s.lastIndexOf(ch, envAt)
+      if (at > segStart) segStart = at
+    }
+    if (/(?:^|[\s"'/])node(?:\.exe|\.cmd)?["']?\s/.test(s.slice(segStart + 1, envAt))) return true
+  }
   const AFTER_QUOTED = /^(?:\.exe|\.cmd)?["']\s+run\b/
   const AFTER_BARE = /^(?:\.exe|\.cmd)?\s+run\b/
   const AFTER_BIN = /^["']?\s+run\b/
