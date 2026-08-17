@@ -378,6 +378,44 @@ function formatMtime(mtime) {
   return Number.isFinite(mtime?.getTime?.()) ? mtime.toISOString() : '?'
 }
 
+/** Classify a DIVERGED shadow pair: is the difference confined to the frontmatter block (and
+ *  if so, which top-level keys differ), or does the agent's instruction BODY differ too? A
+ *  one-line model pin and a rewritten agent body both collapse into the same "DIVERGED" word
+ *  otherwise — a reader can't tell a routing preference from an agent that no longer does what
+ *  its name claims. Mirrors the drift-DIRECTION breakdown a few hundred lines below
+ *  (`driftMissingFromShipped`/`driftMissingFromProject`): the classification is printed ON TOP
+ *  of the existing "DIVERGED" signal, never in place of it — `Buffer.compare` above still owns
+ *  the gate/exit-code-relevant equality check.
+ *  Returns `{ kind: 'body' }`, `{ kind: 'frontmatter', keys: string[] }` (keys sorted, may be
+ *  empty when the block differs only via a multi-line/list value `simpleFrontmatterKeys` can't
+ *  name — reported as "frontmatter differs" rather than guessed at), or `null` when either side
+ *  has no leading frontmatter block to compare (can't classify; caller falls back to the bare
+ *  DIVERGED text unchanged). */
+function classifyAgentDivergence(pluginText, userText) {
+  const pluginBlock = frontmatterBlock(pluginText)
+  const userBlock = frontmatterBlock(userText)
+  if (pluginBlock == null || userBlock == null) return null
+  const pluginBody = pluginText.slice(pluginBlock.length)
+  const userBody = userText.slice(userBlock.length)
+  if (pluginBody !== userBody) return { kind: 'body' }
+  const pluginKeys = simpleFrontmatterKeys(pluginBlock)
+  const userKeys = simpleFrontmatterKeys(userBlock)
+  const allKeys = new Set([...pluginKeys.keys(), ...userKeys.keys()])
+  const diffKeys = [...allKeys].filter((key) => pluginKeys.get(key) !== userKeys.get(key)).sort()
+  return { kind: 'frontmatter', keys: diffKeys }
+}
+
+/** The classification, rendered as the text appended to a DIVERGED line — empty string when
+ *  the pair can't be classified (falls back to the bare word, unchanged behaviour). */
+function describeAgentDivergenceKind(pluginText, userText) {
+  const kind = classifyAgentDivergence(pluginText, userText)
+  if (!kind) return ''
+  if (kind.kind === 'body') return '; body differs'
+  return kind.keys.length > 0
+    ? `; frontmatter-only: ${kind.keys.join(', ')}`
+    : '; frontmatter-only'
+}
+
 function describeRegisteredAgentShadowing(root, userAgentsDir, name) {
   const pluginPath = path.join(root, 'agents', `${name}.md`)
   const userPath = path.join(userAgentsDir, `${name}.md`)
@@ -390,9 +428,10 @@ function describeRegisteredAgentShadowing(root, userAgentsDir, name) {
     if (Buffer.compare(pluginContent, userContent) === 0) {
       return `  - workflow-toolbox:${name} is shadowed by ${userPath} (matches the plugin copy)\n`
     }
+    const kindText = describeAgentDivergenceKind(pluginContent.toString('utf8'), userContent.toString('utf8'))
     return (
       `  - workflow-toolbox:${name} is shadowed by ${userPath} ` +
-      `(DIVERGED; plugin mtime=${formatMtime(pluginStat.mtime)}; user mtime=${formatMtime(userStat.mtime)})\n`
+      `(DIVERGED; plugin mtime=${formatMtime(pluginStat.mtime)}; user mtime=${formatMtime(userStat.mtime)}${kindText})\n`
     )
   } catch {
     return null

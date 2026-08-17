@@ -1139,6 +1139,39 @@ describe('adopt installer — registered-agent shadowing note', () => {
     expect(out).toMatch(/plugin mtime=.*user mtime=.*/)
   })
 
+  it('a BODY divergence is classified as "body differs" — appending a trailing line after the frontmatter changes the instruction text', () => {
+    const d = mkDir()
+    const cfg = mkDir()
+    const { script, agentsDir } = makePluginCopy()
+    const name = firstRegisteredAgentName(agentsDir)
+    mkdirSync(join(cfg, 'agents'), { recursive: true })
+    writeFileSync(join(cfg, 'agents', `${name}.md`), readFileSync(join(agentsDir, `${name}.md`), 'utf8') + '\nlocal divergence\n')
+
+    const out = runCopyEnv(script, ['--set', 'agents', '--check'], d, { CLAUDE_CONFIG_DIR: cfg })
+    expect(out).toContain('DIVERGED')
+    expect(out).toContain('body differs')
+    expect(out).not.toContain('frontmatter-only')
+  })
+
+  it('a FRONTMATTER-only divergence names the diverging key(s) and never claims the body differs', () => {
+    const d = mkDir()
+    const cfg = mkDir()
+    const { script, agentsDir } = makePluginCopy()
+    const name = firstRegisteredAgentName(agentsDir)
+    const pluginSource = readFileSync(join(agentsDir, `${name}.md`), 'utf8')
+    // Add a single-line frontmatter key (a model pin) with nothing else touched — the body
+    // after the closing `---` stays byte-identical to the plugin copy.
+    const userSource = pluginSource.replace(/\n---\n/, '\nmodel: opus\n---\n')
+    expect(userSource, 'fixture must actually gain a new frontmatter line').not.toBe(pluginSource)
+    mkdirSync(join(cfg, 'agents'), { recursive: true })
+    writeFileSync(join(cfg, 'agents', `${name}.md`), userSource)
+
+    const out = runCopyEnv(script, ['--set', 'agents', '--check'], d, { CLAUDE_CONFIG_DIR: cfg })
+    expect(out).toContain('DIVERGED')
+    expect(out).toContain('frontmatter-only: model')
+    expect(out).not.toContain('body differs')
+  })
+
   it('an absent config agents dir is skipped silently: no throw, no shadowing line', () => {
     const d = mkDir()
     const missingCfg = join(mkDir(), 'missing-config-root')
