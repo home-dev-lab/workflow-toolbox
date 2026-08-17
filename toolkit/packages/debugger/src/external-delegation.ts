@@ -97,10 +97,11 @@ function matchesOpencodeRun(cmd = '') {
   const envAt = s.indexOf('wt-opencode-envelope.mjs')
   if (envAt !== -1) {
     let segStart = -1
-    for (const ch of ['\n', ';', '|', '&']) {
-      const at = s.lastIndexOf(ch, envAt)
-      if (at > segStart) segStart = at
-    }
+    // Split on NEWLINES ONLY. Splitting on `;`/`|`/`&` looks stricter and is wrong here: the
+    // plugin-root expansion embeds an inline `node -e '…;…'` whose semicolons sit INSIDE quotes,
+    // so a naive split cut the invocation away from its own `node` and rejected the real call.
+    // A line is the unit an invocation cannot straddle without saying so.
+    segStart = s.lastIndexOf('\n', envAt)
     if (/(?:^|[\s"'/])node(?:\.exe|\.cmd)?["']?\s/.test(s.slice(segStart + 1, envAt))) return true
   }
   const AFTER_QUOTED = /^(?:\.exe|\.cmd)?["']\s+run\b/

@@ -963,10 +963,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     const envAt = s.indexOf("wt-opencode-envelope.mjs");
     if (envAt !== -1) {
       let segStart = -1;
-      for (const ch of ["\n", ";", "|", "&"]) {
-        const at = s.lastIndexOf(ch, envAt);
-        if (at > segStart) segStart = at;
-      }
+      segStart = s.lastIndexOf("\n", envAt);
       if (/(?:^|[\s"'/])node(?:\.exe|\.cmd)?["']?\s/.test(s.slice(segStart + 1, envAt))) return true;
     }
     const AFTER_QUOTED = /^(?:\.exe|\.cmd)?["']\s+run\b/;

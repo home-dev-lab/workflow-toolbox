@@ -43,6 +43,28 @@ describe('opencode envelope provenance lock', () => {
   // genuine call read as a mention. It went unnoticed because the probe written alongside it
   // happened to use a substitution containing the word `node`, and agreed with the code by
   // accident. Both real shapes are pinned here so no future narrowing can quietly drop one.
+  // ⚠ The command that actually shipped, from run wf_105c89db-bdb — kept verbatim because every
+  // hand-written approximation of it PASSED while this one failed. It is one Bash call that
+  // exports two variables, writes a heredoc tasks file, and only then invokes the wrapper; and the
+  // plugin-root expansion embeds an inline `node -e '…;…'` whose SEMICOLONS sit inside quotes.
+  // An earlier version of the invocation check split segments on `;` as well as newlines, so those
+  // quoted semicolons cut the invocation away from its own `node` and the real call read as a
+  // mention. Two halves of the same evening's work, each correct alone, breaking each other.
+  it('accepts the real shipped invocation — heredoc, exports, and quoted semicolons in the plugin-root expansion', () => {
+    const shipped = [
+      'WORKDIR="/tmp/w"',
+      'TASKSFILE="${WORKDIR}/.oc-envelope-tasks-$$.json"',
+      '',
+      "cat > \"$TASKSFILE\" <<'TASKS_EOF'",
+      '[{"id":"capital","prompt":"one word"}]',
+      'TASKS_EOF',
+      '',
+      'node "${CLAUDE_PLUGIN_ROOT:-${WT_PLUGIN_ROOT:-$(node -e \'const fs=require("fs");const p=j.plugins||j;console.log(p[k][0].installPath)\' 2>/dev/null)}}/bin/wt-opencode-envelope.mjs" "$TASKSFILE" --dir "$WORKDIR"',
+    ].join('\n')
+
+    expect(isExternalCliCommand(shipped, OPENCODE)).toBe(true)
+  })
+
   it('accepts the real invocation whatever shell substitution the plugin-root expansion carries', () => {
     const withGitRevParse =
       'node "${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugin}/bin/wt-opencode-envelope.mjs" "$TASKSFILE" --dir "/tmp/w"'
