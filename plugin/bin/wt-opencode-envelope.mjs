@@ -8,8 +8,9 @@
 // a full agent turn that re-ingests the whole prior transcript.
 //
 // The invariant this script exists for: N external calls cost the caller ONE Bash tool call,
-// never N. It reads a JSON array of tasks, resolves the opencode binary and the availability
-// gate ONCE, then fans the tasks out with bounded concurrency — each task gets its own task file,
+// never N. It reads tasks or generates them from an explicit source rule, resolves the opencode
+// binary and the availability gate ONCE, then fans the tasks out with bounded concurrency — each
+// task gets its own task file,
 // its own unique stream log, its own `EXIT=` marker, and its own answer file. The script's own
 // stdout is exactly one line naming a MANIFEST file; it never prints any task's answer, whatever
 // N is — the caller reads individual answer files only if and when it needs their content.
@@ -20,6 +21,7 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { laneTextFromOutput, laneUsageFromOutput, verifierStreamDirForEnv } from './wt-verifier-cli-guard-hook.mjs'
+import { DEFAULT_MAX_TASKS, generateEachTasks, parseEachSource } from './lib/opencode-envelope-tasks.mjs'
 
 const DEFAULT_MODEL = 'openai/gpt-5.4'
 const DEFAULT_AGENT = 'plan'
@@ -30,13 +32,24 @@ function usage() {
   return [
     'wt-opencode-envelope — run N opencode CLI calls behind exactly ONE Bash call.',
     '',
-    'Usage: wt-opencode-envelope.mjs <tasks.json> --dir <workdir> [options]',
+    'Usage:',
+    '  wt-opencode-envelope.mjs <tasks.json> --dir <workdir> [options]',
+    '  wt-opencode-envelope.mjs --each-json <path> --prompt-template <text> --id-template <text> --dir <workdir> [options]',
+    '  wt-opencode-envelope.mjs --each-lines <path> --prompt-template <text> --id-template <text> --dir <workdir> [options]',
     '',
     'Required:',
     '  <tasks.json>           JSON array of tasks: [{ "id": "t1", "prompt": "..." , ',
     '                         "model"?, "variant"?, "agent"?, "fallbackModel"? }, ...]',
     '                         Per-task fields override the matching --option below.',
     '  --dir <path>           Explicit opencode working directory (never the inherited cwd).',
+    '',
+    'Generated-task mode (explicitly choose exactly one source delimiter):',
+    '  --each-json <path>                 JSON array; one task per string or object element (default/general form)',
+    '  --each-lines <path>                One task per non-blank line; only for items that cannot contain newlines',
+    '  --prompt-template <text>           Prompt template; {{item}} is the whole item, {{item.field}} an object field',
+    '  --id-template <text>               Task-id template using the same placeholders (dotted field paths allowed)',
+    `  --max-tasks <n>                    Maximum generated tasks. Default: ${DEFAULT_MAX_TASKS}`,
+    '                                     Excess items are dropped and their count is recorded in the manifest.',
     '',
     'Options:',
     '  --model <provider/model>           Default model. Default: openai/gpt-5.4',
@@ -46,8 +59,8 @@ function usage() {
     '  --timeout-sec <n>                  Per-task CLI timeout. Default: 570',
     '  --concurrency <n>                  Max tasks run in parallel. Default: 4',
     '  --out-dir <path>                   Where answer files + manifest are written.',
-    '                                     Default: the directory containing <tasks.json>',
-    '  --manifest <path>                  Manifest file path. Default: <tasks.json>.manifest.json',
+    '                                     Default: the directory containing the task source',
+    '  --manifest <path>                  Manifest file path. Default: <task-source>.manifest.json',
     '',
     'Prints EXACTLY ONE line to stdout, one of:',
     '  MANIFEST: <path>              — every task attempted; results (per task) are in <path>.',
@@ -60,6 +73,11 @@ function usage() {
 function parseArgs(argv) {
   const out = {
     tasksFile: null,
+    eachJson: null,
+    eachLines: null,
+    promptTemplate: null,
+    idTemplate: null,
+    maxTasks: DEFAULT_MAX_TASKS,
     dir: null,
     model: DEFAULT_MODEL,
     fallbackModel: DEFAULT_MODEL,
@@ -74,6 +92,11 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--dir') out.dir = argv[++i] ?? null
+    else if (a === '--each-json') out.eachJson = argv[++i] ?? null
+    else if (a === '--each-lines') out.eachLines = argv[++i] ?? null
+    else if (a === '--prompt-template') out.promptTemplate = argv[++i] ?? null
+    else if (a === '--id-template') out.idTemplate = argv[++i] ?? null
+    else if (a === '--max-tasks') out.maxTasks = Number(argv[++i])
     else if (a === '--model') out.model = argv[++i] ?? out.model
     else if (a === '--fallback-model') out.fallbackModel = argv[++i] ?? out.fallbackModel
     else if (a === '--variant') out.variant = argv[++i] ?? null
@@ -256,13 +279,26 @@ async function main() {
   }
 
   const opts = parseArgs(argv)
-  if (opts.tasksFile === null || opts.dir === null) {
+  const eachSources = [opts.eachJson, opts.eachLines].filter((value) => value !== null)
+  const generatedMode = eachSources.length > 0
+  if (opts.dir === null || (!generatedMode && opts.tasksFile === null)) {
     process.stderr.write(`${usage()}\n`)
-    process.stderr.write('\nMissing required <tasks.json> and/or --dir.\n')
+    process.stderr.write(generatedMode
+      ? '\nMissing required task source and/or --dir.\n'
+      : '\nMissing required <tasks.json> and/or --dir.\n')
     return 2
   }
-  if (!fs.existsSync(opts.tasksFile)) {
-    process.stdout.write(`OPENCODE_ERROR: tasks file not found: ${opts.tasksFile}\n`)
+  if (eachSources.length > 1 || (generatedMode && opts.tasksFile !== null)) {
+    process.stdout.write('OPENCODE_ERROR: choose exactly one of <tasks.json>, --each-json, or --each-lines\n')
+    return 2
+  }
+  if (generatedMode && (opts.promptTemplate === null || opts.idTemplate === null)) {
+    process.stdout.write('OPENCODE_ERROR: generated-task mode requires --prompt-template and --id-template\n')
+    return 2
+  }
+  const sourcePath = generatedMode ? eachSources[0] : opts.tasksFile
+  if (!fs.existsSync(sourcePath)) {
+    process.stdout.write(`OPENCODE_ERROR: ${generatedMode ? 'source' : 'tasks file'} not found: ${sourcePath}\n`)
     return 2
   }
   if (!fs.existsSync(opts.dir) || !fs.statSync(opts.dir).isDirectory()) {
@@ -271,13 +307,32 @@ async function main() {
   }
 
   let tasks
+  let generation = null
   try {
-    tasks = JSON.parse(fs.readFileSync(opts.tasksFile, 'utf8'))
+    const sourceText = fs.readFileSync(sourcePath, 'utf8')
+    if (generatedMode) {
+      const mode = opts.eachJson !== null ? 'json' : 'lines'
+      generation = {
+        mode,
+        ...generateEachTasks({
+          items: parseEachSource(sourceText, mode),
+          promptTemplate: opts.promptTemplate,
+          idTemplate: opts.idTemplate,
+          maxTasks: opts.maxTasks,
+        }),
+      }
+      tasks = generation.tasks
+    } else {
+      tasks = JSON.parse(sourceText)
+    }
   } catch (err) {
-    process.stdout.write(`OPENCODE_ERROR: tasks file is not valid JSON: ${err instanceof Error ? err.message : String(err)}\n`)
+    const detail = err instanceof Error ? err.message : String(err)
+    process.stdout.write(generatedMode
+      ? `OPENCODE_ERROR: invalid task source: ${detail}\n`
+      : `OPENCODE_ERROR: tasks file is not valid JSON: ${detail}\n`)
     return 2
   }
-  if (!Array.isArray(tasks) || tasks.length === 0) {
+  if (!Array.isArray(tasks) || (!generatedMode && tasks.length === 0)) {
     process.stdout.write('OPENCODE_ERROR: tasks file must be a non-empty JSON array\n')
     return 2
   }
@@ -294,6 +349,31 @@ async function main() {
     seenIds.add(t.id)
   }
 
+  const outDir = opts.outDir ?? path.dirname(path.resolve(sourcePath))
+  const manifestPath = opts.manifest ?? `${sourcePath}.manifest.json`
+  if (generatedMode && generation.dropped > 0) {
+    process.stderr.write(`wt-opencode-envelope: dropped ${generation.dropped} of ${generation.sourceCount} source items because --max-tasks=${opts.maxTasks}\n`)
+  }
+  if (generatedMode && tasks.length === 0) {
+    fs.mkdirSync(outDir, { recursive: true })
+    const manifest = {
+      source: { mode: generation.mode, path: path.resolve(sourcePath), items: generation.sourceCount },
+      maxTasks: opts.maxTasks,
+      dropped: generation.dropped,
+      status: 'nothing_to_do',
+      nothingToDo: true,
+      dir: path.resolve(opts.dir),
+      concurrency: 0,
+      total: 0,
+      answered: 0,
+      errored: 0,
+      tasks: [],
+    }
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
+    process.stdout.write(`MANIFEST: ${manifestPath}\n`)
+    return 0
+  }
+
   const bin = resolveBinarySync()
   if (bin === null) {
     process.stdout.write('OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations\n')
@@ -304,13 +384,22 @@ async function main() {
     return 1
   }
 
-  const outDir = opts.outDir ?? path.dirname(path.resolve(opts.tasksFile))
   fs.mkdirSync(outDir, { recursive: true })
-  const manifestPath = opts.manifest ?? `${opts.tasksFile}.manifest.json`
-
   const results = await runPool(tasks, opts.concurrency, (task) => runTask(task, { ...opts, bin }, outDir))
 
-  const manifest = {
+  const manifest = generatedMode ? {
+    source: { mode: generation.mode, path: path.resolve(sourcePath), items: generation.sourceCount },
+    maxTasks: opts.maxTasks,
+    dropped: generation.dropped,
+    status: 'complete',
+    nothingToDo: false,
+    dir: path.resolve(opts.dir),
+    concurrency: Math.min(opts.concurrency, tasks.length),
+    total: results.length,
+    answered: results.filter((r) => r.status === 'answer').length,
+    errored: results.filter((r) => r.status === 'error').length,
+    tasks: results,
+  } : {
     tasksFile: path.resolve(opts.tasksFile),
     dir: path.resolve(opts.dir),
     concurrency: Math.min(opts.concurrency, tasks.length),
