@@ -392,7 +392,15 @@ async function reduceManifest(opts) {
     return 1
   }
   const prompt = applyAnswersTemplate(template, blocks.join('\n'))
-  const result = await runTask({ id: 'reduce', prompt }, { ...opts, bin }, outDir)
+  // ⚠ The id is DERIVED FROM THE SOURCE MANIFEST, never the literal 'reduce'. It names the
+  // answer file, so a fixed id makes two reduces over one --dir write to the same path: the
+  // second silently overwrites the first, and the first manifest keeps reporting
+  // `answered: 1, errored: 0` while naming a file holding another question's answer. Measured
+  // 2026-08-18 on a nested reduce — a shape this mode explicitly supports, since a reduce
+  // manifest satisfies --reduce's own input contract. Deterministic on purpose: re-running the
+  // SAME reduce overwrites its own previous answer instead of accumulating.
+  const reduceId = `reduce-${crypto.createHash('sha256').update(path.resolve(opts.reduce)).digest('hex').slice(0, 8)}`
+  const result = await runTask({ id: reduceId, prompt }, { ...opts, bin }, outDir)
   writeReduceManifest(manifestPath, {
     sourceManifest: path.resolve(opts.reduce), status: 'complete', nothingToDo: false,
     dir: path.resolve(opts.dir), total: 1, answered: result.status === 'answer' ? 1 : 0,

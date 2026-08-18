@@ -166,7 +166,9 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(readFileSync(promptCapture, 'utf8')).toBe('Synthesize:\n--- BEGIN ANSWER id=first exitStatus=0 ---\nfirst result\n--- END ANSWER id=first ---')
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
     expect(manifest).toMatchObject({ total: 1, answered: 1, errored: 0, skippedFailedTaskIds: ['broken'] })
-    expect(manifest.tasks[0]).toMatchObject({ id: 'reduce', status: 'answer', exitStatus: 0 })
+    expect(manifest.tasks[0]).toMatchObject({ status: 'answer', exitStatus: 0 })
+    // the id is derived from the source manifest, so it is a stable prefix plus a digest
+    expect(manifest.tasks[0].id).toMatch(/^reduce-[0-9a-f]{8}$/)
   })
 
   it('renders an answer containing dollar substitution patterns verbatim', () => {
@@ -196,6 +198,43 @@ describe('wt-opencode-envelope generated task sources', () => {
     const rendered = readFileSync(promptCapture, 'utf8')
     expect(rendered).toContain(literal)
     expect(rendered).not.toContain('{{answers}}')
+  })
+
+  it('two reduces over one directory do not overwrite each other', () => {
+    // ⚠ The failure this locks is SILENT: with a fixed id both reduces wrote
+    // <dir>/reduce.answer.txt, the second overwrote the first, and the first manifest still
+    // reported `answered: 1, errored: 0` while naming a file holding the OTHER question's
+    // answer. Measured 2026-08-18 on a real nested run — a shape this mode supports, since a
+    // reduce manifest satisfies --reduce's own input contract.
+    const root = makeRoot()
+    const workdir = join(root, 'workdir')
+    mkdirSync(workdir)
+    installFakeOpencode(root)
+    const answerA = join(root, 'a.answer.txt')
+    const answerB = join(root, 'b.answer.txt')
+    writeFileSync(answerA, 'alpha')
+    writeFileSync(answerB, 'beta')
+    const sourceA = join(root, 'fan-a.manifest.json')
+    const sourceB = join(root, 'fan-b.manifest.json')
+    writeFileSync(sourceA, JSON.stringify({ tasks: [{ id: 'a', status: 'answer', exitStatus: 0, answerFile: answerA }] }))
+    writeFileSync(sourceB, JSON.stringify({ tasks: [{ id: 'b', status: 'answer', exitStatus: 0, answerFile: answerB }] }))
+    const env = { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}`, XDG_STATE_HOME: root }
+    const run = (source: string, manifest: string) =>
+      spawnSync(process.execPath, [
+        SCRIPT, '--reduce', source, '--reduce-prompt', 'Synthesize:\n{{answers}}',
+        '--dir', workdir, '--manifest', manifest,
+      ], { encoding: 'utf8', env })
+
+    const manifestA = join(root, 'reduce-a.manifest.json')
+    const manifestB = join(root, 'reduce-b.manifest.json')
+    expect(run(sourceA, manifestA).status).toBe(0)
+    expect(run(sourceB, manifestB).status).toBe(0)
+
+    const fileA = JSON.parse(readFileSync(manifestA, 'utf8')).tasks[0].answerFile
+    const fileB = JSON.parse(readFileSync(manifestB, 'utf8')).tasks[0].answerFile
+    expect(fileA).not.toBe(fileB)
+    // and the first answer must still exist after the second run
+    expect(existsSync(fileA)).toBe(true)
   })
 
   it('refuses a reduce template without the literal {{answers}} placeholder', () => {
