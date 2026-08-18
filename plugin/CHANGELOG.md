@@ -4,6 +4,25 @@ All notable changes to the `workflow-toolbox` Claude Code plugin are documented 
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+## [0.171.0] - 2026-08-18
+
+### Added
+
+- **`wt-delegation-ladder` gains a fence-expiry clause.** A brief, rule or card that fences
+  something off because a condition holds NOW keeps blocking after that condition ends, because
+  nothing re-checks it — and a stale fence reads exactly like a live one, same text, no way for a
+  reader to tell which.
+
+  The clause states both halves: name the expiry IN the fence rather than the fence alone, AND give
+  it something that re-reads it — record the condition where whatever satisfies it will land, quote
+  the source that decides a quoted state, and report rather than lift a fence that is not yours.
+
+  Measured three times in one day on three different surfaces before this was written: a task card
+  fixed the same afternoon and left open for two more days; a defect fixed in code and never
+  published, so every adopter still met it; and a rule whose own lifting condition had been
+  satisfied and recorded elsewhere while the rule still said it had not been proven. Nothing was
+  wrong when written; each simply outlived the state it described.
+
 ## [0.170.0] - 2026-08-18
 
 ### Added

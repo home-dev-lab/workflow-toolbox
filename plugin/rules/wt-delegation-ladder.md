@@ -251,6 +251,37 @@ on a refresh that may not come.
 them or produced them by ACTING. Only its transcript, or independent verification of its claims,
 separates the two.
 
+## A fence justified by a live condition carries its expiry — and something must RE-READ it
+
+A brief, a rule or a card fences something off because a condition holds NOW: another writer is in
+that directory, a proof is missing, a version is unpublished. That condition ends. **Nothing
+re-checks the fence.**
+
+The cost is invisible from both sides. Whoever obeys a stale fence reports work correctly blocked
+and names the fence as the trigger; whoever set it reads a well-formed refusal. Both are right, and
+the work stopped for nothing.
+
+So name the EXPIRY IN the fence, never the fence alone: *"until the compression pass finishes"* is
+checkable by the reader, *"don't touch Y"* is forever.
+
+⚠ **Writing the expiry is only half — an expiry nobody re-reads is inert.** A stale fence reads
+exactly like a live one: same text, and no way for a reader to tell which. The cheap remedies:
+
+- name the fence's condition where whatever SATISFIES it gets recorded, so closing the work and
+  lifting the fence are one act rather than two;
+- when a fence quotes a state, quote the SOURCE that decides it, so a reader checks in one command
+  instead of trusting the sentence;
+- finding a fence whose condition appears met and that is NOT yours: report it with the evidence
+  and state what you could not resolve, rather than lifting it. A fence's wording and the evidence
+  offered against it often name subtly different objects, and its author is who knows which was
+  meant.
+
+⚠ Lifting for ONE case is not lifting: generalise the lift in the same act, or say plainly that it
+still stands elsewhere.
+
+⚠ A prohibition that never came from the live condition SURVIVES the lift. Say which, explicitly —
+lifting a fence must not read as lifting everything near it.
+
 ## Four prohibitions that sharpen the ladder
 
 1. **Executing a fully-specified design = executor-lane work, not inline on a strong model.**
