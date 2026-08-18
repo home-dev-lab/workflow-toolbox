@@ -71,6 +71,16 @@ on the two sides. Choosing the next number is part of reconciling that fork, not
 change.
 
 ## [0.165.0] - 2026-08-27
+- **A task's remaining-work ledger is a claim about the tree, and the briefing guidance now says to
+  re-derive it.** A multi-part task carries a running "these remain" list written by whoever last
+  touched it; it goes stale the instant a commit lands without a tracker write, and nothing
+  announces the drift — the ledger stays confident, specific, and formatted exactly like a verified
+  fact. Briefing an executor from a stale one asks for work already done, and the executor is not
+  the safeguard: told to fix a defect, it has every reason to build a second mechanism beside the
+  first, or to rewrite what exists and silently drop hardening the original carried. The clause
+  names the favourable tell — a lane returning a clean tree or a suspiciously small diff — and the
+  one command that settles it before the brief is written.
+
 ## [0.168.0] - 2026-08-18
 
 ### Added

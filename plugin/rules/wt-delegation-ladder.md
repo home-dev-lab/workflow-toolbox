@@ -135,6 +135,21 @@ caps executor at briefer's own knowledge of a layer executor actually reads. Sta
 TRUE, let executor find own route — different mechanism for same invariant = brief working,
 not drift. Keep prescribing structure (shape, seams, ownership); stop prescribing technique.
 
+⚠ A TASK'S REMAINING-WORK LEDGER IS A CLAIM ABOUT THE TREE — RE-DERIVE IT BEFORE BRIEFING FROM IT.
+Multi-part task carries a running "N of M done, these remain" list, written by whoever last touched
+it, from the commits they happened to read. Goes stale the instant a commit lands without a tracker
+write. Nothing announces the drift: the ledger stays confident, specific, formatted exactly like a
+verified fact — and AGE is a weak proxy, since same-day work can invalidate it.
+Brief an executor from it and the work is already done. Executor is NOT the safeguard: told to fix a
+defect, it has every reason to build a second mechanism beside the first, and a plausible one gates
+green. Worst shape: it REWRITES what exists and silently drops hardening the original carried.
+Before a remaining-work list becomes a brief, re-derive it from the tree — read the file at HEAD,
+read the log for the paths involved. One command, seconds, and it answers the only question that
+matters: is this still true?
+⚠ Tell after the fact is FAVOURABLE: lane returns a clean tree, a suspiciously small diff, or reports
+the work already satisfied. Reads as an easy task; it is the moment to re-derive, never to merge.
+⚠ Such a run is not pure waste — say so: a lane that verifies rather than re-implements can prove an
+EXISTING lock red, which nobody had. Report it as verification obtained, beside the brief defect.
 ⚠ VERIFY A CAPABILITY STILL EXISTS BEFORE BRIEFING AROUND IT. Brief gets checked against
 the TASK — invariants right, fences right, definition of done quoted. Nobody checks it against the
 PLATFORM: a capability that worked last week reads as furniture. A prescribed remedy can be
