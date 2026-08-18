@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -35,6 +35,8 @@ function installFakeOpencode(root: string) {
   writeFileSync(bin, [
     '#!/usr/bin/env node',
     "if (process.argv[2] === 'providers') process.exit(0)",
+    "const taskFile = process.argv[process.argv.indexOf('-f') + 1]",
+    "if (process.env.FAKE_PROMPT_CAPTURE) require('node:fs').writeFileSync(process.env.FAKE_PROMPT_CAPTURE, require('node:fs').readFileSync(taskFile, 'utf8'))",
     "process.stdout.write(JSON.stringify({ part: { type: 'text', text: 'answer' } }) + '\\n')",
     '',
   ].join('\n'))
@@ -87,6 +89,9 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(result.stdout).toContain('--each-lines <path>')
     expect(result.stdout).toContain('--max-tasks <n>')
     expect(result.stdout).toContain('Default: 256')
+    expect(result.stdout).toContain('--reduce <manifest-path>')
+    expect(result.stdout).toContain('--max-reduce-chars <n>')
+    expect(result.stdout).toContain('Default: 131072')
   })
 
   it('empty generated source writes a zero-task nothing_to_do manifest without invoking opencode', () => {
@@ -133,5 +138,135 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(manifest).toMatchObject({ maxTasks: 2, dropped: 2, total: 2, nothingToDo: false })
     expect(manifest.tasks).toHaveLength(2)
     expect(manifest.tasks[0]).not.toHaveProperty('usage')
+  })
+
+  it('reduces successful answers into one external call and names failed tasks in its manifest', () => {
+    const root = makeRoot()
+    const workdir = join(root, 'workdir')
+    mkdirSync(workdir)
+    installFakeOpencode(root)
+    const firstAnswer = join(root, 'first.answer.txt')
+    writeFileSync(firstAnswer, 'first result')
+    const sourceManifest = join(root, 'fan-out.manifest.json')
+    writeFileSync(sourceManifest, JSON.stringify({
+      tasks: [
+        { id: 'first', status: 'answer', exitStatus: 0, answerFile: firstAnswer },
+        { id: 'broken', status: 'error', exitStatus: 1, reason: 'opencode exited 1' },
+      ],
+    }))
+    const manifestPath = join(root, 'reduce.manifest.json')
+    const promptCapture = join(root, 'reduce-prompt.txt')
+    const result = spawnSync(process.execPath, [
+      SCRIPT, '--reduce', sourceManifest, '--reduce-prompt', 'Synthesize:\n{{answers}}',
+      '--dir', workdir, '--manifest', manifestPath,
+    ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, FAKE_PROMPT_CAPTURE: promptCapture } })
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe(`MANIFEST: ${manifestPath}\n`)
+    expect(readFileSync(promptCapture, 'utf8')).toBe('Synthesize:\n--- BEGIN ANSWER id=first exitStatus=0 ---\nfirst result\n--- END ANSWER id=first ---')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    expect(manifest).toMatchObject({ total: 1, answered: 1, errored: 0, skippedFailedTaskIds: ['broken'] })
+    expect(manifest.tasks[0]).toMatchObject({ id: 'reduce', status: 'answer', exitStatus: 0 })
+  })
+
+  it('renders an answer containing dollar substitution patterns verbatim', () => {
+    // ⚠ A string replacement makes JS interpret `$&`, `$1` and `$$` in the REPLACEMENT.
+    // Measured 2026-08-18 before this lock existed: an answer reading `use $& to repeat`
+    // rendered as `use {{answers}} to repeat` — the placeholder re-inserted into the prompt,
+    // silently. An external model discussing a regex or a shell command produces exactly this.
+    const root = makeRoot()
+    const workdir = join(root, 'workdir')
+    mkdirSync(workdir)
+    installFakeOpencode(root)
+    const dollarAnswer = join(root, 'dollar.answer.txt')
+    const literal = 'use $& to repeat the match, $1 for group one, $$ for a literal dollar'
+    writeFileSync(dollarAnswer, literal)
+    const sourceManifest = join(root, 'fan-out.manifest.json')
+    writeFileSync(sourceManifest, JSON.stringify({
+      tasks: [{ id: 'dollars', status: 'answer', exitStatus: 0, answerFile: dollarAnswer }],
+    }))
+    const manifestPath = join(root, 'reduce.manifest.json')
+    const promptCapture = join(root, 'reduce-prompt.txt')
+    const result = spawnSync(process.execPath, [
+      SCRIPT, '--reduce', sourceManifest, '--reduce-prompt', 'Synthesize:\n{{answers}}',
+      '--dir', workdir, '--manifest', manifestPath,
+    ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, FAKE_PROMPT_CAPTURE: promptCapture } })
+
+    expect(result.status).toBe(0)
+    const rendered = readFileSync(promptCapture, 'utf8')
+    expect(rendered).toContain(literal)
+    expect(rendered).not.toContain('{{answers}}')
+  })
+
+  it('refuses a reduce template without the literal {{answers}} placeholder', () => {
+    const root = makeRoot()
+    const workdir = join(root, 'workdir')
+    mkdirSync(workdir)
+    const sourceManifest = join(root, 'fan-out.manifest.json')
+    writeFileSync(sourceManifest, JSON.stringify({ tasks: [] }))
+    const result = spawnSync(process.execPath, [
+      SCRIPT, '--reduce', sourceManifest, '--reduce-prompt', 'No answers go here', '--dir', workdir,
+    ], { encoding: 'utf8', env: { ...process.env, PATH: '' } })
+
+    expect(result.status).toBe(2)
+    expect(result.stdout).toContain('reduce prompt template must contain {{answers}}')
+  })
+
+  it('refuses a reduce template with more than one literal {{answers}} placeholder', () => {
+    const root = makeRoot()
+    const workdir = join(root, 'workdir')
+    mkdirSync(workdir)
+    const sourceManifest = join(root, 'fan-out.manifest.json')
+    writeFileSync(sourceManifest, JSON.stringify({ tasks: [] }))
+    const result = spawnSync(process.execPath, [
+      SCRIPT, '--reduce', sourceManifest, '--reduce-prompt', '{{answers}} again {{answers}}', '--dir', workdir,
+    ], { encoding: 'utf8', env: { ...process.env, PATH: '' } })
+
+    expect(result.status).toBe(2)
+    expect(result.stdout).toContain('reduce prompt template must contain exactly one {{answers}}')
+  })
+
+  it('empty reduce input makes zero calls and records its stated reason', () => {
+    const root = makeRoot()
+    const workdir = join(root, 'workdir')
+    mkdirSync(workdir)
+    installFakeOpencode(root)
+    const sourceManifest = join(root, 'fan-out.manifest.json')
+    const manifestPath = join(root, 'reduce.manifest.json')
+    const promptCapture = join(root, 'reduce-prompt.txt')
+    writeFileSync(sourceManifest, JSON.stringify({ tasks: [] }))
+    const result = spawnSync(process.execPath, [
+      SCRIPT, '--reduce', sourceManifest, '--reduce-prompt', '{{answers}}', '--dir', workdir, '--manifest', manifestPath,
+    ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, FAKE_PROMPT_CAPTURE: promptCapture } })
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe(`MANIFEST: ${manifestPath} (nothing_to_do: no usable answers in source manifest)\n`)
+    expect(existsSync(promptCapture)).toBe(false)
+    expect(JSON.parse(readFileSync(manifestPath, 'utf8'))).toMatchObject({ status: 'nothing_to_do', reason: 'no usable answers in source manifest', total: 0 })
+  })
+
+  it('caps reduce input by its literal numeric character limit and logs dropped answer ids', () => {
+    const root = makeRoot()
+    const workdir = join(root, 'workdir')
+    mkdirSync(workdir)
+    installFakeOpencode(root)
+    const firstAnswer = join(root, 'first.answer.txt')
+    const secondAnswer = join(root, 'second.answer.txt')
+    writeFileSync(firstAnswer, 'one')
+    writeFileSync(secondAnswer, 'two')
+    const sourceManifest = join(root, 'fan-out.manifest.json')
+    const manifestPath = join(root, 'reduce.manifest.json')
+    writeFileSync(sourceManifest, JSON.stringify({ tasks: [
+      { id: 'first', status: 'answer', exitStatus: 0, answerFile: firstAnswer },
+      { id: 'second', status: 'answer', exitStatus: 0, answerFile: secondAnswer },
+    ] }))
+    const result = spawnSync(process.execPath, [
+      SCRIPT, '--reduce', sourceManifest, '--reduce-prompt', '{{answers}}', '--max-reduce-chars', '90',
+      '--dir', workdir, '--manifest', manifestPath,
+    ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}`, XDG_STATE_HOME: root } })
+
+    expect(result.status).toBe(0)
+    expect(result.stderr).toContain('dropped 1 answers because --max-reduce-chars=90: second')
+    expect(JSON.parse(readFileSync(manifestPath, 'utf8'))).toMatchObject({ maxReduceChars: 90, cappedAnswerIds: ['second'], total: 1 })
   })
 })

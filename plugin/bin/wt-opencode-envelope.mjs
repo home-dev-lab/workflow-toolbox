@@ -27,6 +27,7 @@ const DEFAULT_MODEL = 'openai/gpt-5.4'
 const DEFAULT_AGENT = 'plan'
 const DEFAULT_TIMEOUT_SEC = 570
 const DEFAULT_CONCURRENCY = 4
+const DEFAULT_MAX_REDUCE_CHARS = 131072
 
 function usage() {
   return [
@@ -36,6 +37,7 @@ function usage() {
     '  wt-opencode-envelope.mjs <tasks.json> --dir <workdir> [options]',
     '  wt-opencode-envelope.mjs --each-json <path> --prompt-template <text> --id-template <text> --dir <workdir> [options]',
     '  wt-opencode-envelope.mjs --each-lines <path> --prompt-template <text> --id-template <text> --dir <workdir> [options]',
+    '  wt-opencode-envelope.mjs --reduce <manifest-path> --reduce-prompt <text> --dir <workdir> [options]',
     '',
     'Required:',
     '  <tasks.json>           JSON array of tasks: [{ "id": "t1", "prompt": "..." , ',
@@ -50,6 +52,13 @@ function usage() {
     '  --id-template <text>               Task-id template using the same placeholders (dotted field paths allowed)',
     `  --max-tasks <n>                    Maximum generated tasks. Default: ${DEFAULT_MAX_TASKS}`,
     '                                     Excess items are dropped and their count is recorded in the manifest.',
+    '',
+    'Reduce mode (one external synthesis call from a prior fan-out manifest):',
+    '  --reduce <manifest-path>             Source manifest; only successful answer files are included.',
+    '  --reduce-prompt <text>               Synthesis template containing exactly a {{answers}} insertion point.',
+    '  --reduce-prompt-file <path>          File containing the synthesis template (instead of --reduce-prompt).',
+    `  --max-reduce-chars <n>              Maximum rendered answer-block characters. Default: ${DEFAULT_MAX_REDUCE_CHARS}`,
+    '                                     Excess answers are dropped whole; their ids are logged and manifested.',
     '',
     'Options:',
     '  --model <provider/model>           Default model. Default: openai/gpt-5.4',
@@ -87,6 +96,10 @@ function parseArgs(argv) {
     concurrency: DEFAULT_CONCURRENCY,
     outDir: null,
     manifest: null,
+    reduce: null,
+    reducePrompt: null,
+    reducePromptFile: null,
+    maxReduceChars: DEFAULT_MAX_REDUCE_CHARS,
   }
   const rest = []
   for (let i = 0; i < argv.length; i++) {
@@ -105,6 +118,10 @@ function parseArgs(argv) {
     else if (a === '--concurrency') out.concurrency = Math.max(1, Number(argv[++i]) || DEFAULT_CONCURRENCY)
     else if (a === '--out-dir') out.outDir = argv[++i] ?? null
     else if (a === '--manifest') out.manifest = argv[++i] ?? null
+    else if (a === '--reduce') out.reduce = argv[++i] ?? null
+    else if (a === '--reduce-prompt') out.reducePrompt = argv[++i] ?? null
+    else if (a === '--reduce-prompt-file') out.reducePromptFile = argv[++i] ?? null
+    else if (a === '--max-reduce-chars') out.maxReduceChars = Number(argv[++i])
     else rest.push(a)
   }
   out.tasksFile = rest[0] ?? null
@@ -236,7 +253,7 @@ async function runTask(task, opts, outDir) {
   // process's own wall-clock, the CLI's `--format json` usage lines) — never invented. `usage` is
   // OMITTED entirely when the stream carried no measurable tokens (a plain-text call), because a
   // zero here would render as a measurement, which is precisely the failure this exists to avoid.
-  const base = { id, prompt: String(task.prompt ?? ''), model: modelUsed, log: result.streamFile, durationMs: result.durationMs }
+  const base = { id, prompt: String(task.prompt ?? ''), model: modelUsed, log: result.streamFile, durationMs: result.durationMs, exitStatus: result.exitCode }
   const usage = laneUsageFromOutput(result.stdout)
   const withUsage = usage !== null ? { ...base, usage } : base
 
@@ -271,6 +288,120 @@ async function runPool(tasks, limit, worker) {
   return results
 }
 
+function applyAnswersTemplate(template, answers) {
+  const placeholders = template.match(/\{\{answers\}\}/g) ?? []
+  if (placeholders.length === 0) throw new Error('reduce prompt template must contain {{answers}}')
+  if (placeholders.length !== 1) throw new Error('reduce prompt template must contain exactly one {{answers}}')
+  // ⚠ A FUNCTION replacer, never a string. With a string replacement JS interprets `$&`,
+  // `$1`, `$$` and friends as substitution patterns — so an answer mentioning `$&` would
+  // re-insert the placeholder itself. Measured 2026-08-18: `use $& to repeat` rendered as
+  // `use {{answers}} to repeat`. An external model discussing regex or shell hits this.
+  return template.replace('{{answers}}', () => answers)
+}
+
+function answerBlock(task, answer) {
+  const exitStatus = Number.isInteger(task.exitStatus) ? task.exitStatus : 0
+  return `--- BEGIN ANSWER id=${task.id} exitStatus=${exitStatus} ---\n${answer}\n--- END ANSWER id=${task.id} ---`
+}
+
+function writeReduceManifest(manifestPath, manifest) {
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
+  process.stdout.write(`MANIFEST: ${manifestPath}\n`)
+}
+
+async function reduceManifest(opts) {
+  if (!fs.existsSync(opts.reduce)) {
+    process.stdout.write(`OPENCODE_ERROR: manifest file not found: ${opts.reduce}\n`)
+    return 2
+  }
+  if (opts.reducePrompt !== null && opts.reducePromptFile !== null) {
+    process.stdout.write('OPENCODE_ERROR: choose exactly one of --reduce-prompt or --reduce-prompt-file\n')
+    return 2
+  }
+  if (opts.reducePrompt === null && opts.reducePromptFile === null) {
+    process.stdout.write('OPENCODE_ERROR: reduce mode requires --reduce-prompt or --reduce-prompt-file\n')
+    return 2
+  }
+  if (!Number.isInteger(opts.maxReduceChars) || opts.maxReduceChars < 1) {
+    process.stdout.write('OPENCODE_ERROR: --max-reduce-chars must be a positive integer\n')
+    return 2
+  }
+
+  let source
+  let template
+  try {
+    source = JSON.parse(fs.readFileSync(opts.reduce, 'utf8'))
+    template = opts.reducePromptFile === null ? opts.reducePrompt : fs.readFileSync(opts.reducePromptFile, 'utf8')
+    if (!Array.isArray(source?.tasks)) throw new Error('manifest must contain a tasks array')
+    applyAnswersTemplate(template, '')
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    process.stdout.write(`OPENCODE_ERROR: invalid reduce input: ${detail}\n`)
+    return 2
+  }
+
+  const outDir = opts.outDir ?? path.dirname(path.resolve(opts.reduce))
+  const manifestPath = opts.manifest ?? `${opts.reduce}.reduce.manifest.json`
+  const skippedFailedTaskIds = source.tasks.filter((task) => task?.status !== 'answer').map((task) => String(task?.id))
+  const unusableAnswerIds = []
+  const cappedAnswerIds = []
+  const blocks = []
+  let renderedLength = 0
+  for (const task of source.tasks) {
+    if (task?.status !== 'answer') continue
+    if (typeof task.id !== 'string' || typeof task.answerFile !== 'string') {
+      unusableAnswerIds.push(String(task?.id))
+      continue
+    }
+    let answer
+    try {
+      answer = fs.readFileSync(task.answerFile, 'utf8')
+    } catch {
+      unusableAnswerIds.push(task.id)
+      continue
+    }
+    const block = answerBlock(task, answer)
+    if (renderedLength + block.length > opts.maxReduceChars) {
+      cappedAnswerIds.push(task.id)
+      continue
+    }
+    blocks.push(block)
+    renderedLength += block.length
+  }
+  if (cappedAnswerIds.length > 0) {
+    process.stderr.write(`wt-opencode-envelope: dropped ${cappedAnswerIds.length} answers because --max-reduce-chars=${opts.maxReduceChars}: ${cappedAnswerIds.join(', ')}\n`)
+  }
+  fs.mkdirSync(outDir, { recursive: true })
+  if (blocks.length === 0) {
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      sourceManifest: path.resolve(opts.reduce), status: 'nothing_to_do', nothingToDo: true,
+      reason: 'no usable answers in source manifest', dir: path.resolve(opts.dir), total: 0,
+      answered: 0, errored: 0, maxReduceChars: opts.maxReduceChars, skippedFailedTaskIds, unusableAnswerIds, cappedAnswerIds, tasks: [],
+    }, null, 2), 'utf8')
+    process.stdout.write(`MANIFEST: ${manifestPath} (nothing_to_do: no usable answers in source manifest)\n`)
+    return 0
+  }
+
+  const bin = resolveBinarySync()
+  if (bin === null) {
+    process.stdout.write('OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations\n')
+    return 1
+  }
+  if (!providerAuthenticatedSync(bin)) {
+    process.stdout.write('OPENCODE_UNAVAILABLE: no opencode provider authenticated (providers list failed)\n')
+    return 1
+  }
+  const prompt = applyAnswersTemplate(template, blocks.join('\n'))
+  const result = await runTask({ id: 'reduce', prompt }, { ...opts, bin }, outDir)
+  writeReduceManifest(manifestPath, {
+    sourceManifest: path.resolve(opts.reduce), status: 'complete', nothingToDo: false,
+    dir: path.resolve(opts.dir), total: 1, answered: result.status === 'answer' ? 1 : 0,
+    errored: result.status === 'error' ? 1 : 0, maxReduceChars: opts.maxReduceChars,
+    skippedFailedTaskIds, unusableAnswerIds, cappedAnswerIds, tasks: [result],
+  })
+  return 0
+}
+
 async function main() {
   const argv = process.argv.slice(2)
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
@@ -279,30 +410,32 @@ async function main() {
   }
 
   const opts = parseArgs(argv)
+  const reduceMode = opts.reduce !== null
   const eachSources = [opts.eachJson, opts.eachLines].filter((value) => value !== null)
   const generatedMode = eachSources.length > 0
-  if (opts.dir === null || (!generatedMode && opts.tasksFile === null)) {
+  if (opts.dir === null || (!reduceMode && !generatedMode && opts.tasksFile === null)) {
     process.stderr.write(`${usage()}\n`)
     process.stderr.write(generatedMode
       ? '\nMissing required task source and/or --dir.\n'
       : '\nMissing required <tasks.json> and/or --dir.\n')
     return 2
   }
-  if (eachSources.length > 1 || (generatedMode && opts.tasksFile !== null)) {
-    process.stdout.write('OPENCODE_ERROR: choose exactly one of <tasks.json>, --each-json, or --each-lines\n')
+  if (eachSources.length > 1 || (generatedMode && opts.tasksFile !== null) || (reduceMode && (generatedMode || opts.tasksFile !== null))) {
+    process.stdout.write('OPENCODE_ERROR: choose exactly one of <tasks.json>, --each-json, --each-lines, or --reduce\n')
     return 2
   }
   if (generatedMode && (opts.promptTemplate === null || opts.idTemplate === null)) {
     process.stdout.write('OPENCODE_ERROR: generated-task mode requires --prompt-template and --id-template\n')
     return 2
   }
+  if (!fs.existsSync(opts.dir) || !fs.statSync(opts.dir).isDirectory()) {
+    process.stdout.write(`OPENCODE_ERROR: --dir is not a directory: ${opts.dir}\n`)
+    return 2
+  }
+  if (reduceMode) return reduceManifest(opts)
   const sourcePath = generatedMode ? eachSources[0] : opts.tasksFile
   if (!fs.existsSync(sourcePath)) {
     process.stdout.write(`OPENCODE_ERROR: ${generatedMode ? 'source' : 'tasks file'} not found: ${sourcePath}\n`)
-    return 2
-  }
-  if (!fs.existsSync(opts.dir) || !fs.statSync(opts.dir).isDirectory()) {
-    process.stdout.write(`OPENCODE_ERROR: --dir is not a directory: ${opts.dir}\n`)
     return 2
   }
 
