@@ -4,6 +4,52 @@ All notable changes to the `workflow-toolbox` Claude Code plugin are documented 
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+## [0.170.0] - 2026-08-18
+
+### Added
+
+- **`leaf-readonly` agentType** — a fenced worker type for roles whose output is KNOWLEDGE
+  rather than a change (survey, ground, audit, locate, verify-by-reading). It declares an
+  explicit `tools:` ALLOW-LIST instead of subtracting from the default surface, and sits
+  between `lean` (zero tools) and `leaf` (every tool except messaging).
+
+  The reason it exists is measured, not theoretical: **withholding `Write`, `Edit` and `Bash`
+  does not make an agent read-only.** A surface that still carries an MCP server's
+  file-writing, shell-executing, record-deleting or message-sending tools still HOLDS all of
+  those with none of the three present (the listing and one invocation from it are observed; that
+  a write through such a tool completes is an inference, and the allow-list does not depend on it) — and an enumeration of forbidden tools cannot cover a surface
+  that grows every time a user installs another MCP server. An allow-list is the only form that
+  closes tools nobody has installed yet.
+
+### Changed
+
+- **`wt-delegation-ladder` gains a "read-only is an ALLOW-LIST" clause.** The rule previously
+  described read-only enforcement only through the executor-briefing split; it now states the
+  invariant (*the agent holds nothing that mutates anything outside its own context*), why a
+  deny-list cannot work (an enumeration cannot cover a surface that grows with every installed
+  MCP server), that an allow-list may silently deliver less than it declares, and that a newly
+  written agent type is not spawnable in the session that wrote it.
+
+- **`leaf`'s description no longer implies a fence it does not provide.** It denies
+  `SendMessage` and nothing else; its own guidance previously read "you keep every tool except
+  inter-agent messaging" without saying what that breadth includes. Both the description and the
+  agent-facing guidance now name the reach explicitly and point a read-only role at
+  `leaf-readonly`. No behaviour change: `leaf` keeps exactly the surface it always had, and no
+  existing routing moves.
+
+### Notes
+
+- ⚠ An allow-list can deliver LESS than it declares, with no error: `Grep` and `Glob` were
+  declared by two different definitions on this harness family and did not arrive. It errs SAFE
+  (fewer tools, never more), so the fence holds — but a role must not assume search is
+  available, and a caller should verify a spawned agent's ACTUAL surface rather than trust the
+  declaration.
+- ⚠ A newly added agentType may not be spawnable in the session that adds it — measured twice an
+  hour apart here, with the printed type list omitting a type added forty minutes earlier. Whether
+  another setup refreshes that list is unverified; plan verification of a new type for a later
+  session rather than depending on a refresh.
+
+## [0.169.0] - 2026-08-18
 
 ### Added
 

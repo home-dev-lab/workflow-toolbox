@@ -193,6 +193,49 @@ Show the shape in a form that would be WRONG to paste: a real example already in
 a description with no quotable sentence in it. Never a plausible-looking template. Tell: a brief
 containing a sentence that could survive copy-paste into the deliverable unchanged.
 
+## "Read-only" is an ALLOW-LIST, never a subtraction and never a sentence in a brief
+
+Delegate whose output is KNOWLEDGE rather than a change — investigate, ground, survey, audit — the
+read-only property is enforced by WHAT THE AGENT CAN CALL. A brief saying "do not modify anything"
+is an instruction a model can silently ignore, and this one fails OUTWARD: damage lands in someone
+else's tree.
+
+**Withholding the obvious writing tools does NOT produce a read-only agent.** An agent carrying no
+file-write, no editor and no shell still CARRIES an installed MCP server's file-writing,
+code-executing, record-deleting and message-sending tools — and a delegate can demonstrably invoke
+a tool from that listing. Subtraction cannot work here for a structural reason: **an enumeration of
+forbidden tools cannot cover a surface that GROWS.** Every MCP server a user installs adds tools no
+existing rule names.
+
+⚠ State the evidence at its real strength, because the weaker claim is enough: what is OBSERVED is
+the tool listing plus one proven invocation from it. That a write through such a tool COMPLETES is
+an inference, not a measurement. The allow-list is the right shape either way — it closes the
+capability without needing the hazard demonstrated first.
+
+So state the INVARIANT and enforce it as a list of what the agent MAY call: *it holds nothing that
+mutates anything outside its own context*. An allow-list closes tools nobody has installed yet;
+a deny-list closes only the ones someone already thought of.
+
+⚠ **An allow-list can deliver LESS than it declares, silently.** Measured on two definitions:
+declared entries did not arrive, with no error. It errs SAFE — fewer tools, never more — so the
+fence holds, but a role must not assume a declared capability is present. **Read the running
+agent's ACTUAL surface; a declaration is not a manifest.**
+
+⚠ A tool that executes or writes cannot be narrowed by wording. Granting one because the task needs
+it once is granting it for every later turn — the question at spawn is not "will it need this
+once?" but "is there any turn on which this is unsafe?".
+
+⚠ **A newly written agent type may not be spawnable in the session that wrote it.** Measured twice,
+an hour apart, on one harness: the spawn returned `Agent type not found`, and the list it printed
+omitted a type added forty minutes earlier — so that list is not re-read on demand there. Other
+setups may refresh it; treat this as a hazard to check, not a universal.
+**Plan a purpose-built fenced type to be verified in a LATER session**, so the arc does not depend
+on a refresh that may not come.
+
+⚠ Invisible from the spawner's side: a delegate reporting findings looks identical whether it READ
+them or produced them by ACTING. Only its transcript, or independent verification of its claims,
+separates the two.
+
 ## Four prohibitions that sharpen the ladder
 
 1. **Executing a fully-specified design = executor-lane work, not inline on a strong model.**
