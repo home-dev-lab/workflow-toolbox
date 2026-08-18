@@ -46,8 +46,8 @@ type Verdict = {
 
 function withTempSubagentsDir(run: (dir: string) => void): void {
   const root = mkdtempSync(join(tmpdir(), 'wt-observer-pairing-'))
-  const dir = join(root, 'subagents')
-  mkdirSync(dir)
+  const dir = join(root, 'project', 'session-current', 'subagents')
+  mkdirSync(dir, { recursive: true })
   try {
     run(dir)
   } finally {
@@ -136,8 +136,8 @@ function runCheckAsync(subagentsDir: string, options: RunOptions): Promise<Verdi
 
 async function withTempSubagentsDirAsync(run: (dir: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), 'wt-observer-pairing-'))
-  const dir = join(root, 'subagents')
-  mkdirSync(dir)
+  const dir = join(root, 'project', 'session-current', 'subagents')
+  mkdirSync(dir, { recursive: true })
   try {
     await run(dir)
   } finally {
@@ -423,6 +423,27 @@ describe('wt-check-observer-pairing.mjs', () => {
       })
     })
 
+    it('confirms pairing when observerTaskId resolves in a different session of the same project', () => {
+      withTempSubagentsDir((dir) => {
+        writeAgentFixture(dir, 'observed-cross-session', { agentType: 'pilot', observerTaskId: 'observer-cross-session' }, 1_000)
+        const otherSessionDir = join(dir, '..', '..', 'session-observer', 'subagents')
+        mkdirSync(otherSessionDir, { recursive: true })
+        const observerFile = writeAgentFixture(
+          otherSessionDir,
+          'observer-cross-session',
+          { agentType: 'pilot-watchdog', isObserver: true },
+          1_500,
+        )
+
+        const result = runCheck(dir, { agentId: 'observed-cross-session', windowSec: 30 })
+
+        expect(result.exitCode, 'cross-session observer id must resolve').toBe(0)
+        expect(result.json.status, 'cross-session pairing must be watched').toBe('pass')
+        expect(result.json.attachedBy).toBe('observerTaskId')
+        expect(result.json.observerFile).toBe(observerFile)
+      })
+    })
+
     it('confirms pairing via observerTaskId even when the sibling mtime predates the observed agent (negative delta)', () => {
       withTempSubagentsDir((dir) => {
         writeAgentFixture(dir, 'obs-1', { agentType: 'pilot-watchdog', isObserver: true }, 990)
@@ -480,7 +501,10 @@ describe('wt-check-observer-pairing.mjs', () => {
 
     it('still returns pending when observerTaskId is present but unresolved AND no mtime candidate exists either', () => {
       withTempSubagentsDir((dir) => {
+        const otherSessionDir = join(dir, '..', '..', 'session-without-observer', 'subagents')
+        mkdirSync(otherSessionDir, { recursive: true })
         writeAgentFixture(dir, 'agent-both-fail', { agentType: 'pilot', observerTaskId: 'ghost', taskKind: 'async' }, 1_000)
+        writeAgentFixture(otherSessionDir, 'unrelated', { agentType: 'general-purpose' }, 1_005)
 
         const result = runCheck(dir, { agentId: 'agent-both-fail' })
 
