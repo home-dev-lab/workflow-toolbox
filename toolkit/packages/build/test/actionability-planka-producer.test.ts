@@ -64,9 +64,13 @@ function scaffoldProject(tag: string, opts: { withParser: boolean; withBoardPoin
   const root = mkRoot(tag)
   const home = join(root, 'home')
   const state = join(root, 'state')
+  const configDir = join(root, 'claude-config')
+  const hookTmp = join(root, 'hook-tmp')
   const cwd = join(root, 'project')
   mkdirSync(home, { recursive: true })
   mkdirSync(state, { recursive: true })
+  mkdirSync(configDir, { recursive: true })
+  mkdirSync(hookTmp, { recursive: true })
   mkdirSync(cwd, { recursive: true })
   if (opts.withBoardPointer !== false) {
     mkdirSync(join(cwd, '.claude'), { recursive: true })
@@ -80,8 +84,9 @@ function scaffoldProject(tag: string, opts: { withParser: boolean; withBoardPoin
   return {
     root,
     cwd,
+    configDir,
     stateDir: join(state, 'wt-actionable'),
-    env: { ...process.env, HOME: home, XDG_STATE_HOME: state },
+    env: { ...process.env, HOME: home, XDG_STATE_HOME: state, CLAUDE_CONFIG_DIR: configDir, TMPDIR: hookTmp },
   }
 }
 
@@ -327,9 +332,9 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
     expect(String(snap!.countedScope)).toMatch(/2 scanned/)
   })
 
-  it('writes a snapshot when the board payload was spilled to a file named by a placeholder tool_response', () => {
-    const { cwd, stateDir, env, root } = scaffoldProject('spilled', { withParser: true })
-    const spillPath = join(root, 'spill', 'planka-board.json')
+  it('writes a snapshot when the harness spills the board payload under the active config dir tool-results path', () => {
+    const { cwd, stateDir, env, configDir } = scaffoldProject('spilled', { withParser: true })
+    const spillPath = join(configDir, 'projects', 'project-slug', 'session-id', 'tool-results', 'planka-board.json')
     mkdirSync(dirname(spillPath), { recursive: true })
     writeFileSync(spillPath, JSON.stringify({
       id: 'board-1',
@@ -397,9 +402,11 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
     expect(String(readFailureRecords(stateDir)[0]!.detail)).toMatch(/spill/i)
   })
 
-  it('writes NOTHING when a placeholder names a path outside the allowed temp/state area, and journals why', () => {
-    const { cwd, stateDir, env } = scaffoldProject('spilled-invalid-path', { withParser: true })
-    const spillPath = '/etc/hosts'
+  it('journals a containment refusal distinctly from an unparseable payload', () => {
+    const { cwd, stateDir, env, root } = scaffoldProject('spilled-invalid-path', { withParser: true })
+    const spillPath = join(root, 'outside-every-allowed-root', 'planka-board.json')
+    mkdirSync(dirname(spillPath), { recursive: true })
+    writeFileSync(spillPath, JSON.stringify({ id: 'board-1', lists: [] }), 'utf8')
     const payload = {
       hook_event_name: 'PostToolUse',
       tool_name: 'mcp__planka__get_board',
@@ -410,8 +417,26 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
     const res = runProducerHook(payload, env)
     expect(res.status).toBe(0)
     expect(readSnapshot(stateDir, cwd)).toBeNull()
-    expect(readFailureRecords(stateDir)[0]).toMatchObject({ ok: false })
+    expect(readFailureRecords(stateDir)[0]).toMatchObject({ ok: false, reason: 'spill-payload-refused' })
     expect(String(readFailureRecords(stateDir)[0]!.detail)).toMatch(/validation/i)
+  })
+
+  it('enforces the spill size cap for a tool-results path under the active config dir', () => {
+    const { cwd, stateDir, env, configDir } = scaffoldProject('spilled-too-large', { withParser: true })
+    const spillPath = join(configDir, 'projects', 'project-slug', 'session-id', 'tool-results', 'planka-board.json')
+    mkdirSync(dirname(spillPath), { recursive: true })
+    writeFileSync(spillPath, JSON.stringify({ id: 'board-1', lists: [], padding: 'x'.repeat(100) }), 'utf8')
+    const res = runProducerHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__get_board',
+      tool_input: { boardId: 'b1' },
+      tool_response: spilledResponse(spillPath),
+      cwd,
+    }, { ...env, TMPDIR: join(configDir, 'projects'), WT_ACTIONABLE_MAX_SPILL_BYTES: '32' })
+    expect(res.status).toBe(0)
+    expect(readSnapshot(stateDir, cwd)).toBeNull()
+    expect(readFailureRecords(stateDir)[0]).toMatchObject({ ok: false })
+    expect(String(readFailureRecords(stateDir)[0]!.detail)).toMatch(/too large/i)
   })
 
   it('writes NOTHING when the dependency-parser replies with non-array ids/unparseable — review finding 3', () => {
