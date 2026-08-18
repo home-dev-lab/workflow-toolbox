@@ -24,6 +24,10 @@ rather than duplicating it here.
 
 Also included: `withLeafFence` / `withLeanRouting` (agent-default wrappers that route
 fresh-context worker/reasoning-only roles to a minimal-ambient-context agent type),
+`withReadOnlyRouting` (a selective wrapper that routes knowledge-only stages to
+`READONLY_AGENT_TYPE`, `workflow-toolbox:leaf-readonly`, while preserving mutation-capable
+stages on their original runtime; configure it with `WithReadOnlyRoutingOptions` and inspect
+its `ReadOnlyRoutingReport`),
 `probeAgentType` (check whether a named agent type is actually callable before routing to
 it), `isExternalBridgeType` (the SAME registry `adversarialVerification` uses to decide
 whether a routed `verifierType` is an external CLI relay — opencode/codex — vs a Claude

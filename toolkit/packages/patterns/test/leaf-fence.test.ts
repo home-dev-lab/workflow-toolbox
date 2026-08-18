@@ -4,6 +4,14 @@ import { withLeafFence, LEAF_AGENT_TYPE } from '../src/leaf-fence.js'
 import { LOCAL_AGENT_PROBE_PROMPT } from '../src/probe-agent-type.js'
 
 describe('withLeafFence — available (probe answers)', () => {
+  // ⚠ Asserts the LITERAL name on purpose. Every other test here compares against
+  // LEAF_AGENT_TYPE, so a typo in the constant moves the code and the expectation together.
+  // Measured 2026-08-18: pointing the constant at a non-existent type left all 15 tests
+  // in this file GREEN. This assertion is the only one that can fail for that reason.
+  it('pins the published agent-type name, which nothing else in this file locks', () => {
+    expect(LEAF_AGENT_TYPE).toBe('workflow-toolbox:leaf')
+  })
+
   it('probes the default LEAF_AGENT_TYPE and reports it resolved', async () => {
     const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
     const { report } = await withLeafFence(rt)

@@ -4,6 +4,14 @@ import { withLeanRouting, LEAN_AGENT_TYPE } from '../src/lean-routing.js'
 import { LOCAL_AGENT_PROBE_PROMPT } from '../src/probe-agent-type.js'
 
 describe('withLeanRouting — available (probe answers)', () => {
+  // ⚠ Asserts the LITERAL name on purpose. Every other test here compares against
+  // LEAN_AGENT_TYPE, so a typo in the constant moves the code and the expectation together.
+  // Measured 2026-08-18: pointing the constant at a non-existent type left all 17 tests
+  // in this file GREEN. This assertion is the only one that can fail for that reason.
+  it('pins the published agent-type name, which nothing else in this file locks', () => {
+    expect(LEAN_AGENT_TYPE).toBe('workflow-toolbox:lean')
+  })
+
   it('probes the default LEAN_AGENT_TYPE and reports it resolved', async () => {
     const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
     const { report } = await withLeanRouting(rt)
