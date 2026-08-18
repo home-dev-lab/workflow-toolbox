@@ -45,7 +45,7 @@
 
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
@@ -79,7 +79,8 @@ function isWithin(root, candidate) {
 }
 
 function allowedSpillRoots() {
-  return [canonicalPath(tmpdir()), canonicalPath(dirname(stateRoot()))]
+  const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
+  return [canonicalPath(tmpdir()), canonicalPath(dirname(stateRoot())), canonicalPath(join(configDir, 'projects'))]
 }
 
 function extractSavedOutputPath(text) {
@@ -232,7 +233,7 @@ function main() {
 
   const hydratedToolResponse = readSpilledToolResponse(input.tool_response)
   if (!hydratedToolResponse.ok) {
-    recordFailure(cwd, 'payload-unparseable', hydratedToolResponse.reason)
+    recordFailure(cwd, 'spill-payload-refused', hydratedToolResponse.reason)
     return
   }
 
