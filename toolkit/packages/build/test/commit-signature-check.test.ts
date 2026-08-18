@@ -252,6 +252,70 @@ describe('wt-check-commit-signatures.mjs', () => {
     expect(res.stdout).toContain('ccccccc: R (revoked signing key)')
   })
 
+  // ⚠ `E` is NOT `N`. `E` means git could not VERIFY the signature — commonly a signature made
+  // with a key absent from this keyring, which is what a forge's web-flow key on a squash-merge
+  // produces. Diagnosing it as "your signing key was unavailable or locked" sends the reader to
+  // check their own key, which is fine, and then to amend a commit somebody else created.
+  it('an E-only finding does not blame the local signing key', () => {
+    const { repo, env } = makeFakeGitEnv('cli-e-cause', {
+      FAKE_GIT_COMMIT_GPGSIGN: 'true',
+      FAKE_GIT_LOG: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tE\tsquash merge from the forge\n',
+      FAKE_GIT_HEAD: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    })
+    const res = runCli(['--repo', repo], env)
+    expect(res.status).toBe(1)
+    expect(res.stdout).toContain('aaaaaaa: E (signature check error)')
+    // The wrong diagnosis must be ABSENT, not merely accompanied by a better one.
+    expect(res.stdout).not.toContain('unavailable, locked')
+    expect(res.stdout).toMatch(/could not be VERIFIED|unknown to this keyring/i)
+  })
+
+  // ⚠ The remedy is the half that reaches outward. `git commit --amend` on a merge the forge
+  // created and this clone has already fetched diverges from the remote. The rebase branch
+  // already carries a published-history reservation; the single-HEAD branch carried none, which
+  // is exactly the branch an E-on-HEAD finding takes.
+  it('the single-HEAD remedy carries a published-history reservation', () => {
+    const { repo, env } = makeFakeGitEnv('cli-e-remedy', {
+      FAKE_GIT_COMMIT_GPGSIGN: 'true',
+      FAKE_GIT_LOG: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tE\tsquash merge from the forge\n',
+      FAKE_GIT_HEAD: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    })
+    const res = runCli(['--repo', repo], env)
+    expect(res.status).toBe(1)
+    expect(res.stdout).toMatch(/already published|rewriting published history/i)
+  })
+
+  // ⚠ The population that must NOT change. One repo on this machine is deliberately unsigned —
+  // 40 of its last 60 commits are `N` — so the existing wording describes a real majority
+  // somewhere. Softening it globally would break a correct guard for people not in the room.
+  it('an N finding keeps the signing-failure cause unchanged', () => {
+    const { repo, env } = makeFakeGitEnv('cli-n-unchanged', {
+      FAKE_GIT_COMMIT_GPGSIGN: 'true',
+      FAKE_GIT_LOG: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tN\tunsigned head\n',
+      FAKE_GIT_HEAD: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    })
+    const res = runCli(['--repo', repo], env)
+    expect(res.status).toBe(1)
+    expect(res.stdout).toContain('unavailable, locked')
+    expect(res.stdout).toContain('Fix: git commit --amend --no-edit -S')
+  })
+
+  // A mixed set still contains a genuinely unsigned commit, so the signing-failure cause is
+  // correct for it. The E-specific line rides alongside rather than replacing it.
+  it('a mixed N + E finding keeps the signing cause AND explains the E', () => {
+    const { repo, env } = makeFakeGitEnv('cli-mixed', {
+      FAKE_GIT_COMMIT_GPGSIGN: 'true',
+      FAKE_GIT_LOG:
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tN\tunsigned\n' +
+        'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tE\tforge merge\n',
+      FAKE_GIT_HEAD: 'cccccccccccccccccccccccccccccccccccccccc',
+    })
+    const res = runCli(['--repo', repo, '--range', 'public/main..main'], env)
+    expect(res.status).toBe(1)
+    expect(res.stdout).toContain('unavailable, locked')
+    expect(res.stdout).toMatch(/could not be VERIFIED|unknown to this keyring/i)
+  })
+
   it('user.signingkey set but commit.gpgsign absent still enforces the check', () => {
     const { repo, env } = makeFakeGitEnv('cli-signingkey', {
       FAKE_GIT_SIGNINGKEY: 'ssh-ed25519 AAAA',
