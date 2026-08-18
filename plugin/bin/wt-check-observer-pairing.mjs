@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 
 const HELP = `wt-check-observer-pairing — did a spawned agent actually get the read-only
@@ -190,10 +190,60 @@ const records = filenames
   .filter((filename) => filename.endsWith('.meta.json'))
   .map((filename) => readMeta(join(subagentsDir, filename)))
 
-const malformed = records.filter((record) => !record.ok).map((record) => ({
+let malformed = records.filter((record) => !record.ok).map((record) => ({
   file: record.filePath,
   reason: record.reason ?? 'unreadable',
 }))
+
+function resolveObserverTaskRecords(rawId) {
+  const resolvedSubagentsDir = resolve(subagentsDir)
+  const projectDir = dirname(dirname(resolvedSubagentsDir))
+  const filename = `agent-${rawId}.meta.json`
+  const currentCandidate = resolve(resolvedSubagentsDir, filename)
+  if (dirname(currentCandidate) !== resolvedSubagentsDir) return { records: [], complete: false }
+  const candidatePaths = [currentCandidate]
+  let complete = true
+
+  try {
+    for (const entry of readdirSync(projectDir, { withFileTypes: true })) {
+      // Session symlinks are deliberately excluded: following one could escape the
+      // project directory, while direct child directories keep this lookup bounded.
+      if (!entry.isDirectory()) continue
+      const candidatePath = join(projectDir, entry.name, 'subagents', filename)
+      if (candidatePath !== candidatePaths[0]) candidatePaths.push(candidatePath)
+    }
+  } catch {
+    // Keep the supplied session usable on its own when the wider project cannot be read.
+    complete = false
+  }
+
+  const foundRecords = []
+  for (const candidatePath of candidatePaths) {
+    try {
+      lstatSync(candidatePath)
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue
+      complete = false
+      foundRecords.push({
+        ok: false,
+        filePath: candidatePath,
+        reason: error instanceof Error ? error.message : String(error),
+      })
+      continue
+    }
+    const record = readMeta(candidatePath)
+    if (!record.ok) complete = false
+    foundRecords.push(record)
+  }
+  return { records: foundRecords, complete }
+}
+
+function addMalformed(foundRecords) {
+  for (const record of foundRecords) {
+    if (record.ok || malformed.some((item) => item.file === record.filePath)) continue
+    malformed.push({ file: record.filePath, reason: record.reason ?? 'unreadable' })
+  }
+}
 
 let observed = null
 let matchedBy = null
@@ -244,8 +294,11 @@ if (!observed) {
 // checked first instead of ever being inferred from timing.
 const observerTaskId = observed.parsed?.observerTaskId
 if (typeof observerTaskId === 'string' && observerTaskId.length > 0) {
-  const pairedFilePath = join(subagentsDir, `agent-${observerTaskId}.meta.json`)
-  let paired = records.find((record) => record.ok && record.filePath === pairedFilePath)
+  let pairingResolution = resolveObserverTaskRecords(observerTaskId)
+  let pairedRecords = pairingResolution.records
+  addMalformed(pairedRecords)
+  let paired = pairedRecords.find((record) => record.ok && record.parsed?.isObserver === true)
+    ?? pairedRecords.find((record) => record.ok)
   if (paired && paired.parsed?.isObserver === true) {
     emit(0, {
       status: 'pass',
@@ -274,21 +327,33 @@ if (typeof observerTaskId === 'string' && observerTaskId.length > 0) {
     const deadline = Date.now() + retryMs
     while (Date.now() < deadline) {
       sleepMs(Math.min(retryIntervalMs, deadline - Date.now()))
-      const retryMeta = readMeta(pairedFilePath)
-      if (retryMeta.ok) {
-        paired = retryMeta
-        if (retryMeta.parsed?.isObserver === true) {
-          emit(0, {
-            status: 'pass',
-            reason: 'observerTaskId field present and resolves to an isObserver:true sibling — resolved during the bounded retry window',
-            matchedBy,
-            attachedBy: 'observerTaskId',
-            observerFile: resolve(retryMeta.filePath),
-            malformed,
-          })
-        }
+      pairingResolution = resolveObserverTaskRecords(observerTaskId)
+      pairedRecords = pairingResolution.records
+      addMalformed(pairedRecords)
+      const retryMeta = pairedRecords.find((record) => record.ok && record.parsed?.isObserver === true)
+      paired = retryMeta ?? pairedRecords.find((record) => record.ok)
+      if (retryMeta) {
+        emit(0, {
+          status: 'pass',
+          reason: 'observerTaskId field present and resolves to an isObserver:true sibling — resolved during the bounded retry window',
+          matchedBy,
+          attachedBy: 'observerTaskId',
+          observerFile: resolve(retryMeta.filePath),
+          malformed,
+        })
       }
     }
+  }
+
+  if (!paired && !pairingResolution.complete) {
+    emit(2, {
+      status: 'unknown',
+      failureClass: 'observer-resolution',
+      reason: `observerTaskId points to ${observerTaskId}, but the project-wide sibling lookup could not read every candidate location`,
+      matchedBy,
+      attachedBy: 'observerTaskId-conflict',
+      malformed,
+    })
   }
 
   // ⚠ TWO DIFFERENT SHAPES BELOW — established 2026-08-09, do not collapse them back
