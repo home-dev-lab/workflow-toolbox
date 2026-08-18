@@ -63,10 +63,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   (fewer tools, never more), so the fence holds — but a role must not assume search is
   available, and a caller should verify a spawned agent's ACTUAL surface rather than trust the
   declaration.
-- ⚠ A newly added agentType may not be spawnable in the session that adds it — measured twice an
-  hour apart here, with the printed type list omitting a type added forty minutes earlier. Whether
-  another setup refreshes that list is unverified; plan verification of a new type for a later
-  session rather than depending on a refresh.
+- ⚠ A newly added agentType becomes spawnable after a DELAY of roughly ninety minutes, with no
+  restart and no announcement. Two readings taken at zero and sixty minutes both returned
+  `Agent type not found` and were simply too early — do not read one refusal as impossibility, and
+  re-probe instead of concluding.
 
 ## [0.169.0] - 2026-08-18
 

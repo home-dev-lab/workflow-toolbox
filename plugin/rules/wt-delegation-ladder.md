@@ -240,12 +240,15 @@ agent's ACTUAL surface; a declaration is not a manifest.**
 it once is granting it for every later turn — the question at spawn is not "will it need this
 once?" but "is there any turn on which this is unsafe?".
 
-⚠ **A newly written agent type may not be spawnable in the session that wrote it.** Measured twice,
-an hour apart, on one harness: the spawn returned `Agent type not found`, and the list it printed
-omitted a type added forty minutes earlier — so that list is not re-read on demand there. Other
-setups may refresh it; treat this as a hazard to check, not a universal.
-**Plan a purpose-built fenced type to be verified in a LATER session**, so the arc does not depend
-on a refresh that may not come.
+⚠ **A newly written agent type becomes spawnable only after a DELAY — measured at roughly ninety
+minutes, and the two earlier readings were taken too soon.** The spawn returned `Agent type not
+found` at both zero and sixty minutes, and the list it printed omitted a type added forty minutes
+earlier; the type then appeared on its own, unannounced, with no session restart. So the earlier
+conclusion — *"not spawnable in the session that wrote it"* — was wrong, and wrong in the
+expensive direction: it turns a wait into a supposed impossibility.
+**Do not plan around either extreme.** A new type is not immediately usable and is not permanently
+unavailable; **re-probe rather than concluding from one refusal**, and if an arc needs the type
+now, arrange for it to be verified later rather than declaring it impossible.
 
 ⚠ Invisible from the spawner's side: a delegate reporting findings looks identical whether it READ
 them or produced them by ACTING. Only its transcript, or independent verification of its claims,
