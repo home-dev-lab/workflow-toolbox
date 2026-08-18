@@ -135,6 +135,14 @@ caps executor at briefer's own knowledge of a layer executor actually reads. Sta
 TRUE, let executor find own route — different mechanism for same invariant = brief working,
 not drift. Keep prescribing structure (shape, seams, ownership); stop prescribing technique.
 
+⚠ VERIFY A CAPABILITY STILL EXISTS BEFORE BRIEFING AROUND IT. Brief gets checked against
+the TASK — invariants right, fences right, definition of done quoted. Nobody checks it against the
+PLATFORM: a capability that worked last week reads as furniture. A prescribed remedy can be
+WITHDRAWN while the rule still names it, and the brief is then wrong BEFORE the executor reads it.
+Covers a tool, a write path, an output channel, an agent type. Executor behaves correctly, cannot
+comply, explains — one round trip bought for nothing, and the competence of both parties hides it.
+Confirm at brief time; never infer from the rule that prescribes it.
+
 MECHANICAL escalation trigger, never "use judgment": escalate after two failed attempts at same
 fix, one repeated diagnosis, or ~15–20 min without narrowing problem. Judgment-based clause is
 unenforceable, silently ignored — agent grinding a wrong hypothesis feels busy, not stuck, so

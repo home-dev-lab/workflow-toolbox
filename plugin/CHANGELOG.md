@@ -25,6 +25,21 @@ on the two sides. Choosing the next number is part of reconciling that fork, not
 change.
 
 ## [0.165.0] - 2026-08-27
+## [0.168.0] - 2026-08-18
+
+### Added
+
+- **The briefing guidance now carries a platform check.** `wt-delegation-ladder.md`’s “Briefing an
+  executor” section told an arbiter to state invariants, traps, evidence format and escalation
+  triggers — all of which check a brief against the TASK. Nothing checked it against the PLATFORM,
+  and a capability that worked last week reads as furniture. A prescribed remedy can be withdrawn
+  while the rule still names it, at which point the brief is wrong BEFORE the executor reads it:
+  the agent behaves correctly, cannot comply, and explains — a round trip bought for nothing, and
+  the competence of both parties is exactly what hides the cause. The clause covers a tool, a write
+  path, an output channel or an agent type, and says to confirm at brief time rather than infer
+  from the rule that prescribes it.
+
+## [0.167.0] - 2026-08-17
 
 ### Fixed
 
