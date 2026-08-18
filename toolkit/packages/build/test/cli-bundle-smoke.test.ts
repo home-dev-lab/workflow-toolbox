@@ -71,7 +71,7 @@ afterAll(() => {
   // tooling rebuilds it on demand. Nothing to clean — the build is idempotent.
 })
 
-describe('published CLI bundle — private workspace deps are inlined, not externalized', () => {
+describe('published CLI bundle — undeclared workspace deps are inlined, declared ones may be external', () => {
   it('tsup emitted the cli bundle', () => {
     expect(fs.existsSync(BUNDLE)).toBe(true)
   })
