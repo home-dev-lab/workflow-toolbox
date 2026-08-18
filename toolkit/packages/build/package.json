@@ -55,14 +55,14 @@
     "prepack": "pnpm run build"
   },
   "dependencies": {
+    "@workflow-toolbox/patterns": "workspace:*",
+    "@workflow-toolbox/pipeline-spec": "workspace:*",
     "@workflow-toolbox/runtime": "workspace:*",
     "esbuild": "~0.28.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@workflow-toolbox/debugger": "workspace:*",
-    "@workflow-toolbox/patterns": "workspace:*",
-    "@workflow-toolbox/pipeline-spec": "workspace:*",
     "@workflow-toolbox/scaffold": "workspace:*",
     "@workflow-toolbox/std": "workspace:*",
     "eslint": "^9.0.0",
