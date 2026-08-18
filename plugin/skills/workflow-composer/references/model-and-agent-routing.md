@@ -88,18 +88,11 @@
     takes Claude out of the workflow: the role still costs an `agent()` call, and the SDK
     host cannot see or reroute what happens inside that call once it starts (measured on
     SDK 0.3.205: `canUseTool` is asked about the `Workflow` tool call and nothing inside
-    it). If what you actually need is a stage that runs with **zero Claude models
-    involved**, this option does not give you that, and no workflow-level knob does —
-    every `agent()` call is a Claude subagent by construction
-    (`toolkit/packages/runtime/globals.d.ts`). That shape is a **pipeline** with a
-    `scripted` stage instead — see `references/orchestrator-pipelines.md`'s "Scripted
-    stages" section; a workflow that must reach an external model with no Claude in the
-    loop is composed there, not here.
-    ⚠ **This bridge pattern is slated for removal, not for hardening.** Frederic's
-    decision, 2026-08-08: stop using the bridge wrapper, replace it with the scripted
-    pipeline stage, and do not guard or harden the wrapper in the meantime. It still
-    works today and is documented below as it stands — treat new standing automation
-    built on it as a decision with a known expiry, not a durable recommendation.
+    it). Every `agent()` call is a Claude subagent by construction
+    (`toolkit/packages/runtime/globals.d.ts`).
+    ⚠ **This bridge pattern is slated for removal, not for hardening.** It still works
+    today and is documented below as it stands — treat new standing automation built on
+    it as a decision with a known expiry, not a durable recommendation.
   - **Cross-family routing: the composer PROPOSES — never silently applies, never
     silently skips.** When you are composing (or configuring the launch of) a workflow
     with verify/review roles, CHECK at authoring time whether a cross-family bridge is
