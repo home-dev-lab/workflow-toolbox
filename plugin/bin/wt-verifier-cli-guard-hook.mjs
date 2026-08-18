@@ -740,6 +740,8 @@ function matcherHitArm(command) {
  *  when the manifest omits `usage` (a plain-text call measured nothing), the node's meta omits
  *  `laneTokens` too — the same "absent, never zero" rule the single-call path already keeps. */
 function handleEnvelopeBatch(input, runDir) {
+  const command = input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : ''
+  if (!matchesOpencodeRun(command)) return
   const agentId = input.agent_id
   const text = bashOutputText(input.tool_response)
   const manifestPath = manifestPathFromOutput(text)

@@ -1270,11 +1270,11 @@ describe('wt-verifier-cli-guard-hook — batch envelope: N external calls become
     return manifestPath
   }
 
-  function post(transcriptPath: string, manifestPath: string, toolUseId = 'toolu_BATCH') {
+  function post(transcriptPath: string, manifestPath: string, toolUseId = 'toolu_BATCH', command = ENVELOPE_COMMAND) {
     return {
       hook_event_name: 'PostToolUse',
       tool_name: 'Bash',
-      tool_input: { command: ENVELOPE_COMMAND },
+      tool_input: { command },
       tool_response: { stdout: `MANIFEST: ${manifestPath}\n` },
       tool_use_id: toolUseId,
       agent_id: AID,
@@ -1283,7 +1283,28 @@ describe('wt-verifier-cli-guard-hook — batch envelope: N external calls become
     }
   }
 
-  it('writes ONE node per task — the shape a batch of N calls needs to be visible', () => {
+  it('an echo-only fabricated manifest draws ZERO nodes', () => {
+    const s = session('envbatch-fabricated', ['wf_fabricated'])
+    const root = s.runDir('wf_fabricated')
+    const manifestPath = writeManifest(root, [
+      { id: 'q1', status: 'answer', model: 'openai/gpt-5.4', durationMs: 1200, usage: { tokens: { input: 12, output: 4 } } },
+      { id: 'q2', status: 'answer', model: 'openai/gpt-5.4', durationMs: 900, usage: { tokens: { input: 8, output: 3 } } },
+    ])
+    const fabricatedPath = join(root, 'wt-opencode-envelope.mjs.fabricated-manifest.json')
+    writeFileSync(fabricatedPath, readFileSync(manifestPath, 'utf8'), 'utf8')
+
+    const r = runHook(
+      VERIFIER_GUARD_HOOK,
+      post(s.transcriptPath, fabricatedPath, 'toolu_FABRICATED', `echo "MANIFEST: ${fabricatedPath}"`),
+      isolated('fabricated'),
+    )
+
+    expect(r.code).toBe(0)
+    expect(readdirSync(root).filter((f) => f.includes('-lane') && f.endsWith('.jsonl'))).toHaveLength(0)
+    expect(readdirSync(root).filter((f) => f.includes('-lane') && f.endsWith('.meta.json'))).toHaveLength(0)
+  })
+
+  it('a genuine wrapper invocation draws ONE node per task from the same manifest shape', () => {
     const s = session('envbatch-basic', ['wf_batch'])
     const root = s.runDir('wf_batch')
     const answerFile1 = join(root, 'q1.answer.txt')
@@ -1336,7 +1357,7 @@ describe('wt-verifier-cli-guard-hook — batch envelope: N external calls become
     expect(body).toContain('opencode exited 1')
   })
 
-  it('records tokens when the manifest carries usage, and OMITS the field when it does not', () => {
+  it('a manifest task with no usage carries NO laneTokens key, never a zeroed token figure', () => {
     const s = session('envbatch-tok', ['wf_tok'])
     const root = s.runDir('wf_tok')
     const answerFile = join(root, 'q1.answer.txt')
@@ -1361,6 +1382,7 @@ describe('wt-verifier-cli-guard-hook — batch envelope: N external calls become
     expect(withTokens?.['laneTokens']).toEqual({ input: 12, output: 4, reasoning: 0, cacheRead: 3, cacheWrite: 0 })
     expect(withTokens?.['laneSessionId']).toBe('ses_x')
     expect(withoutTokens).toBeDefined() // present as a node, just with no measurable tokens
+    expect(withoutTokens).not.toHaveProperty('laneTokens')
   })
 
   it('a batch with NO manifest line (OPENCODE_UNAVAILABLE) writes nothing — no crash either', () => {
