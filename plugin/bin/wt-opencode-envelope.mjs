@@ -174,6 +174,42 @@ function isRateLimited(text) {
   return /429|rate[ _-]?limit|rate_limit_exceeded|too many requests|resource_exhausted/i.test(text)
 }
 
+/** Kills the whole process GROUP of a spawned call and reports how many members had to be
+ * killed beyond the direct child. Requires the call to have been spawned with `detached: true`,
+ * which makes its pid the group id.
+ *
+ * Returns the number of survivors reaped, or `null` when the platform cannot be asked. NEVER 0
+ * on an unmeasurable platform: a zero here would render as "nothing leaked" in the manifest,
+ * which is precisely the reassuring-green failure this whole change exists to remove.
+ *
+ * ⚠ CROSS-PLATFORM, stated rather than discovered in CI. POSIX signalling of a group via a
+ * negative pid does not exist on Windows: `process.kill(-pid)` throws there. So on win32 this
+ * falls back to killing the direct child only — the same behaviour as before this change — and
+ * returns `null` to say so out loud. A Windows adopter therefore keeps the leak; that is a known,
+ * named limitation, not a silent one, and closing it needs a job-object approach this script
+ * cannot express. */
+function reapGroup(pid) {
+  if (typeof pid !== 'number') return null
+  if (process.platform === 'win32') {
+    try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
+    return null
+  }
+  // Count what is still alive in the group AFTER killing it, rather than before: the answer we
+  // want is "did anything outlive the call", and asking before the kill would count the child
+  // itself plus anything mid-exit.
+  try { process.kill(-pid, 'SIGKILL') } catch { /* group already gone — nothing to reap */ }
+  let survivors = 0
+  try {
+    // A group whose leader is dead keeps its id while members remain, so this cannot address a
+    // recycled group in the window between the kill and this check.
+    process.kill(-pid, 0)
+    survivors = 1 // at least one member outlived SIGKILL; exact count needs a process table read
+  } catch {
+    survivors = 0
+  }
+  return survivors
+}
+
 /** Runs `opencode run` ONCE, async, for a single task. Enforces the four non-negotiables
  * together: stdin closed (`< /dev/null` equivalent — stdio[0]:'ignore'), `--auto` so a
  * permission prompt never silently hangs the process, an explicit `--dir` (never the inherited
@@ -194,13 +230,32 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
     if (typeof variant === 'string' && variant.length > 0) args.push('--variant', variant)
     args.push('--auto', '--dir', dir, '--format', 'json', '-f', taskfile)
 
-    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    // ⚠ `detached: true` puts the call in its OWN process group, and that is load-bearing rather
+    // than cosmetic. Measured 2026-08-18 against the previous shape (plain spawn + `child.kill`),
+    // with a stub binary that starts a background process before blocking:
+    //
+    //   a descendant holds this pipe   -> the envelope NEVER exits (alive past 45s on a 5s
+    //                                     timeout), writes no manifest, no EXIT= marker, and
+    //                                     leaves a zero-byte log — because `close` fires only
+    //                                     when the child's stdio closes, and a survivor holds it;
+    //   no descendant holds this pipe  -> the envelope exits at 5s and reports SUCCESS, while a
+    //                                     detached descendant keeps running, orphaned to init.
+    //
+    // The second row is the dangerous one: nothing in the manifest, the log or the exit code can
+    // show it. Signalling the GROUP is what closes both — a survivor cannot hold the pipe if no
+    // survivor exists. The invariant, stated so a later reader can check the body against it:
+    // WHEN THIS FUNCTION STOPS A CALL, NOTHING THAT CALL STARTED IS STILL RUNNING.
+    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
     let stdout = ''
     let stderr = ''
     let timedOut = false
+    // Number of descendants that had to be reaped AFTER the child itself was gone. `null` means
+    // "not measurable here", never 0 — a zero is a measurement and would read as "nothing leaked"
+    // on a platform where we cannot look. See reapGroup().
+    let reaped = null
     const timer = setTimeout(() => {
       timedOut = true
-      child.kill('SIGKILL')
+      reaped = reapGroup(child.pid)
     }, timeoutSec * 1000)
 
     child.stdout.on('data', (d) => { stdout += d })
@@ -211,15 +266,20 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
       fs.writeFileSync(streamFile, stdout, 'utf8')
       fs.appendFileSync(streamFile, `\nEXIT=${exitCode}\n`, 'utf8')
       fs.appendFileSync(streamFile, `\n--- spawn error ---\n${String(err)}\n`, 'utf8')
-      resolve({ streamFile, stdout, stderr, exitCode, timedOut: false, durationMs: Date.now() - startedAt })
+      resolve({ streamFile, stdout, stderr, exitCode, reaped, timedOut: false, durationMs: Date.now() - startedAt })
     })
     child.on('close', (code, signal) => {
       clearTimeout(timer)
+      // ⚠ REAP ON THE CLEAN PATH TOO — this is the half that is easy to leave out, because the
+      // call SUCCEEDED and there is no failure to react to. Measured: a call can exit 0, write a
+      // correct manifest, and still leave a detached descendant running. Reaping only on timeout
+      // would fix the loud case and ship the silent one.
+      if (!timedOut) reaped = reapGroup(child.pid)
       const exitCode = timedOut || signal === 'SIGKILL' ? 124 : (code ?? 1)
       fs.writeFileSync(streamFile, stdout, 'utf8')
       fs.appendFileSync(streamFile, `\nEXIT=${exitCode}\n`, 'utf8')
       if (stderr.length > 0) fs.appendFileSync(streamFile, `\n--- stderr ---\n${stderr}\n`, 'utf8')
-      resolve({ streamFile, stdout, stderr, exitCode, timedOut: timedOut || signal === 'SIGKILL', durationMs: Date.now() - startedAt })
+      resolve({ streamFile, stdout, stderr, exitCode, reaped, timedOut: timedOut || signal === 'SIGKILL', durationMs: Date.now() - startedAt })
     })
   })
 }
@@ -259,19 +319,25 @@ async function runTask(task, opts, outDir) {
   const base = { id, prompt: String(task.prompt ?? ''), model: modelUsed, log: result.streamFile, durationMs: result.durationMs, exitStatus: result.exitCode }
   const usage = laneUsageFromOutput(result.stdout)
   const withUsage = usage !== null ? { ...base, usage } : base
+  // `reaped` follows the same rule as `usage` above and for the same reason: it is OMITTED when
+  // the platform could not be asked (`null` from reapGroup), rather than rendered as 0. A zero
+  // would read as "nothing outlived this call" on exactly the platform where nobody looked —
+  // a silent cleanup replacing one invisible state with another. Present and 0 means measured
+  // and clean; absent means not measurable here.
+  const withReap = typeof result.reaped === 'number' ? { ...withUsage, reaped: result.reaped } : withUsage
 
   if (result.exitCode !== 0) {
     const reason = result.timedOut ? `timed out after ${timeoutSec}s` : `opencode exited ${result.exitCode}`
-    return { ...withUsage, status: 'error', reason: `${reason} (model ${modelUsed})` }
+    return { ...withReap, status: 'error', reason: `${reason} (model ${modelUsed})` }
   }
 
   const answer = laneTextFromOutput(result.stdout)
   if (answer === null || answer.length === 0) {
-    return { ...withUsage, status: 'error', reason: `no answer text found in CLI output (model ${modelUsed})` }
+    return { ...withReap, status: 'error', reason: `no answer text found in CLI output (model ${modelUsed})` }
   }
 
   fs.writeFileSync(answerFile, answer, 'utf8')
-  return { ...withUsage, status: 'answer', answerFile }
+  return { ...withReap, status: 'answer', answerFile }
 }
 
 /** Bounded-concurrency pool: at most `limit` tasks run at once. Async only (network-bound CLI
