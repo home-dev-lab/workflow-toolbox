@@ -64,8 +64,21 @@ describe('validateStageList', () => {
   })
 
   it('rejects a stage with none of "workflow" or "pipeline"', () => {
-    expect(validateStageList([{ name: 'a' } as StageSpecV2])).toMatch(/exactly one of "workflow" or "pipeline"/)
-    expect(validateStageList([{ name: 'a' } as StageSpecV2])).toMatch(/got none/)
+    expect(validateStageList([{ name: 'a' } as StageSpecV2])).toBe(
+      'stage "a" must set exactly one of "workflow" or "pipeline" (got none)',
+    )
+  })
+
+  it('names the removed "scripted" kind instead of reporting that no kind was set', () => {
+    const stage = { name: 'a', scripted: { prompt: 'do work' } } as unknown as StageSpecV2
+    const error = validateStageList([stage])
+    expect(error).toMatch(/scripted.*removed/i)
+    expect(error).not.toMatch(/must set exactly one/)
+  })
+
+  it('rejects "scripted" by name even when a valid workflow kind is also present', () => {
+    const stage = { name: 'a', workflow: 'a.js', scripted: { prompt: 'do work' } } as unknown as StageSpecV2
+    expect(validateStageList([stage])).toMatch(/scripted.*removed/i)
   })
 
   it('rejects a stage with BOTH "workflow" and "pipeline"', () => {
@@ -263,6 +276,15 @@ describe('validatePipelineSpec — stage-list rules (additive wrapper, back-comp
 
   it('surfaces validateStageList failures unchanged (empty stage list)', () => {
     expect(validatePipelineSpec(makeSpec([]))).toMatch(/at least one stage/)
+  })
+
+  it('surfaces the removed "scripted" kind message through the public full-spec validator', () => {
+    const spec = {
+      goal: 'g',
+      projectDir: '/repo',
+      stages: [{ name: 'a', scripted: { prompt: 'do work' } }],
+    } as unknown as PipelineSpec
+    expect(validatePipelineSpec(spec)).toMatch(/scripted.*removed/i)
   })
 
   it('still rejects a trailing gateAfter on a LOOPED spec (the loop\'s own until owns the boundary)', () => {

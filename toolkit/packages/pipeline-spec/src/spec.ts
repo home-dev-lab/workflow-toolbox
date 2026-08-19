@@ -248,6 +248,9 @@ export function validateStageList(stages: readonly StageSpecV2[], limits?: Pipel
     if (seen.has(stage.name)) return `duplicate stage name "${stage.name}" — stageAttempts is keyed by name and would silently clobber its attempt history`
     seen.add(stage.name)
 
+    if (Object.prototype.hasOwnProperty.call(stage, 'scripted')) {
+      return `stage "${stage.name}" uses the "scripted" stage kind, which was removed; use "workflow" or "pipeline" instead`
+    }
     const hasWorkflow = stage.workflow !== undefined
     const hasPipeline = stage.pipeline !== undefined
     const kindCount = Number(hasWorkflow) + Number(hasPipeline)
