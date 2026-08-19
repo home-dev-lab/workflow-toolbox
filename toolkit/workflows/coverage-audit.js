@@ -1093,6 +1093,9 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     for (const sig of EXTERNAL_CLI_SIGNATURES) if (sig.typeRe.test(verifierType)) return sig;
     return null;
   }
+  function isExternalBridgeType(agentType) {
+    return externalGateExpectation(agentType ?? void 0) !== null;
+  }
   function buildProvenanceScannerSource(expectation, nonce, labels) {
     const nonceLit = JSON.stringify(nonce);
     const labelsLit = JSON.stringify(labels);
@@ -2280,11 +2283,13 @@ ${renderClaim(claim)}`;
   ];
 
   // opencode-routing.ts
-  var OPENCODE_VERIFIER_AGENT_TYPE = "workflow-toolbox:opencode-verifier";
   function opencodeWorkdirLine(resolvedType, repoRoot) {
-    return resolvedType === OPENCODE_VERIFIER_AGENT_TYPE ? `OPENCODE_WORKDIR: ${repoRoot}
+    return isBridgeAgentType(resolvedType) ? `OPENCODE_WORKDIR: ${repoRoot}
 
 ` : "";
+  }
+  function isBridgeAgentType(resolvedType) {
+    return isExternalBridgeType(resolvedType);
   }
   function resolveWrapperModel(routesToWrapper, explicit) {
     if (explicit !== void 0) return explicit;
