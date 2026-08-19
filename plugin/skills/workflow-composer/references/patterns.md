@@ -210,8 +210,7 @@ workflow prefer an MCP→model endpoint as the cross-model verifier.
 ⚠ Both still run a Claude subagent that shells out — the workflow keeps a Claude turn
 in that role, it does not become a zero-Claude run, and the pattern is slated for
 removal (see `references/model-and-agent-routing.md`'s caveat under "Cross-family
-routing"). For a stage with no Claude model at all, use a pipeline's `scripted` stage
-(`references/orchestrator-pipelines.md`). This is distinct from (and stronger than) the discouraged
+routing"). This is distinct from (and stronger than) the discouraged
 "specialist reviewer" use — "specialize the producer, not the skeptic" still holds
 for *same-model* specialization. Launch-time exposure: on `cross-model-verify` and
 `independent-analysis` the request travels in the STRUCTURED config envelope —

@@ -27,9 +27,9 @@ describe('definePipeline — spec validation (throws synchronously at call time)
     expect(() => definePipeline(validSpec({ stages: [] }))).toThrow(/at least one stage/)
   })
 
-  it('throws for a stage with none of "workflow", "pipeline", "scripted"', () => {
+  it('throws for a stage with none of "workflow" or "pipeline"', () => {
     expect(() => definePipeline(validSpec({ stages: [{ name: 'a' } as PipelineSpec['stages'][number]] }))).toThrow(
-      /exactly one of "workflow", "pipeline", or "scripted"/,
+      /exactly one of "workflow" or "pipeline"/,
     )
   })
 

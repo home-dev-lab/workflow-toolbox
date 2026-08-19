@@ -60,9 +60,7 @@ spawned agent). [documented]
 > Claude agent's own turn, so a workflow using them never runs with zero Claude
 > models, and the pattern is slated for removal
 > (`references/model-and-agent-routing.md`'s caveat). `agent()` has no primitive that
-> reaches an external model directly — a stage with no Claude model at all is a
-> pipeline's `scripted` stage (`references/orchestrator-pipelines.md`), a different
-> artifact from a workflow.
+> reaches an external model directly.
 >
 > **Scaffolding a workflow programmatically:** `scaffoldWorkflow(spec)` (from
 > `@workflow-toolbox/scaffold`, the emitter behind `workflow-toolbox scaffold` — see

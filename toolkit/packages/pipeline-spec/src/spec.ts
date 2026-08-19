@@ -17,43 +17,9 @@ export const INPUT_REF_SOURCES = ['artifactPath', 'goal', 'projectDir', 'artifac
 /** A declarative reference to a runtime value a stage's args template pulls in at launch —
  *  never a function, so the whole spec round-trips through JSON untouched. `artifactContent`
  *  resolves to the prior stage's handoff artifact read OFF DISK as text (as opposed to
- *  `artifactPath`, which resolves to the path itself) — added for a `scripted` stage's
- *  `prompt` (see ScriptedStageSpec), which needs the artifact's actual content rather than a
- *  path a Claude Code workflow would resolve on its own; usable from an ordinary workflow
- *  stage's `input` too, since the source is a general one, not scripted-only. */
+ *  `artifactPath`, which resolves to the path itself), for workflows that want the prior
+ *  stage's material inline rather than by path. */
 export type InputRef = { from: (typeof INPUT_REF_SOURCES)[number] }
-
-/** One part of a ComposedPrompt (see below) — either a declarative InputRef (the SAME
- *  vocabulary as everywhere else) or a literal string the author writes verbatim. Deliberately
- *  NOT itself a ComposedPrompt: composing a composition buys nothing and would add a recursion
- *  case to a parser whose whole posture is flat `typeof`/`Array.isArray` checks — a `compose`
- *  nested inside a part is REJECTED, one level only (parsePromptPart / describeComposedPromptError). */
-export type PromptPart = InputRef | { text: string }
-
-/** A single prompt assembled from several sources plus author-written literal text — card
- *  #1837410995: `InputRef`'s four fixed sources can each name only ONE value, so a prompt that
- *  needs, say, the prior stage's handoff artifact AND a fixed instruction has no way to express
- *  that today short of a throwaway stage whose only job is concatenation.
- *
- *  Parts concatenate in the array's own order with NO IMPLICIT SEPARATOR: every byte of
- *  whitespace between two parts is something the author wrote as its own `{text:"..."}` part.
- *  This is deliberate, not an omission — an implicit joiner is a rule a reader has to remember;
- *  an explicit `{text:"\n\n"}` part is a rule that is simply read off the spec.
- *
- *  Distinct from the existing distinct-prompt fan (`ScriptedStageSpec.prompt` as a bare
- *  `InputRef[]`, card #1837144459) STRUCTURALLY, not by convention: the fan is a bare array
- *  (`Array.isArray(prompt)`) — its length IS the call count; this is an object carrying a
- *  `compose` key, so neither a parser nor a reader ever has to guess which reading applies
- *  before looking past the outermost shape. That distinction is load-bearing precisely because
- *  the two readings can otherwise collide in practice: this very package's own
- *  `examples/scripted-mixed.pipeline.ts` uses `prompt: [{from:'goal'}, {from:'artifactContent'}]`,
- *  which READS like a two-part composed prompt and MEANS a two-call fan (confirmed by a runtime
- *  failure reporting "all 2 distinct-prompt call(s) failed") — a `{compose:[...]}` wrapper is
- *  what keeps the composed reading from ever being mistaken for that line, at a glance, without
- *  reading a doc. */
-export interface ComposedPrompt {
-  compose: PromptPart[]
-}
 
 /** The single source of truth for the named extractor keys a StageSpecV2 can select —
  *  parseStageSpecV2 validates against this SAME array (imported, not hand-duplicated), so
@@ -72,174 +38,6 @@ export type ExtractorKey = (typeof EXTRACTOR_KEYS)[number]
 // parser at author time and will fail consumers' builds otherwise (a type-only field addition
 // compiles fine but throws at the very next `workflow-toolbox pipeline` build).
 
-/** One stage that runs a scripted EXTERNAL-LANE call (an opencode CLI invocation today, card
- *  #1836599777) instead of a Claude Code workflow — mutually exclusive with `workflow`/
- *  `pipeline` on the owning StageSpecV2. Deliberately minimal: the scripted lane has no
- *  phase/agent DAG of its own to configure, so a model plus a prompt source is the whole
- *  authoring surface. The runner adapts this to the SAME `LaunchedStage` contract a workflow
- *  stage's launch produces (see the companion app's pipeline.ts / pipeline-core.ts,
- *  `deps.launchScripted`) — everything downstream (gate, artifact extraction, settlement)
- *  therefore treats a scripted stage exactly like a workflow stage; it never learns the
- *  difference. */
-export interface ScriptedStageSpec {
-  /** The external model identifier passed straight through to the lane's own model flag
-   *  (e.g. "openai/gpt-5.4" for the bundled opencode adapter). Never checked against a Claude
-   *  Code model allowlist — it names a different model family entirely, and the runner has no
-   *  business validating it beyond "non-empty string" (parseStageSpecV2's job). */
-  model: string
-  /** Where the call's prompt string(s) come from — the SAME declarative InputRef vocabulary a
-   *  workflow stage's `input` uses. Three shapes:
-   *  - a SINGLE InputRef (today's exact behaviour, byte-for-byte unchanged): one prompt,
-   *    resolved once, optionally repeated `calls` times via `calls` below.
-   *  - a ComposedPrompt (card #1837410995, `{ compose: [...] }`): one prompt assembled from
-   *    several sources plus literal text, resolved once — same `calls` interaction as a single
-   *    InputRef (it is just a different way to produce ONE prompt string). See ComposedPrompt's
-   *    own doc for why it cannot be a bare array.
-   *  - an ARRAY of InputRefs and/or ComposedPrompts (card #1837144459, distinct-prompt fan):
-   *    each element becomes ITS OWN concurrent call, resolved independently — N different
-   *    questions rather than N redundant verdicts on the same one. The array's own length IS
-   *    the call count, so `calls` is REJECTED alongside it (validateStageList) — two fields
-   *    that could disagree on N is exactly the contradiction the card's own design section
-   *    warns against; there is only ever one source of truth for "how many calls", whichever
-   *    shape `prompt` takes. Bounded by MAX_SCRIPTED_STAGE_CALLS, same as `calls`, checked at
-   *    both the parse and the validate layers (see validateStageList's own comment for why
-   *    both). A fan element being itself a ComposedPrompt is how the two features compose: N
-   *    independent calls, each built from several sources.
-   *  `{ from: 'artifactContent' }` is the common single-prompt case: hand the PRIOR stage's
-   *  handoff artifact, read off disk, straight to the external model as its whole prompt. */
-  prompt: InputRef | ComposedPrompt | (InputRef | ComposedPrompt)[]
-  /** How many concurrent external-lane calls this stage issues, all resolving the SAME
-   *  `prompt` — a stage of N independent verdicts (redundant review passes, N-of-M voting)
-   *  rather than a single sequential call. Omitted or 1 is today's exact single-call
-   *  behaviour, byte-for-byte unchanged — the fan-out path is entered only for `calls >= 2`.
-   *  Integer in [1, MAX_SCRIPTED_STAGE_CALLS]; a value outside that range is a REJECTED spec
-   *  at author time, never silently clamped or dropped (parseScriptedStageSpec's job). See
-   *  MAX_SCRIPTED_STAGE_CALLS's own doc for why 8. ONLY meaningful when `prompt` is a single
-   *  InputRef — REJECTED when `prompt` is an array (its length already says how many). */
-  calls?: number
-  /** The expected result shape for THIS STAGE's call(s) — card #1837198164. Applies
-   *  UNIFORMLY to every call the stage issues, whichever fan shape (a single call, `calls`
-   *  redundant calls, or a distinct-prompt `prompt` array): one shape, N attempts, never a
-   *  per-call shape. A multi-lens review (distinct prompts) still wants ONE comparable verdict
-   *  shape back from every lens — that is the composition this field is FOR. Omitted (the
-   *  default): today's exact behaviour, byte-for-byte — no shape is requested, no `structured`
-   *  field appears on any call's result. See ScriptedResultShape's own doc for what "conform"
-   *  means and describeScriptedResultShape/checkScriptedResult for how compliance is
-   *  requested and checked (both pure — the runner owns getting from CLI text to a JSON value
-   *  and stitching the `structured` field onto each call's result). */
-  resultShape?: ScriptedResultShape
-}
-
-/** Hard cap on ScriptedStageSpec.calls — not overridable via PipelineSpec.limits (unlike
- *  MAX_STAGES/MAX_PIPELINE_DEPTH/MAX_LOOP_ITERATIONS above).
- *
- *  ⚠ The reason is NOT that the constraint is fixed. An earlier version of this comment said
- *  so, and it contradicted this project's own operational notes, which record the external
- *  concurrency wall as MOVING with the subscribed plan (measured 8-16 simultaneous opencode
- *  processes before requests queue behind 429/retry — and the failure is not a clean refusal
- *  but a 5-8x slowdown the caller's own timeout then converts into a dead call).
- *
- *  The reason is that this cap and the runtime wall are TWO DIFFERENT CONCERNS, deliberately
- *  enforced by two mechanisms:
- *
- *  - the RUNTIME wall belongs to the lane guard (`WT_LANE_MAX_CONCURRENT`, a named parameter
- *    with the same default of 8). It bounds how many external processes exist on THIS machine
- *    at once, across every stage, pipeline and unrelated caller. It is tunable precisely
- *    because the wall moves with the plan;
- *  - THIS cap is an authoring-time sanity bound on ONE stage of a PORTABLE spec. A spec is
- *    JSON that travels: making its validity depend on the reader's environment would let the
- *    same file parse here and fail there, which is a worse defect than a conservative bound.
- *
- *  So 8 here is not a claim about any machine's capacity. It is the value past which a single
- *  stage's declared fan-out stops being reasonable on its own terms, chosen at the low end of
- *  the measured range so it cannot alone exhaust a wall it does not know the size of.
- *
- *  Authors needing more concurrency raise it at the lane guard, where the wall actually lives.
- *  ⚠ And an out-of-range value here stays REJECTED, never silently clamped — a cap that
- *  quietly truncates is how a fan-out ships doing less than its author declared. */
-export const MAX_SCRIPTED_STAGE_CALLS = 8
-
-/** The primitive field types a declared ScriptedResultShape can name — deliberately NOT a full
- *  JSON-schema (this package stays zero-dependency, plain `typeof` checks only, same posture
- *  as every other validator here). `'string[]'` is the one composite allowed, because a
- *  findings/severity-list result is the common review shape this exists for. */
-export const SCRIPTED_RESULT_FIELD_TYPES = ['string', 'number', 'boolean', 'string[]'] as const
-
-export type ScriptedResultFieldType = (typeof SCRIPTED_RESULT_FIELD_TYPES)[number]
-
-/** An expected result shape for a scripted stage's external-lane call(s) — card #1837198164.
- *  The lane is a CLI with no tool-call/schema protocol to lean on (opencode's own `--format
- *  json` is telemetry NDJSON, never a validated verdict — see this project's own operational
- *  notes): compliance can only be REQUESTED, via a prompt convention the runner appends to
- *  every call this shape governs, and CHECKED after the fact against the model's raw response
- *  text. A field named here is REQUIRED — an object missing it, or carrying the wrong
- *  primitive type for it, does not conform (see checkScriptedResult). Extra, undeclared
- *  fields in the response are ignored (a subset match, not an exact one) — the model
- *  volunteering more than asked is not the failure mode this exists to catch. */
-export interface ScriptedResultShape {
-  fields: Record<string, ScriptedResultFieldType>
-}
-
-/** Render a ScriptedResultShape as the plain-language instruction appended to a call's prompt
- *  — pure and deterministic (same shape in, same string out) so it can be unit-tested and
- *  shared between the runner (which sends it) and any authoring-time preview. Field order is
- *  the object's own insertion order (Object.entries), so an author who writes short/required
- *  fields first controls the generation order the same way the structured-output capitulation
- *  note recommends for StructuredOutput schemas — this convention rests on the SAME failure
- *  mode (a long free-text field generated first starves a short required sibling), just
- *  requested by prose instead of enforced by a schema validator. */
-export function describeScriptedResultShape(shape: ScriptedResultShape): string {
-  const fieldLines = Object.entries(shape.fields)
-    .map(([name, type]) => `- ${name}: ${type === 'string[]' ? 'an array of strings' : type}`)
-    .join('\n')
-  // "including at least" — never "exactly these fields": checkScriptedResult deliberately
-  // performs a SUBSET match (extra, undeclared fields are ignored, see its own doc). The
-  // instruction sent to the model must describe what is actually checked, or a model reading
-  // it carefully is asked for something stricter than the code enforces (review finding,
-  // card #1837198164).
-  return (
-    `Respond with ONLY a single JSON object — no prose before or after it, no markdown code ` +
-    `fences — including at least these fields:\n${fieldLines}`
-  )
-}
-
-export type ScriptedResultCheck = { ok: true; data: Record<string, unknown> } | { ok: false; reason: string }
-
-/** Check a parsed JSON value against a declared ScriptedResultShape — the runtime half of the
- *  "conforming vs visibly-marked-as-not" invariant (card #1837198164's whole point). Pure: the
- *  runner is responsible for getting from raw CLI text to a JSON value (JSON.parse, tolerant
- *  of a markdown fence wrapper) BEFORE calling this — a parse failure is reported by the
- *  runner itself as `{ok:false}`, never routed through here with a fabricated value. */
-export function checkScriptedResult(shape: ScriptedResultShape, value: unknown): ScriptedResultCheck {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return { ok: false, reason: `expected a JSON object, got ${value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value}` }
-  }
-  const obj = value as Record<string, unknown>
-  for (const [field, type] of Object.entries(shape.fields)) {
-    // This function is PUBLIC and pure — callable directly, never routed only through the
-    // parser that already restricts field types to SCRIPTED_RESULT_FIELD_TYPES. Without this
-    // explicit membership check, an unrecognized `type` string (a directly-constructed shape
-    // that bypasses TypeScript via a cast, the same way a directly-constructed spec bypasses
-    // parseScriptedStageSpec elsewhere in this file) would silently fall through the type
-    // switch below into the `string[]` branch — a false {ok:true} for a shape that was never
-    // valid to begin with (review finding, card #1837198164).
-    if (!VALID_SCRIPTED_RESULT_FIELD_TYPES.has(type)) {
-      return { ok: false, reason: `field "${field}" declares an unrecognized type "${String(type)}"` }
-    }
-    if (!(field in obj)) return { ok: false, reason: `missing required field "${field}"` }
-    const v = obj[field]
-    const typeOk =
-      type === 'string'
-        ? typeof v === 'string'
-        : type === 'number'
-          ? typeof v === 'number' && Number.isFinite(v)
-          : type === 'boolean'
-            ? typeof v === 'boolean'
-            : Array.isArray(v) && v.every((x) => typeof x === 'string')
-    if (!typeOk) return { ok: false, reason: `field "${field}" must be ${type}, got ${Array.isArray(v) ? 'array' : typeof v}` }
-  }
-  return { ok: true, data: obj }
-}
 
 /** One stage in a v2 pipeline spec: which workflow to run, how to build its args from prior
  *  state (`input`), how to extract its handoff artifact for the NEXT stage (`artifact`,
@@ -247,9 +45,7 @@ export function checkScriptedResult(shape: ScriptedResultShape, value: unknown):
  *  (`gateAfter`). */
 export interface StageSpecV2 {
   name: string
-  /** Exactly one of `workflow`/`pipeline`/`scripted` (validateStageList enforces this — a
-   *  stage either launches a single workflow directly, recurses into a nested sub-pipeline,
-   *  or runs a scripted external-lane call). */
+  /** Exactly one of `workflow`/`pipeline` (validateStageList enforces this). */
   workflow?: string
   /** An INLINE (v1: no by-reference child specs) nested pipeline this stage
    *  recurses into via the SAME runner, as a full first-class pipeline (own pipelineId, own
@@ -260,12 +56,6 @@ export interface StageSpecV2 {
    *  doc for why a non-'raw' extractor would silently diverge between live and reconciled
    *  paths). */
   pipeline?: PipelineSpec
-  /** A stage that runs a scripted external-lane call instead of a Claude Code workflow —
-   *  mutually exclusive with `workflow`/`pipeline`. See ScriptedStageSpec's own doc.
-   *  `input` is disallowed alongside it (validateStageList) — the prompt InputRef IS its one
-   *  input; an `input` record here would be silently unconsulted, the same posture this file
-   *  already takes toward `artifact` on a pipeline-stage. */
-  scripted?: ScriptedStageSpec
   input?: Record<string, InputRef>
   gateAfter?: boolean
   /** Named extractor key into the server-side registry (extract-artifact.ts) — NOT a
@@ -458,60 +248,16 @@ export function validateStageList(stages: readonly StageSpecV2[], limits?: Pipel
     if (seen.has(stage.name)) return `duplicate stage name "${stage.name}" — stageAttempts is keyed by name and would silently clobber its attempt history`
     seen.add(stage.name)
 
+    if (Object.prototype.hasOwnProperty.call(stage, 'scripted')) {
+      return `stage "${stage.name}" uses the "scripted" stage kind, which was removed; use "workflow" or "pipeline" instead`
+    }
     const hasWorkflow = stage.workflow !== undefined
     const hasPipeline = stage.pipeline !== undefined
-    const hasScripted = stage.scripted !== undefined
-    const kindCount = Number(hasWorkflow) + Number(hasPipeline) + Number(hasScripted)
+    const kindCount = Number(hasWorkflow) + Number(hasPipeline)
     if (kindCount !== 1) {
-      const present = [hasWorkflow && '"workflow"', hasPipeline && '"pipeline"', hasScripted && '"scripted"'].filter((v): v is string => v !== false)
-      const got = kindCount === 0 ? 'none' : kindCount === 3 ? 'all three' : `both ${present.join(' and ')}`
-      return `stage "${stage.name}" must set exactly one of "workflow", "pipeline", or "scripted" (got ${got})`
-    }
-    if (hasScripted && stage.input !== undefined) {
-      return `stage "${stage.name}" is a scripted stage — "input" is disallowed on a scripted stage (its "scripted.prompt" InputRef is its one input; an "input" record here would be silently unconsulted)`
-    }
-    // The MAX_SCRIPTED_STAGE_CALLS bound is ALSO checked here, not only in
-    // parseScriptedStageSpec (cross-family review finding, card #1837121171) — a caller that
-    // builds a StageSpecV2 in-process and calls validateStageList/validatePipelineSpec/
-    // runner.start() directly (definePipeline()'s author-time path, or any non-HTTP caller)
-    // never goes through the untrusted-JSON parser, so a bound checked ONLY there is bypassed
-    // structurally, not just in theory — the exact "same rules for authored and live-launched"
-    // invariant this package's own header comment states as its purpose. parseScriptedStageSpec
-    // keeps its own check too (defense in depth, and it runs BEFORE a value even reaches this
-    // already-typed function) — this is not a relocation, it is closing the second door.
-    if (hasScripted) {
-      const sc = stage.scripted!
-      // Distinct-prompt fan (card #1837144459): an array `prompt` names its OWN call count via
-      // its length — `calls` is a second, independent way to say "how many", so the two are
-      // mutually exclusive by construction, never reconciled or preferred over one another.
-      if (Array.isArray(sc.prompt)) {
-        const n = sc.prompt.length
-        if (n < 1 || n > MAX_SCRIPTED_STAGE_CALLS) {
-          return `stage "${stage.name}" has scripted.prompt array length=${n} — must be between 1 and ${MAX_SCRIPTED_STAGE_CALLS} (MAX_SCRIPTED_STAGE_CALLS)`
-        }
-        if (sc.calls !== undefined) {
-          return `stage "${stage.name}" has both scripted.prompt as an array and scripted.calls set — the array's length already determines the call count, so the two must not be able to disagree`
-        }
-        // Card #1837410995: a fan element may itself be a ComposedPrompt. Re-checked here
-        // (not only at parseComposedPrompt's untrusted-JSON boundary) as defense-in-depth for a
-        // directly-constructed spec that bypassed the parser — same posture as every other
-        // runtime re-check of a typed field in this file.
-        for (let i = 0; i < sc.prompt.length; i++) {
-          const composeError = describeComposedPromptError(sc.prompt[i])
-          if (composeError !== null) {
-            return `stage "${stage.name}" has an invalid scripted.prompt[${i}]: ${composeError}`
-          }
-        }
-      } else {
-        const calls = sc.calls
-        if (calls !== undefined && (!Number.isInteger(calls) || calls < 1 || calls > MAX_SCRIPTED_STAGE_CALLS)) {
-          return `stage "${stage.name}" has scripted.calls=${calls} — must be an integer in [1, ${MAX_SCRIPTED_STAGE_CALLS}] (MAX_SCRIPTED_STAGE_CALLS), never silently clamped`
-        }
-        const composeError = describeComposedPromptError(sc.prompt)
-        if (composeError !== null) {
-          return `stage "${stage.name}" has an invalid scripted.prompt: ${composeError}`
-        }
-      }
+      const present = [hasWorkflow && '"workflow"', hasPipeline && '"pipeline"'].filter((v): v is string => v !== false)
+      const got = kindCount === 0 ? 'none' : `both ${present.join(' and ')}`
+      return `stage "${stage.name}" must set exactly one of "workflow" or "pipeline" (got ${got})`
     }
     if (hasPipeline) {
       if (stage.gateAfter === true) {
@@ -648,153 +394,10 @@ export function validatePipelineSpec(spec: PipelineSpec): string | null {
 const VALID_INPUT_FROM = new Set<string>(INPUT_REF_SOURCES)
 const VALID_EXTRACTOR_KEYS = new Set<string>(EXTRACTOR_KEYS)
 
-const VALID_SCRIPTED_RESULT_FIELD_TYPES = new Set<string>(SCRIPTED_RESULT_FIELD_TYPES)
-
-/** Parse an untrusted `resultShape` value into a ScriptedResultShape, or null — all-or-nothing
- *  like every other malformed-field check in this parser. `fields` must be a non-empty object
- *  whose every value is one of SCRIPTED_RESULT_FIELD_TYPES; a shape declaring zero fields
- *  would request nothing checkable, so it is rejected rather than silently accepted as a no-op. */
-function parseScriptedResultShape(v: unknown): ScriptedResultShape | null {
-  if (typeof v !== 'object' || v === null) return null
-  const rawFields = (v as Record<string, unknown>)['fields']
-  if (typeof rawFields !== 'object' || rawFields === null || Array.isArray(rawFields)) return null
-  const entries = Object.entries(rawFields as Record<string, unknown>)
-  if (entries.length === 0) return null
-  const fields: Record<string, ScriptedResultFieldType> = Object.create(null) as Record<string, ScriptedResultFieldType>
-  for (const [name, rawType] of entries) {
-    if (typeof rawType !== 'string' || !VALID_SCRIPTED_RESULT_FIELD_TYPES.has(rawType)) return null
-    fields[name] = rawType as ScriptedResultFieldType
-  }
-  return { fields }
-}
-
 function parseInputRef(v: unknown): InputRef | null {
   if (typeof v !== 'object' || v === null) return null
   const from = (v as Record<string, unknown>)['from']
   return typeof from === 'string' && VALID_INPUT_FROM.has(from) ? { from: from as InputRef['from'] } : null
-}
-
-/** Parse one PromptPart (an element of a ComposedPrompt's `compose` array) — either an
- *  InputRef or a `{text: string}` literal. A nested `compose` key is rejected outright, one
- *  level only (see ComposedPrompt's own doc for why). Extra, unrecognized keys are dropped
- *  silently, same posture as every other whitelist-rebuilding parser in this file. */
-function parsePromptPart(v: unknown): PromptPart | null {
-  if (typeof v !== 'object' || v === null) return null
-  if ('compose' in (v as Record<string, unknown>)) return null // nesting a composition inside a part is rejected, one level only
-  const ref = parseInputRef(v)
-  if (ref !== null) return ref
-  const text = (v as Record<string, unknown>)['text']
-  return typeof text === 'string' ? { text } : null
-}
-
-/** Parse an untrusted `{ compose: [...] }` value into a ComposedPrompt, or null —
- *  all-or-nothing like every other malformed-field check in this parser. An empty `compose`
- *  array is rejected: it names zero parts, which is meaningless and almost certainly a bug in
- *  whatever generated it (see describeComposedPromptError for the message-carrying validate-
- *  layer twin of this same rule). No cap on the NUMBER of parts is imposed here — this package
- *  already bounds the things that actually scale a pipeline's cost (MAX_SCRIPTED_STAGE_CALLS,
- *  MAX_STAGES, MAX_PIPELINE_DEPTH); a part-count ceiling chosen with no measurement behind it
- *  would repeat exactly the mistake MAX_SCRIPTED_STAGE_CALLS's own doc comment records having
- *  corrected once already. */
-function parseComposedPrompt(v: unknown): ComposedPrompt | null {
-  if (typeof v !== 'object' || v === null) return null
-  const raw = (v as Record<string, unknown>)['compose']
-  if (!Array.isArray(raw)) return null
-  if (raw.length === 0) return null
-  const parts: PromptPart[] = []
-  for (const rawPart of raw) {
-    const part = parsePromptPart(rawPart)
-    if (part === null) return null // one bad element invalidates the whole composition (all-or-nothing, same posture as the prompt fan)
-    parts.push(part)
-  }
-  return { compose: parts }
-}
-
-/** Parse a single (non-fan) `prompt` value into an InputRef or a ComposedPrompt, or null.
- *  Tries the InputRef reading first (an object with `from`), then the ComposedPrompt reading
- *  (an object with `compose`) — the two are mutually exclusive by their own required key, so
- *  trying one before the other never masks a valid instance of the other. */
-function parseSinglePromptSpec(v: unknown): InputRef | ComposedPrompt | null {
-  const ref = parseInputRef(v)
-  if (ref !== null) return ref
-  return parseComposedPrompt(v)
-}
-
-/** Structural check for a value that MAY be a ComposedPrompt — shared by validateStageList
- *  (defense-in-depth for a directly-constructed spec that bypassed parseComposedPrompt, e.g.
- *  definePipeline()'s author-time TS path or any other non-HTTP caller) as the message-carrying
- *  twin of parseComposedPrompt's silent null. Returns null both when `v` is well-formed AND
- *  when `v` is not a composition at all (a plain InputRef, or anything else — not this
- *  function's business; validateStageList only calls it where a ComposedPrompt is one of the
- *  legal shapes). Returns a human-readable reason naming what was wrong otherwise. */
-function describeComposedPromptError(v: unknown): string | null {
-  if (typeof v !== 'object' || v === null || !('compose' in (v as Record<string, unknown>))) return null
-  const raw = (v as Record<string, unknown>)['compose']
-  if (!Array.isArray(raw)) return `"compose" must be an array of parts`
-  if (raw.length === 0) return `"compose" must name at least one part — an empty composition is meaningless`
-  for (let i = 0; i < raw.length; i++) {
-    const part = raw[i]
-    if (typeof part === 'object' && part !== null && 'compose' in (part as Record<string, unknown>)) {
-      return `compose[${i}] is itself a composition — nesting "compose" inside a part is rejected, one level only`
-    }
-  }
-  return null
-}
-
-/** Parse an untrusted `scripted` value into a ScriptedStageSpec, or null — all-or-nothing like
- *  every other malformed-field check in this parser. `model` must be a non-empty string.
- *  `prompt` is either a shape-valid single InputRef or ComposedPrompt (card #1837410995, via
- *  parseSinglePromptSpec), or an ARRAY of either (card #1837144459, distinct-prompt fan — each
- *  element re-checked against parseSinglePromptSpec; ONE malformed element invalidates the
- *  whole array, same all-or-nothing posture). An array is bounded by [1, MAX_SCRIPTED_STAGE_CALLS]
- *  — same cap `calls` uses, checked here at the untrusted-JSON boundary AND again in
- *  validateStageList (see that function's own comment for why both) — and `calls` is REJECTED
- *  when `prompt` is an array (the array's length already says how many; two disagreeing
- *  sources of "N" is exactly the contradiction this field's own doc warns against). When
- *  `prompt` is a single InputRef or ComposedPrompt, `calls` — when present — must be an
- *  integer in [1, MAX_SCRIPTED_STAGE_CALLS] — anything else (a float, a string, 0, a value
- *  past the cap) is rejected here, same all-or-nothing posture, never silently clamped.
- *  Omitted `calls` is dropped from the returned object entirely (never set to `undefined`) so
- *  a round-tripped single-call spec is byte-identical to one authored before this field
- *  existed. */
-function parseScriptedStageSpec(v: unknown): ScriptedStageSpec | null {
-  if (typeof v !== 'object' || v === null) return null
-  const s = v as Record<string, unknown>
-  const model = s['model']
-  if (typeof model !== 'string' || model.length === 0) return null
-  const rawPrompt = s['prompt']
-  if (Array.isArray(rawPrompt)) {
-    if (rawPrompt.length < 1 || rawPrompt.length > MAX_SCRIPTED_STAGE_CALLS) return null
-    // "calls" is meaningless (and disallowed) once "prompt" names its own count via length.
-    if (s['calls'] !== undefined) return null
-    const prompts: (InputRef | ComposedPrompt)[] = []
-    for (const rawRef of rawPrompt) {
-      const ref = parseSinglePromptSpec(rawRef) // card #1837410995: a fan element may be an InputRef or a ComposedPrompt
-      if (ref === null) return null // one bad element invalidates the whole array
-      prompts.push(ref)
-    }
-    const arrayResult: ScriptedStageSpec = { model, prompt: prompts }
-    if (s['resultShape'] !== undefined) {
-      const resultShape = parseScriptedResultShape(s['resultShape'])
-      if (resultShape === null) return null
-      arrayResult.resultShape = resultShape
-    }
-    return arrayResult
-  }
-  const prompt = parseSinglePromptSpec(rawPrompt)
-  if (prompt === null) return null
-  const result: ScriptedStageSpec = { model, prompt }
-  if (s['calls'] !== undefined) {
-    const calls = s['calls']
-    if (typeof calls !== 'number' || !Number.isInteger(calls) || calls < 1 || calls > MAX_SCRIPTED_STAGE_CALLS) return null
-    result.calls = calls
-  }
-  if (s['resultShape'] !== undefined) {
-    const resultShape = parseScriptedResultShape(s['resultShape'])
-    if (resultShape === null) return null
-    result.resultShape = resultShape
-  }
-  return result
 }
 
 function parseStageSpecV2(v: unknown): StageSpecV2 | null {
@@ -809,20 +412,15 @@ function parseStageSpecV2(v: unknown): StageSpecV2 | null {
   // other malformed field.
   const hasWorkflow = typeof s['workflow'] === 'string'
   const hasPipelineField = s['pipeline'] !== undefined
-  const hasScriptedField = s['scripted'] !== undefined
-  if (Number(hasWorkflow) + Number(hasPipelineField) + Number(hasScriptedField) !== 1) return null
+  if (Number(hasWorkflow) + Number(hasPipelineField) !== 1) return null
 
   let stage: StageSpecV2
   if (hasWorkflow) {
     stage = { name, workflow: s['workflow'] as string }
-  } else if (hasPipelineField) {
+  } else {
     const nested = parsePipelineSpec(s['pipeline'])
     if (nested === null) return null
     stage = { name, pipeline: nested }
-  } else {
-    const scripted = parseScriptedStageSpec(s['scripted'])
-    if (scripted === null) return null
-    stage = { name, scripted }
   }
 
   if (s['input'] !== undefined) {

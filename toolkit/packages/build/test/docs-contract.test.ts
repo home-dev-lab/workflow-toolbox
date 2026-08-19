@@ -132,7 +132,6 @@ const COMPANION_VOCABULARY = new Set([
   'OBSERVE_WORKFLOWS_DIR', // env var the observatory server reads; launcher only forwards it
   'OBSERVE_COMM_ALLOWED_ROOTS', // env var the observatory server reads to allow/deny a launch `commRoot`; the launcher only passes the root, never reads this
   'lastArtifactPath', // observatory pipeline-manifest field the loop runner-contract threads across iterations (orchestrator-pipelines.md)
-  'externalSessionId', // observatory scripted-stage record field (opencode's own session id, not minted by this repo) — orchestrator-pipelines.md's Scripted stages, workflow-debugger's reached-no-external-model section
 ])
 
 /** Repo-relative path bases a doc may resolve from — its own dir, the repo
