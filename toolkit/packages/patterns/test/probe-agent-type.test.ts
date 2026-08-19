@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, relative } from 'node:path'
 import { describe, it, expect } from 'vitest'
 import { FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
 import { probeAgentType, LOCAL_AGENT_PROBE_PROMPT } from '../src/probe-agent-type.js'
@@ -68,6 +71,124 @@ describe('probeAgentType — available', () => {
     const rt = new FakeRuntime({ onAgent: () => 'PROBE_OK' })
     await probeAgentType(rt, 'codex:codex-rescue')
     expect(rt.logs.some((l) => l.includes('codex:codex-rescue') && /available/i.test(l))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// File-based bridge path — the reply names a manifest and answer artifact
+// ---------------------------------------------------------------------------
+
+describe('probeAgentType — file-based bridge', () => {
+  function writeEnvelope(options: {
+    answered?: number
+    errored?: number
+    answer?: string
+    manifestName?: string
+  } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'probe-agent-type-'))
+    const answerPath = join(dir, 'probe.answer.txt')
+    const manifestPath = join(dir, options.manifestName ?? 'probe.manifest.json')
+    writeFileSync(answerPath, options.answer ?? 'PROBE_OK\n')
+    writeFileSync(manifestPath, JSON.stringify({
+      total: 1,
+      answered: options.answered ?? 1,
+      errored: options.errored ?? 0,
+      tasks: [{ id: 'probe', status: 'answer', answerFile: answerPath }],
+    }))
+    return { dir, answerPath, manifestPath }
+  }
+
+  function manifestRuntime(reply: string) {
+    return new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (opts?.label === 'probeAgentType:read-manifest') {
+          return { found: true, content: readFileSync(reply.slice('MANIFEST: '.length), 'utf8') }
+        }
+        if (opts?.label === 'probeAgentType:read-answer') {
+          const manifest = JSON.parse(readFileSync(reply.slice('MANIFEST: '.length), 'utf8')) as {
+            tasks: Array<{ answerFile: string }>
+          }
+          return { found: true, content: readFileSync(manifest.tasks[0]!.answerFile, 'utf8') }
+        }
+        return reply
+      },
+    })
+  }
+
+  it('accepts a real answered manifest whose named answer carries the token', async () => {
+    const fixture = writeEnvelope()
+    try {
+      const rt = manifestRuntime(`MANIFEST: ${fixture.manifestPath}`)
+      const probe = await probeAgentType(rt, 'workflow-toolbox:opencode-envelope')
+
+      expect(probe).toEqual({
+        agentType: 'workflow-toolbox:opencode-envelope',
+        available: true,
+        reason: null,
+      })
+      expect(rt.calls.map(call => call.opts?.label)).toEqual([
+        'probeAgentType:probe',
+        'probeAgentType:read-manifest',
+        'probeAgentType:read-answer',
+      ])
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    { answered: 1, errored: 1, caseName: 'an errored task' },
+    { answered: 0, errored: 0, caseName: 'no answered task' },
+  ])('rejects a manifest with $caseName', async ({ answered, errored }) => {
+    const fixture = writeEnvelope({ answered, errored })
+    try {
+      const rt = manifestRuntime(`MANIFEST: ${fixture.manifestPath}`)
+      const probe = await probeAgentType(rt, 'workflow-toolbox:opencode-envelope')
+      expect(probe.available).toBe(false)
+      expect(probe.agentType).toBeUndefined()
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a missing manifest without letting an exception escape', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'probe-agent-type-missing-'))
+    try {
+      const rt = manifestRuntime(`MANIFEST: ${join(dir, 'missing.manifest.json')}`)
+      await expect(probeAgentType(rt, 'workflow-toolbox:opencode-envelope')).resolves.toMatchObject({
+        available: false,
+        agentType: undefined,
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a manifest whose named answer lacks the token', async () => {
+    const fixture = writeEnvelope({ answer: 'not the expected answer\n' })
+    try {
+      const rt = manifestRuntime(`MANIFEST: ${fixture.manifestPath}`)
+      const probe = await probeAgentType(rt, 'workflow-toolbox:opencode-envelope')
+      expect(probe.available).toBe(false)
+      expect(probe.agentType).toBeUndefined()
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    { pathFor: (absolute: string) => relative(process.cwd(), absolute), caseName: 'relative' },
+    { pathFor: (absolute: string) => absolute, caseName: 'non-manifest suffix', manifestName: 'probe.json' },
+  ])('rejects a $caseName path without spawning a file reader', async ({ pathFor, manifestName }) => {
+    const fixture = writeEnvelope({ ...(manifestName !== undefined ? { manifestName } : {}) })
+    try {
+      const rt = manifestRuntime(`MANIFEST: ${pathFor(fixture.manifestPath)}`)
+      const probe = await probeAgentType(rt, 'workflow-toolbox:opencode-envelope')
+      expect(probe.available).toBe(false)
+      expect(rt.calls).toHaveLength(1)
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true })
+    }
   })
 })
 
