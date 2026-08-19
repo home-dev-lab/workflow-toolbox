@@ -5,7 +5,7 @@ export const meta = {
   "phases": [
     {
       "title": "Fence",
-      "detail": "Leaf-fence + optional cross-model verifier probe"
+      "detail": "Leaf fence + read-only Inventory routing + optional cross-model verifier probe"
     },
     {
       "title": "Inventory",
@@ -1310,6 +1310,32 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
     };
   }
 
+  // ../packages/patterns/src/readonly-routing.ts
+  var READONLY_AGENT_TYPE = "workflow-toolbox:leaf-readonly";
+  var ROUTING_UNAVAILABLE_MESSAGE = "routing UNAVAILABLE \u2014 calls through this runtime keep their existing agentType default this run (no read-only protection)";
+  async function withReadOnlyRouting(rt, options = {}) {
+    const { phase, agentType = READONLY_AGENT_TYPE, disabled = false, perAgent } = options;
+    if (disabled) {
+      return { rt, report: { resolvedAgentType: null, probe: null } };
+    }
+    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
+    const probe = await probeAgentType(probeRt, agentType, {
+      probePrompt: LOCAL_AGENT_PROBE_PROMPT,
+      ...phase !== void 0 ? { phase } : {}
+    });
+    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
+    if (probe.agentType === void 0) {
+      rt.log(`[readonly-routing] \u26A0 ${ROUTING_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
+    }
+    return {
+      rt: withAgentDefaults(rt, defaults),
+      report: {
+        resolvedAgentType: probe.agentType ?? null,
+        probe: { requested: agentType, available: probe.available, reason: probe.reason }
+      }
+    };
+  }
+
   // ../packages/patterns/src/cache-warm.ts
   var WARMUP_PROMPT = "Reply with a single word: ready.";
   function cliProofPrompt(cli) {
@@ -2386,7 +2412,13 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       disabled: input.messaging,
       ...input.perAgent !== null ? { perAgent: input.perAgent } : {}
     });
+    const { rt: readOnlyBase, report: readOnlyRouting } = await withReadOnlyRouting(rt0, {
+      phase: "Fence",
+      disabled: input.messaging,
+      ...input.perAgent !== null ? { perAgent: input.perAgent } : {}
+    });
     const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0;
+    const readOnlyRt = input.perAgent !== null ? withAgentDefaults(readOnlyBase, input.perAgent) : readOnlyBase;
     const warnings = [];
     if (input.unknownAgentTypeKeys.length > 0) {
       warn(
@@ -2448,7 +2480,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         inventorySource = "input";
       } else {
         const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory);
-        const invOutcome = await agentWithSchemaSalvage(rt, inventoryPrompt(
+        const invOutcome = await agentWithSchemaSalvage(readOnlyRt, inventoryPrompt(
           input,
           resolvedInventoryType,
           resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
@@ -2606,7 +2638,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       const voteSalvageMultiplier = resolvedVerifierType !== null ? 3 : 2;
       const verifyMechanismOverhead = 1 + (resolvedVerifierType !== null ? 2 : 0);
       const estimatedVerifyCalls = estimateVerifyCalls(candidateClaims, input.votes, input.tieredVotes) * voteSalvageMultiplier + verifyMechanismOverhead;
-      const fenceProbes = (input.messaging ? 0 : 1) + (input.inventoryType !== null ? 1 : 0) + (input.extractType !== null ? 1 : 0) + (input.verifierType !== null ? 1 : 0);
+      const fenceProbes = (input.messaging ? 0 : 2) + (input.inventoryType !== null ? 1 : 0) + (input.extractType !== null ? 1 : 0) + (input.verifierType !== null ? 1 : 0);
       const inventoryOverhead = inventorySource === "agent" ? 1 : 0;
       const extractOverhead = input.resumeFrom !== null ? 0 : groups.length * finalState.rounds * 2;
       const overheadSoFar = fenceProbes + inventoryOverhead + extractOverhead;
@@ -2726,6 +2758,7 @@ ${pipelineHowTo}`;
       findings,
       verifierProbe,
       leafFence,
+      readOnlyRouting,
       envelope: { trail: [...extractTrail, ...verifyTrail] },
       warnings
     };
@@ -2736,7 +2769,7 @@ ${pipelineHowTo}`;
       description: "Pre-release semantic docs audit: inventories doc surfaces, extracts checkable claims in loop-until-dry rounds, then refute-first verifies each claim against the actual sources with evidence-tiered verdicts (confirmed / stale / partially-stale / unverifiable).",
       whenToUse: "Use BEFORE a release (npm publish, plugin version bump) to catch documentation whose prose has drifted from the implementation \u2014 the semantic layer compile-time doc gates cannot check. Pass repoRoot (absolute); optionally surfaces, hints (e.g. a provenance map location), and sizing knobs. Findings are remediation input, e.g. for doc-rewrite.",
       phases: [
-        { title: "Fence", detail: "Leaf-fence + optional cross-model verifier probe" },
+        { title: "Fence", detail: "Leaf fence + read-only Inventory routing + optional cross-model verifier probe" },
         { title: "Inventory", detail: "Derive or validate the audited doc-surface list" },
         { title: "Extract", detail: "Loop-until-dry claim extraction: angle-cycled sweeps, deduped against seen" },
         { title: "Verify", detail: "Refute-first adversarial verification of each claim against the sources" },

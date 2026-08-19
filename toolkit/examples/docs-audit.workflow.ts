@@ -29,11 +29,10 @@
 //      the cheapest-to-lose claims first — a zero-agent substitute for a
 //      scoring stage (scoreAndRank would cost one scorer per claim here).
 //
-//  (4) NO LEAN ROUTING — every role in this workflow (inventory, extract,
-//      verify) must READ the repository. withLeanRouting strips tool access,
-//      so it has no eligible role here; only the leaf fence applies. Lean is
-//      selective by design — see pr-review's Synthesize stage for the
-//      counter-example that DOES qualify.
+//  (4) CAPABILITY ROUTING FOLLOWS THE PROMPT — Inventory reads the repository
+//      and produces no change, so it uses the selective read-only runtime.
+//      Nothing uses lean because every judgment role must read source. The
+//      cap-guard persistence call stays on the normal runtime because it writes.
 //
 //  ON LAUNCH: ALWAYS check WorkflowOutput.error. On partial failure, relaunch
 //  with resumeFromRunId — completed agent() calls replay from cache, only
@@ -54,12 +53,14 @@ import {
   probeAgentType,
   warn,
   withLeafFence,
+  withReadOnlyRouting,
 } from '@workflow-toolbox/patterns'
 import type {
   AgentTypeProbeReport,
   ClaimVerdict,
   LeafFenceReport,
   LoopStoppedBy,
+  ReadOnlyRoutingReport,
   TrailRecord,
   VerifiedClaim,
   VerifierVote,
@@ -399,6 +400,8 @@ export interface DocsAuditOutput {
   verifierProbe: AgentTypeProbeReport | null
   /** Leaf-agent fence outcome (withLeafFence). */
   leafFence: LeafFenceReport
+  /** Selective Inventory-stage routing outcome (withReadOnlyRouting). */
+  readOnlyRouting: ReadOnlyRoutingReport
   /** Combined Extract+Verify trail (collectTrail, in phase order). */
   envelope: { trail: TrailRecord[] }
   warnings: string[]
@@ -820,9 +823,21 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     ...(input.perAgent !== null ? { perAgent: input.perAgent } : {}),
   })
 
+  // Selective read-only routing: Inventory needs repository visibility but its
+  // prompt produces no change. Other stages keep `rt`; notably, the cap-guard
+  // persistence call must retain Write access.
+  const { rt: readOnlyBase, report: readOnlyRouting } = await withReadOnlyRouting(rt0, {
+    phase: 'Fence',
+    disabled: input.messaging,
+    ...(input.perAgent !== null ? { perAgent: input.perAgent } : {}),
+  })
+
   // Class-A one-wiring-point: blanket per-agent defaults reach every stage;
   // per-call/pattern opts (the verifiers' explicit model) still win.
   const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0
+  const readOnlyRt = input.perAgent !== null
+    ? withAgentDefaults(readOnlyBase, input.perAgent)
+    : readOnlyBase
 
   const warnings: string[] = []
 
@@ -916,7 +931,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
       inventorySource = 'input'
     } else {
       const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory)
-      const invOutcome = await agentWithSchemaSalvage<InventoryOutput>(rt, inventoryPrompt(
+      const invOutcome = await agentWithSchemaSalvage<InventoryOutput>(readOnlyRt, inventoryPrompt(
         input,
         resolvedInventoryType,
         resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
@@ -1149,7 +1164,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     // Overhead already consumed this run by Fence/Inventory/Extract — computed from what ACTUALLY
     // ran (not a blind ceiling guess), so the guard is as tight as the real evidence allows.
     const fenceProbes =
-      (input.messaging ? 0 : 1) +
+      (input.messaging ? 0 : 2) +
       (input.inventoryType !== null ? 1 : 0) +
       (input.extractType !== null ? 1 : 0) +
       (input.verifierType !== null ? 1 : 0)
@@ -1347,6 +1362,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     findings,
     verifierProbe,
     leafFence,
+    readOnlyRouting,
     envelope: { trail: [...extractTrail, ...verifyTrail] },
     warnings,
   }
@@ -1369,7 +1385,7 @@ export default defineWorkflow({
       'check. Pass repoRoot (absolute); optionally surfaces, hints (e.g. a provenance map ' +
       'location), and sizing knobs. Findings are remediation input, e.g. for doc-rewrite.',
     phases: [
-      { title: 'Fence', detail: 'Leaf-fence + optional cross-model verifier probe' },
+      { title: 'Fence', detail: 'Leaf fence + read-only Inventory routing + optional cross-model verifier probe' },
       { title: 'Inventory', detail: 'Derive or validate the audited doc-surface list' },
       { title: 'Extract', detail: 'Loop-until-dry claim extraction: angle-cycled sweeps, deduped against seen' },
       { title: 'Verify', detail: 'Refute-first adversarial verification of each claim against the sources' },

@@ -385,6 +385,12 @@ counter (`while (found < 10)`) or a budget guard (`while (budget.total && budget
   sandbox scripts (no imports available): pass `agentType: 'workflow-toolbox:lean'` on
   the call's opts — safe whenever this plugin is installed, which is the case if you are
   reading this skill.
+- **Repository-reading stages should use the read-only runtime.** The criterion is
+  *reads the repository and produces no change*: TS compositions obtain a separate
+  read-only-defaulting runtime with `withReadOnlyRouting`, then route exactly those call
+  sites through it. It mirrors `withLeanRouting`'s selective probe-and-degrade behavior
+  and resolves to `workflow-toolbox:leaf-readonly` (`Read`, `Grep`, and `Glob` only).
+  Keep any stage that writes, edits, or runs a command on the normal leaf-fenced runtime.
 
 **Read [references/model-and-agent-routing.md](references/model-and-agent-routing.md)
 BEFORE tuning schemas, models, effort, or any agentType routing** — it carries the
