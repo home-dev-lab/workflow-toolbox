@@ -49,7 +49,7 @@ import { dirname, join, resolve } from 'node:path'
 
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { stateRoot, snapshotPath } from './lib/actionability-state-paths.mjs'
-import { extractCards, computeSnapshot } from './lib/actionability-planka-producer-core.mjs'
+import { extractCards, computeSnapshot, resolveBoardProjectDir } from './lib/actionability-planka-producer-core.mjs'
 
 const DEPENDS_ON_PARSER_RELATIVE = '.claude/scripts/lib/depends-on-parser.mjs'
 const BOARD_POINTER_RELATIVE = '.claude/planka.json'
@@ -63,7 +63,7 @@ function boundedText(value) {
 
 // Keep only the latest 100 one-line attempts. Fields are also truncated, so a
 // malformed hook payload cannot defeat the entry-count bound with one huge line.
-function recordFailure(cwd, reason, detail) {
+function recordAttempt(cwd, ok, reason, detail) {
   try {
     const root = stateRoot()
     const path = join(root, 'actionable-producer-journal.jsonl')
@@ -76,7 +76,7 @@ function recordFailure(cwd, reason, detail) {
     }
     lines.push(JSON.stringify({
       at: Date.now(),
-      ok: false,
+      ok,
       reason: boundedText(reason),
       detail: boundedText(detail),
       projectDir: boundedText(cwd),
@@ -140,34 +140,38 @@ function main() {
   const toolName = input.tool_name
   if (toolName !== 'mcp__planka__get_board' && toolName !== 'mcp__planka__find_cards') return
 
-  // Resolved to an absolute path — same normalization the consumer applies
-  // (wt-actionable-gate-hook.mjs's `resolve(input.cwd)`). Without this, a
-  // relative cwd would slug to a DIFFERENT path than the consumer reads,
-  // writing a snapshot nobody ever consumes (review finding).
-  const cwd = typeof input.cwd === 'string' && input.cwd ? resolve(input.cwd) : ''
-  if (!cwd) return
+  // Normalize the triggering cwd, then walk to the project pointer. The
+  // consumer receives that session project root as its cwd, so both sides key
+  // the snapshot to the same directory even when this call came from a nested
+  // repository or worktree.
+  const triggeringCwd = typeof input.cwd === 'string' && input.cwd ? resolve(input.cwd) : ''
+  if (!triggeringCwd) return
+  const cwd = resolveBoardProjectDir(triggeringCwd, existsSync)
+  if (!cwd) {
+    recordAttempt(triggeringCwd, false, 'no-board-pointer', `no ${BOARD_POINTER_RELATIVE} for this project or its ancestors`)
+    return
+  }
 
-  const extraction = extractCards({ toolName, toolInput: input.tool_input, toolResponse: input.tool_response })
+  const extraction = extractCards({
+    toolName,
+    toolInput: input.tool_input,
+    toolResponse: input.tool_response,
+    readSpilledFile: (path) => existsSync(path) ? readFileSync(path, 'utf8') : null,
+  })
   if (!extraction.ok) {
-    if (!existsSync(join(cwd, BOARD_POINTER_RELATIVE))) {
-      recordFailure(cwd, 'no-board-pointer', `no ${BOARD_POINTER_RELATIVE} for this project`)
-    } else if (extraction.reason === 'no readable tool_response text') {
-      recordFailure(cwd, 'payload-diverted-or-too-large', extraction.reason)
+    if (extraction.reason === 'no readable tool_response text') {
+      recordAttempt(cwd, false, 'payload-diverted-or-too-large', extraction.reason)
     } else if (extraction.reason.includes('result is a subset')) {
-      recordFailure(cwd, 'partial-payload', extraction.reason)
+      recordAttempt(cwd, false, 'partial-payload', extraction.reason)
     } else {
-      recordFailure(cwd, 'payload-unparseable', extraction.reason)
+      recordAttempt(cwd, false, 'payload-unparseable', extraction.reason)
     }
     return // partial/unreadable read — never write a guess
   }
 
   const parserPath = join(cwd, DEPENDS_ON_PARSER_RELATIVE)
   if (!existsSync(parserPath)) {
-    if (!existsSync(join(cwd, BOARD_POINTER_RELATIVE))) {
-      recordFailure(cwd, 'no-board-pointer', `no ${BOARD_POINTER_RELATIVE} for this project`)
-    } else {
-      recordFailure(cwd, 'dependency-parser-unavailable', `no ${DEPENDS_ON_PARSER_RELATIVE} for this project`)
-    }
+    recordAttempt(cwd, false, 'dependency-parser-unavailable', `no ${DEPENDS_ON_PARSER_RELATIVE} for this project`)
     return // no known dependency convention here — never write a wrong count
   }
 
@@ -175,7 +179,7 @@ function main() {
   try {
     resolveDeps = makeDepsResolver(parserPath)
   } catch (error) {
-    recordFailure(cwd, 'dependency-parser-unavailable', error?.message ?? error)
+    recordAttempt(cwd, false, 'dependency-parser-unavailable', error?.message ?? error)
     return
   }
 
@@ -188,7 +192,7 @@ function main() {
   try {
     snapshot = computeSnapshot({ cards: extraction.cards, resolveDeps, boardId, now: Date.now() })
   } catch (error) {
-    recordFailure(cwd, 'snapshot-computation-failed', error?.message ?? error)
+    recordAttempt(cwd, false, 'snapshot-computation-failed', error?.message ?? error)
     return // a card's dependency line could not be resolved (parser died mid-scan) — write nothing
   }
 
@@ -203,14 +207,15 @@ function main() {
     countedScope: snapshot.countedScope,
   }
   if (!isValidSnapshotFields(fields)) {
-    recordFailure(cwd, 'snapshot-invalid', 'computed snapshot failed field validation')
+    recordAttempt(cwd, false, 'snapshot-invalid', 'computed snapshot failed field validation')
     return
   }
 
   try {
     writeSnapshot(cwd, fields)
+    recordAttempt(cwd, true, 'snapshot-written', snapshot.countedScope)
   } catch (error) {
-    recordFailure(cwd, 'snapshot-write-failed', error?.message ?? error)
+    recordAttempt(cwd, false, 'snapshot-write-failed', error?.message ?? error)
     // Writing must never turn this hook into a blocker — the consumer's own
     // fail-closed missing/stale path is the safety net if this write fails.
   }
