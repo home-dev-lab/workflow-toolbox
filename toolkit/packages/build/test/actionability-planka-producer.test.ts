@@ -98,6 +98,15 @@ function findCardsResponse(cards: Array<{ id: string; name: string; description?
   return { content: [{ type: 'text', text: JSON.stringify(cards) }] }
 }
 
+function spilledResponse(path: string) {
+  return {
+    content: [{
+      type: 'text',
+      text: `Error: result (3,281,608 characters across 20,000 lines) exceeds maximum allowed tokens. Output has been saved to ${path}.\nFormat: Plain text`,
+    }],
+  }
+}
+
 function readSnapshot(stateDir: string, cwd: string): Record<string, unknown> | null {
   try {
     return JSON.parse(readFileSync(join(stateDir, `${slug(cwd)}.json`), 'utf8'))
@@ -144,6 +153,38 @@ describe('actionability-planka-producer-core', () => {
     const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
     const parsed = JSON.parse(res.stdout)
     expect(parsed.ok).toBe(false)
+    expect(parsed.reason).toBe('find_cards called with a filter — result is a subset, not the whole board')
+  })
+
+  it('resolveBoardProjectDir: a cwd below a project resolves to the nearest ancestor with a board pointer', () => {
+    const root = mkRoot('core-ancestor')
+    const project = join(root, 'project')
+    const nested = join(project, 'packages/app')
+    mkdirSync(join(project, '.claude'), { recursive: true })
+    mkdirSync(nested, { recursive: true })
+    writeFileSync(join(project, '.claude/planka.json'), '{}', 'utf8')
+    const script = [
+      `import { existsSync } from 'node:fs'`,
+      `import { resolveBoardProjectDir } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `process.stdout.write(resolveBoardProjectDir(${JSON.stringify(nested)}, existsSync) ?? '')`,
+    ].join('\n')
+    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
+    expect(res.status).toBe(0)
+    expect(res.stdout).toBe(project)
+  })
+
+  it('resolveBoardProjectDir: a cwd with no pointer-bearing ancestor returns null', () => {
+    const root = mkRoot('core-no-ancestor')
+    const nested = join(root, 'project/packages/app')
+    mkdirSync(nested, { recursive: true })
+    const script = [
+      `import { existsSync } from 'node:fs'`,
+      `import { resolveBoardProjectDir } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `process.stdout.write(JSON.stringify(resolveBoardProjectDir(${JSON.stringify(nested)}, existsSync)))`,
+    ].join('\n')
+    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
+    expect(res.status).toBe(0)
+    expect(JSON.parse(res.stdout)).toBeNull()
   })
 
   it('extractCards: a get_board LIST WITH NO cards[] ARRAY is refused (truncated, not "empty") — review finding 1', () => {
@@ -219,7 +260,7 @@ describe('actionability-planka-producer-core', () => {
 })
 
 describe('wt-actionable-snapshot-producer-hook (integration)', () => {
-  it('records distinct reasons when measurement is impossible, but no failure on success', () => {
+  it('records distinct failure reasons and records success too', () => {
     const diverted = scaffoldProject('diverted', { withParser: true })
     const divertedResult = runProducerHook({
       hook_event_name: 'PostToolUse',
@@ -264,7 +305,77 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
       cwd: success.cwd,
     }, success.env).status).toBe(0)
     expect(readSnapshot(success.stateDir, success.cwd)).not.toBeNull()
-    expect(readFailureRecords(success.stateDir)).toEqual([])
+    expect(readFailureRecords(success.stateDir)).toEqual([
+      expect.objectContaining({ ok: true, reason: 'snapshot-written', projectDir: success.cwd }),
+    ])
+  })
+
+  it('writes a snapshot from the complete JSON in an oversized-result spill file', () => {
+    const project = scaffoldProject('spilled', { withParser: true })
+    const spillPath = join(project.root, 'spilled-board.txt')
+    writeFileSync(spillPath, JSON.stringify({
+      id: 'board-1',
+      lists: [{ name: 'Next', cards: [{ id: '100020', name: 'Ready', position: 1 }] }],
+    }), 'utf8')
+    const res = runProducerHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__get_board',
+      tool_input: { boardId: 'b1' },
+      tool_response: spilledResponse(spillPath),
+      cwd: project.cwd,
+    }, project.env)
+    expect(res.status).toBe(0)
+    expect(readSnapshot(project.stateDir, project.cwd)).toMatchObject({ actionable: 1 })
+  })
+
+  it('refuses an oversized-result spill path that does not exist without throwing', () => {
+    const project = scaffoldProject('missing-spill', { withParser: true })
+    const missingPath = join(project.root, 'does-not-exist.txt')
+    const res = runProducerHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__get_board',
+      tool_input: { boardId: 'b1' },
+      tool_response: spilledResponse(missingPath),
+      cwd: project.cwd,
+    }, project.env)
+    expect(res.status).toBe(0)
+    expect(res.stderr).toBe('')
+    expect(readSnapshot(project.stateDir, project.cwd)).toBeNull()
+    expect(readFailureRecords(project.stateDir)).toEqual([
+      expect.objectContaining({ ok: false, reason: 'payload-unparseable' }),
+    ])
+  })
+
+  it('refuses a relative oversized-result spill path even when that file exists', () => {
+    const project = scaffoldProject('relative-spill', { withParser: true })
+    writeFileSync(join(project.cwd, 'relative-board.txt'), JSON.stringify({ lists: [] }), 'utf8')
+    const res = runProducerHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__get_board',
+      tool_input: { boardId: 'b1' },
+      tool_response: spilledResponse('relative-board.txt'),
+      cwd: project.cwd,
+    }, project.env)
+    expect(res.status).toBe(0)
+    expect(readSnapshot(project.stateDir, project.cwd)).toBeNull()
+    expect(readFailureRecords(project.stateDir)).toEqual([
+      expect.objectContaining({ ok: false, reason: 'payload-unparseable' }),
+    ])
+  })
+
+  it('uses the pointer-bearing project ancestor as the snapshot key', () => {
+    const project = scaffoldProject('nested-cwd', { withParser: true })
+    const nested = join(project.cwd, 'worktrees/card/toolkit')
+    mkdirSync(nested, { recursive: true })
+    expect(runProducerHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__get_board',
+      tool_input: { boardId: 'b1' },
+      tool_response: boardResponse([{ name: 'Next', cards: [] }]),
+      cwd: nested,
+    }, project.env).status).toBe(0)
+    expect(readSnapshot(project.stateDir, project.cwd)).not.toBeNull()
+    expect(readSnapshot(project.stateDir, nested)).toBeNull()
   })
 
   it('never throws on malformed hook input', () => {
