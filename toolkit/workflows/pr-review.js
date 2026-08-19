@@ -2534,8 +2534,12 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     });
   }
   var MODELS_ROLE_KEYS = ["review"];
+  var OPENCODE_ROLE_KEYS = ["review", "verify"];
   function parseModels(raw) {
     return parseRoleStringMap(raw, "models", MODEL_ALIASES, MODELS_ROLE_KEYS, "pr-review");
+  }
+  function parseOpencodeRoleMap(raw, key) {
+    return parseRoleStringMap(raw, key, null, OPENCODE_ROLE_KEYS, "pr-review");
   }
   var ALLOWED_MODES = ["full", "single-verifier"];
   function parseMode(raw) {
@@ -2558,6 +2562,8 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
         target: raw,
         mode: "full",
         reviewerType: null,
+        opencodeModels: null,
+        opencodeVariants: null,
         models: null,
         verifierModel: null,
         verifierType: null,
@@ -2601,7 +2607,22 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     const provenance = parseProvenance(obj["provenance"]);
     const mode = parseMode(obj["mode"]);
     const models = parseModels(obj["models"]);
-    return { target: obj["target"], mode, reviewerType, models, verifierModel, verifierType, perAgent, effort, messaging, provenance };
+    const opencodeModels = parseOpencodeRoleMap(obj["opencodeModels"], "opencodeModels");
+    const opencodeVariants = parseOpencodeRoleMap(obj["opencodeVariants"], "opencodeVariants");
+    return {
+      target: obj["target"],
+      mode,
+      reviewerType,
+      opencodeModels,
+      opencodeVariants,
+      models,
+      verifierModel,
+      verifierType,
+      perAgent,
+      effort,
+      messaging,
+      provenance
+    };
   }
   async function run(rt00, input) {
     rt00.phase("Fence");
@@ -2638,7 +2659,8 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       resolvedReviewerType = probe.agentType ?? null;
       probeReport = { requested: input.reviewerType, available: probe.available, reason: probe.reason };
     }
-    const reviewModel = resolveWrapperModel(isBridgeAgentType(resolvedReviewerType), input.models?.review);
+    const reviewerIsBridge = isBridgeAgentType(resolvedReviewerType);
+    const reviewModel = resolveWrapperModel(reviewerIsBridge, input.models?.review);
     let resolvedVerifierType = null;
     let verifierProbeReport = null;
     if (input.verifierType !== null) {
@@ -2647,6 +2669,16 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       resolvedVerifierType = probe.agentType ?? null;
       verifierProbeReport = { requested: input.verifierType, available: probe.available, reason: probe.reason };
     }
+    const reviewOpencodeDirectives = reviewerIsBridge ? (input.opencodeModels?.review !== void 0 ? `OPENCODE_MODEL: ${input.opencodeModels.review}
+
+` : "") + (input.opencodeVariants?.review !== void 0 ? `OPENCODE_VARIANT: ${input.opencodeVariants.review}
+
+` : "") : "";
+    const verifyOpencodeDirectives = isBridgeAgentType(resolvedVerifierType) ? (input.opencodeModels?.verify !== void 0 ? `OPENCODE_MODEL: ${input.opencodeModels.verify}
+
+` : "") + (input.opencodeVariants?.verify !== void 0 ? `OPENCODE_VARIANT: ${input.opencodeVariants.verify}
+
+` : "") : "";
     rt.phase("Route");
     const routeResult = await classifyAndAct(rt, {
       items: [input.target],
@@ -2786,7 +2818,7 @@ Focus ONLY on the "${lens}" lens.`;
         const consolidatedInstructions = lenses.map((l) => `### Lens: ${l}
 ${lensInstructionsFor(l)}`).join("\n\n");
         const result2 = await rt.agent(
-          `## Role
+          reviewOpencodeDirectives + `## Role
 You are reviewing this change in single-verifier mode: ONE consolidated pass covering every lens that would normally get its own reviewer (${lenses.join(", ")}).
 
 ## Change
@@ -2823,7 +2855,7 @@ Return your findings across ALL lenses combined. Each finding: \`{ title, file, 
       }
       const lensInstructions = lensInstructionsFor(lens);
       const result = await rt.agent(
-        `## Role
+        reviewOpencodeDirectives + `## Role
 You are a specialized code reviewer examining the **${lens}** aspect of this change.
 
 ## Change
@@ -2895,7 +2927,7 @@ Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'
         // numeric, so none collides with the auto counter's own ' #<n>' format.
         stageKey: lens,
         claims: findings,
-        renderClaim: (finding) => `## Claim to verify (lens: ${lens})
+        renderClaim: (finding) => verifyOpencodeDirectives + `## Claim to verify (lens: ${lens})
 **${finding.title}** \u2014 \`${finding.file}\` \xB7 severity: ${finding.severity}
 
 ${finding.detail}

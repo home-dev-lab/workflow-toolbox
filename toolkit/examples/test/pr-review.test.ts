@@ -859,6 +859,96 @@ describe('pr-review review-lens wrapper model (haiku doctrine)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Test: per-role external model + variant directives. These are bridge prompt
+// directives, distinct from the wrapper's own Claude `models.review` knob.
+// ---------------------------------------------------------------------------
+describe('pr-review per-role opencode model + variant routing', () => {
+  const TYPE = 'workflow-toolbox:opencode-envelope'
+  const reviewCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('pr-review:reviewer:'))
+  const verifyCalls = (rt: FakeRuntime) =>
+    rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
+  const stripMeta = (prompt: unknown) => String(prompt).replace(/^<!-- wt-meta [^\n]+ -->\n\n/, '')
+
+  it('renders each routed role\'s own external model into that role\'s prompt', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      agentTypes: { review: TYPE, verify: TYPE },
+      opencodeModels: { review: 'openai/gpt-5.4', verify: 'openai/gpt-5.6-sol' },
+    }))
+
+    const reviews = reviewCalls(rt)
+    const verifies = verifyCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    expect(reviews.every((c) =>
+      stripMeta(c.prompt).startsWith('OPENCODE_MODEL: openai/gpt-5.4\n\n'),
+    )).toBe(true)
+    expect(reviews.every((c) => !String(c.prompt).includes('OPENCODE_MODEL: openai/gpt-5.6-sol'))).toBe(true)
+    expect(verifies.length).toBeGreaterThan(0)
+    expect(verifies.every((c) =>
+      String(c.prompt).includes('\nClaim:\nOPENCODE_MODEL: openai/gpt-5.6-sol\n\n'),
+    )).toBe(true)
+    expect(verifies.every((c) => !String(c.prompt).includes('OPENCODE_MODEL: openai/gpt-5.4'))).toBe(true)
+  })
+
+  it('renders each routed role\'s own external variant into that role\'s prompt', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      agentTypes: { review: TYPE, verify: TYPE },
+      opencodeVariants: { review: 'review-high', verify: 'verify-xhigh' },
+    }))
+
+    const reviews = reviewCalls(rt)
+    const verifies = verifyCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    expect(reviews.every((c) =>
+      stripMeta(c.prompt).startsWith('OPENCODE_VARIANT: review-high\n\n'),
+    )).toBe(true)
+    expect(reviews.every((c) => !String(c.prompt).includes('OPENCODE_VARIANT: verify-xhigh'))).toBe(true)
+    expect(verifies.length).toBeGreaterThan(0)
+    expect(verifies.every((c) =>
+      String(c.prompt).includes('\nClaim:\nOPENCODE_VARIANT: verify-xhigh\n\n'),
+    )).toBe(true)
+    expect(verifies.every((c) => !String(c.prompt).includes('OPENCODE_VARIANT: review-high'))).toBe(true)
+  })
+
+  it('does not render directives for a role whose agentTypes entry is absent', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      agentTypes: { review: TYPE },
+      opencodeModels: { review: 'openai/gpt-5.4', verify: 'openai/gpt-5.6-sol' },
+      opencodeVariants: { review: 'review-high', verify: 'verify-xhigh' },
+    }))
+
+    const verifies = verifyCalls(rt)
+    expect(verifies.length).toBeGreaterThan(0)
+    expect(verifies.every((c) => !String(c.prompt).includes('OPENCODE_MODEL:'))).toBe(true)
+    expect(verifies.every((c) => !String(c.prompt).includes('OPENCODE_VARIANT:'))).toBe(true)
+  })
+
+  it('rejects an unknown opencodeModels role key and names the map', async () => {
+    await expect(
+      wf.run(makeHappyPathRuntime(), JSON.stringify({
+        target: 'HEAD~1..HEAD',
+        opencodeModels: { bogus: 'openai/gpt-5.4' },
+      })),
+    ).rejects.toThrow(/opencodeModels/)
+  })
+
+  it('rejects an unknown opencodeVariants role key and names the map', async () => {
+    await expect(
+      wf.run(makeHappyPathRuntime(), JSON.stringify({
+        target: 'HEAD~1..HEAD',
+        opencodeVariants: { bogus: 'xhigh' },
+      })),
+    ).rejects.toThrow(/opencodeVariants/)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Test: Verify-fan routing via the STRUCTURED config channel `agentTypes.verify`
 // — mirrors the agentTypes.review block above exactly (same probe-then-resolve
 // shape, same fail-fast contract — an explicit type that fails its probe refuses

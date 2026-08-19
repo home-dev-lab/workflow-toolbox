@@ -134,6 +134,14 @@ export interface PrReviewInput {
    *  default. A specialist reviewer is more thorough but noisier; the
    *  refute-first Verify stage filters the extra false positives. */
   reviewerType: string | null
+  /** Optional external provider/model directive per bridge-routed role.
+   *  Values reach the bridge through an `OPENCODE_MODEL:` prompt line; they
+   *  are omitted when that role did not resolve to a recognized bridge. */
+  opencodeModels: Readonly<{ review?: string; verify?: string }> | null
+  /** Optional opencode variant directive per bridge-routed role. Values reach
+   *  the bridge through an `OPENCODE_VARIANT:` prompt line and are omitted
+   *  from standard Claude or same-family specialist roles. */
+  opencodeVariants: Readonly<{ review?: string; verify?: string }> | null
   /** Optional per-ROLE Claude model for the WRAPPER agent itself (key
    *  'review'), validated against MODEL_ALIASES. A review lens routed to a
    *  NAME-RECOGNIZED external bridge agentType (isBridgeAgentType,
@@ -543,16 +551,24 @@ function parseProvenance(raw: unknown): readonly ProvenanceEntry[] | null {
   })
 }
 
-// pr-review routes only ONE role (`review`) through the shared bridge-routing
-// doctrine — unlike coverage-audit/docs-audit's 3-role map (inventory/
-// extract/verify). Same convention (parseRoleStringMap from opencode-
-// routing.ts, see its header comment for the Rule-of-Three rationale), scoped
-// to pr-review's own role set.
+// The wrapper's Claude `models` map remains review-only. External opencode
+// directives cover both routed roles, review and verify. Both use the shared
+// parseRoleStringMap convention from opencode-routing.ts without conflating
+// the two distinct model channels.
 const MODELS_ROLE_KEYS = ['review'] as const
+const OPENCODE_ROLE_KEYS = ['review', 'verify'] as const
 
 function parseModels(raw: unknown): Readonly<{ review?: ModelAlias }> | null {
   return parseRoleStringMap(raw, 'models', MODEL_ALIASES, MODELS_ROLE_KEYS, 'pr-review') as
     Readonly<{ review?: ModelAlias }> | null
+}
+
+function parseOpencodeRoleMap(
+  raw: unknown,
+  key: 'opencodeModels' | 'opencodeVariants',
+): Readonly<{ review?: string; verify?: string }> | null {
+  return parseRoleStringMap(raw, key, null, OPENCODE_ROLE_KEYS, 'pr-review') as
+    Readonly<{ review?: string; verify?: string }> | null
 }
 
 // Proportionate-review ladder rungs this workflow accepts as `mode`.
@@ -592,6 +608,8 @@ function parseInput(raw: unknown): PrReviewInput {
       target: raw,
       mode: 'full',
       reviewerType: null,
+      opencodeModels: null,
+      opencodeVariants: null,
       models: null,
       verifierModel: null,
       verifierType: null,
@@ -661,8 +679,23 @@ function parseInput(raw: unknown): PrReviewInput {
   // Bespoke pr-review key (parseConfig ignores it, like provenance/mode
   // above): the wrapper-model gate for the review lens.
   const models = parseModels(obj['models'])
+  const opencodeModels = parseOpencodeRoleMap(obj['opencodeModels'], 'opencodeModels')
+  const opencodeVariants = parseOpencodeRoleMap(obj['opencodeVariants'], 'opencodeVariants')
 
-  return { target: obj['target'], mode, reviewerType, models, verifierModel, verifierType, perAgent, effort, messaging, provenance }
+  return {
+    target: obj['target'],
+    mode,
+    reviewerType,
+    opencodeModels,
+    opencodeVariants,
+    models,
+    verifierModel,
+    verifierType,
+    perAgent,
+    effort,
+    messaging,
+    provenance,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -762,7 +795,8 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   // specialist agentType not on the bridge allowlist (e.g.
   // magic-claude:ts-reviewer) — KEEPS its normal tier, fail-safe toward
   // quality. `models.review` always wins when supplied, either direction.
-  const reviewModel = resolveWrapperModel(isBridgeAgentType(resolvedReviewerType), input.models?.review)
+  const reviewerIsBridge = isBridgeAgentType(resolvedReviewerType)
+  const reviewModel = resolveWrapperModel(reviewerIsBridge, input.models?.review)
 
   // Same probe-then-resolve treatment for the Verify fan's routing request
   // (agentTypes.verify) — mirrors the reviewerType block above exactly, so an
@@ -776,6 +810,23 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     resolvedVerifierType = probe.agentType ?? null
     verifierProbeReport = { requested: input.verifierType, available: probe.available, reason: probe.reason }
   }
+
+  const reviewOpencodeDirectives = reviewerIsBridge
+    ? (input.opencodeModels?.review !== undefined
+      ? `OPENCODE_MODEL: ${input.opencodeModels.review}\n\n`
+      : '') +
+      (input.opencodeVariants?.review !== undefined
+        ? `OPENCODE_VARIANT: ${input.opencodeVariants.review}\n\n`
+        : '')
+    : ''
+  const verifyOpencodeDirectives = isBridgeAgentType(resolvedVerifierType)
+    ? (input.opencodeModels?.verify !== undefined
+      ? `OPENCODE_MODEL: ${input.opencodeModels.verify}\n\n`
+      : '') +
+      (input.opencodeVariants?.verify !== undefined
+        ? `OPENCODE_VARIANT: ${input.opencodeVariants.verify}\n\n`
+        : '')
+    : ''
 
   // -------------------------------------------------------------------------
   // Phase 'Route' — classifyAndAct
@@ -1063,6 +1114,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         .join('\n\n')
 
       const result = await rt.agent<FindingsOutput>(
+        reviewOpencodeDirectives +
         `## Role\n` +
         `You are reviewing this change in single-verifier mode: ONE consolidated pass ` +
         `covering every lens that would normally get its own reviewer (${lenses.join(', ')}).\n\n` +
@@ -1099,6 +1151,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     // transcript viewers render markdown, where a single \n does NOT break a paragraph —
     // the old shape read as one giant unscannable blob (user finding, 2026-07-08).
     const result = await rt.agent<FindingsOutput>(
+      reviewOpencodeDirectives +
       `## Role\n` +
       `You are a specialized code reviewer examining the **${lens}** aspect of this change.\n\n` +
       `## Change\n` +
@@ -1179,6 +1232,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       stageKey: lens,
       claims: findings,
       renderClaim: (finding) =>
+        verifyOpencodeDirectives +
         `## Claim to verify (lens: ${lens})\n` +
         `**${finding.title}** — \`${finding.file}\` · severity: ${finding.severity}\n\n` +
         `${finding.detail}\n\n` +
