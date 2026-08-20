@@ -67,6 +67,10 @@ if (rest[0] === 'rev-parse' && rest[1] === '--symbolic-full-name' && rest[2] ===
   out(process.env.FAKE_GIT_UPSTREAM_REF + '\n')
   process.exit(0)
 }
+if (rest[0] === 'remote' && rest.length === 1) {
+  out((process.env.FAKE_GIT_REMOTES || '') + '\n')
+  process.exit(0)
+}
 if (rest[0] === 'symbolic-ref' && rest[1] === '--quiet' && rest[2] === '--short' && rest[3] === 'HEAD') {
   if (process.env.FAKE_GIT_BRANCH === undefined) process.exit(128)
   out(process.env.FAKE_GIT_BRANCH + '\n')
@@ -358,6 +362,35 @@ describe('wt-check-commit-signatures-hook.mjs', () => {
     )
     expect(res.status).toBe(0)
     expect(res.stdout).toBe('')
+  })
+
+  it('excludes only the TARGET remote refs, never every remote-tracking ref', () => {
+    // ⚠ A bare `--not --remotes` excludes whatever ANY tracking ref reaches. Measured on this
+    // repository 2026-08-20: 43 such refs, of which 31 are leftovers from a deleted remote and
+    // 11 belong to a never-pushed archive — only ONE is a push target. On a range that would
+    // genuinely add 62 commits to the public remote, the bare form reported ZERO. A guard that
+    // goes silent on exactly the commits it exists to inspect is worse than no guard.
+    const trace = makeTraceFile('range-target-remote')
+    const { repo, env } = makeFakeGitEnv('range-target-remote', {
+      FAKE_GIT_BRANCH: 'main',
+      FAKE_GIT_PUSH_REF: 'refs/remotes/public/main',
+      FAKE_GIT_REMOTES: 'public\nmirror',
+      FAKE_GIT_TRACE: trace,
+    })
+    const res = runHook(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: repo,
+        tool_input: { command: 'git push public main' },
+      },
+      env,
+    )
+    expect(res.status).toBe(0)
+    const traced = readFileSync(trace, 'utf8')
+    expect(traced).toContain('--remotes=public')
+    // and never the unscoped form, which is what hid the 62
+    expect(traced).not.toMatch(/"--remotes"(?!=)/)
   })
 
   it('derives the outgoing range from the branch upstream for git push with no explicit remote', () => {

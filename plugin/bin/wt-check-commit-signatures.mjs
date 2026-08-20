@@ -91,6 +91,28 @@ function printFindings({ offenders, headSha, range }) {
   );
 }
 
+/** Name the remote a range is pushing TO, or null when it cannot be established.
+ *
+ * The left side of `refs/remotes/<remote>/<branch>..HEAD` (or `<remote>/<branch>..HEAD`) names it.
+ * The candidate is validated against `git remote` rather than trusted from the string, so a branch
+ * that merely LOOKS like `<something>/<something>` cannot silently widen the exclusion.
+ *
+ * Returning null is the SAFE outcome: the caller then excludes nothing and reports every commit in
+ * range. Over-reporting wastes a reader's time; under-reporting ships unsigned commits.
+ */
+function remoteFromRange(repo, range) {
+  if (!range) return null;
+  const left = range.split(/\.\.\.?/)[0];
+  if (!left) return null;
+  const withoutPrefix = left.startsWith('refs/remotes/') ? left.slice('refs/remotes/'.length) : left;
+  const candidate = withoutPrefix.split('/')[0];
+  if (!candidate || candidate === 'refs' || candidate === 'HEAD') return null;
+  const res = runGit(repo, ['remote']);
+  if (res.status !== 0) return null;
+  const known = String(res.stdout || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  return known.includes(candidate) ? candidate : null;
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
 
@@ -105,18 +127,30 @@ function main() {
   const signingKey = getOptionalConfig(args.repo, '--get', 'user.signingkey');
   if (signingKey !== null) configLines.push(`user.signingkey=${signingKey}`);
 
-  // ⚠ EXCLUDE WHAT THE REMOTE ALREADY HAS. A range like origin/<branch>..HEAD is the right
-  // question for "what would this push add" only while the branch is a straight line. Merge
-  // the default branch in — the most routine update there is — and the range legitimately
-  // contains that branch's whole history: other people's commits, unsigned, and ALREADY
-  // PUBLISHED. Measured 2026-08-20 on a repository whose main is not signed: 121 commits in
-  // range, 120 of them reachable from origin/main, one of them the author's own signed merge.
-  // The check refused the push and its remedy proposed rebasing 120 published commits.
-  // `--not --remotes` narrows the walk to commits no remote-tracking ref can reach, which is
-  // exactly the set a push adds. With no remotes configured it matches nothing and the
-  // behaviour is unchanged.
+  // ⚠ EXCLUDE WHAT THE TARGET REMOTE ALREADY HAS — and ONLY that remote.
+  //
+  // A range like <remote>/<branch>..HEAD answers "what would this push add" only while the branch
+  // is a straight line. Merge the default branch in — the most routine update there is — and the
+  // range legitimately contains that branch's whole history: other people's commits, unsigned, and
+  // ALREADY PUBLISHED. Measured 2026-08-20 on a repository whose main is not signed: 121 commits in
+  // range, 120 reachable from origin/main, one actually added. The check refused that push and its
+  // remedy proposed rebasing 120 published commits by a dozen authors.
+  //
+  // ⚠⚠ But a BARE `--not --remotes` over-corrects, and it fails in the dangerous direction: it
+  // excludes whatever ANY tracking ref reaches. Measured the same day on this repository: 43
+  // tracking refs, 31 of them leftovers from a DELETED remote and 11 belonging to an archive that
+  // is never pushed — exactly ONE is a push target. On a range that would genuinely add 62 commits
+  // to the public remote, the bare form reported ZERO. A guard that goes mute on precisely the
+  // commits it exists to inspect does not degrade, it INVERTS: it grants confidence at the one
+  // moment it should refuse.
+  //
+  // So scope the exclusion to the remote the range is pushing TO. When that remote cannot be
+  // established we exclude NOTHING and over-report — a noisy guard is recoverable, a mute one is
+  // not.
+  const targetRemote = remoteFromRange(args.repo, args.range);
+  const excludeArgs = targetRemote === null ? [] : ['--not', `--remotes=${targetRemote}`];
   const logArgs = args.range
-    ? ['log', '--format=%H%x09%G?%x09%s', args.range, '--not', '--remotes']
+    ? ['log', '--format=%H%x09%G?%x09%s', args.range, ...excludeArgs]
     : ['log', '-1', '--format=%H%x09%G?%x09%s', 'HEAD'];
   const logRes = runGit(args.repo, logArgs);
   if (logRes.status !== 0) {
