@@ -3,6 +3,34 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.161.0] - 2026-08-20
+
+### Fixed
+
+- **The commit-signature check no longer accuses commits the remote already has, and no longer goes
+  blind on the ones it adds.** A range like `<remote>/<branch>..HEAD` answers "what would this push
+  add" only while the branch is a straight line; merge the default branch in and the range
+  legitimately contains that branch's whole history — other people's commits, unsigned, already
+  published. On a repository whose default branch is unsigned, the check refused a push by listing
+  120 such commits and proposed rebasing them.
+- **The exclusion is scoped to the remote being pushed TO, not to every remote-tracking ref.** A
+  bare `--not --remotes` over-corrects in the dangerous direction: on a repository carrying 43
+  tracking refs — 31 of them leftovers from a deleted remote, 11 from an archive that is never
+  pushed, exactly one a push target — it reported ZERO commits on a range that would genuinely add
+  62. A guard that falls silent on precisely what it exists to inspect does not degrade, it inverts.
+  The remote is derived from the range's left side and validated against `git remote`; when it
+  cannot be established, nothing is excluded and the check over-reports, because a noisy guard is
+  recoverable and a mute one is not.
+
+### Changed
+
+- **An escalation now names the option it recommends.** `wt-proactive-decision-making` asked for
+  every branch to be presented and stopped there — the bare menu, the one message shape that costs
+  a reader more than silence, because they must construct the answer rather than validate one. The
+  rule now carries both independent axes, in order: is this theirs at all, and only then, did you
+  name what you recommend. It also states plainly which of the two can be mechanised and which
+  cannot.
+
 ## [0.160.0] - 2026-08-10
 
 ### Added
