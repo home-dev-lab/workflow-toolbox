@@ -26,7 +26,12 @@ import { DEFAULT_MAX_TASKS, generateEachTasks, parseEachSource } from './lib/ope
 const DEFAULT_MODEL = 'openai/gpt-5.4'
 const DEFAULT_AGENT = 'plan'
 const DEFAULT_TIMEOUT_SEC = 570
-const DEFAULT_CONCURRENCY = 4
+// How many CLI calls run AT ONCE. It bounds the batch, never the total: a source of 10 000 items
+// runs 10 000 calls, `DEFAULT_CONCURRENCY` at a time, in as many sequential batches as that takes.
+// 8 is the safe default; 16 is known to work and simply takes longer. Degradation past it is TIME,
+// not loss — the 600 s harness ceiling that once made time fatal binds a FOREGROUND Bash call only,
+// and this script is run in the background, so a slow batch costs wall clock and nothing else.
+const DEFAULT_CONCURRENCY = 8
 const DEFAULT_MAX_REDUCE_CHARS = 131072
 
 function usage() {
@@ -50,8 +55,9 @@ function usage() {
     '  --each-lines <path>                One task per non-blank line; only for items that cannot contain newlines',
     '  --prompt-template <text>           Prompt template; {{item}} is the whole item, {{item.field}} an object field',
     '  --id-template <text>               Task-id template using the same placeholders (dotted field paths allowed)',
-    `  --max-tasks <n>                    Maximum generated tasks. Default: ${DEFAULT_MAX_TASKS}`,
-    '                                     Excess items are dropped and their count is recorded in the manifest.',
+    '  --max-tasks <n>                    Optional bound on generated tasks. Default: NO BOUND.',
+    '                                     A source larger than the bound is REFUSED, never truncated —',
+    '                                     batch size is set by --concurrency, not by the task count.',
     '',
     'Reduce mode (one external synthesis call from a prior fan-out manifest):',
     '  --reduce <manifest-path>             Source manifest; only successful answer files are included.',
@@ -69,7 +75,8 @@ function usage() {
     '  --variant <name>                   Default --variant (unvalidated) for tasks without one',
     '  --agent <name>                     Default opencode agent mode. Default: plan',
     '  --timeout-sec <n>                  Per-task CLI timeout. Default: 570',
-    '  --concurrency <n>                  Max tasks run in parallel. Default: 4',
+    `  --concurrency <n>                  Tasks run in parallel per batch. Default: ${DEFAULT_CONCURRENCY}`,
+    '                                     Bounds the BATCH, never the total; the rest runs in later batches.',
     '  --out-dir <path>                   Where answer files + manifest are written.',
     '                                     Default: the directory containing the task source',
     '  --manifest <path>                  Manifest file path. Default: <task-source>.manifest.json',
@@ -89,7 +96,7 @@ function parseArgs(argv) {
     eachLines: null,
     promptTemplate: null,
     idTemplate: null,
-    maxTasks: DEFAULT_MAX_TASKS,
+    maxTasks: DEFAULT_MAX_TASKS,  // undefined = no bound
     dir: null,
     model: DEFAULT_MODEL,
     fallbackModel: DEFAULT_MODEL,
@@ -561,9 +568,6 @@ async function main() {
 
   const outDir = opts.outDir ?? path.dirname(path.resolve(sourcePath))
   const manifestPath = opts.manifest ?? `${sourcePath}.manifest.json`
-  if (generatedMode && generation.dropped > 0) {
-    process.stderr.write(`wt-opencode-envelope: dropped ${generation.dropped} of ${generation.sourceCount} source items because --max-tasks=${opts.maxTasks}\n`)
-  }
   if (generatedMode && tasks.length === 0) {
     fs.mkdirSync(outDir, { recursive: true })
     const manifest = {

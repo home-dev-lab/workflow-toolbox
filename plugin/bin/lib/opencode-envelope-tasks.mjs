@@ -1,4 +1,7 @@
-export const DEFAULT_MAX_TASKS = 256
+// ⚠ RETIRED as a default cap (2026-08-20). Kept only so an explicit `--max-tasks` still has a
+// documented meaning; nothing applies it unless a caller passes the flag, and passing it now
+// REFUSES an oversized source rather than silently dropping its tail.
+export const DEFAULT_MAX_TASKS = undefined
 
 function templateValue(value) {
   if (typeof value === 'string') return value
@@ -46,15 +49,35 @@ export function parseEachSource(sourceText, mode) {
   throw new Error(`unknown each-source mode: ${mode}`)
 }
 
-export function generateEachTasks({ items, promptTemplate, idTemplate, maxTasks = DEFAULT_MAX_TASKS }) {
-  if (!Number.isInteger(maxTasks) || maxTasks < 1) throw new Error('--max-tasks must be a positive integer')
-  const selected = items.slice(0, maxTasks)
+/** Generate one task per source item.
+ *
+ * ⚠ THERE IS NO CAP, AND THAT IS DELIBERATE. This function used to slice the input to
+ * `DEFAULT_MAX_TASKS = 256` and report the remainder as `dropped`. Truncating loses work that
+ * nobody can recover: the calls are never made, the findings they would have produced never exist,
+ * and the only trace is one stderr line in a log nobody re-reads. There is no counterweight — the
+ * cap bought nothing, because a large batch is bounded by CONCURRENCY (how many run at once),
+ * never by TOTAL (how many run at all). An envelope may issue ten thousand calls; it simply runs
+ * them `concurrency` at a time.
+ *
+ * `maxTasks` is kept as an OPT-IN bound for a caller that genuinely wants one — and it now REFUSES
+ * rather than truncating, so the "silently did less than asked" outcome is unreachable by any path.
+ */
+export function generateEachTasks({ items, promptTemplate, idTemplate, maxTasks }) {
+  if (maxTasks !== undefined) {
+    if (!Number.isInteger(maxTasks) || maxTasks < 1) throw new Error('--max-tasks must be a positive integer')
+    if (items.length > maxTasks) {
+      throw new Error(
+        `--max-tasks=${maxTasks} but the source has ${items.length} items. Refusing to truncate: ` +
+        `raise or drop --max-tasks. Batch size is bounded by --concurrency, not by the task count.`,
+      )
+    }
+  }
   return {
-    tasks: selected.map((item) => ({
+    tasks: items.map((item) => ({
       id: applyItemTemplate(idTemplate, item),
       prompt: applyItemTemplate(promptTemplate, item),
     })),
     sourceCount: items.length,
-    dropped: items.length - selected.length,
+    dropped: 0,
   }
 }

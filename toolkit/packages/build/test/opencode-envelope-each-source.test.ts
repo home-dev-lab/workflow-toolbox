@@ -36,6 +36,13 @@ function installFakeOpencode(root: string) {
     '#!/usr/bin/env node',
     "if (process.argv[2] === 'providers') process.exit(0)",
     "const taskFile = process.argv[process.argv.indexOf('-f') + 1]",
+    "if (process.env.FAKE_CONCURRENCY_LOG) {",
+    "  const fs = require('node:fs')",
+    "  fs.appendFileSync(process.env.FAKE_CONCURRENCY_LOG, 'enter\\n')",
+    "  const until = Date.now() + 120",
+    "  while (Date.now() < until) {}",
+    "  fs.appendFileSync(process.env.FAKE_CONCURRENCY_LOG, 'leave\\n')",
+    "}",
     "if (process.env.FAKE_PROMPT_CAPTURE) require('node:fs').writeFileSync(process.env.FAKE_PROMPT_CAPTURE, require('node:fs').readFileSync(taskFile, 'utf8'))",
     "process.stdout.write(JSON.stringify({ part: { type: 'text', text: 'answer' } }) + '\\n')",
     '',
@@ -63,10 +70,16 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(result.tasks).toHaveLength(0)
   })
 
-  it('a source past the cap records both the capped count and dropped count', () => {
-    const result = generated(['a', 'b', 'c', 'd'], 3)
-    expect(result.tasks).toHaveLength(3)
-    expect(result.dropped).toBe(1)
+  it('a source past an explicit bound is REFUSED, never truncated', () => {
+    // Truncation loses calls that are never made and findings that never exist, with no
+    // counterweight — the batch is bounded by --concurrency, never by the task count.
+    expect(() => generated(['a', 'b', 'c', 'd'], 3)).toThrow(/Refusing to truncate/)
+  })
+
+  it('with no bound, every source item becomes a task however many there are', () => {
+    const result = generated(Array.from({ length: 1000 }, (_, i) => `item-${i}`))
+    expect(result.tasks).toHaveLength(1000)
+    expect(result.dropped).toBe(0)
   })
 
   it('--each-lines skips blank lines instead of generating empty tasks', () => {
@@ -88,7 +101,9 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(result.stdout).toContain('--each-json <path>')
     expect(result.stdout).toContain('--each-lines <path>')
     expect(result.stdout).toContain('--max-tasks <n>')
-    expect(result.stdout).toContain('Default: 256')
+    expect(result.stdout).toContain('Default: NO BOUND')
+    expect(result.stdout).toContain('--concurrency <n>')
+    expect(result.stdout).toContain('Default: 8')
     expect(result.stdout).toContain('--reduce <manifest-path>')
     expect(result.stdout).toContain('--max-reduce-chars <n>')
     expect(result.stdout).toContain('Default: 131072')
@@ -114,7 +129,55 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(manifest).toMatchObject({ status: 'nothing_to_do', nothingToDo: true, total: 0, dropped: 0, tasks: [] })
   })
 
-  it('capped execution logs and manifests the number dropped', () => {
+
+  it('10 tasks at --concurrency 8 run as a batch of 8 then a batch of 2', () => {
+    // The batch bounds how many run AT ONCE; the remainder runs in a later batch rather than
+    // being dropped. Each fake call appends enter/leave around a busy wait, so the peak overlap
+    // read back from the log is the real observed concurrency.
+    const root = makeRoot()
+    const workdir = join(root, 'workdir')
+    mkdirSync(workdir)
+    installFakeOpencode(root)
+    const source = join(root, 'items.json')
+    const manifestPath = join(root, 'manifest.json')
+    const concurrencyLog = join(root, 'concurrency.log')
+    writeFileSync(source, JSON.stringify(Array.from({ length: 10 }, (_, i) => `q${i}`)) + '\n')
+
+    const result = spawnSync(process.execPath, [
+      SCRIPT,
+      '--each-json', source,
+      '--prompt-template', 'Answer {{item}}',
+      '--id-template', '{{item}}',
+      '--concurrency', '8',
+      '--dir', workdir,
+      '--manifest', manifestPath,
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, FAKE_CONCURRENCY_LOG: concurrencyLog },
+    })
+
+    expect(result.status).toBe(0)
+
+    // every task ran — nothing truncated
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    expect(manifest.total).toBe(10)
+    expect(manifest.dropped).toBe(0)
+    expect(manifest.tasks).toHaveLength(10)
+
+    // peak overlap never exceeded the batch size, and the work really did overlap
+    const events = readFileSync(concurrencyLog, 'utf8').split('\n').filter(Boolean)
+    expect(events.filter((e) => e === 'enter')).toHaveLength(10)
+    let live = 0
+    let peak = 0
+    for (const e of events) {
+      live += e === 'enter' ? 1 : -1
+      if (live > peak) peak = live
+    }
+    expect(peak).toBeLessThanOrEqual(8)
+    expect(peak).toBeGreaterThan(1)
+  })
+
+  it('an execution whose source exceeds --max-tasks fails loudly and runs nothing', () => {
     const root = makeRoot()
     const workdir = join(root, 'workdir')
     mkdirSync(workdir)
@@ -132,12 +195,11 @@ describe('wt-opencode-envelope generated task sources', () => {
       '--manifest', manifestPath,
     ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}`, XDG_STATE_HOME: root } })
 
-    expect(result.status).toBe(0)
-    expect(result.stderr).toContain('dropped 2 of 4 source items because --max-tasks=2')
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-    expect(manifest).toMatchObject({ maxTasks: 2, dropped: 2, total: 2, nothingToDo: false })
-    expect(manifest.tasks).toHaveLength(2)
-    expect(manifest.tasks[0]).not.toHaveProperty('usage')
+    // The script's contract is exactly one line on STDOUT; an invalid source surfaces there
+    // as OPENCODE_ERROR, never on stderr.
+    expect(result.status).toBe(2)
+    expect(result.stdout).toContain('Refusing to truncate')
+    expect(result.stdout).toContain('4 items')
   })
 
   it('reduces successful answers into one external call and names failed tasks in its manifest', () => {
