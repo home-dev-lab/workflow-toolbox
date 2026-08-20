@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -42,6 +42,7 @@ function scaffold(tag: string): Scaffold {
   const cwd = join(root, 'project')
   const transcriptPath = join(root, 'transcript.jsonl')
   mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, '.git'), 'gitdir: /dev/null\n', 'utf8')
   writeFileSync(transcriptPath, '')
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -60,6 +61,11 @@ function scaffold(tag: string): Scaffold {
 function writeSnapshot(stateDir: string, cwd: string, snap: Record<string, unknown>): void {
   mkdirSync(stateDir, { recursive: true })
   writeFileSync(join(stateDir, `queue-${slug(cwd)}.json`), JSON.stringify(snap), 'utf8')
+}
+
+function agePath(path: string, minutesAgo = 10): void {
+  const staleDate = new Date(Date.now() - minutesAgo * 60_000)
+  utimesSync(path, staleDate, staleDate)
 }
 
 function runHook(payload: unknown, env: NodeJS.ProcessEnv): { code: number | null; stderr: string; stdout: string } {
@@ -90,9 +96,15 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     const { env, payload, stateDir, cwd } = scaffold('ancestor-family')
     writeSnapshot(stateDir, cwd, { open: 7, at: Date.now(), next: 'CARD-7 inherited item' })
 
-    const directories = [cwd, join(cwd, 'repository'), join(cwd, 'repository', 'packages', 'core')]
+    const repository = join(cwd, 'repository')
+    const packages = join(repository, 'packages')
+    const core = join(packages, 'core')
+    mkdirSync(core, { recursive: true })
+    agePath(repository)
+    agePath(packages)
+    agePath(core)
+    const directories = [cwd, repository, core]
     const verdicts = directories.map((directory, index) => {
-      mkdirSync(directory, { recursive: true })
       const r = runHook({
         ...(payload as Record<string, unknown>),
         cwd: directory,
@@ -117,6 +129,9 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     const repository = join(cwd, 'repository')
     const nested = join(repository, 'packages', 'core')
     mkdirSync(nested, { recursive: true })
+    agePath(repository)
+    agePath(join(repository, 'packages'))
+    agePath(nested)
     writeSnapshot(stateDir, cwd, { open: 11, at: Date.now(), next: 'root item' })
     writeSnapshot(stateDir, repository, { open: 3, at: Date.now(), next: 'repository item' })
 
@@ -152,6 +167,79 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     const text = blockText(r)
     expect(text).not.toBe('')
     expect(text).toContain('open work remains')
+  })
+
+  it('stays silent when the worktree was written to seconds ago even if no subagent transcript moved', () => {
+    const { env, payload, stateDir, cwd } = scaffold('recent-worktree-activity')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    writeFileSync(join(cwd, 'lane-output.txt'), 'external lane wrote here', 'utf8')
+
+    const r = runHook(payload, env)
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toBe('')
+  })
+
+  it('still blocks when the worktree is stale and no recent activity exists', () => {
+    const { env, payload, stateDir, cwd } = scaffold('stale-worktree-idle')
+    writeSnapshot(stateDir, cwd, { open: 6, at: Date.now(), next: 'CARD-6 idle item' })
+    const staleFile = join(cwd, 'old-output.txt')
+    writeFileSync(staleFile, 'old write', 'utf8')
+    const staleDate = new Date(Date.now() - 10 * 60_000)
+    utimesSync(staleFile, staleDate, staleDate)
+
+    const r = runHook(payload, env)
+    expect(r.code).toBe(0)
+    const text = blockText(r)
+    expect(text).toContain('open work remains')
+    expect(text).toContain('no recent worktree activity')
+  })
+
+  it('does not treat recent node_modules writes as in-flight worktree activity', () => {
+    const { env, payload, stateDir, cwd } = scaffold('skip-node-modules')
+    writeSnapshot(stateDir, cwd, { open: 8, at: Date.now(), next: 'CARD-8 real work item' })
+    const recentDependencyFile = join(cwd, 'node_modules', 'pkg', 'index.js')
+    mkdirSync(join(cwd, 'node_modules', 'pkg'), { recursive: true })
+    writeFileSync(recentDependencyFile, 'dependency churn', 'utf8')
+
+    const r = runHook(payload, env)
+    expect(r.code).toBe(0)
+    const text = blockText(r)
+    expect(text).toContain('open work remains')
+    expect(text).toContain('no recent worktree activity')
+    expect(text).toContain('8 open')
+  })
+
+  it('does not let a sibling worktree under an umbrella root silence this session', () => {
+    const root = mkRoot('umbrella-neighbor-activity')
+    const stateDir = join(root, 'queue-gate-state')
+    const umbrella = join(root, 'umbrella')
+    const driven = join(umbrella, 'worktrees', 'this-session')
+    const sibling = join(umbrella, 'worktrees', 'other-session')
+    const transcriptPath = join(root, 'transcript.jsonl')
+    mkdirSync(driven, { recursive: true })
+    mkdirSync(sibling, { recursive: true })
+    writeFileSync(join(driven, '.git'), 'gitdir: /dev/null\n', 'utf8')
+    writeFileSync(join(sibling, '.git'), 'gitdir: /dev/null\n', 'utf8')
+    writeFileSync(transcriptPath, '')
+    writeSnapshot(stateDir, umbrella, { open: 5, at: Date.now(), next: 'CARD-5 scoped item' })
+    writeFileSync(join(sibling, 'lane-output.txt'), 'neighbor session write', 'utf8')
+
+    const r = runHook({
+      hook_event_name: 'Stop',
+      session_id: 'session-umbrella-neighbor-activity',
+      cwd: umbrella,
+      transcript_path: transcriptPath,
+    }, {
+      ...process.env,
+      WT_QUEUE_GATE_DIR: stateDir,
+      HOME: root,
+    })
+
+    expect(r.code).toBe(0)
+    const text = blockText(r)
+    expect(text).toContain('open work remains')
+    expect(text).toContain('no recent worktree activity')
+    expect(text).toContain('5 open')
   })
 
   it('the emitted additionalContext is at most 6 lines', () => {

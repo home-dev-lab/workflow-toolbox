@@ -3,6 +3,17 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.161.1] - 2026-08-20
+
+### Fixed
+
+- **The stop-gate no longer reads a session driving an external lane as "nothing running".** It
+  decided whether work was in flight from subagent transcripts alone, so a session whose turn ends
+  with a CLI lane writing inside a worktree looked idle — nothing that lane does passes through a
+  tool call the session makes. The gate now also counts recent worktree activity, and the negative
+  direction is locked too: `node_modules` writes do not count, and a sibling worktree under an
+  umbrella root cannot silence a different session.
+
 ## [0.161.0] - 2026-08-20
 
 ### Fixed
