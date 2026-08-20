@@ -105,8 +105,18 @@ function main() {
   const signingKey = getOptionalConfig(args.repo, '--get', 'user.signingkey');
   if (signingKey !== null) configLines.push(`user.signingkey=${signingKey}`);
 
+  // ⚠ EXCLUDE WHAT THE REMOTE ALREADY HAS. A range like origin/<branch>..HEAD is the right
+  // question for "what would this push add" only while the branch is a straight line. Merge
+  // the default branch in — the most routine update there is — and the range legitimately
+  // contains that branch's whole history: other people's commits, unsigned, and ALREADY
+  // PUBLISHED. Measured 2026-08-20 on a repository whose main is not signed: 121 commits in
+  // range, 120 of them reachable from origin/main, one of them the author's own signed merge.
+  // The check refused the push and its remedy proposed rebasing 120 published commits.
+  // `--not --remotes` narrows the walk to commits no remote-tracking ref can reach, which is
+  // exactly the set a push adds. With no remotes configured it matches nothing and the
+  // behaviour is unchanged.
   const logArgs = args.range
-    ? ['log', '--format=%H%x09%G?%x09%s', args.range]
+    ? ['log', '--format=%H%x09%G?%x09%s', args.range, '--not', '--remotes']
     : ['log', '-1', '--format=%H%x09%G?%x09%s', 'HEAD'];
   const logRes = runGit(args.repo, logArgs);
   if (logRes.status !== 0) {
