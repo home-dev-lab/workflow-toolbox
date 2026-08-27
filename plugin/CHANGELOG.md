@@ -3,6 +3,31 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.162.0] - 2026-08-27
+
+### Fixed
+
+- **Worktree preparation told the wrong actor to run the wrong command.** The concurrent-sessions
+  rule instructed the SPAWNED AGENT to rebase its isolated worktree. The pilot guard refuses a
+  delegate's own rebase, so the brief ordered something the agent could not do — it relayed and
+  waited, costing one round trip per delegate before any work started. The SPAWNER now prepares
+  the tree, immediately after the spawn call returns.
+- **And the operation itself was wrong for a fresh worktree.** A fresh worktree branches off the
+  repository's DEFAULT branch, so `git rebase <integration-tip>` replays upstream's own commits
+  onto the integration branch and exits 1 with a conflict. `git reset --hard <tip>` is correct
+  while the worktree carries no commits of its own. The discriminator is now stated, because the
+  correction inverts later in an arc: once the worktree has its own commits, `reset --hard` would
+  destroy them.
+
+### Added
+
+- **The delegation ladder now says adoption is a PRECONDITION, not an adjective.** The pilot pair
+  ships as unregistered templates — deliberately, since the harness does not honour `observer:` on
+  a plugin-registered agent and a registered pilot would run without its watchdog. A project that
+  has not adopted them has no `pilot` to spawn, and nothing said so: the spawn failed after a
+  complete brief had already been written. Also records that an adoption is picked up within
+  minutes, so the "~90 minutes or a restart" caution applies to hand-written definitions only.
+
 ## [0.161.1] - 2026-08-20
 
 ### Fixed
