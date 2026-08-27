@@ -194,6 +194,35 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(text).toContain('no recent worktree activity')
   })
 
+  it('distinguishes observed idle, no git root, and a bounded-out activity scan', () => {
+    const messages: Record<string, string> = {}
+
+    const idle = scaffold('activity-status-idle')
+    writeSnapshot(idle.stateDir, idle.cwd, { open: 6, at: Date.now(), next: 'activity item' })
+    agePath(idle.cwd)
+    messages.idle = blockText(runHook(idle.payload, idle.env))
+
+    const noRoot = scaffold('activity-status-no-root')
+    rmSync(join(noRoot.cwd, '.git'), { force: true })
+    writeSnapshot(noRoot.stateDir, noRoot.cwd, { open: 6, at: Date.now(), next: 'activity item' })
+    messages['no-root'] = blockText(runHook(noRoot.payload, noRoot.env))
+
+    const bounded = scaffold('activity-status-bounded')
+    writeSnapshot(bounded.stateDir, bounded.cwd, { open: 6, at: Date.now(), next: 'activity item' })
+    for (let i = 0; i <= 4000; i += 1) {
+      const path = join(bounded.cwd, `old-${i}.txt`)
+      writeFileSync(path, 'old', 'utf8')
+      agePath(path)
+    }
+    agePath(bounded.cwd)
+    messages.bounded = blockText(runHook(bounded.payload, bounded.env))
+
+    expect.soft(messages.idle).toContain('no recent worktree activity')
+    expect.soft(messages['no-root']).toContain('Worktree activity is unknown — no git root resolved')
+    expect.soft(messages.bounded).toContain('Worktree activity is unknown — scan bounded out')
+    expect.soft(new Set(Object.values(messages)).size).toBe(3)
+  })
+
   it('does not treat recent node_modules writes as in-flight worktree activity', () => {
     const { env, payload, stateDir, cwd } = scaffold('skip-node-modules')
     writeSnapshot(stateDir, cwd, { open: 8, at: Date.now(), next: 'CARD-8 real work item' })
@@ -238,7 +267,7 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(r.code).toBe(0)
     const text = blockText(r)
     expect(text).toContain('open work remains')
-    expect(text).toContain('no recent worktree activity')
+    expect(text).toContain('Worktree activity is unknown — no git root resolved')
     expect(text).toContain('5 open')
   })
 

@@ -3,6 +3,24 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.164.0] - 2026-08-27
+
+### Fixed
+
+- **The stop-gate claimed to have observed an idle worktree when it had not looked.** Its activity
+  scan returned a boolean, and THREE different facts collapsed into its `false`: no git root could
+  be resolved from the cwd, the bounded walk spent its entry budget before finishing, and the whole
+  reachable tree was walked with nothing recent. The emitted line asserted `no recent worktree
+  activity` in all three, so a reader — and the decision "may I start something else" that reads it
+  — could not tell an observation from an inability to observe.
+  The scan now reports WHICH fact it established (`recent` · `idle` · `no-root` · `bounded`), and
+  the emitted line names it. **Behaviour is unchanged**: only `recent` suppresses the gate, so the
+  hook still speaks in every case it spoke in before — speaking when unsure is deliberate for a
+  stop-gate, and the defect was the claim, never the decision.
+  ⚠ The silent bail on the INVENTORY path is deliberately UNTOUCHED: its own comment states that
+  silence is intentional, and making a per-turn hook speak there would turn every adopter without a
+  producer into a permanently red gate.
+
 ## [0.163.0] - 2026-08-27
 
 ### Added
@@ -14,7 +32,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   and reported three shipped features as never built. The clause also states that any machine-read
   field convention is parsed from the description, so recording it in a comment looks recorded and
   is invisible.
-
 ## [0.162.0] - 2026-08-27
 
 ### Fixed
