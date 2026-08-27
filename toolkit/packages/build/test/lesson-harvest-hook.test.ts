@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -32,10 +33,14 @@ const NO_LESSONS = '# Report\n\n## Lessons for the memory\n\nNone.\n'
 const NOT_A_REPORT = '# Just a document\n\nNothing to harvest here.\n'
 
 function run(s: ReturnType<typeof scaffold>) {
+  return runFrom(s.project, { WT_LESSON_HARVEST_STATE: s.statePath })
+}
+
+function runFrom(cwd: string, env: Record<string, string>) {
   const res = spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify({ cwd: s.project }),
+    input: JSON.stringify({ cwd }),
     encoding: 'utf8',
-    env: { ...process.env, WT_LESSON_HARVEST_STATE: s.statePath },
+    env: { ...process.env, ...env },
     timeout: 20_000,
   })
   const stdout = res.stdout.trim()
@@ -80,6 +85,36 @@ describe('wt-lesson-harvest-hook surfaces what a rule and a skill both failed to
 
     expect(first.context).toContain('2 lesson(s)')
     expect(second.stdout).toBe('')
+  })
+
+  it('shares the default registry across different cwd values in one project', () => {
+    const s = scaffold()
+    const nested = join(s.project, 'packages', 'build')
+    mkdirSync(nested, { recursive: true })
+    report(s.reports, 'card-1-report.md', WITH_LESSONS)
+    const env = { XDG_STATE_HOME: join(s.root, 'state'), WT_LESSON_HARVEST_DIRS: s.reports }
+
+    const first = runFrom(s.project, env)
+    const second = runFrom(nested, env)
+
+    expect(first.context).toContain('2 lesson(s)')
+    expect(second.stdout).toBe('')
+  })
+
+  it('finds ancestor report dirs and anchors cold-start state there from a nested cwd', () => {
+    const s = scaffold()
+    const nested = join(s.project, 'packages', 'build')
+    const stateRoot = join(s.root, 'state')
+    mkdirSync(nested, { recursive: true })
+    const file = report(s.reports, 'card-1-report.md', WITH_LESSONS)
+
+    const result = runFrom(nested, { XDG_STATE_HOME: stateRoot })
+
+    const readable = s.project.replace(/[^A-Za-z0-9]/g, '-').slice(0, 120)
+    const hash = createHash('sha1').update(s.project).digest('hex').slice(0, 12)
+    const projectState = join(stateRoot, 'wt-lesson-harvest', `${readable}-${hash}.json`)
+    expect(result.context).toContain(file)
+    expect(existsSync(projectState)).toBe(true)
   })
 
   it('speaks AGAIN when the report changes, because a rewritten report is new material', () => {
