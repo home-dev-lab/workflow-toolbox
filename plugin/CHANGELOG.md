@@ -3,6 +3,18 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.163.0] - 2026-08-27
+
+### Added
+
+- **Task tracking: closing a card updates its DESCRIPTION, not only a comment.** The rule said
+  where detail belongs and never said to refresh the description when the work lands, so the
+  stale pre-work claim stayed on the surface every reader — human or tool — sees by default.
+  Measured on an adopter's 51-card board: a fidelity check read descriptions, read zero comments,
+  and reported three shipped features as never built. The clause also states that any machine-read
+  field convention is parsed from the description, so recording it in a comment looks recorded and
+  is invisible.
+
 ## [0.162.0] - 2026-08-27
 
 ### Fixed
