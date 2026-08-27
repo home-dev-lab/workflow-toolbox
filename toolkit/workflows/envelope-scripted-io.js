@@ -244,14 +244,29 @@ unreadable channel never fails your task.`;
       whenToUse: "To watch a thin-envelope phase in the observatory with nothing composed by an agent. Not a real analysis: the questions are trivial by design.",
       phases: [{ title: "Ask", detail: "one envelope agent, N script-generated calls" }]
     },
-    input: {
-      /** File whose non-blank lines each become one external call. */
-      sourceFile: { type: "string", required: true },
-      /** Where the script runs and writes its answer files. */
-      workdir: { type: "string", required: true },
-      /** Max calls in flight. The observatory then shows the call pattern for this value. */
-      concurrency: { type: "number", default: 8 },
-      model: { type: "string", default: "openai/gpt-5.4" }
+    // ⚠ `defineWorkflow` accepts { meta, parseInput?, run } — there is NO `input:` key. An earlier
+    // version of this file used one; the args were then never validated and the first run succeeded
+    // only because the values happened to match. A correct result from a mechanism that checks
+    // nothing looks exactly like a correct result.
+    parseInput: (raw) => {
+      const o = raw ?? {};
+      const str = (k) => {
+        const v = o[k];
+        if (typeof v !== "string" || v.length === 0) {
+          throw new Error(`envelope-scripted-io: "${k}" must be a non-empty string`);
+        }
+        return v;
+      };
+      const concurrency = o.concurrency === void 0 ? 8 : o.concurrency;
+      if (typeof concurrency !== "number" || !Number.isInteger(concurrency) || concurrency < 1) {
+        throw new Error('envelope-scripted-io: "concurrency" must be an integer >= 1');
+      }
+      return {
+        sourceFile: str("sourceFile"),
+        workdir: str("workdir"),
+        concurrency,
+        model: typeof o.model === "string" && o.model ? o.model : "openai/gpt-5.4"
+      };
     },
     run: async (rt, input) => {
       rt.phase("Ask");
