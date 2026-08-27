@@ -287,7 +287,7 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
       fs.writeFileSync(streamFile, stdout, 'utf8')
       fs.appendFileSync(streamFile, `\nEXIT=${exitCode}\n`, 'utf8')
       fs.appendFileSync(streamFile, `\n--- spawn error ---\n${String(err)}\n`, 'utf8')
-      resolve({ streamFile, stdout, stderr, exitCode, reaped, timedOut: false, durationMs: Date.now() - startedAt })
+      resolve({ streamFile, stdout, stderr, exitCode, reaped, timedOut: false, startedAt, durationMs: Date.now() - startedAt })
     })
     child.on('close', (code, signal) => {
       clearTimeout(timer)
@@ -300,7 +300,7 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
       fs.writeFileSync(streamFile, stdout, 'utf8')
       fs.appendFileSync(streamFile, `\nEXIT=${exitCode}\n`, 'utf8')
       if (stderr.length > 0) fs.appendFileSync(streamFile, `\n--- stderr ---\n${stderr}\n`, 'utf8')
-      resolve({ streamFile, stdout, stderr, exitCode, reaped, timedOut: timedOut || signal === 'SIGKILL', durationMs: Date.now() - startedAt })
+      resolve({ streamFile, stdout, stderr, exitCode, reaped, timedOut: timedOut || signal === 'SIGKILL', startedAt, durationMs: Date.now() - startedAt })
     })
   })
 }
@@ -337,7 +337,12 @@ async function runTask(task, opts, outDir) {
   // process's own wall-clock, the CLI's `--format json` usage lines) — never invented. `usage` is
   // OMITTED entirely when the stream carried no measurable tokens (a plain-text call), because a
   // zero here would render as a measurement, which is precisely the failure this exists to avoid.
-  const base = { id, prompt: String(task.prompt ?? ''), model: modelUsed, log: result.streamFile, durationMs: result.durationMs, exitStatus: result.exitCode }
+  // startedAt is recorded BESIDE durationMs so the manifest shows the call PATTERN, not just
+  // how long each call took. Without it the wave structure cannot be reconstructed from the
+  // manifest at all: asked to show "8 calls then 2" at concurrency 8, the only route was to
+  // parse an epoch out of each stream file's NAME. A setting is not an observation, and
+  // evidence hidden in a filename is evidence nobody finds.
+  const base = { id, prompt: String(task.prompt ?? ''), model: modelUsed, log: result.streamFile, startedAt: result.startedAt, durationMs: result.durationMs, exitStatus: result.exitCode }
   const usage = laneUsageFromOutput(result.stdout)
   const withUsage = usage !== null ? { ...base, usage } : base
   // `reaped` follows the same rule as `usage` above and for the same reason: it is OMITTED when
