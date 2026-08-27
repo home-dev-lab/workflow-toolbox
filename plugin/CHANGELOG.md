@@ -3,6 +3,24 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.165.0] - 2026-08-27
+
+### Fixed
+
+- **The lesson-harvest hook re-offered reports it had already harvested.** It does keep a registry,
+  and the registry is keyed correctly (`path → mtime`) — but the registry FILE and the directories
+  it searches were both derived from the raw `cwd`. Since `cwd` changes turn to turn (a worktree, a
+  subdirectory, a temp path), every distinct cwd got its own partition, and a run from a deep cwd
+  also looked in a `.claude/reports` that does not exist there.
+  Measured on one machine: **133 state files, 126 of them an empty object** — 95% of the state was
+  written by runs that found nothing to look at.
+  Both halves now resolve by exact key first, then by walking REAL ancestors, the way the queue
+  snapshot's path resolver already did. The `path → mtime` key is unchanged; the
+  `WT_LESSON_HARVEST_STATE` and `WT_LESSON_HARVEST_DIRS` overrides still win.
+  ⚠ The state filename now carries a hash suffix, so existing partitions are not read. Effect is a
+  ONE-TIME cold start per project: already-harvested reports may be offered once more, then
+  remembered correctly. Nothing is lost — the registry only suppresses repeats.
+
 ## [0.164.0] - 2026-08-27
 
 ### Fixed

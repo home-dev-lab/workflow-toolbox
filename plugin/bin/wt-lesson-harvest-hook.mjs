@@ -29,6 +29,7 @@
 //   WT_LESSON_HARVEST_OFF    any non-empty value disables it entirely
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -59,16 +60,49 @@ const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd
 // ⚠ The default list is a CONVENTION, not a discovery. A project whose reports live elsewhere gets
 // silence — which is indistinguishable from "no lessons", the exact ambiguity this file exists to
 // remove one level up. So the banner on first run names where it looked; see below.
-const defaultDirs = [
-  path.join(cwd, '.claude', 'reports'),
-  path.join(cwd, '.claude', 'pilots'),
-]
+function conventionalDirs(dir) {
+  return [path.join(dir, '.claude', 'reports'), path.join(dir, '.claude', 'pilots')]
+}
+
+function resolveDefaultDirs(start) {
+  let ancestor = String(start)
+  while (true) {
+    const candidates = conventionalDirs(ancestor)
+    if (candidates.some((dir) => existsSync(dir))) return { dirs: candidates, ancestor }
+    const parent = path.dirname(ancestor)
+    if (parent === ancestor) break
+    ancestor = parent
+  }
+  return { dirs: conventionalDirs(start), ancestor: '' }
+}
+
 const dirs = (process.env.WT_LESSON_HARVEST_DIRS || '').split(':').filter(Boolean)
-const searchDirs = dirs.length ? dirs : defaultDirs
+const resolvedDefaults = dirs.length ? null : resolveDefaultDirs(cwd)
+const searchDirs = dirs.length ? dirs : resolvedDefaults.dirs
 
 const stateRoot = process.env.XDG_STATE_HOME || path.join(homedir(), '.local', 'state')
-const slug = `${cwd.replace(/[^A-Za-z0-9]/g, '-').slice(0, 120)}`
-const statePath = process.env.WT_LESSON_HARVEST_STATE || path.join(stateRoot, 'wt-lesson-harvest', `${slug}.json`)
+const stateDir = path.join(stateRoot, 'wt-lesson-harvest')
+
+function stateFileName(dir) {
+  const value = String(dir || 'unknown')
+  const readable = value.replace(/[^A-Za-z0-9]/g, '-').slice(0, 120)
+  const hash = createHash('sha1').update(value).digest('hex').slice(0, 12)
+  return `${readable}-${hash}.json`
+}
+
+function resolveStatePath(start, coldStartAncestor) {
+  let ancestor = String(start)
+  while (true) {
+    const candidate = path.join(stateDir, stateFileName(ancestor))
+    if (existsSync(candidate)) return candidate
+    const parent = path.dirname(ancestor)
+    if (parent === ancestor) break
+    ancestor = parent
+  }
+  return path.join(stateDir, stateFileName(coldStartAncestor || start))
+}
+
+const statePath = process.env.WT_LESSON_HARVEST_STATE || resolveStatePath(cwd, resolvedDefaults?.ancestor)
 
 function loadSeen() {
   try {
