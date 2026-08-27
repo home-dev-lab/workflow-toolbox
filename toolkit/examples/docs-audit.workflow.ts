@@ -317,12 +317,32 @@ function claimKey(c: AuditClaim): string {
  *  `votes`) — used here ONLY to ESTIMATE total verify calls before dispatch, never a flat votes×claims
  *  guess (a flat estimate would be wrong for a claim mix that isn't uniform risk, and an explicit
  *  correction recorded on this card requires the clamp to use the REAL vote function). */
+/** How many verifier votes ONE claim gets — the single source of truth for the tiering.
+ *
+ *  Three call sites depend on agreeing EXACTLY: the pre-flight estimate below, the
+ *  safe-slice loop that decides how many claims still fit, and the `votesPerClaim`
+ *  handed to adversarialVerification at run time. They were three hand-written copies
+ *  of this expression.
+ *
+ *  ⚠ That mattered more than an ordinary duplication, because the middle one is a GUARD:
+ *  it refuses to start Verify when the estimate would blow the engine's agent ceiling.
+ *  A guard whose model of the guarded thing drifts does not degrade — it INVERTS. Add a
+ *  tier to the runtime copy and forget the estimate, and the guard under-predicts: it
+ *  lets a run start that then dies mid-fan, having already paid for extraction, which is
+ *  precisely the failure it exists to prevent (run wf_6f63845d-100, claim 312 of 706).
+ *
+ *  The direction is asymmetric too. Over-predicting refuses a run someone retries with
+ *  different arguments — visible and recoverable. Under-predicting burns the whole run
+ *  and returns nothing. */
+function votesForClaim(claim: AuditClaim, votes: number, tieredVotes: boolean): number {
+  if (!tieredVotes) return votes
+  return claim.kind === 'behavior' || claim.kind === 'boundary' || claim.risk === 'high' ? votes : 1
+}
+
 function estimateVerifyCalls(claims: readonly AuditClaim[], votes: number, tieredVotes: boolean): number {
   let total = 0
   for (const c of claims) {
-    total += tieredVotes
-      ? (c.kind === 'behavior' || c.kind === 'boundary' || c.risk === 'high' ? votes : 1)
-      : votes
+    total += votesForClaim(c, votes, tieredVotes)
   }
   return total
 }
@@ -1144,9 +1164,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
       let safeSliceSize = 0
       let running = 0
       for (const c of claimsAfterOffset) {
-        const voteCost = input.tieredVotes
-          ? (c.kind === 'behavior' || c.kind === 'boundary' || c.risk === 'high' ? input.votes : 1)
-          : input.votes
+        const voteCost = votesForClaim(c, input.votes, input.tieredVotes)
         const cost = voteCost * voteSalvageMultiplier
         if (running + cost > remainingBudget) break
         running += cost
@@ -1266,10 +1284,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
       // its single vote.
       ...(input.tieredVotes
         ? {
-            votesPerClaim: (c: AuditClaim) =>
-              c.kind === 'behavior' || c.kind === 'boundary' || c.risk === 'high'
-                ? input.votes
-                : 1,
+            votesPerClaim: (c: AuditClaim) => votesForClaim(c, input.votes, input.tieredVotes),
           }
         : {}),
       refuteThreshold: Math.min(2, input.votes),
