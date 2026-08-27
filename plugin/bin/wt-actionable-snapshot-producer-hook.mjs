@@ -217,25 +217,33 @@ function main() {
   // repository or worktree.
   const triggeringCwd = typeof input.cwd === 'string' && input.cwd ? resolve(input.cwd) : ''
   if (!triggeringCwd) return
-  const cwd = resolveBoardProjectDir(triggeringCwd, existsSync)
-  if (!cwd) {
+  // The board pointer gates the ACTIONABILITY SNAPSHOT, never the read itself.
+  // Resolving it here but deferring the refusal keeps the prior-art index below
+  // reachable on a project that has no pointer at all — which is exactly what
+  // that index's own comment promises, and what a straight early return silently
+  // took away.
+  const boardProjectDir = resolveBoardProjectDir(triggeringCwd, existsSync)
+  const journalDir = boardProjectDir || triggeringCwd
+  // Journaled HERE so the record keeps its place at the head of the journal, but
+  // deliberately WITHOUT returning: a missing pointer is a permanent property of
+  // the project, not a reason to skip the read.
+  if (!boardProjectDir) {
     recordAttempt(triggeringCwd, false, 'no-board-pointer', `no ${BOARD_POINTER_RELATIVE} for this project or its ancestors`)
-    return
   }
 
   const extraction = extractCards({
     toolName,
     toolInput: input.tool_input,
     toolResponse: input.tool_response,
-    readSpilledFile: (path) => readValidatedSpillFile(cwd, path),
+    readSpilledFile: (path) => readValidatedSpillFile(journalDir, path),
   })
   if (!extraction.ok) {
     if (extraction.reason === 'no readable tool_response text') {
-      recordAttempt(cwd, false, 'payload-diverted-or-too-large', extraction.reason)
+      recordAttempt(journalDir, false, 'payload-diverted-or-too-large', extraction.reason)
     } else if (extraction.reason.includes('result is a subset')) {
-      recordAttempt(cwd, false, 'partial-payload', extraction.reason)
+      recordAttempt(journalDir, false, 'partial-payload', extraction.reason)
     } else {
-      recordAttempt(cwd, false, 'payload-unparseable', extraction.reason)
+      recordAttempt(journalDir, false, 'payload-unparseable', extraction.reason)
     }
     return // partial/unreadable read — never write a guess
   }
@@ -251,10 +259,15 @@ function main() {
   // that follows, and vice versa — same fail-open posture as every other
   // write in this hook.
   try {
-    writeCardIndex(cwd, buildCardIndex(extraction.cards, Date.now()))
+    writeCardIndex(journalDir, buildCardIndex(extraction.cards, Date.now()))
   } catch (error) {
-    recordAttempt(cwd, false, 'prior-art-index-write-failed', error?.message ?? error)
+    recordAttempt(journalDir, false, 'prior-art-index-write-failed', error?.message ?? error)
   }
+
+  // From here down the work IS the actionability snapshot, which is meaningless
+  // without a board pointer. The refusal was already journaled above.
+  if (!boardProjectDir) return
+  const cwd = boardProjectDir
 
   const parserPath = join(cwd, DEPENDS_ON_PARSER_RELATIVE)
   if (!existsSync(parserPath)) {

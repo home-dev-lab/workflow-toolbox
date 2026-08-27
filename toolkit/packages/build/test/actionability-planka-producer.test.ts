@@ -317,7 +317,12 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
 
   it('writes a snapshot from the complete JSON in an oversized-result spill file', () => {
     const project = scaffoldProject('spilled', { withParser: true })
-    const spillPath = join(project.root, 'spilled-board.txt')
+    // Under an ALLOWED spill root (the active config dir's projects/ tree), which is
+    // where the harness actually spills. A path outside those roots is refused by
+    // design and has its own test below — this one is about reading a real spill.
+    const spillDir = join(project.configDir, 'projects', 'project-slug', 'session-id', 'tool-results')
+    mkdirSync(spillDir, { recursive: true })
+    const spillPath = join(spillDir, 'spilled-board.txt')
     writeFileSync(spillPath, JSON.stringify({
       id: 'board-1',
       lists: [{ name: 'Next', cards: [{ id: '100020', name: 'Ready', position: 1 }] }],
@@ -335,7 +340,8 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
 
   it('refuses an oversized-result spill path that does not exist without throwing', () => {
     const project = scaffoldProject('missing-spill', { withParser: true })
-    const missingPath = join(project.root, 'does-not-exist.txt')
+    // Inside an allowed root, so the refusal this test names is the one it gets.
+    const missingPath = join(project.configDir, 'projects', 'does-not-exist.txt')
     const res = runProducerHook({
       hook_event_name: 'PostToolUse',
       tool_name: 'mcp__planka__get_board',
@@ -346,7 +352,11 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
     expect(res.status).toBe(0)
     expect(res.stderr).toBe('')
     expect(readSnapshot(project.stateDir, project.cwd)).toBeNull()
+    // TWO records, and both are wanted: the hook names WHY it refused to read the
+    // path, then the extraction reports that it had no payload. Either alone leaves
+    // a reader guessing which half failed.
     expect(readFailureRecords(project.stateDir)).toEqual([
+      expect.objectContaining({ ok: false, reason: 'spill-payload-refused' }),
       expect.objectContaining({ ok: false, reason: 'payload-unparseable' }),
     ])
   })
