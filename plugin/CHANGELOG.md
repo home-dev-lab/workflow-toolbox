@@ -3,6 +3,27 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **A guard for the plugin's own release record.** A commit staging changes under `plugin/`
+  while staging neither the version nor this changelog now warns. The published packages have
+  enforced the equivalent for a long time — touch a package source without a changeset and
+  `changeset-gate` goes red — but the plugin had no counterpart, so a plugin fix could be merged
+  and pushed with no bump and reach no adopter, silently. Measured 2026-08-27: exactly that
+  happened to the queue-gate guard-journal wiring.
+  Ships **warn-only**: a work-in-progress commit that bumps once at the end of a branch, and a
+  plugin change with no release surface, both fire it legitimately. Promotion to blocking is a
+  separate decision taken from the guard journal's record.
+
+### Note on the version number
+
+This entry carries no version deliberately. `main` and `card/1837086183-lane-artefacts` incremented
+their counters independently after forking at 0.160.0, so the same numbers denote different content
+on the two sides. Choosing the next number is part of reconciling that fork, not part of this
+change.
+
 ## [0.165.0] - 2026-08-27
 
 ### Fixed

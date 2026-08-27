@@ -331,6 +331,16 @@ Warns (never blocks) when a Bash command uses `pgrep -a`/`-l` (or a combined sho
 
 It deliberately does not cover: PID-only forms (`pgrep -f pattern`, `pgrep -c -f pattern`, bare `pgrep pattern`) — deliberately silent, that is the safe form; `ps -o args= -p <pid>` (a single already-identified PID, the sanctioned follow-up); a bare `ps` with no full-listing flag; or prose about this trap (a heredoc, a commit message) — same known false-positive family as the sibling guards in this file, a textual guard cannot tell code from data. The flag matcher requires the `-` to be preceded by whitespace or the string start, so a hyphenated PATTERN argument (`pgrep my-pattern`) does not itself read as a flag.
 
+### `wt-plugin-release-record-guard-hook.mjs` — plugin release-record guard (PreToolUse on Bash)
+
+Warns, never blocks, when a `git commit` stages a change under `plugin/` while staging neither `plugin/.claude-plugin/plugin.json` nor `plugin/CHANGELOG.md`. The plugin's version is what decides whether an adopter receives a change at all, so a plugin fix committed and pushed without a bump reaches `main` and reaches nobody — silently, because nothing was checking.
+
+This closes an asymmetry rather than adding a new rule. The published packages already fail red on the equivalent omission: touch a package source without a changeset and `changeset-gate` goes red. The plugin had no counterpart.
+
+Scoped to a repository that owns `plugin/.claude-plugin/plugin.json`, so it stays silent in every other project. It reads only whether the files were staged — never whether the changelog entry is right or the bump the correct size.
+
+Warn-only deliberately: a work-in-progress commit on a branch that bumps once at the end, and a plugin change with no release surface, both fire it legitimately. Neither loses work. Promotion to blocking is a separate decision taken from the guard journal's record.
+
 ### `wt-propagation-reminder-hook.mjs` — tooling/plugin-edit propagation reminder (PostToolUse on Write/Edit/MultiEdit)
 
 Fires, never blocks, when a `Write`/`Edit`/`MultiEdit` call lands under a `plugin/` directory, under `<config-dir>/scripts/`, or under `<config-dir>/agents/` or `<config-dir>/skills/` — the three shapes whose edits reach an audience beyond the editing session: plugin adopters, every session on the same machine, or every session sharing that config dir or project. The trigger is mechanical (a path shape); the report is judgment the hook cannot supply, so it asks four questions — who gets it, when, what changed, and whether a shipped twin needs the same fix — and never answers them. Silence means only that no matched path was touched, never that nothing needs propagating.

@@ -301,6 +301,17 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_input: { command: 'pnpm totally-made-up-script' },
         cwd: sandbox.projectDir,
       }
+    case 'wt-plugin-release-record-guard-hook.mjs':
+      // A `git commit` inside the sandbox project. The sandbox owns no plugin manifest, so the
+      // guard's scope check makes it decline cleanly — which is exactly the path this suite must
+      // see stay quiet and non-crashing. Its firing behaviour is covered by its own test file,
+      // against real throwaway repositories.
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: sandbox.projectDir,
+        tool_input: { command: 'git commit -m wip' },
+      }
     case 'wt-pipestatus-bash-only-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',
