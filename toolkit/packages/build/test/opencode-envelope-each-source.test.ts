@@ -103,7 +103,7 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(result.stdout).toContain('--max-tasks <n>')
     expect(result.stdout).toContain('Default: NO BOUND')
     expect(result.stdout).toContain('--concurrency <n>')
-    expect(result.stdout).toContain('Default: 8')
+    expect(result.stdout).toContain('Default: 16')
     expect(result.stdout).toContain('--reduce <manifest-path>')
     expect(result.stdout).toContain('--max-reduce-chars <n>')
     expect(result.stdout).toContain('Default: 131072')

@@ -26,12 +26,26 @@ import { DEFAULT_MAX_TASKS, generateEachTasks, parseEachSource } from './lib/ope
 const DEFAULT_MODEL = 'openai/gpt-5.4'
 const DEFAULT_AGENT = 'plan'
 const DEFAULT_TIMEOUT_SEC = 570
-// How many CLI calls run AT ONCE. It bounds the batch, never the total: a source of 10 000 items
+// How many CLI calls run AT ONCE. It bounds the BATCH, never the total: a source of 10 000 items
 // runs 10 000 calls, `DEFAULT_CONCURRENCY` at a time, in as many sequential batches as that takes.
-// 8 is the safe default; 16 is known to work and simply takes longer. Degradation past it is TIME,
-// not loss — the 600 s harness ceiling that once made time fatal binds a FOREGROUND Bash call only,
-// and this script is run in the background, so a slow batch costs wall clock and nothing else.
-const DEFAULT_CONCURRENCY = 8
+// Measured 2026-08-20 on this machine, 16 identical calls to openai/gpt-5.4, all answered at every
+// level:
+//
+//   concurrency  8  ->  41 s
+//   concurrency 16  ->  26 s      <- faster, not slower
+//   concurrency 32  ->  27 s      <- says nothing: only 16 tasks, so 32 slots cannot be used
+//
+// ⚠ THE SCOPE OF THAT MEASUREMENT IS THE PART TO CARRY. Those prompts were trivial — one word of
+// output each. The external tool absorbed the parallelism because there was almost nothing to
+// absorb. With heavy prompts, sixteen concurrent requests are a very different load: the provider
+// answers with rate limits or token-per-minute limits, the CLI receives the 429s and slows down,
+// and the wall clock stops improving. So 16 is the right default for the shape we measured, and it
+// is NOT a claim about a fan-out of long analyses.
+//
+// Degradation is TIME, never loss: the 600 s harness ceiling that once made a slow batch fatal
+// binds a FOREGROUND Bash call only, and this script runs in the background. A caller that wants a
+// gentler footprint lowers it with --concurrency; nothing about the total changes either way.
+const DEFAULT_CONCURRENCY = 16
 const DEFAULT_MAX_REDUCE_CHARS = 131072
 
 function usage() {
