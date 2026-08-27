@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest'
 import { FakeRuntime } from '@workflow-toolbox/runtime'
 import wf from '../coverage-audit.workflow.js'
+import { opencodeWorkdirLine } from '../opencode-routing.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -258,8 +259,8 @@ describe('coverage-audit provenance resolution', () => {
 // ---------------------------------------------------------------------------
 // Test: OPENCODE_WORKDIR auto-injection (card #1825784696588469957) — the
 // cd-to-target token economy stops depending on a hand-passed hint: any role
-// resolved to EXACTLY the opencode-verifier bridge gets `OPENCODE_WORKDIR:
-// <repoRoot>` for free, with NO caller recipe (no hints, no opencodeModels).
+// resolved to a recognized external bridge gets `OPENCODE_WORKDIR: <repoRoot>`
+// for free, with NO caller recipe (no hints, no opencodeModels).
 // ---------------------------------------------------------------------------
 
 describe('coverage-audit OPENCODE_WORKDIR auto-injection', () => {
@@ -315,7 +316,7 @@ describe('coverage-audit OPENCODE_WORKDIR auto-injection', () => {
     expect(extract.every((c) => !String(c.prompt).includes('OPENCODE_WORKDIR'))).toBe(true)
   })
 
-  it('does NOT inject OPENCODE_WORKDIR when routed to a DIFFERENT agentType (gated on the exact opencode-verifier string)', async () => {
+  it('does NOT inject OPENCODE_WORKDIR for an unrecognised non-bridge agentType', async () => {
     const rt = makeRuntime({
       inventory: { 'src/a.ts': [makeCapability()], 'src/b.ts': [] },
       extractRounds: [[], []],
@@ -324,6 +325,29 @@ describe('coverage-audit OPENCODE_WORKDIR auto-injection', () => {
     const extract = stageCalls(rt, 'Extract', 'extract undocumented-capability claims')
     expect(extract.length).toBeGreaterThan(0)
     expect(extract.every((c) => !String(c.prompt).includes('OPENCODE_WORKDIR'))).toBe(true)
+  })
+})
+
+describe('opencodeWorkdirLine bridge classification', () => {
+  const REPO_ROOT = '/repo-under-review'
+
+  it('returns the full directive for the opencode-envelope bridge', () => {
+    expect(opencodeWorkdirLine('workflow-toolbox:opencode-envelope', REPO_ROOT))
+      .toBe('OPENCODE_WORKDIR: /repo-under-review\n\n')
+  })
+
+  it('returns the unchanged full directive for the opencode-verifier bridge', () => {
+    expect(opencodeWorkdirLine('workflow-toolbox:opencode-verifier', REPO_ROOT))
+      .toBe('OPENCODE_WORKDIR: /repo-under-review\n\n')
+  })
+
+  it('returns nothing for an unrecognised agent type', () => {
+    expect(opencodeWorkdirLine('magic-claude:ts-reviewer', REPO_ROOT)).toBe('')
+  })
+
+  it('returns nothing for a nullish resolved type', () => {
+    expect(opencodeWorkdirLine(null, REPO_ROOT)).toBe('')
+    expect(opencodeWorkdirLine(undefined, REPO_ROOT)).toBe('')
   })
 })
 

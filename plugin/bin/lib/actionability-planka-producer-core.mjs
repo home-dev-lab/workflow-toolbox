@@ -16,6 +16,10 @@
 // very defect it exists to fix. computeSnapshot() therefore always returns a
 // countedScope string describing the scan, even when the caller does not ask.
 
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+
+const BOARD_POINTER_RELATIVE = '.claude/planka.json'
+
 const STARTABLE_LISTS = new Set(['backlog', 'next'])
 const DONE_LISTS = new Set(['done'])
 
@@ -40,6 +44,23 @@ export function extractResponseText(toolResponse) {
   return first ? first.text : null
 }
 
+export function resolveBoardProjectDir(cwd, pathExists) {
+  let current = resolve(cwd)
+  for (;;) {
+    if (pathExists(join(current, BOARD_POINTER_RELATIVE))) return current
+    const parent = dirname(current)
+    if (parent === current) return null
+    current = parent
+  }
+}
+
+function spilledResponsePath(text) {
+  // Accept only the harness's explicit spill sentence. The named path is still
+  // untrusted: relative paths never cross this boundary.
+  const match = text.match(/Output has been saved to (\/[^\r\n]+)\.(?:\r?\n|$)/)
+  return match && isAbsolute(match[1]) ? match[1] : null
+}
+
 // Normalizes ONE card object (however it arrived — a get_board list member or
 // a find_cards result) into the {id, description, listName, position} shape
 // computeSnapshot() needs. Returns null for anything unusable rather than
@@ -56,18 +77,34 @@ function normalizeCard(raw) {
 }
 
 /**
- * @param {{ toolName: string, toolInput: unknown, toolResponse: unknown }} input
+ * @param {{ toolName: string, toolInput: unknown, toolResponse: unknown, readSpilledFile?: (path: string) => string | null }} input
  * @returns {{ ok: true, cards: Array<{id:string,name:string,description:string,listName:string,position:number}> } | { ok: false, reason: string }}
  */
-export function extractCards({ toolName, toolInput, toolResponse }) {
-  const text = extractResponseText(toolResponse)
+export function extractCards({ toolName, toolInput, toolResponse, readSpilledFile }) {
+  if (toolName === 'mcp__planka__find_cards') {
+    const ti = toolInput && typeof toolInput === 'object' ? toolInput : {}
+    const filtered = Boolean(ti.list || ti.label || ti.text)
+    if (filtered) return { ok: false, reason: 'find_cards called with a filter — result is a subset, not the whole board' }
+  }
+
+  let text = extractResponseText(toolResponse)
   if (!text) return { ok: false, reason: 'no readable tool_response text' }
 
   let parsed
   try {
     parsed = JSON.parse(text)
   } catch {
-    return { ok: false, reason: 'tool_response text is not valid JSON' }
+    const spilledPath = spilledResponsePath(text)
+    if (!spilledPath || typeof readSpilledFile !== 'function') {
+      return { ok: false, reason: 'tool_response text is not valid JSON' }
+    }
+    try {
+      text = readSpilledFile(spilledPath)
+      if (typeof text !== 'string') return { ok: false, reason: 'spilled tool_response file is unavailable' }
+      parsed = JSON.parse(text)
+    } catch {
+      return { ok: false, reason: 'spilled tool_response file is unavailable or not valid JSON' }
+    }
   }
 
   if (toolName === 'mcp__planka__get_board') {
@@ -107,9 +144,6 @@ export function extractCards({ toolName, toolInput, toolResponse }) {
     // as of this writing). If the tool ever grows another filtering/paging argument, this
     // check does not know about it and would need to be extended — named here rather than
     // silently assumed complete.
-    const ti = toolInput && typeof toolInput === 'object' ? toolInput : {}
-    const filtered = Boolean(ti.list || ti.label || ti.text)
-    if (filtered) return { ok: false, reason: 'find_cards called with a filter — result is a subset, not the whole board' }
     if (!Array.isArray(parsed)) return { ok: false, reason: 'find_cards response is not an array' }
     const cards = []
     for (const raw of parsed) {

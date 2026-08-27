@@ -13,6 +13,16 @@ arbiter.
 - Heavy implementation increment of one card → card's executor lane.
 - Decorrelated verification of checkable claim → different model family.
 
+⚠ **"Adopted" is a PRECONDITION, not an adjective — verify the type resolves BEFORE writing the
+brief.** The pilot pair ships as `plugin/agent-templates/`, deliberately UNREGISTERED: the harness
+does not honour `observer:` on a plugin-registered agent, so a registered pilot would run without
+its watchdog, silently. A project that has not adopted them therefore has no `pilot` to spawn, and
+nothing in this ladder says so — the spawn fails AFTER the expensive part, with a complete brief
+already written. `install.mjs --set agents --install` adopts them with a version banner, so a later
+`--check` reports staleness; a hand copy works and loses that.
+⚠ Adoption is picked up within MINUTES, same session, no restart — measured. The "a new agent type
+needs ~90 minutes or a restart" caution applies to a hand-written definition, not to an adoption.
+
 **Floor of ladder ≠ cheapest model — it's code.** Deterministic-answer question → script: zero
 cost, zero latency, zero ambiguity. Routing a deterministic predicate to a model instead isn't
 rigor — it's over-delegation, introducing uncertainty into a question that had none.

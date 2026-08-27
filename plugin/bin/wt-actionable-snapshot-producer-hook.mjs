@@ -50,7 +50,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { stateRoot, snapshotPath } from './lib/actionability-state-paths.mjs'
-import { extractCards, computeSnapshot, extractResponseText } from './lib/actionability-planka-producer-core.mjs'
+import { extractCards, computeSnapshot, resolveBoardProjectDir } from './lib/actionability-planka-producer-core.mjs'
 import { stateRoot as priorArtStateRoot, cardIndexPath } from './lib/prior-art-state-paths.mjs'
 import { buildCardIndex } from './lib/prior-art-index-core.mjs'
 
@@ -83,59 +83,46 @@ function allowedSpillRoots() {
   return [canonicalPath(tmpdir()), canonicalPath(dirname(stateRoot())), canonicalPath(join(configDir, 'projects'))]
 }
 
-function extractSavedOutputPath(text) {
-  const match = /saved[\s\S]{0,200}?\bto\b[^\S\r\n]*(\/[^\r\n]+)$/im.exec(text)
-  if (!match) return null
-  return match[1].trim().replace(/[.)]+$/, '')
-}
-
-function readSpilledToolResponse(toolResponse) {
-  const text = extractResponseText(toolResponse)
-  if (!text) return { ok: true, toolResponse }
-  try {
-    JSON.parse(text)
-    return { ok: true, toolResponse }
-  } catch {
-    // Not inline JSON; it still might be the harness's "saved output to file" placeholder.
+// The CORE decides WHETHER a spill happened and hands us the path it read out of the
+// harness's placeholder; this function decides whether that path may be read at all.
+// Validation stays here, on the hook side, because the bound it enforces is about THIS
+// machine's directories — an allow-list of temp/state roots, a plain file, a size cap —
+// and a refusal is journaled rather than swallowed. `null` is the core's contract for
+// "unavailable", so a refusal degrades to no snapshot, never to a guessed one.
+function readValidatedSpillFile(cwd, spillPath) {
+  const refuse = (reason) => {
+    recordAttempt(cwd, false, 'spill-payload-refused', reason)
+    return null
   }
-
-  const spillPath = extractSavedOutputPath(text)
-  if (!spillPath) return { ok: true, toolResponse }
-  if (!isAbsolute(spillPath)) {
-    return { ok: false, reason: `spill-path validation failed: not absolute (${spillPath})` }
-  }
+  if (!isAbsolute(spillPath)) return refuse(`spill-path validation failed: not absolute (${spillPath})`)
 
   const roots = allowedSpillRoots()
   const canonicalSpillPath = canonicalPath(spillPath)
   if (!roots.some((root) => isWithin(root, canonicalSpillPath))) {
-    return {
-      ok: false,
-      reason: `spill-path validation failed: ${spillPath} is outside allowed temp/state roots (${roots.join(', ')})`,
-    }
+    return refuse(`spill-path validation failed: ${spillPath} is outside allowed temp/state roots (${roots.join(', ')})`)
   }
 
   let stat
   try {
     stat = lstatSync(spillPath)
   } catch (error) {
-    return { ok: false, reason: `spill-file unreadable: ${error?.message ?? error}` }
+    return refuse(`spill-file unreadable: ${error?.message ?? error}`)
   }
-  if (!stat.isFile()) return { ok: false, reason: `spill-path validation failed: ${spillPath} is not a plain file` }
+  if (!stat.isFile()) return refuse(`spill-path validation failed: ${spillPath} is not a plain file`)
   if (stat.size > MAX_SPILL_BYTES) {
-    return { ok: false, reason: `spill-file too large: ${stat.size} bytes exceeds ${MAX_SPILL_BYTES}-byte bound` }
+    return refuse(`spill-file too large: ${stat.size} bytes exceeds ${MAX_SPILL_BYTES}-byte bound`)
   }
 
   try {
-    const payload = readFileSync(spillPath, 'utf8')
-    return { ok: true, toolResponse: { content: [{ type: 'text', text: payload }] } }
+    return readFileSync(spillPath, 'utf8')
   } catch (error) {
-    return { ok: false, reason: `spill-file read failed: ${error?.message ?? error}` }
+    return refuse(`spill-file read failed: ${error?.message ?? error}`)
   }
 }
 
 // Keep only the latest 100 one-line attempts. Fields are also truncated, so a
 // malformed hook payload cannot defeat the entry-count bound with one huge line.
-function recordFailure(cwd, reason, detail) {
+function recordAttempt(cwd, ok, reason, detail) {
   try {
     const root = stateRoot()
     const path = join(root, 'actionable-producer-journal.jsonl')
@@ -148,7 +135,7 @@ function recordFailure(cwd, reason, detail) {
     }
     lines.push(JSON.stringify({
       at: Date.now(),
-      ok: false,
+      ok,
       reason: boundedText(reason),
       detail: boundedText(detail),
       projectDir: boundedText(cwd),
@@ -224,29 +211,31 @@ function main() {
   const toolName = input.tool_name
   if (toolName !== 'mcp__planka__get_board' && toolName !== 'mcp__planka__find_cards') return
 
-  // Resolved to an absolute path — same normalization the consumer applies
-  // (wt-actionable-gate-hook.mjs's `resolve(input.cwd)`). Without this, a
-  // relative cwd would slug to a DIFFERENT path than the consumer reads,
-  // writing a snapshot nobody ever consumes (review finding).
-  const cwd = typeof input.cwd === 'string' && input.cwd ? resolve(input.cwd) : ''
-  if (!cwd) return
-
-  const hydratedToolResponse = readSpilledToolResponse(input.tool_response)
-  if (!hydratedToolResponse.ok) {
-    recordFailure(cwd, 'spill-payload-refused', hydratedToolResponse.reason)
+  // Normalize the triggering cwd, then walk to the project pointer. The
+  // consumer receives that session project root as its cwd, so both sides key
+  // the snapshot to the same directory even when this call came from a nested
+  // repository or worktree.
+  const triggeringCwd = typeof input.cwd === 'string' && input.cwd ? resolve(input.cwd) : ''
+  if (!triggeringCwd) return
+  const cwd = resolveBoardProjectDir(triggeringCwd, existsSync)
+  if (!cwd) {
+    recordAttempt(triggeringCwd, false, 'no-board-pointer', `no ${BOARD_POINTER_RELATIVE} for this project or its ancestors`)
     return
   }
 
-  const extraction = extractCards({ toolName, toolInput: input.tool_input, toolResponse: hydratedToolResponse.toolResponse })
+  const extraction = extractCards({
+    toolName,
+    toolInput: input.tool_input,
+    toolResponse: input.tool_response,
+    readSpilledFile: (path) => readValidatedSpillFile(cwd, path),
+  })
   if (!extraction.ok) {
-    if (!existsSync(join(cwd, BOARD_POINTER_RELATIVE))) {
-      recordFailure(cwd, 'no-board-pointer', `no ${BOARD_POINTER_RELATIVE} for this project`)
-    } else if (extraction.reason === 'no readable tool_response text') {
-      recordFailure(cwd, 'payload-diverted-or-too-large', extraction.reason)
+    if (extraction.reason === 'no readable tool_response text') {
+      recordAttempt(cwd, false, 'payload-diverted-or-too-large', extraction.reason)
     } else if (extraction.reason.includes('result is a subset')) {
-      recordFailure(cwd, 'partial-payload', extraction.reason)
+      recordAttempt(cwd, false, 'partial-payload', extraction.reason)
     } else {
-      recordFailure(cwd, 'payload-unparseable', extraction.reason)
+      recordAttempt(cwd, false, 'payload-unparseable', extraction.reason)
     }
     return // partial/unreadable read — never write a guess
   }
@@ -264,16 +253,12 @@ function main() {
   try {
     writeCardIndex(cwd, buildCardIndex(extraction.cards, Date.now()))
   } catch (error) {
-    recordFailure(cwd, 'prior-art-index-write-failed', error?.message ?? error)
+    recordAttempt(cwd, false, 'prior-art-index-write-failed', error?.message ?? error)
   }
 
   const parserPath = join(cwd, DEPENDS_ON_PARSER_RELATIVE)
   if (!existsSync(parserPath)) {
-    if (!existsSync(join(cwd, BOARD_POINTER_RELATIVE))) {
-      recordFailure(cwd, 'no-board-pointer', `no ${BOARD_POINTER_RELATIVE} for this project`)
-    } else {
-      recordFailure(cwd, 'dependency-parser-unavailable', `no ${DEPENDS_ON_PARSER_RELATIVE} for this project`)
-    }
+    recordAttempt(cwd, false, 'dependency-parser-unavailable', `no ${DEPENDS_ON_PARSER_RELATIVE} for this project`)
     return // no known dependency convention here — never write a wrong count
   }
 
@@ -281,7 +266,7 @@ function main() {
   try {
     resolveDeps = makeDepsResolver(parserPath)
   } catch (error) {
-    recordFailure(cwd, 'dependency-parser-unavailable', error?.message ?? error)
+    recordAttempt(cwd, false, 'dependency-parser-unavailable', error?.message ?? error)
     return
   }
 
@@ -294,7 +279,7 @@ function main() {
   try {
     snapshot = computeSnapshot({ cards: extraction.cards, resolveDeps, boardId, now: Date.now() })
   } catch (error) {
-    recordFailure(cwd, 'snapshot-computation-failed', error?.message ?? error)
+    recordAttempt(cwd, false, 'snapshot-computation-failed', error?.message ?? error)
     return // a card's dependency line could not be resolved (parser died mid-scan) — write nothing
   }
 
@@ -309,14 +294,15 @@ function main() {
     countedScope: snapshot.countedScope,
   }
   if (!isValidSnapshotFields(fields)) {
-    recordFailure(cwd, 'snapshot-invalid', 'computed snapshot failed field validation')
+    recordAttempt(cwd, false, 'snapshot-invalid', 'computed snapshot failed field validation')
     return
   }
 
   try {
     writeSnapshot(cwd, fields)
+    recordAttempt(cwd, true, 'snapshot-written', snapshot.countedScope)
   } catch (error) {
-    recordFailure(cwd, 'snapshot-write-failed', error?.message ?? error)
+    recordAttempt(cwd, false, 'snapshot-write-failed', error?.message ?? error)
     // Writing must never turn this hook into a blocker — the consumer's own
     // fail-closed missing/stale path is the safety net if this write fails.
   }

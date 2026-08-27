@@ -27,11 +27,7 @@ that is the judgment the L1 table below encodes.
 ⚠ **Check first whether a workflow is even the right artifact.** Every pattern below
 spends `agent()` calls, and `agent()` always launches a Claude Code subagent — there is
 no pattern, and no `agentType`/`verifierType` knob on top of one, that runs a role with
-zero Claude models involved. If the job description says a role must execute entirely
-on an external model with no Claude in the loop, stop here: scaffold a `.pipeline.ts`
-with a `scripted` stage instead (`workflow-toolbox pipeline`, see the workflow-composer
-skill's `references/orchestrator-pipelines.md`, "Scripted stages") — this skill covers
-workflows only.
+zero Claude models involved. This skill covers workflows only.
 
 ## The workflow
 

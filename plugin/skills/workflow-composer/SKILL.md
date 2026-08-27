@@ -25,11 +25,8 @@ primitive that runs a process or reaches another model directly.** Routing a rol
 `codex:codex-rescue` or `workflow-toolbox:opencode-verifier` (see
 `references/model-and-agent-routing.md`) still spends a Claude turn: that agent itself
 shells out to an external CLI, and the host cannot see or reroute what happens inside
-its call once it starts. If the job needs a stage that runs with **zero Claude models
-involved**, a workflow is the wrong artifact regardless of which pattern or agentType
-you reach for — that shape is a **pipeline** with a `scripted` stage instead
-(`references/orchestrator-pipelines.md`'s "Scripted stages" section). Recognise this
-before authoring, not after: composing a workflow that cannot do the job is wasted work.
+its call once it starts. Recognise this before authoring, not after: composing a
+workflow that cannot do the job is wasted work.
 
 There are **two ways to author one**, and choosing correctly is the first decision:
 

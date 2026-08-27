@@ -171,9 +171,7 @@ without touching its source — the natural home for an `args`-driven config:
   you want every agent's turn reasoning on the other model, not just the verifier's).
   ⚠ Each of those agents is still a Claude subagent that shells out — the workflow
   never runs with zero Claude models this way, and the pattern is slated for removal
-  (see `references/model-and-agent-routing.md`'s caveat). A stage with no Claude
-  model at all needs a pipeline's `scripted` stage instead
-  (`references/orchestrator-pipelines.md`).
+  (see `references/model-and-agent-routing.md`'s caveat).
 - **`parseConfig(raw)`** (`@workflow-toolbox/build/define`) → a typed
   `WorkflowConfig { perAgent, models, effort, agentTypes, sizing }` — normalizes an
   `args` config envelope so a workflow can accept launch-time tuning declaratively.

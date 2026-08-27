@@ -3,7 +3,7 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.171.0] - 2026-08-18
+## [0.176.0] - 2026-08-18
 
 ### Added
 
@@ -22,7 +22,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   satisfied and recorded elsewhere while the rule still said it had not been proven. Nothing was
   wrong when written; each simply outlived the state it described.
 
-## [0.170.0] - 2026-08-18
+## [0.175.0] - 2026-08-18
 
 ### Added
 
@@ -67,7 +67,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   `Agent type not found` and were simply too early — do not read one refusal as impossibility, and
   re-probe instead of concluding.
 
-## [0.169.0] - 2026-08-18
+## [0.174.0] - 2026-08-18
 
 ### Added
 
@@ -81,7 +81,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   names the favourable tell — a lane returning a clean tree or a suspiciously small diff — and the
   one command that settles it before the brief is written.
 
-## [0.168.0] - 2026-08-18
+## [0.173.0] - 2026-08-18
 
 ### Added
 
@@ -95,7 +95,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   path, an output channel or an agent type, and says to confirm at brief time rather than infer
   from the rule that prescribes it.
 
-## [0.167.0] - 2026-08-17
+## [0.172.0] - 2026-08-17
 
 ### Fixed
 
@@ -126,7 +126,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   that the path resolved at all. Resolution correctness is locked executably in
   `opencode-plugin-root-resolution.test.ts`.
 
-## [0.166.0] - 2026-08-11
+## [0.171.0] - 2026-08-11
 
 ### Added
 
@@ -138,7 +138,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The sidecar is written only when the output genuinely parses as that stream — never as an empty
   file, which would read as "converted to nothing" rather than "not an opencode stream".
 
-## [0.165.0] - 2026-08-11
+## [0.170.0] - 2026-08-11
 
 ### Added
 
@@ -152,7 +152,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The hook is the only place that has it — the command sits in its own `tool_input`, and nothing
   downstream ever sees it.
 
-## [0.164.0] - 2026-08-11
+## [0.169.0] - 2026-08-11
 
 ### Fixed
 
@@ -164,7 +164,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Falls back to the raw output when nothing text-shaped is present: an empty transcript would be
   worse than a noisy one.
 
-## [0.163.0] - 2026-08-11
+## [0.168.0] - 2026-08-11
 
 ### Added
 
@@ -183,7 +183,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   Claude has no equivalent for — the sum would invent a unit.
 - The cumulative stream's **last** usage line wins; taking the first under-reports silently.
 
-## [0.162.0] - 2026-08-11
+## [0.167.0] - 2026-08-11
 
 ### Added
 
@@ -198,7 +198,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   processes counting files in the same directory would pick the same index and one node would
   silently absorb the other.
 
-## [0.161.0] - 2026-08-11
+## [0.166.0] - 2026-08-11
 
 ### Added
 
@@ -217,6 +217,116 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   carries no per-step totals. A zero would render as a measurement; nothing renders as nothing.
 - Best-effort throughout, exactly like the provenance marker beside it: a run never fails because
   an observability artefact could not be written.
+## [0.165.0] - 2026-08-27
+
+### Fixed
+
+- **The lesson-harvest hook re-offered reports it had already harvested.** It does keep a registry,
+  and the registry is keyed correctly (`path → mtime`) — but the registry FILE and the directories
+  it searches were both derived from the raw `cwd`. Since `cwd` changes turn to turn (a worktree, a
+  subdirectory, a temp path), every distinct cwd got its own partition, and a run from a deep cwd
+  also looked in a `.claude/reports` that does not exist there.
+  Measured on one machine: **133 state files, 126 of them an empty object** — 95% of the state was
+  written by runs that found nothing to look at.
+  Both halves now resolve by exact key first, then by walking REAL ancestors, the way the queue
+  snapshot's path resolver already did. The `path → mtime` key is unchanged; the
+  `WT_LESSON_HARVEST_STATE` and `WT_LESSON_HARVEST_DIRS` overrides still win.
+  ⚠ The state filename now carries a hash suffix, so existing partitions are not read. Effect is a
+  ONE-TIME cold start per project: already-harvested reports may be offered once more, then
+  remembered correctly. Nothing is lost — the registry only suppresses repeats.
+
+## [0.164.0] - 2026-08-27
+
+### Fixed
+
+- **The stop-gate claimed to have observed an idle worktree when it had not looked.** Its activity
+  scan returned a boolean, and THREE different facts collapsed into its `false`: no git root could
+  be resolved from the cwd, the bounded walk spent its entry budget before finishing, and the whole
+  reachable tree was walked with nothing recent. The emitted line asserted `no recent worktree
+  activity` in all three, so a reader — and the decision "may I start something else" that reads it
+  — could not tell an observation from an inability to observe.
+  The scan now reports WHICH fact it established (`recent` · `idle` · `no-root` · `bounded`), and
+  the emitted line names it. **Behaviour is unchanged**: only `recent` suppresses the gate, so the
+  hook still speaks in every case it spoke in before — speaking when unsure is deliberate for a
+  stop-gate, and the defect was the claim, never the decision.
+  ⚠ The silent bail on the INVENTORY path is deliberately UNTOUCHED: its own comment states that
+  silence is intentional, and making a per-turn hook speak there would turn every adopter without a
+  producer into a permanently red gate.
+
+## [0.163.0] - 2026-08-27
+
+### Added
+
+- **Task tracking: closing a card updates its DESCRIPTION, not only a comment.** The rule said
+  where detail belongs and never said to refresh the description when the work lands, so the
+  stale pre-work claim stayed on the surface every reader — human or tool — sees by default.
+  Measured on an adopter's 51-card board: a fidelity check read descriptions, read zero comments,
+  and reported three shipped features as never built. The clause also states that any machine-read
+  field convention is parsed from the description, so recording it in a comment looks recorded and
+  is invisible.
+## [0.162.0] - 2026-08-27
+
+### Fixed
+
+- **Worktree preparation told the wrong actor to run the wrong command.** The concurrent-sessions
+  rule instructed the SPAWNED AGENT to rebase its isolated worktree. The pilot guard refuses a
+  delegate's own rebase, so the brief ordered something the agent could not do — it relayed and
+  waited, costing one round trip per delegate before any work started. The SPAWNER now prepares
+  the tree, immediately after the spawn call returns.
+- **And the operation itself was wrong for a fresh worktree.** A fresh worktree branches off the
+  repository's DEFAULT branch, so `git rebase <integration-tip>` replays upstream's own commits
+  onto the integration branch and exits 1 with a conflict. `git reset --hard <tip>` is correct
+  while the worktree carries no commits of its own. The discriminator is now stated, because the
+  correction inverts later in an arc: once the worktree has its own commits, `reset --hard` would
+  destroy them.
+
+### Added
+
+- **The delegation ladder now says adoption is a PRECONDITION, not an adjective.** The pilot pair
+  ships as unregistered templates — deliberately, since the harness does not honour `observer:` on
+  a plugin-registered agent and a registered pilot would run without its watchdog. A project that
+  has not adopted them has no `pilot` to spawn, and nothing said so: the spawn failed after a
+  complete brief had already been written. Also records that an adoption is picked up within
+  minutes, so the "~90 minutes or a restart" caution applies to hand-written definitions only.
+
+## [0.161.1] - 2026-08-20
+
+### Fixed
+
+- **The stop-gate no longer reads a session driving an external lane as "nothing running".** It
+  decided whether work was in flight from subagent transcripts alone, so a session whose turn ends
+  with a CLI lane writing inside a worktree looked idle — nothing that lane does passes through a
+  tool call the session makes. The gate now also counts recent worktree activity, and the negative
+  direction is locked too: `node_modules` writes do not count, and a sibling worktree under an
+  umbrella root cannot silence a different session.
+
+## [0.161.0] - 2026-08-20
+
+### Fixed
+
+- **The commit-signature check no longer accuses commits the remote already has, and no longer goes
+  blind on the ones it adds.** A range like `<remote>/<branch>..HEAD` answers "what would this push
+  add" only while the branch is a straight line; merge the default branch in and the range
+  legitimately contains that branch's whole history — other people's commits, unsigned, already
+  published. On a repository whose default branch is unsigned, the check refused a push by listing
+  120 such commits and proposed rebasing them.
+- **The exclusion is scoped to the remote being pushed TO, not to every remote-tracking ref.** A
+  bare `--not --remotes` over-corrects in the dangerous direction: on a repository carrying 43
+  tracking refs — 31 of them leftovers from a deleted remote, 11 from an archive that is never
+  pushed, exactly one a push target — it reported ZERO commits on a range that would genuinely add
+  62. A guard that falls silent on precisely what it exists to inspect does not degrade, it inverts.
+  The remote is derived from the range's left side and validated against `git remote`; when it
+  cannot be established, nothing is excluded and the check over-reports, because a noisy guard is
+  recoverable and a mute one is not.
+
+### Changed
+
+- **An escalation now names the option it recommends.** `wt-proactive-decision-making` asked for
+  every branch to be presented and stopped there — the bare menu, the one message shape that costs
+  a reader more than silence, because they must construct the answer rather than validate one. The
+  rule now carries both independent axes, in order: is this theirs at all, and only then, did you
+  name what you recommend. It also states plainly which of the two can be mechanised and which
+  cannot.
 
 ## [0.160.0] - 2026-08-10
 

@@ -104,7 +104,7 @@ The spec's validation contract is the standalone `@workflow-toolbox/pipeline-spe
 - `EXTRACTOR_KEYS` (type `ExtractorKey`) — the legal `artifact.extract` values:
   `plan-artifact`, `raw`.
 - `INPUT_REF_SOURCES` — the legal `{ from: … }` sources an `input` template may
-  reference: `artifactPath`, `goal`, `projectDir`.
+  reference: `artifactPath`, `goal`, `projectDir`, `artifactContent`.
 
 The full, buildable version of this example is the toolkit's own living documentation for
 `definePipeline()` — read it at `toolkit/examples/feature-review.pipeline.ts` (its built
@@ -151,108 +151,6 @@ to a rebuild). A few things worth knowing before you write one:
   guaranteed to be exactly what `parsePipelineSpec` would accept back from disk, not just
   what typechecked at the call site), `json` (the pretty-printed JSON, what gets written
   to disk), and `bytes` (`Buffer.byteLength(json)`).
-
-#### Scripted stages — reaching an external model with zero Claude
-
-Every `agent()` call, in every workflow, is a Claude Code subagent — there is no
-workflow-level primitive that runs a process or reaches another model directly
-(`toolkit/packages/runtime/globals.d.ts` declares exactly eight globals; none of them
-spawns anything but a Claude agent). So "route this role to an external model" is not
-a workflow-composition question at all when the requirement is a run with **no Claude
-model in that role's turn** — it is a pipeline question, answered by a `scripted`
-stage (`StageSpecV2.scripted`, `ScriptedStageSpec` in `@workflow-toolbox/pipeline-spec`).
-
-A scripted stage is authored the same way as any other stage in `definePipeline()`,
-mutually exclusive with `workflow`/`pipeline` on that stage:
-
-```ts
-{
-  scripted: {
-    model: 'openai/gpt-5.4',                       // the external lane's own model flag
-    prompt: { from: 'artifactContent' },            // the prior stage's handoff, as text
-  },
-}
-```
-
-- **`model`** is passed straight through to the external lane's model flag — never
-  checked against a Claude Code allowlist, because it names a different model family
-  entirely.
-- **`prompt`** is the same `InputRef` vocabulary a workflow stage's `input` uses. A
-  single `InputRef` (e.g. `{ from: 'artifactContent' }` to hand the prior stage's
-  handoff artifact straight to the external model) makes one call, optionally repeated
-  `calls` times for N-of-M redundant voting on the SAME question. An ARRAY of
-  `InputRef`s (and/or `ComposedPrompt`s, see below) makes N *distinct* concurrent
-  calls — N different questions rather than N redundant verdicts — and `calls` is
-  rejected alongside an array (only one field ever says "how many"). Both shapes are
-  capped at `MAX_SCRIPTED_STAGE_CALLS` (8), the measured concurrency wall of the
-  bundled opencode CLI before requests start queueing behind 429/retry.
-- **Composed prompts** (`ComposedPrompt`, `{ compose: [...] }`) assemble ONE prompt
-  from several of the four fixed `InputRef` sources plus author-written literal text —
-  the shape that's missing when a prompt needs, say, the prior stage's handoff artifact
-  AND a fixed judging instruction:
-  ```ts
-  prompt: {
-    compose: [
-      { text: 'Diff:\n\n' },
-      { from: 'artifactContent' },
-      { text: '\n\nJudge each finding as valid or not, and say why.' },
-    ],
-  }
-  ```
-  Each element of `compose` is a `PromptPart` — either an `InputRef` or a literal
-  `{ text: string }`. Parts concatenate in the array's own order with **no implicit
-  separator**: every byte of whitespace between two parts is a `{ text: ... }` part the
-  author wrote themselves. A composition cannot nest — a part cannot itself be a
-  `{ compose: [...] }`, one level only. `ComposedPrompt` is structurally distinct from
-  the distinct-prompt fan above: the fan is a bare array (its length IS the call
-  count), a composition is an object carrying a `compose` key, so the two readings
-  never collide — `prompt: [a, b]` is always two calls, `prompt: { compose: [a, b] }`
-  is always one call built from two parts. The two features compose freely: one
-  element of a distinct-prompt array may itself be a `ComposedPrompt`
-  (`prompt: [{ from: 'goal' }, { compose: [...] }]`), giving N independent calls each
-  potentially built from several sources.
-- **`resultShape`** requests a structured, comparable verdict from every call the stage
-  issues, instead of leaving the caller to parse prose.
-- The runner adapts a scripted stage to the SAME `LaunchedStage` contract a workflow
-  stage's launch produces — gate, artifact extraction, and settlement never learn the
-  difference, so a pipeline can freely mix `workflow` and `scripted` stages (a Claude
-  planning stage feeding a `scripted` external-model judge via its handoff artifact).
-
-**Two buildable examples exist for this** — `toolkit/examples/scripted-fully.pipeline.ts`
-(every stage `scripted`, zero Claude anywhere in the run) and
-`toolkit/examples/scripted-mixed.pipeline.ts` (one Claude `workflow` stage, pinned cheap
-in its own source, handing its result to one `scripted` stage). Both are listed with what
-they prove in [shipped-compositions.md](shipped-compositions.md#four-orchestrator-pipeline-compositions-definepipeline-not-defineworkflow).
-Build either with `npx workflow-toolbox pipeline examples/scripted-mixed.pipeline.ts` (→
-`pipelines/scripted-mixed.json`) and launch with `POST /api/pipeline { spec: <the built JSON> }`
-against the observe-ui server.
-
-⚠ **When the server serves more than one config dir, that route 404s.** It replies
-`unknown hub route /api/pipeline — multi-source mode requires a source prefix` and NAMES the
-valid prefixes in the same response, so the fix is one read away: post to
-`/s/<source-prefix>/api/pipeline` instead. The auth header is `x-observe-token`, never
-`Authorization: Bearer`. Measured 2026-08-08 — a first attempt with the unprefixed route was
-rejected exactly this way.
-
-**Status, stated at the reach its evidence has (2026-08-08):** a single-call scripted
-stage, and a mixed pipeline (one `workflow` stage → one `scripted` stage consuming its
-handoff via `{ from: 'artifactContent' }`), are **verified** — both ran live through the
-observe server, zero Claude model in the scripted stage's own turn, real external
-`externalSessionId` and reasoning-token accounting in the record. The `prompt` array /
-`calls` fan-out is **supported, not verified reliable**: an authored array-prompt spec
-validates and dispatches real concurrent calls, but the first live run of it failed at
-runtime (one call hit the external CLI's own `database is locked`, the other a 120 s
-timeout) before a later run succeeded — the mechanism is open, not proven, and a stage
-using it should not be described as dependable until that is resolved.
-
-**When to reach for this instead of the workflow-level `agentTypes` bridge**
-(`references/model-and-agent-routing.md`'s "Cross-family routing"): that bridge still
-runs a Claude subagent that shells out — useful for a narrow, decorrelated verifier
-role INSIDE an otherwise-Claude workflow, and it is slated for removal, not hardening.
-A scripted stage is the answer when the requirement is genuinely "no Claude model at
-all" for that role, or when the workflow-level bridge's unreliability (a self-answering
-wrapper, a badge that shows the wrapper's model rather than the lane's) is the exact
-failure you are trying to design out.
 
 #### Looping a pipeline — `loop` (re-run the stage list until done)
 

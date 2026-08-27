@@ -40,23 +40,22 @@ import { isExternalBridgeType } from '@workflow-toolbox/patterns'
 // OPENCODE_WORKDIR auto-injection
 // ---------------------------------------------------------------------------
 
-// The one bridge agentType that recognizes the `OPENCODE_WORKDIR:` directive
-// line (plugin/agents/opencode-verifier.md) — the cd-to-target token economy
-// (def v2, 005c9cf) that used to require the caller to hand-pass
+// External bridge agentTypes recognize the `OPENCODE_WORKDIR:` directive line
+// (plugin/agents/opencode-verifier.md) — the cd-to-target token economy (def
+// v2, 005c9cf) that used to require the caller to hand-pass
 // `OPENCODE_WORKDIR: <repoRoot>` via `hints`. repoRoot is ALREADY a required
 // input on every workflow that can reach this doctrine, so once a role
-// resolves to EXACTLY this agentType the directive is injected automatically —
-// zero caller recipe. Gated on the exact string (not "any resolved
-// agentType") because the directive is meaningless — and would be a stray,
-// confusing line — to any other agentType a caller might route a role to.
+// resolves to a recognized bridge the directive is injected automatically —
+// zero caller recipe. Unknown agentTypes remain fail-safe Claude-family and do
+// not receive a directive.
 export const OPENCODE_VERIFIER_AGENT_TYPE = 'workflow-toolbox:opencode-verifier'
 
 /** OPENCODE_WORKDIR directive line for a role, or '' when the role did not
- *  resolve to the opencode-verifier bridge. Callers place this FIRST among
+ *  resolve to a recognized external bridge. Callers place this FIRST among
  *  the opencode directive lines (workdir must be fixed before the wrapper can
  *  even classify referenced files — see the agent def's step 1). */
-export function opencodeWorkdirLine(resolvedType: string | null, repoRoot: string): string {
-  return resolvedType === OPENCODE_VERIFIER_AGENT_TYPE ? `OPENCODE_WORKDIR: ${repoRoot}\n\n` : ''
+export function opencodeWorkdirLine(resolvedType: string | null | undefined, repoRoot: string): string {
+  return isBridgeAgentType(resolvedType) ? `OPENCODE_WORKDIR: ${repoRoot}\n\n` : ''
 }
 
 // ---------------------------------------------------------------------------
@@ -85,9 +84,8 @@ export function opencodeWorkdirLine(resolvedType: string | null, repoRoot: strin
 // agentType a bridge" for both the provenance gate AND every wrapper-model
 // gate that needs the same answer — a bridge type added or renamed there is
 // automatically correct everywhere, including here. Thin re-export (not a
-// bare re-export) so every call site in this file keeps its existing
-// `string | null` signature without an inline `?? undefined` at each use.
-export function isBridgeAgentType(resolvedType: string | null): boolean {
+// bare re-export) so call sites share the registry's nullish-aware signature.
+export function isBridgeAgentType(resolvedType: string | null | undefined): boolean {
   return isExternalBridgeType(resolvedType)
 }
 
