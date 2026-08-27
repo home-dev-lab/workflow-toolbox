@@ -59,14 +59,15 @@
     "esbuild": "~0.28.1"
   },
   "devDependencies": {
-    "@workflow-toolbox/patterns": "workspace:*",
     "@types/node": "^24.0.0",
-    "tsx": "^4.0.0",
-    "typescript": "^6.0.0",
-    "@workflow-toolbox/scaffold": "workspace:*",
     "@workflow-toolbox/debugger": "workspace:*",
+    "@workflow-toolbox/patterns": "workspace:*",
+    "@workflow-toolbox/pipeline-spec": "workspace:*",
+    "@workflow-toolbox/scaffold": "workspace:*",
     "@workflow-toolbox/std": "workspace:*",
-    "@workflow-toolbox/pipeline-spec": "workspace:*"
+    "eslint": "^9.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^6.0.0"
   },
   "peerDependencies": {
     "typescript": ">=5 <7"
