@@ -2276,7 +2276,8 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-guard-journal-scan.mjs",
         "plugin/bin/wt-isolated-spawn-report-path-hook.mjs",
         "plugin/bin/wt-pgrep-env-dump-guard-hook.mjs",
-        "plugin/bin/wt-propagation-reminder-hook.mjs"
+        "plugin/bin/wt-propagation-reminder-hook.mjs",
+        "plugin/bin/wt-plugin-release-record-guard-hook.mjs"
       ],
       docs: ["docs/public/known-issues.md"]
     }

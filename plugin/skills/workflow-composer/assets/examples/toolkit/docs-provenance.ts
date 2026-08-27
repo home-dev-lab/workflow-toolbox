@@ -360,6 +360,12 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this PreToolUse missing-package-script warn-only guard under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-plugin-release-record-guard-hook.mjs',
+    status: 'mapped',
+    reason:
+      'Known-issues documents this PreToolUse warn-only guard under Shipped Hooks, Guards & Monitors: it warns when a commit stages a change under plugin/ while staging neither the version nor the changelog.',
+  },
+  {
     script: 'plugin/bin/wt-pipestatus-bash-only-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this PreToolUse PIPESTATUS warn-only guard under Shipped Hooks, Guards & Monitors.',
@@ -723,6 +729,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-isolated-spawn-report-path-hook.mjs',
       'plugin/bin/wt-pgrep-env-dump-guard-hook.mjs',
       'plugin/bin/wt-propagation-reminder-hook.mjs',
+      'plugin/bin/wt-plugin-release-record-guard-hook.mjs',
     ],
     docs: ['docs/public/known-issues.md'],
   },

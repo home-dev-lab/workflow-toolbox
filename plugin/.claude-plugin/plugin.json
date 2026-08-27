@@ -197,6 +197,16 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-pgrep-env-dump-guard-hook.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-plugin-release-record-guard-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
