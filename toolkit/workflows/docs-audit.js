@@ -2038,10 +2038,14 @@ ${renderClaim(claim)}`;
   function claimKey(c) {
     return c.surface + " " + c.quote.toLowerCase().replace(/\s+/g, " ").trim();
   }
+  function votesForClaim(claim, votes, tieredVotes) {
+    if (!tieredVotes) return votes;
+    return claim.kind === "behavior" || claim.kind === "boundary" || claim.risk === "high" ? votes : 1;
+  }
   function estimateVerifyCalls(claims, votes, tieredVotes) {
     let total = 0;
     for (const c of claims) {
-      total += tieredVotes ? c.kind === "behavior" || c.kind === "boundary" || c.risk === "high" ? votes : 1 : votes;
+      total += votesForClaim(c, votes, tieredVotes);
     }
     return total;
   }
@@ -2558,7 +2562,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         let safeSliceSize = 0;
         let running = 0;
         for (const c of claimsAfterOffset) {
-          const voteCost = input.tieredVotes ? c.kind === "behavior" || c.kind === "boundary" || c.risk === "high" ? input.votes : 1 : input.votes;
+          const voteCost = votesForClaim(c, input.votes, input.tieredVotes);
           const cost = voteCost * voteSalvageMultiplier;
           if (running + cost > remainingBudget) break;
           running += cost;
@@ -2628,7 +2632,7 @@ ${pipelineHowTo}`;
         // (min(refuteThreshold, claimVotes)), so a 1-vote claim is decided by
         // its single vote.
         ...input.tieredVotes ? {
-          votesPerClaim: (c) => c.kind === "behavior" || c.kind === "boundary" || c.risk === "high" ? input.votes : 1
+          votesPerClaim: (c) => votesForClaim(c, input.votes, input.tieredVotes)
         } : {},
         refuteThreshold: Math.min(2, input.votes),
         maxVerifyClaims: input.maxVerifyClaims,
