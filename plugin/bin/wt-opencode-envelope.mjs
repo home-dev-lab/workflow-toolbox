@@ -48,6 +48,26 @@ const DEFAULT_TIMEOUT_SEC = 570
 const DEFAULT_CONCURRENCY = 16
 const DEFAULT_MAX_REDUCE_CHARS = 131072
 
+// Sum the per-task token usage ONCE, here, so the manifest answers "what did this cost"
+// without every reader re-deriving it. The per-call detail was already complete; what was
+// missing was any total at all, so a display either recomputed it or showed nothing.
+// Absent counters are reported as null rather than 0: a zero reads as a measurement, and
+// "no usage reported" is a different fact from "no tokens used".
+function sumTaskTokens(results) {
+  const keys = ['input', 'output', 'reasoning', 'cacheRead', 'cacheWrite']
+  const out = {}
+  let sawAny = false
+  for (const k of keys) {
+    let sum = null
+    for (const r of results) {
+      const v = r?.usage?.tokens?.[k]
+      if (typeof v === 'number') { sum = (sum ?? 0) + v; sawAny = true }
+    }
+    out[k] = sum
+  }
+  return sawAny ? out : null
+}
+
 function usage() {
   return [
     'wt-opencode-envelope — run N opencode CLI calls behind exactly ONE Bash call.',
@@ -629,6 +649,7 @@ async function main() {
     dir: path.resolve(opts.dir),
     concurrency: Math.min(opts.concurrency, tasks.length),
     total: results.length,
+    tokenTotals: sumTaskTokens(results),
     answered: results.filter((r) => r.status === 'answer').length,
     errored: results.filter((r) => r.status === 'error').length,
     tasks: results,
@@ -637,6 +658,7 @@ async function main() {
     dir: path.resolve(opts.dir),
     concurrency: Math.min(opts.concurrency, tasks.length),
     total: results.length,
+    tokenTotals: sumTaskTokens(results),
     answered: results.filter((r) => r.status === 'answer').length,
     errored: results.filter((r) => r.status === 'error').length,
     tasks: results,
