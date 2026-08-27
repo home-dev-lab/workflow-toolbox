@@ -154,8 +154,14 @@ function resolveActivityRoot(start) {
   }
 }
 
-function hasRecentWorktreeActivity(root, cutoff) {
-  if (!root) return false
+// Returns WHICH fact the scan established, never a boolean: 'recent' (a file under the
+// resolved root was written since the cutoff) · 'idle' (the whole reachable tree was walked
+// and nothing was recent) · 'no-root' (no enclosing git worktree resolved from cwd) ·
+// 'bounded' (the walk hit ACTIVITY_MAX_ENTRIES before finishing). The last two mean COULD NOT
+// LOOK and must never be emitted as an observed idle — that conflation is what this returns
+// four values to prevent.
+function worktreeActivity(root, cutoff) {
+  if (!root) return 'no-root'
 
   const stack = [root]
   let visited = 0
@@ -170,13 +176,13 @@ function hasRecentWorktreeActivity(root, cutoff) {
 
     for (const entry of entries) {
       visited += 1
-      if (visited > ACTIVITY_MAX_ENTRIES) return false
+      if (visited > ACTIVITY_MAX_ENTRIES) return 'bounded'
       if (ACTIVITY_SKIP_DIRS.has(entry.name)) continue
 
       const fullPath = join(dir, entry.name)
       try {
         const info = statSync(fullPath)
-        if (info.mtimeMs >= cutoff) return true
+        if (info.mtimeMs >= cutoff) return 'recent'
         if (entry.isDirectory()) {
           stack.push(fullPath)
           continue
@@ -187,7 +193,7 @@ function hasRecentWorktreeActivity(root, cutoff) {
     }
   }
 
-  return false
+  return 'idle'
 }
 
 function readStdin() {
@@ -221,8 +227,8 @@ if (!transcriptPath || !existsSync(transcriptPath)) bail()
 // touched by this very turn, so it would always look "active" and the guard could never fire.
 // ⚠ The filesystem scan is explicitly BOUNDED: at most ACTIVITY_MAX_ENTRIES entry stats/readdir
 // steps, with known heavy/build trees skipped first. Worst case is therefore O(ACTIVITY_MAX_ENTRIES)
-// regardless of repo size; once the budget is spent the answer degrades to "not recently active"
-// rather than walking the rest of the tree.
+// regardless of repo size; once the budget is spent the answer stays distinct from an observed
+// idle tree so the emitted stop-gate context does not claim more than the scan established.
 const cutoff = Date.now() - INFLIGHT_MIN * 60_000
 const subagentsDir = join(dirname(transcriptPath), sessionId, 'subagents')
 try {
@@ -234,7 +240,8 @@ try {
   /* no subagents dir yet — nothing in flight, keep going */
 }
 
-if (hasRecentWorktreeActivity(resolveActivityRoot(cwd), cutoff)) bail()
+const activityStatus = worktreeActivity(resolveActivityRoot(cwd), cutoff)
+if (activityStatus === 'recent') bail()
 
 // --- 2. Does this project have a tracker wired to this guard at all? ---------------------
 // ⚠ THE ABSTRACTION POINT — see the header. No marker ever written ⇒ silent, permanently, for
@@ -418,7 +425,11 @@ process.stdout.write(
       // path actively invites them to go and read it. Reported by a user who did exactly that.
       // Anything that cannot be hidden must at least name its addressee.
       additionalContext:
-        `[for Claude, not the user] open work remains, no recent worktree activity · ` +
+        `[for Claude, not the user] open work remains, ${activityStatus === 'idle'
+          ? 'no recent worktree activity'
+          : activityStatus === 'no-root'
+            ? 'Worktree activity is unknown — no git root resolved'
+            : 'Worktree activity is unknown — scan bounded out'} · ` +
         (snapshotAncestor ? `using ancestor snapshot from ${snapshotAncestor} · ` : '') +
         (openCount === null
           ? (queueStatus === 'stale'
