@@ -130,6 +130,7 @@ import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { queueSnapshotFileName, queueSnapshotSlug, resolveQueueSnapshotPath } from './lib/queue-snapshot-path.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 const STATE_DIR = process.env.WT_QUEUE_GATE_DIR
   || join(homedir(), '.local', 'state', 'wt-queue-gate')
@@ -407,6 +408,25 @@ try {
 //
 // The phrasing stays FACTUAL rather than imperative: text framed as an out-of-band command can
 // trigger the model's own prompt-injection defenses and be resurfaced to the user anyway.
+// ⚠ RECORDED so this gate's firings can be COUNTED. Without this call the gate is absent
+// from `wt-guard-journal-scan.mjs` entirely — it fires and nothing tallies it, which reads in
+// that scanner exactly like a guard that does not exist. The rule that governs widening this
+// gate's reach demands a false-positive rate measured on material it did not choose, and that
+// number cannot exist for a guard nothing counts.
+//
+// `class` carries the ACTIVITY STATUS rather than a single label, deliberately: an `idle`
+// firing (we looked, the tree was quiet) and a `no-root` or `bounded` firing (we could not
+// look) are different qualities of evidence, and lumping them would reproduce inside the
+// measurement the very conflation this gate was fixed to stop.
+//
+// `decision` is 'warned', not 'blocked': this hook advises and always exits 0 — it never
+// denies. Recording it as blocked would overstate what it does to whoever reads the tally.
+recordGuardEvent({
+  guard: 'wt-queue-not-empty-gate-hook.mjs',
+  decision: 'warned',
+  class: `activity:${activityStatus}`,
+  reason: openCount === null ? `queue:${queueStatus}` : `queue:${openCount}-open`,
+})
 process.stdout.write(
   JSON.stringify({
     hookSpecificOutput: {
