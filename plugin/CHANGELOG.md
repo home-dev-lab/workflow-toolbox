@@ -4,7 +4,44 @@ All notable changes to the `workflow-toolbox` Claude Code plugin are documented 
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
-## [0.171.0] - 2026-08-18
+> The entry below arrived with a branch merge but its code did NOT: no commit in that merge
+> touches the hook it describes. It stays here rather than under a released heading, because a
+> changelog that announces work absent from the tree is worse than one that says nothing.
+
+
+### Fixed
+
+- **The lesson-harvest hook re-offered reports it had already harvested.** It does keep a registry,
+  and the registry is keyed correctly (`path → mtime`) — but the registry FILE and the directories
+  it searches were both derived from the raw `cwd`. Since `cwd` changes turn to turn (a worktree, a
+  subdirectory, a temp path), every distinct cwd got its own partition, and a run from a deep cwd
+  also looked in a `.claude/reports` that does not exist there.
+  Measured on one machine: **133 state files, 126 of them an empty object** — 95% of the state was
+  written by runs that found nothing to look at.
+  Both halves now resolve by exact key first, then by walking REAL ancestors, the way the queue
+  snapshot's path resolver already did. The `path → mtime` key is unchanged; the
+  `WT_LESSON_HARVEST_STATE` and `WT_LESSON_HARVEST_DIRS` overrides still win.
+  ⚠ The state filename now carries a hash suffix, so existing partitions are not read. Effect is a
+  ONE-TIME cold start per project: already-harvested reports may be offered once more, then
+  remembered correctly. Nothing is lost — the registry only suppresses repeats.
+
+## [0.166.0] - 2026-08-28
+### Added
+
+- **The actionability producer hook now BOUNDS the spill-file read it was doing unconditionally.**
+  The harness can answer a large tool call by writing the response to a file and handing the hook a
+  PATH; that path arrives inside the tool response, so reading it unconditionally let an untrusted
+  value choose which file the process opened. Four bounds now apply — absolute, canonically inside a
+  root the harness actually spills into, a plain file, and under a size cap — in a new
+  `plugin/bin/lib/spill-containment.mjs`. It returns null on every refusal and never throws, so the
+  caller's contract is unchanged: an unreadable spill stays a recorded failed attempt and no
+  snapshot is written from a guess.
+
+  Extracted into `lib/` rather than written inline because the hook EXECUTES at import, so a test
+  importing it hangs on a stdin nothing closes. Both bounds are proven red independently: deleting
+  the allow-list reddens only the outside-root case, deleting `realpath` reddens only the
+  symlinked-directory case.
+
 
 ### Added
 
@@ -22,8 +59,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   published, so every adopter still met it; and a rule whose own lifting condition had been
   satisfied and recorded elsewhere while the rule still said it had not been proven. Nothing was
   wrong when written; each simply outlived the state it described.
-
-## [0.170.0] - 2026-08-18
 
 ### Added
 
@@ -68,8 +103,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   `Agent type not found` and were simply too early — do not read one refusal as impossibility, and
   re-probe instead of concluding.
 
-## [0.169.0] - 2026-08-18
-
 ### Added
 
 - **A guard for the plugin's own release record.** A commit staging changes under `plugin/`
@@ -89,19 +122,6 @@ their counters independently after forking at 0.160.0, so the same numbers denot
 on the two sides. Choosing the next number is part of reconciling that fork, not part of this
 change.
 
-## [0.165.0] - 2026-08-27
-- **A task's remaining-work ledger is a claim about the tree, and the briefing guidance now says to
-  re-derive it.** A multi-part task carries a running "these remain" list written by whoever last
-  touched it; it goes stale the instant a commit lands without a tracker write, and nothing
-  announces the drift — the ledger stays confident, specific, and formatted exactly like a verified
-  fact. Briefing an executor from a stale one asks for work already done, and the executor is not
-  the safeguard: told to fix a defect, it has every reason to build a second mechanism beside the
-  first, or to rewrite what exists and silently drop hardening the original carried. The clause
-  names the favourable tell — a lane returning a clean tree or a suspiciously small diff — and the
-  one command that settles it before the brief is written.
-
-## [0.168.0] - 2026-08-18
-
 ### Added
 
 - **The briefing guidance now carries a platform check.** `wt-delegation-ladder.md`’s “Briefing an
@@ -114,23 +134,16 @@ change.
   path, an output channel or an agent type, and says to confirm at brief time rather than infer
   from the rule that prescribes it.
 
-## [0.167.0] - 2026-08-17
-
-### Fixed
-
-- **The lesson-harvest hook re-offered reports it had already harvested.** It does keep a registry,
-  and the registry is keyed correctly (`path → mtime`) — but the registry FILE and the directories
-  it searches were both derived from the raw `cwd`. Since `cwd` changes turn to turn (a worktree, a
-  subdirectory, a temp path), every distinct cwd got its own partition, and a run from a deep cwd
-  also looked in a `.claude/reports` that does not exist there.
-  Measured on one machine: **133 state files, 126 of them an empty object** — 95% of the state was
-  written by runs that found nothing to look at.
-  Both halves now resolve by exact key first, then by walking REAL ancestors, the way the queue
-  snapshot's path resolver already did. The `path → mtime` key is unchanged; the
-  `WT_LESSON_HARVEST_STATE` and `WT_LESSON_HARVEST_DIRS` overrides still win.
-  ⚠ The state filename now carries a hash suffix, so existing partitions are not read. Effect is a
-  ONE-TIME cold start per project: already-harvested reports may be offered once more, then
-  remembered correctly. Nothing is lost — the registry only suppresses repeats.
+## [0.165.0] - 2026-08-27
+- **A task's remaining-work ledger is a claim about the tree, and the briefing guidance now says to
+  re-derive it.** A multi-part task carries a running "these remain" list written by whoever last
+  touched it; it goes stale the instant a commit lands without a tracker write, and nothing
+  announces the drift — the ledger stays confident, specific, and formatted exactly like a verified
+  fact. Briefing an executor from a stale one asks for work already done, and the executor is not
+  the safeguard: told to fix a defect, it has every reason to build a second mechanism beside the
+  first, or to rewrite what exists and silently drop hardening the original carried. The clause
+  names the favourable tell — a lane returning a clean tree or a suspiciously small diff — and the
+  one command that settles it before the brief is written.
 
 ## [0.164.0] - 2026-08-27
 
@@ -161,6 +174,7 @@ change.
   and reported three shipped features as never built. The clause also states that any machine-read
   field convention is parsed from the description, so recording it in a comment looks recorded and
   is invisible.
+
 ## [0.162.0] - 2026-08-27
 
 ### Fixed
@@ -1169,64 +1183,6 @@ assumed.
   The identifier set is derived only when the transcript baseline is replaced, never per poll —
   measured at ~710 ms for 1606 transcript metadata parses on a real project, which a 60-second
   poll loop would otherwise pay to recompute an identical answer.
-
-## [Unreleased]
-
-### Changed — BREAKING
-
-- **The `adopt-rules` skill is renamed to `adopt`. The old name is REMOVED, not aliased.**
-  The skill has always installed two sets — the cross-cutting RULE files and the pilot
-  AGENT-definition copies (`--set rules|agents|all`) — and nothing in its name said the second
-  existed. The name is what a reader uses to decide whether a step applies to them, so having
-  been told "the rules are adopted" a reasonable reader concludes the agent copies were handled
-  too. Observed: the rules were adopted, the agents were not, and the gap surfaced only because
-  someone thought to ask — a question, not a mechanism. The un-run half looked exactly like a
-  completed one.
-
-  Renamed along with it, so no citation points at a dead name: the skill directory
-  (`plugin/skills/adopt-rules/` → `plugin/skills/adopt/`), its engine
-  (`scripts/install-rules.mjs` → `scripts/install.mjs`), and its SessionStart hook
-  (`bin/wt-adopt-rules-check-hook.mjs` → `bin/wt-adopt-check-hook.mjs`).
-
-  **Migration**: invoke `workflow-toolbox:adopt` instead of `workflow-toolbox:adopt-rules`; update
-  any script that calls the engine by path. Already-adopted copies are untouched and keep working
-  — their banners are re-stamped on the next `--install`. No deprecation shim ships: an alias
-  would keep the misleading name alive, which is the whole defect.
-
-### Added
-
-- **`wt-hook-registration-drift-hook.mjs` — a SessionStart/UserPromptSubmit detector for stale in-memory hook registrations.** At SessionStart it snapshots the exact `${CLAUDE_PLUGIN_ROOT}` hook paths the manifest declared for THIS session; on later prompts it re-checks that snapshot against the filesystem and, if any recorded path has since disappeared, emits one attributed notice naming the missing hook file(s). It does NOT close the underlying failure — the hook whose file went missing still crashes with the same unattributed bare loader stack trace on its own next invocation, because the module-not-found error happens before any JS runs and nothing can intercept it. What this adds is a *separate*, one-time, delayed notice on the next prompt, so the session at least learns which of its own registrations went stale instead of only seeing anonymous console noise. Its own limits, stated plainly rather than left implicit: it cannot repair a stale registration (only a session restart picks up the corrected manifest); it cannot detect its OWN file going missing (if this hook itself is renamed or deleted, the running session's next invocation of it fails the same unattributed way, symmetric to every other hook — the existing shim convention from the `wt-adopt-check-hook.mjs` rename applies here too, should this file ever be renamed); and two `UserPromptSubmit` invocations racing the same session's report-once state, or two colliding sanitized session ids, are theoretical, low-likelihood gaps not covered by a lock (Claude Code serializes `UserPromptSubmit` per session, and session ids are UUIDs that do not collide under the sanitization scheme already shared with `wt-outbound-guard-hook.mjs`).
-
-- **`wt-observer-pairing-guard-hook.mjs` — a PostToolUse Agent hook that asks the shipped
-  pairing checker what ACTUALLY attached, instead of warning from a spawn-shape guess.** It only
-  runs for agent definitions that declare `observer:` in an adopted/project-visible copy, then
-  delegates to `wt-check-observer-pairing.mjs` on the spawned agent's real subagent metadata.
-  Clean `pass` outcomes stay silent; contradictory `observerTaskId` links and genuine no-pairing
-  reads surface with the checker's own reason. The guard does not reintroduce a named-spawn rule:
-  the ownership link (or its absence) decides, and the checker's existing mtime fallback remains
-  only for records where no link is present.
-
-- **`wt-shipped-twin-check-hook.mjs` — a PostToolUse Write/Edit advisory that raises the
-  shipped-twin question on conventional local Claude config surfaces.** It never guesses the
-  pairing, stays silent for out-of-scope paths, and throttles itself to once per session per
-  directory so the reminder does not turn into background noise.
-
-- **`wt-adopt-rules-check-hook.mjs` is back as a DEPRECATION SHIM, and every registered hook
-  path is now locked.** Renaming a hook file breaks every session that is ALREADY RUNNING: the
-  manifest is read at session start, so the old path lives on in memory after the file is gone,
-  and node dies in the module loader before any hook code — so the hook cannot even emit its own
-  `FAILED OPEN` trace. The only symptom is a loader line per tool call that names no hook.
-  Measured after the `adopt-rules` → `adopt` rename: **725 failures inside one session**, roughly
-  an hour to attribute, because every reproduction attempt invoked the file that exists.
-  The shim delegates by side-effecting import (same process, same stdin, same exit code) and
-  traces under its OWN name rather than the delegate's. Two locks keep it honest: every
-  `${CLAUDE_PLUGIN_ROOT}` path in the manifest must resolve — asserted over the whole manifest,
-  not a name list, with a non-vacuity check so an extraction bug cannot pass it silently — and
-  the shim's stdout must equal the current hook's for the same payload. Remove the shim, its
-  provenance entry and its crash-safety case one release after the rename.
-  ⚠ Scope, stated so the shim is not over-credited: it helps a rename that ships one. It does
-  nothing for a hook deleted outright, and no repo-level check can see inside a running process,
-  which is where the broken state actually lives.
 
 ## [0.67.0] - 2026-08-03
 
