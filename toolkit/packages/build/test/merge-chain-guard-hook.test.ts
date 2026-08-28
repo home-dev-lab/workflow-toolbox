@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -9,24 +10,35 @@ const HOOK = join(REPO_ROOT, 'plugin/bin/wt-merge-chain-guard-hook.mjs')
 const PLUGIN_MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 
 function run(command: string) {
-  const res = spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify({
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Bash',
-      tool_input: { command },
-    }),
-    encoding: 'utf8',
-  })
-  return {
-    // This guard ships WARN-ONLY (permissionDecision: 'allow' + a reason), never 'deny' — see
-    // the header comment for the measured precision that decided it. `warned` means the
-    // predicate matched and a non-blocking reason was emitted; the tool call itself is never
-    // refused, so `denied` (a "deny" decision) must NEVER be true for this hook.
-    warned: res.stdout.includes('WARNING (not blocked)'),
-    denied: res.stdout.includes('"deny"'),
-    stdout: res.stdout,
-    stderr: res.stderr,
-    status: res.status,
+  const journalDir = mkdtempSync(join(tmpdir(), 'wt-merge-chain-journal-'))
+  try {
+    const res = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        session_id: 'session-test-123',
+        tool_input: { command },
+      }),
+      encoding: 'utf8',
+      env: { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir },
+    })
+    const entries = readdirSync(journalDir)
+      .filter((file) => file.endsWith('.ndjson'))
+      .flatMap((file) => readFileSync(join(journalDir, file), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)))
+    return {
+      // This guard ships WARN-ONLY (permissionDecision: 'allow' + a reason), never 'deny' — see
+      // the header comment for the measured precision that decided it. `warned` means the
+      // predicate matched and a non-blocking reason was emitted; the tool call itself is never
+      // refused, so `denied` (a "deny" decision) must NEVER be true for this hook.
+      warned: res.stdout.includes('WARNING (not blocked)'),
+      denied: res.stdout.includes('"deny"'),
+      stdout: res.stdout,
+      stderr: res.stderr,
+      status: res.status,
+      entries,
+    }
+  } finally {
+    rmSync(journalDir, { recursive: true, force: true })
   }
 }
 
@@ -73,6 +85,22 @@ describe('wt-merge-chain-guard-hook', () => {
     expect(r.warned).toBe(true)
     expect(r.denied).toBe(false)
     expect(r.status).toBe(0)
+  })
+
+  it('records only trailing command heads, resolving assignments, timeout, and a quoted path without leaking arguments', () => {
+    const secret = 'sk_live_DO_NOT_JOURNAL'
+    const r = run(
+      `git merge branch && FOO=bar pnpm test --token ${secret}; timeout 570 git log --password ${secret}; "/opt/tools/npx" run task --secret ${secret}`,
+    )
+    expect(r.entries).toHaveLength(1)
+    expect(r.entries[0]).toMatchObject({
+      session: 'session-test-123',
+      evidence: { after: 'pnpm,git,/opt/tools/npx' },
+    })
+    expect(JSON.stringify(r.entries[0])).not.toContain(secret)
+    expect(JSON.stringify(r.entries[0])).not.toContain('--token')
+    expect(JSON.stringify(r.entries[0])).not.toContain('--password')
+    expect(JSON.stringify(r.entries[0])).not.toContain('--secret')
   })
 
   it('SILENT: a merge run alone', () => {

@@ -40,11 +40,10 @@
 //
 // Every line goes to STDOUT and the exit code carries the verdict: 0 armed/disarmed/live-status,
 // 1 no marker at all (for --status), 2 for a usage or environment error, 3 a marker exists but is
-// EXPIRED — past the freshness window, present on disk, will not fire (for --status). 3 is a
-// distinct code from 1 deliberately: "no marker" and "a marker that will not fire" are different
-// facts a caller may need to branch on differently, and collapsing them back into one code would
-// re-create in the exit status the exact ambiguity this file's `--status` text now refuses to
-// carry in prose. A caller can therefore branch on the code without parsing prose.
+// EXPIRED — past the freshness window, present on disk, will not fire (for --status), 4 a marker
+// exists but is unreadable/untrustworthy so this tool cannot honestly say live or expired. 3 and 4
+// stay distinct from 1 deliberately: "no marker", "expired marker", and "marker present but
+// unreadable" are different facts a caller may need to branch on differently.
 //
 // ⚠ `--status` and the watcher used to each carry their OWN freshness check, and they drifted: the
 // watcher correctly refused to fire on an expired mandate while `--status` still reported `armed`,
@@ -78,7 +77,7 @@ Usage:
   node wt-autonomy-arm.mjs --project <dir>  # target a project other than cwd (tests, tooling)
 
 Exit codes: 0 armed/disarmed/live-status · 1 no marker at all (--status) · 2 usage/env error ·
-3 a marker exists but is EXPIRED (--status).
+3 a marker exists but is EXPIRED (--status) · 4 marker present but unreadable (--status).
 `
 
 const args = process.argv.slice(2)
@@ -144,6 +143,13 @@ if (statusOnly) {
         'Run with no arguments to re-arm.',
     )
     process.exit(3)
+  }
+  if (mandate.kind === 'unknown') {
+    out(
+      `AUTONOMY MANDATE: unknown (a marker exists at ${mandatePath}, but it is unreadable or malformed, so this tool cannot tell whether it is still live). ` +
+        'Re-arm with no arguments to replace it.',
+    )
+    process.exit(4)
   }
   out(`AUTONOMY MANDATE: not armed — nothing at ${mandatePath}`)
   process.exit(1)

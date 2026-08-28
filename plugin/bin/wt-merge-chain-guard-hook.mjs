@@ -106,6 +106,116 @@ function splitSegments(cmd) {
     .filter(Boolean)
 }
 
+// Preserve quoted executable paths while splitting only on unquoted shell separators. This is
+// used for evidence only; the stricter DATA-stripped representation above remains the predicate.
+function splitEvidenceSegments(cmd) {
+  const source = cmd
+    .replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[\s\S]*?^\2$/gm, '<<HEREDOC')
+    .replace(/<<-?\s*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1[\s\S]*$/, '<<HEREDOC')
+    .replace(/`[^`]*`/g, '`CODESPAN`')
+  const segments = []
+  let segment = ''
+  let quote = null
+
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i]
+    if (char === '\\' && quote !== "'") {
+      segment += char
+      if (i + 1 < source.length) segment += source[++i]
+      continue
+    }
+    if (quote) {
+      segment += char
+      if (char === quote) quote = null
+      continue
+    }
+    if (char === "'" || char === '"') {
+      quote = char
+      segment += char
+      continue
+    }
+    if (char === '#' && (i === 0 || /\s/.test(source[i - 1]))) {
+      while (i + 1 < source.length && source[i + 1] !== '\n') i++
+      continue
+    }
+    if (char === '\n' || char === ';' || char === '|' || (char === '&' && source[i + 1] === '&')) {
+      if (segment.trim()) segments.push(segment.trim())
+      segment = ''
+      if ((char === '|' && source[i + 1] === '|') || (char === '&' && source[i + 1] === '&')) i++
+      continue
+    }
+    segment += char
+  }
+  if (segment.trim()) segments.push(segment.trim())
+  return segments
+}
+
+function shellWords(segment) {
+  const words = []
+  let word = ''
+  let quote = null
+  let started = false
+  for (let i = 0; i < segment.length; i++) {
+    const char = segment[i]
+    if (char === '\\' && quote !== "'") {
+      started = true
+      if (i + 1 < segment.length) word += segment[++i]
+      continue
+    }
+    if (quote) {
+      if (char === quote) quote = null
+      else word += char
+      continue
+    }
+    if (char === "'" || char === '"') {
+      quote = char
+      started = true
+    } else if (/\s/.test(char)) {
+      if (started) words.push(word)
+      word = ''
+      started = false
+    } else {
+      word += char
+      started = true
+    }
+  }
+  if (started) words.push(word)
+  return words
+}
+
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+
+function commandHead(segment) {
+  const words = shellWords(segment)
+  let i = 0
+  while (i < words.length && ASSIGNMENT.test(words[i])) i++
+
+  // Resolve common command prefixes without ever selecting the command's arguments.
+  while (i < words.length) {
+    if (words[i] === 'env') {
+      i++
+      while (i < words.length) {
+        if (ASSIGNMENT.test(words[i])) i++
+        else if (['-u', '--unset', '-C', '--chdir'].includes(words[i])) i += 2
+        else if (words[i].startsWith('-')) i++
+        else break
+      }
+      continue
+    }
+    if (words[i] === 'timeout') {
+      i++
+      while (i < words.length && words[i].startsWith('-')) {
+        if (['-s', '--signal', '-k', '--kill-after'].includes(words[i])) i += 2
+        else i++
+      }
+      if (i < words.length) i++ // duration
+      continue
+    }
+    break
+  }
+  return words[i] || null
+}
+
 // Find a `git merge` (excluding --abort/--continue/--quit) that is followed by at least one
 // more real command in the SAME invocation. A merge preceded by other commands is fine —
 // nothing runs after it here to certify a stale tree.
@@ -131,12 +241,19 @@ function main() {
   const segments = splitSegments(stripDataSpans(raw))
   const found = findChainedMerge(segments)
   if (!found) return
+  const after = splitEvidenceSegments(raw)
+    .slice(found.index + 1)
+    .map(commandHead)
+    .filter(Boolean)
+    .join(',')
 
   recordGuardEvent({
     guard: 'wt-merge-chain-guard-hook.mjs',
     decision: 'warned',
     class: 'chained-merge',
     reason: found.segment,
+    session: input.session_id,
+    evidence: after ? { after } : undefined,
   })
   process.stdout.write(
     JSON.stringify({

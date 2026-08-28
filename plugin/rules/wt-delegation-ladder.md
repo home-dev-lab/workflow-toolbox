@@ -135,6 +135,29 @@ caps executor at briefer's own knowledge of a layer executor actually reads. Sta
 TRUE, let executor find own route — different mechanism for same invariant = brief working,
 not drift. Keep prescribing structure (shape, seams, ownership); stop prescribing technique.
 
+⚠ A TASK'S REMAINING-WORK LEDGER IS A CLAIM ABOUT THE TREE — RE-DERIVE IT BEFORE BRIEFING FROM IT.
+Multi-part task carries a running "N of M done, these remain" list, written by whoever last touched
+it, from the commits they happened to read. Goes stale the instant a commit lands without a tracker
+write. Nothing announces the drift: the ledger stays confident, specific, formatted exactly like a
+verified fact — and AGE is a weak proxy, since same-day work can invalidate it.
+Brief an executor from it and the work is already done. Executor is NOT the safeguard: told to fix a
+defect, it has every reason to build a second mechanism beside the first, and a plausible one gates
+green. Worst shape: it REWRITES what exists and silently drops hardening the original carried.
+Before a remaining-work list becomes a brief, re-derive it from the tree — read the file at HEAD,
+read the log for the paths involved. One command, seconds, and it answers the only question that
+matters: is this still true?
+⚠ Tell after the fact is FAVOURABLE: lane returns a clean tree, a suspiciously small diff, or reports
+the work already satisfied. Reads as an easy task; it is the moment to re-derive, never to merge.
+⚠ Such a run is not pure waste — say so: a lane that verifies rather than re-implements can prove an
+EXISTING lock red, which nobody had. Report it as verification obtained, beside the brief defect.
+⚠ VERIFY A CAPABILITY STILL EXISTS BEFORE BRIEFING AROUND IT. Brief gets checked against
+the TASK — invariants right, fences right, definition of done quoted. Nobody checks it against the
+PLATFORM: a capability that worked last week reads as furniture. A prescribed remedy can be
+WITHDRAWN while the rule still names it, and the brief is then wrong BEFORE the executor reads it.
+Covers a tool, a write path, an output channel, an agent type. Executor behaves correctly, cannot
+comply, explains — one round trip bought for nothing, and the competence of both parties hides it.
+Confirm at brief time; never infer from the rule that prescribes it.
+
 MECHANICAL escalation trigger, never "use judgment": escalate after two failed attempts at same
 fix, one repeated diagnosis, or ~15–20 min without narrowing problem. Judgment-based clause is
 unenforceable, silently ignored — agent grinding a wrong hypothesis feels busy, not stuck, so
@@ -184,6 +207,83 @@ concrete-looking string in it reads as material, not metaphor. Nothing in the ph
 Show the shape in a form that would be WRONG to paste: a real example already in the artifact, or
 a description with no quotable sentence in it. Never a plausible-looking template. Tell: a brief
 containing a sentence that could survive copy-paste into the deliverable unchanged.
+
+## "Read-only" is an ALLOW-LIST, never a subtraction and never a sentence in a brief
+
+Delegate whose output is KNOWLEDGE rather than a change — investigate, ground, survey, audit — the
+read-only property is enforced by WHAT THE AGENT CAN CALL. A brief saying "do not modify anything"
+is an instruction a model can silently ignore, and this one fails OUTWARD: damage lands in someone
+else's tree.
+
+**Withholding the obvious writing tools does NOT produce a read-only agent.** An agent carrying no
+file-write, no editor and no shell still CARRIES an installed MCP server's file-writing,
+code-executing, record-deleting and message-sending tools — and a delegate can demonstrably invoke
+a tool from that listing. Subtraction cannot work here for a structural reason: **an enumeration of
+forbidden tools cannot cover a surface that GROWS.** Every MCP server a user installs adds tools no
+existing rule names.
+
+⚠ State the evidence at its real strength, because the weaker claim is enough: what is OBSERVED is
+the tool listing plus one proven invocation from it. That a write through such a tool COMPLETES is
+an inference, not a measurement. The allow-list is the right shape either way — it closes the
+capability without needing the hazard demonstrated first.
+
+So state the INVARIANT and enforce it as a list of what the agent MAY call: *it holds nothing that
+mutates anything outside its own context*. An allow-list closes tools nobody has installed yet;
+a deny-list closes only the ones someone already thought of.
+
+⚠ **An allow-list can deliver LESS than it declares, silently.** Measured on two definitions:
+declared entries did not arrive, with no error. It errs SAFE — fewer tools, never more — so the
+fence holds, but a role must not assume a declared capability is present. **Read the running
+agent's ACTUAL surface; a declaration is not a manifest.**
+
+⚠ A tool that executes or writes cannot be narrowed by wording. Granting one because the task needs
+it once is granting it for every later turn — the question at spawn is not "will it need this
+once?" but "is there any turn on which this is unsafe?".
+
+⚠ **A newly written agent type becomes spawnable only after a DELAY — measured at roughly ninety
+minutes, and the two earlier readings were taken too soon.** The spawn returned `Agent type not
+found` at both zero and sixty minutes, and the list it printed omitted a type added forty minutes
+earlier; the type then appeared on its own, unannounced, with no session restart. So the earlier
+conclusion — *"not spawnable in the session that wrote it"* — was wrong, and wrong in the
+expensive direction: it turns a wait into a supposed impossibility.
+**Do not plan around either extreme.** A new type is not immediately usable and is not permanently
+unavailable; **re-probe rather than concluding from one refusal**, and if an arc needs the type
+now, arrange for it to be verified later rather than declaring it impossible.
+
+⚠ Invisible from the spawner's side: a delegate reporting findings looks identical whether it READ
+them or produced them by ACTING. Only its transcript, or independent verification of its claims,
+separates the two.
+
+## A fence justified by a live condition carries its expiry — and something must RE-READ it
+
+A brief, a rule or a card fences something off because a condition holds NOW: another writer is in
+that directory, a proof is missing, a version is unpublished. That condition ends. **Nothing
+re-checks the fence.**
+
+The cost is invisible from both sides. Whoever obeys a stale fence reports work correctly blocked
+and names the fence as the trigger; whoever set it reads a well-formed refusal. Both are right, and
+the work stopped for nothing.
+
+So name the EXPIRY IN the fence, never the fence alone: *"until the compression pass finishes"* is
+checkable by the reader, *"don't touch Y"* is forever.
+
+⚠ **Writing the expiry is only half — an expiry nobody re-reads is inert.** A stale fence reads
+exactly like a live one: same text, and no way for a reader to tell which. The cheap remedies:
+
+- name the fence's condition where whatever SATISFIES it gets recorded, so closing the work and
+  lifting the fence are one act rather than two;
+- when a fence quotes a state, quote the SOURCE that decides it, so a reader checks in one command
+  instead of trusting the sentence;
+- finding a fence whose condition appears met and that is NOT yours: report it with the evidence
+  and state what you could not resolve, rather than lifting it. A fence's wording and the evidence
+  offered against it often name subtly different objects, and its author is who knows which was
+  meant.
+
+⚠ Lifting for ONE case is not lifting: generalise the lift in the same act, or say plainly that it
+still stands elsewhere.
+
+⚠ A prohibition that never came from the live condition SURVIVES the lift. Say which, explicitly —
+lifting a fence must not read as lifting everything near it.
 
 ## Four prohibitions that sharpen the ladder
 

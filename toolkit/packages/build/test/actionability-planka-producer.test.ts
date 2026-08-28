@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -504,6 +504,13 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
     const mutatedLibDir = join(mutatedBinDir, 'lib')
     mkdirSync(mutatedLibDir, { recursive: true })
 
+    // ⚠ Copy the WHOLE lib directory, never a hand-written list of the modules the hook
+    // happens to import today. An enumeration here fails SILENTLY-ish the day someone adds a
+    // module: the copied hook imports something absent, crashes, writes no snapshot, and this
+    // lock goes red for a reason that has nothing to do with the mutation it exists to prove.
+    // Measured 2026-08-28, when `spill-containment.mjs` was added.
+    cpSync(join(REPO_ROOT, 'plugin/bin/lib'), mutatedLibDir, { recursive: true })
+
     const coreSrc = readFileSync(CORE, 'utf8')
     const mutatedCore = coreSrc.replace(
       "if (filtered) return { ok: false, reason: 'find_cards called with a filter — result is a subset, not the whole board' }",
@@ -511,12 +518,6 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
     )
     expect(mutatedCore).not.toBe(coreSrc) // the replace must actually have matched
     writeFileSync(join(mutatedLibDir, 'actionability-planka-producer-core.mjs'), mutatedCore, 'utf8')
-    writeFileSync(join(mutatedLibDir, 'fail-open-trace.mjs'), readFileSync(join(REPO_ROOT, 'plugin/bin/lib/fail-open-trace.mjs'), 'utf8'), 'utf8')
-    writeFileSync(
-      join(mutatedLibDir, 'actionability-state-paths.mjs'),
-      readFileSync(join(REPO_ROOT, 'plugin/bin/lib/actionability-state-paths.mjs'), 'utf8'),
-      'utf8',
-    )
     const hookSrc = readFileSync(PRODUCER_HOOK, 'utf8')
     writeFileSync(join(mutatedBinDir, 'wt-actionable-snapshot-producer-hook.mjs'), hookSrc, 'utf8')
 

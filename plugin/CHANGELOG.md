@@ -4,6 +4,71 @@ All notable changes to the `workflow-toolbox` Claude Code plugin are documented 
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+## [0.171.0] - 2026-08-18
+
+### Added
+
+- **`wt-delegation-ladder` gains a fence-expiry clause.** A brief, rule or card that fences
+  something off because a condition holds NOW keeps blocking after that condition ends, because
+  nothing re-checks it — and a stale fence reads exactly like a live one, same text, no way for a
+  reader to tell which.
+
+  The clause states both halves: name the expiry IN the fence rather than the fence alone, AND give
+  it something that re-reads it — record the condition where whatever satisfies it will land, quote
+  the source that decides a quoted state, and report rather than lift a fence that is not yours.
+
+  Measured three times in one day on three different surfaces before this was written: a task card
+  fixed the same afternoon and left open for two more days; a defect fixed in code and never
+  published, so every adopter still met it; and a rule whose own lifting condition had been
+  satisfied and recorded elsewhere while the rule still said it had not been proven. Nothing was
+  wrong when written; each simply outlived the state it described.
+
+## [0.170.0] - 2026-08-18
+
+### Added
+
+- **`leaf-readonly` agentType** — a fenced worker type for roles whose output is KNOWLEDGE
+  rather than a change (survey, ground, audit, locate, verify-by-reading). It declares an
+  explicit `tools:` ALLOW-LIST instead of subtracting from the default surface, and sits
+  between `lean` (zero tools) and `leaf` (every tool except messaging).
+
+  The reason it exists is measured, not theoretical: **withholding `Write`, `Edit` and `Bash`
+  does not make an agent read-only.** A surface that still carries an MCP server's
+  file-writing, shell-executing, record-deleting or message-sending tools still HOLDS all of
+  those with none of the three present (the listing and one invocation from it are observed; that
+  a write through such a tool completes is an inference, and the allow-list does not depend on it) — and an enumeration of forbidden tools cannot cover a surface
+  that grows every time a user installs another MCP server. An allow-list is the only form that
+  closes tools nobody has installed yet.
+
+### Changed
+
+- **`wt-delegation-ladder` gains a "read-only is an ALLOW-LIST" clause.** The rule previously
+  described read-only enforcement only through the executor-briefing split; it now states the
+  invariant (*the agent holds nothing that mutates anything outside its own context*), why a
+  deny-list cannot work (an enumeration cannot cover a surface that grows with every installed
+  MCP server), that an allow-list may silently deliver less than it declares, and that a newly
+  written agent type is not spawnable in the session that wrote it.
+
+- **`leaf`'s description no longer implies a fence it does not provide.** It denies
+  `SendMessage` and nothing else; its own guidance previously read "you keep every tool except
+  inter-agent messaging" without saying what that breadth includes. Both the description and the
+  agent-facing guidance now name the reach explicitly and point a read-only role at
+  `leaf-readonly`. No behaviour change: `leaf` keeps exactly the surface it always had, and no
+  existing routing moves.
+
+### Notes
+
+- ⚠ An allow-list can deliver LESS than it declares, with no error: `Grep` and `Glob` were
+  declared by two different definitions on this harness family and did not arrive. It errs SAFE
+  (fewer tools, never more), so the fence holds — but a role must not assume search is
+  available, and a caller should verify a spawned agent's ACTUAL surface rather than trust the
+  declaration.
+- ⚠ A newly added agentType becomes spawnable after a DELAY of roughly ninety minutes, with no
+  restart and no announcement. Two readings taken at zero and sixty minutes both returned
+  `Agent type not found` and were simply too early — do not read one refusal as impossibility, and
+  re-probe instead of concluding.
+
+## [0.169.0] - 2026-08-18
 
 ### Added
 
@@ -25,6 +90,31 @@ on the two sides. Choosing the next number is part of reconciling that fork, not
 change.
 
 ## [0.165.0] - 2026-08-27
+- **A task's remaining-work ledger is a claim about the tree, and the briefing guidance now says to
+  re-derive it.** A multi-part task carries a running "these remain" list written by whoever last
+  touched it; it goes stale the instant a commit lands without a tracker write, and nothing
+  announces the drift — the ledger stays confident, specific, and formatted exactly like a verified
+  fact. Briefing an executor from a stale one asks for work already done, and the executor is not
+  the safeguard: told to fix a defect, it has every reason to build a second mechanism beside the
+  first, or to rewrite what exists and silently drop hardening the original carried. The clause
+  names the favourable tell — a lane returning a clean tree or a suspiciously small diff — and the
+  one command that settles it before the brief is written.
+
+## [0.168.0] - 2026-08-18
+
+### Added
+
+- **The briefing guidance now carries a platform check.** `wt-delegation-ladder.md`’s “Briefing an
+  executor” section told an arbiter to state invariants, traps, evidence format and escalation
+  triggers — all of which check a brief against the TASK. Nothing checked it against the PLATFORM,
+  and a capability that worked last week reads as furniture. A prescribed remedy can be withdrawn
+  while the rule still names it, at which point the brief is wrong BEFORE the executor reads it:
+  the agent behaves correctly, cannot comply, and explains — a round trip bought for nothing, and
+  the competence of both parties is exactly what hides the cause. The clause covers a tool, a write
+  path, an output channel or an agent type, and says to confirm at brief time rather than infer
+  from the rule that prescribes it.
+
+## [0.167.0] - 2026-08-17
 
 ### Fixed
 
