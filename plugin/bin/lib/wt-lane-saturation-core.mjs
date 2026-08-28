@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { stripHeredocs } from './shell-text.mjs'
 
 /** The bound is a NAMED parameter, never a buried constant: the 8-16 wall is empirical and
  *  moves with the subscribed plan. The default is the LOW end deliberately — being warned
@@ -24,6 +25,12 @@ export const LANE_INVOCATIONS = [/\bopencode\s+run\b/, /\bcodex\s+exec\b/]
  *  narrows false positives (mention-only text) at essentially no cost to true positives: a
  *  real invocation is never itself wrapped in quotes or written after a comment marker. */
 export function stripNonExecutedText(command) {
+  // ⚠ Heredoc bodies FIRST, and this line is the whole point of the fix. The character loop below
+  // removes quoted spans, which is what this function documented and did — but a heredoc body is
+  // neither quoted nor commented, so an invocation string sitting inside one reached the matcher
+  // intact and the lane gate REFUSED the command that merely wrote it (measured 2026-08-28, on a
+  // test fixture). A guard that refuses correct work gets disabled, and takes its real case along.
+  command = stripHeredocs(command)
   let out = ''
   let i = 0
   while (i < command.length) {
