@@ -336,11 +336,16 @@ describe('wt-autonomy-watch', () => {
       CLAUDE_CODE_SESSION_ID: s.sessionId,
       XDG_STATE_HOME: s.stateHome,
       WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
-      WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES: '0.001',
+      // ⚠ 1.8s, not the 60ms this used to use. The FIRST check below must complete while the
+      // mandate is still fresh — and it SPAWNS A SUBPROCESS, which cannot be relied on to finish
+      // inside 60ms on a loaded machine. Measured 2026-08-28: this test failed twice in three full
+      // parallel suite runs and passed 5/5 alone, and the failure was always the first assertion
+      // seeing EXPIRED. The window has to outlast a spawn; the delay only has to outlast the window.
+      WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES: '0.03',
     }
 
     const beforeExpiry = runWatch(s.projectDir, env)
-    await delay(120)
+    await delay(2500)
     const atCrossing = runWatch(s.projectDir, env)
     const afterCrossing = runWatch(s.projectDir, env)
 
