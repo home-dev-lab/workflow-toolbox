@@ -49,6 +49,7 @@ import { dirname, join, resolve } from 'node:path'
 
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { stateRoot, snapshotPath } from './lib/actionability-state-paths.mjs'
+import { readSpilledFileGuarded } from './lib/spill-containment.mjs'
 import { extractCards, computeSnapshot, resolveBoardProjectDir } from './lib/actionability-planka-producer-core.mjs'
 
 const DEPENDS_ON_PARSER_RELATIVE = '.claude/scripts/lib/depends-on-parser.mjs'
@@ -156,7 +157,7 @@ function main() {
     toolName,
     toolInput: input.tool_input,
     toolResponse: input.tool_response,
-    readSpilledFile: (path) => existsSync(path) ? readFileSync(path, 'utf8') : null,
+    readSpilledFile: readSpilledFileGuarded,
   })
   if (!extraction.ok) {
     if (extraction.reason === 'no readable tool_response text') {
