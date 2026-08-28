@@ -135,6 +135,8 @@ const COMMAND_SCAN_MAX = 20_000
 // delegated session), overridable via WT_VERIFIER_MARKER_DIR for isolated tests.
 const MARKER_PREFIX = 'wt-verifier-cli-seen-'
 const MARKER_TTL_MS = 6 * 60 * 60 * 1000 // opportunistically reap markers older than this
+const STREAM_PREFIX = 'wt-opencode-json-stream-'
+const STREAM_TTL_MS = 6 * 60 * 60 * 1000
 
 // Per-subagent DENY counter: a sibling file (SAME key family as the
 // cli-seen marker — sha1(transcript_path + ':' + agent_id)) holding how many verdicts THIS wrapper
@@ -251,6 +253,265 @@ function markerDir() {
  *  marker per-VOTE (and per-run). Both hook events derive the SAME path for the SAME subagent
  *  (same transcript_path + same agent_id). agent_id is present in both events (re-probe census:
  *  60 distinct agent_ids on marker-writes). */
+/** The RUN directory a delegated session's agent transcripts live in, derived from the session's own
+ *  transcript path: `…/<session>.jsonl` → `…/<session>/subagents/workflows/<runId>/`.
+ *
+ *  ⚠ `transcript_path` names the SESSION, never the agent — the doc above `markerPathFor` says so,
+ *  and folding `agent_id` into the marker key exists precisely because of it. No hook input carries
+ *  a run id (`BaseHookInput` is session_id · transcript_path · cwd · prompt_id? · permission_mode? ·
+ *  agent_id?), so the run has to be found on disk.
+ *
+ *  ⚠⚠ Returns null unless EXACTLY ONE run dir exists. That is not caution for its own sake: it is
+ *  only ever one because app.ts's anti-runaway guard aborts a second Workflow launch in one session.
+ *  **If that guard is relaxed, this must keep returning null rather than guess** — picking the
+ *  newest would write a run's artefacts into another run's directory, silently, since both paths
+ *  exist and both are writable. Never sort by mtime here.
+ *
+ *  Returns null on anything unexpected; the caller treats that as "nothing to write". */
+export function runDirForSessionTranscript(transcriptPath, readdir = (d) => fs.readdirSync(d, { withFileTypes: true })) {
+  if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return null
+  const sessionDir = transcriptPath.replace(/\.jsonl$/, '')
+  const workflowsDir = path.join(sessionDir, 'subagents', 'workflows')
+  let entries
+  try {
+    entries = readdir(workflowsDir)
+  } catch {
+    return null // no delegated-run layout here — an ordinary session, nothing to do
+  }
+  const runs = entries.filter((e) => e.isDirectory()).map((e) => e.name)
+  if (runs.length !== 1) return null // zero, or an ambiguity we refuse to resolve — see above
+  return path.join(workflowsDir, runs[0])
+}
+
+/** The model an external-CLI command targets, read off the command itself (`--model <x>` or
+ *  `--model=<x>`). Returns null when the command names none — the lane's own default then applies
+ *  and we must not invent a name for it, because a wrong model label on a cost figure is worse
+ *  than an absent one. */
+export function modelFromCommand(command) {
+  if (typeof command !== 'string') return null
+  const m = command.match(/--model[=\s]+["']?([A-Za-z0-9._\-]+\/[A-Za-z0-9._\-]+)["']?/)
+  return m === null ? null : (m[1] ?? null)
+}
+
+/** The external lane's own token counts and session id, parsed from a `--format json` stream.
+ *
+ *  ⚠ Returns null when the output is NOT that stream — the ordinary case today, since the command
+ *  is written by whoever authored the workflow. A null here means "not measured" and must travel
+ *  as such: a zero would render as a measurement, which is the exact failure the cost-split card
+ *  names (a lane whose cost cannot be read shows a labelled unknown, never a zero).
+ *
+ *  ⚠ The LAST tokens object wins: the stream reports cumulative usage as it goes, so an earlier
+ *  line carries a partial count. Taking the first would under-report, silently and plausibly. */
+export function laneUsageFromOutput(text) {
+  if (typeof text !== 'string' || text.length === 0) return null
+  let tokens = null
+  let sessionId = null
+  for (const line of text.split('\n')) {
+    const t = line.trim()
+    if (t.length === 0 || t[0] !== '{') continue
+    let parsed
+    try {
+      parsed = JSON.parse(t)
+    } catch {
+      continue // a non-JSON line in a JSON stream is not an error worth failing a run over
+    }
+    const found = findUsage(parsed)
+    if (found.tokens !== null) tokens = found.tokens
+    if (found.sessionId !== null) sessionId = found.sessionId
+  }
+  if (tokens === null && sessionId === null) return null
+  return { tokens, sessionId }
+}
+
+/** The model's ACTUAL ANSWER, pulled out of a `--format json` event stream.
+ *
+ *  ⚠ Without this the transcript of an external call is the raw stream — every `step_start`,
+ *  `step_finish`, every id and timestamp — so a reader opening that node meets a wall of JSON
+ *  instead of what the model said. The tokens are the reason the command asks for JSON; the answer
+ *  is the reason a human opens the transcript. Both have to survive.
+ *
+ *  Returns null when the output is not that stream (an ordinary text call) or carries no text part
+ *  at all — the caller then keeps the raw output, because dropping it would trade a noisy
+ *  transcript for an empty one. */
+export function laneTextFromOutput(text) {
+  if (typeof text !== 'string' || text.length === 0) return null
+  const parts = []
+  for (const line of text.split('\n')) {
+    const t = line.trim()
+    if (t.length === 0 || t[0] !== '{') continue
+    let parsed
+    try {
+      parsed = JSON.parse(t)
+    } catch {
+      continue
+    }
+    const part = parsed?.part
+    if (part !== null && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string' && part.text.length > 0) {
+      parts.push(part.text)
+    }
+  }
+  return parts.length === 0 ? null : parts.join('\n')
+}
+
+export function observeStateRootForEnv(env = process.env, home = os.homedir(), platform = process.platform) {
+  const xdg = typeof env['XDG_STATE_HOME'] === 'string' && env['XDG_STATE_HOME'].length > 0 ? env['XDG_STATE_HOME'] : null
+  const base =
+    xdg !== null
+      ? xdg
+      : platform === 'darwin'
+        ? path.join(home, 'Library', 'Application Support')
+        : platform === 'win32'
+          ? (typeof env['LOCALAPPDATA'] === 'string' && env['LOCALAPPDATA'].length > 0
+              ? env['LOCALAPPDATA']
+              : path.join(home, 'AppData', 'Local'))
+          : path.join(home, '.local', 'state')
+  return path.join(base, 'wt-observe')
+}
+
+export function verifierStreamDirForEnv(env = process.env, home = os.homedir(), platform = process.platform) {
+  return path.join(observeStateRootForEnv(env, home, platform), 'external-lane-streams')
+}
+
+function stripQuoted(value) {
+  if (typeof value !== 'string' || value.length < 2) return value
+  const q = value[0]
+  if ((q === '"' || q === "'") && value[value.length - 1] === q) return value.slice(1, -1)
+  return value
+}
+
+function shellValueFor(name, assignments, depth = 0) {
+  if (depth > 8) return null
+  const raw = assignments.get(name)
+  if (typeof raw !== 'string' || raw.length === 0) return null
+  const home = os.homedir()
+  const value = stripQuoted(raw)
+  return value
+    .replace(/\$HOME\b/g, home)
+    .replace(/\$([A-Za-z_][A-Za-z0-9_]*)\b/g, (_, ref) => shellValueFor(ref, assignments, depth + 1) ?? process.env[ref] ?? '')
+}
+
+export function streamFilePathFromCommand(command) {
+  if (typeof command !== 'string' || command.length === 0) return null
+  const assignments = new Map()
+  for (const m of command.matchAll(/(?:^|\n)([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g)) {
+    assignments.set(m[1], m[2])
+  }
+  const redirect = command.match(/>\s*"\$STREAMFILE"(?:\s|$)/)
+  if (redirect === null) return null
+  const streamFile = shellValueFor('STREAMFILE', assignments)
+  return typeof streamFile === 'string' && path.isAbsolute(streamFile) ? streamFile : null
+}
+
+/** Walk a parsed line for the two fields worth having. Shallow-recursive by design: the stream
+ *  nests them under varying parents and pinning a path would break on the next CLI version. */
+function findUsage(node, depth = 0) {
+  const out = { tokens: null, sessionId: null }
+  if (node === null || typeof node !== 'object' || depth > 6) return out
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'tokens' && value !== null && typeof value === 'object' && typeof value.input === 'number') {
+      out.tokens = {
+        input: value.input ?? 0,
+        output: value.output ?? 0,
+        reasoning: value.reasoning ?? 0,
+        cacheRead: value.cache?.read ?? 0,
+        cacheWrite: value.cache?.write ?? 0,
+      }
+    } else if (key === 'sessionID' && typeof value === 'string' && value.length > 0) {
+      out.sessionId = value
+    } else if (value !== null && typeof value === 'object') {
+      const deeper = findUsage(value, depth + 1)
+      if (deeper.tokens !== null) out.tokens = deeper.tokens
+      if (deeper.sessionId !== null) out.sessionId = deeper.sessionId
+    }
+  }
+  return out
+}
+
+/** The text a Bash tool_response carries, whatever shape the harness used. `tool_response` is typed
+ *  `unknown` in the SDK, so every shape is narrowed rather than assumed: a bare string, or an object
+ *  with stdout (the observed shape), or neither — in which case there is nothing to write and the
+ *  caller skips rather than writing an empty transcript that would render as a silent node. */
+export function bashOutputText(toolResponse) {
+  if (typeof toolResponse === 'string') return toolResponse
+  if (toolResponse !== null && typeof toolResponse === 'object') {
+    const out = toolResponse.stdout
+    if (typeof out === 'string') return out
+    const content = toolResponse.content
+    if (typeof content === 'string') return content
+  }
+  return ''
+}
+
+export function writeLaneArtefacts({
+  runDir,
+  laneId,
+  askedContent,
+  answerContent,
+  rawStreamText = null,
+  sig,
+  parentAgentId,
+  model = null,
+  durationMs,
+  usage = null,
+  status = 'answer',
+  phaseIndex = null,
+}) {
+  // The call's own two turns are NOT simultaneous, but writeLaneArtefacts only ever runs once,
+  // at PostToolUse — after the call has already finished. There is no observed absolute START
+  // instant on disk anywhere (the manifest carries a DURATION per task, never a start timestamp),
+  // so the write-time instant is the only real anchor available, and it is anchored as the
+  // FINISH: `durationMs`, when present, is subtracted from it to place the ask strictly before
+  // the answer. Without a usable `durationMs` there is nothing truthful to subtract — asserting a
+  // spread would be inventing a number nobody measured — so a minimal 1ms floor is used instead,
+  // just enough to keep the ask ordered before the answer (the one fact that is always true of a
+  // question and its own reply) without asserting any particular elapsed time.
+  const finishedAt = new Date()
+  const askOffsetMs = typeof durationMs === 'number' && durationMs > 0 ? durationMs : 1
+  const askedAt = new Date(finishedAt.getTime() - askOffsetMs).toISOString()
+  const at = finishedAt.toISOString()
+  const askedLine = JSON.stringify({
+    type: 'user',
+    timestamp: askedAt,
+    message: { role: 'user', content: askedContent },
+    uuid: crypto.randomUUID(),
+    agentId: laneId,
+    isSidechain: true,
+  })
+  const line = JSON.stringify({
+    type: 'assistant',
+    timestamp: at,
+    message: { role: 'assistant', content: answerContent },
+    uuid: crypto.randomUUID(),
+    agentId: laneId,
+    isSidechain: true,
+  })
+  fs.appendFileSync(path.join(runDir, `agent-${laneId}.jsonl`), `${askedLine}\n${line}\n`, 'utf8')
+
+  if (typeof rawStreamText === 'string' && laneTextFromOutput(rawStreamText) !== null) {
+    fs.writeFileSync(path.join(runDir, `agent-${laneId}.opencode.jsonl`), rawStreamText.endsWith('\n') ? rawStreamText : `${rawStreamText}\n`, 'utf8')
+  }
+
+  const meta = {
+    agentType: `scripted:${sig}`,
+    description:
+      status === 'error'
+        ? `call FAILED — ${String(answerContent).split('\n')[0]?.slice(0, 160) ?? 'no message'}`
+        : model === null
+          ? `external CLI call by ${parentAgentId}`
+          : `${model} — called by ${parentAgentId}`,
+    parentAgentId,
+    lane: sig,
+  }
+  if (status === 'error') meta.status = 'error'
+  if (model !== null) meta.model = model
+  if (typeof phaseIndex === 'number') meta.phaseIndex = phaseIndex
+  if (typeof durationMs === 'number') meta.durationMs = durationMs
+  if (usage !== null && usage.tokens !== null) meta.laneTokens = usage.tokens
+  if (usage !== null && usage.sessionId !== null) meta.laneSessionId = usage.sessionId
+
+  fs.writeFileSync(path.join(runDir, `agent-${laneId}.meta.json`), JSON.stringify(meta), 'utf8')
+}
+
 export function markerPathFor(transcriptPath, agentId) {
   const key = crypto
     .createHash('sha1')
@@ -284,6 +545,24 @@ function reapOldMarkers() {
         if (now - fs.statSync(fp).mtimeMs > MARKER_TTL_MS) fs.rmSync(fp, { force: true })
       } catch {
         /* ignore a single unstattable/unremovable marker */
+      }
+    }
+  } catch {
+    /* dir unreadable ⇒ skip cleanup */
+  }
+}
+
+function reapOldStreamFiles() {
+  try {
+    const dir = verifierStreamDirForEnv()
+    const now = Date.now()
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.startsWith(STREAM_PREFIX)) continue
+      const fp = path.join(dir, f)
+      try {
+        if (now - fs.statSync(fp).mtimeMs > STREAM_TTL_MS) fs.rmSync(fp, { force: true })
+      } catch {
+        /* ignore one stale/unremovable stream */
       }
     }
   } catch {
@@ -369,16 +648,14 @@ function matcherHitArm(command) {
   return null
 }
 
-/** PostToolUse: when a real external-CLI invocation COMPLETES, write its per-transcript marker.
- *  Never denies/blocks — it only records provenance. Self-scoped by the command regex (only a
- *  real `opencode run`/`codex …` matches); an agent_type, if present, must be a wrapper. */
 export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p, String(Date.now()))) {
   if (input.tool_name !== 'Bash') return
   const command = input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : ''
   const sig = signatureForCommand(command)
   if (sig === null) return // not a real external-CLI invocation
   // If agent_type IS present, only a wrapper marks (avoid stray markers); if absent (undocumented
-  // in PostToolUse), the specific command regex above is the scope.
+  // in PostToolUse), the specific command regex above is the scope. Any wrapper agentType
+  // containing "opencode" passes this same check, which is deliberate.
   if (input.agent_type !== undefined && signatureForAgentType(input.agent_type) === null) return
   const transcriptPath = input.transcript_path
   const agentId = input.agent_id
@@ -387,13 +664,106 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
   // that a sibling self-answer could ride.
   if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return
   if (!agentId) return
+
   try {
     writeMarker(markerPathFor(transcriptPath, agentId))
     dbg('PostToolUse', input, 'marker-written', { matcher_hit: sig.id === 'opencode' ? matcherHitArm(command) : null })
   } catch {
     /* best-effort: a marker we couldn't write just falls back to the transcript scan */
   }
+
+  // Make a WORKFLOW's lane call VISIBLE. Until now an `opencode run`
+  // made by the wrapper agent left nothing on disk, so the observatory had nothing to draw: a
+  // workflow surfaced its Claude agents (from the run journal) and never its external work.
+  //
+  // This is the only place that sees the call: hooks are PER SESSION, so neither the launcher's
+  // hooks nor anything outside observes a workflow agent's tool calls — measured, both zero. A
+  // plugin hook does, because it is loaded INTO the delegated session. That is why this lives here
+  // and not in the server.
+  //
+  // ⚠ Writes the two files a node is built from, and nothing else — no journal entry. A journal is
+  // the harness's artefact; producing one here would put a second writer on a file we do not own,
+  // and the next reader could not tell which entries were real.
+  //
+  // ⚠ TRANSCRIPT ONLY, no tokens: the wrapper's command omits `--format json`, so its output
+  // carries no per-step totals. Adding them is a separate decision with an unsolved attribution
+  // question — writing a zero here would be worse than writing nothing, because a zero renders.
+  //
+  // ⚠⚠ A DERIVED id (`<agentId>-lane`), never `agentId` itself — measured, run wf_aa4fb03d-e90:
+  // the harness writes the CALLING AGENT's own transcript and meta at `agent-<agentId>.*` in this
+  // very directory. Writing there does two silent damages at once: `writeFileSync` TRUNCATES, so
+  // the agent's own turns are destroyed, and the meta overwrite RELABELS the agent's node as the
+  // external one. The point is a SECOND node beside the agent's, never a node replacing it.
+  //
+  // ⚠ ONE NODE PER CALL, keyed by `tool_use_id`. A single agent making N external calls is the
+  // shape that makes batching worth anything (the ~27k system-prompt cost is paid per AGENT, not
+  // per call) — but only if each call still renders as its OWN node. A single accumulating node
+  // holding N transcripts is precisely what a reader cannot use.
+  //
+  // ⚠⚠ Keyed by id, never by a COUNTER over existing files. The calls of one batch are issued in a
+  // single message and therefore complete CONCURRENTLY: two hook processes counting the same
+  // directory at the same instant both see the same number and pick the same index, so one node
+  // silently absorbs the other. `tool_use_id` is unique per call and needs no coordination.
+  //
+  // ⚠ APPEND, not write: cheap insurance if the same call is ever reported twice. The meta is a
+  // constant, so rewriting it is harmless.
+  try {
+    const runDir = runDirForSessionTranscript(transcriptPath)
+    const streamPath = streamFilePathFromCommand(command)
+    let text = bashOutputText(input.tool_response)
+    if (streamPath !== null) {
+      try {
+        const streamed = fs.readFileSync(streamPath, 'utf8')
+        if (streamed.length > 0) text = streamed
+      } catch {
+        /* fall back to the tool response text */
+      }
+      try {
+        fs.unlinkSync(streamPath)
+      } catch {
+        /* best-effort cleanup: the age sweep below is the backstop */
+      }
+    }
+    if (runDir !== null && text.length > 0) {
+      const callKey =
+        typeof input.tool_use_id === 'string' && input.tool_use_id.length > 0
+          ? crypto.createHash('sha1').update(input.tool_use_id).digest('hex').slice(0, 6)
+          : null
+      const laneId = callKey === null ? `${agentId}-lane` : `${agentId}-lane-${callKey}`
+      // What a HUMAN opens this node to read: the model's answer, not the transport. A
+      // `--format json` call (the one that carries the tokens) would otherwise leave a stream of
+      // step markers and ids here. Falls back to the raw output when nothing text-shaped is in it,
+      // because an empty transcript is worse than a noisy one.
+      const usage = laneUsageFromOutput(text)
+      const model = modelFromCommand(command)
+      const content = laneTextFromOutput(text) ?? text
+      writeLaneArtefacts({
+        runDir,
+        laneId,
+        askedContent: command,
+        answerContent: content,
+        rawStreamText: text,
+        sig: sig.id,
+        parentAgentId: agentId,
+        model,
+        durationMs: input.duration_ms,
+        usage,
+      })
+      dbg('PostToolUse', input, 'lane-artefacts-written', {
+        runDir,
+        laneId,
+        chars: text.length,
+        model,
+        measuredTokens: usage !== null && usage.tokens !== null,
+      })
+    }
+  } catch {
+    /* best-effort, exactly like the marker above: a run must never fail because a hook could not
+       write an observability artefact. */
+  }
+
   reapOldMarkers()
+  reapOldStreamFiles()
 }
 
 /** The refusal reason for one wrapper signature. */
