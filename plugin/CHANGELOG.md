@@ -25,6 +25,34 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   ONE-TIME cold start per project: already-harvested reports may be offered once more, then
   remembered correctly. Nothing is lost — the registry only suppresses repeats.
 
+## [0.167.0] - 2026-08-28
+
+### Added
+
+- **Every external-CLI call now leaves a node behind.** Until now a call made by a wrapper agent
+  wrote nothing to disk, so a run surfaced its Claude agents from the journal and never its
+  external work. The hook writes the two files a node is built from — and it is the only place
+  that can, because hooks are per session: nothing outside the delegated session observes its
+  tool calls, while a plugin hook loaded INTO it does.
+
+  Three properties are locked, each proven red by a mutation targeting only itself:
+
+  - the node uses a **derived** id (`<agentId>-lane…`), never `agentId`. The harness writes the
+    calling agent's own transcript and meta at `agent-<agentId>.*` in that same directory, so
+    using `agentId` truncates the agent's own turns and relabels its node as the external one —
+    silently, with nothing raised;
+  - two calls with different `tool_use_id` produce **two** nodes, and the same call reported twice
+    produces **one**;
+  - a token count that could not be measured is **absent, never zero** — a zero renders as a
+    measurement nobody made.
+
+### Fixed
+
+- **A test specified a race against itself.** The autonomy-watch expiry case set the mandate
+  freshness window to 60 ms and then required a check that SPAWNS A SUBPROCESS to finish inside
+  it. It failed 2 of 3 full-suite runs and passed 5 of 5 alone — and passing alone was never a
+  control, since it passed alone before the fix too. The window now outlasts a spawn.
+
 ## [0.166.0] - 2026-08-28
 ### Added
 
