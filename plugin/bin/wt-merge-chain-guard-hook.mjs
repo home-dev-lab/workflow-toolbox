@@ -106,50 +106,6 @@ function splitSegments(cmd) {
     .filter(Boolean)
 }
 
-// Preserve quoted executable paths while splitting only on unquoted shell separators. This is
-// used for evidence only; the stricter DATA-stripped representation above remains the predicate.
-function splitEvidenceSegments(cmd) {
-  const source = cmd
-    .replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[\s\S]*?^\2$/gm, '<<HEREDOC')
-    .replace(/<<-?\s*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1[\s\S]*$/, '<<HEREDOC')
-    .replace(/`[^`]*`/g, '`CODESPAN`')
-  const segments = []
-  let segment = ''
-  let quote = null
-
-  for (let i = 0; i < source.length; i++) {
-    const char = source[i]
-    if (char === '\\' && quote !== "'") {
-      segment += char
-      if (i + 1 < source.length) segment += source[++i]
-      continue
-    }
-    if (quote) {
-      segment += char
-      if (char === quote) quote = null
-      continue
-    }
-    if (char === "'" || char === '"') {
-      quote = char
-      segment += char
-      continue
-    }
-    if (char === '#' && (i === 0 || /\s/.test(source[i - 1]))) {
-      while (i + 1 < source.length && source[i + 1] !== '\n') i++
-      continue
-    }
-    if (char === '\n' || char === ';' || char === '|' || (char === '&' && source[i + 1] === '&')) {
-      if (segment.trim()) segments.push(segment.trim())
-      segment = ''
-      if ((char === '|' && source[i + 1] === '|') || (char === '&' && source[i + 1] === '&')) i++
-      continue
-    }
-    segment += char
-  }
-  if (segment.trim()) segments.push(segment.trim())
-  return segments
-}
-
 function shellWords(segment) {
   const words = []
   let word = ''
@@ -185,12 +141,16 @@ function shellWords(segment) {
 
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 
-function commandHead(segment) {
+// Resolve a segment's command word, skipping leading assignments and the common `env`/
+// `timeout` prefixes, WITHOUT ever selecting the command's arguments. Returns the index into
+// `words` the real command head sits at (never the words themselves, so a caller cannot
+// accidentally forward argument text) alongside the parsed word list for a bounded look-ahead
+// (e.g. a git subcommand right after `git`).
+function resolveCommand(segment) {
   const words = shellWords(segment)
   let i = 0
   while (i < words.length && ASSIGNMENT.test(words[i])) i++
 
-  // Resolve common command prefixes without ever selecting the command's arguments.
   while (i < words.length) {
     if (words[i] === 'env') {
       i++
@@ -213,7 +173,61 @@ function commandHead(segment) {
     }
     break
   }
-  return words[i] || null
+  return { words, index: i }
+}
+
+// The closed set a trailing segment's classification is drawn from. Never widen this to carry
+// command text — the journal record must survive being read by anyone, on a machine that
+// exports real credentials into shell environments, and a trailing segment is arbitrary text.
+const TRAILING_CLASS = Object.freeze({ GATE: 'gate', DIAGNOSTIC: 'diagnostic', UNCLASSIFIED: 'unclassified' })
+
+// Heads that TRUST the merge's outcome by acting on the tree — a test/build/publish/push run,
+// exactly the shape the guard's header describes as the real hazard.
+const GATE_HEADS = new Set([
+  'pnpm', 'npm', 'yarn', 'npx', 'make', 'docker', 'cargo', 'go', 'mvn', 'gradle',
+  'python', 'python3', 'node', 'bash', 'sh', 'zsh', 'curl', 'wget',
+  'tsc', 'vitest', 'jest', 'mocha', 'pytest',
+])
+const GATE_GIT_SUBCOMMANDS = new Set(['push', 'commit', 'tag', 'publish'])
+
+// Heads that only READ the merge's own outcome — the project's documented safe pattern
+// (`git merge x > log 2>&1; echo "merge: $?"; <inspect the log or compare tree hashes>`).
+const DIAGNOSTIC_HEADS = new Set(['echo', 'printf', 'cat', 'test', 'true', 'false', 'wc', 'head', 'tail', 'diff', 'stat', 'ls', 'pwd', '[', '[['])
+const DIAGNOSTIC_GIT_SUBCOMMANDS = new Set(['log', 'diff', 'show', 'status', 'rev-parse', 'rev-list'])
+
+// Classify ONE trailing segment. Returns a TRAILING_CLASS value or null (unrecognized head) —
+// never the segment's own words. `git` needs one extra look-ahead (its subcommand) to tell a
+// gate (`git push`) from a diagnostic read (`git log`) apart; every other head is decided by
+// its own name alone.
+function classifySegment(segment) {
+  const { words, index } = resolveCommand(segment)
+  const head = words[index]
+  if (!head) return null
+  if (head === 'git') {
+    let j = index + 1
+    if (words[j] === '-C') j += 2
+    const sub = words[j]
+    if (sub && GATE_GIT_SUBCOMMANDS.has(sub)) return TRAILING_CLASS.GATE
+    if (sub && DIAGNOSTIC_GIT_SUBCOMMANDS.has(sub)) return TRAILING_CLASS.DIAGNOSTIC
+    return null
+  }
+  const base = head.split('/').pop()
+  if (GATE_HEADS.has(head) || GATE_HEADS.has(base)) return TRAILING_CLASS.GATE
+  if (DIAGNOSTIC_HEADS.has(head) || DIAGNOSTIC_HEADS.has(base)) return TRAILING_CLASS.DIAGNOSTIC
+  return null
+}
+
+// Classify the WHOLE trailing chain as one closed-set value. Any segment that trusts the tree
+// (a gate) makes the whole chain a gate, regardless of what else follows — a single blind gate
+// among several diagnostic reads is still the hazard the guard exists to catch. Only when
+// EVERY segment is a recognized diagnostic read does the chain classify as diagnostic; anything
+// the classifier cannot place is UNCLASSIFIED rather than guessed.
+function classifyTrailing(segments) {
+  if (segments.length === 0) return TRAILING_CLASS.UNCLASSIFIED
+  const results = segments.map(classifySegment)
+  if (results.some((r) => r === TRAILING_CLASS.GATE)) return TRAILING_CLASS.GATE
+  if (results.every((r) => r === TRAILING_CLASS.DIAGNOSTIC)) return TRAILING_CLASS.DIAGNOSTIC
+  return TRAILING_CLASS.UNCLASSIFIED
 }
 
 // Find a `git merge` (excluding --abort/--continue/--quit) that is followed by at least one
@@ -241,11 +255,10 @@ function main() {
   const segments = splitSegments(stripDataSpans(raw))
   const found = findChainedMerge(segments)
   if (!found) return
-  const after = splitEvidenceSegments(raw)
-    .slice(found.index + 1)
-    .map(commandHead)
-    .filter(Boolean)
-    .join(',')
+  // Classification only — the trailing segment's own text NEVER reaches the journal. See
+  // classifyTrailing()'s header: the return value is always one of TRAILING_CLASS's three
+  // members, never anything derived from the segment strings themselves.
+  const trailing = classifyTrailing(segments.slice(found.index + 1))
 
   recordGuardEvent({
     guard: 'wt-merge-chain-guard-hook.mjs',
@@ -253,7 +266,7 @@ function main() {
     class: 'chained-merge',
     reason: found.segment,
     session: input.session_id,
-    evidence: after ? { after } : undefined,
+    evidence: { trailing },
   })
   process.stdout.write(
     JSON.stringify({
