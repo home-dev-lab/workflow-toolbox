@@ -25,6 +25,26 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   ONE-TIME cold start per project: already-harvested reports may be offered once more, then
   remembered correctly. Nothing is lost — the registry only suppresses repeats.
 
+## [0.168.0] - 2026-08-28
+
+### Fixed
+
+- **A guard no longer reads a heredoc body as a command.** A command line carries code and data in
+  one string, and nothing textual separates them — mentioning a footgun is not committing one, and
+  a regex over a command string cannot tell the difference. Writing a test fixture whose heredoc
+  body mentioned an external-CLI invocation was REFUSED by the lane-consent gate, which refuses
+  rather than warns, so it blocked correct work outright.
+
+  The fix is at the shared level, not in the guard that shouted: `plugin/bin/lib/shell-text.mjs`
+  now holds the ONE implementation of `stripHeredocs` / `stripQuotedSpans`, the two byte-identical
+  hand-written copies in `wt-main-guard-hook` and `wt-pilot-guard-hook` import it instead, and
+  `stripNonExecutedText` strips heredoc bodies before its character loop.
+
+  ⚠ Order matters and is locked: heredocs FIRST, because a body can contain a quote that would
+  otherwise pair with one outside it and swallow real code between them. The lock is paired —
+  removing the fix reddens the false-positive row while the "still catches a real invocation" rows
+  stay green, so the guard was not blinded to buy the fix.
+
 ## [0.167.0] - 2026-08-28
 
 ### Added
