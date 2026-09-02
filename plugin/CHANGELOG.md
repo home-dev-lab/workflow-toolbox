@@ -8,6 +8,26 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 > touches the hook it describes. It stays here rather than under a released heading, because a
 > changelog that announces work absent from the tree is worse than one that says nothing.
 
+### Added
+
+- **The 13 shipped rules under `plugin/rules/` now carry a fourth adopt-managed set: `docs`.**
+  `adopt --set docs` installs `plugin/docs/rules-rationale/*.md` to `<config-dir>/docs/wt/`, with
+  the same fingerprint banner and edit-safety as the `rules` set. This is the shipped-rules twin
+  of the private user-rule static-prefix cut of 2026-09-02: a rule keeps every directive line, and
+  a dated field case or hook-superseded section moves VERBATIM to its rationale doc, leaving one
+  pointer line behind. A new `toolkit/packages/build/test/rules-rationale-split.test.ts` (in
+  `pnpm test`) proves, per rule/rationale pair against a committed pre-cut fixture, that no line
+  from the original rule was ever dropped or duplicated, and that no cut fell mid-paragraph.
+  ⚠ Honest yield: 3 of the 13 rules had a section either hook-superseded or a genuine dated field
+  case to move — 393 bytes / 38 tokens of the set's cold-start prefix (≈0.4%, A/B-measured, three
+  identical-cache runs per arm); the other 10 fuse directive and evidence in the same paragraph
+  throughout and have nothing extractable under the whole-paragraph-only invariant. Two further
+  hook-collapse candidates (wt-delegation-ladder's "wrapper never renders its own verdict",
+  wt-step-back-architectural's "twin elsewhere") were attempted and REVERTED after an independent
+  cross-family review found the named hook's own message does not restate a directive the removed
+  text carried — both stay whole rather than shipping a rule that reads as fully covered when it
+  is not. This pass is a small correctness gain (the clauses a shipped hook truly does enforce
+  mechanically are now named as such) rather than a size gain.
 
 ### Fixed
 

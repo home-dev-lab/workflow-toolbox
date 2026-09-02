@@ -172,7 +172,12 @@ promises next turn that doesn't exist. Nothing to do with willingness to keep go
 it slips past every rule about deciding, announcing, not quietly narrowing scope — those govern
 what gets said, never fact that saying it and stopping IS the stop.
 
-Rationale and field cases: `docs/wt/wt-answer-first-reporting.md` §Observed cost of missing this: four consecutive stops.
+Observed cost of missing this: four consecutive stops in one stretch, each closed by report
+ending on intention to continue, each followed by zero further work — until person waiting asked
+why, four separate times. First explanation ("I mistook a finished batch for the whole queue")
+was wrong, repetition proved it: check built on that wrong explanation stayed silent through all
+four stops it was meant to catch, because it verified remaining work had been looked at, never
+that it continued.
 
 **Operative rule: chain within same turn.** Verify last result, integrate it, pick next item,
 start it — only THEN say what needs saying, and only at a real milestone, not after every

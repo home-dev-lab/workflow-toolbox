@@ -4,7 +4,7 @@
 // Writes EDITABLE copies of workflow-toolbox's managed guardrails into the user's
 // config, each stamped with a versioned banner AND a content fingerprint so a later
 // run can tell (a) whether the copy is behind the plugin and (b) whether the USER has
-// edited it. Three managed SETS share one engine:
+// edited it. Four managed SETS share one engine:
 //
 //   • rules  — the cross-cutting guardrail rule files (content SOURCED from the
 //              plugin's rules/ dir at run time — every *.md there except README.md,
@@ -24,6 +24,15 @@
 //   • autonomy — the session-autonomy mandate markdown, sourced from the plugin's
 //                autonomy/ dir at run time. Target: <cwd>/.claude. Banner is line 1,
 //                same plain-markdown prepend shape as the rules set.
+//   • docs — the rationale/field-case overflow moved OUT of the shipped rules by the
+//            2026-09-02 static-prefix cut (content SOURCED from the plugin's
+//            docs/rules-rationale/ dir at run time — every *.md there except README.md,
+//            same discovery discipline as the rules set). Target: <cwd>/.claude/docs/wt,
+//            deliberately BESIDE <cwd>/.claude/rules/wt so a rule's pointer line
+//            resolves relative to the config dir either way. Banner is line 1, same
+//            plain-markdown prepend shape as the rules set — but its OWN `kind` (never
+//            reuses `rules`), so the rules/wt/ legacy-migration fallback never probes a
+//            pre-migration location this set never had.
 //
 // It is safe BY CONSTRUCTION: `--install` never overwrites a locally-edited (or
 // hand-authored) file — that needs an explicit `--force`. `--check` is always
@@ -31,9 +40,9 @@
 // never write silently.
 //
 // Usage (the skill orchestrates these; a human can run them directly too):
-//   node install.mjs [--set rules|agents|autonomy|all] --check   [--dir <dir>]   # report, write nothing
-//   node install.mjs [--set rules|agents|autonomy|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
-//   node install.mjs [--set rules|agents|autonomy|all] --install --force [--dir <dir>]  # also overwrite edited copies
+//   node install.mjs [--set rules|agents|autonomy|docs|all] --check   [--dir <dir>]   # report, write nothing
+//   node install.mjs [--set rules|agents|autonomy|docs|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
+//   node install.mjs [--set rules|agents|autonomy|docs|all] --install --force [--dir <dir>]  # also overwrite edited copies
 //   node install.mjs [--set …] --install --replace-symlinks [--dir <dir>]      # replace a SYMLINKED target with a managed copy in place
 //   node install.mjs [--set …] --check|--install --global                      # target the CONFIG dir instead of the project
 //
@@ -302,6 +311,28 @@ function discoverRuleItems(root) {
     .map((file) => ({ file }))
 }
 
+/** The rationale/field-case docs this skill installs as editable copies — DISCOVERED from
+ *  the plugin's docs/rules-rationale/ dir at run time, the same discipline as
+ *  discoverRuleItems above (every *.md except README.md, nothing hard-coded). These are the
+ *  verbatim overflow moved OUT of the shipped rules during the 2026-09-02 static-prefix cut:
+ *  a rule keeps its directive text and a one-line pointer; the dated field case or
+ *  hook-superseded section it points at lives here, recalled on demand instead of
+ *  auto-loaded every session. Content is NOT inlined, same reason as the rules set: each
+ *  file is its own single source, read verbatim under a banner. */
+function discoverDocsItems(root) {
+  const dir = path.join(root, 'docs', 'rules-rationale')
+  let entries
+  try {
+    entries = fs.readdirSync(dir)
+  } catch {
+    return [] // no bundle dir → nothing to manage (graceful)
+  }
+  return entries
+    .filter((f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md')
+    .sort()
+    .map((file) => ({ file }))
+}
+
 /** The pilot delegation suite, installed as editable project copies. Content is NOT
  *  inlined — it is READ from the plugin's agents/ dir at run time (the agent defs are
  *  their own single source). Each `file` is both the source basename under
@@ -430,6 +461,16 @@ const SETS = {
   // …) stay in agents/ — they declare no observer, so registration serves them correctly.
   agents: { kind: 'agents', srcDir: 'agent-templates', defaultDir: '.claude/agents', globalSubdir: 'agents', resolveItems: () => MANAGED_AGENTS },
   autonomy: { kind: 'autonomy', srcDir: 'autonomy', defaultDir: '.claude', globalSubdir: '', resolveItems: () => MANAGED_AUTONOMY },
+  // docs → `.claude/docs/wt/` mirrors the rules/wt/ convention above: a rule's pointer line
+  // ("Rationale and field cases: `docs/wt/<rule>.md` §…") is written relative to the config
+  // dir, on the assumption this set lands BESIDE rules/wt/ under the same root — never a
+  // hard-coded `~/.claude`, so the pointer resolves the same way under --global or a project
+  // --dir. `kind: 'docs'`, a DISTINCT value from 'rules' even though the banner/fingerprint
+  // path is identical (every kind !== 'agents' takes that path): the rules/wt/ subfolder
+  // migration fallback below is gated on `kind === 'rules'` specifically, and this set never
+  // had a pre-migration flat layout to fall back to — reusing 'rules' would make that
+  // migration heuristic silently probe a legacy location that never existed.
+  docs: { kind: 'docs', srcDir: 'docs/rules-rationale', defaultDir: '.claude/docs/wt', globalSubdir: 'docs/wt', resolveItems: discoverDocsItems },
 }
 
 const MANAGED_SET_NAMES = Object.keys(SETS)

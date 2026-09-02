@@ -509,31 +509,40 @@ describe('adopt installer — CLI surface for the managed-set engine', () => {
     expect(chk).toContain('nothing to do')
   })
 
-  it('--set rules names the untouched agents and autonomy sets, factually and in one line', () => {
+  it('--set rules names the untouched agents, autonomy, and docs sets, factually and in one line', () => {
     const d = mkDir()
     const out = run(['--set', 'rules', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the agents and autonomy sets exist too; they were untouched here, and --set agents or --set autonomy covers them.')
+    expect(line).toBe('adopt: the agents, autonomy, and docs sets exist too; they were untouched here, and --set agents, --set autonomy, --set docs covers them.')
   })
 
-  it('--set agents names the untouched rules and autonomy sets, factually and in one line', () => {
+  it('--set agents names the untouched rules, autonomy, and docs sets, factually and in one line', () => {
     const d = mkDir()
     const out = run(['--set', 'agents', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the rules and autonomy sets exist too; they were untouched here, and --set rules or --set autonomy covers them.')
+    expect(line).toBe('adopt: the rules, autonomy, and docs sets exist too; they were untouched here, and --set rules, --set autonomy, --set docs covers them.')
   })
 
-  it('--set autonomy names the untouched rules and agents sets, factually and in one line', () => {
+  it('--set autonomy names the untouched rules, agents, and docs sets, factually and in one line', () => {
     const d = mkDir()
     const out = runInCwd(['--set', 'autonomy', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the rules and agents sets exist too; they were untouched here, and --set rules or --set agents covers them.')
+    expect(line).toBe('adopt: the rules, agents, and docs sets exist too; they were untouched here, and --set rules, --set agents, --set docs covers them.')
+  })
+
+  it('--set docs names the untouched rules, agents, and autonomy sets, factually and in one line', () => {
+    const d = mkDir()
+    const out = runInCwd(['--set', 'docs', '--check'], d)
+    const line = untouchedSetLine(out)
+    expect(line).not.toContain('⚠')
+    expect(line).not.toMatch(/\bshould\b/i)
+    expect(line).toBe('adopt: the rules, agents, and autonomy sets exist too; they were untouched here, and --set rules, --set agents, --set autonomy covers them.')
   })
 
   it('--set all prints no untouched-set line at all', () => {

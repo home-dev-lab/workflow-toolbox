@@ -14,7 +14,8 @@ description: >-
 # adopt — install editable copies of workflow-toolbox's guardrails and pilot agents
 
 This skill writes **editable, versioned copies** of workflow-toolbox material into the
-user's project, on explicit request only. It manages two sets:
+user's project, on explicit request only. It manages four sets — `rules`, `agents`,
+`autonomy`, and `docs` (below); `--set all` covers all four in one pass:
 
 - **rules** — the cross-cutting guardrail rule files, SOURCED from the plugin's `rules/`
   bundle (every `*.md` there except `README.md` — currently the delegation ladder; the set
@@ -37,6 +38,15 @@ user's project, on explicit request only. It manages two sets:
   names. Copying by hand works too, but a hand copy has NO staleness detection: this set
   closes that gap — every copy carries a version banner + content fingerprint, so a later
   `--check` reports when the plugin has moved ahead.
+- **autonomy** — the session-autonomy mandate markdown (`AUTONOMY.md`), SOURCED from the
+  plugin's `autonomy/` bundle. Same banner/fingerprint shape as `rules`.
+- **docs** — the rationale/field-case overflow moved OUT of the shipped rules by the
+  2026-09-02 static-prefix cut, SOURCED from the plugin's `docs/rules-rationale/` bundle
+  (every `*.md` there except `README.md`, the same discovery discipline as `rules`).
+  Installed to `<config-dir>/docs/wt/`, deliberately beside `<config-dir>/rules/wt/` — a
+  rule keeps its directive text plus a one-line pointer ("Rationale and field cases:
+  `docs/wt/<rule>.md` §…"), and this is what makes that pointer resolve. Recalled on
+  demand, never auto-loaded — the point of moving the content out in the first place.
 
 A THIRD kind of agent exists and this skill does nothing for it, on purpose: the plugin's
 `agents/` directory (`fidelity-checker`, `index-groomer`, `leaf`, `lean`, `opencode-verifier`,
@@ -118,8 +128,8 @@ backward compatibility):
 When adopting into a project that already has rules, reconcile first — see the
 "Reconciling your existing project rules" section in `../../rules/README.md`.
 
-- **Check status (read-only, the default):** `node scripts/install.mjs --set <rules|agents|all> --check`
-- **Install / refresh (absent + unedited only):** `node scripts/install.mjs --set <rules|agents|all> --install`
+- **Check status (read-only, the default):** `node scripts/install.mjs --set <rules|agents|autonomy|docs|all> --check`
+- **Install / refresh (absent + unedited only):** `node scripts/install.mjs --set <rules|agents|autonomy|docs|all> --install`
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
 - **Replace a symlinked target (deliberate):** add `--replace-symlinks` to `--install` — a
   symlinked target is otherwise reported and SKIPPED (never written through); this unlinks
