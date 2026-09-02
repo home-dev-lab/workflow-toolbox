@@ -15,9 +15,17 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   the same fingerprint banner and edit-safety as the `rules` set. This is the shipped-rules twin
   of the private user-rule static-prefix cut of 2026-09-02: a rule keeps every directive line, and
   a dated field case or hook-superseded section moves VERBATIM to its rationale doc, leaving one
-  pointer line behind. A new `toolkit/packages/build/test/rules-rationale-split.test.ts` (in
-  `pnpm test`) proves, per rule/rationale pair against a committed pre-cut fixture, that no line
-  from the original rule was ever dropped or duplicated, and that no cut fell mid-paragraph.
+  pointer line behind. Verified LOSSLESS at cut time with a one-off script,
+  `toolkit/scripts/verify-rules-rationale-split.mjs --baseline <pre-cut dir>` (same algorithm as
+  the private-rule pass's `verify-split.py`): **13/13 rule/rationale pairs, 0 missing, 0
+  duplicated, 0 mid-paragraph splits.** That script is NOT part of `pnpm test` — a frozen
+  byte-for-byte baseline is right for a one-time migration proof and wrong for a permanent lock,
+  since it would forbid ever legitimately retiring a sentence from a shipped rule again. The
+  ongoing gate is `toolkit/packages/build/test/rules-rationale-referential.test.ts`: every
+  pointer's `§heading` resolves in its rationale doc, every rationale-doc heading is referenced
+  by a pointer, a doc exists for every rule and vice versa, and no rationale-doc line is
+  duplicated verbatim in its rule — an invariant that survives future rewrites instead of
+  freezing today's prose. Proven red-then-green with a real mutation.
   ⚠ Honest yield: 3 of the 13 rules had a section either hook-superseded or a genuine dated field
   case to move — 393 bytes / 38 tokens of the set's cold-start prefix (≈0.4%, A/B-measured, three
   identical-cache runs per arm); the other 10 fuse directive and evidence in the same paragraph
