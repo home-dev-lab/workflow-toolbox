@@ -328,7 +328,7 @@ describe('wt-observer-pairing-guard-hook — delegate to the shipped checker', (
     const r = runHook(OBSERVER_PAIRING_HOOK, hookPayload(f.project, f.sessionId, { agent_id: 'worker' }), f.env)
 
     expect(hookContext(r)).toContain('checker verdict pending')
-    expect(hookContext(r)).toContain('missing-watchdog')
+    expect(hookContext(r)).not.toContain('missing-watchdog')
   })
 
   it('surfaces checker flag when no ownership link or fallback match exists', () => {

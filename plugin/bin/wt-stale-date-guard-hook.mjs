@@ -79,7 +79,7 @@ function main() {
     guard: 'wt-stale-date-guard-hook.mjs',
     decision: 'warned',
     class: 'stale-date',
-    reason: filePath,
+    evidence: { kind: 'file_path' },
   })
   emitGuardNotice({
     stdoutJson: {

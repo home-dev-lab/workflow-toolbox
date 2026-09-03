@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,23 +10,38 @@ const HOOK = join(REPO_ROOT, 'plugin/bin/wt-missing-package-script-guard-hook.mj
 const PLUGIN_MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 
 function run(command: string, cwd: string) {
-  const res = spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify({
-      hook_event_name: 'PreToolUse',
-      tool_name: 'Bash',
-      tool_input: { command },
-      cwd,
-    }),
-    encoding: 'utf8',
-  })
-  return {
-    // Warn-only guard: `warned` means the predicate matched and a non-blocking reason was
-    // emitted via permissionDecision: 'allow'. `denied` must NEVER be true for this hook.
-    warned: res.stdout.includes('WARNING (not blocked)'),
-    denied: res.stdout.includes('"deny"'),
-    stdout: res.stdout,
-    stderr: res.stderr,
-    status: res.status,
+  const journalDir = mkdtempSync(join(tmpdir(), 'wt-missing-script-journal-'))
+  try {
+    const res = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command },
+        cwd,
+      }),
+      encoding: 'utf8',
+      env: { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir },
+    })
+    const entries = readdirSync(journalDir)
+      .filter((file) => file.endsWith('.ndjson'))
+      .flatMap((file) =>
+        readFileSync(join(journalDir, file), 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as Record<string, unknown>),
+      )
+    return {
+      // Warn-only guard: `warned` means the predicate matched and a non-blocking reason was
+      // emitted via permissionDecision: 'allow'. `denied` must NEVER be true for this hook.
+      warned: res.stdout.includes('WARNING (not blocked)'),
+      denied: res.stdout.includes('"deny"'),
+      stdout: res.stdout,
+      stderr: res.stderr,
+      status: res.status,
+      entries,
+    }
+  } finally {
+    rmSync(journalDir, { recursive: true, force: true })
   }
 }
 
@@ -117,6 +132,22 @@ describe('wt-missing-package-script-guard-hook', () => {
     expect(r.denied).toBe(false)
     expect(r.stdout).toContain('test')
     expect(r.status).toBe(0)
+  })
+
+  it('SECURITY LOCK: the journal record never contains the package path from the input cwd', () => {
+    const secret = 'SECRET-7f3a'
+    mkdirSync(join(root, 'packages', secret), { recursive: true })
+    writeFileSync(join(root, 'packages', secret, 'package.json'), JSON.stringify({ name: 'secret', scripts: {} }))
+
+    const r = run('pnpm lint', join(root, 'packages', secret))
+    expect(r.warned).toBe(true)
+    expect(r.entries).toHaveLength(1)
+    expect(r.entries[0]).toMatchObject({
+      guard: 'wt-missing-package-script-guard-hook.mjs',
+      decision: 'warned',
+      class: 'missing-script',
+    })
+    expect(JSON.stringify(r.entries[0])).not.toContain(secret)
   })
 
   // ---- INVENTED: synthetic edge cases exercising the cd-tracking / parsing machinery itself ----

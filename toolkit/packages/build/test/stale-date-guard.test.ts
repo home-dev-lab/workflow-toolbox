@@ -17,7 +17,7 @@
 // All three are required; any one missing means the guard is not done.
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, readdirSync, readFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,6 +28,7 @@ import { scanText } from '../../../../plugin/bin/lib/stale-date-guard-core.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const GUARD_CLI = join(REPO_ROOT, 'plugin/bin/wt-stale-date-guard.mjs')
+const HOOK = join(REPO_ROOT, 'plugin/bin/wt-stale-date-guard-hook.mjs')
 
 let tmpDirs: string[] = []
 function makeTmpDir() {
@@ -251,5 +252,44 @@ describe('wt-stale-date-guard.mjs CLI: exit codes are the ground truth', () => {
   it('usage error (no --path) exits 2', () => {
     const res = spawnSync('node', [GUARD_CLI], { encoding: 'utf8' })
     expect(res.status).toBe(2)
+  })
+})
+
+describe('wt-stale-date-guard-hook.mjs journal shape', () => {
+  it('SECURITY LOCK: the journal record never contains the input path', () => {
+    const root = makeTmpDir()
+    const secret = 'SECRET-7f3a'
+    const filePath = join(root, '.claude', 'rules', `${secret}-policy.md`)
+    const journalDir = makeTmpDir()
+    mkdirSync(join(root, '.claude', 'rules'), { recursive: true })
+    writeFileSync(filePath, 'Le prochain compte utilisable après epuisement : le 29/07 a 13:59.\n', { flag: 'w' })
+
+    const res = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Write',
+        cwd: root,
+        tool_input: { file_path: filePath },
+      }),
+      encoding: 'utf8',
+      env: { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir },
+    })
+
+    expect(res.status).toBe(0)
+    const records = readdirSync(journalDir)
+      .filter((file) => file.endsWith('.ndjson'))
+      .flatMap((file) =>
+        readFileSync(join(journalDir, file), 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as Record<string, unknown>),
+      )
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({
+      guard: 'wt-stale-date-guard-hook.mjs',
+      decision: 'warned',
+      class: 'stale-date',
+    })
+    expect(JSON.stringify(records[0])).not.toContain(secret)
   })
 })

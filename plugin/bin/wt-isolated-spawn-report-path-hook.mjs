@@ -67,8 +67,7 @@ function main() {
   const name = typeof ti.name === 'string' && ti.name ? `"${ti.name}"` : 'an anonymous agent'
   const lines = [
     `⚠ ISOLATED SPAWN + AN OUT-OF-TREE WRITE TARGET — ${name} is spawned with isolation:`,
-    `  "${isolation}", and its brief names ${targets.length} absolute write path(s):`,
-    ...targets.slice(0, 4).map((p) => `    ${p}`),
+    `  "${isolation}", and its brief names ${targets.length} absolute write path(s).`,
     `  An isolated agent's write to a path outside its own worktree does not land, its tree is`,
     `  REAPED when it stops, and it will honestly report success. Fix, pick one:`,
     `    · drop isolation and create the worktree yourself, passing that path in the brief;`,
@@ -82,7 +81,7 @@ function main() {
     guard: 'wt-isolated-spawn-report-path-hook.mjs',
     decision: 'warned',
     class: 'isolated-spawn-out-of-tree-write',
-    reason: `${name} isolation=${isolation} targets=${targets.length}`,
+    evidence: { isolation, targets: targets.length },
   })
   emitGuardNotice({ stdoutJson: { systemMessage: lines.join('\n') } })
 }
