@@ -223,6 +223,15 @@ describe('WT_GUARD_MODE=observe', () => {
       expect(observe.stderr).toBe('')
       expect(observe.entries).toHaveLength(1)
       expect(observe.entries[0]).toMatchObject({ guard: hook, decision: 'silent', mode: 'observe' })
+      // Through the SHIPPED reader, not the raw file: a silent event that the scan cannot count is
+      // journaled in name only — the recurrence hook and the scan would both read it as nothing.
+      const scan = spawnSync(process.execPath, [join(BIN_DIR, 'wt-guard-journal-scan.mjs'), '--json'], {
+        encoding: 'utf8',
+        env: { ...process.env, WT_GUARD_JOURNAL_DIR: observe.journalDir },
+      })
+      expect(scan.status).toBe(0)
+      const row = (JSON.parse(scan.stdout).guards as Array<Record<string, unknown>>).find((r) => r.guard === hook)
+      expect(row).toMatchObject({ silent: 1, total: 1 })
       expect(enforce.status).toBe(0)
       expect(enforce.entries).toHaveLength(1)
       expect(enforce.entries[0]).toMatchObject({ guard: hook, decision: 'warned', mode: 'enforce' })

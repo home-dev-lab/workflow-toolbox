@@ -15,7 +15,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   `wt-observer-pairing-guard-hook.mjs`, and `wt-stale-date-guard-hook.mjs`. In observe mode they
   still detect and still journal their events, now stamped with `mode: "observe"` and recorded as
   `decision: "silent"` (never `warned`, so a reader counting `warned` as "the hook spoke" stays
-  honest), but emit no model-facing warning text; the default remains `enforce`.
+  honest), but emit no model-facing warning text; the default remains `enforce`. The journal reader
+  and `wt-guard-journal-scan.mjs --json` count `silent` events (own `silent` column, included in `total`), so
+  the recurrence hook keeps seeing a muted guard's firings.
 
 ## [0.169.0] - 2026-09-03
 > The entry below arrived with a branch merge but its code did NOT: no commit in that merge

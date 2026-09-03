@@ -91,7 +91,7 @@ if (AS_JSON) {
       weekFiles,
       totalEvents: result.totalEvents,
       unreadableLines,
-      guards: rows.map(({ guard, blocked, warned, total, classes }) => ({ guard, blocked, warned, total, classes })),
+      guards: rows.map(({ guard, blocked, warned, silent, total, classes }) => ({ guard, blocked, warned, silent, total, classes })),
       caveat:
         'A count is an EVENT count, not a confirmed-defect count. Some guards include bounded ' +
         'evidence that lets a reader classify a firing, but this scanner does not classify it. ' +
