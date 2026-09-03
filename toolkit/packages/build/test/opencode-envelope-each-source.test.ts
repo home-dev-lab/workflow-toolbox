@@ -44,7 +44,10 @@ function installFakeOpencode(root: string) {
     "  fs.appendFileSync(process.env.FAKE_CONCURRENCY_LOG, 'leave\\n')",
     "}",
     "if (process.env.FAKE_PROMPT_CAPTURE) require('node:fs').writeFileSync(process.env.FAKE_PROMPT_CAPTURE, require('node:fs').readFileSync(taskFile, 'utf8'))",
-    "process.stdout.write(JSON.stringify({ part: { type: 'text', text: 'answer' } }) + '\\n')",
+    "const model = process.argv[process.argv.indexOf('--model') + 1]",
+    "if (process.env.FAKE_MODEL_CAPTURE) require('node:fs').writeFileSync(process.env.FAKE_MODEL_CAPTURE, model)",
+    "if (process.env.FAKE_EXIT_CODE) { process.stderr.write('requested model ' + model); process.exit(Number(process.env.FAKE_EXIT_CODE)) }",
+    "process.stdout.write(JSON.stringify({ part: { type: 'text', text: process.env.FAKE_ANSWER ?? 'answer' } }) + '\\n')",
     '',
   ].join('\n'))
   chmodSync(bin, 0o755)
@@ -127,6 +130,48 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(result.stdout).toBe(`MANIFEST: ${manifestPath}\n`)
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
     expect(manifest).toMatchObject({ status: 'nothing_to_do', nothingToDo: true, total: 0, dropped: 0, tasks: [] })
+  })
+
+  it('prints a JSON-encoded ANSWER only for one successful task and records its requested model', () => {
+    const root = makeRoot()
+    const workdir = join(root, 'workdir')
+    mkdirSync(workdir)
+    installFakeOpencode(root)
+    const tasks = join(root, 'tasks.json')
+    const manifestPath = join(root, 'manifest.json')
+    const modelCapture = join(root, 'model.txt')
+    writeFileSync(tasks, JSON.stringify([{ id: 'only', prompt: 'answer this' }]))
+    const env = {
+      ...process.env,
+      PATH: `${root}:${process.env.PATH ?? ''}`,
+      XDG_STATE_HOME: root,
+      FAKE_ANSWER: 'line one\n"line two"',
+      FAKE_MODEL_CAPTURE: modelCapture,
+    }
+    const result = spawnSync(process.execPath, [
+      SCRIPT, tasks, '--dir', workdir, '--model', 'nonexistent/provider-model', '--manifest', manifestPath,
+    ], { encoding: 'utf8', env })
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe(`MANIFEST: ${manifestPath}\nANSWER: ${JSON.stringify('line one\n"line two"')}\n`)
+    expect(readFileSync(modelCapture, 'utf8')).toBe('nonexistent/provider-model')
+    expect(JSON.parse(readFileSync(manifestPath, 'utf8')).tasks[0]).toMatchObject({
+      status: 'answer', requestedModel: 'nonexistent/provider-model', model: 'nonexistent/provider-model',
+    })
+
+    writeFileSync(tasks, JSON.stringify([{ id: 'one', prompt: 'first' }, { id: 'two', prompt: 'second' }]))
+    const batch = spawnSync(process.execPath, [SCRIPT, tasks, '--dir', workdir, '--manifest', manifestPath], { encoding: 'utf8', env })
+    expect(batch.status).toBe(0)
+    expect(batch.stdout).toBe(`MANIFEST: ${manifestPath}\n`)
+
+    const failed = spawnSync(process.execPath, [SCRIPT, tasks, '--dir', workdir, '--model', 'does-not-exist', '--manifest', manifestPath], {
+      encoding: 'utf8', env: { ...env, FAKE_EXIT_CODE: '1' },
+    })
+    expect(failed.status).toBe(0)
+    expect(failed.stdout).toBe(`MANIFEST: ${manifestPath}\n`)
+    expect(JSON.parse(readFileSync(manifestPath, 'utf8')).tasks[0]).toMatchObject({
+      status: 'error', requestedModel: 'does-not-exist', model: 'does-not-exist', reason: expect.stringContaining('does-not-exist'),
+    })
   })
 
 

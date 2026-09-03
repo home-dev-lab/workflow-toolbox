@@ -70,6 +70,8 @@ export interface StructuredCallOutcome<T> {
   salvageAttempted: boolean
   /** True when `value` came from the salvage pass rather than the native call. */
   salvaged: boolean
+  /** True when a thin opencode envelope supplied a schema-less ANSWER payload. */
+  envelopeAnswer?: true
 }
 
 // The JsonSchema type is an open record; these are the subset keywords the
@@ -342,6 +344,21 @@ function salvagePrompt(prompt: string, schema: JsonSchema): string {
   )
 }
 
+/** True for either a plugin-scoped or bare opencode-envelope agent type. */
+export function isOpenCodeEnvelopeType(agentType: string | undefined): boolean {
+  return agentType?.split(':').pop() === 'opencode-envelope'
+}
+
+function envelopePrompt(prompt: string, schema: JsonSchema): string {
+  const constraints = describeSchemaConstraints(schema)
+  return `${prompt}\n\nOPENCODE ENVELOPE: Answer this task with ONLY a JSON object satisfying this schema; the envelope script will return it in its JSON-encoded ANSWER line.` +
+    (constraints === '' ? '' : `\n${constraints}`)
+}
+
+function envelopeFailure<T>(where: string, warning: string): StructuredCallOutcome<T> {
+  return { value: null, warnings: [`${where}: ${warning}`], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true }
+}
+
 /** Predicate for the harness's "subagent completed without calling
  *  StructuredOutput" throw — the THROW-shaped twin of the null-degrade failure
  *  that this wrapper routes into salvage instead of letting it kill the run.
@@ -383,6 +400,41 @@ export async function agentWithSchemaSalvage<T>(
   if (schema === undefined) {
     const plain = await rt.agent<T>(prompt, opts)
     return { value: plain, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false }
+  }
+
+  if (isOpenCodeEnvelopeType(opts.agentType)) {
+    const where = opts.label ?? 'agent'
+    const envelopeOpts: AgentOptions = { ...opts }
+    delete envelopeOpts.schema
+    const raw = await rt.agent<unknown>(envelopePrompt(prompt, schema), envelopeOpts)
+    if (typeof raw !== 'string') return envelopeFailure(where, 'opencode envelope missing ANSWER line')
+    const answerLine = /^ANSWER:\s*(.+)$/m.exec(raw)
+    if (answerLine === null) return envelopeFailure(where, 'opencode envelope missing ANSWER line')
+    let answerText: unknown
+    try {
+      answerText = JSON.parse(answerLine[1]!)
+    } catch {
+      return envelopeFailure(where, 'opencode envelope ANSWER line is not a JSON string')
+    }
+    if (typeof answerText !== 'string') return envelopeFailure(where, 'opencode envelope ANSWER line is not a JSON string')
+    const candidate = extractJsonObject(answerText)
+    if (candidate === undefined) return envelopeFailure(where, 'opencode envelope ANSWER payload is not a JSON object')
+    const preViolations = validateAgainstSchema(candidate, schema)
+    if (preViolations.length === 0) {
+      return { value: candidate as T, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true }
+    }
+    const { value: repaired, repairs } = repairToSchema(candidate, schema)
+    const postViolations = validateAgainstSchema(repaired, schema)
+    if (postViolations.length === 0) {
+      return {
+        value: repaired as T,
+        warnings: [`${where}: opencode envelope answer repaired — ${repairs.join('; ')}`],
+        spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true,
+      }
+    }
+    return envelopeFailure(where, 'opencode envelope ANSWER failed schema validation — ' +
+      postViolations.map((v) => `${v.path}: ${v.message}`).join('; ') +
+      (repairs.length > 0 ? ` (repairs attempted: ${repairs.join('; ')})` : ''))
   }
 
   // Native schema-bearing call. Two failure shapes route into the salvage path

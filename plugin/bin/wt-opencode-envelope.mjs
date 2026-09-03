@@ -12,8 +12,8 @@
 // binary and the availability gate ONCE, then fans the tasks out with bounded concurrency — each
 // task gets its own task file,
 // its own unique stream log, its own `EXIT=` marker, and its own answer file. The script's own
-// stdout is exactly one line naming a MANIFEST file; it never prints any task's answer, whatever
-// N is — the caller reads individual answer files only if and when it needs their content.
+// stdout names a MANIFEST file. A successful single-task batch additionally carries its answer
+// JSON-encoded on a second line, so schema callers need not open a file they cannot access.
 
 import { spawn, spawnSync as preflightSpawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -115,8 +115,9 @@ function usage() {
     '                                     Default: the directory containing the task source',
     '  --manifest <path>                  Manifest file path. Default: <task-source>.manifest.json',
     '',
-    'Prints EXACTLY ONE line to stdout, one of:',
+    'Prints a MANIFEST line to stdout, and for exactly one successful non-reduce task also:',
     '  MANIFEST: <path>              — every task attempted; results (per task) are in <path>.',
+    '  ANSWER: <JSON string>          — only after a single successful task MANIFEST line.',
     '  OPENCODE_UNAVAILABLE: <reason> — no binary / no authenticated provider (no task ran).',
     '',
     'Never prints any answer text. Exit code: 0 = MANIFEST written, 1 = UNAVAILABLE, 2 = usage/setup error.',
@@ -362,7 +363,7 @@ async function runTask(task, opts, outDir) {
   // manifest at all: asked to show "8 calls then 2" at concurrency 8, the only route was to
   // parse an epoch out of each stream file's NAME. A setting is not an observation, and
   // evidence hidden in a filename is evidence nobody finds.
-  const base = { id, prompt: String(task.prompt ?? ''), model: modelUsed, log: result.streamFile, startedAt: result.startedAt, durationMs: result.durationMs, exitStatus: result.exitCode }
+  const base = { id, prompt: String(task.prompt ?? ''), requestedModel: model, model: modelUsed, log: result.streamFile, startedAt: result.startedAt, durationMs: result.durationMs, exitStatus: result.exitCode }
   const usage = laneUsageFromOutput(result.stdout)
   const withUsage = usage !== null ? { ...base, usage } : base
   // `reaped` follows the same rule as `usage` above and for the same reason: it is OMITTED when
@@ -665,6 +666,9 @@ async function main() {
   }
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
   process.stdout.write(`MANIFEST: ${manifestPath}\n`)
+  if (results.length === 1 && results[0].status === 'answer') {
+    process.stdout.write(`ANSWER: ${JSON.stringify(fs.readFileSync(results[0].answerFile, 'utf8'))}\n`)
+  }
   return 0
 }
 
