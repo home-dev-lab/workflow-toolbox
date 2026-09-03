@@ -52,6 +52,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   mechanically are now named as such) rather than a size gain.
 
 ### Fixed
+- **Three guards no longer record raw command text in the guard journal** (`wt-merge-chain` recorded the
+  merge segment as `reason`, `wt-git-commit-backtick` the flagged commit-message fragment,
+  `wt-find-newermt-format` the flagged argument). Found by the adversarial security review of the observe-mode
+  change; the merge-chain security lock now forbids the segment text too.
 - **Twenty-four capabilities the pre-release coverage audit found undocumented are now described in
   their mapped docs** (quota-probe JSON contract, adopt changelog spans, run-gate `--fail-pattern` and
   authorized-scope shapes, actionable-gate and registry-heartbeat env knobs, static vs dynamic

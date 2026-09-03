@@ -264,7 +264,8 @@ function main() {
     guard: 'wt-merge-chain-guard-hook.mjs',
     decision: 'warned',
     class: 'chained-merge',
-    reason: found.segment,
+    // No `reason`: the merge segment is raw command text (branch names, paths, anything the
+    // caller typed). The classification below is the whole record.
     session: input.session_id,
     evidence: { trailing },
   })

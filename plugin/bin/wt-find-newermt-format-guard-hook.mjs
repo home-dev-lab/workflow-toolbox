@@ -98,7 +98,8 @@ function main() {
     guard: 'wt-find-newermt-format-guard-hook.mjs',
     decision: 'warned',
     class: 'non-iso-newermt',
-    reason: flagged,
+    // No `reason`: the flagged argument is raw command text; only its shape is recorded.
+    evidence: { arg: 'non-iso' },
   })
   emitGuardNotice({ stdoutJson: payload })
 }
