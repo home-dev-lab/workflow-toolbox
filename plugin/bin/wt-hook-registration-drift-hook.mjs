@@ -3,7 +3,7 @@
 // cheaply re-check those exact paths on every prompt so a stale in-memory hook table becomes one
 // attributed notice instead of anonymous loader noise.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +15,12 @@ const PLUGIN_ROOT = join(HERE, '..')
 const MANIFEST = join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json')
 const STATE_DIR = process.env.WT_HOOK_DRIFT_DIR
   || join(homedir(), '.local', 'state', 'wt-hook-drift')
+// The declared-hooks set only changes when the plugin manifest is reloaded (a plugin update or
+// reinstall), never between two SessionStart calls against the same manifest on disk. Caching it
+// keyed on the manifest's own mtime+size turns a repeat SessionStart's JSON.parse + regex sweep
+// over the whole manifest into a single stat() call — the parse re-runs only when the manifest
+// itself has actually changed since the cache was written.
+const MANIFEST_CACHE_FILE = join(STATE_DIR, 'manifest-cache.json')
 
 function readInput() {
   try {
@@ -44,12 +50,43 @@ function writeSnapshot(file, snapshot) {
   writeFileSync(file, JSON.stringify(snapshot, null, 2))
 }
 
-function handleSessionStart(sessionId) {
+function manifestFingerprint() {
+  try {
+    const stat = statSync(MANIFEST)
+    return { mtimeMs: stat.mtimeMs, size: stat.size }
+  } catch {
+    return null
+  }
+}
+
+function readCachedHooks(fingerprint) {
+  if (!fingerprint) return null
+  const cached = readSnapshot(MANIFEST_CACHE_FILE)
+  if (!cached) return null
+  if (cached.mtimeMs !== fingerprint.mtimeMs || cached.size !== fingerprint.size) return null
+  return cached.hooks ?? null
+}
+
+function writeCachedHooks(fingerprint, hooks) {
+  if (!fingerprint) return
+  writeSnapshot(MANIFEST_CACHE_FILE, { ...fingerprint, hooks })
+}
+
+function declaredHooksResolved() {
+  const fingerprint = manifestFingerprint()
+  const cached = readCachedHooks(fingerprint)
+  if (cached) return cached
   const hooks = declaredHookPaths(MANIFEST).map(({ event, rel }) => ({
     event,
     rel,
     abs: resolve(PLUGIN_ROOT, `.${rel}`),
   }))
+  writeCachedHooks(fingerprint, hooks)
+  return hooks
+}
+
+function handleSessionStart(sessionId) {
+  const hooks = declaredHooksResolved()
   writeSnapshot(stateFile(sessionId), { hooks, reportedAt: null })
 }
 
