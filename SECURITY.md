@@ -33,6 +33,9 @@ This is a local developer tool. It has a deliberately small attack surface:
   token only as an `Authorization` header, and never prints or logs it. Its
   outbound call is to `https://api.anthropic.com/api/oauth/usage`, an endpoint
   that is not publicly documented by Anthropic and may change without notice.
+  Its machine-readable stdout is a single JSON object with `quota_model`
+  (`'subscription'` or `'none'`), the two top-level windows, and any weekly scoped buckets;
+  callers are expected to branch on `quota_model`, never on an absent percentage field.
 - **Filesystem reads** are scoped to a Workflow run's own journal and transcripts;
   filesystem **writes** (the audit report folder) happen only when you opt in via
   `$DWT_WORKFLOW_LOG_DIR` or `--out`, to a path you choose.

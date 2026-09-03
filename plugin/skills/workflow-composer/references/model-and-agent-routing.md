@@ -314,6 +314,11 @@
   - **The agentType registry is read at session start.** An agent `.md` added mid-session is
     not visible to `agent({agentType})` until a fresh session; the runtime errors listing the
     available types, so the failure is loud, not silent.
+  - **Need repo reads but not execution or writes? Use `workflow-toolbox:leaf-readonly`.** It sits
+    between `lean` (no repo reads at all) and `leaf` (repo/tool access minus messaging):
+    `tools: Read, Grep, Glob`, `disallowedTools: SendMessage`. Use it for survey / grounding /
+    audit / verify-by-reading roles that must inspect the tree themselves but must never execute,
+    edit, or ask the session for more context.
   - **The toolkit ships this fence as the DEFAULT — `withLeafFence`, from
     `@workflow-toolbox/patterns`.** Call it ONCE, as the very FIRST line of `run()`, before any
     other `withAgentDefaults` wrap:

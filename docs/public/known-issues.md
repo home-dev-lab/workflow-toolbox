@@ -26,6 +26,8 @@ local use.
 - `plugin/bin/wt-session-start-registry-hook.mjs` runs the registry scan on `SessionStart` using the hook payload's own `session_id`, so it checks the current session's journal even when the state directory contains several journals.
 - `plugin/bin/wt-spawn-registry-scan.mjs` is the manual read/ack CLI for those journals. With exactly one journal it behaves as before. With multiple journals it refuses an ambiguous read or `--ack` unless `--session <id>` is supplied, using exit code `3` so ambiguity stays distinct from `2` (`no registry`).
 - The operator-facing commands therefore include the session explicitly: `node plugin/bin/wt-spawn-registry-scan.mjs --session <id> --quiet-min 20` for a manual scan, and `node plugin/bin/wt-spawn-registry-scan.mjs --session <id> --ack <name>` after you have checked a surfaced entry.
+- The scan also has a machine-readable `--json` contract: `{ file, totalSpawns, open, flagged, confirmedAlive, untrackable, untrackableDetail[] }`, where each untrackable detail records the spawned `subagentType`, `model`, `purpose`, and `spawnedAt`. Exit 1 means `flagged.length > 0`; exit 0 means the JSON was produced and nothing is flagged.
+- Its state roots are overridable, not fixed: the registry location is `WT_OUTBOUND_GUARD_DIR` (default `${XDG_STATE_HOME:-$HOME/.local/state}/wt-outbound-guard`), and transcript lookup resolves the active Claude config root from `CLAUDE_CONFIG_DIR` before falling back to `~/.claude`.
 
 
 
@@ -146,6 +148,10 @@ Checks an `Agent` spawn's definition and denies it only when the agent has a `to
 
 Refuses a named `Agent` spawn without `isolation` where the spawning session is in a Git repository, because that shape can route through the in-process-teammate path and lose the declared observer. Outside a Git repository it allows the spawn and states what will be lost, since `isolation: worktree` cannot be applied there. This prevents a silent failure where the agent works normally and reports no observer findings because no observer was attached. Internal errors fail open with one stderr trace.
 
+### `wt-actionable-gate-hook.mjs` — tracker-agnostic actionability Stop gate
+
+Three env knobs tune its stop behavior directly: `WT_ACTIONABLE_STALE_AFTER_MS` (default `7200000`) is how old a snapshot may be before the gate treats it as stale/unknown; `WT_ACTIONABLE_BLOCK_MAX` (default `3`) is the consecutive block count after which the hook stops re-blocking and only records the held state; `WT_ACTIONABLE_INFLIGHT_CAP_MS` (default `600000`) caps any declared `inFlightUntil` window from the snapshot's own `at` timestamp, so a stale claim cannot silence the gate indefinitely.
+
 ### `wt-stale-date-guard-hook.mjs` — written-deadline advisory (PostToolUse)
 
 Runs `wt-stale-date-guard.mjs` on the single file just touched by `Write` or `Edit`. It checks only `.claude/rules/` and `memory/*.md`, exiting 0 silently for other surfaces because they do not carry the operational deadlines this guard is intended to check. It cannot undo an already completed write, so it is advisory only: findings are emitted through `hookSpecificOutput` and `additionalContext`, while clean results produce no output.
@@ -211,6 +217,10 @@ would refuse correct work.
 
 Internal errors fail open — the guard emits nothing, exits 0, and writes one line to stderr
 naming itself. A guard that failed closed on its own bug would block all rule editing.
+
+### `wt-registry-heartbeat-hook.mjs` — Stop-time spawn-registry re-check
+
+This Stop hook simply forwards `wt-spawn-registry-scan.mjs` with two env-tunable thresholds: `WT_REGISTRY_HEARTBEAT_QUIET_MIN` (default `20`) is the message-silence window, and `WT_REGISTRY_HEARTBEAT_STALE_TRANSCRIPT_MIN` (default `5`) is the transcript-staleness window that must also hold before the hook blocks. The two thresholds stay distinct on purpose: message silence alone is only a candidate, not the block condition.
 
 ### `wt-stale-date-guard.mjs` — stale operational-deadline scanner (standalone CLI)
 
