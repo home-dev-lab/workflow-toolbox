@@ -212,12 +212,12 @@ correctly-migrated project nor stays silent on an un-migrated one.
 ```bash
 node scripts/install.mjs --migrate --dry-run [--dir <…/rules/wt>] [--global] \
   [--secondary-dir <path-to-a-second-config-dir's-rules-dir>]
+node scripts/install.mjs --migrate --execute [--dir <…/rules/wt>] [--global]
 ```
 
-This is the ONLY form `--migrate` supports in this version — `--migrate` without `--dry-run`
-refuses outright, on purpose: the actual move needs a human decision (stop other sessions
-that might compact mid-move and read a half-migrated directory, then read this report)
-that the script does not make for you. The dry-run writes nothing and reports, in order: (1)
+`--migrate` without `--dry-run` or `--execute` refuses outright, on purpose. Preview first,
+then use `--execute` only after the human decision to stop other sessions that might compact
+mid-move and read a half-migrated directory. The dry-run writes nothing and reports, in order: (1)
 every file it would move, source → destination, absolute paths; (2) every file it would
 LEAVE at the root, with the reason (hand-authored, locally edited, symlinked, or a name
 collision with an existing destination file); (3) the set LOADED before vs. after, in file
@@ -261,12 +261,13 @@ Recommended flow:
 
 **agents → `.claude/agents/`:**
 
-- **`pilot.md`**, **`pilot-watchdog.md`**, **`pilot-orchestrator.md`** — copied VERBATIM from
-  the plugin's `agents/` directory (their single source), each under a banner. Installing all
-  three is harmless: `pilot.md` + `pilot-watchdog.md` are what a single pilot needs for the
-  watchdog pairing; `pilot-orchestrator.md` is needed only for a wave and sits idle otherwise.
-  Once these project copies exist, spawn the BARE names (`pilot`, `pilot-orchestrator`) so the
-  watchdog pairing attaches.
+- **`pilot.md`**, **`pilot-watchdog.md`**, **`pilot-orchestrator.md`**,
+  **`pilot-orchestrator-watchdog.md`** — copied VERBATIM from the plugin's
+  `agent-templates/` directory (their single source), each under a banner. Installing all four
+  is harmless: `pilot.md` + `pilot-watchdog.md` are what a single pilot needs for the
+  watchdog pairing; `pilot-orchestrator.md` + `pilot-orchestrator-watchdog.md` are the wave
+  pair and sit idle otherwise. Once these project copies exist, spawn the BARE names
+  (`pilot`, `pilot-orchestrator`) so the watchdog pairing attaches.
 
 The rule set is the plugin's shipped, project-agnostic guardrails (pure directives — no
 environment-specific narrative); the workflow-authoring doctrine lives in the
