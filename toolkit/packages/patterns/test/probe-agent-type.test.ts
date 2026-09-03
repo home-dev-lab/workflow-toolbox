@@ -99,13 +99,14 @@ describe('probeAgentType — file-based bridge', () => {
   }
 
   function manifestRuntime(reply: string) {
+    const manifestPath = /^MANIFEST: (\/[^\r\n]*\.manifest\.json)/m.exec(reply)?.[1] ?? ''
     return new FakeRuntime({
       onAgent: ({ opts }) => {
         if (opts?.label === 'probeAgentType:read-manifest') {
-          return { found: true, content: readFileSync(reply.slice('MANIFEST: '.length), 'utf8') }
+          return { found: true, content: readFileSync(manifestPath, 'utf8') }
         }
         if (opts?.label === 'probeAgentType:read-answer') {
-          const manifest = JSON.parse(readFileSync(reply.slice('MANIFEST: '.length), 'utf8')) as {
+          const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
             tasks: Array<{ answerFile: string }>
           }
           return { found: true, content: readFileSync(manifest.tasks[0]!.answerFile, 'utf8') }
@@ -131,6 +132,18 @@ describe('probeAgentType — file-based bridge', () => {
         'probeAgentType:read-manifest',
         'probeAgentType:read-answer',
       ])
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true })
+    }
+  })
+
+  it('accepts a one-line manifest reply with an ANSWER suffix and extracts only its path', async () => {
+    const fixture = writeEnvelope()
+    try {
+      const rt = manifestRuntime(`MANIFEST: ${fixture.manifestPath} ANSWER: ${JSON.stringify('PROBE_OK\\n')}`)
+      const probe = await probeAgentType(rt, 'workflow-toolbox:opencode-envelope')
+      expect(probe.available).toBe(true)
+      expect(rt.calls).toHaveLength(3)
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true })
     }

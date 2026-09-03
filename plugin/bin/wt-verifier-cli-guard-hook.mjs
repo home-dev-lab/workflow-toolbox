@@ -258,7 +258,7 @@ export function matchesEnvelopeInvocation(command) {
  *  was written, and there is nothing to draw). */
 export function manifestPathFromOutput(text) {
   if (typeof text !== 'string') return null
-  const m = text.match(/^MANIFEST:\s*(.+)$/m)
+  const m = text.match(/^MANIFEST:\s*(.+?)(?:\s+ANSWER:.*)?$/m)
   return m === null ? null : (m[1] ?? '').trim() || null
 }
 

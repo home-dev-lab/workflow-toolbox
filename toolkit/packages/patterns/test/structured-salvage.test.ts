@@ -214,8 +214,8 @@ describe('agentWithSchemaSalvage', () => {
     expect(rt.calls).toHaveLength(1)
   })
 
-  it('routes an opencode envelope through its ANSWER line without a harness schema', async () => {
-    const rt = new FakeRuntime({ responses: [`MANIFEST: /tmp/envelope.manifest.json\nANSWER: ${JSON.stringify('{"summary":"a real, long-enough summary","riskAreas":[]}')}\n`] })
+  it('routes an opencode envelope through its MANIFEST suffix ANSWER without a harness schema', async () => {
+    const rt = new FakeRuntime({ responses: [`MANIFEST: /tmp/envelope.manifest.json ANSWER: ${JSON.stringify('{"summary":"a real, long-enough summary","riskAreas":[]}')}\n`] })
     const out = await agentWithSchemaSalvage<{ summary: string; riskAreas: string[] }>(rt, 'summarize the change', {
       ...opts, agentType: 'workflow-toolbox:opencode-envelope',
     })
@@ -223,6 +223,14 @@ describe('agentWithSchemaSalvage', () => {
     expect(rt.calls[0]?.opts?.schema).toBeUndefined()
     expect(rt.calls[0]?.prompt).toContain('ONLY a JSON object')
     expect(rt.calls[0]?.prompt).toContain('"summary" (REQUIRED): string, 12-100 chars')
+  })
+
+  it('keeps accepting the legacy separate ANSWER line for one release', async () => {
+    const rt = new FakeRuntime({ responses: [`MANIFEST: /tmp/envelope.manifest.json\nANSWER: ${JSON.stringify('{"summary":"a real, long-enough summary","riskAreas":[]}')}\n`] })
+    const out = await agentWithSchemaSalvage<{ summary: string; riskAreas: string[] }>(rt, 'summarize the change', {
+      ...opts, agentType: 'workflow-toolbox:opencode-envelope',
+    })
+    expect(out).toMatchObject({ value: { summary: 'a real, long-enough summary', riskAreas: [] }, envelopeAnswer: true })
   })
 
   it('composes one pattern-owned envelope task after verbatim directives', async () => {

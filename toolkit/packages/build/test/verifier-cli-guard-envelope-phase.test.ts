@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 // @ts-expect-error runtime .mjs hook under plugin/bin/ — no bundler, no TS, per its own header.
-import { phaseIndexForAgentInRunDir, handlePostToolUse } from '../../../../plugin/bin/wt-verifier-cli-guard-hook.mjs'
+import { manifestPathFromOutput, phaseIndexForAgentInRunDir, handlePostToolUse } from '../../../../plugin/bin/wt-verifier-cli-guard-hook.mjs'
 
 const roots: string[] = []
 afterEach(() => {
@@ -41,6 +41,12 @@ function mkRoot(tag: string): string {
 const SESSION_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
 const RUN_ID = 'wf-run-1234'
 const PARENT_AGENT_ID = 'parentagentid1234'
+
+describe('manifestPathFromOutput', () => {
+  it('stops the manifest path before an ANSWER suffix', () => {
+    expect(manifestPathFromOutput('MANIFEST: /tmp/envelope.manifest.json ANSWER: "answer"\n')).toBe('/tmp/envelope.manifest.json')
+  })
+})
 
 /** Builds the on-disk layout `phaseIndexForAgentInRunDir` and `handleEnvelopeBatch` read:
  *    <root>/cfg/projects/<slug>/<SESSION_ID>.jsonl                      (transcript, need not exist)

@@ -272,10 +272,10 @@ export async function probeAgentType(
       available = true
     } else {
       // The file-based envelope contract starts with a manifest-path line. A successful
-      // one-task batch may follow it with an ANSWER line for schema callers.
+      // one-task batch may append an ANSWER suffix for schema callers.
       // Validate the untrusted path before asking the sandbox's read agent to
       // open it; relative paths and lookalike suffixes never reach that agent.
-      const manifestReply = /^MANIFEST: (\/[^\r\n]*\.manifest\.json)$/m.exec(stripped)
+      const manifestReply = /^MANIFEST: (\/[^\r\n]*\.manifest\.json)(?: ANSWER: [^\r\n]*)?$/m.exec(stripped)
       if (manifestReply === null) {
         reason = `unexpected probe reply: ${head(stripped)}`
       } else {

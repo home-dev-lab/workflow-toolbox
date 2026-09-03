@@ -12,8 +12,8 @@
 // binary and the availability gate ONCE, then fans the tasks out with bounded concurrency — each
 // task gets its own task file,
 // its own unique stream log, its own `EXIT=` marker, and its own answer file. The script's own
-// stdout names a MANIFEST file. A successful single-task batch additionally carries its answer
-// JSON-encoded on a second line, so schema callers need not open a file they cannot access.
+// stdout names a MANIFEST file. A successful single-task batch appends its JSON-encoded answer
+// to that same line, so schema callers need not open a file they cannot access.
 
 import { spawn, spawnSync as preflightSpawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -115,12 +115,11 @@ function usage() {
     '  <dir>/.wt-envelope/<pid>-<timestamp>-<random>/. This keeps observatory',
     '  witnesses immutable after the invocation that created them.',
     '',
-    'Prints a MANIFEST line to stdout, and for exactly one successful non-reduce task also:',
-    '  MANIFEST: <path>              — every task attempted; results (per task) are in <path>.',
-    '  ANSWER: <JSON string>          — only after a single successful task MANIFEST line.',
+    'Prints exactly one MANIFEST line to stdout, and for exactly one successful non-reduce task:',
+    '  MANIFEST: <path> ANSWER: <JSON string> — every task attempted; results are in <path>.',
     '  OPENCODE_UNAVAILABLE: <reason> — no binary / no authenticated provider (no task ran).',
     '',
-    'Never prints any answer text. Exit code: 0 = MANIFEST written, 1 = UNAVAILABLE, 2 = usage/setup error.',
+    'Never prints raw answer text. Exit code: 0 = MANIFEST written, 1 = UNAVAILABLE, 2 = usage/setup error.',
   ].join('\n')
 }
 
@@ -457,7 +456,7 @@ async function reduceManifest(opts) {
   }
 
   const outDir = invocationOutDir(opts.dir)
-  const manifestPath = path.join(outDir, 'manifest.json')
+  const manifestPath = path.join(outDir, 'envelope.manifest.json')
   const skippedFailedTaskIds = source.tasks.filter((task) => task?.status !== 'answer').map((task) => String(task?.id))
   const unusableAnswerIds = []
   const cappedAnswerIds = []
@@ -607,7 +606,7 @@ async function main() {
   }
 
   const outDir = invocationOutDir(opts.dir)
-  const manifestPath = path.join(outDir, 'manifest.json')
+  const manifestPath = path.join(outDir, 'envelope.manifest.json')
   if (generatedMode && tasks.length === 0) {
     fs.mkdirSync(outDir, { recursive: true })
     const manifest = {
@@ -668,9 +667,10 @@ async function main() {
     tasks: results,
   }
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
-  process.stdout.write(`MANIFEST: ${manifestPath}\n`)
   if (results.length === 1 && results[0].status === 'answer') {
-    process.stdout.write(`ANSWER: ${JSON.stringify(fs.readFileSync(results[0].answerFile, 'utf8'))}\n`)
+    process.stdout.write(`MANIFEST: ${manifestPath} ANSWER: ${JSON.stringify(fs.readFileSync(results[0].answerFile, 'utf8'))}\n`)
+  } else {
+    process.stdout.write(`MANIFEST: ${manifestPath}\n`)
   }
   return 0
 }

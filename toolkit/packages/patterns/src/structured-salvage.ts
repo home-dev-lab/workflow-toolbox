@@ -429,7 +429,9 @@ export async function agentWithSchemaSalvage<T>(
     if (typeof raw !== 'string' || !/^MANIFEST:\s*.+$/m.test(raw)) {
       return envelopeFailure(where, 'opencode envelope did not run the script — final text carries no MANIFEST line', 'no-manifest')
     }
-    const answerLine = /^ANSWER:\s*(.+)$/m.exec(raw)
+    // New envelope replies carry the answer on the MANIFEST line so agents only have one
+    // result line to preserve. Accept the separate line for one release during rollout.
+    const answerLine = /^MANIFEST:[^\r\n]*? ANSWER:\s*(.+)$/m.exec(raw) ?? /^ANSWER:\s*(.+)$/m.exec(raw)
     if (answerLine === null) return envelopeFailure(where, 'opencode envelope script ran but the ANSWER line was not reported', 'no-answer')
     let answerText: unknown
     try {

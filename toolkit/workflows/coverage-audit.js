@@ -699,7 +699,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       if (typeof raw2 !== "string" || !/^MANIFEST:\s*.+$/m.test(raw2)) {
         return envelopeFailure(where2, "opencode envelope did not run the script \u2014 final text carries no MANIFEST line", "no-manifest");
       }
-      const answerLine = /^ANSWER:\s*(.+)$/m.exec(raw2);
+      const answerLine = /^MANIFEST:[^\r\n]*? ANSWER:\s*(.+)$/m.exec(raw2) ?? /^ANSWER:\s*(.+)$/m.exec(raw2);
       if (answerLine === null) return envelopeFailure(where2, "opencode envelope script ran but the ANSWER line was not reported", "no-answer");
       let answerText;
       try {
@@ -1019,7 +1019,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
       } else if (endsWithToken) {
         available = true;
       } else {
-        const manifestReply = /^MANIFEST: (\/[^\r\n]*\.manifest\.json)$/m.exec(stripped);
+        const manifestReply = /^MANIFEST: (\/[^\r\n]*\.manifest\.json)(?: ANSWER: [^\r\n]*)?$/m.exec(stripped);
         if (manifestReply === null) {
           reason = `unexpected probe reply: ${head(stripped)}`;
         } else {

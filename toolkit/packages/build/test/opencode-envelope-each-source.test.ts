@@ -132,12 +132,12 @@ describe('wt-opencode-envelope generated task sources', () => {
 
     expect(result.status).toBe(0)
     const outputManifest = manifestPathFromStdout(result.stdout)
-    expect(outputManifest).toMatch(/^.*\.wt-envelope\/[^/]+\/manifest\.json$/)
+    expect(outputManifest).toMatch(/^.*\.wt-envelope\/[^/]+\/envelope\.manifest\.json$/)
     const manifest = JSON.parse(readFileSync(outputManifest!, 'utf8'))
     expect(manifest).toMatchObject({ status: 'nothing_to_do', nothingToDo: true, total: 0, dropped: 0, tasks: [] })
   })
 
-  it('prints a JSON-encoded ANSWER only for one successful task and records its requested model', () => {
+  it('prints one MANIFEST line with a JSON-encoded ANSWER only for one successful task and records its requested model', () => {
     const root = makeRoot()
     const workdir = join(root, 'workdir')
     mkdirSync(workdir)
@@ -159,7 +159,8 @@ describe('wt-opencode-envelope generated task sources', () => {
 
     expect(result.status).toBe(0)
     const outputManifest = manifestPathFromStdout(result.stdout)
-    expect(result.stdout).toBe(`MANIFEST: ${outputManifest}\nANSWER: ${JSON.stringify('line one\n"line two"')}\n`)
+    expect(outputManifest).toMatch(/\/envelope\.manifest\.json$/)
+    expect(result.stdout).toBe(`MANIFEST: ${outputManifest} ANSWER: ${JSON.stringify('line one\n"line two"')}\n`)
     expect(readFileSync(modelCapture, 'utf8')).toBe('nonexistent/provider-model')
     expect(JSON.parse(readFileSync(outputManifest!, 'utf8')).tasks[0]).toMatchObject({
       status: 'answer', requestedModel: 'nonexistent/provider-model', model: 'nonexistent/provider-model',
@@ -203,11 +204,11 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(first.status).toBe(0)
     expect(second.status).toBe(0)
     expect(inline.status).toBe(0)
-    const manifests = [first, second, inline].map((run) => /^MANIFEST: (.+)$/m.exec(run.stdout)?.[1])
+    const manifests = [first, second, inline].map((run) => manifestPathFromStdout(run.stdout))
     expect(manifests.every((manifest) => typeof manifest === 'string')).toBe(true)
     expect(new Set(manifests).size).toBe(3)
     for (const manifestPath of manifests) {
-      expect(manifestPath).toMatch(new RegExp(`^${workdir}/\\.wt-envelope/[^/]+/manifest\\.json$`))
+      expect(manifestPath).toMatch(new RegExp(`^${workdir}/\\.wt-envelope/[^/]+/envelope\\.manifest\\.json$`))
       const manifest = JSON.parse(readFileSync(manifestPath!, 'utf8'))
       expect(manifest.outDir).toBe(join(workdir, '.wt-envelope', manifestPath!.split('/').at(-2)!))
       expect(manifest.tasks[0].answerFile).toMatch(new RegExp(`^${workdir}/\\.wt-envelope/`))
