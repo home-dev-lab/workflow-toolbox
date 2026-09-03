@@ -22,6 +22,7 @@ import {
   externalGateExpectation,
   deriveProvenanceNonce,
   parseProvenanceReply,
+  buildProvenanceCheckerPrompt,
   buildProvenanceScannerSource,
   runProvenanceChecker,
   PROVENANCE_CHECK_SUFFIX,
@@ -108,7 +109,7 @@ function runScanner(source: string, configRoot: string, extraEnv: Record<string,
   // timeout guards against a scanner that fails to terminate (a pathological poll knob) hanging
   // the whole suite — such a run throws here (ETIMEDOUT), surfacing as a test failure not a hang.
   const out = execFileSync('node', [scanFile], { env: scannerEnv(configRoot, extraEnv), encoding: 'utf8', timeout: 20000 })
-  return JSON.parse(out.trim())
+  return JSON.parse(out.split('\n', 1)[0]!)
 }
 
 /** Run the scanner as a NON-blocking child (for the poll test, which writes a vote transcript
@@ -121,7 +122,7 @@ function spawnScanner(source: string, configRoot: string, extraEnv: Record<strin
   child.stdout.on('data', (d) => { out += String(d) })
   return new Promise<ScanResult>((resolve, reject) => {
     child.on('error', reject)
-    child.on('close', () => { try { resolve(JSON.parse(out.trim())) } catch (e) { reject(e) } })
+    child.on('close', () => { try { resolve(JSON.parse(out.split('\n', 1)[0]!)) } catch (e) { reject(e) } })
   })
 }
 
@@ -169,15 +170,29 @@ describe('parseProvenanceReply — tolerant, strict on cliSeen', () => {
     expect(m.get('v:1')).toBe('absent')
     expect(m.get('v:2')).toBe('undetermined') // not reported → fail-closed
   })
-  it('extracts JSON embedded in prose', () => {
-    const reply = 'Here is the result:\n{"anchored":true,"results":[{"label":"v:0","cliSeen":true}]}\nDone.'
+  it('extracts a results JSON object embedded in prose after unrelated JSON', () => {
+    const reply = 'Here is the result: {"note":"not the scanner reply"}\n{"anchored":true,"results":[{"label":"v:0","cliSeen":true}]}\nDone.'
     expect(parseProvenanceReply(reply, labels).get('v:0')).toBe('seen')
+  })
+  it('extracts a results JSON object from a code fence', () => {
+    const reply = '```json\n{"anchored":true,"results":[{"label":"v:0","cliSeen":true}]}\n```'
+    expect(parseProvenanceReply(reply, labels).get('v:0')).toBe('seen')
+  })
+  it('extracts prose-only per-label cliSeen statements', () => {
+    const reply = 'v:0: cliSeen true\nv:1: cliSeen false\n'
+    const m = parseProvenanceReply(reply, labels)
+    expect(m.get('v:0')).toBe('seen')
+    expect(m.get('v:1')).toBe('absent')
+    expect(m.get('v:2')).toBe('undetermined')
   })
   it('a null reply → all undetermined', () => {
     for (const p of parseProvenanceReply(null, labels).values()) expect(p).toBe('undetermined')
   })
   it('garbage → all undetermined', () => {
     for (const p of parseProvenanceReply('not json at all', labels).values()) expect(p).toBe('undetermined')
+  })
+  it('an empty reply → all undetermined', () => {
+    for (const p of parseProvenanceReply('', labels).values()) expect(p).toBe('undetermined')
   })
   it('cliSeen null or non-boolean → undetermined (never trusted)', () => {
     const reply = JSON.stringify({ results: [{ label: 'v:0', cliSeen: null }, { label: 'v:1', cliSeen: 'true' }] })
@@ -197,6 +212,19 @@ describe('parseProvenanceReply — tolerant, strict on cliSeen', () => {
   it('anchored:false with EMPTY results is the normal not-anchored case → all undetermined', () => {
     const reply = JSON.stringify({ anchored: false, results: [] })
     for (const p of parseProvenanceReply(reply, labels).values()) expect(p).toBe('undetermined')
+  })
+})
+
+describe('buildProvenanceCheckerPrompt', () => {
+  it('requires verbatim stdout with both JSON and per-label prose carriers', () => {
+    const prompt = buildProvenanceCheckerPrompt(
+      externalGateExpectation('workflow-toolbox:opencode-verifier')!,
+      'wtprov-x',
+      ['v:0'],
+    )
+    expect(prompt).toContain('prints a JSON line followed by one `label: cliSeen true|false` line')
+    expect(prompt).toContain('Return the command stdout VERBATIM as your entire reply')
+    expect(prompt).toContain('Do NOT add a summary or paraphrase')
   })
 })
 

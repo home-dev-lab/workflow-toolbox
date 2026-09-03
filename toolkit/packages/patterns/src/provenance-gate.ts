@@ -229,7 +229,7 @@ export function isExternalBridgeType(agentType: string | null | undefined): bool
  *   2b. RE-SCANS on a bounded poll until every label is attributed to a transcript or the
  *      deadline elapses — recovering the per-vote transcripts that are not yet flushed when the
  *      post-burst checker runs (the Path-B false-undetermined that drove costly vote re-spawns);
- *   3. prints one JSON line: {"anchored":bool,"results":[{"label","cliSeen"}]}.
+ *   3. prints a JSON line plus a `label: cliSeen true|false` line for each resolved label.
  *  The regex is interpolated from `expectation.commandRe` verbatim — no second copy. The
  *  transcript-parse mirrors parseTranscriptExternalCalls (drift-locked by fixture test); the
  *  marker key mirrors the hook's markerPathFor (locked by the guard-hook subprocess parity test). */
@@ -300,15 +300,17 @@ export function buildProvenanceScannerSource(
     // a genuine self-answer, not flush lag. Only unfound (null) labels — the flush-lagged ones — wait.
     // The sleep is capped to the remaining budget so the poll never overshoots POLL_END by an interval.
     `let results;for(;;){results=computeResults();if(!results.some(function(r){return r.cliSeen===null})||Date.now()>=POLL_END)break;sleep(Math.min(POLL_INTERVAL,POLL_END-Date.now()))}`,
-    `process.stdout.write(JSON.stringify({anchored:true,results:results}));`,
+    // Two independent reply carriers: JSON remains authoritative for nulls; the prose lines let
+    // the gate recover when a checker relays only the human-readable portion of stdout.
+    `const json=JSON.stringify({anchored:true,results:results}),prose=results.filter(function(r){return typeof r.cliSeen==='boolean'}).map(function(r){return r.label+': cliSeen '+r.cliSeen}).join('\\n');process.stdout.write(json+(prose?'\\n'+prose:''));`,
   ].join('\n')
 }
 
 /** Build the checker agent prompt. It carries the anchor nonce (so the scanner can locate
  *  this run's transcript dir) and ONE Bash command that writes+runs the scanner and prints a
- *  JSON line, which the agent must return verbatim. Deliberately schema-less: the scanner
- *  prints the exact JSON, so a free-text verbatim echo (parsed tolerantly by the pattern)
- *  avoids per-label transcription error a many-field StructuredOutput reconstruction invites. */
+ *  JSON line plus per-label prose carriers, which the agent must return verbatim. Deliberately
+ *  schema-less: the scanner prints the exact facts, avoiding per-label transcription error a
+ *  many-field StructuredOutput reconstruction invites. */
 export function buildProvenanceCheckerPrompt(
   expectation: DelegationExpectation,
   nonce: string,
@@ -329,12 +331,14 @@ export function buildProvenanceCheckerPrompt(
     '```bash\n' +
     command +
     '\n```\n\n' +
-    `2. The command prints ONE line of JSON of the shape ` +
+    `2. The command prints a JSON line followed by one \`label: cliSeen true|false\` line for ` +
+    `each resolved label. The JSON line has the shape ` +
     `{"anchored":true,"results":[{"label":"…","cliSeen":true|false|null}]}.\n` +
-    `Return that JSON line VERBATIM as your entire reply — no prose, no code fence, no edits. ` +
+    `Return the command stdout VERBATIM as your entire reply — no code fence or edits. ` +
+    `Do NOT add a summary or paraphrase. ` +
     `If the command prints nothing or errors, reply with exactly {"anchored":false,"results":[]}.\n\n` +
     `Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason about the ` +
-    `claims. Your only job is to run the command and relay its JSON output.`
+    `claims. Your only job is to run the command and relay its stdout.`
   )
 }
 
@@ -349,7 +353,7 @@ export function parseProvenanceReply(
   labels: readonly string[],
 ): Map<string, Provenance> {
   const map = new Map<string, Provenance>()
-  const perLabel = extractLabelSeen(reply)
+  const perLabel = extractLabelSeen(reply, labels)
   for (const label of labels) {
     const seen = perLabel.get(label)
     map.set(label, seen === true ? 'seen' : seen === false ? 'absent' : 'undetermined')
@@ -357,56 +361,65 @@ export function parseProvenanceReply(
   return map
 }
 
-/** Extract {label → cliSeen bool} from the checker reply. cliSeen is trusted ONLY when it is
- *  a strict boolean; null/absent → the label is left out (→ 'undetermined' upstream). */
-function extractLabelSeen(reply: string | null): Map<string, boolean> {
+/** Extract {label → cliSeen bool} from the checker reply. Prefer the first JSON object with a
+ *  results field anywhere in the reply; when absent, accept only exact per-label prose lines.
+ *  cliSeen is trusted ONLY when it is a strict boolean; null/absent leaves the label out
+ *  (→ 'undetermined' upstream). */
+function extractLabelSeen(reply: string | null, labels: readonly string[]): Map<string, boolean> {
   const out = new Map<string, boolean>()
   if (typeof reply !== 'string') return out
-  const obj = firstJsonObject(reply)
-  if (obj === null) return out
-  const anchored = (obj as { anchored?: unknown }).anchored
-  const results = (obj as { results?: unknown }).results
-  if (!Array.isArray(results)) return out
-  // Contradiction guard: the scanner reports results ONLY when it anchored the run dir,
-  // so `anchored:false` with a non-empty `results` is malformed or tampered — trust NONE
-  // of it (every label falls through to 'undetermined' upstream, i.e. fail-closed).
-  if (anchored === false && results.length > 0) return out
-  for (const row of results) {
-    if (row === null || typeof row !== 'object') continue
-    const label = (row as { label?: unknown }).label
-    const cliSeen = (row as { cliSeen?: unknown }).cliSeen
-    if (typeof label === 'string' && typeof cliSeen === 'boolean') out.set(label, cliSeen)
+  const obj = firstJsonObjectWithResults(reply)
+  if (obj !== null) {
+    const anchored = (obj as { anchored?: unknown }).anchored
+    const results = (obj as { results?: unknown }).results
+    if (!Array.isArray(results)) return out
+    // Contradiction guard: the scanner reports results ONLY when it anchored the run dir,
+    // so `anchored:false` with a non-empty `results` is malformed or tampered — trust NONE
+    // of it (every label falls through to 'undetermined' upstream, i.e. fail-closed).
+    if (anchored === false && results.length > 0) return out
+    for (const row of results) {
+      if (row === null || typeof row !== 'object') continue
+      const label = (row as { label?: unknown }).label
+      const cliSeen = (row as { cliSeen?: unknown }).cliSeen
+      if (typeof label === 'string' && typeof cliSeen === 'boolean') out.set(label, cliSeen)
+    }
+    return out
+  }
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const match = new RegExp(`^\\s*${escaped}\\s*:\\s*cliSeen\\s+(true|false)\\s*$`, 'm').exec(reply)
+    if (match !== null) out.set(label, match[1] === 'true')
   }
   return out
 }
 
-/** Find the first balanced top-level JSON object in `text` (brace-matched, string-aware).
- *  Returns the parsed value or null. Tolerant of prose/fences around the object. */
-function firstJsonObject(text: string): unknown {
-  const start = text.indexOf('{')
-  if (start === -1) return null
-  let depth = 0
-  let inStr = false
-  let esc = false
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i]
-    if (inStr) {
-      if (esc) esc = false
-      else if (ch === '\\') esc = true
-      else if (ch === '"') inStr = false
-      continue
-    }
-    if (ch === '"') inStr = true
-    else if (ch === '{') depth++
-    else if (ch === '}') {
-      depth--
-      if (depth === 0) {
-        const slice = text.slice(start, i + 1)
+/** Find the first balanced JSON object with a `results` field in `text` (brace-matched,
+ *  string-aware). Tolerant of prose/fences and unrelated JSON around the scanner response. */
+function firstJsonObjectWithResults(text: string): unknown {
+  for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
+    let depth = 0
+    let inStr = false
+    let esc = false
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i]
+      if (inStr) {
+        if (esc) esc = false
+        else if (ch === '\\') esc = true
+        else if (ch === '"') inStr = false
+        continue
+      }
+      if (ch === '"') inStr = true
+      else if (ch === '{') depth++
+      else if (ch === '}') {
+        depth--
+        if (depth !== 0) continue
         try {
-          return JSON.parse(slice)
+          const value: unknown = JSON.parse(text.slice(start, i + 1))
+          if (value !== null && typeof value === 'object' && 'results' in value) return value
         } catch {
-          return null
+          // Keep scanning after malformed or unrelated brace-delimited text.
         }
+        break
       }
     }
   }

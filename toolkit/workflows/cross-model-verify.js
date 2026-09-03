@@ -1083,7 +1083,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       // a genuine self-answer, not flush lag. Only unfound (null) labels — the flush-lagged ones — wait.
       // The sleep is capped to the remaining budget so the poll never overshoots POLL_END by an interval.
       `let results;for(;;){results=computeResults();if(!results.some(function(r){return r.cliSeen===null})||Date.now()>=POLL_END)break;sleep(Math.min(POLL_INTERVAL,POLL_END-Date.now()))}`,
-      `process.stdout.write(JSON.stringify({anchored:true,results:results}));`
+      // Two independent reply carriers: JSON remains authoritative for nulls; the prose lines let
+      // the gate recover when a checker relays only the human-readable portion of stdout.
+      `const json=JSON.stringify({anchored:true,results:results}),prose=results.filter(function(r){return typeof r.cliSeen==='boolean'}).map(function(r){return r.label+': cliSeen '+r.cliSeen}).join('\\n');process.stdout.write(json+(prose?'\\n'+prose:''));`
     ].join("\n");
   }
   function buildProvenanceCheckerPrompt(expectation, nonce, labels) {
@@ -1102,62 +1104,68 @@ You are a mechanical provenance checker. Do exactly this, nothing else:
 ` + command + `
 \`\`\`
 
-2. The command prints ONE line of JSON of the shape {"anchored":true,"results":[{"label":"\u2026","cliSeen":true|false|null}]}.
-Return that JSON line VERBATIM as your entire reply \u2014 no prose, no code fence, no edits. If the command prints nothing or errors, reply with exactly {"anchored":false,"results":[]}.
+2. The command prints a JSON line followed by one \`label: cliSeen true|false\` line for each resolved label. The JSON line has the shape {"anchored":true,"results":[{"label":"\u2026","cliSeen":true|false|null}]}.
+Return the command stdout VERBATIM as your entire reply \u2014 no code fence or edits. Do NOT add a summary or paraphrase. If the command prints nothing or errors, reply with exactly {"anchored":false,"results":[]}.
 
-Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason about the claims. Your only job is to run the command and relay its JSON output.`;
+Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason about the claims. Your only job is to run the command and relay its stdout.`;
   }
   function parseProvenanceReply(reply, labels) {
     const map = /* @__PURE__ */ new Map();
-    const perLabel = extractLabelSeen(reply);
+    const perLabel = extractLabelSeen(reply, labels);
     for (const label of labels) {
       const seen = perLabel.get(label);
       map.set(label, seen === true ? "seen" : seen === false ? "absent" : "undetermined");
     }
     return map;
   }
-  function extractLabelSeen(reply) {
+  function extractLabelSeen(reply, labels) {
     const out = /* @__PURE__ */ new Map();
     if (typeof reply !== "string") return out;
-    const obj = firstJsonObject(reply);
-    if (obj === null) return out;
-    const anchored = obj.anchored;
-    const results = obj.results;
-    if (!Array.isArray(results)) return out;
-    if (anchored === false && results.length > 0) return out;
-    for (const row of results) {
-      if (row === null || typeof row !== "object") continue;
-      const label = row.label;
-      const cliSeen = row.cliSeen;
-      if (typeof label === "string" && typeof cliSeen === "boolean") out.set(label, cliSeen);
+    const obj = firstJsonObjectWithResults(reply);
+    if (obj !== null) {
+      const anchored = obj.anchored;
+      const results = obj.results;
+      if (!Array.isArray(results)) return out;
+      if (anchored === false && results.length > 0) return out;
+      for (const row of results) {
+        if (row === null || typeof row !== "object") continue;
+        const label = row.label;
+        const cliSeen = row.cliSeen;
+        if (typeof label === "string" && typeof cliSeen === "boolean") out.set(label, cliSeen);
+      }
+      return out;
+    }
+    for (const label of labels) {
+      const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const match = new RegExp(`^\\s*${escaped}\\s*:\\s*cliSeen\\s+(true|false)\\s*$`, "m").exec(reply);
+      if (match !== null) out.set(label, match[1] === "true");
     }
     return out;
   }
-  function firstJsonObject(text) {
-    const start = text.indexOf("{");
-    if (start === -1) return null;
-    let depth = 0;
-    let inStr = false;
-    let esc = false;
-    for (let i = start; i < text.length; i++) {
-      const ch = text[i];
-      if (inStr) {
-        if (esc) esc = false;
-        else if (ch === "\\") esc = true;
-        else if (ch === '"') inStr = false;
-        continue;
-      }
-      if (ch === '"') inStr = true;
-      else if (ch === "{") depth++;
-      else if (ch === "}") {
-        depth--;
-        if (depth === 0) {
-          const slice = text.slice(start, i + 1);
+  function firstJsonObjectWithResults(text) {
+    for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+      let depth = 0;
+      let inStr = false;
+      let esc = false;
+      for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (inStr) {
+          if (esc) esc = false;
+          else if (ch === "\\") esc = true;
+          else if (ch === '"') inStr = false;
+          continue;
+        }
+        if (ch === '"') inStr = true;
+        else if (ch === "{") depth++;
+        else if (ch === "}") {
+          depth--;
+          if (depth !== 0) continue;
           try {
-            return JSON.parse(slice);
+            const value = JSON.parse(text.slice(start, i + 1));
+            if (value !== null && typeof value === "object" && "results" in value) return value;
           } catch {
-            return null;
           }
+          break;
         }
       }
     }
