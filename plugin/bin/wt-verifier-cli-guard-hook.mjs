@@ -409,7 +409,16 @@ function hasLaneArtefactsForAgent(runDir, agentId) {
   }
 }
 
-function resolveEnvelopeBatchPathA(input) {
+function resolveEnvelopeBatchPathAWithRetry(input, deadlineMs = 4000, stepMs = 250) {
+  const until = Date.now() + deadlineMs
+  for (;;) {
+    const found = resolveEnvelopeBatchPathA(input, { quiet: Date.now() + stepMs < until })
+    if (found !== null || Date.now() + stepMs >= until) return found
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, stepMs)
+  }
+}
+
+function resolveEnvelopeBatchPathA(input, { quiet = false } = {}) {
   const transcriptPath = input.transcript_path
   const command = input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : ''
   if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return null
@@ -451,6 +460,7 @@ function resolveEnvelopeBatchPathA(input) {
   }
 
   if (candidates.length !== 1) {
+    if (quiet && candidates.length === 0) return null // retry loop still has time; trace only on the last attempt
     writeFailOpenTrace('wt-verifier-cli-guard-hook.mjs', new Error(`Path A envelope run-dir resolution found ${candidates.length} candidates for the session transcript payload`))
     return null
   }
@@ -925,7 +935,10 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
         const runDir = runDirForSessionTranscript(transcriptPath)
         if (runDir !== null) handleEnvelopeBatch(input, runDir)
       } else {
-        const resolved = resolveEnvelopeBatchPathA(input)
+        // The agent transcript is flushed AFTER PostToolUse fires (measured 2026-09-04 on
+        // wf_22ea697a-349: 0 candidates live, 30 artefacts when the same payload was replayed
+        // seconds later). Poll briefly for the tool_use line to land; bounded, never spins.
+        const resolved = resolveEnvelopeBatchPathAWithRetry(input)
         if (resolved !== null) handleEnvelopeBatch(input, resolved.runDir, resolved.agentId)
       }
     } catch {
