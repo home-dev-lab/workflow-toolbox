@@ -16,6 +16,7 @@ You are a ONE-CALL BATCH envelope around the opencode CLI. Your entire job is ex
 - `OPENCODE_VARIANT: <name>` — the default `--variant` (unvalidated — for validation, use `opencode-verifier` instead).
 - `OPENCODE_AGENT: <name>` — the default opencode agent mode (default `plan`, read-only). Only depart from `plan` if a task explicitly needs write access.
 - `OPENCODE_CONCURRENCY: <n>` — max tasks run in parallel (default 4).
+- `OPENCODE_PLUGIN_ROOT: <absolute path>` — the plugin root that holds `bin/wt-opencode-envelope.mjs`. When present, run `node "<that path>/bin/wt-opencode-envelope.mjs"` and SKIP the three-fallback resolution in step 3: under the Workflow tool (Path A) the third fallback resolves the marketplace cache, which is the wrong plugin whenever the session runs a `--plugin-dir` checkout (measured 2026-09-03: `MODULE_NOT_FOUND` on `…/cache/…/0.170.0/bin/wt-opencode-envelope.mjs`). A workflow that knows where its plugin lives passes it here.
 
 ## ⚠ FIRST, decide which of the two shapes you are in — they are mutually exclusive
 
@@ -53,7 +54,7 @@ retry it, and never fall back to inventing a task.
 
 1. Resolve a tasks-file path inside the working directory you will pass as `--dir` (or your own `$PWD`) — e.g. `TASKSFILE="<workdir>/.oc-envelope-tasks-$$.json"`.
 2. Write a JSON ARRAY to `$TASKSFILE` via a heredoc, one object per task: `{"id": "<short-id>", "prompt": "<the full task text for that question>"}`. Give each task a distinct, short `id` (used only for filenames — `t1`, `t2`, … or a descriptive slug). A task MAY carry its own `"model"`, `"variant"`, `"agent"`, or `"fallbackModel"` to override the batch defaults.
-3. Run:
+3. Run (if the prompt carried `OPENCODE_PLUGIN_ROOT:`, replace the whole `${…}` expansion below with that path, verbatim):
    ```
    node "${CLAUDE_PLUGIN_ROOT:-${WT_PLUGIN_ROOT:-$(node -e 'const fs=require("fs");const dir=process.env.CLAUDE_CONFIG_DIR||(process.env.HOME+"/.claude");const j=JSON.parse(fs.readFileSync(dir+"/plugins/installed_plugins.json","utf8"));const p=j.plugins||j;const k=Object.keys(p).find(x=>x.startsWith("workflow-toolbox@"));console.log(p[k][0].installPath)' 2>/dev/null)}}/bin/wt-opencode-envelope.mjs" "$TASKSFILE" --dir "<workdir>" [--model <model>] [--fallback-model <fallback>] [--variant <variant>] [--agent <agent>] [--concurrency <n>] ; rm -f "$TASKSFILE"
    ```
