@@ -33,6 +33,23 @@ describe('withEnvelopeContract', () => {
     expect(out.warnings.join(' ')).toContain('opencode exited 1 (model missing)')
   })
 
+  it('TEST-LOCK — a schema-less call keeps the bare MANIFEST line as its value (a multi-task batch has no ANSWER suffix)', async () => {
+    const rt = new FakeRuntime({ responses: ['MANIFEST: /tmp/batch/envelope.manifest.json\n'] })
+    const value = await withEnvelopeContract(rt).agent('OPENCODE_EACH_JSON: /tmp/src.json\nOPENCODE_PROMPT_TEMPLATE: capital of {{item}}\n\nrun it', {
+      agentType: 'workflow-toolbox:opencode-envelope',
+    })
+    expect(value).toBe('MANIFEST: /tmp/batch/envelope.manifest.json\n')
+    expect(rt.calls[0]?.prompt).toContain('EACH mode')
+    expect(rt.calls[0]?.prompt).not.toContain('Write ONE task')
+  })
+
+  it('TEST-LOCK — with a schema, a bare MANIFEST line is still the no-answer failure', async () => {
+    const rt = new FakeRuntime({ responses: ['MANIFEST: /tmp/one/envelope.manifest.json\n'] })
+    const out = await runEnvelopeContract(rt, 'answer', { agentType: 'workflow-toolbox:opencode-envelope', schema, label: 'w' })
+    expect(out.value).toBeNull()
+    expect(out.envelopeFailure).toBe('no-answer')
+  })
+
   it('passes non-envelope calls through unchanged', async () => {
     const rt = new FakeRuntime({ responses: ['plain'] })
     const opts = { agentType: 'workflow-toolbox:leaf', label: 'plain' }

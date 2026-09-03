@@ -24,6 +24,7 @@ function envelopePrompt(prompt: string, schema: JsonSchema | undefined): string 
   const directives = lines.filter((line) => /^OPENCODE_[A-Z0-9_]+:/.test(line))
   const task = lines.filter((line) => !/^OPENCODE_[A-Z0-9_]+:/.test(line)).join('\n').trim()
   const constraints = schema === undefined ? '' : describeSchemaConstraints(schema)
+  const eachMode = directives.some((line) => /^OPENCODE_EACH_(JSON|LINES):/.test(line))
   return [
     ...directives,
     ...(directives.length > 0 ? [''] : []),
@@ -33,7 +34,9 @@ function envelopePrompt(prompt: string, schema: JsonSchema | undefined): string 
     '--- END OPENCODE ENVELOPE TASK ---',
     '',
     '--- BEGIN OPENCODE ENVELOPE INSTRUCTIONS ---',
-    'Write ONE task with the TASK block above as its prompt, run the envelope script, and report EVERY stdout line verbatim.',
+    eachMode
+      ? 'The directives above name a task SOURCE (EACH mode): run the envelope script once on it — the script generates the tasks itself; do not write a tasks file, do not open the source — and report EVERY stdout line verbatim.'
+      : 'Write ONE task with the TASK block above as its prompt, run the envelope script, and report EVERY stdout line verbatim.',
     'Never answer the task yourself. Never open the manifest or the answer file.',
     'Pass no --model flag unless an OPENCODE_MODEL line is present.',
     '--- END OPENCODE ENVELOPE INSTRUCTIONS ---',
@@ -69,7 +72,13 @@ export async function runEnvelopeContract<T>(
     return envelopeFailure(where, 'opencode envelope ERROR line is not a JSON string', 'schema')
   }
   const answerLine = /^MANIFEST:[^\r\n]*? ANSWER:\s*(.+)$/m.exec(raw) ?? /^ANSWER:\s*(.+)$/m.exec(raw)
-  if (answerLine === null) return envelopeFailure(where, 'opencode envelope script ran but the ANSWER line was not reported', 'no-answer')
+  if (answerLine === null) {
+    // No schema: the caller consumes the result line itself (a multi-task batch has no single
+    // answer to append — its value IS the manifest line). With a schema, a missing suffix is
+    // the transport failure the caller must see.
+    if (schema === undefined) return { value: raw as T, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true }
+    return envelopeFailure(where, 'opencode envelope script ran but the ANSWER line was not reported', 'no-answer')
+  }
   let answer: unknown
   try {
     answer = JSON.parse(answerLine[1]!)
