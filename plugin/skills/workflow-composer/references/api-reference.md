@@ -244,6 +244,10 @@ Spawns one fresh-context subagent.
 > `extractObservedSelectors`, `observedBriefFor`, and `buildObservedRoleSection`;
 > their public types are `PromptTagFields`, `PromptTagOptions`, and
 > `ObservedSelector`.
+> `labelRole(label)` is the one to reach for when a tool needs to interpret an observed role the
+> same way the runtime does: it strips one terminal ` #<salt>` suffix, splits on `:`, and drops
+> empty or purely numeric segments, so `generateAndFilter:generate:3` maps to
+> `['generateAndFilter', 'generate']` while `score #3` maps to `['score']`.
 > Live COLUMN assignment additionally needs the tag's phase title to match a
 > `meta.phases` title **exactly** — the same by-title contract the sandbox itself
 > uses to group phases. A title not in `meta.phases` (or seeded ambiguously)

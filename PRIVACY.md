@@ -43,6 +43,11 @@ already writes for the Workflow tool.
   `https://api.anthropic.com/api/oauth/usage`, is never printed or logged, and
   that endpoint is not publicly documented by Anthropic, so it may change or
   disappear without notice.
+  The probe's stdout contract is one compact JSON line:
+  `{configDir, quota_model, five_hour, seven_day, weekly_scoped}`. `quota_model`
+  is the discriminator: `'subscription'` means at least one real quota window exists;
+  `'none'` means a usage-billed account with no five-hour/seven-day window, and consumers must
+  stay silent rather than infer health from null percentages.
 
 ## What it never does
 

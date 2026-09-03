@@ -141,6 +141,12 @@ Read the tracker for the actionable cards: the ones whose dependencies are all D
 priority order the user gives (or the tracker's own ordering). Confirm the selection with the
 user when it is ambiguous. For a single named card, skip straight to a `pilot`.
 
+The mission you hand to a `pilot-orchestrator` can be either static or dynamic. A static mission
+is an explicit card-id list: the orchestrator keeps that fixed set, plus any obviously in-scope
+card it explicitly absorbs and reports. A dynamic mission is a label/query/list scope: after each
+completed or parked card the orchestrator re-queries the tracker so newly-created or newly-labeled
+in-scope cards join the queue automatically.
+
 ## Step 3 — compose the spawn prompt (with model elevation)
 
 ⚠ **A `name` on a typed spawn costs you the observer — unless you also pass `isolation`.**
@@ -224,6 +230,11 @@ The spawn prompt must carry:
 7. `LIVENESS_AGENT_ID` is deliberately NOT in this list's prompt text — the raw agent id does
    not exist until the spawn call returns, one step after the prompt is composed. See the
    subsection right below for how it actually reaches the delegate.
+
+If the spawn prompt overrides `STOP_GATE_INTERVAL_MIN`, name it explicitly. Otherwise the
+orchestrator uses its default 10-minute close gate: when declaring a tier or mission COMPLETE it
+must do two live re-queries separated by at least that much real elapsed time, and both reads must
+come back empty/resolved.
 
 ### LIVENESS_AGENT_ID — sent as the first follow-up message, never inside the composed brief
 

@@ -245,6 +245,13 @@ Recommended flow:
 2. If they want to proceed, confirm the target scope, then run `--install`.
 3. Report exactly which files were written and where.
 
+When a copy is behind, the installer also computes the changelog span between the installed and
+current plugin versions: the most recent entries in that range are shown, any omitted tail is
+counted as `omittedCount`, and a gap inside the version range is reported as
+`missingVersionCount` rather than being read as "no changes". If the installed version predates
+the oldest recorded heading, the tool reports `recorded:false` with `oldestRecordedVersion`
+instead of fabricating a partial history.
+
 ## What gets installed
 
 **rules → `.claude/rules/`:**
