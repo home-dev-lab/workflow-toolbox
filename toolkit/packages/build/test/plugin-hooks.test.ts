@@ -54,6 +54,7 @@ function mkRoot(tag: string): string {
 
 interface Run {
   stdout: string
+  stderr: string
   code: number | null
   json: Record<string, unknown> | null
 }
@@ -64,6 +65,7 @@ function runHook(hookPath: string, payload: unknown, env?: NodeJS.ProcessEnv): R
     env: { ...process.env, WT_GUARD_JOURNAL_DIR: mkRoot('guard-journal'), ...(env ?? {}) },
   })
   const stdout = (res.stdout ?? '').trim()
+  const stderr = (res.stderr ?? '').trim()
   let json: Record<string, unknown> | null = null
   try {
     const parsed: unknown = stdout ? JSON.parse(stdout) : null
@@ -71,7 +73,7 @@ function runHook(hookPath: string, payload: unknown, env?: NodeJS.ProcessEnv): R
   } catch {
     json = null
   }
-  return { stdout, code: res.status, json }
+  return { stdout, stderr, code: res.status, json }
 }
 function permissionDecision(r: Run): string | undefined {
   const hso = r.json?.['hookSpecificOutput'] as Record<string, unknown> | undefined
@@ -1283,6 +1285,24 @@ describe('wt-verifier-cli-guard-hook — batch envelope: N external calls become
     }
   }
 
+  function writeAgentTranscript(runDir: string, agentId: string, command: string) {
+    writeFileSync(
+      join(runDir, `agent-${agentId}.jsonl`),
+      JSON.stringify({
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              name: 'Bash',
+              input: { command },
+            },
+          ],
+        },
+      }) + '\n',
+      'utf8',
+    )
+  }
+
   it('an echo-only fabricated manifest draws ZERO nodes', () => {
     const s = session('envbatch-fabricated', ['wf_fabricated'])
     const root = s.runDir('wf_fabricated')
@@ -1418,6 +1438,73 @@ describe('wt-verifier-cli-guard-hook — batch envelope: N external calls become
     runHook(VERIFIER_GUARD_HOOK, post(s.transcriptPath, manifestPath, 'toolu_SAME'), isolated('nocollide'))
     const laneFiles = readdirSync(root).filter((f) => f.includes('-lane') && f.endsWith('.meta.json'))
     expect(laneFiles).toHaveLength(2)
+  })
+
+  it('Path A from a SESSION transcript with no agent_id resolves the one matching run dir by exact envelope command', () => {
+    const s = session('envbatch-patha-session-one', ['wf_match', 'wf_other'])
+    const matchDir = s.runDir('wf_match')
+    const otherDir = s.runDir('wf_other')
+    writeAgentTranscript(matchDir, 'PATHA_MATCH_AGENT', ENVELOPE_COMMAND)
+    writeAgentTranscript(otherDir, 'PATHA_OTHER_AGENT', 'node "$CLAUDE_PLUGIN_ROOT/bin/wt-opencode-envelope.mjs" "$TASKSFILE" --dir "/different" ; rm -f "$TASKSFILE"')
+
+    const answerFile1 = join(matchDir, 'q1.answer.txt')
+    const answerFile2 = join(matchDir, 'q2.answer.txt')
+    writeFileSync(answerFile1, 'path a answer one', 'utf8')
+    writeFileSync(answerFile2, 'path a answer two', 'utf8')
+    const manifestPath = writeManifest(matchDir, [
+      { id: 'q1', prompt: 'path a question one', status: 'answer', answerFile: answerFile1, model: 'openai/gpt-5.4', durationMs: 1200 },
+      { id: 'q2', prompt: 'path a question two', status: 'answer', answerFile: answerFile2, model: 'openai/gpt-5.4', durationMs: 900 },
+    ])
+
+    const r = runHook(
+      VERIFIER_GUARD_HOOK,
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: ENVELOPE_COMMAND },
+        tool_response: { stdout: `MANIFEST: ${manifestPath}\n` },
+        tool_use_id: 'toolu_PATHA_SESSION',
+        transcript_path: s.transcriptPath,
+      },
+      isolated('patha-session-one'),
+    )
+
+    expect(r.code).toBe(0)
+    expect(readdirSync(matchDir).filter((f) => f.startsWith('agent-PATHA_MATCH_AGENT-lane-') && f.endsWith('.meta.json'))).toHaveLength(2)
+    expect(readdirSync(otherDir).filter((f) => f.includes('-lane') && f.endsWith('.meta.json'))).toHaveLength(0)
+  })
+
+  it('Path A with several matching transcripts writes nothing and leaves one fail-open trace naming the candidate count', () => {
+    const s = session('envbatch-patha-session-ambiguous', ['wf_one', 'wf_two'])
+    const firstDir = s.runDir('wf_one')
+    const secondDir = s.runDir('wf_two')
+    writeAgentTranscript(firstDir, 'PATHA_AGENT_ONE', ENVELOPE_COMMAND)
+    writeAgentTranscript(secondDir, 'PATHA_AGENT_TWO', ENVELOPE_COMMAND)
+
+    const answerFile = join(firstDir, 'q1.answer.txt')
+    writeFileSync(answerFile, 'ambiguous answer', 'utf8')
+    const manifestPath = writeManifest(firstDir, [
+      { id: 'q1', prompt: 'ambiguous question', status: 'answer', answerFile, model: 'openai/gpt-5.4', durationMs: 1200 },
+    ])
+
+    const r = runHook(
+      VERIFIER_GUARD_HOOK,
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: ENVELOPE_COMMAND },
+        tool_response: { stdout: `MANIFEST: ${manifestPath}\n` },
+        tool_use_id: 'toolu_PATHA_AMBIG',
+        transcript_path: s.transcriptPath,
+      },
+      isolated('patha-session-ambiguous'),
+    )
+
+    expect(r.code).toBe(0)
+    expect(readdirSync(firstDir).filter((f) => f.includes('-lane') && f.endsWith('.meta.json'))).toHaveLength(0)
+    expect(readdirSync(secondDir).filter((f) => f.includes('-lane') && f.endsWith('.meta.json'))).toHaveLength(0)
+    expect(r.stderr).toContain('wt-verifier-cli-guard-hook.mjs: FAILED OPEN -')
+    expect(r.stderr).toContain('2 candidate')
   })
 })
 

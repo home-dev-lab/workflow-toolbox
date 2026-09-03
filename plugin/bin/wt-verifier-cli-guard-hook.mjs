@@ -52,6 +52,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { writeFailOpenTrace } from './lib/fail-open-trace.mjs'
 
 // The external-CLI delegation signatures — a DELIBERATE byte-identical COPY of
 // @workflow-toolbox/patterns' provenance-gate EXTERNAL_CLI_SIGNATURES (itself a copy of the
@@ -372,6 +373,88 @@ export function runDirForSessionTranscript(transcriptPath, readdir = (d) => fs.r
   const runs = entries.filter((e) => e.isDirectory()).map((e) => e.name)
   if (runs.length !== 1) return null // zero, or an ambiguity we refuse to resolve — see above
   return path.join(workflowsDir, runs[0])
+}
+
+function parentAgentIdFromTranscriptName(name) {
+  const m = /^agent-([^.]+)\.jsonl$/.exec(name)
+  return m === null ? null : (m[1] ?? null)
+}
+
+function transcriptContainsExactCommand(transcriptText, command) {
+  if (typeof transcriptText !== 'string' || transcriptText.length === 0 || typeof command !== 'string') return false
+  for (const raw of transcriptText.split('\n')) {
+    const t = raw.trim()
+    if (!t) continue
+    let parsed
+    try {
+      parsed = JSON.parse(t)
+    } catch {
+      continue
+    }
+    const blocks = parsed?.message?.content
+    if (!Array.isArray(blocks)) continue
+    for (const block of blocks) {
+      if (block?.type !== 'tool_use' || block?.name !== 'Bash') continue
+      if (block?.input?.command === command) return true
+    }
+  }
+  return false
+}
+
+function hasLaneArtefactsForAgent(runDir, agentId) {
+  try {
+    return fs.readdirSync(runDir).some((name) => name.startsWith(`agent-${agentId}-lane-`) && name.endsWith('.meta.json'))
+  } catch {
+    return false
+  }
+}
+
+function resolveEnvelopeBatchPathA(input) {
+  const transcriptPath = input.transcript_path
+  const command = input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : ''
+  if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return null
+  if (!command) return null
+
+  const sessionDir = transcriptPath.replace(/\.jsonl$/, '')
+  const workflowsDir = path.join(sessionDir, 'subagents', 'workflows')
+  let entries
+  try {
+    entries = fs.readdirSync(workflowsDir, { withFileTypes: true })
+  } catch {
+    return null
+  }
+
+  const candidates = []
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const runDir = path.join(workflowsDir, entry.name)
+    let files
+    try {
+      files = fs.readdirSync(runDir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const file of files) {
+      if (!file.isFile()) continue
+      const agentId = parentAgentIdFromTranscriptName(file.name)
+      if (agentId === null) continue
+      if (hasLaneArtefactsForAgent(runDir, agentId)) continue
+      let text
+      try {
+        text = fs.readFileSync(path.join(runDir, file.name), 'utf8')
+      } catch {
+        continue
+      }
+      if (!transcriptContainsExactCommand(text, command)) continue
+      candidates.push({ runDir, agentId })
+    }
+  }
+
+  if (candidates.length !== 1) {
+    writeFailOpenTrace('wt-verifier-cli-guard-hook.mjs', new Error(`Path A envelope run-dir resolution found ${candidates.length} candidates for the session transcript payload`))
+    return null
+  }
+  return candidates[0]
 }
 
 /** The model an external-CLI command targets, read off the command itself (`--model <x>` or
@@ -753,10 +836,11 @@ function matcherHitArm(command) {
  *  field the manifest didn't carry. `usage` and `durationMs` are taken from the manifest as-is:
  *  when the manifest omits `usage` (a plain-text call measured nothing), the node's meta omits
  *  `laneTokens` too — the same "absent, never zero" rule the single-call path already keeps. */
-function handleEnvelopeBatch(input, runDir) {
+function handleEnvelopeBatch(input, runDir, parentAgentId = input.agent_id) {
   const command = input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : ''
   if (!matchesOpencodeRun(command)) return
-  const agentId = input.agent_id
+  const agentId = parentAgentId
+  if (!agentId) return
   const text = bashOutputText(input.tool_response)
   const manifestPath = manifestPathFromOutput(text)
   if (manifestPath === null) return
@@ -833,18 +917,17 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
   if (input.agent_type !== undefined && signatureForAgentType(input.agent_type) === null) return
   const transcriptPath = input.transcript_path
   const agentId = input.agent_id
-  // Need BOTH transcript_path AND agent_id to form the PER-SUBAGENT key. Without agent_id a marker
-  // would be run-global (the re-probe bleed) — so skip writing rather than write an unkeyed marker
-  // that a sibling self-answer could ride.
-  if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return
-  if (!agentId) return
 
-  // The batch envelope never emits a StructuredOutput verdict (see opencode-envelope.md), so the
-  // provenance-gate marker below is not its concern — only turning its manifest into N nodes is.
   if (isEnvelopeBatch) {
     try {
-      const runDir = runDirForSessionTranscript(transcriptPath)
-      if (runDir !== null) handleEnvelopeBatch(input, runDir)
+      if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return
+      if (agentId) {
+        const runDir = runDirForSessionTranscript(transcriptPath)
+        if (runDir !== null) handleEnvelopeBatch(input, runDir)
+      } else {
+        const resolved = resolveEnvelopeBatchPathA(input)
+        if (resolved !== null) handleEnvelopeBatch(input, resolved.runDir, resolved.agentId)
+      }
     } catch {
       /* best-effort, exactly like the single-call path: a run must never fail because a hook
          could not write an observability artefact. */
@@ -853,6 +936,12 @@ export function handlePostToolUse(input, writeMarker = (p) => fs.writeFileSync(p
     reapOldStreamFiles()
     return
   }
+
+  // Need BOTH transcript_path AND agent_id to form the PER-SUBAGENT key. Without agent_id a marker
+  // would be run-global (the re-probe bleed) — so skip writing rather than write an unkeyed marker
+  // that a sibling self-answer could ride.
+  if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return
+  if (!agentId) return
 
   try {
     writeMarker(markerPathFor(transcriptPath, agentId))
