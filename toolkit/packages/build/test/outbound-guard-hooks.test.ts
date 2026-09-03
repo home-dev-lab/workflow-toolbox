@@ -76,6 +76,14 @@ function runNoInput(script: string, args: string[], env: NodeJS.ProcessEnv): Run
   return { stdout: (res.stdout ?? '').trim(), stderr: (res.stderr ?? '').trim(), code: res.status }
 }
 
+function workflowRunLayout(tag: string): { transcriptPath: string } {
+  const root = mkRoot(tag)
+  const sessionPath = join(root, 'session.jsonl')
+  writeFileSync(sessionPath, '{}\n')
+  mkdirSync(join(root, 'session', 'subagents', 'workflows', 'wf_demo'), { recursive: true })
+  return { transcriptPath: sessionPath }
+}
+
 const stopPayload = (agentId: string | undefined, sessionId: string, agentType = 'some-agent') => ({
   hook_event_name: 'SubagentStop',
   ...(agentId !== undefined ? { agent_id: agentId } : {}),
@@ -153,6 +161,54 @@ describe('wt-outbound-guard-hook — spawn edges, delivery detection, one nudge 
     expect(r.stdout).toBe('')
     expect(r.stderr).toBe('')
     expect(r.code).toBe(0)
+  })
+
+  it('FAILS BEFORE THE FIX: stays SILENT for a fenced leaf type on Stop because its final text is the delivery channel', () => {
+    const { env } = guardEnv('fenced-leaf-stop')
+    const r = run(
+      GUARD_HOOK,
+      { hook_event_name: 'Stop', agent_id: 'agent-leaf-ro', agent_type: 'workflow-toolbox:leaf-readonly', session_id: 'sess-leaf-stop' },
+      env,
+    )
+    expect(r.code, `expected fenced leaf to pass; stderr: ${r.stderr}`).toBe(0)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('')
+  })
+
+  it('FAILS BEFORE THE FIX: stays SILENT for a workflow-tool envelope Stop because it has no SendMessage tool', () => {
+    const { env } = guardEnv('workflow-envelope-stop')
+    const r = run(
+      GUARD_HOOK,
+      { hook_event_name: 'Stop', agent_id: 'agent-envelope', agent_type: 'workflow-toolbox:opencode-envelope', session_id: 'sess-envelope-stop' },
+      env,
+    )
+    expect(r.code, `expected workflow envelope to pass; stderr: ${r.stderr}`).toBe(0)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('')
+  })
+
+  it('FAILS BEFORE THE FIX: stays SILENT for a Stop with no agent_type when transcript_path has the workflow-run layout', () => {
+    const { env } = guardEnv('workflow-path-stop')
+    const { transcriptPath } = workflowRunLayout('workflow-path-layout')
+    const r = run(
+      GUARD_HOOK,
+      { hook_event_name: 'Stop', agent_id: 'agent-workflow-path', session_id: 'sess-workflow-path', transcript_path: transcriptPath },
+      env,
+    )
+    expect(r.code, `expected workflow-path Stop to pass; stderr: ${r.stderr}`).toBe(0)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('')
+  })
+
+  it('pilot remains unchanged: a silent pilot Stop still triggers the outbound guard', () => {
+    const { env } = guardEnv('pilot-stop')
+    const r = run(
+      GUARD_HOOK,
+      { hook_event_name: 'Stop', agent_id: 'agent-pilot-1', agent_type: 'pilot', session_id: 'sess-pilot-stop' },
+      env,
+    )
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('OUTBOUND CHECK')
   })
 
   it('records a spawn edge when the MAIN LOOP launches an agent (Agent tool, no agent_id)', () => {
