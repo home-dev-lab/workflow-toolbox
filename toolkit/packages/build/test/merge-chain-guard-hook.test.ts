@@ -87,20 +87,67 @@ describe('wt-merge-chain-guard-hook', () => {
     expect(r.status).toBe(0)
   })
 
-  it('records only trailing command heads, resolving assignments, timeout, and a quoted path without leaking arguments', () => {
+  it('CLASSIFY gate: a trailing command that trusts the merged tree (pnpm test)', () => {
+    const r = run('git merge branch && pnpm test')
+    expect(r.entries).toHaveLength(1)
+    expect(r.entries[0]).toMatchObject({
+      session: 'session-test-123',
+      evidence: { trailing: 'gate' },
+    })
+  })
+
+  it('CLASSIFY gate: ANY gate segment in the chain wins, even alongside diagnostic reads', () => {
+    // The documented safe pattern's own log/exit-code read (`echo`) sits right next to a real
+    // gate (`pnpm test`) here — one blind gate in the chain is still the hazard.
+    const r = run('git merge branch > log 2>&1 && echo "merge: $?" && pnpm test')
+    expect(r.entries).toHaveLength(1)
+    expect(r.entries[0].evidence).toEqual({ trailing: 'gate' })
+  })
+
+  it('CLASSIFY diagnostic: the project\'s documented safe pattern (log/exit-code read only)', () => {
+    const r = run('git merge branch > log 2>&1; echo "merge: $?"; cat log')
+    expect(r.entries).toHaveLength(1)
+    expect(r.entries[0]).toMatchObject({
+      session: 'session-test-123',
+      evidence: { trailing: 'diagnostic' },
+    })
+  })
+
+  it('CLASSIFY unclassified: a trailing command the classifier cannot place', () => {
+    const r = run('git merge branch && ./scripts/custom-thing.sh')
+    expect(r.entries).toHaveLength(1)
+    expect(r.entries[0]).toMatchObject({
+      session: 'session-test-123',
+      evidence: { trailing: 'unclassified' },
+    })
+  })
+
+  it('SECURITY LOCK: no raw command text — of any trailing segment, in any resolution path (assignment, timeout, quoted path) — ever reaches the journal record', () => {
     const secret = 'sk_live_DO_NOT_JOURNAL'
     const r = run(
       `git merge branch && FOO=bar pnpm test --token ${secret}; timeout 570 git log --password ${secret}; "/opt/tools/npx" run task --secret ${secret}`,
     )
     expect(r.entries).toHaveLength(1)
-    expect(r.entries[0]).toMatchObject({
+    const entry = r.entries[0]
+    // Positive assertion: the record's evidence is EXACTLY the closed-set classification —
+    // nothing else, so there is no field a secret or an argument could have hidden in.
+    expect(entry).toMatchObject({
       session: 'session-test-123',
-      evidence: { after: 'pnpm,git,/opt/tools/npx' },
+      reason: 'git merge branch',
+      evidence: { trailing: 'gate' },
     })
-    expect(JSON.stringify(r.entries[0])).not.toContain(secret)
-    expect(JSON.stringify(r.entries[0])).not.toContain('--token')
-    expect(JSON.stringify(r.entries[0])).not.toContain('--password')
-    expect(JSON.stringify(r.entries[0])).not.toContain('--secret')
+    expect(Object.keys(entry.evidence)).toEqual(['trailing'])
+    expect(['gate', 'diagnostic', 'unclassified']).toContain(entry.evidence.trailing)
+    // Belt: none of the trailing segments' own text — command names, flags, or the secret —
+    // appears anywhere in the serialized record.
+    const serialized = JSON.stringify(entry)
+    expect(serialized).not.toContain(secret)
+    expect(serialized).not.toContain('--token')
+    expect(serialized).not.toContain('--password')
+    expect(serialized).not.toContain('--secret')
+    expect(serialized).not.toContain('pnpm')
+    expect(serialized).not.toContain('npx')
+    expect(serialized).not.toContain('FOO=bar')
   })
 
   it('SILENT: a merge run alone', () => {
