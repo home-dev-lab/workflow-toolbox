@@ -214,6 +214,36 @@ describe('agentWithSchemaSalvage', () => {
     expect(rt.calls).toHaveLength(1)
   })
 
+  it('routes an opencode envelope through its ANSWER line without a harness schema', async () => {
+    const rt = new FakeRuntime({ responses: [`MANIFEST: /tmp/envelope.manifest.json\nANSWER: ${JSON.stringify('{"summary":"a real, long-enough summary","riskAreas":[]}')}\n`] })
+    const out = await agentWithSchemaSalvage<{ summary: string; riskAreas: string[] }>(rt, 'summarize the change', {
+      ...opts, agentType: 'workflow-toolbox:opencode-envelope',
+    })
+    expect(out).toMatchObject({ value: { summary: 'a real, long-enough summary', riskAreas: [] }, spawns: 1, envelopeAnswer: true })
+    expect(rt.calls[0]?.opts?.schema).toBeUndefined()
+    expect(rt.calls[0]?.prompt).toContain('ONLY a JSON object')
+    expect(rt.calls[0]?.prompt).toContain('"summary" (REQUIRED): string, 12-100 chars')
+  })
+
+  it('warns specifically when an opencode envelope omits, corrupts, or violates its ANSWER payload', async () => {
+    const envelopeOpts = { ...opts, agentType: 'workflow-toolbox:opencode-envelope' }
+    const missing = await agentWithSchemaSalvage(new FakeRuntime({ responses: ['MANIFEST: /tmp/x.manifest.json\n'] }), 'task', envelopeOpts)
+    expect(missing.value).toBeNull()
+    expect(missing.warnings.join(' ')).toContain('missing ANSWER line')
+
+    const invalid = await agentWithSchemaSalvage(new FakeRuntime({ responses: ['MANIFEST: /tmp/x.manifest.json\nANSWER: not-json\n'] }), 'task', envelopeOpts)
+    expect(invalid.value).toBeNull()
+    expect(invalid.warnings.join(' ')).toContain('ANSWER line is not a JSON string')
+
+    const enumSchema = { type: 'object', properties: { verdict: { type: 'string', enum: ['yes', 'no'] } }, required: ['verdict'] }
+    const violation = await agentWithSchemaSalvage(new FakeRuntime({ responses: [`ANSWER: ${JSON.stringify('{"verdict":"maybe"}')}\n`] }), 'task', {
+      schema: enumSchema, agentType: 'opencode-envelope', label: 'verify',
+    })
+    expect(violation.value).toBeNull()
+    expect(violation.warnings.join(' ')).toContain('"maybe" is not one of "yes" | "no"')
+    expect(violation.spawns).toBe(1)
+  })
+
   it('TEST-LOCK — the lived exhaustion: native null, salvage answer over-long, repair saves the item', async () => {
     // Native schema call exhausts (null); the salvage respawn answers with the
     // SAME failure shape the harness loop could never fix: summary over its

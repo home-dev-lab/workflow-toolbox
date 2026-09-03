@@ -3,9 +3,8 @@ import { collectTrail, scoreAndRank } from '@workflow-toolbox/patterns'
 
 // Matrix row 4 of the thin-envelope ladder (card 1850837979812070670): scoreAndRank with the
 // score role routed to workflow-toolbox:opencode-envelope, ONE item, ONE dimension, one phase.
-// Prediction (after row 2): the harness injects StructuredOutput into the envelope, which runs
-// its one task then READS the answer file to fill the {score, reason} schema — 2 Bash calls,
-// value returned, no salvage.
+// The schema wrapper asks the envelope for a JSON answer and parses its script-owned ANSWER line
+// without injecting StructuredOutput into the envelope.
 const WORKDIR = '/home/doublefx/projects/wt-suite/workflow-observatory'
 const PLUGIN_ROOT = '/home/doublefx/projects/wt-suite/worktrees/card-1844561823-envelope-reap/plugin'
 const HEAD = [`OPENCODE_WORKDIR: ${WORKDIR}`, `OPENCODE_PLUGIN_ROOT: ${PLUGIN_ROOT}`, ''].join('\n')
@@ -29,7 +28,7 @@ export default defineWorkflow({
             [
               'Your prompt carries ONE task, id "score", whose prompt is:',
               `"Score from 1 to 5 how confident you are that this statement is true: ${item}. Reply with ONLY a JSON object {\\"score\\": N, \\"reason\\": \\"...\\"}."`,
-              'Run the script on it. Report the manifest path only — one line: MANIFEST: <path>.',
+              'Run the script on it. Report every line the script prints verbatim.',
             ].join('\n'),
         },
       ],

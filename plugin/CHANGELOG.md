@@ -3,6 +3,12 @@
 All notable changes to the `workflow-toolbox` Claude Code plugin are documented in this
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- The opencode envelope records each task's requested model and returns a JSON-encoded answer for a successful single-task batch, allowing schema callers to validate the script-owned result.
+
 ## [0.176.0] - 2026-08-18
 
 ### Added

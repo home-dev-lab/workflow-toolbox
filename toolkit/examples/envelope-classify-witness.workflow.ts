@@ -5,9 +5,8 @@ import { classifyAndAct, collectTrail } from '@workflow-toolbox/patterns'
 // classify role routed to workflow-toolbox:opencode-envelope, ONE item, one phase. The action
 // role is routed to the envelope too so no Claude agent other than the envelope runs.
 // Prediction written before the run: the classify role is a schema-enforced call; the envelope
-// holds only Bash, answers with a MANIFEST line, so the native call exhausts to null, the
-// salvage respawn (a second envelope) answers the same way, and the item is DROPPED with a
-// salvage warning — agentTypes is the wrong vector for a structured role.
+// holds only Bash, so the wrapper asks it for a JSON task answer and parses the script's ANSWER
+// line without asking the harness to inject StructuredOutput.
 const WORKDIR = '/home/doublefx/projects/wt-suite/workflow-observatory'
 const PLUGIN_ROOT = '/home/doublefx/projects/wt-suite/worktrees/card-1844561823-envelope-reap/plugin'
 const HEAD = [`OPENCODE_WORKDIR: ${WORKDIR}`, `OPENCODE_PLUGIN_ROOT: ${PLUGIN_ROOT}`, ''].join('\n')
@@ -29,16 +28,16 @@ export default defineWorkflow({
         [
           'Your prompt carries ONE task, id "classify", whose prompt is:',
           `"Classify this text as exactly one of: fact, question. Text: ${item}. Reply with ONLY a JSON object {\\"category\\":\\"fact\\"} or {\\"category\\":\\"question\\"}."`,
-          'Run the script on it. Report the manifest path only — one line: MANIFEST: <path>.',
+          'Run the script on it. Report every line the script prints verbatim.',
         ].join('\n'),
       actions: {
         fact: {
           agentType: 'workflow-toolbox:opencode-envelope',
-          prompt: (item) => HEAD + `Your prompt carries ONE task, id "act-fact", whose prompt is: "Restate this fact in five words or fewer: ${item}". Run the script on it. Report the manifest path only — one line: MANIFEST: <path>.`,
+          prompt: (item) => HEAD + `Your prompt carries ONE task, id "act-fact", whose prompt is: "Restate this fact in five words or fewer: ${item}". Run the script on it. Report every line the script prints verbatim.`,
         },
         question: {
           agentType: 'workflow-toolbox:opencode-envelope',
-          prompt: (item) => HEAD + `Your prompt carries ONE task, id "act-question", whose prompt is: "Answer in five words or fewer: ${item}". Run the script on it. Report the manifest path only — one line: MANIFEST: <path>.`,
+          prompt: (item) => HEAD + `Your prompt carries ONE task, id "act-question", whose prompt is: "Answer in five words or fewer: ${item}". Run the script on it. Report every line the script prints verbatim.`,
         },
       },
       phase: 'Route',

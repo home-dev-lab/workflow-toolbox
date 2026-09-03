@@ -4,8 +4,8 @@ import { adversarialVerification, collectTrail } from '@workflow-toolbox/pattern
 // Matrix row 5 of the thin-envelope ladder (card 1850837979812070670): adversarialVerification
 // with verifierType routed to workflow-toolbox:opencode-envelope, ONE claim, ONE vote, one phase.
 // The pattern owns the verifier prompt; the envelope directives travel inside renderClaim's text.
-// Prediction (after row 2): StructuredOutput injected, one task run, answer file read to fill
-// {verdict, reason} — 2 Bash calls, verdict returned, no salvage.
+// The schema wrapper asks the envelope for a JSON answer and parses its script-owned ANSWER line
+// without injecting StructuredOutput into the envelope.
 const WORKDIR = '/home/doublefx/projects/wt-suite/workflow-observatory'
 const PLUGIN_ROOT = '/home/doublefx/projects/wt-suite/worktrees/card-1844561823-envelope-reap/plugin'
 const HEAD = [`OPENCODE_WORKDIR: ${WORKDIR}`, `OPENCODE_PLUGIN_ROOT: ${PLUGIN_ROOT}`, ''].join('\n')
@@ -28,7 +28,7 @@ export default defineWorkflow({
         [
           'Your prompt carries ONE task, id "verify", whose prompt is:',
           `"Refute-first: try to refute this claim, then give a verdict among confirmed, partially-confirmed, refuted, unverifiable. Claim: ${claim}. Reply with ONLY a JSON object {\\"verdict\\": \\"...\\", \\"reason\\": \\"...\\"}."`,
-          'Run the script on it. Report the manifest path only — one line: MANIFEST: <path>.',
+          'Run the script on it. Report every line the script prints verbatim.',
         ].join('\n'),
       phase: 'Verify',
     })

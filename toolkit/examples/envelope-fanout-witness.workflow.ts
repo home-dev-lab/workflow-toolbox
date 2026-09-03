@@ -36,7 +36,7 @@ export default defineWorkflow({
           '',
           'Run the envelope once against that source. Do not open the source file, do not count its',
           'items, and do not write a tasks file — the script generates the tasks itself.',
-          'Report the manifest path only — one line: MANIFEST: <path>. Do not open the manifest.',
+          'Report every line the script prints verbatim. Do not open the manifest.',
         ].join('\n'),
       synthesisPrompt: (parts) =>
         [
@@ -50,7 +50,7 @@ export default defineWorkflow({
           '"Read the JSON manifest at <the manifest path above>. For each entry of its tasks array, read',
           'the file named by answerFile. Reply with exactly one line: the ten capitals, comma-separated,',
           'in the manifest order. No other text."',
-          'Then run the script on it. Report the manifest path only — one line: MANIFEST: <path>.',
+          'Then run the script on it. Report every line the script prints verbatim.',
           'Do not read the batch manifest or any answer file yourself.',
         ].join('\n'),
       phase: 'Batch',
