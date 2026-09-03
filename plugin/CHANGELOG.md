@@ -57,6 +57,20 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   bump happens on `main`, at push time, and a branch's changelog entry carries no version heading.
   On any branch other than `main`/`master`, the warning now asks only for a changelog entry under
   `## [Unreleased]` and says so explicitly; the version-bump remedy is unchanged on `main`.
+- **`wt-hook-registration-drift-hook.mjs`'s `UserPromptSubmit`/`SessionStart` timeout raised from
+  5s to 15s**, matching the two user-level hooks already registered on the same event. Measured
+  2026-09-02 on a session restarted right after a plugin rollout: `UserPromptSubmit hook timed out
+  after 5s — output discarded` — right after a restart the SessionStart loops load the machine and
+  5s was not always enough headroom, even though the hook's own cold wall time measures ~20-25ms on
+  this machine (5 runs, before and after). The hook is advisory (registration drift detection), so
+  its silent loss on timeout is harmless — which is exactly why it must not keep failing invisibly.
+  Also made SessionStart cheaper on repeat: the declared-hooks parse (JSON.parse + a regex sweep
+  over the whole plugin manifest) is now cached in the per-session state dir, keyed on the
+  manifest's own `mtime`+`size`, so a repeat SessionStart against an unchanged manifest reuses the
+  cached set instead of re-parsing it — the parse only re-runs once the manifest has actually
+  changed (a plugin reload). A new test locks the hook's cold run under a 2s budget against the
+  real manifest and proves the cache reuses the same declared-hooks set across two SessionStart
+  calls.
 
 ## [0.168.0] - 2026-08-28
 
