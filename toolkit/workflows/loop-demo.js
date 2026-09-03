@@ -333,6 +333,7 @@ unreadable channel never fails your task.`;
     const directives = lines.filter((line) => /^OPENCODE_[A-Z0-9_]+:/.test(line));
     const task = lines.filter((line) => !/^OPENCODE_[A-Z0-9_]+:/.test(line)).join("\n").trim();
     const constraints = schema === void 0 ? "" : describeSchemaConstraints(schema);
+    const eachMode = directives.some((line) => /^OPENCODE_EACH_(JSON|LINES):/.test(line));
     return [
       ...directives,
       ...directives.length > 0 ? [""] : [],
@@ -342,7 +343,7 @@ unreadable channel never fails your task.`;
       "--- END OPENCODE ENVELOPE TASK ---",
       "",
       "--- BEGIN OPENCODE ENVELOPE INSTRUCTIONS ---",
-      "Write ONE task with the TASK block above as its prompt, run the envelope script, and report EVERY stdout line verbatim.",
+      eachMode ? "The directives above name a task SOURCE (EACH mode): run the envelope script once on it \u2014 the script generates the tasks itself; do not write a tasks file, do not open the source \u2014 and report EVERY stdout line verbatim." : "Write ONE task with the TASK block above as its prompt, run the envelope script, and report EVERY stdout line verbatim.",
       "Never answer the task yourself. Never open the manifest or the answer file.",
       "Pass no --model flag unless an OPENCODE_MODEL line is present.",
       "--- END OPENCODE ENVELOPE INSTRUCTIONS ---"
@@ -370,7 +371,10 @@ unreadable channel never fails your task.`;
       return envelopeFailure(where, "opencode envelope ERROR line is not a JSON string", "schema");
     }
     const answerLine = /^MANIFEST:[^\r\n]*? ANSWER:\s*(.+)$/m.exec(raw) ?? /^ANSWER:\s*(.+)$/m.exec(raw);
-    if (answerLine === null) return envelopeFailure(where, "opencode envelope script ran but the ANSWER line was not reported", "no-answer");
+    if (answerLine === null) {
+      if (schema === void 0) return { value: raw, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true };
+      return envelopeFailure(where, "opencode envelope script ran but the ANSWER line was not reported", "no-answer");
+    }
     let answer;
     try {
       answer = JSON.parse(answerLine[1]);
