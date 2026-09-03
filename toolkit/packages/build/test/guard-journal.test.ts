@@ -67,6 +67,14 @@ describe('guard-journal — recordGuardEvent', () => {
     const entries = readAllEntries()
     expect(entries).toHaveLength(1)
     expect(entries[0]!.decision).toBe('warned')
+    expect(entries[0]!.mode).toBe('enforce')
+  })
+
+  it('stamps mode=observe when WT_GUARD_MODE=observe', () => {
+    record({ guard: 'wt-example-guard-hook.mjs', decision: 'warned' }, { WT_GUARD_MODE: ' observe ' })
+    const entries = readAllEntries()
+    expect(entries).toHaveLength(1)
+    expect(entries[0]!.mode).toBe('observe')
   })
 
   it('never writes for a decision that is neither blocked nor warned (e.g. allow/journal)', () => {

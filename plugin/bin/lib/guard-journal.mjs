@@ -123,6 +123,19 @@ function journalPath() {
   return path.join(baseDir(), `${isoWeekKey(now())}.ndjson`)
 }
 
+export function guardMode() {
+  const raw = process.env.WT_GUARD_MODE
+  return typeof raw === 'string' && raw.trim().toLowerCase() === 'observe' ? 'observe' : 'enforce'
+}
+
+export function emitGuardNotice({ stdoutJson = null, stdoutText = '', stderrText = '' } = {}) {
+  if (guardMode() === 'observe') return false
+  if (stdoutJson !== null) fs.writeSync(1, `${JSON.stringify(stdoutJson)}`)
+  else if (stdoutText) fs.writeSync(1, stdoutText)
+  if (stderrText) fs.writeSync(2, stderrText)
+  return true
+}
+
 /**
  * Record ONE guard decision durably. NEVER throws, always returns.
  *
@@ -148,10 +161,16 @@ export function recordGuardEvent(event = {}) {
     fs.mkdirSync(dir, { recursive: true })
     const safeSession = typeof session === 'string' ? sanitiseValue(session) : null
     const safeEvidence = sanitiseEvidence(evidence)
+    const mode = guardMode()
+    // Observe mode keeps the detector and the record but the guard said nothing to the model:
+    // the recorded decision is then `silent`, never `warned` — a downstream reader that counts
+    // `warned` as "the hook spoke" must not see one for a guard that was muted.
+    const recorded = mode === 'observe' && decision === 'warned' ? 'silent' : decision
     const entry = {
       ts: now().toISOString(),
       guard,
-      decision,
+      decision: recorded,
+      mode,
       ...(cls ? { class: cls } : {}),
       ...(reason ? { reason: String(reason).slice(0, MAX_REASON_LEN) } : {}),
       ...(cwd ? { cwd } : {}),

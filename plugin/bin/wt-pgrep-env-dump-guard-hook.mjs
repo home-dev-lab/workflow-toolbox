@@ -30,7 +30,7 @@
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -79,7 +79,7 @@ function main() {
         'an already-identified PID, truncated: `ps -o args= -p <pid> | cut -c1-120`.',
     },
   }
-  process.stdout.write(JSON.stringify(payload))
+  emitGuardNotice({ stdoutJson: payload })
 }
 
 runFailOpenHook('wt-pgrep-env-dump-guard-hook.mjs', main)

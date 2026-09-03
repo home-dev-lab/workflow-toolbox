@@ -34,7 +34,7 @@
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -75,7 +75,7 @@ function main() {
     decision: 'warned',
     class: 'pipestatus-bash-only',
   })
-  process.stdout.write(JSON.stringify(payload))
+  emitGuardNotice({ stdoutJson: payload })
 }
 
 runFailOpenHook('wt-pipestatus-bash-only-guard-hook.mjs', main)

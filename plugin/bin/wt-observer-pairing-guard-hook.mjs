@@ -11,7 +11,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CHECKER = path.join(HERE, 'wt-check-observer-pairing.mjs')
@@ -193,16 +193,16 @@ function main() {
     class: 'observer-pairing',
     reason: summary,
   })
-  process.stdout.write(
-    JSON.stringify({
+  emitGuardNotice({
+    stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
         additionalContext:
           `[workflow-toolbox observer-pairing] ${subject} ${summary}.${lookHere} ` +
           `Delegated to wt-check-observer-pairing.mjs after spawn; checker verdict ${status}: ${reason}`,
       },
-    }),
-  )
+    },
+  })
 }
 
 runFailOpenHook('wt-observer-pairing-guard-hook.mjs', main)

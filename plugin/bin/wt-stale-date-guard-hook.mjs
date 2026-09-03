@@ -27,7 +27,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const GUARD = path.join(HERE, 'wt-stale-date-guard.mjs')
@@ -81,16 +81,16 @@ function main() {
     class: 'stale-date',
     reason: filePath,
   })
-  process.stdout.write(
-    JSON.stringify({
+  emitGuardNotice({
+    stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
         additionalContext:
           `STALE OPERATIONAL DEADLINE in ${filePath} — a date-bearing directive has already ` +
           `expired. Fix the deadline or drop the clause before relying on this file:\n${stdout}`,
       },
-    }),
-  )
+    },
+  })
 }
 
 runFailOpenHook('wt-stale-date-guard-hook.mjs', main)

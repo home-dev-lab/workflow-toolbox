@@ -39,7 +39,7 @@
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -100,7 +100,7 @@ function main() {
     class: 'non-iso-newermt',
     reason: flagged,
   })
-  process.stdout.write(JSON.stringify(payload))
+  emitGuardNotice({ stdoutJson: payload })
 }
 
 runFailOpenHook('wt-find-newermt-format-guard-hook.mjs', main)

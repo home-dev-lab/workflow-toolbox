@@ -57,7 +57,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -324,8 +324,8 @@ function main() {
     cwd: cwdPkgDir,
   })
 
-  process.stdout.write(
-    JSON.stringify({
+  emitGuardNotice({
+    stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'allow',
@@ -335,8 +335,8 @@ function main() {
           'can be mistaken for a real regression right after a merge — verify the CWD before ' +
           'reading this as a broken build.',
       },
-    }),
-  )
+    },
+  })
 }
 
 runFailOpenHook('wt-missing-package-script-guard-hook.mjs', main)

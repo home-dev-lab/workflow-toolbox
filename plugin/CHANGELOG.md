@@ -5,6 +5,18 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- `WT_GUARD_MODE=observe` for the plugin's warn-only guards: `wt-merge-chain-guard-hook.mjs`,
+  `wt-pipestatus-bash-only-guard-hook.mjs`, `wt-find-newermt-format-guard-hook.mjs`,
+  `wt-git-commit-backtick-guard-hook.mjs`, `wt-var-colon-modifier-guard-hook.mjs`,
+  `wt-missing-package-script-guard-hook.mjs`, `wt-pgrep-env-dump-guard-hook.mjs`,
+  `wt-plugin-release-record-guard-hook.mjs`, `wt-isolated-spawn-report-path-hook.mjs`,
+  `wt-observer-pairing-guard-hook.mjs`, and `wt-stale-date-guard-hook.mjs`. In observe mode they
+  still detect and still journal their events, now stamped with `mode: "observe"` and recorded as
+  `decision: "silent"` (never `warned`, so a reader counting `warned` as "the hook spoke" stays
+  honest), but emit no model-facing warning text; the default remains `enforce`.
+
 ## [0.169.0] - 2026-09-03
 > The entry below arrived with a branch merge but its code did NOT: no commit in that merge
 > touches the hook it describes. It stays here rather than under a released heading, because a
