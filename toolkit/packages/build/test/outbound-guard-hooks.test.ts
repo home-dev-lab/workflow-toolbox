@@ -76,6 +76,21 @@ function runNoInput(script: string, args: string[], env: NodeJS.ProcessEnv): Run
   return { stdout: (res.stdout ?? '').trim(), stderr: (res.stderr ?? '').trim(), code: res.status }
 }
 
+// A session that holds SEVERAL workflow runs (the ordinary state of a long session) — the
+// Workflow tool hands hooks the SESSION transcript, so the run must be found by the agent's
+// own transcript file inside one of the run directories, never by "there is exactly one run".
+function multiRunWorkflowLayout(tag: string, agentId: string): { transcriptPath: string } {
+  const root = mkRoot(tag)
+  const sessionPath = join(root, 'session.jsonl')
+  writeFileSync(sessionPath, '{}\n')
+  const workflows = join(root, 'session', 'subagents', 'workflows')
+  mkdirSync(join(workflows, 'wf_older'), { recursive: true })
+  mkdirSync(join(workflows, 'wf_current'), { recursive: true })
+  mkdirSync(join(workflows, 'wf_oldest'), { recursive: true })
+  writeFileSync(join(workflows, 'wf_current', `agent-${agentId}.jsonl`), '{}\n')
+  return { transcriptPath: sessionPath }
+}
+
 function workflowRunLayout(tag: string): { transcriptPath: string } {
   const root = mkRoot(tag)
   const sessionPath = join(root, 'session.jsonl')
@@ -198,6 +213,43 @@ describe('wt-outbound-guard-hook — spawn edges, delivery detection, one nudge 
     expect(r.code, `expected workflow-path Stop to pass; stderr: ${r.stderr}`).toBe(0)
     expect(r.stdout).toBe('')
     expect(r.stderr).toBe('')
+  })
+
+  it('FAILS BEFORE THE FIX: stays SILENT for the harness label agent_type "workflow-subagent" (a Workflow-tool subagent on Path A)', () => {
+    const { env } = guardEnv('workflow-subagent-label')
+    const r = run(
+      GUARD_HOOK,
+      { hook_event_name: 'SubagentStop', agent_id: 'agent-prov-check', agent_type: 'workflow-subagent', session_id: 'sess-wsl' },
+      env,
+    )
+    expect(r.code, `expected the harness-labelled workflow subagent to pass; stderr: ${r.stderr}`).toBe(0)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('')
+  })
+
+  it('FAILS BEFORE THE FIX: stays SILENT when the SESSION transcript holds several runs and one of them carries this agent', () => {
+    const { env } = guardEnv('multi-run-member')
+    const { transcriptPath } = multiRunWorkflowLayout('multi-run-member-layout', 'abc123member')
+    const r = run(
+      GUARD_HOOK,
+      { hook_event_name: 'SubagentStop', agent_id: 'abc123member', session_id: 'sess-multi', transcript_path: transcriptPath },
+      env,
+    )
+    expect(r.code, `expected the run member to pass; stderr: ${r.stderr}`).toBe(0)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('')
+  })
+
+  it('discriminator: several runs and NONE carries this agent => the guard still fires (the exemption is by membership, not by layout)', () => {
+    const { env } = guardEnv('multi-run-stranger')
+    const { transcriptPath } = multiRunWorkflowLayout('multi-run-stranger-layout', 'someoneelse')
+    const r = run(
+      GUARD_HOOK,
+      { hook_event_name: 'Stop', agent_id: 'agent-stranger', agent_type: 'pilot', session_id: 'sess-multi-stranger', transcript_path: transcriptPath },
+      env,
+    )
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('OUTBOUND CHECK')
   })
 
   it('pilot remains unchanged: a silent pilot Stop still triggers the outbound guard', () => {

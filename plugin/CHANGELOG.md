@@ -1275,6 +1275,10 @@ assumed.
 
 ## [Unreleased]
 
+### Fixed
+
+- `wt-outbound-guard-hook`: a Workflow-tool subagent on Path A (harness label `workflow-subagent`, session transcript in the hook payload, several runs in the session) was still nudged at SubagentStop and lost its structured return; the exemption now matches the harness label and finds the run by the agent's own transcript file instead of requiring exactly one run.
+
 ### Changed — BREAKING
 
 - **The `adopt-rules` skill is renamed to `adopt`. The old name is REMOVED, not aliased.**

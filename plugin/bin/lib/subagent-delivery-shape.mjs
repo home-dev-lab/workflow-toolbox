@@ -74,7 +74,7 @@ export function agentHasNoMessagingTool(agentType, cwd = '') {
   return String(agentType || '').split(':').pop() === 'opencode-envelope'
 }
 
-export function workflowRunDirForTranscript(transcriptPath, readdir = (d) => fs.readdirSync(d, { withFileTypes: true })) {
+export function workflowRunDirForTranscript(transcriptPath, readdir = (d) => fs.readdirSync(d, { withFileTypes: true }), agentId = null) {
   if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return null
 
   const transcriptDir = path.dirname(transcriptPath)
@@ -97,10 +97,37 @@ export function workflowRunDirForTranscript(transcriptPath, readdir = (d) => fs.
     return null
   }
   const runs = entries.filter((e) => e.isDirectory()).map((e) => e.name)
-  if (runs.length !== 1) return null
-  return path.join(workflowsDir, runs[0])
+  if (runs.length === 1) return path.join(workflowsDir, runs[0])
+  // Several runs — the ordinary state of a long session. Membership is decided by the agent's
+  // own transcript file inside a run directory, never by picking "the" run: with N runs there
+  // is no single one, and "exactly one" silently fails every session past its first launch
+  // (measured 2026-09-03: the provenance checkers of a verification run were nudged, sent their
+  // verdict to the main session, and the pattern fail-closed the claim).
+  if (typeof agentId !== 'string' || agentId.length === 0) return null
+  const wanted = `agent-${agentId}.jsonl`
+  for (const run of runs) {
+    let inner
+    try {
+      inner = readdir(path.join(workflowsDir, run))
+    } catch {
+      continue
+    }
+    if (inner.some((e) => e.name === wanted)) return path.join(workflowsDir, run)
+  }
+  return null
+}
+
+// The harness labels a subagent spawned by the Workflow tool `workflow-subagent` (seen as the
+// hook payload's agent_type, possibly suffixed `@<session>`). Its final text is the run's result
+// channel, so it never needs a SendMessage.
+export function isHarnessWorkflowSubagentType(agentType) {
+  if (typeof agentType !== 'string') return false
+  const bare = agentType.split('@')[0]
+  return bare === 'workflow-subagent'
 }
 
 export function finalTextIsDeliveredByHarness(payload) {
-  return workflowRunDirForTranscript(payload?.transcript_path) !== null
+  if (isHarnessWorkflowSubagentType(payload?.agent_type)) return true
+  const agentId = typeof payload?.agent_id === 'string' ? payload.agent_id : null
+  return workflowRunDirForTranscript(payload?.transcript_path, undefined, agentId) !== null
 }
