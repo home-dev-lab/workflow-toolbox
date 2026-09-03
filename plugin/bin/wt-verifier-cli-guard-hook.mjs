@@ -330,13 +330,15 @@ function markerDir() {
  *  marker per-VOTE (and per-run). Both hook events derive the SAME path for the SAME subagent
  *  (same transcript_path + same agent_id). agent_id is present in both events (re-probe census:
  *  60 distinct agent_ids on marker-writes). */
-/** The RUN directory a delegated session's agent transcripts live in, derived from the session's own
- *  transcript path: `…/<session>.jsonl` → `…/<session>/subagents/workflows/<runId>/`.
+/** The RUN directory a delegated session's agent transcripts live in, derived either from the
+ *  session transcript path (`…/<session>.jsonl` → `…/<session>/subagents/workflows/<runId>/`) or,
+ *  on Path A, directly from a transcript already inside the run dir
+ *  (`…/subagents/workflows/<runId>/agent-<id>.jsonl` → that parent dir).
  *
- *  ⚠ `transcript_path` names the SESSION, never the agent — the doc above `markerPathFor` says so,
- *  and folding `agent_id` into the marker key exists precisely because of it. No hook input carries
- *  a run id (`BaseHookInput` is session_id · transcript_path · cwd · prompt_id? · permission_mode? ·
- *  agent_id?), so the run has to be found on disk.
+ *  ⚠ No hook input carries a run id (`BaseHookInput` is session_id · transcript_path · cwd ·
+ *  prompt_id? · permission_mode? · agent_id?), so the run still has to be found from the transcript
+ *  facts the hook DID receive. Path B exposes the session transcript; Path A exposes an agent
+ *  transcript already inside the run dir.
  *
  *  ⚠⚠ Returns null unless EXACTLY ONE run dir exists. That is not caution for its own sake: it is
  *  only ever one because app.ts's anti-runaway guard aborts a second Workflow launch in one session.
@@ -347,6 +349,18 @@ function markerDir() {
  *  Returns null on anything unexpected; the caller treats that as "nothing to write". */
 export function runDirForSessionTranscript(transcriptPath, readdir = (d) => fs.readdirSync(d, { withFileTypes: true })) {
   if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return null
+
+  const transcriptDir = path.dirname(transcriptPath)
+  const transcriptBase = path.basename(transcriptPath)
+  if (
+    (transcriptBase === 'journal.jsonl' || /^agent-[^.]+\.jsonl$/.test(transcriptBase)) &&
+    path.basename(transcriptDir) !== 'subagents' &&
+    path.basename(path.dirname(transcriptDir)) === 'workflows' &&
+    path.basename(path.dirname(path.dirname(transcriptDir))) === 'subagents'
+  ) {
+    return transcriptDir
+  }
+
   const sessionDir = transcriptPath.replace(/\.jsonl$/, '')
   const workflowsDir = path.join(sessionDir, 'subagents', 'workflows')
   let entries

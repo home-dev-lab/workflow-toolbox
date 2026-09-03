@@ -68,6 +68,10 @@ function fixture(tag: string, journalWorkflowProgress?: unknown[]) {
   return { root, cfg, sessionDir, runDir, transcriptPath }
 }
 
+function pathATranscriptPath(runDir: string): string {
+  return join(runDir, `agent-${PARENT_AGENT_ID}.jsonl`)
+}
+
 describe('phaseIndexForAgentInRunDir — the journal lookup itself', () => {
   it('reads the parent agent’s phaseIndex from the workflow journal', () => {
     const f = fixture('found', [
@@ -148,6 +152,30 @@ describe('handleEnvelopeBatch (via handlePostToolUse) — call nodes inherit the
     const f = fixture('batch-no-phase') // no journal on disk for this run
     const metas = runBatchAndReadLaneMetas(f)
     for (const meta of metas) expect('phaseIndex' in meta).toBe(false)
+  })
+
+  it('Path A hook payload shape: a transcript already inside the run dir still writes one lane node per manifest task', () => {
+    const f = fixture('batch-patha', [{ type: 'workflow_agent', agentId: PARENT_AGENT_ID, phaseIndex: 3, state: 'done' }])
+    const manifestPath = join(f.root, 'manifest.json')
+    const tasks = Array.from({ length: 3 }, (_, i) => {
+      const answerFile = join(f.root, `patha-answer-${i}.txt`)
+      writeFileSync(answerFile, `patha answer ${i}`)
+      return { id: `patha-${i}`, status: 'answer', prompt: `patha prompt ${i}`, answerFile, model: 'openai/gpt-5.4', durationMs: 100 + i }
+    })
+    writeFileSync(manifestPath, JSON.stringify({ tasks }))
+
+    handlePostToolUse({
+      tool_name: 'Bash',
+      tool_input: { command: 'node plugin/bin/wt-opencode-envelope.mjs --tasks x.json' },
+      tool_response: { stdout: `MANIFEST: ${manifestPath}\n` },
+      transcript_path: pathATranscriptPath(f.runDir),
+      agent_id: PARENT_AGENT_ID,
+      agent_type: 'workflow-toolbox:opencode-envelope',
+      tool_use_id: 'toolu_patha',
+    })
+
+    const files = readdirSync(f.runDir).filter((n) => n.startsWith(`agent-${PARENT_AGENT_ID}-lane-`) && n.endsWith('.meta.json'))
+    expect(files.length).toBe(3)
   })
 })
 
