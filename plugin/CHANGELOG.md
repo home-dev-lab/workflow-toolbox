@@ -4,6 +4,8 @@ All notable changes to the `workflow-toolbox` Claude Code plugin are documented 
 file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [0.169.0] - 2026-09-03
 > The entry below arrived with a branch merge but its code did NOT: no commit in that merge
 > touches the hook it describes. It stays here rather than under a released heading, because a
 > changelog that announces work absent from the tree is worse than one that says nothing.
@@ -38,6 +40,20 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   mechanically are now named as such) rather than a size gain.
 
 ### Fixed
+- **Twenty-four capabilities the pre-release coverage audit found undocumented are now described in
+  their mapped docs** (quota-probe JSON contract, adopt changelog spans, run-gate `--fail-pattern` and
+  authorized-scope shapes, actionable-gate and registry-heartbeat env knobs, static vs dynamic
+  orchestrator missions, `STOP_GATE_INTERVAL_MIN`, `leaf-readonly`, `labelRole`, prompt-tag escaping,
+  pr-review routing knobs and its `incomplete` verdict).
+- **Fourteen doc claims corrected after the pre-release docs audit** (adopt `SKILL.md`: agent copies come from
+  `agent-templates/` and there are four of them; `--migrate --execute` is the real move; the merge-chain guard is
+  warn-only and its separator set is `&&`, `;`, `|`, `||`, newline; three rationale docs no longer say a warn-only
+  hook "enforces").
+- **`wt-merge-chain-guard-hook.mjs` records a CLASSIFICATION of the segment that follows a chained
+  `git merge`, never the command text.** The record now says whether the trailing segment was a blind
+  gate (a real catch) or a read of the merge's own log/exit code (the documented safe pattern), so the
+  guard's precision becomes measurable — and no raw shell text, which can carry exported credentials
+  on some machines, ever reaches the guard journal.
 
 - **The lesson-harvest hook re-offered reports it had already harvested.** It does keep a registry,
   and the registry is keyed correctly (`path → mtime`) — but the registry FILE and the directories
