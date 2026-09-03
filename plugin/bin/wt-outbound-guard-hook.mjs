@@ -43,6 +43,7 @@ import { appendFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { runFailOpenHook } from './lib/fail-open-trace.mjs';
+import { agentHasNoMessagingTool, finalTextIsDeliveredByHarness } from './lib/subagent-delivery-shape.mjs';
 
 const STATE_DIR = process.env.WT_OUTBOUND_GUARD_DIR
   || join(homedir(), '.local', 'state', 'wt-outbound-guard');
@@ -204,6 +205,14 @@ function main() {
   const sessionId = payload?.session_id;
   const file = stateFile(sessionId);
   const now = new Date().toISOString();
+
+  if (event === 'SubagentStop' || event === 'Stop' || event === 'StopFailure') {
+    const agentType = typeof payload?.agent_type === 'string' ? payload.agent_type : '';
+    const cwd = typeof payload?.cwd === 'string' ? payload.cwd : '';
+    if (agentHasNoMessagingTool(agentType, cwd) || finalTextIsDeliveredByHarness(payload)) {
+      process.exit(0);
+    }
+  }
 
   // ---- 1. spawn edges. Recorded for EVERY spawner, main loop included: main launches most
   // agents, so gating this behind agent_id would miss almost every birth.
