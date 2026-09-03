@@ -69,12 +69,10 @@ describe('wt-opencode-envelope reaps the process group of a stopped call', () =>
   // no manifest. Do not weaken the timeout below without re-establishing that.
   it('completes its timeout even when a descendant holds the child stdout pipe', () => {
     const { root, bin } = makeStubRoot()
-    const outDir = join(root, 'out')
-
     const started = Date.now()
     const run = spawnSync(
       process.execPath,
-      [SCRIPT, join(root, 'tasks.json'), '--dir', root, '--out-dir', outDir, '--timeout-sec', '3'],
+      [SCRIPT, join(root, 'tasks.json'), '--dir', root, '--timeout-sec', '3'],
       { encoding: 'utf8', timeout: 30_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` } },
     )
     const elapsedMs = Date.now() - started
@@ -87,9 +85,10 @@ describe('wt-opencode-envelope reaps the process group of a stopped call', () =>
     const manifestLine = String(run.stdout ?? '')
     expect(manifestLine).toMatch(/^MANIFEST: /m)
 
-    const manifestPath = join(root, 'tasks.json.manifest.json')
-    expect(existsSync(manifestPath)).toBe(true)
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    const manifestPath = /^MANIFEST: ([^\s]+)/m.exec(manifestLine)?.[1]
+    expect(manifestPath).toBeDefined()
+    expect(existsSync(manifestPath!)).toBe(true)
+    const manifest = JSON.parse(readFileSync(manifestPath!, 'utf8'))
     expect(manifest.tasks).toHaveLength(1)
 
     // Cleanup is LEGIBLE, not silent: on a platform that can be asked, the count is present.

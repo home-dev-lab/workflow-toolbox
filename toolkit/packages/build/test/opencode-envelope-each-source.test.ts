@@ -30,6 +30,10 @@ function generated(items: unknown[], maxTasks = DEFAULT_MAX_TASKS) {
   })
 }
 
+function manifestPathFromStdout(stdout: string) {
+  return /^MANIFEST: ([^\s]+)/m.exec(stdout)?.[1]
+}
+
 function installFakeOpencode(root: string) {
   const bin = join(root, 'opencode')
   writeFileSync(bin, [
@@ -127,8 +131,9 @@ describe('wt-opencode-envelope generated task sources', () => {
     ], { encoding: 'utf8', env: { ...process.env, PATH: '' } })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toBe(`MANIFEST: ${manifestPath}\n`)
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    const outputManifest = manifestPathFromStdout(result.stdout)
+    expect(outputManifest).toMatch(/^.*\.wt-envelope\/[^/]+\/manifest\.json$/)
+    const manifest = JSON.parse(readFileSync(outputManifest!, 'utf8'))
     expect(manifest).toMatchObject({ status: 'nothing_to_do', nothingToDo: true, total: 0, dropped: 0, tasks: [] })
   })
 
@@ -153,25 +158,62 @@ describe('wt-opencode-envelope generated task sources', () => {
     ], { encoding: 'utf8', env })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toBe(`MANIFEST: ${manifestPath}\nANSWER: ${JSON.stringify('line one\n"line two"')}\n`)
+    const outputManifest = manifestPathFromStdout(result.stdout)
+    expect(result.stdout).toBe(`MANIFEST: ${outputManifest}\nANSWER: ${JSON.stringify('line one\n"line two"')}\n`)
     expect(readFileSync(modelCapture, 'utf8')).toBe('nonexistent/provider-model')
-    expect(JSON.parse(readFileSync(manifestPath, 'utf8')).tasks[0]).toMatchObject({
+    expect(JSON.parse(readFileSync(outputManifest!, 'utf8')).tasks[0]).toMatchObject({
       status: 'answer', requestedModel: 'nonexistent/provider-model', model: 'nonexistent/provider-model',
     })
 
     writeFileSync(tasks, JSON.stringify([{ id: 'one', prompt: 'first' }, { id: 'two', prompt: 'second' }]))
     const batch = spawnSync(process.execPath, [SCRIPT, tasks, '--dir', workdir, '--manifest', manifestPath], { encoding: 'utf8', env })
     expect(batch.status).toBe(0)
-    expect(batch.stdout).toBe(`MANIFEST: ${manifestPath}\n`)
+    expect(batch.stdout).toBe(`MANIFEST: ${manifestPathFromStdout(batch.stdout)}\n`)
 
     const failed = spawnSync(process.execPath, [SCRIPT, tasks, '--dir', workdir, '--model', 'does-not-exist', '--manifest', manifestPath], {
       encoding: 'utf8', env: { ...env, FAKE_EXIT_CODE: '1' },
     })
     expect(failed.status).toBe(0)
-    expect(failed.stdout).toBe(`MANIFEST: ${manifestPath}\n`)
-    expect(JSON.parse(readFileSync(manifestPath, 'utf8')).tasks[0]).toMatchObject({
+    const failedManifest = manifestPathFromStdout(failed.stdout)
+    expect(failed.stdout).toBe(`MANIFEST: ${failedManifest}\n`)
+    expect(JSON.parse(readFileSync(failedManifest!, 'utf8')).tasks[0]).toMatchObject({
       status: 'error', requestedModel: 'does-not-exist', model: 'does-not-exist', reason: expect.stringContaining('does-not-exist'),
     })
+  })
+
+  it('writes every inline and generated invocation beneath a fresh workdir envelope', () => {
+    const root = makeRoot()
+    const workdir = join(root, 'workdir')
+    const sourceDir = join(root, 'source')
+    mkdirSync(workdir)
+    mkdirSync(sourceDir)
+    installFakeOpencode(root)
+    const generatedSource = join(sourceDir, 'items.json')
+    const inlineSource = join(sourceDir, 'tasks.json')
+    writeFileSync(generatedSource, '["one"]\n')
+    writeFileSync(inlineSource, JSON.stringify([{ id: 'inline', prompt: 'answer inline' }]))
+    const env = { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}`, XDG_STATE_HOME: root }
+    const runEach = () => spawnSync(process.execPath, [
+      SCRIPT, '--each-json', generatedSource, '--prompt-template', 'Answer {{item}}', '--id-template', '{{item}}', '--dir', workdir,
+    ], { encoding: 'utf8', env })
+
+    const first = runEach()
+    const second = runEach()
+    const inline = spawnSync(process.execPath, [SCRIPT, inlineSource, '--dir', workdir], { encoding: 'utf8', env })
+    expect(first.status).toBe(0)
+    expect(second.status).toBe(0)
+    expect(inline.status).toBe(0)
+    const manifests = [first, second, inline].map((run) => /^MANIFEST: (.+)$/m.exec(run.stdout)?.[1])
+    expect(manifests.every((manifest) => typeof manifest === 'string')).toBe(true)
+    expect(new Set(manifests).size).toBe(3)
+    for (const manifestPath of manifests) {
+      expect(manifestPath).toMatch(new RegExp(`^${workdir}/\\.wt-envelope/[^/]+/manifest\\.json$`))
+      const manifest = JSON.parse(readFileSync(manifestPath!, 'utf8'))
+      expect(manifest.outDir).toBe(join(workdir, '.wt-envelope', manifestPath!.split('/').at(-2)!))
+      expect(manifest.tasks[0].answerFile).toMatch(new RegExp(`^${workdir}/\\.wt-envelope/`))
+      expect(manifest.tasks[0].answerFile.replace(/\.answer\.txt$/, '.task.md')).toMatch(new RegExp(`^${workdir}/\\.wt-envelope/`))
+    }
+    expect(manifests[2]).not.toContain(sourceDir)
   })
 
 
@@ -204,7 +246,7 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(result.status).toBe(0)
 
     // every task ran — nothing truncated
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    const manifest = JSON.parse(readFileSync(manifestPathFromStdout(result.stdout)!, 'utf8'))
     expect(manifest.total).toBe(10)
     expect(manifest.dropped).toBe(0)
     expect(manifest.tasks).toHaveLength(10)
@@ -269,9 +311,9 @@ describe('wt-opencode-envelope generated task sources', () => {
     ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, FAKE_PROMPT_CAPTURE: promptCapture } })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toBe(`MANIFEST: ${manifestPath}\n`)
+    expect(result.stdout).toBe(`MANIFEST: ${manifestPathFromStdout(result.stdout)}\n`)
     expect(readFileSync(promptCapture, 'utf8')).toBe('Synthesize:\n--- BEGIN ANSWER id=first exitStatus=0 ---\nfirst result\n--- END ANSWER id=first ---')
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    const manifest = JSON.parse(readFileSync(manifestPathFromStdout(result.stdout)!, 'utf8'))
     expect(manifest).toMatchObject({ total: 1, answered: 1, errored: 0, skippedFailedTaskIds: ['broken'] })
     expect(manifest.tasks[0]).toMatchObject({ status: 'answer', exitStatus: 0 })
     // the id is derived from the source manifest, so it is a stable prefix plus a digest
@@ -334,11 +376,13 @@ describe('wt-opencode-envelope generated task sources', () => {
 
     const manifestA = join(root, 'reduce-a.manifest.json')
     const manifestB = join(root, 'reduce-b.manifest.json')
-    expect(run(sourceA, manifestA).status).toBe(0)
-    expect(run(sourceB, manifestB).status).toBe(0)
+    const runA = run(sourceA, manifestA)
+    const runB = run(sourceB, manifestB)
+    expect(runA.status).toBe(0)
+    expect(runB.status).toBe(0)
 
-    const fileA = JSON.parse(readFileSync(manifestA, 'utf8')).tasks[0].answerFile
-    const fileB = JSON.parse(readFileSync(manifestB, 'utf8')).tasks[0].answerFile
+    const fileA = JSON.parse(readFileSync(manifestPathFromStdout(runA.stdout)!, 'utf8')).tasks[0].answerFile
+    const fileB = JSON.parse(readFileSync(manifestPathFromStdout(runB.stdout)!, 'utf8')).tasks[0].answerFile
     expect(fileA).not.toBe(fileB)
     // and the first answer must still exist after the second run
     expect(existsSync(fileA)).toBe(true)
@@ -386,9 +430,10 @@ describe('wt-opencode-envelope generated task sources', () => {
     ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, FAKE_PROMPT_CAPTURE: promptCapture } })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toBe(`MANIFEST: ${manifestPath} (nothing_to_do: no usable answers in source manifest)\n`)
+    const outputManifest = manifestPathFromStdout(result.stdout)
+    expect(result.stdout).toBe(`MANIFEST: ${outputManifest} (nothing_to_do: no usable answers in source manifest)\n`)
     expect(existsSync(promptCapture)).toBe(false)
-    expect(JSON.parse(readFileSync(manifestPath, 'utf8'))).toMatchObject({ status: 'nothing_to_do', reason: 'no usable answers in source manifest', total: 0 })
+    expect(JSON.parse(readFileSync(outputManifest!, 'utf8'))).toMatchObject({ status: 'nothing_to_do', reason: 'no usable answers in source manifest', total: 0 })
   })
 
   it('caps reduce input by its literal numeric character limit and logs dropped answer ids', () => {
@@ -413,6 +458,6 @@ describe('wt-opencode-envelope generated task sources', () => {
 
     expect(result.status).toBe(0)
     expect(result.stderr).toContain('dropped 1 answers because --max-reduce-chars=90: second')
-    expect(JSON.parse(readFileSync(manifestPath, 'utf8'))).toMatchObject({ maxReduceChars: 90, cappedAnswerIds: ['second'], total: 1 })
+    expect(JSON.parse(readFileSync(manifestPathFromStdout(result.stdout)!, 'utf8'))).toMatchObject({ maxReduceChars: 90, cappedAnswerIds: ['second'], total: 1 })
   })
 })

@@ -72,6 +72,8 @@ export interface StructuredCallOutcome<T> {
   salvaged: boolean
   /** True when a thin opencode envelope supplied a schema-less ANSWER payload. */
   envelopeAnswer?: true
+  /** The envelope failed before an answer, omitted its answer, or returned an invalid answer. */
+  envelopeFailure?: 'no-manifest' | 'no-answer' | 'schema'
 }
 
 // The JsonSchema type is an open record; these are the subset keywords the
@@ -350,13 +352,30 @@ export function isOpenCodeEnvelopeType(agentType: string | undefined): boolean {
 }
 
 function envelopePrompt(prompt: string, schema: JsonSchema): string {
+  const taskMarker = '--- BEGIN OPENCODE ENVELOPE TASK ---'
+  if (prompt.includes(taskMarker)) return prompt
+  const lines = prompt.split('\n')
+  const directives = lines.filter((line) => /^OPENCODE_[A-Z0-9_]+:/.test(line))
+  const task = lines.filter((line) => !/^OPENCODE_[A-Z0-9_]+:/.test(line)).join('\n').trim()
   const constraints = describeSchemaConstraints(schema)
-  return `${prompt}\n\nOPENCODE ENVELOPE: Answer this task with ONLY a JSON object satisfying this schema; the envelope script will return it in its JSON-encoded ANSWER line.` +
-    (constraints === '' ? '' : `\n${constraints}`)
+  return [
+    ...directives,
+    ...(directives.length > 0 ? [''] : []),
+    taskMarker,
+    task,
+    'Reply with ONLY a JSON object satisfying this schema.',
+    ...(constraints === '' ? [] : [constraints]),
+    '--- END OPENCODE ENVELOPE TASK ---',
+    '',
+    '--- BEGIN OPENCODE ENVELOPE INSTRUCTIONS ---',
+    'Write ONE task with the TASK block above as its prompt, run the envelope script, and report EVERY stdout line verbatim.',
+    'Never answer the task yourself. Never open the manifest or the answer file.',
+    '--- END OPENCODE ENVELOPE INSTRUCTIONS ---',
+  ].join('\n')
 }
 
-function envelopeFailure<T>(where: string, warning: string): StructuredCallOutcome<T> {
-  return { value: null, warnings: [`${where}: ${warning}`], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true }
+function envelopeFailure<T>(where: string, warning: string, envelopeFailure: 'no-manifest' | 'no-answer' | 'schema'): StructuredCallOutcome<T> {
+  return { value: null, warnings: [`${where}: ${warning}`], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true, envelopeFailure }
 }
 
 /** Predicate for the harness's "subagent completed without calling
@@ -407,18 +426,20 @@ export async function agentWithSchemaSalvage<T>(
     const envelopeOpts: AgentOptions = { ...opts }
     delete envelopeOpts.schema
     const raw = await rt.agent<unknown>(envelopePrompt(prompt, schema), envelopeOpts)
-    if (typeof raw !== 'string') return envelopeFailure(where, 'opencode envelope missing ANSWER line')
+    if (typeof raw !== 'string' || !/^MANIFEST:\s*.+$/m.test(raw)) {
+      return envelopeFailure(where, 'opencode envelope did not run the script — final text carries no MANIFEST line', 'no-manifest')
+    }
     const answerLine = /^ANSWER:\s*(.+)$/m.exec(raw)
-    if (answerLine === null) return envelopeFailure(where, 'opencode envelope missing ANSWER line')
+    if (answerLine === null) return envelopeFailure(where, 'opencode envelope script ran but the ANSWER line was not reported', 'no-answer')
     let answerText: unknown
     try {
       answerText = JSON.parse(answerLine[1]!)
     } catch {
-      return envelopeFailure(where, 'opencode envelope ANSWER line is not a JSON string')
+      return envelopeFailure(where, 'opencode envelope ANSWER line is not a JSON string', 'schema')
     }
-    if (typeof answerText !== 'string') return envelopeFailure(where, 'opencode envelope ANSWER line is not a JSON string')
+    if (typeof answerText !== 'string') return envelopeFailure(where, 'opencode envelope ANSWER line is not a JSON string', 'schema')
     const candidate = extractJsonObject(answerText)
-    if (candidate === undefined) return envelopeFailure(where, 'opencode envelope ANSWER payload is not a JSON object')
+    if (candidate === undefined) return envelopeFailure(where, 'opencode envelope ANSWER payload is not a JSON object', 'schema')
     const preViolations = validateAgainstSchema(candidate, schema)
     if (preViolations.length === 0) {
       return { value: candidate as T, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true }
@@ -434,7 +455,7 @@ export async function agentWithSchemaSalvage<T>(
     }
     return envelopeFailure(where, 'opencode envelope ANSWER failed schema validation — ' +
       postViolations.map((v) => `${v.path}: ${v.message}`).join('; ') +
-      (repairs.length > 0 ? ` (repairs attempted: ${repairs.join('; ')})` : ''))
+      (repairs.length > 0 ? ` (repairs attempted: ${repairs.join('; ')})` : ''), 'schema')
   }
 
   // Native schema-bearing call. Two failure shapes route into the salvage path

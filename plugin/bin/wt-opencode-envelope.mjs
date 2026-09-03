@@ -111,9 +111,9 @@ function usage() {
     '  --timeout-sec <n>                  Per-task CLI timeout. Default: 570',
     `  --concurrency <n>                  Tasks run in parallel per batch. Default: ${DEFAULT_CONCURRENCY}`,
     '                                     Bounds the BATCH, never the total; the rest runs in later batches.',
-    '  --out-dir <path>                   Where answer files + manifest are written.',
-    '                                     Default: the directory containing the task source',
-    '  --manifest <path>                  Manifest file path. Default: <task-source>.manifest.json',
+    '  Each invocation writes its task copies, answers, and manifest beneath',
+    '  <dir>/.wt-envelope/<pid>-<timestamp>-<random>/. This keeps observatory',
+    '  witnesses immutable after the invocation that created them.',
     '',
     'Prints a MANIFEST line to stdout, and for exactly one successful non-reduce task also:',
     '  MANIFEST: <path>              — every task attempted; results (per task) are in <path>.',
@@ -202,6 +202,10 @@ function providerAuthenticatedSync(bin) {
 
 function uniqueToken() {
   return `${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
+}
+
+function invocationOutDir(dir) {
+  return path.join(path.resolve(dir), '.wt-envelope', uniqueToken())
 }
 
 function uniqueStreamFile(taskId) {
@@ -335,20 +339,16 @@ async function runTask(task, opts, outDir) {
   const timeoutSec = task.timeoutSec ?? opts.timeoutSec
 
   const safeId = String(id).replace(/[^A-Za-z0-9_.-]/g, '_')
-  const taskfile = path.join(opts.dir, `.oc-envelope-${safeId}-${uniqueToken()}.md`)
+  const taskfile = path.join(outDir, `${safeId}.task.md`)
   fs.writeFileSync(taskfile, String(task.prompt ?? ''), 'utf8')
 
   let result
   let modelUsed = model
-  try {
-    result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model, variant, agentMode, timeoutSec, taskId: id })
+  result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model, variant, agentMode, timeoutSec, taskId: id })
 
-    if (result.exitCode !== 0 && isRateLimited(result.stdout + result.stderr)) {
-      modelUsed = fallbackModel
-      result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model: fallbackModel, variant, agentMode, timeoutSec, taskId: `${id}-retry` })
-    }
-  } finally {
-    try { fs.unlinkSync(taskfile) } catch { /* best-effort cleanup */ }
+  if (result.exitCode !== 0 && isRateLimited(result.stdout + result.stderr)) {
+    modelUsed = fallbackModel
+    result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model: fallbackModel, variant, agentMode, timeoutSec, taskId: `${id}-retry` })
   }
 
   const answerFile = path.join(outDir, `${safeId}.answer.txt`)
@@ -456,8 +456,8 @@ async function reduceManifest(opts) {
     return 2
   }
 
-  const outDir = opts.outDir ?? path.dirname(path.resolve(opts.reduce))
-  const manifestPath = opts.manifest ?? `${opts.reduce}.reduce.manifest.json`
+  const outDir = invocationOutDir(opts.dir)
+  const manifestPath = path.join(outDir, 'manifest.json')
   const skippedFailedTaskIds = source.tasks.filter((task) => task?.status !== 'answer').map((task) => String(task?.id))
   const unusableAnswerIds = []
   const cappedAnswerIds = []
@@ -491,7 +491,7 @@ async function reduceManifest(opts) {
   if (blocks.length === 0) {
     fs.writeFileSync(manifestPath, JSON.stringify({
       sourceManifest: path.resolve(opts.reduce), status: 'nothing_to_do', nothingToDo: true,
-      reason: 'no usable answers in source manifest', dir: path.resolve(opts.dir), total: 0,
+      reason: 'no usable answers in source manifest', dir: path.resolve(opts.dir), outDir, total: 0,
       answered: 0, errored: 0, maxReduceChars: opts.maxReduceChars, skippedFailedTaskIds, unusableAnswerIds, cappedAnswerIds, tasks: [],
     }, null, 2), 'utf8')
     process.stdout.write(`MANIFEST: ${manifestPath} (nothing_to_do: no usable answers in source manifest)\n`)
@@ -519,7 +519,7 @@ async function reduceManifest(opts) {
   const result = await runTask({ id: reduceId, prompt }, { ...opts, bin }, outDir)
   writeReduceManifest(manifestPath, {
     sourceManifest: path.resolve(opts.reduce), status: 'complete', nothingToDo: false,
-    dir: path.resolve(opts.dir), total: 1, answered: result.status === 'answer' ? 1 : 0,
+    dir: path.resolve(opts.dir), outDir, total: 1, answered: result.status === 'answer' ? 1 : 0,
     errored: result.status === 'error' ? 1 : 0, maxReduceChars: opts.maxReduceChars,
     skippedFailedTaskIds, unusableAnswerIds, cappedAnswerIds, tasks: [result],
   })
@@ -606,8 +606,8 @@ async function main() {
     seenIds.add(t.id)
   }
 
-  const outDir = opts.outDir ?? path.dirname(path.resolve(sourcePath))
-  const manifestPath = opts.manifest ?? `${sourcePath}.manifest.json`
+  const outDir = invocationOutDir(opts.dir)
+  const manifestPath = path.join(outDir, 'manifest.json')
   if (generatedMode && tasks.length === 0) {
     fs.mkdirSync(outDir, { recursive: true })
     const manifest = {
@@ -617,6 +617,7 @@ async function main() {
       status: 'nothing_to_do',
       nothingToDo: true,
       dir: path.resolve(opts.dir),
+      outDir,
       concurrency: 0,
       total: 0,
       answered: 0,
@@ -648,6 +649,7 @@ async function main() {
     status: 'complete',
     nothingToDo: false,
     dir: path.resolve(opts.dir),
+    outDir,
     concurrency: Math.min(opts.concurrency, tasks.length),
     total: results.length,
     tokenTotals: sumTaskTokens(results),
@@ -657,6 +659,7 @@ async function main() {
   } : {
     tasksFile: path.resolve(opts.tasksFile),
     dir: path.resolve(opts.dir),
+    outDir,
     concurrency: Math.min(opts.concurrency, tasks.length),
     total: results.length,
     tokenTotals: sumTaskTokens(results),

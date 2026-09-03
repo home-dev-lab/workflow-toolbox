@@ -658,14 +658,29 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     return agentType?.split(":").pop() === "opencode-envelope";
   }
   function envelopePrompt(prompt, schema) {
+    const taskMarker = "--- BEGIN OPENCODE ENVELOPE TASK ---";
+    if (prompt.includes(taskMarker)) return prompt;
+    const lines = prompt.split("\n");
+    const directives = lines.filter((line) => /^OPENCODE_[A-Z0-9_]+:/.test(line));
+    const task = lines.filter((line) => !/^OPENCODE_[A-Z0-9_]+:/.test(line)).join("\n").trim();
     const constraints = describeSchemaConstraints(schema);
-    return `${prompt}
-
-OPENCODE ENVELOPE: Answer this task with ONLY a JSON object satisfying this schema; the envelope script will return it in its JSON-encoded ANSWER line.` + (constraints === "" ? "" : `
-${constraints}`);
+    return [
+      ...directives,
+      ...directives.length > 0 ? [""] : [],
+      taskMarker,
+      task,
+      "Reply with ONLY a JSON object satisfying this schema.",
+      ...constraints === "" ? [] : [constraints],
+      "--- END OPENCODE ENVELOPE TASK ---",
+      "",
+      "--- BEGIN OPENCODE ENVELOPE INSTRUCTIONS ---",
+      "Write ONE task with the TASK block above as its prompt, run the envelope script, and report EVERY stdout line verbatim.",
+      "Never answer the task yourself. Never open the manifest or the answer file.",
+      "--- END OPENCODE ENVELOPE INSTRUCTIONS ---"
+    ].join("\n");
   }
-  function envelopeFailure(where, warning) {
-    return { value: null, warnings: [`${where}: ${warning}`], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true };
+  function envelopeFailure(where, warning, envelopeFailure2) {
+    return { value: null, warnings: [`${where}: ${warning}`], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true, envelopeFailure: envelopeFailure2 };
   }
   function isNoStructuredOutputError(err) {
     return err instanceof Error && err.message.includes("without calling StructuredOutput");
@@ -681,18 +696,20 @@ ${constraints}`);
       const envelopeOpts = { ...opts };
       delete envelopeOpts.schema;
       const raw2 = await rt.agent(envelopePrompt(prompt, schema), envelopeOpts);
-      if (typeof raw2 !== "string") return envelopeFailure(where2, "opencode envelope missing ANSWER line");
+      if (typeof raw2 !== "string" || !/^MANIFEST:\s*.+$/m.test(raw2)) {
+        return envelopeFailure(where2, "opencode envelope did not run the script \u2014 final text carries no MANIFEST line", "no-manifest");
+      }
       const answerLine = /^ANSWER:\s*(.+)$/m.exec(raw2);
-      if (answerLine === null) return envelopeFailure(where2, "opencode envelope missing ANSWER line");
+      if (answerLine === null) return envelopeFailure(where2, "opencode envelope script ran but the ANSWER line was not reported", "no-answer");
       let answerText;
       try {
         answerText = JSON.parse(answerLine[1]);
       } catch {
-        return envelopeFailure(where2, "opencode envelope ANSWER line is not a JSON string");
+        return envelopeFailure(where2, "opencode envelope ANSWER line is not a JSON string", "schema");
       }
-      if (typeof answerText !== "string") return envelopeFailure(where2, "opencode envelope ANSWER line is not a JSON string");
+      if (typeof answerText !== "string") return envelopeFailure(where2, "opencode envelope ANSWER line is not a JSON string", "schema");
       const candidate2 = extractJsonObject(answerText);
-      if (candidate2 === void 0) return envelopeFailure(where2, "opencode envelope ANSWER payload is not a JSON object");
+      if (candidate2 === void 0) return envelopeFailure(where2, "opencode envelope ANSWER payload is not a JSON object", "schema");
       const preViolations2 = validateAgainstSchema(candidate2, schema);
       if (preViolations2.length === 0) {
         return { value: candidate2, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true };
@@ -709,7 +726,7 @@ ${constraints}`);
           envelopeAnswer: true
         };
       }
-      return envelopeFailure(where2, "opencode envelope ANSWER failed schema validation \u2014 " + postViolations2.map((v) => `${v.path}: ${v.message}`).join("; ") + (repairs2.length > 0 ? ` (repairs attempted: ${repairs2.join("; ")})` : ""));
+      return envelopeFailure(where2, "opencode envelope ANSWER failed schema validation \u2014 " + postViolations2.map((v) => `${v.path}: ${v.message}`).join("; ") + (repairs2.length > 0 ? ` (repairs attempted: ${repairs2.join("; ")})` : ""), "schema");
     }
     let native;
     try {

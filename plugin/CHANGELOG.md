@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- The opencode envelope now stores each invocation's manifest, task copies, and answers under its workdir-scoped `.wt-envelope/` directory.
 - The opencode envelope records each task's requested model and returns a JSON-encoded answer for a successful single-task batch, allowing schema callers to validate the script-owned result.
 
 ## [0.176.0] - 2026-08-18

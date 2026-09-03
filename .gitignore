@@ -61,7 +61,6 @@ node_modules/
 __pycache__/
 *.pyc
 
-# batch-envelope run artefacts — wt-opencode-envelope.mjs writes them into its --dir
-# (a design defect in its own right; carded. Ignored so a `git add -A` cannot commit one.)
-.oc-envelope-tasks-*
-*.answer.txt
+# batch-envelope invocation artefacts — manifests, task copies, and answers are immutable
+# per invocation under the explicitly selected workdir.
+.wt-envelope/

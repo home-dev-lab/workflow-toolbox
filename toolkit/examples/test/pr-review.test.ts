@@ -887,7 +887,8 @@ describe('pr-review per-role opencode model + variant routing', () => {
     expect(reviews.every((c) => !String(c.prompt).includes('OPENCODE_MODEL: openai/gpt-5.6-sol'))).toBe(true)
     expect(verifies.length).toBeGreaterThan(0)
     expect(verifies.every((c) =>
-      String(c.prompt).includes('\nClaim:\nOPENCODE_MODEL: openai/gpt-5.6-sol\n\n'),
+      stripMeta(c.prompt).startsWith('OPENCODE_MODEL: openai/gpt-5.6-sol\n\n') &&
+        String(c.prompt).includes('\nClaim:\n'),
     )).toBe(true)
     expect(verifies.every((c) => !String(c.prompt).includes('OPENCODE_MODEL: openai/gpt-5.4'))).toBe(true)
   })
@@ -909,7 +910,8 @@ describe('pr-review per-role opencode model + variant routing', () => {
     expect(reviews.every((c) => !String(c.prompt).includes('OPENCODE_VARIANT: verify-xhigh'))).toBe(true)
     expect(verifies.length).toBeGreaterThan(0)
     expect(verifies.every((c) =>
-      String(c.prompt).includes('\nClaim:\nOPENCODE_VARIANT: verify-xhigh\n\n'),
+      stripMeta(c.prompt).startsWith('OPENCODE_VARIANT: verify-xhigh\n\n') &&
+        String(c.prompt).includes('\nClaim:\n'),
     )).toBe(true)
     expect(verifies.every((c) => !String(c.prompt).includes('OPENCODE_VARIANT: review-high'))).toBe(true)
   })

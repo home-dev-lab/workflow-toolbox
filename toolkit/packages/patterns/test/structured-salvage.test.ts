@@ -225,21 +225,49 @@ describe('agentWithSchemaSalvage', () => {
     expect(rt.calls[0]?.prompt).toContain('"summary" (REQUIRED): string, 12-100 chars')
   })
 
-  it('warns specifically when an opencode envelope omits, corrupts, or violates its ANSWER payload', async () => {
+  it('composes one pattern-owned envelope task after verbatim directives', async () => {
+    const rt = new FakeRuntime({ responses: [`MANIFEST: /tmp/envelope.manifest.json\nANSWER: ${JSON.stringify('{"summary":"a real, long-enough summary","riskAreas":[]}')}\n`] })
+    await agentWithSchemaSalvage(rt, 'OPENCODE_WORKDIR: /work\nOPENCODE_PLUGIN_ROOT: /plugin\n\nsummarize the change', {
+      ...opts, agentType: 'workflow-toolbox:opencode-envelope',
+    })
+    const prompt = rt.calls[0]!.prompt
+    expect(prompt.startsWith('OPENCODE_WORKDIR: /work\nOPENCODE_PLUGIN_ROOT: /plugin\n')).toBe(true)
+    expect((prompt.match(/BEGIN OPENCODE ENVELOPE TASK/g) ?? [])).toHaveLength(1)
+    expect((prompt.match(/BEGIN OPENCODE ENVELOPE INSTRUCTIONS/g) ?? [])).toHaveLength(1)
+    expect(prompt).toContain('summarize the change')
+    expect(prompt).toContain('Reply with ONLY a JSON object')
+  })
+
+  it('does not double-wrap a caller prompt carrying the envelope task marker', async () => {
+    const wrapped = 'OPENCODE_WORKDIR: /work\n\n--- BEGIN OPENCODE ENVELOPE TASK ---\nalready wrapped\n--- END OPENCODE ENVELOPE TASK ---'
+    const rt = new FakeRuntime({ responses: [`MANIFEST: /tmp/envelope.manifest.json\nANSWER: ${JSON.stringify('{"summary":"a real, long-enough summary","riskAreas":[]}')}\n`] })
+    await agentWithSchemaSalvage(rt, wrapped, { ...opts, agentType: 'opencode-envelope' })
+    expect(rt.calls[0]!.prompt).toBe(wrapped)
+  })
+
+  it('distinguishes envelopes that did not run, omitted ANSWER, or failed schema validation', async () => {
     const envelopeOpts = { ...opts, agentType: 'workflow-toolbox:opencode-envelope' }
-    const missing = await agentWithSchemaSalvage(new FakeRuntime({ responses: ['MANIFEST: /tmp/x.manifest.json\n'] }), 'task', envelopeOpts)
-    expect(missing.value).toBeNull()
-    expect(missing.warnings.join(' ')).toContain('missing ANSWER line')
+    const noManifest = await agentWithSchemaSalvage(new FakeRuntime({ responses: ['{"summary":"self answer"}\n'] }), 'task', envelopeOpts)
+    expect(noManifest.value).toBeNull()
+    expect(noManifest.envelopeFailure).toBe('no-manifest')
+    expect(noManifest.warnings.join(' ')).toContain('final text carries no MANIFEST line')
+
+    const noAnswer = await agentWithSchemaSalvage(new FakeRuntime({ responses: ['MANIFEST: /tmp/x.manifest.json\n'] }), 'task', envelopeOpts)
+    expect(noAnswer.value).toBeNull()
+    expect(noAnswer.envelopeFailure).toBe('no-answer')
+    expect(noAnswer.warnings.join(' ')).toContain('script ran but the ANSWER line was not reported')
 
     const invalid = await agentWithSchemaSalvage(new FakeRuntime({ responses: ['MANIFEST: /tmp/x.manifest.json\nANSWER: not-json\n'] }), 'task', envelopeOpts)
     expect(invalid.value).toBeNull()
+    expect(invalid.envelopeFailure).toBe('schema')
     expect(invalid.warnings.join(' ')).toContain('ANSWER line is not a JSON string')
 
     const enumSchema = { type: 'object', properties: { verdict: { type: 'string', enum: ['yes', 'no'] } }, required: ['verdict'] }
-    const violation = await agentWithSchemaSalvage(new FakeRuntime({ responses: [`ANSWER: ${JSON.stringify('{"verdict":"maybe"}')}\n`] }), 'task', {
+    const violation = await agentWithSchemaSalvage(new FakeRuntime({ responses: [`MANIFEST: /tmp/x.manifest.json\nANSWER: ${JSON.stringify('{"verdict":"maybe"}')}\n`] }), 'task', {
       schema: enumSchema, agentType: 'opencode-envelope', label: 'verify',
     })
     expect(violation.value).toBeNull()
+    expect(violation.envelopeFailure).toBe('schema')
     expect(violation.warnings.join(' ')).toContain('"maybe" is not one of "yes" | "no"')
     expect(violation.spawns).toBe(1)
   })
