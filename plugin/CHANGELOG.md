@@ -5,6 +5,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+
+- **Four guard hooks no longer journal paths or path-derived text from tool input**. `wt-stale-date-guard-hook`, `wt-missing-package-script-guard-hook`, `wt-isolated-spawn-report-path-hook`, and `wt-observer-pairing-guard-hook` now record only class labels plus bounded shape evidence in the guard journal. Their model-facing warnings keep path detail only where the warning would be materially less usable without it.
+
 ## [0.170.0] - 2026-09-03
 
 ### Added

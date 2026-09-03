@@ -320,8 +320,7 @@ function main() {
     guard: 'wt-missing-package-script-guard-hook.mjs',
     decision: 'warned',
     class: 'missing-script',
-    reason: `${scriptName} @ ${cwdPkgDir}`,
-    cwd: cwdPkgDir,
+    evidence: { nearest: 'package_json', ancestor: ancestorDir ? 'yes' : 'no' },
   })
 
   emitGuardNotice({

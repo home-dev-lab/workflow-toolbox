@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,6 +33,14 @@ function run(toolInput: Record<string, unknown>) {
     warned: res.stdout.includes('systemMessage'),
     stdout: res.stdout,
     status: res.status,
+    entries: readdirSync(journalDir)
+      .filter((file) => file.endsWith('.ndjson'))
+      .flatMap((file) =>
+        readFileSync(join(journalDir, file), 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as Record<string, unknown>),
+      ),
   }
 }
 
@@ -44,8 +52,26 @@ describe('wt-isolated-spawn-report-path-hook', () => {
       prompt: 'Write your report to /home/doublefx/projects/wt-suite/.claude/reports/x.md when done.',
     })
     expect(r.warned).toBe(true)
-    expect(r.stdout).toContain('/home/doublefx/projects/wt-suite/.claude/reports/x.md')
+    expect(r.stdout).toContain('1 absolute write path(s).')
+    expect(r.stdout).not.toContain('/home/doublefx/projects/wt-suite/.claude/reports/x.md')
     expect(r.status).toBe(0)
+  })
+
+  it('SECURITY LOCK: the journal record never contains the absolute path extracted from the prompt', () => {
+    const secret = 'SECRET-7f3a'
+    const r = run({
+      name: 'port-guards',
+      isolation: 'worktree',
+      prompt: `Write your report to /home/x/${secret}/report.md when done.`,
+    })
+    expect(r.warned).toBe(true)
+    expect(r.entries).toHaveLength(1)
+    expect(r.entries[0]).toMatchObject({
+      guard: 'wt-isolated-spawn-report-path-hook.mjs',
+      decision: 'warned',
+      class: 'isolated-spawn-out-of-tree-write',
+    })
+    expect(JSON.stringify(r.entries[0])).not.toContain(secret)
   })
 
   it('SILENT: isolated spawn whose write target is already inside a worktrees dir', () => {

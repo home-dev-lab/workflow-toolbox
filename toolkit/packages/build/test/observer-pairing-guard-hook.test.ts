@@ -20,7 +20,7 @@
 // a source that cannot drift with the shell's working directory.
 
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -85,11 +85,12 @@ function fixture(tag: string, slugLabel: string) {
   return { root, projectRoot, subDir, cfg, transcriptPath }
 }
 
-function runHook(payload: Record<string, unknown>, cfg: string): { stdout: string; context: string } {
+function runHook(payload: Record<string, unknown>, cfg: string): { stdout: string; context: string; entries: Array<Record<string, unknown>> } {
+  const journalDir = mkRoot('journal')
   const res = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_CONFIG_DIR: cfg },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, WT_GUARD_JOURNAL_DIR: journalDir },
   })
   const stdout = (res.stdout ?? '').trim()
   let context = ''
@@ -100,7 +101,15 @@ function runHook(payload: Record<string, unknown>, cfg: string): { stdout: strin
   } catch {
     context = ''
   }
-  return { stdout, context }
+  const entries = readdirSync(journalDir)
+    .filter((file) => file.endsWith('.ndjson'))
+    .flatMap((file) =>
+      readFileSync(join(journalDir, file), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>),
+    )
+  return { stdout, context, entries }
 }
 
 // The RESTART defect (card 1837122444): the guard's subagentsDirFor() joined
@@ -188,6 +197,45 @@ describe('wt-observer-pairing-guard-hook.mjs', () => {
     expect(context).toContain('the checker could not resolve its own path')
     expect(context).not.toContain('metadata was not found or was ambiguous')
     expect(context).not.toContain('LOST its declared observer')
+  })
+
+  it('SECURITY LOCK: the journal record never contains the transcript path or checker path details', () => {
+    const secret = 'SECRET-7f3a'
+    const root = mkRoot('path-secret')
+    const cfg = join(root, 'cfg')
+    const projectRoot = join(root, 'proj')
+    mkdirSync(projectRoot, { recursive: true })
+    const agentsDir = join(projectRoot, '.claude', 'agents')
+    mkdirSync(agentsDir, { recursive: true })
+    writeFileSync(
+      join(agentsDir, 'pilot-orchestrator.md'),
+      '---\nname: pilot-orchestrator\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
+    )
+    const slugDir = join(cfg, 'projects', `slug-${secret}`)
+    const transcriptPath = join(slugDir, `${SESSION_ID}.jsonl`)
+
+    const { context, entries } = runHook(
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { subagent_type: 'pilot-orchestrator' },
+        tool_response: { agent_id: AGENT_ID },
+        cwd: projectRoot,
+        session_id: SESSION_ID,
+        transcript_path: transcriptPath,
+      },
+      cfg,
+    )
+
+    expect(context).toContain('PAIRING UNKNOWN')
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      guard: 'wt-observer-pairing-guard-hook.mjs',
+      decision: 'warned',
+      class: 'observer-pairing',
+    })
+    expect(JSON.stringify(entries[0])).not.toContain(secret)
+    expect(JSON.stringify(entries[0])).not.toContain('subagents')
   })
 
   it('distinguishes a META-LOOKUP unknown (the directory read fine, but the observed record is missing) from a path-resolution unknown', () => {
