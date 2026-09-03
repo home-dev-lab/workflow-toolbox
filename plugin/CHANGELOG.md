@@ -52,6 +52,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   ⚠ The state filename now carries a hash suffix, so existing partitions are not read. Effect is a
   ONE-TIME cold start per project: already-harvested reports may be offered once more, then
   remembered correctly. Nothing is lost — the registry only suppresses repeats.
+- **`wt-plugin-release-record-guard-hook.mjs`'s remedy no longer asks a branch to bump the
+  version.** `no-publish-from-branches.md` forbids a branch from bumping the version at all — the
+  bump happens on `main`, at push time, and a branch's changelog entry carries no version heading.
+  On any branch other than `main`/`master`, the warning now asks only for a changelog entry under
+  `## [Unreleased]` and says so explicitly; the version-bump remedy is unchanged on `main`.
 
 ## [0.168.0] - 2026-08-28
 

@@ -25,6 +25,12 @@
 // Neither loses work; both are a nag. Promotion to blocking is a separate decision, taken from
 // the guard journal's record, not from this file.
 //
+// ⚠ BRANCH-AWARE REMEDY. `no-publish-from-branches.md`: a branch never bumps the version — it
+// inherits `main`'s number and the bump happens on `main`, at push time; a branch's changelog
+// entry carries no version heading, only `## [Unreleased]`. On any branch other than
+// `main`/`master`, the warning's remedy asks ONLY for a changelog entry — never the version bump,
+// which would ask the committer to do the one thing that rule forbids.
+//
 // ⚠ WHAT IT DOES NOT COVER, so its silence is never read as coverage:
 //   - whether the changelog entry is CORRECT, or whether the bump is the right size. It reads
 //     that the files were staged, nothing about their content;
@@ -85,6 +91,25 @@ function stagedPaths(cwd) {
   }
 }
 
+/**
+ * Current branch name, or null when it can't be determined (detached HEAD, git failure). Fail
+ * open toward the MAIN-branch remedy: an unknown branch gets the same wording main gets today,
+ * never the branch-only wording — `no-publish-from-branches.md` only relaxes the requirement on a
+ * branch it can actually name.
+ */
+function currentBranch(cwd) {
+  try {
+    const name = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return name || null
+  } catch {
+    return null
+  }
+}
+
 function main() {
   const input = readInput()
   if (input.hook_event_name !== 'PreToolUse') return
@@ -113,30 +138,46 @@ function main() {
   if (hasVersion || hasChangelog) return
 
   const missing = 'neither the version nor the changelog'
+  const branch = currentBranch(cwd)
+  const onFeatureBranch = branch !== null && branch !== 'main' && branch !== 'master'
 
   recordGuardEvent({
     guard: 'wt-plugin-release-record-guard-hook.mjs',
     decision: 'warned',
     class: 'plugin-change-without-release-record',
-    reason: `${staged.filter((p) => p.startsWith('plugin/')).length} plugin path(s) staged, ${missing}`,
+    reason: `${staged.filter((p) => p.startsWith('plugin/')).length} plugin path(s) staged, ${missing}${
+      onFeatureBranch ? ` (branch ${branch})` : ''
+    }`,
   })
+
+  const preamble =
+    '⚠ [workflow-toolbox plugin release-record guard] This commit stages a change under ' +
+    '`plugin/` but stages ' + missing + '. The plugin version is what gates whether ' +
+    'ADOPTERS receive the change: a plugin fix merged and pushed without a bump reaches ' +
+    '`main` and reaches nobody, silently. Measured 2026-08-27, exactly that. Published ' +
+    'PACKAGES already fail red on the same omission (changeset-gate); the plugin had no ' +
+    'equivalent, which is the asymmetry this closes.\n'
+
+  // `no-publish-from-branches.md`: a branch never bumps the version — it inherits main's number
+  // and leaves it alone; the bump happens on `main`, at push time. Telling a branch commit to
+  // stage the version bump would ask for the one thing that rule forbids.
+  const remedy = onFeatureBranch
+    ? 'Stage a changelog entry in this commit:\n' +
+      '  plugin/CHANGELOG.md   (an entry under `## [Unreleased]`, no version heading)\n' +
+      `The version bump happens on \`main\`, at push time — not on branch \`${branch}\`.\n` +
+      'Deliberately WARN-ONLY: a plugin change with no release surface (a comment, a test ' +
+      'fixture) fires this legitimately too.'
+    : 'Stage the bump and the entry in this commit:\n' +
+      '  plugin/.claude-plugin/plugin.json   (version)\n' +
+      '  plugin/CHANGELOG.md                 (one entry naming what adopters get)\n' +
+      'Deliberately WARN-ONLY: a work-in-progress commit on a branch that bumps once at the ' +
+      'end, and a plugin change with no release surface, both fire this legitimately.'
 
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        additionalContext:
-          '⚠ [workflow-toolbox plugin release-record guard] This commit stages a change under ' +
-          '`plugin/` but stages ' + missing + '. The plugin version is what gates whether ' +
-          'ADOPTERS receive the change: a plugin fix merged and pushed without a bump reaches ' +
-          '`main` and reaches nobody, silently. Measured 2026-08-27, exactly that. Published ' +
-          'PACKAGES already fail red on the same omission (changeset-gate); the plugin had no ' +
-          'equivalent, which is the asymmetry this closes.\n' +
-          'Stage the bump and the entry in this commit:\n' +
-          '  plugin/.claude-plugin/plugin.json   (version)\n' +
-          '  plugin/CHANGELOG.md                 (one entry naming what adopters get)\n' +
-          'Deliberately WARN-ONLY: a work-in-progress commit on a branch that bumps once at the ' +
-          'end, and a plugin change with no release surface, both fire this legitimately.',
+        additionalContext: preamble + remedy,
       },
     }),
   )

@@ -133,6 +133,31 @@ describe('wt-plugin-release-record-guard-hook', () => {
     expect(run(root, 'ls -la plugin/').warned).toBe(false)
   })
 
+  // Branch wording. `no-publish-from-branches.md`: a branch never bumps the version — the bump
+  // happens on `main` at push time, and a branch's changelog entry carries no version heading.
+  // The remedy text must match that, or it tells the committer to do the forbidden thing.
+  it('on a branch, the remedy asks only for a changelog entry — never a version bump', () => {
+    const root = pluginRepo()
+    git(root, 'checkout', '-q', '-b', 'card/some-work')
+    write(root, 'plugin/bin/thing.mjs', '// v2\n')
+    git(root, 'add', 'plugin/bin/thing.mjs')
+    const r = run(root)
+    expect(r.warned, 'a plugin change with no release record must still warn on a branch').toBe(true)
+    expect(r.denied).toBe(false)
+    expect(r.stdout).not.toContain('plugin.json   (version)')
+    expect(r.stdout).toContain('## [Unreleased]')
+    expect(r.stdout).toContain('main')
+  })
+
+  it('is silent on a branch when only the changelog entry is staged (no version bump)', () => {
+    const root = pluginRepo()
+    git(root, 'checkout', '-q', '-b', 'card/some-work')
+    write(root, 'plugin/bin/thing.mjs', '// v2\n')
+    write(root, 'plugin/CHANGELOG.md', '# Changelog\n\n## [Unreleased]\n\n- fixed thing\n')
+    git(root, 'add', 'plugin/bin/thing.mjs', 'plugin/CHANGELOG.md')
+    expect(run(root).warned).toBe(false)
+  })
+
   // Fail-open is the contract for every guard here: a hook that throws must not block the tool.
   it('exits zero even when handed input it cannot use', () => {
     const root = pluginRepo()
