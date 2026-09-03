@@ -43,6 +43,7 @@ import { warn, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { runCacheWarmup } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
+import { withEnvelopeContract } from './envelope-contract.js'
 import type { StructuredCallOutcome } from './structured-salvage.js'
 
 const STAGE = 'tournament'
@@ -250,6 +251,7 @@ export async function tournament<TAttempt = string, TOut = string>(
   rt: WorkflowRuntime,
   options: TournamentOptions<TAttempt>,
 ): Promise<PatternResult<TOut | null>> {
+  rt = withEnvelopeContract(rt)
   const {
     angles,
     attemptPrompt,

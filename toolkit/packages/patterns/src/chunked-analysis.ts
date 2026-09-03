@@ -35,6 +35,7 @@ import { warn, applyCap, makeRecord, emitDigest, assertAgentTypeOption } from '.
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { parallelWithCacheWarm } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
+import { withEnvelopeContract } from './envelope-contract.js'
 import type { StructuredCallOutcome } from './structured-salvage.js'
 import { claimStageInstance, stageBuilder } from './stage-instance.js'
 
@@ -264,6 +265,7 @@ export async function chunkedAnalysis<TChunk = string, TOut = string>(
   rt: WorkflowRuntime,
   options: ChunkedAnalysisOptions<TChunk>,
 ): Promise<ChunkedAnalysisResult<TChunk, TOut>> {
+  rt = withEnvelopeContract(rt)
   const {
     input,
     maxChars,

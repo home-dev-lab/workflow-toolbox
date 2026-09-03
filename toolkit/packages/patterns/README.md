@@ -22,8 +22,10 @@ pnpm add @workflow-toolbox/patterns @workflow-toolbox/runtime
 documents its own **when to use / when not to** — see the pattern table linked below
 rather than duplicating it here.
 
-Also included: `withLeafFence` / `withLeanRouting` (agent-default wrappers that route
-fresh-context worker/reasoning-only roles to a minimal-ambient-context agent type),
+Also included: `withEnvelopeContract` (routes every `opencode-envelope` call through its
+single-task protocol, removing harness schemas and parsing its one result line),
+`withLeafFence` / `withLeanRouting` (agent-default wrappers that route fresh-context
+worker/reasoning-only roles to a minimal-ambient-context agent type),
 `probeAgentType` (check whether a named agent type is actually callable before routing to
 it), `isExternalBridgeType` (the SAME registry `adversarialVerification` uses to decide
 whether a routed `verifierType` is an external CLI relay — opencode/codex — vs a Claude

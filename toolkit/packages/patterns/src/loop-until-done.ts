@@ -64,6 +64,7 @@
 
 import type { AgentOptions, WorkflowRuntime } from '@workflow-toolbox/runtime'
 import { LOOP_STAGE, LOOP_ITER_MARKER } from '@workflow-toolbox/runtime'
+import { withEnvelopeContract } from './envelope-contract.js'
 import { warn, makeRecord, emitDigest } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 
@@ -151,6 +152,7 @@ export async function loopUntilDone<TState>(
   rt: WorkflowRuntime,
   options: LoopUntilDoneOptions<TState>,
 ): Promise<PatternResult<LoopOutcome<TState>>> {
+  rt = withEnvelopeContract(rt)
   const { initial, body, maxIterations, dryRounds, budgetFloor } = options as LoopStopConditions & {
     initial: TState
     body: LoopUntilDoneOptions<TState>['body']

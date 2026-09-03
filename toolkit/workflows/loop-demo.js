@@ -320,6 +320,100 @@ unreadable channel never fails your task.`;
     }
   }
 
+  // ../packages/patterns/src/envelope-contract.ts
+  var wrappedRuntimes = /* @__PURE__ */ new WeakMap();
+  var wrappersByRuntime = /* @__PURE__ */ new WeakMap();
+  function isOpenCodeEnvelopeType(agentType) {
+    return agentType?.split(":").pop() === "opencode-envelope";
+  }
+  function envelopePrompt(prompt, schema) {
+    const taskMarker = "--- BEGIN OPENCODE ENVELOPE TASK ---";
+    if (prompt.includes(taskMarker)) return prompt;
+    const lines = prompt.split("\n");
+    const directives = lines.filter((line) => /^OPENCODE_[A-Z0-9_]+:/.test(line));
+    const task = lines.filter((line) => !/^OPENCODE_[A-Z0-9_]+:/.test(line)).join("\n").trim();
+    const constraints = schema === void 0 ? "" : describeSchemaConstraints(schema);
+    return [
+      ...directives,
+      ...directives.length > 0 ? [""] : [],
+      taskMarker,
+      task,
+      ...schema === void 0 ? [] : ["Reply with ONLY a JSON object satisfying this schema.", ...constraints === "" ? [] : [constraints]],
+      "--- END OPENCODE ENVELOPE TASK ---",
+      "",
+      "--- BEGIN OPENCODE ENVELOPE INSTRUCTIONS ---",
+      "Write ONE task with the TASK block above as its prompt, run the envelope script, and report EVERY stdout line verbatim.",
+      "Never answer the task yourself. Never open the manifest or the answer file.",
+      "Pass no --model flag unless an OPENCODE_MODEL line is present.",
+      "--- END OPENCODE ENVELOPE INSTRUCTIONS ---"
+    ].join("\n");
+  }
+  function envelopeFailure(where, warning, failure) {
+    return { value: null, warnings: [`${where}: ${warning}`], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true, envelopeFailure: failure };
+  }
+  async function runEnvelopeContract(rt, prompt, opts) {
+    const schema = opts.schema;
+    const where = opts.label ?? "agent";
+    const envelopeOpts = { ...opts };
+    delete envelopeOpts.schema;
+    const raw = await unwrapEnvelopeContract(rt).agent(envelopePrompt(prompt, schema), envelopeOpts);
+    if (typeof raw !== "string" || !/^MANIFEST:\s*.+$/m.test(raw)) {
+      return envelopeFailure(where, "opencode envelope did not run the script \u2014 final text carries no MANIFEST line", "no-manifest");
+    }
+    const errorLine = /^MANIFEST:[^\r\n]*? ERROR:\s*(.+)$/m.exec(raw);
+    if (errorLine !== null) {
+      try {
+        const reason = JSON.parse(errorLine[1]);
+        if (typeof reason === "string") return envelopeFailure(where, `opencode envelope lane failed \u2014 ${reason}`, "lane-error");
+      } catch {
+      }
+      return envelopeFailure(where, "opencode envelope ERROR line is not a JSON string", "schema");
+    }
+    const answerLine = /^MANIFEST:[^\r\n]*? ANSWER:\s*(.+)$/m.exec(raw) ?? /^ANSWER:\s*(.+)$/m.exec(raw);
+    if (answerLine === null) return envelopeFailure(where, "opencode envelope script ran but the ANSWER line was not reported", "no-answer");
+    let answer;
+    try {
+      answer = JSON.parse(answerLine[1]);
+    } catch {
+      return envelopeFailure(where, "opencode envelope ANSWER line is not a JSON string", "schema");
+    }
+    if (typeof answer !== "string") return envelopeFailure(where, "opencode envelope ANSWER line is not a JSON string", "schema");
+    if (schema === void 0) return { value: answer, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true };
+    const candidate = extractJsonObject(answer);
+    if (candidate === void 0) return envelopeFailure(where, "opencode envelope ANSWER payload is not a JSON object", "schema");
+    const preViolations = validateAgainstSchema(candidate, schema);
+    if (preViolations.length === 0) return { value: candidate, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true };
+    const { value: repaired, repairs } = repairToSchema(candidate, schema);
+    const postViolations = validateAgainstSchema(repaired, schema);
+    if (postViolations.length === 0) {
+      return { value: repaired, warnings: [`${where}: opencode envelope answer repaired \u2014 ${repairs.join("; ")}`], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true };
+    }
+    return envelopeFailure(where, "opencode envelope ANSWER failed schema validation \u2014 " + postViolations.map((v) => `${v.path}: ${v.message}`).join("; ") + (repairs.length > 0 ? ` (repairs attempted: ${repairs.join("; ")})` : ""), "schema");
+  }
+  function withEnvelopeContract(rt) {
+    if (wrappedRuntimes.has(rt)) return rt;
+    const existing = wrappersByRuntime.get(rt);
+    if (existing !== void 0) return existing;
+    const wrapped = {
+      agent: async (prompt, opts = {}) => {
+        if (!isOpenCodeEnvelopeType(opts.agentType)) return rt.agent(prompt, opts);
+        return (await runEnvelopeContract(rt, prompt, opts)).value;
+      },
+      parallel: (thunks) => rt.parallel(thunks),
+      pipeline: (...args) => rt.pipeline(...args),
+      phase: (title) => rt.phase(title),
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
+    wrappedRuntimes.set(wrapped, rt);
+    wrappersByRuntime.set(rt, wrapped);
+    return wrapped;
+  }
+  function unwrapEnvelopeContract(rt) {
+    return wrappedRuntimes.get(rt) ?? rt;
+  }
+
   // ../packages/patterns/src/structured-salvage.ts
   function describeNode(node) {
     const parts = [];
@@ -508,34 +602,6 @@ STRUCTURED-OUTPUT SALVAGE: a previous schema-enforced attempt at this exact task
 ${constraints}`) + `
 Never satisfy a constraint with placeholder values ("test", "a"); shorten real content instead of faking it.`;
   }
-  function isOpenCodeEnvelopeType(agentType) {
-    return agentType?.split(":").pop() === "opencode-envelope";
-  }
-  function envelopePrompt(prompt, schema) {
-    const taskMarker = "--- BEGIN OPENCODE ENVELOPE TASK ---";
-    if (prompt.includes(taskMarker)) return prompt;
-    const lines = prompt.split("\n");
-    const directives = lines.filter((line) => /^OPENCODE_[A-Z0-9_]+:/.test(line));
-    const task = lines.filter((line) => !/^OPENCODE_[A-Z0-9_]+:/.test(line)).join("\n").trim();
-    const constraints = describeSchemaConstraints(schema);
-    return [
-      ...directives,
-      ...directives.length > 0 ? [""] : [],
-      taskMarker,
-      task,
-      "Reply with ONLY a JSON object satisfying this schema.",
-      ...constraints === "" ? [] : [constraints],
-      "--- END OPENCODE ENVELOPE TASK ---",
-      "",
-      "--- BEGIN OPENCODE ENVELOPE INSTRUCTIONS ---",
-      "Write ONE task with the TASK block above as its prompt, run the envelope script, and report EVERY stdout line verbatim.",
-      "Never answer the task yourself. Never open the manifest or the answer file.",
-      "--- END OPENCODE ENVELOPE INSTRUCTIONS ---"
-    ].join("\n");
-  }
-  function envelopeFailure(where, warning, envelopeFailure2) {
-    return { value: null, warnings: [`${where}: ${warning}`], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true, envelopeFailure: envelopeFailure2 };
-  }
   function isNoStructuredOutputError(err) {
     return err instanceof Error && err.message.includes("without calling StructuredOutput");
   }
@@ -546,41 +612,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       return { value: plain, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false };
     }
     if (isOpenCodeEnvelopeType(opts.agentType)) {
-      const where2 = opts.label ?? "agent";
-      const envelopeOpts = { ...opts };
-      delete envelopeOpts.schema;
-      const raw2 = await rt.agent(envelopePrompt(prompt, schema), envelopeOpts);
-      if (typeof raw2 !== "string" || !/^MANIFEST:\s*.+$/m.test(raw2)) {
-        return envelopeFailure(where2, "opencode envelope did not run the script \u2014 final text carries no MANIFEST line", "no-manifest");
-      }
-      const answerLine = /^MANIFEST:[^\r\n]*? ANSWER:\s*(.+)$/m.exec(raw2) ?? /^ANSWER:\s*(.+)$/m.exec(raw2);
-      if (answerLine === null) return envelopeFailure(where2, "opencode envelope script ran but the ANSWER line was not reported", "no-answer");
-      let answerText;
-      try {
-        answerText = JSON.parse(answerLine[1]);
-      } catch {
-        return envelopeFailure(where2, "opencode envelope ANSWER line is not a JSON string", "schema");
-      }
-      if (typeof answerText !== "string") return envelopeFailure(where2, "opencode envelope ANSWER line is not a JSON string", "schema");
-      const candidate2 = extractJsonObject(answerText);
-      if (candidate2 === void 0) return envelopeFailure(where2, "opencode envelope ANSWER payload is not a JSON object", "schema");
-      const preViolations2 = validateAgainstSchema(candidate2, schema);
-      if (preViolations2.length === 0) {
-        return { value: candidate2, warnings: [], spawns: 1, salvageAttempted: false, salvaged: false, envelopeAnswer: true };
-      }
-      const { value: repaired2, repairs: repairs2 } = repairToSchema(candidate2, schema);
-      const postViolations2 = validateAgainstSchema(repaired2, schema);
-      if (postViolations2.length === 0) {
-        return {
-          value: repaired2,
-          warnings: [`${where2}: opencode envelope answer repaired \u2014 ${repairs2.join("; ")}`],
-          spawns: 1,
-          salvageAttempted: false,
-          salvaged: false,
-          envelopeAnswer: true
-        };
-      }
-      return envelopeFailure(where2, "opencode envelope ANSWER failed schema validation \u2014 " + postViolations2.map((v) => `${v.path}: ${v.message}`).join("; ") + (repairs2.length > 0 ? ` (repairs attempted: ${repairs2.join("; ")})` : ""), "schema");
+      return runEnvelopeContract(rt, prompt, opts);
     }
     let native;
     try {
@@ -717,6 +749,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
   var STAGE = "generateAndFilter";
   var REJECTED = /* @__PURE__ */ Symbol("generate-and-filter:REJECTED");
   async function generateAndFilter(rt, options) {
+    rt = withEnvelopeContract(rt);
     const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase, stageKey, cacheWarm } = options;
     if (count < 1) {
       throw new Error(
@@ -906,6 +939,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
   // ../packages/patterns/src/loop-until-done.ts
   var STAGE2 = LOOP_STAGE;
   async function loopUntilDone(rt, options) {
+    rt = withEnvelopeContract(rt);
     const { initial, body, maxIterations, dryRounds, budgetFloor } = options;
     if (maxIterations !== void 0 && maxIterations < 1) {
       throw new Error(
@@ -1038,6 +1072,7 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     additionalProperties: false
   };
   async function scoreAndRank(rt, options) {
+    rt = withEnvelopeContract(rt);
     const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase, stageKey, cacheWarm } = options;
     const combine = options.combine ?? ((scores) => scores.reduce((a, b) => a * b, 1));
     if (items.length < 1) {

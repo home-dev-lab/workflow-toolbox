@@ -24,6 +24,7 @@ export {
   repairToSchema,
 } from './structured-salvage.js'
 export type { StructuredCallOutcome, SchemaViolation } from './structured-salvage.js'
+export { withEnvelopeContract } from './envelope-contract.js'
 
 export { autoSelectEffort, deterministicEffortOf } from './auto-effort.js'
 export type { AutoSelectEffortOptions, AutoSelectEffortResult, EffortSignals, EffortWorkItem } from './auto-effort.js'

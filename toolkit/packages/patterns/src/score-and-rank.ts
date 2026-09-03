@@ -36,6 +36,7 @@ import { warn, makeRecord, applyCap, emitDigest, assertAgentTypeOption } from '.
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { parallelWithCacheWarm } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
+import { withEnvelopeContract } from './envelope-contract.js'
 import { claimStageInstance, stageBuilder } from './stage-instance.js'
 
 const STAGE = 'scoreAndRank'
@@ -179,6 +180,7 @@ export async function scoreAndRank<TItem = string>(
   rt: WorkflowRuntime,
   options: ScoreAndRankOptions<TItem>,
 ): Promise<PatternResult<ScoredItem<TItem>[]>> {
+  rt = withEnvelopeContract(rt)
   const { items, dimensions, scoreModel, scoreEffort, scoreType, cutoff, maxItems, phase, stageKey, cacheWarm } = options
   const combine = options.combine ?? ((scores: number[]): number => scores.reduce((a, b) => a * b, 1))
 

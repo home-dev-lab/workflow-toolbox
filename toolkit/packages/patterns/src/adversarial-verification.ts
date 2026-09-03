@@ -24,6 +24,7 @@ import { warn, applyCap, makeRecord, emitDigest } from './envelope.js'
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { runCacheWarmup } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
+import { withEnvelopeContract } from './envelope-contract.js'
 import type { StructuredCallOutcome } from './structured-salvage.js'
 import { claimStageInstance, stageBuilder } from './stage-instance.js'
 import {
@@ -240,6 +241,7 @@ export async function adversarialVerification<TClaim>(
   rt: WorkflowRuntime,
   options: AdversarialVerificationOptions<TClaim>,
 ): Promise<PatternResult<Array<VerifiedClaim<TClaim>>>> {
+  rt = withEnvelopeContract(rt)
   const {
     claims,
     renderClaim,

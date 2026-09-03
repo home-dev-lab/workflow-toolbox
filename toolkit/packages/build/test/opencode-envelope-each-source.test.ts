@@ -171,12 +171,13 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(batch.status).toBe(0)
     expect(batch.stdout).toBe(`MANIFEST: ${manifestPathFromStdout(batch.stdout)}\n`)
 
+    writeFileSync(tasks, JSON.stringify([{ id: 'failed', prompt: 'fail this' }]))
     const failed = spawnSync(process.execPath, [SCRIPT, tasks, '--dir', workdir, '--model', 'does-not-exist', '--manifest', manifestPath], {
       encoding: 'utf8', env: { ...env, FAKE_EXIT_CODE: '1' },
     })
     expect(failed.status).toBe(0)
     const failedManifest = manifestPathFromStdout(failed.stdout)
-    expect(failed.stdout).toBe(`MANIFEST: ${failedManifest}\n`)
+    expect(failed.stdout).toBe(`MANIFEST: ${failedManifest} ERROR: ${JSON.stringify('opencode exited 1 (model does-not-exist)')}\n`)
     expect(JSON.parse(readFileSync(failedManifest!, 'utf8')).tasks[0]).toMatchObject({
       status: 'error', requestedModel: 'does-not-exist', model: 'does-not-exist', reason: expect.stringContaining('does-not-exist'),
     })

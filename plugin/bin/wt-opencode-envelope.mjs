@@ -669,6 +669,8 @@ async function main() {
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
   if (results.length === 1 && results[0].status === 'answer') {
     process.stdout.write(`MANIFEST: ${manifestPath} ANSWER: ${JSON.stringify(fs.readFileSync(results[0].answerFile, 'utf8'))}\n`)
+  } else if (results.length === 1 && results[0].status === 'error') {
+    process.stdout.write(`MANIFEST: ${manifestPath} ERROR: ${JSON.stringify(results[0].reason)}\n`)
   } else {
     process.stdout.write(`MANIFEST: ${manifestPath}\n`)
   }

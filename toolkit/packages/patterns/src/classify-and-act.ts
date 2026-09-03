@@ -15,6 +15,7 @@ import { warn, applyCap, makeRecord, emitDigest, assertAgentTypeOption } from '.
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { pipelineWithCacheWarm } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
+import { withEnvelopeContract } from './envelope-contract.js'
 import { claimStageInstance, stageBuilder } from './stage-instance.js'
 
 const STAGE = 'classifyAndAct'
@@ -117,6 +118,7 @@ export async function classifyAndAct<TIn, TOut = string>(
   rt: WorkflowRuntime,
   options: ClassifyAndActOptions<TIn>,
 ): Promise<PatternResult<Array<{ item: TIn; category: string; result: TOut }>>> {
+  rt = withEnvelopeContract(rt)
   const { items, categories, classifyPrompt, actions, classifyModel, classifyEffort, classifyType, phase, maxItems, stageKey, cacheWarm } = options
 
   // -------------------------------------------------------------------------

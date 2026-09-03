@@ -18,6 +18,7 @@ import { warn, makeRecord, emitDigest, assertAgentTypeOption } from './envelope.
 import type { PatternResult, PatternStats, TrailRecord } from './envelope.js'
 import { pipelineWithCacheWarm } from './cache-warm.js'
 import { agentWithSchemaSalvage } from './structured-salvage.js'
+import { withEnvelopeContract } from './envelope-contract.js'
 import { claimStageInstance, stageBuilder } from './stage-instance.js'
 
 const STAGE = 'generateAndFilter'
@@ -122,6 +123,7 @@ export async function generateAndFilter<TCand = string>(
   rt: WorkflowRuntime,
   options: GenerateAndFilterOptions<TCand>,
 ): Promise<PatternResult<TCand[]>> {
+  rt = withEnvelopeContract(rt)
   const { count, generatePrompt, generateSchema, generateModel, generateEffort, generateType, filterPrompt, filterModel, filterEffort, filterType, phase, stageKey, cacheWarm } = options
 
   // -------------------------------------------------------------------------
