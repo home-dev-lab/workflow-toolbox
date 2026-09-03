@@ -133,9 +133,12 @@ describe('wt-merge-chain-guard-hook', () => {
     // nothing else, so there is no field a secret or an argument could have hidden in.
     expect(entry).toMatchObject({
       session: 'session-test-123',
-      reason: 'git merge branch',
       evidence: { trailing: 'gate' },
     })
+    // The merge segment itself is raw command text too (branch names, paths): it must not be
+    // recorded as `reason` either. The classification is the whole record.
+    expect(entry).not.toHaveProperty('reason')
+    expect(JSON.stringify(entry)).not.toContain('git merge branch')
     expect(Object.keys(entry.evidence)).toEqual(['trailing'])
     expect(['gate', 'diagnostic', 'unclassified']).toContain(entry.evidence.trailing)
     // Belt: none of the trailing segments' own text — command names, flags, or the secret —

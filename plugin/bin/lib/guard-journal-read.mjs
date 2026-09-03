@@ -99,14 +99,15 @@ export function readGuardJournal({ weeks = 1, all = false, baseDir } = {}) {
         continue
       }
       if (!perGuard.has(entry.guard)) {
-        perGuard.set(entry.guard, { blocked: 0, warned: 0, classes: new Map(), unclassedTotal: 0 })
+        perGuard.set(entry.guard, { blocked: 0, warned: 0, silent: 0, classes: new Map(), unclassedTotal: 0 })
       }
       const g = perGuard.get(entry.guard)
       if (entry.decision === 'blocked') g.blocked += 1
       else if (entry.decision === 'warned') g.warned += 1
+      else if (entry.decision === 'silent') g.silent += 1 // observe mode: the guard fired but said nothing
       if (typeof entry.class === 'string' && entry.class) {
         g.classes.set(entry.class, (g.classes.get(entry.class) || 0) + 1)
-      } else if (entry.decision === 'blocked' || entry.decision === 'warned') {
+      } else if (entry.decision === 'blocked' || entry.decision === 'warned' || entry.decision === 'silent') {
         g.unclassedTotal += 1
       }
     }
@@ -117,7 +118,8 @@ export function readGuardJournal({ weeks = 1, all = false, baseDir } = {}) {
       guard,
       blocked: g.blocked,
       warned: g.warned,
-      total: g.blocked + g.warned,
+      silent: g.silent,
+      total: g.blocked + g.warned + g.silent,
       classes: Object.fromEntries(g.classes),
       unclassedTotal: g.unclassedTotal,
     }))

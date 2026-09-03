@@ -53,7 +53,7 @@
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -264,12 +264,13 @@ function main() {
     guard: 'wt-merge-chain-guard-hook.mjs',
     decision: 'warned',
     class: 'chained-merge',
-    reason: found.segment,
+    // No `reason`: the merge segment is raw command text (branch names, paths, anything the
+    // caller typed). The classification below is the whole record.
     session: input.session_id,
     evidence: { trailing },
   })
-  process.stdout.write(
-    JSON.stringify({
+  emitGuardNotice({
+    stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'allow',
@@ -284,8 +285,8 @@ function main() {
           "only reads the merge's own captured exit code or log, this is expected and safe — " +
           'this guard cannot yet tell the two apart, so it warns rather than refuses.',
       },
-    }),
-  )
+    },
+  })
 }
 
 runFailOpenHook('wt-merge-chain-guard-hook.mjs', main)

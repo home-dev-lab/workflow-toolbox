@@ -34,7 +34,7 @@
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -105,9 +105,11 @@ function main() {
     guard: 'wt-git-commit-backtick-guard-hook.mjs',
     decision: 'warned',
     class: 'unescaped-backtick',
-    reason: flagged,
+    // No `reason`: the flagged fragment is the commit message text itself, and raw command
+    // text never reaches the journal on a machine that exports credentials into shells.
+    evidence: { flag: '-m' },
   })
-  process.stdout.write(JSON.stringify(payload))
+  emitGuardNotice({ stdoutJson: payload })
 }
 
 runFailOpenHook('wt-git-commit-backtick-guard-hook.mjs', main)

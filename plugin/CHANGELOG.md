@@ -5,6 +5,20 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- `WT_GUARD_MODE=observe` for the plugin's warn-only guards: `wt-merge-chain-guard-hook.mjs`,
+  `wt-pipestatus-bash-only-guard-hook.mjs`, `wt-find-newermt-format-guard-hook.mjs`,
+  `wt-git-commit-backtick-guard-hook.mjs`, `wt-var-colon-modifier-guard-hook.mjs`,
+  `wt-missing-package-script-guard-hook.mjs`, `wt-pgrep-env-dump-guard-hook.mjs`,
+  `wt-plugin-release-record-guard-hook.mjs`, `wt-isolated-spawn-report-path-hook.mjs`,
+  `wt-observer-pairing-guard-hook.mjs`, and `wt-stale-date-guard-hook.mjs`. In observe mode they
+  still detect and still journal their events, now stamped with `mode: "observe"` and recorded as
+  `decision: "silent"` (never `warned`, so a reader counting `warned` as "the hook spoke" stays
+  honest), but emit no model-facing warning text; the default remains `enforce`. The journal reader
+  and `wt-guard-journal-scan.mjs --json` count `silent` events (own `silent` column, included in `total`), so
+  the recurrence hook keeps seeing a muted guard's firings.
+
 ## [0.169.0] - 2026-09-03
 > The entry below arrived with a branch merge but its code did NOT: no commit in that merge
 > touches the hook it describes. It stays here rather than under a released heading, because a
@@ -40,6 +54,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   mechanically are now named as such) rather than a size gain.
 
 ### Fixed
+- **Three guards no longer record raw command text in the guard journal** (`wt-merge-chain` recorded the
+  merge segment as `reason`, `wt-git-commit-backtick` the flagged commit-message fragment,
+  `wt-find-newermt-format` the flagged argument). Found by the adversarial security review of the observe-mode
+  change; the merge-chain security lock now forbids the segment text too.
 - **Twenty-four capabilities the pre-release coverage audit found undocumented are now described in
   their mapped docs** (quota-probe JSON contract, adopt changelog spans, run-gate `--fail-pattern` and
   authorized-scope shapes, actionable-gate and registry-heartbeat env knobs, static vs dynamic

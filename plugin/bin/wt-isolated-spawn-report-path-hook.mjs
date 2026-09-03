@@ -26,7 +26,7 @@
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -84,7 +84,7 @@ function main() {
     class: 'isolated-spawn-out-of-tree-write',
     reason: `${name} isolation=${isolation} targets=${targets.length}`,
   })
-  process.stdout.write(JSON.stringify({ systemMessage: lines.join('\n') }))
+  emitGuardNotice({ stdoutJson: { systemMessage: lines.join('\n') } })
 }
 
 runFailOpenHook('wt-isolated-spawn-report-path-hook.mjs', main)

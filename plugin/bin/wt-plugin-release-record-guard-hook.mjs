@@ -46,7 +46,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 const PLUGIN_MANIFEST = 'plugin/.claude-plugin/plugin.json'
 const PLUGIN_CHANGELOG = 'plugin/CHANGELOG.md'
@@ -173,14 +173,14 @@ function main() {
       'Deliberately WARN-ONLY: a work-in-progress commit on a branch that bumps once at the ' +
       'end, and a plugin change with no release surface, both fire this legitimately.'
 
-  process.stdout.write(
-    JSON.stringify({
+  emitGuardNotice({
+    stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         additionalContext: preamble + remedy,
       },
-    }),
-  )
+    },
+  })
 }
 
 runFailOpenHook('wt-plugin-release-record-guard-hook.mjs', main)
