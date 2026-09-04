@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- `report-contract-lens.ts` is now an explicitly manual tool with the `pnpm wt:report-lens <report-file>` entry point, documentation of its non-automatic status, and a pre-harvest invocation in `lesson-harvest`.
 - `wt-queue-not-empty-gate-hook` now detects recent work in live `opencode run` and `codex exec` lanes by reading their Linux `/proc/*/cmdline` `--dir` arguments, including lanes in separate repositories.
 - Advisory plugin hooks now stay silent for payloads from Workflow-tool subagents, keeping their reminders and session guidance out of delegated agent context.
 - `wt-outbound-guard-hook`: a Workflow-tool subagent on Path A (harness label `workflow-subagent`, session transcript in the hook payload, several runs in the session) was still nudged at SubagentStop and lost its structured return; the exemption now matches the harness label and finds the run by the agent's own transcript file instead of requiring exactly one run.

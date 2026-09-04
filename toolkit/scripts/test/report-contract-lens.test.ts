@@ -14,7 +14,17 @@ import { fileURLToPath } from 'node:url'
 import { checkReport, RULE_POLICIES } from '../report-contract-lens.ts'
 
 const FIXTURES = fileURLToPath(new URL('./fixtures', import.meta.url))
+const TOOLKIT_ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const readFixture = (name: string) => readFileSync(join(FIXTURES, name), 'utf8')
+
+describe('report-contract-lens - package entry point', () => {
+  it('exposes the manual lens through wt:report-lens', () => {
+    const packageJson = JSON.parse(readFileSync(join(TOOLKIT_ROOT, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+    }
+    expect(packageJson.scripts['wt:report-lens']).toBe('tsx scripts/report-contract-lens.ts')
+  })
+})
 
 describe('report-contract-lens — the RED demonstration', () => {
   it('speaks on a deliberately non-scoped report on all 6 requirements', () => {
