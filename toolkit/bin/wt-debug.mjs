@@ -368,6 +368,7 @@ function parseDebugArgs(argv) {
       r.project = t.value;
     } else if (a === "--help" || a === "-h") r.help = true;
     else if (!a.startsWith("-")) r.runId = a;
+    else return { ...r, error: `unknown flag ${a} (see --help)` };
   }
   return r;
 }

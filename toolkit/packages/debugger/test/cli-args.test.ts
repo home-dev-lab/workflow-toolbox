@@ -77,3 +77,11 @@ describe('parseReportArgs', () => {
     expect(parseReportArgs(['--out=']).error).toMatch(/--out requires a value/)
   })
 })
+
+describe('unknown flags are refused (cli-help contract)', () => {
+  it('parseDebugArgs: an unknown --flag yields an error instead of being ignored', () => {
+    const r = parseDebugArgs(['--this-flag-does-not-exist-cli-help-probe'])
+    expect(r.error).toBeDefined()
+    expect(r.error).toContain('unknown flag')
+  })
+})
