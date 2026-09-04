@@ -131,11 +131,29 @@ export interface DriveLoopDeps {
   /** Reads the output file's raw contents (the loop JSON.parses the result).
    *  The real driver passes `readFileSync(path, 'utf8')`. */
   readOutputFile: (path: string) => string
+  /** Wait between output-file reads. The completed notification can precede the
+   * final file write, so this is injectable to keep the retry path unit-testable. */
+  waitForOutputFile: () => Promise<void>
   /** Stops a background task by id — the fire-and-forget "don't leak a real run"
    *  cleanup for a `waitForCompletion: false` launch. The real driver passes
    *  `q.stopTask`; a rejection is swallowed by the loop itself (matching the
    *  original `.catch(() => undefined)`), so implementations need not guard it. */
   stopTask: (taskId: string) => Promise<void>
+}
+
+const OUTPUT_FILE_READ_ATTEMPTS = 3
+
+async function readOutputFile(path: string, deps: DriveLoopDeps): Promise<unknown> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= OUTPUT_FILE_READ_ATTEMPTS; attempt++) {
+    try {
+      return JSON.parse(deps.readOutputFile(path))
+    } catch (error) {
+      lastError = error
+      if (attempt < OUTPUT_FILE_READ_ATTEMPTS) await deps.waitForOutputFile()
+    }
+  }
+  throw lastError
 }
 
 type DriveLoopOptions = Pick<DriverOptions, 'scriptPath' | 'timeoutMs' | 'waitForCompletion' | 'validateScriptPath'>
@@ -236,7 +254,7 @@ export async function driveLoop(
         result.notification = notification
         if (notification.status === 'completed' && notification.outputFile !== null) {
           try {
-            result.rawOutput = JSON.parse(deps.readOutputFile(notification.outputFile))
+            result.rawOutput = await readOutputFile(notification.outputFile, deps)
             result.result = isRecord(result.rawOutput) ? result.rawOutput['result'] : undefined
           } catch (err) {
             result.outputReadError = (err as Error).message
@@ -292,6 +310,7 @@ export async function runDriverSession(opts: DriverOptions): Promise<DriverResul
   try {
     return await driveLoop(q, opts, {
       readOutputFile: (path) => readFileSync(path, 'utf8'),
+      waitForOutputFile: () => new Promise((resolve) => setTimeout(resolve, 100)),
       stopTask: (taskId) => q.stopTask(taskId),
     })
   } finally {

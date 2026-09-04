@@ -76,6 +76,7 @@ const MISMATCHED_LAUNCH_TEXT =
 function noopDeps(overrides: Partial<DriveLoopDeps> = {}): DriveLoopDeps {
   return {
     readOutputFile: vi.fn(() => '{}'),
+    waitForOutputFile: vi.fn(() => Promise.resolve()),
     stopTask: vi.fn(() => Promise.resolve()),
     ...overrides,
   }
@@ -250,6 +251,23 @@ describe('driveLoop — output file reading', () => {
     const result = await driveLoop(it, { scriptPath: '/wf.js', timeoutMs: 1000, waitForCompletion: true }, noopDeps({ readOutputFile }))
     expect(result.outputReadError).toBe('ENOENT: no such file')
     expect(result.result).toBeUndefined()
+  })
+
+  it('retries a partially-written output file after its completed notification', async () => {
+    const it = iterOf([userToolResult('toolu_1', LAUNCH_TEXT), taskNotification('toolu_1', 'completed', '/out.json')])
+    const readOutputFile = vi.fn()
+      .mockReturnValueOnce('{"result":')
+      .mockReturnValueOnce('{"result":{"marker":"ok"}}')
+    const waitForOutputFile = vi.fn(() => Promise.resolve())
+    const result = await driveLoop(
+      it,
+      { scriptPath: '/wf.js', timeoutMs: 1000, waitForCompletion: true },
+      noopDeps({ readOutputFile, waitForOutputFile }),
+    )
+    expect(readOutputFile).toHaveBeenCalledTimes(2)
+    expect(waitForOutputFile).toHaveBeenCalledTimes(1)
+    expect(result.result).toEqual({ marker: 'ok' })
+    expect(result.outputReadError).toBeNull()
   })
 
   it('does not attempt to read the output file for a non-completed notification', async () => {

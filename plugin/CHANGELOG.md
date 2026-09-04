@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Raised `@anthropic-ai/claude-agent-sdk` from `^0.3.205` to `^0.3.260` for the upgrade canary. Claude Code 2.1.260 can send a completed task notification before its output file is fully written, so the canary retries a transient partial-file read.
 - The opencode envelope now stores each invocation's manifest, task copies, and answers under its workdir-scoped `.wt-envelope/` directory.
 - The opencode envelope records each task's requested model and returns a JSON-encoded answer on the successful single-task batch's one `MANIFEST:` line, allowing schema callers to validate the script-owned result; invocation manifests are named `envelope.manifest.json` for manifest readers.
 
