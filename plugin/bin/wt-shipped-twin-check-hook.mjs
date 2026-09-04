@@ -97,6 +97,7 @@ function markSeen(filePath, seen) {
 
 function main() {
   const input = readInput()
+  if (typeof input?.agent_id === 'string' && input.agent_id) return
   if (input.hook_event_name && input.hook_event_name !== 'PostToolUse') return
   if (input.tool_name && !/^(Write|Edit)$/.test(input.tool_name)) return
 

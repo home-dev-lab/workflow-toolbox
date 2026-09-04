@@ -79,7 +79,7 @@ function main() {
         'an already-identified PID, truncated: `ps -o args= -p <pid> | cut -c1-120`.',
     },
   }
-  emitGuardNotice({ stdoutJson: payload })
+  emitGuardNotice({ payload: input, stdoutJson: payload })
 }
 
 runFailOpenHook('wt-pgrep-env-dump-guard-hook.mjs', main)

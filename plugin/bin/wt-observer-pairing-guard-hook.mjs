@@ -197,6 +197,7 @@ function main() {
     evidence: { status, failure },
   })
   emitGuardNotice({
+    payload: input,
     stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',

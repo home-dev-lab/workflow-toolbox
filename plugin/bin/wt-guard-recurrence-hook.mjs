@@ -59,6 +59,7 @@
 // instead of looking healthy-quiet, matching every other hook in this plugin.
 
 import { readGuardJournal } from './lib/guard-journal-read.mjs'
+import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 
 // "more than twice in one week" (wt-durable-fix-at-the-right-level.md) = 3 or more firings.
@@ -106,6 +107,13 @@ function buildMessage(result, groups) {
 }
 
 function main() {
+  let input = {}
+  try {
+    input = JSON.parse(readFileSync(0, 'utf8') || '{}')
+  } catch {
+    return
+  }
+  if (typeof input?.agent_id === 'string' && input.agent_id) return
   const result = readGuardJournal({ weeks: 1 })
   if (!result.ok) return // missing/unreadable journal degrades to silence — never an error
   const groups = recurringGroups(result)

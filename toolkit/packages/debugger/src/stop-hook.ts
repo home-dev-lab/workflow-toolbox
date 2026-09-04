@@ -62,7 +62,9 @@ async function main(): Promise<void> {
 
   let payload
   try {
-    payload = parseStopPayload(JSON.parse(raw) as unknown)
+    const input = JSON.parse(raw) as Record<string, unknown>
+    if (typeof input.agent_id === 'string' && input.agent_id) process.exit(0)
+    payload = parseStopPayload(input)
   } catch {
     emit('{}')
     return

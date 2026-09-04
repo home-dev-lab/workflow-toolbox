@@ -1357,7 +1357,9 @@ async function main() {
   }
   let payload;
   try {
-    payload = parseStopPayload(JSON.parse(raw));
+    const input = JSON.parse(raw);
+    if (typeof input.agent_id === "string" && input.agent_id) process.exit(0);
+    payload = parseStopPayload(input);
   } catch {
     emit("{}");
     return;

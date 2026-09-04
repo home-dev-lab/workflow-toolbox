@@ -133,7 +133,7 @@ function main() {
     class: 'var-colon-modifier',
     reason: `$${m[1]}:${m[2]}`,
   })
-  emitGuardNotice({ stdoutJson: payload })
+  emitGuardNotice({ payload: input, stdoutJson: payload })
 }
 
 runFailOpenHook('wt-var-colon-modifier-guard-hook.mjs', main)

@@ -75,7 +75,7 @@ function main() {
     decision: 'warned',
     class: 'pipestatus-bash-only',
   })
-  emitGuardNotice({ stdoutJson: payload })
+  emitGuardNotice({ payload: input, stdoutJson: payload })
 }
 
 runFailOpenHook('wt-pipestatus-bash-only-guard-hook.mjs', main)

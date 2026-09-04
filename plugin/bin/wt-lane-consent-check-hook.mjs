@@ -15,6 +15,7 @@ function readInput() {
 
 function main() {
   const input = readInput()
+  if (typeof input.agent_id === 'string' && input.agent_id) return
   const root = typeof input.cwd === 'string' && input.cwd ? input.cwd : null
   if (!root) return
   const result = analyzeLaneConsent(root, process.env)

@@ -82,6 +82,7 @@ function readStdinJson() {
 
 function main() {
   const payload = readStdinJson()
+  if (typeof payload.agent_id === 'string' && payload.agent_id) return
   const projectRoot =
     typeof payload['cwd'] === 'string' && payload['cwd'].trim() !== '' ? payload['cwd'] : process.cwd()
 

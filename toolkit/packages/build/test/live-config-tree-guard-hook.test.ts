@@ -52,9 +52,10 @@ function runHook(
   cwd: string,
   env: NodeJS.ProcessEnv,
   extraArgv: string[] = [],
+  agentId?: string,
 ): { status: number | null; stdout: string; decision: string | null; systemMessage: string | null } {
   const res = spawnSync(process.execPath, [HOOK, ...extraArgv], {
-    input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd }),
+    input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd, ...(agentId ? { agent_id: agentId } : {}) }),
     encoding: 'utf8',
     env,
   })
@@ -81,6 +82,13 @@ describe('wt-live-config-tree-guard-hook — CATCHES the near-miss pattern (defa
     expect(r.systemMessage).toContain('LIVE CONFIG TREE')
   })
 
+  it('keeps its warning journal-only for a subagent', () => {
+    const f = gitFixture('subagent-warn')
+    const r = runHook(`git -C ${f.rulesDir} switch some-branch`, f.root, f.env, [], 'a1')
+    expect(r.status).toBe(0)
+    expect(r.stdout).toBe('')
+  })
+
   it('catches the exact near-miss: cd into the live dir then reset --hard, split across &&', () => {
     const f = gitFixture('split-cd')
     const r = runHook(`cd ${f.rulesDir} && git reset --hard origin/main`, f.root, f.env)
@@ -93,6 +101,15 @@ describe('wt-live-config-tree-guard-hook — CATCHES the near-miss pattern (defa
       ...f.env,
       WT_LIVE_CONFIG_TREE_GUARD_MODE: 'deny',
     })
+    expect(r.decision).toBe('deny')
+  })
+
+  it('still denies a subagent when deny mode is enabled', () => {
+    const f = gitFixture('subagent-deny')
+    const r = runHook(`git -C ${f.rulesDir} checkout other-branch`, f.root, {
+      ...f.env,
+      WT_LIVE_CONFIG_TREE_GUARD_MODE: 'deny',
+    }, [], 'a1')
     expect(r.decision).toBe('deny')
   })
 

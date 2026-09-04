@@ -64,6 +64,7 @@ function formatNotice({ boardId, findings, advisories, cards }) {
 
 function main() {
   const input = readInput()
+  if (typeof input.agent_id === 'string' && input.agent_id) return
   if (input.hook_event_name && input.hook_event_name !== 'PostToolUse') return
   if (input.tool_name !== 'mcp__planka__get_board') return
 

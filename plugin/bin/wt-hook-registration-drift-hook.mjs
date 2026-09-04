@@ -115,6 +115,7 @@ function handleUserPromptSubmit(sessionId) {
 
 function main() {
   const input = readInput()
+  if (typeof input?.agent_id === 'string' && input.agent_id) return
   const event = input?.hook_event_name
   const sessionId = input?.session_id
   if (event === 'SessionStart') {

@@ -174,6 +174,7 @@ function main() {
       'end, and a plugin change with no release surface, both fire this legitimately.'
 
   emitGuardNotice({
+    payload: input,
     stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',

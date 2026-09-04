@@ -100,6 +100,7 @@ function main() {
   }
 
   // Advisory path (warn mode, or the unknown-measurement branch): print and allow.
+  if (typeof payload.agent_id === 'string' && payload.agent_id) return
   console.log(result.message)
 }
 

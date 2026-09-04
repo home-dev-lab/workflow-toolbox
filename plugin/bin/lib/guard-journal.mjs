@@ -128,8 +128,9 @@ export function guardMode() {
   return typeof raw === 'string' && raw.trim().toLowerCase() === 'observe' ? 'observe' : 'enforce'
 }
 
-export function emitGuardNotice({ stdoutJson = null, stdoutText = '', stderrText = '' } = {}) {
+export function emitGuardNotice({ payload = null, stdoutJson = null, stdoutText = '', stderrText = '' } = {}) {
   if (guardMode() === 'observe') return false
+  if (typeof payload?.agent_id === 'string' && payload.agent_id) return false
   if (stdoutJson !== null) fs.writeSync(1, `${JSON.stringify(stdoutJson)}`)
   else if (stdoutText) fs.writeSync(1, stdoutText)
   if (stderrText) fs.writeSync(2, stderrText)

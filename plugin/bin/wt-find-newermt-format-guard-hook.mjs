@@ -101,7 +101,7 @@ function main() {
     // No `reason`: the flagged argument is raw command text; only its shape is recorded.
     evidence: { arg: 'non-iso' },
   })
-  emitGuardNotice({ stdoutJson: payload })
+  emitGuardNotice({ payload: input, stdoutJson: payload })
 }
 
 runFailOpenHook('wt-find-newermt-format-guard-hook.mjs', main)

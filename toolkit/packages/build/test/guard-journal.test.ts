@@ -33,6 +33,17 @@ function record(
   })
 }
 
+function emitNotice(payload: Record<string, unknown>) {
+  const script = `
+    import { emitGuardNotice } from ${JSON.stringify(LIB)}
+    emitGuardNotice({ payload: ${JSON.stringify(payload)}, stdoutText: 'warning' })
+  `
+  return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    encoding: 'utf8',
+    env: { ...process.env, WT_GUARD_MODE: 'warn' },
+  })
+}
+
 function journalFiles(): string[] {
   if (!existsSync(journalDir)) return []
   return readdirSync(journalDir).filter((f) => f.endsWith('.ndjson'))
@@ -48,6 +59,15 @@ function readAllEntries(): Array<Record<string, unknown>> {
 }
 
 describe('guard-journal — recordGuardEvent', () => {
+  it('renders warned notices for the main loop but not a subagent', () => {
+    const main = emitNotice({})
+    const subagent = emitNotice({ agent_id: 'a1' })
+    expect(main.status).toBe(0)
+    expect(main.stdout).toBe('warning')
+    expect(subagent.status).toBe(0)
+    expect(subagent.stdout).toBe('')
+  })
+
   it('RED->GREEN: writes one NDJSON line for a blocked decision', () => {
     const res = record({ guard: 'wt-example-guard-hook.mjs', decision: 'blocked', class: 'x', reason: 'because' })
     expect(res.status).toBe(0)

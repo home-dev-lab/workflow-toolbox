@@ -200,6 +200,7 @@ function resolveEvent(input) {
 
 function main() {
   const input = readInput()
+  if (typeof input?.agent_id === 'string' && input.agent_id) return
   const event = resolveEvent(input)
   if (!event) return
 

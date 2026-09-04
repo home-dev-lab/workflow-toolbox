@@ -82,6 +82,7 @@ function main() {
     evidence: { kind: 'file_path' },
   })
   emitGuardNotice({
+    payload: input,
     stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',

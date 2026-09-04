@@ -83,7 +83,7 @@ function main() {
     class: 'isolated-spawn-out-of-tree-write',
     evidence: { isolation, targets: targets.length },
   })
-  emitGuardNotice({ stdoutJson: { systemMessage: lines.join('\n') } })
+  emitGuardNotice({ payload: input, stdoutJson: { systemMessage: lines.join('\n') } })
 }
 
 runFailOpenHook('wt-isolated-spawn-report-path-hook.mjs', main)

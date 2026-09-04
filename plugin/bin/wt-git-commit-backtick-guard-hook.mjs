@@ -109,7 +109,7 @@ function main() {
     // text never reaches the journal on a machine that exports credentials into shells.
     evidence: { flag: '-m' },
   })
-  emitGuardNotice({ stdoutJson: payload })
+  emitGuardNotice({ payload: input, stdoutJson: payload })
 }
 
 runFailOpenHook('wt-git-commit-backtick-guard-hook.mjs', main)

@@ -324,6 +324,7 @@ function main() {
   })
 
   emitGuardNotice({
+    payload: input,
     stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',

@@ -270,6 +270,7 @@ function main() {
     evidence: { trailing },
   })
   emitGuardNotice({
+    payload: input,
     stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
