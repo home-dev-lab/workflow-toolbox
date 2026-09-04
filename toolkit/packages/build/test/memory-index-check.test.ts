@@ -1157,4 +1157,54 @@ describe('archived fiches', () => {
     expect(report.diskFiches).toBe(1)
     expect(report.unreachableFiches).toEqual([])
   })
+
+})
+describe('a [[slug]] resolves by frontmatter name as well as by filename', () => {
+  // A store may declare a fiche's identity in frontmatter (`name: <slug>`) rather than in its
+  // filename, and one store can carry both conventions at once. A resolver that only tries the
+  // filename reports CORRECT links as dangling — and the confident repair is to rewrite a working
+  // link into the other convention. Both directions are asserted here, because fixing the false
+  // positive without keeping the real one would trade a wrong alarm for a blind spot.
+  it('resolves a member link that matches ONLY the frontmatter name, and still reaches the fiche', () => {
+    const dir = makeStore()
+    writeFileSync(join(dir, 'differently-named.md'), '---\nname: declared-identity\n---\n\nBody.\n')
+    fiche(dir, 'plain', 'Body for plain.\n')
+    fiche(dir, 'hub-topic', '- [[declared-identity]] — resolves by name only\n- [[plain]] — resolves by filename\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '# Memory index\n- [Hub: topic](hub-topic.md) — grouped facts\n')
+
+    const { status, report } = runCli(dir)
+
+    expect(report.danglingRefs).toEqual([])
+    expect(report.unreachableFiches).toEqual([])
+    expect(report.reachableFiches).toBe(report.diskFiches)
+    expect(status).toBe(0)
+  })
+
+  it('still reports a member link that matches NEITHER the filename nor any frontmatter name', () => {
+    const dir = makeStore()
+    writeFileSync(join(dir, 'differently-named.md'), '---\nname: declared-identity\n---\n\nBody.\n')
+    fiche(dir, 'hub-topic', '- [[declared-identity]] — resolves by name only\n- [[nothing-declares-this]] — resolves by neither\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '# Memory index\n- [Hub: topic](hub-topic.md) — grouped facts\n')
+
+    const { status, report } = runCli(dir)
+
+    expect(report.danglingRefs).toEqual([{ from: 'hub-topic.md', target: 'nothing-declares-this.md' }])
+    expect(status).toBe(1)
+  })
+
+  it('prefers the FILENAME when a slug matches one file by name and another by filename', () => {
+    // Order matters: the filename is the cheap, common case and must win, so a store following
+    // that convention never pays for the name index and never resolves to a coincidental twin.
+    const dir = makeStore()
+    fiche(dir, 'ambiguous', 'The file actually named ambiguous.md.\n')
+    writeFileSync(join(dir, 'other-file.md'), '---\nname: ambiguous\n---\n\nDeclares the same slug.\n')
+    fiche(dir, 'hub-topic', '- [[ambiguous]] — must resolve to the FILE, not the declared name\n- [[other-file]] — by filename\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '# Memory index\n- [Hub: topic](hub-topic.md) — grouped facts\n')
+
+    const { status, report } = runCli(dir)
+
+    expect(report.danglingRefs).toEqual([])
+    expect(report.unreachableFiches).toEqual([])
+    expect(status).toBe(0)
+  })
 })

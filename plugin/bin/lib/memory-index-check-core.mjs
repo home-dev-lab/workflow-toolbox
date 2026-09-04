@@ -216,6 +216,46 @@ export function checkStore(storeDir, opts = {}) {
     diskFiches.add(entry.name);
   }
 
+  // A `[[slug]]` names a fiche by its DECLARED identity, which a store may keep in
+  // frontmatter (`name: <slug>`) rather than in the filename. Both conventions are
+  // legitimate and one store can carry both at once, so a resolver that only tries
+  // the filename reports CORRECT links as dangling — and the confident repair is to
+  // rewrite a working link into the other convention. Measured on one store: a
+  // `[[bash-parallel-shared-cwd-v2]]` pointing at `bash-parallel-shared-cwd.md`,
+  // whose frontmatter declares exactly that name.
+  //
+  // The name index is built LAZILY, on the first slug the filename lookup misses, so
+  // a store following the filename convention never pays for it. It is read from the
+  // WHOLE file: a windowed read can cut a `name:` value mid-string, and a truncated
+  // identifier is indistinguishable from a wrong one — it simply fails to match.
+  let nameIndex = null;
+  const buildNameIndex = () => {
+    const index = new Map();
+    for (const file of diskFiches) {
+      let body;
+      try {
+        body = readFileSync(join(storeDir, file), 'utf8');
+      } catch {
+        continue; // unreadable is reported elsewhere; it must not break resolution
+      }
+      const fm = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(body);
+      if (fm === null) continue;
+      const declared = /^[ \t]*name:[ \t]*(\S.*?)[ \t]*$/m.exec(fm[1]);
+      if (declared === null) continue;
+      if (!index.has(declared[1])) index.set(declared[1], file);
+    }
+    return index;
+  };
+
+  /** The real filename a `[[slug]]` resolves to, or null. Filename stem first (the
+   *  common case, and free), then the declared frontmatter name. */
+  const resolveSlug = (slug) => {
+    const byFilename = `${slug}.md`;
+    if (diskFiches.has(byFilename)) return byFilename;
+    if (nameIndex === null) nameIndex = buildNameIndex();
+    return nameIndex.get(slug) ?? null;
+  };
+
   // Archived fiches are NOT live-store members — they stay out of the
   // reachability graph above, and that is correct. But they still EXIST, and
   // the hygiene convention says inbound `[[links]]` are deliberately not
@@ -307,9 +347,10 @@ export function checkStore(storeDir, opts = {}) {
     HUBLINK_RE.lastIndex = 0;
     let match;
     while ((match = HUBLINK_RE.exec(body))) {
-      const candidate = `${match[1]}.md`;
-      if (diskFiches.has(candidate)) bodyLinks.add(candidate);
-      if (diskFiches.has(candidate) && !reachable.has(candidate)) {
+      const candidate = resolveSlug(match[1]);
+      if (candidate === null) continue;
+      bodyLinks.add(candidate);
+      if (!reachable.has(candidate)) {
         reachable.add(candidate);
         queue.push(candidate);
       }
@@ -327,9 +368,10 @@ export function checkStore(storeDir, opts = {}) {
       const m = MEMBER_LINE_RE.exec(line.trim());
       if (!m) continue;
       memberLineCount++;
-      const candidate = `${m[1]}.md`;
+      const resolved = resolveSlug(m[1]);
+      const candidate = resolved ?? `${m[1]}.md`;
       memberLineSlugs.add(candidate);
-      if (diskFiches.has(candidate)) memberSlugs.add(candidate);
+      if (resolved !== null) memberSlugs.add(candidate);
       // A body link into the archive RESOLVES — the convention says so
       // explicitly and tells stores not to rewrite these. Counted as its own
       // class so the distinction stays visible without ever reading as a fault.
