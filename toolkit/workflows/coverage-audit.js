@@ -2136,6 +2136,20 @@ ${renderClaim(claim)}`;
       ]
     },
     {
+      // The thin opencode envelope script plus its registered agent definitions:
+      // authoring docs teach when/how to route to it, debugger docs teach how to
+      // read the manifest, answer files, and per-task logs after a run.
+      sources: [
+        "plugin/bin/wt-opencode-envelope.mjs",
+        "plugin/agents/opencode-envelope.md",
+        "plugin/launch-agents/agents/opencode-envelope.md"
+      ],
+      docs: [
+        "plugin/skills/workflow-composer/references/model-and-agent-routing.md",
+        "plugin/skills/workflow-debugger/SKILL.md"
+      ]
+    },
+    {
       // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer
       // skill, which also documents the environment-brief contract. The whole
       // plugin/agents/ subtree is mapped above to the routing docs (accurate for

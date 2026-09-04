@@ -206,8 +206,8 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   },
   {
     script: 'plugin/bin/wt-opencode-envelope.mjs',
-    status: 'exempt',
-    reason: 'Internal batch-fanout helper invoked only by the opencode-envelope agent to run N opencode CLI calls behind one Bash tool call; no standalone operator-facing contract of its own.',
+    status: 'mapped',
+    reason: 'Workflow-composer and workflow-debugger document the operator-facing routing and forensics contract for the shipped opencode-envelope script.',
   },
   {
     script: 'plugin/bin/wt-outbound-guard-hook.mjs',
@@ -440,6 +440,20 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: [
       'plugin/skills/workflow-composer/references/model-and-agent-routing.md',
       'plugin/skills/workflow-composer/SKILL.md',
+    ],
+  },
+  {
+    // The thin opencode envelope script plus its registered agent definitions:
+    // authoring docs teach when/how to route to it, debugger docs teach how to
+    // read the manifest, answer files, and per-task logs after a run.
+    sources: [
+      'plugin/bin/wt-opencode-envelope.mjs',
+      'plugin/agents/opencode-envelope.md',
+      'plugin/launch-agents/agents/opencode-envelope.md',
+    ],
+    docs: [
+      'plugin/skills/workflow-composer/references/model-and-agent-routing.md',
+      'plugin/skills/workflow-debugger/SKILL.md',
     ],
   },
   {
