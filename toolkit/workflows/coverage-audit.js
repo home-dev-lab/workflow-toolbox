@@ -2934,6 +2934,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       for (const w of sel.warnings) warn(rt, warnings, w);
       extractEffortByGroup = groups.map((_, gi) => sel.efforts[`extract:${gi}`] ?? EXTRACT_EFFORT);
     }
+    let extractorFailures = 0;
     const loopResult = await loopUntilDone(rt, {
       maxIterations: input.maxRounds,
       dryRounds: input.dryRounds,
@@ -2974,6 +2975,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         for (let gi = 0; gi < results.length; gi++) {
           const res = results[gi];
           if (res === null || res === void 0) {
+            extractorFailures++;
             warn(
               rt,
               warnings,
@@ -3111,6 +3113,11 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       unverifiable: verdictCount("unverifiable"),
       unverifiedByCap: verdictCount("unverified-by-cap")
     };
+    if (capabilitiesInventoried > 0 && finalState.claims.length === 0 && extractorFailures > 0) {
+      throw new Error(
+        `coverage-audit: extraction produced no claims: failed extractors=${extractorFailures}, capabilities inventoried=${capabilitiesInventoried}`
+      );
+    }
     rt.log(
       `coverage-audit: ${summary.total} capability gaps checked \u2014 ${summary.undocumented} undocumented, ${summary.documented} actually documented, ${summary.partiallyDocumented} partial, ${summary.unverifiable} unverifiable, ${summary.unverifiedByCap} unverified-by-cap`
     );

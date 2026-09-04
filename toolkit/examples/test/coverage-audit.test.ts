@@ -85,7 +85,7 @@ function makeRuntime(opts: {
   inventory: Record<string, FakeCapability[]> | null
   /** Gaps returned per extraction ROUND (call order); rounds beyond the
    *  array's length repeat the LAST entry (which makes the loop go dry). */
-  extractRounds: FakeGap[][]
+  extractRounds: Array<FakeGap[] | null>
   /** capability-name substring (lowercased) → verdict for verifier votes
    *  (default 'confirmed' — the gap is real). */
   verdicts?: Record<string, string>
@@ -120,7 +120,8 @@ function makeRuntime(opts: {
       if (p.includes('extract undocumented-capability claims')) {
         const round = Math.min(extractCalls, opts.extractRounds.length - 1)
         extractCalls++
-        return { claims: opts.extractRounds[round] }
+        const claims = opts.extractRounds[round]
+        return claims === null ? null : { claims }
       }
 
       if (p.includes('verdict for one undocumented-capability claim')) {
@@ -1108,6 +1109,22 @@ describe('coverage-audit auto-effort worker routing', () => {
 // ---------------------------------------------------------------------------
 
 describe('coverage-audit zero gaps', () => {
+  it('fails when a non-empty inventory produces no claims because every extractor failed', async () => {
+    const rt = makeRuntime({
+      inventory: {
+        'src/a.ts': [makeCapability({ name: 'runFoo', sourcePath: 'src/a.ts' })],
+        'src/b.ts': [makeCapability({ name: 'runBar', sourcePath: 'src/b.ts' })],
+      },
+      extractRounds: [null],
+    })
+
+    await expect(
+      wf.run(rt, JSON.stringify({ ...BASE_INPUT, entriesPerAgent: 1 })),
+    ).rejects.toThrow(
+      'coverage-audit: extraction produced no claims: failed extractors=2, capabilities inventoried=2',
+    )
+  })
+
   it('returns a graceful zero-findings report when every capability is well documented', async () => {
     const rt = makeRuntime({
       inventory: { 'src/a.ts': [makeCapability()] },
