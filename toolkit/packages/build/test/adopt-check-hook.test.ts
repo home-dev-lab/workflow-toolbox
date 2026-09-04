@@ -7,7 +7,7 @@
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -41,15 +41,15 @@ function fixture(tag: string) {
   return { root, proj, cfg, env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: cfg } }
 }
 
-function installInto(dir: string): void {
-  const res = spawnSync(process.execPath, [INSTALL_RULES, '--install', '--set', 'rules', '--dir', dir], {
+function installInto(dir: string, script = INSTALL_RULES): void {
+  const res = spawnSync(process.execPath, [script, '--install', '--set', 'rules', '--dir', dir], {
     encoding: 'utf8',
   })
   if (res.status !== 0) throw new Error(`fixture install failed: ${res.stdout}${res.stderr}`)
 }
 
-function runHook(cwd: string, env: NodeJS.ProcessEnv): { stdout: string; context: string } {
-  const res = spawnSync(process.execPath, [HOOK], {
+function runHook(cwd: string, env: NodeJS.ProcessEnv, hook = HOOK): { stdout: string; context: string } {
+  const res = spawnSync(process.execPath, [hook], {
     input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', cwd }),
     encoding: 'utf8',
     env,
@@ -64,6 +64,35 @@ function runHook(cwd: string, env: NodeJS.ProcessEnv): { stdout: string; context
     context = ''
   }
   return { stdout, context }
+}
+
+function makeHookCopy(version = '1.0.0'): { hook: string; installer: string; rulesDir: string } {
+  const root = mkRoot('shipped')
+  const plugin = join(root, 'plugin')
+  mkdirSync(join(plugin, '.claude-plugin'), { recursive: true })
+  writeFileSync(join(plugin, '.claude-plugin', 'plugin.json'), JSON.stringify({ version }))
+  for (const dir of ['rules', 'agents', 'agent-templates']) {
+    cpSync(join(REPO_ROOT, 'plugin', dir), join(plugin, dir), { recursive: true })
+  }
+  cpSync(join(REPO_ROOT, 'plugin/CHANGELOG.md'), join(plugin, 'CHANGELOG.md'))
+  const scriptDir = join(plugin, 'skills', 'adopt', 'scripts')
+  mkdirSync(scriptDir, { recursive: true })
+  const installer = join(scriptDir, 'install.mjs')
+  cpSync(INSTALL_RULES, installer)
+  const binDir = join(plugin, 'bin')
+  mkdirSync(binDir, { recursive: true })
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib'), join(binDir, 'lib'), { recursive: true })
+  const hook = join(binDir, 'wt-adopt-check-hook.mjs')
+  cpSync(HOOK, hook)
+  return { hook, installer, rulesDir: join(plugin, 'rules') }
+}
+
+function writeManagedRule(file: string, body: string, version: string, fp?: string): void {
+  const stamped = fp ?? createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
+  writeFileSync(
+    file,
+    `<!-- installed from workflow-toolbox v${version} · content sha256:${stamped} by the adopt skill -->\n\n${body}`,
+  )
 }
 
 function runPostToolUsePushHook(
@@ -135,6 +164,62 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(r.stdout).toBe('')
   })
 
+  it.each([
+    ['project rules/', (f: ReturnType<typeof fixture>) => join(f.proj, '.claude', 'rules')],
+    ['project rules/wt/', (f: ReturnType<typeof fixture>) => join(f.proj, '.claude', 'rules', 'wt')],
+    ['global rules/', (f: ReturnType<typeof fixture>) => join(f.cfg, 'rules')],
+    ['global rules/wt/', (f: ReturnType<typeof fixture>) => join(f.cfg, 'rules', 'wt')],
+  ])('content-identical copy at %s is current despite stale banner metadata and trailing-newline variance', (_label, locate) => {
+    const f = fixture('four-locations')
+    const shipped = makeHookCopy()
+    const target = locate(f)
+    installInto(target, shipped.installer)
+    const body = readFileSync(join(shipped.rulesDir, RULE), 'utf8').replace(/[ \t\r\n]+$/u, '') + '\n\n'
+    writeManagedRule(join(target, RULE), body, '0.0.1', '000000000000')
+
+    expect(runHook(f.proj, f.env, shipped.hook).stdout).toBe('')
+  })
+
+  it('manual checker and hook both classify a newer divergent global rules/wt copy as ahead/forked and name its location', () => {
+    const f = fixture('ahead-fork')
+    const shipped = makeHookCopy()
+    const target = join(f.cfg, 'rules', 'wt')
+    installInto(target, shipped.installer)
+    const body = readFileSync(join(shipped.rulesDir, RULE), 'utf8') + '\nA FORKED FUTURE LINE\n'
+    writeManagedRule(join(target, RULE), body, '999.0.0')
+
+    const checked = spawnSync(
+      process.execPath,
+      [shipped.installer, '--check', '--set', 'rules', '--dir', target],
+      { encoding: 'utf8', env: f.env },
+    ).stdout
+    expect(checked).toContain(`${RULE}: AHEAD/FORKED`)
+    const hooked = runHook(f.proj, f.env, shipped.hook)
+    expect(hooked.context).toContain('Ahead/forked from the shipped content')
+    expect(hooked.context).toContain(`${RULE} (${target})`)
+    expect(hooked.context).not.toContain('Behind the shipped content')
+  })
+
+  it('manual checker and hook both classify real project rules/wt content drift as behind and name its location', () => {
+    const f = fixture('behind-drift')
+    const shipped = makeHookCopy()
+    const target = join(f.proj, '.claude', 'rules', 'wt')
+    installInto(target, shipped.installer)
+    const body = readFileSync(join(shipped.rulesDir, RULE), 'utf8') + '\nAN OLD SHIPPED LINE\n'
+    writeManagedRule(join(target, RULE), body, '0.0.1')
+
+    const checked = spawnSync(
+      process.execPath,
+      [shipped.installer, '--check', '--set', 'rules', '--dir', target],
+      { encoding: 'utf8', env: f.env },
+    ).stdout
+    expect(checked).toContain(`${RULE}: STALE`)
+    const hooked = runHook(f.proj, f.env, shipped.hook)
+    expect(hooked.context).toContain('Behind the shipped content')
+    expect(hooked.context).toContain(`${RULE} (${target})`)
+    expect(hooked.context).not.toContain('Ahead/forked')
+  })
+
   it('a genuinely un-migrated flat install is never double-counted or masked at the new location', () => {
     const f = fixture('unmigrated')
     const dir = join(f.proj, '.claude', 'rules')
@@ -148,7 +233,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     writeFileSync(p, `<!-- installed from workflow-toolbox v0.0.1 · content sha256:${fp} by the adopt skill -->\n\n${body}`)
     const r = runHook(f.proj, f.env)
     expect(r.stdout, 'must not be silent').not.toBe('')
-    expect(r.context).toContain('Behind the shipped version')
+    expect(r.context).toContain('Behind the shipped content')
     expect(r.context).toContain(RULE)
   })
 
@@ -167,7 +252,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     writeFileSync(p, `<!-- installed from workflow-toolbox v0.0.1 · content sha256:${fp} by the adopt skill -->\n\n${body}`)
     const r = runHook(f.proj, f.env)
     expect(r.stdout, 'must not be silent').not.toBe('')
-    expect(r.context).toContain('Behind the shipped version')
+    expect(r.context).toContain('Behind the shipped content')
     expect(r.context).toContain(RULE)
     expect(r.context).toContain('adopt')
   })
@@ -185,7 +270,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(r.context).not.toContain('just landed')
     expect(r.context).not.toContain('A push just landed and the adopted rule copies are now behind it')
     expect(r.context).toContain('A `git push` command just ran; this Bash PostToolUse hook cannot tell whether it landed.')
-    expect(r.context).toContain('Behind the shipped version')
+    expect(r.context).toContain('Behind the shipped content')
     expect(r.context).toContain(RULE)
   })
 
@@ -227,7 +312,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(r.context).toContain('Locally modified')
     expect(r.context).toContain(RULE)
     expect(r.context.toLowerCase()).toContain('supported')
-    expect(r.context).not.toContain('Behind the shipped version')
+    expect(r.context).not.toContain('Behind the shipped content')
     expect(r.context).not.toContain('NOT installed')
   })
 

@@ -27,7 +27,7 @@
 //   - everything adopted & current everywhere it's checked → SILENT (no output at all).
 //   - some rule file absent everywhere → say so, name the file(s), name the consequence
 //     (the methodology's directives are not in force), give the exact fix.
-//   - some rule file behind the shipped version everywhere it's found → say which, and
+//   - some rule file behind the shipped content everywhere it's found → say which location, and
 //     that installing won't touch a locally-edited file.
 //   - some rule file locally edited (and not clean/current elsewhere) → say which, and
 //     that this is a SUPPORTED state, never framed as a problem.
@@ -59,7 +59,7 @@ function readInput() {
 }
 
 /** Run the REAL install.mjs in --check mode against one target dir and parse its
- *  per-file status lines (`  <file>: <status>`) into a Map<file, status>. Never throws —
+ *  per-file status lines (`  <file>: <status>`) into a Map<file, {status, location}>. Never throws —
  *  a missing/failed child (broken install, no such dir handled fine by install-rules
  *  itself) just yields an empty map, which contributes nothing to the merge. */
 function checkDir(dir, set = 'rules') {
@@ -77,7 +77,7 @@ function checkDir(dir, set = 'rules') {
   const stdout = res && res.stdout ? res.stdout : ''
   for (const line of stdout.split('\n')) {
     const m = /^ {2}(\S+\.md): (.+)$/.exec(line)
-    if (m) map.set(m[1], m[2])
+    if (m) map.set(m[1], { status: m[2], location: dir })
   }
   return map
 }
@@ -98,15 +98,16 @@ function bucket(status) {
   if (/^ABSENT/.test(status)) return 'absent'
   if (/^MIGRATION-PENDING/.test(status)) return 'absent'
   if (/^STALE/.test(status)) return 'stale'
+  if (/^AHEAD(?:\/FORKED)?/.test(status)) return 'ahead'
   if (/^EDITED/.test(status)) return 'edited'
-  return 'ok' // UP-TO-DATE, AHEAD, SYMLINK, PRESENT (hand-authored), or anything unrecognized
+  return 'ok' // UP-TO-DATE, SYMLINK, PRESENT (hand-authored), or anything unrecognized
 }
 
 // Best-to-worst: a file counts 'ok' if EITHER checked location says so (it IS in force,
 // current, somewhere) — an edited/stale copy in the OTHER location doesn't undo that.
 // Otherwise take the least-concerning bucket found: edited (supported, not a problem)
-// beats stale (needs a refresh) beats absent (nothing installed at all).
-const RANK = { ok: 0, edited: 1, stale: 2, absent: 3 }
+// beats ahead/forked, which beats stale (needs a refresh), then absent.
+const RANK = { ok: 0, edited: 1, ahead: 2, stale: 3, absent: 4 }
 
 /** "A file counts ok if ANY checked location says so" — folded across N maps rather than
  *  just two, since the rules set now has a second candidate LOCATION on top of the
@@ -114,32 +115,40 @@ const RANK = { ok: 0, edited: 1, stale: 2, absent: 3 }
  *  subfolder, card 1835727457). Four maps in the common case (project flat, project wt,
  *  global flat, global wt). */
 function mergeAll(maps, file) {
-  let best = 'absent'
+  let best = { bucket: 'absent', location: null, status: 'ABSENT' }
   for (const map of maps) {
-    const status = map.get(file)
-    const b = status ? bucket(status) : 'absent'
-    if (b === 'ok') return 'ok'
-    if (RANK[b] < RANK[best]) best = b
+    const finding = map.get(file)
+    const b = finding ? bucket(finding.status) : 'absent'
+    if (b === 'ok') return { bucket: 'ok', location: finding.location, status: finding.status }
+    if (RANK[b] < RANK[best.bucket]) {
+      best = { bucket: b, location: finding?.location ?? null, status: finding?.status ?? 'ABSENT' }
+    }
   }
   return best
 }
 
 function buildMessage(perFile, installCmd, set = 'rules', event = 'SessionStart') {
-  const buckets = { absent: [], stale: [], edited: [] }
-  for (const [file, b] of perFile) {
-    if (b !== 'ok') buckets[b].push(file)
+  const buckets = { absent: [], stale: [], ahead: [], edited: [] }
+  for (const [file, finding] of perFile) {
+    if (finding.bucket !== 'ok') buckets[finding.bucket].push({ file, ...finding })
   }
   // ABSENT means opposite things for the two sets. Rules carry the methodology: not having
   // them is a gap worth naming. Agent copies are OPT-IN — a project that never adopted the
   // pilot suite made a choice, and nagging it on every session would be a guard that is
   // always red, which is a guard that gets ignored. For agents, only STALE is a finding.
   if (set !== 'rules') buckets.absent = []
-  if (!buckets.absent.length && !buckets.stale.length && !buckets.edited.length) return null
+  if (!buckets.absent.length && !buckets.stale.length && !buckets.ahead.length && !buckets.edited.length) return null
+
+  const named = (items) =>
+    items
+      .sort((a, b) => a.file.localeCompare(b.file))
+      .map(({ file, location }) => `${file}${location ? ` (${location})` : ''}`)
+      .join(', ')
 
   const lines = []
   if (buckets.absent.length) {
     lines.push(
-      `workflow-toolbox rules NOT installed here: ${buckets.absent.sort().join(', ')}. ` +
+      `workflow-toolbox rules NOT installed here: ${named(buckets.absent)}. ` +
         `Plugin ${set} never load into a session on their own, so what they carry is ` +
         `NOT in force for these. Fix: run the ${SKILL_NAME} skill ` +
         `(or \`node ${installCmd} --set ${set} --install\`).`,
@@ -147,8 +156,14 @@ function buildMessage(perFile, installCmd, set = 'rules', event = 'SessionStart'
   }
   if (buckets.stale.length) {
     lines.push(
-      `Behind the shipped version: ${buckets.stale.sort().join(', ')}. Refresh via ` +
+      `Behind the shipped content: ${named(buckets.stale)}. Refresh via ` +
         `${SKILL_NAME} (\`--set ${set} --install\`) — it will not touch a file you've locally edited.`,
+    )
+  }
+  if (buckets.ahead.length) {
+    lines.push(
+      `Ahead/forked from the shipped content: ${named(buckets.ahead)}. Its banner version is newer and its content differs; ` +
+        `review the fork before replacing it.`,
     )
   }
   // "Locally modified" is a SUPPORTED steady state, not an event. Reporting it at session
@@ -157,7 +172,7 @@ function buildMessage(perFile, installCmd, set = 'rules', event = 'SessionStart'
   // manufactures the blind spot it exists to close.
   if (buckets.edited.length && event !== 'PostToolUse') {
     lines.push(
-      `Locally modified (supported, left untouched by any refresh): ${buckets.edited.sort().join(', ')}.`,
+      `Locally modified (supported, left untouched by any refresh): ${named(buckets.edited)}.`,
     )
   }
   // ⚠ NAME THE ACTION, AND NAME WHOSE IT IS. Everything above is a measurement, and a

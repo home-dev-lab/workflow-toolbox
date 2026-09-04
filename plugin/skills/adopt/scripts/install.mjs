@@ -572,6 +572,12 @@ function fingerprint(body) {
   return crypto.createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
 }
 
+/** Content comparison ignores trailing whitespace at EOF (including a missing/extra final
+ * newline). That formatting carries no rule semantics and must not manufacture drift. */
+function contentFingerprint(body) {
+  return fingerprint(body.replace(/[ \t\r\n]+$/u, ''))
+}
+
 function banner(version, fp) {
   return (
     `<!-- installed from ${BANNER_TOOL} v${version} · content sha256:${fp} by the adopt ` +
@@ -601,7 +607,7 @@ function itemContent(set, item, root) {
  *  degrades to null and the caller falls back to the version comparison. */
 function shippedFingerprint(set, item, root) {
   try {
-    return fingerprint(fs.readFileSync(path.join(root, set.srcDir, item.file), 'utf8'))
+    return contentFingerprint(fs.readFileSync(path.join(root, set.srcDir, item.file), 'utf8'))
   } catch {
     return null
   }
@@ -830,12 +836,12 @@ function classify(target, set) {
   if (!vm) return { state: 'hand-authored' }
   const installedVer = `${vm[1]}.${vm[2]}.${vm[3]}`
   const fpm = FP_RE.exec(line)
-  if (!fpm) return { state: 'edited-unknown', installedVer }
-  const clean = fingerprint(stripBannerFor(set, content)) === fpm[1]
-  // installedFp = the fingerprint of the content this copy actually holds. Returned so the
-  // planner can ask "is this the same text that ships today?" — the question the version
-  // number cannot answer, and the one that decides whether STALE means anything.
-  return { state: clean ? 'clean' : 'edited', installedVer, installedFp: fpm[1] }
+  const body = stripBannerFor(set, content)
+  const contentFp = contentFingerprint(body)
+  if (!fpm) return { state: 'edited-unknown', installedVer, contentFp }
+  const clean = fingerprint(body) === fpm[1] || contentFingerprint(body) === fpm[1]
+  // Re-derive this from the body; never trust the banner hash for shipped-content identity.
+  return { state: clean ? 'clean' : 'edited', installedVer, contentFp }
 }
 
 function cmp(a, b) {
@@ -1481,6 +1487,20 @@ function auditOverlap(userDir, root, pairsFile, declarationsFile, set = 'rules')
  *  stamped. A symlink is never written THROUGH: it writes only under `replaceSymlinks`
  *  (and then processSet unlinks the link first, preserving its target). */
 function plan(c, version, force, replaceSymlinks, shippedFp) {
+  // CONTENT wins over banner metadata, including an old/ahead version or stale stored hash.
+  // Comparison uses contentFingerprint's trailing-EOF-whitespace normalization.
+  if (c.installedVer && shippedFp && c.contentFp === shippedFp) {
+    return {
+      status:
+        cmp(c.installedVer, version) === 0
+          ? `UP-TO-DATE (v${c.installedVer})`
+          : `UP-TO-DATE (banner v${c.installedVer}; content identical to v${version})`,
+      write: force,
+    }
+  }
+  if (c.installedVer && cmp(c.installedVer, version) > 0) {
+    return { status: `AHEAD/FORKED (installed v${c.installedVer} > v${version}; content differs)`, write: force }
+  }
   switch (c.state) {
     case 'absent':
       return { status: 'ABSENT', write: true }
@@ -1510,26 +1530,8 @@ function plan(c, version, force, replaceSymlinks, shippedFp) {
       }
     case 'clean': {
       const c2 = cmp(c.installedVer, version)
-      // AHEAD is decided FIRST and never short-circuited by matching content: a copy claiming
-      // a version this plugin does not have means something is wrong with the INSTALL, not
-      // with the text, and identical content does not make that anomaly go away. (Skipping
-      // this ordering is exactly how an earlier attempt silently swallowed the AHEAD signal.)
-      if (c2 > 0) return { status: `AHEAD (installed v${c.installedVer} > v${version})`, write: force }
-      // Otherwise CONTENT decides, not the version number. Most releases touch a few files;
-      // comparing versions alone marks every adopted copy stale on every release, identical
-      // ones included — and a warning that cries wolf on each release is not read on the one
-      // release that matters. The banner then honestly records the version at which THIS
-      // exact text was installed.
-      if (shippedFp && c.installedFp === shippedFp) {
-        return {
-          status:
-            c2 === 0
-              ? `UP-TO-DATE (v${c.installedVer})`
-              : `UP-TO-DATE (banner v${c.installedVer}; content identical to v${version})`,
-          write: force,
-        }
-      }
       if (c2 < 0) return { status: `STALE (installed v${c.installedVer} < v${version})`, write: true }
+      // A current-version clean agent may carry an installer-preserved local frontmatter field.
       return { status: `UP-TO-DATE (v${c.installedVer})`, write: force }
     }
     default:
@@ -1584,7 +1586,7 @@ function processSet(set, dir, args, version, root) {
     if (
       c.state === 'clean' &&
       cmp(c.installedVer, version) < 0 &&
-      !(shippedFp && c.installedFp === shippedFp)
+      !(shippedFp && c.contentFp === shippedFp)
     )
       anyStale = true
     if (c.state === 'edited' || c.state === 'edited-unknown') anyEdited = true
