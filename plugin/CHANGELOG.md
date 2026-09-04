@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- `wt-merge-chain-guard-hook.mjs` now stays silent while journaling `decision: "silent"` for a chained merge followed only by diagnostic reads; chained gates and unclassified commands continue to warn.
 - The shared `wt-queue-gate` state directory now expires recognized stale queue, mandate, cooldown, and defunct-session watch markers opportunistically during normal reads and writes, without deleting unknown records.
 - `adopt:migrate --execute --secondary-dir <rules-dir>` now reconciles a second configuration
   directory after verified moves: only symlinks to moved managed files are removed, then one

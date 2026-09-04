@@ -8,12 +8,10 @@
 // into "this guard fired 3 times this week" (a number). This module is the write side of that
 // count; wt-guard-journal-scan.mjs (its sibling in plugin/bin/) is the read side.
 //
-// WHAT IT RECORDS, DELIBERATELY NARROW. Only decision === 'blocked' | 'warned' — the two shapes
-// a guard's OWN payload already names (a `permissionDecision: 'deny'`, or a warning surfaced via
-// `additionalContext` / an `allow` with a warning reason). Anything else (a silent no-op, an
-// internal "journal-only, allowed" bookkeeping entry some guards already keep for their own
-// purpose) is not this module's concern — recordGuardEvent() no-ops on any other decision value,
-// so a caller that passes the wrong string fails silently rather than polluting the count.
+// WHAT IT RECORDS, DELIBERATELY NARROW. Only decision === 'blocked' | 'warned' | 'silent' — a
+// refusal, a warning surfaced through the hook payload, or an intentional journal-only detection.
+// Anything else is not this module's concern — recordGuardEvent() no-ops on an unknown value, so a
+// caller that passes the wrong string fails silently rather than polluting the count.
 //
 // FAIL-OPEN, STRUCTURALLY. A guard's whole POINT can be to refuse a dangerous command; if this
 // journal's bookkeeping could throw, a guard that already decided to block/warn correctly could
@@ -143,11 +141,10 @@ export function emitGuardNotice({ payload = null, stdoutJson = null, stdoutText 
  * @param {object} event
  * @param {string} event.guard   - the guard's own filename (e.g. 'wt-main-guard-hook.mjs').
  *                                 Required — no guard name, no write.
- * @param {'blocked'|'warned'} event.decision - required, and the ONLY two values recorded.
+ * @param {'blocked'|'warned'|'silent'} event.decision - required, and the ONLY values recorded.
  *                                 Any other value (including a guard's own internal
  *                                 'allowed-journaled'/'override-allow' bookkeeping) is a no-op
- *                                 here by design — this journal counts refusals and warnings,
- *                                 nothing else.
+ *                                 here by design.
  * @param {string} [event.class]  - the guard's own classification of what it matched, if any.
  * @param {string} [event.reason] - free text, truncated to 400 chars.
  * @param {string} [event.cwd]    - the cwd the decision was made in, if known.
@@ -157,7 +154,7 @@ export function emitGuardNotice({ payload = null, stdoutJson = null, stdoutText 
 export function recordGuardEvent(event = {}) {
   try {
     const { guard, decision, class: cls, reason, cwd, session, evidence } = event || {}
-    if (!guard || (decision !== 'blocked' && decision !== 'warned')) return
+    if (!guard || !['blocked', 'warned', 'silent'].includes(decision)) return
     const dir = baseDir()
     fs.mkdirSync(dir, { recursive: true })
     const safeSession = typeof session === 'string' ? sanitiseValue(session) : null

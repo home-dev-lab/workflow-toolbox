@@ -80,17 +80,20 @@ describe('wt-merge-chain-guard-hook', () => {
     expect(r.status).toBe(0)
   })
 
-  it('WARN: a merge chained with || is flagged', () => {
+  it('SILENT: a merge chained with || to a diagnostic read is journaled', () => {
     const r = run('git merge branch || echo failed')
-    expect(r.warned).toBe(true)
-    expect(r.denied).toBe(false)
+    expect(r.stdout).toBe('')
     expect(r.status).toBe(0)
+    expect(r.entries).toHaveLength(1)
+    expect(r.entries[0]).toMatchObject({ decision: 'silent', evidence: { trailing: 'diagnostic' } })
   })
 
   it('CLASSIFY gate: a trailing command that trusts the merged tree (pnpm test)', () => {
     const r = run('git merge branch && pnpm test')
+    expect(r.warned).toBe(true)
     expect(r.entries).toHaveLength(1)
     expect(r.entries[0]).toMatchObject({
+      decision: 'warned',
       session: 'session-test-123',
       evidence: { trailing: 'gate' },
     })
@@ -106,17 +109,28 @@ describe('wt-merge-chain-guard-hook', () => {
 
   it('CLASSIFY diagnostic: the project\'s documented safe pattern (log/exit-code read only)', () => {
     const r = run('git merge branch > log 2>&1; echo "merge: $?"; cat log')
+    expect(r.stdout).toBe('')
     expect(r.entries).toHaveLength(1)
     expect(r.entries[0]).toMatchObject({
+      decision: 'silent',
       session: 'session-test-123',
       evidence: { trailing: 'diagnostic' },
     })
   })
 
+  it('CLASSIFY diagnostic: all documented diagnostic heads stay silent and journaled', () => {
+    const r = run('git merge branch; tail log; head log; cut -d: -f1 log; grep merged log; wc -l log; echo done; cat log; git log -1; git status --short; git show --stat; git diff --stat; git rev-parse HEAD; git merge-base HEAD main')
+    expect(r.stdout).toBe('')
+    expect(r.entries).toHaveLength(1)
+    expect(r.entries[0]).toMatchObject({ decision: 'silent', evidence: { trailing: 'diagnostic' } })
+  })
+
   it('CLASSIFY unclassified: a trailing command the classifier cannot place', () => {
     const r = run('git merge branch && ./scripts/custom-thing.sh')
+    expect(r.warned).toBe(true)
     expect(r.entries).toHaveLength(1)
     expect(r.entries[0]).toMatchObject({
+      decision: 'warned',
       session: 'session-test-123',
       evidence: { trailing: 'unclassified' },
     })

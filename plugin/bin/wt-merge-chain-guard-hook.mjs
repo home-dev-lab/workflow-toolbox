@@ -15,17 +15,14 @@
 // between them — or a newline, which is the same thing to the shell — hands the next command a
 // stale tree to certify.
 //
-// ⚠ WHY THIS SHIPS WARN-ONLY, NOT BLOCKING — measured, not a default caution. The predicate is
-// "any command follows a `git merge` in the same invocation", which is what the hazard actually
-// is. Measured against this project's own history before shipping: 1,140 distinct real `git
+// ⚠ WHY THIS SHIPS WARN-ONLY, NOT BLOCKING — measured, not a default caution. Measured against
+// this project's own history before shipping: 1,140 distinct real `git
 // merge`-containing Bash commands, replayed against this guard's own executable as PreToolUse
 // payloads — 376 matched. Reading them: the overwhelming majority are NOT the blind-chain
 // hazard — they are the project's own established careful pattern, `git merge x > log 2>&1;
 // echo "merge: $?"; <inspect the log or compare tree hashes>`, which THIS guard's predicate
-// cannot distinguish from a blind chained gate without a much larger, more fragile analysis of
-// what the trailing commands actually do with the captured result. A conservative verb-based
-// re-classification of the same 376 still found roughly three quarters with no recognizable
-// downstream gate command (test/build/publish/push) in the chained tail. Blocking that volume
+// can now distinguish from a blind chained gate through a closed set of diagnostic command heads.
+// Blocking the remaining volume
 // of correct, careful work is exactly the false-positive shape that gets a guard switched off,
 // taking its real cases with it (`wt-unquoted-tool-glob-guard-hook.mjs`'s own header explains
 // the bar this guard did not clear: 0 false positives on unchosen material before shipping
@@ -192,8 +189,8 @@ const GATE_GIT_SUBCOMMANDS = new Set(['push', 'commit', 'tag', 'publish'])
 
 // Heads that only READ the merge's own outcome — the project's documented safe pattern
 // (`git merge x > log 2>&1; echo "merge: $?"; <inspect the log or compare tree hashes>`).
-const DIAGNOSTIC_HEADS = new Set(['echo', 'printf', 'cat', 'test', 'true', 'false', 'wc', 'head', 'tail', 'diff', 'stat', 'ls', 'pwd', '[', '[['])
-const DIAGNOSTIC_GIT_SUBCOMMANDS = new Set(['log', 'diff', 'show', 'status', 'rev-parse', 'rev-list'])
+const DIAGNOSTIC_HEADS = new Set(['echo', 'printf', 'cat', 'cut', 'grep', 'test', 'true', 'false', 'wc', 'head', 'tail', 'diff', 'stat', 'ls', 'pwd', '[', '[['])
+const DIAGNOSTIC_GIT_SUBCOMMANDS = new Set(['log', 'diff', 'show', 'status', 'rev-parse', 'rev-list', 'merge-base'])
 
 // Classify ONE trailing segment. Returns a TRAILING_CLASS value or null (unrecognized head) —
 // never the segment's own words. `git` needs one extra look-ahead (its subcommand) to tell a
@@ -262,13 +259,14 @@ function main() {
 
   recordGuardEvent({
     guard: 'wt-merge-chain-guard-hook.mjs',
-    decision: 'warned',
+    decision: trailing === TRAILING_CLASS.DIAGNOSTIC ? 'silent' : 'warned',
     class: 'chained-merge',
     // No `reason`: the merge segment is raw command text (branch names, paths, anything the
     // caller typed). The classification below is the whole record.
     session: input.session_id,
     evidence: { trailing },
   })
+  if (trailing === TRAILING_CLASS.DIAGNOSTIC) return
   emitGuardNotice({
     payload: input,
     stdoutJson: {
@@ -282,9 +280,7 @@ function main() {
           'branch — and the chained commands then run on the UNMERGED tree and return exit 0, ' +
           'certifying a subject nobody intended to certify. If what follows is a GATE that ' +
           'trusts the merge succeeded (a test/build/publish/push run), run the merge ALONE, ' +
-          'read its result, and only THEN run the gate in a separate command. If what follows ' +
-          "only reads the merge's own captured exit code or log, this is expected and safe — " +
-          'this guard cannot yet tell the two apart, so it warns rather than refuses.',
+          'read its result, and only THEN run the gate in a separate command.',
       },
     },
   })
