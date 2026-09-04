@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- The shared `wt-queue-gate` state directory now expires recognized stale queue, mandate, cooldown, and defunct-session watch markers opportunistically during normal reads and writes, without deleting unknown records.
 - `adopt:migrate --execute --secondary-dir <rules-dir>` now reconciles a second configuration
   directory after verified moves: only symlinks to moved managed files are removed, then one
   absolute `wt -> <primary>/rules/wt` directory symlink is created and verified. A planned move

@@ -17,6 +17,7 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { isServiceDegraded } from './lib/service-flag.mjs'
 import { classifyMandate } from './lib/autonomy-mandate.mjs'
+import { expireMarker, expireOwnedMarkers } from './lib/queue-gate-marker-expiry.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 
 const HELP = `wt-autonomy-watch — wakes an autonomous session (one that declared a mandate via
@@ -226,6 +227,7 @@ function externalLaneRunning(cwd) {
 
 function readQueueSnapshot(queuePath, now, staleAfterMs) {
   if (!existsSync(queuePath)) return { kind: 'unknown' }
+  if (expireMarker('queue', queuePath, now, { queueFreshnessMs: staleAfterMs }).expired) return { kind: 'unknown' }
   try {
     const parsed = JSON.parse(readFileSync(queuePath, 'utf8'))
     const at = parsed?.at
@@ -318,11 +320,16 @@ function clearMandateState(mandateStatePath) {
 
 function poll(context) {
   const now = Date.now()
+  expireOwnedMarkers(context.watchStateDir, ['queue', 'watch-emission', 'watch-mandate-state'], now, {
+    queueFreshnessMs: context.queueStaleMs,
+    sessionTranscriptDir: context.projectStateRoot,
+  })
   // ⚠ SAME CLASSIFICATION THE BANNER USES — see lib/autonomy-mandate.mjs for why this is a shared
   // function rather than a second copy of "is this marker still fresh". 'live' may proceed to a
   // wake; 'expired' may emit ONE transition notice if this watcher previously observed the same
   // declaration as live; 'absent' and 'unknown' stay otherwise silent.
   const mandate = classifyMandate(context.mandatePath, context.mandateFreshnessMs, now, context.sessionId)
+  expireMarker('mandate', context.mandatePath, now, { mandateFreshnessMs: context.mandateFreshnessMs })
   const previousMandateState = readMandateState(context.mandateStatePath)
   if (mandate.kind === 'unknown') {
     writeMandateState(context.mandateStatePath, {
@@ -458,6 +465,8 @@ const context = {
   mandatePath,
   markerPath,
   mandateStatePath,
+  watchStateDir,
+  projectStateRoot,
   idleMs: DEFAULT_IDLE_MINUTES * 60_000,
   inflightMs: DEFAULT_INFLIGHT_MINUTES * 60_000,
   queueStaleMs: DEFAULT_QUEUE_STALE_MINUTES * 60_000,

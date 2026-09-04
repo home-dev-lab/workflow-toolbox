@@ -224,7 +224,7 @@ describe('--status distinguishes live, expired and absent — and agrees with th
     expect(result.status).toBe(4)
   })
 
-  it('the watcher banner and --status AGREE about the same expired marker at the same instant — the regression this locks', () => {
+  it('status reports expiry and removes the expired marker before the watcher next reads it', () => {
     const s = scaffold()
     const now = Date.now()
     writeMandate(s.mandatePath, s.sessionId, now - 9 * 60 * 60_000)
@@ -232,9 +232,9 @@ describe('--status distinguishes live, expired and absent — and agrees with th
     const status = run(ARM, s.env, [...s.args, '--status'])
     const watch = run(WATCH, { ...s.env, CLAUDE_CONFIG_DIR: join(s.root, 'config') }, ['--once', '--project', s.projectDir])
 
-    // The watcher's banner says CANNOT FIRE / stale; --status must say the equivalent, never
-    // "armed" — the two tools reporting on one file must never contradict each other.
-    expect(watch.stdout).toContain('mandate=stale(')
+    // The status reader returns the expiry verdict for this invocation, then opportunistically
+    // removes the dead declaration. The next reader sees an honest absence, never a live mandate.
+    expect(watch.stdout).toContain('mandate=absent')
     expect(watch.stdout).toContain('CANNOT FIRE')
     expect(status.stdout).not.toContain('AUTONOMY MANDATE: armed')
     expect(status.stdout).toContain('expired')

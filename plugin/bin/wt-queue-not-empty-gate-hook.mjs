@@ -132,6 +132,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { queueSnapshotFileName, queueSnapshotSlug, resolveQueueSnapshotPath } from './lib/queue-snapshot-path.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
 import { scanLiveLaneProcesses, worktreeActivity } from './lib/lane-live-scan.mjs'
+import { expireMarker, expireOwnedMarkers } from './lib/queue-gate-marker-expiry.mjs'
 
 const STATE_DIR = process.env.WT_QUEUE_GATE_DIR
   || join(homedir(), '.local', 'state', 'wt-queue-gate')
@@ -172,6 +173,10 @@ const transcriptPath = input.transcript_path
 const sessionId = input.session_id || 'unknown'
 const cwd = input.cwd || process.cwd()
 if (!transcriptPath || !existsSync(transcriptPath)) bail()
+
+// This is bounded at 100 names: stale queue evidence and this hook's own cooldown records cannot
+// accumulate, while a Stop hook never turns into an unbounded directory sweep.
+expireOwnedMarkers(STATE_DIR, ['cooldown'], Date.now())
 
 // --- 1. Is work in flight? --------------------------------------------------------------
 // A delegated agent writes to <session>/subagents/agent-*.jsonl. A recent write there means the
@@ -294,6 +299,9 @@ try {
   if (!validAt || !isValidOpen || typeof snap.next !== 'string') {
     queueStatus = 'malformed'
   } else if (age > SNAPSHOT_MAX_AGE_MIN * 60_000) {
+    // Keep the stale verdict for this invocation even when cleanup succeeds: a reader must ignore
+    // stale evidence, not confuse its removal with a project that was never wired.
+    expireMarker('queue', snapshot, Date.now(), { queueFreshnessMs: SNAPSHOT_MAX_AGE_MIN * 60_000 })
     queueStatus = 'stale'
     snapshotAgeMin = Math.round(age / 60_000)
   } else {
