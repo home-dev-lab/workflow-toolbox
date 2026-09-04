@@ -1035,6 +1035,7 @@ function parseArgs(argv) {
     declarationsFile: null,
     dryRun: false,
     secondaryDir: null,
+    ignoreSecondary: false,
     execute: false,
   }
   for (let i = 0; i < argv.length; i++) {
@@ -1052,6 +1053,7 @@ function parseArgs(argv) {
     else if (argv[i] === '--migrate') args.mode = 'migrate'
     else if (argv[i] === '--dry-run') args.dryRun = true
     else if (argv[i] === '--secondary-dir') args.secondaryDir = argv[++i]
+    else if (argv[i] === '--ignore-secondary') args.ignoreSecondary = true
     else if (argv[i] === '--execute') args.execute = true
   }
   return args
@@ -1084,6 +1086,7 @@ const FLAG_EFFECTIVE_MODES = {
   replaceSymlinks: { cli: '--replace-symlinks', modes: ['check', 'install'] },
   dryRun: { cli: '--dry-run', modes: ['migrate'] },
   secondaryDir: { cli: '--secondary-dir', modes: ['migrate'] },
+  ignoreSecondary: { cli: '--ignore-secondary', modes: ['migrate'] },
   execute: { cli: '--execute', modes: ['migrate'] },
 }
 
@@ -1776,6 +1779,95 @@ function planSecondaryDirSymlinks(secondaryDir, flatDir, wtDir, moves, stays) {
   return lines
 }
 
+/** Resolve a symlink target without following the link itself. The migration is allowed to
+ * remove only links whose resolved target is an exact file selected for this run's move. */
+function resolvedLinkTarget(linkPath) {
+  const target = fs.readlinkSync(linkPath)
+  return path.resolve(path.dirname(linkPath), target)
+}
+
+/** Reconcile the explicit secondary rules dir after every planned move is confirmed. The
+ * directory link is intentionally absolute: it matches the documented machine setup and
+ * remains correct if the secondary config directory is reached through another cwd. */
+function reconcileSecondaryDir(secondaryDir, wtDir, moves) {
+  const movedSources = new Set(moves.map((move) => path.resolve(move.from)))
+  const wtLink = path.join(secondaryDir, 'wt')
+  let entries
+  try {
+    entries = fs.readdirSync(secondaryDir, { withFileTypes: true })
+  } catch (error) {
+    fail(`secondary reconciliation failed: cannot read ${secondaryDir} — ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  let removed = 0
+  let left = 0
+  for (const entry of entries) {
+    const linkPath = path.join(secondaryDir, entry.name)
+    let lst
+    try {
+      lst = fs.lstatSync(linkPath)
+    } catch {
+      continue
+    }
+    if (!lst.isSymbolicLink() || linkPath === wtLink) continue
+    let target
+    try {
+      target = resolvedLinkTarget(linkPath)
+    } catch {
+      // An unreadable or already-dead unrelated link is never ours to remove.
+      left++
+      continue
+    }
+    if (movedSources.has(target)) {
+      fs.unlinkSync(linkPath)
+      removed++
+    } else {
+      left++
+    }
+  }
+
+  let directoryState = 'created'
+  try {
+    const lst = fs.lstatSync(wtLink)
+    if (!lst.isSymbolicLink()) {
+      fail(`secondary reconciliation failed: ${wtLink} exists and is not a symlink; refusing to replace it`)
+    }
+    const target = resolvedLinkTarget(wtLink)
+    if (target !== path.resolve(wtDir)) {
+      fail(`secondary reconciliation failed: ${wtLink} points to ${target}, not ${wtDir}; refusing to replace it`)
+    }
+    directoryState = 'already correct'
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      try {
+        fs.symlinkSync(wtDir, wtLink, 'dir')
+      } catch (createError) {
+        fail(
+          `secondary reconciliation failed: could not create directory symlink ${wtLink} -> ${wtDir} — ` +
+            `${createError instanceof Error ? createError.message : String(createError)}`,
+        )
+      }
+    } else {
+      throw error
+    }
+  }
+
+  for (const move of moves) {
+    const stalePath = path.join(secondaryDir, move.file)
+    try {
+      if (fs.lstatSync(stalePath).isSymbolicLink() && resolvedLinkTarget(stalePath) === path.resolve(move.from)) {
+        fail(`secondary reconciliation failed: dead link remains at ${stalePath}`)
+      }
+    } catch (error) {
+      if (error && typeof error === 'object' && error.code === 'ENOENT') continue
+      throw error
+    }
+  }
+  process.stdout.write(
+    `secondary reconciliation: ${removed} link(s) removed, directory link ${directoryState}, ${left} link(s) left.\n`,
+  )
+}
+
 function migrateDryRun(dir, args) {
   const wtDir = dir
   const flatDir = legacyRulesDir(wtDir)
@@ -1939,12 +2031,22 @@ function executeMigration(dir, args) {
     return
   }
 
+  if (moves.length > 0 && !args.secondaryDir && !args.ignoreSecondary) {
+    process.stdout.write(
+      'adopt:migrate --execute: REFUSING — a second config dir could hold per-file symlinks that this move would break. ' +
+        'Pass --secondary-dir <path-to-its-rules-dir> to reconcile it, or --ignore-secondary to proceed with that risk explicitly. Nothing has been moved.\n',
+    )
+    process.exitCode = 1
+    return
+  }
+
   if (moves.length === 0) {
     process.stdout.write(
       `adopt:migrate --execute: nothing to move — the plan is empty. No-op (not an error): either ` +
         `already migrated, or nothing was ever at the flat root.\n  ${stays.length} file(s) left in ` +
         `place by design (hand-authored — never managed).\n  destination: ${wtDir}\n`,
     )
+    if (args.secondaryDir) reconcileSecondaryDir(args.secondaryDir, wtDir, moves)
     return
   }
 
@@ -1989,7 +2091,9 @@ function executeMigration(dir, args) {
   if (firstFailure || confirmed !== plannedCount) {
     process.stdout.write('adopt:migrate --execute: EXITING NON-ZERO — not every planned move is confirmed.\n')
     process.exitCode = 1
+    return
   }
+  if (args.secondaryDir) reconcileSecondaryDir(args.secondaryDir, wtDir, moves)
 }
 
 function main() {

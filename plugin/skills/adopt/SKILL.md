@@ -212,7 +212,8 @@ correctly-migrated project nor stays silent on an un-migrated one.
 ```bash
 node scripts/install.mjs --migrate --dry-run [--dir <…/rules/wt>] [--global] \
   [--secondary-dir <path-to-a-second-config-dir's-rules-dir>]
-node scripts/install.mjs --migrate --execute [--dir <…/rules/wt>] [--global]
+node scripts/install.mjs --migrate --execute [--dir <…/rules/wt>] [--global] \
+  --secondary-dir <path-to-a-second-config-dir's-rules-dir>
 ```
 
 `--migrate` without `--dry-run` or `--execute` refuses outright, on purpose. Preview first,
@@ -226,6 +227,17 @@ to a second config dir's per-file symlinks, when `--secondary-dir` names one. It
 non-zero whenever it would produce a duplicate (a file loaded from both locations at once)
 — a dry-run that describes a dangerous state and exits 0 would be a report, not a guard.
 
+`--execute --secondary-dir <dir>` performs the second-config reconciliation only after every
+planned file move is byte-verified: it removes each per-file symlink in `<dir>` whose target was
+one of those moved files, then creates the single **absolute** directory symlink
+`<dir>/wt -> <primary>/rules/wt`. Absolute matches this machine's documented setup and makes the
+link independent of the invoking cwd. It prints the removed, created/already-correct, and left
+link counts; a remaining moved-file link makes the command exit non-zero with its path. Links to
+hand-authored root files are untouched. Re-running it reports `directory link already correct` and
+does not recreate the link. When a move is planned and `--secondary-dir` is absent, `--execute`
+refuses loudly rather than silently leaving an unknowable second configuration broken; pass
+`--ignore-secondary` only to acknowledge and explicitly accept that risk.
+
 **Design decision — the second config dir's symlink arrangement.** This machine's own setup
 (`~/.claude-work/rules/` symlinking each managed file individually into `~/.claude/rules/`)
 predates the `wt/` subfolder and cannot survive it unchanged: a per-file symlink does not
@@ -237,7 +249,9 @@ half of an edit); a directory symlink covers the whole managed set at once and n
 maintenance as it grows or shrinks. Any locally-authored, non-`wt/` rules in the secondary
 dir are unaffected and stay as direct files (never covered by a directory symlink meant for
 the managed subset alone). `--migrate --dry-run --secondary-dir <dir>` names each existing
-per-file symlink into the migrating set and states whether it goes stale.
+per-file symlink into the migrating set and states whether it goes stale; `--migrate --execute
+--secondary-dir <dir>` carries out the replacement above rather than leaving it as a manual
+follow-up.
 
 Recommended flow:
 1. Run `--check` first (for the relevant set, or `--set all`) and show the user the status
