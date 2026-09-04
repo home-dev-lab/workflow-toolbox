@@ -18,22 +18,26 @@ import { defineConfig } from 'tsup'
 // the TS sources via tsx/vitest (see the top-level `exports`); dist is selected
 // at publish time only, through the `publishConfig` override.
 //
-// KNOWN GAP (I5, not fixed here — no current gate covers it): tsup's JS bundling already
-// inlines every devDependency's CODE (verified by cli-bundle-smoke.test.ts) — but the separate
-// .d.ts bundling step (rollup-plugin-dts) does NOT inline @workflow-toolbox/pipeline-spec's
-// TYPES the same way; dist/index.d.ts still emits a bare
-// `import { PipelineSpec } from '@workflow-toolbox/pipeline-spec'`, unresolvable for a real npm
-// consumer (pipeline-spec is never published). Tried `dts: { resolve: true }` and two targeted
-// forms (string, RegExp) — none inlined it, likely because pipeline-spec ships its TYPES as
-// plain .ts source (package.json `"types": "./src/index.ts"`, no real .d.ts) rather than a
-// pre-compiled declaration file rollup-plugin-dts's resolver expects. definePipeline is the
-// FIRST public export whose type originates from a private devDependency, so this is the first
-// time the gap matters (WorkflowMeta/BundleResult/etc. never referenced one). Only bites at an
-// ACTUAL `npm publish` of @workflow-toolbox/build (out of scope here — no publish this
-// increment); flagged for arbitration: publish pipeline-spec as a real 4th package (build's
-// own dependency, matching @workflow-toolbox/runtime's treatment), or find a working
-// dts-inlining mechanism (@microsoft/api-extractor's --experimental-dts, or pre-building
-// pipeline-spec's own .d.ts via tsc first).
+// RESOLVED 2026-08-18 (was: KNOWN GAP I5). The gap this block described — dist/index.d.ts
+// emitting a bare `import { PipelineSpec } from '@workflow-toolbox/pipeline-spec'`, unresolvable
+// for an npm consumer — is fixed, and the premise it rested on had retired: pipeline-spec is
+// PUBLISHED (0.1.0, 0.2.0) and ships a real dist/index.d.ts declaring the type. It is now a
+// runtime `dependency`, so tsup externalizes it and a consumer resolves it from the registry.
+// @workflow-toolbox/patterns had the same defect one layer down — a bare import surviving in
+// dist/cli.js — and is declared for the same reason.
+//
+// ⚠ The old text said `dts: { resolve: true }` had been tried and failed. That remains true and is
+// now moot: nothing needs inlining once the package is a real dependency.
+//
+// ⚠ THE LESSON, kept because it cost an afternoon: this comment was accurate when written and
+// asserted a retired fact afterwards. `cli-bundle-smoke.test.ts` encoded the same stale premise in
+// its own title, went red on the CORRECT fix, and the fix was reverted on its verdict. A test is a
+// claim about the world made when it was written. Its list is now DERIVED — anything not declared
+// as a runtime dependency must be inlined — so it cannot rot the same way again.
+//
+// ⚠ The criterion is the DEPENDENCY EDGE, not the registry: @workflow-toolbox/std is published and
+// must still be inlined here, because build does not depend on it and a consumer therefore has none.
+
 export default defineConfig({
   entry: ['src/index.ts', 'src/define-workflow.ts', 'src/define-pipeline.ts', 'src/cli.ts'],
   format: ['esm'],

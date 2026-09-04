@@ -15,6 +15,7 @@
 import * as cp from 'node:child_process'
 import * as fs from 'node:fs'
 import { createRequire } from 'node:module'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -23,15 +24,30 @@ const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const DIST = path.join(PACKAGE_ROOT, 'dist')
 const BUNDLE = path.join(DIST, 'cli.js')
 
-// The private workspace packages whose code MUST be inlined (never left as a bare
-// specifier) in the published bundle. @workflow-toolbox/runtime is intentionally NOT
-// here — it is a real `dependency` and correctly stays external.
-const PRIVATE_PACKAGES = [
-  '@workflow-toolbox/scaffold',
-  '@workflow-toolbox/debugger',
-  '@workflow-toolbox/std',
-  '@workflow-toolbox/pipeline-spec',
-]
+// The workspace packages whose code MUST be inlined (never left as a bare specifier) in
+// the published bundle: every @workflow-toolbox/* sibling that this package does NOT
+// declare as a runtime dependency. A consumer installs only what `dependencies` names, so
+// a bare import of anything else is unresolvable for them.
+//
+// ⚠ DERIVED, never listed. This was a hardcoded array and it went stale twice over:
+// @workflow-toolbox/pipeline-spec was named "private" after it had been published, and
+// @workflow-toolbox/std likewise. The list stayed correct-looking, and the assertion built
+// on it turned red on a CORRECT fix — a dependency move that made the package legitimately
+// external — which cost a revert and an afternoon (card 1844397188394779824).
+//
+// ⚠ Note the criterion is NOT "is it published". @workflow-toolbox/std IS published and
+// still must be inlined here, because `build` does not depend on it: a consumer installing
+// `build` gets no `std`. What decides is the dependency edge, not the registry.
+const WORKSPACE_SCOPE = '@workflow-toolbox/'
+const buildManifest = JSON.parse(
+  fs.readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf8'),
+) as { dependencies?: Record<string, string> }
+const DECLARED_DEPS = new Set(Object.keys(buildManifest.dependencies ?? {}))
+const PRIVATE_PACKAGES = fs
+  .readdirSync(path.join(PACKAGE_ROOT, '..'), { withFileTypes: true })
+  .filter((e) => e.isDirectory())
+  .map((e) => `${WORKSPACE_SCOPE}${e.name}`)
+  .filter((name) => name !== `${WORKSPACE_SCOPE}build` && !DECLARED_DEPS.has(name))
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -56,7 +72,7 @@ afterAll(() => {
   // tooling rebuilds it on demand. Nothing to clean — the build is idempotent.
 })
 
-describe('published CLI bundle — private workspace deps are inlined, not externalized', () => {
+describe('published CLI bundle — undeclared workspace deps are inlined, declared ones may be external', () => {
   it('tsup emitted the cli bundle', () => {
     expect(fs.existsSync(BUNDLE)).toBe(true)
   })
@@ -84,10 +100,48 @@ describe('published CLI bundle — private workspace deps are inlined, not exter
   // (bundled) handler without a module-resolution failure. Run with no args: the handler
   // throws a clean argument error — which proves the code is present and reachable —
   // rather than ERR_MODULE_NOT_FOUND, which is what a broken bundle would throw on load.
+  // ⚠ A CONSUMER SANDBOX, not this workspace. ESM resolves a bare specifier from the importing
+  // FILE's location upward, never from cwd — so running the bundle in place always resolves
+  // @workflow-toolbox/* through the workspace links, whose `exports` point at TypeScript SOURCE.
+  // node cannot load that from a built artifact, and the failure looks exactly like a broken
+  // bundle. (The old `cwd: PACKAGE_ROOT` comment claimed cwd governed this. It does not.)
+  //
+  // So: copy dist/ somewhere neutral and give it a node_modules holding each externalized
+  // workspace dependency as its PUBLISHED shape — the manifest from that package's own
+  // `publishConfig`, pointing at its built dist. Nearest node_modules wins, and a symlink to the
+  // real one behind it still resolves third-party deps like esbuild. Offline, deterministic, and
+  // it exercises the resolution a consumer actually gets.
+  const consumerSandbox = (): string => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-cli-consumer-'))
+    const pkgDir = path.join(root, 'pkg')
+    fs.mkdirSync(pkgDir, { recursive: true })
+    for (const f of fs.readdirSync(DIST)) fs.copyFileSync(path.join(DIST, f), path.join(pkgDir, f))
+    const nm = path.join(pkgDir, 'node_modules', '@workflow-toolbox')
+    fs.mkdirSync(nm, { recursive: true })
+    for (const dep of DECLARED_DEPS) {
+      if (!dep.startsWith(WORKSPACE_SCOPE)) continue
+      const name = dep.slice(WORKSPACE_SCOPE.length)
+      const src = path.join(PACKAGE_ROOT, '..', name)
+      const manifest = JSON.parse(fs.readFileSync(path.join(src, 'package.json'), 'utf8')) as Record<string, unknown>
+      const published = (manifest.publishConfig ?? {}) as Record<string, unknown>
+      const target = path.join(nm, name)
+      fs.mkdirSync(target, { recursive: true })
+      fs.writeFileSync(
+        path.join(target, 'package.json'),
+        JSON.stringify({ name: manifest.name, version: manifest.version, type: manifest.type, ...published }, null, 2),
+      )
+      fs.symlinkSync(path.join(src, 'dist'), path.join(target, 'dist'), 'dir')
+    }
+    // Third-party deps (esbuild) resolve one level further up, through THIS package's own
+    // node_modules — pnpm installs per package, so the workspace root does not carry them.
+    // The shims above sit nearer and therefore still win for @workflow-toolbox/*.
+    fs.symlinkSync(path.join(PACKAGE_ROOT, 'node_modules'), path.join(root, 'node_modules'), 'dir')
+    return path.join(pkgDir, 'cli.js')
+  }
+
   for (const cmd of ['scaffold', 'debug', 'report', 'pipeline']) {
     it(`\`${cmd}\` loads from the bundle and dispatches (no MODULE_NOT_FOUND)`, () => {
-      const res = cp.spawnSync(process.execPath, [BUNDLE, cmd], {
-        cwd: PACKAGE_ROOT, // so the external deps (runtime, esbuild) resolve via the package's node_modules
+      const res = cp.spawnSync(process.execPath, [consumerSandbox(), cmd], {
         encoding: 'utf8',
       })
       const out = `${res.stdout ?? ''}${res.stderr ?? ''}`
