@@ -58,6 +58,10 @@ Code version, so you see exactly which runtime any breakage or change belongs to
 - **edge** (negative): launches deliberately-invalid scripts and asserts the
   runtime still **rejects** them — (a) over the 512 KB cap, (b) a statement before
   `meta`. If an upgrade silently ACCEPTS one, that is the regression this catches.
+- **nesting**: re-verifies `workflow()`'s one-level nesting cap with a positive control
+  that depth-1 still works.
+- **budget**: re-verifies that strictly sequential orchestrator-launched workflow runs
+  keep separate `budget.spent()` pools.
 - **wt:check** (static): lints the committed artifacts (integrity, not runtime).
 
 **Known gap (state it):** the `name`-registry-keyed-by-`meta.name` behavior is NOT
@@ -88,7 +92,7 @@ pnpm canary                              # both runtimes; --target system|bundle
 for f in workflows/*.js; do pnpm wt:check "$f" || echo "FAIL $f"; done
 ```
 
-`pnpm canary` runs smoke + edge against each target, prints a SUMMARY (per-target
+`pnpm canary` runs smoke + edge + nesting + budget against each target, prints a SUMMARY (per-target
 Claude Code version, the SDK⇒bundled-CC mapping, installed-vs-latest SDK on npm),
 a **WHAT CHANGED SINCE LAST RUN** section, an **AGENT SCHEMA DRIFT** section (the SDK
 `AgentDefinition` field set + the least-privilege `Options` fields, diffed against a

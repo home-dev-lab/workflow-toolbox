@@ -639,6 +639,11 @@ pnpm canary          # the matrix: smoke + edge (negative) + nesting against BOT
 pnpm canary:edge     # just the negative checks (cap + meta-order) on the bundled runtime.
 pnpm canary:nesting  # canary C1: workflow() rejects nesting past one level (a
                      # parent→child→grandchild round trip) on the bundled runtime.
+pnpm canary:budget   # canary C2: two separate orchestrator-launched runs keep separate
+                     # budget.spent() pools.
+pnpm canary:agents   # SDK agent-definition probe: which query() fencing fields the
+                     # runtime actually honors.
+pnpm canary:observer # experimental observer-agent pairing probe.
 pnpm canary:version  # read-only gate: exit 0 = unchanged since last pass (skip),
                      # 3 = a signal changed / forced (run), 2 = error.
 ```
