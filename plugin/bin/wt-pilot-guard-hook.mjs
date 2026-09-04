@@ -38,6 +38,7 @@
 import fs from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { stripHeredocs, stripQuotedSpans } from './lib/shell-text.mjs'
 
 // ⚠ NOT an allowlist of agent types. It used to be one — `pilot`, `pilot-orchestrator`,
 // `pilot-watchdog` — and that failed OPEN: a copy of the pilot definition under any other name
@@ -85,15 +86,6 @@ function readInput() {
 // stripping and is no longer caught. That is deliberate — it is an obfuscation shape, not a
 // reflex mistake, and this guard is defense-in-depth against reflexes (see the header). The
 // ordinary forms `git push --force` / `-f` are unaffected and stay covered by their tests.
-function stripHeredocs(cmd) {
-  return cmd.replace(
-    /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[\s\S]*?^\s*\2\s*$/gm,
-    '<<HEREDOC-BODY-STRIPPED',
-  )
-}
-function stripQuotedSpans(cmd) {
-  return cmd.replace(/'[^']*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""')
-}
 
 /** Split a shell command into rough segments on the sequencing operators, so each
  *  `git push` / `pkill` etc. is evaluated on its own. Strips data BEFORE splitting: a

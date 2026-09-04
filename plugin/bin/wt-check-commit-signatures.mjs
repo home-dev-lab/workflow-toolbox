@@ -72,13 +72,42 @@ function printFindings({ offenders, headSha, range }) {
       `- ${shortSha(offender.sha)}: ${offender.status} (${statusMeaning(offender.status)}) — ${offender.subject}`,
     );
   }
-  console.log(
-    'Common cause: signing likely failed at commit time because the signing key or signing agent was unavailable, locked, or otherwise unusable.',
-  );
+  // ⚠ `E` IS NOT `N`, AND THE DIFFERENCE DECIDES WHAT THE READER SHOULD DO.
+  // `N` means no signature: the local signing setup is the likely cause, and amending is right.
+  // `E` means git could NOT VERIFY one — most often a signature made with a key absent from this
+  // keyring, which is exactly what a forge's web-flow key on a squash-merge produces. Blaming the
+  // local key there sends the reader to check a key that is fine, and then to amend a commit
+  // somebody else created.
+  // Reported from the field 2026-08-18 after firing three times on GitHub squash-merges. It had
+  // never been seen before because `E` is rare: an independent count over 460 commits on two other
+  // repositories found zero. That same count found 40 DELIBERATE `N` commits in one repository, so
+  // the wording below describes a real and majority population somewhere and must not be softened
+  // for everyone — only the `E` case is carved out.
+  const unsignedOffenders = offenders.filter((offender) => offender.status !== 'E');
+  const unverifiableOffenders = offenders.filter((offender) => offender.status === 'E');
+
+  if (unsignedOffenders.length > 0) {
+    console.log(
+      'Common cause: signing likely failed at commit time because the signing key or signing agent was unavailable, locked, or otherwise unusable.',
+    );
+  }
+  if (unverifiableOffenders.length > 0) {
+    console.log(
+      'Note: a status of E means the signature could not be VERIFIED here, not that it is missing — commonly a signature made with a key unknown to this keyring, such as a forge web-flow key on a squash-merge. Check the signing key with: git log -1 --format=%GK <sha>. If the key is not yours, nothing local needs fixing.',
+    );
+  }
 
   const onlyHeadOffender = offenders.length === 1 && offenders[0].sha === headSha;
   if (onlyHeadOffender) {
     console.log('Fix: git commit --amend --no-edit -S');
+    // ⚠ THE RESERVATION BELONGS ON THIS BRANCH TOO, and it was only on the rebase branch below.
+    // A single-offender HEAD is precisely the shape a freshly-fetched merge takes, so this is the
+    // path that fires when the commit is ALREADY PUBLISHED — and amending it then diverges from
+    // the remote. Stated unconditionally rather than only for `E`: an unsigned HEAD can be
+    // published too, and refusing one door does not close the class.
+    console.log(
+      'Warning: only if that commit is unpushed. If it is already published — a merge created by the forge, or anything already fetched — amending it rewrites published history and diverges from the remote; leave it alone.',
+    );
     return;
   }
 

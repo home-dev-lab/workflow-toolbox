@@ -180,6 +180,7 @@ function alreadyWarned(payload, file) {
 
 function main() {
   const payload = readInput()
+  if (typeof payload?.agent_id === 'string' && payload.agent_id) return
   const file = payload ? editedPath(payload) : null
   const hit = file ? classify(file) : null
   if (!hit) return

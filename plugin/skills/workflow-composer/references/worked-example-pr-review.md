@@ -157,6 +157,18 @@ currently `opus`). This verification is targeted and diff-grounded, so `'sonnet'
 sound, cheaper choice for that one fan — the committed default stays `opus` so there is no
 implicit downgrade.
 
+**`models.review`** — an optional Claude-model override for the review WRAPPER agent itself,
+requested via the bespoke top-level `models` key. It matters only on the review role: when that
+role is routed to a recognized external bridge, the wrapper defaults to `haiku` so the bridge is
+a cheap relay; `models.review` overrides that default, and a non-bridge or ordinary Claude review
+keeps its normal tier.
+
+**`opencodeModels` / `opencodeVariants`** — optional per-role directives for bridge-routed
+`review` and `verify` roles, requested as top-level `args.opencodeModels` and
+`args.opencodeVariants`. They are separate from Claude `models`: the workflow renders them as
+`OPENCODE_MODEL:` / `OPENCODE_VARIANT:` prompt lines only when that role resolved to the
+opencode bridge, so Claude-side roles ignore them.
+
 **`messaging`** — a blanket opt-out of the default leaf-agent fence. By default
 (`null`/`false`) every agent this workflow spawns denies `SendMessage` (`withLeafFence`),
 and the pure Synthesize stage additionally runs under the minimal-ambient-context routing
@@ -166,3 +178,8 @@ down together is deliberate: the lean routing's empty tools allowlist also denie
 routing on would silently re-deny `SendMessage` on the one stage this knob was meant to
 exempt. Set `messaging: true` only when the run genuinely needs its agents to coordinate.
 
+**Incomplete coverage is an explicit returned verdict, not a hidden warning.** If the workflow
+launched one or more review lenses and any reviewer returned nothing, it records
+`coverage: { launched, returned, missing }` and overrides the synthesis result to
+`verdict: 'incomplete'` with a summary naming the missing lenses. A partial fan-out therefore
+never reuses an "approve" or "request-changes" synthesis as though full coverage had happened.

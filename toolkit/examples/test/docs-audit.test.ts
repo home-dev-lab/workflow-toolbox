@@ -277,10 +277,11 @@ describe('docs-audit per-role agentType routing', () => {
     ).rejects.toThrow(/required agentType .* is unavailable/)
   })
 
-  it('warns about unknown agentTypes keys and continues', async () => {
+  it('rejects unknown agentTypes keys with a nearest-key suggestion', async () => {
     const rt = makeRuntime({ extractRounds: [[], []] })
-    const out = await wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { bogusKey: 'x' } }))
-    expect(out.warnings.some((w) => w.includes('bogusKey'))).toBe(true)
+    await expect(
+      wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { bogusKey: 'x' } })),
+    ).rejects.toThrow('unknown key `bogusKey` in `agentTypes`')
   })
 
   it('prepends the routed Extract role model before all other prompt text', async () => {
@@ -356,7 +357,7 @@ describe('docs-audit per-role wrapper model + opencodeVariants', () => {
     expect(extract.every((c) => c.opts?.model === undefined)).toBe(true)
   })
 
-  it('spawns the wrapper-routed verify fan as haiku by default (external-relay pattern default)', async () => {
+  it('lets launcher perAgent.model override the external-relay verify default', async () => {
     const rt = makeRuntime({ inventory: ['docs/a.md'], extractRounds: [[makeClaim()], []] })
     await wf.run(rt, JSON.stringify({
       repoRoot: '/repo',
@@ -366,7 +367,7 @@ describe('docs-audit per-role wrapper model + opencodeVariants', () => {
     }))
     const verify = stageCalls(rt, 'Verify', 'adversarially verify the following claim')
     expect(verify.length).toBeGreaterThan(0)
-    expect(verify.every((c) => c.opts?.model === 'haiku')).toBe(true)
+    expect(verify.every((c) => c.opts?.model === 'sonnet')).toBe(true)
   })
 
   it('models.verify overrides verifierModel for the verify fan', async () => {
@@ -1178,5 +1179,74 @@ describe('docs-audit auto-effort worker routing', () => {
     expect(inv.length).toBeGreaterThan(0)
     for (const c of inv) expect(c.opts?.effort).toBe('low')
     expect(out.warnings.some((w) => w.includes("inventory") && w.includes('auto'))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Test: the pre-flight ESTIMATE and the RUNTIME dispatch agree
+// ---------------------------------------------------------------------------
+
+describe('docs-audit estimate <-> runtime agreement', () => {
+  // WHY this is not redundant with the "computes the x2/x3 worst-case estimate" tests above.
+  //
+  // Those lock the ESTIMATE's arithmetic, by reading the numbers out of the guard's refusal
+  // message. They never observe a single real dispatch, so they cannot tell whether the model
+  // the estimate uses is the model the run actually follows.
+  //
+  // Three call sites must agree EXACTLY on how many votes one claim gets: the pre-flight
+  // estimate, the safe-slice loop, and the votesPerClaim handed to adversarialVerification.
+  // They were once three hand-written copies of the same expression and are now one function
+  // (votesForClaim). Today they therefore CANNOT disagree — which is precisely why the risk
+  // is invisible: nothing stops a future edit from re-introducing a copy at one site, and no
+  // existing assertion would notice.
+  //
+  // The middle site is a GUARD: it refuses to start Verify when the estimate would blow the
+  // engine's agent ceiling. A guard whose model of the guarded thing drifts does not degrade,
+  // it INVERTS — it under-predicts, lets a run start, and the run dies mid-fan having already
+  // paid for extraction (observed: run wf_6f63845d-100, claim 312 of 706).
+  //
+  // So this lock asserts the relationship END TO END: for a deliberately MIXED claim set, the
+  // number of verify calls actually dispatched equals what the tiering model predicts. Any
+  // re-divergence at any of the three sites turns it red.
+  it('dispatches exactly the number of verify calls the tiering model predicts', async () => {
+    // Tiered UP to the full quorum by the rule "behavior OR boundary OR high risk".
+    // Each of the three triggers a DIFFERENT clause, so dropping any one clause is caught.
+    const fullQuorum = [
+      makeClaim({ quote: 'estimate lock behavior quote', kind: 'behavior', risk: 'low' }),
+      makeClaim({ quote: 'estimate lock boundary quote', kind: 'boundary', risk: 'low' }),
+      makeClaim({ quote: 'estimate lock high-risk quote', kind: 'other', risk: 'high' }),
+    ]
+    // Everything else gets exactly one vote.
+    const singleVote = [
+      makeClaim({ quote: 'estimate lock plain quote a', kind: 'other', risk: 'low' }),
+      makeClaim({ quote: 'estimate lock plain quote b', kind: 'instruction', risk: 'medium' }),
+    ]
+    const claims = [...fullQuorum, ...singleVote]
+    const votes = 3
+    const rt = makeRuntime({ extractRounds: [claims, claims] })
+
+    await wf.run(rt, JSON.stringify({ ...BASE_INPUT, votes, tieredVotes: true }))
+
+    // 3 claims x 3 votes + 2 claims x 1 vote = 11. Written as the arithmetic rather than as
+    // the literal 11, so a reader can see WHICH rule produces the number.
+    const expected = fullQuorum.length * votes + singleVote.length * 1
+    expect(verifyCalls(rt)).toHaveLength(expected)
+  })
+
+  // The control for the test above: with tiering OFF, every claim gets the flat vote count.
+  // Without this row, a votesForClaim that always returned `votes` would still pass the first
+  // assertion for a claim set that happened to be all-high-risk — and the mixed set is exactly
+  // what stops that, so the pair is what makes either meaningful.
+  it('falls back to a flat vote count for every claim when tieredVotes is off', async () => {
+    const claims = [
+      makeClaim({ quote: 'flat vote behavior quote', kind: 'behavior', risk: 'high' }),
+      makeClaim({ quote: 'flat vote plain quote', kind: 'other', risk: 'low' }),
+    ]
+    const votes = 2
+    const rt = makeRuntime({ extractRounds: [claims, claims] })
+
+    await wf.run(rt, JSON.stringify({ ...BASE_INPUT, votes, tieredVotes: false }))
+
+    expect(verifyCalls(rt)).toHaveLength(claims.length * votes)
   })
 })

@@ -161,13 +161,43 @@ describe('awaitSpawnedServerReady', () => {
 // start` actually runs — and skips elsewhere.
 // ---------------------------------------------------------------------------
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { findObserveRoot } from '../src/observe-checkout.js'
 
-const OBSERVE_ROOT = process.env['DWT_OBSERVE_ROOT'] ??
-  resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../workflow-observatory')
-const DEV_API = resolve(OBSERVE_ROOT, 'apps/observe-ui/server/dev-api.ts')
+function resolveDevApi(startDir: string, env: Record<string, string | undefined> = {}): string | null {
+  const observeRoot = findObserveRoot(startDir, env)
+  return observeRoot === null ? null : resolve(observeRoot, 'apps/observe-ui/server/dev-api.ts')
+}
+
+const TEST_DIR = dirname(fileURLToPath(import.meta.url))
+const OBSERVE_ROOT = findObserveRoot(TEST_DIR, process.env)
+const DEV_API = OBSERVE_ROOT === null ? '' : resolve(OBSERVE_ROOT, 'apps/observe-ui/server/dev-api.ts')
+
+describe('observatory checkout resolution', () => {
+  it('finds the same dev-api from main and deeply nested worktree test paths', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'wt-observe-checkout-'))
+    try {
+      const devApi = resolve(root, 'workflow-observatory/apps/observe-ui/server/dev-api.ts')
+      const mainTestDir = resolve(root, 'workflow-toolbox/toolkit/packages/debugger/test')
+      const worktreeTestDir = resolve(root, 'worktrees/x/toolkit/packages/debugger/test')
+      mkdirSync(dirname(devApi), { recursive: true })
+      mkdirSync(mainTestDir, { recursive: true })
+      mkdirSync(worktreeTestDir, { recursive: true })
+      writeFileSync(resolve(root, 'workflow-observatory/apps/observe-ui/package.json'), JSON.stringify({
+        name: '@workflow-toolbox/observe-ui',
+      }))
+      writeFileSync(devApi, '')
+
+      expect(resolveDevApi(mainTestDir)).toBe(devApi)
+      expect(resolveDevApi(worktreeTestDir)).toBe(devApi)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
 
 // ---------------------------------------------------------------------------
 // resolveHealthTimeoutMs — card #1826653906575295552's "make the window configurable"

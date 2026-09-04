@@ -198,9 +198,9 @@ export function defineWorkflow<TInput = unknown, TOut = unknown>(def: {
 // Validates the conventional tuning envelope a workflow author threads from
 // `args` into a typed WorkflowConfig. SANDBOX-PURE (only primitive JS; the
 // runtime imports above are type-only, erased at emit). Two policies:
-//   • UNRECOGNIZED top-level keys are IGNORED — so a workflow can pass its own
-//     bespoke args next to the tuning slices (e.g. { target, models:{…} }) and
-//     parseConfig reads `models`, leaving `target` to the author's own parser.
+//   • Each workflow supplies its documented top-level and role-map keys. This
+//     keeps bespoke args composable without letting a launch typo silently fall
+//     through to defaults.
 //   • Recognized slices are validated STRICTLY; a bad value throws an actionable
 //     message (fail-fast, same discipline as a parseInput guard).
 //
@@ -247,6 +247,18 @@ export interface WorkflowConfig {
   messaging?: boolean
 }
 
+/** The launch-time argument vocabulary declared by one workflow. `args` includes
+ * both its bespoke fields and every conventional slice it accepts. Role-map
+ * keys are intentionally declared separately because their values remain
+ * workflow-specific. */
+export interface WorkflowConfigSchema {
+  args: readonly string[]
+  models?: readonly string[]
+  effort?: readonly string[]
+  agentTypes?: readonly string[]
+  sizing?: readonly string[]
+}
+
 // Local effort allowlist for runtime validation. Annotated `readonly EffortAlias[]`
 // so a value that is NOT a valid EffortAlias fails to compile; keep it in sync if
 // the EffortAlias union ever grows (a new alias missing here is merely rejected).
@@ -264,6 +276,50 @@ const PER_AGENT_KEYS = ['model', 'effort', 'agentType', 'isolation', 'stallMs'] 
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+function editDistance(left: string, right: string): number {
+  const previous: number[] = []
+  const current: number[] = []
+  for (let j = 0; j <= right.length; j++) previous[j] = j
+  for (let i = 1; i <= left.length; i++) {
+    current[0] = i
+    for (let j = 1; j <= right.length; j++) {
+      current[j] = left[i - 1] === right[j - 1]
+        ? previous[j - 1] as number
+        : Math.min(previous[j] as number, current[j - 1] as number, previous[j - 1] as number) + 1
+    }
+    for (let j = 0; j <= right.length; j++) previous[j] = current[j] as number
+  }
+  return previous[right.length] as number
+}
+
+function nearestKey(key: string, allowed: readonly string[]): string {
+  if (key === 'verifierType' && allowed.includes('agentTypes.verify')) return 'agentTypes.verify'
+  let nearest = allowed[0] as string
+  let distance = editDistance(key, nearest)
+  for (const candidate of allowed.slice(1)) {
+    const next = editDistance(key, candidate)
+    if (next < distance) {
+      nearest = candidate
+      distance = next
+    }
+  }
+  return nearest
+}
+
+function rejectUnknownKey(key: string, where: string | null, allowed: readonly string[]): void {
+  const suggestion = nearestKey(key, allowed)
+  if (where === null) {
+    throw new Error(`parseConfig: unknown arg \`${key}\` — did you mean \`${suggestion}\`?`)
+  }
+  throw new Error(`parseConfig: unknown key \`${key}\` in \`${where}\` — did you mean \`${suggestion}\`?`)
+}
+
+function checkKeys(raw: Record<string, unknown>, where: string | null, allowed: readonly string[]): void {
+  for (const key of Object.keys(raw)) {
+    if (!allowed.includes(key)) rejectUnknownKey(key, where, allowed)
+  }
 }
 
 function asNonEmptyString(v: unknown, where: string): string {
@@ -314,15 +370,17 @@ function parsePerAgent(raw: unknown): AgentDefaults {
   return out
 }
 
-function parseStringMap(raw: unknown, where: string): Record<string, string> {
+function parseStringMap(raw: unknown, where: string, allowed?: readonly string[]): Record<string, string> {
   if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? 'null' : typeof raw}`)
+  if (allowed !== undefined) checkKeys(raw, where, allowed)
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(raw)) out[k] = asNonEmptyString(v, `${where}.${k}`)
   return out
 }
 
-function parseEffortMap(raw: unknown): Record<string, EffortRoleValue> {
+function parseEffortMap(raw: unknown, allowed?: readonly string[]): Record<string, EffortRoleValue> {
   if (!isRecord(raw)) throw new Error(`parseConfig: effort must be an object, got ${raw === null ? 'null' : typeof raw}`)
+  if (allowed !== undefined) checkKeys(raw, 'effort', allowed)
   const out: Record<string, EffortRoleValue> = {}
   for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`)
   return out
@@ -335,8 +393,9 @@ function asBoolean(v: unknown, where: string): boolean {
   return v
 }
 
-function parseNumberMap(raw: unknown, where: string): Record<string, number> {
+function parseNumberMap(raw: unknown, where: string, allowed?: readonly string[]): Record<string, number> {
   if (!isRecord(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? 'null' : typeof raw}`)
+  if (allowed !== undefined) checkKeys(raw, where, allowed)
   const out: Record<string, number> = {}
   for (const [k, v] of Object.entries(raw)) {
     if (typeof v !== 'number' || !Number.isFinite(v)) {
@@ -349,19 +408,27 @@ function parseNumberMap(raw: unknown, where: string): Record<string, number> {
 
 /** Normalize + validate the conventional tuning envelope into a typed
  *  WorkflowConfig. `undefined`/`null` → `{}` (no tuning supplied). A non-object
- *  throws. Recognized slices (perAgent/models/effort/agentTypes/sizing) are
- *  validated; unrecognized top-level keys are ignored. */
-export function parseConfig(raw: unknown): WorkflowConfig {
+ *  throws. The workflow's schema rejects unknown top-level and role-map keys
+ *  before they can silently select defaults. */
+export function parseConfig(raw: unknown, schema?: WorkflowConfigSchema): WorkflowConfig {
   if (raw === undefined || raw === null) return {}
   if (!isRecord(raw)) {
     throw new Error(`parseConfig: expected an object (or undefined), got ${typeof raw}`)
   }
+  if (schema !== undefined) {
+    // Include nested paths only for suggestion selection; `agentTypes` itself
+    // remains the actual top-level key accepted from the launch envelope.
+    const suggestionKeys = schema.agentTypes?.includes('verify')
+      ? schema.args.concat(['agentTypes.verify'])
+      : schema.args
+    checkKeys(raw, null, suggestionKeys)
+  }
   const config: WorkflowConfig = {}
   if (raw.perAgent !== undefined) config.perAgent = parsePerAgent(raw.perAgent)
-  if (raw.models !== undefined) config.models = parseStringMap(raw.models, 'models')
-  if (raw.effort !== undefined) config.effort = parseEffortMap(raw.effort)
-  if (raw.agentTypes !== undefined) config.agentTypes = parseStringMap(raw.agentTypes, 'agentTypes')
-  if (raw.sizing !== undefined) config.sizing = parseNumberMap(raw.sizing, 'sizing')
+  if (raw.models !== undefined) config.models = parseStringMap(raw.models, 'models', schema?.models)
+  if (raw.effort !== undefined) config.effort = parseEffortMap(raw.effort, schema?.effort)
+  if (raw.agentTypes !== undefined) config.agentTypes = parseStringMap(raw.agentTypes, 'agentTypes', schema?.agentTypes)
+  if (raw.sizing !== undefined) config.sizing = parseNumberMap(raw.sizing, 'sizing', schema?.sizing)
   if (raw.messaging !== undefined) config.messaging = asBoolean(raw.messaging, 'messaging')
   return config
 }

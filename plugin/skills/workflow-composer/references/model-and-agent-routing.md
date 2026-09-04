@@ -314,6 +314,11 @@
   - **The agentType registry is read at session start.** An agent `.md` added mid-session is
     not visible to `agent({agentType})` until a fresh session; the runtime errors listing the
     available types, so the failure is loud, not silent.
+  - **Need repo reads but not execution or writes? Use `workflow-toolbox:leaf-readonly`.** It sits
+    between `lean` (no repo reads at all) and `leaf` (repo/tool access minus messaging):
+    `tools: Read, Grep, Glob`, `disallowedTools: SendMessage`. Use it for survey / grounding /
+    audit / verify-by-reading roles that must inspect the tree themselves but must never execute,
+    edit, or ask the session for more context.
   - **The toolkit ships this fence as the DEFAULT — `withLeafFence`, from
     `@workflow-toolbox/patterns`.** Call it ONCE, as the very FIRST line of `run()`, before any
     other `withAgentDefaults` wrap:
@@ -330,10 +335,11 @@
     environment where the agentType isn't registered (plugin not installed) degrades
     gracefully to the standard subagent, exactly like every other `probeAgentType` consumer.
     The returned `report` (`LeafFenceReport`; mirrored by `withLeanRouting`'s
-    `LeanRoutingReport`) carries `resolvedAgentType` — null when routing was disabled or
+    `LeanRoutingReport` and `withReadOnlyRouting`'s `ReadOnlyRoutingReport`) carries
+    `resolvedAgentType` — null when routing was disabled or
     the probe found the type unavailable and the run degraded — plus the raw probe
     outcome: surface it in the workflow's result rather than assuming the fence held
-    (degradation is fail-open by design, the report is what keeps it loud). Both wrappers
+    (degradation is fail-open by design, the report is what keeps it loud). All three wrappers
     also accept `agentType` (probe a differently-named minimal type, e.g. a private
     plugin's own) and `perAgent` (so their internal probe call respects the workflow's
     blanket model/effort defaults).
@@ -352,7 +358,7 @@
     not the rest of the injected text. A role whose entire task is inline in its prompt (it
     never reads a file, runs a command, or calls any tool) gains nothing from that
     injection; it only pays for it.
-- **Which agentType for which role — standard / leaf / lean / cross-family verifier.**
+- **Which agentType for which call site — standard / leaf / read-only / lean / cross-family verifier.**
   - **Standard subagent (no `agentType`)** — the default. Use for any role that genuinely
     needs tools (reading the repo, running git, calling an MCP) or inter-agent messaging.
     Most reviewer/verifier roles that re-derive findings from the actual diff belong here
@@ -361,8 +367,17 @@
     default fence (`withLeafFence`, above). Denies SendMessage only; keeps every other
     tool. Applied to EVERY agent a workflow spawns, unconditionally, unless a role
     overrides it or the run opts out via `messaging: true`. When wiring the name by hand,
-    import the `LEAF_AGENT_TYPE` / `LEAN_AGENT_TYPE` constants from
+    import the `LEAF_AGENT_TYPE` / `READONLY_AGENT_TYPE` / `LEAN_AGENT_TYPE` constants from
     `@workflow-toolbox/patterns` instead of retyping the strings.
+  - **`workflow-toolbox:leaf-readonly`** (`Read`, `Grep`, and `Glob` only) — the
+    selective capability fence for a stage whose prompt *reads the repository and produces
+    no change*. Obtain a separate defaulting runtime with `withReadOnlyRouting`, then use it
+    only at verified call sites; do not infer eligibility from role names. It mirrors lean's
+    local probe and graceful degradation to the wrapped runtime when the plugin type is not
+    registered. `WithReadOnlyRoutingOptions` carries the same phase, agent-type override,
+    disabled, and per-agent probe defaults as lean's options. `docs-audit`'s Inventory stage
+    is the reference wiring; its cache-persistence fallback remains on the normal runtime
+    because that call deliberately writes a file.
   - **`workflow-toolbox:lean`** (empty `tools` allowlist + `disallowedTools: SendMessage`,
     ships as `plugin/agents/lean.md`) — a minimal-ambient-context agentType for provably
     PURE-REASONING roles: classify / vote / judge / score / dedup / synthesize calls whose
@@ -388,12 +403,14 @@
     end-to-end (the anti-shortcut defence: a wrapper that self-answers the probe would turn
     it into a false positive). A locally-registered type must do the OPPOSITE: a tool-less
     `lean` agent honestly refuses that instruction, so under the bridge prompt the probe
-    reads a perfectly available type as unavailable. `withLeafFence` and `withLeanRouting`
+    reads a perfectly available type as unavailable. `withLeafFence`, `withLeanRouting`, and
+    `withReadOnlyRouting`
     already pass the right prompt internally. `LOCAL_AGENT_PROBE_PROMPT` is defined in
     `@workflow-toolbox/patterns`'s internal `probe-agent-type.js` module but is **not**
     re-exported from the package root, so it cannot currently be imported as
     `{ probePrompt: LOCAL_AGENT_PROBE_PROMPT } from '@workflow-toolbox/patterns'`. Prefer
-    routing through `withLeafFence`/`withLeanRouting` (which already pass it) instead of
+    routing through `withLeafFence`/`withLeanRouting`/`withReadOnlyRouting` (which already
+    pass it) instead of
     calling `probeAgentType` directly for a locally-registered type; keep the default
     probe prompt only for external bridges.
   - **Cross-family verifier** (`codex:codex-rescue`, `workflow-toolbox:opencode-verifier`) —

@@ -47,8 +47,8 @@ vote budget is now an attack/decay surface:
 - If the signal is *self-assessed by the agent it gates* (a planner rating
   its own task's `risk`), add a deterministic structural floor — in
   `dev-plan`, a task touching more than one file keeps the full quorum no
-  matter what its label says, and a plan where >80% of tasks self-rate "low"
-  draws a loud implausibility warning.
+  matter what its label says, and on a plan with 4+ tasks, one where >80% of
+  them self-rate "low" draws a loud implausibility warning.
 - If the signal crosses an agent boundary (a consolidator re-emitting
   reviewer findings), enforce it in code — `dev-review-fix` restores the
   reviewers' maximum severity when the consolidation downgraded it, because
@@ -112,8 +112,9 @@ Three contracts make this safe:
   mangle embedded copies of your own delimiter lines, and apply these at
   EVERY site that embeds it (verifier, consolidator, fixer) — a cap or a
   caveat that guards only one path is a hole, not a control.
-- **Bound it in code** (3000 chars, line-snapped) — a reviewer that dumps a
-  whole file must not blow up every downstream prompt.
+- **Bound it in code** (3000 chars of snippet body, line-snapped, with a
+  `(snippet truncated)` suffix when cut) — a reviewer that dumps a whole file
+  must not blow up every downstream prompt.
 - Make the field **required-with-empty** rather than optional: models
   routinely omit prompted-but-optional fields under output pressure, which
   silently no-ops the optimization.

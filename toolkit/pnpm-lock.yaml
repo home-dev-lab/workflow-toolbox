@@ -71,6 +71,12 @@ importers:
 
   packages/build:
     dependencies:
+      '@workflow-toolbox/patterns':
+        specifier: workspace:*
+        version: link:../patterns
+      '@workflow-toolbox/pipeline-spec':
+        specifier: workspace:*
+        version: link:../pipeline-spec
       '@workflow-toolbox/runtime':
         specifier: workspace:*
         version: link:../runtime
@@ -84,12 +90,6 @@ importers:
       '@workflow-toolbox/debugger':
         specifier: workspace:*
         version: link:../debugger
-      '@workflow-toolbox/patterns':
-        specifier: workspace:*
-        version: link:../patterns
-      '@workflow-toolbox/pipeline-spec':
-        specifier: workspace:*
-        version: link:../pipeline-spec
       '@workflow-toolbox/scaffold':
         specifier: workspace:*
         version: link:../scaffold

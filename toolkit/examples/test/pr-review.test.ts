@@ -635,15 +635,11 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
     ).rejects.toThrow(/agentTypes\.review/)
   })
 
-  it('ignores a legacy top-level reviewerType arg (removed contract)', async () => {
+  it('rejects a legacy top-level reviewerType arg with a routing suggestion', async () => {
     const rt = makeHappyPathRuntime()
-    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', reviewerType: 'magic-claude:ts-reviewer' }))
-    // Only the two unconditional probes run (leaf fence, lean routing) — the
-    // legacy key is ignored, so no reviewerType-specific probe is spawned.
-    expect(probeCalls(rt).length).toBe(2)
-    expect(probeCalls(rt)[0]!.opts?.agentType).toBe(LEAF_AGENT_TYPE)
-    expect(probeCalls(rt)[1]!.opts?.agentType).toBe(LEAN_AGENT_TYPE)
-    for (const c of reviewCalls(rt)) expect(c.opts?.agentType).toBe(LEAF_AGENT_TYPE)
+    await expect(
+      wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', reviewerType: 'magic-claude:ts-reviewer' })),
+    ).rejects.toThrow('unknown arg `reviewerType`')
   })
 })
 

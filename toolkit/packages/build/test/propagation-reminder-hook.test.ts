@@ -22,13 +22,14 @@ afterEach(() => {
   rmSync(dedupDir, { recursive: true, force: true })
 })
 
-function run(toolName: string, filePath: string, sessionId?: string) {
+function run(toolName: string, filePath: string, sessionId?: string, agentId?: string) {
   const payload: Record<string, unknown> = {
     hook_event_name: 'PostToolUse',
     tool_name: toolName,
     tool_input: { file_path: filePath },
   }
   if (sessionId !== undefined) payload.session_id = sessionId
+  if (agentId !== undefined) payload.agent_id = agentId
   const res = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
@@ -51,6 +52,12 @@ describe('wt-propagation-reminder-hook', () => {
     expect(r.warned).toBe(true)
     expect(r.stdout).toContain('PROPAGATION')
     expect(r.stdout).toContain('ADOPTERS')
+    expect(r.status).toBe(0)
+  })
+
+  it('is SILENT for a subagent even when the same edit would remind the main loop', () => {
+    const r = run('Write', '/home/x/repo/plugin/bin/wt-something-hook.mjs', undefined, 'workflow-agent-1')
+    expect(r.stdout).toBe('')
     expect(r.status).toBe(0)
   })
 

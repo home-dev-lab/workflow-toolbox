@@ -96,6 +96,7 @@ function isAmbientRule(file) {
 
 function main() {
   const payload = readInput()
+  if (typeof payload?.agent_id === 'string' && payload.agent_id) return
   if (!payload) return
   const sourceFile = editedFile(payload)
   if (!sourceFile) return

@@ -248,6 +248,7 @@ function main() {
     reason: hitSeg,
     cwd: hitDir,
   })
+  if (typeof input.agent_id === 'string' && input.agent_id) return
   writeSync(
     1,
     JSON.stringify({

@@ -52,6 +52,9 @@ The reference files carry the deep material — read them when a step points you
 - `references/orchestrator-pipelines.md` — human-gated multi-workflow jobs (L3).
 - `references/shipped-compositions.md` — the 26 shipped compositions + operational lessons.
 - `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
+  That reference also carries the shipped least-privilege agentTypes, including
+  `workflow-toolbox:leaf-readonly` for read/search-only worker roles that must inspect the repo
+  directly but must not execute, edit, or message.
 - `references/observer-definitions.md` — authoring an observer (`<name>.observer.json`), the
   abstract-needs boundary, the selector/label coupling, and the `args.observers` launch bridge.
 - `references/capability-needs.md` — giving a role more than the bare default via a
@@ -382,6 +385,12 @@ counter (`while (found < 10)`) or a budget guard (`while (budget.total && budget
   sandbox scripts (no imports available): pass `agentType: 'workflow-toolbox:lean'` on
   the call's opts — safe whenever this plugin is installed, which is the case if you are
   reading this skill.
+- **Repository-reading stages should use the read-only runtime.** The criterion is
+  *reads the repository and produces no change*: TS compositions obtain a separate
+  read-only-defaulting runtime with `withReadOnlyRouting`, then route exactly those call
+  sites through it. It mirrors `withLeanRouting`'s selective probe-and-degrade behavior
+  and resolves to `workflow-toolbox:leaf-readonly` (`Read`, `Grep`, and `Glob` only).
+  Keep any stage that writes, edits, or runs a command on the normal leaf-fenced runtime.
 
 **Read [references/model-and-agent-routing.md](references/model-and-agent-routing.md)
 BEFORE tuning schemas, models, effort, or any agentType routing** — it carries the

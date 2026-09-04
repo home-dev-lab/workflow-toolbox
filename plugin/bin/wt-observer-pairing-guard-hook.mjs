@@ -11,7 +11,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CHECKER = path.join(HERE, 'wt-check-observer-pairing.mjs')
@@ -154,7 +154,6 @@ function main() {
   const status = typeof verdict.json.status === 'string' ? verdict.json.status : 'unknown'
   if (verdict.exitCode === 0 && status === 'pass') return
 
-  const reason = typeof verdict.json.reason === 'string' ? verdict.json.reason : 'no reason reported'
   const subject = name ? `"${name}" (${type})` : `${type} (${agentId})`
 
   // Two 'unknown' causes read as the SAME sentence to a reader unless distinguished here:
@@ -168,20 +167,24 @@ function main() {
   // only needed to stop collapsing them into one vague phrase.
   let summary
   let lookHere = ''
+  let failure = 'other'
   if (verdict.exitCode === 1) {
     summary = `appears to have LOST its declared observer '${observerName}'`
+    failure = 'lost'
   } else {
     const failureClass = typeof verdict.json.failureClass === 'string' ? verdict.json.failureClass : null
     if (failureClass === 'path-resolution') {
-      summary = `PAIRING UNKNOWN — the checker could not resolve its own path (${subagentsDir})`
+      summary = `PAIRING UNKNOWN — the checker could not resolve its own path`
       lookHere =
-        ` To verify by hand: check whether that directory exists and is readable, then read its ` +
-        `agent-*.meta.json siblings' "agentType" field.`
+        ` To verify by hand: check the session's subagents directory exists and is readable, then ` +
+        `read its agent-*.meta.json siblings' "agentType" field.`
+      failure = 'path'
     } else if (failureClass === 'meta-lookup') {
       summary = `PAIRING UNKNOWN — the observed agent's metadata was not found or was ambiguous`
       lookHere =
-        ` To verify by hand: read the sibling agent-*.meta.json files under ${subagentsDir} ` +
-        `and check the "agentType" field.`
+        ` To verify by hand: read the sibling agent-*.meta.json files in the session's subagents ` +
+        `directory and check the "agentType" field.`
+      failure = 'meta'
     } else {
       summary = `could not establish the state of its declared observer '${observerName}'`
     }
@@ -191,18 +194,19 @@ function main() {
     guard: 'wt-observer-pairing-guard-hook.mjs',
     decision: 'warned',
     class: 'observer-pairing',
-    reason: summary,
+    evidence: { status, failure },
   })
-  process.stdout.write(
-    JSON.stringify({
+  emitGuardNotice({
+    payload: input,
+    stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
         additionalContext:
           `[workflow-toolbox observer-pairing] ${subject} ${summary}.${lookHere} ` +
-          `Delegated to wt-check-observer-pairing.mjs after spawn; checker verdict ${status}: ${reason}`,
+          `Delegated to wt-check-observer-pairing.mjs after spawn; checker verdict ${status}.`,
       },
-    }),
-  )
+    },
+  })
 }
 
 runFailOpenHook('wt-observer-pairing-guard-hook.mjs', main)

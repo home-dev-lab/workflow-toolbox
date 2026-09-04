@@ -5,7 +5,7 @@ export const meta = {
   "phases": [
     {
       "title": "Fence",
-      "detail": "Leaf-fence + optional cross-model verifier probe"
+      "detail": "Leaf fence + read-only Inventory routing + optional cross-model verifier probe"
     },
     {
       "title": "Inventory",
@@ -297,6 +297,44 @@ unreadable channel never fails your task.`;
   function isRecord2(v) {
     return typeof v === "object" && v !== null && !Array.isArray(v);
   }
+  function editDistance(left, right) {
+    const previous = [];
+    const current = [];
+    for (let j = 0; j <= right.length; j++) previous[j] = j;
+    for (let i = 1; i <= left.length; i++) {
+      current[0] = i;
+      for (let j = 1; j <= right.length; j++) {
+        current[j] = left[i - 1] === right[j - 1] ? previous[j - 1] : Math.min(previous[j], current[j - 1], previous[j - 1]) + 1;
+      }
+      for (let j = 0; j <= right.length; j++) previous[j] = current[j];
+    }
+    return previous[right.length];
+  }
+  function nearestKey(key, allowed) {
+    if (key === "verifierType" && allowed.includes("agentTypes.verify")) return "agentTypes.verify";
+    let nearest = allowed[0];
+    let distance = editDistance(key, nearest);
+    for (const candidate of allowed.slice(1)) {
+      const next = editDistance(key, candidate);
+      if (next < distance) {
+        nearest = candidate;
+        distance = next;
+      }
+    }
+    return nearest;
+  }
+  function rejectUnknownKey(key, where, allowed) {
+    const suggestion = nearestKey(key, allowed);
+    if (where === null) {
+      throw new Error(`parseConfig: unknown arg \`${key}\` \u2014 did you mean \`${suggestion}\`?`);
+    }
+    throw new Error(`parseConfig: unknown key \`${key}\` in \`${where}\` \u2014 did you mean \`${suggestion}\`?`);
+  }
+  function checkKeys(raw, where, allowed) {
+    for (const key of Object.keys(raw)) {
+      if (!allowed.includes(key)) rejectUnknownKey(key, where, allowed);
+    }
+  }
   function asNonEmptyString(v, where) {
     if (typeof v !== "string" || v.trim().length === 0) {
       throw new Error(`parseConfig: ${where} must be a non-empty string, got ${JSON.stringify(v)}`);
@@ -341,14 +379,16 @@ unreadable channel never fails your task.`;
     }
     return out;
   }
-  function parseStringMap(raw, where) {
+  function parseStringMap(raw, where, allowed) {
     if (!isRecord2(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    if (allowed !== void 0) checkKeys(raw, where, allowed);
     const out = {};
     for (const [k, v] of Object.entries(raw)) out[k] = asNonEmptyString(v, `${where}.${k}`);
     return out;
   }
-  function parseEffortMap(raw) {
+  function parseEffortMap(raw, allowed) {
     if (!isRecord2(raw)) throw new Error(`parseConfig: effort must be an object, got ${raw === null ? "null" : typeof raw}`);
+    if (allowed !== void 0) checkKeys(raw, "effort", allowed);
     const out = {};
     for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`);
     return out;
@@ -359,8 +399,9 @@ unreadable channel never fails your task.`;
     }
     return v;
   }
-  function parseNumberMap(raw, where) {
+  function parseNumberMap(raw, where, allowed) {
     if (!isRecord2(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    if (allowed !== void 0) checkKeys(raw, where, allowed);
     const out = {};
     for (const [k, v] of Object.entries(raw)) {
       if (typeof v !== "number" || !Number.isFinite(v)) {
@@ -370,17 +411,21 @@ unreadable channel never fails your task.`;
     }
     return out;
   }
-  function parseConfig(raw) {
+  function parseConfig(raw, schema) {
     if (raw === void 0 || raw === null) return {};
     if (!isRecord2(raw)) {
       throw new Error(`parseConfig: expected an object (or undefined), got ${typeof raw}`);
     }
+    if (schema !== void 0) {
+      const suggestionKeys = schema.agentTypes?.includes("verify") ? schema.args.concat(["agentTypes.verify"]) : schema.args;
+      checkKeys(raw, null, suggestionKeys);
+    }
     const config = {};
     if (raw.perAgent !== void 0) config.perAgent = parsePerAgent(raw.perAgent);
-    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models");
-    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort);
-    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes");
-    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing");
+    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models", schema?.models);
+    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort, schema?.effort);
+    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes", schema?.agentTypes);
+    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing", schema?.sizing);
     if (raw.messaging !== void 0) config.messaging = asBoolean(raw.messaging, "messaging");
     return config;
   }
@@ -397,6 +442,9 @@ unreadable channel never fails your task.`;
     const safeFloor = isEffortAlias(floor) ? floor : "high";
     const resolved = resolveEffort(argsValue, stageDefault);
     return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor;
+  }
+  function resolveVerifierModel(launcherModel, workflowModel) {
+    return launcherModel ?? workflowModel ?? void 0;
   }
 
   // ../packages/patterns/src/envelope.ts
@@ -1377,6 +1425,32 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
     };
   }
 
+  // ../packages/patterns/src/readonly-routing.ts
+  var READONLY_AGENT_TYPE = "workflow-toolbox:leaf-readonly";
+  var ROUTING_UNAVAILABLE_MESSAGE = "routing UNAVAILABLE \u2014 calls through this runtime keep their existing agentType default this run (no read-only protection)";
+  async function withReadOnlyRouting(rt, options = {}) {
+    const { phase, agentType = READONLY_AGENT_TYPE, disabled = false, perAgent } = options;
+    if (disabled) {
+      return { rt, report: { resolvedAgentType: null, probe: null } };
+    }
+    const probeRt = perAgent !== void 0 ? withAgentDefaults(rt, perAgent) : rt;
+    const probe = await probeAgentType(probeRt, agentType, {
+      probePrompt: LOCAL_AGENT_PROBE_PROMPT,
+      ...phase !== void 0 ? { phase } : {}
+    });
+    const defaults = probe.agentType !== void 0 ? { agentType: probe.agentType } : {};
+    if (probe.agentType === void 0) {
+      rt.log(`[readonly-routing] \u26A0 ${ROUTING_UNAVAILABLE_MESSAGE} (requested: ${agentType}; reason: ${probe.reason ?? "unknown"})`);
+    }
+    return {
+      rt: withAgentDefaults(rt, defaults),
+      report: {
+        resolvedAgentType: probe.agentType ?? null,
+        probe: { requested: agentType, available: probe.available, reason: probe.reason }
+      }
+    };
+  }
+
   // ../packages/patterns/src/cache-warm.ts
   var WARMUP_PROMPT = "Reply with a single word: ready.";
   function cliProofPrompt(cli) {
@@ -2155,10 +2229,14 @@ ${renderClaim(claim)}`;
   function claimKey(c) {
     return c.surface + " " + c.quote.toLowerCase().replace(/\s+/g, " ").trim();
   }
+  function votesForClaim(claim, votes, tieredVotes) {
+    if (!tieredVotes) return votes;
+    return claim.kind === "behavior" || claim.kind === "boundary" || claim.risk === "high" ? votes : 1;
+  }
   function estimateVerifyCalls(claims, votes, tieredVotes) {
     let total = 0;
     for (const c of claims) {
-      total += tieredVotes ? c.kind === "behavior" || c.kind === "boundary" || c.risk === "high" ? votes : 1 : votes;
+      total += votesForClaim(c, votes, tieredVotes);
     }
     return total;
   }
@@ -2315,7 +2393,12 @@ ${renderClaim(claim)}`;
       }
       verifierModel = obj["verifierModel"];
     }
-    const cfg = parseConfig(obj);
+    const cfg = parseConfig(obj, {
+      args: ["repoRoot", "surfaces", "surfaceRules", "hints", "maxRounds", "dryRounds", "surfacesPerAgent", "maxVerifyClaims", "claimOffset", "resumeFrom", "votes", "tieredVotes", "verifierModel", "effort", "perAgent", "agentTypes", "opencodeModels", "models", "opencodeVariants", "messaging"],
+      models: ["inventory", "extract", "verify"],
+      effort: ["inventory", "extract", "verify"],
+      agentTypes: ["inventory", "extract", "verify"]
+    });
     let tieredVotes = true;
     if (obj["tieredVotes"] !== void 0) {
       if (typeof obj["tieredVotes"] !== "boolean") {
@@ -2446,7 +2529,13 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       disabled: input.messaging,
       ...input.perAgent !== null ? { perAgent: input.perAgent } : {}
     });
+    const { rt: readOnlyBase, report: readOnlyRouting } = await withReadOnlyRouting(rt0, {
+      phase: "Fence",
+      disabled: input.messaging,
+      ...input.perAgent !== null ? { perAgent: input.perAgent } : {}
+    });
     const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0;
+    const readOnlyRt = input.perAgent !== null ? withAgentDefaults(readOnlyBase, input.perAgent) : readOnlyBase;
     const warnings = [];
     if (input.unknownAgentTypeKeys.length > 0) {
       warn(
@@ -2508,7 +2597,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         inventorySource = "input";
       } else {
         const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory);
-        const invOutcome = await agentWithSchemaSalvage(rt, inventoryPrompt(
+        const invOutcome = await agentWithSchemaSalvage(readOnlyRt, inventoryPrompt(
           input,
           resolvedInventoryType,
           resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
@@ -2666,7 +2755,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       const voteSalvageMultiplier = resolvedVerifierType !== null ? 3 : 2;
       const verifyMechanismOverhead = 1 + (resolvedVerifierType !== null ? 2 : 0);
       const estimatedVerifyCalls = estimateVerifyCalls(candidateClaims, input.votes, input.tieredVotes) * voteSalvageMultiplier + verifyMechanismOverhead;
-      const fenceProbes = (input.messaging ? 0 : 1) + (input.inventoryType !== null ? 1 : 0) + (input.extractType !== null ? 1 : 0) + (input.verifierType !== null ? 1 : 0);
+      const fenceProbes = (input.messaging ? 0 : 2) + (input.inventoryType !== null ? 1 : 0) + (input.extractType !== null ? 1 : 0) + (input.verifierType !== null ? 1 : 0);
       const inventoryOverhead = inventorySource === "agent" ? 1 : 0;
       const extractOverhead = input.resumeFrom !== null ? 0 : groups.length * finalState.rounds * 2;
       const overheadSoFar = fenceProbes + inventoryOverhead + extractOverhead;
@@ -2675,7 +2764,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         let safeSliceSize = 0;
         let running = 0;
         for (const c of claimsAfterOffset) {
-          const voteCost = input.tieredVotes ? c.kind === "behavior" || c.kind === "boundary" || c.risk === "high" ? input.votes : 1 : input.votes;
+          const voteCost = votesForClaim(c, input.votes, input.tieredVotes);
           const cost = voteCost * voteSalvageMultiplier;
           if (running + cost > remainingBudget) break;
           running += cost;
@@ -2726,7 +2815,7 @@ ${pipelineHowTo}`;
 ` : "Claim persistence FAILED (see warnings) \u2014 the extracted claims were NOT durably saved; a re-run will have to re-extract.\n") + remedyParagraph
         );
       }
-      const verifyModel = input.models?.verify ?? input.verifierModel ?? null;
+      const verifyModel = resolveVerifierModel(input.perAgent?.model, input.models?.verify ?? input.verifierModel);
       const verifyResult = await adversarialVerification(rt, {
         claims: claimsAfterOffset,
         renderClaim: renderAuditClaim(
@@ -2745,13 +2834,13 @@ ${pipelineHowTo}`;
         // (min(refuteThreshold, claimVotes)), so a 1-vote claim is decided by
         // its single vote.
         ...input.tieredVotes ? {
-          votesPerClaim: (c) => c.kind === "behavior" || c.kind === "boundary" || c.risk === "high" ? input.votes : 1
+          votesPerClaim: (c) => votesForClaim(c, input.votes, input.tieredVotes)
         } : {},
         refuteThreshold: Math.min(2, input.votes),
         maxVerifyClaims: input.maxVerifyClaims,
         effort: verifyEffort,
         phase: "Verify",
-        ...verifyModel !== null ? { model: verifyModel } : {},
+        ...verifyModel !== void 0 ? { model: verifyModel } : {},
         ...resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}
       });
       for (const w of verifyResult.warnings) warnings.push(w);
@@ -2786,6 +2875,7 @@ ${pipelineHowTo}`;
       findings,
       verifierProbe,
       leafFence,
+      readOnlyRouting,
       envelope: { trail: [...extractTrail, ...verifyTrail] },
       warnings
     };
@@ -2796,7 +2886,7 @@ ${pipelineHowTo}`;
       description: "Pre-release semantic docs audit: inventories doc surfaces, extracts checkable claims in loop-until-dry rounds, then refute-first verifies each claim against the actual sources with evidence-tiered verdicts (confirmed / stale / partially-stale / unverifiable).",
       whenToUse: "Use BEFORE a release (npm publish, plugin version bump) to catch documentation whose prose has drifted from the implementation \u2014 the semantic layer compile-time doc gates cannot check. Pass repoRoot (absolute); optionally surfaces, hints (e.g. a provenance map location), and sizing knobs. Findings are remediation input, e.g. for doc-rewrite.",
       phases: [
-        { title: "Fence", detail: "Leaf-fence + optional cross-model verifier probe" },
+        { title: "Fence", detail: "Leaf fence + read-only Inventory routing + optional cross-model verifier probe" },
         { title: "Inventory", detail: "Derive or validate the audited doc-surface list" },
         { title: "Extract", detail: "Loop-until-dry claim extraction: angle-cycled sweeps, deduped against seen" },
         { title: "Verify", detail: "Refute-first adversarial verification of each claim against the sources" },

@@ -34,7 +34,7 @@
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
 import { MODEL_ALIASES, withAgentDefaults } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, ModelAlias, EffortAlias, AgentDefaults } from '@workflow-toolbox/runtime'
-import { resolveVerifierEffort } from '@workflow-toolbox/std'
+import { resolveVerifierEffort, resolveVerifierModel } from '@workflow-toolbox/std'
 // untrusted() / renderSourceRefs() (used below) are promoted from here +
 // independent-analysis.workflow.ts into @workflow-toolbox/patterns, Rule of
 // Three — the two copies were byte-identical.
@@ -51,8 +51,7 @@ import type { VerifiedClaim, AgentTypeProbeReport } from '@workflow-toolbox/patt
 // Per-stage effort default (Class B/C launch-time tuning — see parseConfig).
 // A launch-time `args.effort.verify` override (parsed into `input.effort`) can
 // retune it without a source edit, via resolveVerifierEffort. Clamped to a
-// 'high' FLOOR — an override may only RAISE it, mirroring
-// adversarialVerification's own model-floor guardrail.
+// workflow default; explicit launcher effort.verify wins.
 // ---------------------------------------------------------------------------
 const VERIFY_EFFORT_DEFAULT: EffortAlias = 'high'
 
@@ -180,7 +179,11 @@ export default defineWorkflow({
     // per-role effort overrides (`effort.verify`) and the per-role agentType
     // routing map (`agentTypes.verify` — the structured, user-pre-decidable
     // channel for cross-family routing; no bespoke top-level arg).
-    const cfg = parseConfig(obj)
+    const cfg = parseConfig(obj, {
+      args: ['claims', 'sourceRefs', 'votes', 'refuteThreshold', 'verifierModel', 'perAgent', 'effort', 'agentTypes'],
+      effort: ['verify'],
+      agentTypes: ['verify'],
+    })
     const effort = cfg.effort ?? null
     const verifierType = cfg.agentTypes?.['verify']
     const perAgent = cfg.perAgent ?? null
@@ -193,10 +196,9 @@ export default defineWorkflow({
     // doc comment) — reaches EVERY agent this workflow spawns downstream
     // (probe + cache-warm + every verifier vote) since parallel()/pipeline()
     // close over this wrapped rt's agent(). Per-call opts still win (e.g.
-    // adversarialVerification always sets `model` explicitly, so perAgent.model
-    // never overrides a verifier's resolved model — only knobs the callee does
-    // NOT set itself, like `stallMs`, actually flow through).
+    // Launcher perAgent.model / effort.verify win over verifierModel and defaults.
     const rt: WorkflowRuntime = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0
+    const verifierModel = resolveVerifierModel(input.perAgent?.model, input.verifierModel)
 
     const sourceBlock = renderSourceRefs(input.sourceRefs, {
       emptyNote: 'No source files were provided — reason from the claim as given.',
@@ -232,7 +234,9 @@ export default defineWorkflow({
       ...(input.refuteThreshold !== undefined ? { refuteThreshold: input.refuteThreshold } : {}),
       effort: resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT),
       ...(resolvedType !== undefined ? { verifierType: resolvedType } : {}),
-      ...(input.verifierModel !== undefined ? { model: input.verifierModel } : {}),
+      ...(verifierModel !== undefined
+        ? { model: verifierModel }
+        : {}),
       phase: 'Verify',
     })
 

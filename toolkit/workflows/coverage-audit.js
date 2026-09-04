@@ -297,6 +297,44 @@ unreadable channel never fails your task.`;
   function isRecord2(v) {
     return typeof v === "object" && v !== null && !Array.isArray(v);
   }
+  function editDistance(left, right) {
+    const previous = [];
+    const current = [];
+    for (let j = 0; j <= right.length; j++) previous[j] = j;
+    for (let i = 1; i <= left.length; i++) {
+      current[0] = i;
+      for (let j = 1; j <= right.length; j++) {
+        current[j] = left[i - 1] === right[j - 1] ? previous[j - 1] : Math.min(previous[j], current[j - 1], previous[j - 1]) + 1;
+      }
+      for (let j = 0; j <= right.length; j++) previous[j] = current[j];
+    }
+    return previous[right.length];
+  }
+  function nearestKey(key, allowed) {
+    if (key === "verifierType" && allowed.includes("agentTypes.verify")) return "agentTypes.verify";
+    let nearest = allowed[0];
+    let distance = editDistance(key, nearest);
+    for (const candidate of allowed.slice(1)) {
+      const next = editDistance(key, candidate);
+      if (next < distance) {
+        nearest = candidate;
+        distance = next;
+      }
+    }
+    return nearest;
+  }
+  function rejectUnknownKey(key, where, allowed) {
+    const suggestion = nearestKey(key, allowed);
+    if (where === null) {
+      throw new Error(`parseConfig: unknown arg \`${key}\` \u2014 did you mean \`${suggestion}\`?`);
+    }
+    throw new Error(`parseConfig: unknown key \`${key}\` in \`${where}\` \u2014 did you mean \`${suggestion}\`?`);
+  }
+  function checkKeys(raw, where, allowed) {
+    for (const key of Object.keys(raw)) {
+      if (!allowed.includes(key)) rejectUnknownKey(key, where, allowed);
+    }
+  }
   function asNonEmptyString(v, where) {
     if (typeof v !== "string" || v.trim().length === 0) {
       throw new Error(`parseConfig: ${where} must be a non-empty string, got ${JSON.stringify(v)}`);
@@ -341,14 +379,16 @@ unreadable channel never fails your task.`;
     }
     return out;
   }
-  function parseStringMap(raw, where) {
+  function parseStringMap(raw, where, allowed) {
     if (!isRecord2(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    if (allowed !== void 0) checkKeys(raw, where, allowed);
     const out = {};
     for (const [k, v] of Object.entries(raw)) out[k] = asNonEmptyString(v, `${where}.${k}`);
     return out;
   }
-  function parseEffortMap(raw) {
+  function parseEffortMap(raw, allowed) {
     if (!isRecord2(raw)) throw new Error(`parseConfig: effort must be an object, got ${raw === null ? "null" : typeof raw}`);
+    if (allowed !== void 0) checkKeys(raw, "effort", allowed);
     const out = {};
     for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`);
     return out;
@@ -359,8 +399,9 @@ unreadable channel never fails your task.`;
     }
     return v;
   }
-  function parseNumberMap(raw, where) {
+  function parseNumberMap(raw, where, allowed) {
     if (!isRecord2(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    if (allowed !== void 0) checkKeys(raw, where, allowed);
     const out = {};
     for (const [k, v] of Object.entries(raw)) {
       if (typeof v !== "number" || !Number.isFinite(v)) {
@@ -370,17 +411,21 @@ unreadable channel never fails your task.`;
     }
     return out;
   }
-  function parseConfig(raw) {
+  function parseConfig(raw, schema) {
     if (raw === void 0 || raw === null) return {};
     if (!isRecord2(raw)) {
       throw new Error(`parseConfig: expected an object (or undefined), got ${typeof raw}`);
     }
+    if (schema !== void 0) {
+      const suggestionKeys = schema.agentTypes?.includes("verify") ? schema.args.concat(["agentTypes.verify"]) : schema.args;
+      checkKeys(raw, null, suggestionKeys);
+    }
     const config = {};
     if (raw.perAgent !== void 0) config.perAgent = parsePerAgent(raw.perAgent);
-    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models");
-    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort);
-    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes");
-    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing");
+    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models", schema?.models);
+    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort, schema?.effort);
+    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes", schema?.agentTypes);
+    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing", schema?.sizing);
     if (raw.messaging !== void 0) config.messaging = asBoolean(raw.messaging, "messaging");
     return config;
   }
@@ -397,6 +442,9 @@ unreadable channel never fails your task.`;
     const safeFloor = isEffortAlias(floor) ? floor : "high";
     const resolved = resolveEffort(argsValue, stageDefault);
     return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor;
+  }
+  function resolveVerifierModel(launcherModel, workflowModel) {
+    return launcherModel ?? workflowModel ?? void 0;
   }
 
   // ../packages/patterns/src/envelope.ts
@@ -2394,7 +2442,8 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-guard-journal-scan.mjs",
         "plugin/bin/wt-isolated-spawn-report-path-hook.mjs",
         "plugin/bin/wt-pgrep-env-dump-guard-hook.mjs",
-        "plugin/bin/wt-propagation-reminder-hook.mjs"
+        "plugin/bin/wt-propagation-reminder-hook.mjs",
+        "plugin/bin/wt-plugin-release-record-guard-hook.mjs"
       ],
       docs: ["docs/public/known-issues.md"]
     }
@@ -2694,7 +2743,12 @@ ${renderClaim(claim)}`;
       }
       verifierModel = obj["verifierModel"];
     }
-    const cfg = parseConfig(obj);
+    const cfg = parseConfig(obj, {
+      args: ["repoRoot", "provenance", "scope", "hints", "maxRounds", "dryRounds", "entriesPerAgent", "maxVerifyClaims", "votes", "tieredVotes", "verifierModel", "effort", "perAgent", "agentTypes", "opencodeModels", "models", "opencodeVariants", "messaging"],
+      models: ["inventory", "extract", "verify"],
+      effort: ["inventory", "extract", "verify"],
+      agentTypes: ["inventory", "extract", "verify"]
+    });
     let tieredVotes = true;
     if (obj["tieredVotes"] !== void 0) {
       if (typeof obj["tieredVotes"] !== "boolean") {
@@ -2998,6 +3052,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       for (const w of sel.warnings) warn(rt, warnings, w);
       extractEffortByGroup = groups.map((_, gi) => sel.efforts[`extract:${gi}`] ?? EXTRACT_EFFORT);
     }
+    let extractorFailures = 0;
     const loopResult = await loopUntilDone(rt, {
       maxIterations: input.maxRounds,
       dryRounds: input.dryRounds,
@@ -3038,6 +3093,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         for (let gi = 0; gi < results.length; gi++) {
           const res = results[gi];
           if (res === null || res === void 0) {
+            extractorFailures++;
             warn(
               rt,
               warnings,
@@ -3128,7 +3184,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         "coverage-audit [Verify]: no undocumented-capability claims were extracted \u2014 nothing to verify. This can be legitimate (every inventoried capability is well documented) or an extraction problem (review the Extract warnings above)."
       );
     } else {
-      const verifyModel = input.models?.verify ?? input.verifierModel ?? null;
+      const verifyModel = resolveVerifierModel(input.perAgent?.model, input.models?.verify ?? input.verifierModel);
       const verifyResult = await adversarialVerification(rt, {
         claims: sortedClaims,
         renderClaim: renderCoverageClaim(
@@ -3152,7 +3208,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         maxVerifyClaims: input.maxVerifyClaims,
         effort: verifyEffort,
         phase: "Verify",
-        ...verifyModel !== null ? { model: verifyModel } : {},
+        ...verifyModel !== void 0 ? { model: verifyModel } : {},
         ...resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}
       });
       for (const w of verifyResult.warnings) warnings.push(w);
@@ -3175,6 +3231,11 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
       unverifiable: verdictCount("unverifiable"),
       unverifiedByCap: verdictCount("unverified-by-cap")
     };
+    if (capabilitiesInventoried > 0 && finalState.claims.length === 0 && extractorFailures > 0) {
+      throw new Error(
+        `coverage-audit: extraction produced no claims: failed extractors=${extractorFailures}, capabilities inventoried=${capabilitiesInventoried}`
+      );
+    }
     rt.log(
       `coverage-audit: ${summary.total} capability gaps checked \u2014 ${summary.undocumented} undocumented, ${summary.documented} actually documented, ${summary.partiallyDocumented} partial, ${summary.unverifiable} unverifiable, ${summary.unverifiedByCap} unverified-by-cap`
     );

@@ -54,6 +54,7 @@ try {
 } catch {
   quit()
 }
+if (typeof input?.agent_id === 'string' && input.agent_id) quit()
 
 const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd()
 

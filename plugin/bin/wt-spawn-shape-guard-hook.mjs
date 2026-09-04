@@ -80,6 +80,7 @@ function main() {
       reason: `"${name}" (${type}) named without isolation, no git repo at cwd`,
       cwd,
     })
+    if (typeof input.agent_id === 'string' && input.agent_id) return
     process.stdout.write(
       JSON.stringify({
         systemMessage:

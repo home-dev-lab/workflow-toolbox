@@ -254,14 +254,17 @@ describe('adopt installer — agent-copies set (--set agents; committed drift lo
     expect(readFileSync(agentPath(d, 'pilot.md'), 'utf8')).toContain('content sha256:')
   })
 
-  it('AHEAD (installed version > plugin, unedited): --install SKIPS it without --force', () => {
+  it('AHEAD/FORKED (installed version > plugin, differing unedited content): --install SKIPS it without --force', () => {
     const d = mkDir()
     run(['--set', 'agents', '--install'], d)
     const p = agentPath(d, 'pilot.md')
-    // Raise ONLY the banner's version token above any real plugin version; fingerprint intact.
-    const before = readFileSync(p, 'utf8')
-    writeFileSync(p, before.replace(/(installed from workflow-toolbox )v\d+\.\d+\.\d+/, '$1v999.0.0'))
-    expect(run(['--set', 'agents', '--check'], d)).toContain('pilot.md: AHEAD')
+    let before = readFileSync(p, 'utf8') + '\nA FORKED FUTURE LINE\n'
+    const fp = createHash('sha256').update(stripInstalledAgentBanner(before), 'utf8').digest('hex').slice(0, 12)
+    before = before
+      .replace(/(installed from workflow-toolbox )v\d+\.\d+\.\d+/, '$1v999.0.0')
+      .replace(/content sha256:[0-9a-f]{12}/, `content sha256:${fp}`)
+    writeFileSync(p, before)
+    expect(run(['--set', 'agents', '--check'], d)).toContain('pilot.md: AHEAD/FORKED')
     expect(run(['--set', 'agents', '--install'], d)).toContain('pilot.md: SKIPPED')
     // untouched by a plain --install (still AHEAD, still v999)
     expect(readFileSync(p, 'utf8')).toContain('v999.0.0')
@@ -509,31 +512,40 @@ describe('adopt installer — CLI surface for the managed-set engine', () => {
     expect(chk).toContain('nothing to do')
   })
 
-  it('--set rules names the untouched agents and autonomy sets, factually and in one line', () => {
+  it('--set rules names the untouched agents, autonomy, and docs sets, factually and in one line', () => {
     const d = mkDir()
     const out = run(['--set', 'rules', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the agents and autonomy sets exist too; they were untouched here, and --set agents or --set autonomy covers them.')
+    expect(line).toBe('adopt: the agents, autonomy, and docs sets exist too; they were untouched here, and --set agents, --set autonomy, --set docs covers them.')
   })
 
-  it('--set agents names the untouched rules and autonomy sets, factually and in one line', () => {
+  it('--set agents names the untouched rules, autonomy, and docs sets, factually and in one line', () => {
     const d = mkDir()
     const out = run(['--set', 'agents', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the rules and autonomy sets exist too; they were untouched here, and --set rules or --set autonomy covers them.')
+    expect(line).toBe('adopt: the rules, autonomy, and docs sets exist too; they were untouched here, and --set rules, --set autonomy, --set docs covers them.')
   })
 
-  it('--set autonomy names the untouched rules and agents sets, factually and in one line', () => {
+  it('--set autonomy names the untouched rules, agents, and docs sets, factually and in one line', () => {
     const d = mkDir()
     const out = runInCwd(['--set', 'autonomy', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the rules and agents sets exist too; they were untouched here, and --set rules or --set agents covers them.')
+    expect(line).toBe('adopt: the rules, agents, and docs sets exist too; they were untouched here, and --set rules, --set agents, --set docs covers them.')
+  })
+
+  it('--set docs names the untouched rules, agents, and autonomy sets, factually and in one line', () => {
+    const d = mkDir()
+    const out = runInCwd(['--set', 'docs', '--check'], d)
+    const line = untouchedSetLine(out)
+    expect(line).not.toContain('⚠')
+    expect(line).not.toMatch(/\bshould\b/i)
+    expect(line).toBe('adopt: the rules, agents, and autonomy sets exist too; they were untouched here, and --set rules, --set agents, --set autonomy covers them.')
   })
 
   it('--set all prints no untouched-set line at all', () => {
@@ -712,6 +724,21 @@ describe('adopt installer — STALE tracks CONTENT, not the version number', () 
     for (const f of shippedRules()) installedAt(dir, f, version, shipped(f))
   }
 
+  it('identical shipped content under rules/wt is UP-TO-DATE even when its stored fingerprint is stale', () => {
+    const target = join(mkDir(), 'rules', 'wt')
+    mkdirSync(target, { recursive: true })
+    const { pluginRoot, script } = makePluginCopy('1.0.0')
+    const body = readFileSync(join(pluginRoot, 'rules', RULE), 'utf8').replace(/[ \t\r\n]+$/u, '')
+    writeFileSync(
+      join(target, RULE),
+      `<!-- installed from workflow-toolbox v0.0.1 · content sha256:000000000000 by the adopt skill -->\n\n${body}\n`,
+    )
+
+    const out = runCopy(script, ['--set', 'rules', '--check'], target)
+    expect(out).toContain(`${RULE}: UP-TO-DATE`)
+    expect(out).not.toContain(`${RULE}: EDITED`)
+  })
+
   it('identical content behind a newer plugin version is UP-TO-DATE, not STALE', () => {
     const d = mkDir()
     seedAllAt(d, '0.0.1')
@@ -741,12 +768,30 @@ describe('adopt installer — STALE tracks CONTENT, not the version number', () 
     expect(readFileSync(join(d, RULE), 'utf8')).not.toContain('A LINE FROM AN OLDER RELEASE')
   })
 
-  it('AHEAD survives: a copy claiming a FUTURE version is still flagged, identical content or not', () => {
+  it('a FUTURE banner with identical content is still UP-TO-DATE', () => {
     const d = mkDir()
     seedAllAt(d, '0.0.1')
     installedAt(d, RULE, '999.0.0', shipped(RULE))
     const out = run(['--set', 'rules', '--check'], d)
-    expect(out).toMatch(new RegExp(`${RULE}: AHEAD`))
+    expect(out).toMatch(new RegExp(`${RULE}: UP-TO-DATE`))
+  })
+
+  it('a FUTURE banner with different content is AHEAD/FORKED, never STALE', () => {
+    const d = mkDir()
+    seedAllAt(d, '0.0.1')
+    installedAt(d, RULE, '999.0.0', shipped(RULE) + '\nA FORKED FUTURE LINE\n')
+    const out = run(['--set', 'rules', '--check'], d)
+    expect(out).toMatch(new RegExp(`${RULE}: AHEAD/FORKED`))
+    expect(out).not.toMatch(new RegExp(`${RULE}: STALE`))
+  })
+
+  it('a trailing-newline-only difference is UP-TO-DATE', () => {
+    const d = mkDir()
+    seedAllAt(d, '0.0.1')
+    installedAt(d, RULE, '0.0.1', shipped(RULE).replace(/[ \t\r\n]+$/u, '') + '\n\n')
+    const out = run(['--set', 'rules', '--check'], d)
+    expect(out).toMatch(new RegExp(`${RULE}: UP-TO-DATE`))
+    expect(out).not.toMatch(new RegExp(`${RULE}: STALE|${RULE}: EDITED`))
   })
 })
 
@@ -992,11 +1037,12 @@ describe('adopt installer — a flag with no effect in the resolved mode is REFU
 // the script itself) under a temp dir, adds a fixture agent to the COPY's agents/, and runs
 // the COPIED script — whose pluginRoot() resolution walks up from ITS OWN location, landing
 // on the temp copy, never the real one.
-function makePluginCopy(): { pluginRoot: string; script: string; agentsDir: string } {
+function makePluginCopy(version = '0.0.1'): { pluginRoot: string; script: string; agentsDir: string } {
   const pluginRoot = mkdtempSync(join(tmpdir(), 'wt-adopt-plugin-'))
   roots.push(pluginRoot)
   mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true })
-  writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: '0.0.1' }))
+  writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ version }))
+  cpSync(join(REPO_ROOT, 'plugin/rules'), join(pluginRoot, 'rules'), { recursive: true })
   cpSync(join(REPO_ROOT, 'plugin/agents'), join(pluginRoot, 'agents'), { recursive: true })
   cpSync(join(REPO_ROOT, 'plugin/agent-templates'), join(pluginRoot, 'agent-templates'), { recursive: true })
   const scriptDir = join(pluginRoot, 'skills/adopt/scripts')
@@ -1128,6 +1174,39 @@ describe('adopt installer — registered-agent shadowing note', () => {
     expect(out).toContain(`workflow-toolbox:${name} is shadowed by`)
     expect(out).toContain('DIVERGED')
     expect(out).toMatch(/plugin mtime=.*user mtime=.*/)
+  })
+
+  it('a BODY divergence is classified as "body differs" — appending a trailing line after the frontmatter changes the instruction text', () => {
+    const d = mkDir()
+    const cfg = mkDir()
+    const { script, agentsDir } = makePluginCopy()
+    const name = firstRegisteredAgentName(agentsDir)
+    mkdirSync(join(cfg, 'agents'), { recursive: true })
+    writeFileSync(join(cfg, 'agents', `${name}.md`), readFileSync(join(agentsDir, `${name}.md`), 'utf8') + '\nlocal divergence\n')
+
+    const out = runCopyEnv(script, ['--set', 'agents', '--check'], d, { CLAUDE_CONFIG_DIR: cfg })
+    expect(out).toContain('DIVERGED')
+    expect(out).toContain('body differs')
+    expect(out).not.toContain('frontmatter-only')
+  })
+
+  it('a FRONTMATTER-only divergence names the diverging key(s) and never claims the body differs', () => {
+    const d = mkDir()
+    const cfg = mkDir()
+    const { script, agentsDir } = makePluginCopy()
+    const name = firstRegisteredAgentName(agentsDir)
+    const pluginSource = readFileSync(join(agentsDir, `${name}.md`), 'utf8')
+    // Add a single-line frontmatter key (a model pin) with nothing else touched — the body
+    // after the closing `---` stays byte-identical to the plugin copy.
+    const userSource = pluginSource.replace(/\n---\n/, '\nmodel: opus\n---\n')
+    expect(userSource, 'fixture must actually gain a new frontmatter line').not.toBe(pluginSource)
+    mkdirSync(join(cfg, 'agents'), { recursive: true })
+    writeFileSync(join(cfg, 'agents', `${name}.md`), userSource)
+
+    const out = runCopyEnv(script, ['--set', 'agents', '--check'], d, { CLAUDE_CONFIG_DIR: cfg })
+    expect(out).toContain('DIVERGED')
+    expect(out).toContain('frontmatter-only: model')
+    expect(out).not.toContain('body differs')
   })
 
   it('an absent config agents dir is skipped silently: no throw, no shadowing line', () => {

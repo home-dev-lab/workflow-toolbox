@@ -55,7 +55,7 @@
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
 import { withAgentDefaults, MODEL_ALIASES } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, EffortAlias, ModelAlias, AgentDefaults } from '@workflow-toolbox/runtime'
-import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
+import { resolveEffort, resolveVerifierEffort, resolveVerifierModel } from '@workflow-toolbox/std'
 import {
   adversarialVerification,
   agentWithSchemaSalvage,
@@ -766,7 +766,12 @@ function parseInput(raw: unknown): CoverageAuditInput {
 
   // Recognized config slices (effort/perAgent/agentTypes/messaging) go through
   // the shared parseConfig helper; it ignores this workflow's bespoke keys.
-  const cfg = parseConfig(obj)
+  const cfg = parseConfig(obj, {
+    args: ['repoRoot', 'provenance', 'scope', 'hints', 'maxRounds', 'dryRounds', 'entriesPerAgent', 'maxVerifyClaims', 'votes', 'tieredVotes', 'verifierModel', 'effort', 'perAgent', 'agentTypes', 'opencodeModels', 'models', 'opencodeVariants', 'messaging'],
+    models: ['inventory', 'extract', 'verify'],
+    effort: ['inventory', 'extract', 'verify'],
+    agentTypes: ['inventory', 'extract', 'verify'],
+  })
 
   let tieredVotes = true
   if (obj['tieredVotes'] !== undefined) {
@@ -1232,6 +1237,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
     extractEffortByGroup = groups.map((_, gi) => sel.efforts[`extract:${gi}`] ?? EXTRACT_EFFORT)
   }
 
+  let extractorFailures = 0
   const loopResult = await loopUntilDone<ExtractState>(rt, {
     maxIterations: input.maxRounds,
     dryRounds: input.dryRounds,
@@ -1275,6 +1281,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
       for (let gi = 0; gi < results.length; gi++) {
         const res = results[gi]
         if (res === null || res === undefined) {
+          extractorFailures++
           warn(
             rt, warnings,
             `coverage-audit [Extract]: extractor ${round}:${gi} failed — its entries contribute ` +
@@ -1392,10 +1399,9 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
     )
     .map((x) => x.c)
 
-  // Zero extracted claims is a LEGITIMATE outcome (every inventoried
-  // capability is well documented, or every extractor failed — the warnings
-  // say which), not a crash: the pattern rejects an empty claims array at
-  // entry, so skip it and report zeros.
+  // Zero extracted claims can be a legitimate outcome when every inventoried
+  // capability is well documented. The Report phase below separately rejects
+  // this shape when extractor failures mean coverage was not measured.
   let verified: ReadonlyArray<VerifiedClaim<CoverageClaim>> = []
   let verifyTrail: TrailRecord[] = []
   if (sortedClaims.length === 0) {
@@ -1410,7 +1416,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
     // when both are absent adversarialVerification supplies the default itself
     // ('haiku' for an external relay via externalGateExpectation, BEST_MODEL for
     // a plain Claude verifier) — so we pass NOTHING rather than force a model.
-    const verifyModel: ModelAlias | null = input.models?.verify ?? input.verifierModel ?? null
+    const verifyModel = resolveVerifierModel(input.perAgent?.model, input.models?.verify ?? input.verifierModel)
     const verifyResult = await adversarialVerification<CoverageClaim>(rt, {
       claims: sortedClaims,
       renderClaim: renderCoverageClaim(
@@ -1437,7 +1443,7 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
       maxVerifyClaims: input.maxVerifyClaims,
       effort: verifyEffort,
       phase: 'Verify',
-      ...(verifyModel !== null ? { model: verifyModel } : {}),
+      ...(verifyModel !== undefined ? { model: verifyModel } : {}),
       ...(resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}),
     })
     for (const w of verifyResult.warnings) warnings.push(w)
@@ -1477,6 +1483,13 @@ async function run(rt00: WorkflowRuntime, input: CoverageAuditInput): Promise<Co
     partiallyDocumented: verdictCount('partially-confirmed'),
     unverifiable: verdictCount('unverifiable'),
     unverifiedByCap: verdictCount('unverified-by-cap'),
+  }
+
+  if (capabilitiesInventoried > 0 && finalState.claims.length === 0 && extractorFailures > 0) {
+    throw new Error(
+      `coverage-audit: extraction produced no claims: failed extractors=${extractorFailures}, ` +
+      `capabilities inventoried=${capabilitiesInventoried}`,
+    )
   }
 
   rt.log(

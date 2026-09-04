@@ -40,6 +40,8 @@ judgment call this tool cannot make.
 
 ## Usage
 
+Before harvesting a delegation report, run `pnpm wt:report-lens <report-file>` from `toolkit/`: it is the manual report-contract check for the separately named lanes, grounded claims, deferred checks, probe criteria, and required `## Lessons for the memory` section. Nothing invokes it automatically, so do not read its absence as a clean report.
+
 ```bash
 node plugin/skills/lesson-harvest/scripts/harvest-lessons.mjs <report.md>            # human-readable
 node plugin/skills/lesson-harvest/scripts/harvest-lessons.mjs <report.md> --json     # machine-readable

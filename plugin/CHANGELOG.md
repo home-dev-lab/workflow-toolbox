@@ -5,13 +5,13 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+
 ### Changed
 
 - Raised `@anthropic-ai/claude-agent-sdk` from `^0.3.205` to `^0.3.260` for the upgrade canary. Claude Code 2.1.260 can send a completed task notification before its output file is fully written, so the canary retries a transient partial-file read.
 - The opencode envelope now stores each invocation's manifest, task copies, and answers under its workdir-scoped `.wt-envelope/` directory.
 - The opencode envelope records each task's requested model and returns a JSON-encoded answer on the successful single-task batch's one `MANIFEST:` line, allowing schema callers to validate the script-owned result; invocation manifests are named `envelope.manifest.json` for manifest readers.
 
-## [0.176.0] - 2026-08-18
 
 ### Added
 
@@ -30,7 +30,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   satisfied and recorded elsewhere while the rule still said it had not been proven. Nothing was
   wrong when written; each simply outlived the state it described.
 
-## [0.175.0] - 2026-08-18
 
 ### Added
 
@@ -75,7 +74,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   `Agent type not found` and were simply too early — do not read one refusal as impossibility, and
   re-probe instead of concluding.
 
-## [0.174.0] - 2026-08-18
 
 ### Added
 
@@ -89,7 +87,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   names the favourable tell — a lane returning a clean tree or a suspiciously small diff — and the
   one command that settles it before the brief is written.
 
-## [0.173.0] - 2026-08-18
 
 ### Added
 
@@ -103,7 +100,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   path, an output channel or an agent type, and says to confirm at brief time rather than infer
   from the rule that prescribes it.
 
-## [0.172.0] - 2026-08-17
 
 ### Fixed
 
@@ -134,7 +130,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   that the path resolved at all. Resolution correctness is locked executably in
   `opencode-plugin-root-resolution.test.ts`.
 
-## [0.171.0] - 2026-08-11
 
 ### Added
 
@@ -146,88 +141,93 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The sidecar is written only when the output genuinely parses as that stream — never as an empty
   file, which would read as "converted to nothing" rather than "not an opencode stream".
 
-## [0.170.0] - 2026-08-11
-
-### Added
-
-- **An external call's node now records what was ASKED, not only what came back.** Its transcript
-  carries the invoking command as a user turn ahead of the model's answer, so the node's
-  Input/Output panel stops reading "No input/output captured" — a reader could see the verdict and
-  not the question, which is the half that makes a verdict judgeable.
-- The whole command is recorded rather than a prompt excerpted from it: the model flag, the working
-  directory and the redirections are part of what was actually asked, and a prettier excerpt drops
-  exactly what someone re-running the call would need.
-- The hook is the only place that has it — the command sits in its own `tool_input`, and nothing
-  downstream ever sees it.
-
-## [0.169.0] - 2026-08-11
-
 ### Fixed
 
-- **An external call's transcript now carries the model's ANSWER, not the JSON transport.** A
-  `--format json` invocation — the one that carries the token counts — was writing its whole event
-  stream into the node's transcript, so a reader opening that node met step markers, ids and
-  timestamps instead of what the model said. The tokens are why the command asks for JSON; the
-  answer is why a human opens the transcript, and both now survive.
-- Falls back to the raw output when nothing text-shaped is present: an empty transcript would be
-  worse than a noisy one.
+- Adopt checks now classify copies by a trailing-whitespace-normalized fingerprint of their
+  banner-stripped content across project/global `rules/` and `rules/wt/` locations, report the
+  selected location, and distinguish newer divergent copies as ahead/forked rather than behind.
+- `wt-merge-chain-guard-hook.mjs` now stays silent while journaling `decision: "silent"` for a chained merge followed only by diagnostic reads; chained gates and unclassified commands continue to warn.
+- The shared `wt-queue-gate` state directory now expires recognized stale queue, mandate, cooldown, and defunct-session watch markers opportunistically during normal reads and writes, without deleting unknown records.
+- `adopt:migrate --execute --secondary-dir <rules-dir>` now reconciles a second configuration
+  directory after verified moves: only symlinks to moved managed files are removed, then one
+  absolute `wt -> <primary>/rules/wt` directory symlink is created and verified. A planned move
+  without `--secondary-dir` now refuses unless `--ignore-secondary` explicitly accepts the risk,
+  preventing a silent broken second configuration.
+- `report-contract-lens.ts` is now an explicitly manual tool with the `pnpm wt:report-lens <report-file>` entry point, documentation of its non-automatic status, and a pre-harvest invocation in `lesson-harvest`.
+- `wt-queue-not-empty-gate-hook` now detects recent work in live `opencode run` and `codex exec` lanes by reading their Linux `/proc/*/cmdline` `--dir` arguments, including lanes in separate repositories.
+- Advisory plugin hooks now stay silent for payloads from Workflow-tool subagents, keeping their reminders and session guidance out of delegated agent context.
+- `wt-outbound-guard-hook`: a Workflow-tool subagent on Path A (harness label `workflow-subagent`, session transcript in the hook payload, several runs in the session) was still nudged at SubagentStop and lost its structured return; the exemption now matches the harness label and finds the run by the agent's own transcript file instead of requiring exactly one run.
+- **Four guard hooks no longer journal paths or path-derived text from tool input**. `wt-stale-date-guard-hook`, `wt-missing-package-script-guard-hook`, `wt-isolated-spawn-report-path-hook`, and `wt-observer-pairing-guard-hook` now record only class labels plus bounded shape evidence in the guard journal. Their model-facing warnings keep path detail only where the warning would be materially less usable without it.
 
-## [0.168.0] - 2026-08-11
-
-### Added
-
-- **An external call now records what a renderer needs to place and price it**: the parent agent
-  that made it, the model read off the command, the real duration from the harness's own
-  `duration_ms`, and — when the command used `--format json` — the lane's token counts and session
-  id.
-- **The parent link is the load-bearing one.** Without it a call cannot be shown inside the phase
-  it belongs to, and lands in a disconnected side column: 16 identical nodes, each claiming `0.0s`,
-  beside the phase that actually made them.
-- **Every field is recorded only when genuinely known.** A command naming no model records no
-  model; a call that emitted no usage records no tokens. The alternative to an absent field is an
-  invented one, and a zero renders as a measurement.
-- **External tokens are deliberately NOT merged into the transcript's own usage.** They would be
-  added to the Claude total by the existing reader, and a GPT count carries a `reasoning` component
-  Claude has no equivalent for — the sum would invent a unit.
-- The cumulative stream's **last** usage line wins; taking the first under-reports silently.
-
-## [0.167.0] - 2026-08-11
+## [0.170.0] - 2026-09-03
 
 ### Added
 
-- **One envelope, N external calls, N nodes.** The lane node is now keyed per CALL
-  (`tool_use_id`) instead of per agent, so a single wrapper agent issuing several `opencode run`
-  calls in one message renders as one node per call rather than one node accumulating everything.
-- **Why it matters:** the ~26k system-prompt cost of a wrapper is paid per AGENT, not per call.
-  Measured across four runs of the same probe — 1, 3, 8 and 16 concurrent calls from one agent —
-  the fixed cost stayed flat (26 281 → 25 550 cache-read) while the node count matched N exactly.
-  Cost per external call fell from **27 759** tokens at N=1 to **2 074** at N=16.
-- **Keyed by id, never by a counter.** The calls of a batch complete concurrently, so two hook
-  processes counting files in the same directory would pick the same index and one node would
-  silently absorb the other.
+- `WT_GUARD_MODE=observe` for the plugin's warn-only guards: `wt-merge-chain-guard-hook.mjs`,
+  `wt-pipestatus-bash-only-guard-hook.mjs`, `wt-find-newermt-format-guard-hook.mjs`,
+  `wt-git-commit-backtick-guard-hook.mjs`, `wt-var-colon-modifier-guard-hook.mjs`,
+  `wt-missing-package-script-guard-hook.mjs`, `wt-pgrep-env-dump-guard-hook.mjs`,
+  `wt-plugin-release-record-guard-hook.mjs`, `wt-isolated-spawn-report-path-hook.mjs`,
+  `wt-observer-pairing-guard-hook.mjs`, and `wt-stale-date-guard-hook.mjs`. In observe mode they
+  still detect and still journal their events, now stamped with `mode: "observe"` and recorded as
+  `decision: "silent"` (never `warned`, so a reader counting `warned` as "the hook spoke" stays
+  honest), but emit no model-facing warning text; the default remains `enforce`. The journal reader
+  and `wt-guard-journal-scan.mjs --json` count `silent` events (own `silent` column, included in `total`), so
+  the recurrence hook keeps seeing a muted guard's firings.
 
-## [0.166.0] - 2026-08-11
+## [0.169.0] - 2026-09-03
+> The entry below arrived with a branch merge but its code did NOT: no commit in that merge
+> touches the hook it describes. It stays here rather than under a released heading, because a
+> changelog that announces work absent from the tree is worse than one that says nothing.
 
 ### Added
 
-- **A workflow's external-CLI call now leaves a node behind.** When the verifier-CLI guard sees an
-  `opencode run` complete, it writes the two artefacts an observatory builds an agent node from —
-  the transcript line and its meta — into the delegated session's run directory. Until now that
-  call left nothing on disk, so a run surfaced its Claude agents and never its external work.
-- The guard is the only vantage point that sees it: hooks are **per session**, so a launcher's own
-  hooks observe neither the spawn nor the tool calls of a workflow's agents (measured: zero of
-  each). A plugin hook does, because it is loaded into the delegated session.
-- **It refuses to guess.** The run directory is derived from the session transcript path, and the
-  write happens only when exactly ONE run directory exists — the real case, since a second launch
-  in one session is aborted upstream. Were that to relax, picking the newest would file one run's
-  lane call inside another run's DAG, silently; refusing is the correct degradation.
-- **Transcript only — no tokens.** The wrapper's command omits `--format json`, so its output
-  carries no per-step totals. A zero would render as a measurement; nothing renders as nothing.
-- Best-effort throughout, exactly like the provenance marker beside it: a run never fails because
-  an observability artefact could not be written.
-## [0.165.0] - 2026-08-27
+- **The 13 shipped rules under `plugin/rules/` now carry a fourth adopt-managed set: `docs`.**
+  `adopt --set docs` installs `plugin/docs/rules-rationale/*.md` to `<config-dir>/docs/wt/`, with
+  the same fingerprint banner and edit-safety as the `rules` set. This is the shipped-rules twin
+  of the private user-rule static-prefix cut of 2026-09-02: a rule keeps every directive line, and
+  a dated field case or hook-superseded section moves VERBATIM to its rationale doc, leaving one
+  pointer line behind. Verified LOSSLESS at cut time with a one-off script,
+  `toolkit/scripts/verify-rules-rationale-split.mjs --baseline <pre-cut dir>` (same algorithm as
+  the private-rule pass's `verify-split.py`): **13/13 rule/rationale pairs, 0 missing, 0
+  duplicated, 0 mid-paragraph splits.** That script is NOT part of `pnpm test` — a frozen
+  byte-for-byte baseline is right for a one-time migration proof and wrong for a permanent lock,
+  since it would forbid ever legitimately retiring a sentence from a shipped rule again. The
+  ongoing gate is `toolkit/packages/build/test/rules-rationale-referential.test.ts`: every
+  pointer's `§heading` resolves in its rationale doc, every rationale-doc heading is referenced
+  by a pointer, a doc exists for every rule and vice versa, and no rationale-doc line is
+  duplicated verbatim in its rule — an invariant that survives future rewrites instead of
+  freezing today's prose. Proven red-then-green with a real mutation.
+  ⚠ Honest yield: 3 of the 13 rules had a section either hook-superseded or a genuine dated field
+  case to move — 393 bytes / 38 tokens of the set's cold-start prefix (≈0.4%, A/B-measured, three
+  identical-cache runs per arm); the other 10 fuse directive and evidence in the same paragraph
+  throughout and have nothing extractable under the whole-paragraph-only invariant. Two further
+  hook-collapse candidates (wt-delegation-ladder's "wrapper never renders its own verdict",
+  wt-step-back-architectural's "twin elsewhere") were attempted and REVERTED after an independent
+  cross-family review found the named hook's own message does not restate a directive the removed
+  text carried — both stay whole rather than shipping a rule that reads as fully covered when it
+  is not. This pass is a small correctness gain (the clauses a shipped hook truly does enforce
+  mechanically are now named as such) rather than a size gain.
 
 ### Fixed
+- **Three guards no longer record raw command text in the guard journal** (`wt-merge-chain` recorded the
+  merge segment as `reason`, `wt-git-commit-backtick` the flagged commit-message fragment,
+  `wt-find-newermt-format` the flagged argument). Found by the adversarial security review of the observe-mode
+  change; the merge-chain security lock now forbids the segment text too.
+- **Twenty-four capabilities the pre-release coverage audit found undocumented are now described in
+  their mapped docs** (quota-probe JSON contract, adopt changelog spans, run-gate `--fail-pattern` and
+  authorized-scope shapes, actionable-gate and registry-heartbeat env knobs, static vs dynamic
+  orchestrator missions, `STOP_GATE_INTERVAL_MIN`, `leaf-readonly`, `labelRole`, prompt-tag escaping,
+  pr-review routing knobs and its `incomplete` verdict).
+- **Fourteen doc claims corrected after the pre-release docs audit** (adopt `SKILL.md`: agent copies come from
+  `agent-templates/` and there are four of them; `--migrate --execute` is the real move; the merge-chain guard is
+  warn-only and its separator set is `&&`, `;`, `|`, `||`, newline; three rationale docs no longer say a warn-only
+  hook "enforces").
+- **`wt-merge-chain-guard-hook.mjs` records a CLASSIFICATION of the segment that follows a chained
+  `git merge`, never the command text.** The record now says whether the trailing segment was a blind
+  gate (a real catch) or a read of the merge's own log/exit code (the documented safe pattern), so the
+  guard's precision becomes measurable — and no raw shell text, which can carry exported credentials
+  on some machines, ever reaches the guard journal.
 
 - **The lesson-harvest hook re-offered reports it had already harvested.** It does keep a registry,
   and the registry is keyed correctly (`path → mtime`) — but the registry FILE and the directories
@@ -242,6 +242,193 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   ⚠ The state filename now carries a hash suffix, so existing partitions are not read. Effect is a
   ONE-TIME cold start per project: already-harvested reports may be offered once more, then
   remembered correctly. Nothing is lost — the registry only suppresses repeats.
+- **`wt-plugin-release-record-guard-hook.mjs`'s remedy no longer asks a branch to bump the
+  version.** `no-publish-from-branches.md` forbids a branch from bumping the version at all — the
+  bump happens on `main`, at push time, and a branch's changelog entry carries no version heading.
+  On any branch other than `main`/`master`, the warning now asks only for a changelog entry under
+  `## [Unreleased]` and says so explicitly; the version-bump remedy is unchanged on `main`.
+- **`wt-hook-registration-drift-hook.mjs`'s `UserPromptSubmit`/`SessionStart` timeout raised from
+  5s to 15s**, matching the two user-level hooks already registered on the same event. Measured
+  2026-09-02 on a session restarted right after a plugin rollout: `UserPromptSubmit hook timed out
+  after 5s — output discarded` — right after a restart the SessionStart loops load the machine and
+  5s was not always enough headroom, even though the hook's own cold wall time measures ~20-25ms on
+  this machine (5 runs, before and after). The hook is advisory (registration drift detection), so
+  its silent loss on timeout is harmless — which is exactly why it must not keep failing invisibly.
+  Also made SessionStart cheaper on repeat: the declared-hooks parse (JSON.parse + a regex sweep
+  over the whole plugin manifest) is now cached in the per-session state dir, keyed on the
+  manifest's own `mtime`+`size`, so a repeat SessionStart against an unchanged manifest reuses the
+  cached set instead of re-parsing it — the parse only re-runs once the manifest has actually
+  changed (a plugin reload). A new test locks the hook's cold run under a 2s budget against the
+  real manifest and proves the cache reuses the same declared-hooks set across two SessionStart
+  calls.
+
+## [0.168.0] - 2026-08-28
+
+### Fixed
+
+- **A guard no longer reads a heredoc body as a command.** A command line carries code and data in
+  one string, and nothing textual separates them — mentioning a footgun is not committing one, and
+  a regex over a command string cannot tell the difference. Writing a test fixture whose heredoc
+  body mentioned an external-CLI invocation was REFUSED by the lane-consent gate, which refuses
+  rather than warns, so it blocked correct work outright.
+
+  The fix is at the shared level, not in the guard that shouted: `plugin/bin/lib/shell-text.mjs`
+  now holds the ONE implementation of `stripHeredocs` / `stripQuotedSpans`, the two byte-identical
+  hand-written copies in `wt-main-guard-hook` and `wt-pilot-guard-hook` import it instead, and
+  `stripNonExecutedText` strips heredoc bodies before its character loop.
+
+  ⚠ Order matters and is locked: heredocs FIRST, because a body can contain a quote that would
+  otherwise pair with one outside it and swallow real code between them. The lock is paired —
+  removing the fix reddens the false-positive row while the "still catches a real invocation" rows
+  stay green, so the guard was not blinded to buy the fix.
+
+## [0.167.0] - 2026-08-28
+
+### Added
+
+- **Every external-CLI call now leaves a node behind.** Until now a call made by a wrapper agent
+  wrote nothing to disk, so a run surfaced its Claude agents from the journal and never its
+  external work. The hook writes the two files a node is built from — and it is the only place
+  that can, because hooks are per session: nothing outside the delegated session observes its
+  tool calls, while a plugin hook loaded INTO it does.
+
+  Three properties are locked, each proven red by a mutation targeting only itself:
+
+  - the node uses a **derived** id (`<agentId>-lane…`), never `agentId`. The harness writes the
+    calling agent's own transcript and meta at `agent-<agentId>.*` in that same directory, so
+    using `agentId` truncates the agent's own turns and relabels its node as the external one —
+    silently, with nothing raised;
+  - two calls with different `tool_use_id` produce **two** nodes, and the same call reported twice
+    produces **one**;
+  - a token count that could not be measured is **absent, never zero** — a zero renders as a
+    measurement nobody made.
+
+### Fixed
+
+- **A test specified a race against itself.** The autonomy-watch expiry case set the mandate
+  freshness window to 60 ms and then required a check that SPAWNS A SUBPROCESS to finish inside
+  it. It failed 2 of 3 full-suite runs and passed 5 of 5 alone — and passing alone was never a
+  control, since it passed alone before the fix too. The window now outlasts a spawn.
+
+## [0.166.0] - 2026-08-28
+### Added
+
+- **The actionability producer hook now BOUNDS the spill-file read it was doing unconditionally.**
+  The harness can answer a large tool call by writing the response to a file and handing the hook a
+  PATH; that path arrives inside the tool response, so reading it unconditionally let an untrusted
+  value choose which file the process opened. Four bounds now apply — absolute, canonically inside a
+  root the harness actually spills into, a plain file, and under a size cap — in a new
+  `plugin/bin/lib/spill-containment.mjs`. It returns null on every refusal and never throws, so the
+  caller's contract is unchanged: an unreadable spill stays a recorded failed attempt and no
+  snapshot is written from a guess.
+
+  Extracted into `lib/` rather than written inline because the hook EXECUTES at import, so a test
+  importing it hangs on a stdin nothing closes. Both bounds are proven red independently: deleting
+  the allow-list reddens only the outside-root case, deleting `realpath` reddens only the
+  symlinked-directory case.
+
+
+### Added
+
+- **`wt-delegation-ladder` gains a fence-expiry clause.** A brief, rule or card that fences
+  something off because a condition holds NOW keeps blocking after that condition ends, because
+  nothing re-checks it — and a stale fence reads exactly like a live one, same text, no way for a
+  reader to tell which.
+
+  The clause states both halves: name the expiry IN the fence rather than the fence alone, AND give
+  it something that re-reads it — record the condition where whatever satisfies it will land, quote
+  the source that decides a quoted state, and report rather than lift a fence that is not yours.
+
+  Measured three times in one day on three different surfaces before this was written: a task card
+  fixed the same afternoon and left open for two more days; a defect fixed in code and never
+  published, so every adopter still met it; and a rule whose own lifting condition had been
+  satisfied and recorded elsewhere while the rule still said it had not been proven. Nothing was
+  wrong when written; each simply outlived the state it described.
+
+### Added
+
+- **`leaf-readonly` agentType** — a fenced worker type for roles whose output is KNOWLEDGE
+  rather than a change (survey, ground, audit, locate, verify-by-reading). It declares an
+  explicit `tools:` ALLOW-LIST instead of subtracting from the default surface, and sits
+  between `lean` (zero tools) and `leaf` (every tool except messaging).
+
+  The reason it exists is measured, not theoretical: **withholding `Write`, `Edit` and `Bash`
+  does not make an agent read-only.** A surface that still carries an MCP server's
+  file-writing, shell-executing, record-deleting or message-sending tools still HOLDS all of
+  those with none of the three present (the listing and one invocation from it are observed; that
+  a write through such a tool completes is an inference, and the allow-list does not depend on it) — and an enumeration of forbidden tools cannot cover a surface
+  that grows every time a user installs another MCP server. An allow-list is the only form that
+  closes tools nobody has installed yet.
+
+### Changed
+
+- **`wt-delegation-ladder` gains a "read-only is an ALLOW-LIST" clause.** The rule previously
+  described read-only enforcement only through the executor-briefing split; it now states the
+  invariant (*the agent holds nothing that mutates anything outside its own context*), why a
+  deny-list cannot work (an enumeration cannot cover a surface that grows with every installed
+  MCP server), that an allow-list may silently deliver less than it declares, and that a newly
+  written agent type is not spawnable in the session that wrote it.
+
+- **`leaf`'s description no longer implies a fence it does not provide.** It denies
+  `SendMessage` and nothing else; its own guidance previously read "you keep every tool except
+  inter-agent messaging" without saying what that breadth includes. Both the description and the
+  agent-facing guidance now name the reach explicitly and point a read-only role at
+  `leaf-readonly`. No behaviour change: `leaf` keeps exactly the surface it always had, and no
+  existing routing moves.
+
+### Notes
+
+- ⚠ An allow-list can deliver LESS than it declares, with no error: `Grep` and `Glob` were
+  declared by two different definitions on this harness family and did not arrive. It errs SAFE
+  (fewer tools, never more), so the fence holds — but a role must not assume search is
+  available, and a caller should verify a spawned agent's ACTUAL surface rather than trust the
+  declaration.
+- ⚠ A newly added agentType becomes spawnable after a DELAY of roughly ninety minutes, with no
+  restart and no announcement. Two readings taken at zero and sixty minutes both returned
+  `Agent type not found` and were simply too early — do not read one refusal as impossibility, and
+  re-probe instead of concluding.
+
+### Added
+
+- **A guard for the plugin's own release record.** A commit staging changes under `plugin/`
+  while staging neither the version nor this changelog now warns. The published packages have
+  enforced the equivalent for a long time — touch a package source without a changeset and
+  `changeset-gate` goes red — but the plugin had no counterpart, so a plugin fix could be merged
+  and pushed with no bump and reach no adopter, silently. Measured 2026-08-27: exactly that
+  happened to the queue-gate guard-journal wiring.
+  Ships **warn-only**: a work-in-progress commit that bumps once at the end of a branch, and a
+  plugin change with no release surface, both fire it legitimately. Promotion to blocking is a
+  separate decision taken from the guard journal's record.
+
+### Note on the version number
+
+This entry carries no version deliberately. `main` and `card/1837086183-lane-artefacts` incremented
+their counters independently after forking at 0.160.0, so the same numbers denote different content
+on the two sides. Choosing the next number is part of reconciling that fork, not part of this
+change.
+
+### Added
+
+- **The briefing guidance now carries a platform check.** `wt-delegation-ladder.md`’s “Briefing an
+  executor” section told an arbiter to state invariants, traps, evidence format and escalation
+  triggers — all of which check a brief against the TASK. Nothing checked it against the PLATFORM,
+  and a capability that worked last week reads as furniture. A prescribed remedy can be withdrawn
+  while the rule still names it, at which point the brief is wrong BEFORE the executor reads it:
+  the agent behaves correctly, cannot comply, and explains — a round trip bought for nothing, and
+  the competence of both parties is exactly what hides the cause. The clause covers a tool, a write
+  path, an output channel or an agent type, and says to confirm at brief time rather than infer
+  from the rule that prescribes it.
+
+## [0.165.0] - 2026-08-27
+- **A task's remaining-work ledger is a claim about the tree, and the briefing guidance now says to
+  re-derive it.** A multi-part task carries a running "these remain" list written by whoever last
+  touched it; it goes stale the instant a commit lands without a tracker write, and nothing
+  announces the drift — the ledger stays confident, specific, and formatted exactly like a verified
+  fact. Briefing an executor from a stale one asks for work already done, and the executor is not
+  the safeguard: told to fix a defect, it has every reason to build a second mechanism beside the
+  first, or to rewrite what exists and silently drop hardening the original carried. The clause
+  names the favourable tell — a lane returning a clean tree or a suspiciously small diff — and the
+  one command that settles it before the brief is written.
 
 ## [0.164.0] - 2026-08-27
 
@@ -272,6 +459,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   and reported three shipped features as never built. The clause also states that any machine-read
   field convention is parsed from the description, so recording it in a comment looks recorded and
   is invisible.
+
 ## [0.162.0] - 2026-08-27
 
 ### Fixed
@@ -1280,68 +1468,6 @@ assumed.
   The identifier set is derived only when the transcript baseline is replaced, never per poll —
   measured at ~710 ms for 1606 transcript metadata parses on a real project, which a 60-second
   poll loop would otherwise pay to recompute an identical answer.
-
-## [Unreleased]
-
-### Fixed
-
-- `wt-outbound-guard-hook`: a Workflow-tool subagent on Path A (harness label `workflow-subagent`, session transcript in the hook payload, several runs in the session) was still nudged at SubagentStop and lost its structured return; the exemption now matches the harness label and finds the run by the agent's own transcript file instead of requiring exactly one run.
-
-### Changed — BREAKING
-
-- **The `adopt-rules` skill is renamed to `adopt`. The old name is REMOVED, not aliased.**
-  The skill has always installed two sets — the cross-cutting RULE files and the pilot
-  AGENT-definition copies (`--set rules|agents|all`) — and nothing in its name said the second
-  existed. The name is what a reader uses to decide whether a step applies to them, so having
-  been told "the rules are adopted" a reasonable reader concludes the agent copies were handled
-  too. Observed: the rules were adopted, the agents were not, and the gap surfaced only because
-  someone thought to ask — a question, not a mechanism. The un-run half looked exactly like a
-  completed one.
-
-  Renamed along with it, so no citation points at a dead name: the skill directory
-  (`plugin/skills/adopt-rules/` → `plugin/skills/adopt/`), its engine
-  (`scripts/install-rules.mjs` → `scripts/install.mjs`), and its SessionStart hook
-  (`bin/wt-adopt-rules-check-hook.mjs` → `bin/wt-adopt-check-hook.mjs`).
-
-  **Migration**: invoke `workflow-toolbox:adopt` instead of `workflow-toolbox:adopt-rules`; update
-  any script that calls the engine by path. Already-adopted copies are untouched and keep working
-  — their banners are re-stamped on the next `--install`. No deprecation shim ships: an alias
-  would keep the misleading name alive, which is the whole defect.
-
-### Added
-
-- **`wt-hook-registration-drift-hook.mjs` — a SessionStart/UserPromptSubmit detector for stale in-memory hook registrations.** At SessionStart it snapshots the exact `${CLAUDE_PLUGIN_ROOT}` hook paths the manifest declared for THIS session; on later prompts it re-checks that snapshot against the filesystem and, if any recorded path has since disappeared, emits one attributed notice naming the missing hook file(s). It does NOT close the underlying failure — the hook whose file went missing still crashes with the same unattributed bare loader stack trace on its own next invocation, because the module-not-found error happens before any JS runs and nothing can intercept it. What this adds is a *separate*, one-time, delayed notice on the next prompt, so the session at least learns which of its own registrations went stale instead of only seeing anonymous console noise. Its own limits, stated plainly rather than left implicit: it cannot repair a stale registration (only a session restart picks up the corrected manifest); it cannot detect its OWN file going missing (if this hook itself is renamed or deleted, the running session's next invocation of it fails the same unattributed way, symmetric to every other hook — the existing shim convention from the `wt-adopt-check-hook.mjs` rename applies here too, should this file ever be renamed); and two `UserPromptSubmit` invocations racing the same session's report-once state, or two colliding sanitized session ids, are theoretical, low-likelihood gaps not covered by a lock (Claude Code serializes `UserPromptSubmit` per session, and session ids are UUIDs that do not collide under the sanitization scheme already shared with `wt-outbound-guard-hook.mjs`).
-
-- **`wt-observer-pairing-guard-hook.mjs` — a PostToolUse Agent hook that asks the shipped
-  pairing checker what ACTUALLY attached, instead of warning from a spawn-shape guess.** It only
-  runs for agent definitions that declare `observer:` in an adopted/project-visible copy, then
-  delegates to `wt-check-observer-pairing.mjs` on the spawned agent's real subagent metadata.
-  Clean `pass` outcomes stay silent; contradictory `observerTaskId` links and genuine no-pairing
-  reads surface with the checker's own reason. The guard does not reintroduce a named-spawn rule:
-  the ownership link (or its absence) decides, and the checker's existing mtime fallback remains
-  only for records where no link is present.
-
-- **`wt-shipped-twin-check-hook.mjs` — a PostToolUse Write/Edit advisory that raises the
-  shipped-twin question on conventional local Claude config surfaces.** It never guesses the
-  pairing, stays silent for out-of-scope paths, and throttles itself to once per session per
-  directory so the reminder does not turn into background noise.
-
-- **`wt-adopt-rules-check-hook.mjs` is back as a DEPRECATION SHIM, and every registered hook
-  path is now locked.** Renaming a hook file breaks every session that is ALREADY RUNNING: the
-  manifest is read at session start, so the old path lives on in memory after the file is gone,
-  and node dies in the module loader before any hook code — so the hook cannot even emit its own
-  `FAILED OPEN` trace. The only symptom is a loader line per tool call that names no hook.
-  Measured after the `adopt-rules` → `adopt` rename: **725 failures inside one session**, roughly
-  an hour to attribute, because every reproduction attempt invoked the file that exists.
-  The shim delegates by side-effecting import (same process, same stdin, same exit code) and
-  traces under its OWN name rather than the delegate's. Two locks keep it honest: every
-  `${CLAUDE_PLUGIN_ROOT}` path in the manifest must resolve — asserted over the whole manifest,
-  not a name list, with a non-vacuity check so an extraction bug cannot pass it silently — and
-  the shim's stdout must equal the current hook's for the same payload. Remove the shim, its
-  provenance entry and its crash-safety case one release after the rename.
-  ⚠ Scope, stated so the shim is not over-credited: it helps a rename that ships one. It does
-  nothing for a hook deleted outright, and no repo-level check can see inside a running process,
-  which is where the broken state actually lives.
 
 ## [0.67.0] - 2026-08-03
 

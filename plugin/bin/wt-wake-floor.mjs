@@ -4,6 +4,7 @@
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { classifyMandate } from './lib/autonomy-mandate.mjs'
+import { expireMarker } from './lib/queue-gate-marker-expiry.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 
 const HELP = `wt-wake-floor — hands a turn back to a session with a declared autonomous mandate
@@ -114,6 +115,7 @@ const message = `FLOOR: ${formatMinutes(pollSeconds)} minutes elapsed on my inte
 for (;;) {
   await wait(pollSeconds * 1000)
   try {
+    expireMarker('mandate', mandatePath, Date.now(), { mandateFreshnessMs })
     const mandate = classifyMandate(mandatePath, mandateFreshnessMs, Date.now(), sessionId)
     if (mandate.kind === 'live') write(message)
   } catch {

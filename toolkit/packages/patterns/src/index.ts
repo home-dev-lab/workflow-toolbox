@@ -50,6 +50,9 @@ export type { WithLeafFenceOptions, LeafFenceReport } from './leaf-fence.js'
 export { withLeanRouting, LEAN_AGENT_TYPE } from './lean-routing.js'
 export type { WithLeanRoutingOptions, LeanRoutingReport } from './lean-routing.js'
 
+export { withReadOnlyRouting, READONLY_AGENT_TYPE } from './readonly-routing.js'
+export type { WithReadOnlyRoutingOptions, ReadOnlyRoutingReport } from './readonly-routing.js'
+
 export { classifyAndAct } from './classify-and-act.js'
 export type { ClassifyAndActOptions, ActionSpec } from './classify-and-act.js'
 

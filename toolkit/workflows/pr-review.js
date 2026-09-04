@@ -299,6 +299,44 @@ unreadable channel never fails your task.`;
   function isRecord2(v) {
     return typeof v === "object" && v !== null && !Array.isArray(v);
   }
+  function editDistance(left, right) {
+    const previous = [];
+    const current = [];
+    for (let j = 0; j <= right.length; j++) previous[j] = j;
+    for (let i = 1; i <= left.length; i++) {
+      current[0] = i;
+      for (let j = 1; j <= right.length; j++) {
+        current[j] = left[i - 1] === right[j - 1] ? previous[j - 1] : Math.min(previous[j], current[j - 1], previous[j - 1]) + 1;
+      }
+      for (let j = 0; j <= right.length; j++) previous[j] = current[j];
+    }
+    return previous[right.length];
+  }
+  function nearestKey(key, allowed) {
+    if (key === "verifierType" && allowed.includes("agentTypes.verify")) return "agentTypes.verify";
+    let nearest = allowed[0];
+    let distance = editDistance(key, nearest);
+    for (const candidate of allowed.slice(1)) {
+      const next = editDistance(key, candidate);
+      if (next < distance) {
+        nearest = candidate;
+        distance = next;
+      }
+    }
+    return nearest;
+  }
+  function rejectUnknownKey(key, where, allowed) {
+    const suggestion = nearestKey(key, allowed);
+    if (where === null) {
+      throw new Error(`parseConfig: unknown arg \`${key}\` \u2014 did you mean \`${suggestion}\`?`);
+    }
+    throw new Error(`parseConfig: unknown key \`${key}\` in \`${where}\` \u2014 did you mean \`${suggestion}\`?`);
+  }
+  function checkKeys(raw, where, allowed) {
+    for (const key of Object.keys(raw)) {
+      if (!allowed.includes(key)) rejectUnknownKey(key, where, allowed);
+    }
+  }
   function asNonEmptyString(v, where) {
     if (typeof v !== "string" || v.trim().length === 0) {
       throw new Error(`parseConfig: ${where} must be a non-empty string, got ${JSON.stringify(v)}`);
@@ -343,14 +381,16 @@ unreadable channel never fails your task.`;
     }
     return out;
   }
-  function parseStringMap(raw, where) {
+  function parseStringMap(raw, where, allowed) {
     if (!isRecord2(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    if (allowed !== void 0) checkKeys(raw, where, allowed);
     const out = {};
     for (const [k, v] of Object.entries(raw)) out[k] = asNonEmptyString(v, `${where}.${k}`);
     return out;
   }
-  function parseEffortMap(raw) {
+  function parseEffortMap(raw, allowed) {
     if (!isRecord2(raw)) throw new Error(`parseConfig: effort must be an object, got ${raw === null ? "null" : typeof raw}`);
+    if (allowed !== void 0) checkKeys(raw, "effort", allowed);
     const out = {};
     for (const [k, v] of Object.entries(raw)) out[k] = asEffortRoleValue(v, `effort.${k}`);
     return out;
@@ -361,8 +401,9 @@ unreadable channel never fails your task.`;
     }
     return v;
   }
-  function parseNumberMap(raw, where) {
+  function parseNumberMap(raw, where, allowed) {
     if (!isRecord2(raw)) throw new Error(`parseConfig: ${where} must be an object, got ${raw === null ? "null" : typeof raw}`);
+    if (allowed !== void 0) checkKeys(raw, where, allowed);
     const out = {};
     for (const [k, v] of Object.entries(raw)) {
       if (typeof v !== "number" || !Number.isFinite(v)) {
@@ -372,17 +413,21 @@ unreadable channel never fails your task.`;
     }
     return out;
   }
-  function parseConfig(raw) {
+  function parseConfig(raw, schema) {
     if (raw === void 0 || raw === null) return {};
     if (!isRecord2(raw)) {
       throw new Error(`parseConfig: expected an object (or undefined), got ${typeof raw}`);
     }
+    if (schema !== void 0) {
+      const suggestionKeys = schema.agentTypes?.includes("verify") ? schema.args.concat(["agentTypes.verify"]) : schema.args;
+      checkKeys(raw, null, suggestionKeys);
+    }
     const config = {};
     if (raw.perAgent !== void 0) config.perAgent = parsePerAgent(raw.perAgent);
-    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models");
-    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort);
-    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes");
-    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing");
+    if (raw.models !== void 0) config.models = parseStringMap(raw.models, "models", schema?.models);
+    if (raw.effort !== void 0) config.effort = parseEffortMap(raw.effort, schema?.effort);
+    if (raw.agentTypes !== void 0) config.agentTypes = parseStringMap(raw.agentTypes, "agentTypes", schema?.agentTypes);
+    if (raw.sizing !== void 0) config.sizing = parseNumberMap(raw.sizing, "sizing", schema?.sizing);
     if (raw.messaging !== void 0) config.messaging = asBoolean(raw.messaging, "messaging");
     return config;
   }
@@ -399,6 +444,9 @@ unreadable channel never fails your task.`;
     const safeFloor = isEffortAlias(floor) ? floor : "high";
     const resolved = resolveEffort(argsValue, stageDefault);
     return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor;
+  }
+  function resolveVerifierModel(launcherModel, workflowModel) {
+    return launcherModel ?? workflowModel ?? void 0;
   }
 
   // ../packages/patterns/src/envelope.ts
@@ -2514,7 +2562,8 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-guard-journal-scan.mjs",
         "plugin/bin/wt-isolated-spawn-report-path-hook.mjs",
         "plugin/bin/wt-pgrep-env-dump-guard-hook.mjs",
-        "plugin/bin/wt-propagation-reminder-hook.mjs"
+        "plugin/bin/wt-propagation-reminder-hook.mjs",
+        "plugin/bin/wt-plugin-release-record-guard-hook.mjs"
       ],
       docs: ["docs/public/known-issues.md"]
     }
@@ -2778,7 +2827,12 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       }
       verifierModel = obj["verifierModel"];
     }
-    const cfg = parseConfig(obj);
+    const cfg = parseConfig(obj, {
+      args: ["target", "verifierModel", "perAgent", "effort", "agentTypes", "messaging", "provenance", "mode", "models", "opencodeModels", "opencodeVariants"],
+      models: ["review"],
+      effort: ["classify", "route", "review", "verify", "synthesize"],
+      agentTypes: ["review", "verify"]
+    });
     const perAgent = cfg.perAgent ?? null;
     const effort = cfg.effort ?? null;
     const reviewerType = cfg.agentTypes?.["review"] ?? null;
@@ -2830,6 +2884,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     const routeActEffort = resolveEffort(input.effort?.["route"], ROUTE_ACT_EFFORT);
     let reviewEffort = resolveEffort(input.effort?.["review"], REVIEW_EFFORT);
     const verifyEffort = resolveVerifierEffort(input.effort?.["verify"], VERIFY_EFFORT_DEFAULT);
+    const verifierModel = resolveVerifierModel(input.perAgent?.model, input.verifierModel);
     const synthesizeEffort = resolveEffort(input.effort?.["synthesize"], SYNTHESIZE_EFFORT);
     let resolvedReviewerType = null;
     let probeReport = null;
@@ -3087,7 +3142,7 @@ Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'
         // Verify-fan model: launch-time override via `args.verifierModel`, default opus (BEST_MODEL).
         // This verification is TARGETED + diff-grounded, so passing 'sonnet' at launch is a sound,
         // cheaper choice — but the committed DEFAULT stays opus (no implicit downgrade).
-        ...input.verifierModel !== null ? { model: input.verifierModel } : {},
+        ...verifierModel !== void 0 ? { model: verifierModel } : {},
         // Verify-fan agentType: launch-time override via `args.agentTypes.verify`,
         // probe-resolved above. Omitted when null → the standard subagent (default,
         // also the graceful-fallback path when the requested type could not answer).

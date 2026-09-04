@@ -8,7 +8,7 @@
   "scripts": {
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
-    "test": "node scripts/cross-repo-typecheck.mjs && vitest run",
+    "test": "pnpm build:dist && node scripts/cross-repo-typecheck.mjs && vitest run",
     "test:cross-repo": "node scripts/cross-repo-typecheck.mjs",
     "wt:build": "tsx packages/build/src/cli.ts build",
     "wt:pipeline": "tsx packages/build/src/cli.ts pipeline",
@@ -30,7 +30,8 @@
     "canary:agents": "tsx packages/smoke/src/sdk-agent-probe.ts",
     "canary:observer": "tsx packages/smoke/src/observer-canaries.ts",
     "audit:rules-overlap": "node scripts/audit-rules-overlap.mjs",
-    "report:citation-candidates": "tsx scripts/citation-candidate-report.ts"
+    "report:citation-candidates": "tsx scripts/citation-candidate-report.ts",
+    "wt:report-lens": "tsx scripts/report-contract-lens.ts"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.1",

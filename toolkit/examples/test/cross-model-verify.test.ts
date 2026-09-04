@@ -56,16 +56,12 @@ describe('cross-model-verify — input contract', () => {
     ).rejects.toThrow(/agentTypes\.verify/)
   })
 
-  it('ignores a legacy top-level verifierType arg (removed contract — no bespoke arg)', async () => {
+  it('rejects a legacy top-level verifierType arg with the structured routing suggestion', async () => {
     const rt = makeRuntime()
-    const result = (await wf.run(rt, {
+    await expect(wf.run(rt, {
       ...BASE_ARGS,
       verifierType: 'codex:codex-rescue',
-    })) as WfResult
-    // No probe spawned, nothing routed — the legacy arg is dead.
-    expect(rt.calls.some((c) => c.opts?.label === 'probeAgentType:probe')).toBe(false)
-    expect(result.verifierType).toBeNull()
-    expect(result.probe).toBeNull()
+    })).rejects.toThrow('unknown arg `verifierType` — did you mean `agentTypes.verify`?')
   })
 })
 
@@ -213,29 +209,35 @@ describe('cross-model-verify — perAgent (withAgentDefaults wiring)', () => {
     })
     const probe = rt.calls.find((c) => c.opts?.label === 'probeAgentType:probe')!
     expect(probe.opts?.stallMs).toBe(650000)
-    const verifierCalls = rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:'))
+    const verifierCalls = rt.calls.filter((c) => {
+      const label = c.opts?.label
+      return label === 'adversarialVerification:warm' || label?.startsWith('adversarialVerification:verify:')
+    })
     expect(verifierCalls.length).toBeGreaterThan(0)
     for (const c of verifierCalls) expect(c.opts?.stallMs).toBe(650000)
   })
 
-  it('perAgent.model reaches the probe (it sets no model of its own) but NOT the verifier votes (adversarialVerification sets its own resolved model — haiku for an external RELAY verifier)', async () => {
+  it('launcher perAgent.model overrides verifierModel/default on the warm probe and every vote; effort.verify stays clamped to the high floor', async () => {
     const rt = makeRuntime()
     await wf.run(rt, {
       ...BASE_ARGS,
       agentTypes: { verify: 'workflow-toolbox:opencode-verifier' },
       perAgent: { model: 'sonnet' },
+      verifierModel: 'opus',
+      effort: { verify: 'low' },
     })
     const probe = rt.calls.find((c) => c.opts?.label === 'probeAgentType:probe')!
     expect(probe.opts?.model).toBe('sonnet')
-    const verifierCalls = rt.calls.filter((c) =>
-      c.opts?.label?.startsWith('adversarialVerification:verify:'),
-    )
+    const verifierCalls = rt.calls.filter((c) => {
+      const label = c.opts?.label
+      return label === 'adversarialVerification:warm' || label?.startsWith('adversarialVerification:verify:')
+    })
     expect(verifierCalls.length).toBeGreaterThan(0)
-    // perAgent.model (sonnet) does NOT reach the verifier votes — the pattern owns the vote
-    // model. Here verifierType routes to the EXTERNAL opencode relay, so the pattern defaults
-    // the wrapper to 'haiku' (card #1825163461588419933): the wrapper only shells out to the
-    // CLI, so a cheap relay model bounds a self-answer's cost. (Was 'opus'/BEST_MODEL before.)
-    for (const c of verifierCalls) expect(c.opts?.model).toBe('haiku')
+    for (const c of verifierCalls) {
+      expect(c.opts?.model).toBe('sonnet')
+      // effort.verify:'low' is clamped by the verifier floor — an override may only RAISE it.
+      expect(c.opts?.effort).toBe('high')
+    }
   })
 
   it('rejects an unknown perAgent key via the shared parseConfig validation', async () => {

@@ -31,7 +31,7 @@
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
 import { withAgentDefaults, MODEL_ALIASES } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias, AgentDefaults } from '@workflow-toolbox/runtime'
-import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
+import { resolveEffort, resolveVerifierEffort, resolveVerifierModel } from '@workflow-toolbox/std'
 import {
   autoSelectEffort,
   classifyAndAct,
@@ -662,7 +662,12 @@ function parseInput(raw: unknown): PrReviewInput {
   // key: parseConfig never validates key sets, so a near-miss key would be a
   // SILENT no-op — mirroring the effort key is the guard). The Verify fan's
   // routing request follows the SAME convention at `agentTypes.verify`.
-  const cfg = parseConfig(obj)
+  const cfg = parseConfig(obj, {
+    args: ['target', 'verifierModel', 'perAgent', 'effort', 'agentTypes', 'messaging', 'provenance', 'mode', 'models', 'opencodeModels', 'opencodeVariants'],
+    models: ['review'],
+    effort: ['classify', 'route', 'review', 'verify', 'synthesize'],
+    agentTypes: ['review', 'verify'],
+  })
   const perAgent = cfg.perAgent ?? null
   const effort = cfg.effort ?? null
   const reviewerType = cfg.agentTypes?.['review'] ?? null
@@ -764,6 +769,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   // change summary once it exists (post-Route) — see the auto-effort block.
   let reviewEffort = resolveEffort(input.effort?.['review'], REVIEW_EFFORT)
   const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
+  const verifierModel = resolveVerifierModel(input.perAgent?.model, input.verifierModel)
   const synthesizeEffort = resolveEffort(input.effort?.['synthesize'], SYNTHESIZE_EFFORT)
 
   // -------------------------------------------------------------------------
@@ -1211,7 +1217,9 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       // Verify-fan model: launch-time override via `args.verifierModel`, default opus (BEST_MODEL).
       // This verification is TARGETED + diff-grounded, so passing 'sonnet' at launch is a sound,
       // cheaper choice — but the committed DEFAULT stays opus (no implicit downgrade).
-      ...(input.verifierModel !== null ? { model: input.verifierModel } : {}),
+      ...(verifierModel !== undefined
+        ? { model: verifierModel }
+        : {}),
       // Verify-fan agentType: launch-time override via `args.agentTypes.verify`,
       // probe-resolved above. Omitted when null → the standard subagent (default,
       // also the graceful-fallback path when the requested type could not answer).

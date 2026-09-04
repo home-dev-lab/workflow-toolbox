@@ -57,6 +57,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { stripHeredocs, stripQuotedSpans } from './lib/shell-text.mjs'
 
 const STATE_DIR = path.join(os.homedir(), '.local', 'state', 'wt-main-guard')
 const JOURNAL_PATH = path.join(STATE_DIR, 'journal.jsonl')
@@ -107,21 +108,12 @@ const RM_GITROOT_UNRESOLVABLE_BLOCKING = false
 /** Strip heredoc BODIES (never real shell in the segment they sit in — pure data) before any
  *  pattern matching. A heredoc body line can otherwise become its own pseudo-segment (segments()
  *  splits on bare newlines too) and look like a standalone command starting with the matched word. */
-function stripHeredocs(cmd) {
-  return cmd.replace(
-    /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[\s\S]*?^\s*\2\s*$/gm,
-    '<<HEREDOC-BODY-STRIPPED',
-  )
-}
 
 /** Strip quoted SPANS (single- and double-quoted) to empty quotes, so text merely mentioned,
  *  echoed, or destined for a commit message stops looking like an instruction. Only applied to
  *  the rules below where the anchor word (npm/publish, git/push/--force/--delete, git/merge) is
  *  never itself legitimately quoted in a real invocation — never to rm target parsing (see
  *  header comment above). */
-function stripQuotedSpans(cmd) {
-  return cmd.replace(/'[^']*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""')
-}
 
 function readInput() {
   try {

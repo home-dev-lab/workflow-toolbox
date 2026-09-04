@@ -161,6 +161,56 @@ describe('checkSmokeResult', () => {
     expect(checkSmokeResult(OUTPUT.result, 'wt-smoke-ok')).toEqual([])
   })
 
+  it('accepts the split gen/rank PatternResult shape', () => {
+    const result = {
+      marker: 'WT_SHAPE_E2E_OK',
+      envelope: { trail: [{ stage: 'wrap:final', outcome: 'ok', model: 'haiku', effort: 'low' }] },
+      gen: {
+        value: ['CANDIDATE-0', 'CANDIDATE-1'],
+        stats: { itemsIn: 2, itemsOut: 2, agentsSpawned: 4, dropped: 0, truncated: 0 },
+        warnings: [],
+        trail: [{ stage: 'generateAndFilter:generate:0', outcome: 'ok', model: 'haiku', effort: 'low' }],
+      },
+      rank: {
+        value: [{ item: 'alpha', scores: [3], score: 3 }],
+        stats: { itemsIn: 2, itemsOut: 1, agentsSpawned: 2, dropped: 0, truncated: 0 },
+        warnings: ['all identical'],
+        trail: [{ stage: 'scoreAndRank:score:0:fixture', outcome: 'ok', model: 'haiku', effort: 'low' }],
+      },
+    }
+
+    expect(checkSmokeResult(result, 'WT_SHAPE_E2E_OK')).toEqual([])
+  })
+
+  it('refuses a split result missing rank', () => {
+    const result = {
+      marker: 'WT_SHAPE_E2E_OK',
+      envelope: { trail: [{ stage: 'wrap:final', outcome: 'ok', model: 'haiku', effort: 'low' }] },
+      gen: {
+        value: ['CANDIDATE-0'],
+        stats: { itemsIn: 1, itemsOut: 1, agentsSpawned: 1, dropped: 0, truncated: 0 },
+        warnings: [],
+        trail: [{ stage: 'generateAndFilter:generate:0', outcome: 'ok', model: 'haiku', effort: 'low' }],
+      },
+    }
+
+    expect(checkSmokeResult(result, 'WT_SHAPE_E2E_OK')).toContain('result.rank is missing or not an object')
+  })
+
+  it('accepts the legacy envelope PatternResult shape', () => {
+    const result = {
+      marker: 'WT_SHAPE_E2E_OK',
+      envelope: {
+        value: ['ok'],
+        stats: { itemsIn: 1, itemsOut: 1, agentsSpawned: 1, dropped: 0, truncated: 0 },
+        warnings: [],
+        trail: [{ stage: 'wrap:final', outcome: 'ok', model: 'haiku', effort: 'low' }],
+      },
+    }
+
+    expect(checkSmokeResult(result, 'WT_SHAPE_E2E_OK')).toEqual([])
+  })
+
   it('flags a wrong marker', () => {
     const problems = checkSmokeResult(OUTPUT.result, 'WRONG')
     expect(problems.some((p) => p.includes('marker'))).toBe(true)

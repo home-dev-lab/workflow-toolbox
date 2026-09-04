@@ -169,13 +169,16 @@ author. A cap never destroys evidence either: claims a cap cuts are kept too,
 just flagged differently (see the toolkit vocabulary below).
 
 **Toolkit:** `adversarialVerification(rt, { claims, renderClaim, votes, refuteThreshold, lenses, votesPerClaim, model, effort, verifierType, maxVerifyClaims })`.
-The default model is `BEST_MODEL` (currently `'opus'`, exported by
-`@workflow-toolbox/runtime`) — verification quality is model-sensitive, and
-explicitly passing a weaker model warns. (`BEST_MODEL` names the strongest
-*reliably-callable* tier, not merely the newest. Do not hand-override a verifier to a
-top-tier alias you have not verified is callable in the consumer's environment —
-alias availability varies by plan and over time, and an uncallable alias errors at
-runtime.) Optional `lenses` give one distinct angle per vote
+For the standard same-model verifier, the default model is `BEST_MODEL`
+(currently `'opus'`, exported by `@workflow-toolbox/runtime`) — verification
+quality is model-sensitive, and explicitly passing a weaker model warns.
+(`BEST_MODEL` names the strongest *reliably-callable* tier, not merely the
+newest. Do not hand-override a verifier to a top-tier alias you have not
+verified is callable in the consumer's environment — alias availability varies
+by plan and over time, and an uncallable alias errors at runtime.) When
+`verifierType` routes through an external CLI relay, the wrapper model instead
+defaults to `'haiku'` because the external model does the reasoning. Optional
+`lenses` give one distinct angle per vote
 (e.g. `['correctness', 'security', 'does-it-reproduce']`) so a claim that fails
 in more than one way is caught. Optional `votesPerClaim` (`(claim) => number`,
 integer ≥ 1, validated for every claim before anything spawns) scales the vote

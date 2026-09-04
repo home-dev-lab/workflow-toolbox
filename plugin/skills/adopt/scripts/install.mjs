@@ -4,7 +4,7 @@
 // Writes EDITABLE copies of workflow-toolbox's managed guardrails into the user's
 // config, each stamped with a versioned banner AND a content fingerprint so a later
 // run can tell (a) whether the copy is behind the plugin and (b) whether the USER has
-// edited it. Three managed SETS share one engine:
+// edited it. Four managed SETS share one engine:
 //
 //   • rules  — the cross-cutting guardrail rule files (content SOURCED from the
 //              plugin's rules/ dir at run time — every *.md there except README.md,
@@ -24,6 +24,15 @@
 //   • autonomy — the session-autonomy mandate markdown, sourced from the plugin's
 //                autonomy/ dir at run time. Target: <cwd>/.claude. Banner is line 1,
 //                same plain-markdown prepend shape as the rules set.
+//   • docs — the rationale/field-case overflow moved OUT of the shipped rules by the
+//            2026-09-02 static-prefix cut (content SOURCED from the plugin's
+//            docs/rules-rationale/ dir at run time — every *.md there except README.md,
+//            same discovery discipline as the rules set). Target: <cwd>/.claude/docs/wt,
+//            deliberately BESIDE <cwd>/.claude/rules/wt so a rule's pointer line
+//            resolves relative to the config dir either way. Banner is line 1, same
+//            plain-markdown prepend shape as the rules set — but its OWN `kind` (never
+//            reuses `rules`), so the rules/wt/ legacy-migration fallback never probes a
+//            pre-migration location this set never had.
 //
 // It is safe BY CONSTRUCTION: `--install` never overwrites a locally-edited (or
 // hand-authored) file — that needs an explicit `--force`. `--check` is always
@@ -31,9 +40,9 @@
 // never write silently.
 //
 // Usage (the skill orchestrates these; a human can run them directly too):
-//   node install.mjs [--set rules|agents|autonomy|all] --check   [--dir <dir>]   # report, write nothing
-//   node install.mjs [--set rules|agents|autonomy|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
-//   node install.mjs [--set rules|agents|autonomy|all] --install --force [--dir <dir>]  # also overwrite edited copies
+//   node install.mjs [--set rules|agents|autonomy|docs|all] --check   [--dir <dir>]   # report, write nothing
+//   node install.mjs [--set rules|agents|autonomy|docs|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
+//   node install.mjs [--set rules|agents|autonomy|docs|all] --install --force [--dir <dir>]  # also overwrite edited copies
 //   node install.mjs [--set …] --install --replace-symlinks [--dir <dir>]      # replace a SYMLINKED target with a managed copy in place
 //   node install.mjs [--set …] --check|--install --global                      # target the CONFIG dir instead of the project
 //
@@ -302,6 +311,28 @@ function discoverRuleItems(root) {
     .map((file) => ({ file }))
 }
 
+/** The rationale/field-case docs this skill installs as editable copies — DISCOVERED from
+ *  the plugin's docs/rules-rationale/ dir at run time, the same discipline as
+ *  discoverRuleItems above (every *.md except README.md, nothing hard-coded). These are the
+ *  verbatim overflow moved OUT of the shipped rules during the 2026-09-02 static-prefix cut:
+ *  a rule keeps its directive text and a one-line pointer; the dated field case or
+ *  hook-superseded section it points at lives here, recalled on demand instead of
+ *  auto-loaded every session. Content is NOT inlined, same reason as the rules set: each
+ *  file is its own single source, read verbatim under a banner. */
+function discoverDocsItems(root) {
+  const dir = path.join(root, 'docs', 'rules-rationale')
+  let entries
+  try {
+    entries = fs.readdirSync(dir)
+  } catch {
+    return [] // no bundle dir → nothing to manage (graceful)
+  }
+  return entries
+    .filter((f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md')
+    .sort()
+    .map((file) => ({ file }))
+}
+
 /** The pilot delegation suite, installed as editable project copies. Content is NOT
  *  inlined — it is READ from the plugin's agents/ dir at run time (the agent defs are
  *  their own single source). Each `file` is both the source basename under
@@ -347,6 +378,44 @@ function formatMtime(mtime) {
   return Number.isFinite(mtime?.getTime?.()) ? mtime.toISOString() : '?'
 }
 
+/** Classify a DIVERGED shadow pair: is the difference confined to the frontmatter block (and
+ *  if so, which top-level keys differ), or does the agent's instruction BODY differ too? A
+ *  one-line model pin and a rewritten agent body both collapse into the same "DIVERGED" word
+ *  otherwise — a reader can't tell a routing preference from an agent that no longer does what
+ *  its name claims. Mirrors the drift-DIRECTION breakdown a few hundred lines below
+ *  (`driftMissingFromShipped`/`driftMissingFromProject`): the classification is printed ON TOP
+ *  of the existing "DIVERGED" signal, never in place of it — `Buffer.compare` above still owns
+ *  the gate/exit-code-relevant equality check.
+ *  Returns `{ kind: 'body' }`, `{ kind: 'frontmatter', keys: string[] }` (keys sorted, may be
+ *  empty when the block differs only via a multi-line/list value `simpleFrontmatterKeys` can't
+ *  name — reported as "frontmatter differs" rather than guessed at), or `null` when either side
+ *  has no leading frontmatter block to compare (can't classify; caller falls back to the bare
+ *  DIVERGED text unchanged). */
+function classifyAgentDivergence(pluginText, userText) {
+  const pluginBlock = frontmatterBlock(pluginText)
+  const userBlock = frontmatterBlock(userText)
+  if (pluginBlock == null || userBlock == null) return null
+  const pluginBody = pluginText.slice(pluginBlock.length)
+  const userBody = userText.slice(userBlock.length)
+  if (pluginBody !== userBody) return { kind: 'body' }
+  const pluginKeys = simpleFrontmatterKeys(pluginBlock)
+  const userKeys = simpleFrontmatterKeys(userBlock)
+  const allKeys = new Set([...pluginKeys.keys(), ...userKeys.keys()])
+  const diffKeys = [...allKeys].filter((key) => pluginKeys.get(key) !== userKeys.get(key)).sort()
+  return { kind: 'frontmatter', keys: diffKeys }
+}
+
+/** The classification, rendered as the text appended to a DIVERGED line — empty string when
+ *  the pair can't be classified (falls back to the bare word, unchanged behaviour). */
+function describeAgentDivergenceKind(pluginText, userText) {
+  const kind = classifyAgentDivergence(pluginText, userText)
+  if (!kind) return ''
+  if (kind.kind === 'body') return '; body differs'
+  return kind.keys.length > 0
+    ? `; frontmatter-only: ${kind.keys.join(', ')}`
+    : '; frontmatter-only'
+}
+
 function describeRegisteredAgentShadowing(root, userAgentsDir, name) {
   const pluginPath = path.join(root, 'agents', `${name}.md`)
   const userPath = path.join(userAgentsDir, `${name}.md`)
@@ -359,9 +428,10 @@ function describeRegisteredAgentShadowing(root, userAgentsDir, name) {
     if (Buffer.compare(pluginContent, userContent) === 0) {
       return `  - workflow-toolbox:${name} is shadowed by ${userPath} (matches the plugin copy)\n`
     }
+    const kindText = describeAgentDivergenceKind(pluginContent.toString('utf8'), userContent.toString('utf8'))
     return (
       `  - workflow-toolbox:${name} is shadowed by ${userPath} ` +
-      `(DIVERGED; plugin mtime=${formatMtime(pluginStat.mtime)}; user mtime=${formatMtime(userStat.mtime)})\n`
+      `(DIVERGED; plugin mtime=${formatMtime(pluginStat.mtime)}; user mtime=${formatMtime(userStat.mtime)}${kindText})\n`
     )
   } catch {
     return null
@@ -430,6 +500,16 @@ const SETS = {
   // …) stay in agents/ — they declare no observer, so registration serves them correctly.
   agents: { kind: 'agents', srcDir: 'agent-templates', defaultDir: '.claude/agents', globalSubdir: 'agents', resolveItems: () => MANAGED_AGENTS },
   autonomy: { kind: 'autonomy', srcDir: 'autonomy', defaultDir: '.claude', globalSubdir: '', resolveItems: () => MANAGED_AUTONOMY },
+  // docs → `.claude/docs/wt/` mirrors the rules/wt/ convention above: a rule's pointer line
+  // ("Rationale and field cases: `docs/wt/<rule>.md` §…") is written relative to the config
+  // dir, on the assumption this set lands BESIDE rules/wt/ under the same root — never a
+  // hard-coded `~/.claude`, so the pointer resolves the same way under --global or a project
+  // --dir. `kind: 'docs'`, a DISTINCT value from 'rules' even though the banner/fingerprint
+  // path is identical (every kind !== 'agents' takes that path): the rules/wt/ subfolder
+  // migration fallback below is gated on `kind === 'rules'` specifically, and this set never
+  // had a pre-migration flat layout to fall back to — reusing 'rules' would make that
+  // migration heuristic silently probe a legacy location that never existed.
+  docs: { kind: 'docs', srcDir: 'docs/rules-rationale', defaultDir: '.claude/docs/wt', globalSubdir: 'docs/wt', resolveItems: discoverDocsItems },
 }
 
 const MANAGED_SET_NAMES = Object.keys(SETS)
@@ -492,6 +572,12 @@ function fingerprint(body) {
   return crypto.createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
 }
 
+/** Content comparison ignores trailing whitespace at EOF (including a missing/extra final
+ * newline). That formatting carries no rule semantics and must not manufacture drift. */
+function contentFingerprint(body) {
+  return fingerprint(body.replace(/[ \t\r\n]+$/u, ''))
+}
+
 function banner(version, fp) {
   return (
     `<!-- installed from ${BANNER_TOOL} v${version} · content sha256:${fp} by the adopt ` +
@@ -521,7 +607,7 @@ function itemContent(set, item, root) {
  *  degrades to null and the caller falls back to the version comparison. */
 function shippedFingerprint(set, item, root) {
   try {
-    return fingerprint(fs.readFileSync(path.join(root, set.srcDir, item.file), 'utf8'))
+    return contentFingerprint(fs.readFileSync(path.join(root, set.srcDir, item.file), 'utf8'))
   } catch {
     return null
   }
@@ -750,12 +836,12 @@ function classify(target, set) {
   if (!vm) return { state: 'hand-authored' }
   const installedVer = `${vm[1]}.${vm[2]}.${vm[3]}`
   const fpm = FP_RE.exec(line)
-  if (!fpm) return { state: 'edited-unknown', installedVer }
-  const clean = fingerprint(stripBannerFor(set, content)) === fpm[1]
-  // installedFp = the fingerprint of the content this copy actually holds. Returned so the
-  // planner can ask "is this the same text that ships today?" — the question the version
-  // number cannot answer, and the one that decides whether STALE means anything.
-  return { state: clean ? 'clean' : 'edited', installedVer, installedFp: fpm[1] }
+  const body = stripBannerFor(set, content)
+  const contentFp = contentFingerprint(body)
+  if (!fpm) return { state: 'edited-unknown', installedVer, contentFp }
+  const clean = fingerprint(body) === fpm[1] || contentFingerprint(body) === fpm[1]
+  // Re-derive this from the body; never trust the banner hash for shipped-content identity.
+  return { state: clean ? 'clean' : 'edited', installedVer, contentFp }
 }
 
 function cmp(a, b) {
@@ -994,6 +1080,7 @@ function parseArgs(argv) {
     declarationsFile: null,
     dryRun: false,
     secondaryDir: null,
+    ignoreSecondary: false,
     execute: false,
   }
   for (let i = 0; i < argv.length; i++) {
@@ -1011,6 +1098,7 @@ function parseArgs(argv) {
     else if (argv[i] === '--migrate') args.mode = 'migrate'
     else if (argv[i] === '--dry-run') args.dryRun = true
     else if (argv[i] === '--secondary-dir') args.secondaryDir = argv[++i]
+    else if (argv[i] === '--ignore-secondary') args.ignoreSecondary = true
     else if (argv[i] === '--execute') args.execute = true
   }
   return args
@@ -1043,6 +1131,7 @@ const FLAG_EFFECTIVE_MODES = {
   replaceSymlinks: { cli: '--replace-symlinks', modes: ['check', 'install'] },
   dryRun: { cli: '--dry-run', modes: ['migrate'] },
   secondaryDir: { cli: '--secondary-dir', modes: ['migrate'] },
+  ignoreSecondary: { cli: '--ignore-secondary', modes: ['migrate'] },
   execute: { cli: '--execute', modes: ['migrate'] },
 }
 
@@ -1398,6 +1487,20 @@ function auditOverlap(userDir, root, pairsFile, declarationsFile, set = 'rules')
  *  stamped. A symlink is never written THROUGH: it writes only under `replaceSymlinks`
  *  (and then processSet unlinks the link first, preserving its target). */
 function plan(c, version, force, replaceSymlinks, shippedFp) {
+  // CONTENT wins over banner metadata, including an old/ahead version or stale stored hash.
+  // Comparison uses contentFingerprint's trailing-EOF-whitespace normalization.
+  if (c.installedVer && shippedFp && c.contentFp === shippedFp) {
+    return {
+      status:
+        cmp(c.installedVer, version) === 0
+          ? `UP-TO-DATE (v${c.installedVer})`
+          : `UP-TO-DATE (banner v${c.installedVer}; content identical to v${version})`,
+      write: force,
+    }
+  }
+  if (c.installedVer && cmp(c.installedVer, version) > 0) {
+    return { status: `AHEAD/FORKED (installed v${c.installedVer} > v${version}; content differs)`, write: force }
+  }
   switch (c.state) {
     case 'absent':
       return { status: 'ABSENT', write: true }
@@ -1427,26 +1530,8 @@ function plan(c, version, force, replaceSymlinks, shippedFp) {
       }
     case 'clean': {
       const c2 = cmp(c.installedVer, version)
-      // AHEAD is decided FIRST and never short-circuited by matching content: a copy claiming
-      // a version this plugin does not have means something is wrong with the INSTALL, not
-      // with the text, and identical content does not make that anomaly go away. (Skipping
-      // this ordering is exactly how an earlier attempt silently swallowed the AHEAD signal.)
-      if (c2 > 0) return { status: `AHEAD (installed v${c.installedVer} > v${version})`, write: force }
-      // Otherwise CONTENT decides, not the version number. Most releases touch a few files;
-      // comparing versions alone marks every adopted copy stale on every release, identical
-      // ones included — and a warning that cries wolf on each release is not read on the one
-      // release that matters. The banner then honestly records the version at which THIS
-      // exact text was installed.
-      if (shippedFp && c.installedFp === shippedFp) {
-        return {
-          status:
-            c2 === 0
-              ? `UP-TO-DATE (v${c.installedVer})`
-              : `UP-TO-DATE (banner v${c.installedVer}; content identical to v${version})`,
-          write: force,
-        }
-      }
       if (c2 < 0) return { status: `STALE (installed v${c.installedVer} < v${version})`, write: true }
+      // A current-version clean agent may carry an installer-preserved local frontmatter field.
       return { status: `UP-TO-DATE (v${c.installedVer})`, write: force }
     }
     default:
@@ -1501,7 +1586,7 @@ function processSet(set, dir, args, version, root) {
     if (
       c.state === 'clean' &&
       cmp(c.installedVer, version) < 0 &&
-      !(shippedFp && c.installedFp === shippedFp)
+      !(shippedFp && c.contentFp === shippedFp)
     )
       anyStale = true
     if (c.state === 'edited' || c.state === 'edited-unknown') anyEdited = true
@@ -1735,6 +1820,95 @@ function planSecondaryDirSymlinks(secondaryDir, flatDir, wtDir, moves, stays) {
   return lines
 }
 
+/** Resolve a symlink target without following the link itself. The migration is allowed to
+ * remove only links whose resolved target is an exact file selected for this run's move. */
+function resolvedLinkTarget(linkPath) {
+  const target = fs.readlinkSync(linkPath)
+  return path.resolve(path.dirname(linkPath), target)
+}
+
+/** Reconcile the explicit secondary rules dir after every planned move is confirmed. The
+ * directory link is intentionally absolute: it matches the documented machine setup and
+ * remains correct if the secondary config directory is reached through another cwd. */
+function reconcileSecondaryDir(secondaryDir, wtDir, moves) {
+  const movedSources = new Set(moves.map((move) => path.resolve(move.from)))
+  const wtLink = path.join(secondaryDir, 'wt')
+  let entries
+  try {
+    entries = fs.readdirSync(secondaryDir, { withFileTypes: true })
+  } catch (error) {
+    fail(`secondary reconciliation failed: cannot read ${secondaryDir} — ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  let removed = 0
+  let left = 0
+  for (const entry of entries) {
+    const linkPath = path.join(secondaryDir, entry.name)
+    let lst
+    try {
+      lst = fs.lstatSync(linkPath)
+    } catch {
+      continue
+    }
+    if (!lst.isSymbolicLink() || linkPath === wtLink) continue
+    let target
+    try {
+      target = resolvedLinkTarget(linkPath)
+    } catch {
+      // An unreadable or already-dead unrelated link is never ours to remove.
+      left++
+      continue
+    }
+    if (movedSources.has(target)) {
+      fs.unlinkSync(linkPath)
+      removed++
+    } else {
+      left++
+    }
+  }
+
+  let directoryState = 'created'
+  try {
+    const lst = fs.lstatSync(wtLink)
+    if (!lst.isSymbolicLink()) {
+      fail(`secondary reconciliation failed: ${wtLink} exists and is not a symlink; refusing to replace it`)
+    }
+    const target = resolvedLinkTarget(wtLink)
+    if (target !== path.resolve(wtDir)) {
+      fail(`secondary reconciliation failed: ${wtLink} points to ${target}, not ${wtDir}; refusing to replace it`)
+    }
+    directoryState = 'already correct'
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      try {
+        fs.symlinkSync(wtDir, wtLink, 'dir')
+      } catch (createError) {
+        fail(
+          `secondary reconciliation failed: could not create directory symlink ${wtLink} -> ${wtDir} — ` +
+            `${createError instanceof Error ? createError.message : String(createError)}`,
+        )
+      }
+    } else {
+      throw error
+    }
+  }
+
+  for (const move of moves) {
+    const stalePath = path.join(secondaryDir, move.file)
+    try {
+      if (fs.lstatSync(stalePath).isSymbolicLink() && resolvedLinkTarget(stalePath) === path.resolve(move.from)) {
+        fail(`secondary reconciliation failed: dead link remains at ${stalePath}`)
+      }
+    } catch (error) {
+      if (error && typeof error === 'object' && error.code === 'ENOENT') continue
+      throw error
+    }
+  }
+  process.stdout.write(
+    `secondary reconciliation: ${removed} link(s) removed, directory link ${directoryState}, ${left} link(s) left.\n`,
+  )
+}
+
 function migrateDryRun(dir, args) {
   const wtDir = dir
   const flatDir = legacyRulesDir(wtDir)
@@ -1898,12 +2072,22 @@ function executeMigration(dir, args) {
     return
   }
 
+  if (moves.length > 0 && !args.secondaryDir && !args.ignoreSecondary) {
+    process.stdout.write(
+      'adopt:migrate --execute: REFUSING — a second config dir could hold per-file symlinks that this move would break. ' +
+        'Pass --secondary-dir <path-to-its-rules-dir> to reconcile it, or --ignore-secondary to proceed with that risk explicitly. Nothing has been moved.\n',
+    )
+    process.exitCode = 1
+    return
+  }
+
   if (moves.length === 0) {
     process.stdout.write(
       `adopt:migrate --execute: nothing to move — the plan is empty. No-op (not an error): either ` +
         `already migrated, or nothing was ever at the flat root.\n  ${stays.length} file(s) left in ` +
         `place by design (hand-authored — never managed).\n  destination: ${wtDir}\n`,
     )
+    if (args.secondaryDir) reconcileSecondaryDir(args.secondaryDir, wtDir, moves)
     return
   }
 
@@ -1948,7 +2132,9 @@ function executeMigration(dir, args) {
   if (firstFailure || confirmed !== plannedCount) {
     process.stdout.write('adopt:migrate --execute: EXITING NON-ZERO — not every planned move is confirmed.\n')
     process.exitCode = 1
+    return
   }
+  if (args.secondaryDir) reconcileSecondaryDir(args.secondaryDir, wtDir, moves)
 }
 
 function main() {

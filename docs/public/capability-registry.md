@@ -29,9 +29,10 @@ unset. Override the path with the environment variable **`WT_CAPABILITY_REGISTRY
 - **Absent file → an EMPTY registry, not an error.** A machine with no registry resolves
   every need to its named degradation (below). The toolkit assumes no tools of yours; a
   harness-only machine is a first-class, supported case.
-- **Present but invalid → the launch is refused, loudly.** A registry that is not valid
-  JSON, or violates the schema below, makes `wt-observe launch` list every problem and exit
-  non-zero rather than launch against a half-read registry.
+- **Present but invalid → a capability-using launch is refused, loudly.** A registry that is
+  not valid JSON, or violates the schema below, makes `wt-observe launch` list every problem
+  and exit non-zero when it is resolving a capability sidecar (or inline observer
+  requirements), rather than launch against a half-read registry.
 
 ## Format
 

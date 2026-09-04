@@ -156,6 +156,13 @@ Four standalone analysis/verification compositions:
   external-repo audit, mirroring `pr-review`'s `provenance` knob. Run it
   before a release alongside `docs-audit`; its findings are remediation input
   (e.g. for `doc-rewrite`).
+- `pr-review.workflow.ts` also exposes three launch-time routing knobs beyond the usual
+  `perAgent` / `effort` / `verifierModel`: `models.review` overrides the Claude wrapper model on a
+  bridge-routed review role; `opencodeModels.{review|verify}` selects the external provider/model
+  for opencode-routed review/verify roles; `opencodeVariants.{review|verify}` selects the
+  opencode reasoning variant for those roles. And if any launched review lens returns nothing, the
+  workflow returns `verdict: 'incomplete'` plus `coverage.{launched,returned,missing}` instead of
+  trusting the synthesis verdict as full coverage.
 
 And three demonstration compositions:
 

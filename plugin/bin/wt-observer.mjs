@@ -7,6 +7,7 @@ import { classifyMandate } from './lib/autonomy-mandate.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { runObserverLane, buildObserverPrompt, observerLaneInputBytes } from './lib/observer-lane.mjs'
 import { queueSnapshotSlug, resolveQueueSnapshotPath } from './lib/queue-snapshot-path.mjs'
+import { expireMarker } from './lib/queue-gate-marker-expiry.mjs'
 import { readTranscriptDelta } from './lib/transcript-delta.mjs'
 
 const HELP = `wt-observer — watches this session's own transcript, checks for a mechanical
@@ -133,6 +134,7 @@ function lessonIndexPath(configuredPath, projectDir, configDir) {
 function readQueueSnapshot(stateDir, cwd, freshnessMs, now) {
   const resolved = resolveQueueSnapshotPath(stateDir, cwd)
   if (!resolved) return { kind: 'absent' }
+  if (expireMarker('queue', resolved.path, now, { queueFreshnessMs: freshnessMs }).expired) return { kind: 'stale' }
   const parsed = JSON.parse(readFileSync(resolved.path, 'utf8'))
   const at = parsed?.at
   const open = parsed?.open
@@ -274,6 +276,7 @@ async function runPass(trigger) {
   }
 
   const mandate = classifyMandate(mandatePath, DEFAULT_MANDATE_FRESHNESS_MINUTES * 60_000, now, sessionId)
+  expireMarker('mandate', mandatePath, now, { mandateFreshnessMs: DEFAULT_MANDATE_FRESHNESS_MINUTES * 60_000 })
   let queue
   try {
     queue = readQueueSnapshot(stateDir, projectDir, 120 * 60_000, now)

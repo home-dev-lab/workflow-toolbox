@@ -13,7 +13,7 @@
 // new default location).
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, symlinkSync, chmodSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readdirSync, readFileSync, symlinkSync, chmodSync, lstatSync, readlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -191,13 +191,24 @@ describe('adopt:migrate --execute', () => {
     expect(readdirSync(claudeDir).filter((f) => f !== 'wt').sort()).toEqual(before.filter((f) => f !== 'wt').sort())
   })
 
-  it('actually moves a clean file, byte-identical, and reports the count', () => {
+  it('refuses to move when a potentially linked secondary config dir was not named or explicitly ignored', () => {
+    const claudeDir = mkDir()
+    writeCleanFlatCopy(claudeDir)
+    const wtDir = join(claudeDir, 'wt')
+
+    const { out, status } = run(['--migrate', '--execute', '--dir', wtDir])
+    expect(status).not.toBe(0)
+    expect(out).toMatch(/REFUSING.*--secondary-dir.*--ignore-secondary/)
+    expect(existsSync(join(claudeDir, RULE))).toBe(true)
+  })
+
+  it('actually moves a clean file, byte-identical, and reports the count when secondary risk is explicitly ignored', () => {
     const claudeDir = mkDir()
     writeCleanFlatCopy(claudeDir)
     const wtDir = join(claudeDir, 'wt')
     const originalBytes = readFileSync(join(claudeDir, RULE))
 
-    const { out, status } = run(['--migrate', '--execute', '--dir', wtDir])
+    const { out, status } = run(['--migrate', '--execute', '--ignore-secondary', '--dir', wtDir])
     expect(status).toBe(0)
     expect(existsSync(join(claudeDir, RULE)), 'source must be gone after the move').toBe(false)
     expect(existsSync(join(wtDir, RULE)), 'destination must exist after the move').toBe(true)
@@ -216,7 +227,7 @@ describe('adopt:migrate --execute', () => {
     const beforeFlat = readFileSync(join(claudeDir, RULE))
     const beforeWt = readFileSync(join(wtDir, RULE))
 
-    const { out, status } = run(['--migrate', '--execute', '--dir', wtDir])
+    const { out, status } = run(['--migrate', '--execute', '--ignore-secondary', '--dir', wtDir])
     expect(status).not.toBe(0)
     expect(out).toMatch(/REFUSING/)
     expect(out).toContain(RULE)
@@ -231,7 +242,7 @@ describe('adopt:migrate --execute', () => {
     const p = join(claudeDir, RULE)
     chmodSync(p, 0o000)
     try {
-      const { out, status } = run(['--migrate', '--execute', '--dir', wtDir])
+      const { out, status } = run(['--migrate', '--execute', '--ignore-secondary', '--dir', wtDir])
       expect(status).not.toBe(0)
       expect(out).toMatch(/REFUSING/)
       expect(out).toMatch(/unreadable/)
@@ -249,7 +260,7 @@ describe('adopt:migrate --execute', () => {
     const wtDir = join(claudeDir, 'wt')
     const before = readFileSync(p)
 
-    const { out, status } = run(['--migrate', '--execute', '--dir', wtDir])
+    const { out, status } = run(['--migrate', '--execute', '--ignore-secondary', '--dir', wtDir])
     expect(status).not.toBe(0)
     expect(out).toMatch(/REFUSING/)
     expect(readFileSync(p).equals(before)).toBe(true)
@@ -262,7 +273,7 @@ describe('adopt:migrate --execute', () => {
     writeFileSync(join(claudeDir, 'my-own-rule.md'), '# my own rule\nnever adopted\n')
     const wtDir = join(claudeDir, 'wt')
 
-    const { out, status } = run(['--migrate', '--execute', '--dir', wtDir])
+    const { out, status } = run(['--migrate', '--execute', '--ignore-secondary', '--dir', wtDir])
     expect(status).toBe(0)
     expect(existsSync(join(claudeDir, 'my-own-rule.md')), 'hand-authored file stays put').toBe(true)
     expect(existsSync(join(wtDir, RULE)), 'the clean managed file still moves').toBe(true)
@@ -273,12 +284,37 @@ describe('adopt:migrate --execute', () => {
     const claudeDir = mkDir()
     writeCleanFlatCopy(claudeDir)
     const wtDir = join(claudeDir, 'wt')
-    const first = run(['--migrate', '--execute', '--dir', wtDir])
-    expect(first.status).toBe(0)
+    const first = run(['--migrate', '--execute', '--ignore-secondary', '--dir', wtDir])
+    expect(first.status, first.out).toBe(0)
 
-    const second = run(['--migrate', '--execute', '--dir', wtDir])
+    const second = run(['--migrate', '--execute', '--ignore-secondary', '--dir', wtDir])
     expect(second.status).toBe(0)
     expect(second.out).toMatch(/nothing to move/)
     expect(existsSync(join(wtDir, RULE)), 'file stays at the destination after the no-op re-run').toBe(true)
+  })
+
+  it('reconciles moved per-file links into one absolute directory symlink without touching unrelated or pre-existing dead links', () => {
+    const claudeDir = mkDir()
+    writeCleanFlatCopy(claudeDir)
+    const wtDir = join(claudeDir, 'wt')
+    const secondary = mkDir()
+    const unrelated = join(claudeDir, 'hand-authored.md')
+    writeFileSync(unrelated, '# untouched\n')
+    symlinkSync(join(claudeDir, RULE), join(secondary, RULE))
+    symlinkSync(unrelated, join(secondary, 'hand-authored.md'))
+    symlinkSync(join(claudeDir, 'already-dead.md'), join(secondary, 'already-dead.md'))
+
+    const first = run(['--migrate', '--execute', '--dir', wtDir, '--secondary-dir', secondary])
+    expect(first.status, first.out).toBe(0)
+    expect(existsSync(join(secondary, RULE)), 'moved per-file link must be removed').toBe(false)
+    expect(readFileSync(join(secondary, 'hand-authored.md'))).toEqual(readFileSync(unrelated))
+    expect(lstatSync(join(secondary, 'already-dead.md')).isSymbolicLink(), 'unrelated dead link remains untouched').toBe(true)
+    expect(readFileSync(join(secondary, 'wt', RULE))).toEqual(readFileSync(join(wtDir, RULE)))
+    expect(readlinkSync(join(secondary, 'wt'))).toBe(wtDir)
+    expect(first.out).toMatch(/secondary reconciliation: 1 link\(s\) removed, directory link created, 2 link\(s\) left/)
+
+    const second = run(['--migrate', '--execute', '--dir', wtDir, '--secondary-dir', secondary])
+    expect(second.status).toBe(0)
+    expect(second.out).toMatch(/secondary reconciliation: 0 link\(s\) removed, directory link already correct, 2 link\(s\) left/)
   })
 })

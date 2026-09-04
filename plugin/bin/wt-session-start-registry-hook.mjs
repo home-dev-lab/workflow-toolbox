@@ -37,6 +37,7 @@ try {
 } catch {}
 
 function main() {
+  if (typeof payload?.agent_id === 'string' && payload.agent_id) return;
   if (!existsSync(SCAN)) process.exit(0);
 
   const sessionId = typeof payload?.session_id === 'string' && payload.session_id ? payload.session_id : null;

@@ -130,6 +130,9 @@ import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { queueSnapshotFileName, queueSnapshotSlug, resolveQueueSnapshotPath } from './lib/queue-snapshot-path.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { scanLiveLaneProcesses, worktreeActivity } from './lib/lane-live-scan.mjs'
+import { expireMarker, expireOwnedMarkers } from './lib/queue-gate-marker-expiry.mjs'
 
 const STATE_DIR = process.env.WT_QUEUE_GATE_DIR
   || join(homedir(), '.local', 'state', 'wt-queue-gate')
@@ -137,8 +140,6 @@ const HELP_PATH = new URL('wt-queue-not-empty-gate-hook.help.md', import.meta.ur
 const COOLDOWN_MIN = 45 // never block more often than this, per session
 const INFLIGHT_MIN = 3 // a subagent transcript touched this recently ⇒ work is running
 const SNAPSHOT_MAX_AGE_MIN = 120
-const ACTIVITY_MAX_ENTRIES = 4000
-const ACTIVITY_SKIP_DIRS = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', 'coverage', '.next'])
 
 function resolveActivityRoot(start) {
   try {
@@ -152,48 +153,6 @@ function resolveActivityRoot(start) {
   } catch {
     return null
   }
-}
-
-// Returns WHICH fact the scan established, never a boolean: 'recent' (a file under the
-// resolved root was written since the cutoff) · 'idle' (the whole reachable tree was walked
-// and nothing was recent) · 'no-root' (no enclosing git worktree resolved from cwd) ·
-// 'bounded' (the walk hit ACTIVITY_MAX_ENTRIES before finishing). The last two mean COULD NOT
-// LOOK and must never be emitted as an observed idle — that conflation is what this returns
-// four values to prevent.
-function worktreeActivity(root, cutoff) {
-  if (!root) return 'no-root'
-
-  const stack = [root]
-  let visited = 0
-  while (stack.length > 0) {
-    const dir = stack.pop()
-    let entries
-    try {
-      entries = readdirSync(dir, { withFileTypes: true })
-    } catch {
-      continue
-    }
-
-    for (const entry of entries) {
-      visited += 1
-      if (visited > ACTIVITY_MAX_ENTRIES) return 'bounded'
-      if (ACTIVITY_SKIP_DIRS.has(entry.name)) continue
-
-      const fullPath = join(dir, entry.name)
-      try {
-        const info = statSync(fullPath)
-        if (info.mtimeMs >= cutoff) return 'recent'
-        if (entry.isDirectory()) {
-          stack.push(fullPath)
-          continue
-        }
-      } catch {
-        continue
-      }
-    }
-  }
-
-  return 'idle'
 }
 
 function readStdin() {
@@ -215,6 +174,10 @@ const sessionId = input.session_id || 'unknown'
 const cwd = input.cwd || process.cwd()
 if (!transcriptPath || !existsSync(transcriptPath)) bail()
 
+// This is bounded at 100 names: stale queue evidence and this hook's own cooldown records cannot
+// accumulate, while a Stop hook never turns into an unbounded directory sweep.
+expireOwnedMarkers(STATE_DIR, ['cooldown'], Date.now())
+
 // --- 1. Is work in flight? --------------------------------------------------------------
 // A delegated agent writes to <session>/subagents/agent-*.jsonl. A recent write there means the
 // arc is alive and stopping is just yielding between turns — never a decision to stop.
@@ -225,7 +188,7 @@ if (!transcriptPath || !existsSync(transcriptPath)) bail()
 // activity as unknown rather than letting a sibling worktree silence the gate.
 // ⚠ This reads the SUBAGENTS dir, never the session's own transcript: the session's own file is
 // touched by this very turn, so it would always look "active" and the guard could never fire.
-// ⚠ The filesystem scan is explicitly BOUNDED: at most ACTIVITY_MAX_ENTRIES entry stats/readdir
+// ⚠ The filesystem scan is explicitly BOUNDED: at most 4000 entry stats/readdir
 // steps, with known heavy/build trees skipped first. Worst case is therefore O(ACTIVITY_MAX_ENTRIES)
 // regardless of repo size; once the budget is spent the answer stays distinct from an observed
 // idle tree so the emitted stop-gate context does not claim more than the scan established.
@@ -242,6 +205,13 @@ try {
 
 const activityStatus = worktreeActivity(resolveActivityRoot(cwd), cutoff)
 if (activityStatus === 'recent') bail()
+// Live lane processes name the directory they are actually driving, reaching separate repositories
+// that neither this session's path scan nor git worktree metadata can see. This Linux-only /proc
+// source only makes the guard quieter: a recent lane write bails; every other result preserves the
+// existing verdict and can never independently block or deny.
+const laneScan = scanLiveLaneProcesses({ procRoot: process.env.WT_QUEUE_GATE_PROC_ROOT || '/proc' })
+const liveLane = laneScan.processes.find((processInfo) => worktreeActivity(processInfo.dir, cutoff) === 'recent')
+if (liveLane) bail()
 
 // --- 2. Does this project have a tracker wired to this guard at all? ---------------------
 // ⚠ THE ABSTRACTION POINT — see the header. No marker ever written ⇒ silent, permanently, for
@@ -329,6 +299,9 @@ try {
   if (!validAt || !isValidOpen || typeof snap.next !== 'string') {
     queueStatus = 'malformed'
   } else if (age > SNAPSHOT_MAX_AGE_MIN * 60_000) {
+    // Keep the stale verdict for this invocation even when cleanup succeeds: a reader must ignore
+    // stale evidence, not confuse its removal with a project that was never wired.
+    expireMarker('queue', snapshot, Date.now(), { queueFreshnessMs: SNAPSHOT_MAX_AGE_MIN * 60_000 })
     queueStatus = 'stale'
     snapshotAgeMin = Math.round(age / 60_000)
   } else {
@@ -407,6 +380,25 @@ try {
 //
 // The phrasing stays FACTUAL rather than imperative: text framed as an out-of-band command can
 // trigger the model's own prompt-injection defenses and be resurfaced to the user anyway.
+// ⚠ RECORDED so this gate's firings can be COUNTED. Without this call the gate is absent
+// from `wt-guard-journal-scan.mjs` entirely — it fires and nothing tallies it, which reads in
+// that scanner exactly like a guard that does not exist. The rule that governs widening this
+// gate's reach demands a false-positive rate measured on material it did not choose, and that
+// number cannot exist for a guard nothing counts.
+//
+// `class` carries the ACTIVITY STATUS rather than a single label, deliberately: an `idle`
+// firing (we looked, the tree was quiet) and a `no-root` or `bounded` firing (we could not
+// look) are different qualities of evidence, and lumping them would reproduce inside the
+// measurement the very conflation this gate was fixed to stop.
+//
+// `decision` is 'warned', not 'blocked': this hook advises and always exits 0 — it never
+// denies. Recording it as blocked would overstate what it does to whoever reads the tally.
+recordGuardEvent({
+  guard: 'wt-queue-not-empty-gate-hook.mjs',
+  decision: 'warned',
+  class: `activity:${activityStatus};lane:${laneScan.status}`,
+  reason: openCount === null ? `queue:${queueStatus}` : `queue:${openCount}-open`,
+})
 process.stdout.write(
   JSON.stringify({
     hookSpecificOutput: {
@@ -426,10 +418,10 @@ process.stdout.write(
       // Anything that cannot be hidden must at least name its addressee.
       additionalContext:
         `[for Claude, not the user] open work remains, ${activityStatus === 'idle'
-          ? 'no recent worktree activity'
+          ? `no recent worktree activity${laneScan.status === 'unknown' ? '; live lane scan was unavailable' : ''}`
           : activityStatus === 'no-root'
-            ? 'Worktree activity is unknown — no git root resolved'
-            : 'Worktree activity is unknown — scan bounded out'} · ` +
+            ? `Worktree activity is unknown — no git root resolved${laneScan.status === 'unknown' ? '; live lane scan was unavailable' : ''}`
+            : `Worktree activity is unknown — scan bounded out${laneScan.status === 'unknown' ? '; live lane scan was unavailable' : ''}`} · ` +
         (snapshotAncestor ? `using ancestor snapshot from ${snapshotAncestor} · ` : '') +
         (openCount === null
           ? (queueStatus === 'stale'

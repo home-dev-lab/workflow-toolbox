@@ -1440,6 +1440,8 @@ describe('adversarialVerification — cacheWarm=true (warmup-agent)', () => {
     expect(warmCall.opts?.effort).toBe('low')
     expect(warmCall.opts?.agentType).toBe('codex:codex-rescue')
     expect(warmCall.phase).toBe('verify-phase')
+    const verifyCalls = rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
+    expect(verifyCalls.every((c) => c.opts?.model === 'sonnet' && c.opts?.effort === 'low')).toBe(true)
   })
 
   it('charges the warmup call against the budget like every other verifier', async () => {

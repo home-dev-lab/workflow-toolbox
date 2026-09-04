@@ -350,7 +350,6 @@ function markerDir() {
  *  Returns null on anything unexpected; the caller treats that as "nothing to write". */
 export function runDirForSessionTranscript(transcriptPath, readdir = (d) => fs.readdirSync(d, { withFileTypes: true })) {
   if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return null
-
   const transcriptDir = path.dirname(transcriptPath)
   const transcriptBase = path.basename(transcriptPath)
   if (

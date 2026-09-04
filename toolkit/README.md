@@ -371,6 +371,13 @@ agent call only; the trail is intentionally not extended (the `model` field
 already covers the pattern's load-bearing audit concern). Additive, semver-minor;
 ships in `@workflow-toolbox/patterns` 0.6.0.
 
+Verify-fan precedence is explicit: `resolveVerifierModel(perAgent.model,
+verifierModel)` gives the launcher model priority, then the workflow pin, then
+the pattern default; `effort.verify` may only RAISE a verifier's effort above the
+workflow's `high` floor, never lower it (verifiers keep a static floor). The
+cache-warm probe uses the same resolved model and effort as every verify vote,
+so its trail is directly comparable.
+
 The "specialize the producer, not the skeptic" caveat above is about *same-model*
 specialization. The **premier use of `verifierType` is the opposite — cross-model
 decorrelation**: routing to a *different model family* is the one real lever
@@ -632,6 +639,11 @@ pnpm canary          # the matrix: smoke + edge (negative) + nesting against BOT
 pnpm canary:edge     # just the negative checks (cap + meta-order) on the bundled runtime.
 pnpm canary:nesting  # canary C1: workflow() rejects nesting past one level (a
                      # parent→child→grandchild round trip) on the bundled runtime.
+pnpm canary:budget   # canary C2: two separate orchestrator-launched runs keep separate
+                     # budget.spent() pools.
+pnpm canary:agents   # SDK agent-definition probe: which query() fencing fields the
+                     # runtime actually honors.
+pnpm canary:observer # experimental observer-agent pairing probe.
 pnpm canary:version  # read-only gate: exit 0 = unchanged since last pass (skip),
                      # 3 = a signal changed / forced (run), 2 = error.
 ```

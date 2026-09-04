@@ -96,6 +96,9 @@ cannot drift apart silently:
   Mid-run, an attached run has label/phase on disk nowhere else — the tag is what lets a
   live observer assign each agent to its phase column from the moment it spawns, instead
   of waiting for the terminal journal.
+  Tag values are entity-escaped on write and decoded on parse (`&`, `"`, `<`, `>`, and newline),
+  so a hostile label cannot break the attribute quoting, forge a second field, or close the
+  comment early.
 
 ## Quick recipes
 

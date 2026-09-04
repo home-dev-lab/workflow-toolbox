@@ -29,11 +29,10 @@
 //      the cheapest-to-lose claims first — a zero-agent substitute for a
 //      scoring stage (scoreAndRank would cost one scorer per claim here).
 //
-//  (4) NO LEAN ROUTING — every role in this workflow (inventory, extract,
-//      verify) must READ the repository. withLeanRouting strips tool access,
-//      so it has no eligible role here; only the leaf fence applies. Lean is
-//      selective by design — see pr-review's Synthesize stage for the
-//      counter-example that DOES qualify.
+//  (4) CAPABILITY ROUTING FOLLOWS THE PROMPT — Inventory reads the repository
+//      and produces no change, so it uses the selective read-only runtime.
+//      Nothing uses lean because every judgment role must read source. The
+//      cap-guard persistence call stays on the normal runtime because it writes.
 //
 //  ON LAUNCH: ALWAYS check WorkflowOutput.error. On partial failure, relaunch
 //  with resumeFromRunId — completed agent() calls replay from cache, only
@@ -44,7 +43,7 @@
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
 import { withAgentDefaults, MODEL_ALIASES } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, EffortAlias, ModelAlias, AgentDefaults } from '@workflow-toolbox/runtime'
-import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
+import { resolveEffort, resolveVerifierEffort, resolveVerifierModel } from '@workflow-toolbox/std'
 import {
   adversarialVerification,
   agentWithSchemaSalvage,
@@ -54,12 +53,14 @@ import {
   probeAgentType,
   warn,
   withLeafFence,
+  withReadOnlyRouting,
 } from '@workflow-toolbox/patterns'
 import type {
   AgentTypeProbeReport,
   ClaimVerdict,
   LeafFenceReport,
   LoopStoppedBy,
+  ReadOnlyRoutingReport,
   TrailRecord,
   VerifiedClaim,
   VerifierVote,
@@ -317,12 +318,32 @@ function claimKey(c: AuditClaim): string {
  *  `votes`) — used here ONLY to ESTIMATE total verify calls before dispatch, never a flat votes×claims
  *  guess (a flat estimate would be wrong for a claim mix that isn't uniform risk, and an explicit
  *  correction recorded on this card requires the clamp to use the REAL vote function). */
+/** How many verifier votes ONE claim gets — the single source of truth for the tiering.
+ *
+ *  Three call sites depend on agreeing EXACTLY: the pre-flight estimate below, the
+ *  safe-slice loop that decides how many claims still fit, and the `votesPerClaim`
+ *  handed to adversarialVerification at run time. They were three hand-written copies
+ *  of this expression.
+ *
+ *  ⚠ That mattered more than an ordinary duplication, because the middle one is a GUARD:
+ *  it refuses to start Verify when the estimate would blow the engine's agent ceiling.
+ *  A guard whose model of the guarded thing drifts does not degrade — it INVERTS. Add a
+ *  tier to the runtime copy and forget the estimate, and the guard under-predicts: it
+ *  lets a run start that then dies mid-fan, having already paid for extraction, which is
+ *  precisely the failure it exists to prevent (run wf_6f63845d-100, claim 312 of 706).
+ *
+ *  The direction is asymmetric too. Over-predicting refuses a run someone retries with
+ *  different arguments — visible and recoverable. Under-predicting burns the whole run
+ *  and returns nothing. */
+function votesForClaim(claim: AuditClaim, votes: number, tieredVotes: boolean): number {
+  if (!tieredVotes) return votes
+  return claim.kind === 'behavior' || claim.kind === 'boundary' || claim.risk === 'high' ? votes : 1
+}
+
 function estimateVerifyCalls(claims: readonly AuditClaim[], votes: number, tieredVotes: boolean): number {
   let total = 0
   for (const c of claims) {
-    total += tieredVotes
-      ? (c.kind === 'behavior' || c.kind === 'boundary' || c.risk === 'high' ? votes : 1)
-      : votes
+    total += votesForClaim(c, votes, tieredVotes)
   }
   return total
 }
@@ -379,6 +400,8 @@ export interface DocsAuditOutput {
   verifierProbe: AgentTypeProbeReport | null
   /** Leaf-agent fence outcome (withLeafFence). */
   leafFence: LeafFenceReport
+  /** Selective Inventory-stage routing outcome (withReadOnlyRouting). */
+  readOnlyRouting: ReadOnlyRoutingReport
   /** Combined Extract+Verify trail (collectTrail, in phase order). */
   envelope: { trail: TrailRecord[] }
   warnings: string[]
@@ -579,7 +602,12 @@ function parseInput(raw: unknown): DocsAuditInput {
 
   // Recognized config slices (effort/perAgent/agentTypes/messaging) go through
   // the shared parseConfig helper; it ignores this workflow's bespoke keys.
-  const cfg = parseConfig(obj)
+  const cfg = parseConfig(obj, {
+    args: ['repoRoot', 'surfaces', 'surfaceRules', 'hints', 'maxRounds', 'dryRounds', 'surfacesPerAgent', 'maxVerifyClaims', 'claimOffset', 'resumeFrom', 'votes', 'tieredVotes', 'verifierModel', 'effort', 'perAgent', 'agentTypes', 'opencodeModels', 'models', 'opencodeVariants', 'messaging'],
+    models: ['inventory', 'extract', 'verify'],
+    effort: ['inventory', 'extract', 'verify'],
+    agentTypes: ['inventory', 'extract', 'verify'],
+  })
 
   let tieredVotes = true
   if (obj['tieredVotes'] !== undefined) {
@@ -795,9 +823,21 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     ...(input.perAgent !== null ? { perAgent: input.perAgent } : {}),
   })
 
+  // Selective read-only routing: Inventory needs repository visibility but its
+  // prompt produces no change. Other stages keep `rt`; notably, the cap-guard
+  // persistence call must retain Write access.
+  const { rt: readOnlyBase, report: readOnlyRouting } = await withReadOnlyRouting(rt0, {
+    phase: 'Fence',
+    disabled: input.messaging,
+    ...(input.perAgent !== null ? { perAgent: input.perAgent } : {}),
+  })
+
   // Class-A one-wiring-point: blanket per-agent defaults reach every stage;
   // per-call/pattern opts (the verifiers' explicit model) still win.
   const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0
+  const readOnlyRt = input.perAgent !== null
+    ? withAgentDefaults(readOnlyBase, input.perAgent)
+    : readOnlyBase
 
   const warnings: string[] = []
 
@@ -891,7 +931,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
       inventorySource = 'input'
     } else {
       const inventoryModel = resolveWrapperModel(resolvedInventoryType !== null, input.models?.inventory)
-      const invOutcome = await agentWithSchemaSalvage<InventoryOutput>(rt, inventoryPrompt(
+      const invOutcome = await agentWithSchemaSalvage<InventoryOutput>(readOnlyRt, inventoryPrompt(
         input,
         resolvedInventoryType,
         resolvedInventoryType !== null ? input.opencodeModels?.inventory ?? null : null,
@@ -1124,7 +1164,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     // Overhead already consumed this run by Fence/Inventory/Extract — computed from what ACTUALLY
     // ran (not a blind ceiling guess), so the guard is as tight as the real evidence allows.
     const fenceProbes =
-      (input.messaging ? 0 : 1) +
+      (input.messaging ? 0 : 2) +
       (input.inventoryType !== null ? 1 : 0) +
       (input.extractType !== null ? 1 : 0) +
       (input.verifierType !== null ? 1 : 0)
@@ -1144,9 +1184,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
       let safeSliceSize = 0
       let running = 0
       for (const c of claimsAfterOffset) {
-        const voteCost = input.tieredVotes
-          ? (c.kind === 'behavior' || c.kind === 'boundary' || c.risk === 'high' ? input.votes : 1)
-          : input.votes
+        const voteCost = votesForClaim(c, input.votes, input.tieredVotes)
         const cost = voteCost * voteSalvageMultiplier
         if (running + cost > remainingBudget) break
         running += cost
@@ -1246,7 +1284,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     // when both are absent adversarialVerification supplies the default itself
     // ('haiku' for an external relay via externalGateExpectation, BEST_MODEL for
     // a plain Claude verifier) — so we pass NOTHING rather than force a model.
-    const verifyModel: ModelAlias | null = input.models?.verify ?? input.verifierModel ?? null
+    const verifyModel = resolveVerifierModel(input.perAgent?.model, input.models?.verify ?? input.verifierModel)
     const verifyResult = await adversarialVerification<AuditClaim>(rt, {
       claims: claimsAfterOffset,
       renderClaim: renderAuditClaim(
@@ -1266,17 +1304,14 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
       // its single vote.
       ...(input.tieredVotes
         ? {
-            votesPerClaim: (c: AuditClaim) =>
-              c.kind === 'behavior' || c.kind === 'boundary' || c.risk === 'high'
-                ? input.votes
-                : 1,
+            votesPerClaim: (c: AuditClaim) => votesForClaim(c, input.votes, input.tieredVotes),
           }
         : {}),
       refuteThreshold: Math.min(2, input.votes),
       maxVerifyClaims: input.maxVerifyClaims,
       effort: verifyEffort,
       phase: 'Verify',
-      ...(verifyModel !== null ? { model: verifyModel } : {}),
+      ...(verifyModel !== undefined ? { model: verifyModel } : {}),
       ...(resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}),
     })
     for (const w of verifyResult.warnings) warnings.push(w)
@@ -1327,6 +1362,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     findings,
     verifierProbe,
     leafFence,
+    readOnlyRouting,
     envelope: { trail: [...extractTrail, ...verifyTrail] },
     warnings,
   }
@@ -1349,7 +1385,7 @@ export default defineWorkflow({
       'check. Pass repoRoot (absolute); optionally surfaces, hints (e.g. a provenance map ' +
       'location), and sizing knobs. Findings are remediation input, e.g. for doc-rewrite.',
     phases: [
-      { title: 'Fence', detail: 'Leaf-fence + optional cross-model verifier probe' },
+      { title: 'Fence', detail: 'Leaf fence + read-only Inventory routing + optional cross-model verifier probe' },
       { title: 'Inventory', detail: 'Derive or validate the audited doc-surface list' },
       { title: 'Extract', detail: 'Loop-until-dry claim extraction: angle-cycled sweeps, deduped against seen' },
       { title: 'Verify', detail: 'Refute-first adversarial verification of each claim against the sources' },

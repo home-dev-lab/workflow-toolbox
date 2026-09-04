@@ -30,8 +30,7 @@ count after a merge is the tell the merge never landed, whatever the gate's own 
 State this one mechanically, not as a thing to remember — a threshold that EXECUTES beats a
 check that depends on recall.
 
-**Never chain a merge with its gates in one command.** `;`, or a newline, hand the next command
-a stale tree to certify — same failure as piping a gate, one step earlier.
+Enforced by `wt-merge-chain-guard-hook.mjs` (PreToolUse Bash: warns when `git merge` is chained with a gate or unclassified command through `&&`, `;`, `|`, `||`, or a newline; a diagnostic read is silent but journaled. It deliberately ignores a merge preceded by earlier commands and `git merge --abort/--continue/--quit` — run the merge alone, read its result, then gate). Rationale and field cases: `docs/wt/wt-verify-by-ground-truth.md` §Never chain a merge with its gates in one command.
 
 **UI claim = RENDERED PIXELS.** Not API payload. Field can sit in JSON and be dropped before DOM.
 Drive real browser.

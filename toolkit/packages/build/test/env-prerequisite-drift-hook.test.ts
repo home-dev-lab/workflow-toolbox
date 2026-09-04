@@ -74,9 +74,9 @@ function envJson(keys: Record<string, string>): string {
   return JSON.stringify({ env: { ...keys, A_CREDENTIAL: SECRET_VALUE } })
 }
 
-function run(fx: Fixture): { out: string; code: number | null } {
+function run(fx: Fixture, agentId?: string): { out: string; code: number | null } {
   const res = spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify({ cwd: fx.proj }),
+    input: JSON.stringify({ cwd: fx.proj, ...(agentId ? { agent_id: agentId } : {}) }),
     encoding: 'utf8',
     env: { ...process.env, CLAUDE_CONFIG_DIR: fx.cfg },
   })
@@ -104,6 +104,14 @@ describe('env-prerequisite drift — the SessionStart warning light', () => {
     // A warning with no exit becomes wallpaper. Both directions must be offered.
     expect(out).toContain('--install')
     expect(out).toContain('declare the key yourself')
+    expect(code).toBe(0)
+  })
+
+  it('is SILENT for a subagent even when adopted prerequisites are absent', () => {
+    const fx = fixture('subagent', { adopted: true })
+    writeSettings(fx.cfg, envJson({}))
+    const { out, code } = run(fx, 'workflow-agent-1')
+    expect(out).toBe('')
     expect(code).toBe(0)
   })
 

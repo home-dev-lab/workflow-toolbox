@@ -119,8 +119,8 @@ harmless but redundant — it matches the default and emits no warning.)
 
 ## What it returns
 
-A result envelope: `{ subject, lensesUsed, confirmed, refuted, allVerified,
-candidateCount, stats, warnings }`. `confirmed` is the actionable list (each with a
+A result envelope: `{ subject, lensesUsed, verifierType, probe, leafFence, confirmed,
+refuted, allVerified, candidateCount, stats, envelope, warnings }`. `confirmed` is the actionable list (each with a
 `verdict` of `confirmed`/`partially-confirmed`); `refuted` is what the verifiers
 killed; `stats`/`warnings` make dropped or capped work visible. Read `confirmed`,
 decide which to act on, and **apply them by hand**.

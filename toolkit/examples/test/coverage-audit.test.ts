@@ -85,7 +85,7 @@ function makeRuntime(opts: {
   inventory: Record<string, FakeCapability[]> | null
   /** Gaps returned per extraction ROUND (call order); rounds beyond the
    *  array's length repeat the LAST entry (which makes the loop go dry). */
-  extractRounds: FakeGap[][]
+  extractRounds: Array<FakeGap[] | null>
   /** capability-name substring (lowercased) → verdict for verifier votes
    *  (default 'confirmed' — the gap is real). */
   verdicts?: Record<string, string>
@@ -120,7 +120,8 @@ function makeRuntime(opts: {
       if (p.includes('extract undocumented-capability claims')) {
         const round = Math.min(extractCalls, opts.extractRounds.length - 1)
         extractCalls++
-        return { claims: opts.extractRounds[round] }
+        const claims = opts.extractRounds[round]
+        return claims === null ? null : { claims }
       }
 
       if (p.includes('verdict for one undocumented-capability claim')) {
@@ -392,10 +393,11 @@ describe('coverage-audit per-role agentType routing', () => {
     ).rejects.toThrow(/required agentType .* is unavailable/)
   })
 
-  it('warns about unknown agentTypes keys and continues', async () => {
+  it('rejects unknown agentTypes keys with a nearest-key suggestion', async () => {
     const rt = runtime()
-    const out = await wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { bogusKey: 'x' } }))
-    expect(out.warnings.some((w) => w.includes('bogusKey'))).toBe(true)
+    await expect(
+      wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { bogusKey: 'x' } })),
+    ).rejects.toThrow('unknown key `bogusKey` in `agentTypes`')
   })
 
   it('prepends the routed Extract role model before all other prompt text', async () => {
@@ -478,7 +480,7 @@ describe('coverage-audit per-role wrapper model + opencodeVariants', () => {
     expect(extract.every((c) => c.opts?.model === undefined)).toBe(true)
   })
 
-  it('spawns the wrapper-routed verify fan as haiku by default (external-relay pattern default)', async () => {
+  it('lets launcher perAgent.model override the external-relay verify default', async () => {
     const rt = runtime()
     await wf.run(rt, JSON.stringify({
       ...BASE_INPUT,
@@ -487,7 +489,7 @@ describe('coverage-audit per-role wrapper model + opencodeVariants', () => {
     }))
     const verify = stageCalls(rt, 'Verify', 'verdict for one undocumented-capability claim')
     expect(verify.length).toBeGreaterThan(0)
-    expect(verify.every((c) => c.opts?.model === 'haiku')).toBe(true)
+    expect(verify.every((c) => c.opts?.model === 'sonnet')).toBe(true)
   })
 
   it('models.verify overrides verifierModel for the verify fan', async () => {
@@ -1107,6 +1109,22 @@ describe('coverage-audit auto-effort worker routing', () => {
 // ---------------------------------------------------------------------------
 
 describe('coverage-audit zero gaps', () => {
+  it('fails when a non-empty inventory produces no claims because every extractor failed', async () => {
+    const rt = makeRuntime({
+      inventory: {
+        'src/a.ts': [makeCapability({ name: 'runFoo', sourcePath: 'src/a.ts' })],
+        'src/b.ts': [makeCapability({ name: 'runBar', sourcePath: 'src/b.ts' })],
+      },
+      extractRounds: [null],
+    })
+
+    await expect(
+      wf.run(rt, JSON.stringify({ ...BASE_INPUT, entriesPerAgent: 1 })),
+    ).rejects.toThrow(
+      'coverage-audit: extraction produced no claims: failed extractors=2, capabilities inventoried=2',
+    )
+  })
+
   it('returns a graceful zero-findings report when every capability is well documented', async () => {
     const rt = makeRuntime({
       inventory: { 'src/a.ts': [makeCapability()] },

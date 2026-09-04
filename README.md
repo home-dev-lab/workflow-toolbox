@@ -393,6 +393,11 @@ installed. Only the pilot suite above needs a project copy, for the
 end of its run, so you never have to guess which of the two mechanisms
 explains an agent's absence from `.claude/agents/`.
 
+When an adopted copy is stale, the installer also slices `plugin/CHANGELOG.md`
+between the installed and current plugin versions so the user sees what shipped in
+that span: recent entries plus an honest count of omitted ones, and an explicit
+"no record" outcome when the installed version predates the oldest recorded heading.
+
 ## The toolkit
 
 `toolkit/` is a pnpm workspace of three core packages:
@@ -759,6 +764,10 @@ then `<configDir>/scripts/quota-usage.mjs` if present, else the bundled probe.
 That probe only READS `<configDir>/.credentials.json`; it never writes it. Its
 usage endpoint (`https://api.anthropic.com/api/oauth/usage`) is not publicly
 documented by Anthropic and may change without notice.
+Its stdout is one compact JSON object:
+`{configDir, quota_model, five_hour, seven_day, weekly_scoped}`. Branch on
+`quota_model`, not on an absent percentage: `'subscription'` means the account has real quota
+windows; `'none'` means a usage-billed account with no five-hour/seven-day window at all.
 
 ## Companion app — Workflow Observatory
 

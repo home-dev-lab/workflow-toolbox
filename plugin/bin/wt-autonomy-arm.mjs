@@ -55,6 +55,7 @@ import { writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { classifyMandate } from './lib/autonomy-mandate.mjs'
+import { expireMarker, expireOwnedMarkers } from './lib/queue-gate-marker-expiry.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 
 function out(line) {
@@ -124,6 +125,7 @@ const mandateFreshnessMs = Number(process.env.WT_AUTONOMY_WATCH_MANDATE_FRESHNES
 
 if (statusOnly) {
   const mandate = classifyMandate(mandatePath, mandateFreshnessMs, Date.now(), sessionId)
+  const expiry = expireMarker('mandate', mandatePath, Date.now(), { mandateFreshnessMs })
   if (mandate.kind === 'live') {
     const declaredAt = new Date(mandate.declaredAtMs).toISOString()
     out(
@@ -140,7 +142,7 @@ if (statusOnly) {
     out(
       `AUTONOMY MANDATE: expired (declared ${declaredAt} by session ${mandate.declaredBy}, ` +
         `${mandate.ageMin.toFixed(0)}min ago — past the freshness window, will NOT fire) — ${mandatePath}. ` +
-        'Run with no arguments to re-arm.',
+        `Run with no arguments to re-arm.${expiry.error ? ` Cleanup failed: ${String(expiry.error.message || expiry.error)}` : ''}`,
     )
     process.exit(3)
   }
@@ -165,6 +167,7 @@ if (disarm) {
   process.exit(0)
 }
 
+expireOwnedMarkers(mandateDir, ['mandate'], Date.now(), { mandateFreshnessMs })
 mkdirSync(mandateDir, { recursive: true })
 // Rewriting it is the normal case, not an error: re-arming refreshes the declaration, which is
 // what a session does after a compaction or a long stretch of inline work — and it is also how a

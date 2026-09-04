@@ -14,7 +14,8 @@ description: >-
 # adopt — install editable copies of workflow-toolbox's guardrails and pilot agents
 
 This skill writes **editable, versioned copies** of workflow-toolbox material into the
-user's project, on explicit request only. It manages two sets:
+user's project, on explicit request only. It manages four sets — `rules`, `agents`,
+`autonomy`, and `docs` (below); `--set all` covers all four in one pass:
 
 - **rules** — the cross-cutting guardrail rule files, SOURCED from the plugin's `rules/`
   bundle (every `*.md` there except `README.md` — currently the delegation ladder; the set
@@ -37,6 +38,15 @@ user's project, on explicit request only. It manages two sets:
   names. Copying by hand works too, but a hand copy has NO staleness detection: this set
   closes that gap — every copy carries a version banner + content fingerprint, so a later
   `--check` reports when the plugin has moved ahead.
+- **autonomy** — the session-autonomy mandate markdown (`AUTONOMY.md`), SOURCED from the
+  plugin's `autonomy/` bundle. Same banner/fingerprint shape as `rules`.
+- **docs** — the rationale/field-case overflow moved OUT of the shipped rules by the
+  2026-09-02 static-prefix cut, SOURCED from the plugin's `docs/rules-rationale/` bundle
+  (every `*.md` there except `README.md`, the same discovery discipline as `rules`).
+  Installed to `<config-dir>/docs/wt/`, deliberately beside `<config-dir>/rules/wt/` — a
+  rule keeps its directive text plus a one-line pointer ("Rationale and field cases:
+  `docs/wt/<rule>.md` §…"), and this is what makes that pointer resolve. Recalled on
+  demand, never auto-loaded — the point of moving the content out in the first place.
 
 A THIRD kind of agent exists and this skill does nothing for it, on purpose: the plugin's
 `agents/` directory (`fidelity-checker`, `index-groomer`, `leaf`, `lean`, `opencode-verifier`,
@@ -118,8 +128,8 @@ backward compatibility):
 When adopting into a project that already has rules, reconcile first — see the
 "Reconciling your existing project rules" section in `../../rules/README.md`.
 
-- **Check status (read-only, the default):** `node scripts/install.mjs --set <rules|agents|all> --check`
-- **Install / refresh (absent + unedited only):** `node scripts/install.mjs --set <rules|agents|all> --install`
+- **Check status (read-only, the default):** `node scripts/install.mjs --set <rules|agents|autonomy|docs|all> --check`
+- **Install / refresh (absent + unedited only):** `node scripts/install.mjs --set <rules|agents|autonomy|docs|all> --install`
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
 - **Replace a symlinked target (deliberate):** add `--replace-symlinks` to `--install` — a
   symlinked target is otherwise reported and SKIPPED (never written through); this unlinks
@@ -202,12 +212,13 @@ correctly-migrated project nor stays silent on an un-migrated one.
 ```bash
 node scripts/install.mjs --migrate --dry-run [--dir <…/rules/wt>] [--global] \
   [--secondary-dir <path-to-a-second-config-dir's-rules-dir>]
+node scripts/install.mjs --migrate --execute [--dir <…/rules/wt>] [--global] \
+  --secondary-dir <path-to-a-second-config-dir's-rules-dir>
 ```
 
-This is the ONLY form `--migrate` supports in this version — `--migrate` without `--dry-run`
-refuses outright, on purpose: the actual move needs a human decision (stop other sessions
-that might compact mid-move and read a half-migrated directory, then read this report)
-that the script does not make for you. The dry-run writes nothing and reports, in order: (1)
+`--migrate` without `--dry-run` or `--execute` refuses outright, on purpose. Preview first,
+then use `--execute` only after the human decision to stop other sessions that might compact
+mid-move and read a half-migrated directory. The dry-run writes nothing and reports, in order: (1)
 every file it would move, source → destination, absolute paths; (2) every file it would
 LEAVE at the root, with the reason (hand-authored, locally edited, symlinked, or a name
 collision with an existing destination file); (3) the set LOADED before vs. after, in file
@@ -215,6 +226,17 @@ count and bytes, so a doubling reads as a number rather than an intuition; (4) w
 to a second config dir's per-file symlinks, when `--secondary-dir` names one. It exits
 non-zero whenever it would produce a duplicate (a file loaded from both locations at once)
 — a dry-run that describes a dangerous state and exits 0 would be a report, not a guard.
+
+`--execute --secondary-dir <dir>` performs the second-config reconciliation only after every
+planned file move is byte-verified: it removes each per-file symlink in `<dir>` whose target was
+one of those moved files, then creates the single **absolute** directory symlink
+`<dir>/wt -> <primary>/rules/wt`. Absolute matches this machine's documented setup and makes the
+link independent of the invoking cwd. It prints the removed, created/already-correct, and left
+link counts; a remaining moved-file link makes the command exit non-zero with its path. Links to
+hand-authored root files are untouched. Re-running it reports `directory link already correct` and
+does not recreate the link. When a move is planned and `--secondary-dir` is absent, `--execute`
+refuses loudly rather than silently leaving an unknowable second configuration broken; pass
+`--ignore-secondary` only to acknowledge and explicitly accept that risk.
 
 **Design decision — the second config dir's symlink arrangement.** This machine's own setup
 (`~/.claude-work/rules/` symlinking each managed file individually into `~/.claude/rules/`)
@@ -227,13 +249,22 @@ half of an edit); a directory symlink covers the whole managed set at once and n
 maintenance as it grows or shrinks. Any locally-authored, non-`wt/` rules in the secondary
 dir are unaffected and stay as direct files (never covered by a directory symlink meant for
 the managed subset alone). `--migrate --dry-run --secondary-dir <dir>` names each existing
-per-file symlink into the migrating set and states whether it goes stale.
+per-file symlink into the migrating set and states whether it goes stale; `--migrate --execute
+--secondary-dir <dir>` carries out the replacement above rather than leaving it as a manual
+follow-up.
 
 Recommended flow:
 1. Run `--check` first (for the relevant set, or `--set all`) and show the user the status
    (absent / up-to-date / stale / edited / hand-authored).
 2. If they want to proceed, confirm the target scope, then run `--install`.
 3. Report exactly which files were written and where.
+
+When a copy is behind, the installer also computes the changelog span between the installed and
+current plugin versions: the most recent entries in that range are shown, any omitted tail is
+counted as `omittedCount`, and a gap inside the version range is reported as
+`missingVersionCount` rather than being read as "no changes". If the installed version predates
+the oldest recorded heading, the tool reports `recorded:false` with `oldestRecordedVersion`
+instead of fabricating a partial history.
 
 ## What gets installed
 
@@ -251,12 +282,13 @@ Recommended flow:
 
 **agents → `.claude/agents/`:**
 
-- **`pilot.md`**, **`pilot-watchdog.md`**, **`pilot-orchestrator.md`** — copied VERBATIM from
-  the plugin's `agents/` directory (their single source), each under a banner. Installing all
-  three is harmless: `pilot.md` + `pilot-watchdog.md` are what a single pilot needs for the
-  watchdog pairing; `pilot-orchestrator.md` is needed only for a wave and sits idle otherwise.
-  Once these project copies exist, spawn the BARE names (`pilot`, `pilot-orchestrator`) so the
-  watchdog pairing attaches.
+- **`pilot.md`**, **`pilot-watchdog.md`**, **`pilot-orchestrator.md`**,
+  **`pilot-orchestrator-watchdog.md`** — copied VERBATIM from the plugin's
+  `agent-templates/` directory (their single source), each under a banner. Installing all four
+  is harmless: `pilot.md` + `pilot-watchdog.md` are what a single pilot needs for the
+  watchdog pairing; `pilot-orchestrator.md` + `pilot-orchestrator-watchdog.md` are the wave
+  pair and sit idle otherwise. Once these project copies exist, spawn the BARE names
+  (`pilot`, `pilot-orchestrator`) so the watchdog pairing attaches.
 
 The rule set is the plugin's shipped, project-agnostic guardrails (pure directives — no
 environment-specific narrative); the workflow-authoring doctrine lives in the

@@ -61,6 +61,7 @@ function storeDir(cwd) {
 
 function main() {
   const input = readInput()
+  if (typeof input.agent_id === 'string' && input.agent_id) return
   if (input.hook_event_name && input.hook_event_name !== 'SessionStart') return
 
   const store = storeDir(input.cwd || process.cwd())
