@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 
@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-queue-not-empty-gate-hook.mjs')
 const HELP_FILE = join(REPO_ROOT, 'plugin/bin/wt-queue-not-empty-gate-hook.help.md')
+const LANE_LIVE_SCAN = new URL('../../../../plugin/bin/lib/lane-live-scan.mjs', import.meta.url).href
 const roots: string[] = []
 
 afterEach(() => {
@@ -39,14 +40,17 @@ type Scaffold = {
 function scaffold(tag: string): Scaffold {
   const root = mkRoot(tag)
   const stateDir = join(root, 'queue-gate-state')
+  const procRoot = join(root, 'fake-proc')
   const cwd = join(root, 'project')
   const transcriptPath = join(root, 'transcript.jsonl')
   mkdirSync(cwd, { recursive: true })
+  mkdirSync(procRoot)
   writeFileSync(join(cwd, '.git'), 'gitdir: /dev/null\n', 'utf8')
   writeFileSync(transcriptPath, '')
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     WT_QUEUE_GATE_DIR: stateDir,
+    WT_QUEUE_GATE_PROC_ROOT: procRoot,
     HOME: root,
   }
   const payload = {
@@ -179,6 +183,61 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(blockText(r)).toBe('')
   })
 
+  it('stays silent for recent activity in a live external lane and names its directory in the scan result', () => {
+    const { env, payload, stateDir, cwd } = scaffold('live-external-lane')
+    const laneDir = join(dirname(cwd), 'outside-session-root')
+    const procRoot = join(cwd, 'fake-proc')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    mkdirSync(join(procRoot, '101'), { recursive: true })
+    mkdirSync(laneDir, { recursive: true })
+    writeFileSync(join(laneDir, 'lane-output.txt'), 'external lane wrote here', 'utf8')
+    writeFileSync(join(procRoot, '101', 'cmdline'), `opencode\0run\0--dir\0${laneDir}\0`)
+    agePath(join(procRoot, '101', 'cmdline'))
+    agePath(join(procRoot, '101'))
+    agePath(procRoot)
+    agePath(cwd)
+
+    const r = runHook(payload, { ...env, WT_QUEUE_GATE_PROC_ROOT: procRoot })
+    expect(r.code).toBe(0)
+    // RED PROOF: before the /proc scan existed, this hook emitted its idle block instead of
+    // finding the `opencode run --dir` lane outside the session root.
+    expect(blockText(r)).toBe('')
+    const scan = spawnSync(process.execPath, ['--input-type=module', '--eval',
+      `const scan = await import(${JSON.stringify(LANE_LIVE_SCAN)}); ` +
+      `console.log(JSON.stringify(scan.scanLiveLaneProcesses({ procRoot: ${JSON.stringify(procRoot)} })))`,
+    ], { encoding: 'utf8' })
+    expect(scan.status).toBe(0)
+    expect(JSON.parse(scan.stdout).processes).toEqual([
+      { pid: '101', dir: laneDir, command: 'opencode run' },
+    ])
+  })
+
+  it('keeps the existing idle verdict when /proc has no matching lane process', () => {
+    const { env, payload, stateDir, cwd } = scaffold('no-live-external-lane')
+    const procRoot = join(cwd, 'fake-proc')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    mkdirSync(join(procRoot, '101'), { recursive: true })
+    writeFileSync(join(procRoot, '101', 'cmdline'), 'node\0worker.mjs\0')
+    agePath(join(procRoot, '101', 'cmdline'))
+    agePath(join(procRoot, '101'))
+    agePath(procRoot)
+    agePath(cwd)
+
+    const r = runHook(payload, { ...env, WT_QUEUE_GATE_PROC_ROOT: procRoot })
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toContain('no recent worktree activity')
+  })
+
+  it('reports a named unknown when the live-lane /proc scan is unavailable', () => {
+    const { env, payload, stateDir, cwd } = scaffold('live-external-lane-unavailable')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    agePath(cwd)
+
+    const r = runHook(payload, { ...env, WT_QUEUE_GATE_PROC_ROOT: join(cwd, 'unreadable-proc') })
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toContain('lane scan was unavailable')
+  })
+
   it('still blocks when the worktree is stale and no recent activity exists', () => {
     const { env, payload, stateDir, cwd } = scaffold('stale-worktree-idle')
     writeSnapshot(stateDir, cwd, { open: 6, at: Date.now(), next: 'CARD-6 idle item' })
@@ -241,12 +300,14 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
   it('does not let a sibling worktree under an umbrella root silence this session', () => {
     const root = mkRoot('umbrella-neighbor-activity')
     const stateDir = join(root, 'queue-gate-state')
+    const procRoot = join(root, 'fake-proc')
     const umbrella = join(root, 'umbrella')
     const driven = join(umbrella, 'worktrees', 'this-session')
     const sibling = join(umbrella, 'worktrees', 'other-session')
     const transcriptPath = join(root, 'transcript.jsonl')
     mkdirSync(driven, { recursive: true })
     mkdirSync(sibling, { recursive: true })
+    mkdirSync(procRoot)
     writeFileSync(join(driven, '.git'), 'gitdir: /dev/null\n', 'utf8')
     writeFileSync(join(sibling, '.git'), 'gitdir: /dev/null\n', 'utf8')
     writeFileSync(transcriptPath, '')
@@ -261,6 +322,7 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     }, {
       ...process.env,
       WT_QUEUE_GATE_DIR: stateDir,
+      WT_QUEUE_GATE_PROC_ROOT: procRoot,
       HOME: root,
     })
 
