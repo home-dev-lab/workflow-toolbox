@@ -392,10 +392,11 @@ describe('coverage-audit per-role agentType routing', () => {
     ).rejects.toThrow(/required agentType .* is unavailable/)
   })
 
-  it('warns about unknown agentTypes keys and continues', async () => {
+  it('rejects unknown agentTypes keys with a nearest-key suggestion', async () => {
     const rt = runtime()
-    const out = await wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { bogusKey: 'x' } }))
-    expect(out.warnings.some((w) => w.includes('bogusKey'))).toBe(true)
+    await expect(
+      wf.run(rt, JSON.stringify({ ...BASE_INPUT, agentTypes: { bogusKey: 'x' } })),
+    ).rejects.toThrow('unknown key `bogusKey` in `agentTypes`')
   })
 
   it('prepends the routed Extract role model before all other prompt text', async () => {

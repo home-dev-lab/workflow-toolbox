@@ -15,6 +15,36 @@ describe('parseConfig', () => {
     expect(() => parseConfig(42)).toThrow(/expected an object/)
   })
 
+  it('rejects an unknown top-level arg with the structured routing suggestion', () => {
+    expect(() => parseConfig(
+      { claims: ['claim'], verifierType: 'codex:reviewer' },
+      { args: ['claims', 'agentTypes'], agentTypes: ['verify'] },
+    )).toThrow('unknown arg `verifierType` — did you mean `agentTypes.verify`?')
+  })
+
+  it('rejects unknown keys inside declared permissive maps', () => {
+    expect(() => parseConfig(
+      { sizing: { maxVerify: 3 } },
+      { args: ['sizing'], sizing: ['maxVerifyClaims'] },
+    )).toThrow('unknown key `maxVerify` in `sizing` — did you mean `maxVerifyClaims`?')
+  })
+
+  it('accepts complete documented cross-model-verify and pr-review configs', () => {
+    expect(parseConfig(
+      { claims: ['claim'], sourceRefs: ['/tmp/source'], votes: 1, refuteThreshold: 1, verifierModel: 'opus', perAgent: { stallMs: 1 }, effort: { verify: 'high' }, agentTypes: { verify: 'reviewer' } },
+      { args: ['claims', 'sourceRefs', 'votes', 'refuteThreshold', 'verifierModel', 'perAgent', 'effort', 'agentTypes'], effort: ['verify'], agentTypes: ['verify'] },
+    )).toMatchObject({ agentTypes: { verify: 'reviewer' }, effort: { verify: 'high' } })
+    expect(parseConfig(
+      { target: 'HEAD~1..HEAD', verifierModel: 'sonnet', perAgent: { effort: 'high' }, effort: { classify: 'low', route: 'medium', review: 'high', verify: 'xhigh', synthesize: 'auto' }, agentTypes: { review: 'reviewer', verify: 'verifier' }, messaging: false, provenance: [], mode: 'full', models: { review: 'sonnet' }, opencodeModels: { review: 'gpt' }, opencodeVariants: { verify: 'high' } },
+      { args: ['target', 'verifierModel', 'perAgent', 'effort', 'agentTypes', 'messaging', 'provenance', 'mode', 'models', 'opencodeModels', 'opencodeVariants'], models: ['review'], effort: ['classify', 'route', 'review', 'verify', 'synthesize'], agentTypes: ['review', 'verify'] },
+    )).toMatchObject({ models: { review: 'sonnet' }, agentTypes: { review: 'reviewer', verify: 'verifier' } })
+  })
+
+  it('rejects an unknown top-level arg for a workflow with no map containers', () => {
+    expect(() => parseConfig({ target: 'HEAD', fabricated: true }, { args: ['target'] }))
+      .toThrow('unknown arg `fabricated` — did you mean `target`?')
+  })
+
   it('parses a full perAgent slice', () => {
     const cfg = parseConfig({
       perAgent: { model: 'sonnet', effort: 'high', agentType: 'reviewer', isolation: 'worktree', stallMs: 60000 },

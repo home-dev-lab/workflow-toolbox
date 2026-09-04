@@ -662,7 +662,12 @@ function parseInput(raw: unknown): PrReviewInput {
   // key: parseConfig never validates key sets, so a near-miss key would be a
   // SILENT no-op — mirroring the effort key is the guard). The Verify fan's
   // routing request follows the SAME convention at `agentTypes.verify`.
-  const cfg = parseConfig(obj)
+  const cfg = parseConfig(obj, {
+    args: ['target', 'verifierModel', 'perAgent', 'effort', 'agentTypes', 'messaging', 'provenance', 'mode', 'models', 'opencodeModels', 'opencodeVariants'],
+    models: ['review'],
+    effort: ['classify', 'route', 'review', 'verify', 'synthesize'],
+    agentTypes: ['review', 'verify'],
+  })
   const perAgent = cfg.perAgent ?? null
   const effort = cfg.effort ?? null
   const reviewerType = cfg.agentTypes?.['review'] ?? null

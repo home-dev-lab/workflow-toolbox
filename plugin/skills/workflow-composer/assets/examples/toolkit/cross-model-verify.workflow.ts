@@ -180,7 +180,11 @@ export default defineWorkflow({
     // per-role effort overrides (`effort.verify`) and the per-role agentType
     // routing map (`agentTypes.verify` — the structured, user-pre-decidable
     // channel for cross-family routing; no bespoke top-level arg).
-    const cfg = parseConfig(obj)
+    const cfg = parseConfig(obj, {
+      args: ['claims', 'sourceRefs', 'votes', 'refuteThreshold', 'verifierModel', 'perAgent', 'effort', 'agentTypes'],
+      effort: ['verify'],
+      agentTypes: ['verify'],
+    })
     const effort = cfg.effort ?? null
     const verifierType = cfg.agentTypes?.['verify']
     const perAgent = cfg.perAgent ?? null

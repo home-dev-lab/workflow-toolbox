@@ -56,16 +56,12 @@ describe('cross-model-verify — input contract', () => {
     ).rejects.toThrow(/agentTypes\.verify/)
   })
 
-  it('ignores a legacy top-level verifierType arg (removed contract — no bespoke arg)', async () => {
+  it('rejects a legacy top-level verifierType arg with the structured routing suggestion', async () => {
     const rt = makeRuntime()
-    const result = (await wf.run(rt, {
+    await expect(wf.run(rt, {
       ...BASE_ARGS,
       verifierType: 'codex:codex-rescue',
-    })) as WfResult
-    // No probe spawned, nothing routed — the legacy arg is dead.
-    expect(rt.calls.some((c) => c.opts?.label === 'probeAgentType:probe')).toBe(false)
-    expect(result.verifierType).toBeNull()
-    expect(result.probe).toBeNull()
+    })).rejects.toThrow('unknown arg `verifierType` — did you mean `agentTypes.verify`?')
   })
 })
 

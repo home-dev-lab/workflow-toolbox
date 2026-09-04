@@ -599,7 +599,12 @@ function parseInput(raw: unknown): DocsAuditInput {
 
   // Recognized config slices (effort/perAgent/agentTypes/messaging) go through
   // the shared parseConfig helper; it ignores this workflow's bespoke keys.
-  const cfg = parseConfig(obj)
+  const cfg = parseConfig(obj, {
+    args: ['repoRoot', 'surfaces', 'surfaceRules', 'hints', 'maxRounds', 'dryRounds', 'surfacesPerAgent', 'maxVerifyClaims', 'claimOffset', 'resumeFrom', 'votes', 'tieredVotes', 'verifierModel', 'effort', 'perAgent', 'agentTypes', 'opencodeModels', 'models', 'opencodeVariants', 'messaging'],
+    models: ['inventory', 'extract', 'verify'],
+    effort: ['inventory', 'extract', 'verify'],
+    agentTypes: ['inventory', 'extract', 'verify'],
+  })
 
   let tieredVotes = true
   if (obj['tieredVotes'] !== undefined) {
