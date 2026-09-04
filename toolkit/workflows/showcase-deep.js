@@ -2161,6 +2161,9 @@ ${renderClaim(claim)}`;
 
   // showcase-deep.workflow.ts
   var GUARD = " IMPORTANT: render demo \u2014 reply with a short line of TEXT ONLY. Do NOT use any tools, and do NOT create, modify, or delete any files.";
+  function inlineLines(items) {
+    return items.map((item, index) => `${index + 1}. ${item}`).join("\n");
+  }
   function parseInput(raw) {
     const obj = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
     return { perAgent: parseConfig(obj).perAgent ?? null };
@@ -2181,7 +2184,8 @@ ${renderClaim(claim)}`;
       maxChars: 24,
       analyzePrompt: (c, i, total) => `Render demo. Chunk ${i + 1}/${total}. Summarize the feedback themes in one short line:
 ${c}${GUARD}`,
-      synthesizePrompt: (parts) => `Render demo. Merge these ${parts.length} theme notes into one short "top clusters" line.${GUARD}`,
+      synthesizePrompt: (parts) => `Render demo. Merge these theme notes into one short "top clusters" line:
+${inlineLines(parts)}${GUARD}`,
       phase: "Chunk"
     });
     rt.phase("Verify");

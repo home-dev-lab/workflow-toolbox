@@ -20,8 +20,22 @@ function makeRuntime(): FakeRuntime {
       const p = prompt.toLowerCase()
       if (p.includes('classify')) return { category: 'playful' }
       if (p.includes('score')) return { score: 3, reason: 'demo' }
-      if (p.includes('plan') && p.includes('split')) return { subtasks: [{ description: 'step a' }, { description: 'step b' }] }
+      if ((p.includes('plan') || p.includes('break')) && (p.includes('split') || p.includes('independent'))) {
+        return { subtasks: [{ description: 'step a' }, { description: 'step b' }] }
+      }
       if (p.includes('keep this')) return { pass: true }
+      if (p.includes('chunk 1/5')) return 'color theme'
+      if (p.includes('chunk 2/5')) return 'font theme'
+      if (p.includes('chunk 3/5')) return 'mascot theme'
+      if (p.includes('chunk 4/5')) return 'font repeat theme'
+      if (p.includes('chunk 5/5')) return 'scary mascot theme'
+      if (p.includes("mascot's colors")) return 'colors note'
+      if (p.includes("mascot's personality")) return 'personality note'
+      if (p.includes("mascot's catchphrase")) return 'catchphrase note'
+      if (p.includes('write a bold mascot tagline')) return 'bold tagline'
+      if (p.includes('write a whimsical mascot tagline')) return 'whimsical tagline'
+      if (p.includes('step 0:')) return 'intro line'
+      if (p.includes('step 1:')) return 'close line'
       return 'one short demo line'
     },
   })
@@ -67,4 +81,45 @@ describe('showcase stages — honor args.perAgent.model when launched standalone
       expect(rt.calls.every((c) => c.opts?.model === 'opus')).toBe(true)
     })
   }
+})
+
+describe('showcase stages — synthesis prompts inline their source items', () => {
+  it('showcase-deep includes every theme note in the Chunk synthesis prompt', async () => {
+    const rt = makeRuntime()
+    await deep.run(rt, JSON.stringify({}))
+
+    const prompt = rt.calls.find((c) => c.phase === 'Chunk' && c.opts?.label?.includes('synthesize'))?.prompt
+    expect(prompt).toBeTruthy()
+    expect(prompt).toContain('color theme')
+    expect(prompt).toContain('font theme')
+    expect(prompt).toContain('mascot theme')
+    expect(prompt).toContain('font repeat theme')
+    expect(prompt).toContain('scary mascot theme')
+  })
+
+  it('showcase-fan-compete includes every angle note and tagline in synthesis prompts', async () => {
+    const rt = makeRuntime()
+    await fanCompete.run(rt, JSON.stringify({}))
+
+    const fanPrompt = rt.calls.find((c) => c.phase === 'Fan' && c.opts?.label?.includes('synthesize'))?.prompt
+    expect(fanPrompt).toBeTruthy()
+    expect(fanPrompt).toContain('colors note')
+    expect(fanPrompt).toContain('personality note')
+    expect(fanPrompt).toContain('catchphrase note')
+
+    const competePrompt = rt.calls.find((c) => c.phase === 'Compete' && c.opts?.label?.includes('synthesize'))?.prompt
+    expect(competePrompt).toBeTruthy()
+    expect(competePrompt).toContain('bold tagline')
+    expect(competePrompt).toContain('whimsical tagline')
+  })
+
+  it('showcase-plan includes every worker line in the Plan synthesis prompt', async () => {
+    const rt = makeRuntime()
+    await plan.run(rt, JSON.stringify({}))
+
+    const prompt = rt.calls.find((c) => c.phase === 'Plan' && c.opts?.label?.includes('synthesize'))?.prompt
+    expect(prompt).toBeTruthy()
+    expect(prompt).toContain('intro line')
+    expect(prompt).toContain('close line')
+  })
 })

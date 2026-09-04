@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest'
 import { FakeRuntime } from '@workflow-toolbox/runtime'
 import wf from '../all-patterns-workflow.workflow.js'
+import demoAllPatterns from '../demo-all-patterns.workflow.js'
 
 // A permissive handler: returns a shape rich enough that no pattern THROWS (they
 // degrade on a mismatch, never throw). Routed lightly on prompt content.
@@ -17,8 +18,19 @@ function makeRuntime(): FakeRuntime {
       if (p.includes('classify')) return { category: 'playful' }
       if (p.includes('approve')) return { approve: true, reason: 'demo' }
       if (p.includes('score')) return { score: 3, reason: 'demo' }
-      if (p.includes('plan') && p.includes('split')) return { subtasks: [{ description: 'step a' }, { description: 'step b' }] }
+      if ((p.includes('plan') || p.includes('break')) && (p.includes('split') || p.includes('independent'))) {
+        return { subtasks: [{ description: 'step a' }, { description: 'step b' }, { description: 'step c' }] }
+      }
       if (p.includes('keep this')) return { pass: true }
+      if (p.includes('about "alpha"')) return 'alpha note'
+      if (p.includes('about "beta"')) return 'beta note'
+      if (p.includes('about "gamma"')) return 'gamma note'
+      if (p.includes('about "delta"')) return 'delta note'
+      if (p.includes('write one short slogan in a concise style')) return 'concise slogan'
+      if (p.includes('write one short slogan in a playful style')) return 'playful slogan'
+      if (p.includes('subtask 0:')) return 'hello line'
+      if (p.includes('subtask 1:')) return 'bonjour line'
+      if (p.includes('subtask 2:')) return 'hola line'
       return 'one short demo line'
     },
   })
@@ -90,5 +102,30 @@ describe('all-patterns-workflow — three nesting levels all execute', () => {
     // The trail concatenates every level's pattern trails — non-trivial.
     expect(out.envelope.trail.length).toBeGreaterThan(10)
     expect(out.approved).toBe(true)
+  })
+})
+
+describe('demo-all-patterns — synthesis prompts inline their source items', () => {
+  it('includes the fan notes, ranked slogans, and worker lines in synthesis prompts', async () => {
+    const rt = makeRuntime()
+    await demoAllPatterns.run(rt, JSON.stringify({}))
+
+    const analyzePrompt = rt.calls.find((c) => c.phase === 'Analyze' && c.opts?.label?.includes('synthesize'))?.prompt
+    expect(analyzePrompt).toBeTruthy()
+    expect(analyzePrompt).toContain('alpha note')
+    expect(analyzePrompt).toContain('beta note')
+    expect(analyzePrompt).toContain('gamma note')
+    expect(analyzePrompt).toContain('delta note')
+
+    const competePrompt = rt.calls.find((c) => c.phase === 'Compete' && c.opts?.label?.includes('synthesize'))?.prompt
+    expect(competePrompt).toBeTruthy()
+    expect(competePrompt).toContain('concise slogan')
+    expect(competePrompt).toContain('playful slogan')
+
+    const executePrompt = rt.calls.find((c) => c.phase === 'Execute' && c.opts?.label?.includes('synthesize'))?.prompt
+    expect(executePrompt).toBeTruthy()
+    expect(executePrompt).toContain('hello line')
+    expect(executePrompt).toContain('bonjour line')
+    expect(executePrompt).toContain('hola line')
   })
 })

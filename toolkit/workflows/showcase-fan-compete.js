@@ -1411,6 +1411,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
 
   // showcase-fan-compete.workflow.ts
   var GUARD = " IMPORTANT: render demo \u2014 reply with a short line of TEXT ONLY. Do NOT use any tools, and do NOT create, modify, or delete any files.";
+  function inlineLines(items) {
+    return items.map((item, index) => `${index + 1}. ${item}`).join("\n");
+  }
   function parseInput(raw) {
     const obj = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
     return { perAgent: parseConfig(obj).perAgent ?? null };
@@ -1422,7 +1425,8 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     const fan = await fanOutAndSynthesize(rt, {
       tasks: ["colors", "personality", "catchphrase"],
       taskPrompt: (task, i) => `Render demo, angle ${i}. One short idea about the mascot's ${task}.${GUARD}`,
-      synthesisPrompt: (parts) => `Render demo. Fuse these ${parts.length} angle notes into one mascot brief line.${GUARD}`,
+      synthesisPrompt: (parts) => `Render demo. Fuse these angle notes into one mascot brief line:
+${inlineLines(parts)}${GUARD}`,
       phase: "Fan"
     });
     rt.phase("Compete");
@@ -1430,7 +1434,8 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       angles: ["bold", "whimsical"],
       attemptPrompt: (angle, i) => `Render demo, attempt ${i}. Write a ${angle} mascot tagline (one short line).${GUARD}`,
       judgePrompt: (attempt) => `Render demo. Score this tagline 1-10: "${attempt}".${GUARD}`,
-      synthesisPrompt: (ranked) => `Render demo. From the best of ${ranked.length} taglines, write the final one line.${GUARD}`,
+      synthesisPrompt: (ranked) => `Render demo. Write the final one line from these ranked taglines:
+${inlineLines(ranked.map((entry) => entry.attempt))}${GUARD}`,
       phase: "Compete"
     });
     return {

@@ -29,6 +29,10 @@
 import { defineWorkflow } from '@workflow-toolbox/build/define'
 import { classifyAndAct, collectTrail, fanOutAndSynthesize, adversarialVerification, generateAndFilter, tournament, loopUntilDone, planAndExecute, scoreAndRank } from '@workflow-toolbox/patterns'
 
+function inlineLines(items: ReadonlyArray<string>): string {
+  return items.map((item, index) => `${index + 1}. ${item}`).join('\n')
+}
+
 export default defineWorkflow({
   meta: {
     name: 'demo-all-patterns',
@@ -80,7 +84,7 @@ export default defineWorkflow({
       synthesisEffort: 'low',
       tasks: ['alpha', 'beta', 'gamma', 'delta'],
       taskPrompt: (task, index) => `Render demo, worker ${index}. Reply with one short line about "${task}".${GUARD}`,
-      synthesisPrompt: (parts) => `Render demo. Combine these ${parts.length} short notes into one line.${GUARD}`,
+      synthesisPrompt: (parts) => `Render demo. Combine these short notes into one line:\n${inlineLines(parts)}${GUARD}`,
       phase: 'Analyze',
     })
 
@@ -113,7 +117,7 @@ export default defineWorkflow({
       angles: ['concise', 'playful'],
       attemptPrompt: (angle, index) => `Render demo, attempt ${index}. Write one short slogan in a ${angle} style.${GUARD}`,
       judgePrompt: (attempt) => `Render demo. Score this slogan 1-10: "${attempt}".${GUARD}`,
-      synthesisPrompt: (ranked) => `Render demo. From the best of ${ranked.length} slogans, write the final one line.${GUARD}`,
+      synthesisPrompt: (ranked) => `Render demo. Write the final one line from these ranked slogans:\n${inlineLines(ranked.map((entry) => entry.attempt))}${GUARD}`,
       phase: 'Compete',
     })
 
@@ -140,7 +144,7 @@ export default defineWorkflow({
       synthesisEffort: 'low',
       planPrompt: `Render demo. Return a 3-item plan that breaks "say hello in three languages" into 3 independent subtasks — as a PLAN ONLY. Do NOT implement it.${GUARD}`,
       workerPrompt: (subtask, index) => `Render demo, subtask ${index}: ${subtask.description}. Reply in one short line.${GUARD}`,
-      synthesisPrompt: () => `Render demo. Combine the 3 worker lines into one greeting.${GUARD}`,
+      synthesisPrompt: (results) => `Render demo. Combine these worker lines into one greeting:\n${inlineLines(results)}${GUARD}`,
       phase: 'Execute',
     })
 

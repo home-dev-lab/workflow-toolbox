@@ -1093,6 +1093,9 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
 
   // showcase-plan.workflow.ts
   var GUARD = " IMPORTANT: render demo \u2014 reply with a short line of TEXT ONLY. Do NOT use any tools, and do NOT create, modify, or delete any files.";
+  function inlineLines(items) {
+    return items.map((item, index) => `${index + 1}. ${item}`).join("\n");
+  }
   function parseInput(raw) {
     const obj = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
     return { perAgent: parseConfig(obj).perAgent ?? null };
@@ -1104,7 +1107,8 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
     const plan = await planAndExecute(rt, {
       planPrompt: `Render demo. Return a 3-item PLAN (do NOT implement) that splits "introduce the mascot" into 3 independent one-line steps.${GUARD}`,
       workerPrompt: (subtask, i) => `Render demo, step ${i}: ${subtask.description}. Reply in one short line.${GUARD}`,
-      synthesisPrompt: (results) => `Render demo. Combine these ${results.length} step lines into one rollout summary.${GUARD}`,
+      synthesisPrompt: (results) => `Render demo. Combine these step lines into one rollout summary:
+${inlineLines(results)}${GUARD}`,
       phase: "Plan"
     });
     return {

@@ -11,6 +11,10 @@ import type { TrailRecord } from '@workflow-toolbox/patterns'
 const GUARD =
   ' IMPORTANT: render demo — reply with a short line of TEXT ONLY. Do NOT use any tools, and do NOT create, modify, or delete any files.'
 
+function inlineLines(items: ReadonlyArray<string>): string {
+  return items.map((item, index) => `${index + 1}. ${item}`).join('\n')
+}
+
 export interface StageInput {
   perAgent: AgentDefaults | null
 }
@@ -34,7 +38,7 @@ async function run(rt0: WorkflowRuntime, input: StageInput): Promise<StageOutput
   const plan = await planAndExecute(rt, {
     planPrompt: `Render demo. Return a 3-item PLAN (do NOT implement) that splits "introduce the mascot" into 3 independent one-line steps.${GUARD}`,
     workerPrompt: (subtask, i) => `Render demo, step ${i}: ${subtask.description}. Reply in one short line.${GUARD}`,
-    synthesisPrompt: (results) => `Render demo. Combine these ${results.length} step lines into one rollout summary.${GUARD}`,
+    synthesisPrompt: (results) => `Render demo. Combine these step lines into one rollout summary:\n${inlineLines(results)}${GUARD}`,
     phase: 'Plan',
   })
 

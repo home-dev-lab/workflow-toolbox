@@ -22,6 +22,10 @@ import type { TrailRecord } from '@workflow-toolbox/patterns'
 const GUARD =
   ' IMPORTANT: render demo — reply with a short line of TEXT ONLY. Do NOT use any tools, and do NOT create, modify, or delete any files.'
 
+function inlineLines(items: ReadonlyArray<string>): string {
+  return items.map((item, index) => `${index + 1}. ${item}`).join('\n')
+}
+
 export interface StageInput {
   perAgent: AgentDefaults | null
 }
@@ -54,7 +58,7 @@ async function run(rt0: WorkflowRuntime, input: StageInput): Promise<StageOutput
     input: 'LOVE the colors\nfont too small\nLOVE the mascot\nfont too small\nmascot is scary',
     maxChars: 24,
     analyzePrompt: (c, i, total) => `Render demo. Chunk ${i + 1}/${total}. Summarize the feedback themes in one short line:\n${c}${GUARD}`,
-    synthesizePrompt: (parts) => `Render demo. Merge these ${parts.length} theme notes into one short "top clusters" line.${GUARD}`,
+    synthesizePrompt: (parts) => `Render demo. Merge these theme notes into one short "top clusters" line:\n${inlineLines(parts)}${GUARD}`,
     phase: 'Chunk',
   })
 
