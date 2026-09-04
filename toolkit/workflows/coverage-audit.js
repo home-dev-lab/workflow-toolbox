@@ -443,6 +443,9 @@ unreadable channel never fails your task.`;
     const resolved = resolveEffort(argsValue, stageDefault);
     return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor;
   }
+  function resolveVerifierModel(launcherModel, workflowModel) {
+    return launcherModel ?? workflowModel ?? void 0;
+  }
 
   // ../packages/patterns/src/envelope.ts
   function makeRecord(stage, ok, extra) {
@@ -3061,7 +3064,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         "coverage-audit [Verify]: no undocumented-capability claims were extracted \u2014 nothing to verify. This can be legitimate (every inventoried capability is well documented) or an extraction problem (review the Extract warnings above)."
       );
     } else {
-      const verifyModel = input.models?.verify ?? input.verifierModel ?? null;
+      const verifyModel = resolveVerifierModel(input.perAgent?.model, input.models?.verify ?? input.verifierModel);
       const verifyResult = await adversarialVerification(rt, {
         claims: sortedClaims,
         renderClaim: renderCoverageClaim(
@@ -3085,7 +3088,7 @@ Cite the file paths (and line numbers where possible) your verdict rests on in "
         maxVerifyClaims: input.maxVerifyClaims,
         effort: verifyEffort,
         phase: "Verify",
-        ...verifyModel !== null ? { model: verifyModel } : {},
+        ...verifyModel !== void 0 ? { model: verifyModel } : {},
         ...resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}
       });
       for (const w of verifyResult.warnings) warnings.push(w);

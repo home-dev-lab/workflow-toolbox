@@ -31,9 +31,9 @@
 // portable cross-model verifier prefer an MCP→model endpoint. See cross-model-verify.
 
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
-import { MODEL_ALIASES } from '@workflow-toolbox/runtime'
-import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
-import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
+import { MODEL_ALIASES, withAgentDefaults } from '@workflow-toolbox/runtime'
+import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias, AgentDefaults } from '@workflow-toolbox/runtime'
+import { resolveEffort, resolveVerifierEffort, resolveVerifierModel } from '@workflow-toolbox/std'
 // untrusted() / renderSourceRefs() (used below) are promoted from here +
 // cross-model-verify.workflow.ts into @workflow-toolbox/patterns, Rule of
 // Three — the two copies were byte-identical.
@@ -99,6 +99,7 @@ export interface IndependentAnalysisInput {
    *  overrides. Resolved per-stage via resolveEffort; 'verify' is additionally
    *  clamped to a 'high' floor via resolveVerifierEffort. */
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
+  perAgent: AgentDefaults | null
   /** Blanket opt-OUT of the default leaf-agent fence (withLeafFence): every agent
    *  this workflow spawns denies SendMessage by default. true = allow the standard
    *  (messaging-capable) subagent instead. null/false (default) = the fence applies. */
@@ -284,8 +285,9 @@ export default defineWorkflow({
     const effort = cfg.effort ?? null
     const verifierType = cfg.agentTypes?.['verify']
     const messaging = cfg.messaging ?? null
+    const perAgent = cfg.perAgent ?? null
 
-    return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel, verifierType, effort, messaging }
+    return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel, verifierType, effort, messaging, perAgent }
   },
 
   run: async (rt0: WorkflowRuntime, input: IndependentAnalysisInput) => {
@@ -295,10 +297,12 @@ export default defineWorkflow({
     // agentType unless `messaging: true` was requested — see
     // @workflow-toolbox/patterns' withLeafFence.
     rt0.phase('Fence')
-    const { rt, report: leafFence } = await withLeafFence(rt0, {
+    const { rt: fencedRt, report: leafFence } = await withLeafFence(rt0, {
       phase: 'Fence',
       disabled: input.messaging === true,
     })
+    const rt = input.perAgent !== null ? withAgentDefaults(fencedRt, input.perAgent) : fencedRt
+    const verifierModel = resolveVerifierModel(input.perAgent?.model, input.verifierModel)
     const subjectBlock = untrusted('SUBJECT', input.subject)
     const contextBlock = input.context.trim().length > 0 ? untrusted('CONTEXT', input.context) : '(no extra context)'
     const assumptionsBlock = renderAssumptions(input.assumptions)
@@ -442,7 +446,9 @@ export default defineWorkflow({
       // Low-severity findings get a single vote; the rest get the full panel.
       votesPerClaim: (c) => (c.severity === 'low' ? 1 : input.votes),
       effort: verifyEffort,
-      ...(input.verifierModel !== undefined ? { model: input.verifierModel } : {}),
+      ...(verifierModel !== undefined
+        ? { model: verifierModel }
+        : {}),
       ...(resolvedVerifierType !== undefined ? { verifierType: resolvedVerifierType } : {}),
       phase: 'Verify',
     })

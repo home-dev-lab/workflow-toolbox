@@ -445,6 +445,9 @@ unreadable channel never fails your task.`;
     const resolved = resolveEffort(argsValue, stageDefault);
     return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor;
   }
+  function resolveVerifierModel(launcherModel, workflowModel) {
+    return launcherModel ?? workflowModel ?? void 0;
+  }
 
   // ../packages/patterns/src/envelope.ts
   function makeRecord(stage, ok, extra) {
@@ -2763,6 +2766,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     const routeActEffort = resolveEffort(input.effort?.["route"], ROUTE_ACT_EFFORT);
     let reviewEffort = resolveEffort(input.effort?.["review"], REVIEW_EFFORT);
     const verifyEffort = resolveVerifierEffort(input.effort?.["verify"], VERIFY_EFFORT_DEFAULT);
+    const verifierModel = resolveVerifierModel(input.perAgent?.model, input.verifierModel);
     const synthesizeEffort = resolveEffort(input.effort?.["synthesize"], SYNTHESIZE_EFFORT);
     let resolvedReviewerType = null;
     let probeReport = null;
@@ -3020,7 +3024,7 @@ Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'
         // Verify-fan model: launch-time override via `args.verifierModel`, default opus (BEST_MODEL).
         // This verification is TARGETED + diff-grounded, so passing 'sonnet' at launch is a sound,
         // cheaper choice — but the committed DEFAULT stays opus (no implicit downgrade).
-        ...input.verifierModel !== null ? { model: input.verifierModel } : {},
+        ...verifierModel !== void 0 ? { model: verifierModel } : {},
         // Verify-fan agentType: launch-time override via `args.agentTypes.verify`,
         // probe-resolved above. Omitted when null → the standard subagent (default,
         // also the graceful-fallback path when the requested type could not answer).

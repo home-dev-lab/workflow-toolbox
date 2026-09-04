@@ -49,3 +49,11 @@ export function resolveVerifierEffort(
   const resolved = resolveEffort(argsValue, stageDefault)
   return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor
 }
+
+/** Resolve verify-fan model precedence: launcher blanket, workflow pin, pattern default. */
+export function resolveVerifierModel<T extends string>(
+  launcherModel: T | undefined,
+  workflowModel: T | null | undefined,
+): T | undefined {
+  return launcherModel ?? workflowModel ?? undefined
+}

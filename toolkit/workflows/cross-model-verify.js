@@ -426,6 +426,9 @@ unreadable channel never fails your task.`;
     const resolved = resolveEffort(argsValue, stageDefault);
     return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor;
   }
+  function resolveVerifierModel(launcherModel, workflowModel) {
+    return launcherModel ?? workflowModel ?? void 0;
+  }
 
   // ../packages/patterns/src/envelope.ts
   function makeRecord(stage, ok, extra) {
@@ -1740,6 +1743,7 @@ ${renderClaim(claim)}`;
     },
     run: async (rt0, input) => {
       const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0;
+      const verifierModel = resolveVerifierModel(input.perAgent?.model, input.verifierModel);
       const sourceBlock = renderSourceRefs(input.sourceRefs, {
         emptyNote: "No source files were provided \u2014 reason from the claim as given.",
         leadIn: "READ these files to GROUND the verdict in real content (cite specifics):"
@@ -1765,7 +1769,7 @@ ${untrusted("CLAIM", c)}`,
         ...input.refuteThreshold !== void 0 ? { refuteThreshold: input.refuteThreshold } : {},
         effort: resolveVerifierEffort(input.effort?.["verify"], VERIFY_EFFORT_DEFAULT),
         ...resolvedType !== void 0 ? { verifierType: resolvedType } : {},
-        ...input.verifierModel !== void 0 ? { model: input.verifierModel } : {},
+        ...verifierModel !== void 0 ? { model: verifierModel } : {},
         phase: "Verify"
       });
       const verified = verification.value ?? [];

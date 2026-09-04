@@ -479,7 +479,7 @@ describe('coverage-audit per-role wrapper model + opencodeVariants', () => {
     expect(extract.every((c) => c.opts?.model === undefined)).toBe(true)
   })
 
-  it('spawns the wrapper-routed verify fan as haiku by default (external-relay pattern default)', async () => {
+  it('lets launcher perAgent.model override the external-relay verify default', async () => {
     const rt = runtime()
     await wf.run(rt, JSON.stringify({
       ...BASE_INPUT,
@@ -488,7 +488,7 @@ describe('coverage-audit per-role wrapper model + opencodeVariants', () => {
     }))
     const verify = stageCalls(rt, 'Verify', 'verdict for one undocumented-capability claim')
     expect(verify.length).toBeGreaterThan(0)
-    expect(verify.every((c) => c.opts?.model === 'haiku')).toBe(true)
+    expect(verify.every((c) => c.opts?.model === 'sonnet')).toBe(true)
   })
 
   it('models.verify overrides verifierModel for the verify fan', async () => {

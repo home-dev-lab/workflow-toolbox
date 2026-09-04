@@ -371,6 +371,13 @@ agent call only; the trail is intentionally not extended (the `model` field
 already covers the pattern's load-bearing audit concern). Additive, semver-minor;
 ships in `@workflow-toolbox/patterns` 0.6.0.
 
+Verify-fan precedence is explicit: `resolveVerifierModel(perAgent.model,
+verifierModel)` gives the launcher model priority, then the workflow pin, then
+the pattern default; `effort.verify` may only RAISE a verifier's effort above the
+workflow's `high` floor, never lower it (verifiers keep a static floor). The
+cache-warm probe uses the same resolved model and effort as every verify vote,
+so its trail is directly comparable.
+
 The "specialize the producer, not the skeptic" caveat above is about *same-model*
 specialization. The **premier use of `verifierType` is the opposite — cross-model
 decorrelation**: routing to a *different model family* is the one real lever

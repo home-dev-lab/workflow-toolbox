@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Verifier launch selectors now take precedence over workflow verifier pins: `perAgent.model` reaches every adversarial verification vote and its warm probe (launcher > workflow `verifierModel` > pattern default); `effort.verify` still only raises the verifier effort above the workflow floor.
+
 ## 0.8.0
 
 ### Minor Changes

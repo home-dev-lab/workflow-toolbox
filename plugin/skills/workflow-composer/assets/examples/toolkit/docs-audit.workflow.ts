@@ -44,7 +44,7 @@
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
 import { withAgentDefaults, MODEL_ALIASES } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, EffortAlias, ModelAlias, AgentDefaults } from '@workflow-toolbox/runtime'
-import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
+import { resolveEffort, resolveVerifierEffort, resolveVerifierModel } from '@workflow-toolbox/std'
 import {
   adversarialVerification,
   agentWithSchemaSalvage,
@@ -1269,7 +1269,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
     // when both are absent adversarialVerification supplies the default itself
     // ('haiku' for an external relay via externalGateExpectation, BEST_MODEL for
     // a plain Claude verifier) — so we pass NOTHING rather than force a model.
-    const verifyModel: ModelAlias | null = input.models?.verify ?? input.verifierModel ?? null
+    const verifyModel = resolveVerifierModel(input.perAgent?.model, input.models?.verify ?? input.verifierModel)
     const verifyResult = await adversarialVerification<AuditClaim>(rt, {
       claims: claimsAfterOffset,
       renderClaim: renderAuditClaim(
@@ -1296,7 +1296,7 @@ async function run(rt00: WorkflowRuntime, input: DocsAuditInput): Promise<DocsAu
       maxVerifyClaims: input.maxVerifyClaims,
       effort: verifyEffort,
       phase: 'Verify',
-      ...(verifyModel !== null ? { model: verifyModel } : {}),
+      ...(verifyModel !== undefined ? { model: verifyModel } : {}),
       ...(resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}),
     })
     for (const w of verifyResult.warnings) warnings.push(w)

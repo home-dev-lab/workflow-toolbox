@@ -435,6 +435,9 @@ unreadable channel never fails your task.`;
     const resolved = resolveEffort(argsValue, stageDefault);
     return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor;
   }
+  function resolveVerifierModel(launcherModel, workflowModel) {
+    return launcherModel ?? workflowModel ?? void 0;
+  }
 
   // ../packages/patterns/src/envelope.ts
   function makeRecord(stage, ok, extra) {
@@ -1993,14 +1996,17 @@ ${renderClaim(claim)}`;
       const effort = cfg.effort ?? null;
       const verifierType = cfg.agentTypes?.["verify"];
       const messaging = cfg.messaging ?? null;
-      return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel, verifierType, effort, messaging };
+      const perAgent = cfg.perAgent ?? null;
+      return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel, verifierType, effort, messaging, perAgent };
     },
     run: async (rt0, input) => {
       rt0.phase("Fence");
-      const { rt, report: leafFence } = await withLeafFence(rt0, {
+      const { rt: fencedRt, report: leafFence } = await withLeafFence(rt0, {
         phase: "Fence",
         disabled: input.messaging === true
       });
+      const rt = input.perAgent !== null ? withAgentDefaults(fencedRt, input.perAgent) : fencedRt;
+      const verifierModel = resolveVerifierModel(input.perAgent?.model, input.verifierModel);
       const subjectBlock = untrusted("SUBJECT", input.subject);
       const contextBlock = input.context.trim().length > 0 ? untrusted("CONTEXT", input.context) : "(no extra context)";
       const assumptionsBlock = renderAssumptions(input.assumptions);
@@ -2121,7 +2127,7 @@ ${subjectBlock}`,
         // Low-severity findings get a single vote; the rest get the full panel.
         votesPerClaim: (c) => c.severity === "low" ? 1 : input.votes,
         effort: verifyEffort,
-        ...input.verifierModel !== void 0 ? { model: input.verifierModel } : {},
+        ...verifierModel !== void 0 ? { model: verifierModel } : {},
         ...resolvedVerifierType !== void 0 ? { verifierType: resolvedVerifierType } : {},
         phase: "Verify"
       });

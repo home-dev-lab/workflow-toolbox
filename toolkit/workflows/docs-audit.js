@@ -443,6 +443,9 @@ unreadable channel never fails your task.`;
     const resolved = resolveEffort(argsValue, stageDefault);
     return EFFORT_ORDER.indexOf(resolved) >= EFFORT_ORDER.indexOf(safeFloor) ? resolved : safeFloor;
   }
+  function resolveVerifierModel(launcherModel, workflowModel) {
+    return launcherModel ?? workflowModel ?? void 0;
+  }
 
   // ../packages/patterns/src/envelope.ts
   function makeRecord(stage, ok, extra) {
@@ -2663,7 +2666,7 @@ ${pipelineHowTo}`;
 ` : "Claim persistence FAILED (see warnings) \u2014 the extracted claims were NOT durably saved; a re-run will have to re-extract.\n") + remedyParagraph
         );
       }
-      const verifyModel = input.models?.verify ?? input.verifierModel ?? null;
+      const verifyModel = resolveVerifierModel(input.perAgent?.model, input.models?.verify ?? input.verifierModel);
       const verifyResult = await adversarialVerification(rt, {
         claims: claimsAfterOffset,
         renderClaim: renderAuditClaim(
@@ -2688,7 +2691,7 @@ ${pipelineHowTo}`;
         maxVerifyClaims: input.maxVerifyClaims,
         effort: verifyEffort,
         phase: "Verify",
-        ...verifyModel !== null ? { model: verifyModel } : {},
+        ...verifyModel !== void 0 ? { model: verifyModel } : {},
         ...resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {}
       });
       for (const w of verifyResult.warnings) warnings.push(w);
