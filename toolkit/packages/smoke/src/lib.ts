@@ -272,9 +272,34 @@ export async function peelLaunch(it: AsyncIterator<unknown>, timeoutMs: number):
 
 const STAT_KEYS = ['itemsIn', 'itemsOut', 'agentsSpawned', 'dropped', 'truncated'] as const
 
+function checkPatternResultShape(value: unknown, path: string, problems: string[]): void {
+  if (!isRecord(value)) {
+    problems.push(`${path} is missing or not an object`)
+    return
+  }
+
+  if (!Array.isArray(value['warnings'])) problems.push(`${path}.warnings is not an array`)
+  if (!Array.isArray(value['trail']) || value['trail'].length === 0) {
+    problems.push(`${path}.trail is missing, not an array, or empty`)
+  }
+
+  const stats = value['stats']
+  if (!isRecord(stats)) {
+    problems.push(`${path}.stats is missing or not an object`)
+    return
+  }
+
+  for (const key of STAT_KEYS) {
+    if (typeof stats[key] !== 'number') {
+      problems.push(`${path}.stats.${key} is not a number`)
+    }
+  }
+}
+
 /** Validate the `result` field of a completed wt-smoke run. Returns a list of
  *  problems — empty means the round-trip envelope arrived intact. Asserts the
- *  PatternResult shape structurally (deterministic) plus the marker. */
+ *  legacy envelope or split gen/rank PatternResult shape structurally
+ *  (deterministic) plus the marker. */
 export function checkSmokeResult(result: unknown, marker: string): string[] {
   const problems: string[] = []
   if (!isRecord(result)) return [`result is not an object (got ${typeof result})`]
@@ -289,21 +314,25 @@ export function checkSmokeResult(result: unknown, marker: string): string[] {
     return problems
   }
 
-  if (!Array.isArray(envelope['value'])) problems.push('envelope.value is not an array')
-  if (!Array.isArray(envelope['warnings'])) problems.push('envelope.warnings is not an array')
   if (!Array.isArray(envelope['trail']) || envelope['trail'].length === 0) {
     problems.push('envelope.trail is missing, not an array, or empty')
   }
 
-  const stats = envelope['stats']
-  if (!isRecord(stats)) {
-    problems.push('envelope.stats is missing or not an object')
-  } else {
-    for (const key of STAT_KEYS) {
-      if (typeof stats[key] !== 'number') {
-        problems.push(`envelope.stats.${key} is not a number`)
-      }
-    }
+  const hasLegacyEnvelopeShape = 'value' in envelope || 'warnings' in envelope || 'stats' in envelope
+  const hasSplitPatternShape = 'gen' in result || 'rank' in result
+
+  if (hasLegacyEnvelopeShape) {
+    if (!Array.isArray(envelope['value'])) problems.push('envelope.value is not an array')
+    checkPatternResultShape(envelope, 'envelope', problems)
+  }
+
+  if (hasSplitPatternShape) {
+    checkPatternResultShape(result['gen'], 'result.gen', problems)
+    checkPatternResultShape(result['rank'], 'result.rank', problems)
+  }
+
+  if (!hasLegacyEnvelopeShape && !hasSplitPatternShape) {
+    problems.push('result carries neither a legacy envelope PatternResult nor split gen/rank PatternResults')
   }
   return problems
 }
