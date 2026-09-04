@@ -51,7 +51,9 @@ The reference files carry the deep material — read them when a step points you
   `sourceRefs` for any analysis, audit, verification, or decision workflow.
 - `references/orchestrator-pipelines.md` — human-gated multi-workflow jobs (L3).
 - `references/shipped-compositions.md` — the 26 shipped compositions + operational lessons.
-- `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing.
+- `references/model-and-agent-routing.md` — schemas, tiering, effort, agentType routing, including
+  the heavy-wrapper vs thin-envelope split (`workflow-toolbox:opencode-envelope`) and how to wire
+  it through `agentTypes.<role>`.
 - `references/observer-definitions.md` — authoring an observer (`<name>.observer.json`), the
   abstract-needs boundary, the selector/label coupling, and the `args.observers` launch bridge.
 - `references/capability-needs.md` — giving a role more than the bare default via a

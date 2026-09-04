@@ -126,7 +126,7 @@ and attaches a **schema-hint** finding telling you to fix the schema and re-run 
 ## Reached no external model (a diagnosable class, not a mystery)
 
 A run that was supposed to route a role to a cross-family bridge (`codex:codex-rescue`,
-`workflow-toolbox:opencode-verifier`) and quietly never called out is a known cause,
+`workflow-toolbox:opencode-verifier`, `workflow-toolbox:opencode-envelope`) and quietly never called out is a known cause,
 not an open question — check it directly rather than re-reading the whole journal.
 
 ⚠ **A non-empty answer is NOT evidence a call happened.** The wrapper agent has a
@@ -140,9 +140,43 @@ What DOES discriminate — read the per-agent transcript (or the pipeline's stag
 record) directly:
 
 - **Wrapper agentType (a workflow role routed to `codex:codex-rescue` /
-  `opencode-verifier`)**: look for a real external-CLI `tool_use` in that agent's own
-  transcript, quoted with its `--model` flag. No such call in the transcript = no
-  external model reached, whatever the agent's final answer reads like.
+   `opencode-verifier`)**: look for a real external-CLI `tool_use` in that agent's own
+   transcript, quoted with its `--model` flag. No such call in the transcript = no
+   external model reached, whatever the agent's final answer reads like.
+
+## Thin-envelope runs
+
+`workflow-toolbox:opencode-envelope` is a different lane shape from the heavy wrappers above. The
+script writes its invocation artifacts under `<workdir>/.wt-envelope/<pid>-<timestamp>-<random>/`,
+and the manifest for that invocation is `envelope.manifest.json`; the brief `MANIFEST: <path>` line
+on stdout is the handle the debugger follows into the manifest, the per-task answer files, and the
+per-task logs (`plugin/bin/wt-opencode-envelope.mjs:114-116`,
+`plugin/bin/wt-opencode-envelope.mjs:659-675`, `plugin/CHANGELOG.md:11-12`).
+
+- **Where the evidence lives.** The manifest path comes from the Bash output's `MANIFEST:` line;
+  each task record in that JSON carries its own `answerFile`, `log`, `model`, `durationMs`, and
+  optional `usage`, and each per-task log ends with `EXIT=` because the script owns the CLI call
+  and its timeout/logging (`plugin/bin/wt-opencode-envelope.mjs:10-16`,
+  `plugin/bin/wt-opencode-envelope.mjs:671-675`, `plugin/agents/opencode-envelope.md:62-69`).
+- **Read `laneTokens` literally.** The verifier hook sets `meta.laneTokens` only when
+  `usage.tokens` exists, and omits the key entirely otherwise; absent means UNKNOWN, never zero
+  (`plugin/bin/wt-verifier-cli-guard-hook.mjs:689-694`,
+  `plugin/bin/wt-verifier-cli-guard-hook.mjs:843-848`).
+- **Expect one observatory node per external call, not one per envelope agent.** The envelope hook
+  unfolds the manifest's `tasks` array and writes one child node per task, and the changelog calls
+  out the same invariant as "One envelope, N external calls, N nodes"
+  (`plugin/bin/wt-verifier-cli-guard-hook.mjs:843-869`, `plugin/CHANGELOG.md:198-207`).
+- **CLI-called vs self-answered is different here.** A wrapper proves delegation with a real CLI
+  `tool_use` in the wrapper transcript. A thin envelope proves delegation with the `MANIFEST:` line
+  plus the manifest-backed answer/log files. If an envelope agent answered itself, you will find
+  neither artifact even if the transcript shows some unrelated tool call such as `git diff`
+  (`plugin/bin/wt-opencode-envelope.mjs:118-122`, `plugin/bin/wt-opencode-envelope.mjs:659-675`).
+- **`resumeFromRunId`: treat resumed envelopes conservatively.** The workflow runtime does replay
+  completed `agent()` calls from cache in the same session, but this skill does not verify any
+  envelope-specific idempotency contract in code; the script itself is "run the batch, write the
+  manifest" per invocation, so if a routed envelope agent re-runs, treat it as re-running its
+  batch (`plugin/skills/workflow-debugger/SKILL.md:89-105`,
+  `plugin/bin/wt-opencode-envelope.mjs:10-16`, `plugin/bin/wt-opencode-envelope.mjs:641-675`).
 
 If the class fires, name it plainly rather than describing the run as merely "wrong" —
 "the external model was never reached; the wrapper answered in its place" is a

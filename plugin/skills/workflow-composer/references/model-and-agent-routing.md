@@ -185,13 +185,19 @@
       bridges whose agent DEFINITION carries an output CONTRACT ("your final text may
       come from exactly these sources: gate marker / CLI stdout / CLI error — never your
       own knowledge") over a behavioral "do not inspect the repo". When the external
-      verdict actually matters, verify compliance from the run's agent transcripts —
-      the external CLI must appear as a real tool invocation (`tool_use` evidence), not
-      just in the injected instructions. The toolbox runs this check automatically: the
-      audit report (`wt:report`, and the plugin's Stop hook) carries an
-      `## External delegation` section that scans each routed agent's transcript for
-      real external-CLI `tool_use` and flags agents that show none, and the observe-ui
-      agent panel shows the same signal live (« delegated → CLI seen ✓ / NO CLI call ⚠ »).
+      verdict actually matters, verify compliance from the run's agent transcripts or the
+      envelope artifacts — and name the TWO shapes correctly. A heavy wrapper is compliant only
+      when the agent transcript shows a real external-CLI `tool_use`; no such `tool_use` means the
+      wrapper answered itself. A thin envelope is compliant only when the Bash output carries a
+      `MANIFEST: <path>` line and the manifest's tasks point at the per-task answer files the
+      script wrote; an envelope that answered itself has NEITHER, whatever `toolCalls` says, and a
+      wrapper-side `git diff` still counts as a tool call but NOT as evidence the external model
+      ran (`plugin/bin/wt-opencode-envelope.mjs:10-16`, `plugin/bin/wt-opencode-envelope.mjs:114-122`,
+      `plugin/bin/wt-opencode-envelope.mjs:659-675`, `plugin/CHANGELOG.md:11-12`). The toolbox runs
+      this check automatically: the audit report (`wt:report`, and the plugin's Stop hook) carries
+      an `## External delegation` section that scans each routed agent's transcript for real
+      external-CLI `tool_use` and flags agents that show none, and the observe-ui agent panel shows
+      the same signal live (« delegated → CLI seen ✓ / NO CLI call ⚠ »).
       - **The shipped `workflow-toolbox:opencode-verifier` adds a MECHANICAL backstop beyond
         prompt/skill discipline.** A matcher-narrowed `PreToolUse` hook
         (`wt-verifier-cli-guard-hook.mjs`), registered in the plugin MANIFEST — deliberately NOT
@@ -399,6 +405,50 @@
   - **Cross-family verifier** (`codex:codex-rescue`, `workflow-toolbox:opencode-verifier`) —
     opt-in decorrelation for a review/verify role, covered in its own bullets above. Not a
     default; a per-workflow proposal.
+
+### Thin envelope (`workflow-toolbox:opencode-envelope`)
+
+This is a DIFFERENT routing option from the heavy wrappers above: route a role to
+`workflow-toolbox:opencode-envelope` when the role only needs the external model's own answer and
+NO Claude-side repo reads or tool work inside the wrapper, because this agent is `model: haiku`,
+`effort: low`, `tools: Bash`, and its job is one Bash call that writes one answer file per task
+instead of reasoning itself (`plugin/agents/opencode-envelope.md:3-7`,
+`plugin/launch-agents/agents/opencode-envelope.md:3-7`).
+
+- **Route it through `agentTypes.<role>`, same as any other registered type.** The workflow's
+  structured launch config already carries per-role routing in `args.agentTypes.<role>` and the
+  runtime wrapper detects the route by checking whether `opts.agentType` ends in
+  `opencode-envelope` before replacing the ordinary `agent()` call with the envelope protocol
+  (`plugin/skills/workflow-composer/SKILL.md:233-245`,
+  `toolkit/packages/patterns/src/envelope-contract.ts:15-18`,
+  `toolkit/packages/patterns/src/envelope-contract.ts:105-113`).
+- **Model and variant travel on directive lines to the envelope, not through the wrapper model.**
+  The envelope accepts `OPENCODE_MODEL: <provider/model>` as the default external `--model`,
+  `OPENCODE_VARIANT: <name>` as the external `--variant`, and per-task overrides in the tasks JSON;
+  when `OPENCODE_MODEL` is absent the script defaults to `openai/gpt-5.4`
+  (`plugin/agents/opencode-envelope.md:12-19`, `plugin/agents/opencode-envelope.md:55-69`,
+  `plugin/bin/wt-opencode-envelope.mjs:26-28`, `plugin/bin/wt-opencode-envelope.mjs:107-110`).
+- **Do NOT spend `perAgent.model` on this wrapper.** The shipped envelope agent is already pinned
+  to `haiku` / `low`, and the point of the route is that the EXTERNAL model does the reasoning;
+  keep the wrapper cheap and let `OPENCODE_MODEL` choose the external family instead
+  (`plugin/agents/opencode-envelope.md:3-7`, `plugin/launch-agents/agents/opencode-envelope.md:3-7`).
+- **Path A needs `OPENCODE_PLUGIN_ROOT` when the workflow knows its plugin checkout.** The envelope
+  agent accepts `OPENCODE_PLUGIN_ROOT: <absolute path>` and, when present, skips the fallback
+  resolution entirely; without it the script path falls back in this order:
+  `CLAUDE_PLUGIN_ROOT`, then `WT_PLUGIN_ROOT`, then the `workflow-toolbox@...` entry in
+  `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json`. That third fallback is what
+  fixed Path A generally, but the agent docs also record the measured failure mode when a
+  `--plugin-dir` checkout lets the registry resolve the marketplace cache instead of the active
+  checkout (`plugin/agents/opencode-envelope.md:19`, `plugin/agents/opencode-envelope.md:57-62`,
+  `plugin/launch-agents/agents/opencode-envelope.md:19`,
+  `plugin/launch-agents/agents/opencode-envelope.md:57-62`, `plugin/CHANGELOG.md:110-126`).
+- **Patterns route it by wrapping the runtime with `withEnvelopeContract(rt)`.** The helper is
+  documented as routing every `opencode-envelope` call through the single-task protocol, and the
+  pattern implementations install it before they fan out, classify, verify, loop, or execute
+  (`toolkit/packages/patterns/README.md:25-27`,
+  `toolkit/packages/patterns/src/classify-and-act.ts:121`,
+  `toolkit/packages/patterns/src/fan-out-and-synthesize.ts:124`,
+  `toolkit/packages/patterns/src/adversarial-verification.ts:244`).
 - **When to define an `.md` vs inline the prompt.** Inline when the leaf is a generic worker
   the default subagent's capabilities already fit. Define a registered agentType `.md` when you
   need a capability fence (above), reusable discipline across workflows, or a specific
