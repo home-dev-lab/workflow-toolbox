@@ -5,6 +5,13 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- `wt-opencode-envelope.mjs` and the `opencode-envelope` / `opencode-verifier` agents: default model
+  `openai/gpt-5.6-luna` (fallback `openai/gpt-5.6-terra`). `openai/gpt-5.4` was withdrawn from Codex/ChatGPT
+  accounts on 2026-08-31 ("not supported when using Codex with a ChatGPT account"), so every envelope call that
+  relied on the old default failed. Routing rationale: 2026-09-05 measurements (Luna 93.0 SWE-bench Verified at a
+  tenth of Terra's quota; both accept 326k input via Codex).
+
 ### Added
 - `plugin/usage-manifest.json`: what the plugin consumes from the harness and the Agent SDK (frontmatter keys,
   hook events and payload fields, monitors, SDK query options, env vars, CLI surfaces, invariants) — the input a

@@ -23,12 +23,12 @@ import crypto from 'node:crypto'
 import { laneTextFromOutput, laneUsageFromOutput, verifierStreamDirForEnv } from './wt-verifier-cli-guard-hook.mjs'
 import { DEFAULT_MAX_TASKS, generateEachTasks, parseEachSource } from './lib/opencode-envelope-tasks.mjs'
 
-const DEFAULT_MODEL = 'openai/gpt-5.4'
+const DEFAULT_MODEL = 'openai/gpt-5.6-luna' // gpt-5.4 withdrawn from Codex/ChatGPT accounts 2026-08-31
 const DEFAULT_AGENT = 'plan'
 const DEFAULT_TIMEOUT_SEC = 570
 // How many CLI calls run AT ONCE. It bounds the BATCH, never the total: a source of 10 000 items
 // runs 10 000 calls, `DEFAULT_CONCURRENCY` at a time, in as many sequential batches as that takes.
-// Measured 2026-08-20 on this machine, 16 identical calls to openai/gpt-5.4, all answered at every
+// Measured 2026-08-20 on this machine, 16 identical calls to openai/gpt-5.6-luna, all answered at every
 // level:
 //
 //   concurrency  8  ->  41 s
@@ -104,8 +104,8 @@ function usage() {
     '                                     reduces sharing --dir cannot overwrite one another.',
     '',
     'Options:',
-    '  --model <provider/model>           Default model. Default: openai/gpt-5.4',
-    '  --fallback-model <provider/model>  Default fallback for the ONE 429 retry. Default: openai/gpt-5.4',
+    '  --model <provider/model>           Default model. Default: openai/gpt-5.6-luna',
+    '  --fallback-model <provider/model>  Default fallback for the ONE 429 retry. Default: openai/gpt-5.6-terra',
     '  --variant <name>                   Default --variant (unvalidated) for tasks without one',
     '  --agent <name>                     Default opencode agent mode. Default: plan',
     '  --timeout-sec <n>                  Per-task CLI timeout. Default: 570',
