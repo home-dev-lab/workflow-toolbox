@@ -5,6 +5,15 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- `wt-adopt-check-hook.mjs` (PostToolUse Bash): the adopted-rules drift notice fired on any command whose TEXT
+  contained the words `git push` — a card description written through a heredoc, a quoted grep — while no push
+  happened (three false firings on 2026-09-05). The pre-filter is now `looksLikePush()`: heredoc bodies and quoted
+  strings are dropped and only a `git [-C dir] push` at a command position counts (start, after `&&`/`||`/`;`/`|`/
+  `(`/`{`/`$(`/newline, `sudo`/`env`/`VAR=` prefixes allowed). Known-answer selftest
+  `wt-adopt-check-hook.selftest.mjs` (12 cases); the hook's entry point now runs only when executed, so the
+  selftest can import it.
+
 
 ### Changed
 

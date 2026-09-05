@@ -200,7 +200,24 @@ function buildMessage(perFile, installCmd, set = 'rules', event = 'SessionStart'
 // PostToolUse does not tell us whether the push landed or was refused. Narrow on purpose:
 // every OTHER Bash command must cost nothing, or a guard that runs on each call becomes
 // a guard someone turns off.
-const PUSH = /\bgit\s+(?:-C\s+\S+\s+)?push\b/
+/** True when `command` INVOKES git push — not when the words merely appear in a heredoc body
+ *  or a quoted string (a card description written with `cat <<'EOF'` that mentions "git push"
+ *  is not a push; measured 2026-09-05, three firings on one afternoon of card writing). Only
+ *  text at a command position counts: the start, or right after `&&`, `||`, `;`, `|`, `(`,
+ *  `{`, `$(`, a newline, or `sudo`/`env VAR=…` prefixes. Exported for the selftest. */
+export function looksLikePush(command) {
+  if (typeof command !== 'string' || !command.includes('push')) return false
+  let text = command
+  // 1. drop heredoc bodies: from `<<[-]['"]?WORD['"]?` to the line holding WORD alone
+  text = text.replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, '\n')
+  // 2. drop single- and double-quoted strings (a quoted "git push" is an argument, not a command)
+  text = text.replace(/'[^']*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""')
+  // 3. split into command positions and test each segment's head
+  return text.split(/&&|\|\||;|\||\n|\(|\{|\$\(/).some((seg) => {
+    const head = seg.trim().replace(/^(?:sudo\s+|env\s+|(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+)/, '')
+    return /^git\s+(?:-C\s+\S+\s+)?push\b/.test(head)
+  })
+}
 
 /** Which event are we serving, and should we do anything at all? Returns the event name
  *  to echo back, or null to stay silent. */
@@ -210,7 +227,7 @@ function resolveEvent(input) {
   // PostToolUse fires for every Bash call; only a push can have created the drift.
   if (input.tool_name !== 'Bash') return null
   const command = input?.tool_input?.command
-  return typeof command === 'string' && PUSH.test(command) ? event : null
+  return looksLikePush(command) ? event : null
 }
 
 function main() {
@@ -283,4 +300,8 @@ function main() {
   )
 }
 
-runFailOpenHook('wt-adopt-check-hook.mjs', main)
+// Run only when executed as a hook, not when imported by the selftest.
+import { pathToFileURL } from 'node:url'
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runFailOpenHook('wt-adopt-check-hook.mjs', main)
+}
