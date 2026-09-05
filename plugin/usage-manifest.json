@@ -1,0 +1,69 @@
+{
+  "$comment": "What workflow-toolbox consumes from the Claude Code harness and the Agent SDK, so a docs/changelog digest can be diffed against it (brief to magic-claude-docs, 2026-09-05). Inventoried by a read-only agent over plugin/, toolkit/packages and workflow-observatory/apps/observe-ui/server; entries carrying `where` were read at that path, the others at file-set granularity. Common shape agreed with claude-mem (room 'Fred to All Sessions' #171-#172).",
+  "plugin": "workflow-toolbox",
+  "version": "0.170.0",
+  "measuredAt": "2026-09-05",
+  "frontmatter": {
+    "agents": [
+      { "name": "name", "where": "plugin/agents/opencode-envelope.md" },
+      { "name": "description", "where": "plugin/agents/leaf-readonly.md" },
+      { "name": "tools", "where": "plugin/agents/fidelity-checker.md" },
+      { "name": "disallowedTools", "where": "plugin/agents/leaf.md" },
+      { "name": "effort", "where": "plugin/agents/opencode-envelope.md" },
+      { "name": "model", "where": "plugin/agents/opencode-verifier.md" },
+      { "name": "maxTurns", "where": "plugin/agents/opencode-envelope.md" },
+      { "name": "memory", "where": "plugin/agent-templates/pilot.md" },
+      { "name": "observer", "where": "plugin/agent-templates/pilot.md" },
+      { "name": "observerMessage", "where": "plugin/agent-templates/pilot.md" }
+    ],
+    "skills": [
+      { "name": "name", "where": "plugin/skills/adopt/SKILL.md" },
+      { "name": "description", "where": "plugin/skills/adopt/SKILL.md" },
+      { "name": "user-invocable", "where": "plugin/skills/delegation-chain/SKILL.md" },
+      { "name": "argument-hint", "where": "plugin/skills/workflow-debugger/SKILL.md" }
+    ]
+  },
+  "hooks": {
+    "events": { "PreToolUse": 20, "PostToolUse": 9, "SessionStart": 8, "UserPromptSubmit": 1, "SubagentStop": 1, "Stop": 5 },
+    "types": ["command"],
+    "matchers": ["Bash", "SendMessage", "Edit|Write|MultiEdit", "StructuredOutput", "Agent", "*", "SendMessage|Agent|Task", "mcp__planka__get_board|mcp__planka__find_cards"],
+    "payloadFields": ["hook_event_name", "session_id", "tool_name", "tool_input", "transcript_path", "cwd", "agent_id", "agent_type", "stop_hook_active"],
+    "outputs": [
+      { "name": "hookSpecificOutput.permissionDecision=deny + permissionDecisionReason", "where": "plugin/bin/wt-main-guard-hook.mjs:409-412" },
+      { "name": "hookSpecificOutput.additionalContext", "where": "plugin/bin (SessionStart hooks)" },
+      { "name": "silent exit 0 (allow)", "where": "plugin/bin/wt-main-guard-hook.mjs:42-45" }
+    ]
+  },
+  "monitors": { "file": "plugin/monitors/monitors.json", "fields": ["name", "command", "description", "when"], "count": 5 },
+  "functionHooks": {
+    "status": "spike only (worktrees/fh-spike), nothing shipped; gated by CLAUDE_CODE_ENABLE_FUNCTION_HOOKS",
+    "events": ["tool.call"],
+    "capabilities": ["$.ui.log", "$.store.get", "$.store.set"]
+  },
+  "sdk": {
+    "package": "@anthropic-ai/claude-agent-sdk",
+    "version": "^0.3.260",
+    "where": "toolkit/packages/smoke/package.json:26",
+    "queryOptions": ["resume", "hooks", "plugins", "settingSources", "permissionMode", "canUseTool", "maxTurns", "env", "cwd"],
+    "streamEvents": ["result"],
+    "streamEventsNote": "workflow_phase / system.init consumed in the observatory server (not re-verified in this pass)"
+  },
+  "env": [
+    { "name": "CLAUDE_CONFIG_DIR", "where": "plugin/bin/wt-observe.mjs:180" },
+    { "name": "CLAUDE_PLUGIN_ROOT", "where": "plugin/.claude-plugin/plugin.json (hook commands)" },
+    { "name": "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS", "where": "worktrees/fh-spike (spike only)" }
+  ],
+  "cli": [
+    { "name": "claude plugin validate", "where": "README.md" },
+    { "name": "claude --plugin-dir / --debug-file / --allowedTools / -p", "where": "worktrees/fh-spike (spike only)" },
+    { "name": "/plugin-types", "where": "worktrees/fh-spike/types (spike only)" }
+  ],
+  "invariants": [
+    "CLAUDE_PLUGIN_ROOT is EMPTY in the main session's Bash shell; only hook commands see it",
+    "CLAUDE_PLUGIN_DATA in the main shell names ANOTHER plugin's dir; never read it outside a plugin process",
+    "a tools: allow-list can deliver fewer tools than declared; read the running agent's surface",
+    "PostToolUse command hooks receive the RAW tool output, before any function-hook rewrite",
+    "SubagentStop block is honoured only on the model-stop path",
+    "isolated worktrees for spawned agents start from the repo DEFAULT branch"
+  ]
+}

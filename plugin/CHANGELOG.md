@@ -5,6 +5,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- `plugin/usage-manifest.json`: what the plugin consumes from the harness and the Agent SDK (frontmatter keys,
+  hook events and payload fields, monitors, SDK query options, env vars, CLI surfaces, invariants) — the input a
+  docs/changelog digest is diffed against (common shape with claude-mem, 2026-09-05).
+
 ### Fixed
 - `wt-adopt-check-hook.mjs` (PostToolUse Bash): the adopted-rules drift notice fired on any command whose TEXT
   contained the words `git push` — a card description written through a heredoc, a quoted grep — while no push
