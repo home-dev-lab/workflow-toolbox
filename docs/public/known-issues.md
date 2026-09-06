@@ -361,7 +361,7 @@ Refuses a real `git commit` (an invocation at a command position, never the word
 
 Refuse-and-tell by default: the refusal names every carrier with its version and the target (the highest), and the repair is to set them all, stage, and commit again. `WT_VERSION_GUARD_MODE=align` opts into the other behaviour — the guard writes the highest version into every carrier of that root and stages them, then lets the commit through. The default was chosen deliberately: a silent bump is a decision nobody took.
 
-It does not check the changelog — `wt-plugin-release-record-guard-hook.mjs` keeps that invariant — and it ships as a command hook only: a `hooks/hooks.json` function module cannot import the Node APIs needed to read the staged index (measured 2026-09-05, the runtime refuses `node:child_process`).
+It does not check the changelog — `wt-plugin-release-record-guard-hook.mjs` keeps that invariant — and it ships as a command hook only: a function-hook module (the `modules` list a plugin declares beside its command hooks) cannot import the Node APIs needed to read the staged index (measured 2026-09-05, the runtime refuses `node:child_process`).
 
 ### `wt-propagation-reminder-hook.mjs` — tooling/plugin-edit propagation reminder (PostToolUse on Write/Edit/MultiEdit)
 
