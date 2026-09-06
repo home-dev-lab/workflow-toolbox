@@ -13,6 +13,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   tenth of Terra's quota; both accept 326k input via Codex).
 
 ### Added
+- `wt-version-guard-hook.mjs` now discovers every staged plugin root and refuses a real `git commit` when its tracked version carriers diverge: `.claude-plugin/plugin.json`, a versioned `package.json`, and matching versioned marketplace entries. It names every carrier, version, and the exact repair; `WT_VERSION_GUARD_MODE=align` is opt-in and stages the highest version. The existing release-record guard is reused unchanged for its separate changelog invariant. Function-hook modules cannot inspect Git's staged index because their runtime forbids Node API imports, so this ships as a command hook only.
 - `plugin/usage-manifest.json`: what the plugin consumes from the harness and the Agent SDK (frontmatter keys,
   hook events and payload fields, monitors, SDK query options, env vars, CLI surfaces, invariants) — the input a
   docs/changelog digest is diffed against (common shape with claude-mem, 2026-09-05).
