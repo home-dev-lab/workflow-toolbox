@@ -6,6 +6,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
+- Executor-lane consent is now declared as optional plugin `userConfig.executor_lane_consent`
+  (boolean, default OFF). The shared resolver reads its persisted account value, requires it to
+  agree with an existing `WT_EXECUTOR_LANE_CONSENT` account setting when both exist, and reports
+  each source; missing, false, narrowing, or disagreement keeps routing on the SPLIT path.
 - `wt-opencode-envelope.mjs` and the `opencode-envelope` / `opencode-verifier` agents: default model
   `openai/gpt-5.6-luna` (fallback `openai/gpt-5.6-terra`). `openai/gpt-5.4` was withdrawn from Codex/ChatGPT
   accounts on 2026-08-31 ("not supported when using Codex with a ChatGPT account"), so every envelope call that

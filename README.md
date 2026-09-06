@@ -110,6 +110,11 @@ And if you ever do convert an implicit setup, that change is proposed and
 consent-based — never forced at install, the same shape as the shipped
 `adopt` skill: detection → proposal → your consent → conversion.
 
+The external executor lane is also opt-in: plugin configuration
+`executor_lane_consent` defaults to OFF. The account setting is the ceiling and a project's
+local Claude settings may only narrow it, so missing or false consent keeps work in the in-house
+SPLIT path rather than sending it to the lane.
+
 ## Where to go from here
 
 The practitioner depth below is unchanged — here is the map:
