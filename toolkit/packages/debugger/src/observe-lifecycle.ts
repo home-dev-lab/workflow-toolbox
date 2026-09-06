@@ -133,6 +133,10 @@ export interface ObservePidfile {
    *  CARRIED across adopts from the prior pidfile (health never transports it — the
    *  served page is the browser's only carrier); absent only if never recorded. */
   token?: string
+  /** The checkout identity that supplied the server code, recorded at start/adopt time. */
+  branch?: string
+  head?: string
+  bundle?: string
   /** The FULL set of config dirs this server serves (1+, `configDir` mirrors `sources[0]`).
    *  REQUIRED post-verb-unification — every pidfile this CLI writes now goes through the
    *  same resolved-source path, single-source included, so there is no longer a "pidfile
@@ -168,6 +172,9 @@ export function parseObservePidfile(text: string): ObservePidfile | null {
   if (m['bootId'] !== null && typeof m['bootId'] !== 'string') return null
   if (m['procStartTicks'] !== null && typeof m['procStartTicks'] !== 'number') return null
   if (m['token'] !== undefined && typeof m['token'] !== 'string') return null
+  if (m['branch'] !== undefined && typeof m['branch'] !== 'string') return null
+  if (m['head'] !== undefined && typeof m['head'] !== 'string') return null
+  if (m['bundle'] !== undefined && typeof m['bundle'] !== 'string') return null
   if (!Array.isArray(m['sources']) || m['sources'].length === 0 || m['sources'].some((s) => typeof s !== 'string')) return null
   return raw as unknown as ObservePidfile
 }
