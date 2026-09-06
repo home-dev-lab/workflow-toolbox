@@ -31,12 +31,49 @@ function readInstalledPlugins(configDir) {
   }
 }
 
-function installedMarketplace(configDir, name) {
+function installedEntry(configDir, name) {
   const installed = readInstalledPlugins(configDir)
   if (!installed || typeof installed !== 'object') return null
   const prefix = `${name}@`
   const key = Object.keys(installed).find((candidate) => candidate.startsWith(prefix))
-  return key ? key.slice(prefix.length) : null
+  if (!key) return null
+  const value = installed[key]
+  const entry = Array.isArray(value) ? value[0] : value
+  return { marketplace: key.slice(prefix.length), version: entry && typeof entry.version === 'string' ? entry.version : null }
+}
+
+function installedMarketplace(configDir, name) {
+  return installedEntry(configDir, name)?.marketplace ?? null
+}
+
+function ownVersion() {
+  try {
+    return JSON.parse(readFileSync(join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).version ?? null
+  } catch {
+    return null
+  }
+}
+
+function versionAtLeast(candidate, floor) {
+  if (!candidate || !floor) return false
+  const a = candidate.split('.').map(Number)
+  const b = floor.split('.').map(Number)
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const x = a[i] ?? 0
+    const y = b[i] ?? 0
+    if (x !== y) return x > y
+  }
+  return true
+}
+
+/** Carry-over is safe only once the INSTALLED plugin resolves canonical too. Measured 2026-09-06:
+ *  a develop checkout carried the legacy dirs over while the installed 0.170.0 still read them —
+ *  the installed actionability gate then reported its snapshot missing. So a checkout newer than
+ *  the installed plugin reads canonical (if present) but never moves anything; the installed
+ *  plugin, once updated, carries over on its first resolution. */
+export function carryOverAllowed({ configDir, pluginName: name, minimumVersion = ownVersion() }) {
+  const entry = installedEntry(configDir, name)
+  return Boolean(entry && versionAtLeast(entry.version, minimumVersion))
 }
 
 function moveLegacyDir(legacyDir, dir, stderr) {
@@ -84,7 +121,7 @@ function moveLegacyDir(legacyDir, dir, stderr) {
  * CLAUDE_PLUGIN_DATA is used only for an uninstalled --plugin-dir session; its value
  * never overrides an installed plugin's canonical directory.
  */
-export function resolvePluginDataDir({ env = process.env, configDir = env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), pluginName: name = pluginName(), fallback, platform = process.platform, stderr = process.stderr }) {
+export function resolvePluginDataDir({ env = process.env, configDir = env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), pluginName: name = pluginName(), fallback, platform = process.platform, stderr = process.stderr, minimumVersion = ownVersion() }) {
   const legacyDir = fallback || join(env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), name)
   const candidate = env.CLAUDE_PLUGIN_DATA
   const marketplace = installedMarketplace(configDir, name)
@@ -94,8 +131,10 @@ export function resolvePluginDataDir({ env = process.env, configDir = env.CLAUDE
     const pluginData = typeof candidate !== 'string' || !candidate
       ? 'unset'
       : candidate === dataDir ? 'agrees' : 'disagrees'
-    moveLegacyDir(legacyDir, dir, stderr)
-    return { dir, source: 'installed_plugins', reason: `installed_plugins.json selects ${name}@${marketplace}`, pluginData }
+    const carry = carryOverAllowed({ configDir, pluginName: name, minimumVersion })
+    if (carry) moveLegacyDir(legacyDir, dir, stderr)
+    else if (!existsSync(dir)) return { dir: legacyDir, source: 'fallback', reason: `installed ${name} is older than ${minimumVersion}; canonical dir not created yet`, pluginData }
+    return { dir, source: 'installed_plugins', reason: `installed_plugins.json selects ${name}@${marketplace}${carry ? '' : ' (read-only until the installed plugin is updated)'}`, pluginData }
   }
   if (typeof candidate === 'string' && candidate && startsWithPluginName(pathBasename(candidate), name, platform)) {
     return { dir: candidate, source: 'env', reason: 'CLAUDE_PLUGIN_DATA names an uninstalled plugin session' }

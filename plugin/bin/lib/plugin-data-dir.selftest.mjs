@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { pluginName, resolvePluginDataDir } from './plugin-data-dir.mjs'
+import { carryOverAllowed, pluginName, resolvePluginDataDir } from './plugin-data-dir.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'wt-plugin-data-'))
 const name = pluginName()
@@ -13,7 +13,23 @@ const canonical = join(canonicalRoot, name)
 const installed = join(configDir, 'plugins', 'installed_plugins.json')
 
 mkdirSync(join(configDir, 'plugins'), { recursive: true })
-writeFileSync(installed, JSON.stringify({ [`${name}@marketplace`]: {} }))
+writeFileSync(installed, JSON.stringify({ [`${name}@marketplace`]: { version: '999.0.0' } }))
+
+// An INSTALLED plugin older than this checkout must keep its legacy dir: no carry-over, and the
+// canonical dir is used only if it already exists (measured 2026-09-06: a develop checkout emptied
+// the legacy actionability dir the installed 0.170.0 gate still read).
+{
+  const oldConfig = join(root, 'old-config')
+  mkdirSync(join(oldConfig, 'plugins'), { recursive: true })
+  writeFileSync(join(oldConfig, 'plugins', 'installed_plugins.json'), JSON.stringify({ [`${name}@marketplace`]: { version: '0.1.0' } }))
+  const oldLegacy = join(root, 'old-state', name)
+  mkdirSync(oldLegacy, { recursive: true })
+  writeFileSync(join(oldLegacy, 'keep.ndjson'), '{}\n')
+  const r = resolvePluginDataDir({ env: {}, configDir: oldConfig, pluginName: name, fallback: oldLegacy, minimumVersion: '1.0.0' })
+  assert.equal(r.dir, oldLegacy)
+  assert.equal(existsSync(join(oldLegacy, 'keep.ndjson')), true)
+  assert.equal(carryOverAllowed({ configDir: oldConfig, pluginName: name, minimumVersion: '1.0.0' }), false)
+}
 
 assert.deepEqual(resolvePluginDataDir({ env: {}, configDir, pluginName: name, fallback }), {
   dir: canonical, source: 'installed_plugins', reason: `installed_plugins.json selects ${name}@marketplace`, pluginData: 'unset',
