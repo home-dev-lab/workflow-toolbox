@@ -28,6 +28,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   docs/changelog digest is diffed against (common shape with claude-mem, 2026-09-05).
 
 ### Fixed
+- `shell-text.mjs` is now a compatibility re-export of `command-invocation.mjs`; heredoc and quoted
+  text stripping has one implementation and one test file, including `<<-` and quoted delimiters.
 - Lane-consent and saturation guards now share `command-invocation.mjs` for heredoc and quoted
   text stripping, so a fixture body mentioning `opencode run` is not mistaken for an invocation.
 - `adopt install.mjs` now refuses `--install --dir <rules-or-docs-root>` when adopted `wt/`
