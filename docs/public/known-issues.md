@@ -146,6 +146,22 @@ Polls `https://status.claude.com/api/v2/summary.json` and considers only `Claude
 
 Checks an `Agent` spawn's definition and denies it only when the agent has a `tools:` allowlist without `Write` and its brief asks for a file at a path. An agent type with no `tools:` line is allowed because it inherits all tools. The denial explains how to repair the brief before the delegated work runs without a way to write its required report. Internal errors fail open with one stderr trace.
 
+### `wt-spawn-channel-guard-hook.mjs` — report-channel advisory (PreToolUse on Agent)
+
+Warns, never blocks, when a brief asks a spawned agent to report, reply, send, message the caller, or report when done, while its trusted `tools:` allow-list lacks `SendMessage`. Quoted and fenced examples are ignored. An unresolved agent type stays silent and journals `type-unresolved`, rather than inferring access from an unknown definition.
+
+### `wt-spawn-readonly-guard-hook.mjs` — read-only boundary advisory (PreToolUse on Agent)
+
+Warns, never blocks, when a read-only, do-not-modify, or investigate-only brief targets a type with a wide allow-list (`*`, `Bash`, `Write`, `Edit`, or an MCP tool), or with no `tools:` line at all. The latter is separately journaled as `spawn-readonly-no-allowlist`, because an absent declaration inherits the whole surface. Narrow read-only lists, quoted examples, and unresolved definitions stay silent.
+
+### `wt-workflow-model-guard-hook.mjs` — inherited-model advisory (PreToolUse on Workflow)
+
+Warns, never blocks, when Workflow `args` carries no `perAgent.model`, `models`, or `effort`; if `args` is absent, it inspects the supplied script text instead. The warning makes the otherwise implicit session-model inheritance visible before a fan-out begins.
+
+### `wt-nested-spawn-guard-hook.mjs` — nested self-verification advisory (PreToolUse on Agent)
+
+Warns, never blocks, when an Agent call issued by a subagent asks for verification, review of its own work, double-checking, or a second opinion. The owning session should route independent verification, preserving separation between implementation and review. Quoted and fenced examples stay silent.
+
 ### `wt-spawn-shape-guard-hook.mjs` — observer-preserving spawn guard (PreToolUse)
 
 Refuses a named `Agent` spawn without `isolation` where the spawning session is in a Git repository, because that shape can route through the in-process-teammate path and lose the declared observer. Outside a Git repository it allows the spawn and states what will be lost, since `isolation: worktree` cannot be applied there. This prevents a silent failure where the agent works normally and reports no observer findings because no observer was attached. Internal errors fail open with one stderr trace.

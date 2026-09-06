@@ -1,7 +1,7 @@
 {
   "$comment": "What workflow-toolbox consumes from the Claude Code harness and the Agent SDK, so a docs/changelog digest can be diffed against it (brief to magic-claude-docs, 2026-09-05). Inventoried by a read-only agent over plugin/, toolkit/packages and workflow-observatory/apps/observe-ui/server; entries carrying `where` were read at that path, the others at file-set granularity. Common shape agreed with claude-mem (room 'Fred to All Sessions' #171-#172).",
   "plugin": "workflow-toolbox",
-  "version": "0.170.0",
+  "version": "0.171.0",
   "measuredAt": "2026-09-05",
   "frontmatter": {
     "manifest": [
@@ -27,9 +27,9 @@
     ]
   },
   "hooks": {
-    "events": { "PreToolUse": 22, "PostToolUse": 9, "SessionStart": 8, "UserPromptSubmit": 1, "SubagentStop": 1, "Stop": 5 },
+    "events": { "PreToolUse": 24, "PostToolUse": 9, "SessionStart": 8, "UserPromptSubmit": 1, "SubagentStop": 1, "Stop": 5 },
     "types": ["command"],
-    "matchers": ["Bash", "SendMessage", "Edit|Write|MultiEdit", "StructuredOutput", "Agent", "*", "SendMessage|Agent|Task", "mcp__planka__get_board|mcp__planka__find_cards"],
+    "matchers": ["Bash", "SendMessage", "Edit|Write|MultiEdit", "StructuredOutput", "Agent", "Workflow", "*", "SendMessage|Agent|Task", "mcp__planka__get_board|mcp__planka__find_cards"],
     "payloadFields": ["hook_event_name", "session_id", "tool_name", "tool_input", "transcript_path", "cwd", "agent_id", "agent_type", "stop_hook_active"],
     "outputs": [
       { "name": "hookSpecificOutput.permissionDecision=deny + permissionDecisionReason", "where": "plugin/bin/wt-main-guard-hook.mjs:409-412" },

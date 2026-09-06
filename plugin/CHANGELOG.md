@@ -5,6 +5,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.171.0] - 2026-09-06
+
+### Added
+- Warn-only PreToolUse spawn-surface guards now journal and surface missing report channels, read-only briefs paired with wide or absent tool allow-lists, Workflow fan-outs inheriting the session model, and subagent self-verification spawns. The capability guard and the new guards share one trusted agent-type tools resolver.
+
 ### Changed
 - Guard-journal entries now carry sanitised session and agent identities plus process `pid`/`ppid`; scan and SessionStart recurrence summaries report distinct sessions and unattributed firings while retaining firing counts for the recurrence trigger.
 - The opencode envelope now keeps task copies, manifests, answers, and logs outside the opencode

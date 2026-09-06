@@ -32,10 +32,9 @@
 // own bug is worse than the gap it closes.
 
 import fs from 'node:fs'
-import path from 'node:path'
-import os from 'node:os'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { resolveAgentTypeTools } from './lib/agent-type-tools.mjs'
 
 function readInput() {
   try {
@@ -44,57 +43,6 @@ function readInput() {
   } catch {
     return {}
   }
-}
-
-/** Directories that can hold an agent definition, most specific first. A project copy wins over
- *  a user one, which is the same precedence the harness applies. */
-function definitionDirs(cwd) {
-  const dirs = []
-  if (cwd) {
-    let current = path.resolve(cwd)
-    for (;;) {
-      dirs.push(path.join(current, '.claude', 'agents'))
-      const parent = path.dirname(current)
-      if (parent === current) break
-      current = parent
-    }
-  }
-  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-  dirs.push(path.join(configDir, 'agents'))
-  return dirs
-}
-
-/** A plugin-namespaced type (`plugin:name`) resolves on its bare name in these dirs; a plugin's
- *  own agent directory is not searched, because a plugin-registered type's frontmatter is not
- *  honored by the harness anyway — so we only ever act on definitions we can actually trust. */
-function findDefinition(type, cwd) {
-  const bare = type.includes(':') ? type.slice(type.lastIndexOf(':') + 1) : type
-  for (const dir of definitionDirs(cwd)) {
-    const file = path.join(dir, `${bare}.md`)
-    try {
-      if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8')
-    } catch {
-      /* unreadable dir — keep looking */
-    }
-  }
-  return null
-}
-
-/** Return the declared tool allowlist, or null when the definition declares none (= inherits
- *  every tool). Only the frontmatter block is considered. */
-function declaredTools(source) {
-  const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---/)
-  if (!match) return null
-  const line = match[1].match(/^tools:\s*(.+)$/m)
-  if (!line) return null
-  const value = line[1].trim()
-  if (!value || value === '*') return null
-  // Supports `tools: A, B, C` and a YAML inline list `tools: [A, B]`.
-  return value
-    .replace(/^\[|\]$/g, '')
-    .split(',')
-    .map((t) => t.trim().replace(/^["']|["']$/g, ''))
-    .filter(Boolean)
 }
 
 /** Does the brief ask the agent to PRODUCE a file? Deliberately narrow: an imperative write verb
@@ -126,10 +74,9 @@ function main() {
   const prompt = typeof ti.prompt === 'string' ? ti.prompt : ''
   if (!type || !prompt) return
 
-  const source = findDefinition(type, typeof input.cwd === 'string' ? input.cwd : '')
-  if (!source) return // unknown type: cannot judge, so say nothing
-
-  const tools = declaredTools(source)
+  const resolved = resolveAgentTypeTools(type, typeof input.cwd === 'string' ? input.cwd : '')
+  if (!resolved.resolved) return // unknown type: cannot judge, so say nothing
+  const { tools } = resolved
   if (!tools) return // inherits everything
 
   const hasWrite = tools.some((t) => t === 'Write' || t === '*')
