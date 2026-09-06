@@ -355,6 +355,14 @@ Scoped to a repository that owns `plugin/.claude-plugin/plugin.json`, so it stay
 
 Warn-only deliberately: a work-in-progress commit on a branch that bumps once at the end, and a plugin change with no release surface, both fire it legitimately. Neither loses work. Promotion to blocking is a separate decision taken from the guard journal's record.
 
+### `wt-version-guard-hook.mjs` — plugin version-alignment guard (PreToolUse on Bash)
+
+Refuses a real `git commit` (an invocation at a command position, never the words in a heredoc or a quoted string) when a staged plugin root carries diverging versions. A plugin root is discovered from the staged paths: the nearest tracked `.claude-plugin/plugin.json` up from each staged file. Its version carriers are that manifest, a tracked `package.json` beside it that carries a `version`, and any entry of the repository's `.claude-plugin/marketplace.json` whose `source` resolves to that root and carries a `version` — all read from the index, never from the working tree. One carrier means nothing to align, and the guard stays silent: this repository's own `plugin/` is that case.
+
+Refuse-and-tell by default: the refusal names every carrier with its version and the target (the highest), and the repair is to set them all, stage, and commit again. `WT_VERSION_GUARD_MODE=align` opts into the other behaviour — the guard writes the highest version into every carrier of that root and stages them, then lets the commit through. The default was chosen deliberately: a silent bump is a decision nobody took.
+
+It does not check the changelog — `wt-plugin-release-record-guard-hook.mjs` keeps that invariant — and it ships as a command hook only: a `hooks/hooks.json` function module cannot import the Node APIs needed to read the staged index (measured 2026-09-05, the runtime refuses `node:child_process`).
+
 ### `wt-propagation-reminder-hook.mjs` — tooling/plugin-edit propagation reminder (PostToolUse on Write/Edit/MultiEdit)
 
 Fires, never blocks, when a `Write`/`Edit`/`MultiEdit` call lands under a `plugin/` directory, under `<config-dir>/scripts/`, or under `<config-dir>/agents/` or `<config-dir>/skills/` — the three shapes whose edits reach an audience beyond the editing session: plugin adopters, every session on the same machine, or every session sharing that config dir or project. The trigger is mechanical (a path shape); the report is judgment the hook cannot supply, so it asks four questions — who gets it, when, what changed, and whether a shipped twin needs the same fix — and never answers them. Silence means only that no matched path was touched, never that nothing needs propagating.
