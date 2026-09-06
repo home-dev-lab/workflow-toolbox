@@ -193,6 +193,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-observer-pairing-guard-hook.mjs',
     decision: 'warned',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'observer-pairing',
     evidence: { status, failure },
   })

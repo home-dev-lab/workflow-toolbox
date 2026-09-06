@@ -39,8 +39,8 @@ function writeWeek(dir: string, lines: Array<Record<string, unknown>>): void {
   writeFileSync(join(dir, '2026-W32.ndjson'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
 }
 
-function event(guard: string, opts: { decision?: string; class?: string } = {}): Record<string, unknown> {
-  return { ts: '2026-08-05T10:00:00.000Z', guard, decision: opts.decision ?? 'blocked', ...(opts.class ? { class: opts.class } : {}) }
+function event(guard: string, opts: { decision?: string; class?: string; session?: string } = {}): Record<string, unknown> {
+  return { ts: '2026-08-05T10:00:00.000Z', guard, decision: opts.decision ?? 'blocked', ...(opts.class ? { class: opts.class } : {}), ...(opts.session ? { session: opts.session } : {}) }
 }
 
 function run(journalDir: string | undefined): { out: string; err: string; code: number | null } {
@@ -70,14 +70,15 @@ describe('guard-recurrence-hook — the SessionStart count surface', () => {
   it('SPEAKS when a guard fired 3+ times for the SAME class this week, naming the guard and the count — not a reminder to reflect', () => {
     const dir = mkJournalDir()
     writeWeek(dir, [
-      event('wt-main-guard-hook.mjs', { class: 'publish' }),
-      event('wt-main-guard-hook.mjs', { class: 'publish' }),
-      event('wt-main-guard-hook.mjs', { class: 'publish' }),
+      event('wt-main-guard-hook.mjs', { class: 'publish', session: 's1' }),
+      event('wt-main-guard-hook.mjs', { class: 'publish', session: 's1' }),
+      event('wt-main-guard-hook.mjs', { class: 'publish', session: 's2' }),
     ])
     const { out, code } = run(dir)
     expect(out).toContain('wt-main-guard-hook.mjs')
     expect(out).toContain('publish')
     expect(out).toContain('3 firings')
+    expect(out).toContain('2 sessions (+0 unattributed)')
     // The card's own wording: the count itself, never an instruction to reflect.
     expect(out).not.toMatch(/reflect on|consider whether|think about/i)
     expect(out).toContain('not a reminder to reflect')

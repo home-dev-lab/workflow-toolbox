@@ -78,6 +78,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-stale-date-guard-hook.mjs',
     decision: 'warned',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'stale-date',
     evidence: { kind: 'file_path' },
   })

@@ -72,17 +72,17 @@ const UNCLASSED_LABEL = '(unclassed)'
  * REAL hook as a child process (see the sibling .test.ts) rather than importing hook modules —
  * an import would execute this file's top-level runFailOpenHook(main) call as a side effect,
  * including a stdin read, which is exactly the ambiguity black-box spawning avoids.
- * @returns {Array<{guard:string, label:string, count:number}>} sorted by count, descending.
+ * @returns {Array<{guard:string, label:string, count:number, sessions:number, unknownSessionEvents:number}>} sorted by count, descending.
  */
 function recurringGroups(result) {
   if (!result || result.ok !== true) return []
   const groups = []
   for (const row of result.rows) {
     for (const [cls, count] of Object.entries(row.classes)) {
-      if (count >= RECURRENCE_THRESHOLD) groups.push({ guard: row.guard, label: cls, count })
+      if (count >= RECURRENCE_THRESHOLD) groups.push({ guard: row.guard, label: cls, count, sessions: row.sessions, unknownSessionEvents: row.unknownSessionEvents })
     }
     if (row.unclassedTotal >= RECURRENCE_THRESHOLD) {
-      groups.push({ guard: row.guard, label: UNCLASSED_LABEL, count: row.unclassedTotal })
+      groups.push({ guard: row.guard, label: UNCLASSED_LABEL, count: row.unclassedTotal, sessions: row.sessions, unknownSessionEvents: row.unknownSessionEvents })
     }
   }
   return groups.sort((a, b) => b.count - a.count)
@@ -94,7 +94,7 @@ function buildMessage(result, groups) {
       `the-guard trigger, not a reminder to reflect:`,
   ]
   for (const g of groups) {
-    lines.push(`  ${g.guard} [${g.label}] — ${g.count} firings this week`)
+    lines.push(`  ${g.guard} [${g.label}] — ${g.count} firings · ${g.sessions} sessions (+${g.unknownSessionEvents} unattributed) this week`)
   }
   lines.push(
     '⚠ Event count, not a confirmed-defect count: some guards include bounded evidence that ' +

@@ -56,10 +56,12 @@ function parseProbeClaim(message) {
   return { fields }
 }
 
-function deny(reason) {
+function deny(reason, input) {
   recordGuardEvent({
     guard: 'wt-probe-claim-guard-hook.mjs',
     decision: 'blocked',
+    session: input.session_id,
+    agent: input.agent_id,
     reason,
   })
   process.stdout.write(JSON.stringify({
@@ -83,7 +85,8 @@ function main() {
       `[workflow-toolbox probe-claim] Refused: malformed ${HEADER} stanza. ` +
       `Each line before the first blank line must be "key: value". Bad line: ${JSON.stringify(parsed.invalidLine)}. ` +
       `Without a parseable provenance block, later readers cannot tell what probe fact is being claimed or how to re-check it, so this message cannot leave through SendMessage. ` +
-      `Fix: rewrite the stanza in "key: value" form, then resend it.`
+      `Fix: rewrite the stanza in "key: value" form, then resend it.`,
+      input,
     )
     return
   }
@@ -96,7 +99,8 @@ function main() {
     deny(
       `[workflow-toolbox probe-claim] Refused: ${HEADER} is missing required field(s): ${missing.join(', ')}. ` +
       `A probe-derived claim must carry the exact scanned set and the probe's self-exclusion before it is emittable; otherwise later readers cannot reconstruct what was scanned or whether the probe counted itself. ` +
-      `Fix: add the missing field(s), then resend the message.`
+      `Fix: add the missing field(s), then resend the message.`,
+      input,
     )
     return
   }
@@ -105,7 +109,8 @@ function main() {
     deny(
       `[workflow-toolbox probe-claim] Refused: ${HEADER} declares a hollow self-exclusion ` +
       `(${JSON.stringify(parsed.fields['self-exclusion'])}). A probe that does not name a real self-exclusion can archive a false count by including its own shell/pid. ` +
-      `Fix: state how the probe excluded its own pid/shell, or why self-exclusion was truly not applicable.`
+      `Fix: state how the probe excluded its own pid/shell, or why self-exclusion was truly not applicable.`,
+      input,
     )
   }
 }

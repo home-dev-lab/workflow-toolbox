@@ -144,6 +144,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-plugin-release-record-guard-hook.mjs',
     decision: 'warned',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'plugin-change-without-release-record',
     reason: `${staged.filter((p) => p.startsWith('plugin/')).length} plugin path(s) staged, ${missing}${
       onFeatureBranch ? ` (branch ${branch})` : ''

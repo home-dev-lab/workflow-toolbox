@@ -139,6 +139,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-spawn-capability-guard-hook.mjs',
     decision: 'blocked',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'no-write-tool',
     reason: `agent type "${type}" has no Write tool`,
   })

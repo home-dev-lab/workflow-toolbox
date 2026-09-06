@@ -396,6 +396,8 @@ try {
 recordGuardEvent({
   guard: 'wt-queue-not-empty-gate-hook.mjs',
   decision: 'warned',
+  session: input.session_id,
+  agent: input.agent_id,
   class: `activity:${activityStatus};lane:${laneScan.status}`,
   reason: openCount === null ? `queue:${queueStatus}` : `queue:${openCount}-open`,
 })

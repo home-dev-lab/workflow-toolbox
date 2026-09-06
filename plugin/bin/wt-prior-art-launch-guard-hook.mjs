@@ -108,6 +108,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-prior-art-launch-guard-hook.mjs',
     decision: 'warned',
+    session: input.session_id,
+    agent: input.agent_id,
     class: matchedCount > 0 ? 'matched' : 'no-match-or-no-index',
   })
 

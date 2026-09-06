@@ -106,6 +106,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-unquoted-tool-glob-guard-hook.mjs',
     decision: 'blocked',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'unquoted-glob',
     reason: shown,
   })

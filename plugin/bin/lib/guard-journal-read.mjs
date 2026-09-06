@@ -39,7 +39,8 @@ export function defaultGuardJournalDir() {
  * @returns {
  *   {ok:true, baseDir:string, window:string, weekFiles:string[], totalEvents:number,
  *    totalLines:number, unreadableLines:number, rows:Array<{guard:string, blocked:number,
- *    warned:number, total:number, classes:Record<string,number>, unclassedTotal:number}>}
+ *    warned:number, total:number, sessions:number, unknownSessionEvents:number,
+ *    classes:Record<string,number>, unclassedTotal:number}>}
  *   |
  *   {ok:false, exitCode:2|3, message:string, baseDir:string}
  * }
@@ -73,7 +74,7 @@ export function readGuardJournal({ weeks = 1, all = false, baseDir } = {}) {
 
   const selected = all ? files : files.slice(0, Math.max(1, weeks))
 
-  // guard -> { blocked, warned, classes: Map<class,count>, unclassedTotal }
+  // guard -> { blocked, warned, classes: Map<class,count>, unclassedTotal, sessions, unknownSessionEvents }
   const perGuard = new Map()
   let unreadableLines = 0
   let totalLines = 0
@@ -103,12 +104,22 @@ export function readGuardJournal({ weeks = 1, all = false, baseDir } = {}) {
         continue
       }
       if (!perGuard.has(entry.guard)) {
-        perGuard.set(entry.guard, { blocked: 0, warned: 0, silent: 0, classes: new Map(), unclassedTotal: 0 })
+        perGuard.set(entry.guard, {
+          blocked: 0,
+          warned: 0,
+          silent: 0,
+          classes: new Map(),
+          unclassedTotal: 0,
+          sessions: new Set(),
+          unknownSessionEvents: 0,
+        })
       }
       const g = perGuard.get(entry.guard)
       if (entry.decision === 'blocked') g.blocked += 1
       else if (entry.decision === 'warned') g.warned += 1
       else if (entry.decision === 'silent') g.silent += 1 // observe mode: the guard fired but said nothing
+      if (typeof entry.session === 'string' && entry.session) g.sessions.add(entry.session)
+      else g.unknownSessionEvents += 1
       if (typeof entry.class === 'string' && entry.class) {
         g.classes.set(entry.class, (g.classes.get(entry.class) || 0) + 1)
       } else if (entry.decision === 'blocked' || entry.decision === 'warned' || entry.decision === 'silent') {
@@ -124,6 +135,8 @@ export function readGuardJournal({ weeks = 1, all = false, baseDir } = {}) {
       warned: g.warned,
       silent: g.silent,
       total: g.blocked + g.warned + g.silent,
+      sessions: g.sessions.size,
+      unknownSessionEvents: g.unknownSessionEvents,
       classes: Object.fromEntries(g.classes),
       unclassedTotal: g.unclassedTotal,
     }))

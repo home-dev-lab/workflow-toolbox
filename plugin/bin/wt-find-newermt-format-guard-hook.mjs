@@ -97,6 +97,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-find-newermt-format-guard-hook.mjs',
     decision: 'warned',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'non-iso-newermt',
     // No `reason`: the flagged argument is raw command text; only its shape is recorded.
     evidence: { arg: 'non-iso' },

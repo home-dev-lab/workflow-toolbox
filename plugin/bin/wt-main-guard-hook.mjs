@@ -407,6 +407,8 @@ function main() {
     class: result.class,
     reason: result.reason,
     cwd,
+    session: input.session_id,
+    agent: input.agent_id,
   })
   process.stdout.write(
     JSON.stringify({
