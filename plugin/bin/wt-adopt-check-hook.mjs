@@ -42,6 +42,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { invokes } from './lib/command-invocation.mjs'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -206,17 +207,7 @@ function buildMessage(perFile, installCmd, set = 'rules', event = 'SessionStart'
  *  text at a command position counts: the start, or right after `&&`, `||`, `;`, `|`, `(`,
  *  `{`, `$(`, a newline, or `sudo`/`env VAR=…` prefixes. Exported for the selftest. */
 export function looksLikePush(command) {
-  if (typeof command !== 'string' || !command.includes('push')) return false
-  let text = command
-  // 1. drop heredoc bodies: from `<<[-]['"]?WORD['"]?` to the line holding WORD alone
-  text = text.replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, '\n')
-  // 2. drop single- and double-quoted strings (a quoted "git push" is an argument, not a command)
-  text = text.replace(/'[^']*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""')
-  // 3. split into command positions and test each segment's head
-  return text.split(/&&|\|\||;|\||\n|\(|\{|\$\(/).some((seg) => {
-    const head = seg.trim().replace(/^(?:sudo\s+|env\s+|(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+)/, '')
-    return /^git\s+(?:-C\s+\S+\s+)?push\b/.test(head)
-  })
+  return invokes(command, /^git\s+(?:-C\s+\S+\s+)?push\b/)
 }
 
 /** Which event are we serving, and should we do anything at all? Returns the event name

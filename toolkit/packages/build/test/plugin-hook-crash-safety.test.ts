@@ -194,6 +194,13 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         cwd: sandbox.projectDir,
         tool_input: { command: 'git status' },
       }
+    case 'wt-version-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: sandbox.projectDir,
+        tool_input: { command: 'git status' },
+      }
     case 'wt-probe-claim-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',

@@ -24,7 +24,7 @@
     ]
   },
   "hooks": {
-    "events": { "PreToolUse": 20, "PostToolUse": 9, "SessionStart": 8, "UserPromptSubmit": 1, "SubagentStop": 1, "Stop": 5 },
+    "events": { "PreToolUse": 21, "PostToolUse": 9, "SessionStart": 8, "UserPromptSubmit": 1, "SubagentStop": 1, "Stop": 5 },
     "types": ["command"],
     "matchers": ["Bash", "SendMessage", "Edit|Write|MultiEdit", "StructuredOutput", "Agent", "*", "SendMessage|Agent|Task", "mcp__planka__get_board|mcp__planka__find_cards"],
     "payloadFields": ["hook_event_name", "session_id", "tool_name", "tool_input", "transcript_path", "cwd", "agent_id", "agent_type", "stop_hook_active"],
@@ -36,7 +36,7 @@
   },
   "monitors": { "file": "plugin/monitors/monitors.json", "fields": ["name", "command", "description", "when"], "count": 5 },
   "functionHooks": {
-    "status": "spike only (worktrees/fh-spike), nothing shipped; gated by CLAUDE_CODE_ENABLE_FUNCTION_HOOKS",
+    "status": "spike only (worktrees/fh-spike); function modules cannot import Node APIs needed to inspect a staged Git diff",
     "events": ["tool.call"],
     "capabilities": ["$.ui.log", "$.store.get", "$.store.set"]
   },
@@ -51,7 +51,8 @@
   "env": [
     { "name": "CLAUDE_CONFIG_DIR", "where": "plugin/bin/wt-observe.mjs:180" },
     { "name": "CLAUDE_PLUGIN_ROOT", "where": "plugin/.claude-plugin/plugin.json (hook commands)" },
-    { "name": "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS", "where": "worktrees/fh-spike (spike only)" }
+    { "name": "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS", "where": "worktrees/fh-spike (spike only)" },
+    { "name": "WT_VERSION_GUARD_MODE", "where": "plugin/bin/lib/plugin-version-alignment.mjs (align is opt-in; refuse is default)" }
   ],
   "cli": [
     { "name": "claude plugin validate", "where": "README.md" },
