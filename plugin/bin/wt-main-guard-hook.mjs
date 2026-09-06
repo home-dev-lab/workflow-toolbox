@@ -57,7 +57,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
-import { stripHeredocs, stripQuotedSpans } from './lib/shell-text.mjs'
+import { stripHeredocs, stripQuotedSpans } from './lib/command-invocation.mjs'
 import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 
 const STATE_DIR = resolvePluginDataDir({

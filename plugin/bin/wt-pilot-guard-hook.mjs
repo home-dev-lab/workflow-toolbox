@@ -38,7 +38,7 @@
 import fs from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
-import { stripHeredocs, stripQuotedSpans } from './lib/shell-text.mjs'
+import { stripHeredocs, stripQuotedSpans } from './lib/command-invocation.mjs'
 
 // ⚠ NOT an allowlist of agent types. It used to be one — `pilot`, `pilot-orchestrator`,
 // `pilot-watchdog` — and that failed OPEN: a copy of the pilot definition under any other name
