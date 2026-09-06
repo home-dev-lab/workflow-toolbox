@@ -54,6 +54,7 @@ import { defaultLivenessDir, sanitizeLivenessKey, readLivenessRecord, worktreeRe
 import { isServiceDegraded } from './lib/service-flag.mjs'
 import { hasRecordedStop, lastStopTimestamps, lastRealRecordTimestampMs } from './lib/stop-correlation.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
+import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 
 const HELP = `wt-arc-watch — delegated-arc watcher: watches this project's subagent transcripts
 (corroborated by the outbound-guard stop journal and any liveness declaration file) and
@@ -206,7 +207,7 @@ const sessionsRoot = path.join(configDir, 'projects', projectSlug(projectDir))
 // every read failure, absent match, or stale-but-irrelevant old match falls through to the
 // ordinary STALE line, unchanged.
 const OUTBOUND_GUARD_DIR = process.env.WT_OUTBOUND_GUARD_DIR
-  || path.join(homedir(), '.local', 'state', 'wt-outbound-guard')
+  || resolvePluginDataDir({ fallback: path.join(homedir(), '.local', 'state', 'wt-outbound-guard'), pluginName: pluginName() }).dir
 const LIVENESS_DIR = process.env.WT_LIVENESS_DIR || defaultLivenessDir(homedir())
 
 function loadLastStopTimestamps(sessionName) {

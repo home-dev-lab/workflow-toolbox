@@ -21,6 +21,7 @@
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { projectSlug } from './actionability-state-paths.mjs'
+import { pluginName, resolvePluginDataDir } from './plugin-data-dir.mjs'
 
 export { projectSlug }
 
@@ -28,7 +29,7 @@ export { projectSlug }
 // other wt-* state directory on this machine (see machine-calibrations.md).
 export function stateRoot() {
   const base = process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state')
-  return join(base, 'wt-prior-art')
+  return resolvePluginDataDir({ fallback: join(base, 'wt-prior-art'), pluginName: pluginName() }).dir
 }
 
 export function cardIndexPath(root, cwd) {

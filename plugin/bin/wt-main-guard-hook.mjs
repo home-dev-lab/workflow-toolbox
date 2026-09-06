@@ -58,8 +58,12 @@ import { execFileSync } from 'node:child_process'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
 import { stripHeredocs, stripQuotedSpans } from './lib/shell-text.mjs'
+import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 
-const STATE_DIR = path.join(os.homedir(), '.local', 'state', 'wt-main-guard')
+const STATE_DIR = resolvePluginDataDir({
+  fallback: path.join(os.homedir(), '.local', 'state', 'wt-main-guard'),
+  pluginName: pluginName(),
+}).dir
 const JOURNAL_PATH = path.join(STATE_DIR, 'journal.jsonl')
 const ALLOW_ONCE_PATH = path.join(STATE_DIR, 'allow-once.json')
 

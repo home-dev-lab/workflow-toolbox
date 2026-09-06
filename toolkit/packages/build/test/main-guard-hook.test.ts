@@ -30,7 +30,7 @@ function run(command: string, opts: { agentId?: string; cwd?: string } = {}) {
   const res = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    env: { ...process.env, HOME: sandboxHome },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: undefined, CLAUDE_PLUGIN_DATA: undefined, HOME: sandboxHome },
   })
   return {
     denied: res.stdout.includes('"deny"'),
@@ -222,7 +222,7 @@ describe('wt-main-guard-hook — scope', () => {
     const res = spawnSync(process.execPath, [HOOK], {
       input: JSON.stringify(payload),
       encoding: 'utf8',
-      env: { ...process.env, HOME: sandboxHome },
+      env: { ...process.env, CLAUDE_CONFIG_DIR: undefined, CLAUDE_PLUGIN_DATA: undefined, HOME: sandboxHome },
     })
     expect(res.stdout).toBe('')
   })

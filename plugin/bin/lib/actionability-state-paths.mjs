@@ -13,12 +13,13 @@
 
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { pluginName, resolvePluginDataDir } from './plugin-data-dir.mjs'
 
 // XDG_STATE_HOME with the documented ~/.local/state fallback — matches every
 // other wt-* state directory on this machine (see machine-calibrations.md).
 export function stateRoot() {
   const base = process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state')
-  return join(base, 'wt-actionable')
+  return resolvePluginDataDir({ fallback: join(base, 'wt-actionable'), pluginName: pluginName() }).dir
 }
 
 // The project slug is the project's cwd with every character outside

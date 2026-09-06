@@ -30,6 +30,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -81,8 +82,9 @@ const dirs = (process.env.WT_LESSON_HARVEST_DIRS || '').split(':').filter(Boolea
 const resolvedDefaults = dirs.length ? null : resolveDefaultDirs(cwd)
 const searchDirs = dirs.length ? dirs : resolvedDefaults.dirs
 
-const stateRoot = process.env.XDG_STATE_HOME || path.join(homedir(), '.local', 'state')
-const stateDir = path.join(stateRoot, 'wt-lesson-harvest')
+const stateDir = process.env.WT_LESSON_HARVEST_STATE
+  ? path.dirname(process.env.WT_LESSON_HARVEST_STATE)
+  : resolvePluginDataDir({ fallback: path.join(process.env.XDG_STATE_HOME || path.join(homedir(), '.local', 'state'), 'wt-lesson-harvest'), pluginName: pluginName() }).dir
 
 function stateFileName(dir) {
   const value = String(dir || 'unknown')

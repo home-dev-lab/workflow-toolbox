@@ -53,6 +53,7 @@
   },
   "env": [
     { "name": "CLAUDE_CONFIG_DIR", "where": "plugin/bin/wt-observe.mjs:180" },
+    { "name": "CLAUDE_PLUGIN_DATA", "where": "plugin/bin/lib/plugin-data-dir.mjs" },
     { "name": "CLAUDE_PLUGIN_ROOT", "where": "plugin/.claude-plugin/plugin.json (hook commands)" },
     { "name": "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS", "where": "worktrees/fh-spike (spike only)" },
     { "name": "WT_VERSION_GUARD_MODE", "where": "plugin/bin/lib/plugin-version-alignment.mjs (align is opt-in; refuse is default)" },

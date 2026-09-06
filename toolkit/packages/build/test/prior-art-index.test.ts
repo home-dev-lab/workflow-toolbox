@@ -34,7 +34,7 @@ function scaffoldProject(tag: string, opts: { withBoardPointer?: boolean } = {})
   return {
     cwd,
     priorArtDir: join(state, 'wt-prior-art'),
-    env: { ...process.env, HOME: home, XDG_STATE_HOME: state },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: undefined, CLAUDE_PLUGIN_DATA: undefined, HOME: home, XDG_STATE_HOME: state },
   }
 }
 

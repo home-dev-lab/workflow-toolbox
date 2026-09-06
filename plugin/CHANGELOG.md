@@ -10,6 +10,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   (boolean, default OFF). The shared resolver reads its persisted account value, requires it to
   agree with an existing `WT_EXECUTOR_LANE_CONSENT` account setting when both exist, and reports
   each source; missing, false, narrowing, or disagreement keeps routing on the SPLIT path.
+- Hook-only durable state now resolves through `plugin/bin/lib/plugin-data-dir.mjs` from the active config
+  directory's installed-plugin registry, so hooks and shell readers share `plugins/data/workflow-toolbox-<marketplace>/<legacy-root>`.
+  An uninstalled inline session may use its matching `CLAUDE_PLUGIN_DATA`; otherwise the XDG fallback remains.
+  Legacy entries are carried over per file on every canonical resolution (never overwriting a same-named entry), because an older installed plugin keeps writing the legacy dir until the owner updates it.
 - `wt-opencode-envelope.mjs` and the `opencode-envelope` / `opencode-verifier` agents: default model
   `openai/gpt-5.6-luna` (fallback `openai/gpt-5.6-terra`). `openai/gpt-5.4` was withdrawn from Codex/ChatGPT
   accounts on 2026-08-31 ("not supported when using Codex with a ChatGPT account"), so every envelope call that

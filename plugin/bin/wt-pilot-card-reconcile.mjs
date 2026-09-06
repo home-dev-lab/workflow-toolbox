@@ -51,6 +51,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { handleHelpFlag } from './lib/cli-help.mjs';
+import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs';
 
 const HELP = `wt-pilot-card-reconcile — compare cards reputedly taken against pilots actually
 in flight (via the spawn registry), and name the mismatch: a pilot that died between spawn
@@ -65,7 +66,7 @@ Usage:
 `;
 
 const STATE_DIR = process.env.WT_OUTBOUND_GUARD_DIR
-  || join(homedir(), '.local', 'state', 'wt-outbound-guard');
+  || resolvePluginDataDir({ fallback: join(homedir(), '.local', 'state', 'wt-outbound-guard'), pluginName: pluginName() }).dir;
 
 const argv = process.argv.slice(2);
 handleHelpFlag(argv, HELP);

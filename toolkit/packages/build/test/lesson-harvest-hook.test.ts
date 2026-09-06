@@ -40,7 +40,7 @@ function runFrom(cwd: string, env: Record<string, string>) {
   const res = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ cwd }),
     encoding: 'utf8',
-    env: { ...process.env, ...env },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: join(cwd, '.claude-test'), CLAUDE_PLUGIN_DATA: undefined, ...env },
     timeout: 20_000,
   })
   const stdout = res.stdout.trim()
@@ -160,7 +160,7 @@ describe('wt-lesson-harvest-hook surfaces what a rule and a skill both failed to
     const res = spawnSync(process.execPath, [HOOK], {
       input: JSON.stringify({ cwd: s.project }),
       encoding: 'utf8',
-      env: { ...process.env, WT_LESSON_HARVEST_STATE: s.statePath, WT_LESSON_HARVEST_OFF: '1' },
+      env: { ...process.env, CLAUDE_CONFIG_DIR: undefined, CLAUDE_PLUGIN_DATA: undefined, WT_LESSON_HARVEST_STATE: s.statePath, WT_LESSON_HARVEST_OFF: '1' },
       timeout: 20_000,
     })
 
