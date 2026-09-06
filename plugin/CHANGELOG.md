@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
+- Guard-journal entries now carry sanitised session and agent identities plus process `pid`/`ppid`; scan and SessionStart recurrence summaries report distinct sessions and unattributed firings while retaining firing counts for the recurrence trigger.
 - The opencode envelope now keeps task copies, manifests, answers, and logs outside the opencode
   `--dir` working tree, under a unique plugin state directory by default; `WT_ENVELOPE_WORKDIR`
   provides an explicit per-invocation directory.

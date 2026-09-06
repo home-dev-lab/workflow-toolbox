@@ -80,6 +80,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-isolated-spawn-report-path-hook.mjs',
     decision: 'warned',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'isolated-spawn-out-of-tree-write',
     evidence: { isolation, targets: targets.length },
   })

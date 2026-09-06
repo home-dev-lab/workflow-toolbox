@@ -19,7 +19,7 @@ function main() {
   const root = repoRoot(input.cwd || process.cwd())
   const result = checkPluginVersionAlignment(root)
   if (result.status !== 'diverged') return
-  recordGuardEvent({ guard: 'wt-version-guard-hook.mjs', decision: 'blocked', class: 'plugin-version-diverged', reason: result.remedy, cwd: root })
+  recordGuardEvent({ guard: 'wt-version-guard-hook.mjs', decision: 'blocked', class: 'plugin-version-diverged', reason: result.remedy, cwd: root, session: input.session_id, agent: input.agent_id })
   emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: result.remedy } } })
 }
 

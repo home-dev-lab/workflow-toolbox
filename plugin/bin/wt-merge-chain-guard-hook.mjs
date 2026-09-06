@@ -264,6 +264,7 @@ function main() {
     // No `reason`: the merge segment is raw command text (branch names, paths, anything the
     // caller typed). The classification below is the whole record.
     session: input.session_id,
+    agent: input.agent_id,
     evidence: { trailing },
   })
   if (trailing === TRAILING_CLASS.DIAGNOSTIC) return

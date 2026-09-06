@@ -150,15 +150,17 @@ export function emitGuardNotice({ payload = null, stdoutJson = null, stdoutText 
  * @param {string} [event.reason] - free text, truncated to 400 chars.
  * @param {string} [event.cwd]    - the cwd the decision was made in, if known.
  * @param {string} [event.session] - bounded session id, if known.
+ * @param {string} [event.agent] - bounded agent id, if known.
  * @param {object} [event.evidence] - up to six bounded string/number fields chosen by the guard.
  */
 export function recordGuardEvent(event = {}) {
   try {
-    const { guard, decision, class: cls, reason, cwd, session, evidence } = event || {}
+    const { guard, decision, class: cls, reason, cwd, session, agent, evidence } = event || {}
     if (!guard || !['blocked', 'warned', 'silent'].includes(decision)) return
     const dir = baseDir()
     fs.mkdirSync(dir, { recursive: true })
     const safeSession = typeof session === 'string' ? sanitiseValue(session) : null
+    const safeAgent = typeof agent === 'string' ? sanitiseValue(agent) : null
     const safeEvidence = sanitiseEvidence(evidence)
     const mode = guardMode()
     // Observe mode keeps the detector and the record but the guard said nothing to the model:
@@ -174,6 +176,9 @@ export function recordGuardEvent(event = {}) {
       ...(reason ? { reason: String(reason).slice(0, MAX_REASON_LEN) } : {}),
       ...(cwd ? { cwd } : {}),
       ...(safeSession ? { session: safeSession } : {}),
+      ...(safeAgent ? { agent: safeAgent } : {}),
+      pid: process.pid,
+      ppid: process.ppid,
       ...(safeEvidence ? { evidence: safeEvidence } : {}),
     }
     fs.appendFileSync(journalPath(), `${JSON.stringify(entry)}\n`)

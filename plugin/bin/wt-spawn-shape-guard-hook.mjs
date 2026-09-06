@@ -76,6 +76,8 @@ function main() {
     recordGuardEvent({
       guard: 'wt-spawn-shape-guard-hook.mjs',
       decision: 'warned',
+      session: input.session_id,
+      agent: input.agent_id,
       class: 'named-without-isolation-no-repo',
       reason: `"${name}" (${type}) named without isolation, no git repo at cwd`,
       cwd,
@@ -96,6 +98,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-spawn-shape-guard-hook.mjs',
     decision: 'blocked',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'named-without-isolation',
     reason: `"${name}" (${type}) named but not isolated`,
     cwd,

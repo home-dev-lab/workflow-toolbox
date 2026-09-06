@@ -225,6 +225,8 @@ function main() {
     recordGuardEvent({
       guard: 'wt-live-config-tree-guard-hook.mjs',
       decision: 'blocked',
+      session: input.session_id,
+      agent: input.agent_id,
       class: 'live-config-tree',
       reason: hitSeg,
       cwd: hitDir,
@@ -244,6 +246,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-live-config-tree-guard-hook.mjs',
     decision: 'warned',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'live-config-tree',
     reason: hitSeg,
     cwd: hitDir,

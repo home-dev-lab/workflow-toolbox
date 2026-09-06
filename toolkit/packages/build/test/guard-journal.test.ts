@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LIB = join(REPO_ROOT, 'plugin/bin/lib/guard-journal.mjs')
+const SCAN = join(REPO_ROOT, 'plugin/bin/wt-guard-journal-scan.mjs')
 
 let journalDir: string
 
@@ -78,6 +79,8 @@ describe('guard-journal — recordGuardEvent', () => {
       decision: 'blocked',
       class: 'x',
       reason: 'because',
+      pid: expect.any(Number),
+      ppid: expect.any(Number),
     })
     expect(typeof entries[0]!.ts).toBe('string')
   })
@@ -171,6 +174,48 @@ describe('guard-journal — recordGuardEvent', () => {
       session: 'session-123/example',
       evidence: { after: 'pnpm,git', count: '2' },
     })
+  })
+
+  it('sanitises and records the agent identity', () => {
+    record({ guard: 'wt-example-guard-hook.mjs', decision: 'blocked', session: 's1', agent: 'agent 1' })
+    expect(readAllEntries()[0]).toMatchObject({ agent: 'agent?1', pid: expect.any(Number), ppid: expect.any(Number) })
+  })
+
+  it('aggregates distinct sessions and counts old-shape entries as unknown', () => {
+    mkdirSync(journalDir, { recursive: true })
+    writeFileSync(
+      join(journalDir, '2026-W32.ndjson'),
+      [
+        { guard: 'g', decision: 'blocked', session: 'a' },
+        { guard: 'g', decision: 'warned', session: 'a' },
+        { guard: 'g', decision: 'blocked', session: 'b' },
+        { guard: 'g', decision: 'blocked' },
+      ].map((entry) => JSON.stringify(entry)).join('\n') + '\n',
+    )
+    const result = spawnSync(process.execPath, [SCAN, '--json'], {
+      encoding: 'utf8',
+      env: { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir },
+    })
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout).guards[0]).toMatchObject({ total: 4, sessions: 2, unknownSessionEvents: 1 })
+  })
+
+  it('prints firing and distinct-session counts in the human scan line', () => {
+    mkdirSync(journalDir, { recursive: true })
+    writeFileSync(
+      join(journalDir, '2026-W32.ndjson'),
+      [
+        { guard: 'g', decision: 'blocked', session: 'a' },
+        { guard: 'g', decision: 'warned', session: 'a' },
+        { guard: 'g', decision: 'blocked' },
+      ].map((entry) => JSON.stringify(entry)).join('\n') + '\n',
+    )
+    const result = spawnSync(process.execPath, [SCAN], {
+      encoding: 'utf8',
+      env: { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir },
+    })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('3 firings · 1 sessions (+1 unattributed)')
   })
 
   it('truncates an over-long evidence value after coercion', () => {

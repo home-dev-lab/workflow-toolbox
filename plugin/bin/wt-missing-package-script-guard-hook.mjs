@@ -319,6 +319,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-missing-package-script-guard-hook.mjs',
     decision: 'warned',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'missing-script',
     evidence: { nearest: 'package_json', ancestor: ancestorDir ? 'yes' : 'no' },
   })

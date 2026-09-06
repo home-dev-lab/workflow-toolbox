@@ -130,6 +130,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-var-colon-modifier-guard-hook.mjs',
     decision: 'warned',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'var-colon-modifier',
     reason: `$${m[1]}:${m[2]}`,
   })

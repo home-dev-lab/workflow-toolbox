@@ -1194,6 +1194,8 @@ export function run() {
   recordGuardEvent({
     guard: 'wt-verifier-cli-guard-hook.mjs',
     decision: 'blocked',
+    session: input.session_id,
+    agent: input.agent_id,
     reason: finalReason,
   })
   process.stdout.write(

@@ -65,6 +65,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-pgrep-env-dump-guard-hook.mjs',
     decision: 'warned',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'full-listing-pgrep-ps',
   })
   const payload = {

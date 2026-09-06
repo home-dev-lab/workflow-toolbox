@@ -104,6 +104,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-git-commit-backtick-guard-hook.mjs',
     decision: 'warned',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'unescaped-backtick',
     // No `reason`: the flagged fragment is the commit message text itself, and raw command
     // text never reaches the journal on a machine that exports credentials into shells.

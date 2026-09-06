@@ -166,6 +166,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-pilot-guard-hook.mjs',
     decision: 'blocked',
+    session: input.session_id,
+    agent: input.agent_id,
     reason,
   })
   process.stdout.write(

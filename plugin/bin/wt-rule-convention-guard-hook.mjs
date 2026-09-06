@@ -158,10 +158,12 @@ function detectViolations(text) {
   return violations
 }
 
-function deny(reason) {
+function deny(reason, input) {
   recordGuardEvent({
     guard: 'wt-rule-convention-guard-hook.mjs',
     decision: 'blocked',
+    session: input.session_id,
+    agent: input.agent_id,
     reason,
   })
   process.stdout.write(JSON.stringify({
@@ -193,6 +195,7 @@ function main() {
   deny(
     `${details}\nA rule states what to DO plus the invariant that makes it right. ` +
     `Move the date, the name and the story to a note, and keep the directive.`,
+    payload,
   )
 }
 

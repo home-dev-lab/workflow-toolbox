@@ -59,7 +59,7 @@ function main() {
 
   const reason = skippedReason(command, cwd)
   if (reason) {
-    recordGuardEvent({ guard: GUARD, decision: 'silent', class: 'gate-evidence-skipped', reason, cwd: root, session: input.session_id })
+    recordGuardEvent({ guard: GUARD, decision: 'silent', class: 'gate-evidence-skipped', reason, cwd: root, session: input.session_id, agent: input.agent_id })
     return
   }
 
@@ -72,7 +72,7 @@ function main() {
     return []
   })
   if (!problems.length) {
-    recordGuardEvent({ guard: GUARD, decision: 'silent', class: 'gate-evidence-fresh', cwd: root, session: input.session_id })
+    recordGuardEvent({ guard: GUARD, decision: 'silent', class: 'gate-evidence-fresh', cwd: root, session: input.session_id, agent: input.agent_id })
     return
   }
 
@@ -81,7 +81,7 @@ function main() {
   const commands = problems.map(({ gate }) => `  (${gate.cwd}) node "${'${CLAUDE_PLUGIN_ROOT}'}/bin/wt-run-gate.mjs" --record ${gate.name} -- ${gate.command}`).join('\n')
   const message = `Gate evidence is required before this commit:\n${problems.map(({ gate, status }) => `- ${gate.name}: ${status}`).join('\n')}\nRun:\n${commands}`
   const deny = firing >= 20
-  recordGuardEvent({ guard: GUARD, decision: deny ? 'blocked' : 'warned', class: cls, reason: problems.map((p) => `${p.gate.name}:${p.status}`).join(', '), cwd: root, session: input.session_id })
+  recordGuardEvent({ guard: GUARD, decision: deny ? 'blocked' : 'warned', class: cls, reason: problems.map((p) => `${p.gate.name}:${p.status}`).join(', '), cwd: root, session: input.session_id, agent: input.agent_id })
   if (deny) {
     emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: message } } })
   } else {

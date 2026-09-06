@@ -73,6 +73,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-pipestatus-bash-only-guard-hook.mjs',
     decision: 'warned',
+    session: input.session_id,
+    agent: input.agent_id,
     class: 'pipestatus-bash-only',
   })
   emitGuardNotice({ payload: input, stdoutJson: payload })

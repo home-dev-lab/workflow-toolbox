@@ -201,6 +201,8 @@ function main() {
   recordGuardEvent({
     guard: 'wt-propagation-reminder-hook.mjs',
     decision: 'warned',
+    session: payload.session_id,
+    agent: payload.agent_id,
     class: 'propagation',
     reason: `${hit.why}: ${file}`,
   })

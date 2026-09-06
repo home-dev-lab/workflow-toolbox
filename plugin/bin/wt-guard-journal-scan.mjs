@@ -91,7 +91,7 @@ if (AS_JSON) {
       weekFiles,
       totalEvents: result.totalEvents,
       unreadableLines,
-      guards: rows.map(({ guard, blocked, warned, silent, total, classes }) => ({ guard, blocked, warned, silent, total, classes })),
+      guards: rows.map(({ guard, blocked, warned, silent, total, sessions, unknownSessionEvents, classes }) => ({ guard, blocked, warned, silent, total, sessions, unknownSessionEvents, classes })),
       caveat:
         'A count is an EVENT count, not a confirmed-defect count. Some guards include bounded ' +
         'evidence that lets a reader classify a firing, but this scanner does not classify it. ' +
@@ -109,7 +109,7 @@ if (rows.length === 0) {
   console.log('')
   console.log('guard'.padEnd(42) + 'blocked'.padStart(9) + 'warned'.padStart(9) + 'total'.padStart(8))
   for (const r of rows) {
-    console.log(r.guard.padEnd(42) + String(r.blocked).padStart(9) + String(r.warned).padStart(9) + String(r.total).padStart(8))
+    console.log(r.guard.padEnd(42) + String(r.blocked).padStart(9) + String(r.warned).padStart(9) + String(r.total).padStart(8) + ` — ${r.total} firings · ${r.sessions} sessions (+${r.unknownSessionEvents} unattributed)`)
   }
 }
 if (unreadableLines > 0) {
