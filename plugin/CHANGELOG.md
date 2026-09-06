@@ -18,6 +18,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   docs/changelog digest is diffed against (common shape with claude-mem, 2026-09-05).
 
 ### Fixed
+- `wt-observe start` now names the checkout branch, short commit, and newest served UI bundle before launch, records them in `server.json`, and refuses a non-`main` checkout unless the explicit, loud `--allow-branch` override is passed. `wt-observe status` reports the recorded identity.
 - `wt-adopt-check-hook.mjs` (PostToolUse Bash): the adopted-rules drift notice fired on any command whose TEXT
   contained the words `git push` — a card description written through a heredoc, a quoted grep — while no push
   happened (three false firings on 2026-09-05). The pre-filter is now `looksLikePush()`: heredoc bodies and quoted

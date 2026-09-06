@@ -67,6 +67,9 @@ function parseObservePidfile(text) {
   if (m["bootId"] !== null && typeof m["bootId"] !== "string") return null;
   if (m["procStartTicks"] !== null && typeof m["procStartTicks"] !== "number") return null;
   if (m["token"] !== void 0 && typeof m["token"] !== "string") return null;
+  if (m["branch"] !== void 0 && typeof m["branch"] !== "string") return null;
+  if (m["head"] !== void 0 && typeof m["head"] !== "string") return null;
+  if (m["bundle"] !== void 0 && typeof m["bundle"] !== "string") return null;
   if (!Array.isArray(m["sources"]) || m["sources"].length === 0 || m["sources"].some((s) => typeof s !== "string")) return null;
   return raw;
 }
@@ -1643,6 +1646,44 @@ async function probeFor(ctx) {
     port
   };
 }
+function inspectObserveOrientation() {
+  const root = findObserveRoot(process.cwd(), process.env);
+  if (root === null) {
+    throw new Error(
+      "cannot locate the observe server (no checkout found from cwd; set DWT_OBSERVE_ROOT). Until the Workflow Observatory binary distribution ships, wt-observe start needs a workflow-observatory checkout (or a legacy workflow-toolbox one) on this machine."
+    );
+  }
+  const git = (...args) => execFileSync2("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  let branch;
+  let head;
+  try {
+    branch = git("branch", "--show-current") || "(detached)";
+    head = git("rev-parse", "--short", "HEAD");
+  } catch {
+    throw new Error(`cannot identify the observe checkout at ${root}: git branch/HEAD are required before start`);
+  }
+  const assetsDir = join7(root, "apps", "observe-ui", "dist", "assets");
+  const bundle = (() => {
+    try {
+      return readdirSync3(assetsDir, { withFileTypes: true }).filter((entry) => entry.isFile() && /^index-.*\.js$/.test(entry.name)).map((entry) => ({ name: entry.name, mtimeMs: statSync2(join7(assetsDir, entry.name)).mtimeMs })).sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))[0]?.name;
+    } catch {
+      return void 0;
+    }
+  })();
+  return { branch, head, bundle: bundle === void 0 ? "(no index bundle found)" : `apps/observe-ui/dist/assets/${bundle}` };
+}
+function announceObserveOrientation(orientation, allowBranch) {
+  if (orientation.branch !== "main" && !allowBranch) {
+    const root = findObserveRoot(process.cwd(), process.env);
+    throw new Error(
+      `observe root ${root} is on branch ${orientation.branch}, not main \u2014 refusing to start. Remedy: git -C ${root} checkout main && pnpm ui:build`
+    );
+  }
+  if (orientation.branch !== "main") process.stderr.write(`*** ALLOW-BRANCH OVERRIDE: serving ${orientation.branch} instead of main. ***
+`);
+  process.stdout.write(`observe root: branch=${orientation.branch} head=${orientation.head} bundle=${orientation.bundle}
+`);
+}
 function resolveStartSources(explicitRaw) {
   const explicit = explicitRaw.map(resolveDir);
   for (const [i, dir] of explicit.entries()) {
@@ -1807,7 +1848,7 @@ async function cmdStart(ctx, sourceDirs, remotes, flags) {
     if (d.action === "adopt") {
       const h2 = p.health;
       const served = sourcesFromHealth(h2);
-      writePidfileAt(ctx.pidfilePath, withCarriedToken(pidfileFromHealth(h2), p.pf));
+      writePidfileAt(ctx.pidfilePath, withCarriedToken({ ...pidfileFromHealth(h2), ...flags.orientation }, p.pf));
       const label2 = served.length === 1 ? ` for ${served[0]}` : "";
       const sourcesLine2 = served.length > 1 ? `sources: ${served.join(", ")}
 ` : "";
@@ -1872,7 +1913,7 @@ ${sourcesLine2}URL: http://127.0.0.1:${h2.port}/
       process.stderr.write("wt-observe: owned server slow to answer \u2014 retrying health with a longer timeout\u2026\n");
       const h2 = await probeHealth(p.port, 1e4);
       if (typeof h2 === "object") {
-        writePidfileAt(ctx.pidfilePath, withCarriedToken(pidfileFromHealth(h2), p.pf));
+        writePidfileAt(ctx.pidfilePath, withCarriedToken({ ...pidfileFromHealth(h2), ...flags.orientation }, p.pf));
         process.stdout.write(`observe-ui already running (answered on retry) \u2014 adopted.
 URL: http://127.0.0.1:${h2.port}/
 `);
@@ -1899,7 +1940,7 @@ URL: http://127.0.0.1:${h2.port}/
     }
     const port = p.port;
     const { health: h, token } = await spawnServer(ctx.stateRoot, port, sourceDirs, remotes, flags);
-    writePidfileAt(ctx.pidfilePath, { ...pidfileFromHealth(h), token });
+    writePidfileAt(ctx.pidfilePath, { ...pidfileFromHealth(h), ...flags.orientation, token });
     const notes = [
       flags.watch ? " with the vite build watcher (--watch)" : "",
       flags.enableLaunch ? " with live launches ENABLED (--enable-launch)" : "",
@@ -1950,6 +1991,12 @@ async function cmdStatus(ctx) {
 `);
     process.stdout.write("recorded sources:\n");
     for (const s of p.pf.sources) process.stdout.write(`  - ${s}
+`);
+    process.stdout.write(`branch     : ${p.pf.branch ?? "(not recorded)"}
+`);
+    process.stdout.write(`head       : ${p.pf.head ?? "(not recorded)"}
+`);
+    process.stdout.write(`bundle     : ${p.pf.bundle ?? "(not recorded)"}
 `);
   }
   if (p.identity === "ours" && p.health !== null) {
@@ -2561,7 +2608,7 @@ async function cmdPrune(argv) {
   return 0;
 }
 var SYNOPSIS = {
-  start: "wt-observe start [--source <dir>]... [--watch] [--enable-launch] [--no-resume] [--health-timeout <seconds>]",
+  start: "wt-observe start [--source <dir>]... [--watch] [--enable-launch] [--no-resume] [--allow-branch] [--health-timeout <seconds>]",
   stop: "wt-observe stop",
   status: "wt-observe status",
   prune: "wt-observe prune [--run <id> | --name-prefix <p>]... [--older-than <dur>] [--yes]",
@@ -2571,7 +2618,8 @@ var SYNOPSIS = {
   config: "wt-observe config [show | add-source <dir> | remove-source <dir> | add-remote <url> [--token <t> | --token-file <p>] [--label <l>] | remove-remote <url>]"
 };
 var HELP_DETAIL = {
-  start: `  --no-resume: park every pending orphaned-run resume this boot instead of dispatching
+  start: `  --allow-branch: deliberately permit a non-main observe checkout (printed loudly).
+  --no-resume: park every pending orphaned-run resume this boot instead of dispatching
   it (never discards a launch record \u2014 the next boot without this flag resumes it).
   --health-timeout <seconds>: how long to wait for the fresh spawn to answer
   /api/health before giving up and reaping the child (default 90s; also settable via
@@ -2607,6 +2655,8 @@ async function main(argv = process.argv.slice(2)) {
   const ctx = makeCtx();
   try {
     if (cmd === "start") {
+      const orientation = inspectObserveOrientation();
+      announceObserveOrientation(orientation, argv.includes("--allow-branch"));
       const sourceDirs = resolveStartSources(flagValues(argv, "source"));
       const remotes = resolveStartRemotes();
       {
@@ -2621,7 +2671,8 @@ async function main(argv = process.argv.slice(2)) {
           watch: argv.includes("--watch"),
           enableLaunch: argv.includes("--enable-launch"),
           noResume: argv.includes("--no-resume"),
-          healthTimeoutMs
+          healthTimeoutMs,
+          orientation
         });
       }
     } else if (cmd === "stop") await cmdStop(ctx);
