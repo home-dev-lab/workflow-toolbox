@@ -250,6 +250,15 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
           prompt: 'Inspect the code and report what you find.',
         },
       }
+    case 'wt-spawn-channel-guard-hook.mjs':
+    case 'wt-spawn-readonly-guard-hook.mjs':
+    case 'wt-nested-spawn-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse', tool_name: 'Agent', cwd: sandbox.projectDir,
+        tool_input: { subagent_type: 'verify-strict', prompt: 'Inspect and report back.' },
+      }
+    case 'wt-workflow-model-guard-hook.mjs':
+      return { hook_event_name: 'PreToolUse', tool_name: 'Workflow', cwd: sandbox.projectDir, tool_input: { args: {} } }
     case 'wt-spawn-shape-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',
