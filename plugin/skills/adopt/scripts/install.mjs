@@ -47,8 +47,10 @@
 //   node install.mjs [--set …] --check|--install --global                      # target the CONFIG dir instead of the project
 //
 // Default --set is `rules` (backward-compatible with the original rules-only tool).
-// Each set targets its own default dir under <cwd>; `--dir` overrides the target and
-// therefore requires a SINGLE --set (with `--set all` each set keeps its own default).
+// Each set targets its own default dir under <cwd>; `--dir` overrides the target exactly and
+// therefore requires a SINGLE --set (with `--set all` each set keeps its own default). For
+// rules/docs, do not pass the parent of an adopted `wt/` directory: --install refuses that
+// duplicate trap; use `--dir <root>/wt` or `--global`.
 //
 // `--global` targets the CONFIG dir — CLAUDE_CONFIG_DIR, or ~/.claude when that is unset —
 // resolving the path here so no caller has to build it. That matters because a caller who
@@ -796,6 +798,35 @@ function bannerLine(set, text) {
   }
   const nl = text.indexOf('\n')
   return nl === -1 ? text : text.slice(0, nl)
+}
+
+function explicitNestedTarget(set, dir, args) {
+  if (!args.dir || !['rules', 'docs'].includes(set.kind)) return null
+  return path.join(dir, 'wt')
+}
+
+function hasAdoptionBanner(set, file) {
+  try {
+    return VERSION_RE.test(bannerLine(set, fs.readFileSync(file, 'utf8')))
+  } catch {
+    return false
+  }
+}
+
+function refuseExplicitRootInstall(set, dir, args, root) {
+  const nestedDir = explicitNestedTarget(set, dir, args)
+  if (args.mode !== 'install' || !nestedDir) return
+  const bannerFiles = set
+    .resolveItems(root)
+    .filter((item) => hasAdoptionBanner(set, path.join(nestedDir, item.file)))
+    .map((item) => item.file)
+  if (bannerFiles.length === 0) return
+  const named = bannerFiles.slice(0, 3).join(', ')
+  fail(
+    `--dir ${dir} is a rules/docs root with adopted files under ${nestedDir}/ ` +
+      `(first banner files: ${named}${bannerFiles.length > 3 ? ', …' : ''}). ` +
+      `Use --dir ${nestedDir} or --global; refusing to create flat duplicates beside wt/.`,
+  )
 }
 
 function stripBannerFor(set, text) {
@@ -1549,11 +1580,17 @@ function processSet(set, dir, args, version, root) {
   let anyEdited = false
   let anySymlink = false
   let anyMigrationPending = false
+  let anyDuplicate = false
+  const nestedDir = explicitNestedTarget(set, dir, args)
   for (const item of set.resolveItems(root)) {
     const target = path.join(dir, item.file)
     const c = classify(target, set)
     const shippedFp = shippedFingerprint(set, item, root)
     let p = plan(c, version, args.force, args.replaceSymlinks, shippedFp)
+    if (nestedDir && hasAdoptionBanner(set, target) && hasAdoptionBanner(set, path.join(nestedDir, item.file))) {
+      anyDuplicate = true
+      p = { status: `DUPLICATE (also present in ${nestedDir}/${item.file})`, write: false }
+    }
 
     // LEGACY-LOCATION FALLBACK (rules/wt/ migration, card 1835727457): an item ABSENT at the
     // new default target may simply be UN-MIGRATED, still sitting at the pre-migration flat
@@ -1642,7 +1679,7 @@ function processSet(set, dir, args, version, root) {
       }
     }
   }
-  return { anyAbsent, anyStale, anyEdited, anySymlink, anyMigrationPending }
+  return { anyAbsent, anyStale, anyEdited, anySymlink, anyMigrationPending, anyDuplicate }
 }
 
 // --- --migrate --dry-run --------------------------------------------------------------------
@@ -2206,6 +2243,7 @@ function main() {
   let anySymlink = false
   let anySettingsProblem = false
   let anyMigrationPending = false
+  let anyDuplicate = false
   for (const name of chosen) {
     const set = SETS[name]
     // `set.defaultDir` is project-relative ('.claude/rules/wt' | '.claude/agents'); under
@@ -2218,13 +2256,17 @@ function main() {
           ? path.join(globalRoot, set.globalSubdir)
           : path.join(process.cwd(), set.defaultDir)),
     )
+    refuseExplicitRootInstall(set, dir, args, root)
     const r = processSet(set, dir, args, version, root)
     anyAbsent = anyAbsent || r.anyAbsent
     anyStale = anyStale || r.anyStale
     anyEdited = anyEdited || r.anyEdited
     anySymlink = anySymlink || r.anySymlink
     anyMigrationPending = anyMigrationPending || r.anyMigrationPending
+    anyDuplicate = anyDuplicate || r.anyDuplicate
   }
+
+  if (anyDuplicate) process.exitCode = 1
 
   const settingsResult = processSettings(globalRoot, chosen, args, version)
   anyAbsent = anyAbsent || settingsResult.anyAbsent
