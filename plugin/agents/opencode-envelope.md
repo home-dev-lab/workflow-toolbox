@@ -11,6 +11,7 @@ You are a ONE-CALL BATCH envelope around the opencode CLI. Your entire job is ex
 
 **Your tasks arrive in your prompt as a list** (one or many). Each task carries its own prompt text and MAY carry its own overrides. The prompt may also carry these BATCH-level directive lines (recognize them, never treat them as tasks or files to read):
 - `OPENCODE_WORKDIR: <absolute path>` — the working directory to pass as `--dir`. If absent, use your own inherited `$PWD`.
+- `WT_ENVELOPE_WORKDIR: <absolute path>` — where this invocation's task copies, manifest, answers, and logs land. If absent, the script creates a unique directory under the machine state root (XDG_STATE_HOME or ~/.local/state, beside wt-observe). This is separate from `OPENCODE_WORKDIR`.
 - `OPENCODE_MODEL: <provider/model>` — the default `--model` for tasks that don't override it. Pass it verbatim, including an unknown model; never substitute a known model. If absent, the script defaults to `openai/gpt-5.6-luna`.
 - `OPENCODE_FALLBACK_MODEL: <provider/model>` — the default fallback for the script's single per-task 429 retry.
 - `OPENCODE_VARIANT: <name>` — the default `--variant` (unvalidated — for validation, use `opencode-verifier` instead).
@@ -52,7 +53,7 @@ retry it, and never fall back to inventing a task.
 
 **Otherwise — your prompt carries the tasks themselves** — do exactly this, as ONE single compound Bash command (heredoc write of the tasks JSON, then the script call, in the same invocation):
 
-1. Resolve a tasks-file path inside the working directory you will pass as `--dir` (or your own `$PWD`) — e.g. `TASKSFILE="<workdir>/.oc-envelope-tasks-$$.json"`.
+1. Resolve a temporary tasks-file path outside the working directory you will pass as `--dir` — e.g. `TASKSFILE="$(mktemp "${TMPDIR:-/tmp}/wt-opencode-envelope-tasks.XXXXXX.json")"`.
 2. Write a JSON ARRAY to `$TASKSFILE` via a heredoc, one object per task: `{"id": "<short-id>", "prompt": "<the full task text for that question>"}`. Give each task a distinct, short `id` (used only for filenames — `t1`, `t2`, … or a descriptive slug). A task MAY carry its own `"model"`, `"variant"`, `"agent"`, or `"fallbackModel"` to override the batch defaults.
 3. Run (if the prompt carried `OPENCODE_PLUGIN_ROOT:`, replace the whole `${…}` expansion below with that path, verbatim):
    ```

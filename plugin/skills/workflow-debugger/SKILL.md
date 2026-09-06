@@ -147,7 +147,8 @@ record) directly:
 ## Thin-envelope runs
 
 `workflow-toolbox:opencode-envelope` is a different lane shape from the heavy wrappers above. The
-script writes its invocation artifacts under `<workdir>/.wt-envelope/<pid>-<timestamp>-<random>/`,
+script writes its invocation artifacts under the machine state root's (XDG_STATE_HOME or ~/.local/state)
+`wt-envelope/<pid>-<timestamp>-<random>/` (or `WT_ENVELOPE_WORKDIR` when explicitly set),
 and the manifest for that invocation is `envelope.manifest.json`; the brief `MANIFEST: <path>` line
 on stdout is the handle the debugger follows into the manifest, the per-task answer files, and the
 per-task logs (`plugin/bin/wt-opencode-envelope.mjs:114-116`,

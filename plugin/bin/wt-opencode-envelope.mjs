@@ -112,7 +112,8 @@ function usage() {
     `  --concurrency <n>                  Tasks run in parallel per batch. Default: ${DEFAULT_CONCURRENCY}`,
     '                                     Bounds the BATCH, never the total; the rest runs in later batches.',
     '  Each invocation writes its task copies, answers, and manifest beneath',
-    '  <dir>/.wt-envelope/<pid>-<timestamp>-<random>/. This keeps observatory',
+    '  the machine state root (XDG_STATE_HOME or ~/.local/state): wt-envelope/<pid>-<timestamp>-<random>/.',
+    '  Set WT_ENVELOPE_WORKDIR to choose a per-invocation directory explicitly.',
     '  witnesses immutable after the invocation that created them.',
     '',
     'Prints exactly one MANIFEST line to stdout, and for exactly one successful non-reduce task:',
@@ -204,7 +205,13 @@ function uniqueToken() {
 }
 
 function invocationOutDir(dir) {
-  return path.join(path.resolve(dir), '.wt-envelope', uniqueToken())
+  const explicit = process.env.WT_ENVELOPE_WORKDIR
+  if (typeof explicit === 'string' && explicit.length > 0) return path.resolve(explicit)
+  // SHARED state, deliberately NOT the hook-only plugin data dir: the observatory (a non-plugin
+  // process) follows the absolute MANIFEST path printed here, and the arbiter reads the answer
+  // files by hand — so the files live under the machine's state root, beside wt-observe.
+  const stateRoot = process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state')
+  return path.join(stateRoot, 'wt-envelope', uniqueToken())
 }
 
 function uniqueStreamFile(taskId) {
