@@ -75,6 +75,14 @@ describe('wt-lane-saturation-hook.mjs', () => {
     }
   })
 
+  it('is silent when a heredoc-written fixture contains a lane invocation mention', () => {
+    const countLaneProcesses = () => {
+      throw new Error('countLaneProcesses should not be called for heredoc data')
+    }
+    const command = `cat > fixture.ts <<'EOF'\nopencode run --model x\nEOF`
+    expect(evaluateLaneCall({ tool_input: { command } }, { countLaneProcesses }).silent).toBe(true)
+  })
+
   it('still detects a real invocation chained after another command, or preceded by an unquoted modifier', () => {
     // The false-positive fix must not become a false-negative regression: a real lane call
     // is never itself wrapped in quotes or written after a comment marker, so stripping
