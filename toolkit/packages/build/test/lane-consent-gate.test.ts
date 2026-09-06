@@ -100,6 +100,36 @@ describe('evaluateConsentGate (core decision)', () => {
     ).toBe(true)
   })
 
+  it('is silent when a heredoc-written fixture contains a lane invocation mention', () => {
+    const resolveConsentImpl = () => {
+      throw new Error('resolveConsentImpl should not be called for heredoc data')
+    }
+    const command = `cat > fixture.ts <<'EOF'\nopencode run --model x\nEOF`
+    expect(evaluateConsentGate({ tool_input: { command } }, { resolveConsentImpl }).silent).toBe(true)
+  })
+
+  it('still detects real lane invocations at command positions and through modifiers', () => {
+    const resolveConsentImpl = () => ({
+      outcome: 'not_true' as const,
+      account: { state: 'missing', filePath: '/acct/settings.json' },
+      project: { state: 'missing', filePath: '/proj/.claude/settings.local.json' },
+    })
+    const commands = [
+      'opencode run --model x',
+      'printf ready && opencode run --model x',
+      'printf ready; opencode run --model x',
+      'printf ready | opencode run --model x',
+      'printf ready\nopencode run --model x',
+      'printf $(opencode run --model x)',
+      'timeout 10 opencode run --model x',
+      'env X=1 opencode run --model x',
+    ]
+    for (const command of commands) {
+      const result = evaluateConsentGate({ tool_input: { command } }, { resolveConsentImpl })
+      expect(result.deny, command).toBe(true)
+    }
+  })
+
   // ── ON path ──────────────────────────────────────────────────────────────────────────────
   it('ON: a real lane call is silent (allowed) when consent resolves true', () => {
     const result = evaluateConsentGate(
@@ -265,5 +295,8 @@ describe('wt-lane-consent-gate-hook.mjs (PreToolUse Bash wrapper)', () => {
     const res = runHook(f.project, f.env, "echo 'opencode run x'")
     expect(res.status).toBe(0)
     expect((res.stdout ?? '').trim()).toBe('')
+    const comment = runHook(f.project, f.env, '# opencode run x')
+    expect(comment.status).toBe(0)
+    expect((comment.stdout ?? '').trim()).toBe('')
   })
 })

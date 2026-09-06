@@ -5,8 +5,8 @@
 // The sibling `wt-lane-consent-check-hook.mjs` (SessionStart) only warns when auto-loaded RULES
 // disagree with the switch; it never runs at call time and never refuses anything. This hook is
 // the gate: it inspects the REAL Bash command about to run, and if it is a real external-lane
-// invocation (`opencode run` / `codex exec`, quote/comment-stripped — same detection as the
-// lane-saturation guard) that is not consented, it denies before the process ever starts.
+// invocation (`opencode run` / `codex exec`, heredoc/quote/comment-stripped via
+// command-invocation.mjs) that is not consented, it denies before the process ever starts.
 //
 // ⚠ FAILS CLOSED — the deliberate exception to every other guard in this directory. Every OTHER
 // deny-capable guard here (lane saturation, verifier-cli self-answer, …) wraps its entry point in

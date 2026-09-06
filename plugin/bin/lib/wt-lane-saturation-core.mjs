@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { stripHeredocs } from './shell-text.mjs'
+import { stripNonCommandText } from './command-invocation.mjs'
 
 /** The bound is a NAMED parameter, never a buried constant: the 8-16 wall is empirical and
  *  moves with the subscribed plan. The default is the LOW end deliberately — being warned
@@ -12,7 +12,7 @@ export const LANE_PROCESS_NAMES = ['opencode', 'codex']
  *  every command containing the word becomes noise within a day. */
 export const LANE_INVOCATIONS = [/\bopencode\s+run\b/, /\bcodex\s+exec\b/]
 
-/** Strip quoted-string bodies and shell comments before testing LANE_INVOCATIONS — a
+/** Strip heredoc/quoted-string bodies and shell comments before testing LANE_INVOCATIONS — a
  *  command line MIXES code and data, and a textual guard that reads a heredoc or a quoted
  *  string as if the shell would execute it refuses correct work (this project's own
  *  documented gotcha). Without this, `echo 'opencode run x'`, `printf '%s' 'opencode run'`,
@@ -21,34 +21,16 @@ export const LANE_INVOCATIONS = [/\bopencode\s+run\b/, /\bcodex\s+exec\b/]
  *  Bash caller including the main session.
  *
  *  Deliberately simple, not a shell parser: strips '...'/"..." bodies (escaped quotes inside
- *  double quotes respected) and drops everything from an unquoted `#` to end of string. This
+ *  double quotes respected); `command-invocation.mjs` owns heredoc and quote stripping; this
+ *  function only adds comment stripping. This
  *  narrows false positives (mention-only text) at essentially no cost to true positives: a
  *  real invocation is never itself wrapped in quotes or written after a comment marker. */
 export function stripNonExecutedText(command) {
-  // ⚠ Heredoc bodies FIRST, and this line is the whole point of the fix. The character loop below
-  // removes quoted spans, which is what this function documented and did — but a heredoc body is
-  // neither quoted nor commented, so an invocation string sitting inside one reached the matcher
-  // intact and the lane gate REFUSED the command that merely wrote it (measured 2026-08-28, on a
-  // test fixture). A guard that refuses correct work gets disabled, and takes its real case along.
-  command = stripHeredocs(command)
+  command = stripNonCommandText(command)
   let out = ''
   let i = 0
   while (i < command.length) {
     const ch = command[i]
-    if (ch === "'") {
-      const end = command.indexOf("'", i + 1)
-      i = end === -1 ? command.length : end + 1
-      continue
-    }
-    if (ch === '"') {
-      let j = i + 1
-      while (j < command.length && command[j] !== '"') {
-        if (command[j] === '\\') j += 1
-        j += 1
-      }
-      i = j >= command.length ? command.length : j + 1
-      continue
-    }
     if (ch === '#') break // unquoted '#' starts a comment: nothing after it executes
     out += ch
     i += 1
