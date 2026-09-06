@@ -148,8 +148,8 @@ function main() {
         {
           key: KEY,
           effective: consent.outcome === 'true' ? 'allowed' : consent.outcome,
-          account: { file: accountFile, state: consent.account.state },
-          project: { file: projectFile, state: consent.project.state },
+          account: { file: accountFile, state: consent.account.state, source: consent.account.source },
+          project: { file: projectFile, state: consent.project.state, source: consent.project.source },
           written,
         },
         null,
@@ -174,9 +174,9 @@ function main() {
 
   lines.push(`External executor lane (${KEY}):`)
   lines.push(`  account  ${accountFile}`)
-  lines.push(`           ${describe(consent.account.state)}`)
+  lines.push(`           ${describe(consent.account.state)} (source: ${consent.account.source})`)
   lines.push(`  project  ${projectFile}`)
-  lines.push(`           ${describe(consent.project.state)}`)
+  lines.push(`           ${describe(consent.project.state)} (source: ${consent.project.source})`)
   lines.push('')
   if (consent.outcome === 'unknown') {
     lines.push('  EFFECTIVE: UNKNOWN — one of the files above could not be read or parsed.')

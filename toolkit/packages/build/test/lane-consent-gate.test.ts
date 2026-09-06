@@ -55,6 +55,27 @@ function runHook(project: string, env: NodeJS.ProcessEnv, command: string) {
 }
 
 describe('evaluateConsentGate (core decision)', () => {
+  it('uses persisted plugin userConfig as the account consent source and remains split unless every level permits it', () => {
+    const f = fixture('userconfig')
+    const settings = join(f.config, 'settings.json')
+
+    // Missing is the manifest default (false), never an implicit lane opt-in.
+    expect(resolveConsent(f.project, f.env).outcome).toBe('not_true')
+
+    writeFileSync(settings, JSON.stringify({ pluginConfigs: { 'workflow-toolbox@local': { options: { executor_lane_consent: false } } } }))
+    expect(resolveConsent(f.project, f.env)).toMatchObject({ outcome: 'not_true', account: { source: 'userConfig' } })
+
+    writeFileSync(settings, JSON.stringify({
+      env: { WT_EXECUTOR_LANE_CONSENT: 'true' },
+      pluginConfigs: { 'workflow-toolbox@local': { options: { executor_lane_consent: true } } },
+    }))
+    expect(resolveConsent(f.project, f.env).outcome).toBe('true')
+
+    mkdirSync(join(f.project, '.claude'), { recursive: true })
+    writeFileSync(join(f.project, '.claude', 'settings.local.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'false' } }))
+    expect(resolveConsent(f.project, f.env).outcome).toBe('not_true')
+  })
+
   it('is silent on a command that has nothing to do with the lane — resolveConsentImpl never called', () => {
     const result = evaluateConsentGate(
       { tool_input: { command: 'ls -la' } },

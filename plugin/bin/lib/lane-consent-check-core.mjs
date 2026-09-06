@@ -2,7 +2,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+// Consent is fail-closed across three levels: the persisted plugin userConfig and the legacy
+// account env setting must agree; the project env setting may only narrow their shared ceiling.
 const CONSENT_KEY = 'WT_EXECUTOR_LANE_CONSENT'
+const USER_CONFIG_KEY = 'executor_lane_consent'
+const PLUGIN_CONFIG_PREFIX = 'workflow-toolbox@'
 
 function homeDir(env) {
   return env.HOME || os.homedir()
@@ -37,21 +41,43 @@ function ownEnvValue(json) {
   return { present: true, isTrue: envBlock[CONSENT_KEY] === 'true' }
 }
 
-function evaluateSettingsFile(filePath) {
+function ownUserConfigValue(json) {
+  if (!json || typeof json !== 'object') return { present: false, isTrue: false }
+  const pluginConfigs = json.pluginConfigs
+  if (!pluginConfigs || typeof pluginConfigs !== 'object') return { present: false, isTrue: false }
+  const entries = Object.entries(pluginConfigs).filter(([pluginId]) => pluginId.startsWith(PLUGIN_CONFIG_PREFIX))
+  const values = entries
+    .map(([, config]) => config?.options?.[USER_CONFIG_KEY])
+    .filter((value) => typeof value === 'boolean')
+  if (values.length === 0) return { present: false, isTrue: false }
+  if (values.some((value) => value !== values[0])) return { present: true, disagreement: true, isTrue: false }
+  return { present: true, disagreement: false, isTrue: values[0] }
+}
+
+function evaluateSettingsFile(filePath, { account = false } = {}) {
   const read = readJsonFile(filePath)
   if (read.kind === 'missing') return { filePath, state: 'missing', source: 'missing' }
   if (read.kind === 'unreadable') return { filePath, state: 'unknown', source: 'unreadable', detail: read.detail }
   if (read.kind === 'invalid') return { filePath, state: 'unknown', source: 'invalid', detail: read.detail }
   const env = ownEnvValue(read.value)
-  if (!env.present) return { filePath, state: 'missing', source: 'missing' }
-  return { filePath, state: env.isTrue ? 'true' : 'not_true', source: env.isTrue ? 'true' : 'not_true' }
+  if (!account) {
+    if (!env.present) return { filePath, state: 'missing', source: 'missing' }
+    return { filePath, state: env.isTrue ? 'true' : 'not_true', source: 'settings env' }
+  }
+  const userConfig = ownUserConfigValue(read.value)
+  if (userConfig.disagreement || (env.present && userConfig.present && env.isTrue !== userConfig.isTrue)) {
+    return { filePath, state: 'unknown', source: 'disagreement', detail: 'settings env and userConfig disagree' }
+  }
+  if (userConfig.present) return { filePath, state: userConfig.isTrue ? 'true' : 'not_true', source: 'userConfig' }
+  if (env.present) return { filePath, state: env.isTrue ? 'true' : 'not_true', source: 'settings env' }
+  return { filePath, state: 'missing', source: 'manifest default' }
 }
 
 export const LANE_CONSENT_KEY = CONSENT_KEY
 
 export function resolveConsent(projectDir, env = process.env) {
   const configDir = resolveConfigDir(env)
-  const account = evaluateSettingsFile(path.join(configDir, 'settings.json'))
+  const account = evaluateSettingsFile(path.join(configDir, 'settings.json'), { account: true })
   const project = evaluateSettingsFile(path.join(projectDir, '.claude', 'settings.local.json'))
 
   if (account.state === 'unknown' || project.state === 'unknown') {
@@ -190,8 +216,8 @@ function describeSettingsSide(consent) {
           : 'present but narrowing'
   return [
     `Consent chain for ${CONSENT_KEY}:`,
-    `- account settings ${consent.account.filePath}: ${account}`,
-    `- project settings ${consent.project.filePath}: ${project}`,
+    `- account settings ${consent.account.filePath} (${consent.account.source}): ${account}`,
+    `- project settings ${consent.project.filePath} (${consent.project.source}): ${project}`,
   ].join('\n')
 }
 

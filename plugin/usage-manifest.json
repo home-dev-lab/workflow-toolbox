@@ -4,6 +4,9 @@
   "version": "0.170.0",
   "measuredAt": "2026-09-05",
   "frontmatter": {
+    "manifest": [
+      { "name": "userConfig", "where": "plugin/.claude-plugin/plugin.json" }
+    ],
     "agents": [
       { "name": "name", "where": "plugin/agents/opencode-envelope.md" },
       { "name": "description", "where": "plugin/agents/leaf-readonly.md" },

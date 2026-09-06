@@ -71,13 +71,14 @@ the resolved values in the spawn prompt:
   1. **Availability**: is a cross-family CLI bridge on `PATH` (e.g. `command -v codex`,
      `command -v opencode`)? A missing one degrades cleanly to step 2's fallback — never
      assume a bridge is present.
-  2. **Consent** (checked only if available): read `WT_EXECUTOR_LANE_CONSENT` from the `env`
-     block of `~/.claude/settings.json` (account ceiling — opt-in, default OFF: absent or
-     not `"true"` means NOT consented) — this is a plain file read, so it takes effect
-     immediately with no process restart needed. Then check the CURRENT project's
-     `<project>/.claude/settings.local.json` `env` block for the SAME key: it may only NARROW (set it
-     to something other than `"true"`), never widen a ceiling that is off. A refusal at
-     either level wins.
+   2. **Consent** (checked only if available): use the shared `wt-lane-consent` resolver. Its
+      account source is the plugin's persisted `userConfig.executor_lane_consent` value in
+      `~/.claude/settings.json` (opt-in, default OFF); the existing
+      `WT_EXECUTOR_LANE_CONSENT` settings `env` value remains an account source and must agree
+      when both are present. Then check the CURRENT project's
+      `<project>/.claude/settings.local.json` `env` block for the same key: it may only NARROW
+      (set it to something other than `"true"`), never widen an account ceiling that is off. A
+      refusal or disagreement at either level wins.
   **The shipped CLI answers both halves of this without hand-editing JSON**, and it is what
   you point a user at when they ask how to see or change the switch:
 
@@ -93,7 +94,7 @@ the resolved values in the spawn prompt:
   opted in and a project that narrows an allowing account read identically otherwise. A write
   backs the file up first and preserves every other key.
   ⚠ **Two readers, two latencies, and the CLI says so after a write**: anything reading the
-  settings FILE (this CLI, the consent check, this skill) sees the change immediately; anything
+   settings FILE (this CLI, the consent check, this skill) sees the change immediately; anything
   reading the environment VARIABLE sees it only in a session started afterwards, because the
   settings `env` block is applied at session start. A correct write can otherwise look like it
   did nothing.
