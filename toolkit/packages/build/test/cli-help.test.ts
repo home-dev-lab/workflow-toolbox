@@ -41,12 +41,14 @@ const JUSTIFIED_EXCLUSIONS: Record<string, string> = {
  *     (PreToolUse/PostToolUse/SessionStart/Stop), never argv; --help is meaningless to a
  *     calling convention that never passes command-line flags at all.
  *   - anything under plugin/bin/lib/ — internal libraries, not invoked directly.
+ *   - a `*.selftest.mjs` file — a known-answer selftest run as `node <file>` with no flags;
+ *     it is a test, not an operator CLI, and its output is PASS/FAIL lines, not usage.
  * Derived from the directory listing, never a hand-kept name list — that is the whole point:
  * a CLI added next month is discovered by this glob on its very first run, not opted in later.
  */
 function allOperatorCliFiles(): string[] {
   return readdirSync(BIN_DIR)
-    .filter((f) => f.endsWith('.mjs') && !f.endsWith('-hook.mjs'))
+    .filter((f) => f.endsWith('.mjs') && !f.endsWith('-hook.mjs') && !f.endsWith('.selftest.mjs'))
     .filter((f) => statSync(join(BIN_DIR, f)).isFile())
 }
 

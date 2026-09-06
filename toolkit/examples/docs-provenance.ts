@@ -150,6 +150,16 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
       'Known-issues documents this PreToolUse external-lane consent gate (fail-closed on unreadable settings and on its own internal errors) under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-adopt-check-hook.selftest.mjs',
+    status: 'exempt',
+    reason: 'Known-answer selftest of wt-adopt-check-hook.mjs (mapped): run by the gates and by hand after an edit, it has no invocation contract of its own beyond `node <file>`; the hook it exercises is the documented surface.',
+  },
+  {
+    script: 'plugin/bin/wt-observe.selftest.mjs',
+    status: 'exempt',
+    reason: 'Known-answer selftest of wt-observe.mjs (mapped): builds a temp git repo plus a fake dev-api and checks the served-tree line, the non-main refusal and --allow-branch; no operator contract of its own, the launcher it exercises is the documented surface.',
+  },
+  {
     script: 'plugin/bin/wt-lane-consent-check-hook.mjs',
     status: 'exempt',
     reason: 'A disagreement detector for wt-lane-consent.mjs (mapped) with no user-facing invocation contract of its own — it only ever surfaces a SessionStart notice when the resolved consent state disagrees with itself; the CLI it complements is the operative surface a reader is pointed at (see the pilot-wave DOCS_PROVENANCE entry).',
