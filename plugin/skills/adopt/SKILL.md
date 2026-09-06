@@ -136,6 +136,9 @@ When adopting into a project that already has rules, reconcile first — see the
   the symlink and writes a managed copy in its place, leaving the former target untouched.
 - **Target a specific dir:** add `--dir <dir>` — requires a SINGLE `--set` (with `--set all`
   each set uses its own default dir).
+- Use `--dir` for the exact destination directory; use `--global` for the config directory and
+  its managed subdirectories. For rules/docs, passing a parent that already contains adopted
+  `wt/` files is refused to prevent flat duplicates; use `--dir <root>/wt` or `--global`.
 - **Target the CONFIG dir:** add `--global` — the script resolves `CLAUDE_CONFIG_DIR` itself
   (falling back to `~/.claude` only when it is unset). Never hand-build that path and pass it
   via `--dir`: a hardcoded `~/.claude` is correct on a default machine and silently WRONG on
@@ -192,8 +195,9 @@ tree itself, instead of only in the `wt-` filename prefix nothing enforced:
     └── …
 ```
 
-`--dir` still targets any directory outright, including the flat pre-migration root, for
-inspection during the transition.
+`--dir` still targets any directory exactly, including the flat pre-migration root, for
+inspection during the transition. An install aimed at a parent that already contains adopted
+`wt/` files is refused rather than creating a second loaded copy.
 
 **During the transition, `--check` and `--audit-overlap` search BOTH locations** for the
 rules set — the pre-migration flat dir and the new `wt/` default — and union the results.

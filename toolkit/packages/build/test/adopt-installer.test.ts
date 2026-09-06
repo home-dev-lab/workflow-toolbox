@@ -45,6 +45,10 @@ function run(args: string[], dir: string): string {
   const res = spawnSync(process.execPath, [SCRIPT, ...args, '--dir', dir], { encoding: 'utf8' })
   return (res.stdout ?? '') + (res.stderr ?? '')
 }
+function runResult(args: string[], dir: string) {
+  const res = spawnSync(process.execPath, [SCRIPT, ...args, '--dir', dir], { encoding: 'utf8' })
+  return { status: res.status, out: (res.stdout ?? '') + (res.stderr ?? '') }
+}
 // Run WITHOUT a forced --dir, at a chosen cwd, so the script uses each set's OWN
 // default dir (.claude/rules, .claude/agents) under that cwd — the only way to
 // exercise the `--set all` SUCCESS path, which rejects an explicit --dir.
@@ -131,6 +135,42 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     const d = mkDir()
     run(['--check'], d)
     expect(existsSync(rulePath(d))).toBe(false)
+  })
+})
+
+describe('adopt installer — explicit rules roots cannot create flat duplicates', () => {
+  it('--dir <root-with-wt> refuses install, names files, and gives both remedies', () => {
+    const root = mkDir()
+    const wt = join(root, 'wt')
+    run(['--install'], wt)
+
+    const res = runResult(['--set', 'rules', '--install'], root)
+    expect(res.status).not.toBe(0)
+    expect(res.out).toMatch(/first banner files: .*\.md/)
+    expect(res.out).toContain(`--dir ${wt}`)
+    expect(res.out).toContain('--global')
+  })
+
+  it('--dir <root>/wt remains the exact install target', () => {
+    const root = mkDir()
+    const wt = join(root, 'wt')
+    const res = runResult(['--set', 'rules', '--install'], wt)
+    expect(res.status).toBe(0)
+    expect(res.out).toContain('WROTE')
+  })
+
+  it('--check reports DUPLICATE for every flat copy beside its wt copy and exits non-zero', () => {
+    const root = mkDir()
+    const wt = join(root, 'wt')
+    run(['--set', 'rules', '--install'], root)
+    mkdirSync(wt)
+    for (const file of readdirSync(root).filter((name) => name.endsWith('.md'))) {
+      cpSync(join(root, file), join(wt, file))
+    }
+
+    const res = runResult(['--set', 'rules', '--check'], root)
+    expect(res.status).not.toBe(0)
+    expect(res.out).toContain(`${RULE}: DUPLICATE`)
   })
 })
 
