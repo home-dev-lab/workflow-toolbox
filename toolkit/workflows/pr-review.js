@@ -2578,7 +2578,8 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-pgrep-env-dump-guard-hook.mjs",
         "plugin/bin/wt-propagation-reminder-hook.mjs",
         "plugin/bin/wt-plugin-release-record-guard-hook.mjs",
-        "plugin/bin/wt-version-guard-hook.mjs"
+        "plugin/bin/wt-version-guard-hook.mjs",
+        "plugin/bin/wt-gate-evidence-guard-hook.mjs"
       ],
       docs: ["docs/public/known-issues.md"]
     }

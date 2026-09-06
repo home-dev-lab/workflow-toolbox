@@ -1,0 +1,8 @@
+{
+  "gates": [
+    { "name": "test", "command": "pnpm test", "cwd": "toolkit" },
+    { "name": "typecheck", "command": "pnpm typecheck", "cwd": "toolkit" },
+    { "name": "lint", "command": "pnpm lint", "cwd": "toolkit" }
+  ],
+  "paths": ["plugin/", "toolkit/"]
+}
