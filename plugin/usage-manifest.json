@@ -24,7 +24,7 @@
     ]
   },
   "hooks": {
-    "events": { "PreToolUse": 21, "PostToolUse": 9, "SessionStart": 8, "UserPromptSubmit": 1, "SubagentStop": 1, "Stop": 5 },
+    "events": { "PreToolUse": 22, "PostToolUse": 9, "SessionStart": 8, "UserPromptSubmit": 1, "SubagentStop": 1, "Stop": 5 },
     "types": ["command"],
     "matchers": ["Bash", "SendMessage", "Edit|Write|MultiEdit", "StructuredOutput", "Agent", "*", "SendMessage|Agent|Task", "mcp__planka__get_board|mcp__planka__find_cards"],
     "payloadFields": ["hook_event_name", "session_id", "tool_name", "tool_input", "transcript_path", "cwd", "agent_id", "agent_type", "stop_hook_active"],
@@ -52,7 +52,8 @@
     { "name": "CLAUDE_CONFIG_DIR", "where": "plugin/bin/wt-observe.mjs:180" },
     { "name": "CLAUDE_PLUGIN_ROOT", "where": "plugin/.claude-plugin/plugin.json (hook commands)" },
     { "name": "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS", "where": "worktrees/fh-spike (spike only)" },
-    { "name": "WT_VERSION_GUARD_MODE", "where": "plugin/bin/lib/plugin-version-alignment.mjs (align is opt-in; refuse is default)" }
+    { "name": "WT_VERSION_GUARD_MODE", "where": "plugin/bin/lib/plugin-version-alignment.mjs (align is opt-in; refuse is default)" },
+    { "name": "WT_GUARD_JOURNAL_DIR", "where": "plugin/bin/lib/guard-journal.mjs and gate-evidence.mjs (test state-root override)" }
   ],
   "cli": [
     { "name": "claude plugin validate", "where": "README.md" },
@@ -65,6 +66,7 @@
     "a tools: allow-list can deliver fewer tools than declared; read the running agent's surface",
     "PostToolUse command hooks receive the RAW tool output, before any function-hook rewrite",
     "SubagentStop block is honoured only on the model-stop path",
-    "isolated worktrees for spawned agents start from the repo DEFAULT branch"
+    "isolated worktrees for spawned agents start from the repo DEFAULT branch",
+    ".wt-gates.json declares commit-time gates and paths; records are valid only for their exact tree signature"
   ]
 }

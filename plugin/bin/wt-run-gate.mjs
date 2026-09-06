@@ -25,6 +25,7 @@
 // Usage:
 //   node wt-run-gate.mjs --name typecheck --out-dir .claude/gate-logs \
 //     [--fail-pattern 'error TS\d'] -- pnpm typecheck
+//   node wt-run-gate.mjs --record typecheck -- pnpm typecheck
 //
 // Exit code of THIS process = the gate's own exit code, unless the fail-pattern mismatch check
 // trips (forced to 1 in that case). Either way, `<out-dir>/<name>.exit` holds the ground truth —
@@ -35,6 +36,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { handleHelpFlag } from './lib/cli-help.mjs'
+import { recordPath, repoRoot, treeSignature, writeGateRecord } from './lib/gate-evidence.mjs'
 
 const HELP = `wt-run-gate — run ONE gate command and make its exit code non-bypassable: writes
 the gate's real exit code to <out-dir>/<name>.exit and its combined output to <name>.log, with
@@ -43,9 +45,11 @@ no shell construct between the child finishing and that write.
 Usage:
   node wt-run-gate.mjs --name typecheck --out-dir .claude/gate-logs \\
     [--fail-pattern 'error TS\\d'] -- pnpm typecheck
+  node wt-run-gate.mjs --record typecheck -- pnpm typecheck
 
 Exit code of this process = the gate's own exit code (forced to 1 if --fail-pattern matches the
-log despite exit 0). <out-dir>/<name>.exit holds the ground truth for a caller to read.
+log despite exit 0). --record additionally writes the named gate's exit, finish time, and exact
+tree signature to the guard-journal state directory.
 `
 
 function fail(msg) {
@@ -59,16 +63,18 @@ function parseArgs(argv) {
   const dashDashIndex = argv.indexOf('--')
   const ownArgs = dashDashIndex === -1 ? argv : argv.slice(0, dashDashIndex)
   handleHelpFlag(ownArgs, HELP)
-  const args = { name: null, outDir: '.', failPattern: null, cmd: [] }
+  const args = { name: null, record: null, outDir: '.', outDirExplicit: false, failPattern: null, cmd: [] }
   let i = 0
   for (; i < argv.length; i++) {
     if (argv[i] === '--name') args.name = argv[++i]
-    else if (argv[i] === '--out-dir') args.outDir = argv[++i]
+    else if (argv[i] === '--record') args.record = argv[++i]
+    else if (argv[i] === '--out-dir') { args.outDir = argv[++i]; args.outDirExplicit = true }
     else if (argv[i] === '--fail-pattern') args.failPattern = argv[++i]
     else if (argv[i] === '--') { args.cmd = argv.slice(i + 1); break }
     else fail(`unknown flag '${argv[i]}' (did you forget '--' before the command?)`)
   }
-  if (!args.name) fail('--name <label> is required (names the .exit/.log files for this gate)')
+  if (!args.name && !args.record) fail('--name <label> or --record <gate> is required')
+  if (!args.name) args.name = args.record
   // `--name` becomes a bare path.join() segment for the .exit/.log files below — an
   // unsanitized `../other-gate` would let one gate's report overwrite an unrelated file
   // outside --out-dir (cross-family review finding on this card). Refuse anything that
@@ -78,15 +84,22 @@ function parseArgs(argv) {
   if (args.name && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(args.name)) {
     fail(`--name '${args.name}' must be a plain filename-safe token (letters, digits, '.', '_', '-' — no '/' or '..')`)
   }
+  if (args.record && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(args.record)) fail(`--record '${args.record}' must be a plain filename-safe token`)
   if (args.cmd.length === 0) fail("no command given — pass it after '--', e.g. -- pnpm typecheck")
   return args
 }
 
 function main() {
   const args = parseArgs(process.argv.slice(2))
-  fs.mkdirSync(args.outDir, { recursive: true })
-  const exitFile = path.join(args.outDir, `${args.name}.exit`)
-  const logFile = path.join(args.outDir, `${args.name}.log`)
+  // Record-mode artifacts must not become untracked files in the checked tree: a later gate
+  // would otherwise make an earlier record stale merely by writing its own log.
+  const root = args.record ? repoRoot(process.cwd()) : null
+  const outDir = args.record && !args.outDirExplicit
+    ? path.join(path.dirname(recordPath(root, args.record)), 'logs')
+    : args.outDir
+  fs.mkdirSync(outDir, { recursive: true })
+  const exitFile = path.join(outDir, `${args.name}.exit`)
+  const logFile = path.join(outDir, `${args.name}.log`)
 
   const [cmd, ...cmdArgs] = args.cmd
   const res = spawnSync(cmd, cmdArgs, { shell: false, encoding: 'utf8' })
@@ -113,6 +126,18 @@ function main() {
   // two streams, which this still catches correctly.
   const combined = (res.stdout ?? '') + (res.stderr ?? '')
   fs.writeFileSync(logFile, combined)
+
+  if (args.record) {
+    // Compute after the child exits: an edit during a gate must invalidate its evidence.
+    const recordFile = writeGateRecord(root, {
+      name: args.record,
+      command: args.cmd.join(' '),
+      exit: realExitCode ?? 1,
+      finishedAt: new Date().toISOString(),
+      tree: treeSignature(root),
+    })
+    process.stdout.write(`GATE ${args.record}: record=${recordFile}\n`)
+  }
 
   if (res.signal) {
     process.stderr.write(`wt-run-gate: ${args.name}: killed by signal ${res.signal} — no exit code was ever returned\n`)

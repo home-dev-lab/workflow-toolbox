@@ -363,6 +363,12 @@ Refuse-and-tell by default: the refusal names every carrier with its version and
 
 It does not check the changelog — `wt-plugin-release-record-guard-hook.mjs` keeps that invariant — and it ships as a command hook only: a `hooks/hooks.json` function module cannot import the Node APIs needed to read the staged index (measured 2026-09-05, the runtime refuses `node:child_process`).
 
+### `wt-gate-evidence-guard-hook.mjs` — declared gate-evidence guard (PreToolUse on Bash)
+
+In a repository that declares `.wt-gates.json`, a real `git commit` touching one of its declared paths requires a green record for every declared gate. `wt-run-gate.mjs --record <name> -- <command>` writes each record after the command exits, including the command exit code, finish time, and a SHA-256 signature of `HEAD`, staged and unstaged diffs, and sorted untracked files. A record is stale if its signature differs or a staged file was modified after it finished, so a gate cannot accidentally certify a later tree.
+
+The guard is warn-only for its first 19 journalled firings, naming MISSING, RED, or STALE records and exact wrapper commands; the twentieth refuses. `gates: skipped — <reason>` in `-m`, `-F`, or a heredoc message explicitly allows the commit and is journalled. It is silent outside a declaring repository, for non-declared staged paths, merges, and `--amend` commits with no staged change. It runs no gates itself and therefore stays within the hook timeout.
+
 ### `wt-propagation-reminder-hook.mjs` — tooling/plugin-edit propagation reminder (PostToolUse on Write/Edit/MultiEdit)
 
 Fires, never blocks, when a `Write`/`Edit`/`MultiEdit` call lands under a `plugin/` directory, under `<config-dir>/scripts/`, or under `<config-dir>/agents/` or `<config-dir>/skills/` — the three shapes whose edits reach an audience beyond the editing session: plugin adopters, every session on the same machine, or every session sharing that config dir or project. The trigger is mechanical (a path shape); the report is judgment the hook cannot supply, so it asks four questions — who gets it, when, what changed, and whether a shipped twin needs the same fix — and never answers them. Silence means only that no matched path was touched, never that nothing needs propagating.

@@ -64,3 +64,4 @@ __pycache__/
 # batch-envelope invocation artefacts — manifests, task copies, and answers are immutable
 # per invocation under the explicitly selected workdir.
 .wt-envelope/
+.lane/

@@ -214,6 +214,11 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-version-guard-hook.mjs\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-gate-evidence-guard-hook.mjs\"",
+            "timeout": 5
           }
         ]
       }
