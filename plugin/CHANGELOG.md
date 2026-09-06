@@ -6,6 +6,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
+- Hook-only durable state now resolves through `plugin/bin/lib/plugin-data-dir.mjs` from the active config
+  directory's installed-plugin registry, so hooks and shell readers share `plugins/data/workflow-toolbox-<marketplace>/<legacy-root>`.
+  An uninstalled inline session may use its matching `CLAUDE_PLUGIN_DATA`; otherwise the XDG fallback remains.
+  Existing legacy records move once only on the canonical route and only when the destination is empty.
 - `wt-opencode-envelope.mjs` and the `opencode-envelope` / `opencode-verifier` agents: default model
   `openai/gpt-5.6-luna` (fallback `openai/gpt-5.6-terra`). `openai/gpt-5.4` was withdrawn from Codex/ChatGPT
   accounts on 2026-08-31 ("not supported when using Codex with a ChatGPT account"), so every envelope call that

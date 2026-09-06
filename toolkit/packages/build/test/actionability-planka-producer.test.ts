@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const PRODUCER_HOOK = join(REPO_ROOT, 'plugin/bin/wt-actionable-snapshot-producer-hook.mjs')
 const CORE = join(REPO_ROOT, 'plugin/bin/lib/actionability-planka-producer-core.mjs')
+const PLUGIN_MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 
 const roots: string[] = []
 afterEach(() => {
@@ -86,7 +87,7 @@ function scaffoldProject(tag: string, opts: { withParser: boolean; withBoardPoin
     cwd,
     configDir,
     stateDir: join(state, 'wt-actionable'),
-    env: { ...process.env, HOME: home, XDG_STATE_HOME: state, CLAUDE_CONFIG_DIR: configDir, TMPDIR: hookTmp },
+    env: { ...process.env, CLAUDE_PLUGIN_DATA: undefined, HOME: home, XDG_STATE_HOME: state, CLAUDE_CONFIG_DIR: configDir, TMPDIR: hookTmp },
   }
 }
 
@@ -597,6 +598,8 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
     const mutatedBinDir = join(mutatedRoot, 'bin')
     const mutatedLibDir = join(mutatedBinDir, 'lib')
     mkdirSync(mutatedLibDir, { recursive: true })
+    mkdirSync(join(mutatedRoot, '.claude-plugin'), { recursive: true })
+    writeFileSync(join(mutatedRoot, '.claude-plugin', 'plugin.json'), readFileSync(PLUGIN_MANIFEST, 'utf8'))
 
     // ⚠ Copy the WHOLE lib directory, never a hand-written list of the modules the hook
     // happens to import today. An enumeration here fails SILENTLY-ish the day someone adds a

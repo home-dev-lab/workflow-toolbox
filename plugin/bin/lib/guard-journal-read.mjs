@@ -17,12 +17,16 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { pluginName, resolvePluginDataDir } from './plugin-data-dir.mjs'
 
 /** Resolve the journal directory the same way guard-journal.mjs's baseDir() does — same
  *  override precedence (WT_GUARD_JOURNAL_DIR first), so a reader and the writer never disagree
  *  about which directory "the journal" means. */
 export function defaultGuardJournalDir() {
-  return process.env.WT_GUARD_JOURNAL_DIR || join(homedir(), '.local', 'state', 'wt-guard-journal')
+  return process.env.WT_GUARD_JOURNAL_DIR || resolvePluginDataDir({
+    fallback: join(homedir(), '.local', 'state', 'wt-guard-journal'),
+    pluginName: pluginName(),
+  }).dir
 }
 
 /**

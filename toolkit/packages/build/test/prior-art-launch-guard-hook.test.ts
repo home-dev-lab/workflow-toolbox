@@ -41,7 +41,7 @@ function scaffold(tag: string, cards: Array<{ id: string; name: string; listName
   }
   return {
     cwd,
-    env: { ...process.env, HOME: home, XDG_STATE_HOME: state, WT_GUARD_JOURNAL_DIR: journal },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: undefined, CLAUDE_PLUGIN_DATA: undefined, HOME: home, XDG_STATE_HOME: state, WT_GUARD_JOURNAL_DIR: journal },
   }
 }
 

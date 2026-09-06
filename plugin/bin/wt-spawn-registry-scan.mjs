@@ -54,6 +54,7 @@ import { readFileSync, existsSync, readdirSync, statSync, appendFileSync, realpa
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { handleHelpFlag } from './lib/cli-help.mjs';
+import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs';
 
 const HELP = `wt-spawn-registry-scan — read the spawn registry (written by
 wt-outbound-guard-hook.mjs) and report what is UNACCOUNTED FOR: an agent whose spawn record has
@@ -75,7 +76,7 @@ Exit codes: 0 nothing to ask about · 1 at least one open+silent agent · 2 no r
 `;
 
 const STATE_DIR = process.env.WT_OUTBOUND_GUARD_DIR
-  || join(homedir(), '.local', 'state', 'wt-outbound-guard');
+  || resolvePluginDataDir({ fallback: join(homedir(), '.local', 'state', 'wt-outbound-guard'), pluginName: pluginName() }).dir;
 
 const argv = process.argv.slice(2);
 handleHelpFlag(argv, HELP);

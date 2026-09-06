@@ -115,7 +115,7 @@ function scaffold(tag: string) {
     stateDir: join(state, 'wt-actionable'),
     subagentsDir: join(transcripts, sessionId, 'subagents'),
     payload: { hook_event_name: 'Stop', transcript_path: transcriptPath, session_id: sessionId, cwd },
-    env: { ...process.env, HOME: home, XDG_STATE_HOME: state },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: undefined, CLAUDE_PLUGIN_DATA: undefined, HOME: home, XDG_STATE_HOME: state },
   }
 }
 

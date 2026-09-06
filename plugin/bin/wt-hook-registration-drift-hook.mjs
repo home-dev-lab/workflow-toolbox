@@ -9,12 +9,13 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { declaredHookPaths } from './lib/hook-manifest.mjs'
+import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ROOT = join(HERE, '..')
 const MANIFEST = join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json')
 const STATE_DIR = process.env.WT_HOOK_DRIFT_DIR
-  || join(homedir(), '.local', 'state', 'wt-hook-drift')
+  || resolvePluginDataDir({ fallback: join(homedir(), '.local', 'state', 'wt-hook-drift'), pluginName: pluginName() }).dir
 // The declared-hooks set only changes when the plugin manifest is reloaded (a plugin update or
 // reinstall), never between two SessionStart calls against the same manifest on disk. Caching it
 // keyed on the manifest's own mtime+size turns a repeat SessionStart's JSON.parse + regex sweep

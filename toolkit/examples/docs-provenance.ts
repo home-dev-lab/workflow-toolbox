@@ -375,6 +375,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this PreToolUse var-colon-modifier warn-only guard under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-version-guard-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Commit-time plugin-version alignment guard is recorded in the changelog but lacks a dedicated operator documentation surface.',
+  },
+  {
     script: 'plugin/bin/wt-merge-chain-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this PreToolUse merge-chain warning guard under Shipped Hooks, Guards & Monitors.',
@@ -408,7 +413,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-guard-journal-scan.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this standalone read CLI, its exit codes, and the shared guard-journal.mjs write side under Shipped Hooks, Guards & Monitors.',
+    reason: 'Known-issues documents this standalone read CLI, its exit codes, shared guard-journal.mjs write side, and plugin-data-dir.mjs state resolver under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-guard-recurrence-hook.mjs',

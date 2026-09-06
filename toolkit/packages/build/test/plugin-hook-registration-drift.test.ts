@@ -38,6 +38,7 @@ function makeSandbox(tag: string) {
     REAL_HOOK,
     join(REAL_PLUGIN_ROOT, 'bin', 'lib', 'fail-open-trace.mjs'),
     join(REAL_PLUGIN_ROOT, 'bin', 'lib', 'hook-manifest.mjs'),
+    join(REAL_PLUGIN_ROOT, 'bin', 'lib', 'plugin-data-dir.mjs'),
   ]) {
     writeFileSync(join(file === REAL_HOOK ? binDir : libDir, basename(file)), readFileSync(file, 'utf8'))
   }

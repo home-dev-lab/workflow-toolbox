@@ -44,9 +44,10 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { runFailOpenHook } from './lib/fail-open-trace.mjs';
 import { agentHasNoMessagingTool, finalTextIsDeliveredByHarness } from './lib/subagent-delivery-shape.mjs';
+import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs';
 
 const STATE_DIR = process.env.WT_OUTBOUND_GUARD_DIR
-  || join(homedir(), '.local', 'state', 'wt-outbound-guard');
+  || resolvePluginDataDir({ fallback: join(homedir(), '.local', 'state', 'wt-outbound-guard'), pluginName: pluginName() }).dir;
 
 // Deliberately NARROW — and narrowed twice, both times by reading the guard's own records.
 //

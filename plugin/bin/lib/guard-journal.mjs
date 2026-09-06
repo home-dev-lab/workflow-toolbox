@@ -29,15 +29,12 @@
 //
 // CROSS-PLATFORM VERDICT (this plugin ships on Linux, Windows, macOS — see the project rule
 // naming that requirement):
-//   - Location: `path.join(os.homedir(), '.local', 'state', 'wt-guard-journal')`. `os.homedir()`
-//     resolves correctly on all three platforms (it reads $HOME on Linux/macOS, %USERPROFILE% on
-//     Windows) — this is the SAME base wt-main-guard-hook.mjs already uses for its own journal,
-//     already exercised on this machine. The `.local/state` segment is a Linux/XDG naming
-//     convention, not a Windows one, but it is not a Windows PATH VIOLATION either: Windows
-//     filesystems accept arbitrary directory names, dotted or not, so the directory is created
-//     and used successfully — it simply does not look native there. Verdict: WORKS on all three,
-//     unconventional-but-functional on Windows, never throws, never silently returns a plausible
-//     wrong value.
+//   - Location: resolve the active config dir (`CLAUDE_CONFIG_DIR`, else ~/.claude), then look up
+//     workflow-toolbox's marketplace in plugins/installed_plugins.json. Every caller uses
+//     plugins/data/workflow-toolbox-<marketplace>/wt-guard-journal when installed, regardless of
+//     its own CLAUDE_PLUGIN_DATA. An uninstalled --plugin-dir session can use its matching env dir;
+//     otherwise the legacy XDG path remains the fallback. Node's path helpers supply native
+//     separators; the legacy fallback stays unconventional-but-functional on Windows.
 //   - Concurrency: POSIX small-append atomicity (no interleaved/torn lines) is a property of
 //     Linux and macOS filesystems. NTFS's guarantee for concurrent small appends from separate
 //     processes is not the same documented guarantee — two sessions racing a write on the SAME
@@ -50,6 +47,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { pluginName, resolvePluginDataDir } from './plugin-data-dir.mjs'
 
 const MAX_REASON_LEN = 400
 const MAX_SAFE_FIELD_LEN = 24
@@ -91,7 +89,10 @@ function sanitiseEvidence(evidence) {
 function baseDir() {
   const override = process.env.WT_GUARD_JOURNAL_DIR
   if (override) return override
-  return path.join(os.homedir(), '.local', 'state', 'wt-guard-journal')
+  return resolvePluginDataDir({
+    fallback: path.join(os.homedir(), '.local', 'state', 'wt-guard-journal'),
+    pluginName: pluginName(),
+  }).dir
 }
 
 /** now(), overridable only for tests (WT_GUARD_JOURNAL_NOW) — never read in normal operation. */
