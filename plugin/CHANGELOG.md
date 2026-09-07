@@ -5,10 +5,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
-### Fixed
-- The quota watcher now resolves the session route before polling. Configured CLI Proxy sessions report the bound account's normalized windows; unknown non-Anthropic routes stay explicitly degraded and never fall back to the Claude quota probe.
-
-## [0.171.0] - 2026-09-06
+## [0.171.0] - 2026-09-07
 
 ### Added
 - Warn-only PreToolUse spawn-surface guards now journal and surface missing report channels, read-only briefs paired with wide or absent tool allow-lists, Workflow fan-outs inheriting the session model, and subagent self-verification spawns. The capability guard and the new guards share one trusted agent-type tools resolver.
@@ -209,6 +206,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Advisory plugin hooks now stay silent for payloads from Workflow-tool subagents, keeping their reminders and session guidance out of delegated agent context.
 - `wt-outbound-guard-hook`: a Workflow-tool subagent on Path A (harness label `workflow-subagent`, session transcript in the hook payload, several runs in the session) was still nudged at SubagentStop and lost its structured return; the exemption now matches the harness label and finds the run by the agent's own transcript file instead of requiring exactly one run.
 - **Four guard hooks no longer journal paths or path-derived text from tool input**. `wt-stale-date-guard-hook`, `wt-missing-package-script-guard-hook`, `wt-isolated-spawn-report-path-hook`, and `wt-observer-pairing-guard-hook` now record only class labels plus bounded shape evidence in the guard journal. Their model-facing warnings keep path detail only where the warning would be materially less usable without it.
+- The quota watcher now resolves the session route before polling. Configured CLI Proxy sessions report the bound account's normalized windows; unknown non-Anthropic routes stay explicitly degraded and never fall back to the Claude quota probe.
 
 ## [0.170.0] - 2026-09-03
 
