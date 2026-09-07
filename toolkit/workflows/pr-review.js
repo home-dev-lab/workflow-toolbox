@@ -2270,6 +2270,10 @@ ${renderClaim(claim)}`;
       ]
     },
     {
+      sources: ["plugin/bin/wt-lane.mjs", "plugin/skills/external-lane/"],
+      docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
+    },
+    {
       // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer
       // skill, which also documents the environment-brief contract. The whole
       // plugin/agents/ subtree is mapped above to the routing docs (accurate for

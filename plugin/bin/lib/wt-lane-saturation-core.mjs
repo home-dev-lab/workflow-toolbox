@@ -10,7 +10,7 @@ export const LANE_PROCESS_NAMES = ['opencode', 'codex']
 /** Substrings that mean the command is trying to USE the lane, as opposed to merely
  *  mentioning it (a grep, a doc edit, this file). Narrow on purpose: a guard that fires on
  *  every command containing the word becomes noise within a day. */
-export const LANE_INVOCATIONS = [/\bopencode\s+run\b/, /\bcodex\s+exec\b/]
+export const LANE_INVOCATIONS = [/\bopencode\s+run\b/, /\bcodex\s+exec\b/, /\bnode\s+\S*wt-lane\.mjs\b/]
 
 /** Strip heredoc/quoted-string bodies and shell comments before testing LANE_INVOCATIONS — a
  *  command line MIXES code and data, and a textual guard that reads a heredoc or a quoted

@@ -62,6 +62,7 @@
     { "name": "WT_QUOTA_PROXY_ORIGINS", "where": "plugin/bin/lib/quota-route.mjs (comma-separated trusted CLI Proxy origins)" }
   ],
   "cli": [
+    { "name": "node <configDir>/scripts/wt-lane.mjs", "where": "README.md and plugin/skills/external-lane/SKILL.md" },
     { "name": "claude plugin validate", "where": "README.md" },
     { "name": "claude --plugin-dir / --debug-file / --allowedTools / -p", "where": "worktrees/fh-spike (spike only)" },
     { "name": "/plugin-types", "where": "worktrees/fh-spike/types (spike only)" }
