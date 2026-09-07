@@ -7,7 +7,7 @@ description: Use when asked to delegate an implementation/review to an external 
 
 Use an external lane for a complete implementation or review, not a five-minute harness task.
 
-1. Create a dedicated Git worktree and `.lane/brief.md`. Paste the definition of done verbatim, list invariants and exact gates, require detached gates with `EXIT=` markers, require a lane report, and end with `## Lessons for the memory`.
+1. Create a dedicated Git worktree and a brief file at .lane/brief.md inside it. Paste the definition of done verbatim, list invariants and exact gates, require detached gates with `EXIT=` markers, require a lane report, and end with `## Lessons for the memory`.
 2. Confirm account/project consent. Install the stable launcher with `node plugin/skills/adopt/scripts/install.mjs --set scripts --install --global`; it installs `<configDir>/scripts/wt-lane.mjs`. The plugin-cache `plugin/bin/wt-lane.mjs` works too but changes with plugin upgrades.
 3. Launch: `node "$CLAUDE_CONFIG_DIR/scripts/wt-lane.mjs" --dir <worktree> --model <provider/model> --brief <worktree>/.lane/brief.md --timeout 5400`.
 4. Monitor the printed `pid` with `kill -0 <pid>`. On exit, read the final `EXIT=` log line and ensure the lane report has content. A report is input, not proof.
