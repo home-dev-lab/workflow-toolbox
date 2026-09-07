@@ -2262,6 +2262,10 @@ ${renderClaim(claim)}`;
       docs: ["plugin/skills/changelog/SKILL.md", "docs/public/known-issues.md"]
     },
     {
+      sources: ["plugin/bin/wt-plugin-eval-gate.mjs", "plugin/evals/"],
+      docs: ["docs/public/known-issues.md"]
+    },
+    {
       // The thin opencode envelope script plus its registered agent definitions:
       // authoring docs teach when/how to route to it, debugger docs teach how to
       // read the manifest, answer files, and per-task logs after a run.

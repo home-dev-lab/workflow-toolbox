@@ -43,6 +43,22 @@ be false. The watcher stays alive and emits a degraded notice in that case.
 
 ## External limitations — mitigated, not fixable here
 
+### Plugin eval suite is early access
+
+`claude plugin eval` is an early-access Claude Code surface. The release-only
+`node plugin/bin/wt-plugin-eval-gate.mjs` runs four one-run haiku cases when
+`CLAUDE_CODE_WALNUT_SPIRE=1`: the external-lane launcher, the unavailable
+opencode-verifier marker, the leaf-readonly tool fence, and changelog skill
+invocation. It is never part of `pnpm test`, because each case starts a Claude
+agent and LLM graders also spend model calls. The initial measured single-case
+cost was 19 seconds, three turns, and $0.0546244 for the agent plus $0.00203
+for the three haiku judge votes; release runs use one agent run per case.
+
+When the early-access flag is absent, the gate exits 0 and prints `plugin eval:
+not run (early access flag absent)`. That is a skipped paid check, not evidence
+that the suite passed. Re-check the CLI surface after upgrades before relying on
+the gate.
+
 | # | Limitation | Mitigation |
 |---|---|---|
 | A | **The Workflow tool is a research preview**; part of the surface the toolkit relies on (`isolation`, `label`, `budget`, the determinism bans, the 512 KB cap) is verified against the binary, not officially documented. An upgrade can change it. | Firewalled behind `@workflow-toolbox/runtime` — exactly one package changes. Re-verify after upgrades; the `upgrade-canary` skill does exactly this. |

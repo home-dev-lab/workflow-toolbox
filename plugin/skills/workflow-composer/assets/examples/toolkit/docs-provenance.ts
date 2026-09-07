@@ -56,6 +56,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'The changelog skill and known-issues document this deterministic Unreleased-entry and changeset writer.',
   },
   {
+    script: 'plugin/bin/wt-plugin-eval-gate.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this release-only early-access eval gate, its covered contracts, and its honest skip output.',
+  },
+  {
     script: 'plugin/bin/wt-lane.mjs',
     status: 'mapped',
     reason: 'README, known-issues, and the external-lane skill document the stable adopted launcher and lifecycle contract.',
@@ -498,6 +503,10 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     // and its public limitation/format contract.
     sources: ['plugin/bin/wt-changelog-entry.mjs', 'plugin/skills/changelog/'],
     docs: ['plugin/skills/changelog/SKILL.md', 'docs/public/known-issues.md'],
+  },
+  {
+    sources: ['plugin/bin/wt-plugin-eval-gate.mjs', 'plugin/evals/'],
+    docs: ['docs/public/known-issues.md'],
   },
   {
     // The thin opencode envelope script plus its registered agent definitions:

@@ -65,3 +65,6 @@ __pycache__/
 # per invocation under the explicitly selected workdir.
 .wt-envelope/
 .lane/
+
+# plugin eval runs are local artefacts, never shipped
+plugin/evals/results/
