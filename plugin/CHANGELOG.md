@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- The quota watcher now resolves the session route before polling. Configured CLI Proxy sessions report the bound account's normalized windows; unknown non-Anthropic routes stay explicitly degraded and never fall back to the Claude quota probe.
+
 ## [0.171.0] - 2026-09-06
 
 ### Added

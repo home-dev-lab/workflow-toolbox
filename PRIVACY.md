@@ -26,8 +26,8 @@ already writes for the Workflow tool.
   `--out` flag). No network.
 
 - **`upgrade-canary`** — a maintainer-only tool that re-verifies the Workflow
-  runtime after a Claude Code upgrade. It makes the plugin's **only outbound
-  network connection**: a best-effort `GET` of the **public** Claude Code
+  runtime after a Claude Code upgrade. It makes one outbound network connection:
+  a best-effort `GET` of the **public** Claude Code
   `CHANGELOG.md` from `raw.githubusercontent.com` (5-second timeout, single
   attempt, silently skipped if offline). **No data about you is sent** — it is a
   plain fetch of a public file. It also launches local Workflow runs against the
@@ -46,8 +46,13 @@ already writes for the Workflow tool.
   The probe's stdout contract is one compact JSON line:
   `{configDir, quota_model, five_hour, seven_day, weekly_scoped}`. `quota_model`
   is the discriminator: `'subscription'` means at least one real quota window exists;
-  `'none'` means a usage-billed account with no five-hour/seven-day window, and consumers must
-  stay silent rather than infer health from null percentages.
+   `'none'` means a usage-billed account with no five-hour/seven-day window, and consumers must
+   stay silent rather than infer health from null percentages.
+   When the session is routed through a configured CLI Proxy origin, the watcher
+   sends only the session id, effective model, and the gateway key the session
+   already holds to that exact origin's selected-usage endpoint. It sends
+   nothing to another origin, and never sends source, conversation, or Claude
+   credentials to the proxy.
 
 ## What it never does
 

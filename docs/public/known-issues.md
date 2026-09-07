@@ -5,6 +5,13 @@ The toolkit is **directly usable**: the committed artifacts under
 39-agent review run validated the full chain end to end. Nothing below blocks
 local use.
 
+## Quota route coverage
+
+The quota monitor intentionally does not watch an unknown non-Anthropic route.
+Only direct Anthropic sessions and configured CLI Proxy origins have a known
+quota source; reporting a Claude subscription window for another provider would
+be false. The watcher stays alive and emits a degraded notice in that case.
+
 ## Open items
 
 | # | Issue | Impact | Status |
