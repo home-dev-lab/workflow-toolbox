@@ -2350,7 +2350,7 @@ ${renderClaim(claim)}`;
     },
     {
       // Bundled quota monitor/probe pair.
-      sources: ["plugin/bin/wt-quota-probe.mjs", "plugin/bin/wt-quota-watch.mjs"],
+      sources: ["plugin/bin/wt-quota-probe.mjs", "plugin/bin/wt-quota-watch.mjs", "plugin/bin/lib/quota-route.mjs"],
       docs: ["README.md", "PRIVACY.md", "SECURITY.md"]
     },
     {

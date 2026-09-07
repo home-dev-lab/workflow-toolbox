@@ -62,6 +62,7 @@ import { computeBackoffMs } from './lib/quota-backoff.mjs'
 import { computeWatcherCacheToleranceMs } from './lib/quota-cache-tolerance.mjs'
 import { hasCompleteWindows } from './lib/quota-window-completeness.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
+import { effectiveModel, fetchProxyUsage, normalizeProxyUsage, resolveRoute } from './lib/quota-route.mjs'
 
 const DEFAULT_THRESHOLDS = '80,90,95'
 const DEFAULT_POLL_SECONDS = 300
@@ -84,6 +85,7 @@ const MINUTE_MS = 60 * 1000
 const HOUR_MS = 60 * MINUTE_MS
 const DEGRADED_REMINDER_STEPS_MS = [5 * MINUTE_MS, 15 * MINUTE_MS, 45 * MINUTE_MS]
 const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
+const ROUTE = resolveRoute(process.env)
 const USER_PROBE = join(CONFIG_DIR, 'scripts', 'quota-usage.mjs')
 const BUNDLED_PROBE = join(dirname(fileURLToPath(import.meta.url)), 'wt-quota-probe.mjs')
 // Same path AND format the private per-turn hook (inject-context-quota.mjs) already
@@ -533,7 +535,7 @@ try {
 // equivalent and was not: a watcher stopped inside its first cycle — which is the shape of every
 // bounded test run, and of a short-lived diagnostic run — never announced itself at all. The
 // guarantee has to be "before any other output", never "eventually".
-const ARMED_LINE = `QUOTA WATCH ARMED: thresholds=${thresholds.join(',')} poll=${poll}s probe=${basename(probe.path)} source=${probe.source}`
+let ARMED_LINE = `QUOTA WATCH ARMED: thresholds=${thresholds.join(',')} poll=${poll}s probe=${basename(probe.path)} source=${probe.source}`
 let armedPending = true
 
 /** Emit the held arming line on its own — used by every path that is NOT the first reading. */
@@ -550,6 +552,64 @@ while (true) {
   // delay the confirmation that the watcher started: a reader left in silence would reasonably
   // conclude nothing armed at all, which is the exact state this file exists to make impossible.
   try {
+    if (ROUTE.route === 'unknown') {
+      ARMED_LINE = `QUOTA WATCH ARMED: thresholds=${thresholds.join(',')} poll=${poll}s probe=none source=none route=unknown family=unknown`
+      flushArmed()
+      writeLine(`QUOTA WATCH DEGRADED: route ${ROUTE.base} has no quota source (${ROUTE.reason}) — quota is NOT being watched`)
+      while (true) await sleep(poll * 1000)
+    }
+
+    if (ROUTE.route === 'proxy') {
+      ARMED_LINE = `QUOTA WATCH ARMED: thresholds=${thresholds.join(',')} poll=${poll}s probe=cli-proxy source=cli-proxy route=proxy ${ROUTE.base} family=unknown`
+      const sessionId = process.env.CLAUDE_CODE_SESSION_ID || ''
+      const slug = process.cwd().replace(/[^A-Za-z0-9-]/g, '-')
+      const transcriptPath = join(CONFIG_DIR, 'projects', slug, `${sessionId}.jsonl`)
+      let transcriptTail = ''
+      try { transcriptTail = readFileSync(transcriptPath, 'utf8').slice(-64 * 1024) } catch { /* env defaults remain a valid source */ }
+      const usage = await fetchProxyUsage({ base: ROUTE.base, token: ROUTE.token, sessionId, model: effectiveModel({ transcriptTail }), timeoutMs: 8000 })
+      if (!usage.ok) {
+        state.consecutiveFailures += 1
+        if (!state.probeKoSignaled) {
+          state.probeKoSignaled = true
+          flushArmed(); writeLine(`QUOTA WATCH DEGRADED: ${usage.reason} (reported once)`)
+        }
+        const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
+        await sleep(backoffMs)
+        continue
+      }
+
+      const reading = normalizeProxyUsage(usage)
+      ARMED_LINE = `QUOTA WATCH ARMED: thresholds=${thresholds.join(',')} poll=${poll}s probe=cli-proxy source=cli-proxy route=proxy ${ROUTE.base} family=${reading.family}`
+      state.probeKoSignaled = false
+      state.consecutiveFailures = 0
+      if (!state.hasReading) {
+        for (const windowData of reading.windows) baselineWindow(state, windowData.key, windowData.pct, thresholds)
+        state.hasReading = true
+        flushArmed()
+        await sleep(poll * 1000)
+        continue
+      }
+      for (const windowData of reading.windows) {
+        const previousPct = state.lastPct.get(windowData.key)
+        if (previousPct !== undefined && windowData.pct < previousPct) {
+          writeLine(`QUOTA RESET ${reading.family} ${windowData.label}: ${windowData.pct}% (was ${previousPct}%) — new window, capacity available`)
+          baselineWindow(state, windowData.key, windowData.pct, thresholds)
+          continue
+        }
+        let fired = state.fired.get(windowData.key)
+        if (!fired) { fired = new Set(); state.fired.set(windowData.key, fired) }
+        for (const threshold of thresholds) {
+          if (windowData.pct >= threshold && !fired.has(threshold)) {
+            fired.add(threshold)
+            writeLine(`QUOTA ${reading.family} ${windowData.label}: ${windowData.pct}% — crossed the ${threshold}% threshold${windowData.resetLocal ? `, resets ${windowData.resetLocal}` : ' (no reset time reported)'}`)
+          }
+        }
+        state.lastPct.set(windowData.key, windowData.pct)
+      }
+      await sleep(poll * 1000)
+      continue
+    }
+
     let windows = {}
     let sourceData = null
     let viaCache = false
@@ -822,7 +882,7 @@ while (true) {
       for (const threshold of thresholds) {
         if (windowData.pct >= threshold && !firedForWindow.has(threshold)) {
           firedForWindow.add(threshold)
-          writeLine(`QUOTA ${label}: ${windowData.pct}% — crossed the ${threshold}% threshold, resets ${windowData.resetLocal}`)
+          writeLine(`QUOTA ${label}: ${windowData.pct}% — crossed the ${threshold}% threshold${windowData.resetLocal ? `, resets ${windowData.resetLocal}` : ' (no reset time reported)'}`)
         }
       }
 

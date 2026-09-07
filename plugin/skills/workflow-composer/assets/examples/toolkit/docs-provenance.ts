@@ -698,7 +698,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   },
   {
     // Bundled quota monitor/probe pair.
-    sources: ['plugin/bin/wt-quota-probe.mjs', 'plugin/bin/wt-quota-watch.mjs'],
+    sources: ['plugin/bin/wt-quota-probe.mjs', 'plugin/bin/wt-quota-watch.mjs', 'plugin/bin/lib/quota-route.mjs'],
     docs: ['README.md', 'PRIVACY.md', 'SECURITY.md'],
   },
   {
@@ -821,7 +821,7 @@ function mappedPluginBinScripts(manifest: readonly ProvenanceEntry[]): Set<strin
   return new Set(
     manifest.flatMap((entry) =>
       entry.sources.filter(
-        (source) => source.startsWith('plugin/bin/') && source.endsWith('.mjs'),
+        (source) => /^plugin\/bin\/[^/]+\.mjs$/.test(source),
       ),
     ),
   )

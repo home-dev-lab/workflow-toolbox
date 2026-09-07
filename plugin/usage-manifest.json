@@ -58,7 +58,8 @@
     { "name": "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS", "where": "worktrees/fh-spike (spike only)" },
     { "name": "WT_VERSION_GUARD_MODE", "where": "plugin/bin/lib/plugin-version-alignment.mjs (align is opt-in; refuse is default)" },
     { "name": "WT_GUARD_JOURNAL_DIR", "where": "plugin/bin/lib/guard-journal.mjs and gate-evidence.mjs (test state-root override)" },
-    { "name": "WT_ENVELOPE_WORKDIR", "where": "plugin/bin/wt-opencode-envelope.mjs (per-invocation envelope artifact directory override)" }
+    { "name": "WT_ENVELOPE_WORKDIR", "where": "plugin/bin/wt-opencode-envelope.mjs (per-invocation envelope artifact directory override)" },
+    { "name": "WT_QUOTA_PROXY_ORIGINS", "where": "plugin/bin/lib/quota-route.mjs (comma-separated trusted CLI Proxy origins)" }
   ],
   "cli": [
     { "name": "claude plugin validate", "where": "README.md" },

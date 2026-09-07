@@ -17,9 +17,10 @@ days and to address confirmed issues in a reasonable timeframe.
 
 This is a local developer tool. It has a deliberately small attack surface:
 
-- **No network exposure.** The plugin opens no ports and runs no server. Its only
-  outbound connection is the `upgrade-canary`'s best-effort fetch of the public
-  Claude Code `CHANGELOG.md` (see [PRIVACY.md](PRIVACY.md)).
+- **No network exposure.** The plugin opens no ports and runs no server. Its
+  outbound connections are the `upgrade-canary`'s best-effort fetch of the
+  public Claude Code `CHANGELOG.md` and the quota monitor's explicitly selected
+  quota source (see [PRIVACY.md](PRIVACY.md)).
 - **No data exfiltration.** It collects and transmits no user data, source, or
   conversation content. See [PRIVACY.md](PRIVACY.md).
 - **Bundled hook binaries** (`bin/wt-stop-hook.mjs`, `bin/wt-debug.mjs`) are
@@ -35,7 +36,12 @@ This is a local developer tool. It has a deliberately small attack surface:
   that is not publicly documented by Anthropic and may change without notice.
   Its machine-readable stdout is a single JSON object with `quota_model`
   (`'subscription'` or `'none'`), the two top-level windows, and any weekly scoped buckets;
-  callers are expected to branch on `quota_model`, never on an absent percentage field.
+   callers are expected to branch on `quota_model`, never on an absent percentage field.
+   For an explicitly configured CLI Proxy route, the watcher instead posts the
+   current session id and effective model to that same proxy origin, authorized
+   with the gateway key already present in the session environment. Other
+   origins are never contacted for quota data and do not fall back to the
+   Claude probe.
 - **Filesystem reads** are scoped to a Workflow run's own journal and transcripts;
   filesystem **writes** (the audit report folder) happen only when you opt in via
   `$DWT_WORKFLOW_LOG_DIR` or `--out`, to a path you choose.
