@@ -40,7 +40,7 @@
 // never write silently.
 //
 // Usage (the skill orchestrates these; a human can run them directly too):
-//   node install.mjs [--set rules|agents|autonomy|docs|all] --check   [--dir <dir>]   # report, write nothing
+//   node install.mjs [--set rules|agents|autonomy|docs|scripts|all] --check   [--dir <dir>]   # report, write nothing
 //   node install.mjs [--set rules|agents|autonomy|docs|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
 //   node install.mjs [--set rules|agents|autonomy|docs|all] --install --force [--dir <dir>]  # also overwrite edited copies
 //   node install.mjs [--set …] --install --replace-symlinks [--dir <dir>]      # replace a SYMLINKED target with a managed copy in place
@@ -512,6 +512,7 @@ const SETS = {
   // had a pre-migration flat layout to fall back to — reusing 'rules' would make that
   // migration heuristic silently probe a legacy location that never existed.
   docs: { kind: 'docs', srcDir: 'docs/rules-rationale', defaultDir: '.claude/docs/wt', globalSubdir: 'docs/wt', resolveItems: discoverDocsItems },
+  scripts: { kind: 'scripts', srcDir: 'bin', defaultDir: '.claude/scripts', globalSubdir: 'scripts', resolveItems: () => [{ file: 'wt-lane.mjs' }] },
 }
 
 const MANAGED_SET_NAMES = Object.keys(SETS)
@@ -580,7 +581,8 @@ function contentFingerprint(body) {
   return fingerprint(body.replace(/[ \t\r\n]+$/u, ''))
 }
 
-function banner(version, fp) {
+function banner(version, fp, file = '') {
+  if (file.endsWith('.mjs')) return `// installed from ${BANNER_TOOL} v${version} · content sha256:${fp} by the adopt skill -- editable copy.`
   return (
     `<!-- installed from ${BANNER_TOOL} v${version} · content sha256:${fp} by the adopt ` +
     `skill — editable copy. Re-run the ${BANNER_TOOL}:adopt skill to check for updates; ` +
@@ -595,7 +597,27 @@ function banner(version, fp) {
 function itemContent(set, item, root) {
   const src = path.join(root, set.srcDir, item.file)
   if (!fs.existsSync(src)) fail(`${set.kind} source not found: ${src} — the ${set.kind} bundle (plugin/${set.srcDir}/) is out of sync`)
-  return fs.readFileSync(src, 'utf8')
+  const content = fs.readFileSync(src, 'utf8')
+  if (set.kind !== 'scripts') return content
+  // The adopted launcher has no stable plugin-cache neighbour. Inline its small consent bridge
+  // while retaining plugin/bin/wt-lane.mjs as the single authored source.
+  return content
+    .replace("import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'", `
+function resolveConsent(projectDir, env = process.env) {
+  const configDir = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), '.claude')
+  const read = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return null } }
+  const accountFile = path.join(configDir, 'settings.json')
+  const projectFile = path.join(projectDir, '.claude', 'settings.local.json')
+  const account = read(accountFile); const project = read(projectFile)
+  const accountValue = account?.env?.WT_EXECUTOR_LANE_CONSENT ?? (account?.pluginConfigs && Object.values(account.pluginConfigs).find((x) => x?.options?.executor_lane_consent === true)?.options?.executor_lane_consent)
+  const projectValue = project?.env?.WT_EXECUTOR_LANE_CONSENT
+  return { outcome: accountValue === 'true' || accountValue === true ? (projectValue === 'false' ? 'not_true' : 'true') : 'not_true' }
+}
+function evaluateConsentGate(payload, { resolveConsentImpl = resolveConsent } = {}) {
+  const consent = resolveConsentImpl(payload.cwd)
+  return consent.outcome === 'true' ? { silent: true } : { silent: false, message: 'Refused: this command routes work to the external executor lane, and consent is not given.' }
+}`)
+    .replace("import { appendFileSync, mkdirSync, openSync, existsSync, statSync } from 'node:fs'", "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, readFileSync } from 'node:fs'\nimport os from 'node:os'")
 }
 
 /** The shipped content's fingerprint, or null when the source cannot be read.
@@ -656,6 +678,15 @@ function stripRuleBanner(text) {
   return text.slice(nl + 1).replace(/^\n+/, '')
 }
 
+function stripScriptBanner(text) {
+  const first = text.indexOf('\n')
+  if (first === -1 || !text.startsWith('#!')) return stripRuleBanner(text)
+  const secondEnd = text.indexOf('\n', first + 1)
+  const second = secondEnd === -1 ? text.slice(first + 1) : text.slice(first + 1, secondEnd)
+  if (!VERSION_RE.test(second)) return text
+  return text.slice(0, first + 1) + text.slice(secondEnd + 1).replace(/^\n+/, '')
+}
+
 /** The full installed file: content + a banner stamped with the fingerprint of the content
  *  ACTUALLY WRITTEN. When `oldContent` is given (the file about to be overwritten, agents set
  *  only), any local single-line frontmatter field it carries — one the shipped def does not
@@ -670,8 +701,12 @@ function renderItem(set, item, version, root, oldContent = null) {
   const rawContent = itemContent(set, item, root)
   const { content, preserved } =
     set.kind === 'agents' ? preserveLocalFrontmatter(rawContent, oldContent) : { content: rawContent, preserved: [] }
-  const b = banner(version, fingerprint(content))
-  const text = set.kind === 'agents' ? insertAgentBanner(content, b) : `${b}\n\n${content}`
+  const b = banner(version, fingerprint(content), item.file)
+  const text = set.kind === 'agents'
+    ? insertAgentBanner(content, b)
+    : set.kind === 'scripts' && content.startsWith('#!')
+      ? `${content.slice(0, content.indexOf('\n') + 1)}${b}\n\n${content.slice(content.indexOf('\n') + 1)}`
+      : `${b}\n\n${content}`
   return { text, preserved }
 }
 
@@ -796,6 +831,12 @@ function bannerLine(set, text) {
     const nl = after.indexOf('\n')
     return nl === -1 ? after : after.slice(0, nl)
   }
+  if (set.kind === 'scripts') {
+    const first = text.indexOf('\n')
+    const after = first === -1 ? '' : text.slice(first + 1)
+    const nl = after.indexOf('\n')
+    return nl === -1 ? after : after.slice(0, nl)
+  }
   const nl = text.indexOf('\n')
   return nl === -1 ? text : text.slice(0, nl)
 }
@@ -830,7 +871,7 @@ function refuseExplicitRootInstall(set, dir, args, root) {
 }
 
 function stripBannerFor(set, text) {
-  return set.kind === 'agents' ? stripAgentBanner(text) : stripRuleBanner(text)
+  return set.kind === 'agents' ? stripAgentBanner(text) : set.kind === 'scripts' ? stripScriptBanner(text) : stripRuleBanner(text)
 }
 
 // Fingerprint scope (known limit, both kinds): an unedited copy is recognized by

@@ -552,46 +552,61 @@ describe('adopt installer — CLI surface for the managed-set engine', () => {
     expect(chk).toContain('nothing to do')
   })
 
-  it('--set rules names the untouched agents, autonomy, and docs sets, factually and in one line', () => {
+  it('--set rules names the untouched agents, autonomy, docs, and scripts sets, factually and in one line', () => {
     const d = mkDir()
     const out = run(['--set', 'rules', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the agents, autonomy, and docs sets exist too; they were untouched here, and --set agents, --set autonomy, --set docs covers them.')
+    expect(line).toBe('adopt: the agents, autonomy, docs, and scripts sets exist too; they were untouched here, and --set agents, --set autonomy, --set docs, --set scripts covers them.')
   })
 
-  it('--set agents names the untouched rules, autonomy, and docs sets, factually and in one line', () => {
+  it('--set agents names the untouched rules, autonomy, docs, and scripts sets, factually and in one line', () => {
     const d = mkDir()
     const out = run(['--set', 'agents', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the rules, autonomy, and docs sets exist too; they were untouched here, and --set rules, --set autonomy, --set docs covers them.')
+    expect(line).toBe('adopt: the rules, autonomy, docs, and scripts sets exist too; they were untouched here, and --set rules, --set autonomy, --set docs, --set scripts covers them.')
   })
 
-  it('--set autonomy names the untouched rules, agents, and docs sets, factually and in one line', () => {
+  it('--set autonomy names the untouched rules, agents, docs, and scripts sets, factually and in one line', () => {
     const d = mkDir()
     const out = runInCwd(['--set', 'autonomy', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the rules, agents, and docs sets exist too; they were untouched here, and --set rules, --set agents, --set docs covers them.')
+    expect(line).toBe('adopt: the rules, agents, docs, and scripts sets exist too; they were untouched here, and --set rules, --set agents, --set docs, --set scripts covers them.')
   })
 
-  it('--set docs names the untouched rules, agents, and autonomy sets, factually and in one line', () => {
+  it('--set docs names the untouched rules, agents, autonomy, and scripts sets, factually and in one line', () => {
     const d = mkDir()
     const out = runInCwd(['--set', 'docs', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the rules, agents, and autonomy sets exist too; they were untouched here, and --set rules, --set agents, --set autonomy covers them.')
+    expect(line).toBe('adopt: the rules, agents, autonomy, and scripts sets exist too; they were untouched here, and --set rules, --set agents, --set autonomy, --set scripts covers them.')
   })
 
   it('--set all prints no untouched-set line at all', () => {
     const d = mkDir()
     const out = runInCwd(['--set', 'all', '--check'], d)
     expect(untouchedSetLine(out)).toBeUndefined()
+  })
+})
+
+describe('adopt installer — scripts set', () => {
+  it('installs a bannered standalone wt-lane launcher, detects local edits, and its help runs', () => {
+    const d = mkDir()
+    const out = run(['--set', 'scripts', '--install'], d)
+    const installed = join(d, 'wt-lane.mjs')
+    expect(out).toContain('wt-lane.mjs: WROTE')
+    expect(readFileSync(installed, 'utf8').split('\n')[1]).toMatch(/^\/\/ installed from workflow-toolbox v\d+\.\d+\.\d+/)
+    expect(run(['--set', 'scripts', '--check'], d)).toContain('wt-lane.mjs: UP-TO-DATE')
+    const help = spawnSync(process.execPath, [installed, '--help'], { encoding: 'utf8' })
+    expect(help.status, help.stderr).toBe(0)
+    writeFileSync(installed, readFileSync(installed, 'utf8') + '\n// local edit\n')
+    expect(run(['--set', 'scripts', '--check'], d)).toContain('wt-lane.mjs: EDITED')
   })
 })
 

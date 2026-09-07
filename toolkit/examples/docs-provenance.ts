@@ -51,6 +51,11 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-lane.mjs',
+    status: 'mapped',
+    reason: 'README, known-issues, and the external-lane skill document the stable adopted launcher and lifecycle contract.',
+  },
+  {
     script: 'plugin/bin/wt-actionable-gate-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents the shipped Stop gate and its snapshot contract.',
@@ -496,6 +501,10 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/skills/workflow-composer/references/model-and-agent-routing.md',
       'plugin/skills/workflow-debugger/SKILL.md',
     ],
+  },
+  {
+    sources: ['plugin/bin/wt-lane.mjs', 'plugin/skills/external-lane/'],
+    docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
   },
   {
     // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer

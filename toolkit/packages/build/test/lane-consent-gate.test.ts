@@ -123,11 +123,16 @@ describe('evaluateConsentGate (core decision)', () => {
       'printf $(opencode run --model x)',
       'timeout 10 opencode run --model x',
       'env X=1 opencode run --model x',
+      'node /stable/scripts/wt-lane.mjs --dir /worktree --model x --brief /brief.md',
     ]
     for (const command of commands) {
       const result = evaluateConsentGate({ tool_input: { command } }, { resolveConsentImpl })
       expect(result.deny, command).toBe(true)
     }
+  })
+
+  it('does not treat a quoted launcher mention as an invocation', () => {
+    expect(evaluateConsentGate({ tool_input: { command: "echo 'node /x/wt-lane.mjs --dir /x'" } }).silent).toBe(true)
   })
 
   // ── ON path ──────────────────────────────────────────────────────────────────────────────

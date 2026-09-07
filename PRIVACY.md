@@ -52,7 +52,13 @@ already writes for the Workflow tool.
    sends only the session id, effective model, and the gateway key the session
    already holds to that exact origin's selected-usage endpoint. It sends
    nothing to another origin, and never sends source, conversation, or Claude
-   credentials to the proxy.
+    credentials to the proxy.
+
+- **External-lane launcher** (`bin/wt-lane.mjs`) — starts a detached local
+  `opencode run` with an explicit worktree, model, and brief, closes stdin, and
+  writes local output plus an `EXIT=` marker. The launcher has no network client
+  or telemetry. The spawned `opencode` CLI may send the supplied brief and
+  repository context to the provider selected by its existing configuration.
 
 ## What it never does
 

@@ -115,6 +115,10 @@ The external executor lane is also opt-in: plugin configuration
 local Claude settings may only narrow it, so missing or false consent keeps work in the in-house
 SPLIT path rather than sending it to the lane.
 
+## External lanes
+
+For a complete detached implementation or review, use the `external-lane` skill. Adopt the stable launcher with `node plugin/skills/adopt/scripts/install.mjs --set scripts --install --global`, then run `node <configDir>/scripts/wt-lane.mjs --dir <worktree> --model <provider/model> --brief <file>`. It returns immediately with a pid and log path; the log ends in `EXIT=<code>`. The plugin-cache `plugin/bin/wt-lane.mjs` works too, but its path changes with plugin upgrades.
+
 ## Where to go from here
 
 The practitioner depth below is unchanged — here is the map:
