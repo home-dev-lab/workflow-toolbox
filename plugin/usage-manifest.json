@@ -38,6 +38,10 @@
     ]
   },
   "monitors": { "file": "plugin/monitors/monitors.json", "fields": ["name", "command", "description", "when"], "count": 5 },
+  "shippedSkills": {
+    "count": 15,
+    "names": ["adopt", "changelog", "deep-grounding", "delegation-chain", "external-lane", "independent-analysis", "lesson-harvest", "pilot-wave", "planka-tracking", "stale-card-sweep", "toolkit-scaffold", "upgrade-canary", "what-next", "workflow-composer", "workflow-debugger"]
+  },
   "functionHooks": {
     "status": "spike only (worktrees/fh-spike); function modules cannot import Node APIs needed to inspect a staged Git diff",
     "events": ["tool.call"],

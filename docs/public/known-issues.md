@@ -57,6 +57,20 @@ be false. The watcher stays alive and emits a degraded notice in that case.
 Hooks and monitors shipped under `plugin/bin/` that are not already covered by a section above:
 what fires them, what they check, and their output/exit contract.
 
+### `wt-changelog-entry.mjs` — changelog and changeset writer
+
+The `changelog` skill runs `node plugin/bin/wt-changelog-entry.mjs` after a plugin or published
+package-source change and before a commit. The writer adds one idempotent entry to
+`plugin/CHANGELOG.md` under `## [Unreleased]` in `Added`, `Changed`, or `Fixed`; `--dry-run`
+reports without writing. For a touched `toolkit/packages/<package>/src` path, it reads that
+package's `package.json` and creates a patch changeset only when `publishConfig` is present and
+the package is not private. This produces the records accepted by the release-record guard and
+the changeset gate; it does not alter either guard's decision.
+
+It refuses a requested version heading outside `main`: versions are bumped on `main` only. It
+removes a 19-digit private tracker id from the supplied summary and reports the removal, so callers
+must use meaningful public wording rather than an internal identifier.
+
 ### `wt-adopt-check-hook.mjs` — rule-adoption state check (SessionStart + PostToolUse)
 
 Checks BOTH managed sets — `.claude/rules/` and `.claude/agents/` — in the project AND global config dirs, by running the adopt installer in `--check` mode and reusing its absent, clean, stale, edited, symlink, and hand-authored classification. A file counts as OK if either the project or the global copy is current (the union, not an intersection), so an adopted-globally rule never falsely reads as absent. It is silent when everything checked is adopted and current; otherwise it names the absent/stale/edited files per set and suggests the adoption fix (for agents, only `stale` is a finding — the pilot suite's project copies are opt-in by design). It never installs or changes anything: adoption requires the owner's consent. Besides SessionStart, it also re-fires on PostToolUse after a `git push` — the moment the shipped rules can move ahead of the adopted copies — with a preface explaining why the notice appears mid-session. Any internal error exits 0 silently so it cannot break a session or a push.

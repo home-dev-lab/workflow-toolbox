@@ -51,6 +51,11 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-changelog-entry.mjs',
+    status: 'mapped',
+    reason: 'The changelog skill and known-issues document this deterministic Unreleased-entry and changeset writer.',
+  },
+  {
     script: 'plugin/bin/wt-lane.mjs',
     status: 'mapped',
     reason: 'README, known-issues, and the external-lane skill document the stable adopted launcher and lifecycle contract.',
@@ -487,6 +492,12 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/skills/workflow-composer/references/model-and-agent-routing.md',
       'plugin/skills/workflow-composer/SKILL.md',
     ],
+  },
+  {
+    // The deterministic release-record writer is described by its invocation skill
+    // and its public limitation/format contract.
+    sources: ['plugin/bin/wt-changelog-entry.mjs', 'plugin/skills/changelog/'],
+    docs: ['plugin/skills/changelog/SKILL.md', 'docs/public/known-issues.md'],
   },
   {
     // The thin opencode envelope script plus its registered agent definitions:
