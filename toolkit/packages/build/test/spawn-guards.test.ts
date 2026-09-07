@@ -26,7 +26,9 @@ function run(hook: string, payload: unknown, cwd: string) {
   const journal = join(cwd, 'journal')
   const result = spawnSync(process.execPath, [join(BIN, hook)], {
     input: JSON.stringify(payload), encoding: 'utf8',
-    env: { ...process.env, CLAUDE_CONFIG_DIR: join(cwd, 'empty-config'), WT_GUARD_JOURNAL_DIR: journal },
+    // The journal file is named by ISO week, so the clock is PINNED (WT_GUARD_JOURNAL_NOW): written on
+    // 2026-09-06 (W36) this test read `2026-W36.ndjson` from the real clock and went red the next morning.
+    env: { ...process.env, CLAUDE_CONFIG_DIR: join(cwd, 'empty-config'), WT_GUARD_JOURNAL_DIR: journal, WT_GUARD_JOURNAL_NOW: '2026-09-06T12:00:00Z' },
   })
   const journalFile = join(journal, '2026-W36.ndjson')
   return { ...result, journal: existsSync(journalFile) ? readFileSync(journalFile, 'utf8') : '' }
