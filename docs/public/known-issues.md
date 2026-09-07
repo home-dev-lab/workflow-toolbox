@@ -12,6 +12,13 @@ Only direct Anthropic sessions and configured CLI Proxy origins have a known
 quota source; reporting a Claude subscription window for another provider would
 be false. The watcher stays alive and emits a degraded notice in that case.
 
+## Lifecycle v1
+
+The pilot template's Discovery block and LITE/FULL routing are mechanical: the block is carried
+across phases, risk and labeled threshold signals force FULL, and loop bounds have written exits.
+The ambiguous remainder still requires one strong-tier judgment, with uncertainty routed upward to
+FULL; this increment deliberately adds neither a runner nor a second state tracker.
+
 ## Open items
 
 | # | Issue | Impact | Status |

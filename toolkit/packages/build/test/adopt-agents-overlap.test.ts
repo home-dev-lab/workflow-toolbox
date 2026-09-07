@@ -65,6 +65,13 @@ const SHIPPED_AGENTS = {
     '---\nname: pilot-orchestrator-watchdog\ndescription: synthetic orchestrator watchdog\n---\n\nWatch the orchestrator for drift only.\n',
 } as const
 
+const REAL_TEMPLATE_AGENTS = [
+  'pilot.md',
+  'pilot-orchestrator.md',
+  'pilot-watchdog.md',
+  'pilot-orchestrator-watchdog.md',
+] as const
+
 function mkFixture() {
   const base = mkdtempSync(join(tmpdir(), 'wt-agents-overlap-'))
   roots.push(base)
@@ -92,6 +99,16 @@ function mkFixture() {
   const userDir = join(base, 'user')
   mkdirSync(userDir)
   return { script: join(scriptsDir, 'install.mjs'), userDir }
+}
+
+function mkRealTemplateFixture() {
+  const fixture = mkFixture()
+  const templates = join(REPO_ROOT, 'plugin', 'agent-templates')
+  const pluginRoot = join(fixture.script, '..', '..', '..', '..')
+  for (const file of REAL_TEMPLATE_AGENTS) {
+    writeFileSync(join(pluginRoot, 'agent-templates', file), readFileSync(join(templates, file), 'utf8'))
+  }
+  return fixture
 }
 
 function withModel(source: string, model: string): string {
@@ -200,6 +217,18 @@ describe('adopt audit-overlap --set agents', () => {
     expect(res.stdout).toContain('CLEAN pilot.md')
     expect(res.stdout).toContain('CLEAN pilot-orchestrator.md')
     expect(res.stdout).toContain('CLEAN pilot-watchdog.md')
+    expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 0 absent, 0 unpaired, 0 unmapped')
+  })
+
+  it('accepts an installed copy of the current agent templates (normative-template overlap lock)', () => {
+    const fixture = mkRealTemplateFixture()
+    install(fixture.script, fixture.userDir)
+
+    const res = run(fixture.script, fixture.userDir, ['--set', 'agents'])
+
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('CLEAN pilot.md')
+    expect(res.stdout).toContain('CLEAN pilot-orchestrator.md')
     expect(res.stdout).toContain('audit-overlap: 0 duplicate, 0 drift, 0 absent, 0 unpaired, 0 unmapped')
   })
 

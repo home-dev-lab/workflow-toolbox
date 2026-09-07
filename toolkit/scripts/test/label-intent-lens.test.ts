@@ -135,7 +135,7 @@ describe('label-intent-lens — card detection fixtures', () => {
   it('12. strips sr-meta before scanning and remains silent when labels are applied', () => {
     const result = checkLabelIntent(
       card(
-        '...\n\nLabels: P2 feature effort:M (repo: acme-widget-service).\n\n<!-- sr-meta v1 -->\nLast-worked: 2026-07-24\nNext: ...\n<!-- /sr-meta -->\n',
+        '...\n\nLabels: P2 feature effort:M (repo: acme-widget-service).\n\n<!-- sr-meta v1 -->\nLast-worked: 2026-07-24\nPhase: verify\nNext: ...\n<!-- /sr-meta -->\n',
         ['tooling', 'P2', 'feature', 'effort:M'],
       ),
     )

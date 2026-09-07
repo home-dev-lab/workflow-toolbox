@@ -221,7 +221,7 @@ function resolveEvent(input) {
   return looksLikePush(command) ? event : null
 }
 
-function main() {
+export function main() {
   const input = readInput()
   if (typeof input?.agent_id === 'string' && input.agent_id) return
   const event = resolveEvent(input)

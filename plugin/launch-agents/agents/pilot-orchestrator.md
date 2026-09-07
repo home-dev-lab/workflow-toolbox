@@ -165,7 +165,8 @@ unless the report states which one it was.
    backgrounded work, it ALSO states the async-wait discipline explicitly (block in-turn with
    a hard cap; never arm-and-yield on a self-owned watcher) — a pilot brief that authorizes a
    lane without this is the exact incomplete-brief shape that has already produced a silently
-   dormant delegate.
+   dormant delegate. On resumption, read the pilot's latest Discovery block first: its `Phase:`
+   and `Next:` state identifies the phase to continue and the next concrete action.
 
    Immediately after each `Agent` call returns, before anything else, `SendMessage` the
    newly-spawned pilot one line: `LIVENESS_AGENT_ID: <raw id from the Agent tool's return
