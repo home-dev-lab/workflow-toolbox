@@ -2491,6 +2491,7 @@ ${renderClaim(claim)}`;
       // Pilot operators are instructed to run these helper CLIs/guards directly.
       sources: [
         "plugin/bin/wt-run-gate.mjs",
+        "plugin/bin/wt-report-findings-check.mjs",
         "plugin/bin/wt-push-scope-check.mjs",
         "plugin/bin/wt-pilot-guard-hook.mjs",
         "plugin/bin/wt-pilot-card-reconcile.mjs",
@@ -2502,7 +2503,9 @@ ${renderClaim(claim)}`;
         "plugin/agent-templates/pilot.md",
         "plugin/agent-templates/pilot-orchestrator.md",
         "plugin/launch-agents/agents/pilot.md",
-        "plugin/launch-agents/agents/pilot-orchestrator.md"
+        "plugin/launch-agents/agents/pilot-orchestrator.md",
+        "plugin/skills/lesson-harvest/SKILL.md",
+        "docs/public/known-issues.md"
       ]
     },
     {

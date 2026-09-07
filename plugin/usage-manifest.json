@@ -63,14 +63,17 @@
     { "name": "WT_VERSION_GUARD_MODE", "where": "plugin/bin/lib/plugin-version-alignment.mjs (align is opt-in; refuse is default)" },
     { "name": "WT_GUARD_JOURNAL_DIR", "where": "plugin/bin/lib/guard-journal.mjs and gate-evidence.mjs (test state-root override)" },
     { "name": "WT_ENVELOPE_WORKDIR", "where": "plugin/bin/wt-opencode-envelope.mjs (per-invocation envelope artifact directory override)" },
-    { "name": "WT_QUOTA_PROXY_ORIGINS", "where": "plugin/bin/lib/quota-route.mjs (comma-separated trusted CLI Proxy origins)" }
+    { "name": "WT_QUOTA_PROXY_ORIGINS", "where": "plugin/bin/lib/quota-route.mjs (comma-separated trusted CLI Proxy origins)" },
+    { "name": "WT_FINDINGS_DISPOSITION_MODE", "where": "plugin/bin/wt-report-findings-check.mjs (block override for the Findings disposition probation)" },
+    { "name": "WT_FINDINGS_DISPOSITION_NOW", "where": "plugin/bin/wt-report-findings-check.mjs (deterministic clock override)" }
   ],
   "cli": [
     { "name": "node <configDir>/scripts/wt-lane.mjs", "where": "README.md and plugin/skills/external-lane/SKILL.md" },
     { "name": "node plugin/bin/wt-plugin-eval-gate.mjs", "where": "docs/public/known-issues.md" },
     { "name": "claude plugin validate", "where": "README.md" },
     { "name": "claude --plugin-dir / --debug-file / --allowedTools / -p", "where": "worktrees/fh-spike (spike only)" },
-    { "name": "/plugin-types", "where": "worktrees/fh-spike/types (spike only)" }
+    { "name": "/plugin-types", "where": "worktrees/fh-spike/types (spike only)" },
+    { "name": "node plugin/bin/wt-report-findings-check.mjs", "where": "plugin/agent-templates/pilot-orchestrator.md and plugin/skills/lesson-harvest/SKILL.md" }
   ],
   "invariants": [
     "CLAUDE_PLUGIN_ROOT is EMPTY in the main session's Bash shell; only hook commands see it",

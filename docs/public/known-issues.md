@@ -19,6 +19,14 @@ across phases, risk and labeled threshold signals force FULL, and loop bounds ha
 The ambiguous remainder still requires one strong-tier judgment, with uncertainty routed upward to
 FULL; this increment deliberately adds neither a runner nor a second state tracker.
 
+## Findings disposition probation
+
+`node plugin/bin/wt-report-findings-check.mjs <report>` checks that a closing report has a
+`## Findings` section containing either `None.` or a Markdown table with one allowed disposition
+per row. It prints its active regime with every result. The checker warns through 2026-09-13 and
+blocks on 2026-09-14; set `WT_FINDINGS_DISPOSITION_MODE=block` to switch early. The
+`WT_FINDINGS_DISPOSITION_NOW` clock override exists for deterministic tests.
+
 ## Open items
 
 | # | Issue | Impact | Status |

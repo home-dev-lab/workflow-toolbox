@@ -290,6 +290,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Pilot docs instruct operators to use this non-bypassable gate runner for repo gates.',
   },
   {
+    script: 'plugin/bin/wt-report-findings-check.mjs',
+    status: 'mapped',
+    reason: 'Pilot and lesson-harvest docs describe this closing-report Findings disposition checker and its probation mode.',
+  },
+  {
     script: 'plugin/bin/wt-observer-pairing-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this PostToolUse observer-pairing reporter under Shipped Hooks, Guards & Monitors.',
@@ -734,6 +739,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     // Pilot operators are instructed to run these helper CLIs/guards directly.
     sources: [
       'plugin/bin/wt-run-gate.mjs',
+      'plugin/bin/wt-report-findings-check.mjs',
       'plugin/bin/wt-push-scope-check.mjs',
       'plugin/bin/wt-pilot-guard-hook.mjs',
       'plugin/bin/wt-pilot-card-reconcile.mjs',
@@ -746,6 +752,8 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/agent-templates/pilot-orchestrator.md',
       'plugin/launch-agents/agents/pilot.md',
       'plugin/launch-agents/agents/pilot-orchestrator.md',
+      'plugin/skills/lesson-harvest/SKILL.md',
+      'docs/public/known-issues.md',
     ],
   },
   {

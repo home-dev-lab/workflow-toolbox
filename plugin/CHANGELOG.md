@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Add warn-only Findings disposition report checker
 - Add release-only plugin eval gate
 - Add the changelog skill for deterministic release records
 - `wt-lane.mjs`: a stable-path adoptable detached external-lane launcher and the `external-lane` skill.

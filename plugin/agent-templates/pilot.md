@@ -697,6 +697,12 @@ which is precisely the claim it would be hiding.
 Dismissing a finding is legitimate — you are the one with the arc's context, and an observer
 watching from outside can be wrong. What is not legitimate is dismissing it invisibly.
 
+### Findings
+
+Your final report carries a `## Findings` section. State `None.` when review found nothing.
+Otherwise, use a Markdown table with one row per review finding and exactly one disposition per
+row: `fixed with red lock <test>`, `out-of-scope card <id>`, or `rejected with evidence <where>`.
+
 ### Lessons for the memory
 
 Your final report always ends with a section **"Lessons for the memory"**: every reusable
