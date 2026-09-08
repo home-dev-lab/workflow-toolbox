@@ -26,6 +26,14 @@ including values embedded in structured text. The salt is not a secrecy boundary
 store can still make offline guesses for low-entropy values. Use high-entropy secrets and treat the
 store as sensitive local state.
 
+## TypeScript pack SDK runner
+
+The TypeScript pack's SDK-only agent runner is a toolkit development utility at
+`toolkit/scripts/run-typescript-pack-agent.mjs`, not a distributed plugin capability. It resolves
+the SDK from the toolkit's declared development dependencies, so it must be run from a toolkit
+checkout with its dependencies installed. Plugin adopters receive the pack's rules, skills, and
+agent definitions without an undeclared dependency on a sibling toolkit checkout.
+
 ## Findings disposition probation
 
 `node plugin/bin/wt-report-findings-check.mjs <report>` checks that a closing report has a

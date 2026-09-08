@@ -4,11 +4,12 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+  loadSdk,
   parseAgentFrontmatter,
   parseRunnerArgs,
   requireString,
   serializeRun,
-} from '../../../../plugin/packs/typescript/scripts/run-agent.mjs'
+} from '../../../scripts/run-typescript-pack-agent.mjs'
 
 const testDir = path.dirname(fileURLToPath(import.meta.url))
 const packDir = path.resolve(testDir, '../../../../plugin/packs/typescript')
@@ -55,6 +56,11 @@ describe('TypeScript pack manifest', () => {
 })
 
 describe('TypeScript pack SDK agent runner', () => {
+  it('loads the SDK from the toolkit-owned runner rather than the shipped plugin pack', async () => {
+    expect(fs.existsSync(path.join(packDir, 'scripts', 'run-agent.mjs'))).toBe(false)
+    await expect(loadSdk()).resolves.toHaveProperty('query')
+  })
+
   it('parses required agent frontmatter without loading the SDK', () => {
     expect(
       parseAgentFrontmatter(`---
@@ -83,7 +89,7 @@ System prompt`),
       outputPath: 'critic.json',
     })
     expect(() => parseRunnerArgs(['critic.md', 'plan.md'])).toThrow(
-      'usage: run-agent.mjs <agent.md> <input.md> <output.json>',
+      'usage: run-typescript-pack-agent.mjs <agent.md> <input.md> <output.json>',
     )
   })
 

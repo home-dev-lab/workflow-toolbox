@@ -21,3 +21,5 @@ export function serializeRun(
   transcript: unknown[]
   usage: unknown
 }
+
+export function loadSdk(): Promise<{ query: unknown }>

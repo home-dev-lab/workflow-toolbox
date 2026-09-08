@@ -27,6 +27,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Mask secret-guard-tokenised values before guard-journal persistence
 - Mask secret-guard-tokenised values when embedded in guard-journal fields
 - Return the bare unavailable marker when the verifier cannot run its Bash probe
+- Refuse a successful opencode verifier response that contains an external-directory denial, so the
+  bridge can perform its one inlined recovery attempt instead of returning an ungrounded verdict.
+- Keep opencode verification read-only by omitting `--auto` from the stable wrapper command.
+- Move the TypeScript pack SDK runner into the toolkit, where its Agent SDK development dependency
+  is owned, instead of resolving it through a distributed plugin's sibling checkout.
 - Make adopted `wt-lane.mjs` import the installed canonical consent resolver and refuse when it cannot be found, rather than carrying a drift-prone inline copy.
 
 ### Added

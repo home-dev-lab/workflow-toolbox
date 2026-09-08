@@ -19,15 +19,15 @@ If a Bash invocation for the step-1 availability probe errors before the probe c
 
 ## Prepare The Task
 
-Build the full task text before the call. Keep every instruction, diff, and required schema. Resolve `OPENCODE_WORKDIR: <absolute path>` as the sole effective workdir; otherwise use the inherited working directory. Files under that workdir may be listed relative for native reads. Inline every file outside it unless the trusted task carries exactly `OPENCODE_DIRECT_READS: yes`; if a listed read is refused with `external_directory`, re-prepare the same task with every referenced file inlined before the one allowed re-do.
+Build the full task text before the call. Keep every instruction, diff, and required schema. Resolve `OPENCODE_WORKDIR: <absolute path>` as the sole effective workdir; otherwise use the inherited working directory. Files under that workdir may be listed relative for native reads. Inline every file outside it unless the trusted task carries exactly `OPENCODE_DIRECT_READS: yes`. If the command returns `OPENCODE_EXTERNAL_DIRECTORY: <denial>`, re-prepare the same task with every referenced file inlined and make exactly one recovery re-do; do not return that internal marker as a verdict.
 
 Recognize `OPENCODE_MODEL: <provider/model>`, `OPENCODE_FALLBACK_MODEL: <provider/model>`, and `OPENCODE_VARIANT: <name>` as directives, not files. The primary model is that directive or `openai/gpt-5.6-luna`; a fallback model is the fallback directive or the same default. Only pass a variant validated for the selected model: Luna allows `none`, `low`, `medium`, `high`, `xhigh`; Terra and Sol also allow `max`. On an invalid variant, do not pass it and prefix the returned output with `OPENCODE_VARIANT_IGNORED: <name> not in <model> list [...]`. Re-evaluate the variant for the fallback model.
 
-Use a unique id and provide the prepared task through an existing file or standard input. Never put a heredoc in the command text. The shipped command owns the cwd-local temporary task file, cleanup, closed child stdin, 570-second ceiling, JSON stream extraction, one 429/rate-limit retry, and explicit `--auto`, `--dir`, and `-m` options. It resolves `opencode` from PATH and then the installer-path scan; the `"$BIN"` path-scan fallback is NOT coverable by an allow rule.
+Use a unique id and provide the prepared task through an existing file or standard input. Never put a heredoc in the command text. The shipped command owns the cwd-local temporary task file, cleanup, closed child stdin, 570-second ceiling, JSON stream extraction, one 429/rate-limit retry, and explicit `--dir` and `-m` options. It resolves `opencode` from PATH and then the installer-path scan; the `"$BIN"` path-scan fallback is NOT coverable by an allow rule.
 
 ## One Command
 
-Make exactly one Bash call for each attempt, with `timeout: 600000`. Its text must start with this stable prefix and use a trusted task-file path (or replace `--task-file "$TASK_FILE"` with `--stdin` when the Bash invocation supplies closed standard input):
+Make exactly one Bash call for the initial attempt, and only make one recovery re-do when the command returns the external-directory marker above, with `timeout: 600000`. Its text must start with this stable prefix and use a trusted task-file path (or replace `--task-file "$TASK_FILE"` with `--stdin` when the Bash invocation supplies closed standard input):
 
 `node "${CLAUDE_PLUGIN_ROOT}/bin/wt-opencode-verify.mjs" --dir "$WORKDIR" -m "$MODEL" --fallback-model "$FALLBACK_MODEL" --id "$UNIQUE_ID" --task-file "$TASK_FILE"`
 
@@ -49,7 +49,7 @@ Each correction is a fresh task that inlines the previous stdout under `### prev
 
 - Do not perform the review or verification yourself.
 - Do not modify project files, stage, or commit anything.
-- Do not use any agent other than read-only `plan`; the script sets `--auto` only to prevent the permission prompt from hanging, while `--agent plan` remains the read-only mode.
+- Do not use any agent other than read-only `plan`, and never add `--auto`: auto-approval can widen tool authorization beyond the verifier's read-only boundary.
 - Do not retry beyond the script's one 429 retry or the two bounded schema-format corrections.
 
 ## Mechanical Guard

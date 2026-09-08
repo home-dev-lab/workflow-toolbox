@@ -2,10 +2,10 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, resolve } from 'node:path'
+import { dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const USAGE = 'usage: run-agent.mjs <agent.md> <input.md> <output.json>'
+const USAGE = 'usage: run-typescript-pack-agent.mjs <agent.md> <input.md> <output.json>'
 
 export function parseRunnerArgs(argv) {
   if (argv.length !== 3 || argv.some((arg) => !arg || arg.startsWith('-'))) throw new Error(USAGE)
@@ -40,10 +40,8 @@ export function serializeRun(agentPath, model, effort, transcript) {
   return { agent: { path: agentPath, model, effort }, transcript, usage: result?.usage ?? null }
 }
 
-async function loadSdk() {
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
-  const toolkitRequire = createRequire(resolve(repoRoot, 'toolkit/package.json'))
-  const sdkPath = toolkitRequire.resolve('@anthropic-ai/claude-agent-sdk')
+export async function loadSdk() {
+  const sdkPath = createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk')
   return import(pathToFileURL(sdkPath).href)
 }
 

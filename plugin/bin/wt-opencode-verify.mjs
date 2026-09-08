@@ -45,7 +45,7 @@ export function buildRunArgs({ model, dir, taskFile, variant }) {
   const args = ['run', MESSAGE, '--agent', 'plan', '--model', model]
   if (variant) args.push('--variant', variant)
   // These must be explicit: the verifier must neither inherit a directory nor block on a prompt.
-  args.push('--auto', '--dir', dir, '--format', 'json', '-f', taskFile)
+  args.push('--dir', dir, '--format', 'json', '-f', taskFile)
   return args
 }
 
@@ -58,13 +58,13 @@ function resolveBinary() {
   return null
 }
 
-function runOnce(spawnFn, bin, args) {
+function runOnce(spawnFn, bin, args, timeoutSec = DEFAULT_TIMEOUT_SEC) {
   return new Promise((resolve) => {
     const child = spawnFn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = ''
     let stderr = ''
     let timedOut = false
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, DEFAULT_TIMEOUT_SEC * 1000)
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, timeoutSec * 1000)
     child.stdout.on('data', (data) => { stdout += data })
     child.stderr.on('data', (data) => { stderr += data })
     child.once('error', (error) => { clearTimeout(timer); resolve({ stdout, stderr: `${stderr}${error}`, code: 1, timedOut: false }) })
@@ -79,7 +79,11 @@ function rateLimited(result) {
   return /429|rate[ _-]?limit|rate_limit_exceeded|too many requests|resource_exhausted/i.test(`${result.stdout}\n${result.stderr}`)
 }
 
-export async function runVerifier(options, { spawnFn = spawn, binary = resolveBinary(), providerAuthenticated = (bin) => spawnSync(bin, ['providers', 'list'], { encoding: 'utf8', timeout: 30000 }).status === 0, readStdin = () => fs.readFileSync(0, 'utf8') } = {}) {
+function externalDirectoryDenial(result) {
+  return `${result.stdout}\n${result.stderr}`.match(/[^\n]*external_directory[^\n]*/i)?.[0].trim() ?? null
+}
+
+export async function runVerifier(options, { spawnFn = spawn, binary = resolveBinary(), providerAuthenticated = (bin) => spawnSync(bin, ['providers', 'list'], { encoding: 'utf8', timeout: 30000 }).status === 0, readStdin = () => fs.readFileSync(0, 'utf8'), timeoutSec = DEFAULT_TIMEOUT_SEC } = {}) {
   if (!binary) return { code: 1, output: 'OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations' }
   if (!providerAuthenticated(binary)) {
     return { code: 1, output: 'OPENCODE_UNAVAILABLE: no opencode provider authenticated (providers list failed)' }
@@ -88,10 +92,12 @@ export async function runVerifier(options, { spawnFn = spawn, binary = resolveBi
   const taskFile = path.join(path.resolve(options.dir), `.oc-verify-${options.id}-${process.pid}.md`)
   fs.writeFileSync(taskFile, task, 'utf8')
   try {
-    let result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, taskFile }))
+    let result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, taskFile }), timeoutSec)
     if (result.code !== 0 && rateLimited(result)) {
-      result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, model: options.fallbackModel || DEFAULT_MODEL, taskFile }))
+      result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, model: options.fallbackModel || DEFAULT_MODEL, taskFile }), timeoutSec)
     }
+    const denial = externalDirectoryDenial(result)
+    if (result.code === 0 && denial) return { code: 1, output: `OPENCODE_EXTERNAL_DIRECTORY: ${denial}` }
     if (result.code === 0) return { code: 0, output: laneTextFromOutput(result.stdout) ?? result.stdout }
     return { code: result.code, output: result.stderr || result.stdout || `opencode exited ${result.code}` }
   } finally {
