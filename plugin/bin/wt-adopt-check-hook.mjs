@@ -48,6 +48,7 @@ import { fileURLToPath } from 'node:url'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const INSTALL_RULES = path.join(HERE, '..', 'skills', 'adopt', 'scripts', 'install.mjs')
 const SKILL_NAME = 'workflow-toolbox:adopt'
+const VERSION_RE = /installed from workflow-toolbox v(\d+\.\d+\.\d+)/
 
 /** Read the hook's JSON payload from stdin; tolerate empty/malformed input. */
 function readInput() {
@@ -128,6 +129,61 @@ function mergeAll(maps, file) {
   return best
 }
 
+function versionFromStatus(status) {
+  const match = /installed v(\d+\.\d+\.\d+)/.exec(status)
+  return match ? match[1] : null
+}
+
+function compareVersions(a, b) {
+  const left = a.split('.').map(Number)
+  const right = b.split('.').map(Number)
+  for (let i = 0; i < 3; i++) {
+    if (left[i] !== right[i]) return left[i] < right[i] ? -1 : 1
+  }
+  return 0
+}
+
+// Banners are installer-owned metadata. Drop only the recognized banner line and its
+// separator before comparing the editable body to the shipped source.
+function stripBanner(text) {
+  const lines = text.split('\n')
+  const bannerIndex = lines.findIndex((line) => VERSION_RE.test(line))
+  if (bannerIndex === -1) return text
+  lines.splice(bannerIndex, 1)
+  if (lines[bannerIndex] === '') lines.splice(bannerIndex, 1)
+  return lines.join('\n').replace(/[ \t\r\n]+$/u, '')
+}
+
+function contentDirection(file, finding, set) {
+  const installedVersion = versionFromStatus(finding.status)
+  let currentVersion
+  try {
+    currentVersion = JSON.parse(fs.readFileSync(path.join(HERE, '..', '.claude-plugin', 'plugin.json'), 'utf8')).version
+  } catch {
+    return 'differs (direction unknown: content-only comparison)'
+  }
+  if (installedVersion && typeof currentVersion === 'string') {
+    const compared = compareVersions(installedVersion, currentVersion)
+    if (compared < 0) return `behind v${currentVersion}`
+    if (compared > 0) return `ahead of v${currentVersion}`
+  }
+
+  const sourceDir = set === 'agents' ? 'agent-templates' : 'rules'
+  try {
+    const copy = stripBanner(fs.readFileSync(path.join(finding.location, file), 'utf8'))
+    const shipped = fs.readFileSync(path.join(HERE, '..', sourceDir, file), 'utf8').replace(/[ \t\r\n]+$/u, '')
+    const copyLines = new Set(copy.split(/\r?\n/))
+    const shippedLines = new Set(shipped.split(/\r?\n/))
+    const onlyCopy = [...copyLines].some((line) => !shippedLines.has(line))
+    const onlyShipped = [...shippedLines].some((line) => !copyLines.has(line))
+    if (onlyCopy && !onlyShipped) return `ahead of v${currentVersion}`
+    if (onlyShipped && !onlyCopy) return `behind v${currentVersion}`
+  } catch {
+    // A vanished/unreadable copy is not grounds for a direction claim.
+  }
+  return `differs from v${currentVersion} (direction unknown: content-only comparison)`
+}
+
 function buildMessage(perFile, installCmd, set = 'rules', event = 'SessionStart') {
   const buckets = { absent: [], stale: [], ahead: [], edited: [] }
   for (const [file, finding] of perFile) {
@@ -155,16 +211,11 @@ function buildMessage(perFile, installCmd, set = 'rules', event = 'SessionStart'
         `(or \`node ${installCmd} --set ${set} --install\`).`,
     )
   }
-  if (buckets.stale.length) {
+  for (const finding of [...buckets.stale, ...buckets.ahead].sort((a, b) => a.file.localeCompare(b.file))) {
+    const target = `${finding.file}${finding.location ? ` (${finding.location})` : ''}`
     lines.push(
-      `Behind the shipped content: ${named(buckets.stale)}. Refresh via ` +
-        `${SKILL_NAME} (\`--set ${set} --install\`) — it will not touch a file you've locally edited.`,
-    )
-  }
-  if (buckets.ahead.length) {
-    lines.push(
-      `Ahead/forked from the shipped content: ${named(buckets.ahead)}. Its banner version is newer and its content differs; ` +
-        `review the fork before replacing it.`,
+      `${target}: ${contentDirection(finding.file, finding, set)}. Owner / single writer: run ` +
+        `\`node ${installCmd} --set ${set} --install\`; this read-only hook will not run it.`,
     )
   }
   // "Locally modified" is a SUPPORTED steady state, not an event. Reporting it at session

@@ -304,6 +304,14 @@ environment-specific narrative); the workflow-authoring doctrine lives in the
 `--check` parses each installed file's banner version and compares it to the running plugin's
 version — for both sets:
 
+At `SessionStart`, the read-only adopt check examines only the managed rule and agent paths in
+the project and active config profile. It stays silent when every adopted copy matches. For each
+differing managed copy it names `behind vX` or `ahead of vX` from the banner-version ordering;
+equal-version drift is classified from the stripped copy body when one side only adds content.
+If content changed in both directions, it says that direction is unknown rather than guessing.
+The hook never refreshes anything: the owner or single writer must run
+`node scripts/install.mjs --set <set> --install` after reviewing the finding.
+
 - **ABSENT** — not installed; `--install` writes it.
 - **SYMLINK** — the target is a symlink; `--install` reports it and leaves it (and its real
   target) untouched. `--install --replace-symlinks` replaces the link with a managed copy in

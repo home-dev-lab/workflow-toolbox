@@ -22,6 +22,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Added
 - Add adoptable SDLC engineering protocol rule
 - Add TypeScript pack SDK agent runner
+- SessionStart adopt checks now report each divergent managed copy as `behind vX` or `ahead of vX`
+  and leave the owner or single writer to run the explicit refresh command.
 
 ## [0.172.0] - 2026-09-08
 

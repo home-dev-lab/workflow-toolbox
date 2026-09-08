@@ -195,9 +195,9 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     ).stdout
     expect(checked).toContain(`${RULE}: AHEAD/FORKED`)
     const hooked = runHook(f.proj, f.env, shipped.hook)
-    expect(hooked.context).toContain('Ahead/forked from the shipped content')
+    expect(hooked.context).toContain('ahead of v1.0.0')
     expect(hooked.context).toContain(`${RULE} (${target})`)
-    expect(hooked.context).not.toContain('Behind the shipped content')
+    expect(hooked.context).not.toContain('behind v1.0.0')
   })
 
   it('manual checker and hook both classify real project rules/wt content drift as behind and name its location', () => {
@@ -215,9 +215,9 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     ).stdout
     expect(checked).toContain(`${RULE}: STALE`)
     const hooked = runHook(f.proj, f.env, shipped.hook)
-    expect(hooked.context).toContain('Behind the shipped content')
+    expect(hooked.context).toContain('behind v1.0.0')
     expect(hooked.context).toContain(`${RULE} (${target})`)
-    expect(hooked.context).not.toContain('Ahead/forked')
+    expect(hooked.context).not.toContain('ahead of v1.0.0')
   })
 
   it('same-version shipped content drift is STALE, refreshes cleanly, and surfaces through the hook', () => {
@@ -237,7 +237,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(checked).toContain('content changed without a version change; no version range to show.')
 
     const hooked = runHook(f.proj, f.env, shipped.hook)
-    expect(hooked.context).toContain('Behind the shipped content')
+    expect(hooked.context).toContain('behind v1.0.0')
     expect(hooked.context).toContain(`${RULE} (${target})`)
 
     const refreshed = spawnSync(
@@ -247,6 +247,33 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     ).stdout
     expect(refreshed).toContain('REFRESHED')
     expect(readFileSync(join(target, RULE), 'utf8')).toContain('A SAME-VERSION SHIPPED FIX')
+  })
+
+  it('derives ahead from a newer copy body, not the installer warning word', () => {
+    const f = fixture('content-ahead')
+    const shipped = makeHookCopy()
+    const target = join(f.proj, '.claude', 'rules')
+    installInto(target, shipped.installer)
+    const body = readFileSync(join(shipped.rulesDir, RULE), 'utf8') + '\nA DECISION PRESENT ONLY IN THE NEWER COPY\n'
+    writeManagedRule(join(target, RULE), body, '1.0.0')
+
+    const hooked = runHook(f.proj, f.env, shipped.hook)
+    expect(hooked.context).toContain('ahead of v1.0.0')
+    expect(hooked.context).toContain('--set rules --install')
+  })
+
+  it('derives behind from a sentence missing from the copy body', () => {
+    const f = fixture('content-behind')
+    const shipped = makeHookCopy()
+    const target = join(f.proj, '.claude', 'rules')
+    installInto(target, shipped.installer)
+    const lines = readFileSync(join(shipped.rulesDir, RULE), 'utf8').split('\n')
+    const removed = lines.findIndex((line, index) => index > 0 && line.trim() !== '')
+    const body = [...lines.slice(0, removed), ...lines.slice(removed + 1)].join('\n')
+    writeManagedRule(join(target, RULE), body, '1.0.0')
+
+    const hooked = runHook(f.proj, f.env, shipped.hook)
+    expect(hooked.context).toContain('behind v1.0.0')
   })
 
   it('a genuinely un-migrated flat install is never double-counted or masked at the new location', () => {
@@ -262,7 +289,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     writeFileSync(p, `<!-- installed from workflow-toolbox v0.0.1 · content sha256:${fp} by the adopt skill -->\n\n${body}`)
     const r = runHook(f.proj, f.env)
     expect(r.stdout, 'must not be silent').not.toBe('')
-    expect(r.context).toContain('Behind the shipped content')
+    expect(r.context).toContain('behind v')
     expect(r.context).toContain(RULE)
   })
 
@@ -281,7 +308,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     writeFileSync(p, `<!-- installed from workflow-toolbox v0.0.1 · content sha256:${fp} by the adopt skill -->\n\n${body}`)
     const r = runHook(f.proj, f.env)
     expect(r.stdout, 'must not be silent').not.toBe('')
-    expect(r.context).toContain('Behind the shipped content')
+    expect(r.context).toContain('behind v')
     expect(r.context).toContain(RULE)
     expect(r.context).toContain('adopt')
   })
@@ -299,7 +326,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(r.context).not.toContain('just landed')
     expect(r.context).not.toContain('A push just landed and the adopted rule copies are now behind it')
     expect(r.context).toContain('A `git push` command just ran; this Bash PostToolUse hook cannot tell whether it landed.')
-    expect(r.context).toContain('Behind the shipped content')
+    expect(r.context).toContain('behind v')
     expect(r.context).toContain(RULE)
   })
 
@@ -341,7 +368,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(r.context).toContain('Locally modified')
     expect(r.context).toContain(RULE)
     expect(r.context.toLowerCase()).toContain('supported')
-    expect(r.context).not.toContain('Behind the shipped content')
+    expect(r.context).not.toContain('behind v')
     expect(r.context).not.toContain('NOT installed')
   })
 
