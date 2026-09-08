@@ -115,7 +115,16 @@ function scaffold(tag: string) {
     stateDir: join(state, 'wt-actionable'),
     subagentsDir: join(transcripts, sessionId, 'subagents'),
     payload: { hook_event_name: 'Stop', transcript_path: transcriptPath, session_id: sessionId, cwd },
-    env: { ...process.env, CLAUDE_CONFIG_DIR: undefined, CLAUDE_PLUGIN_DATA: undefined, HOME: home, XDG_STATE_HOME: state },
+    // Most hook tests do not exercise Linux process detection. Pin its explicit degraded mode so
+    // their result is decided only by the fixture, not by the runner's process tree.
+    env: {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: undefined,
+      CLAUDE_PLUGIN_DATA: undefined,
+      HOME: home,
+      XDG_STATE_HOME: state,
+      WT_ACTIONABLE_LANE_DETECTION_MODE: 'unsupported',
+    },
   }
 }
 
@@ -698,10 +707,18 @@ describe('wt-actionable-gate-hook', () => {
     expect(runHook(payload, env).code).toBe(0)
     const pattern = 'wt-actionable-test same-session lane'
     launchLane(pattern, cwd)
-    const running = runHook(payload, { ...env, WT_ACTIONABLE_LANE_PATTERNS: pattern })
+    const running = runHook(payload, {
+      ...env,
+      WT_ACTIONABLE_LANE_DETECTION_MODE: undefined,
+      WT_ACTIONABLE_LANE_PATTERNS: pattern,
+    })
     expect(running.code).toBe(0)
     expect(blockText(running)).toBe('')
-    const again = runHook(payload, { ...env, WT_ACTIONABLE_LANE_PATTERNS: 'wt-actionable-test no-match lane' })
+    const again = runHook(payload, {
+      ...env,
+      WT_ACTIONABLE_LANE_DETECTION_MODE: undefined,
+      WT_ACTIONABLE_LANE_PATTERNS: 'wt-actionable-test no-match lane',
+    })
     expect(again.code).toBe(0)
     expect(blockText(again)).toContain('Block 1 of 3')
   })
@@ -719,7 +736,11 @@ describe('wt-actionable-gate-hook', () => {
     })
     const pattern = 'wt-actionable-test blinded matcher lane'
     launchLane(pattern, cwd)
-    const r = runHook(payload, { ...env, WT_ACTIONABLE_LANE_PATTERNS: 'wt-actionable-test definitely-no-match lane' })
+    const r = runHook(payload, {
+      ...env,
+      WT_ACTIONABLE_LANE_DETECTION_MODE: undefined,
+      WT_ACTIONABLE_LANE_PATTERNS: 'wt-actionable-test definitely-no-match lane',
+    })
     expect(r.code).toBe(0)
     expect(blockText(r)).toContain('CARD-55 blinded matcher')
   })
@@ -737,7 +758,11 @@ describe('wt-actionable-gate-hook', () => {
     })
     const pattern = 'wt-actionable-test detached lane'
     launchDetachedLaneViaHelper(pattern, cwd)
-    const r = runHook(payload, { ...env, WT_ACTIONABLE_LANE_PATTERNS: pattern })
+    const r = runHook(payload, {
+      ...env,
+      WT_ACTIONABLE_LANE_DETECTION_MODE: undefined,
+      WT_ACTIONABLE_LANE_PATTERNS: pattern,
+    })
     expect(r.code).toBe(0)
     expect(blockText(r)).toContain('CARD-56 other session lane')
   })

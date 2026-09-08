@@ -12,6 +12,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Require a seam review and merged-tree gates when integrating parallel branches.
 
 ### Fixed
+- Make the actionability-gate hook tests independent of ambient Linux lane detection; test-only.
 - The plugin eval grader for the changelog skill now accepts a command wrapped over several lines;
   `.*` never crossed a newline, so a correct multi-line answer graded as "pattern not found".
 - `wt-actionable-gate-hook` now names whether a missing measurement needs its producer wired, is a
