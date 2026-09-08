@@ -10,6 +10,10 @@ import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
 const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
 
+async function loadConsentModules() {
+  return { resolveConsent, evaluateConsentGate }
+}
+
 function usage() {
   return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--timeout 5400] [--log <path>] [--variant <name>]'
 }
@@ -37,7 +41,7 @@ function parse(argv) {
   return out
 }
 
-function main() {
+async function main() {
   const worker = process.argv[2] === '--worker'
   const opts = parse(process.argv.slice(worker ? 3 : 2))
   if (opts.help) { process.stdout.write(`${usage()}\n`); return 0 }
@@ -47,7 +51,17 @@ function main() {
 
   // Invoke the same consent resolver and wording as the PreToolUse gate before a node wrapper
   // can bypass its text matcher.
-  const consent = evaluateConsentGate({ tool_input: { command: 'opencode run' }, cwd: opts.dir }, { resolveConsentImpl: resolveConsent })
+  let consentModules
+  try {
+    consentModules = await loadConsentModules()
+  } catch (error) {
+    process.stderr.write(`wt-lane: Refused: ${error instanceof Error ? error.message : String(error)}; refusing to launch.\n`)
+    return 1
+  }
+  const consent = consentModules.evaluateConsentGate(
+    { tool_input: { command: 'opencode run' }, cwd: opts.dir },
+    { resolveConsentImpl: consentModules.resolveConsent },
+  )
   if (!consent.silent) { process.stderr.write(`${consent.message}\n`); return 1 }
 
   if (!worker) {
@@ -80,4 +94,4 @@ function main() {
   return 0
 }
 
-process.exitCode = main()
+main().then((code) => { process.exitCode = code })

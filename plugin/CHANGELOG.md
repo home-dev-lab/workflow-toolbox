@@ -14,6 +14,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 - Mask secret-guard-tokenised values before guard-journal persistence
 - Return the bare unavailable marker when the verifier cannot run its Bash probe
+- Make adopted `wt-lane.mjs` import the installed canonical consent resolver and refuse when it cannot be found, rather than carrying a drift-prone inline copy.
 
 ### Added
 - Add adoptable SDLC engineering protocol rule

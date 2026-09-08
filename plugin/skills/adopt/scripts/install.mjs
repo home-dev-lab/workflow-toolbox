@@ -599,25 +599,41 @@ function itemContent(set, item, root) {
   if (!fs.existsSync(src)) fail(`${set.kind} source not found: ${src} — the ${set.kind} bundle (plugin/${set.srcDir}/) is out of sync`)
   const content = fs.readFileSync(src, 'utf8')
   if (set.kind !== 'scripts') return content
-  // The adopted launcher has no stable plugin-cache neighbour. Inline its small consent bridge
-  // while retaining plugin/bin/wt-lane.mjs as the single authored source.
+  // The adopted launcher has no stable plugin-cache neighbour. Resolve the installed plugin at
+  // launch time instead of copying consent logic, so a changed resolver cannot fail open here.
   return content
     .replace("import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'", `
-function resolveConsent(projectDir, env = process.env) {
+function pluginRoot(env = process.env) {
+  for (const candidate of [env.CLAUDE_PLUGIN_ROOT, env.WT_PLUGIN_ROOT]) {
+    if (typeof candidate === 'string' && candidate) return candidate
+  }
   const configDir = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), '.claude')
-  const read = (file) => { try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return null } }
-  const accountFile = path.join(configDir, 'settings.json')
-  const projectFile = path.join(projectDir, '.claude', 'settings.local.json')
-  const account = read(accountFile); const project = read(projectFile)
-  const accountValue = account?.env?.WT_EXECUTOR_LANE_CONSENT ?? (account?.pluginConfigs && Object.values(account.pluginConfigs).find((x) => x?.options?.executor_lane_consent === true)?.options?.executor_lane_consent)
-  const projectValue = project?.env?.WT_EXECUTOR_LANE_CONSENT
-  return { outcome: accountValue === 'true' || accountValue === true ? (projectValue === 'false' ? 'not_true' : 'true') : 'not_true' }
+  const registry = path.join(configDir, 'plugins', 'installed_plugins.json')
+  try {
+    const parsed = JSON.parse(readFileSync(registry, 'utf8'))
+    const plugins = parsed?.plugins && typeof parsed.plugins === 'object' ? parsed.plugins : parsed
+    const key = Object.keys(plugins).find((name) => name.startsWith('workflow-toolbox@'))
+    const entry = key ? plugins[key] : null
+    const installed = Array.isArray(entry) ? entry[0] : entry
+    if (typeof installed?.installPath === 'string' && installed.installPath) return installed.installPath
+  } catch { /* handled by the fail-closed caller */ }
+  return null
 }
-function evaluateConsentGate(payload, { resolveConsentImpl = resolveConsent } = {}) {
-  const consent = resolveConsentImpl(payload.cwd)
-  return consent.outcome === 'true' ? { silent: true } : { silent: false, message: 'Refused: this command routes work to the external executor lane, and consent is not given.' }
+
+async function loadAdoptedConsentModules() {
+  const root = pluginRoot()
+  if (!root) throw new Error('could not locate workflow-toolbox plugin root via CLAUDE_PLUGIN_ROOT, WT_PLUGIN_ROOT, or plugins/installed_plugins.json')
+  const resolver = path.join(root, 'bin', 'lib', 'lane-consent-check-core.mjs')
+  const gate = path.join(root, 'bin', 'lib', 'lane-consent-gate-core.mjs')
+  try {
+    const [{ resolveConsent }, { evaluateConsentGate }] = await Promise.all([import(pathToFileURL(resolver).href), import(pathToFileURL(gate).href)])
+    return { resolveConsent, evaluateConsentGate }
+  } catch {
+    throw new Error(\`could not load workflow-toolbox consent resolver from \${resolver} and \${gate}\`)
+  }
 }`)
-    .replace("import { appendFileSync, mkdirSync, openSync, existsSync, statSync } from 'node:fs'", "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, readFileSync } from 'node:fs'\nimport os from 'node:os'")
+    .replace("async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
+    .replace("import { appendFileSync, mkdirSync, openSync, existsSync, statSync } from 'node:fs'", "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, readFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
 }
 
 /** The shipped content's fingerprint, or null when the source cannot be read.
