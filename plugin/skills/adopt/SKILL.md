@@ -192,6 +192,7 @@ tree itself, instead of only in the `wt-` filename prefix nothing enforced:
 ├── machine-calibrations.md
 └── wt/                          ← the plugin's, adopted
     ├── wt-delegation-ladder.md
+    ├── wt-sdlc.md
     └── …
 ```
 

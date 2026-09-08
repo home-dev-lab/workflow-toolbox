@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, symlinkSync, unlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, symlinkSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -136,6 +136,13 @@ describe('adopt audit-overlap', () => {
     const res = run(d, ['--pairs-file', pairsFile])
     expect(res.status).toBe(1)
     expect(res.stdout).toContain('UNPAIRED wt-task-tracking.md: no pairing entry in')
+  })
+  it('declares every bundled rule in the adoption registry', () => {
+    const paired = new Set((JSON.parse(readFileSync(RULE_PAIRS, 'utf8')) as Array<{ shipped: string }>).map((pair) => pair.shipped))
+    const bundled = readdirSync(join(REPO_ROOT, 'plugin/rules')).filter((file) => file.endsWith('.md') && file !== 'README.md').sort()
+
+    expect(bundled).toContain('wt-sdlc.md')
+    expect([...paired].sort()).toEqual(bundled)
   })
   it('makes every file with no declared pair visible, but NEVER failing on its own — a project-local file (e.g. wt-check.md) must not block the gate forever (card #1828669977687753994)', () => {
     const d = mkDir()

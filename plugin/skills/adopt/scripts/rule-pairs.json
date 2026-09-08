@@ -20,6 +20,11 @@
     "partial": false
   },
   {
+    "user": "sdlc-interim.md",
+    "shipped": "wt-sdlc.md",
+    "partial": false
+  },
+  {
     "user": "proactive-decision-making.md",
     "shipped": "wt-proactive-decision-making.md",
     "partial": false
