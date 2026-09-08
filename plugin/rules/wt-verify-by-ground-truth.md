@@ -32,6 +32,8 @@ check that depends on recall.
 
 Enforced by `wt-merge-chain-guard-hook.mjs` (PreToolUse Bash: warns when `git merge` is chained with a gate or unclassified command through `&&`, `;`, `|`, `||`, or a newline; a diagnostic read is silent but journaled. It deliberately ignores a merge preceded by earlier commands and `git merge --abort/--continue/--quit` — run the merge alone, read its result, then gate). Rationale and field cases: `docs/wt/wt-verify-by-ground-truth.md` §Never chain a merge with its gates in one command.
 
+Enforced by `wt-piped-gate-exit-code-guard-hook.mjs` (PreToolUse Bash: warns, never blocks, when a control gate is piped and `$?` then reads the last pipeline element's code; capture instead with `command > file; echo EXIT=$? >> file`, or use `${pipestatus[1]}` on zsh).
+
 **Merging parallel branches requires THREE reviews: each branch, then their seam.** Hold sibling
 branches and merge them together. Before merging, compare their contracts by hand; branch gates
 validate each branch alone, not their seam. Run the merged tree's gates after the merge: they are
