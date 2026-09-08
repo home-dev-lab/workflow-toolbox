@@ -5,6 +5,16 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.173.0] - 2026-09-09
+
+### Release notes
+- Docs audit and coverage audit NOT run for this release (rituals suspended by the owner on 2026-09-03 until the thin-envelope campaign completes).
+- Cross-family review of the whole range (GPT lane, five lenses + refutation): the five HIGH and two MEDIUM findings are fixed in this release, each with a lock proven red first; six lower findings are deferred and listed on the release card.
+- Cross-platform verdicts for the two new plugin binaries: `wt-piped-gate-exit-code-guard-hook.mjs` parses the command text only (one `readFileSync`, no platform call) and behaves the same on Linux, macOS and Windows; `wt-opencode-verify.mjs` resolves the CLI with a POSIX `command -v` and a list of POSIX install paths, so on Windows it refuses with the legible `OPENCODE_UNAVAILABLE` marker unless `opencode` is reachable through those paths — it never returns a plausible verdict where it cannot run. Both read from source; Linux exercised, macOS and Windows not run.
+- The TypeScript pack's SDK runner is now a toolkit development utility, not a shipped file (see `docs/public/known-issues.md`); the pack stays experimental.
+- Plugin eval gate (`wt-plugin-eval-gate.mjs`, early-access flag on): 4/4 on the final run. Three runs on the same content: run 1 failed on a grader that could not match a line-wrapped command (fixed in this release), run 2 failed once on `opencode-verifier-unavailable` with a single haiku run that narrated instead of calling; the gate's single-run verdict is tracked as unstable (release card).
+- npm packages are NOT published by this release; pending changesets are released separately.
+
 ### Changed
 - Let the plugin eval gate track declared expected failures and reject malformed or expired expiry dates
 - Document `<project root>/.claude/worktrees/<name>` as the gitignored convention for new concurrent worktrees.
