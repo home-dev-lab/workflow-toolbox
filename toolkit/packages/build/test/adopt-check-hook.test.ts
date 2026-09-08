@@ -220,6 +220,35 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(hooked.context).not.toContain('Ahead/forked')
   })
 
+  it('same-version shipped content drift is STALE, refreshes cleanly, and surfaces through the hook', () => {
+    const f = fixture('same-version-content-drift')
+    const shipped = makeHookCopy()
+    const target = join(f.proj, '.claude', 'rules')
+    installInto(target, shipped.installer)
+    const changed = readFileSync(join(shipped.rulesDir, RULE), 'utf8') + '\nA SAME-VERSION SHIPPED FIX\n'
+    writeFileSync(join(shipped.rulesDir, RULE), changed)
+
+    const checked = spawnSync(
+      process.execPath,
+      [shipped.installer, '--check', '--set', 'rules', '--dir', target],
+      { encoding: 'utf8', env: f.env },
+    ).stdout
+    expect(checked).toContain(`${RULE}: STALE (content`)
+    expect(checked).toContain('content changed without a version change; no version range to show.')
+
+    const hooked = runHook(f.proj, f.env, shipped.hook)
+    expect(hooked.context).toContain('Behind the shipped content')
+    expect(hooked.context).toContain(`${RULE} (${target})`)
+
+    const refreshed = spawnSync(
+      process.execPath,
+      [shipped.installer, '--install', '--set', 'rules', '--dir', target],
+      { encoding: 'utf8', env: f.env },
+    ).stdout
+    expect(refreshed).toContain('REFRESHED')
+    expect(readFileSync(join(target, RULE), 'utf8')).toContain('A SAME-VERSION SHIPPED FIX')
+  })
+
   it('a genuinely un-migrated flat install is never double-counted or masked at the new location', () => {
     const f = fixture('unmigrated')
     const dir = join(f.proj, '.claude', 'rules')

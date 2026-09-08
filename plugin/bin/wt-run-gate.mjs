@@ -26,6 +26,7 @@
 //   node wt-run-gate.mjs --name typecheck --out-dir .claude/gate-logs \
 //     [--fail-pattern 'error TS\d'] -- pnpm typecheck
 //   node wt-run-gate.mjs --record typecheck -- pnpm typecheck
+//   node wt-run-gate.mjs --check <tree-dir> [--gate test,typecheck,lint]
 //
 // Exit code of THIS process = the gate's own exit code, unless the fail-pattern mismatch check
 // trips (forced to 1 in that case). Either way, `<out-dir>/<name>.exit` holds the ground truth —
@@ -36,7 +37,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { handleHelpFlag } from './lib/cli-help.mjs'
-import { recordPath, repoRoot, treeSignature, writeGateRecord } from './lib/gate-evidence.mjs'
+import { readGateRecord, recordPath, repoRoot, treeSignature, writeGateRecord } from './lib/gate-evidence.mjs'
 
 const HELP = `wt-run-gate — run ONE gate command and make its exit code non-bypassable: writes
 the gate's real exit code to <out-dir>/<name>.exit and its combined output to <name>.log, with
@@ -46,10 +47,12 @@ Usage:
   node wt-run-gate.mjs --name typecheck --out-dir .claude/gate-logs \\
     [--fail-pattern 'error TS\\d'] -- pnpm typecheck
   node wt-run-gate.mjs --record typecheck -- pnpm typecheck
+  node wt-run-gate.mjs --check <tree-dir> [--gate test,typecheck,lint]
 
 Exit code of this process = the gate's own exit code (forced to 1 if --fail-pattern matches the
 log despite exit 0). --record additionally writes the named gate's exit, finish time, and exact
-tree signature to the guard-journal state directory.
+tree signature to the guard-journal state directory. --check reads records for a tree without
+running a command and exits 0 only when every requested gate is green for its current signature.
 `
 
 function fail(msg) {
@@ -63,16 +66,30 @@ function parseArgs(argv) {
   const dashDashIndex = argv.indexOf('--')
   const ownArgs = dashDashIndex === -1 ? argv : argv.slice(0, dashDashIndex)
   handleHelpFlag(ownArgs, HELP)
-  const args = { name: null, record: null, outDir: '.', outDirExplicit: false, failPattern: null, cmd: [] }
+  const args = { name: null, record: null, check: null, gates: null, outDir: '.', outDirExplicit: false, failPattern: null, cmd: [] }
   let i = 0
   for (; i < argv.length; i++) {
     if (argv[i] === '--name') args.name = argv[++i]
     else if (argv[i] === '--record') args.record = argv[++i]
+    else if (argv[i] === '--check') args.check = argv[++i]
+    else if (argv[i] === '--gate') args.gates = argv[++i]
     else if (argv[i] === '--out-dir') { args.outDir = argv[++i]; args.outDirExplicit = true }
     else if (argv[i] === '--fail-pattern') args.failPattern = argv[++i]
     else if (argv[i] === '--') { args.cmd = argv.slice(i + 1); break }
     else fail(`unknown flag '${argv[i]}' (did you forget '--' before the command?)`)
   }
+  if (args.check) {
+    if (args.name || args.record || args.outDirExplicit || args.failPattern || args.cmd.length > 0) {
+      fail('--check <tree-dir> cannot be combined with gate-run options')
+    }
+    const gates = (args.gates ?? 'test,typecheck,lint').split(',')
+    if (gates.length === 0 || gates.some((gate) => !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(gate))) {
+      fail('--gate must be a comma-separated list of plain gate names')
+    }
+    args.gates = gates
+    return args
+  }
+  if (args.gates) fail('--gate is only valid with --check <tree-dir>')
   if (!args.name && !args.record) fail('--name <label> or --record <gate> is required')
   if (!args.name) args.name = args.record
   // `--name` becomes a bare path.join() segment for the .exit/.log files below — an
@@ -89,8 +106,48 @@ function parseArgs(argv) {
   return args
 }
 
+function checkGateRecords(treeDir, gates) {
+  let root
+  let signature
+  try {
+    root = repoRoot(treeDir)
+    signature = treeSignature(root)
+  } catch (err) {
+    fail(`cannot inspect tree '${treeDir}' - ${err.message}`)
+  }
+
+  let allGreen = true
+  for (const name of gates) {
+    const file = recordPath(root, name)
+    let record
+    try {
+      fs.accessSync(file, fs.constants.R_OK)
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        process.stdout.write(`${name}: missing\n`)
+        allGreen = false
+        continue
+      }
+      fail(`cannot read record directory '${path.dirname(file)}' - ${err.message}`)
+    }
+    record = readGateRecord(root, name)
+
+    if (!record || record.tree !== signature) {
+      process.stdout.write(`${name}: missing\n`)
+      allGreen = false
+    } else if (record.exit === 0) {
+      process.stdout.write(`${name}: green ${record.tree} ${record.finishedAt}\n`)
+    } else {
+      process.stdout.write(`${name}: red ${record.tree} ${record.finishedAt} exit=${record.exit}\n`)
+      allGreen = false
+    }
+  }
+  process.exit(allGreen ? 0 : 1)
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2))
+  if (args.check) checkGateRecords(args.check, args.gates)
   // Record-mode artifacts must not become untracked files in the checked tree: a later gate
   // would otherwise make an earlier record stale merely by writing its own log.
   const root = args.record ? repoRoot(process.cwd()) : null

@@ -35,6 +35,7 @@
 // trace.
 
 import { runFailOpenHookAsync } from './lib/fail-open-trace.mjs'
+import { main } from './wt-adopt-check-hook.mjs'
 
 const SELF = 'wt-adopt-rules-check-hook.mjs'
 
@@ -44,5 +45,5 @@ process.stderr.write(
 )
 
 await runFailOpenHookAsync(SELF, async () => {
-  await import('./wt-adopt-check-hook.mjs')
+  main()
 })

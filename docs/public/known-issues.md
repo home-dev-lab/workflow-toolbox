@@ -12,6 +12,23 @@ Only direct Anthropic sessions and configured CLI Proxy origins have a known
 quota source; reporting a Claude subscription window for another provider would
 be false. The watcher stays alive and emits a degraded notice in that case.
 
+## Lifecycle v1
+
+The pilot template's Discovery block and LITE/FULL routing are mechanical: the block is carried
+across phases, risk and labeled threshold signals force FULL, and loop bounds have written exits.
+The ambiguous remainder still requires one strong-tier judgment, with uncertainty routed upward to
+FULL; this increment deliberately adds neither a runner nor a second state tracker.
+
+## Findings disposition probation
+
+`node plugin/bin/wt-report-findings-check.mjs <report>` checks that a closing report has a
+`## Findings` section containing either `None.` or a Markdown table with one allowed disposition
+per row, plus non-empty `## Implemented`, `## Verification`, `## Independent Review`,
+`## Decisions`, and `## Remaining Risks` sections; pass `--no-shape` for a non-closing report.
+It prints its active regime with every result. The checker warns through 2026-09-13 and blocks on
+2026-09-14; set `WT_FINDINGS_DISPOSITION_MODE=block` to switch early. The
+`WT_FINDINGS_DISPOSITION_NOW` clock override exists for deterministic tests.
+
 ## Open items
 
 | # | Issue | Impact | Status |
@@ -43,6 +60,22 @@ be false. The watcher stays alive and emits a degraded notice in that case.
 
 ## External limitations — mitigated, not fixable here
 
+### Plugin eval suite is early access
+
+`claude plugin eval` is an early-access Claude Code surface. The release-only
+`node plugin/bin/wt-plugin-eval-gate.mjs` runs four one-run haiku cases when
+`CLAUDE_CODE_WALNUT_SPIRE=1`: the external-lane launcher, the unavailable
+opencode-verifier marker, the leaf-readonly tool fence, and changelog skill
+invocation. It is never part of `pnpm test`, because each case starts a Claude
+agent and LLM graders also spend model calls. The initial measured single-case
+cost was 19 seconds, three turns, and $0.0546244 for the agent plus $0.00203
+for the three haiku judge votes; release runs use one agent run per case.
+
+When the early-access flag is absent, the gate exits 0 and prints `plugin eval:
+not run (early access flag absent)`. That is a skipped paid check, not evidence
+that the suite passed. Re-check the CLI surface after upgrades before relying on
+the gate.
+
 | # | Limitation | Mitigation |
 |---|---|---|
 | A | **The Workflow tool is a research preview**; part of the surface the toolkit relies on (`isolation`, `label`, `budget`, the determinism bans, the 512 KB cap) is verified against the binary, not officially documented. An upgrade can change it. | Firewalled behind `@workflow-toolbox/runtime` — exactly one package changes. Re-verify after upgrades; the `upgrade-canary` skill does exactly this. |
@@ -56,6 +89,20 @@ be false. The watcher stays alive and emits a degraded notice in that case.
 
 Hooks and monitors shipped under `plugin/bin/` that are not already covered by a section above:
 what fires them, what they check, and their output/exit contract.
+
+### `wt-changelog-entry.mjs` — changelog and changeset writer
+
+The `changelog` skill runs `node plugin/bin/wt-changelog-entry.mjs` after a plugin or published
+package-source change and before a commit. The writer adds one idempotent entry to
+`plugin/CHANGELOG.md` under `## [Unreleased]` in `Added`, `Changed`, or `Fixed`; `--dry-run`
+reports without writing. For a touched `toolkit/packages/<package>/src` path, it reads that
+package's `package.json` and creates a patch changeset only when `publishConfig` is present and
+the package is not private. This produces the records accepted by the release-record guard and
+the changeset gate; it does not alter either guard's decision.
+
+It refuses a requested version heading outside `main`: versions are bumped on `main` only. It
+removes a 19-digit private tracker id from the supplied summary and reports the removal, so callers
+must use meaningful public wording rather than an internal identifier.
 
 ### `wt-adopt-check-hook.mjs` — rule-adoption state check (SessionStart + PostToolUse)
 
@@ -112,6 +159,10 @@ Fires only on a command that actually invokes an external executor lane (`openco
 ### `wt-lane-consent-gate-hook.mjs` — external-lane consent gate (PreToolUse on Bash)
 
 Fires only on a command that actually invokes an external executor lane (`opencode run`, `codex exec` — the same quote/comment-stripped detection as `wt-lane-saturation-hook.mjs`) and refuses it (`permissionDecision:'deny'`) unless the `WT_EXECUTOR_LANE_CONSENT` switch resolves to consented for the current account/project pair. It is the enforcement counterpart to `wt-lane-consent-check-hook.mjs`: that hook only warns at session start when auto-loaded rules disagree with the switch, and neither the lane-verifier agents nor the pilot-wave skill's own prose ever consulted the switch at the moment a call actually runs — an instruction a model can silently skip is not a gate. This hook is the gate: it inspects the account settings ceiling, then the project settings narrowing, and denies unless both resolve to `"true"`/no-narrowing, naming which level refused. **It fails CLOSED, not open** — the deliberate exception among this file's guards: an unreadable or malformed settings file is treated exactly like "not consented" rather than silently granting the call, and the hook's own internal errors resolve to a denial rather than an allow, because a consent switch that fails open on error grants permission it was never given. It never widens what a project's rules describe as policy — it only makes the existing opt-in switch enforceable at the one place it previously had no effect.
+
+### `wt-lane.mjs` — detached external-lane launcher
+
+Starts `opencode run` in a detached supervisor with closed stdin, explicit `--dir`, `--auto`, a wall-clock timeout, and a log ending in `EXIT=<code>` (`124` on timeout). It invokes the same consent gate before launch, while the consent and saturation hooks recognize `node .../wt-lane.mjs`. Adopt it to `<configDir>/scripts/wt-lane.mjs` for a stable allow-rule path; the bundled plugin-cache path changes with plugin versions. Activity observes the actual `opencode` process by exact name and attributes it through its worktree.
 
 ### `wt-env-prerequisite-drift-hook.mjs` — post-adoption environment drift light (SessionStart)
 
@@ -391,6 +442,8 @@ It does not check the changelog — `wt-plugin-release-record-guard-hook.mjs` ke
 ### `wt-gate-evidence-guard-hook.mjs` — declared gate-evidence guard (PreToolUse on Bash)
 
 In a repository that declares `.wt-gates.json`, a real `git commit` touching one of its declared paths requires a green record for every declared gate. `wt-run-gate.mjs --record <name> -- <command>` writes each record after the command exits, including the command exit code, finish time, and a SHA-256 signature of `HEAD`, staged and unstaged diffs, and sorted untracked files. A record is stale if its signature differs or a staged file was modified after it finished, so a gate cannot accidentally certify a later tree.
+
+`wt-run-gate.mjs --check <tree-dir> [--gate name,...]` reads those records without running a command and reports green only when every requested record has that tree's current signature.
 
 The guard is warn-only for its first 19 journalled firings, naming MISSING, RED, or STALE records and exact wrapper commands; the twentieth refuses. `gates: skipped — <reason>` in `-m`, `-F`, or a heredoc message explicitly allows the commit and is journalled. It is silent outside a declaring repository, for non-declared staged paths, merges, and `--amend` commits with no staged change. It runs no gates itself and therefore stays within the hook timeout.
 

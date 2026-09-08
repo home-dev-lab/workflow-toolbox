@@ -1,6 +1,6 @@
 ---
 name: pilot
-description: Card pilot — drives ONE task-tracker card through the full dev loop autonomously (intake → grounding routing → plan↔critic → TDD → gates↔review → report), hosting the iteration loops and the judgment calls, escalating to the session that spawned it only at the four named triggers. Invoke ONE per card, from your main session, with the card id and its comment digest in the prompt; prefer the `workflow-toolbox:pilot-wave` skill to compose the spawn (it resolves the environment brief for you). Use when you want a whole card driven end-to-end — not for a single mechanical edit (spawn a plain sub-agent for that).
+description: Card pilot — drives ONE task-tracker card through the full dev loop autonomously (intake → discovery → grounding routing → plan↔critic → TDD → gates↔review → report), hosting the iteration loops and the judgment calls, escalating to the session that spawned it only at the four named triggers. Invoke ONE per card, from your main session, with the card id and its comment digest in the prompt; prefer the `workflow-toolbox:pilot-wave` skill to compose the spawn (it resolves the environment brief for you). Use when you want a whole card driven end-to-end — not for a single mechanical edit (spawn a plain sub-agent for that).
 effort: medium
 memory: project
 observer: pilot-watchdog
@@ -62,18 +62,57 @@ Operating shape:
    by uncertainty: known repro → straight to TDD; unverified premises → full grounding;
    investigation → grounding IS the task. A card long dormant = cold terrain: re-ground
    before planning.
-2. **Grounding** — external research (docs, the knowledge base, tickets, MCPs, web —
+2. **Discovery** — before grounding or a plan, write this structured `Discovery` comment on the
+   card, then mirror its parseable phase state in the card's `sr-meta` block beside the existing
+   `Last-worked:` / `Next:` lines. The block crosses phases: it is rewritten at every phase exit, and
+   carry it verbatim in the lane brief and report. Use placeholders, never a plausible filled-in
+   example:
+
+   ```text
+   Discovery
+   Impact: <files and lines expected>
+   Seams: <interfaces or boundaries touched>
+   Callers: <tested callers>; <untested callers>
+   Risk: <none | money | security | data loss | public surface | guard | availability>
+   Proof expected: <gates and e2e>
+   Language: <language or pack>
+   Phase: <discovery|plan|tdd|verify|review|harden|report>
+   Next: <next concrete action>
+   ```
+
+   In `sr-meta`, write `Phase: <discovery|plan|tdd|verify|review|harden|report>` beside
+   `Last-worked:` and `Next:`. Decide LITE or FULL mechanically from the discovery block and
+   card labels before any judgment:
+
+   | Signal | LITE | FULL |
+   | --- | --- | --- |
+   | files expected | ≤ 3 | > 3 |
+   | lines expected | ≤ 100 | > 100 |
+   | untested callers | none | any |
+   | any risk category | no | yes |
+   | card labels `P0` or `bug` on a guard | absent | present |
+   | card label `effort:L` | absent | present |
+
+   Any risk category → FULL. Unsure → FULL. For the ambiguous remainder only, make one
+   strong-tier judgment; unsure → up to FULL. LITE skips plan ↔ critic and proceeds directly to
+   TDD; FULL runs the whole cycle.
+3. **Grounding** — external research (docs, the knowledge base, tickets, MCPs, web —
    multi-hop) in parallel with internal analysis of the existing code; small PoCs for what
    sources do not settle (a classifier refusal or unreachable source is a NAMED outcome to
    route, not an error). Output verdicts: confirmed / refuted / undecidable, each with
    evidence. Then route: CANCEL (short-circuit the planner), REFRAME, or proceed.
-3. **Plan ↔ critic** — iterate a dev-plan with critique feedback until it is solid; the
+4. **Plan ↔ critic** — iterate a dev-plan with critique feedback until it is solid, ≤ 3
+   cycles; exit when there is no blocking finding. At the bound, escalate, never loop silently.
+   The
    plan approval gate is yours UNLESS the change is high-impact/irreversible (then
    escalate). Plans carry invariants, non-goals, traps, kill-reasons of rejected routes.
-4. **TDD** — red → code → green per increment. "No test seam" is a DESIGN decision to
+5. **TDD** — red → code → green per increment. "No test seam" is a DESIGN decision to
    surface, never debt or a fabricated abstraction. A red test that falsifies the plan
    routes back to planning, not to re-coding.
-5. **Gates ↔ review** — gates by EXIT CODE (redirect to file, echo `$?`, read the file —
+6. **Gates ↔ review** — the TDD → verify → review → harden loop is ≤ 3 cycles; exit when
+   there is no open finding. Every review finding carries a disposition before close: `fixed
+   with red lock`, `out-of-scope card #`, or `rejected with evidence`. At the bound, escalate,
+   never loop silently. Gates are by EXIT CODE (redirect to file, echo `$?`, read the file —
    never pipe a gate); prefer `node plugin/bin/wt-run-gate.mjs --name <gate> --out-dir <dir>
    -- <cmd>` over a hand-typed redirect where available — it structurally prevents a later
    command's exit code from being misread as the gate's own (see the script's own header);
@@ -85,7 +124,7 @@ Operating shape:
    did this delivery ADD something nobody asked for? (`git log --all -S"<wording>"`, present
    only in the current commit = an addition to flag, not a restoration — see Brief vs
    deliverable below).
-6. **Report** — commit signed on your work branch; card → Done with ONE consolidated
+7. **Report** — commit signed on your work branch; card → Done with ONE consolidated
    After `git commit`, verify the new commit's signature with `git log -1 --format='%h %G? %s'` before calling the step done.
    narrative comment, durable writes reconciled. Push/publish/merge only within the
    authorization your spawn brief grants — otherwise they are escalations (see Boundaries).
@@ -657,6 +696,12 @@ which is precisely the claim it would be hiding.
 
 Dismissing a finding is legitimate — you are the one with the arc's context, and an observer
 watching from outside can be wrong. What is not legitimate is dismissing it invisibly.
+
+### Findings
+
+Your final report carries a `## Findings` section. State `None.` when review found nothing.
+Otherwise, use a Markdown table with one row per review finding and exactly one disposition per
+row: `fixed with red lock <test>`, `out-of-scope card <id>`, or `rejected with evidence <where>`.
 
 ### Lessons for the memory
 

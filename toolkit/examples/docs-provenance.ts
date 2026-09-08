@@ -51,6 +51,21 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-changelog-entry.mjs',
+    status: 'mapped',
+    reason: 'The changelog skill and known-issues document this deterministic Unreleased-entry and changeset writer.',
+  },
+  {
+    script: 'plugin/bin/wt-plugin-eval-gate.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this release-only early-access eval gate, its covered contracts, and its honest skip output.',
+  },
+  {
+    script: 'plugin/bin/wt-lane.mjs',
+    status: 'mapped',
+    reason: 'README, known-issues, and the external-lane skill document the stable adopted launcher and lifecycle contract.',
+  },
+  {
     script: 'plugin/bin/wt-actionable-gate-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents the shipped Stop gate and its snapshot contract.',
@@ -275,6 +290,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Pilot docs instruct operators to use this non-bypassable gate runner for repo gates.',
   },
   {
+    script: 'plugin/bin/wt-report-findings-check.mjs',
+    status: 'mapped',
+    reason: 'Pilot and lesson-harvest docs describe this closing-report Findings disposition checker and its probation mode.',
+  },
+  {
     script: 'plugin/bin/wt-observer-pairing-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this PostToolUse observer-pairing reporter under Shipped Hooks, Guards & Monitors.',
@@ -484,6 +504,16 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     ],
   },
   {
+    // The deterministic release-record writer is described by its invocation skill
+    // and its public limitation/format contract.
+    sources: ['plugin/bin/wt-changelog-entry.mjs', 'plugin/skills/changelog/'],
+    docs: ['plugin/skills/changelog/SKILL.md', 'docs/public/known-issues.md'],
+  },
+  {
+    sources: ['plugin/bin/wt-plugin-eval-gate.mjs', 'plugin/evals/'],
+    docs: ['docs/public/known-issues.md'],
+  },
+  {
     // The thin opencode envelope script plus its registered agent definitions:
     // authoring docs teach when/how to route to it, debugger docs teach how to
     // read the manifest, answer files, and per-task logs after a run.
@@ -496,6 +526,10 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/skills/workflow-composer/references/model-and-agent-routing.md',
       'plugin/skills/workflow-debugger/SKILL.md',
     ],
+  },
+  {
+    sources: ['plugin/bin/wt-lane.mjs', 'plugin/skills/external-lane/'],
+    docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
   },
   {
     // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer
@@ -705,6 +739,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     // Pilot operators are instructed to run these helper CLIs/guards directly.
     sources: [
       'plugin/bin/wt-run-gate.mjs',
+      'plugin/bin/wt-report-findings-check.mjs',
       'plugin/bin/wt-push-scope-check.mjs',
       'plugin/bin/wt-pilot-guard-hook.mjs',
       'plugin/bin/wt-pilot-card-reconcile.mjs',
@@ -717,6 +752,8 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/agent-templates/pilot-orchestrator.md',
       'plugin/launch-agents/agents/pilot.md',
       'plugin/launch-agents/agents/pilot-orchestrator.md',
+      'plugin/skills/lesson-harvest/SKILL.md',
+      'docs/public/known-issues.md',
     ],
   },
   {

@@ -5,6 +5,24 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- Add an opt-in TypeScript development pack with TDD, gate, and SDK review guidance
+- wt-lane launcher accepts --variant <name> and passes it to opencode (effort axis); a malformed name is refused
+- Require the five SDLC closing-report sections in the findings checker.
+- Add read-only gate-record status checks
+- Add warn-only Findings disposition report checker
+- Add release-only plugin eval gate
+- Add the changelog skill for deterministic release records
+- `wt-lane.mjs`: a stable-path adoptable detached external-lane launcher and the `external-lane` skill.
+
+### Fixed
+- adopt --check detects shipped content changes under an unchanged version
+- `opencode-verifier` now runs the CLI as the bare word `opencode` whenever `command -v opencode` resolved it (`timeout 570 opencode run …`), so a narrow `Bash(timeout 570 opencode run:*)` allow rule can cover the verifier without the auto-mode classifier; the `"$BIN"` form is kept only for a binary found by the installer-path scan, which no allow rule can cover.
+- The quota watcher now resolves the session route before polling. Configured CLI Proxy sessions report the bound account's normalized windows; unknown non-Anthropic routes stay explicitly degraded and never fall back to the Claude quota probe.
+
+### Changed
+- Make the pilot lifecycle discovery-led with mechanical LITE/FULL routing and bounded exits
+
 ## [0.171.0] - 2026-09-07
 
 ### Added

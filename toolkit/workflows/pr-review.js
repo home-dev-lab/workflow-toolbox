@@ -2256,6 +2256,16 @@ ${renderClaim(claim)}`;
       ]
     },
     {
+      // The deterministic release-record writer is described by its invocation skill
+      // and its public limitation/format contract.
+      sources: ["plugin/bin/wt-changelog-entry.mjs", "plugin/skills/changelog/"],
+      docs: ["plugin/skills/changelog/SKILL.md", "docs/public/known-issues.md"]
+    },
+    {
+      sources: ["plugin/bin/wt-plugin-eval-gate.mjs", "plugin/evals/"],
+      docs: ["docs/public/known-issues.md"]
+    },
+    {
       // The thin opencode envelope script plus its registered agent definitions:
       // authoring docs teach when/how to route to it, debugger docs teach how to
       // read the manifest, answer files, and per-task logs after a run.
@@ -2268,6 +2278,10 @@ ${renderClaim(claim)}`;
         "plugin/skills/workflow-composer/references/model-and-agent-routing.md",
         "plugin/skills/workflow-debugger/SKILL.md"
       ]
+    },
+    {
+      sources: ["plugin/bin/wt-lane.mjs", "plugin/skills/external-lane/"],
+      docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
     },
     {
       // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer
@@ -2477,6 +2491,7 @@ ${renderClaim(claim)}`;
       // Pilot operators are instructed to run these helper CLIs/guards directly.
       sources: [
         "plugin/bin/wt-run-gate.mjs",
+        "plugin/bin/wt-report-findings-check.mjs",
         "plugin/bin/wt-push-scope-check.mjs",
         "plugin/bin/wt-pilot-guard-hook.mjs",
         "plugin/bin/wt-pilot-card-reconcile.mjs",
@@ -2488,7 +2503,9 @@ ${renderClaim(claim)}`;
         "plugin/agent-templates/pilot.md",
         "plugin/agent-templates/pilot-orchestrator.md",
         "plugin/launch-agents/agents/pilot.md",
-        "plugin/launch-agents/agents/pilot-orchestrator.md"
+        "plugin/launch-agents/agents/pilot-orchestrator.md",
+        "plugin/skills/lesson-harvest/SKILL.md",
+        "docs/public/known-issues.md"
       ]
     },
     {

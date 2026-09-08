@@ -45,10 +45,18 @@ Before harvesting a delegation report, run `pnpm wt:report-lens <report-file>` f
 ```bash
 node plugin/skills/lesson-harvest/scripts/harvest-lessons.mjs <report.md>            # human-readable
 node plugin/skills/lesson-harvest/scripts/harvest-lessons.mjs <report.md> --json     # machine-readable
+node plugin/bin/wt-report-findings-check.mjs <report.md>                              # Findings dispositions + closing-report shape
 ```
 
 Exit codes: `0` section found (with or without lessons) · `1` the file could not be read ·
 `2` the report has no such section at all.
+
+The Findings checker prints its row count, missing-disposition count, active mode, and probation
+date. It also requires non-empty Implemented, Verification, Independent Review, Decisions, and
+Remaining Risks sections, unless `--no-shape` marks a non-closing report. It warns by default
+until 2026-09-14; set `WT_FINDINGS_DISPOSITION_MODE=block` to block early. From that date it
+blocks missing Findings sections, rows without exactly one allowed disposition, and missing or
+empty required closing-report sections.
 
 Run it once per closed card's report, at the moment the session integrates that card — not on
 every report indiscriminately, and not as a substitute for the session-level checkpoint, which

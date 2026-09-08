@@ -165,7 +165,8 @@ unless the report states which one it was.
    backgrounded work, it ALSO states the async-wait discipline explicitly (block in-turn with
    a hard cap; never arm-and-yield on a self-owned watcher) — a pilot brief that authorizes a
    lane without this is the exact incomplete-brief shape that has already produced a silently
-   dormant delegate.
+   dormant delegate. On resumption, read the pilot's latest Discovery block first: its `Phase:`
+   and `Next:` state identifies the phase to continue and the next concrete action.
 
    Immediately after each `Agent` call returns, before anything else, `SendMessage` the
    newly-spawned pilot one line: `LIVENESS_AGENT_ID: <raw id from the Agent tool's return
@@ -242,8 +243,9 @@ unless the report states which one it was.
    working — reply promptly (confirm, or add the constraint it lacked); it integrates your
    reply without restarting.
 9. **Integrate** — sequential re-integration of worktrees; regenerate generated artifacts
-   on the merged tree (never textual-merge them); gates green on the MERGED tree before
-   any push or deployment.
+    on the merged tree (never textual-merge them); gates green on the MERGED tree before
+    any push or deployment. Run `node plugin/bin/wt-report-findings-check.mjs <pilot-report>`
+    on every pilot report at integration.
 10. **Report** — ONE consolidated wave report file (named per the *File-report contract*
    naming constraint below) + a one-line SendMessage to the main session. Verify each pilot left its card's narrative as one consolidated comment and its
    board state true. **Name, per card, which lane or tier carried the IMPLEMENTATION and

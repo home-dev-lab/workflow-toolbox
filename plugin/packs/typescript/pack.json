@@ -1,0 +1,18 @@
+{
+  "language": "typescript",
+  "triggers": {
+    "extensions": [".ts", ".tsx"]
+  },
+  "rules": [
+    "tdd-vitest.md",
+    "lint-typecheck-build.md"
+  ],
+  "skills": [
+    "tdd-red-green",
+    "lint-typecheck-build"
+  ],
+  "agents": [
+    "critic.md",
+    "reviewer.md"
+  ]
+}

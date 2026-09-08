@@ -17,7 +17,7 @@
 // one in and showing it has no effect on the captured .exit file.)
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -35,12 +35,32 @@ function mkDir(): string {
   dirs.push(d)
   return d
 }
-function run(args: string[]) {
-  const res = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' })
+function run(args: string[], options: { cwd?: string, env?: NodeJS.ProcessEnv } = {}) {
+  const res = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', ...options })
   return { ...res, out: (res.stdout ?? '') + (res.stderr ?? '') }
 }
 function exitFileContents(dir: string, name: string): string {
   return readFileSync(join(dir, `${name}.exit`), 'utf8').trim()
+}
+
+function gateRepo() {
+  const root = mkDir()
+  const state = mkDir()
+  const git = (...args: string[]) => {
+    const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } })
+    if (result.status !== 0) throw new Error(result.stderr)
+  }
+  mkdirSync(join(root, 'plugin'), { recursive: true })
+  writeFileSync(join(root, 'plugin', 'thing.mjs'), '// base\n')
+  git('init', '-q')
+  git('add', '.')
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'base')
+  return { root, env: { ...process.env, WT_GUARD_JOURNAL_DIR: state } }
+}
+
+function recordGate(root: string, env: NodeJS.ProcessEnv, name: string, exit = 0) {
+  const result = run(['--record', name, '--', process.execPath, '-e', `process.exit(${exit})`], { cwd: root, env })
+  expect(result.status).toBe(exit)
 }
 
 describe('wt-run-gate — the exit code written is the GATE\'s own, never a wrapper\'s', () => {
@@ -168,5 +188,54 @@ describe('wt-run-gate — the exit code written is the GATE\'s own, never a wrap
     const res = run(['--name', 'g', '--out-dir', d, '--', process.execPath, '-e', 'process.exit(0)'])
     expect(res.status).toBe(0)
     expect(existsSync(join(d, 'g.exit'))).toBe(true)
+  })
+})
+
+describe('wt-run-gate --check', () => {
+  it('reports the three default gates green for a fixture tree with matching records', () => {
+    const { root, env } = gateRepo()
+    for (const gate of ['test', 'typecheck', 'lint']) recordGate(root, env, gate)
+
+    const result = run(['--check', root], { env })
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toMatch(/^test: green [a-f0-9]{64} .+\ntypecheck: green [a-f0-9]{64} .+\nlint: green [a-f0-9]{64} .+\n$/)
+  })
+
+  it('reports a matching non-zero record red with its exit code', () => {
+    const { root, env } = gateRepo()
+    recordGate(root, env, 'test', 1)
+
+    const result = run(['--check', root, '--gate', 'test'], { env })
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toMatch(/^test: red [a-f0-9]{64} .+ exit=1\n$/)
+  })
+
+  it('reports an absent requested record missing', () => {
+    const { root, env } = gateRepo()
+
+    const result = run(['--check', root, '--gate', 'test'], { env })
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toBe('test: missing\n')
+  })
+
+  it('reports a record made for another tree signature missing', () => {
+    const { root, env } = gateRepo()
+    recordGate(root, env, 'test')
+    writeFileSync(join(root, 'plugin', 'thing.mjs'), '// changed after gate\n')
+
+    const result = run(['--check', root, '--gate', 'test'], { env })
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toBe('test: missing\n')
+  })
+
+  it('returns a caller error for a tree directory outside a Git repository', () => {
+    const result = run(['--check', mkDir()])
+
+    expect(result.status).toBe(2)
+    expect(result.out).toContain('wt-run-gate:')
   })
 })
