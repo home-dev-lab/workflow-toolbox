@@ -19,6 +19,13 @@ across phases, risk and labeled threshold signals force FULL, and loop bounds ha
 The ambiguous remainder still requires one strong-tier judgment, with uncertainty routed upward to
 FULL; this increment deliberately adds neither a runner nor a second state tracker.
 
+## Secret guard masking
+
+Guard-journal masking compares values against the secret guard's salted hashes before persistence,
+including values embedded in structured text. The salt is not a secrecy boundary: a reader with the
+store can still make offline guesses for low-entropy values. Use high-entropy secrets and treat the
+store as sensitive local state.
+
 ## Findings disposition probation
 
 `node plugin/bin/wt-report-findings-check.mjs <report>` checks that a closing report has a

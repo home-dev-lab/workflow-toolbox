@@ -23,6 +23,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   fresh non-terminal `.lane/run.log` as in-flight external lane work. A terminal `EXIT=<n>` log and
   a merely live process do not suppress the gate.
 - Mask secret-guard-tokenised values before guard-journal persistence
+- Mask secret-guard-tokenised values when embedded in guard-journal fields
 - Return the bare unavailable marker when the verifier cannot run its Bash probe
 - Make adopted `wt-lane.mjs` import the installed canonical consent resolver and refuse when it cannot be found, rather than carrying a drift-prone inline copy.
 

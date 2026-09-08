@@ -114,6 +114,43 @@ describe('guard-journal — recordGuardEvent', () => {
     }
   })
 
+  it('RED: masks stored secrets embedded in punctuation-delimited journal fields', () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'wt-secret-store-test-'))
+    const short = 's3cr3t'
+    const first = 'synthetic-token-value-123456789'
+    const second = 'another-token-value-987654321'
+    secretStore(configDir, 'wt-secret-guard.json', short, 'masked-short')
+    try {
+      const storePath = join(configDir, 'plugins', 'store', 'wt-secret-guard.json')
+      const store = JSON.parse(readFileSync(storePath, 'utf8'))
+      store.detections.entries.push(
+        { token: 'masked-first', sha256: createHash('sha256').update(`${store.salt}:${first}`).digest('hex') },
+        { token: 'masked-second', sha256: createHash('sha256').update(`${store.salt}:${second}`).digest('hex') },
+      )
+      writeFileSync(storePath, JSON.stringify(store))
+
+      const res = record({
+        guard: 'wt-example-guard-hook.mjs',
+        decision: 'blocked',
+        class: `token=${short},`,
+        reason: `token=${first}, then ${second}.`,
+        cwd: `https://example.test/records/${first}?token=${second}`,
+        evidence: { json: `{"token":"${short}"}`, prose: `contains ${short} here` },
+      }, { CLAUDE_CONFIG_DIR: configDir })
+
+      expect(res.status).toBe(0)
+      const persisted = JSON.stringify(readAllEntries()[0])
+      expect(persisted).not.toContain(short)
+      expect(persisted).not.toContain(first)
+      expect(persisted).not.toContain(second)
+      expect(persisted).toContain('masked-short')
+      expect(persisted).toContain('masked-first')
+      expect(persisted).toContain('masked-second')
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+  })
+
   it('RED: uses the newest inline secret-guard store before persisting', () => {
     const configDir = mkdtempSync(join(tmpdir(), 'wt-secret-store-test-'))
     const value = ['synthetic', 'token', 'value', '987654321'].join('-')

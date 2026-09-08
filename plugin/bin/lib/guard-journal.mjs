@@ -53,6 +53,7 @@ import { pluginName, resolvePluginDataDir } from './plugin-data-dir.mjs'
 const MAX_REASON_LEN = 400
 const MAX_SAFE_FIELD_LEN = 24
 const MAX_EVIDENCE_KEYS = 6
+const MAX_SECRET_CANDIDATE_LEN = 400
 // Keys stay strict; VALUES also allow a comma, which is how a guard lists several items in one
 // field (`after: "pnpm,git"`). A comma cannot carry a secret — the protection against that is
 // that arguments are never SELECTED in the first place, not the charset. Excluding it only
@@ -120,7 +121,28 @@ function secretGuardMasker() {
       const tokenFor = (candidate) => tokens.get(createHash('sha256').update(`${store.salt}:${candidate}`).digest('hex'))
       const wholeToken = tokenFor(text)
       if (wholeToken) return wholeToken
-      return text.replace(/\S{16,}/g, (candidate) => tokenFor(candidate) || candidate)
+      if (tokens.size === 0) return text
+
+      // The secret store contains only salted hashes, not the source value. Check bounded exact
+      // substrings so a stored secret is found when surrounded by URL, JSON, or prose punctuation.
+      let masked = ''
+      for (let start = 0; start < text.length;) {
+        const endLimit = Math.min(text.length, start + MAX_SECRET_CANDIDATE_LEN)
+        let replacement = null
+        let end = endLimit
+        for (; end > start; end--) {
+          replacement = tokenFor(text.slice(start, end))
+          if (replacement) break
+        }
+        if (replacement) {
+          masked += replacement
+          start = end
+        } else {
+          masked += text[start]
+          start++
+        }
+      }
+      return masked
     }
   } catch {
     warnSecretStoreUnavailable()
