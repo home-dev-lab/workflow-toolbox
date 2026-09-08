@@ -1,5 +1,5 @@
 ---
 type: regex
-pattern: 'wt-changelog-entry\.mjs.*--summary.*--section|wt-changelog-entry\.mjs.*--section.*--summary'
+pattern: 'wt-changelog-entry\.mjs[\s\S]*--summary[\s\S]*--section|wt-changelog-entry\.mjs[\s\S]*--section[\s\S]*--summary'
 weight: 1
 ---
