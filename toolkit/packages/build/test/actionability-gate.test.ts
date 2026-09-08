@@ -124,6 +124,11 @@ function writeSnapshot(stateDir: string, cwd: string, snapshot: Record<string, u
   writeFileSync(join(stateDir, `${slug(cwd)}.json`), JSON.stringify(snapshot), 'utf8')
 }
 
+function writeProjectState(stateDir: string, cwd: string, state: Record<string, unknown>) {
+  mkdirSync(stateDir, { recursive: true })
+  writeFileSync(join(stateDir, `${slug(cwd)}.project-state.json`), JSON.stringify(state), 'utf8')
+}
+
 function readManifest() {
   return JSON.parse(readFileSync(MANIFEST, 'utf8')) as {
     hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>
@@ -420,9 +425,84 @@ describe('wt-actionable-gate-hook', () => {
       blockedUntil: null,
       inFlightUntil: null,
     })
+    writeProjectState(stateDir, cwd, {
+      optedIn: true,
+      heartbeatAt: Date.now() - (2 * 60 * 60 * 1000 + 1),
+      lastOutcome: 'snapshot-written',
+    })
     const r = runHook(payload, env)
     expect(r.code).toBe(0)
-    expect(blockText(r)).toContain('Actionable count is UNKNOWN')
+    expect(blockText(r)).toContain('normal during a conversation')
+  })
+
+  it('names a declared producer with no heartbeat and says to wire it', () => {
+    const declaredButUnwired = scaffold('declared-but-unwired')
+    writeProjectState(declaredButUnwired.stateDir, declaredButUnwired.cwd, { optedIn: true })
+    const unwired = runHook(declaredButUnwired.payload, declaredButUnwired.env)
+    expect(unwired.code).toBe(0)
+    expect(blockText(unwired)).toContain('wire the producer')
+  })
+
+  it('names a stale producer heartbeat as normal board-read lag', () => {
+    const normalLag = scaffold('normal-lag')
+    writeSnapshot(normalLag.stateDir, normalLag.cwd, {
+      at: Date.now() - (2 * 60 * 60 * 1000 + 1),
+      actionable: 0,
+      next: '',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+    writeProjectState(normalLag.stateDir, normalLag.cwd, {
+      optedIn: true,
+      heartbeatAt: Date.now() - (2 * 60 * 60 * 1000 + 1),
+      lastOutcome: 'snapshot-written',
+    })
+    const lag = runHook(normalLag.payload, normalLag.env)
+    expect(lag.code).toBe(0)
+    expect(blockText(lag)).toContain('heartbeat is stale')
+    expect(blockText(lag)).toContain('normal during a conversation')
+    expect(blockText(lag)).toContain('nothing, normal')
+  })
+
+  it('names a fresh failed producer heartbeat and says to check the tracker', () => {
+    const boardUnreachable = scaffold('board-unreachable')
+    writeSnapshot(boardUnreachable.stateDir, boardUnreachable.cwd, {
+      at: Date.now() - (2 * 60 * 60 * 1000 + 1),
+      actionable: 0,
+      next: '',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+    writeProjectState(boardUnreachable.stateDir, boardUnreachable.cwd, {
+      optedIn: true,
+      heartbeatAt: Date.now(),
+      lastOutcome: 'unreachable',
+    })
+    const unreachable = runHook(boardUnreachable.payload, boardUnreachable.env)
+    expect(unreachable.code).toBe(0)
+    expect(blockText(unreachable)).toContain('could not read the board')
+    expect(blockText(unreachable)).toContain('check the tracker')
+  })
+
+  it('does not guess when legacy snapshot evidence has no producer heartbeat', () => {
+    const { env, payload, stateDir, cwd } = scaffold('legacy-unknown')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now() - (2 * 60 * 60 * 1000 + 1),
+      actionable: 0,
+      next: '',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+    const result = runHook(payload, env)
+    expect(result.code).toBe(0)
+    expect(blockText(result)).toContain('cannot be distinguished')
+    expect(blockText(result)).toContain('check the tracker')
   })
 
   it('consecutive blocks reach the ceiling -> passes', () => {
@@ -474,7 +554,7 @@ describe('wt-actionable-gate-hook', () => {
     rmSync(join(stateDir, `${slug(cwd)}.json`), { force: true })
     const missing = runHook(payload, env)
     expect(missing.code).toBe(0)
-    expect(blockText(missing)).toContain('Actionable count is UNKNOWN')
+    expect(blockText(missing)).toContain('wire the producer')
   })
 
   it('reads only subagent mtimes, not the main transcript touched by the turn', () => {

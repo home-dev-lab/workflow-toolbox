@@ -49,7 +49,7 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { stateRoot, snapshotPath } from './lib/actionability-state-paths.mjs'
+import { projectStatePath, stateRoot, snapshotPath } from './lib/actionability-state-paths.mjs'
 import { extractCards, computeSnapshot, resolveBoardProjectDir } from './lib/actionability-planka-producer-core.mjs'
 import { stateRoot as priorArtStateRoot, cardIndexPath } from './lib/prior-art-state-paths.mjs'
 import { buildCardIndex } from './lib/prior-art-index-core.mjs'
@@ -199,6 +199,12 @@ function writeSnapshot(cwd, fields) {
   writeFileSync(path, JSON.stringify(fields), 'utf8')
 }
 
+function writeProducerState(cwd, lastOutcome) {
+  const path = projectStatePath(stateRoot(), cwd)
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, JSON.stringify({ optedIn: true, heartbeatAt: Date.now(), lastOutcome }), 'utf8')
+}
+
 function main() {
   let input
   try {
@@ -229,6 +235,12 @@ function main() {
   // the project, not a reason to skip the read.
   if (!boardProjectDir) {
     recordAttempt(triggeringCwd, false, 'no-board-pointer', `no ${BOARD_POINTER_RELATIVE} for this project or its ancestors`)
+  } else {
+    try {
+      writeProducerState(boardProjectDir, 'reading')
+    } catch (error) {
+      recordAttempt(boardProjectDir, false, 'producer-state-write-failed', error?.message ?? error)
+    }
   }
 
   const extraction = extractCards({
@@ -244,6 +256,13 @@ function main() {
       recordAttempt(journalDir, false, 'partial-payload', extraction.reason)
     } else {
       recordAttempt(journalDir, false, 'payload-unparseable', extraction.reason)
+    }
+    if (boardProjectDir) {
+      try {
+        writeProducerState(boardProjectDir, 'unreachable')
+      } catch (error) {
+        recordAttempt(boardProjectDir, false, 'producer-state-write-failed', error?.message ?? error)
+      }
     }
     return // partial/unreadable read — never write a guess
   }
@@ -272,6 +291,11 @@ function main() {
   const parserPath = join(cwd, DEPENDS_ON_PARSER_RELATIVE)
   if (!existsSync(parserPath)) {
     recordAttempt(cwd, false, 'dependency-parser-unavailable', `no ${DEPENDS_ON_PARSER_RELATIVE} for this project`)
+    try {
+      writeProducerState(cwd, 'unavailable')
+    } catch (error) {
+      recordAttempt(cwd, false, 'producer-state-write-failed', error?.message ?? error)
+    }
     return // no known dependency convention here — never write a wrong count
   }
 
@@ -293,6 +317,11 @@ function main() {
     snapshot = computeSnapshot({ cards: extraction.cards, resolveDeps, boardId, now: Date.now() })
   } catch (error) {
     recordAttempt(cwd, false, 'snapshot-computation-failed', error?.message ?? error)
+    try {
+      writeProducerState(cwd, 'unavailable')
+    } catch (stateError) {
+      recordAttempt(cwd, false, 'producer-state-write-failed', stateError?.message ?? stateError)
+    }
     return // a card's dependency line could not be resolved (parser died mid-scan) — write nothing
   }
 
@@ -308,14 +337,25 @@ function main() {
   }
   if (!isValidSnapshotFields(fields)) {
     recordAttempt(cwd, false, 'snapshot-invalid', 'computed snapshot failed field validation')
+    try {
+      writeProducerState(cwd, 'unavailable')
+    } catch (error) {
+      recordAttempt(cwd, false, 'producer-state-write-failed', error?.message ?? error)
+    }
     return
   }
 
   try {
     writeSnapshot(cwd, fields)
+    writeProducerState(cwd, 'snapshot-written')
     recordAttempt(cwd, true, 'snapshot-written', snapshot.countedScope)
   } catch (error) {
     recordAttempt(cwd, false, 'snapshot-write-failed', error?.message ?? error)
+    try {
+      writeProducerState(cwd, 'unavailable')
+    } catch (stateError) {
+      recordAttempt(cwd, false, 'producer-state-write-failed', stateError?.message ?? stateError)
+    }
     // Writing must never turn this hook into a blocker — the consumer's own
     // fail-closed missing/stale path is the safety net if this write fails.
   }

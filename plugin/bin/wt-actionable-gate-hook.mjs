@@ -64,7 +64,12 @@ function writeJson(path, value) {
 function readProjectState(path) {
   try {
     const parsed = readJson(path)
-    return parsed && typeof parsed === 'object' ? parsed : { optedIn: false }
+    if (!parsed || typeof parsed !== 'object' || parsed.optedIn !== true) return { optedIn: false }
+    return {
+      optedIn: true,
+      heartbeatAt: finiteNumber(parsed.heartbeatAt) ? parsed.heartbeatAt : null,
+      lastOutcome: typeof parsed.lastOutcome === 'string' ? parsed.lastOutcome : '',
+    }
   } catch {
     return { optedIn: false }
   }
@@ -105,20 +110,20 @@ function normalizeSnapshot(parsed) {
 
 function readSnapshot(root, cwd, now) {
   const snapPath = snapshotPath(root, cwd)
+  const projectState = readProjectState(projectStatePath(root, cwd))
   if (!existsSync(snapPath)) {
-    const projectState = readProjectState(projectStatePath(root, cwd))
-    return projectState.optedIn ? { status: 'missing' } : { status: 'never' }
+    return projectState.optedIn ? { status: 'missing', producer: projectState } : { status: 'never' }
   }
 
   try {
-    writeJson(projectStatePath(root, cwd), { optedIn: true, seenAt: now })
+    if (!projectState.optedIn) writeJson(projectStatePath(root, cwd), { optedIn: true, seenAt: now })
   } catch {
     return { status: 'invalid' }
   }
 
   try {
     const normalized = normalizeSnapshot(readJson(snapPath))
-    return normalized ?? { status: 'invalid' }
+    return normalized ? { ...normalized, producer: projectState } : { status: 'invalid' }
   } catch {
     return { status: 'invalid' }
   }
@@ -265,13 +270,23 @@ function contextPct(transcriptPath) {
   return null
 }
 
-function renderBlock(decision, blockMax, ctxPct) {
+function renderBlock(decision, blockMax, ctxPct, snapshot, now) {
   // Factual, not imperative — see the emission comment in main() for why. Keep the exact
-  // substrings 'actionable item(s) remain', 'Actionable count is UNKNOWN', and 'Block N of M':
+  // substrings 'actionable item(s) remain', 'normal during a conversation', and 'Block N of M':
   // the test suite matches on them, and they carry the state a resuming reader needs.
-  const actionableLine = finiteNumber(decision.actionable)
-    ? `${decision.actionable} actionable item(s) remain.`
-    : 'Actionable count is UNKNOWN (snapshot missing or stale after opt-in).'
+  let actionableLine
+  if (finiteNumber(decision.actionable)) {
+    actionableLine = `${decision.actionable} actionable item(s) remain.`
+  } else if (decision.reason === 'snapshot-missing') {
+    actionableLine = 'Actionability producer is declared but has not reported a heartbeat — wire the producer.'
+  } else if (snapshot?.producer?.lastOutcome === 'unreachable' &&
+    finiteNumber(snapshot.producer.heartbeatAt) && now - snapshot.producer.heartbeatAt <= STALE_AFTER_MS) {
+    actionableLine = 'Actionability producer could not read the board — check the tracker.'
+  } else if (!finiteNumber(snapshot?.producer?.heartbeatAt)) {
+    actionableLine = 'Actionability state cannot be distinguished from legacy snapshot evidence — check the tracker.'
+  } else {
+    actionableLine = 'Producer heartbeat is stale: no recent board read (normal during a conversation) — nothing, normal.'
+  }
   const nextLine = decision.next ? decision.next : 'unknown'
   // ⚠ ONE LINE, and the length lock below is what keeps it that way.
   // Measured 2026-08-06 on this harness: NO Stop-hook emission shape hides its text from the
@@ -358,7 +373,7 @@ function main() {
     hookSpecificOutput: {
       hookEventName: 'Stop',
       // Measured only once the block is certain, so a healthy turn never pays for the read.
-      additionalContext: renderBlock(decision, BLOCK_MAX, contextPct(transcriptPath)),
+      additionalContext: renderBlock(decision, BLOCK_MAX, contextPct(transcriptPath), snapshot, now),
     },
   }))
   process.exit(0)

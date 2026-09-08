@@ -228,6 +228,11 @@ Refuses a named `Agent` spawn without `isolation` where the spawning session is 
 
 Three env knobs tune its stop behavior directly: `WT_ACTIONABLE_STALE_AFTER_MS` (default `7200000`) is how old a snapshot may be before the gate treats it as stale/unknown; `WT_ACTIONABLE_BLOCK_MAX` (default `3`) is the consecutive block count after which the hook stops re-blocking and only records the held state; `WT_ACTIONABLE_INFLIGHT_CAP_MS` (default `600000`) caps any declared `inFlightUntil` window from the snapshot's own `at` timestamp, so a stale claim cannot silence the gate indefinitely.
 
+The shipped Planka producer writes a separate opt-in heartbeat. An undeclared project remains silent;
+a declared producer with no heartbeat says to wire it; a stale heartbeat after no recent board read is
+normal during a conversation and calls for nothing; a fresh failed heartbeat says it could not read the
+board and calls for checking the tracker. All paths remain advisory with exit `0`.
+
 ### `wt-stale-date-guard-hook.mjs` — written-deadline advisory (PostToolUse)
 
 Runs `wt-stale-date-guard.mjs` on the single file just touched by `Write` or `Edit`. It checks only `.claude/rules/` and `memory/*.md`, exiting 0 silently for other surfaces because they do not carry the operational deadlines this guard is intended to check. It cannot undo an already completed write, so it is advisory only: findings are emitted through `hookSpecificOutput` and `additionalContext`, while clean results produce no output.

@@ -12,6 +12,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Require a seam review and merged-tree gates when integrating parallel branches.
 
 ### Fixed
+- `wt-actionable-gate-hook` now names whether a missing measurement needs its producer wired, is a
+  normal no-recent-board-read lag, or reflects a producer that could not read the board; undeclared
+  projects remain silent.
 - `opencode-verifier` now invokes one stable `wt-opencode-verify.mjs` command, so a narrow allow
   rule covers the complete call rather than only one segment of its former shell chain.
 - `wt-queue-not-empty-gate-hook` now treats recent files in every registered git worktree and a

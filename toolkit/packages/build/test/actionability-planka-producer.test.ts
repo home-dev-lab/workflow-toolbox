@@ -121,6 +121,14 @@ function readSnapshot(stateDir: string, cwd: string): Record<string, unknown> | 
   }
 }
 
+function readProjectState(stateDir: string, cwd: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(readFileSync(join(stateDir, `${slug(cwd)}.project-state.json`), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
 function readFailureRecords(stateDir: string): Array<Record<string, unknown>> {
   try {
     return readFileSync(join(stateDir, 'actionable-producer-journal.jsonl'), 'utf8')
@@ -266,6 +274,25 @@ describe('actionability-planka-producer-core', () => {
 })
 
 describe('wt-actionable-snapshot-producer-hook (integration)', () => {
+  it('declares a heartbeat when an opted-in producer cannot read the board', () => {
+    const project = scaffoldProject('producer-heartbeat', { withParser: true })
+    const result = runProducerHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__find_cards',
+      tool_input: { boardId: 'b1' },
+      tool_response: { content: [{ type: 'text', text: 'tracker unavailable' }] },
+      cwd: project.cwd,
+    }, project.env)
+
+    expect(result.status).toBe(0)
+    expect(readSnapshot(project.stateDir, project.cwd)).toBeNull()
+    expect(readProjectState(project.stateDir, project.cwd)).toMatchObject({
+      optedIn: true,
+      lastOutcome: 'unreachable',
+    })
+    expect(readProjectState(project.stateDir, project.cwd)?.heartbeatAt).toEqual(expect.any(Number))
+  })
+
   it('records distinct failure reasons and records success too', () => {
     const diverted = scaffoldProject('diverted', { withParser: true })
     const divertedResult = runProducerHook({
