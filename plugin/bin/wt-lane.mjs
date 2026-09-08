@@ -11,7 +11,7 @@ const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <worktree> --model <provider/model> --brief <file> [--timeout 5400] [--log <path>]'
+  return 'Usage: node wt-lane.mjs --dir <worktree> --model <provider/model> --brief <file> [--timeout 5400] [--log <path>] [--variant <name>]'
 }
 
 function parse(argv) {
@@ -23,11 +23,14 @@ function parse(argv) {
     else if (arg === '--brief') out.brief = argv[++i] ?? null
     else if (arg === '--timeout') out.timeout = Number(argv[++i])
     else if (arg === '--log') out.log = argv[++i] ?? null
+    else if (arg === '--variant') out.variant = argv[++i] ?? null
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
   }
   if (!out.dir || !out.model || !out.brief) return { error: 'missing required --dir, --model, or --brief' }
   if (!Number.isFinite(out.timeout) || out.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
+  // opencode's built-in effort axis; an unknown name falls back SILENTLY to the default on the opencode side, so it is validated here.
+  if (out.variant !== undefined && out.variant !== null && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(out.variant)) return { error: '--variant must be a plain variant name' }
   out.dir = path.resolve(out.dir)
   out.brief = path.resolve(out.brief)
   out.log = path.resolve(out.log ?? path.join(out.dir, '.lane', 'run.log'))
@@ -48,7 +51,7 @@ function main() {
   if (!consent.silent) { process.stderr.write(`${consent.message}\n`); return 1 }
 
   if (!worker) {
-    const child = spawn(process.execPath, [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', opts.brief, '--timeout', String(opts.timeout), '--log', opts.log], {
+    const child = spawn(process.execPath, [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', opts.brief, '--timeout', String(opts.timeout), '--log', opts.log, ...(opts.variant ? ['--variant', opts.variant] : [])], {
       detached: true,
       stdio: 'ignore',
     })
@@ -59,7 +62,7 @@ function main() {
 
   mkdirSync(path.dirname(opts.log), { recursive: true })
   const fd = openSync(opts.log, 'a')
-  const args = ['run', `Read and execute the complete brief at ${opts.brief}.`, '--auto', '--dir', opts.dir, '--model', opts.model]
+  const args = ['run', `Read and execute the complete brief at ${opts.brief}.`, '--auto', '--dir', opts.dir, '--model', opts.model, ...(opts.variant ? ['--variant', opts.variant] : [])]
   const child = spawn('opencode', args, { cwd: opts.dir, detached: true, stdio: ['ignore', fd, fd] })
   let finished = false
   const finish = (code) => {

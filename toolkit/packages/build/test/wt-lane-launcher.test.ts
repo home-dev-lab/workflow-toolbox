@@ -42,6 +42,13 @@ describe('wt-lane detached launcher', () => {
     const log = join(f.dir, '.lane', 'run.log'); waitFor(log, 3000)
     expect(readFileSync(log, 'utf8')).toMatch(/EXIT=124\n$/)
   })
+  it('passes --variant through to opencode and refuses a malformed one', () => {
+    const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"; IFS= read -r x; echo done')
+    const res = run(f, ['--variant', 'high']); expect(res.status).toBe(0)
+    const log = join(f.dir, '.lane', 'run.log'); waitFor(log)
+    expect(readFileSync(join(f.dir, 'argv'), 'utf8')).toMatch(/--variant\nhigh\n/)
+    const bad = run(f, ['--variant', 'hi gh']); expect(bad.status).toBe(2); expect(bad.stderr).toContain('--variant')
+  })
   it('refuses absent consent before spawning', () => {
     const f = fixture('echo spawned > "$PWD/spawned"')
     writeFileSync(join(f.config, 'settings.json'), '{}')
