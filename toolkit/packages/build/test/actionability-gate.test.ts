@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -804,6 +804,35 @@ describe('wt-actionable-gate-hook', () => {
     })
     expect(fallback.code).toBe(0)
     expect(blockText(fallback)).toBe('')
+  })
+
+  it('a lane detection error falls back to transcript + declared bound and names the error', () => {
+    const { env, payload, root, stateDir, cwd } = scaffold('lane-detection-error')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now(),
+      actionable: 2,
+      next: 'CARD-58 lane detection error',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+    const shimDir = join(root, 'bin')
+    mkdirSync(shimDir, { recursive: true })
+    const pgrepShim = join(shimDir, 'pgrep')
+    writeFileSync(pgrepShim, '#!/bin/sh\nexit 2\n', 'utf8')
+    chmodSync(pgrepShim, 0o755)
+
+    const result = runHook(payload, {
+      ...env,
+      WT_ACTIONABLE_LANE_DETECTION_MODE: undefined,
+      PATH: `${shimDir}:${process.env.PATH ?? ''}`,
+    })
+
+    expect(result.code).toBe(0)
+    const text = blockText(result)
+    expect(text).toContain('CARD-58 lane detection error')
+    expect(text).toContain('lane detection unavailable: Command failed: pgrep -f')
   })
 
   it('the emitted additionalContext is at most 2 lines', () => {

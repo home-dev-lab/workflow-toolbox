@@ -2,6 +2,8 @@
 // wt-actionable-gate-hook.mjs — Stop hook consumer for a tracker-agnostic
 // actionability snapshot. The producer decides what is STARTABLE; this hook only
 // enforces the contract's stop-time invariants.
+// External-lane detection is Linux-only; unsupported platforms and detection errors
+// degrade legibly to transcript and declared-bound evidence.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -270,7 +272,7 @@ function contextPct(transcriptPath) {
   return null
 }
 
-function renderBlock(decision, blockMax, ctxPct, snapshot, now) {
+function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane) {
   // Factual, not imperative — see the emission comment in main() for why. Keep the exact
   // substrings 'actionable item(s) remain', 'normal during a conversation', and 'Block N of M':
   // the test suite matches on them, and they carry the state a resuming reader needs.
@@ -307,7 +309,10 @@ function renderBlock(decision, blockMax, ctxPct, snapshot, now) {
     ctxPct !== null && ctxPct !== undefined && ctxPct >= CONTEXT_LOUD_PCT
       ? ` Context ~${ctxPct}%: the door is already open — you cross it by emitting tokens, never by falling silent.`
       : ''
-  return `[for Claude, not the user] Actionability gate: ${actionableLine} Next: ${nextLine}.${ctxClause} Block ${decision.nextConsecutiveBlocks} of ${blockMax}.`
+  const laneClause = externalLane.kind === 'unsupported' || externalLane.kind === 'error'
+    ? `\nlane detection unavailable: ${externalLane.reason.split(/\r?\n/, 1)[0]}`
+    : ''
+  return `[for Claude, not the user] Actionability gate: ${actionableLine} Next: ${nextLine}.${ctxClause} Block ${decision.nextConsecutiveBlocks} of ${blockMax}.${laneClause}`
 }
 
 function main() {
@@ -325,7 +330,6 @@ function main() {
   if (snapshot.status === 'invalid') return
 
   const externalLane = detectExternalLane(cwd)
-  if (externalLane.kind === 'error') return
 
   const sessionPath = sessionStatePath(root, cwd, sessionId)
   const consecutiveBlocks = readSessionState(sessionPath)
@@ -374,7 +378,7 @@ function main() {
     hookSpecificOutput: {
       hookEventName: 'Stop',
       // Measured only once the block is certain, so a healthy turn never pays for the read.
-      additionalContext: renderBlock(decision, BLOCK_MAX, contextPct(transcriptPath), snapshot, now),
+      additionalContext: renderBlock(decision, BLOCK_MAX, contextPct(transcriptPath), snapshot, now, externalLane),
     },
   }))
   process.exit(0)
