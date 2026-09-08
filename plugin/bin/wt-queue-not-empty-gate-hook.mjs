@@ -131,7 +131,7 @@ import { homedir } from 'node:os'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { queueSnapshotFileName, queueSnapshotSlug, resolveQueueSnapshotPath } from './lib/queue-snapshot-path.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
-import { scanLiveLaneProcesses, worktreeActivity } from './lib/lane-live-scan.mjs'
+import { ACTIVITY_WINDOW_MIN, hasActiveLaneLog, registeredWorktreeActivity } from './lib/lane-live-scan.mjs'
 import { expireMarker, expireOwnedMarkers } from './lib/queue-gate-marker-expiry.mjs'
 
 const STATE_DIR = process.env.WT_QUEUE_GATE_DIR
@@ -181,37 +181,33 @@ expireOwnedMarkers(STATE_DIR, ['cooldown'], Date.now())
 // --- 1. Is work in flight? --------------------------------------------------------------
 // A delegated agent writes to <session>/subagents/agent-*.jsonl. A recent write there means the
 // arc is alive and stopping is just yielding between turns — never a decision to stop.
-// An external lane writes to the driven worktree instead, so recent file activity in the
-// nearest enclosing git worktree also counts as in-flight work without claiming anything about
-// the coordinator process itself. If `cwd` is only an umbrella directory and no single worktree
-// can be identified from it, this hook chooses the conservative side and treats filesystem
-// activity as unknown rather than letting a sibling worktree silence the gate.
+// An external lane writes to the driven worktree instead, so recent file activity in every
+// registered worktree of the enclosing repository also counts as in-flight work. A fresh lane
+// run.log is a second lane-specific signal, unless its last line is an EXIT marker. If `cwd` is
+// only an umbrella directory and no repository can be identified from it, filesystem activity is
+// unknown rather than letting an unrelated sibling worktree silence the gate.
 // ⚠ This reads the SUBAGENTS dir, never the session's own transcript: the session's own file is
 // touched by this very turn, so it would always look "active" and the guard could never fire.
-// ⚠ The filesystem scan is explicitly BOUNDED: at most 4000 entry stats/readdir
-// steps, with known heavy/build trees skipped first. Worst case is therefore O(ACTIVITY_MAX_ENTRIES)
-// regardless of repo size; once the budget is spent the answer stays distinct from an observed
-// idle tree so the emitted stop-gate context does not claim more than the scan established.
-const cutoff = Date.now() - INFLIGHT_MIN * 60_000
+// ⚠ The filesystem scan is explicitly BOUNDED: at most 4000 entry stats/readdir steps per
+// registered worktree, with known heavy/build trees skipped first. Once a budget is spent the
+// answer stays distinct from an observed idle tree so the emitted stop-gate context does not
+// claim more than the scan established.
+const transcriptCutoff = Date.now() - INFLIGHT_MIN * 60_000
 const subagentsDir = join(dirname(transcriptPath), sessionId, 'subagents')
 try {
   for (const f of readdirSync(subagentsDir)) {
     if (!f.endsWith('.jsonl')) continue
-    if (statSync(join(subagentsDir, f)).mtimeMs >= cutoff) bail() // something is running
+    if (statSync(join(subagentsDir, f)).mtimeMs >= transcriptCutoff) bail() // something is running
   }
 } catch {
   /* no subagents dir yet — nothing in flight, keep going */
 }
 
-const activityStatus = worktreeActivity(resolveActivityRoot(cwd), cutoff)
+const activityRoot = resolveActivityRoot(cwd)
+const activityCutoff = Date.now() - ACTIVITY_WINDOW_MIN * 60_000
+const activityStatus = registeredWorktreeActivity(activityRoot, activityCutoff)
 if (activityStatus === 'recent') bail()
-// Live lane processes name the directory they are actually driving, reaching separate repositories
-// that neither this session's path scan nor git worktree metadata can see. This Linux-only /proc
-// source only makes the guard quieter: a recent lane write bails; every other result preserves the
-// existing verdict and can never independently block or deny.
-const laneScan = scanLiveLaneProcesses({ procRoot: process.env.WT_QUEUE_GATE_PROC_ROOT || '/proc' })
-const liveLane = laneScan.processes.find((processInfo) => worktreeActivity(processInfo.dir, cutoff) === 'recent')
-if (liveLane) bail()
+if (hasActiveLaneLog(activityRoot, activityCutoff)) bail()
 
 // --- 2. Does this project have a tracker wired to this guard at all? ---------------------
 // ⚠ THE ABSTRACTION POINT — see the header. No marker ever written ⇒ silent, permanently, for
@@ -398,7 +394,7 @@ recordGuardEvent({
   decision: 'warned',
   session: input.session_id,
   agent: input.agent_id,
-  class: `activity:${activityStatus};lane:${laneScan.status}`,
+  class: `activity:${activityStatus}`,
   reason: openCount === null ? `queue:${queueStatus}` : `queue:${openCount}-open`,
 })
 process.stdout.write(
@@ -420,10 +416,10 @@ process.stdout.write(
       // Anything that cannot be hidden must at least name its addressee.
       additionalContext:
         `[for Claude, not the user] open work remains, ${activityStatus === 'idle'
-          ? `no recent worktree activity${laneScan.status === 'unknown' ? '; live lane scan was unavailable' : ''}`
+          ? 'no recent worktree activity'
           : activityStatus === 'no-root'
-            ? `Worktree activity is unknown — no git root resolved${laneScan.status === 'unknown' ? '; live lane scan was unavailable' : ''}`
-            : `Worktree activity is unknown — scan bounded out${laneScan.status === 'unknown' ? '; live lane scan was unavailable' : ''}`} · ` +
+            ? 'Worktree activity is unknown — no git root resolved'
+            : 'Worktree activity is unknown — scan bounded out'} · ` +
         (snapshotAncestor ? `using ancestor snapshot from ${snapshotAncestor} · ` : '') +
         (openCount === null
           ? (queueStatus === 'stale'

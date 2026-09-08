@@ -1,7 +1,9 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { basename, join } from 'node:path'
 
 export const ACTIVITY_MAX_ENTRIES = 4000
+export const ACTIVITY_WINDOW_MIN = 12
 export const ACTIVITY_SKIP_DIRS = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', 'coverage', '.next'])
 
 // This scan can only suppress the advisory: a recent write means work may be in flight, but an
@@ -29,6 +31,12 @@ export function worktreeActivity(root, cutoff, {
       if (ACTIVITY_SKIP_DIRS.has(entry.name)) continue
 
       const fullPath = join(dir, entry.name)
+      // A lane log is assessed separately: a fresh terminal EXIT marker must not look like work.
+      if (entry.name === '.lane' && entry.isDirectory()) {
+        stack.push(fullPath)
+        continue
+      }
+      if (fullPath === join(root, '.lane', 'run.log')) continue
       try {
         const info = statImpl(fullPath)
         if (info.mtimeMs >= cutoff) return 'recent'
@@ -40,6 +48,51 @@ export function worktreeActivity(root, cutoff, {
   }
 
   return 'idle'
+}
+
+export function registeredWorktrees(root, { spawnSyncImpl = spawnSync } = {}) {
+  if (!root) return []
+  try {
+    const result = spawnSyncImpl('git', ['-C', root, 'worktree', 'list', '--porcelain'], {
+      encoding: 'utf8',
+      timeout: 1_000,
+    })
+    if (result.status !== 0 || typeof result.stdout !== 'string') return [root]
+    const worktrees = result.stdout
+      .split('\n')
+      .filter((line) => line.startsWith('worktree '))
+      .map((line) => line.slice('worktree '.length))
+    return worktrees.length > 0 ? [...new Set(worktrees)] : [root]
+  } catch {
+    return [root]
+  }
+}
+
+export function registeredWorktreeActivity(root, cutoff) {
+  if (!root) return 'no-root'
+  let status = 'idle'
+  for (const worktree of registeredWorktrees(root)) {
+    const activity = worktreeActivity(worktree, cutoff)
+    if (activity === 'recent') return 'recent'
+    if (activity === 'bounded') status = 'bounded'
+  }
+  return status
+}
+
+export function hasActiveLaneLog(root, cutoff) {
+  if (!root) return false
+  for (const worktree of registeredWorktrees(root)) {
+    const log = join(worktree, '.lane', 'run.log')
+    try {
+      if (statSync(log).mtimeMs < cutoff) continue
+      const lines = readFileSync(log, 'utf8').trimEnd().split('\n')
+      const lastLine = lines.at(-1) || ''
+      if (!/^EXIT=\d+$/.test(lastLine)) return true
+    } catch {
+      // An unreadable lane log is not evidence of liveness.
+    }
+  }
+  return false
 }
 
 function laneDirFromArgs(args) {

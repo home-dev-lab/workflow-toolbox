@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-queue-not-empty-gate-hook.mjs')
 const HELP_FILE = join(REPO_ROOT, 'plugin/bin/wt-queue-not-empty-gate-hook.help.md')
-const LANE_LIVE_SCAN = new URL('../../../../plugin/bin/lib/lane-live-scan.mjs', import.meta.url).href
+const LANE_LIVE_SCAN = join(REPO_ROOT, 'plugin/bin/lib/lane-live-scan.mjs')
 const roots: string[] = []
 
 afterEach(() => {
@@ -67,7 +67,7 @@ function writeSnapshot(stateDir: string, cwd: string, snap: Record<string, unkno
   writeFileSync(join(stateDir, `queue-${slug(cwd)}.json`), JSON.stringify(snap), 'utf8')
 }
 
-function agePath(path: string, minutesAgo = 10): void {
+function agePath(path: string, minutesAgo = 15): void {
   const staleDate = new Date(Date.now() - minutesAgo * 60_000)
   utimesSync(path, staleDate, staleDate)
 }
@@ -96,6 +96,10 @@ function blockText(r: { stdout: string }): string {
 }
 
 describe('wt-queue-not-empty-gate-hook: emission shape', () => {
+  it('uses one exported 12-minute window for registered-worktree and lane-log liveness', () => {
+    expect(readFileSync(LANE_LIVE_SCAN, 'utf8')).toContain('export const ACTIVITY_WINDOW_MIN = 12')
+  })
+
   it('reaches the same queue verdict from a project root and every nested directory', () => {
     const { env, payload, stateDir, cwd } = scaffold('ancestor-family')
     writeSnapshot(stateDir, cwd, { open: 7, at: Date.now(), next: 'CARD-7 inherited item' })
@@ -183,7 +187,49 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(blockText(r)).toBe('')
   })
 
-  it('stays silent for recent activity in a live external lane and names its directory in the scan result', () => {
+  it('stays silent for a fresh file in another registered worktree with no subagent transcript', () => {
+    const { env, payload, stateDir, cwd } = scaffold('registered-worktree-activity')
+    const lane = join(dirname(cwd), 'registered-lane')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    rmSync(join(cwd, '.git'), { force: true })
+    expect(spawnSync('git', ['init', '--quiet'], { cwd }).status).toBe(0)
+    expect(spawnSync('git', ['config', 'user.email', 'queue-gate@example.test'], { cwd }).status).toBe(0)
+    expect(spawnSync('git', ['config', 'user.name', 'Queue Gate'], { cwd }).status).toBe(0)
+    writeFileSync(join(cwd, 'seed.txt'), 'seed', 'utf8')
+    expect(spawnSync('git', ['add', 'seed.txt'], { cwd }).status).toBe(0)
+    expect(spawnSync('git', ['-c', 'commit.gpgSign=false', 'commit', '--quiet', '-m', 'seed'], { cwd }).status).toBe(0)
+    expect(spawnSync('git', ['worktree', 'add', '--quiet', '-b', 'lane-branch', lane], { cwd }).status).toBe(0)
+    writeFileSync(join(lane, 'lane-output.txt'), 'external lane wrote here', 'utf8')
+    agePath(join(cwd, 'seed.txt'))
+
+    const r = runHook(payload, env)
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toBe('')
+  })
+
+  it('stays silent for a fresh non-terminal lane run log', () => {
+    const { env, payload, stateDir, cwd } = scaffold('active-lane-log')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    mkdirSync(join(cwd, '.lane'), { recursive: true })
+    writeFileSync(join(cwd, '.lane', 'run.log'), 'working\n', 'utf8')
+
+    const r = runHook(payload, env)
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toBe('')
+  })
+
+  it('does not mistake a lane ending EXIT=124 for a running lane', () => {
+    const { env, payload, stateDir, cwd } = scaffold('finished-lane-log')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    mkdirSync(join(cwd, '.lane'), { recursive: true })
+    writeFileSync(join(cwd, '.lane', 'run.log'), 'working\nEXIT=124\n', 'utf8')
+
+    const r = runHook(payload, env)
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toContain('open work remains')
+  })
+
+  it('does not treat a live process as liveness without registered-worktree activity or a lane log', () => {
     const { env, payload, stateDir, cwd } = scaffold('live-external-lane')
     const laneDir = join(dirname(cwd), 'outside-session-root')
     const procRoot = join(cwd, 'fake-proc')
@@ -199,17 +245,7 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
 
     const r = runHook(payload, { ...env, WT_QUEUE_GATE_PROC_ROOT: procRoot })
     expect(r.code).toBe(0)
-    // RED PROOF: before the /proc scan existed, this hook emitted its idle block instead of
-    // finding the `opencode run --dir` lane outside the session root.
-    expect(blockText(r)).toBe('')
-    const scan = spawnSync(process.execPath, ['--input-type=module', '--eval',
-      `const scan = await import(${JSON.stringify(LANE_LIVE_SCAN)}); ` +
-      `console.log(JSON.stringify(scan.scanLiveLaneProcesses({ procRoot: ${JSON.stringify(procRoot)} })))`,
-    ], { encoding: 'utf8' })
-    expect(scan.status).toBe(0)
-    expect(JSON.parse(scan.stdout).processes).toEqual([
-      { pid: '101', dir: laneDir, command: 'opencode run' },
-    ])
+    expect(blockText(r)).toContain('open work remains')
   })
 
   it('keeps the existing idle verdict when /proc has no matching lane process', () => {
@@ -228,14 +264,14 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(blockText(r)).toContain('no recent worktree activity')
   })
 
-  it('reports a named unknown when the live-lane /proc scan is unavailable', () => {
+  it('keeps the idle verdict when process inspection is unavailable', () => {
     const { env, payload, stateDir, cwd } = scaffold('live-external-lane-unavailable')
     writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
     agePath(cwd)
 
     const r = runHook(payload, { ...env, WT_QUEUE_GATE_PROC_ROOT: join(cwd, 'unreadable-proc') })
     expect(r.code).toBe(0)
-    expect(blockText(r)).toContain('lane scan was unavailable')
+    expect(blockText(r)).toContain('no recent worktree activity')
   })
 
   it('still blocks when the worktree is stale and no recent activity exists', () => {
@@ -243,7 +279,7 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     writeSnapshot(stateDir, cwd, { open: 6, at: Date.now(), next: 'CARD-6 idle item' })
     const staleFile = join(cwd, 'old-output.txt')
     writeFileSync(staleFile, 'old write', 'utf8')
-    const staleDate = new Date(Date.now() - 10 * 60_000)
+    const staleDate = new Date(Date.now() - 15 * 60_000)
     utimesSync(staleFile, staleDate, staleDate)
 
     const r = runHook(payload, env)

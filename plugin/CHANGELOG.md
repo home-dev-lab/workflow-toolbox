@@ -12,6 +12,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Require a seam review and merged-tree gates when integrating parallel branches.
 
 ### Fixed
+- `wt-queue-not-empty-gate-hook` now treats recent files in every registered git worktree and a
+  fresh non-terminal `.lane/run.log` as in-flight external lane work. A terminal `EXIT=<n>` log and
+  a merely live process do not suppress the gate.
 - Mask secret-guard-tokenised values before guard-journal persistence
 - Return the bare unavailable marker when the verifier cannot run its Bash probe
 - Make adopted `wt-lane.mjs` import the installed canonical consent resolver and refuse when it cannot be found, rather than carrying a drift-prone inline copy.

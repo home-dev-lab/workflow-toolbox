@@ -1,5 +1,12 @@
 # Known Issues
 
+## External lane liveness scope
+
+The queue stop gate checks recent disk activity and `.lane/run.log` records only in worktrees
+registered to the Git repository enclosing the hook's current directory. A lane working in an
+unrelated repository is not liveness evidence for that project; a mere live process is deliberately
+not treated as progress because it may be hung.
+
 ## Adopted lane launcher dependency
 
 The adopted `wt-lane.mjs` launcher resolves and imports the installed Workflow Toolbox consent
