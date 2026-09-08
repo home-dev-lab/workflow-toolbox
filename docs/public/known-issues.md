@@ -441,6 +441,8 @@ It does not check the changelog — `wt-plugin-release-record-guard-hook.mjs` ke
 
 In a repository that declares `.wt-gates.json`, a real `git commit` touching one of its declared paths requires a green record for every declared gate. `wt-run-gate.mjs --record <name> -- <command>` writes each record after the command exits, including the command exit code, finish time, and a SHA-256 signature of `HEAD`, staged and unstaged diffs, and sorted untracked files. A record is stale if its signature differs or a staged file was modified after it finished, so a gate cannot accidentally certify a later tree.
 
+`wt-run-gate.mjs --check <tree-dir> [--gate name,...]` reads those records without running a command and reports green only when every requested record has that tree's current signature.
+
 The guard is warn-only for its first 19 journalled firings, naming MISSING, RED, or STALE records and exact wrapper commands; the twentieth refuses. `gates: skipped — <reason>` in `-m`, `-F`, or a heredoc message explicitly allows the commit and is journalled. It is silent outside a declaring repository, for non-declared staged paths, merges, and `--amend` commits with no staged change. It runs no gates itself and therefore stays within the hook timeout.
 
 ### `wt-propagation-reminder-hook.mjs` — tooling/plugin-edit propagation reminder (PostToolUse on Write/Edit/MultiEdit)
