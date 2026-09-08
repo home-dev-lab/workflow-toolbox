@@ -629,9 +629,18 @@ function evaluateConsentGate(payload, { resolveConsentImpl = resolveConsent } = 
  *  remaining file from the hook's view — leaving it SILENT about items it never reached.
  *  A guard that goes quiet because it broke is worse than one that never existed, so this
  *  degrades to null and the caller falls back to the version comparison. */
-function shippedFingerprint(set, item, root) {
+function shippedFingerprint(set, item, root, installedBody = null, preserveAgentFrontmatter = false) {
   try {
-    return contentFingerprint(fs.readFileSync(path.join(root, set.srcDir, item.file), 'utf8'))
+    const source = fs.readFileSync(path.join(root, set.srcDir, item.file), 'utf8')
+    const rendered = set.kind === 'scripts' ? itemContent(set, item, root) : source
+    // A clean agent can legitimately retain an installer-preserved local frontmatter field.
+    // Compare that copy to the current shipped definition with the same field retained, not to
+    // the raw template which could never match it.
+    const expected =
+      preserveAgentFrontmatter && set.kind === 'agents' && installedBody !== null
+        ? preserveLocalFrontmatter(rendered, installedBody).content
+        : rendered
+    return contentFingerprint(expected)
   } catch {
     return null
   }
@@ -913,7 +922,7 @@ function classify(target, set) {
   if (!fpm) return { state: 'edited-unknown', installedVer, contentFp }
   const clean = fingerprint(body) === fpm[1] || contentFingerprint(body) === fpm[1]
   // Re-derive this from the body; never trust the banner hash for shipped-content identity.
-  return { state: clean ? 'clean' : 'edited', installedVer, contentFp }
+  return { state: clean ? 'clean' : 'edited', installedVer, contentFp, body }
 }
 
 function cmp(a, b) {
@@ -1085,6 +1094,12 @@ function pluginChangelogText(root) {
  *  with its own local machinery. Never called for anything but a STALE item — an
  *  up-to-date or hand-authored file has no span to show. */
 function printChangelogSpan(root, fromVersion, toVersion) {
+  if (fromVersion === toVersion) {
+    process.stdout.write(
+      `    CHANGELOG v${fromVersion}: content changed without a version change; no version range to show.\n`,
+    )
+    return
+  }
   const changelog = pluginChangelogText(root)
   if (!changelog) {
     process.stdout.write(
@@ -1558,7 +1573,7 @@ function auditOverlap(userDir, root, pairsFile, declarationsFile, set = 'rules')
  *  with no toolbox banner is NEVER overwritten — we won't clobber a file we never
  *  stamped. A symlink is never written THROUGH: it writes only under `replaceSymlinks`
  *  (and then processSet unlinks the link first, preserving its target). */
-function plan(c, version, force, replaceSymlinks, shippedFp) {
+function plan(c, version, force, replaceSymlinks, shippedFp, currentContentFp = shippedFp) {
   // CONTENT wins over banner metadata, including an old/ahead version or stale stored hash.
   // Comparison uses contentFingerprint's trailing-EOF-whitespace normalization.
   if (c.installedVer && shippedFp && c.contentFp === shippedFp) {
@@ -1603,6 +1618,9 @@ function plan(c, version, force, replaceSymlinks, shippedFp) {
     case 'clean': {
       const c2 = cmp(c.installedVer, version)
       if (c2 < 0) return { status: `STALE (installed v${c.installedVer} < v${version})`, write: true }
+      if (c2 === 0 && currentContentFp && c.contentFp !== currentContentFp) {
+        return { status: `STALE (content differs at v${version})`, write: true }
+      }
       // A current-version clean agent may carry an installer-preserved local frontmatter field.
       return { status: `UP-TO-DATE (v${c.installedVer})`, write: force }
     }
@@ -1627,7 +1645,8 @@ function processSet(set, dir, args, version, root) {
     const target = path.join(dir, item.file)
     const c = classify(target, set)
     const shippedFp = shippedFingerprint(set, item, root)
-    let p = plan(c, version, args.force, args.replaceSymlinks, shippedFp)
+    const currentContentFp = shippedFingerprint(set, item, root, c.body, true)
+    let p = plan(c, version, args.force, args.replaceSymlinks, shippedFp, currentContentFp)
     if (nestedDir && hasAdoptionBanner(set, target) && hasAdoptionBanner(set, path.join(nestedDir, item.file))) {
       anyDuplicate = true
       p = { status: `DUPLICATE (also present in ${nestedDir}/${item.file})`, write: false }
@@ -1663,8 +1682,8 @@ function processSet(set, dir, args, version, root) {
     // STALE line sends the reader looking for something that isn't there.
     if (
       c.state === 'clean' &&
-      cmp(c.installedVer, version) < 0 &&
-      !(shippedFp && c.contentFp === shippedFp)
+      ((cmp(c.installedVer, version) < 0 && shippedFp && c.contentFp !== shippedFp) ||
+        (cmp(c.installedVer, version) === 0 && currentContentFp && c.contentFp !== currentContentFp))
     )
       anyStale = true
     if (c.state === 'edited' || c.state === 'edited-unknown') anyEdited = true
