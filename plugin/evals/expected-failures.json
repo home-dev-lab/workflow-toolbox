@@ -1,0 +1,7 @@
+[
+  {
+    "case": "opencode-verifier-unavailable",
+    "reason": "The eval sandbox has no Bash, so the verifier's command -v opencode probe cannot run there.",
+    "until": "The plugin eval sandbox permits the verifier's Bash probe."
+  }
+]

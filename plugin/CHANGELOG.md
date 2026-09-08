@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- Let the plugin eval gate track declared expected failures
+
 ## [0.172.0] - 2026-09-08
 
 ### Release notes
