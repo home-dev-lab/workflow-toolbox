@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const PRODUCER_HOOK = join(REPO_ROOT, 'plugin/bin/wt-actionable-snapshot-producer-hook.mjs')
+const GATE_HOOK = join(REPO_ROOT, 'plugin/bin/wt-actionable-gate-hook.mjs')
 const CORE = join(REPO_ROOT, 'plugin/bin/lib/actionability-planka-producer-core.mjs')
 const PLUGIN_MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 
@@ -94,6 +95,11 @@ function scaffoldProject(tag: string, opts: { withParser: boolean; withBoardPoin
 function runProducerHook(payload: unknown, env: NodeJS.ProcessEnv): { status: number | null; stderr: string } {
   const res = spawnSync(process.execPath, [PRODUCER_HOOK], { input: JSON.stringify(payload), encoding: 'utf8', env })
   return { status: res.status, stderr: (res.stderr ?? '').trim() }
+}
+
+function runGateHook(payload: unknown, env: NodeJS.ProcessEnv): { status: number | null; stdout: string } {
+  const res = spawnSync(process.execPath, [GATE_HOOK], { input: JSON.stringify(payload), encoding: 'utf8', env })
+  return { status: res.status, stdout: (res.stdout ?? '').trim() }
 }
 
 function boardResponse(lists: Array<{ name: string; cards: Array<{ id: string; name: string; description?: string; position?: number }> }>) {
@@ -705,5 +711,37 @@ describe('producer output is consumable by the real consumer decide()', () => {
     const snap = readSnapshot(stateDir, cwd) as { at: number; actionable: number; next: string; workPossible: boolean; reason: string; blockedUntil: null; inFlightUntil: null }
     const decision = runDecide({ snapshot: { status: 'present', ...snap }, now: snap.at + 1000, staleAfterMs: 2 * 60 * 60 * 1000, consecutiveBlocks: 0, blockMax: 3 })
     expect(decision.block).toBe(false)
+  })
+
+  it('a producer first-read failure artifact makes the consumer direct operators to the tracker', () => {
+    const { root, cwd, stateDir, env } = scaffoldProject('e2e-first-read-failure', { withParser: true })
+    const producerPayload = {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__get_board',
+      tool_input: { boardId: 'b1' },
+      tool_response: {},
+      cwd,
+    }
+    expect(runProducerHook(producerPayload, env).status).toBe(0)
+    expect(readSnapshot(stateDir, cwd)).toBeNull()
+    expect(readProjectState(stateDir, cwd)).toMatchObject({
+      optedIn: true,
+      lastOutcome: 'unreachable',
+    })
+
+    const sessionId = 'first-read-failure'
+    const transcriptPath = join(root, `${sessionId}.jsonl`)
+    writeFileSync(transcriptPath, '{}\n')
+    const consumer = runGateHook({
+      hook_event_name: 'Stop',
+      transcript_path: transcriptPath,
+      session_id: sessionId,
+      cwd,
+    }, env)
+
+    expect(consumer.status).toBe(0)
+    const additionalContext = JSON.parse(consumer.stdout).hookSpecificOutput.additionalContext as string
+    expect(additionalContext).toContain('could not read the board')
+    expect(additionalContext).not.toContain('wire the producer')
   })
 })

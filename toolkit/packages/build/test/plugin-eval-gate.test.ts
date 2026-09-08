@@ -95,6 +95,39 @@ describe('wt-plugin-eval-gate', () => {
     })
   })
 
+  it('fails when an expected-failure declaration has expired', () => {
+    withExpectedFailures(JSON.stringify([{ case: 'declared-failure', reason: 'sandbox limitation', until: '2000-01-01' }]), () => {
+      withFixture(resultFor('declared-failure', false), (fixture) => {
+        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+
+        expect(result.status).toBe(1)
+        expect(result.stderr).toContain('plugin eval: expected failure declaration expired: declared-failure (until 2000-01-01)')
+      })
+    })
+  })
+
+  it('rejects a malformed expected-failure expiry', () => {
+    withExpectedFailures(JSON.stringify([{ case: 'declared-failure', reason: 'sandbox limitation', until: 'tomorrow' }]), () => {
+      withFixture(resultFor('declared-failure', false), (fixture) => {
+        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+
+        expect(result.status).toBe(2)
+        expect(result.stderr).toContain('plugin eval: invalid expected failures: declaration until must be an ISO date (YYYY-MM-DD)')
+      })
+    })
+  })
+
+  it('allows a future expected-failure expiry', () => {
+    withExpectedFailures(JSON.stringify([{ case: 'declared-failure', reason: 'sandbox limitation', until: '2999-01-01' }]), () => {
+      withFixture(resultFor('declared-failure', false), (fixture) => {
+        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+
+        expect(result.status).toBe(0)
+        expect(result.stdout).toContain('plugin eval: expected failure declared-failure — sandbox limitation')
+      })
+    })
+  })
+
   it('keeps an undeclared failed case fatal', () => {
     withFixture(resultFor('undeclared-failure', false), (fixture) => {
       const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })

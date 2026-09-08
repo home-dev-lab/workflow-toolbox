@@ -6,7 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
-- Let the plugin eval gate track declared expected failures
+- Let the plugin eval gate track declared expected failures and reject malformed or expired expiry dates
 - Document `<project root>/.claude/worktrees/<name>` as the gitignored convention for new concurrent worktrees.
 - Require hand-written executor-lane briefs to request report lessons and harvest each report at its lane integration.
 - Require a seam review and merged-tree gates when integrating parallel branches.
@@ -15,6 +15,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - `wt-actionable-gate-hook` now names whether a missing measurement needs its producer wired, is a
   normal no-recent-board-read lag, or reflects a producer that could not read the board; undeclared
   projects remain silent.
+- Classify fresh actionability producer failures before missing snapshots or stale heartbeats, so
+  tracker failures direct operators to the tracker rather than wiring or normal-lag guidance.
 - `opencode-verifier` now invokes one stable `wt-opencode-verify.mjs` command, so a narrow allow
   rule covers the complete call rather than only one segment of its former shell chain.
 - `wt-queue-not-empty-gate-hook` now treats recent files in every registered git worktree and a

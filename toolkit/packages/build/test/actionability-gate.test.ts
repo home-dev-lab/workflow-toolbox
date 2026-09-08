@@ -488,6 +488,45 @@ describe('wt-actionable-gate-hook', () => {
     expect(blockText(unreachable)).toContain('check the tracker')
   })
 
+  it('names a fresh first-read producer failure as a tracker problem, not an unwired producer', () => {
+    const firstReadFailure = scaffold('first-read-failure')
+    writeProjectState(firstReadFailure.stateDir, firstReadFailure.cwd, {
+      optedIn: true,
+      heartbeatAt: Date.now(),
+      lastOutcome: 'unreachable',
+    })
+
+    const result = runHook(firstReadFailure.payload, firstReadFailure.env)
+
+    expect(result.code).toBe(0)
+    expect(blockText(result)).toContain('could not read the board')
+    expect(blockText(result)).not.toContain('wire the producer')
+  })
+
+  it('names a fresh unavailable producer heartbeat as a tracker problem, not stale lag', () => {
+    const unavailable = scaffold('fresh-unavailable')
+    writeSnapshot(unavailable.stateDir, unavailable.cwd, {
+      at: Date.now() - (2 * 60 * 60 * 1000 + 1),
+      actionable: 0,
+      next: '',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+    writeProjectState(unavailable.stateDir, unavailable.cwd, {
+      optedIn: true,
+      heartbeatAt: Date.now(),
+      lastOutcome: 'unavailable',
+    })
+
+    const result = runHook(unavailable.payload, unavailable.env)
+
+    expect(result.code).toBe(0)
+    expect(blockText(result)).toContain('check the tracker')
+    expect(blockText(result)).not.toContain('heartbeat is stale')
+  })
+
   it('does not guess when legacy snapshot evidence has no producer heartbeat', () => {
     const { env, payload, stateDir, cwd } = scaffold('legacy-unknown')
     writeSnapshot(stateDir, cwd, {

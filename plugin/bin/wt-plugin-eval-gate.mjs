@@ -30,6 +30,19 @@ function failedCases(result) {
   })
 }
 
+function parseUntil(until) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(until)) {
+    throw new Error('declaration until must be an ISO date (YYYY-MM-DD)')
+  }
+  const [year, month, day] = until.split('-').map(Number)
+  const expiresAt = Date.UTC(year, month - 1, day + 1)
+  const parsed = new Date(expiresAt - 24 * 60 * 60 * 1000)
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) {
+    throw new Error('declaration until must be an ISO date (YYYY-MM-DD)')
+  }
+  return expiresAt
+}
+
 function expectedFailures() {
   if (!existsSync(EXPECTED_FAILURES)) return new Map()
   const declarations = JSON.parse(readFileSync(EXPECTED_FAILURES, 'utf8'))
@@ -44,10 +57,10 @@ function expectedFailures() {
       throw new Error('each declaration requires non-empty case and reason strings')
     }
     if (until !== undefined && (typeof until !== 'string' || !until)) {
-      throw new Error('declaration until must be a non-empty string when present')
+      throw new Error('declaration until must be an ISO date (YYYY-MM-DD)')
     }
     if (expected.has(name)) throw new Error(`duplicate declaration for ${name}`)
-    expected.set(name, { reason })
+    expected.set(name, { reason, until, expiresAt: until === undefined ? null : parseUntil(until) })
   }
   return expected
 }
@@ -92,6 +105,13 @@ function main() {
     } catch (error) {
       process.stderr.write(`plugin eval: invalid expected failures: ${error.message}\n`)
       return 2
+    }
+    const expired = [...expected.entries()].filter(([, declaration]) => declaration.expiresAt !== null && Date.now() >= declaration.expiresAt)
+    if (expired.length > 0) {
+      for (const [name, declaration] of expired) {
+        process.stderr.write(`plugin eval: expected failure declaration expired: ${name} (until ${declaration.until})\n`)
+      }
+      return 1
     }
     const failedNames = new Set(failed.map((item) => item.name))
     const expectedFailed = failed.filter((item) => expected.has(item.name))

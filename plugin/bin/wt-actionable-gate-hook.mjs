@@ -277,11 +277,12 @@ function renderBlock(decision, blockMax, ctxPct, snapshot, now) {
   let actionableLine
   if (finiteNumber(decision.actionable)) {
     actionableLine = `${decision.actionable} actionable item(s) remain.`
+  } else if (finiteNumber(snapshot?.producer?.heartbeatAt) &&
+    now - snapshot.producer.heartbeatAt <= STALE_AFTER_MS &&
+    snapshot.producer.lastOutcome !== 'reading' && snapshot.producer.lastOutcome !== 'snapshot-written') {
+    actionableLine = 'Actionability producer could not read the board — check the tracker.'
   } else if (decision.reason === 'snapshot-missing') {
     actionableLine = 'Actionability producer is declared but has not reported a heartbeat — wire the producer.'
-  } else if (snapshot?.producer?.lastOutcome === 'unreachable' &&
-    finiteNumber(snapshot.producer.heartbeatAt) && now - snapshot.producer.heartbeatAt <= STALE_AFTER_MS) {
-    actionableLine = 'Actionability producer could not read the board — check the tracker.'
   } else if (!finiteNumber(snapshot?.producer?.heartbeatAt)) {
     actionableLine = 'Actionability state cannot be distinguished from legacy snapshot evidence — check the tracker.'
   } else {
