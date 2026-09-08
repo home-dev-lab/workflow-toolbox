@@ -8,6 +8,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Changed
 - Let the plugin eval gate track declared expected failures
 - Document `<project root>/.claude/worktrees/<name>` as the gitignored convention for new concurrent worktrees.
+- Require hand-written executor-lane briefs to request report lessons and harvest each report at its lane integration.
+- Require a seam review and merged-tree gates when integrating parallel branches.
 
 ### Fixed
 - Mask secret-guard-tokenised values before guard-journal persistence

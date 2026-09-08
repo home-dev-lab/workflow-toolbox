@@ -130,6 +130,11 @@ commits/pushes, one working directory, sequential execution). Under-specificatio
 review rounds. Executor flags possible completeness gap ("every X must produce Y") → arbiter
 requires the guard or proves case impossible — never files as harmless scope note.
 
+Every hand-written executor-lane brief requires `## Lessons for the memory` in its report, with
+`None.` legitimate, alongside gate evidence. At that lane's integration, harvest that one report;
+never defer reports into an end-of-run pile. Rationale and field cases:
+`docs/wt/wt-delegation-ladder.md` §Executor report lessons.
+
 State INVARIANT executor must reach, not mechanism you guessed reaches it. Prescribing *how*
 caps executor at briefer's own knowledge of a layer executor actually reads. State what must be
 TRUE, let executor find own route — different mechanism for same invariant = brief working,
