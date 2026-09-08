@@ -1,8 +1,12 @@
 # Concurrent sessions — isolate in git worktree, re-integrate only on your go
 
-Create worktree YOURSELF for concurrent work → branch off CURRENT branch:
-`git worktree add ../<dir> -b <session-branch>`. Sessions sharing one tree corrupt each other's
-edits/git state. Per-session worktree = isolated tree over shared `.git`.
+Create worktree YOURSELF for concurrent work under `<project root>/.claude/worktrees/<name>` →
+branch off CURRENT branch: `git worktree add .claude/worktrees/<name> -b <session-branch>`.
+Git-ignore it where the ignore file actually governs: when `.claude/` is its own repository, add `worktrees/` to `.claude/.gitignore`; otherwise add `.claude/worktrees/` to the project root's `.gitignore`. This is the harness convention: it is
+exempt from the `.claude/` protected path, stays visible to root-confined tools, and normal repo
+globs/tests do not descend into it. Sessions sharing one tree corrupt each other's edits/git state.
+Per-session worktree = isolated tree over shared `.git`. Do not mass-move existing worktrees;
+leave them where they are until deliberately purged.
 
 Harness-managed isolated spawns = different mechanism/trap: may start from repo's DEFAULT
 branch, not yours. Work must build on unmerged branch → verify base at spawn time, not after.

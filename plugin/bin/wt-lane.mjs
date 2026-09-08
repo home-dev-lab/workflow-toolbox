@@ -11,7 +11,7 @@ const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <worktree> --model <provider/model> --brief <file> [--timeout 5400] [--log <path>] [--variant <name>]'
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--timeout 5400] [--log <path>] [--variant <name>]'
 }
 
 function parse(argv) {

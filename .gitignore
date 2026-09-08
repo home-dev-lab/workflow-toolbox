@@ -1,4 +1,5 @@
 # Local Claude Code project config + personal skills (not part of the plugin)
+/.claude/worktrees/
 /.claude/
 
 # Private per-developer Claude memory (auto-loaded standalone, must not be committed)

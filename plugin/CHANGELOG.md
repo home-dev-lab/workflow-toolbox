@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 - Let the plugin eval gate track declared expected failures
+- Document `<project root>/.claude/worktrees/<name>` as the gitignored convention for new concurrent worktrees.
 
 ### Fixed
 - Return the bare unavailable marker when the verifier cannot run its Bash probe
