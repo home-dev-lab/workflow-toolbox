@@ -5,6 +5,13 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.172.0] - 2026-09-08
+
+### Release notes
+- Docs audit and coverage audit NOT run for this release (rituals suspended by the owner on 2026-09-03 until the thin-envelope campaign completes).
+- The TypeScript pack ships with its SDK critic/reviewer agents declared but not yet exercised on a real increment (follow-up tracked); treat the pack as experimental.
+- npm packages are NOT published by this release; pending changesets (patterns, pipeline-spec major) are released separately.
+
 ### Added
 - Add an opt-in TypeScript development pack with TDD, gate, and SDK review guidance
 - wt-lane launcher accepts --variant <name> and passes it to opencode (effort axis); a malformed name is refused
