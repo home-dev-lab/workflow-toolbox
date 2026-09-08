@@ -44,7 +44,8 @@
 //   - `WT_GUARD_JOURNAL_DIR` / `WT_GUARD_JOURNAL_NOW` env overrides exist for tests only (see
 //     guard-journal.test.ts) — normal operation never sets them.
 
-import fs from 'node:fs'
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, statSync, writeSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { pluginName, resolvePluginDataDir } from './plugin-data-dir.mjs'
@@ -59,22 +60,22 @@ const MAX_EVIDENCE_KEYS = 6
 const SAFE_FIELD = /^[A-Za-z0-9._/-]+$/
 const SAFE_VALUE_STRIP = /[^A-Za-z0-9._/,-]+/g
 
-function sanitiseValue(value) {
+function sanitiseValue(value, mask = (text) => text) {
   if (typeof value !== 'string' && typeof value !== 'number') return null
-  const sanitised = String(value)
+  const sanitised = mask(String(value))
     .slice(0, MAX_SAFE_FIELD_LEN)
     .replace(SAFE_VALUE_STRIP, '?')
   return sanitised || null
 }
 
-function sanitiseEvidence(evidence) {
+function sanitiseEvidence(evidence, mask) {
   try {
     if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return null
     const out = {}
     let count = 0
     for (const [key, value] of Object.entries(evidence)) {
       if (!key || key.length > MAX_SAFE_FIELD_LEN || !SAFE_FIELD.test(key)) continue
-      const sanitised = sanitiseValue(value)
+      const sanitised = sanitiseValue(value, mask)
       if (sanitised === null) continue
       out[key] = sanitised
       count++
@@ -83,6 +84,47 @@ function sanitiseEvidence(evidence) {
     return Object.keys(out).length > 0 ? out : null
   } catch {
     return null
+  }
+}
+
+let warnedAboutSecretStore = false
+
+function warnSecretStoreUnavailable() {
+  if (warnedAboutSecretStore) return
+  warnedAboutSecretStore = true
+  try { writeSync(2, 'wt-guard-journal: secret guard store unavailable; writing unmasked\n') } catch {}
+}
+
+function secretGuardMasker() {
+  try {
+    const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+    const storeDir = path.join(configDir, 'plugins', 'store')
+    const named = path.join(storeDir, 'wt-secret-guard.json')
+    const storePath = (() => {
+      try {
+        statSync(named)
+        return named
+      } catch {}
+      return readdirSync(storeDir)
+        .filter((name) => /^wt-secret-guard_inline-[^.]+\.json$/.test(name))
+        .map((name) => ({ path: path.join(storeDir, name), mtime: statSync(path.join(storeDir, name)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)[0]?.path
+    })()
+    if (!storePath) throw new Error('store missing')
+    const store = JSON.parse(readFileSync(storePath, 'utf8'))
+    if (typeof store?.salt !== 'string' || !Array.isArray(store?.detections?.entries)) throw new Error('store invalid')
+    const tokens = new Map(store.detections.entries
+      .filter((entry) => typeof entry?.sha256 === 'string' && typeof entry?.token === 'string')
+      .map((entry) => [entry.sha256, entry.token]))
+    return (text) => {
+      const tokenFor = (candidate) => tokens.get(createHash('sha256').update(`${store.salt}:${candidate}`).digest('hex'))
+      const wholeToken = tokenFor(text)
+      if (wholeToken) return wholeToken
+      return text.replace(/\S{16,}/g, (candidate) => tokenFor(candidate) || candidate)
+    }
+  } catch {
+    warnSecretStoreUnavailable()
+    return (text) => text
   }
 }
 
@@ -130,9 +172,9 @@ export function guardMode() {
 export function emitGuardNotice({ payload = null, stdoutJson = null, stdoutText = '', stderrText = '' } = {}) {
   if (guardMode() === 'observe') return false
   if (typeof payload?.agent_id === 'string' && payload.agent_id) return false
-  if (stdoutJson !== null) fs.writeSync(1, `${JSON.stringify(stdoutJson)}`)
-  else if (stdoutText) fs.writeSync(1, stdoutText)
-  if (stderrText) fs.writeSync(2, stderrText)
+  if (stdoutJson !== null) writeSync(1, `${JSON.stringify(stdoutJson)}`)
+  else if (stdoutText) writeSync(1, stdoutText)
+  if (stderrText) writeSync(2, stderrText)
   return true
 }
 
@@ -157,11 +199,12 @@ export function recordGuardEvent(event = {}) {
   try {
     const { guard, decision, class: cls, reason, cwd, session, agent, evidence } = event || {}
     if (!guard || !['blocked', 'warned', 'silent'].includes(decision)) return
+    const mask = secretGuardMasker()
     const dir = baseDir()
-    fs.mkdirSync(dir, { recursive: true })
-    const safeSession = typeof session === 'string' ? sanitiseValue(session) : null
-    const safeAgent = typeof agent === 'string' ? sanitiseValue(agent) : null
-    const safeEvidence = sanitiseEvidence(evidence)
+    mkdirSync(dir, { recursive: true })
+    const safeSession = typeof session === 'string' ? sanitiseValue(session, mask) : null
+    const safeAgent = typeof agent === 'string' ? sanitiseValue(agent, mask) : null
+    const safeEvidence = sanitiseEvidence(evidence, mask)
     const mode = guardMode()
     // Observe mode keeps the detector and the record but the guard said nothing to the model:
     // the recorded decision is then `silent`, never `warned` — a downstream reader that counts
@@ -172,16 +215,16 @@ export function recordGuardEvent(event = {}) {
       guard,
       decision: recorded,
       mode,
-      ...(cls ? { class: cls } : {}),
-      ...(reason ? { reason: String(reason).slice(0, MAX_REASON_LEN) } : {}),
-      ...(cwd ? { cwd } : {}),
+      ...(cls ? { class: mask(String(cls)) } : {}),
+      ...(reason ? { reason: mask(String(reason)).slice(0, MAX_REASON_LEN) } : {}),
+      ...(cwd ? { cwd: mask(String(cwd)) } : {}),
       ...(safeSession ? { session: safeSession } : {}),
       ...(safeAgent ? { agent: safeAgent } : {}),
       pid: process.pid,
       ppid: process.ppid,
       ...(safeEvidence ? { evidence: safeEvidence } : {}),
     }
-    fs.appendFileSync(journalPath(), `${JSON.stringify(entry)}\n`)
+    appendFileSync(journalPath(), `${JSON.stringify(entry)}\n`)
   } catch {
     // Journalling must NEVER be the reason a guard's own decision fails to render. Same
     // fail-open posture as writeFailOpenTrace() in fail-open-trace.mjs.

@@ -215,12 +215,13 @@ describe('WT_GUARD_MODE=observe', () => {
   ]
 
   for (const { hook, make, contains } of cases) {
-    it(`${hook} journals mode=observe and emits nothing`, () => {
+    it(`${hook} journals mode=observe and emits no guard notice`, () => {
       const { payload, env } = make()
       const { observe, enforce } = runWarnAndObserve(hook, payload, env)
       expect(observe.status).toBe(0)
       expect(observe.stdout).toBe('')
-      expect(observe.stderr).toBe('')
+      if (hook === 'wt-observer-pairing-guard-hook.mjs') expect(observe.stderr).toContain('secret guard store unavailable')
+      else expect(observe.stderr).toBe('')
       expect(observe.entries).toHaveLength(1)
       expect(observe.entries[0]).toMatchObject({ guard: hook, decision: 'silent', mode: 'observe' })
       // Through the SHIPPED reader, not the raw file: a silent event that the scan cannot count is

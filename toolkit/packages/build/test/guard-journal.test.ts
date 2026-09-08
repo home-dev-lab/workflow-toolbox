@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -59,6 +60,20 @@ function readAllEntries(): Array<Record<string, unknown>> {
   return out
 }
 
+function secretStore(configDir: string, name: string, value: string, token: string) {
+  const salt = 'test-salt-which-is-long-enough-to-be-valid'
+  const storeDir = join(configDir, 'plugins', 'store')
+  mkdirSync(storeDir, { recursive: true })
+  const storePath = join(storeDir, name)
+  writeFileSync(storePath, JSON.stringify({
+    salt,
+    detections: {
+      entries: [{ token, sha256: createHash('sha256').update(`${salt}:${value}`).digest('hex') }],
+    },
+  }))
+  return storePath
+}
+
 describe('guard-journal — recordGuardEvent', () => {
   it('renders warned notices for the main loop but not a subagent', () => {
     const main = emitNotice({})
@@ -83,6 +98,37 @@ describe('guard-journal — recordGuardEvent', () => {
       ppid: expect.any(Number),
     })
     expect(typeof entries[0]!.ts).toBe('string')
+  })
+
+  it('RED: replaces a matching candidate using the named secret-guard store before persisting', () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'wt-secret-store-test-'))
+    const value = ['synthetic', 'token', 'value', '123456789'].join('-')
+    const token = 'secret:test#named'
+    secretStore(configDir, 'wt-secret-guard.json', value, token)
+    try {
+      const res = record({ guard: 'wt-example-guard-hook.mjs', decision: 'blocked', reason: value }, { CLAUDE_CONFIG_DIR: configDir })
+      expect(res.status).toBe(0)
+      expect(readAllEntries()[0]!.reason === token).toBe(true)
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+  })
+
+  it('RED: uses the newest inline secret-guard store before persisting', () => {
+    const configDir = mkdtempSync(join(tmpdir(), 'wt-secret-store-test-'))
+    const value = ['synthetic', 'token', 'value', '987654321'].join('-')
+    const token = 'secret:test#inline'
+    const oldValue = ['synthetic', 'token', 'value', '111111111'].join('-')
+    const oldStore = secretStore(configDir, 'wt-secret-guard_inline-old.json', oldValue, 'secret:test#old')
+    utimesSync(oldStore, 1, 1)
+    secretStore(configDir, 'wt-secret-guard_inline-current.json', value, token)
+    try {
+      const res = record({ guard: 'wt-example-guard-hook.mjs', decision: 'blocked', reason: value }, { CLAUDE_CONFIG_DIR: configDir })
+      expect(res.status).toBe(0)
+      expect(readAllEntries()[0]!.reason === token).toBe(true)
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
+    }
   })
 
   it('writes one NDJSON line for a warned decision', () => {
@@ -150,10 +196,10 @@ describe('guard-journal — recordGuardEvent', () => {
     writeFileSync(blockerFile, 'x')
     const res = record(
       { guard: 'wt-example-guard-hook.mjs', decision: 'blocked' },
-      { WT_GUARD_JOURNAL_DIR: join(blockerFile, 'journal') },
+      { WT_GUARD_JOURNAL_DIR: join(blockerFile, 'journal'), CLAUDE_CONFIG_DIR: journalDir },
     )
     expect(res.status).toBe(0)
-    expect(res.stderr).toBe('')
+    expect(res.stderr).toContain('secret guard store unavailable')
   })
 
   it('reason is truncated so one enormous command never blows up the journal file', () => {
