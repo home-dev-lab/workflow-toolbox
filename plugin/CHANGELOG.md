@@ -8,6 +8,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Changed
 - Let the plugin eval gate track declared expected failures
 
+### Fixed
+- Return the bare unavailable marker when the verifier cannot run its Bash probe
+
 ## [0.172.0] - 2026-09-08
 
 ### Release notes

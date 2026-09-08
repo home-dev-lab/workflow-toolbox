@@ -84,12 +84,14 @@ describe('wt-plugin-eval-gate', () => {
   })
 
   it('allows a declared expected failure', () => {
-    withFixture(resultFor('opencode-verifier-unavailable', false), (fixture) => {
-      const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+    withExpectedFailures(JSON.stringify([{ case: 'declared-failure', reason: 'sandbox limitation' }]), () => {
+      withFixture(resultFor('declared-failure', false), (fixture) => {
+        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
 
-      expect(result.status).toBe(0)
-      expect(result.stdout).toContain("plugin eval: expected failure opencode-verifier-unavailable — The eval sandbox has no Bash, so the verifier's command -v opencode probe cannot run there.")
-      expect(result.stdout).toContain('plugin eval: passed 0/1, expected failures 1')
+        expect(result.status).toBe(0)
+        expect(result.stdout).toContain('plugin eval: expected failure declared-failure — sandbox limitation')
+        expect(result.stdout).toContain('plugin eval: passed 0/1, expected failures 1')
+      })
     })
   })
 
@@ -103,11 +105,13 @@ describe('wt-plugin-eval-gate', () => {
   })
 
   it('rejects an expected-failure declaration when the case now passes', () => {
-    withFixture(resultFor('opencode-verifier-unavailable', true), (fixture) => {
-      const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+    withExpectedFailures(JSON.stringify([{ case: 'declared-passing', reason: 'sandbox limitation' }]), () => {
+      withFixture(resultFor('declared-passing', true), (fixture) => {
+        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
 
-      expect(result.status).toBe(1)
-      expect(result.stdout).toContain('plugin eval: expected failure opencode-verifier-unavailable now passes — remove its declaration')
+        expect(result.status).toBe(1)
+        expect(result.stdout).toContain('plugin eval: expected failure declared-passing now passes — remove its declaration')
+      })
     })
   })
 
