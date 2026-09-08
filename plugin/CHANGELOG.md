@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Add an opt-in TypeScript development pack with TDD, gate, and SDK review guidance
 - wt-lane launcher accepts --variant <name> and passes it to opencode (effort axis); a malformed name is refused
 - Require the five SDLC closing-report sections in the findings checker.
 - Add read-only gate-record status checks
