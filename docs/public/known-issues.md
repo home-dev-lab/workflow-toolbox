@@ -23,8 +23,10 @@ FULL; this increment deliberately adds neither a runner nor a second state track
 
 `node plugin/bin/wt-report-findings-check.mjs <report>` checks that a closing report has a
 `## Findings` section containing either `None.` or a Markdown table with one allowed disposition
-per row. It prints its active regime with every result. The checker warns through 2026-09-13 and
-blocks on 2026-09-14; set `WT_FINDINGS_DISPOSITION_MODE=block` to switch early. The
+per row, plus non-empty `## Implemented`, `## Verification`, `## Independent Review`,
+`## Decisions`, and `## Remaining Risks` sections; pass `--no-shape` for a non-closing report.
+It prints its active regime with every result. The checker warns through 2026-09-13 and blocks on
+2026-09-14; set `WT_FINDINGS_DISPOSITION_MODE=block` to switch early. The
 `WT_FINDINGS_DISPOSITION_NOW` clock override exists for deterministic tests.
 
 ## Open items

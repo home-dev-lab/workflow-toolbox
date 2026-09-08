@@ -1,24 +1,28 @@
 #!/usr/bin/env node
-// Validate only a closing report's Findings disposition contract. This is a separate CLI so
-// lesson harvesting retains its stable extraction-only exit-code contract.
+// Validate a closing report's Findings dispositions and required report shape. This remains a
+// separate CLI so lesson harvesting retains its stable extraction-only exit-code contract.
 
 import { readFileSync } from 'node:fs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 
 export const PROBATION_UNTIL = '2026-09-14'
 
-const HELP = `wt-report-findings-check — validate a closing report's ## Findings dispositions.
+const HELP = `wt-report-findings-check — validate a closing report's Findings dispositions and shape.
 
 Usage:
-  node wt-report-findings-check.mjs <report.md>
+  node wt-report-findings-check.mjs [--no-shape] <report.md>
 
-Prints the Findings row count, rows without exactly one disposition, and the active warn/block
-probation mode. Set WT_FINDINGS_DISPOSITION_MODE=block to block before ${PROBATION_UNTIL}.
+Checks ## Implemented, ## Verification, ## Independent Review, ## Decisions, and ## Remaining
+Risks unless --no-shape is supplied for a non-closing report. Prints Findings disposition and
+shape failures in the same warn/block probation mode. Set WT_FINDINGS_DISPOSITION_MODE=block to
+block before ${PROBATION_UNTIL}.
 `
 
-function extractFindings(markdown) {
+const REQUIRED_SECTIONS = ['Implemented', 'Verification', 'Independent Review', 'Decisions', 'Remaining Risks']
+
+function extractSection(markdown, name) {
   const lines = markdown.split(/\r?\n/)
-  const start = lines.findIndex((line) => /^##\s+Findings\s*$/i.test(line))
+  const start = lines.findIndex((line) => new RegExp(`^##\\s+${name}\\s*$`, 'i').test(line))
   if (start === -1) return { found: false, body: '' }
   const end = lines.findIndex((line, index) => index > start && /^##\s+\S/.test(line))
   return { found: true, body: lines.slice(start + 1, end === -1 ? lines.length : end).join('\n').trim() }
@@ -49,7 +53,7 @@ export function resolveMode(env = process.env) {
 }
 
 export function checkFindings(markdown, env = process.env) {
-  const section = extractFindings(markdown)
+  const section = extractSection(markdown, 'Findings')
   const mode = resolveMode(env)
   if (!section.found) return { rows: 0, withoutDisposition: 1, mode }
   const table = findingsRows(section.body)
@@ -61,9 +65,18 @@ export function checkFindings(markdown, env = process.env) {
   }
 }
 
+export function checkReportShape(markdown) {
+  return REQUIRED_SECTIONS.filter((name) => {
+    const section = extractSection(markdown, name)
+    return !section.found || !section.body
+  })
+}
+
 function main() {
-  handleHelpFlag(process.argv.slice(2), HELP)
-  const [reportPath] = process.argv.slice(2)
+  const args = process.argv.slice(2)
+  handleHelpFlag(args, HELP)
+  const skipShape = args.includes('--no-shape')
+  const [reportPath] = args.filter((arg) => arg !== '--no-shape')
   if (!reportPath) {
     process.stderr.write('usage: wt-report-findings-check.mjs <report.md>\n')
     process.exit(2)
@@ -76,10 +89,19 @@ function main() {
     process.exit(2)
   }
   const result = checkFindings(markdown)
+  const missingSections = skipShape ? [] : checkReportShape(markdown)
   process.stdout.write(
     `findings: ${result.rows} rows, ${result.withoutDisposition} without disposition (mode=${result.mode}, probation until ${PROBATION_UNTIL})\n`,
   )
-  process.exit(result.mode === 'block' && result.withoutDisposition > 0 ? 1 : 0)
+  if (skipShape) {
+    process.stdout.write('closing report shape: skipped (--no-shape)\n')
+  } else if (missingSections.length > 0) {
+    for (const name of missingSections) {
+      process.stdout.write(`closing report section: ${name} is missing or empty\n`)
+    }
+    process.stdout.write(`closing report shape: ${missingSections.length} required section${missingSections.length === 1 ? '' : 's'} missing or empty\n`)
+  }
+  process.exit(result.mode === 'block' && (result.withoutDisposition > 0 || missingSections.length > 0) ? 1 : 0)
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) main()

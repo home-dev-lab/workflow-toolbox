@@ -11,12 +11,12 @@ const roots: string[] = []
 
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-function run(markdown: string, env: Record<string, string> = {}) {
+function run(markdown: string, env: Record<string, string> = {}, args: string[] = []) {
   const root = mkdtempSync(join(tmpdir(), 'wt-report-findings-'))
   roots.push(root)
   const report = join(root, 'report.md')
   writeFileSync(report, markdown)
-  const result = spawnSync(process.execPath, [SCRIPT, report], {
+  const result = spawnSync(process.execPath, [SCRIPT, ...args, report], {
     encoding: 'utf8',
     env: { ...process.env, ...env },
   })
@@ -24,6 +24,42 @@ function run(markdown: string, env: Record<string, string> = {}) {
 }
 
 describe('wt-report-findings-check', () => {
+  const closingSections = [
+    '## Implemented\n\nCompleted the change.',
+    '## Verification\n\nPassed.',
+    '## Independent Review\n\nNo findings.',
+    '## Decisions\n\nNo decisions.',
+    '## Remaining Risks\n\nNone.',
+  ]
+  const findings = '## Findings\n\nNone.'
+
+  it('does not print a shape line when every required closing-report section is present', () => {
+    const result = run([...closingSections, findings].join('\n\n'))
+    expect(result.status).toBe(0)
+    expect(result.stdout).not.toContain('closing report shape:')
+  })
+
+  it('names a missing required closing-report section', () => {
+    const result = run([...closingSections.filter((section) => !section.startsWith('## Decisions')), findings].join('\n\n'))
+    expect(result.stdout).toContain('closing report section: Decisions is missing or empty')
+  })
+
+  it('names an empty required closing-report section', () => {
+    const result = run([...closingSections.map((section) => section.startsWith('## Verification') ? '## Verification\n\n   ' : section), findings].join('\n\n'))
+    expect(result.stdout).toContain('closing report section: Verification is missing or empty')
+  })
+
+  it('skips the closing-report shape check with --no-shape', () => {
+    const result = run(findings, {}, ['--no-shape'])
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('closing report shape: skipped (--no-shape)')
+  })
+
+  it('blocks a missing required closing-report section in block mode', () => {
+    const result = run(findings, { WT_FINDINGS_DISPOSITION_MODE: 'block' })
+    expect(result.status).toBe(1)
+  })
+
   it('accepts an explicit None.', () => {
     const result = run('# Report\n\n## Findings\n\nNone.\n')
     expect(result.status).toBe(0)
