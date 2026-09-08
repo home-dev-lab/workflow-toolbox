@@ -36,11 +36,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 - Add adoptable SDLC engineering protocol rule
-- Add TypeScript pack SDK agent runner
-
-## [0.172.1] - 2026-09-08
-
-### Added
+- Add the TypeScript pack SDK agent runner as a toolkit development utility
+  (`toolkit/scripts/run-typescript-pack-agent.mjs`), not a shipped plugin file
 - Add `wt-piped-gate-exit-code-guard-hook.mjs`, a journaled warn-only warning for control-gate
   pipelines whose following `$?` would read the final pipeline element rather than the gate.
 - SessionStart adopt checks now report each divergent managed copy as `behind vX` or `ahead of vX`
@@ -119,13 +116,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   `wt-adopt-check-hook.selftest.mjs` (12 cases); the hook's entry point now runs only when executed, so the
   selftest can import it.
 
-
 ### Changed
 
 - Raised `@anthropic-ai/claude-agent-sdk` from `^0.3.205` to `^0.3.260` for the upgrade canary. Claude Code 2.1.260 can send a completed task notification before its output file is fully written, so the canary retries a transient partial-file read.
 - The opencode envelope now stores each invocation's manifest, task copies, and answers under its workdir-scoped `.wt-envelope/` directory.
 - The opencode envelope records each task's requested model and returns a JSON-encoded answer on the successful single-task batch's one `MANIFEST:` line, allowing schema callers to validate the script-owned result; invocation manifests are named `envelope.manifest.json` for manifest readers.
-
 
 ### Added
 
@@ -143,7 +138,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   published, so every adopter still met it; and a rule whose own lifting condition had been
   satisfied and recorded elsewhere while the rule still said it had not been proven. Nothing was
   wrong when written; each simply outlived the state it described.
-
 
 ### Added
 
@@ -188,7 +182,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   `Agent type not found` and were simply too early — do not read one refusal as impossibility, and
   re-probe instead of concluding.
 
-
 ### Added
 
 - **A task's remaining-work ledger is a claim about the tree, and the briefing guidance now says to
@@ -201,7 +194,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   names the favourable tell — a lane returning a clean tree or a suspiciously small diff — and the
   one command that settles it before the brief is written.
 
-
 ### Added
 
 - **The briefing guidance now carries a platform check.** `wt-delegation-ladder.md`’s “Briefing an
@@ -213,7 +205,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   the competence of both parties is exactly what hides the cause. The clause covers a tool, a write
   path, an output channel or an agent type, and says to confirm at brief time rather than infer
   from the rule that prescribes it.
-
 
 ### Fixed
 
@@ -243,7 +234,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   to the resolver, including the one that made it work, while its green had never been evidence
   that the path resolved at all. Resolution correctness is locked executably in
   `opencode-plugin-root-resolution.test.ts`.
-
 
 ### Added
 
@@ -441,7 +431,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   importing it hangs on a stdin nothing closes. Both bounds are proven red independently: deleting
   the allow-list reddens only the outside-root case, deleting `realpath` reddens only the
   symlinked-directory case.
-
 
 ### Added
 
@@ -1193,7 +1182,6 @@ assumed.
   changed, so a future test that bypasses the redirect (e.g. constructs its own `env: {}`)
   cannot silently reintroduce the leak. A full `pnpm test` run now leaves the real journal
   location byte-for-byte unchanged (verified: identical file list and MD5 before/after).
-
 
 
 ### Added
