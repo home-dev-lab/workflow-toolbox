@@ -51,27 +51,29 @@ export function worktreeActivity(root, cutoff, {
 }
 
 export function registeredWorktrees(root, { spawnSyncImpl = spawnSync } = {}) {
-  if (!root) return []
+  if (!root) return { status: 'no-root', worktrees: [] }
   try {
     const result = spawnSyncImpl('git', ['-C', root, 'worktree', 'list', '--porcelain'], {
       encoding: 'utf8',
       timeout: 1_000,
     })
-    if (result.status !== 0 || typeof result.stdout !== 'string') return [root]
+    if (result.status !== 0 || typeof result.stdout !== 'string') return { status: 'unknown', worktrees: [] }
     const worktrees = result.stdout
       .split('\n')
       .filter((line) => line.startsWith('worktree '))
       .map((line) => line.slice('worktree '.length))
-    return worktrees.length > 0 ? [...new Set(worktrees)] : [root]
+    return worktrees.length > 0
+      ? { status: 'known', worktrees: [...new Set(worktrees)] }
+      : { status: 'unknown', worktrees: [] }
   } catch {
-    return [root]
+    return { status: 'unknown', worktrees: [] }
   }
 }
 
-export function registeredWorktreeActivity(root, cutoff) {
-  if (!root) return 'no-root'
+export function registeredWorktreeActivity(worktreeScan, cutoff) {
+  if (worktreeScan.status !== 'known') return worktreeScan.status
   let status = 'idle'
-  for (const worktree of registeredWorktrees(root)) {
+  for (const worktree of worktreeScan.worktrees) {
     const activity = worktreeActivity(worktree, cutoff)
     if (activity === 'recent') return 'recent'
     if (activity === 'bounded') status = 'bounded'
@@ -79,9 +81,9 @@ export function registeredWorktreeActivity(root, cutoff) {
   return status
 }
 
-export function hasActiveLaneLog(root, cutoff) {
-  if (!root) return false
-  for (const worktree of registeredWorktrees(root)) {
+export function hasActiveLaneLog(worktreeScan, cutoff) {
+  if (worktreeScan.status !== 'known') return false
+  for (const worktree of worktreeScan.worktrees) {
     const log = join(worktree, '.lane', 'run.log')
     try {
       if (statSync(log).mtimeMs < cutoff) continue

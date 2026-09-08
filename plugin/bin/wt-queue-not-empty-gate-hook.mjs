@@ -131,7 +131,7 @@ import { homedir } from 'node:os'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { queueSnapshotFileName, queueSnapshotSlug, resolveQueueSnapshotPath } from './lib/queue-snapshot-path.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
-import { ACTIVITY_WINDOW_MIN, hasActiveLaneLog, registeredWorktreeActivity } from './lib/lane-live-scan.mjs'
+import { ACTIVITY_WINDOW_MIN, hasActiveLaneLog, registeredWorktrees, registeredWorktreeActivity } from './lib/lane-live-scan.mjs'
 import { expireMarker, expireOwnedMarkers } from './lib/queue-gate-marker-expiry.mjs'
 
 const STATE_DIR = process.env.WT_QUEUE_GATE_DIR
@@ -205,9 +205,10 @@ try {
 
 const activityRoot = resolveActivityRoot(cwd)
 const activityCutoff = Date.now() - ACTIVITY_WINDOW_MIN * 60_000
-const activityStatus = registeredWorktreeActivity(activityRoot, activityCutoff)
+const worktreeScan = registeredWorktrees(activityRoot)
+const activityStatus = registeredWorktreeActivity(worktreeScan, activityCutoff)
 if (activityStatus === 'recent') bail()
-if (hasActiveLaneLog(activityRoot, activityCutoff)) bail()
+if (hasActiveLaneLog(worktreeScan, activityCutoff)) bail()
 
 // --- 2. Does this project have a tracker wired to this guard at all? ---------------------
 // ⚠ THE ABSTRACTION POINT — see the header. No marker ever written ⇒ silent, permanently, for
@@ -419,7 +420,9 @@ process.stdout.write(
           ? 'no recent worktree activity'
           : activityStatus === 'no-root'
             ? 'Worktree activity is unknown — no git root resolved'
-            : 'Worktree activity is unknown — scan bounded out'} · ` +
+            : activityStatus === 'bounded'
+              ? 'Worktree activity is unknown — scan bounded out'
+              : 'Worktree activity is unknown — git worktree enumeration failed'} · ` +
         (snapshotAncestor ? `using ancestor snapshot from ${snapshotAncestor} · ` : '') +
         (openCount === null
           ? (queueStatus === 'stale'

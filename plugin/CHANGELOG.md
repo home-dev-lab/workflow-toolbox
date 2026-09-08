@@ -22,6 +22,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - `wt-queue-not-empty-gate-hook` now treats recent files in every registered git worktree and a
   fresh non-terminal `.lane/run.log` as in-flight external lane work. A terminal `EXIT=<n>` log and
   a merely live process do not suppress the gate.
+- `wt-queue-not-empty-gate-hook` now reports worktree activity as unknown when Git worktree
+  enumeration fails, times out, or returns malformed output instead of claiming the root is idle.
 - Mask secret-guard-tokenised values before guard-journal persistence
 - Mask secret-guard-tokenised values when embedded in guard-journal fields
 - Return the bare unavailable marker when the verifier cannot run its Bash probe

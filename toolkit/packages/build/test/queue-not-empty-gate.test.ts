@@ -7,6 +7,9 @@ import { createHash } from 'node:crypto'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+// @ts-expect-error TS7016 -- lane-live-scan.mjs is a shipped plain-JS plugin script.
+import { registeredWorktrees } from '../../../../plugin/bin/lib/lane-live-scan.mjs'
+
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-queue-not-empty-gate-hook.mjs')
 const HELP_FILE = join(REPO_ROOT, 'plugin/bin/wt-queue-not-empty-gate-hook.help.md')
@@ -45,7 +48,7 @@ function scaffold(tag: string): Scaffold {
   const transcriptPath = join(root, 'transcript.jsonl')
   mkdirSync(cwd, { recursive: true })
   mkdirSync(procRoot)
-  writeFileSync(join(cwd, '.git'), 'gitdir: /dev/null\n', 'utf8')
+  if (spawnSync('git', ['init', '--quiet'], { cwd }).status !== 0) throw new Error('git init failed')
   writeFileSync(transcriptPath, '')
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -94,6 +97,35 @@ function blockText(r: { stdout: string }): string {
     return ''
   }
 }
+
+describe('registeredWorktrees', () => {
+  it('returns unknown when git is unavailable', () => {
+    expect(registeredWorktrees('/repo', {
+      spawnSyncImpl: () => ({ error: new Error('ENOENT'), status: null }),
+    })).toEqual({ status: 'unknown', worktrees: [] })
+  })
+
+  it('returns unknown when git worktree enumeration times out', () => {
+    expect(registeredWorktrees('/repo', {
+      spawnSyncImpl: () => ({ signal: 'SIGTERM', status: null, stdout: '' }),
+    })).toEqual({ status: 'unknown', worktrees: [] })
+  })
+
+  it('returns unknown for malformed git worktree output', () => {
+    expect(registeredWorktrees('/repo', {
+      spawnSyncImpl: () => ({ status: 0, stdout: 'not porcelain output\n' }),
+    })).toEqual({ status: 'unknown', worktrees: [] })
+  })
+
+  it('reports failed enumeration as unknown in the queue guard', () => {
+    const { env, payload, stateDir, cwd } = scaffold('unavailable-worktree-enumeration')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+
+    const r = runHook(payload, { ...env, PATH: '' })
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toContain('Worktree activity is unknown — git worktree enumeration failed')
+  })
+})
 
 describe('wt-queue-not-empty-gate-hook: emission shape', () => {
   it('uses one exported 12-minute window for registered-worktree and lane-log liveness', () => {
@@ -191,7 +223,7 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     const { env, payload, stateDir, cwd } = scaffold('registered-worktree-activity')
     const lane = join(dirname(cwd), 'registered-lane')
     writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
-    rmSync(join(cwd, '.git'), { force: true })
+    rmSync(join(cwd, '.git'), { recursive: true, force: true })
     expect(spawnSync('git', ['init', '--quiet'], { cwd }).status).toBe(0)
     expect(spawnSync('git', ['config', 'user.email', 'queue-gate@example.test'], { cwd }).status).toBe(0)
     expect(spawnSync('git', ['config', 'user.name', 'Queue Gate'], { cwd }).status).toBe(0)
@@ -298,7 +330,7 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     messages.idle = blockText(runHook(idle.payload, idle.env))
 
     const noRoot = scaffold('activity-status-no-root')
-    rmSync(join(noRoot.cwd, '.git'), { force: true })
+    rmSync(join(noRoot.cwd, '.git'), { recursive: true, force: true })
     writeSnapshot(noRoot.stateDir, noRoot.cwd, { open: 6, at: Date.now(), next: 'activity item' })
     messages['no-root'] = blockText(runHook(noRoot.payload, noRoot.env))
 
