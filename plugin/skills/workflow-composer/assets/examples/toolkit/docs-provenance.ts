@@ -61,6 +61,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this release-only early-access eval gate, its covered contracts, and its honest skip output.',
   },
   {
+    script: 'plugin/bin/wt-opencode-verify.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the one-command verifier entry point and the allow rule that covers it; the opencode-verifier agent definition is its only caller.',
+  },
+  {
     script: 'plugin/bin/wt-lane.mjs',
     status: 'mapped',
     reason: 'README, known-issues, and the external-lane skill document the stable adopted launcher and lifecycle contract.',
@@ -526,6 +531,10 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/skills/workflow-composer/references/model-and-agent-routing.md',
       'plugin/skills/workflow-debugger/SKILL.md',
     ],
+  },
+  {
+    sources: ['plugin/bin/wt-opencode-verify.mjs', 'plugin/agents/opencode-verifier.md', 'plugin/launch-agents/agents/opencode-verifier.md'],
+    docs: ['docs/public/known-issues.md'],
   },
   {
     sources: ['plugin/bin/wt-lane.mjs', 'plugin/skills/external-lane/'],

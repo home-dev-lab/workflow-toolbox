@@ -2160,6 +2160,10 @@ ${renderClaim(claim)}`;
       ]
     },
     {
+      sources: ["plugin/bin/wt-opencode-verify.mjs", "plugin/agents/opencode-verifier.md", "plugin/launch-agents/agents/opencode-verifier.md"],
+      docs: ["docs/public/known-issues.md"]
+    },
+    {
       sources: ["plugin/bin/wt-lane.mjs", "plugin/skills/external-lane/"],
       docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
     },

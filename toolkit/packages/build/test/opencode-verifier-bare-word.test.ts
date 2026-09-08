@@ -13,11 +13,14 @@ const FILES = ['plugin/agents/opencode-verifier.md', 'plugin/launch-agents/agent
 describe('opencode-verifier runs the CLI as the bare word opencode', () => {
   for (const rel of FILES) {
     const text = readFileSync(join(ROOT, rel), 'utf8')
-    it(`${rel}: the step-5 run line starts with "timeout 570 opencode run"`, () => {
-      expect(text).toMatch(/`timeout 570 opencode run "/)
+    it(`${rel}: RED: never embeds a heredoc in the agent definition`, () => {
+      expect(text).not.toContain("<<'EOF'")
     })
-    it(`${rel}: no CLI run goes through "$BIN" run`, () => {
-      expect(text).not.toMatch(/"\$BIN" run\b/)
+    it(`${rel}: invokes the stable verifier entrypoint`, () => {
+      expect(text).toMatch(/node "\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/wt-opencode-verify\.mjs"/)
+    })
+    it(`${rel}: does not embed an opencode CLI run`, () => {
+      expect(text).not.toMatch(/opencode run/)
     })
     it(`${rel}: the path-scan fallback is named as not coverable by an allow rule`, () => {
       expect(text).toMatch(/NOT coverable by an allow rule/)

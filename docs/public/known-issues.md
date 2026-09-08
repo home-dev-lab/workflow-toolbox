@@ -452,3 +452,26 @@ The guard is warn-only for its first 19 journalled firings, naming MISSING, RED,
 Fires, never blocks, when a `Write`/`Edit`/`MultiEdit` call lands under a `plugin/` directory, under `<config-dir>/scripts/`, or under `<config-dir>/agents/` or `<config-dir>/skills/` — the three shapes whose edits reach an audience beyond the editing session: plugin adopters, every session on the same machine, or every session sharing that config dir or project. The trigger is mechanical (a path shape); the report is judgment the hook cannot supply, so it asks four questions — who gets it, when, what changed, and whether a shipped twin needs the same fix — and never answers them. Silence means only that no matched path was touched, never that nothing needs propagating.
 
 It deliberately does not cover `<config-dir>/rules/*.md` — `wt-rule-edit-horizon-hook.mjs` already speaks on ambient rule edits, and two reminders on one edit is how a reminder gets switched off.
+
+## Opencode verifier allow rule
+
+The opt-in verifier makes one stable Bash call per external attempt. Allow the bundled entrypoint
+with `Bash(node */bin/wt-opencode-verify.mjs:*)`. This covers its task-file copy and cleanup,
+closed child stdin, 570-second timeout, and one rate-limit retry without allowing arbitrary shell
+chains. The installer-path `"$BIN"` fallback used when `opencode` is absent from PATH remains
+inside the script and is not independently coverable by a rule.
+
+## External lane liveness scope
+
+The queue stop gate checks recent disk activity and `.lane/run.log` records only in worktrees
+registered to the Git repository enclosing the hook's current directory. A lane working in an
+unrelated repository is not liveness evidence for that project; a mere live process is deliberately
+not treated as progress because it may be hung.
+
+## Adopted lane launcher dependency
+
+The adopted `wt-lane.mjs` launcher resolves and imports the installed Workflow Toolbox consent
+resolver from `CLAUDE_PLUGIN_ROOT`, `WT_PLUGIN_ROOT`, or the active config directory's
+`~/.claude/plugins/installed_plugins.json` (the config dir's plugin registry). If none is available, or the resolver cannot load, it refuses to
+launch. This deliberately prevents an adopted launcher from making a stale or fail-open consent
+decision without the plugin.

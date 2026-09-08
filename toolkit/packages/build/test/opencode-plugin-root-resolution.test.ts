@@ -195,18 +195,13 @@ describe('opencode-envelope / opencode-verifier — plugin-root resolution under
     const rel = path.slice(REPO_ROOT.length)
     describe(rel, () => {
       const source = readFileSync(path, 'utf8')
-      const exprs = extractPluginRootExprs(source, 'wt-opencode-json-extractor\\.mjs')
 
-      it('carries the extractor-resolving expression at least twice (happy path + 429-retry path)', () => {
-        expect(exprs.length).toBeGreaterThanOrEqual(2)
+      it('uses the stable shipped verifier entrypoint rather than resolving an extractor in the prompt', () => {
+        expect(source).toContain('node "${CLAUDE_PLUGIN_ROOT}/bin/wt-opencode-verify.mjs"')
       })
 
-      it('EVERY occurrence resolves under the Workflow-tool case (both variables unset)', () => {
-        for (const expr of exprs) {
-          const { stdout, status } = resolveInBash(expr, noPluginRootEnv())
-          expect(status).toBe(0)
-          expect(stdout).toBe(pluginContentRoot)
-        }
+      it('does not retain the prompt-owned JSON extractor invocation', () => {
+        expect(source).not.toContain('wt-opencode-json-extractor.mjs')
       })
     })
   }

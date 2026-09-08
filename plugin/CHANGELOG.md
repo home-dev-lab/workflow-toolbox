@@ -12,6 +12,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Require a seam review and merged-tree gates when integrating parallel branches.
 
 ### Fixed
+- `opencode-verifier` now invokes one stable `wt-opencode-verify.mjs` command, so a narrow allow
+  rule covers the complete call rather than only one segment of its former shell chain.
 - `wt-queue-not-empty-gate-hook` now treats recent files in every registered git worktree and a
   fresh non-terminal `.lane/run.log` as in-flight external lane work. A terminal `EXIT=<n>` log and
   a merely live process do not suppress the gate.
