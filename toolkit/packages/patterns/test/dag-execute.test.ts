@@ -5,10 +5,12 @@ import { dagExecute } from '../src/dag-execute.js'
 describe('dagExecute', () => {
   it('runs independent nodes in the same wave concurrently', async () => {
     const rt = new FakeRuntime()
-    const delayMs = 50
     const started: string[] = []
+    let release: () => void = () => {}
+    const bothStarted = new Promise<void>((resolve) => {
+      release = resolve
+    })
 
-    const start = Date.now()
     const result = await dagExecute(rt, {
       nodes: [
         { id: 'A', dependsOn: [] },
@@ -16,14 +18,13 @@ describe('dagExecute', () => {
       ],
       run: async (node) => {
         started.push(node.id)
-        await new Promise((resolve) => setTimeout(resolve, delayMs))
+        if (started.length === 2) release()
+        await bothStarted
         return `${node.id}-done`
       },
     })
-    const elapsed = Date.now() - start
 
     expect(started).toEqual(['A', 'B'])
-    expect(elapsed).toBeLessThan(delayMs * 2 - 10)
     expect(result.value.waves).toBe(1)
     expect(result.stats.agentsSpawned).toBe(2)
   })

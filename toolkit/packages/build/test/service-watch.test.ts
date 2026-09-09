@@ -20,7 +20,7 @@
 // process would see them across successive polls.
 
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, readdirSync, existsSync, utimesSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, readdirSync, existsSync, utimesSync, watch } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -1160,32 +1160,32 @@ ${
     const counterPath = join(cfg, 'counter.txt')
     writeCounterProbe(cfg, counterPath, 'always-succeed')
 
-    // This test needs a REAL steady-state cycle boundary to inject the attack between
-    // cycle 1 (which legitimately writes a COMPLETE cache) and cycle 2 (which must reject
-    // whatever is on disk by then) — so it does NOT use the sleep-log seam (which would
-    // collapse the gap to ~0ms) for this run. --poll 5 (the CLI floor) keeps the real wait
-    // small and bounded; the ~800ms injection delay leaves a generous ~4.2s margin before
-    // cycle 2 actually reads the cache, which is what makes this robust under load rather
-    // than a re-run of the counting-race flake this file's tests were rewritten to avoid —
-    // the assertion is exact-count-after-self-exit, not a count sampled inside a window.
+    // Inject after the watcher itself reports that cycle 1 has reached its sleep boundary.
+    // This is an event from the process under test, rather than a wall-clock estimate of
+    // when a contended child process will have finished its first cycle.
+    const sleepLogPath = join(cfg, 'sleeps.log')
+    writeFileSync(sleepLogPath, '')
     const res = await new Promise<{ stdout: string; timedOut: boolean }>((resolve) => {
       const child = spawn(process.execPath, [QUOTA_WATCH, '--poll', '5', '--timeout', '1'], {
-        env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, WT_QUOTA_WATCH_TEST_MAX_CYCLES: '2' },
+        env: {
+          ...process.env,
+          CLAUDE_CONFIG_DIR: cfg,
+          WT_QUOTA_WATCH_TEST_MAX_CYCLES: '2',
+          WT_QUOTA_WATCH_TEST_SLEEP_LOG: sleepLogPath,
+        },
       })
       let stdout = ''
       child.stdout.on('data', (d) => {
         stdout += d
       })
-      const injectAttack = setTimeout(() => {
+      const sleepWatcher = watch(sleepLogPath, () => {
+        const sleeps = readSleepLog(sleepLogPath)
+        if (sleeps.length !== 1) return
+        sleepWatcher.close()
         writeFileSync(join(cfg, '.quota-cache.json'), JSON.stringify({ at: Date.now(), data: { configDir: cfg, seven_day: { pct: 50 } } })) // five_hour missing
-      }, 800)
-      const safety = setTimeout(() => {
-        child.kill('SIGKILL')
-        resolve({ stdout, timedOut: true })
-      }, 12_000)
+      })
       child.on('close', () => {
-        clearTimeout(injectAttack)
-        clearTimeout(safety)
+        sleepWatcher.close()
         resolve({ stdout, timedOut: false })
       })
     })
@@ -1195,7 +1195,7 @@ ${
     // corrupted to partial in between) — BOTH hit the live probe. If cycle 2 had accepted
     // the corrupted partial cache, the counter would still read 1.
     expect(readCounter(counterPath)).toBe(2)
-  }, 15_000)
+  })
 
   it('a live probe refills the shared cache in the format the per-turn hook reads', async () => {
     const cfg = tmpRoot('wt-quota-watch-cache-')

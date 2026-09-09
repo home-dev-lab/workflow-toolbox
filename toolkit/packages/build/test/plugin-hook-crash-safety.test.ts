@@ -445,7 +445,9 @@ function runHook(hookPath: string, payload: unknown, sandbox: Sandbox): HookRun 
     env: sandbox.env,
     input,
     encoding: 'utf8',
-    timeout: 10_000,
+    // Hook startup is intentionally exercised under the full child-process suite; allow
+    // CPU contention to delay Node startup without turning a healthy exit into a false crash.
+    timeout: 30_000,
   })
 
   return {
@@ -499,7 +501,7 @@ describe('plugin hook crash safety', () => {
         cleanupSandbox(sandbox)
       }
     }
-  })
+  }, 60_000)
 
   it('healthy decline stays green: a hook that decides the event is irrelevant remains silent and non-crashing', () => {
     const hookPath = join(REPO_ROOT, 'plugin/bin/wt-spawn-shape-guard-hook.mjs')
