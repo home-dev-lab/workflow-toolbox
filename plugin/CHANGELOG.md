@@ -1882,6 +1882,43 @@ assumed.
   silently refreshes nothing. The advisory now names where the managed copies actually live
   and how to refresh them.
 
+## [0.45.0] - 2026-07-26
+
+### Added
+
+- `wt-answer-first-reporting`: a shipped rule for human-facing replies and status reports. It
+  requires the answer first, progressive disclosure in plain language, explicit status on
+  deliverables, milestone-based reporting, and completed work alongside any pending list.
+- SessionStart now reports when the plugin's bundled rules are absent, behind, or locally edited,
+  reusing the adopt check and staying silent when a current copy is already in force. It is
+  read-only and never installs rules without consent.
+- The spawn registry now accepts `--ack <name> [--reason]` as an append-only human acknowledgement
+  for an open entry. Acknowledgements are scoped to that spawn, so a later relaunch with the same
+  name is reported again; near-simultaneous duplicate spawn records remain collapsed.
+
+### Changed
+
+- The shipped delegation and task-tracking rules now cover the complete lifecycle contract:
+  fixed lifecycle lists, required priority/type/effort axes, dependency conventions and gates,
+  explicit category sequencing with deadline overrides, archiving completed cards, silence-versus-
+  death check-ins, real completion signals instead of display-name polling, and re-issued versus
+  open mandates. They also state that the arbiter's own turns are a spend, that effort is pinned
+  per agent type rather than inherited as a blanket default, and that evidence must outlive the
+  process that produced it, including the mechanism-inversion failure mode.
+- Pilot intake now treats a project with no task tracker as supported: it works from the prompt,
+  does not create tracking infrastructure, and reports which tracker sources were checked.
+- Unnamed spawns are retained in the registry as explicitly untrackable, with the response shape
+  recorded and the scan stating that these entries are outside its individual ending/open counts.
+
+### Fixed
+
+- The outbound guard no longer treats writing a file as delivery. Only a sent message closes the
+  reporting loop; an agent that writes a report file must also send the line that tells its caller
+  where it is.
+- Adopt now states that bundled rules are inert until explicitly adopted, and its symlink warning
+  explains that the managed target directory is where `--check` and `--install` must be run to
+  refresh shared copies.
+
 ## [0.44.2] - 2026-07-26
 
 ### Added
