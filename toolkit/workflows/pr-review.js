@@ -2566,6 +2566,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-arc-watch.mjs",
         "plugin/bin/wt-autonomy-arm.mjs",
         "plugin/bin/wt-autonomy-watch.mjs",
+        "plugin/bin/lib/session-role.mjs",
         "plugin/bin/lib/queue-snapshot-contract.mjs",
         "plugin/bin/wt-wake-floor.mjs",
         "plugin/bin/wt-observer.mjs",
@@ -2609,7 +2610,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-version-guard-hook.mjs",
         "plugin/bin/wt-gate-evidence-guard-hook.mjs"
       ],
-      docs: ["docs/public/known-issues.md"]
+      docs: ["docs/public/known-issues.md", "plugin/monitors/README.md", "README.md"]
     }
   ];
   function docsForChangedFiles(changedFiles, manifest = DOCS_PROVENANCE) {
