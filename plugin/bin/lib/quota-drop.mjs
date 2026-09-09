@@ -34,11 +34,14 @@ export function resetsAtToMs(value) {
 
 /**
  * @returns {{ kind: 'reset' | 'unverified' | 'undetermined', detail: string }}
- *   'reset'        — past the previously reported reset time; the detail names the continuity
- *                    evidence available (`continuity` option, e.g. 'account fingerprint unchanged')
- *                    or says it was not verified.
- *   'unverified'   — before the previously reported reset time: a manual reset or a change of
- *                    subject; both reset times printed; capacity not asserted.
+ *   'reset'        — past the previously reported reset time AND identity continuity established
+ *                    by the caller (`continuity`, e.g. 'account fingerprint unchanged'). Without
+ *                    continuity the verdict never reaches 'reset': an account switch past the old
+ *                    deadline drops the percentage exactly like a reset, and a consumer acts on
+ *                    the event TYPE without reading the caveat (claude-mem-cc-1, #44).
+ *   'unverified'   — before the previously reported reset time (a manual reset or a change of
+ *                    subject), or past it without continuity evidence (reset likely, unproven).
+ *                    Both reset times printed; capacity not asserted.
  *   'undetermined' — no previous reset time reported.
  */
 export function classifyQuotaDrop({ nowMs, previousResetsAt, currentResetsAt, previousPct, currentPct, continuity = null }) {
@@ -53,6 +56,8 @@ export function classifyQuotaDrop({ nowMs, previousResetsAt, currentResetsAt, pr
   if (nowMs < previousMs) {
     return { kind: 'unverified', detail: `${change} — reset unverified: before the reported reset time ${previousLabel} (reading now reports ${currentLabel}); a manual reset, or the source, account or binding changed — capacity not asserted` }
   }
-  const evidence = continuity ? `${continuity}` : 'source continuity not verified on this route'
-  return { kind: 'reset', detail: `${change} — past the reported reset time ${previousLabel} (now ${currentLabel}); ${evidence} — new window, capacity available` }
+  if (!continuity) {
+    return { kind: 'unverified', detail: `${change} — reset likely but unverified: past the reported reset time ${previousLabel} (now ${currentLabel}), source continuity not verified on this route — probe before relying on the capacity` }
+  }
+  return { kind: 'reset', detail: `${change} — past the reported reset time ${previousLabel} (now ${currentLabel}); ${continuity} — new window, capacity available` }
 }

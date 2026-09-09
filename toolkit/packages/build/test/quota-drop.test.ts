@@ -36,16 +36,20 @@ describe('classifyQuotaDrop', () => {
     expect(verdict.detail).toContain('capacity not asserted')
     expect(verdict.detail).not.toContain('capacity available')
   })
-  it('a drop AT or AFTER the previous reset time is a reset', () => {
-    const at = classifyQuotaDrop({ nowMs: NOW, previousResetsAt: NOW, currentResetsAt: NOW + 7 * 86400000, previousPct: 90, currentPct: 3 })
-    const after = classifyQuotaDrop({ nowMs: NOW + 60000, previousResetsAt: NOW, currentResetsAt: NOW + 7 * 86400000, previousPct: 90, currentPct: 3 })
+  it('a drop AT or AFTER the previous reset time is a reset ONLY with identity continuity', () => {
+    const at = classifyQuotaDrop({ nowMs: NOW, previousResetsAt: NOW, currentResetsAt: NOW + 7 * 86400000, previousPct: 90, currentPct: 3, continuity: 'account fingerprint unchanged' })
+    const after = classifyQuotaDrop({ nowMs: NOW + 60000, previousResetsAt: NOW, currentResetsAt: NOW + 7 * 86400000, previousPct: 90, currentPct: 3, continuity: 'account fingerprint unchanged' })
     expect(at.kind).toBe('reset')
     expect(after.kind).toBe('reset')
+    expect(after.detail).toContain('account fingerprint unchanged')
     expect(after.detail).toContain('new window, capacity available')
-    expect(after.detail).toContain('source continuity not verified on this route')
-    const withIdentity = classifyQuotaDrop({ nowMs: NOW + 60000, previousResetsAt: NOW, currentResetsAt: null, previousPct: 90, currentPct: 3, continuity: 'account fingerprint unchanged' })
-    expect(withIdentity.detail).toContain('account fingerprint unchanged')
-    expect(withIdentity.detail).not.toContain('not verified')
+  })
+  it('a drop past the previous reset time WITHOUT continuity stays unverified — an account switch drops the same way', () => {
+    const verdict = classifyQuotaDrop({ nowMs: NOW + 60000, previousResetsAt: NOW, currentResetsAt: NOW + 7 * 86400000, previousPct: 90, currentPct: 3 })
+    expect(verdict.kind).toBe('unverified')
+    expect(verdict.detail).toContain('reset likely but unverified')
+    expect(verdict.detail).toContain('source continuity not verified on this route')
+    expect(verdict.detail).not.toContain('capacity available')
   })
   it('a drop with no previous reset time stays undetermined', () => {
     const verdict = classifyQuotaDrop({ nowMs: NOW, previousResetsAt: null, currentResetsAt: '2026-09-16T07:27:00Z', previousPct: 42, currentPct: 32 })

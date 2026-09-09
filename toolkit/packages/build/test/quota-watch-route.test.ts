@@ -62,14 +62,15 @@ describe('wt-quota-watch proxy route', () => {
     expect(result.stdout).not.toContain('QUOTA RESET')
   })
 
-  it('a drop once the previously reported reset time has passed is a RESET', async () => {
+  it('a drop once the previously reported reset time has passed is still a DROP on the proxy route (no identity signal)', async () => {
     const past = new Date(Date.now() - 60000).toISOString()
     const next = new Date(Date.now() + 7 * 86400000).toISOString()
     responses = [{ family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 90, window_minutes: 10080, resets_at: past }] }, { family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 3, window_minutes: 10080, resets_at: next }] }]
     const { result } = await run({ ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: 'gateway', WT_QUOTA_PROXY_ORIGINS: base })
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain('QUOTA RESET codex 7d: 3% (was 90%) — past the reported reset time')
-    expect(result.stdout).toContain('source continuity not verified on this route — new window, capacity available')
+    expect(result.stdout).toContain('QUOTA DROP codex 7d: 3% (was 90%) — reset likely but unverified: past the reported reset time')
+    expect(result.stdout).toContain('source continuity not verified on this route')
+    expect(result.stdout).not.toContain('QUOTA RESET')
   })
 
   it('stays alive and explicitly degraded for an unknown route', async () => {
