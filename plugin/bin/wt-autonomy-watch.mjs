@@ -296,6 +296,10 @@ function readMandateState(mandateStatePath) {
         typeof lastMandateDeclaredAtMs === 'number' && Number.isFinite(lastMandateDeclaredAtMs)
           ? lastMandateDeclaredAtMs
           : null,
+      warningNotifiedForDeclaredAtMs:
+        typeof parsed?.warningNotifiedForDeclaredAtMs === 'number' && Number.isFinite(parsed.warningNotifiedForDeclaredAtMs)
+          ? parsed.warningNotifiedForDeclaredAtMs
+          : null,
       expiryNotifiedForDeclaredAtMs:
         typeof expiryNotifiedForDeclaredAtMs === 'number' && Number.isFinite(expiryNotifiedForDeclaredAtMs)
           ? expiryNotifiedForDeclaredAtMs
@@ -336,6 +340,7 @@ function poll(context) {
       observedAt: new Date(now).toISOString(),
       lastMandateKind: 'unknown',
       lastMandateDeclaredAtMs: null,
+      warningNotifiedForDeclaredAtMs: previousMandateState?.warningNotifiedForDeclaredAtMs ?? null,
       expiryNotifiedForDeclaredAtMs: null,
     })
     return
@@ -354,6 +359,7 @@ function poll(context) {
         observedAt: new Date(now).toISOString(),
         lastMandateKind: 'live',
         lastMandateDeclaredAtMs: mandate.declaredAtMs,
+        warningNotifiedForDeclaredAtMs: null,
         expiryNotifiedForDeclaredAtMs: null,
       })
       return
@@ -366,6 +372,10 @@ function poll(context) {
       observedAt: new Date(now).toISOString(),
       lastMandateKind: 'expired',
       lastMandateDeclaredAtMs: mandate.declaredAtMs,
+      warningNotifiedForDeclaredAtMs:
+        previousMandateState?.lastMandateDeclaredAtMs === mandate.declaredAtMs
+          ? previousMandateState.warningNotifiedForDeclaredAtMs
+          : null,
       expiryNotifiedForDeclaredAtMs: mandate.declaredAtMs,
     })
     if (crossedIntoExpiry) {
@@ -373,12 +383,22 @@ function poll(context) {
     }
     return
   }
+  const warningDue = now - mandate.declaredAtMs >= context.mandateFreshnessMs * 0.85
+  const warningAlreadyNotified = previousMandateState?.warningNotifiedForDeclaredAtMs === mandate.declaredAtMs
+  const warningNotifiedForDeclaredAtMs = warningDue || warningAlreadyNotified ? mandate.declaredAtMs : null
   writeMandateState(context.mandateStatePath, {
     observedAt: new Date(now).toISOString(),
     lastMandateKind: 'live',
     lastMandateDeclaredAtMs: mandate.declaredAtMs,
+    warningNotifiedForDeclaredAtMs,
     expiryNotifiedForDeclaredAtMs: null,
   })
+  // Warn at a fraction of the window so the notice scales with custom freshness settings and leaves
+  // time to re-arm, rather than assuming the default window's fixed number of minutes.
+  if (warningDue && !warningAlreadyNotified) {
+    const minutesLeft = Math.max(1, Math.ceil((context.mandateFreshnessMs - (now - mandate.declaredAtMs)) / 60_000))
+    write(`AUTONOMY MANDATE CLOSING: ${minutesLeft} min left of the ${context.mandateFreshnessMs / 60_000} min freshness window; re-arm with \`wt-autonomy-arm.mjs\` before it expires or nothing will be watching this session.`)
+  }
 
   const transcriptMtimeMs = readMtimeMs(context.transcriptPath)
   if (transcriptMtimeMs === null) return
@@ -546,11 +566,14 @@ write(
 // crosses through an observable live -> expired transition on the first poll.
 const mandateAtArming = classifyMandate(context.mandatePath, context.mandateFreshnessMs, nowAtArming, sessionId)
 if (mandateAtArming.kind === 'live') {
+  const previousMandateState = readMandateState(context.mandateStatePath)
+  const sameDeclaration = previousMandateState?.lastMandateDeclaredAtMs === mandateAtArming.declaredAtMs
   writeMandateState(context.mandateStatePath, {
     observedAt: new Date(nowAtArming).toISOString(),
     lastMandateKind: 'live',
     lastMandateDeclaredAtMs: mandateAtArming.declaredAtMs,
-    expiryNotifiedForDeclaredAtMs: null,
+    warningNotifiedForDeclaredAtMs: sameDeclaration ? previousMandateState.warningNotifiedForDeclaredAtMs : null,
+    expiryNotifiedForDeclaredAtMs: sameDeclaration ? previousMandateState.expiryNotifiedForDeclaredAtMs : null,
   })
 }
 

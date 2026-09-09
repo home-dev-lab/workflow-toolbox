@@ -354,6 +354,43 @@ describe('wt-autonomy-watch', () => {
     expect(afterCrossing.stdout).toBe('')
   })
 
+  it('warns once before expiry, stays silent after expiry, and re-arms for a new declaration', async () => {
+    const s = scaffold('expiry-warning')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now)
+    const env = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+      WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES: '0.05',
+    }
+
+    const beforeWarning = runWatch(s.projectDir, env)
+    await delay(2700)
+    const warning = runWatch(s.projectDir, env)
+    const afterWarning = runWatch(s.projectDir, env)
+    await delay(700)
+    const expiry = runWatch(s.projectDir, env)
+    const afterExpiry = runWatch(s.projectDir, env)
+
+    expect(beforeWarning.stdout).toBe('')
+    expect(warning.stdout).toBe('AUTONOMY MANDATE CLOSING: 1 min left of the 0.05 min freshness window; re-arm with `wt-autonomy-arm.mjs` before it expires or nothing will be watching this session.')
+    expect(afterWarning.stdout).toBe('')
+    expect(expiry.stdout).toBe('AUTONOMY MANDATE EXPIRED: mandate freshness window elapsed; nothing is watching this session now. Re-arm with `wt-autonomy-arm.mjs` if autonomy should continue.')
+    expect(afterExpiry.stdout).toBe('')
+
+    writeMandate(s.mandatePath, s.sessionId, Date.now())
+    const beforeRearmWarning = runWatch(s.projectDir, env)
+    await delay(2700)
+    const rearmWarning = runWatch(s.projectDir, env)
+
+    expect(beforeRearmWarning.stdout).toBe('')
+    expect(rearmWarning.stdout).toBe('AUTONOMY MANDATE CLOSING: 1 min left of the 0.05 min freshness window; re-arm with `wt-autonomy-arm.mjs` before it expires or nothing will be watching this session.')
+  })
+
   it('an unreadable marker is reported as unknown, never absent', () => {
     const s = scaffold('expiry-unknown')
     const now = Date.now()
