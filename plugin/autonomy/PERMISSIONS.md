@@ -47,6 +47,11 @@ rules loaded; each named command was refused, and a plain `git push --dry-run` s
 }
 ```
 
+The publish and force-push rules above are measured but OPTIONAL: on the machine that measured them the
+owner keeps neither in the managed file — GitHub protects the main branches, and no live npm token exists
+outside a release, so a session cannot publish anyway. Keep them where a live token or an unprotected
+branch makes the act possible; the guard hook refuses both classes in every session that loads the plugin.
+
 Not expressible as a rule, measured: `git push X :branch` — a trailing `:*` is read as the prefix
 separator, so five variants all let the command run; the guard hook covers it. Do not write
 `Bash(npm * publish*)`: it also refuses `npm run publish-nothing`.
