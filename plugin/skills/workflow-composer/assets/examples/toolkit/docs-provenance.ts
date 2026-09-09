@@ -51,6 +51,11 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-claimed-test-check.mjs',
+    status: 'missing-doc-surface',
+    reason: 'A repo-maintenance precision checker recorded in the Unreleased changelog; this pairing-half card adds no user-facing operating guide.',
+  },
+  {
     script: 'plugin/bin/wt-escalation-journal-hook.mjs',
     status: 'mapped',
     reason: 'The adopted standing-authorization template documents this warn-only Stop hook and the authorization format it reads.',
