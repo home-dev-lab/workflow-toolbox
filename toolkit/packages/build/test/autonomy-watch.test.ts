@@ -140,6 +140,75 @@ function runWatch(
 }
 
 describe('wt-autonomy-watch', () => {
+  it('reports a known queue wake with all three classifications', () => {
+    const s = scaffold('v2-wake')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
+    writeQueue(s.queuePath, { at: now, startable: 2, awaitingOwner: 3, unclassified: 1, next: 'CARD-v2 start here' })
+
+    const result = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(result.stdout).toBe('AUTONOMY WAKE: idle session with mandate, 2 startable (3 awaiting owner, 1 unclassified), next: CARD-v2 start here')
+  })
+
+  it('emits MISSION FINISHED once per unchanged snapshot and wakes again for newer startable work', () => {
+    const s = scaffold('mission-finished')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
+    const env = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+      WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now),
+    }
+    writeQueue(s.queuePath, { at: now, startable: 0, awaitingOwner: 2, unclassified: 1, next: '' })
+
+    const first = runWatch(s.projectDir, env)
+    const second = runWatch(s.projectDir, env)
+    const third = runWatch(s.projectDir, env)
+    writeQueue(s.queuePath, { at: now + 1, startable: 0, awaitingOwner: 2, unclassified: 1, next: '' })
+    const beforeIdlePeriod = runWatch(s.projectDir, { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 1) })
+    const afterIdlePeriod = runWatch(s.projectDir, { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 15 * 60_000 + 1) })
+    writeQueue(s.queuePath, { at: now + 15 * 60_000 + 2, startable: 1, awaitingOwner: 2, unclassified: 0, next: 'CARD-resumed' })
+    const resumed = runWatch(s.projectDir, { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 15 * 60_000 + 2) })
+
+    expect(first.stdout).toBe('AUTONOMY MISSION FINISHED: 0 startable, 2 awaiting owner, 1 unclassified — the queue holds nothing this session can start; ask the owner for the next mission (or, if U > 0, classify the U unclassified items first)')
+    expect(second.stdout).toBe('')
+    expect(third.stdout).toBe('')
+    expect(beforeIdlePeriod.stdout).toBe('')
+    expect(afterIdlePeriod.stdout).toContain('AUTONOMY MISSION FINISHED:')
+    expect(resumed.stdout).toContain('AUTONOMY WAKE:')
+  })
+
+  it('keeps legacy wakes explicit and never emits MISSION FINISHED for them', () => {
+    const s = scaffold('legacy-wake')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
+    writeQueue(s.queuePath, { at: now, open: 2, next: 'CARD-legacy keep going' })
+
+    const result = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(result.stdout).toBe('AUTONOMY WAKE: idle session with mandate, 2 open, next: CARD-legacy keep going [legacy snapshot: classification unknown]')
+    expect(result.stdout).not.toContain('MISSION FINISHED')
+  })
+
   it('no mandate marker emits NOTHING even when the other conditions are satisfied', () => {
     const s = scaffold('no-mandate')
     const now = Date.now()
@@ -175,7 +244,7 @@ describe('wt-autonomy-watch', () => {
     })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toBe('AUTONOMY WAKE: idle session with mandate, 2 open, next: CARD-2 implement watcher')
+    expect(result.stdout).toBe('AUTONOMY WAKE: idle session with mandate, 2 open, next: CARD-2 implement watcher [legacy snapshot: classification unknown]')
     expect(existsSync(s.markerPath)).toBe(true)
     const marker = JSON.parse(readFileSync(s.markerPath, 'utf8')) as { next: string }
     expect(marker.next).toBe('CARD-2 implement watcher')
@@ -477,7 +546,7 @@ describe('wt-autonomy-watch inherits a project-keyed mandate across a session re
     })
 
     expect(result.armed).toContain('mandate=present(own)')
-    expect(result.stdout).toBe('AUTONOMY WAKE: idle session with mandate, 1 open, next: CARD-10 own session, own mandate')
+    expect(result.stdout).toBe('AUTONOMY WAKE: idle session with mandate, 1 open, next: CARD-10 own session, own mandate [legacy snapshot: classification unknown]')
     expect(result.stdout).not.toContain('inherited')
   })
 })

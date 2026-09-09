@@ -92,6 +92,35 @@ one of three honest answers — `armed` (live), `expired` (present but past the 
 fire — re-arm with no arguments), or `not armed` (nothing declared) — never `armed` about a
 mandate that has already stopped counting.
 
+## Queue snapshot contract
+
+The tracker-neutral queue snapshot lives at the configured queue-gate state path. Every v2 producer
+writes these fields; producer-specific fields such as `source`, `open`, or `scanned` are allowed and
+ignored by readers.
+
+| Field | Meaning |
+|---|---|
+| `at` | Epoch milliseconds when the producer measured the queue. |
+| `startable` | Non-negative integer count of work this session can begin without an owner decision. |
+| `awaitingOwner` | Non-negative integer count blocked on a decision only the owner can make. |
+| `unclassified` | Non-negative integer count the producer could not place in either bucket. |
+| `next` | Proposed next startable item; empty when `startable` is zero. |
+
+An old `open`-only snapshot is a **legacy snapshot**. Readers retain its prior open-work behavior,
+but label any wake or stop-gate warning `[legacy snapshot: classification unknown]`; missing v2
+counts never mean zero and a legacy snapshot never means nothing is startable.
+
+The mission end condition is `startable === 0`, while always naming `unclassified`: the watcher
+emits once for a snapshot's `at`, and a changed zero snapshot only emits again after its configured
+idle period. Its exact line is:
+
+```
+AUTONOMY MISSION FINISHED: 0 startable, M awaiting owner, U unclassified — the queue holds nothing this session can start; ask the owner for the next mission (or, if U > 0, classify the U unclassified items first)
+```
+
+The Stop gate lets that finished mission end its turn, naming `awaitingOwner` and `unclassified` in
+its context. A fresh positive `startable` count resumes normal wake and stop-gate behavior.
+
 ## 6. A budget limit is a door, not a wall
 
 Cross it, do not wait in front of it. Unspent budget inside a window is gone; an interrupted arc

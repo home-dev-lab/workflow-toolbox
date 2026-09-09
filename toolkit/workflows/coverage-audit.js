@@ -2446,6 +2446,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-arc-watch.mjs",
         "plugin/bin/wt-autonomy-arm.mjs",
         "plugin/bin/wt-autonomy-watch.mjs",
+        "plugin/bin/lib/queue-snapshot-contract.mjs",
         "plugin/bin/wt-wake-floor.mjs",
         "plugin/bin/wt-observer.mjs",
         "plugin/bin/wt-check-commit-signatures-hook.mjs",

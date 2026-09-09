@@ -15,6 +15,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   on the type without reading the caveat. Classifier in `lib/quota-drop.mjs`.
 
 ### Added
+- Add the v2 tracker-neutral queue snapshot contract, including startable, awaiting-owner, and
+  unclassified counts; the autonomy watcher now reports a completed mission once per snapshot and
+  the stop gate permits that finished mission to end.
 - Add spawn-time pilot and orchestrator model profile keys with Anthropic `sonnet` defaults and
   process-environment/settings-profile resolution.
 - Warn before an autonomy mandate freshness window expires so sessions can re-arm in time.
