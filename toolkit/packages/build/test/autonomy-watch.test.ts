@@ -114,10 +114,6 @@ function transcriptPathFor(configDir: string, projectDir: string, sessionId: str
   return join(configDir, 'projects', projectSlug(projectDir), `${sessionId}.jsonl`)
 }
 
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
 function runWatch(
   projectDir: string,
   env: NodeJS.ProcessEnv,
@@ -336,18 +332,14 @@ describe('wt-autonomy-watch', () => {
       CLAUDE_CODE_SESSION_ID: s.sessionId,
       XDG_STATE_HOME: s.stateHome,
       WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
-      // ⚠ 1.8s, not the 60ms this used to use. The FIRST check below must complete while the
-      // mandate is still fresh — and it SPAWNS A SUBPROCESS, which cannot be relied on to finish
-      // inside 60ms on a loaded machine. Measured 2026-08-28: this test failed twice in three full
-      // parallel suite runs and passed 5/5 alone, and the failure was always the first assertion
-      // seeing EXPIRED. The window has to outlast a spawn; the delay only has to outlast the window.
+      WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now),
       WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES: '0.03',
     }
 
     const beforeExpiry = runWatch(s.projectDir, env)
-    await delay(2500)
-    const atCrossing = runWatch(s.projectDir, env)
-    const afterCrossing = runWatch(s.projectDir, env)
+    const afterExpiryEnv = { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 2_000) }
+    const atCrossing = runWatch(s.projectDir, afterExpiryEnv)
+    const afterCrossing = runWatch(s.projectDir, afterExpiryEnv)
 
     expect(beforeExpiry.stdout).toBe('')
     expect(atCrossing.stdout).toBe('AUTONOMY MANDATE EXPIRED: mandate freshness window elapsed; nothing is watching this session now. Re-arm with `wt-autonomy-arm.mjs` if autonomy should continue.')
@@ -365,16 +357,17 @@ describe('wt-autonomy-watch', () => {
       CLAUDE_CODE_SESSION_ID: s.sessionId,
       XDG_STATE_HOME: s.stateHome,
       WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+      WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now),
       WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES: '0.05',
     }
 
     const beforeWarning = runWatch(s.projectDir, env)
-    await delay(2700)
-    const warning = runWatch(s.projectDir, env)
-    const afterWarning = runWatch(s.projectDir, env)
-    await delay(700)
-    const expiry = runWatch(s.projectDir, env)
-    const afterExpiry = runWatch(s.projectDir, env)
+    const warningEnv = { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 2_700) }
+    const warning = runWatch(s.projectDir, warningEnv)
+    const afterWarning = runWatch(s.projectDir, warningEnv)
+    const expiryEnv = { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 3_100) }
+    const expiry = runWatch(s.projectDir, expiryEnv)
+    const afterExpiry = runWatch(s.projectDir, expiryEnv)
 
     expect(beforeWarning.stdout).toBe('')
     expect(warning.stdout).toBe('AUTONOMY MANDATE CLOSING: 1 min left of the 0.05 min freshness window; re-arm with `wt-autonomy-arm.mjs` before it expires or nothing will be watching this session.')
@@ -382,10 +375,9 @@ describe('wt-autonomy-watch', () => {
     expect(expiry.stdout).toBe('AUTONOMY MANDATE EXPIRED: mandate freshness window elapsed; nothing is watching this session now. Re-arm with `wt-autonomy-arm.mjs` if autonomy should continue.')
     expect(afterExpiry.stdout).toBe('')
 
-    writeMandate(s.mandatePath, s.sessionId, Date.now())
-    const beforeRearmWarning = runWatch(s.projectDir, env)
-    await delay(2700)
-    const rearmWarning = runWatch(s.projectDir, env)
+    writeMandate(s.mandatePath, s.sessionId, now + 3_100)
+    const beforeRearmWarning = runWatch(s.projectDir, expiryEnv)
+    const rearmWarning = runWatch(s.projectDir, { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 5_800) })
 
     expect(beforeRearmWarning.stdout).toBe('')
     expect(rearmWarning.stdout).toBe('AUTONOMY MANDATE CLOSING: 1 min left of the 0.05 min freshness window; re-arm with `wt-autonomy-arm.mjs` before it expires or nothing will be watching this session.')

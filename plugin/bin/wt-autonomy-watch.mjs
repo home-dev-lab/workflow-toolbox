@@ -61,6 +61,11 @@ const DEFAULT_MANDATE_FRESHNESS_MINUTES = Number(process.env.WT_AUTONOMY_WATCH_M
 const DEFAULT_LANE_PATTERNS = ['opencode run', 'codex exec']
 const BOOTSTRAP_OBSERVATION_GRACE_MS = 1_000
 
+function clockNow() {
+  const testNow = Number(process.env.WT_AUTONOMY_WATCH_TEST_NOW_MS)
+  return Number.isFinite(testNow) ? testNow : Date.now()
+}
+
 function write(line) {
   process.stdout.write(`${line}\n`)
 }
@@ -323,7 +328,7 @@ function clearMandateState(mandateStatePath) {
 }
 
 function poll(context) {
-  const now = Date.now()
+  const now = clockNow()
   expireOwnedMarkers(context.watchStateDir, ['queue', 'watch-emission', 'watch-mandate-state'], now, {
     queueFreshnessMs: context.queueStaleMs,
     sessionTranscriptDir: context.projectStateRoot,
@@ -544,7 +549,7 @@ function queueArmedState(queuePath, staleMs, now) {
   }
 }
 
-const nowAtArming = Date.now()
+const nowAtArming = clockNow()
 const mandateState = mandateArmedState(context.mandatePath, context.mandateFreshnessMs, nowAtArming, sessionId)
 const queueState = queueArmedState(context.queuePath, context.queueStaleMs, nowAtArming)
 const canFire = mandateState.startsWith('present') && queueState.startsWith('fresh')

@@ -209,9 +209,9 @@ describe('wt-pilot-guard-hook — self-scoped destructive-action guard', () => {
     cwd,
     tool_input: ti,
   })
-  // The toolkit dir is inside the repo; the OS temp dir is not.
+  // The toolkit dir is inside the repo; the filesystem root cannot inherit a project TMPDIR.
   const IN_REPO = process.cwd()
-  const NO_REPO = tmpdir()
+  const NO_REPO = '/'
 
   it('spawn-shape: REFUSES a named spawn with no isolation when isolation is available', () => {
     const r = runHook(SHAPE_HOOK, spawn({ subagent_type: 'pilot', name: 's-x' }, IN_REPO))

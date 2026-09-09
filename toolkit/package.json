@@ -9,6 +9,7 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "test": "pnpm build:dist && node scripts/cross-repo-typecheck.mjs && vitest run",
+    "test:under-load": "node scripts/suite-under-load.mjs",
     "test:cross-repo": "node scripts/cross-repo-typecheck.mjs",
     "wt:build": "tsx packages/build/src/cli.ts build",
     "wt:pipeline": "tsx packages/build/src/cli.ts pipeline",

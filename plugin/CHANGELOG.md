@@ -19,6 +19,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Require a seam review and merged-tree gates when integrating parallel branches.
 
 ### Fixed
+- Make autonomy-watch expiry transition tests deterministic with an injected test clock.
 - Keep plugin eval expected-failure fixtures in temporary files instead of mutating the shipped declaration.
 - Refuse adopted launcher generation when its consent transformation fragments are missing, duplicated, or leave relative imports behind.
 - `wt-actionable-gate-hook` now falls back to transcript and declared-bound evidence when Linux lane detection errors, and names the detection failure in its block.
