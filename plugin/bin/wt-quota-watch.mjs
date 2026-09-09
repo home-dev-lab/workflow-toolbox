@@ -64,6 +64,7 @@ import { hasCompleteWindows } from './lib/quota-window-completeness.mjs'
 import { classifyQuotaDrop } from './lib/quota-drop.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { effectiveModel, fetchProxyUsage, normalizeProxyUsage, resolveRoute } from './lib/quota-route.mjs'
+import { relaySkipLine } from './lib/session-role.mjs'
 
 const DEFAULT_THRESHOLDS = '80,90,95'
 const DEFAULT_POLL_SECONDS = 300
@@ -136,6 +137,11 @@ function resolveProbePath(probeOverride) {
 
 function parseArgs(argv) {
   handleHelpFlag(argv, HELP)
+  const relayLine = relaySkipLine('QUOTA WATCH')
+  if (relayLine) {
+    writeLine(relayLine)
+    process.exit(0)
+  }
   let thresholdsArg = DEFAULT_THRESHOLDS
   let poll = DEFAULT_POLL_SECONDS
   let timeout = DEFAULT_TIMEOUT_SECONDS

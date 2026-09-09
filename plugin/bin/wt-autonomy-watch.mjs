@@ -20,6 +20,7 @@ import { classifyMandate } from './lib/autonomy-mandate.mjs'
 import { expireMarker, expireOwnedMarkers } from './lib/queue-gate-marker-expiry.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { parseQueueSnapshot } from './lib/queue-snapshot-contract.mjs'
+import { relaySkipLine } from './lib/session-role.mjs'
 
 const HELP = `wt-autonomy-watch — wakes an autonomous session (one that declared a mandate via
 wt-autonomy-arm.mjs) when it still has actionable queued work, nothing else in flight, and has
@@ -98,6 +99,11 @@ function readNumber(value) {
 
 function parseArgs(argv) {
   handleHelpFlag(argv, HELP)
+  const relayLine = relaySkipLine('AUTONOMY WATCH')
+  if (relayLine) {
+    write(relayLine)
+    process.exit(0)
+  }
   let pollSeconds = DEFAULT_POLL_SECONDS
   let projectDir = process.cwd()
   let once = false

@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -140,6 +140,20 @@ function runWatch(
 }
 
 describe('wt-autonomy-watch', () => {
+  it('relay sessions print the skip line and leave the state directory empty', () => {
+    const s = scaffold('relay')
+    const result = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_SESSION_ROLE: ' relay ',
+    })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe("AUTONOMY WATCH NOT ARMED: relay session (WT_SESSION_ROLE=relay) — this session only relays; it cannot act on this watcher's events")
+    expect(readdirSync(s.stateDir)).toEqual([])
+  })
+
   it('reports a known queue wake with all three classifications', () => {
     const s = scaffold('v2-wake')
     const now = Date.now()

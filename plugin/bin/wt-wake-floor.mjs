@@ -6,6 +6,7 @@ import path from 'node:path'
 import { classifyMandate } from './lib/autonomy-mandate.mjs'
 import { expireMarker } from './lib/queue-gate-marker-expiry.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
+import { relaySkipLine } from './lib/session-role.mjs'
 
 const HELP = `wt-wake-floor — hands a turn back to a session with a declared autonomous mandate
 after a fixed elapsed-time period, then repeats on the same cadence. It does not inspect work.
@@ -49,6 +50,11 @@ function readNumber(value) {
 
 function parseArgs(argv) {
   handleHelpFlag(argv, HELP)
+  const relayLine = relaySkipLine('WAKE FLOOR')
+  if (relayLine) {
+    write(relayLine)
+    process.exit(0)
+  }
   let pollSeconds = DEFAULT_IDLE_MINUTES * 60
   let projectDir = process.cwd()
   let once = false

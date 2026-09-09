@@ -293,6 +293,15 @@ function readFlag(flagPath: string) {
 }
 
 describe('wt-service-watch: writes the flag on real degradation', () => {
+  it('relay sessions print the skip line and do not write state', () => {
+    const dir = tmpRoot('wt-service-watch-relay-')
+    const fixture = writeFixture(dir, 'payload.json', degradedApiPayload())
+    const r = runOnce(['--fixture', fixture, '--flag', join(dir, 'flag.json')], { WT_SESSION_ROLE: ' relay ' })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toBe("SERVICE WATCH NOT ARMED: relay session (WT_SESSION_ROLE=relay) — this session only relays; it cannot act on this watcher's events\n")
+    expect(readdirSync(dir)).toEqual(['payload.json'])
+  })
+
   it('a degraded API component writes the flag with the right shape', () => {
     const dir = tmpRoot('wt-service-watch-')
     const fixture = writeFixture(dir, 'payload.json', degradedApiPayload())
@@ -585,6 +594,22 @@ describe('wt-arc-watch: suppresses emission while the service flag is live, resu
     // service-flag-related) so it should NOT be individually reported as a
     // fresh STALE event — confirming the baseline sweep, not a backlog dump.
     expect(res.stdout).not.toContain('STALE: sess-1/agent-a.jsonl')
+  })
+
+  it('a relay arc watcher prints the skip line and leaves its state directory empty', () => {
+    const root = tmpRoot('wt-arc-watch-relay-')
+    const project = join(root, 'project')
+    const configDir = join(root, 'config')
+    mkdirSync(project, { recursive: true })
+    mkdirSync(configDir, { recursive: true })
+    const res = spawnSync(process.execPath, [ARC_WATCH, '--project', project], {
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, WT_SESSION_ROLE: 'RELAY' },
+      timeout: 5_000,
+    })
+    expect(res.status).toBe(0)
+    expect(res.stdout).toBe("ARC WATCH NOT ARMED: relay session (WT_SESSION_ROLE=relay) — this session only relays; it cannot act on this watcher's events\n")
+    expect(readdirSync(root)).toEqual(['config', 'project'])
   })
 })
 

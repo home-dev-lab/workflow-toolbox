@@ -54,6 +54,7 @@ import { defaultLivenessDir, sanitizeLivenessKey, readLivenessRecord, worktreeRe
 import { isServiceDegraded } from './lib/service-flag.mjs'
 import { hasRecordedStop, lastStopTimestamps, lastRealRecordTimestampMs } from './lib/stop-correlation.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
+import { relaySkipLine } from './lib/session-role.mjs'
 import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 
 const HELP = `wt-arc-watch — delegated-arc watcher: watches this project's subagent transcripts
@@ -132,6 +133,11 @@ function readNumber(value) {
 }
 
 handleHelpFlag(process.argv.slice(2), HELP)
+const relayLine = relaySkipLine('ARC WATCH')
+if (relayLine) {
+  process.stdout.write(`${relayLine}\n`)
+  process.exit(0)
+}
 
 let staleMinutes = 10
 let pollSeconds = 60

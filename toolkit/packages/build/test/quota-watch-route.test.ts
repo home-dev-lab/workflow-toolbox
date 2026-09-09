@@ -1,5 +1,5 @@
 import { createServer } from 'node:http'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -42,6 +42,21 @@ async function run(env: Record<string, string>) {
 }
 
 describe('wt-quota-watch proxy route', () => {
+  it('relay sessions print the skip line and leave the config state untouched', async () => {
+    const config = mkdtempSync(join(tmpdir(), 'wt-quota-relay-'))
+    roots.push(config)
+    const result = await new Promise<{ stdout: string; status: number | null }>((resolve, reject) => {
+      const child = spawn(process.execPath, [WATCH, '--poll', '5'], { env: { ...process.env, CLAUDE_CONFIG_DIR: config, WT_SESSION_ROLE: 'relay' } })
+      let stdout = ''
+      child.stdout.on('data', (chunk) => { stdout += chunk })
+      child.on('error', reject)
+      child.on('close', (status) => resolve({ stdout, status }))
+    })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe("QUOTA WATCH NOT ARMED: relay session (WT_SESSION_ROLE=relay) — this session only relays; it cannot act on this watcher's events\n")
+    expect(readdirSync(config)).toEqual([])
+  })
+
   it('names the proxy family and emits only its 7d threshold crossing', async () => {
     responses = [{ family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 10, window_minutes: 10080, resets_at: null }] }, { family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 80, window_minutes: 10080, resets_at: null }] }]
     const { result } = await run({ ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: 'gateway', WT_QUOTA_PROXY_ORIGINS: base })
