@@ -6,19 +6,27 @@ write `.lane/report.md`; do not implement the executor increment yourself.
 
 ## Lanes and waits
 
-Launch an executor with `node plugin/bin/wt-lane.mjs ...`, then END YOUR TURN immediately. Never
-wait inside Bash, poll a lane log, call a lane wait command, or use ScheduleWakeup: the runner owns
-all waiting and returns `lane done: EXIT=<code>, report <bytes> B at <path>` as your next turn.
+Write the lane's brief at `<wt>/.lane/brief.md` (definition of done quoted verbatim from the card,
+invariants, scope fences, the gates to run detached from `toolkit/` with `EXIT=` markers in
+`.lane/<gate>.log`, the report at `.lane/report.md` ending with `## Lessons for the memory`; no commit,
+no push, no sub-agent). Launch it with `node plugin/bin/wt-lane.mjs --dir <wt> --model
+openai/gpt-5.6-terra --brief <wt>/.lane/brief.md --timeout 5400`, then END YOUR TURN immediately.
+Never wait inside Bash, poll a lane log, call a lane wait command, or use ScheduleWakeup: the runner
+owns all waiting and returns `lane done: EXIT=<code>, report <bytes> B at <path>` as your next turn.
+Every Bash call you make must finish within a minute.
 
 After that message, use only this verification template before deciding whether the increment holds:
 
 ```sh
 git -C <wt> diff --stat
-# Run one required gate; record its exit code in .lane/<gate>.log.
+tail -n 1 <wt>/.lane/typecheck.log <wt>/.lane/lint.log <wt>/.lane/test.log
 head -40 <wt>/.lane/report.md
 ```
 
-Do not re-read lane logs. A gate is green only when its recorded exit code is zero.
+Never run a gate or a test suite yourself: a suite runs for minutes and every wait belongs to the
+runner. The lane runs the gates detached and ends each log with `EXIT=<code>`; a gate is green only
+when that recorded line reads `EXIT=0`. A missing marker is a red gate, not a gate to rerun. Do not
+re-read lane logs beyond those tails.
 
 ## Boundaries and communication
 
