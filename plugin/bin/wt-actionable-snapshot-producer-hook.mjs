@@ -47,6 +47,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { execFileSync } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { projectStatePath, stateRoot, snapshotPath } from './lib/actionability-state-paths.mjs'
@@ -122,9 +123,8 @@ function readValidatedSpillFile(cwd, spillPath) {
 
 // Keep only the latest 100 one-line attempts. Fields are also truncated, so a
 // malformed hook payload cannot defeat the entry-count bound with one huge line.
-function recordAttempt(cwd, ok, reason, detail) {
+export function writeJournalEntry(root, cwd, ok, reason, detail) {
   try {
-    const root = stateRoot()
     const path = join(root, 'actionable-producer-journal.jsonl')
     mkdirSync(root, { recursive: true })
     let lines = []
@@ -145,6 +145,8 @@ function recordAttempt(cwd, ok, reason, detail) {
     // Observed tool calls must remain fail-open even when diagnostics cannot be written.
   }
 }
+
+function recordAttempt(cwd, ok, reason, detail) { writeJournalEntry(stateRoot(), cwd, ok, reason, detail) }
 
 // Spawns the project's own dependency parser, one call per card. A missing
 // binary, a timeout, a non-JSON reply, OR a reply whose `ids`/`unparseable`
@@ -361,4 +363,6 @@ function main() {
   }
 }
 
-runFailOpenHook('wt-actionable-snapshot-producer-hook.mjs', main)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runFailOpenHook('wt-actionable-snapshot-producer-hook.mjs', main)
+}

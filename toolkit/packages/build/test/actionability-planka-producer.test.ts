@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -436,7 +437,9 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
     expect(raw.status).toBe(0)
   })
 
-  it('bounds the failure journal to the latest 100 records', () => {
+  // Card 1860387857: exercise the journal bound in-process instead of paying for
+  // 105 synchronous hook spawns inside Vitest's fixed timeout.
+  it('bounds the failure journal to the latest 100 records', async () => {
     const project = scaffoldProject('bounded-journal', { withParser: true })
     const payload = {
       hook_event_name: 'PostToolUse',
@@ -444,7 +447,12 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
       tool_input: { boardId: 'b1' },
       cwd: project.cwd,
     }
-    for (let i = 0; i < 105; i += 1) expect(runProducerHook(payload, project.env).status).toBe(0)
+    expect(runProducerHook(payload, project.env).status).toBe(0)
+    // Node 24's native ESM require avoids Vite transforming this repository-root module.
+    const hookModule = createRequire(pathToFileURL(PRODUCER_HOOK).href)(PRODUCER_HOOK)
+    for (let i = 0; i < 104; i += 1) {
+      hookModule.writeJournalEntry(project.stateDir, project.cwd, false, 'bound-probe', 'seam-exercised record')
+    }
     expect(readFailureRecords(project.stateDir)).toHaveLength(100)
   })
 
