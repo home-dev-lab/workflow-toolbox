@@ -3,7 +3,8 @@
 `node plugin/bin/wt-pilot-runner.mjs --card <id> --dir <worktree>` starts an Agent SDK pilot behind
 the adopted `PILOT-CONTRACT.md`. It keeps the prompt stream open, reads newline-delimited owner
 messages from `.lane/pilot-mailbox.txt` (or `--mailbox`), and owns executor-lane waits: it detects a
-pilot `wt-lane.mjs` launch, polls the reported log for `EXIT=`, and injects one completion turn.
+pilot `wt-lane.mjs` launch, polls the reported log for `EXIT=`, and injects one completion turn. The pilot's own report is `.lane/pilot-report.md`; the lane's stays
+`.lane/report.md`, and the runner stops on the pilot's file only.
 
 The runner passes `settingSources: []`, `bypassPermissions`, the local Function Hook fence, and the
 Planka HTTP MCP. It does not read `/proc`, so its mailbox and lane-log polling are cross-platform.

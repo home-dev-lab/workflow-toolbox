@@ -68,13 +68,17 @@ export async function runPilot(options, dependencies) {
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
   const model = options.hard ? models.pilotHard : models.pilot
   const contract = readFile(options.contract, 'utf8')
-  const report = join(options.dir, '.lane', 'report.md')
+  // The pilot's OWN report; the lane writes `.lane/report.md`, and the first real run (2026-09-09)
+  // ended the runner on the lane's file before the pilot ever got its `lane done` turn.
+  const report = join(options.dir, '.lane', 'pilot-report.md')
+  const laneReport = join(options.dir, '.lane', 'report.md')
   const usagePath = join(options.dir, '.lane', 'usage.json')
   const summaryPath = join(options.dir, '.lane', 'summary.json')
   const started = now()
   const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
   const turns = []
   const tools = []
+  let turnTools = []
   const pendingLanes = new Map()
   let laneLaunchSeen = false
   let mailboxLines = 0
@@ -92,8 +96,8 @@ export async function runPilot(options, dependencies) {
         const exit = /(?:^|\n)EXIT=([^\s\n]+)/.exec(content)?.[1]
         if (exit) {
           pendingLanes.delete(log)
-          const bytes = exists(report) ? stat(report).size : 0
-          yield { type: 'user', message: { role: 'user', content: `lane done: EXIT=${exit}, report ${bytes} B at ${report}` } }
+          const bytes = exists(laneReport) ? stat(laneReport).size : 0
+          yield { type: 'user', message: { role: 'user', content: `lane done: EXIT=${exit}, report ${bytes} B at ${laneReport}` } }
           lane.done = true
         }
       }
@@ -101,7 +105,7 @@ export async function runPilot(options, dependencies) {
       if (lines.length > mailboxLines) yield { type: 'user', message: { role: 'user', content: `Message from the owner: ${lines[mailboxLines++]}` } }
       else await sleep(POLL_MS)
     }
-    if (!completed) yield { type: 'user', message: { role: 'user', content: 'Runner timeout reached. Write .lane/report.md with the current state and end your turn.' } }
+    if (!completed) yield { type: 'user', message: { role: 'user', content: 'Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.' } }
   }
 
   const stream = query({ prompt: prompt(), options: {
@@ -121,6 +125,7 @@ export async function runPilot(options, dependencies) {
     if (Array.isArray(content)) for (const item of content) {
       if (item.type === 'tool_use') {
         tools.push(item.name)
+        turnTools.push(item.name)
         if (item.id) startedTools.set(item.id, now())
         if (item.name === 'Bash' && /(?:node\s+)?[^\s]*wt-lane\.mjs\b/.test(String(item.input?.command ?? ''))) laneLaunchSeen = true
       }
@@ -137,7 +142,8 @@ export async function runPilot(options, dependencies) {
     if (laneLaunchSeen && laneLog) pendingLanes.set(resolve(options.dir, laneLog), {})
     if (message.type === 'result') {
       const usage = usageOf(message)
-      turns.push({ ...usage, tool_names: [...new Set(tools)] })
+      turns.push({ ...usage, tool_names: [...new Set(turnTools)] })
+      turnTools = []
       for (const key of Object.keys(totals)) totals[key] += usage[key]
     }
   }

@@ -33,11 +33,12 @@ re-read lane logs beyond those tails.
 Never push, publish, merge, force, delete, or retry a denied tool call. The Function Hook enforces
 those boundaries. Do not print secrets or environment variables. The runner's mailbox supplies owner
 messages as new turns. Speak to the owner through the Atrium MCP in the room named by the runner if
-it is available; otherwise put a concise owner message in `.lane/report.md`.
+it is available; otherwise put a concise owner message in `.lane/pilot-report.md`.
 
 ## Completion
 
-Write `.lane/report.md` with `## Implemented`, `## Verification`, `## Decisions`, `## Remaining
-Risks`, and `## Lessons for the memory` (`None.` is legitimate). Then end the turn. The runner stops
-when that report exists. The runner measures fresh tokens as input + cache creation + output; stay
+Write YOUR report at `.lane/pilot-report.md` (the lane's own report is `.lane/report.md`; never
+overwrite it) with `## Implemented`, `## Verification`, `## Decisions`, `## Remaining Risks`, and
+`## Lessons for the memory` (`None.` is legitimate). Then end the turn. The runner stops when
+`.lane/pilot-report.md` exists. The runner measures fresh tokens as input + cache creation + output; stay
 under the 100 k target where the work permits.

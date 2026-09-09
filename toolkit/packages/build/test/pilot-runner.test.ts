@@ -48,8 +48,10 @@ describe('SDK pilot runner', () => {
       sleep: async () => {},
     })
     expect(yielded).toContain('lane done: EXIT=0, report 0 B at ' + join(f.dir, '.lane', 'report.md'))
+    expect(result.summary.report_exists).toBe(false)
     expect(yielded).toContain('Message from the owner: owner says proceed')
     expect(result.usage).toMatchObject({ fresh_tokens: 73, tool_names: ['Bash'] })
+    expect(result.usage.turns[1].tool_names).toEqual([])
     expect(result.summary).toMatchObject({ fresh_tokens: 73, turns: 2, longest_tool_call_ms: 0 })
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'usage.json'), 'utf8')).turns).toHaveLength(2)
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8')).minutes).toBeTypeOf('number')
@@ -59,6 +61,22 @@ describe('SDK pilot runner', () => {
     expect(laneLogFrom('pid=12\nlog=/w/.lane/executor.log')).toBe('/w/.lane/executor.log')
     expect(laneLogFrom('GATE test: exit=0 log=/records/logs/test.log exit-file=/records/logs/test.exit')).toBeNull()
     expect(laneLogFrom('log=/w/.lane/executor.log')).toBeNull()
+  })
+
+  it('stops on the pilot report, never on the lane report at .lane/report.md', async () => {
+    const f = fixture(); writeFileSync(join(f.dir, '.lane', 'report.md'), 'lane report\n')
+    const yielded: string[] = []
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      const first = await prompt.next(); yielded.push(first.value.message.content)
+      writeFileSync(join(f.dir, '.lane', 'pilot-report.md'), '# pilot\n')
+      yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+      const next = await prompt.next(); if (!next.done) yielded.push(next.value.message.content)
+    })()
+    const result = await runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, {
+      query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), sleep: async () => {},
+    })
+    expect(yielded).toHaveLength(1)
+    expect(result.summary.report_exists).toBe(true)
   })
 
   it('keeps the adopted contract under 6 KB', () => {
