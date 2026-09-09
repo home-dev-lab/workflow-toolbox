@@ -2,7 +2,7 @@
 // wt-lane.mjs -- detached, one-command external opencode lane launcher.
 
 import { appendFileSync, mkdirSync, openSync, existsSync, statSync, writeFileSync } from 'node:fs'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { resolveConsent } from './lib/lane-consent-check-core.mjs'
 import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
@@ -41,6 +41,26 @@ function parse(argv) {
   return out
 }
 
+function writeEnvLog(dir) {
+  const lines = [`SSH_AUTH_SOCK=${process.env.SSH_AUTH_SOCK ? 'present' : 'absent'}`]
+  try {
+    const result = spawnSync('ssh-add', ['-l'], { timeout: 3000, stdio: 'pipe', encoding: 'utf8' })
+    if (result.error) {
+      lines.push(`ssh-add -l: unavailable: ${result.error.code === 'ETIMEDOUT' ? 'timeout' : result.error.message}`)
+    } else {
+      // Count only on success: a failing `ssh-add -l` still prints a sentence ("The agent has no identities.").
+      const keys = result.status === 0 ? result.stdout.split('\n').filter((line) => line.trim()).length : 0
+      lines.push(`ssh-add -l: exit=${result.status ?? 1} keys=${keys}`)
+    }
+  } catch (error) {
+    lines.push(`ssh-add -l: unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  lines.push(`HOME=${process.env.HOME ? 'present' : 'absent'} USER=${process.env.USER ? 'present' : 'absent'}`)
+  lines.push(`node=${process.version}`)
+  lines.push(`at=${new Date().toISOString()}`)
+  try { writeFileSync(path.join(dir, '.lane', 'env.log'), `${lines.join('\n')}\n`) } catch { /* best effort diagnostic */ }
+}
+
 async function main() {
   const worker = process.argv[2] === '--worker'
   const opts = parse(process.argv.slice(worker ? 3 : 2))
@@ -77,6 +97,7 @@ async function main() {
   }
 
   mkdirSync(path.dirname(opts.log), { recursive: true })
+  writeEnvLog(opts.dir)
   const fd = openSync(opts.log, 'a')
   const args = ['run', `Read and execute the complete brief at ${opts.brief}.`, '--auto', '--dir', opts.dir, '--model', opts.model, ...(opts.variant ? ['--variant', opts.variant] : [])]
   const child = spawn('opencode', args, { cwd: opts.dir, detached: true, stdio: ['ignore', fd, fd] })

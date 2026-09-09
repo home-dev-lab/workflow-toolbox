@@ -27,6 +27,10 @@ function waitFor(log: string, ms = 3000) {
   const until = Date.now() + ms
   while (Date.now() < until) { if (existsSync(log) && /EXIT=/.test(readFileSync(log, 'utf8'))) return; spawnSync('sleep', ['0.05']) }
 }
+function waitForFile(file: string, ms = 3000) {
+  const until = Date.now() + ms
+  while (Date.now() < until) { if (existsSync(file)) return; spawnSync('sleep', ['0.05']) }
+}
 
 describe('wt-lane detached launcher', () => {
   it('returns immediately, leaves the worker alive, closes stdin, and writes EXIT=0', () => {
@@ -60,5 +64,38 @@ describe('wt-lane detached launcher', () => {
     const f = fixture('true')
     const res = spawnSync(process.execPath, [LAUNCHER, '--model', 'test/model', '--brief', join(f.dir, 'brief.md')], { encoding: 'utf8', env: f.env })
     expect(res.status).toBe(2); expect(res.stderr).toContain('missing required')
+  })
+  it('writes a redacted environment snapshot when the worker starts', () => {
+    const f = fixture('sleep 0.2')
+    writeFileSync(join(f.root, 'bin', 'ssh-add'), '#!/bin/sh\nprintf \'ssh-rsa AAAA fingerprint\n\'\nexit 0\n')
+    spawnSync('chmod', ['+x', join(f.root, 'bin', 'ssh-add')])
+    const res = run(f); expect(res.status).toBe(0)
+    const envLog = join(f.dir, '.lane', 'env.log'); waitForFile(envLog)
+    const lines = readFileSync(envLog, 'utf8').trim().split('\n')
+    expect(lines).toHaveLength(5)
+    expect(lines[0]).toMatch(/^SSH_AUTH_SOCK=(present|absent)$/)
+    expect(lines[1]).toBe('ssh-add -l: exit=0 keys=1')
+    expect(lines[2]).toMatch(/^HOME=(present|absent) USER=(present|absent)$/)
+    expect(lines[3]).toMatch(/^node=v\d+\.\d+\.\d+$/)
+    expect(lines[4]).toMatch(/^at=\d{4}-\d\d-\d\dT.*Z$/)
+    expect(readFileSync(envLog, 'utf8')).not.toMatch(/ssh-rsa|fingerprint|AAAA|\/home\//)
+  })
+  it('records an ssh-add exit without exposing probe output', () => {
+    const f = fixture('sleep 0.2')
+    writeFileSync(join(f.root, 'bin', 'ssh-add'), '#!/bin/sh\nexit 2\n')
+    spawnSync('chmod', ['+x', join(f.root, 'bin', 'ssh-add')])
+    expect(run(f).status).toBe(0)
+    const envLog = join(f.dir, '.lane', 'env.log'); waitForFile(envLog)
+    expect(readFileSync(envLog, 'utf8')).toContain('ssh-add -l: exit=2 keys=0')
+    expect(readFileSync(envLog, 'utf8')).not.toMatch(/ssh-ed25519|SHA256:|secret|AAAA/)
+  })
+  it('reports keys=0 when ssh-add fails while still printing a sentence', () => {
+    const f = fixture('sleep 0.2')
+    writeFileSync(join(f.root, 'bin', 'ssh-add'), '#!/bin/sh\nprintf \'The agent has no identities.\\n\'\nexit 1\n')
+    spawnSync('chmod', ['+x', join(f.root, 'bin', 'ssh-add')])
+    expect(run(f).status).toBe(0)
+    const envLog = join(f.dir, '.lane', 'env.log'); waitForFile(envLog)
+    expect(readFileSync(envLog, 'utf8')).toContain('ssh-add -l: exit=1 keys=0')
+    expect(readFileSync(envLog, 'utf8')).not.toContain('identities')
   })
 })

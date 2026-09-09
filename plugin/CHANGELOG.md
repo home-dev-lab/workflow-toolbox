@@ -8,6 +8,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Added
 - Warn before an autonomy mandate freshness window expires so sessions can re-arm in time.
 - Add `wt-lane-wait.mjs`, an allow-rule-covered Monitor command that waits for a lane worker and its terminal exit marker without printing the lane log.
+- Record a redacted environment snapshot in `.lane/env.log` when a lane worker starts.
 
 ### Changed
 - Run each release-only plugin eval case three times and decide it by a strict majority, reporting
