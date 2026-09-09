@@ -15,6 +15,19 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
+// The CLI reads the ambient process env ahead of the profile's settings env, so a machine whose own
+// profile sets WT_*_MODEL or ANTHROPIC_DEFAULT_*_MODEL would make these fixtures read the machine, not
+// the fixture (measured 2026-09-09: `source=env` on a host with WT_PILOT_MODEL=opus in its settings env).
+function scrubbedEnv(extra: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue
+    if (/^WT_(PILOT|PILOT_HARD|ORCHESTRATOR)_MODEL$/.test(key) || /^ANTHROPIC_DEFAULT_[A-Z0-9_]+_MODEL$/.test(key)) continue
+    env[key] = value
+  }
+  return { ...env, ...extra }
+}
+
 describe('pilot model configuration', () => {
   it('resolves process env ahead of settings env, and settings ahead of sonnet defaults', () => {
     expect(resolvePilotModels({
@@ -73,7 +86,7 @@ describe('pilot model configuration', () => {
     } }))
     const result = spawnSync(process.execPath, [CLI], {
       cwd: root,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: config },
+      env: scrubbedEnv({ CLAUDE_CONFIG_DIR: config }),
       encoding: 'utf8',
     })
     expect(result.status).toBe(0)
@@ -94,7 +107,7 @@ describe('pilot model configuration', () => {
     writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_PILOT_MODEL: 'openai/gpt-5.6-luna' } }))
     const result = spawnSync(process.execPath, [CLI], {
       cwd: root,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: config },
+      env: scrubbedEnv({ CLAUDE_CONFIG_DIR: config }),
       encoding: 'utf8',
     })
     expect(result.status).toBe(2)
