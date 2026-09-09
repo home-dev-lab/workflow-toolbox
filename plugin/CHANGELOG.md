@@ -19,6 +19,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   on the type without reading the caveat. Classifier in `lib/quota-drop.mjs`.
 
 ### Added
+- `wt-main-guard-hook.mjs` now journals (without denying) `git reset --hard` and `git checkout -f` only when their worktree has uncommitted changes.
 - Add adopted standing-authorization and permission-class templates; escalations now consult owner-granted acts and a warn-only Stop hook journals covered and uncovered requests.
 - Add the adopted SDK pilot runner, launch-then-end-turn contract, local Function Hook guard, and
   release eval scaffold. The runner owns lane waits and records per-turn token usage toward the 100 k

@@ -206,6 +206,51 @@ describe('wt-main-guard-hook — journal-only merge direction', () => {
   })
 })
 
+describe('wt-main-guard-hook — reset-hard is journal-only on dirty worktrees', () => {
+  it('journals (never denies) git reset --hard when the worktree has uncommitted changes', () => {
+    const repo = join(sandboxHome, 'dirty-reset-repo')
+    initGitRepo(repo)
+    writeFileSync(join(repo, 'f.txt'), 'dirty')
+
+    const r = run('git reset --hard HEAD', { cwd: repo })
+
+    expect(r.denied).toBe(false)
+    expect(r.stdout).toBe('')
+    expect(journalLines().some((l) => l.class === 'reset-hard' && l.decision === 'allowed-journaled')).toBe(true)
+  })
+
+  it('stays silent for git reset --hard on a clean worktree', () => {
+    const repo = join(sandboxHome, 'clean-reset-repo')
+    initGitRepo(repo)
+
+    const r = run('git reset --hard HEAD', { cwd: repo })
+
+    expect(r.denied).toBe(false)
+    expect(r.stdout).toBe('')
+    expect(journalLines().some((l) => l.class === 'reset-hard')).toBe(false)
+  })
+
+  it('journals git checkout -f when the named -C worktree has uncommitted changes', () => {
+    const repo = join(sandboxHome, 'dirty-checkout-repo')
+    initGitRepo(repo)
+    writeFileSync(join(repo, 'f.txt'), 'dirty')
+
+    const r = run(`git -C ${repo} checkout -f`, { cwd: sandboxHome })
+
+    expect(r.denied).toBe(false)
+    expect(r.stdout).toBe('')
+    expect(journalLines().some((l) => l.class === 'reset-hard')).toBe(true)
+  })
+
+  it('stays silent when "git reset --hard" is only quoted in a commit message', () => {
+    const r = run('git commit -m "document git reset --hard before rebasing"')
+
+    expect(r.denied).toBe(false)
+    expect(r.stdout).toBe('')
+    expect(journalLines().some((l) => l.class === 'reset-hard')).toBe(false)
+  })
+})
+
 describe('wt-main-guard-hook — scope', () => {
   it('no-ops for any subagent call (agent_id present) — the pilot guard already covers it', () => {
     const r = run('rm -rf /', { agentId: 'agent-pilot-1' })
