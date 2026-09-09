@@ -228,9 +228,10 @@ forbidden tools cannot cover a surface that GROWS.** Every MCP server a user ins
 existing rule names.
 
 ⚠ State the evidence at its real strength, because the weaker claim is enough: what is OBSERVED is
-the tool listing plus one proven invocation from it. That a write through such a tool COMPLETES is
-an inference, not a measurement. The allow-list is the right shape either way — it closes the
-capability without needing the hazard demonstrated first.
+the tool listing, one proven invocation from it, and — measured since — a file WRITTEN to disk by a
+built-in "read-only" agent type through an installed server's shell tool, read back by the
+spawning session. The allow-list is the right shape either way — it closes the capability without
+needing the hazard demonstrated first.
 
 So state the INVARIANT and enforce it as a list of what the agent MAY call: *it holds nothing that
 mutates anything outside its own context*. An allow-list closes tools nobody has installed yet;
