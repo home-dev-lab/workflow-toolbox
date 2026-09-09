@@ -9,7 +9,7 @@ import { afterEach, beforeAll, afterAll, describe, expect, it } from 'vitest'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const WATCH = join(ROOT, 'plugin/bin/wt-quota-watch.mjs')
-let responses = [{ family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 10, window_minutes: 10080, resets_at: null }] }]
+let responses: Array<{ family: string, state: string, windows: Array<{ name: string, used_percent: number, window_minutes: number, resets_at: string | null }> }> = [{ family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 10, window_minutes: 10080, resets_at: null }] }]
 let base = ''
 let server: ReturnType<typeof createServer>
 const roots: string[] = []
@@ -51,13 +51,13 @@ describe('wt-quota-watch proxy route', () => {
     expect(result.stdout).not.toContain('5h')
   })
 
-  it('a drop before the previously reported reset time is a DROP, not a RESET (card 1860461290531588066)', async () => {
+  it('a drop before the previously reported reset time is a DROP with the reset unverified (card 1860461290531588066)', async () => {
     const future = new Date(Date.now() + 5 * 86400000).toISOString()
     const otherWindow = new Date(Date.now() + 7 * 86400000).toISOString()
     responses = [{ family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 42, window_minutes: 10080, resets_at: future }] }, { family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 32, window_minutes: 10080, resets_at: otherWindow }] }]
     const { result } = await run({ ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: 'gateway', WT_QUOTA_PROXY_ORIGINS: base })
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain('QUOTA DROP codex 7d: 32% (was 42%) — NOT a reset')
+    expect(result.stdout).toContain('QUOTA DROP codex 7d: 32% (was 42%) — reset unverified')
     expect(result.stdout).toContain('capacity not asserted')
     expect(result.stdout).not.toContain('QUOTA RESET')
   })
@@ -68,7 +68,8 @@ describe('wt-quota-watch proxy route', () => {
     responses = [{ family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 90, window_minutes: 10080, resets_at: past }] }, { family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 3, window_minutes: 10080, resets_at: next }] }]
     const { result } = await run({ ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: 'gateway', WT_QUOTA_PROXY_ORIGINS: base })
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain('QUOTA RESET codex 7d: 3% (was 90%) — new window, capacity available')
+    expect(result.stdout).toContain('QUOTA RESET codex 7d: 3% (was 90%) — past the reported reset time')
+    expect(result.stdout).toContain('source continuity not verified on this route — new window, capacity available')
   })
 
   it('stays alive and explicitly degraded for an unknown route', async () => {

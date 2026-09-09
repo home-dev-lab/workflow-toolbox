@@ -864,7 +864,7 @@ while (true) {
         const previousResetsAt = state.lastResetsAt.get(drop.key) ?? null
         const verdict = previousResetsAt === null
           ? { kind: 'reset', detail: `${drop.currentPct}% (was ${drop.previousPct}%) — new window, capacity available` }
-          : classifyQuotaDrop({ nowMs: Date.now(), previousResetsAt, currentResetsAt: drop.resetsAt, previousPct: drop.previousPct, currentPct: drop.currentPct })
+          : classifyQuotaDrop({ nowMs: Date.now(), previousResetsAt, currentResetsAt: drop.resetsAt, previousPct: drop.previousPct, currentPct: drop.currentPct , continuity: 'account fingerprint unchanged' })
         writeLine(`QUOTA ${verdict.kind === 'reset' ? 'RESET' : 'DROP'} ${drop.label}: ${verdict.detail}`)
         baselineWindow(state, drop.key, drop.currentPct, thresholds, drop.resetsAt)
       }

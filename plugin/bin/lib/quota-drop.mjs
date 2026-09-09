@@ -1,17 +1,21 @@
 // quota-drop.mjs — classify a DROP in a usage percentage between two polls.
 //
 // A percentage that falls between two polls has more than one cause: the window genuinely
-// reset (capacity available), or the READING now describes something else — another account,
+// reset (capacity available), a provider reset it by hand before its own deadline (observed on
+// CLIProxy, 2026-09-09 morning), or the READING now describes something else — another account,
 // another binding of the proxy session, another source. The watcher used to print
 // `QUOTA RESET … new window, capacity available` on any drop along the proxy route, and a
 // consumer measured it wrong: 42 % → 32 % at 18:41 while the previously reported reset time
-// (14/09 20:00) had not come yet, and the reset time itself jumped to a different window
-// (16/09 08:27). A window cannot reset before its own reset time, so that drop was a change of
-// SUBJECT, not a reset — and the line asserted fresh capacity to every session that read it.
+// (14/09 20:00) had not come and the reset time itself jumped to another window (16/09 08:27).
 //
-// The discriminator is time, not the size of the drop: a drop observed BEFORE the previously
-// reported reset time is not a reset of that window. A drop observed at or after it is. When
-// no reset time was reported the cause stays undetermined, and the line says so.
+// What TIME can and cannot establish (claude-mem-cc-1's control cases, same day): a drop BEFORE
+// the previously reported reset time is not that window's scheduled reset — it may be a manual
+// reset or a change of subject, and the line must not choose; a drop AT OR AFTER it is consistent
+// with the scheduled reset, but an account switch past the old deadline produces the same drop.
+// So time is EVIDENCE the line prints, never a complete classifier: the "reset" verdict is issued
+// only past the deadline, and it names what it did not verify (source continuity) so a reader
+// does not credit more than the instrument measured. The Claude route adds the account
+// fingerprint on top; the proxy route has no identity signal and says so.
 //
 // Pure, no I/O; the watcher passes what it stored from the previous poll.
 
@@ -29,19 +33,26 @@ export function resetsAtToMs(value) {
 }
 
 /**
- * @returns {{ kind: 'reset' | 'not-a-reset' | 'undetermined', detail: string }}
+ * @returns {{ kind: 'reset' | 'unverified' | 'undetermined', detail: string }}
+ *   'reset'        — past the previously reported reset time; the detail names the continuity
+ *                    evidence available (`continuity` option, e.g. 'account fingerprint unchanged')
+ *                    or says it was not verified.
+ *   'unverified'   — before the previously reported reset time: a manual reset or a change of
+ *                    subject; both reset times printed; capacity not asserted.
+ *   'undetermined' — no previous reset time reported.
  */
-export function classifyQuotaDrop({ nowMs, previousResetsAt, currentResetsAt, previousPct, currentPct }) {
+export function classifyQuotaDrop({ nowMs, previousResetsAt, currentResetsAt, previousPct, currentPct, continuity = null }) {
   const previousMs = resetsAtToMs(previousResetsAt)
   const currentMs = resetsAtToMs(currentResetsAt)
   const change = `${currentPct}% (was ${previousPct}%)`
   if (previousMs === null) {
     return { kind: 'undetermined', detail: `${change} — cause undetermined: no reset time was reported for the previous reading (reset or source change)` }
   }
+  const previousLabel = new Date(previousMs).toISOString()
+  const currentLabel = currentMs === null ? 'none' : new Date(currentMs).toISOString()
   if (nowMs < previousMs) {
-    const previousLabel = new Date(previousMs).toISOString()
-    const currentLabel = currentMs === null ? 'none' : new Date(currentMs).toISOString()
-    return { kind: 'not-a-reset', detail: `${change} — NOT a reset: the window was due to reset at ${previousLabel} and that time has not come (reading now reports ${currentLabel}); the source, account or binding changed — capacity not asserted` }
+    return { kind: 'unverified', detail: `${change} — reset unverified: before the reported reset time ${previousLabel} (reading now reports ${currentLabel}); a manual reset, or the source, account or binding changed — capacity not asserted` }
   }
-  return { kind: 'reset', detail: `${change} — new window, capacity available` }
+  const evidence = continuity ? `${continuity}` : 'source continuity not verified on this route'
+  return { kind: 'reset', detail: `${change} — past the reported reset time ${previousLabel} (now ${currentLabel}); ${evidence} — new window, capacity available` }
 }

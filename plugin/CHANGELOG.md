@@ -7,9 +7,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - `wt-quota-watch.mjs`: a usage percentage that falls between two polls is reported as a RESET
-  only once the previously reported reset time has come; before it, the line reads
-  `QUOTA DROP … NOT a reset` with both reset times and "capacity not asserted" (the reading
-  changed subject — account, binding or source). Classifier in `lib/quota-drop.mjs`.
+  only once the previously reported reset time has come, and the line names the continuity
+  evidence it has (account fingerprint on the Claude route; "source continuity not verified" on
+  the proxy route); before that time it reads `QUOTA DROP … reset unverified` with both reset
+  times and "capacity not asserted" (a manual reset, or a change of account, binding or source).
+  Classifier in `lib/quota-drop.mjs`.
 
 ### Added
 - Add spawn-time pilot and orchestrator model profile keys with Anthropic `sonnet` defaults and

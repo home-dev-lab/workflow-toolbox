@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { classifyQuotaDrop, resetsAtToMs } from '../../../../plugin/bin/lib/quota-drop.mjs'
 
 // The classifier the quota watcher applies to a percentage that FELL between two polls.
@@ -24,11 +25,12 @@ describe('resetsAtToMs', () => {
 })
 
 describe('classifyQuotaDrop', () => {
-  it('a drop BEFORE the previously reported reset time is NOT a reset, and names both times', () => {
+  it('a drop BEFORE the previously reported reset time is reset-unverified, and names both times', () => {
     const verdict = classifyQuotaDrop({ nowMs: NOW, previousResetsAt: '2026-09-14T19:00:00Z', currentResetsAt: '2026-09-16T07:27:00Z', previousPct: 42, currentPct: 32 })
-    expect(verdict.kind).toBe('not-a-reset')
+    expect(verdict.kind).toBe('unverified')
     expect(verdict.detail).toContain('32% (was 42%)')
-    expect(verdict.detail).toContain('NOT a reset')
+    expect(verdict.detail).toContain('reset unverified')
+    expect(verdict.detail).toContain('manual reset')
     expect(verdict.detail).toContain('2026-09-14T19:00:00.000Z')
     expect(verdict.detail).toContain('2026-09-16T07:27:00.000Z')
     expect(verdict.detail).toContain('capacity not asserted')
@@ -40,6 +42,10 @@ describe('classifyQuotaDrop', () => {
     expect(at.kind).toBe('reset')
     expect(after.kind).toBe('reset')
     expect(after.detail).toContain('new window, capacity available')
+    expect(after.detail).toContain('source continuity not verified on this route')
+    const withIdentity = classifyQuotaDrop({ nowMs: NOW + 60000, previousResetsAt: NOW, currentResetsAt: null, previousPct: 90, currentPct: 3, continuity: 'account fingerprint unchanged' })
+    expect(withIdentity.detail).toContain('account fingerprint unchanged')
+    expect(withIdentity.detail).not.toContain('not verified')
   })
   it('a drop with no previous reset time stays undetermined', () => {
     const verdict = classifyQuotaDrop({ nowMs: NOW, previousResetsAt: null, currentResetsAt: '2026-09-16T07:27:00Z', previousPct: 42, currentPct: 32 })
@@ -49,7 +55,7 @@ describe('classifyQuotaDrop', () => {
   })
   it('a current reset time that is missing does not turn a premature drop into a reset', () => {
     const verdict = classifyQuotaDrop({ nowMs: NOW, previousResetsAt: '2026-09-14T19:00:00Z', currentResetsAt: null, previousPct: 42, currentPct: 32 })
-    expect(verdict.kind).toBe('not-a-reset')
+    expect(verdict.kind).toBe('unverified')
     expect(verdict.detail).toContain('reading now reports none')
   })
 })
