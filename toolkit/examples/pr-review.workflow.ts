@@ -114,10 +114,13 @@ export interface PrReviewInput {
    *  model does not. null = the standard subagent (the default). Requested via the
    *  SAME structured config envelope as reviewerType: `args.agentTypes.verify`
    *  (the SAME role key as a future `effort.verify` override — one role, one key),
-   *  validated by the shared parseConfig. PROBED at run entry (probeAgentType),
-   *  mirroring the reviewerType precedent exactly: when the type cannot answer,
-   *  the run degrades to the standard subagent — reported in the result's
-   *  `verifierProbe`, never silent. Routes the Verify fan ONLY: the lens reviewers
+   *  validated by the shared parseConfig. PROBED at run entry (probeAgentType,
+   *  `required: true`), mirroring the reviewerType precedent exactly: when the
+   *  type cannot answer, the run is REFUSED at launch — the error names the type,
+   *  the reason and the remedy (register the type, or drop `agentTypes.verify` to
+   *  get the standard subagent). It never degrades silently; when the type IS
+   *  available, the probe outcome is reported in the result's `verifierProbe`.
+   *  Routes the Verify fan ONLY: the lens reviewers
    *  and the synthesizer are never specialized by this knob. Never hard-code a
    *  private (e.g. magic-claude:*) type as a default. */
   verifierType: string | null
@@ -127,8 +130,11 @@ export interface PrReviewInput {
    *  Requested via the STRUCTURED config envelope: `args.agentTypes.review`
    *  (the SAME role key as `effort.review` — one role, one key; no bespoke
    *  top-level arg), validated by the shared parseConfig. PROBED at run entry
-   *  (probeAgentType): when the type cannot answer, the run degrades to the
-   *  standard subagent — reported in the result's `probe`, never silent. Routes
+   *  (probeAgentType, `required: true`): when the type cannot answer, the run is
+   *  REFUSED at launch — the error names the type, the reason and the remedy
+   *  (register the type, or drop `agentTypes.review` to get the standard
+   *  subagent). It never degrades silently; when the type IS available, the probe
+   *  outcome is reported in the result's `probe`. Routes
    *  the lens reviewers ONLY: the verifiers and the synthesizer are never
    *  specialized. Never hard-code a private (e.g. magic-claude:*) type as a
    *  default. A specialist reviewer is more thorough but noisier; the
@@ -776,8 +782,10 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   // Phase 'Probe' (conditional) — resolve the reviewer routing BEFORE any
   // reviewer spawns. One schema-less probe through the requested type; any
   // non-affirmative outcome (UNAVAILABLE marker, null, error text, throw on an
-  // unregistered type) degrades to the standard subagent. Never silent: the
-  // probe logs + emits its own digest, and the result carries `probe`.
+  // unregistered type) REFUSES the launch (`required: true`): an explicitly
+  // requested type that cannot answer is not silently swapped for the standard
+  // subagent — the thrown error carries the remedy. Never silent: the probe
+  // logs + emits its own digest, and the result carries `probe`.
   // -------------------------------------------------------------------------
 
   let resolvedReviewerType: string | null = null
@@ -806,8 +814,9 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
 
   // Same probe-then-resolve treatment for the Verify fan's routing request
   // (agentTypes.verify) — mirrors the reviewerType block above exactly, so an
-  // unavailable cross-family verifier degrades to the standard subagent
-  // instead of silently starving every verify call.
+  // unavailable cross-family verifier refuses the launch (`required: true`)
+  // instead of silently starving every verify call or silently swapping in the
+  // standard subagent.
   let resolvedVerifierType: string | null = null
   let verifierProbeReport: AgentTypeProbeReport | null = null
   if (input.verifierType !== null) {
