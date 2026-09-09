@@ -13,8 +13,12 @@ Use `--profile-env <settings.json>` to pass a profile's `env` block to `query()`
 pilot runs: retain the approved alias in `WT_PILOT_MODEL`/`WT_PILOT_HARD_MODEL`, then remap it with
 `ANTHROPIC_DEFAULT_<ALIAS>_MODEL`. `--hard` selects `pilotHard` through `resolvePilotModels`.
 
+Use `--card-file <path>` to put the arbiter-provided card text verbatim in the first pilot prompt.
+The prompt tells the pilot not to re-read that card from the board. Each injected lane completion,
+owner message, or timeout also prints an `injected: ...` line to stdout for the runner log.
+
 At exit `.lane/usage.json` contains per-result token categories and tools; `.lane/summary.json`
 contains fresh tokens (`input + cache_creation + output`), result turns, elapsed minutes, and the
-longest observed tool call. The target is under 100 k fresh tokens; PoC 4 measured 167,615. Runner
+longest observed tool call plus injected-turn count. The target is under 100 k fresh tokens; PoC 4 measured 167,615. Runner
 ownership of waits and the short verification template are designed reductions, not yet a measured
 real-card result.

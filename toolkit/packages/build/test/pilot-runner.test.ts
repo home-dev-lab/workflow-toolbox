@@ -22,16 +22,34 @@ describe('SDK pilot runner', () => {
   it('parses required arguments and refuses absent card, bad timeout, and malformed profile env', () => {
     expect(parsePilotRunnerArgs(['--dir', '/tmp/a'])).toMatchObject({ error: 'missing required --card or --dir' })
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--timeout', '0'])).toMatchObject({ error: '--timeout must be a positive number of seconds' })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md'])).toMatchObject({ cardFile: '/tmp/card.md' })
     const f = fixture(); const profile = join(f.root, 'profile.json'); writeFileSync(profile, '{"env":{"X":3}}')
     expect(() => loadProfileEnv(profile)).toThrow('--profile-env env.X must be a string')
     const result = spawnSync(process.execPath, [CLI, '--dir', f.dir], { encoding: 'utf8' })
     expect(result.status).toBe(2); expect(result.stderr).toContain('missing required --card or --dir')
   })
 
+  it('places an arbiter card file verbatim in the first prompt without changing prompts that omit it', async () => {
+    const f = fixture(); const cardFile = join(f.root, 'card.md'); const card = '# Card title\n\nDefinition of done: ship it.\n'
+    writeFileSync(cardFile, card)
+    const prompts: string[] = []
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      const first = await prompt.next(); prompts.push(first.value.message.content)
+    })()
+    const models = () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } })
+    await runPilot({ card: '186', cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
+    expect(prompts[0]).toContain(`## The card, verbatim\n\n${card}`)
+    expect(prompts[0]).toContain('do not re-read the card from the board; the text above is the card')
+
+    await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
+    expect(prompts[1]).toBe(`Pilot card 186 in ${f.dir}. Launch executor lanes only with node ${join(f.root, '../bin/wt-lane.mjs')} and end your turn immediately after launch.`)
+  })
+
   it('turns mailbox input and a completed lane log into prompt turns, and writes measured shapes', async () => {
     const f = fixture(); const mailbox = join(f.root, 'mailbox.txt'); const log = join(f.dir, '.lane', 'executor.log')
     writeFileSync(mailbox, 'owner says proceed\n')
     const yielded: string[] = []
+    const logged: string[] = []
     const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
       const first = await prompt.next(); yielded.push(first.value.message.content)
       yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'lane', name: 'Bash', input: { command: 'node plugin/bin/wt-lane.mjs --dir x' } }] } }
@@ -46,15 +64,37 @@ describe('SDK pilot runner', () => {
       query,
       resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
       sleep: async () => {},
+      log: (line: string) => logged.push(line),
     })
     expect(yielded).toContain('lane done: EXIT=0, report 0 B at ' + join(f.dir, '.lane', 'report.md'))
     expect(result.summary.report_exists).toBe(false)
     expect(yielded).toContain('Message from the owner: owner says proceed')
     expect(result.usage).toMatchObject({ fresh_tokens: 73, tool_names: ['Bash'] })
     expect(result.usage.turns[1].tool_names).toEqual([])
-    expect(result.summary).toMatchObject({ fresh_tokens: 73, turns: 2, longest_tool_call_ms: 0 })
+    expect(logged).toEqual([
+      `injected: lane done: EXIT=0, report 0 B at ${join(f.dir, '.lane', 'report.md')}`,
+      'injected: owner message Message from the owner: owner says proceed',
+    ])
+    expect(result.summary).toMatchObject({ fresh_tokens: 73, turns: 2, injected_turns: 2, longest_tool_call_ms: 0 })
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'usage.json'), 'utf8')).turns).toHaveLength(2)
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8')).minutes).toBeTypeOf('number')
+  })
+
+  it('logs a timeout injection and counts it in the summary', async () => {
+    const f = fixture(); const logged: string[] = []; let calls = 0
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      await prompt.next()
+      const timeout = await prompt.next()
+      expect(timeout.value.message.content).toContain('Runner timeout reached')
+    })()
+    const result = await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, {
+      query,
+      resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
+      now: () => calls++ === 0 ? 0 : 1001,
+      log: (line: string) => logged.push(line),
+    })
+    expect(logged).toEqual(['injected: timeout Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.'])
+    expect(result.summary.injected_turns).toBe(1)
   })
 
   it('waits only on a lane answer carrying pid= and log= together, never on a gate record log=', () => {

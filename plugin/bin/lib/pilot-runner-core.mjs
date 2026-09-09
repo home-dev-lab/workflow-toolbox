@@ -5,10 +5,11 @@ export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
 
 export function parsePilotRunnerArgs(argv) {
-  const options = { card: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, room: null, timeout: DEFAULT_TIMEOUT }
+  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, room: null, timeout: DEFAULT_TIMEOUT }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--card') options.card = argv[++i] ?? null
+    else if (arg === '--card-file') options.cardFile = argv[++i] ?? null
     else if (arg === '--dir') options.dir = argv[++i] ?? null
     else if (arg === '--profile-env') options.profileEnv = argv[++i] ?? null
     else if (arg === '--contract') options.contract = argv[++i] ?? null
@@ -25,6 +26,7 @@ export function parsePilotRunnerArgs(argv) {
   options.contract = resolve(options.contract ?? join(dirname(new URL(import.meta.url).pathname), '../../autonomy/PILOT-CONTRACT.md'))
   options.mailbox = resolve(options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt'))
   if (options.profileEnv) options.profileEnv = resolve(options.profileEnv)
+  if (options.cardFile) options.cardFile = resolve(options.cardFile)
   return options
 }
 
@@ -63,7 +65,7 @@ function usageOf(message) {
 }
 
 export async function runPilot(options, dependencies) {
-  const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, stat = statSync } = dependencies
+  const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, stat = statSync, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
   const model = options.hard ? models.pilotHard : models.pilot
@@ -83,29 +85,45 @@ export async function runPilot(options, dependencies) {
   let laneLaunchSeen = false
   let mailboxLines = 0
   let completed = false
+  let injectedTurns = 0
   let longestToolCallMs = 0
   const startedTools = new Map()
 
   async function* prompt() {
-    yield { type: 'user', message: { role: 'user', content: `Pilot card ${options.card} in ${options.dir}. Launch executor lanes only with node ${join(dirname(options.contract), '../bin/wt-lane.mjs')} and end your turn immediately after launch.${options.room ? ` Owner room: ${options.room}.` : ''}` } }
+    const standing = `Pilot card ${options.card} in ${options.dir}. Launch executor lanes only with node ${join(dirname(options.contract), '../bin/wt-lane.mjs')} and end your turn immediately after launch.${options.room ? ` Owner room: ${options.room}.` : ''}`
+    const card = options.cardFile ? readFile(options.cardFile, 'utf8') : null
+    yield { type: 'user', message: { role: 'user', content: card === null ? standing : `${standing}\n\n## The card, verbatim\n\n${card}\n\ndo not re-read the card from the board; the text above is the card` } }
     while (!completed && now() - started < options.timeout * 1000) {
       if (exists(report)) { completed = true; return }
-      for (const [log, lane] of pendingLanes) {
-        if (!exists(log)) continue
-        const content = readFile(log, 'utf8')
+      for (const [laneLogPath, lane] of pendingLanes) {
+        if (!exists(laneLogPath)) continue
+        const content = readFile(laneLogPath, 'utf8')
         const exit = /(?:^|\n)EXIT=([^\s\n]+)/.exec(content)?.[1]
         if (exit) {
-          pendingLanes.delete(log)
+          pendingLanes.delete(laneLogPath)
           const bytes = exists(laneReport) ? stat(laneReport).size : 0
-          yield { type: 'user', message: { role: 'user', content: `lane done: EXIT=${exit}, report ${bytes} B at ${laneReport}` } }
+          const content = `lane done: EXIT=${exit}, report ${bytes} B at ${laneReport}`
+          injectedTurns += 1
+          log(`injected: ${content}`)
+          yield { type: 'user', message: { role: 'user', content } }
           lane.done = true
         }
       }
       const lines = exists(options.mailbox) ? readFile(options.mailbox, 'utf8').split(/\r?\n/).filter(Boolean) : []
-      if (lines.length > mailboxLines) yield { type: 'user', message: { role: 'user', content: `Message from the owner: ${lines[mailboxLines++]}` } }
+      if (lines.length > mailboxLines) {
+        const content = `Message from the owner: ${lines[mailboxLines++]}`
+        injectedTurns += 1
+        log(`injected: owner message ${content}`)
+        yield { type: 'user', message: { role: 'user', content } }
+      }
       else await sleep(POLL_MS)
     }
-    if (!completed) yield { type: 'user', message: { role: 'user', content: 'Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.' } }
+    if (!completed) {
+      const content = 'Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.'
+      injectedTurns += 1
+      log(`injected: timeout ${content}`)
+      yield { type: 'user', message: { role: 'user', content } }
+    }
   }
 
   const stream = query({ prompt: prompt(), options: {
@@ -149,7 +167,7 @@ export async function runPilot(options, dependencies) {
   }
   const freshTokens = totals.input + totals.cache_creation + totals.output
   const usage = { turns, totals, fresh_tokens: freshTokens, tool_names: [...new Set(tools)] }
-  const summary = { fresh_tokens: freshTokens, turns: turns.length, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report) }
+  const summary = { fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report) }
   writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   return { usage, summary }

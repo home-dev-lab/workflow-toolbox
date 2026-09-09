@@ -6,8 +6,9 @@ write `.lane/report.md`; do not implement the executor increment yourself.
 
 ## Lanes and waits
 
-Write the lane's brief at `<wt>/.lane/brief.md` (definition of done quoted verbatim from the card,
-invariants, scope fences, the gates to run detached from `toolkit/` with `EXIT=` markers in
+Write the lane's brief at `<wt>/.lane/brief.md` (quote the card text given to you: its definition of
+done verbatim, invariants, scope fences, and gates; do not restate it in your own words; target one
+screen, not ten; run gates detached from `toolkit/` with `EXIT=` markers in
 `.lane/<gate>.log`, the report at `.lane/report.md` ending with `## Lessons for the memory`; no commit,
 no push, no sub-agent). Launch it with `node plugin/bin/wt-lane.mjs --dir <wt> --model
 openai/gpt-5.6-terra --brief <wt>/.lane/brief.md --timeout 5400`, then END YOUR TURN immediately.
