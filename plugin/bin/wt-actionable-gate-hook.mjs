@@ -145,12 +145,12 @@ function hasInFlightWork(transcriptPath, sessionId, now) {
   return false
 }
 
-function nearAncestorsOf(pid, depth) {
+function nearAncestorsOf(pid, depth, fixture) {
   const out = new Set()
   let current = Number(pid)
   for (let i = 0; i < depth && current > 1; i += 1) {
-    const stat = readFileSync(`/proc/${current}/stat`, 'utf8')
-    const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
+    const stat = fixture ? null : readFileSync(`/proc/${current}/stat`, 'utf8')
+    const ppid = fixture ? fixture.processes.get(current)?.ppid : Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
     if (!Number.isInteger(ppid) || ppid <= 1) break
     out.add(ppid)
     current = ppid
@@ -165,7 +165,15 @@ function intersects(left, right) {
   return false
 }
 
-function listMatchingPids(pattern) {
+function listMatchingPids(pattern, fixture) {
+  if (fixture) {
+    return {
+      kind: 'ok',
+      pids: [...fixture.processes.values()]
+        .filter((process) => process.patterns.includes(pattern) || process.command.includes(pattern))
+        .map((process) => process.pid),
+    }
+  }
   try {
     const out = execFileSync('pgrep', ['-f', pattern], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
     return {
@@ -180,6 +188,29 @@ function listMatchingPids(pattern) {
   } catch (error) {
     if (error && error.status === 1) return { kind: 'ok', pids: [] }
     return { kind: 'error', reason: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+function readLaneFixture() {
+  const path = process.env.WT_ACTIONABLE_LANE_FIXTURE_PATH
+  if (!path) return { kind: 'absent' }
+  try {
+    const parsed = readJson(path)
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.processes) || !Number.isInteger(parsed.hookPid)) {
+      throw new Error('fixture must contain hookPid and processes')
+    }
+    const processes = new Map()
+    for (const entry of parsed.processes) {
+      if (!entry || typeof entry !== 'object' || !Number.isInteger(entry.pid) || !Number.isInteger(entry.ppid) ||
+        typeof entry.cwd !== 'string' || typeof entry.command !== 'string' || !Array.isArray(entry.patterns) ||
+        !entry.patterns.every((pattern) => typeof pattern === 'string')) {
+        throw new Error('fixture process is invalid')
+      }
+      processes.set(entry.pid, entry)
+    }
+    return { kind: 'present', hookPid: parsed.hookPid, processes }
+  } catch (error) {
+    return { kind: 'error', reason: `lane fixture: ${error instanceof Error ? error.message : String(error)}` }
   }
 }
 
@@ -199,26 +230,32 @@ function detectExternalLane(cwd) {
   const detectionMode = process.env.WT_ACTIONABLE_LANE_DETECTION_MODE
   if (detectionMode === 'unsupported') return { kind: 'unsupported', reason: 'forced unsupported for tests' }
 
+  const fixture = readLaneFixture()
+  if (fixture.kind === 'error') return fixture
+
   // Degraded path is explicit: this detection relies on Linux /proc for cwd + ppid and on
   // `pgrep -f` to match the invocation without printing command lines. Elsewhere the hook must
   // fall back to transcripts plus the declared bound, not pretend it checked and found nothing.
-  if (process.platform !== 'linux') {
+  if (fixture.kind === 'absent' && process.platform !== 'linux') {
     return { kind: 'unsupported', reason: `external lane detection requires linux /proc + pgrep (got ${process.platform})` }
   }
 
   try {
-    const hookNear = nearAncestorsOf(process.pid, LANE_ANCESTOR_DEPTH)
-    const hookSelfAndAncestors = new Set([process.pid, ...nearAncestorsOf(process.pid, LANE_SELF_EXCLUDE_DEPTH)])
+    const scanner = fixture.kind === 'present' ? fixture : null
+    const hookPid = scanner?.hookPid ?? process.pid
+    const hookNear = nearAncestorsOf(hookPid, LANE_ANCESTOR_DEPTH, scanner)
+    const hookSelfAndAncestors = new Set([hookPid, ...nearAncestorsOf(hookPid, LANE_SELF_EXCLUDE_DEPTH, scanner)])
     const projectRoot = safeProjectRoot(cwd)
 
     for (const pattern of lanePatterns()) {
-      const matches = listMatchingPids(pattern)
+      const matches = listMatchingPids(pattern, scanner)
       if (matches.kind !== 'ok') return matches
       for (const pid of matches.pids) {
         if (hookSelfAndAncestors.has(pid)) continue
-        const laneRoot = readlinkSync(`/proc/${pid}/cwd`)
+        const laneRoot = scanner ? scanner.processes.get(pid)?.cwd : readlinkSync(`/proc/${pid}/cwd`)
+        if (typeof laneRoot !== 'string') throw new Error(`missing cwd for lane pid ${pid}`)
         if (!isSameOrNestedPath(laneRoot, projectRoot)) continue
-        if (intersects(hookNear, nearAncestorsOf(pid, LANE_ANCESTOR_DEPTH))) {
+        if (intersects(hookNear, nearAncestorsOf(pid, LANE_ANCESTOR_DEPTH, scanner))) {
           return { kind: 'running', pid, pattern }
         }
       }

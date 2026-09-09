@@ -1,5 +1,5 @@
-import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -11,16 +11,8 @@ const HOOK = join(REPO_ROOT, 'plugin/bin/wt-actionable-gate-hook.mjs')
 const CORE = join(REPO_ROOT, 'plugin/bin/lib/actionability-core.mjs')
 const MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 const roots: string[] = []
-const laneProcesses: Array<{ pid: number; detached: boolean }> = []
 
 afterEach(() => {
-  for (const lane of laneProcesses.splice(0)) {
-    try {
-      process.kill(lane.pid, 'SIGKILL')
-    } catch {
-      // Already exited.
-    }
-  }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -64,34 +56,10 @@ function blockText(r: { stdout: string }): string {
   }
 }
 
-function launchLane(args0: string, cwd: string, detached = false): number {
-  const child = spawn('bash', ['-lc', `exec -a ${JSON.stringify(args0)} sleep 30`], {
-    cwd,
-    detached,
-    stdio: detached ? 'ignore' : 'pipe',
-  })
-  if (detached) child.unref()
-  if (!child.pid) throw new Error('lane did not start')
-  laneProcesses.push({ pid: child.pid, detached })
-  return child.pid
-}
-
-function launchDetachedLaneViaHelper(args0: string, cwd: string): void {
-  const helper = spawnSync(
-    'bash',
-    ['-lc', `bash -lc 'exec -a ${JSON.stringify(args0)} sleep 30' >/dev/null 2>&1 &`],
-    { cwd, encoding: 'utf8' },
-  )
-  if (helper.status !== 0) throw new Error(helper.stderr || 'detached lane helper failed')
-  const pidLookup = spawnSync('pgrep', ['-f', args0], { encoding: 'utf8' })
-  const pid = (pidLookup.stdout || '')
-    .split('\n')
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .map(Number)
-    .find((value) => Number.isInteger(value) && value > 0)
-  if (!pid) throw new Error('detached lane pid lookup failed')
-  laneProcesses.push({ pid, detached: true })
+function writeLaneFixture(root: string, processes: unknown[] = []): string {
+  const path = join(root, 'lane-fixture.json')
+  writeFileSync(path, JSON.stringify({ hookPid: 100, processes }), 'utf8')
+  return path
 }
 
 function scaffold(tag: string) {
@@ -102,6 +70,7 @@ function scaffold(tag: string) {
   const sessionId = `sess-${tag}`
   const transcriptPath = join(transcripts, `${sessionId}.jsonl`)
   const cwd = join(root, 'project')
+  const laneFixturePath = writeLaneFixture(root)
   mkdirSync(home, { recursive: true })
   mkdirSync(state, { recursive: true })
   mkdirSync(transcripts, { recursive: true })
@@ -115,15 +84,14 @@ function scaffold(tag: string) {
     stateDir: join(state, 'wt-actionable'),
     subagentsDir: join(transcripts, sessionId, 'subagents'),
     payload: { hook_event_name: 'Stop', transcript_path: transcriptPath, session_id: sessionId, cwd },
-    // Most hook tests do not exercise Linux process detection. Pin its explicit degraded mode so
-    // their result is decided only by the fixture, not by the runner's process tree.
+    // Every hook invocation gets an empty scanner fixture, so no test observes host processes.
     env: {
       ...process.env,
       CLAUDE_CONFIG_DIR: undefined,
       CLAUDE_PLUGIN_DATA: undefined,
       HOME: home,
       XDG_STATE_HOME: state,
-      WT_ACTIONABLE_LANE_DETECTION_MODE: 'unsupported',
+      WT_ACTIONABLE_LANE_FIXTURE_PATH: laneFixturePath,
     },
   }
 }
@@ -694,7 +662,7 @@ describe('wt-actionable-gate-hook', () => {
   })
 
   it('a lane of this session detected by ancestry + cwd -> no block, and the counter resets', () => {
-    const { env, payload, stateDir, cwd } = scaffold('lane-detected')
+    const { env, payload, root, stateDir, cwd } = scaffold('lane-detected')
     writeSnapshot(stateDir, cwd, {
       at: Date.now(),
       actionable: 3,
@@ -706,17 +674,19 @@ describe('wt-actionable-gate-hook', () => {
     })
     expect(runHook(payload, env).code).toBe(0)
     const pattern = 'wt-actionable-test same-session lane'
-    launchLane(pattern, cwd)
+    writeLaneFixture(root, [
+      { pid: 100, ppid: 90, cwd, command: 'hook', patterns: [] },
+      { pid: 90, ppid: 1, cwd, command: 'parent', patterns: [] },
+      { pid: 200, ppid: 90, cwd, command: pattern, patterns: [pattern] },
+    ])
     const running = runHook(payload, {
       ...env,
-      WT_ACTIONABLE_LANE_DETECTION_MODE: undefined,
       WT_ACTIONABLE_LANE_PATTERNS: pattern,
     })
     expect(running.code).toBe(0)
     expect(blockText(running)).toBe('')
     const again = runHook(payload, {
       ...env,
-      WT_ACTIONABLE_LANE_DETECTION_MODE: undefined,
       WT_ACTIONABLE_LANE_PATTERNS: 'wt-actionable-test no-match lane',
     })
     expect(again.code).toBe(0)
@@ -724,7 +694,7 @@ describe('wt-actionable-gate-hook', () => {
   })
 
   it('blinding the matcher still blocks, proving the gate did not merely stay quiet', () => {
-    const { env, payload, stateDir, cwd } = scaffold('lane-blinded')
+    const { env, payload, root, stateDir, cwd } = scaffold('lane-blinded')
     writeSnapshot(stateDir, cwd, {
       at: Date.now(),
       actionable: 2,
@@ -735,10 +705,13 @@ describe('wt-actionable-gate-hook', () => {
       inFlightUntil: null,
     })
     const pattern = 'wt-actionable-test blinded matcher lane'
-    launchLane(pattern, cwd)
+    writeLaneFixture(root, [
+      { pid: 100, ppid: 90, cwd, command: 'hook', patterns: [] },
+      { pid: 90, ppid: 1, cwd, command: 'parent', patterns: [] },
+      { pid: 200, ppid: 90, cwd, command: pattern, patterns: [pattern] },
+    ])
     const r = runHook(payload, {
       ...env,
-      WT_ACTIONABLE_LANE_DETECTION_MODE: undefined,
       WT_ACTIONABLE_LANE_PATTERNS: 'wt-actionable-test definitely-no-match lane',
     })
     expect(r.code).toBe(0)
@@ -746,7 +719,7 @@ describe('wt-actionable-gate-hook', () => {
   })
 
   it('a lane from another session is not counted as this session\'s work', () => {
-    const { env, payload, stateDir, cwd } = scaffold('lane-other-session')
+    const { env, payload, root, stateDir, cwd } = scaffold('lane-other-session')
     writeSnapshot(stateDir, cwd, {
       at: Date.now(),
       actionable: 2,
@@ -757,10 +730,14 @@ describe('wt-actionable-gate-hook', () => {
       inFlightUntil: null,
     })
     const pattern = 'wt-actionable-test detached lane'
-    launchDetachedLaneViaHelper(pattern, cwd)
+    writeLaneFixture(root, [
+      { pid: 100, ppid: 90, cwd, command: 'hook', patterns: [] },
+      { pid: 90, ppid: 1, cwd, command: 'this-session parent', patterns: [] },
+      { pid: 200, ppid: 300, cwd, command: pattern, patterns: [pattern] },
+      { pid: 300, ppid: 1, cwd, command: 'other-session parent', patterns: [] },
+    ])
     const r = runHook(payload, {
       ...env,
-      WT_ACTIONABLE_LANE_DETECTION_MODE: undefined,
       WT_ACTIONABLE_LANE_PATTERNS: pattern,
     })
     expect(r.code).toBe(0)
@@ -779,7 +756,6 @@ describe('wt-actionable-gate-hook', () => {
       inFlightUntil: null,
     })
     const pattern = 'wt-actionable-test unsupported mode lane'
-    launchLane(pattern, cwd)
     const blocked = runHook(payload, {
       ...env,
       WT_ACTIONABLE_LANE_DETECTION_MODE: 'unsupported',
@@ -817,22 +793,47 @@ describe('wt-actionable-gate-hook', () => {
       blockedUntil: null,
       inFlightUntil: null,
     })
-    const shimDir = join(root, 'bin')
-    mkdirSync(shimDir, { recursive: true })
-    const pgrepShim = join(shimDir, 'pgrep')
-    writeFileSync(pgrepShim, '#!/bin/sh\nexit 2\n', 'utf8')
-    chmodSync(pgrepShim, 0o755)
+    const fixturePath = join(root, 'lane-fixture.json')
+    writeFileSync(fixturePath, '{', 'utf8')
 
     const result = runHook(payload, {
       ...env,
-      WT_ACTIONABLE_LANE_DETECTION_MODE: undefined,
-      PATH: `${shimDir}:${process.env.PATH ?? ''}`,
     })
 
     expect(result.code).toBe(0)
     const text = blockText(result)
     expect(text).toContain('CARD-58 lane detection error')
-    expect(text).toContain('lane detection unavailable: Command failed: pgrep -f')
+    expect(text).toContain('lane detection unavailable: lane fixture:')
+  })
+
+  it('uses the scanner fixture without invoking pgrep', () => {
+    const { env, payload, root, stateDir, cwd } = scaffold('lane-fixture-lock')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now(), actionable: 1, next: 'CARD-59 fixture lock', workPossible: true,
+      reason: '', blockedUntil: null, inFlightUntil: null,
+    })
+    const pattern = 'wt-actionable-test fixture lock lane'
+    writeLaneFixture(root, [
+      { pid: 100, ppid: 90, cwd, command: 'hook', patterns: [] },
+      { pid: 90, ppid: 1, cwd, command: 'parent', patterns: [] },
+      { pid: 200, ppid: 90, cwd, command: pattern, patterns: [pattern] },
+    ])
+    const shimDir = join(root, 'bin')
+    const sentinel = join(root, 'pgrep-called')
+    mkdirSync(shimDir, { recursive: true })
+    const pgrepShim = join(shimDir, 'pgrep')
+    writeFileSync(pgrepShim, `#!/bin/sh\ntouch ${JSON.stringify(sentinel)}\nexit 2\n`, 'utf8')
+    chmodSync(pgrepShim, 0o755)
+
+    const result = runHook(payload, {
+      ...env,
+      PATH: shimDir,
+      WT_ACTIONABLE_LANE_PATTERNS: pattern,
+    })
+
+    expect(result.code).toBe(0)
+    expect(blockText(result)).toBe('')
+    expect(existsSync(sentinel)).toBe(false)
   })
 
   it('the emitted additionalContext is at most 2 lines', () => {
