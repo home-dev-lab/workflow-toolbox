@@ -19,6 +19,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   on the type without reading the caveat. Classifier in `lib/quota-drop.mjs`.
 
 ### Added
+- Add a SessionStart warning when `.claude/progress.md` has unsynced Planka-buffer entries, directing the session to fold them into the board and purge the section.
 - Add `wt-claimed-test-check.mjs`, a warn-only scan for normative documentation claims that lack a plausibly relevant toolkit test.
 - Pilot runner accepts an arbiter-written `--card-file`, traces injected turns to stdout, and records their count in `summary.json`.
 - `wt-main-guard-hook.mjs` now journals (without denying) `git reset --hard` and `git checkout -f` only when their worktree has uncommitted changes.

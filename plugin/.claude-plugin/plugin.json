@@ -424,6 +424,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-unsynced-buffer-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-memory-index-check-hook.mjs\"",
             "timeout": 20
           }

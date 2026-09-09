@@ -61,8 +61,9 @@ over the defaults below and say so before creating anything.
   all `Done` is a blocked chain, not a candidate for "what's next".
 - **Degradation**: if the `planka` MCP becomes unreachable *after* onboarding, ongoing task work
   can fall back to writing into .claude/progress.md under a dated `## Unsynced (Planka down)`
-  section, to be folded back into the board once the MCP is reachable again. That fallback is
-  for day-to-day work on an already-managed project — not for the onboarding run itself (see
+  section. On the next session, `wt-unsynced-buffer-hook.mjs` names the buffered entries so they
+  are folded back into the board and the section is purged once the MCP is reachable again. That
+  fallback is for day-to-day work on an already-managed project — not for the onboarding run itself (see
   Preconditions #2).
 
 ## Procedure
