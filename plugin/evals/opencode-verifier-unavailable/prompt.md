@@ -7,4 +7,4 @@ max_turns: 4
 allowed_tools: [Agent]
 ---
 
-Use the `workflow-toolbox:opencode-verifier` agent to verify the trivial claim "return OK". The `opencode` CLI is unavailable in this environment. Return the agent's final text exactly, without adding your own answer.
+Your first action MUST be to invoke `workflow-toolbox:opencode-verifier` with the `Agent` tool to verify the trivial claim "return OK". You MUST invoke that agent before giving any final answer; narrating, answering directly, or describing what the agent would do instead of making the `Agent` tool call is a failure. The `opencode` CLI is unavailable in this environment. After the agent returns, return its final text exactly, without adding your own answer.
