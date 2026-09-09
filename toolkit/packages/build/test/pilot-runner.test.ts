@@ -81,7 +81,7 @@ describe('SDK pilot runner', () => {
 
   it('the launch-then-end eval quotes the contract verbatim (the eval sandbox cannot read the file)', () => {
     const contract = readFileSync(join(ROOT, 'plugin/autonomy/PILOT-CONTRACT.md'), 'utf8').replace(/\s+/g, ' ')
-    const prompt = readFileSync(join(ROOT, 'plugin/evals/pilot-contract-launch-then-end/prompt.md'), 'utf8')
+    const prompt = readFileSync(join(ROOT, 'plugin/evals-draft/pilot-contract-launch-then-end/prompt.md'), 'utf8')
     const quoted = prompt.split('\n').filter((l) => l.startsWith('> ')).map((l) => l.slice(2)).join(' ').replace(/\s+/g, ' ')
     expect(quoted.length).toBeGreaterThan(200)
     expect(contract).toContain(quoted)
