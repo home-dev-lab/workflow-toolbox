@@ -61,6 +61,7 @@ import { readQuotaCache, writeQuotaCacheAtomic, defaultQuotaCachePath } from './
 import { computeBackoffMs } from './lib/quota-backoff.mjs'
 import { computeWatcherCacheToleranceMs } from './lib/quota-cache-tolerance.mjs'
 import { hasCompleteWindows } from './lib/quota-window-completeness.mjs'
+import { classifyQuotaDrop } from './lib/quota-drop.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { effectiveModel, fetchProxyUsage, normalizeProxyUsage, resolveRoute } from './lib/quota-route.mjs'
 
@@ -245,6 +246,7 @@ function parseProbeWindow(windowValue) {
   return {
     pct: windowValue.pct,
     resetLocal: typeof windowValue?.reset_local === 'string' && windowValue.reset_local.length > 0 ? windowValue.reset_local : '?',
+    resetsAt: windowValue.resets_at ?? null,
   }
 }
 
@@ -284,6 +286,7 @@ function setBaseline(state, windows, thresholds) {
     const windowData = windows[key]
     if (!windowData) continue
     state.lastPct.set(key, windowData.pct)
+    state.lastResetsAt.set(key, windowData.resetsAt ?? null)
     const firedForWindow = new Set()
     for (const threshold of thresholds) {
       if (windowData.pct >= threshold) firedForWindow.add(threshold)
@@ -294,6 +297,7 @@ function setBaseline(state, windows, thresholds) {
 
 function clearWindowState(state, windowKey) {
   state.lastPct.delete(windowKey)
+  state.lastResetsAt.delete(windowKey)
   state.fired.delete(windowKey)
 }
 
@@ -335,8 +339,9 @@ function resetDegradedVisibility(state) {
   state.nextDegradedReminderMs = DEGRADED_REMINDER_STEPS_MS[0]
 }
 
-function baselineWindow(state, windowKey, pct, thresholds) {
+function baselineWindow(state, windowKey, pct, thresholds, resetsAt = null) {
   state.lastPct.set(windowKey, pct)
+  state.lastResetsAt.set(windowKey, resetsAt)
   const firedForWindow = new Set()
   for (const threshold of thresholds) {
     if (pct >= threshold) firedForWindow.add(threshold)
@@ -434,6 +439,7 @@ if (!existsSync(probe.path)) {
 const state = {
   fired: new Map(),
   lastPct: new Map(),
+  lastResetsAt: new Map(),
   probeKoSignaled: false,
   probeTimeoutSignaled: false,
   internalErrorSignaled: false,
@@ -583,7 +589,7 @@ while (true) {
       state.probeKoSignaled = false
       state.consecutiveFailures = 0
       if (!state.hasReading) {
-        for (const windowData of reading.windows) baselineWindow(state, windowData.key, windowData.pct, thresholds)
+        for (const windowData of reading.windows) baselineWindow(state, windowData.key, windowData.pct, thresholds, windowData.resetsAt ?? null)
         state.hasReading = true
         flushArmed()
         await sleep(poll * 1000)
@@ -592,8 +598,11 @@ while (true) {
       for (const windowData of reading.windows) {
         const previousPct = state.lastPct.get(windowData.key)
         if (previousPct !== undefined && windowData.pct < previousPct) {
-          writeLine(`QUOTA RESET ${reading.family} ${windowData.label}: ${windowData.pct}% (was ${previousPct}%) — new window, capacity available`)
-          baselineWindow(state, windowData.key, windowData.pct, thresholds)
+          // A drop is a RESET only once the previously reported reset time has come; before it,
+          // the reading describes another subject (account, binding, source) — see lib/quota-drop.mjs.
+          const verdict = classifyQuotaDrop({ nowMs: Date.now(), previousResetsAt: state.lastResetsAt.get(windowData.key) ?? null, currentResetsAt: windowData.resetsAt ?? null, previousPct, currentPct: windowData.pct })
+          writeLine(`QUOTA ${verdict.kind === 'reset' ? 'RESET' : 'DROP'} ${reading.family} ${windowData.label}: ${verdict.detail}`)
+          baselineWindow(state, windowData.key, windowData.pct, thresholds, windowData.resetsAt ?? null)
           continue
         }
         let fired = state.fired.get(windowData.key)
@@ -605,6 +614,7 @@ while (true) {
           }
         }
         state.lastPct.set(windowData.key, windowData.pct)
+        state.lastResetsAt.set(windowData.key, windowData.resetsAt ?? null)
       }
       await sleep(poll * 1000)
       continue
@@ -833,7 +843,7 @@ while (true) {
       const previousPct = state.lastPct.get(key)
       if (!windowData || previousPct === undefined) continue
       if (windowData.pct < previousPct) {
-        drops.push({ key, label, currentPct: windowData.pct, previousPct, resetLocal: windowData.resetLocal })
+        drops.push({ key, label, currentPct: windowData.pct, previousPct, resetLocal: windowData.resetLocal, resetsAt: windowData.resetsAt ?? null })
       }
     }
 
@@ -849,8 +859,14 @@ while (true) {
 
     if (drops.length > 0) {
       for (const drop of drops) {
-        writeLine(`QUOTA RESET ${drop.label}: ${drop.currentPct}% (was ${drop.previousPct}%) — new window, capacity available`)
-        baselineWindow(state, drop.key, drop.currentPct, thresholds)
+        // Same account (fingerprint unchanged) — still not a reset if the window's own reset time
+        // has not come yet; a reset time the probe never reported leaves the old verdict in place.
+        const previousResetsAt = state.lastResetsAt.get(drop.key) ?? null
+        const verdict = previousResetsAt === null
+          ? { kind: 'reset', detail: `${drop.currentPct}% (was ${drop.previousPct}%) — new window, capacity available` }
+          : classifyQuotaDrop({ nowMs: Date.now(), previousResetsAt, currentResetsAt: drop.resetsAt, previousPct: drop.previousPct, currentPct: drop.currentPct })
+        writeLine(`QUOTA ${verdict.kind === 'reset' ? 'RESET' : 'DROP'} ${drop.label}: ${verdict.detail}`)
+        baselineWindow(state, drop.key, drop.currentPct, thresholds, drop.resetsAt)
       }
       for (const { key } of WINDOWS) {
         if (!windows[key] || drops.some((drop) => drop.key === key)) continue

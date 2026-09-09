@@ -51,6 +51,26 @@ describe('wt-quota-watch proxy route', () => {
     expect(result.stdout).not.toContain('5h')
   })
 
+  it('a drop before the previously reported reset time is a DROP, not a RESET (card 1860461290531588066)', async () => {
+    const future = new Date(Date.now() + 5 * 86400000).toISOString()
+    const otherWindow = new Date(Date.now() + 7 * 86400000).toISOString()
+    responses = [{ family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 42, window_minutes: 10080, resets_at: future }] }, { family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 32, window_minutes: 10080, resets_at: otherWindow }] }]
+    const { result } = await run({ ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: 'gateway', WT_QUOTA_PROXY_ORIGINS: base })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('QUOTA DROP codex 7d: 32% (was 42%) — NOT a reset')
+    expect(result.stdout).toContain('capacity not asserted')
+    expect(result.stdout).not.toContain('QUOTA RESET')
+  })
+
+  it('a drop once the previously reported reset time has passed is a RESET', async () => {
+    const past = new Date(Date.now() - 60000).toISOString()
+    const next = new Date(Date.now() + 7 * 86400000).toISOString()
+    responses = [{ family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 90, window_minutes: 10080, resets_at: past }] }, { family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: 3, window_minutes: 10080, resets_at: next }] }]
+    const { result } = await run({ ANTHROPIC_BASE_URL: base, ANTHROPIC_AUTH_TOKEN: 'gateway', WT_QUOTA_PROXY_ORIGINS: base })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('QUOTA RESET codex 7d: 3% (was 90%) — new window, capacity available')
+  })
+
   it('stays alive and explicitly degraded for an unknown route', async () => {
     const { result } = await run({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:4000', ANTHROPIC_AUTH_TOKEN: 'other' })
     expect(result.stdout).toContain('QUOTA WATCH DEGRADED: route http://127.0.0.1:4000 has no quota source')
