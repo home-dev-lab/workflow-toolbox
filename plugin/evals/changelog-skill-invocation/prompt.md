@@ -2,7 +2,7 @@
 name: changelog-skill-invocation
 description: Uses the changelog skill's release-record command and branch restriction.
 tags: [skill, changelog]
-runs: 1
+runs: 3
 max_turns: 4
 allowed_tools: [Skill]
 ---

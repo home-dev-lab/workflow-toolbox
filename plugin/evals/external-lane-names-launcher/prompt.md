@@ -2,7 +2,7 @@
 name: external-lane-names-launcher
 description: Names the supported detached external-lane launcher and its launch properties.
 tags: [skill, external-lane]
-runs: 1
+runs: 3
 max_turns: 6
 allowed_tools: [Read, Glob, Grep, Skill]
 ---

@@ -78,13 +78,16 @@ It prints its active regime with every result. The checker warns through 2026-09
 ### Plugin eval suite is early access
 
 `claude plugin eval` is an early-access Claude Code surface. The release-only
-`node plugin/bin/wt-plugin-eval-gate.mjs` runs four one-run haiku cases when
+`node plugin/bin/wt-plugin-eval-gate.mjs` runs four three-run haiku cases when
 `CLAUDE_CODE_WALNUT_SPIRE=1`: the external-lane launcher, the unavailable
 opencode-verifier marker, the leaf-readonly tool fence, and changelog skill
 invocation. It is never part of `pnpm test`, because each case starts a Claude
 agent and LLM graders also spend model calls. The initial measured single-case
 cost was 19 seconds, three turns, and $0.0546244 for the agent plus $0.00203
-for the three haiku judge votes; release runs use one agent run per case.
+for the three haiku judge votes. Release runs use three agent runs per case; five
+measurements averaged 210 seconds and $0.4197936 per gate (12 case-runs).
+The gate passes a case only when a strict majority of its three recorded runs
+pass, and prints its per-case pass count.
 
 When the early-access flag is absent, the gate exits 0 and prints `plugin eval:
 not run (early access flag absent)`. That is a skipped paid check, not evidence

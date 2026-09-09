@@ -6,6 +6,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
+- Run each release-only plugin eval case three times and decide it by a strict majority, reporting
+  each case's pass count so transient model outcomes do not decide a release rerun.
 - Let the plugin eval gate track declared expected failures and reject malformed or expired expiry dates
 - Document `<project root>/.claude/worktrees/<name>` as the gitignored convention for new concurrent worktrees.
 - Require hand-written executor-lane briefs to request report lessons and harvest each report at its lane integration.

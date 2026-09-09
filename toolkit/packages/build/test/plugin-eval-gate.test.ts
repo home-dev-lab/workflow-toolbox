@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
@@ -25,6 +25,10 @@ const FAILED_RESULT = {
 
 function resultFor(name: string, passed: boolean) {
   return { cases: [{ name, arms: { with: [{ passed }] } }] }
+}
+
+function resultForRuns(name: string, passed: boolean[]) {
+  return { cases: [{ name, arms: { with: passed.map((value) => ({ passed: value })) } }] }
 }
 
 function withFixture(content: unknown, body: (fixture: string) => void) {
@@ -80,6 +84,24 @@ describe('wt-plugin-eval-gate', () => {
 
       expect(result.status).toBe(1)
       expect(result.stdout).toContain('plugin eval: failed 1/1 case(s): external-lane-names-launcher')
+    })
+  })
+
+  it('passes a case when two of its three runs pass', () => {
+    withFixture(resultForRuns('flaky-case', [true, true, false]), (fixture) => {
+      const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('plugin eval: flaky-case passed 2/3')
+    })
+  })
+
+  it('fails a case when two of its three runs fail', () => {
+    withFixture(resultForRuns('flaky-case', [true, false, false]), (fixture) => {
+      const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+
+      expect(result.status).toBe(1)
+      expect(result.stdout).toContain('plugin eval: flaky-case passed 1/3')
     })
   })
 
@@ -168,6 +190,28 @@ describe('wt-plugin-eval-gate', () => {
         expect(result.stdout).toContain('plugin eval: passed 1/1, expected failures 0')
       })
     })
+  })
+
+  it('launches the CLI when the nominated result does not exist yet, and grades what the CLI wrote', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wt-eval-gate-launch-'))
+    try {
+      const target = join(dir, 'fresh-result.json')
+      const fake = join(dir, 'fake-claude.sh')
+      writeFileSync(fake, [
+        '#!/bin/sh',
+        'out=""',
+        'while [ $# -gt 0 ]; do if [ "$1" = "--json" ]; then out="$2"; fi; shift; done',
+        `printf '%s' '{"cases":[{"name":"fresh-case","arms":{"with":[{"passed":true},{"passed":true},{"passed":false}]}}]}' > "$out"`,
+        'exit 0',
+        '',
+      ].join('\n'), 'utf8')
+      chmodSync(fake, 0o755)
+      const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: target, CLAUDE_BIN: fake })
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('fresh-case passed 2/3')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('returns success for a recorded eval result when every case passed', () => {

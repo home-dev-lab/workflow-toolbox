@@ -2,7 +2,7 @@
 name: opencode-verifier-unavailable
 description: Returns the documented degraded marker when the opencode CLI is unavailable.
 tags: [agent, opencode, provider-free]
-runs: 1
+runs: 3
 max_turns: 4
 allowed_tools: [Agent]
 ---

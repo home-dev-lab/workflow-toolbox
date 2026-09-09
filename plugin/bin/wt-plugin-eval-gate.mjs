@@ -22,11 +22,15 @@ function claudeBinary() {
   return 'claude'
 }
 
-function failedCases(result) {
+function caseVerdicts(result) {
   if (!Array.isArray(result.cases)) throw new Error('result has no cases array')
-  return result.cases.filter((item) => {
+  return result.cases.map((item) => {
     const runs = item.arms?.with
-    return !Array.isArray(runs) || runs.some((run) => run.passed !== true)
+    if (!Array.isArray(runs) || runs.length === 0) {
+      throw new Error(`case ${item.name || '<unnamed>'} has no runs`)
+    }
+    const passed = runs.filter((run) => run.passed === true).length
+    return { item, passed, total: runs.length, passedMajority: passed * 2 > runs.length }
   })
 }
 
@@ -79,10 +83,14 @@ function main() {
     return 0
   }
 
-  if (!process.env.WT_PLUGIN_EVAL_RESULT) {
+  // A nominated result that already exists is a fixture (tests, archived runs). Anything else —
+  // no nomination, or a nominated path not yet written — launches the CLI, so a stale file at the
+  // default location can never be graded as if it were this run's result.
+  const useRecordedResult = Boolean(process.env.WT_PLUGIN_EVAL_RESULT) && existsSync(RESULT)
+  if (!useRecordedResult) {
     const claude = claudeBinary()
     const run = spawnSync(claude, [
-      'plugin', 'eval', './plugin', '--runs', '1', '--ablation', 'none', '--no-publish',
+      'plugin', 'eval', './plugin', '--runs', '3', '--ablation', 'none', '--no-publish',
       '--model', 'haiku', '--json', RESULT, '--report', join(ROOT, '.lane/plugin-eval-report.html'),
     ], { cwd: ROOT, encoding: 'utf8', stdio: 'inherit' })
     if (run.error) {
@@ -98,7 +106,8 @@ function main() {
   }
   try {
     const result = JSON.parse(readFileSync(RESULT, 'utf8'))
-    const failed = failedCases(result)
+    const verdicts = caseVerdicts(result)
+    const failed = verdicts.filter((verdict) => !verdict.passedMajority).map((verdict) => verdict.item)
     let expected
     try {
       expected = expectedFailures()
@@ -112,6 +121,9 @@ function main() {
         process.stderr.write(`plugin eval: expected failure declaration expired: ${name} (until ${declaration.until})\n`)
       }
       return 1
+    }
+    for (const verdict of verdicts) {
+      process.stdout.write(`plugin eval: ${verdict.item.name} passed ${verdict.passed}/${verdict.total}\n`)
     }
     const failedNames = new Set(failed.map((item) => item.name))
     const expectedFailed = failed.filter((item) => expected.has(item.name))
