@@ -22,3 +22,5 @@ contains fresh tokens (`input + cache_creation + output`), result turns, elapsed
 longest observed tool call plus injected-turn count. The target is under 100 k fresh tokens; PoC 4 measured 167,615. Runner
 ownership of waits and the short verification template are designed reductions, not yet a measured
 real-card result.
+
+`--lane-silence <min>` defaults to 12 and injects `lane silent: no write for N min, log <bytes> B, pid alive|gone|unknown` once per inactive worktree window. The runner samples only mtimes, skipping `.git`, `node_modules`, and the lane log, and checks known pids with guarded `process.kill(pid, 0)`. `summary.json` records these in `silence_injections`, while `injected_turns` includes them with every other injected turn.

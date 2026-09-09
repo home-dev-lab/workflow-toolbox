@@ -15,6 +15,9 @@ openai/gpt-5.6-terra --brief <wt>/.lane/brief.md --timeout 5400`, then END YOUR 
 Never wait inside Bash, poll a lane log, call a lane wait command, or use ScheduleWakeup: the runner
 owns all waiting and returns `lane done: EXIT=<code>, report <bytes> B at <path>` as your next turn.
 Every Bash call you make must finish within a minute.
+On `lane silent`, read `tail -n 20 <log>` once, then either wait one more window or write `.lane/pilot-report.md` as PARTIAL naming the silence; never relaunch while that pid is alive.
+On `lane done: EXIT=124`, read the worktree diff, never discard it, and relaunch one lane with a continuation brief naming what is done and what remains.
+If that continuation also exits 124, write a PARTIAL report naming both timeouts.
 
 After that message, use only this verification template before deciding whether the increment holds:
 

@@ -29,6 +29,72 @@ describe('SDK pilot runner', () => {
     expect(result.status).toBe(2); expect(result.stderr).toContain('missing required --card or --dir')
   })
 
+  it('parses a positive lane-silence interval', () => {
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a'])).toMatchObject({ laneSilence: 12 })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--lane-silence', '3'])).toMatchObject({ laneSilence: 3 })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--lane-silence', '0'])).toMatchObject({ error: '--lane-silence must be a positive number of minutes' })
+  })
+
+  it('injects one silence turn for an inactive lane and records it', async () => {
+    const f = fixture(); const log = join(f.dir, '.lane', 'executor.log'); writeFileSync(log, 'pid=12\n')
+    const injected: string[] = []; let clock = 0
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      await prompt.next()
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'node plugin/bin/wt-lane.mjs' } }] } }
+      yield { type: 'user', message: { content: `pid=12\nlog=${log}` } }
+      clock = 60_001
+      const silence = await prompt.next(); injected.push(silence.value.message.content)
+    })()
+    const result = await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 120, laneSilence: 1, hard: false }, {
+      query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
+      now: () => clock, sleep: async () => { clock = 120_001 }, newestMtime: () => 0, pidAlive: () => true,
+    })
+    expect(injected).toEqual(['lane silent: no write for 1 min, log 7 B, pid alive'])
+    expect(result.summary).toMatchObject({ silence_injections: 1, injected_turns: 1 })
+  })
+
+  it('does not inject silence after worktree activity or an exit marker', async () => {
+    for (const terminal of [false, true]) {
+      const f = fixture(); const log = join(f.dir, '.lane', 'executor.log'); writeFileSync(log, terminal ? 'pid=12\nEXIT=0\n' : 'pid=12\n')
+      const injected: string[] = []; let clock = 0
+      const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+        await prompt.next()
+        yield { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'node plugin/bin/wt-lane.mjs' } }] } }
+        yield { type: 'user', message: { content: `pid=12\nlog=${log}` } }
+        clock = 60_001
+        const next = await prompt.next(); if (!next.done) injected.push(next.value.message.content)
+      })()
+      const result = await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 120, laneSilence: 1, hard: false }, {
+        query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
+        now: () => clock, sleep: async () => { clock = 120_001 }, newestMtime: () => terminal ? 0 : 60_000, pidAlive: () => true,
+      })
+      expect(injected).not.toContain(expect.stringContaining('lane silent:'))
+      expect(result.summary.silence_injections).toBe(0)
+    }
+  })
+
+  it('injects again only after activity opens a second silence window', async () => {
+    const f = fixture(); const log = join(f.dir, '.lane', 'executor.log'); writeFileSync(log, 'pid=12\n')
+    const injected: string[] = []; let clock = 0; let mtime = 0; let sleeps = 0
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      await prompt.next()
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'node plugin/bin/wt-lane.mjs' } }] } }
+      yield { type: 'user', message: { content: `pid=12\nlog=${log}` } }
+      clock = 60_001; injected.push((await prompt.next()).value.message.content)
+      mtime = 60_002; clock = 60_002
+      injected.push((await prompt.next()).value.message.content)
+    })()
+    const result = await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 240, laneSilence: 1, hard: false }, {
+      query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
+      now: () => clock, sleep: async () => { clock = ++sleeps === 1 ? 120_003 : 240_001 }, newestMtime: () => mtime, pidAlive: () => null,
+    })
+    expect(injected).toEqual([
+      'lane silent: no write for 1 min, log 7 B, pid unknown',
+      'lane silent: no write for 1 min, log 7 B, pid unknown',
+    ])
+    expect(result.summary.silence_injections).toBe(2)
+  })
+
   it('places an arbiter card file verbatim in the first prompt without changing prompts that omit it', async () => {
     const f = fixture(); const cardFile = join(f.root, 'card.md'); const card = '# Card title\n\nDefinition of done: ship it.\n'
     writeFileSync(cardFile, card)

@@ -1,11 +1,12 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 export const DEFAULT_TIMEOUT = 5400
+export const DEFAULT_LANE_SILENCE = 12
 const POLL_MS = 250
 
 export function parsePilotRunnerArgs(argv) {
-  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, room: null, timeout: DEFAULT_TIMEOUT }
+  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, room: null, timeout: DEFAULT_TIMEOUT, laneSilence: DEFAULT_LANE_SILENCE }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--card') options.card = argv[++i] ?? null
@@ -16,12 +17,14 @@ export function parsePilotRunnerArgs(argv) {
     else if (arg === '--mailbox') options.mailbox = argv[++i] ?? null
     else if (arg === '--room') options.room = argv[++i] ?? null
     else if (arg === '--timeout') options.timeout = Number(argv[++i])
+    else if (arg === '--lane-silence') options.laneSilence = Number(argv[++i])
     else if (arg === '--hard') options.hard = true
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
   }
   if (!options.card || !options.dir) return { error: 'missing required --card or --dir' }
   if (!Number.isFinite(options.timeout) || options.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
+  if (!Number.isFinite(options.laneSilence) || options.laneSilence <= 0) return { error: '--lane-silence must be a positive number of minutes' }
   options.dir = resolve(options.dir)
   options.contract = resolve(options.contract ?? join(dirname(new URL(import.meta.url).pathname), '../../autonomy/PILOT-CONTRACT.md'))
   options.mailbox = resolve(options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt'))
@@ -48,10 +51,33 @@ function textFrom(value) {
   return ''
 }
 
-export function laneLogFrom(text) {
-  const pid = /\bpid=\d+\b/.test(text)
+export function laneLogFrom(text, details = false) {
+  const pid = /\bpid=(\d+)\b/.exec(text)?.[1]
   const log = /\blog=([^\s]+)/.exec(text)?.[1]
-  return pid && log ? log : null
+  if (!pid || !log) return null
+  return details ? { pid: Number(pid), log } : log
+}
+
+export function defaultNewestMtime(dir, excludePaths) {
+  const excluded = new Set(excludePaths)
+  let newest = null
+  function walk(path) {
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      const child = join(path, entry.name)
+      if (excluded.has(child) || entry.isSymbolicLink()) continue
+      if (entry.isDirectory()) {
+        if (entry.name !== '.git' && entry.name !== 'node_modules') walk(child)
+      } else if (entry.isFile()) {
+        const mtime = statSync(child).mtimeMs
+        newest = newest === null ? mtime : Math.max(newest, mtime)
+      }
+    }
+  }
+  try { walk(dir); return newest } catch { return null }
+}
+
+export function defaultPidAlive(pid) {
+  try { process.kill(pid, 0); return true } catch (error) { return error?.code !== 'ESRCH' }
 }
 
 function usageOf(message) {
@@ -65,7 +91,7 @@ function usageOf(message) {
 }
 
 export async function runPilot(options, dependencies) {
-  const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, stat = statSync, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
+  const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, stat = statSync, newestMtime = defaultNewestMtime, pidAlive = defaultPidAlive, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
   const model = options.hard ? models.pilotHard : models.pilot
@@ -86,6 +112,7 @@ export async function runPilot(options, dependencies) {
   let mailboxLines = 0
   let completed = false
   let injectedTurns = 0
+  let silenceInjections = 0
   let longestToolCallMs = 0
   const startedTools = new Map()
 
@@ -107,6 +134,19 @@ export async function runPilot(options, dependencies) {
           log(`injected: ${content}`)
           yield { type: 'user', message: { role: 'user', content } }
           lane.done = true
+          continue
+        }
+        const mtime = newestMtime(options.dir, [laneLogPath])
+        if (mtime !== null && lane.silenceInjectedAt !== null && mtime > lane.silenceInjectedAt) lane.silenceInjectedAt = null
+        const lastActivity = mtime === null ? null : Math.max(mtime, lane.launchedAt)
+        if (lastActivity !== null && lane.silenceInjectedAt === null && now() - lastActivity >= options.laneSilence * 60000) {
+          const alive = lane.pid === null ? null : pidAlive(lane.pid)
+          const content = `lane silent: no write for ${options.laneSilence} min, log ${stat(laneLogPath).size} B, pid ${alive === null ? 'unknown' : alive ? 'alive' : 'gone'}`
+          lane.silenceInjectedAt = now()
+          silenceInjections += 1
+          injectedTurns += 1
+          log(`injected: ${content}`)
+          yield { type: 'user', message: { role: 'user', content } }
         }
       }
       const lines = exists(options.mailbox) ? readFile(options.mailbox, 'utf8').split(/\r?\n/).filter(Boolean) : []
@@ -156,8 +196,11 @@ export async function runPilot(options, dependencies) {
     if (/(?:node\s+)?[^\s]*wt-lane\.mjs\b/.test(messageText)) laneLaunchSeen = true
     // A lane launch answers `pid=<n>` and `log=<path>` together; a gate record prints `log=` alone
     // (wt-run-gate), so `log=` without `pid=` is never a lane to wait on.
-    const laneLog = laneLogFrom(messageText)
-    if (laneLaunchSeen && laneLog) pendingLanes.set(resolve(options.dir, laneLog), {})
+    const lane = laneLogFrom(messageText, true)
+    if (laneLaunchSeen && lane) {
+      const laneLogPath = resolve(options.dir, lane.log)
+      if (!pendingLanes.has(laneLogPath)) pendingLanes.set(laneLogPath, { pid: lane.pid, launchedAt: now(), silenceInjectedAt: null })
+    }
     if (message.type === 'result') {
       const usage = usageOf(message)
       turns.push({ ...usage, tool_names: [...new Set(turnTools)] })
@@ -167,7 +210,7 @@ export async function runPilot(options, dependencies) {
   }
   const freshTokens = totals.input + totals.cache_creation + totals.output
   const usage = { turns, totals, fresh_tokens: freshTokens, tool_names: [...new Set(tools)] }
-  const summary = { fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report) }
+  const summary = { fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report) }
   writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   return { usage, summary }
