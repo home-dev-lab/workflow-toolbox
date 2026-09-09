@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- Add `wt-lane-wait.mjs`, an allow-rule-covered Monitor command that waits for a lane worker and its terminal exit marker without printing the lane log.
+
 ### Changed
 - Run each release-only plugin eval case three times and decide it by a strict majority, reporting
   each case's pass count so transient model outcomes do not decide a release rerun.

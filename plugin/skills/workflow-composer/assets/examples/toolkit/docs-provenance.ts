@@ -71,6 +71,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'README, known-issues, and the external-lane skill document the stable adopted launcher and lifecycle contract.',
   },
   {
+    script: 'plugin/bin/wt-lane-wait.mjs',
+    status: 'mapped',
+    reason: 'The external-lane skill documents the allow-covered monitor waiter and its lane exit contract.',
+  },
+  {
     script: 'plugin/bin/wt-actionable-gate-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents the shipped Stop gate and its snapshot contract.',
@@ -542,7 +547,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['docs/public/known-issues.md'],
   },
   {
-    sources: ['plugin/bin/wt-lane.mjs', 'plugin/skills/external-lane/'],
+    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/skills/external-lane/'],
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
   },
   {

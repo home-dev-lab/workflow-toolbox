@@ -33,7 +33,8 @@ describe('wt-lane detached launcher', () => {
     const f = fixture('IFS= read -r x; test -z "$x"; sleep 0.2; echo done')
     const res = run(f); const log = join(f.dir, '.lane', 'run.log')
     expect(res.status).toBe(0); expect(res.stdout).toMatch(/pid=\d+\nlog=/)
-    const pid = Number(/pid=(\d+)/.exec(res.stdout)?.[1]); expect(() => process.kill(pid, 0)).not.toThrow()
+     const pid = Number(/pid=(\d+)/.exec(res.stdout)?.[1]); expect(() => process.kill(pid, 0)).not.toThrow()
+     expect(readFileSync(join(f.dir, '.lane', 'pid'), 'utf8').trim()).toBe(String(pid))
     waitFor(log); expect(readFileSync(log, 'utf8')).toMatch(/EXIT=0\n$/)
   })
   it('enforces the timeout with EXIT=124', () => {

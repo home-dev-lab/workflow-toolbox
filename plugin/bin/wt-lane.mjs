@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // wt-lane.mjs -- detached, one-command external opencode lane launcher.
 
-import { appendFileSync, mkdirSync, openSync, existsSync, statSync } from 'node:fs'
+import { appendFileSync, mkdirSync, openSync, existsSync, statSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { resolveConsent } from './lib/lane-consent-check-core.mjs'
@@ -65,11 +65,13 @@ async function main() {
   if (!consent.silent) { process.stderr.write(`${consent.message}\n`); return 1 }
 
   if (!worker) {
+    mkdirSync(path.join(opts.dir, '.lane'), { recursive: true })
     const child = spawn(process.execPath, [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', opts.brief, '--timeout', String(opts.timeout), '--log', opts.log, ...(opts.variant ? ['--variant', opts.variant] : [])], {
       detached: true,
       stdio: 'ignore',
     })
     child.unref()
+    writeFileSync(path.join(opts.dir, '.lane', 'pid'), `${child.pid}\n`)
     process.stdout.write(`pid=${child.pid}\nlog=${opts.log}\n`)
     return 0
   }

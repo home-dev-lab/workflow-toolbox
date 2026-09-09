@@ -601,6 +601,7 @@ describe('adopt installer — scripts set', () => {
     const out = run(['--set', 'scripts', '--install'], d)
     const installed = join(d, 'wt-lane.mjs')
     expect(out).toContain('wt-lane.mjs: WROTE')
+    expect(out).toContain('wt-lane-wait.mjs: WROTE')
     expect(readFileSync(installed, 'utf8').split('\n')[1]).toMatch(/^\/\/ installed from workflow-toolbox v\d+\.\d+\.\d+/)
     expect(run(['--set', 'scripts', '--check'], d)).toContain('wt-lane.mjs: UP-TO-DATE')
     const help = spawnSync(process.execPath, [installed, '--help'], { encoding: 'utf8' })

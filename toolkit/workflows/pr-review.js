@@ -2284,7 +2284,7 @@ ${renderClaim(claim)}`;
       docs: ["docs/public/known-issues.md"]
     },
     {
-      sources: ["plugin/bin/wt-lane.mjs", "plugin/skills/external-lane/"],
+      sources: ["plugin/bin/wt-lane.mjs", "plugin/bin/wt-lane-wait.mjs", "plugin/skills/external-lane/"],
       docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
     },
     {

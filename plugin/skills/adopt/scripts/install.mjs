@@ -512,7 +512,7 @@ const SETS = {
   // had a pre-migration flat layout to fall back to — reusing 'rules' would make that
   // migration heuristic silently probe a legacy location that never existed.
   docs: { kind: 'docs', srcDir: 'docs/rules-rationale', defaultDir: '.claude/docs/wt', globalSubdir: 'docs/wt', resolveItems: discoverDocsItems },
-  scripts: { kind: 'scripts', srcDir: 'bin', defaultDir: '.claude/scripts', globalSubdir: 'scripts', resolveItems: () => [{ file: 'wt-lane.mjs' }] },
+  scripts: { kind: 'scripts', srcDir: 'bin', defaultDir: '.claude/scripts', globalSubdir: 'scripts', resolveItems: () => [{ file: 'wt-lane.mjs' }, { file: 'wt-lane-wait.mjs' }] },
 }
 
 const MANAGED_SET_NAMES = Object.keys(SETS)
@@ -598,7 +598,7 @@ function itemContent(set, item, root) {
   const src = path.join(root, set.srcDir, item.file)
   if (!fs.existsSync(src)) fail(`${set.kind} source not found: ${src} — the ${set.kind} bundle (plugin/${set.srcDir}/) is out of sync`)
   const content = fs.readFileSync(src, 'utf8')
-  if (set.kind !== 'scripts') return content
+  if (set.kind !== 'scripts' || item.file !== 'wt-lane.mjs') return content
   // The adopted launcher has no stable plugin-cache neighbour. Resolve the installed plugin at
   // launch time instead of copying consent logic, so a changed resolver cannot fail open here.
   const replaceExactlyOnce = (body, fragment, replacement) => {
@@ -639,7 +639,7 @@ async function loadAdoptedConsentModules() {
   }
 }`)
   adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
-  adopted = replaceExactlyOnce(adopted, "import { appendFileSync, mkdirSync, openSync, existsSync, statSync } from 'node:fs'", "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, readFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
+  adopted = replaceExactlyOnce(adopted, "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, writeFileSync, readFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
   const relativeConsentImport = adopted.match(/import .* from '\.\/lib\/lane-consent-[^']+'/)?.[0]
   if (relativeConsentImport) {
     fail(`launcher transformation left a relative consent import in ${src}: ${relativeConsentImport.slice(0, 60)}`)
