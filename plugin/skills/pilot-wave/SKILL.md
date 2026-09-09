@@ -161,7 +161,7 @@ from the process environment, the active `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/se
 `env` block, or the shipped default `sonnet`. The CLI prints each resolved value and its source.
 Use `model=<value>` from that output on the corresponding spawn: `pilot` for an ordinary card,
 `pilotHard` when the card is classified hard by the stated criteria, and `orchestrator` for a
-wave. The prompt must name the same `model=<value> (source=<env|settings|default>)`; never let an
+wave. The prompt must name the same `model=<value> (source=<env|settings|default>[, effective=<model> via ANTHROPIC_DEFAULT_<ALIAS>_MODEL (<env|settings>)])` — a GPT pilot is the same alias under a profile that remaps it, never a separate runner; never let an
 unresolved value inherit the session model. A refused value stops the spawn and names the
 opencode-runner follow-up rather than falling back.
 

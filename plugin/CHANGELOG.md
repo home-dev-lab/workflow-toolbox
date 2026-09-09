@@ -6,6 +6,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Pilot model keys: the resolver and `wt-pilot-models` report the EFFECTIVE model a profile remaps
+  an alias to (`ANTHROPIC_DEFAULT_<ALIAS>_MODEL`, process env over settings env), and a raw
+  provider name in a `WT_*_MODEL` key is refused with that remedy — a GPT pilot is the same harness
+  alias under a remapping profile, not a separate runner.
 - `wt-quota-watch.mjs`: a usage percentage that falls between two polls is reported as a RESET
   only when the previously reported reset time has come AND identity continuity is established
   (account fingerprint unchanged, Claude route). Every other drop is `QUOTA DROP … unverified`

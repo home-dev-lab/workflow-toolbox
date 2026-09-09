@@ -21,17 +21,17 @@ describe('pilot model configuration', () => {
       env: { WT_PILOT_MODEL: 'haiku' },
       settingsEnv: { WT_PILOT_MODEL: 'opus', WT_PILOT_HARD_MODEL: 'fable' },
     })).toEqual({
-      pilot: { value: 'haiku', source: 'env' },
-      pilotHard: { value: 'fable', source: 'settings' },
-      orchestrator: { value: 'sonnet', source: 'default' },
+      pilot: { value: 'haiku', source: 'env', effective: 'haiku', remappedBy: null },
+      pilotHard: { value: 'fable', source: 'settings', effective: 'fable', remappedBy: null },
+      orchestrator: { value: 'sonnet', source: 'default', effective: 'sonnet', remappedBy: null },
     })
   })
 
   it('uses sonnet for every unresolved key', () => {
     expect(resolvePilotModels({ env: {}, settingsEnv: {} })).toEqual({
-      pilot: { value: 'sonnet', source: 'default' },
-      pilotHard: { value: 'sonnet', source: 'default' },
-      orchestrator: { value: 'sonnet', source: 'default' },
+      pilot: { value: 'sonnet', source: 'default', effective: 'sonnet', remappedBy: null },
+      pilotHard: { value: 'sonnet', source: 'default', effective: 'sonnet', remappedBy: null },
+      orchestrator: { value: 'sonnet', source: 'default', effective: 'sonnet', remappedBy: null },
     })
   })
 
@@ -41,12 +41,24 @@ describe('pilot model configuration', () => {
     }
   })
 
-  it('refuses GPT and other non-harness values with the SDK-pilot follow-up', () => {
+  it('refuses GPT and other non-harness values with the alias-remap remedy (Frederic, wt-suite #1536)', () => {
     for (const value of ['openai/gpt-5.6-luna', 'gpt-4o', 'codex', 'zai', '']) {
       expect(() => assertHarnessModel(value)).toThrow(
-        'GPT pilot runs as an opencode runner; see the SDK-pilot spike card',
+        'keep the alias (sonnet, opus, fable) and remap it in the profile env with ANTHROPIC_DEFAULT_<ALIAS>_MODEL',
       )
     }
+  })
+
+  it('reports the EFFECTIVE model a profile remaps an alias to, env over settings, alias untouched otherwise', () => {
+    const models = resolvePilotModels({
+      env: { WT_PILOT_MODEL: 'sonnet', ANTHROPIC_DEFAULT_SONNET_MODEL: 'gpt-5.6-terra' },
+      settingsEnv: { ANTHROPIC_DEFAULT_SONNET_MODEL: 'gpt-5.6-luna', WT_PILOT_HARD_MODEL: 'fable', ANTHROPIC_DEFAULT_FABLE_MODEL: 'gpt-6-astra', WT_ORCHESTRATOR_MODEL: 'claude-sonnet-5' },
+    })
+    expect(models.pilot).toMatchObject({ value: 'sonnet', source: 'env', effective: 'gpt-5.6-terra', remappedBy: 'ANTHROPIC_DEFAULT_SONNET_MODEL (env)' })
+    expect(models.pilotHard).toMatchObject({ value: 'fable', source: 'settings', effective: 'gpt-6-astra', remappedBy: 'ANTHROPIC_DEFAULT_FABLE_MODEL (settings)' })
+    expect(models.orchestrator).toMatchObject({ value: 'claude-sonnet-5', effective: 'claude-sonnet-5', remappedBy: null })
+    const plain = resolvePilotModels({ env: {}, settingsEnv: {} })
+    expect(plain.pilot).toMatchObject({ value: 'sonnet', source: 'default', effective: 'sonnet', remappedBy: null })
   })
 
   it('prints only the three resolved lines and succeeds for a settings profile', () => {
@@ -86,8 +98,8 @@ describe('pilot model configuration', () => {
       encoding: 'utf8',
     })
     expect(result.status).toBe(2)
-    expect(result.stderr).toContain('GPT pilot runs as an opencode runner')
-    expect(result.stderr).toContain('SDK-pilot spike card')
+    expect(result.stderr).toContain('keep the alias (sonnet, opus, fable) and remap it in the profile env')
+    expect(result.stderr).toContain('refused model value: openai/gpt-5.6-luna')
     expect(result.stdout).toBe('')
   })
 })

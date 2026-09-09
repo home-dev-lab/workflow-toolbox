@@ -38,8 +38,8 @@ try {
   if (args.length > 0) throw new Error(`unknown argument: ${args[0]}\n\n${usage()}`)
   const models = resolvePilotModels({ env: process.env, settingsEnv: settingsEnv() })
   for (const role of ['pilot', 'pilotHard', 'orchestrator']) {
-    const { value, source } = models[role]
-    process.stdout.write(`${role}=${value} (source=${source})\n`)
+    const { value, source, effective, remappedBy } = models[role]
+    process.stdout.write(`${role}=${value} (source=${source}${effective !== value ? `, effective=${effective} via ${remappedBy}` : ''})\n`)
   }
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
