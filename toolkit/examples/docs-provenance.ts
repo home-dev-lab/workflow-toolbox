@@ -51,6 +51,11 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-pilot-models.mjs',
+    status: 'mapped',
+    reason: 'The pilot-wave skill and adopted pilot-orchestrator template document this spawn-time model resolver CLI.',
+  },
+  {
     script: 'plugin/bin/wt-changelog-entry.mjs',
     status: 'mapped',
     reason: 'The changelog skill and known-issues document this deterministic Unreleased-entry and changeset writer.',
@@ -765,6 +770,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-lane-probe.mjs',
       'plugin/bin/wt-lane-activity.mjs',
       'plugin/bin/wt-lane-postdiff-check.mjs',
+      'plugin/bin/wt-pilot-models.mjs',
     ],
     docs: [
       'plugin/agent-templates/pilot.md',

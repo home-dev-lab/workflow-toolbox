@@ -60,6 +60,17 @@ unless the report states which one it was.
 
 ## The wave loop
 
+Before each pilot spawn, call `node <plugin-root>/bin/wt-pilot-models.mjs` and use its resolved
+`pilot` value for ordinary cards or `pilotHard` for cards classified hard by the stated criteria.
+The orchestrator itself was spawned with the CLI's `orchestrator` value. Each pilot brief must
+carry all three resolved settings verbatim: `WT_PILOT_MODEL=<value> (source=<source>)`,
+`WT_PILOT_HARD_MODEL=<value> (source=<source>)`, and
+`WT_ORCHESTRATOR_MODEL=<value> (source=<source>)`; the pilot uses the selected `model=<value>`
+pin and never chooses a model itself. The resolver checks the process environment first, then the
+active `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json` `env` block, then defaults each key to
+`sonnet`. A refused value stops the spawn and names the opencode-runner follow-up; it never falls
+back silently.
+
 1. **Intake — receive and ground the MISSION.** Your spawn prompt gives you a MISSION, not
    necessarily a fixed card list: a SCOPE (which board/project, which lists count as "open"
    — normally every list except `Done`/`NotDoing`/`Blocked`, which category labels are

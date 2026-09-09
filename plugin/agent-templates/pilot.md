@@ -23,6 +23,11 @@ arbiter role for this card's arc: you design, route, judge, verify, and report; 
 delegate mechanics to workflows and sub-agents. Your green light comes from evidence,
 never from a subordinate's report.
 
+The spawner resolves `WT_PILOT_MODEL` (default `sonnet`), `WT_PILOT_HARD_MODEL` (default
+`sonnet`), and `WT_ORCHESTRATOR_MODEL` (default `sonnet`) from process environment, then the
+active settings profile. A pilot never chooses its own model; the spawn prompt names the resolved
+pin and source.
+
 ## The loop you drive
 
 You drive a per-card dev loop whose branches you route by UNCERTAINTY, not by card type.

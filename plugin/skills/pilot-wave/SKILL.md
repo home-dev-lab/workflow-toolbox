@@ -150,6 +150,21 @@ in-scope cards join the queue automatically.
 
 ## Step 3 — compose the spawn prompt (with model elevation)
 
+Before composing any pilot or orchestrator spawn, run the shipped model resolver CLI:
+
+```bash
+node <plugin-root>/bin/wt-pilot-models.mjs
+```
+
+It resolves `WT_PILOT_MODEL`, `WT_PILOT_HARD_MODEL`, and `WT_ORCHESTRATOR_MODEL` in that order
+from the process environment, the active `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json`
+`env` block, or the shipped default `sonnet`. The CLI prints each resolved value and its source.
+Use `model=<value>` from that output on the corresponding spawn: `pilot` for an ordinary card,
+`pilotHard` when the card is classified hard by the stated criteria, and `orchestrator` for a
+wave. The prompt must name the same `model=<value> (source=<env|settings|default>)`; never let an
+unresolved value inherit the session model. A refused value stops the spawn and names the
+opencode-runner follow-up rather than falling back.
+
 ⚠ **A `name` on a typed spawn costs you the observer — unless you also pass `isolation`.**
 
 In a session that already has addressable teammates, a named spawn is routed down the
