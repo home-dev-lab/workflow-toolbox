@@ -2179,6 +2179,10 @@ ${renderClaim(claim)}`;
       docs: ["plugin/autonomy/AUTHORIZATIONS.md", "plugin/autonomy/PERMISSIONS.md", "plugin/skills/adopt/SKILL.md"]
     },
     {
+      sources: ["plugin/bin/wt-pilot-runner.mjs", "plugin/autonomy/PILOT-CONTRACT.md", "plugin/hooks-modules/pilot-guard/"],
+      docs: ["plugin/autonomy/PILOT-RUNNER.md"]
+    },
+    {
       // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer
       // skill, which also documents the environment-brief contract. The whole
       // plugin/agents/ subtree is mapped above to the routing docs (accurate for

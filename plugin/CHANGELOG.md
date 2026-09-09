@@ -20,6 +20,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 - Add adopted standing-authorization and permission-class templates; escalations now consult owner-granted acts and a warn-only Stop hook journals covered and uncovered requests.
+- Add the adopted SDK pilot runner, launch-then-end-turn contract, local Function Hook guard, and
+  release eval scaffold. The runner owns lane waits and records per-turn token usage toward the 100 k
+  fresh-token target.
 - Add a fail-safe `WT_SESSION_ROLE=relay` mode that leaves the five always-on monitors unarmed in relay sessions while preserving principal defaults.
 - Add the v2 tracker-neutral queue snapshot contract, including startable, awaiting-owner, and
   unclassified counts; the autonomy watcher now reports a completed mission once per snapshot and

@@ -346,7 +346,13 @@ const MANAGED_AGENTS = [
   { file: 'pilot-orchestrator-watchdog.md' },
 ]
 
-const MANAGED_AUTONOMY = [{ file: 'AUTHORIZATIONS.md' }, { file: 'AUTONOMY.md' }, { file: 'PERMISSIONS.md' }]
+const MANAGED_AUTONOMY = [
+  { file: 'AUTHORIZATIONS.md' },
+  { file: 'AUTONOMY.md' },
+  { file: 'PERMISSIONS.md' },
+  { file: 'PILOT-CONTRACT.md' },
+  { file: 'PILOT-RUNNER.md' },
+]
 
 /** The plugin's REGISTERED agents (`plugin/agents/`) — DISCOVERED from the filesystem at
  *  run time, never hard-coded, so an agent added to that dir later shows up here with
