@@ -2626,6 +2626,11 @@ ${renderClaim(claim)}`;
   }
 
   // opencode-routing.ts
+  function opencodeWorkdirLine(resolvedType, repoRoot) {
+    return isBridgeAgentType(resolvedType) ? `OPENCODE_WORKDIR: ${repoRoot}
+
+` : "";
+  }
   function isBridgeAgentType(resolvedType) {
     return isExternalBridgeType(resolvedType);
   }
@@ -2832,6 +2837,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       }
       return {
         target: raw,
+        repoRoot: null,
         mode: "full",
         reviewerType: null,
         opencodeModels: null,
@@ -2861,6 +2867,15 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
         'pr-review: "target" must be a non-empty string \u2014 provide a git ref range or change description (e.g. "HEAD~3..HEAD")'
       );
     }
+    let repoRoot = null;
+    if (obj["repoRoot"] !== void 0 && obj["repoRoot"] !== null) {
+      if (typeof obj["repoRoot"] !== "string" || obj["repoRoot"].length === 0 || obj["repoRoot"] !== obj["repoRoot"].trim() || !obj["repoRoot"].startsWith("/")) {
+        throw new Error(
+          'pr-review: "repoRoot" must be an absolute path with no trailing whitespace when provided'
+        );
+      }
+      repoRoot = obj["repoRoot"];
+    }
     let verifierModel = null;
     if (obj["verifierModel"] !== void 0 && obj["verifierModel"] !== null) {
       if (typeof obj["verifierModel"] !== "string" || obj["verifierModel"].trim().length === 0) {
@@ -2871,7 +2886,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       verifierModel = obj["verifierModel"];
     }
     const cfg = parseConfig(obj, {
-      args: ["target", "verifierModel", "perAgent", "effort", "agentTypes", "messaging", "provenance", "mode", "models", "opencodeModels", "opencodeVariants"],
+      args: ["target", "repoRoot", "verifierModel", "perAgent", "effort", "agentTypes", "messaging", "provenance", "mode", "models", "opencodeModels", "opencodeVariants"],
       models: ["review"],
       effort: ["classify", "route", "review", "verify", "synthesize"],
       agentTypes: ["review", "verify"]
@@ -2888,6 +2903,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     const opencodeVariants = parseOpencodeRoleMap(obj["opencodeVariants"], "opencodeVariants");
     return {
       target: obj["target"],
+      repoRoot,
       mode,
       reviewerType,
       opencodeModels,
@@ -2938,6 +2954,11 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       probeReport = { requested: input.reviewerType, available: probe.available, reason: probe.reason };
     }
     const reviewerIsBridge = isBridgeAgentType(resolvedReviewerType);
+    if (reviewerIsBridge && input.repoRoot === null) {
+      throw new Error(
+        `pr-review: review role routed to bridge type '${resolvedReviewerType}' requires repoRoot \u2014 pass repoRoot: <absolute path> in the launch args`
+      );
+    }
     const reviewModel = resolveWrapperModel(reviewerIsBridge, input.models?.review);
     let resolvedVerifierType = null;
     let verifierProbeReport = null;
@@ -2947,12 +2968,18 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       resolvedVerifierType = probe.agentType ?? null;
       verifierProbeReport = { requested: input.verifierType, available: probe.available, reason: probe.reason };
     }
-    const reviewOpencodeDirectives = reviewerIsBridge ? (input.opencodeModels?.review !== void 0 ? `OPENCODE_MODEL: ${input.opencodeModels.review}
+    const verifierIsBridge = isBridgeAgentType(resolvedVerifierType);
+    if (verifierIsBridge && input.repoRoot === null) {
+      throw new Error(
+        `pr-review: verify role routed to bridge type '${resolvedVerifierType}' requires repoRoot \u2014 pass repoRoot: <absolute path> in the launch args`
+      );
+    }
+    const reviewOpencodeDirectives = reviewerIsBridge ? opencodeWorkdirLine(resolvedReviewerType, input.repoRoot ?? "") + (input.opencodeModels?.review !== void 0 ? `OPENCODE_MODEL: ${input.opencodeModels.review}
 
 ` : "") + (input.opencodeVariants?.review !== void 0 ? `OPENCODE_VARIANT: ${input.opencodeVariants.review}
 
 ` : "") : "";
-    const verifyOpencodeDirectives = isBridgeAgentType(resolvedVerifierType) ? (input.opencodeModels?.verify !== void 0 ? `OPENCODE_MODEL: ${input.opencodeModels.verify}
+    const verifyOpencodeDirectives = isBridgeAgentType(resolvedVerifierType) ? opencodeWorkdirLine(resolvedVerifierType, input.repoRoot ?? "") + (input.opencodeModels?.verify !== void 0 ? `OPENCODE_MODEL: ${input.opencodeModels.verify}
 
 ` : "") + (input.opencodeVariants?.verify !== void 0 ? `OPENCODE_VARIANT: ${input.opencodeVariants.verify}
 

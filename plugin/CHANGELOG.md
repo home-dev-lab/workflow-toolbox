@@ -21,6 +21,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Require a seam review and merged-tree gates when integrating parallel branches.
 
 ### Fixed
+- Pass the explicit repository root to bridge-routed `pr-review` reviewers and refuse launches that omit it.
 - Replace 105 synchronous hook spawns inside a fixed test timeout with an in-process `writeJournalEntry` journal seam.
 - Quota route: a proxy window whose `used_percent` is not a finite number within 0–100 is dropped, and an answer whose windows are all malformed reads as unknown instead of 0 %.
 - Make autonomy-watch expiry transition tests deterministic with an injected test clock.
