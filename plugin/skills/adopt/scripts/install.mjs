@@ -601,8 +601,14 @@ function itemContent(set, item, root) {
   if (set.kind !== 'scripts') return content
   // The adopted launcher has no stable plugin-cache neighbour. Resolve the installed plugin at
   // launch time instead of copying consent logic, so a changed resolver cannot fail open here.
-  return content
-    .replace("import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'", `
+  const replaceExactlyOnce = (body, fragment, replacement) => {
+    const count = body.split(fragment).length - 1
+    if (count !== 1) {
+      fail(`launcher transformation expected exactly one occurrence in ${src}: ${fragment.slice(0, 60)}`)
+    }
+    return body.replace(fragment, replacement)
+  }
+  let adopted = replaceExactlyOnce(content, "import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'", `
 function pluginRoot(env = process.env) {
   for (const candidate of [env.CLAUDE_PLUGIN_ROOT, env.WT_PLUGIN_ROOT]) {
     if (typeof candidate === 'string' && candidate) return candidate
@@ -632,8 +638,13 @@ async function loadAdoptedConsentModules() {
     throw new Error(\`could not load workflow-toolbox consent resolver from \${resolver} and \${gate}\`)
   }
 }`)
-    .replace("async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
-    .replace("import { appendFileSync, mkdirSync, openSync, existsSync, statSync } from 'node:fs'", "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, readFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
+  adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
+  adopted = replaceExactlyOnce(adopted, "import { appendFileSync, mkdirSync, openSync, existsSync, statSync } from 'node:fs'", "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, readFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
+  const relativeConsentImport = adopted.match(/import .* from '\.\/lib\/lane-consent-[^']+'/)?.[0]
+  if (relativeConsentImport) {
+    fail(`launcher transformation left a relative consent import in ${src}: ${relativeConsentImport.slice(0, 60)}`)
+  }
+  return adopted
 }
 
 /** The shipped content's fingerprint, or null when the source cannot be read.

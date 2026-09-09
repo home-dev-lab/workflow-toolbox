@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
+import crypto from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
-import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,7 +16,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
-function fixture() {
+function fixture(transformSource?: (source: string) => string, install = true) {
   const root = mkdtempSync(join(tmpdir(), 'wt-adopted-lane-consent-'))
   roots.push(root)
   const config = join(root, 'config')
@@ -25,9 +26,15 @@ function fixture() {
   mkdirSync(join(config, 'plugins'), { recursive: true })
   mkdirSync(join(project, '.claude'), { recursive: true })
   mkdirSync(join(pluginRoot, 'bin', 'lib'), { recursive: true })
+  mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true })
+  mkdirSync(join(pluginRoot, 'skills', 'adopt', 'scripts'), { recursive: true })
+  writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
+  cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
   for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   }
+  const launcher = readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')
+  writeFileSync(join(pluginRoot, 'bin', 'wt-lane.mjs'), transformSource ? transformSource(launcher) : launcher)
   writeFileSync(join(config, 'plugins', 'installed_plugins.json'), JSON.stringify({
     version: 2,
     plugins: { 'workflow-toolbox@fixture': [{ installPath: pluginRoot, version: '0.0.0' }] },
@@ -35,9 +42,11 @@ function fixture() {
   const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home') }
   delete env.CLAUDE_PLUGIN_ROOT
   delete env.WT_PLUGIN_ROOT
-  const install = spawnSync(process.execPath, [INSTALLER, '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], { encoding: 'utf8', env })
-  expect(install.status, install.stderr).toBe(0)
-  return { config, project, installed, env }
+  if (install) {
+    const result = spawnSync(process.execPath, [join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'), '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], { encoding: 'utf8', env })
+    expect(result.status, result.stderr).toBe(0)
+  }
+  return { root, config, project, installed, env, installer: join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs') }
 }
 
 function launch(f: ReturnType<typeof fixture>) {
@@ -48,6 +57,13 @@ function launch(f: ReturnType<typeof fixture>) {
 
 describe('adopted wt-lane consent resolver', () => {
   it('uses the real resolver for account and project consent fixtures', () => {
+    const snapshotRoot = mkdtempSync(join(tmpdir(), 'wt-adopted-lane-snapshot-'))
+    roots.push(snapshotRoot)
+    const snapshot = spawnSync(process.execPath, [INSTALLER, '--set', 'scripts', '--install', '--dir', snapshotRoot], { encoding: 'utf8' })
+    expect(snapshot.status, snapshot.stderr).toBe(0)
+    const digest = crypto.createHash('sha256').update(readFileSync(join(snapshotRoot, 'wt-lane.mjs'))).digest('hex')
+    expect(digest).toBe('0b45a994336a3790528aa7d7fbcbc53dd5693a29393df5ff7039639c3f02c3b1')
+
     const accounts = [
       { name: 'settings true', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'true' } } },
       { name: 'settings false', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'false' } } },
@@ -88,5 +104,19 @@ describe('adopted wt-lane consent resolver', () => {
     const actual = spawnSync(process.execPath, [f.installed, '--help'], { encoding: 'utf8', env: f.env })
     expect(actual.status, actual.stderr).toBe(0)
     expect(actual.stdout).toContain('Usage: node wt-lane.mjs')
+  })
+
+  it('refuses a launcher whose consent import fragment was reworded', () => {
+    const f = fixture((source) => source.replace(
+      "import { resolveConsent } from './lib/lane-consent-check-core.mjs'",
+      "import { resolveConsent as resolveLaneConsent } from './lib/lane-consent-check-core.mjs'",
+    ), false)
+    const install = spawnSync(process.execPath, [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], { encoding: 'utf8' })
+
+    expect(install.status).not.toBe(0)
+    expect(`${install.stdout}${install.stderr}`).toContain('launcher transformation expected exactly one occurrence')
+    expect(`${install.stdout}${install.stderr}`).toContain('import { resolveConsent } from')
+    expect(`${install.stdout}${install.stderr}`).toContain(join(f.root, 'plugin', 'bin', 'wt-lane.mjs'))
+    expect(readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')).toContain("import { resolveConsent } from './lib/lane-consent-check-core.mjs'")
   })
 })

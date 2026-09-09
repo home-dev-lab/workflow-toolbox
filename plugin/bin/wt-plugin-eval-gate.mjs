@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const RESULT = process.env.WT_PLUGIN_EVAL_RESULT || join(ROOT, '.lane/plugin-eval-result.json')
-const EXPECTED_FAILURES = join(ROOT, 'plugin/evals/expected-failures.json')
+const EXPECTED_FAILURES = process.env.WT_PLUGIN_EVAL_EXPECTED_FAILURES || join(ROOT, 'plugin/evals/expected-failures.json')
 
 function claudeBinary() {
   if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN
