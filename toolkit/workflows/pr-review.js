@@ -2288,6 +2288,17 @@ ${renderClaim(claim)}`;
       docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
     },
     {
+      // Adopted owner-granted authorization format, its deterministic reader, and the
+      // Stop-hook measurement that prevents authorized acts from being escalated again.
+      sources: [
+        "plugin/autonomy/AUTHORIZATIONS.md",
+        "plugin/autonomy/PERMISSIONS.md",
+        "plugin/bin/lib/standing-authorizations.mjs",
+        "plugin/bin/wt-escalation-journal-hook.mjs"
+      ],
+      docs: ["plugin/autonomy/AUTHORIZATIONS.md", "plugin/autonomy/PERMISSIONS.md", "plugin/skills/adopt/SKILL.md"]
+    },
+    {
       // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer
       // skill, which also documents the environment-brief contract. The whole
       // plugin/agents/ subtree is mapped above to the routing docs (accurate for

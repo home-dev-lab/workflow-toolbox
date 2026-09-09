@@ -514,6 +514,15 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-escalation-journal-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }

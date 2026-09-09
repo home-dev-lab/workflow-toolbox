@@ -38,7 +38,8 @@ user's project, on explicit request only. It manages four sets — `rules`, `age
   names. Copying by hand works too, but a hand copy has NO staleness detection: this set
   closes that gap — every copy carries a version banner + content fingerprint, so a later
   `--check` reports when the plugin has moved ahead.
-- **autonomy** — the session-autonomy mandate markdown (`AUTONOMY.md`), SOURCED from the
+- **autonomy** — the session-autonomy mandate (`AUTONOMY.md`), standing-authorization format
+  (`AUTHORIZATIONS.md`), and recommended permission classes (`PERMISSIONS.md`), SOURCED from the
   plugin's `autonomy/` bundle. Same banner/fingerprint shape as `rules`.
 - **docs** — the rationale/field-case overflow moved OUT of the shipped rules by the
   2026-09-02 static-prefix cut, SOURCED from the plugin's `docs/rules-rationale/` bundle

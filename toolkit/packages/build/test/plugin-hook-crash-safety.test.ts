@@ -238,6 +238,13 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         cwd: sandbox.projectDir,
         transcript_path: sandbox.transcriptPath,
       }
+    case 'wt-escalation-journal-hook.mjs':
+      return {
+        hook_event_name: 'Stop',
+        session_id: 'selftest-session',
+        cwd: sandbox.projectDir,
+        last_assistant_message: 'ordinary completed work',
+      }
     case 'wt-registry-heartbeat-hook.mjs':
       return {
         hook_event_name: 'Stop',

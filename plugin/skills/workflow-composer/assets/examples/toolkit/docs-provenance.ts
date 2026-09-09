@@ -51,6 +51,11 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-escalation-journal-hook.mjs',
+    status: 'mapped',
+    reason: 'The adopted standing-authorization template documents this warn-only Stop hook and the authorization format it reads.',
+  },
+  {
     script: 'plugin/bin/wt-pilot-models.mjs',
     status: 'mapped',
     reason: 'The pilot-wave skill and adopted pilot-orchestrator template document this spawn-time model resolver CLI.',
@@ -554,6 +559,17 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
     sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/skills/external-lane/'],
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
+  },
+  {
+    // Adopted owner-granted authorization format, its deterministic reader, and the
+    // Stop-hook measurement that prevents authorized acts from being escalated again.
+    sources: [
+      'plugin/autonomy/AUTHORIZATIONS.md',
+      'plugin/autonomy/PERMISSIONS.md',
+      'plugin/bin/lib/standing-authorizations.mjs',
+      'plugin/bin/wt-escalation-journal-hook.mjs',
+    ],
+    docs: ['plugin/autonomy/AUTHORIZATIONS.md', 'plugin/autonomy/PERMISSIONS.md', 'plugin/skills/adopt/SKILL.md'],
   },
   {
     // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer
