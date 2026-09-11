@@ -43,7 +43,7 @@ function promiseSpawn(program, args, options) {
 function pause(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
 function refusal(edge, missing, file) { return `edge refused: ${edge}; missing ${missing}: ${file}` }
 
-export function createLifecycleServer({ worktree, route, reasons = [], models, cardId, sessionTag, sdk = null, laneLauncher = null, lanePollMs = 25, laneWaitMs = null }) {
+export function createLifecycleServer({ worktree, route, reasons = [], models, cardId, sessionTag, sdk = null, laneLauncher = null, lanePollMs = 25, laneWaitMs = null, git = execFileSync, copy = fs.cpSync }) {
   if (!path.isAbsolute(worktree)) throw new Error('lifecycle worktree must be absolute')
   const frozenRoute = Object.freeze(String(route))
   const frozenModels = Object.freeze({ ...models })
@@ -60,7 +60,7 @@ export function createLifecycleServer({ worktree, route, reasons = [], models, c
   Object.freeze(lifecycle)
   fs.mkdirSync(laneDir, { recursive: true })
   fs.writeFileSync(path.join(laneDir, 'route.json'), `${JSON.stringify({ cardId, route: frozenRoute, reasons, models: frozenModels }, null, 2)}\n`, { flag: 'wx' })
-  let state = { phase: 'discovery', planRound: 0, reviewRound: 0, handled: new Map(), lastLaneMtime: 0 }
+  let state = { phase: 'discovery', planRound: 0, reviewRound: 0, handled: new Map(), lastLaneMtime: 0, verifySnapshot: null }
   let serial = Promise.resolve()
 
   function saveEvidence(entry) {
@@ -89,6 +89,34 @@ export function createLifecycleServer({ worktree, route, reasons = [], models, c
       if (item.exit !== '0') return refusal(edge, `gate receipt EXIT=${item.exit ?? 'missing'}`, file)
       if (item.tree !== current) return refusal(edge, 'current tree signature', file)
       if (item.mtime < state.lastLaneMtime) return refusal(edge, 'gate newer than lane receipt', file)
+    }
+    return null
+  }
+  function verifySnapshot(edge) {
+    const receipt = gatesEvidence(edge)
+    if (receipt) return receipt
+    const tree = treeSignature(root)
+    const gates = {}
+    for (const name of GATES) {
+      const file = path.join(laneDir, `${name}.log`)
+      const item = evidence(file)
+      gates[name] = { path: file, sha256: item.sha256 }
+    }
+    state.verifySnapshot = { tree, gates }
+    const stored = readJson(evidencePath, { version: 1, entries: {} })
+    stored.verify_snapshot = state.verifySnapshot
+    fs.writeFileSync(evidencePath, `${JSON.stringify(stored, null, 2)}\n`)
+    return null
+  }
+  function snapshotEvidence(edge) {
+    const snapshot = state.verifySnapshot
+    if (!snapshot) return refusal(edge, 'verify digest snapshot', evidencePath)
+    const currentTree = treeSignature(root)
+    if (currentTree !== snapshot.tree) return refusal(edge, `tree signature changed (${snapshot.tree} != ${currentTree})`, root)
+    for (const name of GATES) {
+      const saved = snapshot.gates[name]
+      const current = readAttestation(saved.path)
+      if (!current || current.sha256 !== saved.sha256) return refusal(edge, `gate digest changed (${saved.sha256} != ${current?.sha256 ?? 'missing'})`, saved.path)
     }
     return null
   }
@@ -126,7 +154,7 @@ export function createLifecycleServer({ worktree, route, reasons = [], models, c
       next = 'verify'
     } else if (state.phase === 'verify') {
       if (event.outcome !== 'passed') return refusal('verify->next', 'outcome passed', laneDir)
-      const receipt = gatesEvidence('verify->next'); if (receipt) return receipt
+      const receipt = verifySnapshot('verify->next'); if (receipt) return receipt
       next = frozenRoute === 'LITE' ? 'report' : 'review'
     } else if (state.phase === 'review' || state.phase === 'refutation') {
       const receipt = laneEvidence(state.phase, event.outcome === 'changes-requested'); if (receipt) return receipt
@@ -136,25 +164,27 @@ export function createLifecycleServer({ worktree, route, reasons = [], models, c
       next = state.phase === 'review' && event.outcome === 'clear' ? 'refutation' : state.phase === 'refutation' && event.outcome === 'clear' ? 'report' : 'harden'
     } else if (state.phase === 'report') {
       if (!fs.existsSync(path.join(laneDir, 'pilot-report.md'))) return refusal('report->awaiting_fidelity', 'pilot report', path.join(laneDir, 'pilot-report.md'))
-      const receipt = gatesEvidence('report->awaiting_fidelity'); if (receipt) return receipt
-      const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+      const receipt = snapshotEvidence('report->awaiting_fidelity'); if (receipt) return receipt
+      const base = git('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
       try {
-        execFileSync('git', ['add', '-A'], { cwd: root })
+        git('git', ['add', '-A'], { cwd: root })
         const report = fs.readFileSync(path.join(laneDir, 'pilot-report.md'), 'utf8')
         const subject = report.split(/\r?\n/).find(Boolean) ?? `pilot lifecycle ${cardId}`
         const body = `card: ${cardId}\nsession: ${sessionTag}\ntree: ${treeSignature(root)}\nevidence: ${sha256(fs.readFileSync(evidencePath))}`
-        execFileSync('git', ['commit', '-m', subject.replace(/^#\s*/, ''), '-m', body], { cwd: root })
+        git('git', ['commit', '-m', subject.replace(/^#\s*/, ''), '-m', body], { cwd: root })
       } catch (error) { return refusal('report->awaiting_fidelity', `commit (${error instanceof Error ? error.message : String(error)})`, root) }
-      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+      const head = git('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
       if (head === base) return refusal('report->awaiting_fidelity', 'changed HEAD', root)
-      if (execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()) return refusal('report->awaiting_fidelity', 'clean tree', root)
-      fs.writeFileSync(summaryPath, `${JSON.stringify({ commit: head, implementation: 'runner-hosted-server' }, null, 2)}\n`)
+      if (git('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()) return refusal('report->awaiting_fidelity', 'clean tree', root)
       const stamp = new Date().toISOString().replace(/[:.]/g, '-')
       const archive = path.join(root, '.claude', 'reports', `${cardId}-${stamp}`)
       try {
         fs.mkdirSync(path.dirname(archive), { recursive: true })
-        fs.cpSync(laneDir, archive, { recursive: true, dereference: false })
-        fs.writeFileSync(path.join(archive, 'manifest.json'), `${JSON.stringify({ cardId, route: frozenRoute, commit: head, phases: [...state.handled.values()].map((item) => item.result), evidence: sha256(fs.readFileSync(evidencePath)) }, null, 2)}\n`)
+        copy(laneDir, archive, { recursive: true, dereference: false })
+        const manifest = { cardId, route: frozenRoute, commit: head, phases: [...state.handled.values()].map((item) => item.result), evidence: sha256(fs.readFileSync(evidencePath)) }
+        const manifestContent = `${JSON.stringify(manifest, null, 2)}\n`
+        fs.writeFileSync(path.join(archive, 'manifest.json'), manifestContent)
+        fs.writeFileSync(summaryPath, `${JSON.stringify({ commit: head, archive: { path: archive, manifest_sha256: sha256(manifestContent) }, lifecycle_implementation: { name: 'sdk-pilot-lifecycle', version: '1.0.0' } }, null, 2)}\n`)
       } catch (error) { return refusal('report->awaiting_fidelity', `archive (${error instanceof Error ? error.message : String(error)})`, archive) }
       next = 'awaiting_fidelity'
     }

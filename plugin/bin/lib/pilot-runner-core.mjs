@@ -104,7 +104,7 @@ function usageOf(message) {
 }
 
 export async function runPilot(options, dependencies) {
-  const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, stat = statSync, newestMtime = defaultNewestMtime, pidAlive = defaultPidAlive, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
+  const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, stat = statSync, newestMtime = defaultNewestMtime, pidAlive = defaultPidAlive, oldLifecycleHook = null, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
   const model = options.hard ? models.pilotHard : models.pilot
@@ -141,7 +141,7 @@ export async function runPilot(options, dependencies) {
   // B5: completion is `awaiting_fidelity receipt && report exists`, so a report left by an earlier
   // run would satisfy it without this session ever writing one. Refuse to start on a dirty lane.
   if (exists(report)) throw new Error(`SDK pilot preflight failed: ${report} already exists; a stale report would satisfy completion`)
-  if (existsSync(join(pluginRoot, 'hooks-modules', 'sdk-pilot-lifecycle'))) throw new Error('SDK pilot preflight failed: old lifecycle hook is still present')
+  if (exists(oldLifecycleHook ?? join(pluginRoot, 'hooks-modules', 'sdk-pilot-lifecycle'))) throw new Error('SDK pilot preflight failed: old lifecycle hook is still present')
   try { execFileSync('git', ['check-ignore', '.lane'], { cwd: options.dir, stdio: 'ignore' }) } catch { throw new Error('SDK pilot preflight failed: .lane must be git-ignored') }
   for (const file of [join(guardPlugin, 'hooks', 'hooks.json'), join(guardPlugin, 'hooks', 'hooks.js')]) {
     if (!existsSync(file)) throw new Error(`SDK pilot preflight failed: required plugin file is absent: ${file}`)
@@ -226,7 +226,7 @@ export async function runPilot(options, dependencies) {
       initReceiptSeen = true
       const initTools = Array.isArray(message.tools) ? message.tools : []
       const initPlugins = Array.isArray(message.plugins) ? message.plugins : []
-      const missing = ['mcp__sdk-pilot-lifecycle__transition', 'mcp__sdk-pilot-lifecycle__write_artifact'].filter((tool) => !initTools.includes(tool))
+      const missing = ['mcp__sdk-pilot-lifecycle__transition', 'mcp__sdk-pilot-lifecycle__write_artifact', 'mcp__sdk-pilot-lifecycle__run'].filter((tool) => !initTools.includes(tool))
       const absent = [guardPlugin].filter((path) => !initPlugins.some((plugin) => plugin.path === path))
       if (missing.length > 0 || absent.length > 0) {
         throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${JSON.stringify({ missingTools: missing, absentPlugins: absent, tools: initTools, plugins: initPlugins })}`)
@@ -272,7 +272,9 @@ export async function runPilot(options, dependencies) {
   if (!initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
   const freshTokens = totals.input + totals.cache_creation + totals.output
   const usage = { turns, totals, fresh_tokens: freshTokens, tool_names: [...new Set(tools)] }
-  const summary = { fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt }
+  let lifecycleSummary = {}
+  try { lifecycleSummary = JSON.parse(readFile(summaryPath, 'utf8')) } catch { /* no transition reached the summary yet */ }
+  const summary = { ...lifecycleSummary, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt }
   writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)

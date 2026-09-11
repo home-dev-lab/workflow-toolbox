@@ -15,7 +15,7 @@ const PLUGIN_ROOT = join(ROOT, 'plugin')
 const initMessage = () => ({
   type: 'system',
   subtype: 'init',
-  tools: ['Bash', 'Read', 'Glob', 'Grep', 'mcp__sdk-pilot-lifecycle__transition', 'mcp__sdk-pilot-lifecycle__write_artifact'],
+  tools: ['Bash', 'Read', 'Glob', 'Grep', 'mcp__sdk-pilot-lifecycle__transition', 'mcp__sdk-pilot-lifecycle__write_artifact', 'mcp__sdk-pilot-lifecycle__run'],
   plugins: [{ path: join(PLUGIN_ROOT, 'hooks-modules', 'pilot-guard') }],
 })
 const roots: string[] = []
@@ -265,6 +265,24 @@ describe('SDK pilot runner', () => {
     })()
     await expect(runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: thin, resolvePilotModels: models, sleep: async () => {} }))
       .rejects.toThrow(/missing plugins or lifecycle tools/)
+  })
+
+  it('refuses an initialization receipt that omits the lifecycle run tool', async () => {
+    const f = fixture()
+    const thin = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      yield { ...initMessage(), tools: ['mcp__sdk-pilot-lifecycle__transition', 'mcp__sdk-pilot-lifecycle__write_artifact'] }
+      await prompt.next()
+    })()
+    await expect(runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: thin, resolvePilotModels: models, sleep: async () => {} }))
+      .rejects.toThrow(/missing plugins or lifecycle tools/)
+  })
+
+  it('refuses startup when the retired lifecycle hook directory exists', async () => {
+    const f = fixture()
+    const oldHook = join(f.root, 'sdk-pilot-lifecycle'); mkdirSync(oldHook)
+    await expect(runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, {
+      query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models, oldLifecycleHook: oldHook,
+    })).rejects.toThrow(/old lifecycle hook is still present/)
   })
 
   it('refuses to start on a lane that already holds a pilot report', async () => {

@@ -137,16 +137,55 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     writeFileSync(join(lifecycle.root, 'changed.txt'), 'changed\n')
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'changed' }))).toMatch(/^edge refused: verify->next; missing current tree signature: /)
   })
+
+  it('persists verify digests and refuses a report edge when a gate changes afterward', async () => {
+    const lifecycle = await lifecycleAtVerify()
+    writeGates(lifecycle.root)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' }))).toBe('accepted phase=report')
+    const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
+    expect(evidence.verify_snapshot).toMatchObject({ tree: treeSignature(lifecycle.root) })
+    writeFileSync(join(lifecycle.root, '.lane', 'test.log'), 'gate\nEXIT=0\nchanged\n')
+    writeFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), '# report\n')
+    await expect(text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' })))
+      .resolves.toMatch(/missing gate digest changed .*?[a-f0-9]{64}.*[a-f0-9]{64}.*test\.log/)
+  })
+
+  it.each([
+    ['failed commit', () => (_program: string, call: string[]) => { if (call[0] === 'commit') throw new Error('commit failed'); return call[0] === 'rev-parse' ? 'base\n' : '' }, /missing commit \(commit failed\)/],
+    ['unchanged HEAD', () => (_program: string, call: string[]) => call[0] === 'rev-parse' ? 'base\n' : '', /missing changed HEAD/],
+    ['dirty tree', () => { let revisions = 0; return (_program: string, call: string[]) => call[0] === 'status' ? ' M changed.txt\n' : call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : '' }, /missing clean tree/],
+  ])('refuses report->awaiting_fidelity on %s', async (_name, makeGit, expected) => {
+    const lifecycle = await lifecycleReadyForReport({ git: makeGit() })
+    await expect(text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).resolves.toMatch(expected)
+  })
+
+  it('refuses report->awaiting_fidelity when the archive copy fails', async () => {
+    let revisions = 0
+    const git = (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
+    const lifecycle = await lifecycleReadyForReport({ git, copy: () => { throw new Error('destination not writable') } })
+    await expect(text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' })))
+      .resolves.toMatch(/missing archive \(destination not writable\)/)
+  })
+
+  it('records the commit, archive manifest digest, and lifecycle implementation', async () => {
+    let revisions = 0
+    const git = (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
+    const lifecycle = await lifecycleReadyForReport({ git })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
+    const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
+    expect(summary).toMatchObject({ commit: 'next', lifecycle_implementation: { name: 'sdk-pilot-lifecycle', version: '1.0.0' } })
+    expect(summary.archive).toMatchObject({ path: expect.stringContaining('.claude/reports/1-'), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) })
+  })
 })
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
-function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher: string | null = null, laneWaitMs: number | null = null) {
+function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher: string | null = null, laneWaitMs: number | null = null, options: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-')); roots.push(root)
   mkdirSync(join(root, '.lane'))
   writeFileSync(join(root, '.gitignore'), '.lane/\n')
   spawnSync('git', ['init', '-q'], { cwd: root })
-  const server = createLifecycleServer({ worktree: root, route, reasons, models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'test', laneLauncher: launcher, laneWaitMs })
+  const server = createLifecycleServer({ worktree: root, route, reasons, models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'test', laneLauncher: launcher, laneWaitMs, ...options })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
   return { root, transition: tools.transition!.handler, artifact: tools.write_artifact!.handler, run: tools.run!.handler }
 }
@@ -168,6 +207,17 @@ async function lifecycleAtVerify() {
   writeFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'brief\n')
   await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
   expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toBe('accepted phase=verify')
+  return lifecycle
+}
+async function lifecycleReadyForReport(options: Record<string, unknown> = {}) {
+  const lifecycle = testLifecycle('LITE', [], successLauncher(), 100, options)
+  await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+  writeFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'brief\n')
+  await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
+  await lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' })
+  writeGates(lifecycle.root)
+  await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' })
+  writeFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), '# report\n')
   return lifecycle
 }
 function writeGates(root: string, overrides: Record<string, { exit?: string, mtime?: number }> = {}) {
