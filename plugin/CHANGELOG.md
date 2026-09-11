@@ -30,7 +30,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   names now require `--other-file` at freeze, and manifests preserve that classification so verify
   cannot reinterpret an unknown-name symlink as recognized evidence.
 
-## [0.173.0] - 2026-09-11
 
 ### Changed
 - The SDK pilot lifecycle is now the runner-hosted `sdk-pilot-lifecycle` MCP server, replacing the
