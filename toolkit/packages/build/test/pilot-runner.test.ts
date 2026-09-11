@@ -218,12 +218,10 @@ describe('SDK pilot runner', () => {
       .rejects.toThrow(/already exists/)
   })
 
-  it('the launch-then-end eval quotes the contract verbatim (the eval sandbox cannot read the file)', () => {
-    const contract = readFileSync(join(ROOT, 'plugin/autonomy/PILOT-CONTRACT.md'), 'utf8').replace(/\s+/g, ' ')
-    const prompt = readFileSync(join(ROOT, 'plugin/evals-draft/pilot-contract-launch-then-end/prompt.md'), 'utf8')
-    const quoted = prompt.split('\n').filter((l) => l.startsWith('> ')).map((l) => l.slice(2)).join(' ').replace(/\s+/g, ' ')
-    expect(quoted.length).toBeGreaterThan(200)
-    expect(contract).toContain(quoted)
+  it('documents lifecycle-only lane delegation in the adopted contract', () => {
+    const contract = readFileSync(join(ROOT, 'plugin/autonomy/PILOT-CONTRACT.md'), 'utf8')
+    expect(contract).toContain("run { kind: 'lane', phase, timeout }")
+    expect(contract).toContain('You have no Bash, Write, or Edit.')
   })
 
   it('keeps the adopted contract under 6 KB', () => {

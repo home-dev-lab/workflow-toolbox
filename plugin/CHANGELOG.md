@@ -5,13 +5,16 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- The SDK pilot lifecycle is now the runner-hosted `sdk-pilot-lifecycle` MCP server, replacing the
+  Function Hook and raw Bash allow-list. It derives and freezes card routing; parses lane verdicts
+  from attested reports; uses nonce-bound per-launch receipts; re-checks ancestors and refuses
+  symlinks; and uses filesystem tree signature v3, which ignores index-only changes. The lifecycle
+  run tool waits for lanes, so `--lane-silence` is removed. Fidelity bundles use canonical manifest
+  v2 with typed snapshot-bound entries and length-prefixed signatures; `verify` supports
+  `--require-clean-tree` and `--require-head`.
+
 ### Fixed
-- Fidelity bundles now use canonical typed, snapshot-bound manifests with length-prefixed signatures;
-  freeze records contained symlinks without following them and rejects links that escape the worktree.
-- SDK pilot lifecycle: lane verdicts are parsed from the attested report rather than declared by
-  the pilot; receipts are per-launch files, the tree signature ignores staging, ancestors are
-  re-checked on every operation, and symlinks refused.
-- `--lane-silence` removed: the lifecycle run tool waits for the lane itself.
 - `wt-run-gate` signatures now invalidate records for content, deletion, mode, type, and symlink-target
   changes; the SDK pilot can write only its lifecycle-gated lane brief and report artifacts.
 - SDK pilot lifecycle: a `changes-requested` review or refutation must now name at least one
@@ -31,27 +34,15 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   on the type without reading the caveat. Classifier in `lib/quota-drop.mjs`.
 
 ### Added
-- The SDK pilot lifecycle is now a runner-hosted MCP server: card-derived immutable routing,
-  runner-read lane and gate receipts, structured argv-only runs, worktree-confined reads, and an
-  atomic report-edge commit replace the Function Hook and raw Bash allow-list.
 - Add deterministic pilot-orchestrator intake triage and `wt-intake-triage` CLI: forced route handling,
   one batched strong-model classification, route-up-on-doubt, and an executable fixture lock for inline,
   lane-direct, and pilot work.
-- Add `wt-pilot-fidelity.mjs`, the shipped freeze/verify command Main uses to bind lane evidence
-  bytes and worktree identity before fidelity review.
-- Add the runner-owned `sdk-pilot-lifecycle` Function Hook and curated SDK tool surface; ordered
-  pilot transition receipts stop at `awaiting_fidelity`, leaving report truth and merge judgment to Main.
 - Pilot runner now detects silent executor worktrees, injects a bounded status turn, and records `silence_injections`; pilots continue one `EXIT=124` lane with a diff-preserving brief before reporting a second-timeout PARTIAL.
 - Add a SessionStart warning when `.claude/progress.md` has unsynced Planka-buffer entries, directing the session to fold them into the board and purge the section.
 - Add `wt-claimed-test-check.mjs`, a warn-only scan for normative documentation claims that lack a plausibly relevant toolkit test.
 - Pilot runner accepts an arbiter-written `--card-file`, traces injected turns to stdout, and records their count in `summary.json`.
 - `wt-main-guard-hook.mjs` now journals (without denying) `git reset --hard` and `git checkout -f` only when their worktree has uncommitted changes.
 - Add adopted standing-authorization and permission-class templates; escalations now consult owner-granted acts and a warn-only Stop hook journals covered and uncovered requests.
-- Add the adopted SDK pilot runner, launch-then-end-turn contract, and local Function Hook guard.
-  The runner owns lane waits, stops on the pilot's own `.lane/pilot-report.md`, and records per-turn
-  token usage toward the 100 k fresh-token target (first real run: 54 859). The launch-then-end eval
-  case ships as a DRAFT under `plugin/evals-draft/`, outside the release gate, until it passes
-  reliably on the eval model.
 - Add a fail-safe `WT_SESSION_ROLE=relay` mode that leaves the five always-on monitors unarmed in relay sessions while preserving principal defaults.
 - Add the v2 tracker-neutral queue snapshot contract, including startable, awaiting-owner, and
   unclassified counts; the autonomy watcher now reports a completed mission once per snapshot and

@@ -1,52 +1,50 @@
 # SDK pilot contract
 
-You pilot one tracked card in the named worktree. Do not implement the executor increment yourself.
-The runner's lifecycle Function Hook, not this prose, enforces ordered phases and the restricted write
-surface. Use its artifact tool for the lane brief and your pilot report; source Write/Edit are absent.
+Pilot one tracked card in the named worktree. Do not implement its executor increment. You may read
+the worktree with Read, Glob, and Grep; call `sdk-pilot-lifecycle` tools `transition`,
+`write_artifact`, and `run`; and talk to Planka and Atrium. You have no Bash, Write, or Edit.
 
-## Lanes and waits
+## Lifecycle tools
 
-Write the lane brief with the lifecycle artifact tool (quote the card text given to you: its definition of
-done verbatim, invariants, scope fences, and gates; do not restate it in your own words; target one
-screen, not ten; run gates detached from `toolkit/` with `EXIT=` markers in
-`.lane/<gate>.log`, the report at `.lane/report.md` ending with `## Lessons for the memory`; no commit,
-no push, no sub-agent). Launch it with `node plugin/bin/wt-lane.mjs --dir <wt> --model
-openai/gpt-5.6-terra --brief <wt>/.lane/brief.md --timeout 5400`, then END YOUR TURN immediately.
-Never wait inside Bash, poll a lane log, call a lane wait command, or use ScheduleWakeup: the runner
-owns all waiting and returns `lane done: EXIT=<code>, report <bytes> B at <path>` as your next turn.
-Every Bash call you make must finish within a minute.
-On `lane silent`, read `tail -n 20 <log>` once, then either wait one more window or write `.lane/pilot-report.md` as PARTIAL naming the silence; never relaunch while that pid is alive.
-On `lane done: EXIT=124`, read the worktree diff, never discard it, and relaunch one lane with a continuation brief naming what is done and what remains.
-If that continuation also exits 124, write a PARTIAL report naming both timeouts.
+Use `write_artifact` only for its phase-bound kinds: `plan` (plan), `critic-brief` (plan), `brief`
+(tdd), `review-brief` (review), `refutation-brief` (refutation), `harden-brief` (harden), and
+`pilot-report` (report). Use `run { kind: 'lane', phase, timeout }` only for tdd, critic, review,
+refutation, or harden; timeout is at most 5400 seconds. Use `run { kind: 'gate', name }` only for
+`typecheck`, `lint`, or `test`. Use `run { kind: 'inspect', what }` only for `diff`, `status`, or
+the allow-listed receipt/log names.
 
-After that message, use only this verification template before deciding whether the increment holds:
+For a critic, review, or refutation lane, write a brief that asks for this block; the server appends
+the contract text too:
 
-```sh
-git -C <wt> diff --stat
-tail -n 1 <wt>/.lane/typecheck.log <wt>/.lane/lint.log <wt>/.lane/test.log
-head -40 <wt>/.lane/report.md
+```
+VERDICT: <approved|changes-requested or clear|changes-requested>
+FINDINGS:
+- <finding when changes-requested>
 ```
 
-Never run a gate or a test suite yourself: a suite runs for minutes and every wait belongs to the
-runner. The lane runs the gates detached and ends each log with `EXIT=<code>`; a gate is green only
-when that recorded line reads `EXIT=0`. A missing marker is a red gate, not a gate to rerun. Do not
-re-read lane logs beyond those tails.
+The critic report must quote the plan SHA-256 line. On FULL, the tdd brief must carry the plan's
+`## Tasks` block byte-identically.
 
-## Boundaries and communication
+| Phase | Do this before transition |
+| --- | --- |
+| discovery | Transition using the runner's frozen route; LITE reaches tdd, FULL reaches plan. |
+| plan | Write a plan with ADR decision/rejected, top-level task DoDs, and Gates; then transition. |
+| critic | Write the brief, run the lane, and transition from its report: approved -> tdd; changes-requested -> plan. Maximum three plan revisions. |
+| tdd or harden | Write the brief, run the lane, then transition to verify. |
+| verify | Run all three gates. Transition `outcome: passed` only after their green receipts; LITE reaches report, FULL review. |
+| review | Write the brief, run the lane, then follow its report: clear -> refutation; changes-requested -> harden. |
+| refutation | Write the brief, run the lane, then follow its report: clear -> report; changes-requested -> harden. |
+| report | Write the pilot report and transition; the runner commits and archives. |
 
-Never push, publish, merge, force, delete, or retry a denied tool call. The Function Hook enforces
-those boundaries. Do not print secrets or environment variables. The runner's mailbox supplies owner
-messages as new turns. Speak to the owner through the Atrium MCP in the room named by the runner if
-it is available; otherwise put a concise owner message in `.lane/pilot-report.md`.
+Outcomes and findings are read from the lane report: any declared value must match it. Review and
+refutation changes-requested outcomes need findings; there are at most three such rounds. A refusal
+names missing evidence: produce that evidence, do not retry the denied call.
 
-## Completion
+## Completion and boundaries
 
-Write YOUR report with the lifecycle artifact tool only after the lifecycle has reached `awaiting_fidelity`
-(the lane's own report is `.lane/report.md`; never overwrite it) with `## Implemented`,
-`## Verification`, `## Decisions`, `## Remaining Risks`, and `## Lessons for the memory` (`None.` is
-legitimate). Transition receipts prove ordered self-report gestures, not authorship, independence,
-truth, or resistance to same-user file tampering. Then end the turn. The runner stops when
-`.lane/pilot-report.md` exists and the correlated lifecycle tool result accepted `awaiting_fidelity`.
-The runner measures fresh tokens as input + cache creation + output; stay
-under the 100 k target where the work permits. The hooks cannot prevent a malicious same-user process
-outside this SDK session from changing the worktree or its receipts.
+Write `pilot-report` through `write_artifact` with `## Implemented`, `## Verification`,
+`## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`; then transition report and end
+the turn: the runner commits, archives `.lane/`, and stops. Never push, publish, merge, force, delete,
+or retry a denied call; `pilot-guard` enforces those boundaries. Print no secrets or environment
+variables. Owner messages arrive through the runner's mailbox; answer through the Atrium room the
+runner names, otherwise in the pilot report.
