@@ -24,7 +24,7 @@
 // case: a retraction with a broken pointer earns no exemption and stays
 // counted, on top of the brokenRetractions finding it already produces.
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join, basename, isAbsolute, relative, resolve, sep } from 'node:path';
 
 // An index entry line, per the convention this project's own
 // wt-memory-hygiene.md documents: `- [Title](file.md) — one-phrase hook`.
@@ -203,11 +203,9 @@ export function checkStore(storeDir, opts = {}) {
   const overThreshold = entryLineCount > threshold;
   const overSizeThreshold = indexBytes > sizeThreshold;
 
-  // Fiches on disk: *.md files directly inside storeDir, excluding the
-  // index itself. A subdirectory (e.g. archive/) is NOT descended into —
-  // archived fiches were deliberately moved out of the live store by the
-  // project's own hygiene convention, so they are excluded from the
-  // reachability graph entirely rather than counted as invisible.
+  // Live-store membership is *.md files directly inside storeDir, excluding
+  // the index. Subdirectories (including archive/) stay out of this set; a
+  // link may resolve against the store root without making its target live.
   const diskFiches = new Set();
   for (const entry of readdirSync(storeDir, { withFileTypes: true })) {
     if (entry.isDirectory()) continue;
@@ -283,8 +281,24 @@ export function checkStore(storeDir, opts = {}) {
     }
   }
 
+  const resolveStoreLink = (target) => {
+    if (isAbsolute(target)) return null;
+    const path = resolve(storeDir, target);
+    const pathFromStore = relative(storeDir, path);
+    if (pathFromStore === '' || pathFromStore === '..' || pathFromStore.startsWith(`..${sep}`) || isAbsolute(pathFromStore)) {
+      return null;
+    }
+    return existsSync(path) ? pathFromStore : null;
+  };
+  const resolveArchivedLink = (target) => {
+    if (archivedFiches.has(target)) return join('archive', target);
+    const resolved = resolveStoreLink(target);
+    return resolved !== null && (resolved === 'archive' || resolved.startsWith(`archive${sep}`)) ? resolved : null;
+  };
+
   // Direct links: every `(*.md)` target named anywhere in the index file.
   const directLinks = new Set();
+  const resolvedDirectLinks = new Map();
   const danglingRefs = [];
   const unresolvedCrossRefs = [];
   const archivedRefs = [];
@@ -294,15 +308,20 @@ export function checkStore(storeDir, opts = {}) {
     LINK_RE.lastIndex = 0;
     let match;
     while ((match = LINK_RE.exec(line))) {
-      directLinks.add(match[1]);
-      if (diskFiches.has(match[1])) continue;
       // An index pointer at an archived fiche is not dangling — the file is
       // right there — but it IS the pointer the archiving step was supposed
       // to drop. Naming it as its own class is what makes it actionable;
       // folding it into "dangling" would send a reader hunting a missing file
       // that exists, and folding it into "resolved" would hide a real defect.
-      if (archivedFiches.has(match[1])) staleIndexPointers.push({ from: indexFile, target: match[1] });
-      else danglingRefs.push({ from: indexFile, target: match[1] });
+      if (resolveArchivedLink(match[1]) !== null) {
+        staleIndexPointers.push({ from: indexFile, target: match[1] });
+        continue;
+      }
+      const resolved = resolveStoreLink(match[1]);
+      if (resolved !== null) {
+        directLinks.add(resolved);
+        resolvedDirectLinks.set(match[1], resolved);
+      } else danglingRefs.push({ from: indexFile, target: match[1] });
     }
   }
 
@@ -313,10 +332,12 @@ export function checkStore(storeDir, opts = {}) {
   // ceiling one layer down instead of removing it.
   const reachable = new Set();
   const queue = [];
+  const queued = new Set();
   const unreadableFiches = new Set();
   for (const file of directLinks) {
-    if (diskFiches.has(file) && !reachable.has(file)) {
-      reachable.add(file);
+    if (!queued.has(file)) {
+      queued.add(file);
+      if (diskFiches.has(file)) reachable.add(file);
       queue.push(file);
     }
   }
@@ -375,7 +396,7 @@ export function checkStore(storeDir, opts = {}) {
       // A body link into the archive RESOLVES — the convention says so
       // explicitly and tells stores not to rewrite these. Counted as its own
       // class so the distinction stays visible without ever reading as a fault.
-      else if (archivedFiches.has(candidate)) archivedRefs.push({ from: current, target: candidate });
+      else if (resolveArchivedLink(candidate) !== null) archivedRefs.push({ from: current, target: candidate });
       else unresolvedMemberLineRefs.push({ from: current, target: candidate });
     }
     entryMemberCounts.set(current, memberSlugs.size);
@@ -400,7 +421,7 @@ export function checkStore(storeDir, opts = {}) {
   // transitive graph above answers whole-store reachability; using it here
   // makes nearly every cross-referenced entry appear to front the whole store.
   const perEntryCounts = indexEntries.map(({ line, target }) =>
-    measureEntryMembers(target, line, diskFiches, entryMemberCounts, unreadableFiches),
+    measureEntryMembers(target, resolvedDirectLinks.get(target) ?? target, line, diskFiches, entryMemberCounts, unreadableFiches),
   );
 
   // Whole-note retractions are detected only by the convention's top-of-note
@@ -565,23 +586,23 @@ export function checkStore(storeDir, opts = {}) {
   };
 }
 
-function measureEntryMembers(target, line, diskFiches, entryMemberCounts, unreadableFiches) {
-  if (!diskFiches.has(target)) {
+function measureEntryMembers(target, resolvedTarget, line, diskFiches, entryMemberCounts, unreadableFiches) {
+  if (!diskFiches.has(resolvedTarget) && !entryMemberCounts.has(resolvedTarget)) {
     return { line, target, behindCount: null, complete: false, blockedBy: [target] };
   }
 
-  if (unreadableFiches.has(target)) {
+  if (unreadableFiches.has(resolvedTarget)) {
     return { line, target, behindCount: null, complete: false, blockedBy: [target] };
   }
 
-  if (!entryMemberCounts.has(target)) {
+  if (!entryMemberCounts.has(resolvedTarget)) {
     return { line, target, behindCount: null, complete: false, blockedBy: [target] };
   }
 
   return {
     line,
     target,
-    behindCount: entryMemberCounts.get(target),
+    behindCount: entryMemberCounts.get(resolvedTarget),
     complete: true,
     blockedBy: [],
   };

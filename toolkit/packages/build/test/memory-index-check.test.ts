@@ -1159,6 +1159,69 @@ describe('archived fiches', () => {
   })
 
 })
+
+describe('path-shaped index links', () => {
+  function subfiche(dir: string, path: string, body: string) {
+    mkdirSync(join(dir, path, '..'), { recursive: true })
+    writeFileSync(join(dir, path), body)
+  }
+
+  it('resolves an existing subfolder fiche without making it a live-store member', () => {
+    const dir = makeStore()
+    subfiche(dir, 'sub/fiche.md', 'Subfolder fiche.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Smoke test](sub/fiche.md) — hook\n')
+
+    const report = checkStore(dir)
+
+    expect(report.danglingRefs).toEqual([])
+    expect(report.diskFiches).toBe(0)
+    expect(report.reachableFiches).toBe(0)
+    expect(report.unreachableFiches).toEqual([])
+    expect(report.indexEntries).toEqual([{ line: 1, target: 'sub/fiche.md', behindCount: 0, complete: true, blockedBy: [] }])
+    expect(report.flagged).toBe(false)
+  })
+
+  it('keeps missing and outside-store path targets dangling', () => {
+    const dir = makeStore()
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Missing](sub/never-existed.md) — hook\n- [Outside](../elsewhere/x.md) — hook\n')
+
+    const report = checkStore(dir)
+
+    expect(report.danglingRefs).toEqual([
+      { from: 'MEMORY.md', target: 'sub/never-existed.md' },
+      { from: 'MEMORY.md', target: '../elsewhere/x.md' },
+    ])
+    expect(report.flagged).toBe(true)
+  })
+
+  it('traverses a resolved subfolder hub without counting the hub itself', () => {
+    const dir = makeStore()
+    fiche(dir, 'flat-member', 'Reachable through the subfolder hub.\n')
+    subfiche(dir, 'sub/hub.md', '- [[flat-member]] — member\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Hub](sub/hub.md) — hook\n')
+
+    const report = checkStore(dir)
+
+    expect(report.diskFiches).toBe(1)
+    expect(report.reachableFiches).toBe(1)
+    expect(report.unreachableFiches).toEqual([])
+    expect(report.flagged).toBe(false)
+  })
+
+  it('keeps an archive/ path pointer stale rather than resolving it as live', () => {
+    const dir = makeStore()
+    mkdirSync(join(dir, 'archive'))
+    writeFileSync(join(dir, 'archive', 'closed-work.md'), 'Archived.\n')
+    writeFileSync(join(dir, 'MEMORY.md'), '- [Closed](archive/closed-work.md) — stale pointer\n')
+
+    const report = checkStore(dir)
+
+    expect(report.staleIndexPointers).toEqual([{ from: 'MEMORY.md', target: 'archive/closed-work.md' }])
+    expect(report.danglingRefs).toEqual([])
+    expect(report.flagged).toBe(true)
+  })
+})
+
 describe('a [[slug]] resolves by frontmatter name as well as by filename', () => {
   // A store may declare a fiche's identity in frontmatter (`name: <slug>`) rather than in its
   // filename, and one store can carry both conventions at once. A resolver that only tries the
