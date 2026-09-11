@@ -239,7 +239,58 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
-    expect(readFileSync(join(lifecycle.root, 'calls'), 'utf8')).toContain(`--brief ${join(lifecycle.root, '.lane', 'tdd-brief.md')}`)
+    const call = readFileSync(join(lifecycle.root, 'calls'), 'utf8')
+    expect(call).toMatch(/--brief \/tmp\/wt-lane-launch-[^/]+\/brief\.md/)
+    expect(call).not.toContain(`--brief ${join(lifecycle.root, '.lane', 'tdd-brief.md')}`)
+    expect(fs.existsSync(/--brief (\S+)/.exec(call)![1]!)).toBe(false)
+  })
+
+  it('launches an independent lane from a read-only snapshot outside the worktree', async () => {
+    const recordedBrief = join(tmpdir(), `wt-h9-brief-${process.pid}-${Date.now()}`)
+    const recordedInput = `${recordedBrief}.diff`
+    roots.push(recordedBrief, recordedInput)
+    const worker = rawLauncher(`import { spawn } from 'node:child_process'; import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const brief=args[args.indexOf('--brief')+1]; const log=args[args.indexOf('--log')+1]; const root=args[args.indexOf('--dir')+1]; const text=readFileSync(brief,'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(text)[1]; if (text.includes('independent reviewer')) { writeFileSync(join(root,'.lane/review-brief.md'),'forged brief\\n'); writeFileSync(join(root,'.lane/review-input.diff'),'forged diff\\n'); await new Promise((resolve)=>setTimeout(resolve,40)); writeFileSync(${JSON.stringify(recordedBrief)},readFileSync(brief)); const input=/prospective implementation patch is \`([^\`]+)\`/.exec(text)[1]; writeFileSync(${JSON.stringify(recordedInput)},readFileSync(input)); writeFileSync(report,'VERDICT: clear\\nFINDINGS:\\n'); } else if (text.includes('independent critic')) { const digest=/plan sha256: ([a-f0-9]{64})/.exec(text)[1]; writeFileSync(report,'VERDICT: approved\\nFINDINGS:\\nplan sha256: '+digest+'\\n'); } else writeFileSync(report,'report\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); const child=spawn('sleep',['600'],{detached:true,stdio:'ignore'}); child.unref(); process.stdout.write('pid='+child.pid+'\\n')`)
+    const git = (_program: string, args: string[]) => args[0] === 'status'
+      ? ' M changed.txt\n'
+      : args[0] === 'diff' && args.includes('--binary')
+        ? 'diff --git a/changed.txt b/changed.txt\n--- a/changed.txt\n+++ b/changed.txt\n@@ -1 +1 @@\n-old\n+new\n'
+        : ''
+    const lifecycle = testLifecycle('FULL', [], worker, 250, { git })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.artifact({ kind: 'plan', content: plan })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'critic context\n' })
+    await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
+    await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    await lifecycle.transition({ phase: 'critic', outcome: 'approved', tool_use_id: 'critic' })
+    await lifecycle.artifact({ kind: 'brief', content: plan })
+    await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
+    await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' })
+    await writeGates(lifecycle)
+    await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'original review context\n' })
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }))).toBe('lane review EXIT=0')
+    expect(readFileSync(recordedBrief, 'utf8')).toContain('original review context')
+    expect(readFileSync(recordedBrief, 'utf8')).not.toContain('forged brief')
+    expect(readFileSync(recordedInput, 'utf8')).toContain('# Prospective commit patch')
+    expect(readFileSync(recordedInput, 'utf8')).not.toContain('forged diff')
+  })
+
+  it('terminates the launcher-reported process group after attesting its receipt', async () => {
+    const pidFile = join(tmpdir(), `wt-h9-pid-${process.pid}-${Date.now()}`)
+    roots.push(pidFile)
+    const worker = rawLauncher(`import { spawn } from 'node:child_process'; import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const brief=args[args.indexOf('--brief')+1]; const log=args[args.indexOf('--log')+1]; const report=/Write the report to \`([^\`]+)\`/.exec(readFileSync(brief,'utf8'))[1]; const child=spawn('sleep',['600'],{detached:true,stdio:'ignore'}); child.unref(); writeFileSync(${JSON.stringify(pidFile)},String(child.pid)); process.stdout.write('pid='+child.pid+'\\n'); writeFileSync(report,'report\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
+    const lifecycle = testLifecycle('LITE', [], worker, 250)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=0')
+    const pid = Number(readFileSync(pidFile, 'utf8'))
+    let gone = false
+    try { process.kill(pid, 0) } catch { gone = true }
+    if (!gone) { try { process.kill(-pid, 'SIGKILL') } catch {} }
+    expect(gone, `process group ${pid} survived its lane receipt`).toBe(true)
+    const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
+    expect(evidence.entries[join(lifecycle.root, '.lane', 'tdd-run.log')].group).toBe('terminated')
   })
 
   it('refuses traversal and absolute inspect log names', async () => {
@@ -273,7 +324,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
   })
 
   it('publishes and attests the nonce report rather than stale shared reports', async () => {
-    const worker = launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const brief=args[args.indexOf('--brief')+1]; const log=args[args.indexOf('--log')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(brief.replace('-brief.md','-report.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(brief.replace('-brief.md','-report.other.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- genuine\\n'); appendFileSync(log,'done\\nEXIT=0\\n')")
+    const worker = launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const brief=args[args.indexOf('--brief')+1]; const log=args[args.indexOf('--log')+1]; const root=args[args.indexOf('--dir')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(join(root,'.lane/critic-report.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(join(root,'.lane/critic-report.other.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- genuine\\n'); appendFileSync(log,'done\\nEXIT=0\\n')")
     const lifecycle = testLifecycle('FULL', [], worker, 100)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n' })
@@ -574,6 +625,9 @@ function realGitLifecycle() {
 }
 function text(result: Promise<{ content: Array<{ text: string }> }>) { return result.then((value) => value.content[0]!.text) }
 function launcher(source: string) {
+  return rawLauncher(`process.stdout.write('pid='+process.pid+'\\n');${source}`)
+}
+function rawLauncher(source: string) {
   const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-launcher-')); roots.push(root)
   const file = join(root, 'launcher.mjs'); writeFileSync(file, source)
   return file

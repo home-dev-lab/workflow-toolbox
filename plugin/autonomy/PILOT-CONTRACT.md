@@ -16,7 +16,7 @@ refutation, or harden; timeout is at most 5400 seconds. Use `run { kind: 'gate',
 the allow-listed receipt/log names.
 
 Every lane phase must first receive its brief through `write_artifact`; at launch the server
-exclusively recreates that file from its in-memory context, so disk-created or modified briefs are ignored.
+exclusively recreates canonical pilot-readable copies and launches from a read-only runner-owned snapshot outside the worktree, so later disk modifications cannot replace launch inputs.
 
 For a critic, review, or refutation lane, `content` is context only. The server writes the
 authoritative independent-review instructions first, names the evidence to judge, fences your text

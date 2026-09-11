@@ -3,9 +3,10 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
-import { launchProcess, waitForLaneReceipt } from './lifecycle-receipts.mjs'
+import { launchProcess, launchProcessWithOutput, terminateProcessGroup, waitForLaneReceipt } from './lifecycle-receipts.mjs'
 import { archiveLifecycle } from './lifecycle-report-edge.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
@@ -113,7 +114,7 @@ function fenced(content) {
   return `${fence}text\n${content}${content.endsWith('\n') ? '' : '\n'}${fence}`
 }
 
-function independentBrief({ phase, context, artifacts, reportPath, planDigest = null, constructionBase = null }) {
+function independentBrief({ phase, context, artifacts, reportPath, planDigest = null, constructionBase = null, snapshotDir = null }) {
   const verdict = phase === 'critic' ? 'approved|changes-requested' : 'clear|changes-requested'
   return `## Authoritative instructions
 
@@ -123,6 +124,7 @@ You are the independent ${INDEPENDENT_ROLES[phase]}. Judge the artefacts named b
 
 ${artifacts.map((artifact) => `- \`${artifact}\``).join('\n')}
 ${constructionBase ? `\nThe prospective implementation patch is \`${artifacts[0]}\`, computed against construction base \`${constructionBase}\`.` : ''}
+${snapshotDir ? `\nThese are read-only launch inputs in the runner-owned snapshot directory \`${snapshotDir}\`.` : ''}
 
 ## Pilot context (untrusted)
 
@@ -357,24 +359,54 @@ export function createLifecycleServer({
   function archive(head) {
     return archiveLifecycle({ root, laneDir, cardId, route: frozenRoute, head, phases: [...state.handled.values()].map((item) => item.result).concat(AWAITING_FIDELITY_RESULT), evidence: sha256(readRegularFile(evidencePath) ?? ''), implementation: { name: LIFECYCLE_SERVER_NAME, version: '1.0.0' }, assertDirectories: () => assertLaneDir(true), copy, git, sha256, writeRegularFile })
   }
-  function prepareLaneBrief(phase, context, reportPath) {
+  function prepareLaneBrief(phase, context, reportPath, snapshotDir = null) {
     if (!INDEPENDENT_ROLES[phase]) {
-      return `${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
+      const content = `${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
+      return snapshotDir
+        ? { canonical: content, launch: `${content}\nThis brief is the read-only launch snapshot at \`${snapshotDir}\`; do not rely on background processes surviving the lane.\n` }
+        : content
     }
     const artifacts = []
+    const canonicalArtifacts = []
     let planDigest = null
+    const snapshotFile = (name, content) => {
+      const file = path.join(snapshotDir, name)
+      fs.writeFileSync(file, content, { flag: 'wx', mode: 0o400 })
+      return file
+    }
     if (phase === 'critic') {
-      artifacts.push('.lane/plan.md')
-      if (regularFile(path.join(laneDir, 'card.md'))) artifacts.push('.lane/card.md')
-      planDigest = sha256(readRegularFile(path.join(laneDir, 'plan.md')))
+      const plan = readRegularFile(path.join(laneDir, 'plan.md'))
+      if (plan === null) throw new Error('plan unavailable')
+      canonicalArtifacts.push('.lane/plan.md')
+      artifacts.push(snapshotDir ? snapshotFile('plan.md', plan) : canonicalArtifacts[0])
+      const card = readRegularFile(path.join(laneDir, 'card.md'))
+      if (card !== null) {
+        canonicalArtifacts.push('.lane/card.md')
+        artifacts.push(snapshotDir ? snapshotFile('card.md', card) : canonicalArtifacts.at(-1))
+      }
+      planDigest = sha256(plan)
     } else {
       const inputName = `.lane/${phase}-input.diff`
       const inputPath = path.join(root, inputName)
       const diff = prospectivePatch(root, constructionBase, git, prospectivePatchMaxBuffer)
       writeRegularFile(inputPath, diff)
-      artifacts.push(inputName, '.lane/typecheck.log', '.lane/lint.log', '.lane/test.log')
+      canonicalArtifacts.push(inputName)
+      artifacts.push(snapshotDir ? snapshotFile(`${phase}-input.diff`, diff) : inputName)
+      for (const gate of GATES) {
+        const gateName = `${gate}.log`
+        const gateContent = readRegularFile(path.join(laneDir, gateName))
+        if (snapshotDir && gateContent === null) throw new Error(`${gateName} unavailable`)
+        canonicalArtifacts.push(`.lane/${gateName}`)
+        artifacts.push(snapshotDir ? snapshotFile(gateName, gateContent) : `.lane/${gateName}`)
+      }
     }
-    return independentBrief({ phase, context, artifacts, reportPath, planDigest, constructionBase: phase === 'critic' ? null : constructionBase })
+    const options = { phase, context, reportPath, planDigest, constructionBase: phase === 'critic' ? null : constructionBase }
+    return snapshotDir
+      ? {
+          canonical: independentBrief({ ...options, artifacts: canonicalArtifacts }),
+          launch: independentBrief({ ...options, artifacts, snapshotDir }),
+        }
+      : independentBrief({ ...options, artifacts })
   }
   function transition(event) {
     try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
@@ -614,64 +646,77 @@ export function createLifecycleServer({
       }
       fs.rmSync(canonicalLog, { force: true })
       fs.rmSync(canonicalReport, { force: true })
-      let launchBrief
+      let snapshot = null
+      let group = 'already-gone'
       try {
-        launchBrief = prepareLaneBrief(phase, laneBriefContexts.get(phase), report)
+        snapshot = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-lane-launch-'))
+        fs.chmodSync(snapshot, 0o700)
+        const launchBriefs = prepareLaneBrief(phase, laneBriefContexts.get(phase), report, snapshot)
+        fs.rmSync(brief, { force: true })
+        writeRegularFile(brief, launchBriefs.canonical, { flag: 'wx' })
+        const snapshotBrief = path.join(snapshot, 'brief.md')
+        fs.writeFileSync(snapshotBrief, launchBriefs.launch, { flag: 'wx', mode: 0o400 })
+        fs.writeFileSync(log, `LANE_NONCE=${nonce}\n`, { flag: 'wx' })
+        let launch
+        try {
+          launch = await launchProcessWithOutput(
+            process.execPath,
+            [
+              laneLauncher ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'wt-lane.mjs'),
+              '--dir',
+              root,
+              '--model',
+              phase === 'tdd' || phase === 'harden' ? frozenModels.lane : frozenModels.review,
+              '--brief',
+              snapshotBrief,
+              '--log',
+              log,
+              '--timeout',
+              String(timeout),
+            ],
+            { cwd: root },
+          )
+        } catch (error) {
+          return refusal(
+            `${state.phase}->next`,
+            `lane spawn (${error instanceof Error ? error.message : String(error)})`,
+            log,
+          )
+        }
+        const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
+        if (!Number.isSafeInteger(workerPid) || workerPid <= 1) {
+          return refusal(`${state.phase}->next`, 'launcher pid', log)
+        }
+        const logEntry = await waitForLaneReceipt({ log, nonce, timeoutMs: laneWaitMs ?? timeout * 1000, launchedAt, pollMs: lanePollMs, readAttestation, readRegularFile })
+        group = await terminateProcessGroup(workerPid)
+        if (!logEntry) return `lane ${phase} EXIT=missing`
+        assertLaneDir()
+        if (!regularFile(log)) return `lane ${phase} EXIT=missing`
+        if (!regularFile(report)) return `lane ${phase} EXIT=missing`
+        if (fs.existsSync(canonicalLog) && !regularFile(canonicalLog)) {
+          return refusal(`${state.phase}->next`, 'regular lane receipt', canonicalLog)
+        }
+        fs.rmSync(canonicalLog, { force: true })
+        fs.rmSync(canonicalReport, { force: true })
+        try {
+          fs.copyFileSync(log, canonicalLog, fs.constants.COPYFILE_EXCL)
+          fs.copyFileSync(report, canonicalReport, fs.constants.COPYFILE_EXCL)
+        } catch (error) {
+          fs.rmSync(canonicalLog, { force: true })
+          fs.rmSync(canonicalReport, { force: true })
+          return refusal(`${state.phase}->next`, `publish lane pair (${error instanceof Error ? error.message : String(error)})`, canonicalLog)
+        }
+        attest(canonicalReport)
+        attest(canonicalLog, { group })
+        state.lastLaneMtime = logEntry.mtime
+        return `lane ${phase} EXIT=${logEntry.exit}`
       } catch (error) {
         fs.rmSync(path.join(laneDir, `${phase}-input.diff`), { force: true })
         fs.rmSync(brief, { force: true })
         return `review input unavailable: ${error instanceof Error ? error.message : String(error)}`
+      } finally {
+        if (snapshot) fs.rmSync(snapshot, { recursive: true, force: true })
       }
-      fs.rmSync(brief, { force: true })
-      writeRegularFile(brief, launchBrief, { flag: 'wx' })
-      fs.writeFileSync(log, `LANE_NONCE=${nonce}\n`, { flag: 'wx' })
-      try {
-        await launchProcess(
-          process.execPath,
-          [
-            laneLauncher ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'wt-lane.mjs'),
-            '--dir',
-            root,
-            '--model',
-            phase === 'tdd' || phase === 'harden' ? frozenModels.lane : frozenModels.review,
-            '--brief',
-            brief,
-            '--log',
-            log,
-            '--timeout',
-            String(timeout),
-          ],
-          { cwd: root },
-        )
-      } catch (error) {
-        return refusal(
-          `${state.phase}->next`,
-          `lane spawn (${error instanceof Error ? error.message : String(error)})`,
-          log,
-        )
-      }
-      const logEntry = await waitForLaneReceipt({ log, nonce, timeoutMs: laneWaitMs ?? timeout * 1000, launchedAt, pollMs: lanePollMs, readAttestation, readRegularFile })
-      if (!logEntry) return `lane ${phase} EXIT=missing`
-      assertLaneDir()
-      if (!regularFile(log)) return `lane ${phase} EXIT=missing`
-      if (!regularFile(report)) return `lane ${phase} EXIT=missing`
-      if (fs.existsSync(canonicalLog) && !regularFile(canonicalLog)) {
-        return refusal(`${state.phase}->next`, 'regular lane receipt', canonicalLog)
-      }
-      fs.rmSync(canonicalLog, { force: true })
-      fs.rmSync(canonicalReport, { force: true })
-      try {
-        fs.copyFileSync(log, canonicalLog, fs.constants.COPYFILE_EXCL)
-        fs.copyFileSync(report, canonicalReport, fs.constants.COPYFILE_EXCL)
-      } catch (error) {
-        fs.rmSync(canonicalLog, { force: true })
-        fs.rmSync(canonicalReport, { force: true })
-        return refusal(`${state.phase}->next`, `publish lane pair (${error instanceof Error ? error.message : String(error)})`, canonicalLog)
-      }
-      attest(canonicalReport)
-      attest(canonicalLog)
-      state.lastLaneMtime = logEntry.mtime
-      return `lane ${phase} EXIT=${logEntry.exit}`
     }
     if (args.kind === 'gate') {
       if (!GATES.has(args.name)) {

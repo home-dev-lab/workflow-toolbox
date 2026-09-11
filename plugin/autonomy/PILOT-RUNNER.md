@@ -45,7 +45,7 @@ and excluded from the tree signature.
 Critic, review, and refutation briefs begin with server-owned independent-review instructions. The
 server retains each lane phase's pilot context in memory and, immediately before launch, refuses an
 unwritten phase or exclusively recreates its brief from that context, re-deriving independent inputs.
-server names the plan/card or the prospective working-tree patch against the construction base plus
+The server names the plan/card or the prospective working-tree patch against the construction base plus
 gate receipts, writes review/refutation patches to `.lane/<phase>-input.diff`, names that path and base
 in the brief, and fences pilot prose afterward as untrusted context. The patch includes staged and
 unstaged tracked changes, deletions, modes, symlinks, renames, binary changes, and non-ignored
@@ -64,6 +64,7 @@ rename does not change it; recorded v2 signatures do not compare.
 TDD and harden lanes use `openai/gpt-5.6-terra`; critic, review, and refutation use
 `openai/gpt-5.6-sol`. Lane timeouts are capped at 5400 seconds. `run { kind: 'gate' }` runs the
 toolkit's `pnpm typecheck`, `pnpm lint`, or `pnpm test`.
+A lane must not rely on background processes surviving its receipt: the server terminates the launcher's reported process group, though a double-forked daemon that escapes that group remains outside this contract.
 
 ## Completion and CLI
 

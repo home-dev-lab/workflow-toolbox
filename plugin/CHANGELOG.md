@@ -5,6 +5,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.173.4] - 2026-09-11
+
+### Fixed
+- Lane launches now consume read-only runner-owned snapshots outside the worktree and terminate the
+  launcher-reported process group after receipt or timeout, closing interference from prior lanes.
+
 ## [0.173.3] - 2026-09-11
 
 ### Fixed
