@@ -9,7 +9,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Fidelity bundles now use canonical typed, snapshot-bound manifests with length-prefixed signatures;
   freeze records contained symlinks without following them and rejects links that escape the worktree.
 - SDK pilot lifecycle: lane verdicts are parsed from the attested report rather than declared by
-  the pilot; receipts are nonce-bound; symlinks refused.
+  the pilot; receipts are per-launch files, the tree signature ignores staging, ancestors are
+  re-checked on every operation, and symlinks refused.
 - `wt-run-gate` signatures now invalidate records for content, deletion, mode, type, and symlink-target
   changes; the SDK pilot can write only its lifecycle-gated lane brief and report artifacts.
 - SDK pilot lifecycle: a `changes-requested` review or refutation must now name at least one

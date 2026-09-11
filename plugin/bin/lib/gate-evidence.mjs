@@ -9,6 +9,10 @@ function git(root, args) {
   return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
 }
 
+function gitOrEmpty(root, args) {
+  try { return git(root, args) } catch { return '' }
+}
+
 export function repoRoot(cwd) {
   return git(cwd, ['rev-parse', '--show-toplevel']).trim()
 }
@@ -25,13 +29,19 @@ export function readGateDeclaration(root) {
 
 export function treeSignature(root, fileSystem = fs) {
   const hash = createHash('sha256')
-  hash.update('wt-tree-signature-v2\0')
-  const names = git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean).sort()
+  hash.update('wt-tree-signature-v3\0')
+  // The signature describes the filesystem, not the index.  Include HEAD names so
+  // staging a deletion or rename cannot change the set being compared.
+  const names = [...new Set([
+    ...gitOrEmpty(root, ['ls-tree', '-r', '--name-only', 'HEAD', '-z']).split('\0'),
+    ...git(root, ['ls-files', '--cached', '-z']).split('\0'),
+    ...git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0'),
+  ])].filter(Boolean).sort()
   for (const name of names) {
     const file = path.join(root, name)
     const stat = fileSystem.lstatSync(file, { throwIfNoEntry: false })
     hash.update(Buffer.from(name)); hash.update('\0')
-    if (!stat) { hash.update('missing\0'); continue }
+    if (!stat) continue
     hash.update(`${stat.isFile() ? 'file' : stat.isSymbolicLink() ? 'symlink' : 'other'}\0${stat.mode & 0o7777}\0`)
     if (stat.isFile()) hash.update(fileSystem.readFileSync(file))
     else if (stat.isSymbolicLink()) hash.update(fileSystem.readlinkSync(file))

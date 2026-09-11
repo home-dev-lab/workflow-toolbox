@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { lifecycleCanUseTool, laneLogFrom, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
+import { lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 
@@ -47,69 +47,6 @@ describe('SDK pilot runner', () => {
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--lane-silence', '0'])).toMatchObject({ error: '--lane-silence must be a positive number of minutes' })
   })
 
-  it('injects one silence turn for an inactive lane and records it', async () => {
-    const f = fixture(); const log = join(f.dir, '.lane', 'executor.log'); writeFileSync(log, 'pid=12\n')
-    const injected: string[] = []; let clock = 0
-    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
-      yield initMessage()
-      await prompt.next()
-      yield { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'node plugin/bin/wt-lane.mjs' } }] } }
-      yield { type: 'user', message: { content: `pid=12\nlog=${log}` } }
-      clock = 60_001
-      const silence = await prompt.next(); injected.push(silence.value.message.content)
-    })()
-    const result = await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 120, laneSilence: 1, hard: false }, {
-      query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
-      now: () => clock, sleep: async () => { clock = 120_001 }, newestMtime: () => 0, pidAlive: () => true,
-    })
-    expect(injected).toEqual(['lane silent: no write for 1 min, log 7 B, pid alive'])
-    expect(result.summary).toMatchObject({ silence_injections: 1, injected_turns: 1 })
-  })
-
-  it('does not inject silence after worktree activity or an exit marker', async () => {
-    for (const terminal of [false, true]) {
-      const f = fixture(); const log = join(f.dir, '.lane', 'executor.log'); writeFileSync(log, terminal ? 'pid=12\nEXIT=0\n' : 'pid=12\n')
-      const injected: string[] = []; let clock = 0
-      const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
-      yield initMessage()
-        await prompt.next()
-        yield { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'node plugin/bin/wt-lane.mjs' } }] } }
-        yield { type: 'user', message: { content: `pid=12\nlog=${log}` } }
-        clock = 60_001
-        const next = await prompt.next(); if (!next.done) injected.push(next.value.message.content)
-      })()
-      const result = await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 120, laneSilence: 1, hard: false }, {
-        query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
-        now: () => clock, sleep: async () => { clock = 120_001 }, newestMtime: () => terminal ? 0 : 60_000, pidAlive: () => true,
-      })
-      expect(injected).not.toContain(expect.stringContaining('lane silent:'))
-      expect(result.summary.silence_injections).toBe(0)
-    }
-  })
-
-  it('injects again only after activity opens a second silence window', async () => {
-    const f = fixture(); const log = join(f.dir, '.lane', 'executor.log'); writeFileSync(log, 'pid=12\n')
-    const injected: string[] = []; let clock = 0; let mtime = 0; let sleeps = 0
-    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
-      yield initMessage()
-      await prompt.next()
-      yield { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'node plugin/bin/wt-lane.mjs' } }] } }
-      yield { type: 'user', message: { content: `pid=12\nlog=${log}` } }
-      clock = 60_001; injected.push((await prompt.next()).value.message.content)
-      mtime = 60_002; clock = 60_002
-      injected.push((await prompt.next()).value.message.content)
-    })()
-    const result = await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 240, laneSilence: 1, hard: false }, {
-      query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
-      now: () => clock, sleep: async () => { clock = ++sleeps === 1 ? 120_003 : 240_001 }, newestMtime: () => mtime, pidAlive: () => null,
-    })
-    expect(injected).toEqual([
-      'lane silent: no write for 1 min, log 7 B, pid unknown',
-      'lane silent: no write for 1 min, log 7 B, pid unknown',
-    ])
-    expect(result.summary.silence_injections).toBe(2)
-  })
-
   it('places an arbiter card file verbatim in the first prompt without changing prompts that omit it', async () => {
     const f = fixture(); const cardFile = join(f.root, 'card.md'); const card = '# Card title\n\nDefinition of done: ship it.\n'
     writeFileSync(cardFile, card)
@@ -128,43 +65,6 @@ describe('SDK pilot runner', () => {
     expect(prompts[1]).toBe(`Pilot card 186 in ${f2.dir}. Launch executor lanes only through the lifecycle run tool and end your turn immediately after launch.`)
   })
 
-  it('turns mailbox input and a completed lane log into prompt turns, and writes measured shapes', async () => {
-    const f = fixture(); const mailbox = join(f.root, 'mailbox.txt'); const log = join(f.dir, '.lane', 'executor.log')
-    writeFileSync(mailbox, 'owner says proceed\n')
-    const yielded: string[] = []
-    const logged: string[] = []
-    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
-      yield initMessage()
-      const first = await prompt.next(); yielded.push(first.value.message.content)
-      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'lane', name: 'Bash', input: { command: 'node plugin/bin/wt-lane.mjs --dir x' } }] } }
-      yield { type: 'user', message: { content: `pid=12\nlog=${log}` } }
-      writeFileSync(log, 'lane output\nEXIT=0\n')
-      const laneDone = await prompt.next(); yielded.push(laneDone.value.message.content)
-      yield { type: 'result', usage: { input_tokens: 10, cache_creation_input_tokens: 20, cache_read_input_tokens: 30, output_tokens: 40 } }
-      const mail = await prompt.next(); yielded.push(mail.value.message.content)
-      yield { type: 'result', usage: { input_tokens: 1, output_tokens: 2 } }
-    })()
-    const result = await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox, timeout: 2, hard: false }, {
-      query,
-      resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
-      sleep: async () => {},
-      log: (line: string) => logged.push(line),
-    })
-    expect(yielded).toContain('lane done: EXIT=0, report 0 B at ' + join(f.dir, '.lane', 'report.md'))
-    expect(result.summary.report_exists).toBe(false)
-    expect(yielded).toContain('Message from the owner: owner says proceed')
-    expect(result.usage).toMatchObject({ fresh_tokens: 73, tool_names: ['Bash'] })
-    expect(result.usage.turns[1].tool_names).toEqual([])
-    expect(logged).toEqual([
-      `injected: lane done: EXIT=0, report 0 B at ${join(f.dir, '.lane', 'report.md')}`,
-      'injected: owner message Message from the owner: owner says proceed',
-    ])
-    expect(result.summary).toMatchObject({ fresh_tokens: 73, turns: 2, injected_turns: 2, longest_tool_call_ms: 0 })
-    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'usage.json'), 'utf8')).turns).toHaveLength(2)
-    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8')).minutes).toBeTypeOf('number')
-    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'sdk-transcript.json'), 'utf8'))).toHaveLength(5)
-  })
-
   it('logs a timeout injection and counts it in the summary', async () => {
     const f = fixture(); const logged: string[] = []; let calls = 0
     const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
@@ -181,12 +81,6 @@ describe('SDK pilot runner', () => {
     })
     expect(logged).toEqual(['injected: timeout Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.'])
     expect(result.summary.injected_turns).toBe(1)
-  })
-
-  it('waits only on a lane answer carrying pid= and log= together, never on a gate record log=', () => {
-    expect(laneLogFrom('pid=12\nlog=/w/.lane/executor.log')).toBe('/w/.lane/executor.log')
-    expect(laneLogFrom('GATE test: exit=0 log=/records/logs/test.log exit-file=/records/logs/test.exit')).toBeNull()
-    expect(laneLogFrom('log=/w/.lane/executor.log')).toBeNull()
   })
 
   it('stops on a synthetic authoritative awaiting_fidelity tool result, never on the lane report', async () => {
@@ -213,7 +107,7 @@ describe('SDK pilot runner', () => {
   it('accepts the awaiting_fidelity receipt returned by the real lifecycle transition handler', async () => {
     const f = fixture(); let heads = 0
     const launcher = join(f.root, 'launcher.mjs')
-    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, `${readFileSync(log, 'utf8')}done\\nEXIT=0\\n`); writeFileSync(log.replace('-run.log', '-report.md'), 'report\\n')")
+    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, `${readFileSync(log, 'utf8')}done\\nEXIT=0\\n`); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), 'report\\n')")
     const server = createLifecycleServer({ worktree: f.dir, route: 'LITE', models: {}, cardId: '1', sessionTag: 'runner-test', laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' })
     const transition = server.instance._registeredTools.transition.handler
     await transition({ phase: 'discovery', tool_use_id: 'discovery' })

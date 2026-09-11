@@ -107,6 +107,7 @@ function verdictFromReport(phase, content) {
   const afterFindings = content.slice(match.index + match[0].length + findingsStart.index + findingsStart[0].length)
   const findings = afterFindings
     .split(/\r?\n/)
+    .slice(0, afterFindings.split(/\r?\n/).findIndex((line, index, lines) => index > 0 && (/^#/.test(line) || (line === '' && /^## /.test(lines[index + 1] ?? '')))) || undefined)
     .filter((line) => /^-\s+\S/.test(line))
     .map((line) => line.replace(/^-\s+/, '').trim())
   if (match[1] === 'changes-requested' && findings.length === 0) return null
@@ -144,9 +145,20 @@ export function createLifecycleServer({
   } else {
     fs.mkdirSync(laneDir, { recursive: true })
   }
-  if (path.relative(root, fs.realpathSync(laneDir)).startsWith('..')) {
-    throw new Error('lifecycle .lane must be under the worktree')
+  function assertLaneDir(archive = false) {
+    const required = [laneDir]
+    if (archive) required.push(path.join(root, '.claude'), path.join(root, '.claude', 'reports'))
+    for (const directory of required) {
+      let stat
+      try { stat = fs.lstatSync(directory) } catch { throw new Error(`lane directory replaced: ${directory}`) }
+      if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory || path.relative(root, directory).startsWith('..')) {
+        throw new Error(`lane directory replaced: ${directory}`)
+      }
+    }
   }
+  assertLaneDir()
+  fs.mkdirSync(path.join(root, '.claude', 'reports'), { recursive: true })
+  assertLaneDir(true)
   try {
     execFileSync('git', ['check-ignore', '--no-index', '.claude/reports/archive'], {
       cwd: root,
@@ -188,6 +200,7 @@ export function createLifecycleServer({
   const attestations = new Map()
   let serial = Promise.resolve()
   function audit() {
+    assertLaneDir()
     writeRegularFile(
       evidencePath,
       `${JSON.stringify(
@@ -202,6 +215,7 @@ export function createLifecycleServer({
     )
   }
   function attest(file, extra = {}) {
+    assertLaneDir()
     const entry = readAttestation(file)
     if (entry) {
       const saved = { ...entry, ...extra }
@@ -212,6 +226,7 @@ export function createLifecycleServer({
     return null
   }
   function verified(file) {
+    assertLaneDir()
     const saved = attestations.get(file)
     const current = readAttestation(file)
     return saved &&
@@ -223,6 +238,7 @@ export function createLifecycleServer({
       : null
   }
   function laneEvidence(phase, allowFailed = false) {
+    assertLaneDir()
     const log = path.join(laneDir, `${phase}-run.log`)
     const report = path.join(laneDir, `${phase}-report.md`)
     const logEntry = verified(log)
@@ -239,6 +255,7 @@ export function createLifecycleServer({
     return null
   }
   function gatesEvidence(edge) {
+    assertLaneDir()
     const currentTree = treeSignature(root)
     for (const name of GATES) {
       const file = path.join(laneDir, `${name}.log`)
@@ -250,7 +267,7 @@ export function createLifecycleServer({
       if (item.tree !== currentTree) {
         return refusal(edge, 'current tree signature', file)
       }
-      if (item.mtime < state.lastLaneMtime) {
+      if (item.mtime <= state.lastLaneMtime) {
         return refusal(edge, 'gate newer than lane receipt', file)
       }
     }
@@ -269,6 +286,7 @@ export function createLifecycleServer({
     return null
   }
   function snapshotEvidence(edge) {
+    assertLaneDir()
     const snapshot = state.verifySnapshot
     if (!snapshot) return refusal(edge, 'verify digest snapshot', evidencePath)
     if (treeSignature(root) !== snapshot.tree) {
@@ -283,6 +301,7 @@ export function createLifecycleServer({
     return null
   }
   function archive(head) {
+    assertLaneDir(true)
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
     const target = path.join(root, '.claude', 'reports', `${cardId}-${stamp}`)
     const temporary = `${target}.tmp-${randomUUID()}`
@@ -303,8 +322,8 @@ export function createLifecycleServer({
       },
     }
     writeRegularFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
-    fs.mkdirSync(path.dirname(target), { recursive: true })
     try {
+      assertLaneDir(true)
       copy(laneDir, temporary, { recursive: true, dereference: false })
       writeRegularFile(path.join(temporary, 'manifest.json'), manifestContent)
       fs.renameSync(temporary, target)
@@ -318,6 +337,7 @@ export function createLifecycleServer({
     return summary
   }
   function transition(event) {
+    try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
     if (!event || typeof event !== 'object' || !PHASES.includes(event.phase)) {
       return refusal('unknown->next', 'valid phase', laneDir)
     }
@@ -435,7 +455,8 @@ export function createLifecycleServer({
             return refusal('report->awaiting_fidelity', 'tree signature unchanged after staging', root)
           }
           const report = readRegularFile(path.join(laneDir, 'pilot-report.md'))
-          git(
+          let commitError = null
+          try { git(
             'git',
             [
               'commit',
@@ -447,15 +468,20 @@ export function createLifecycleServer({
               )}\nevidence: ${sha256(readRegularFile(evidencePath) ?? '')}`,
             ],
             { cwd: root },
-          )
-          const head = git('git', ['rev-parse', 'HEAD'], {
-            cwd: root,
-            encoding: 'utf8',
-          }).trim()
-          state.report = { stage: 'committed', head }
+          ) } catch (error) { commitError = error }
+          let head
+          try {
+            head = git('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+          } catch {
+            head = git('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+          }
           if (head === base) {
+            git('git', ['reset'], { cwd: root })
+            state.report = { stage: 'idle', head: null }
             return refusal('report->awaiting_fidelity', 'changed HEAD', root)
           }
+          state.report = { stage: 'committed', head }
+          if (commitError) throw commitError
           if (
             git('git', ['status', '--porcelain'], {
               cwd: root,
@@ -502,6 +528,7 @@ export function createLifecycleServer({
     return null
   }
   async function run(args) {
+    try { assertLaneDir() } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
     if (!args || typeof args !== 'object') {
       return refusal(`${state.phase}->next`, 'run arguments object', laneDir)
     }
@@ -515,18 +542,19 @@ export function createLifecycleServer({
       }
       const phase = args.phase
       const brief = path.join(laneDir, `${phase}-brief.md`)
-      const log = path.join(laneDir, `${phase}-run.log`)
+      const canonicalLog = path.join(laneDir, `${phase}-run.log`)
       const report = path.join(laneDir, `${phase}-report.md`)
       const timeout = Math.min(args.timeout ?? 5400, 5400)
       const launchedAt = Date.now()
       const nonce = randomUUID()
-      if (fs.existsSync(log) && !regularFile(log)) {
-        return refusal(`${state.phase}->next`, 'regular lane receipt', log)
+      const log = path.join(laneDir, `${phase}-run.${nonce}.log`)
+      if (fs.existsSync(canonicalLog) && !regularFile(canonicalLog)) {
+        return refusal(`${state.phase}->next`, 'regular lane receipt', canonicalLog)
       }
       if (fs.existsSync(report) && !regularFile(report)) {
         return refusal(`${state.phase}->next`, 'regular lane report', report)
       }
-      fs.rmSync(log, { force: true })
+      fs.rmSync(canonicalLog, { force: true })
       fs.rmSync(report, { force: true })
       fs.writeFileSync(log, `LANE_NONCE=${nonce}\n`, { flag: 'wx' })
       try {
@@ -556,8 +584,15 @@ export function createLifecycleServer({
       }
       const logEntry = await waitForLaneReceipt(log, nonce, laneWaitMs ?? timeout * 1000, launchedAt)
       if (!logEntry) return `lane ${phase} EXIT=missing`
+      assertLaneDir()
+      if (!regularFile(log)) return `lane ${phase} EXIT=missing`
+      if (fs.existsSync(canonicalLog) && !regularFile(canonicalLog)) {
+        return refusal(`${state.phase}->next`, 'regular lane receipt', canonicalLog)
+      }
+      fs.rmSync(canonicalLog, { force: true })
+      fs.copyFileSync(log, canonicalLog, fs.constants.COPYFILE_EXCL)
       const reportEntry = attest(report)
-      attest(log)
+      attest(canonicalLog)
       state.lastLaneMtime = logEntry.mtime
       return `lane ${phase} EXIT=${logEntry.exit}`
     }
@@ -633,6 +668,7 @@ export function createLifecycleServer({
     return refusal(`${state.phase}->next`, 'run kind lane|gate|inspect', laneDir)
   }
   async function artifact({ kind, content }) {
+    try { assertLaneDir() } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
     const spec = ARTIFACTS[kind]
     if (!spec) {
       return refusal(`${state.phase}->next`, 'known artifact kind', laneDir)

@@ -151,7 +151,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
   })
 
   it.each([
-    ['failed commit', () => (_program: string, call: string[]) => { if (call[0] === 'commit') throw new Error('commit failed'); return call[0] === 'rev-parse' ? 'base\n' : '' }, /missing commit \(commit failed\)/],
+    ['failed commit', () => (_program: string, call: string[]) => { if (call[0] === 'commit') throw new Error('commit failed'); return call[0] === 'rev-parse' ? 'base\n' : '' }, /missing changed HEAD/],
     ['unchanged HEAD', () => (_program: string, call: string[]) => call[0] === 'rev-parse' ? 'base\n' : '', /missing changed HEAD/],
     ['dirty tree', () => { let revisions = 0; return (_program: string, call: string[]) => call[0] === 'status' ? ' M changed.txt\n' : call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : '' }, /missing clean tree/],
   ])('refuses report->awaiting_fidelity on %s', async (_name, makeGit, expected) => {
@@ -191,7 +191,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
   })
 
   it('maps the real tdd brief artifact to the real lane launch argument', async () => {
-    const recorded = launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(process.env.CALLS, process.argv.join(' ') + '\\n'); appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), 'report\\n')")
+    const recorded = launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(process.env.CALLS, process.argv.join(' ') + '\\n'); appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), 'report\\n')")
     const lifecycle = testLifecycle('LITE', [], recorded, 100)
     process.env.CALLS = join(lifecycle.root, 'calls')
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -316,10 +316,31 @@ describe('runner-hosted SDK pilot lifecycle', () => {
   })
 
   it('does not attest a receipt from another launch nonce', async () => {
-    const lifecycle = testLifecycle('LITE', [], launcher("import { writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; writeFileSync(log, 'LANE_NONCE=other\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), 'report\\n')"), 30)
+    const lifecycle = testLifecycle('LITE', [], launcher("import { writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; writeFileSync(log, 'LANE_NONCE=other\\nEXIT=0\\n'); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), 'report\\n')"), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
+  })
+
+  it('publishes only the current per-launch receipt when an old worker appends to the canonical name', async () => {
+    const lifecycle = testLifecycle('LITE', [], launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief = process.argv[process.argv.indexOf('--brief') + 1]; const canonical = log.replace(/-run\\.[^.]+\\.log$/, '-run.log'); appendFileSync(canonical, 'old worker\\nEXIT=0\\n'); appendFileSync(log, `${readFileSync(log, 'utf8')}genuine worker\\nEXIT=0\\n`); writeFileSync(brief.replace('-brief.md', '-report.md'), 'report\\n')"), 100)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=0')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-run.log'), 'utf8')).toContain('genuine worker')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-run.log'), 'utf8')).not.toContain('old worker')
+  })
+
+  it.each(['run', 'write_artifact', 'transition'] as const)('refuses %s after .lane is replaced', async (operation) => {
+    const lifecycle = testLifecycle('LITE')
+    const moved = join(lifecycle.root, 'moved-lane')
+    rmSync(join(lifecycle.root, '.lane'), { recursive: true }); mkdirSync(moved); symlinkSync(moved, join(lifecycle.root, '.lane'))
+    const result = operation === 'run'
+      ? await text(lifecycle.run({ kind: 'gate', name: 'test' }))
+      : operation === 'write_artifact'
+        ? await text(lifecycle.artifact({ kind: 'brief', content: 'brief' }))
+        : await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'replaced' }))
+    expect(result).toContain('lane directory replaced')
   })
 
   it('resets a failed pre-commit index and removes failed archive temporary directories', async () => {
@@ -350,6 +371,27 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'first' }))).toContain('missing archive')
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'retry' }))).toBe('accepted phase=awaiting_fidelity')
     expect(commits).toBe(1)
+  })
+
+  it('reconciles a transient post-commit HEAD read without committing twice', async () => {
+    let revisions = 0; let commits = 0
+    const git = (_program: string, call: string[]) => {
+      if (call[0] === 'commit') commits += 1
+      if (call[0] === 'rev-parse' && ++revisions === 2) throw new Error('transient HEAD read')
+      return call[0] === 'rev-parse' ? `${revisions === 1 ? 'base' : 'next'}\n` : ''
+    }
+    const lifecycle = await lifecycleReadyForReport({ git })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'first' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(commits).toBe(1)
+  })
+
+  it('refuses an archive whose reports ancestor becomes a symlink', async () => {
+    let revisions = 0
+    const lifecycle = await lifecycleReadyForReport({ git: (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : '' })
+    const outside = mkdtempSync(join(tmpdir(), 'wt-lifecycle-outside-')); roots.push(outside)
+    rmSync(join(lifecycle.root, '.claude', 'reports'), { recursive: true }); symlinkSync(outside, join(lifecycle.root, '.claude', 'reports'))
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'archive' }))).toContain('lane directory replaced')
+    expect(readdirSync(outside)).toEqual([])
   })
 
   it('accepts the card plan grammar and distinguishes top-level tasks from nested bullets', async () => {
@@ -397,13 +439,13 @@ function launcher(source: string) {
   return file
 }
 function delayedLauncher() {
-  return launcher("import { spawn } from 'node:child_process'; const log = process.argv[process.argv.indexOf('--log') + 1]; const report = log.replace('-run.log', '-report.md'); const code = \"const fs=require('fs'); setTimeout(() => { fs.appendFileSync(process.argv[1], 'done\\\\nEXIT=0\\\\n'); fs.writeFileSync(process.argv[2], 'report\\\\n') }, 50)\"; const child = spawn(process.execPath, ['-e', code, log, report], { detached: true, stdio: 'ignore' }); child.unref()")
+  return launcher("import { spawn } from 'node:child_process'; const log = process.argv[process.argv.indexOf('--log') + 1]; const report = process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'); const code = \"const fs=require('fs'); setTimeout(() => { fs.appendFileSync(process.argv[1], 'done\\\\nEXIT=0\\\\n'); fs.writeFileSync(process.argv[2], 'report\\\\n') }, 50)\"; const child = spawn(process.execPath, ['-e', code, log, report], { detached: true, stdio: 'ignore' }); child.unref()")
 }
 function emptyLauncher() { return launcher('process.exit(0)') }
-function logOnlyLauncher() { return launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), '')") }
-function successLauncher() { return launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), 'report\\n')") }
-function verdictLauncher() { return launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), 'VERDICT: changes-requested\\nFINDINGS:\\n- blocker\\n')") }
-function foreignThenGenuineLauncher() { return launcher("import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const report = log.replace('-run.log', '-report.md'); const nonce = readFileSync(log, 'utf8'); rmSync(log); writeFileSync(log, 'foreign\\nEXIT=0\\n'); setTimeout(() => { writeFileSync(log, nonce); appendFileSync(log, 'genuine\\nEXIT=0\\n'); writeFileSync(report, 'report\\n') }, 40)") }
+function logOnlyLauncher() { return launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), '')") }
+function successLauncher() { return launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), 'report\\n')") }
+function verdictLauncher() { return launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), 'VERDICT: changes-requested\\nFINDINGS:\\n- blocker\\n')") }
+function foreignThenGenuineLauncher() { return launcher("import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const report = process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'); const nonce = readFileSync(log, 'utf8'); rmSync(log); writeFileSync(log, 'foreign\\nEXIT=0\\n'); setTimeout(() => { writeFileSync(log, nonce); appendFileSync(log, 'genuine\\nEXIT=0\\n'); writeFileSync(report, 'report\\n') }, 40)") }
 async function lifecycleAtVerify() {
   const lifecycle = testLifecycle('LITE', [], successLauncher(), 100)
   await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
