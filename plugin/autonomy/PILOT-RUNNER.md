@@ -64,7 +64,9 @@ rename does not change it; recorded v2 signatures do not compare.
 TDD and harden lanes use `openai/gpt-5.6-terra`; critic, review, and refutation use
 `openai/gpt-5.6-sol`. Lane timeouts are capped at 5400 seconds. `run { kind: 'gate' }` runs the
 toolkit's `pnpm typecheck`, `pnpm lint`, or `pnpm test`.
-A lane must not rely on background processes surviving its receipt: the server terminates the launcher's reported process group, though a double-forked daemon that escapes that group remains outside this contract.
+A lane must not rely on background processes surviving its receipt: the reported process group contains
+the launcher worker, `opencode`, and its ordinary descendants, and the server terminates that group. A
+process that creates its own session escapes the lane process group and remains outside this contract.
 
 ## Completion and CLI
 

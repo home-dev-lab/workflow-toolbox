@@ -100,7 +100,7 @@ async function main() {
   writeEnvLog(opts.dir)
   const fd = openSync(opts.log, 'a')
   const args = ['run', `Read and execute the complete brief at ${opts.brief}.`, '--auto', '--dir', opts.dir, '--model', opts.model, ...(opts.variant ? ['--variant', opts.variant] : [])]
-  const child = spawn('opencode', args, { cwd: opts.dir, detached: true, stdio: ['ignore', fd, fd] })
+  const child = spawn('opencode', args, { cwd: opts.dir, stdio: ['ignore', fd, fd] })
   let finished = false
   const finish = (code) => {
     if (finished) return
@@ -108,8 +108,10 @@ async function main() {
     try { appendFileSync(opts.log, `EXIT=${code}\n`) } catch { /* best effort after a log write failure */ }
   }
   const timer = setTimeout(() => {
-    try { process.kill(-child.pid, 'SIGTERM') } catch { /* already exited */ }
-    setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL') } catch { /* already exited */ }; finish(124) }, GRACE_MS).unref()
+    finish(124)
+    process.on('SIGTERM', () => {})
+    try { process.kill(-process.pid, 'SIGTERM') } catch { /* already exited */ }
+    setTimeout(() => { try { process.kill(-process.pid, 'SIGKILL') } catch { /* already exited */ } }, GRACE_MS).unref()
   }, opts.timeout * 1000)
   timer.unref()
   child.on('error', () => { clearTimeout(timer); finish(1) })

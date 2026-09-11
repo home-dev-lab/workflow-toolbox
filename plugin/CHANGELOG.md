@@ -8,8 +8,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [0.173.4] - 2026-09-11
 
 ### Fixed
-- Lane launches now consume read-only runner-owned snapshots outside the worktree and terminate the
-  launcher-reported process group after receipt or timeout, closing interference from prior lanes.
+- Lane launches now consume read-only runner-owned snapshots outside the worktree and keep the launcher
+  worker, `opencode`, and ordinary descendants in the reported process group terminated after receipt or
+  timeout; processes that create their own session remain outside this guarantee.
 
 ## [0.173.3] - 2026-09-11
 
