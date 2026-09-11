@@ -28,36 +28,56 @@ function within(root, target) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
 }
 
-function receiptFields(name, bytes, otherFiles = new Set()) {
-  const text = bytes.toString('utf8')
+function recognizedKind(name) {
   const lane = /^\.lane\/([^/]+)-run\.log$/.exec(name)
   const report = /^\.lane\/(pilot-report|[^/]+-report)\.md$/.exec(name)
   const gate = /^\.lane\/(typecheck|lint|test)\.log$/.exec(name)
-  if (lane) {
+  if (lane && LIFECYCLE_PHASES.has(lane[1])) return 'lane'
+  if (report) {
+    const phase = report[1] === 'pilot-report' ? 'report' : report[1].slice(0, -'-report'.length)
+    if (LIFECYCLE_PHASES.has(phase)) return 'report'
+  }
+  if (name === '.lane/summary.json') return 'commit'
+  if (gate) return 'gate'
+  return null
+}
+
+function classifyName(name, otherFiles = new Set()) {
+  const kind = recognizedKind(name)
+  if (kind) return kind
+  if (otherFiles.has(name)) return 'other'
+  throw new Error(`unknown fidelity bundle input: ${name}`)
+}
+
+function receiptFields(name, bytes, otherFiles = new Set()) {
+  const text = bytes.toString('utf8')
+  const kind = classifyName(name, otherFiles)
+  const lane = /^\.lane\/([^/]+)-run\.log$/.exec(name)
+  const report = /^\.lane\/(pilot-report|[^/]+-report)\.md$/.exec(name)
+  if (kind === 'lane') {
     const exit = /^EXIT=([^\r\n]+)$/m.exec(text.split(/\r?\n/).filter(Boolean).at(-1) ?? '')?.[1]
     if (!LIFECYCLE_PHASES.has(lane[1])) throw new Error(`unknown fidelity bundle input: ${name}`)
     if (!exit || !INTEGER_EXIT.test(exit)) throw new Error(`lane receipt lacks integer terminal EXIT=: ${name}`)
     return { kind: 'lane', phase: lane[1], exit }
   }
-  if (report) {
+  if (kind === 'report') {
     const phase = report[1] === 'pilot-report' ? 'report' : report[1].slice(0, -'-report'.length)
     if (!LIFECYCLE_PHASES.has(phase)) throw new Error(`unknown fidelity bundle input: ${name}`)
     return { kind: 'report', phase }
   }
-  if (name === '.lane/summary.json') {
+  if (kind === 'commit') {
     let summary
     try { summary = JSON.parse(text) } catch { throw new Error(`invalid commit summary: ${name}`) }
     if (typeof summary?.commit !== 'string' || summary.commit.length === 0) throw new Error(`commit summary lacks head: ${name}`)
     return { kind: 'commit', head: summary.commit }
   }
-  if (gate) {
+  if (kind === 'gate') {
     const exit = /^EXIT=([^\r\n]+)$/m.exec(text.split(/\r?\n/).filter(Boolean).at(-1) ?? '')?.[1]
     if (!exit || !INTEGER_EXIT.test(exit)) throw new Error(`gate receipt lacks integer terminal EXIT=: ${name}`)
     // The entry's required name is its root-relative receipt path; its basename identifies the gate.
     return { kind: 'gate', exit }
   }
-  if (otherFiles.has(name)) return { kind: 'other' }
-  throw new Error(`unknown fidelity bundle input: ${name}`)
+  return { kind: 'other' }
 }
 
 function signature(files) {
@@ -75,11 +95,12 @@ function readEntry(root, name, snapshot, otherFiles = new Set()) {
   if (!within(rootReal, parentReal)) throw new Error(`fidelity bundle input escapes root: ${name}`)
   const source = path.join(parentReal, path.basename(name))
   const stat = fs.lstatSync(source)
+  const evidence = classifyName(name, otherFiles)
   if (stat.isSymbolicLink()) {
     const target = fs.readlinkSync(source)
     const resolved = fs.realpathSync(path.resolve(parentReal, target))
     if (!within(rootReal, resolved)) throw new Error(`fidelity bundle symlink escapes root: ${name}`)
-    return { name, kind: 'symlink', target, sha256: sha256(target), snapshot }
+    return { name, kind: 'symlink', evidence, target, sha256: sha256(target), snapshot }
   }
   if (!stat.isFile()) throw new Error(`fidelity bundle refuses non-file input: ${name}`)
   const bytes = fs.readFileSync(source)
@@ -91,7 +112,7 @@ const ENTRY_FIELDS = {
   lane: ['bytes', 'exit', 'kind', 'name', 'phase', 'sha256', 'snapshot'],
   report: ['bytes', 'kind', 'name', 'phase', 'sha256', 'snapshot'],
   commit: ['bytes', 'head', 'kind', 'name', 'sha256', 'snapshot'],
-  symlink: ['kind', 'name', 'sha256', 'snapshot', 'target'],
+  symlink: ['evidence', 'kind', 'name', 'sha256', 'snapshot', 'target'],
   other: ['bytes', 'kind', 'name', 'sha256', 'snapshot'],
 }
 
@@ -99,7 +120,7 @@ function validEntry(file, snapshot) {
   const fields = file && ENTRY_FIELDS[file.kind]
   if (!fields || Object.keys(file).sort().join('\0') !== fields.join('\0')) return false
   if (!safeName(file.name) || file.snapshot !== snapshot || !/^[a-f0-9]{64}$/.test(file.sha256)) return false
-  if (file.kind === 'symlink') return typeof file.target === 'string'
+  if (file.kind === 'symlink') return typeof file.target === 'string' && file.evidence === (recognizedKind(file.name) ?? 'other')
   if (!Number.isSafeInteger(file.bytes) || file.bytes < 0) return false
   if (file.kind === 'gate') return GATES.has(path.basename(file.name, '.log')) && file.name === `.lane/${path.basename(file.name)}` && typeof file.exit === 'string' && INTEGER_EXIT.test(file.exit)
   if (file.kind === 'lane') return typeof file.phase === 'string' && LIFECYCLE_PHASES.has(file.phase) && file.name === `.lane/${file.phase}-run.log` && typeof file.exit === 'string' && INTEGER_EXIT.test(file.exit)
@@ -155,8 +176,8 @@ export function verifyFidelityBundle({ root, dir, requireSameTree = false, requi
   if (actual.size !== expected.size || [...actual].some((name) => !expected.has(name))) throw new Error('fidelity bundle has missing or extra files')
   for (const file of manifest.files) {
     if (file.kind === 'symlink') {
-      const current = readEntry(root, file.name, manifest.snapshot)
-      if (current.kind !== 'symlink' || current.target !== file.target || current.sha256 !== file.sha256) throw new Error(`fidelity bundle symlink mismatch: ${file.name}`)
+      const current = readEntry(root, file.name, manifest.snapshot, file.evidence === 'other' ? new Set([file.name]) : new Set())
+      if (canonicalJson(current) !== canonicalJson(file)) throw new Error(`fidelity bundle symlink mismatch: ${file.name}`)
       continue
     }
     const bytes = fs.readFileSync(path.join(dir, file.name))

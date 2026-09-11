@@ -47,7 +47,9 @@ server names the plan/card or the prospective working-tree patch against the con
 gate receipts, writes review/refutation patches to `.lane/<phase>-input.diff`, names that path and base
 in the brief, and fences pilot prose afterward as untrusted context. The patch includes staged and
 unstaged tracked changes, deletions, modes, symlinks, renames, binary changes, and non-ignored
-untracked files without changing the real index. Glob and Grep
+untracked files without changing the real index. If Git cannot construct that patch, its output
+exceeds the bounded buffer, or a dirty tree produces no substantive hunk, the lifecycle refuses the
+review/refutation brief and cannot launch that lane. Glob and Grep
 patterns with separators are confined by real-path checking their non-glob prefix, including through
 relative symlinks. Lifecycle implementation, receipts/launch, and report-edge transaction code live
 in separate modules behind the unchanged public server export.
@@ -82,5 +84,8 @@ freeze and verify admit only `typecheck`, `lint`, and `test` gate logs, lifecycl
 phases, and integer `EXIT=` values; they also reject unknown kinds, malformed top-level scalars,
 extra fields, duplicate names, incoherent commit heads, unsafe containment, and malformed evidence.
 Every unmatched file, including another `.lane/*.log`, requires explicit `--other-file` input.
+This also applies to symlinks: recognized lifecycle names remain typed symlink entries with their
+evidence classification and recorded target, while unmatched names retain their explicit `other`
+classification for verification.
 `--require-clean-tree` remains a deprecated alias. Verification proves frozen bytes and requested
 tree/HEAD identity only, never authorship or prose truth.

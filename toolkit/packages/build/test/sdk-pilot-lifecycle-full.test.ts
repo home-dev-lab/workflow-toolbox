@@ -1,5 +1,5 @@
-import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -29,6 +29,43 @@ describe('real SDK lifecycle server FULL sequence', () => {
     await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'clear', tool_use_id: 'review' })
     await lifecycle.artifact({ kind: 'refutation-brief', content: 'skip refutation' })
     expect(readFileSync(join(lifecycle.calls, '..', 'refutation-input.diff'), 'utf8')).toContain('+created by tdd')
+  })
+
+  it('H6-1 lock: refuses independent briefs when prospective review input is unavailable', async () => {
+    const realGit = (program: string, args: string[], options: Record<string, unknown>) => execFileSync(program, args, { cwd: options.cwd as string, encoding: 'utf8', maxBuffer: options.maxBuffer as number })
+    const cases = [
+      { reason: 'controlled git failure', options: { git: () => { throw new Error('controlled git failure') } } },
+      { reason: /ENOBUFS|maxBuffer|stdout/i, options: { git: realGit, prospectivePatchMaxBuffer: 1 } },
+      ...['M  staged.txt', ' M unstaged.txt', '?? untracked.txt', ' D deleted.txt'].map((status) => ({
+        reason: 'dirty tree produced no substantive patch',
+        options: { git: (_program: string, args: string[]) => args[0] === 'status' ? `${status}\0` : '' },
+      })),
+    ]
+    for (const [index, fixture] of cases.entries()) {
+      const lifecycle = fullLifecycle(fixture.options); await reachReview(lifecycle)
+      const result = await lifecycle.artifact({ kind: 'review-brief', content: 'review' })
+      expect(result).toMatch(/^review input unavailable: /)
+      expect(result).toMatch(fixture.reason)
+      expect(existsSync(join(lifecycle.root, '.lane', 'review-input.diff'))).toBe(false)
+      expect(existsSync(join(lifecycle.root, '.lane', 'review-brief.md'))).toBe(false)
+      expect(await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })).toMatch(/missing lane brief/)
+      expect(index).toBeLessThan(cases.length)
+    }
+    let completedPatch = false
+    const failRefutationGit = (program: string, args: string[], options: Record<string, unknown>) => {
+      if (completedPatch) throw new Error('refutation git failure')
+      const result = realGit(program, args, options)
+      if (args[0] === 'status') completedPatch = true
+      return result
+    }
+    const refutation = fullLifecycle({ git: failRefutationGit }); await reachReview(refutation)
+    edgeConfig({ review: { verdict: 'clear' } })
+    expect(await refutation.artifact({ kind: 'review-brief', content: 'review' })).toBe('wrote review-brief')
+    await refutation.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    await refutation.transition({ phase: 'review', outcome: 'clear', tool_use_id: 'review-clear' })
+    expect(await refutation.artifact({ kind: 'refutation-brief', content: 'refute' })).toBe('review input unavailable: refutation git failure')
+    expect(existsSync(join(refutation.root, '.lane', 'refutation-brief.md'))).toBe(false)
+    expect(await refutation.run({ kind: 'lane', phase: 'refutation', timeout: 1 })).toMatch(/missing lane brief/)
   })
 
   it('mechanically completes the full route through the registered handlers', async () => {
@@ -121,12 +158,12 @@ function laneLauncher() {
   writeFileSync(file, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; import { basename } from 'node:path'; const args = process.argv; const at = (name) => args[args.indexOf(name) + 1]; const log = at('--log'); const brief = at('--brief'); const phase = basename(brief).replace('-brief.md', ''); const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; const key = `${phase}-count`; const counts = JSON.parse(readFileSync(process.env.WT_FULL_COUNTS, 'utf8')); counts[key] = (counts[key] ?? 0) + 1; writeFileSync(process.env.WT_FULL_COUNTS, JSON.stringify(counts)); appendFileSync(process.env.WT_FULL_CALLS, JSON.stringify({ phase, model: at('--model'), argv: args.slice(1) }) + '\\n'); if (phase === 'tdd') { appendFileSync('tracked.txt', 'modified by tdd\\n'); writeFileSync('created.txt', 'created by tdd\\n'); } const configured = JSON.parse(process.env.WT_EDGE_CONFIG || '{}')[phase] || {}; const defaults = phase === 'critic' ? (counts[key] === 1 ? { verdict: 'changes-requested', findings: ['tighten the proof'] } : { verdict: 'approved', findings: [] }) : phase === 'review' ? (counts[key] === 1 ? { verdict: 'changes-requested', findings: ['exercise harden'] } : { verdict: 'clear', findings: [] }) : phase === 'refutation' ? { verdict: 'clear', findings: [] } : {}; const verdict = configured.verdict ?? defaults.verdict; const findings = configured.findings ?? defaults.findings ?? []; let reportText = 'report\\n'; if (configured.noVerdict) reportText = 'report without contract\\n'; else if (verdict) { const digest = phase === 'critic' && verdict === 'approved' ? `${/plan sha256: ([a-f0-9]+)/.exec(readFileSync(brief, 'utf8'))[0]}\\n` : ''; reportText = `VERDICT: ${verdict}\\nFINDINGS:\\n${findings.map((finding) => `- ${finding}\\n`).join('')}${digest}`; } appendFileSync(log, `done\\nEXIT=${configured.exit ?? 0}\\n`); writeFileSync(report, reportText)")
   return file
 }
-function fullLifecycle() {
+function fullLifecycle(options: Record<string, unknown> = {}) {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); process.env.WT_FULL_CALLS = calls; process.env.WT_FULL_COUNTS = counts
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
-  const server = createLifecycleServer({ worktree, route: 'FULL', models: { lane: 'openai/gpt-5.6-terra', review: 'openai/gpt-5.6-sol' }, cardId: 'full', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 } })
-  return { ...handlers(server), calls, base }
+  const server = createLifecycleServer({ worktree, route: 'FULL', models: { lane: 'openai/gpt-5.6-terra', review: 'openai/gpt-5.6-sol' }, cardId: 'full', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, ...options })
+  return { ...handlers(server), calls, base, root: worktree }
 }
 function liteLifecycle() {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')

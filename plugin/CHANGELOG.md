@@ -5,6 +5,16 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.173.1] - 2026-09-11
+
+### Fixed
+- Independent review and refutation now fail closed when their prospective patch cannot be built,
+  exceeds the output limit, or has no substantive hunk despite a dirty tree; no brief is left
+  launchable after refusal.
+- Fidelity bundles apply lifecycle-name classification before handling symlinks. Unmatched symlink
+  names now require `--other-file` at freeze, and manifests preserve that classification so verify
+  cannot reinterpret an unknown-name symlink as recognized evidence.
+
 ## [0.173.0] - 2026-09-11
 
 ### Changed

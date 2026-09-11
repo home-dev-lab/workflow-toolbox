@@ -138,9 +138,9 @@ FINDINGS:
 ${planDigest ? `\nThe critic report must include this line verbatim: plan sha256: ${planDigest}\n` : ''}`
 }
 
-function prospectivePatch(root, constructionBase, git) {
+function prospectivePatch(root, constructionBase, git, maxBuffer) {
   const run = (args, difference = false) => {
-    try { return git('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }) }
+    try { return git('git', args, { cwd: root, encoding: 'utf8', maxBuffer }) }
     catch (error) {
       if (difference && error?.status === 1 && error.stdout !== undefined) return String(error.stdout)
       throw error
@@ -151,7 +151,10 @@ function prospectivePatch(root, constructionBase, git) {
   const header = ['# Prospective commit patch', `# Construction base: ${constructionBase}`, '# Deleted paths:', ...(deleted.length > 0 ? deleted.map((name) => `# - ${JSON.stringify(name)}`) : ['# - (none)']), ''].join('\n')
   const tracked = run(['diff', '--binary', '--find-renames', constructionBase, '--'])
   const additions = untracked.map((name) => run(['diff', '--no-index', '--binary', '--', '/dev/null', name], true)).join('')
-  return `${header}${tracked}${additions}`
+  const patch = `${header}${tracked}${additions}`
+  const dirty = run(['status', '--porcelain=v1', '-z', '--untracked-files=all']).length > 0
+  if (dirty && !/^diff --git /m.test(patch)) throw new Error('dirty tree produced no substantive patch')
+  return patch
 }
 
 export function createLifecycleServer({
@@ -168,6 +171,7 @@ export function createLifecycleServer({
   gateRunner = null,
   git = execFileSync,
   copy = fs.cpSync,
+  prospectivePatchMaxBuffer = 64 * 1024 * 1024,
 }) {
   if (!path.isAbsolute(worktree)) {
     throw new Error('lifecycle worktree must be absolute')
@@ -735,9 +739,16 @@ export function createLifecycleServer({
         planDigest = sha256(readRegularFile(path.join(laneDir, 'plan.md')))
       } else {
         const inputName = `.lane/${independentPhase}-input.diff`
-        let diff = ''
-        try { diff = prospectivePatch(root, constructionBase, git) } catch (error) { diff = `diff unavailable: ${error instanceof Error ? error.message : String(error)}\n` }
-        writeRegularFile(path.join(root, inputName), diff)
+        const inputPath = path.join(root, inputName)
+        let diff
+        try {
+          diff = prospectivePatch(root, constructionBase, git, prospectivePatchMaxBuffer)
+        } catch (error) {
+          fs.rmSync(inputPath, { force: true })
+          fs.rmSync(path.join(laneDir, spec[1]), { force: true })
+          return `review input unavailable: ${error instanceof Error ? error.message : String(error)}`
+        }
+        writeRegularFile(inputPath, diff)
         artifacts.push(inputName, '.lane/typecheck.log', '.lane/lint.log', '.lane/test.log')
       }
       artifactContent = independentBrief({ phase: independentPhase, context: content, artifacts, reportPath: `.lane/${independentPhase}-report.<launch-nonce>.md`, planDigest, constructionBase: independentPhase === 'critic' ? null : constructionBase })
