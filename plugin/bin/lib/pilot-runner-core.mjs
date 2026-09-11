@@ -6,9 +6,17 @@ import { deriveRoute } from './route-from-card.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
+const PLANKA_TOOLS = new Set([
+  'mcp__planka__get_card',
+  'mcp__planka__get_comments',
+  'mcp__planka__add_comment',
+  'mcp__planka__update_card',
+  'mcp__planka__move_card',
+  'mcp__planka__add_label_to_card',
+])
 
 export function parsePilotRunnerArgs(argv) {
-  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, room: null, timeout: DEFAULT_TIMEOUT }
+  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, timeout: DEFAULT_TIMEOUT }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--card') options.card = argv[++i] ?? null
@@ -17,13 +25,13 @@ export function parsePilotRunnerArgs(argv) {
     else if (arg === '--profile-env') options.profileEnv = argv[++i] ?? null
     else if (arg === '--contract') options.contract = argv[++i] ?? null
     else if (arg === '--mailbox') options.mailbox = argv[++i] ?? null
-    else if (arg === '--room') options.room = argv[++i] ?? null
     else if (arg === '--timeout') options.timeout = Number(argv[++i])
     else if (arg === '--hard') options.hard = true
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
   }
   if (!options.card || !options.dir) return { error: 'missing required --card or --dir' }
+  if (!options.cardFile) return { error: '--card-file is required: the route is derived from the card' }
   if (!Number.isFinite(options.timeout) || options.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
   options.dir = resolve(options.dir)
   options.contract = resolve(options.contract ?? join(dirname(new URL(import.meta.url).pathname), '../../autonomy/PILOT-CONTRACT.md'))
@@ -63,6 +71,7 @@ export function confinedToWorktree(root, requested) {
 
 export function lifecycleCanUseTool(worktree, toolName, input) {
   if (['transition', 'write_artifact', 'run'].map(lifecycleToolName).includes(toolName)) return { behavior: 'allow' }
+  if (PLANKA_TOOLS.has(toolName)) return { behavior: 'allow' }
   if (!['Read', 'Glob', 'Grep'].includes(toolName)) return { behavior: 'deny', message: `tool refused: ${toolName}` }
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
   const requested = input.file_path ?? input.path ?? worktree
@@ -95,7 +104,8 @@ export async function runPilot(options, dependencies) {
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
   const model = options.hard ? models.pilotHard : models.pilot
   const contract = readFile(options.contract, 'utf8')
-  const cardText = options.cardFile ? readFile(options.cardFile, 'utf8') : ''
+  if (!options.cardFile) throw new Error('--card-file is required: the route is derived from the card')
+  const cardText = readFile(options.cardFile, 'utf8')
   const routing = deriveRoute(cardText)
   const report = join(options.dir, '.lane', 'pilot-report.md')
   const usagePath = join(options.dir, '.lane', 'usage.json')
@@ -130,9 +140,8 @@ export async function runPilot(options, dependencies) {
   const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, models: { lane: 'openai/gpt-5.6-terra', review: 'openai/gpt-5.6-sol' }, cardId: options.card, sessionTag: `${options.card}-${started}`, ...lifecycleOptions })
 
   async function* prompt() {
-    const standing = `Pilot card ${options.card} in ${options.dir}. Launch executor lanes only through the lifecycle run tool and end your turn immediately after launch.${options.room ? ` Owner room: ${options.room}.` : ''}`
-    const card = options.cardFile ? cardText : null
-    yield { type: 'user', message: { role: 'user', content: card === null ? standing : `${standing}\n\n## The card, verbatim\n\n${card}\n\ndo not re-read the card from the board; the text above is the card` } }
+    const standing = `Pilot card ${options.card} in ${options.dir}. Launch executor lanes only through the lifecycle run tool and end your turn immediately after launch.`
+    yield { type: 'user', message: { role: 'user', content: `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card` } }
     while (!completed && now() - started < options.timeout * 1000) {
       if (awaitingFidelityReceipt && exists(report)) { completed = true; return }
       const lines = exists(options.mailbox) ? readFile(options.mailbox, 'utf8').split(/\r?\n/).filter(Boolean) : []
@@ -196,7 +205,7 @@ export async function runPilot(options, dependencies) {
         if (item.type === 'tool_result' && lifecycleCalls.has(item.tool_use_id)) {
           const lifecycleResult = textFrom(item.content)
           log(`lifecycle: ${lifecycleResult}`)
-          if (lifecycleResult.includes(AWAITING_FIDELITY_RESULT)) awaitingFidelityReceipt = true
+          if (lifecycleResult.trim() === AWAITING_FIDELITY_RESULT) awaitingFidelityReceipt = true
         }
     }
     if (message.type === 'result') {

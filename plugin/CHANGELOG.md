@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.173.0] - 2026-09-11
+
 ### Changed
 - The SDK pilot lifecycle is now the runner-hosted `sdk-pilot-lifecycle` MCP server, replacing the
   Function Hook and raw Bash allow-list. It derives and freezes card routing; parses lane verdicts
@@ -15,11 +17,18 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   v2 with exact snapshot-bound entry schemas, coherent commit heads, and length-prefixed signatures;
   `verify` supports `--require-same-tree` and `--require-head` (`--require-clean-tree` is deprecated).
   Lifecycle code is split into server/state, receipts/launch, and report-edge transaction modules;
-  an uncertain post-commit HEAD is persisted and reconciled on retry without committing twice.
+  an uncertain post-commit HEAD is persisted and reconciled on retry without committing twice. The
+  runner now requires `--card-file`, exposes only the exact documented Planka operations, uses
+  mailbox-in/report-out owner communication, and supplies independent review with the prospective
+  staged, unstaged, and untracked working-tree patch against the construction base.
 
 ### Fixed
 - `wt-run-gate` signatures now invalidate records for content, deletion, mode, type, and symlink-target
   changes; the SDK pilot can write only its lifecycle-gated lane brief and report artifacts.
+- SDK pilot completion now requires the correlated lifecycle result to equal the awaiting-fidelity
+  receipt; refusal text containing that marker cannot complete a run. Fidelity manifests accept only
+  named quality gates, lifecycle phases, integer exits, and typed top-level scalars. Archive success
+  summaries are published only after archive creation and final tree-cleanliness validation succeed.
 - SDK pilot lifecycle: a `changes-requested` review or refutation must now name at least one
   non-blank finding. An empty findings list was accepted, so a revision round could consume one of
   the bounded rounds while recording no reason for it. A `clear` outcome still carries no findings,

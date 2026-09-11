@@ -204,6 +204,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     const lifecycle = await lifecycleReadyForReport({ git, copy: () => { throw new Error('destination not writable') } })
     await expect(text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' })))
       .resolves.toMatch(/missing archive \(destination not writable\)/)
+    expect(fs.existsSync(join(lifecycle.root, '.lane', 'summary.json'))).toBe(false)
   })
 
   it('retries an archive failure without making a second commit', async () => {

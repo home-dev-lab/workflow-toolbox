@@ -10,7 +10,7 @@ const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const require = createRequire(join(ROOT, 'toolkit/package.json'))
 
 function usage() {
-  return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> [--card-file <path>] [--profile-env <settings.json>] [--contract <path>] [--hard] [--mailbox <path>] [--room <atrium room>] [--timeout 5400]'
+  return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <path> [--profile-env <settings.json>] [--contract <path>] [--hard] [--mailbox <path>] [--timeout 5400]'
 }
 
 async function main() {
@@ -19,7 +19,7 @@ async function main() {
   if (options.error) { process.stderr.write(`wt-pilot-runner: ${options.error}\n${usage()}\n`); return 2 }
   if (!existsSync(options.dir)) { process.stderr.write(`wt-pilot-runner: --dir is not a directory: ${options.dir}\n`); return 2 }
   if (!existsSync(options.contract)) { process.stderr.write(`wt-pilot-runner: --contract does not exist: ${options.contract}\n`); return 2 }
-  if (options.cardFile && !existsSync(options.cardFile)) { process.stderr.write(`wt-pilot-runner: --card-file does not exist: ${options.cardFile}\n`); return 2 }
+  if (!existsSync(options.cardFile)) { process.stderr.write(`wt-pilot-runner: --card-file does not exist: ${options.cardFile}\n`); return 2 }
   try {
     const sdk = await import(require.resolve('@anthropic-ai/claude-agent-sdk'))
     const result = await runPilot(options, { query: sdk.query, resolvePilotModels })

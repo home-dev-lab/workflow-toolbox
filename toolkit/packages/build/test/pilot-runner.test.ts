@@ -26,14 +26,16 @@ function fixture() {
   const dir = join(root, 'worktree'); mkdirSync(join(dir, '.lane'), { recursive: true }); writeFileSync(join(dir, '.gitignore'), '.lane/\n.claude/reports/\n')
   spawnSync('git', ['init', '-q'], { cwd: dir })
   const contract = join(root, 'contract.md'); writeFileSync(contract, '# contract\n')
-  return { root, dir, contract }
+  const cardFile = join(root, 'card.md'); writeFileSync(cardFile, 'Route: LITE\nDoD: exercise the runner\n')
+  return { root, dir, contract, cardFile }
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 describe('SDK pilot runner', () => {
   it('parses required arguments and refuses absent card, bad timeout, and malformed profile env', () => {
     expect(parsePilotRunnerArgs(['--dir', '/tmp/a'])).toMatchObject({ error: 'missing required --card or --dir' })
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--timeout', '0'])).toMatchObject({ error: '--timeout must be a positive number of seconds' })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a'])).toMatchObject({ error: '--card-file is required: the route is derived from the card' })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--timeout', '0'])).toMatchObject({ error: '--timeout must be a positive number of seconds' })
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md'])).toMatchObject({ cardFile: '/tmp/card.md' })
     const f = fixture(); const profile = join(f.root, 'profile.json'); writeFileSync(profile, '{"env":{"X":3}}')
     expect(() => loadProfileEnv(profile)).toThrow('--profile-env env.X must be a string')
@@ -42,13 +44,13 @@ describe('SDK pilot runner', () => {
   })
 
   it('rejects the removed lane-silence option and omits it from usage', () => {
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a'])).not.toHaveProperty('laneSilence')
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--lane-silence', '3'])).toMatchObject({ error: 'unknown argument: --lane-silence' })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md'])).not.toHaveProperty('laneSilence')
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--lane-silence', '3'])).toMatchObject({ error: 'unknown argument: --lane-silence' })
     const result = spawnSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' })
     expect(result.status).toBe(0); expect(result.stdout).not.toContain('--lane-silence')
   })
 
-  it('places an arbiter card file verbatim in the first prompt without changing prompts that omit it', async () => {
+  it('places the required arbiter card file verbatim in the first prompt', async () => {
     const f = fixture(); const cardFile = join(f.root, 'card.md'); const card = '# Card title\n\nDefinition of done: ship it.\n'
     writeFileSync(cardFile, card)
     const prompts: string[] = []
@@ -61,9 +63,6 @@ describe('SDK pilot runner', () => {
     expect(prompts[0]).toContain(`## The card, verbatim\n\n${card}`)
     expect(prompts[0]).toContain('do not re-read the card from the board; the text above is the card')
 
-    const f2 = fixture()
-    await runPilot({ card: '186', dir: f2.dir, contract: f2.contract, mailbox: join(f2.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
-    expect(prompts[1]).toBe(`Pilot card 186 in ${f2.dir}. Launch executor lanes only through the lifecycle run tool and end your turn immediately after launch.`)
   })
 
   it('logs a timeout injection and counts it in the summary', async () => {
@@ -74,7 +73,7 @@ describe('SDK pilot runner', () => {
       const timeout = await prompt.next()
       expect(timeout.value.message.content).toContain('Runner timeout reached')
     })()
-    const result = await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, {
+    const result = await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, {
       query,
       resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
       now: () => calls++ === 0 ? 0 : 1001,
@@ -96,13 +95,25 @@ describe('SDK pilot runner', () => {
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       const next = await prompt.next(); if (!next.done) yielded.push(next.value.message.content)
     })()
-    const result = await runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, {
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, {
       query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), sleep: async () => {},
     })
     expect(yielded).toHaveLength(1)
     expect(result.summary.report_exists).toBe(true)
     expect(result.summary.awaiting_fidelity_receipt).toBe(true)
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'sdk-transcript.json'), 'utf8'))).toHaveLength(4)
+  })
+
+  it('refuses a correlated lifecycle refusal that merely contains the completion result', async () => {
+    const f = fixture()
+    const query = () => (async function* () {
+      yield initMessage()
+      writeFileSync(join(f.dir, '.lane', 'pilot-report.md'), '# refused\n')
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'lifecycle', name: lifecycleToolName('transition'), input: {} }] } }
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'lifecycle', content: `edge refused: report->awaiting_fidelity; missing commit (hook says ${AWAITING_FIDELITY_RESULT}): /x` }] } }
+    })()
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
+    expect(result).toMatchObject({ exitCode: 1, summary: { awaiting_fidelity_receipt: false, completed: false } })
   })
 
   it('completes from the real result of the lifecycle server registered in query options', async () => {
@@ -141,7 +152,7 @@ describe('SDK pilot runner', () => {
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       const next = await prompt.next(); if (!next.done) yielded.push(next.value.message.content)
     })()
-    const result = await runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 0.001, hard: false }, {
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 0.001, hard: false }, {
       query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), sleep: async () => {},
     })
     expect(yielded).toHaveLength(2)
@@ -156,7 +167,7 @@ describe('SDK pilot runner', () => {
       await prompt.next()
       yield { type: 'assistant', message: { content: [] } }
     })()
-    await expect(runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: noInit, resolvePilotModels: models, sleep: async () => {} }))
+    await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: noInit, resolvePilotModels: models, sleep: async () => {} }))
       .rejects.toThrow(/initialization receipt/)
   })
 
@@ -173,7 +184,7 @@ describe('SDK pilot runner', () => {
       yield initMessage()
       await prompt.next()
     })()
-    await expect(runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: late, resolvePilotModels: models, sleep: async () => {} }))
+    await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: late, resolvePilotModels: models, sleep: async () => {} }))
       .rejects.toThrow(/receipt never arrived/)
   })
 
@@ -185,7 +196,7 @@ describe('SDK pilot runner', () => {
       yield { ...initMessage(), tools: ['mcp__sdk-pilot-lifecycle__transition'], plugins: [] }
       await prompt.next()
     })()
-    await expect(runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: thin, resolvePilotModels: models, sleep: async () => {} }))
+    await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: thin, resolvePilotModels: models, sleep: async () => {} }))
       .rejects.toThrow(/missing plugins or lifecycle tools/)
   })
 
@@ -195,14 +206,14 @@ describe('SDK pilot runner', () => {
       yield { ...initMessage(), tools: ['mcp__sdk-pilot-lifecycle__transition', 'mcp__sdk-pilot-lifecycle__write_artifact'] }
       await prompt.next()
     })()
-    await expect(runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: thin, resolvePilotModels: models, sleep: async () => {} }))
+    await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: thin, resolvePilotModels: models, sleep: async () => {} }))
       .rejects.toThrow(/missing plugins or lifecycle tools/)
   })
 
   it('refuses startup when the retired lifecycle hook directory exists', async () => {
     const f = fixture()
     const oldHook = join(f.root, 'sdk-pilot-lifecycle'); mkdirSync(oldHook)
-    await expect(runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, {
+    await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, {
       query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models, oldLifecycleHook: oldHook,
     })).rejects.toThrow(/old lifecycle hook is still present/)
   })
@@ -214,14 +225,21 @@ describe('SDK pilot runner', () => {
       yield initMessage()
       await prompt.next()
     })()
-    await expect(runPilot({ card: '1', dir: stale.dir, contract: stale.contract, mailbox: join(stale.root, 'none.txt'), timeout: 2, hard: false }, { query: ok, resolvePilotModels: models, sleep: async () => {} }))
+    await expect(runPilot({ card: '1', cardFile: stale.cardFile, dir: stale.dir, contract: stale.contract, mailbox: join(stale.root, 'none.txt'), timeout: 2, hard: false }, { query: ok, resolvePilotModels: models, sleep: async () => {} }))
       .rejects.toThrow(/already exists/)
   })
 
   it('documents lifecycle-only lane delegation in the adopted contract', () => {
     const contract = readFileSync(join(ROOT, 'plugin/autonomy/PILOT-CONTRACT.md'), 'utf8')
+    const runner = readFileSync(join(ROOT, 'plugin/autonomy/PILOT-RUNNER.md'), 'utf8')
     expect(contract).toContain("run { kind: 'lane', phase, timeout }")
     expect(contract).toContain('You have no Bash, Write, or Edit.')
+    for (const tool of ['get_card', 'get_comments', 'add_comment', 'update_card', 'move_card', 'add_label_to_card']) {
+      expect(contract).toContain(`mcp__planka__${tool}`)
+      expect(runner).toContain(`mcp__planka__${tool}`)
+    }
+    expect(`${contract}\n${runner}`).not.toContain('Atrium')
+    expect(`${contract}\n${runner}`).not.toContain('--room')
   })
 
   it('keeps the adopted contract under 6 KB', () => {
@@ -234,7 +252,7 @@ describe('SDK pilot runner', () => {
     const f = fixture(); let options: QueryOptions | undefined
     const query = ({ options: received }: { options: QueryOptions }) => { options = received; return (async function* () {
       yield initMessage()})() }
-    await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }) })
+    await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }) })
     expect(options!.plugins.map((plugin) => plugin.path)).toEqual([expect.stringContaining('pilot-guard')])
     expect(options!.tools).toEqual(['Read', 'Glob', 'Grep'])
     expect(options!.mcpServers[LIFECYCLE_MCP_KEY]).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
@@ -242,7 +260,7 @@ describe('SDK pilot runner', () => {
 
   it('fails closed after an initialized stream ends without lifecycle completion', async () => {
     const f = fixture()
-    const result = await runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, { query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models })
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, { query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models })
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: expect.stringContaining('without awaiting_fidelity') } })
   })
 
@@ -260,5 +278,19 @@ describe('SDK pilot runner', () => {
     expect(lifecycleCanUseTool(f.dir, 'Glob', { pattern: 'src/**/*.ts' }).behavior).toBe('allow')
     expect(lifecycleCanUseTool(f.dir, 'Grep', { path: '.', glob: 'outside-link/*.ts' }).behavior).toBe('deny')
     expect(lifecycleCanUseTool(f.dir, 'Read', null).behavior).toBe('deny')
+  })
+
+  it('admits only the exact Planka contract through the real authorization seam', () => {
+    const f = fixture()
+    expect(lifecycleCanUseTool(f.dir, 'mcp__planka__get_card', {}).behavior).toBe('allow')
+    expect(lifecycleCanUseTool(f.dir, 'mcp__planka__delete_card', {}).behavior).toBe('deny')
+    expect(lifecycleCanUseTool(f.dir, 'mcp__plugin_atrium_atrium__speak', {}).behavior).toBe('deny')
+  })
+
+  it.each([['LITE', 'Route: LITE\nDoD: small\n'], ['FULL', 'Route: FULL\nDoD: risky\n']])('registers a lifecycle server routed %s from the required card', async (route, card) => {
+    const f = fixture(); writeFileSync(f.cardFile, card); let registered: { lifecycle: { route: string } } | undefined
+    const query = ({ options }: { options: { mcpServers: Record<string, unknown> } }) => { registered = options.mcpServers[LIFECYCLE_MCP_KEY] as typeof registered; return (async function* () { yield initMessage() })() }
+    await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, { query, resolvePilotModels: models })
+    expect(registered!.lifecycle.route).toBe(route)
   })
 })

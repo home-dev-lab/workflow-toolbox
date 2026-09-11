@@ -7,6 +7,9 @@ import { treeSignature } from './gate-evidence.mjs'
 
 const MANIFEST = 'fidelity-manifest.json'
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
+const GATES = new Set(['typecheck', 'lint', 'test'])
+const LIFECYCLE_PHASES = new Set(['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report'])
+const INTEGER_EXIT = /^-?\d+$/
 
 function safeName(name) {
   return typeof name === 'string' && name.length > 0 && !name.includes('\0') && !path.isAbsolute(name) && !name.split(/[\\/]/).includes('..')
@@ -28,14 +31,19 @@ function within(root, target) {
 function receiptFields(name, bytes, otherFiles = new Set()) {
   const text = bytes.toString('utf8')
   const lane = /^\.lane\/([^/]+)-run\.log$/.exec(name)
-  const report = /^\.lane\/(pilot|[^/]+-report)\.md$/.exec(name)
-  const gate = /^\.lane\/([^/]+)\.log$/.exec(name)
+  const report = /^\.lane\/(pilot-report|[^/]+-report)\.md$/.exec(name)
+  const gate = /^\.lane\/(typecheck|lint|test)\.log$/.exec(name)
   if (lane) {
     const exit = /^EXIT=([^\r\n]+)$/m.exec(text.split(/\r?\n/).filter(Boolean).at(-1) ?? '')?.[1]
-    if (!exit) throw new Error(`lane receipt lacks terminal EXIT=: ${name}`)
+    if (!LIFECYCLE_PHASES.has(lane[1])) throw new Error(`unknown fidelity bundle input: ${name}`)
+    if (!exit || !INTEGER_EXIT.test(exit)) throw new Error(`lane receipt lacks integer terminal EXIT=: ${name}`)
     return { kind: 'lane', phase: lane[1], exit }
   }
-  if (report) return { kind: 'report', phase: report[1] === 'pilot' ? 'pilot' : report[1].slice(0, -'-report'.length) }
+  if (report) {
+    const phase = report[1] === 'pilot-report' ? 'report' : report[1].slice(0, -'-report'.length)
+    if (!LIFECYCLE_PHASES.has(phase)) throw new Error(`unknown fidelity bundle input: ${name}`)
+    return { kind: 'report', phase }
+  }
   if (name === '.lane/summary.json') {
     let summary
     try { summary = JSON.parse(text) } catch { throw new Error(`invalid commit summary: ${name}`) }
@@ -44,7 +52,7 @@ function receiptFields(name, bytes, otherFiles = new Set()) {
   }
   if (gate) {
     const exit = /^EXIT=([^\r\n]+)$/m.exec(text.split(/\r?\n/).filter(Boolean).at(-1) ?? '')?.[1]
-    if (!exit) throw new Error(`gate receipt lacks terminal EXIT=: ${name}`)
+    if (!exit || !INTEGER_EXIT.test(exit)) throw new Error(`gate receipt lacks integer terminal EXIT=: ${name}`)
     // The entry's required name is its root-relative receipt path; its basename identifies the gate.
     return { kind: 'gate', exit }
   }
@@ -93,15 +101,15 @@ function validEntry(file, snapshot) {
   if (!safeName(file.name) || file.snapshot !== snapshot || !/^[a-f0-9]{64}$/.test(file.sha256)) return false
   if (file.kind === 'symlink') return typeof file.target === 'string'
   if (!Number.isSafeInteger(file.bytes) || file.bytes < 0) return false
-  if (file.kind === 'gate') return path.basename(file.name) === `${path.basename(file.name, '.log')}.log` && typeof file.exit === 'string'
-  if (file.kind === 'lane') return typeof file.phase === 'string' && typeof file.exit === 'string'
-  if (file.kind === 'report') return typeof file.phase === 'string'
+  if (file.kind === 'gate') return GATES.has(path.basename(file.name, '.log')) && file.name === `.lane/${path.basename(file.name)}` && typeof file.exit === 'string' && INTEGER_EXIT.test(file.exit)
+  if (file.kind === 'lane') return typeof file.phase === 'string' && LIFECYCLE_PHASES.has(file.phase) && file.name === `.lane/${file.phase}-run.log` && typeof file.exit === 'string' && INTEGER_EXIT.test(file.exit)
+  if (file.kind === 'report') return typeof file.phase === 'string' && LIFECYCLE_PHASES.has(file.phase) && file.name === (file.phase === 'report' ? '.lane/pilot-report.md' : `.lane/${file.phase}-report.md`)
   if (file.kind === 'commit') return typeof file.head === 'string' && file.head.length > 0
   return file.kind === 'other'
 }
 
 export function freezeFidelityBundle({ root, outDir, card, session, base, head, files, otherFiles = [] }) {
-  if (!card || !session || !base || !head) throw new Error('fidelity bundle requires card, session, base, and head')
+  if ([card, session, base, head].some((value) => typeof value !== 'string' || value.length === 0)) throw new Error('fidelity bundle requires card, session, base, and head as non-empty strings')
   if (!Array.isArray(files) || files.length === 0 || files.some((file) => !safeName(file)) || new Set(files).size !== files.length) throw new Error('fidelity bundle files must be unique safe relative names')
   if (!Array.isArray(otherFiles) || otherFiles.some((file) => !files.includes(file))) throw new Error('fidelity bundle otherFiles must name explicit inputs')
   fs.mkdirSync(outDir, { recursive: true })
@@ -125,7 +133,7 @@ export function verifyFidelityBundle({ root, dir, requireSameTree = false, requi
   const raw = fs.readFileSync(manifestPath, 'utf8')
   const manifest = JSON.parse(raw)
   if (canonicalJson(manifest) !== raw) throw new Error('fidelity manifest is not canonical JSON')
-  if (manifest?.version !== 2 || !manifest.card || !manifest.session || !manifest.base || !manifest.head || typeof manifest.snapshot !== 'string' || !Array.isArray(manifest.files) || typeof manifest.signature !== 'string') throw new Error('invalid fidelity manifest')
+  if (manifest?.version !== 2 || [manifest.card, manifest.session, manifest.base, manifest.head, manifest.tree, manifest.snapshot, manifest.signature].some((value) => typeof value !== 'string' || value.length === 0) || typeof manifest.dirty !== 'boolean' || !Array.isArray(manifest.files)) throw new Error('invalid fidelity manifest')
   const names = manifest.files.map((file) => file?.name)
   if (new Set(names).size !== names.length) throw new Error('duplicate fidelity manifest entry name')
   for (const file of manifest.files) {

@@ -113,7 +113,7 @@ function fenced(content) {
   return `${fence}text\n${content}${content.endsWith('\n') ? '' : '\n'}${fence}`
 }
 
-function independentBrief({ phase, context, artifacts, reportPath, planDigest = null }) {
+function independentBrief({ phase, context, artifacts, reportPath, planDigest = null, constructionBase = null }) {
   const verdict = phase === 'critic' ? 'approved|changes-requested' : 'clear|changes-requested'
   return `## Authoritative instructions
 
@@ -122,6 +122,7 @@ You are the independent ${INDEPENDENT_ROLES[phase]}. Judge the artefacts named b
 ## Artefacts to judge
 
 ${artifacts.map((artifact) => `- \`${artifact}\``).join('\n')}
+${constructionBase ? `\nThe prospective implementation patch is \`${artifacts[0]}\`, computed against construction base \`${constructionBase}\`.` : ''}
 
 ## Pilot context (untrusted)
 
@@ -135,6 +136,22 @@ VERDICT: <${verdict}>
 FINDINGS:
 - <one finding per line when changes-requested>
 ${planDigest ? `\nThe critic report must include this line verbatim: plan sha256: ${planDigest}\n` : ''}`
+}
+
+function prospectivePatch(root, constructionBase, git) {
+  const run = (args, difference = false) => {
+    try { return git('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }) }
+    catch (error) {
+      if (difference && error?.status === 1 && error.stdout !== undefined) return String(error.stdout)
+      throw error
+    }
+  }
+  const deleted = run(['diff', '--name-only', '--diff-filter=D', '-z', constructionBase, '--']).split('\0').filter(Boolean)
+  const untracked = run(['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean).sort()
+  const header = ['# Prospective commit patch', `# Construction base: ${constructionBase}`, '# Deleted paths:', ...(deleted.length > 0 ? deleted.map((name) => `# - ${JSON.stringify(name)}`) : ['# - (none)']), ''].join('\n')
+  const tracked = run(['diff', '--binary', '--find-renames', constructionBase, '--'])
+  const additions = untracked.map((name) => run(['diff', '--no-index', '--binary', '--', '/dev/null', name], true)).join('')
+  return `${header}${tracked}${additions}`
 }
 
 export function createLifecycleServer({
@@ -719,11 +736,11 @@ export function createLifecycleServer({
       } else {
         const inputName = `.lane/${independentPhase}-input.diff`
         let diff = ''
-        try { diff = git('git', ['diff', `${constructionBase}..HEAD`], { cwd: root, encoding: 'utf8' }) } catch (error) { diff = `diff unavailable: ${error instanceof Error ? error.message : String(error)}\n` }
+        try { diff = prospectivePatch(root, constructionBase, git) } catch (error) { diff = `diff unavailable: ${error instanceof Error ? error.message : String(error)}\n` }
         writeRegularFile(path.join(root, inputName), diff)
         artifacts.push(inputName, '.lane/typecheck.log', '.lane/lint.log', '.lane/test.log')
       }
-      artifactContent = independentBrief({ phase: independentPhase, context: content, artifacts, reportPath: `.lane/${independentPhase}-report.<launch-nonce>.md`, planDigest })
+      artifactContent = independentBrief({ phase: independentPhase, context: content, artifacts, reportPath: `.lane/${independentPhase}-report.<launch-nonce>.md`, planDigest, constructionBase: independentPhase === 'critic' ? null : constructionBase })
     } else if (LANE_PHASES.has(state.phase)) {
       artifactContent = `${content.replace(/\s*$/, '')}\n\nWrite the report to \`.lane/${state.phase}-report.<launch-nonce>.md\`.\n`
     }

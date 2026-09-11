@@ -1,10 +1,14 @@
 # SDK pilot runner
 
-`node plugin/bin/wt-pilot-runner.mjs --card <id> --dir <worktree>` runs the pilot with `query()`
+`node plugin/bin/wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <card.md>` runs the pilot with `query()`
 and `settingSources: []`. Its SDK surface is Read, Glob, and Grep, confined to the worktree by
 real-path `canUseTool`, plus the local `pilot-guard` plugin, the Planka HTTP MCP, and the
 in-process `sdk-pilot-lifecycle` MCP server. The lifecycle server exposes `transition`,
 `write_artifact`, and `run`; it owns phases, artifacts, lanes, gates, and the report-edge commit.
+The only admitted Planka tools are `mcp__planka__get_card`, `mcp__planka__get_comments`,
+`mcp__planka__add_comment`, `mcp__planka__update_card`, `mcp__planka__move_card`, and
+`mcp__planka__add_label_to_card`; every other Planka operation is denied. Owner input arrives only
+through the runner mailbox and owner-facing output only through the pilot report.
 
 ## Route and phases
 
@@ -39,8 +43,11 @@ Symlinks are refused and `.lane` ancestors are re-checked before operations. `.l
 and excluded from the tree signature.
 
 Critic, review, and refutation briefs begin with server-owned independent-review instructions. The
-server names the plan/card or a base-to-HEAD diff plus gate receipts, writes review/refutation diffs
-to `.lane/<phase>-input.diff`, and fences pilot prose afterward as untrusted context. Glob and Grep
+server names the plan/card or the prospective working-tree patch against the construction base plus
+gate receipts, writes review/refutation patches to `.lane/<phase>-input.diff`, names that path and base
+in the brief, and fences pilot prose afterward as untrusted context. The patch includes staged and
+unstaged tracked changes, deletions, modes, symlinks, renames, binary changes, and non-ignored
+untracked files without changing the real index. Glob and Grep
 patterns with separators are confined by real-path checking their non-glob prefix, including through
 relative symlinks. Lifecycle implementation, receipts/launch, and report-edge transaction code live
 in separate modules behind the unchanged public server export.
@@ -55,13 +62,14 @@ toolkit's `pnpm typecheck`, `pnpm lint`, or `pnpm test`.
 
 ## Completion and CLI
 
-The runner completes only after the lifecycle result `accepted phase=awaiting_fidelity` and
+The runner completes only after the trimmed correlated lifecycle result equals
+`accepted phase=awaiting_fidelity` and
 `.lane/pilot-report.md` both exist. A stream ending first exits 1 and writes
 `summary.completed=false`. `.lane/usage.json`, `.lane/summary.json`, and
 `.lane/sdk-transcript.json` record the run.
 
-Flags are `--card`, `--dir`, `--card-file`, `--profile-env`, `--contract`, `--hard`, `--mailbox`,
-`--room`, and `--timeout`; `--lane-silence` is not accepted. The runner uses Node path semantics on
+`--card`, `--dir`, and `--card-file` are required. Optional flags are `--profile-env`, `--contract`,
+`--hard`, `--mailbox`, and `--timeout`; `--lane-silence` is not accepted. The runner uses Node path semantics on
 Linux and macOS, resolves `--dir` to an absolute path, and applies real-path containment before
 authorizing reads.
 
@@ -70,7 +78,9 @@ authorizing reads.
 Main freezes and verifies evidence with `wt-pilot-fidelity.mjs`. Run `freeze` with the worktree,
 bundle directory, card, session, base, head, and lane files; then run `verify --require-same-tree
 --require-head`. The v2 manifest has typed entries, a snapshot id, and a length-prefixed signature;
-freeze and verify reject unknown kinds, extra fields, duplicate names, incoherent commit heads,
-unsafe containment, and malformed evidence. Unknown files require explicit `--other-file` input.
+freeze and verify admit only `typecheck`, `lint`, and `test` gate logs, lifecycle-enum lane/report
+phases, and integer `EXIT=` values; they also reject unknown kinds, malformed top-level scalars,
+extra fields, duplicate names, incoherent commit heads, unsafe containment, and malformed evidence.
+Every unmatched file, including another `.lane/*.log`, requires explicit `--other-file` input.
 `--require-clean-tree` remains a deprecated alias. Verification proves frozen bytes and requested
 tree/HEAD identity only, never authorship or prose truth.

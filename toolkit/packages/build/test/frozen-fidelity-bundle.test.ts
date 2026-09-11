@@ -74,6 +74,35 @@ it('refuses unknown freeze inputs unless explicitly classified as other', () => 
   expect(freezeFidelityBundle({ root, outDir: accepted, card: '186', session: 'sdk-1', base: 'base', head: manifest.head, files: ['.lane/notes.txt'], otherFiles: ['.lane/notes.txt'] }).files[0].kind).toBe('other')
 })
 
+it('H5 semantic lock: refuses custom gate logs at freeze unless explicitly classified as other', () => {
+  const { root, manifest } = fixture(); writeFileSync(join(root, '.lane', 'custom.log'), 'custom\nEXIT=0\n')
+  const refused = mkdtempSync(join(tmpdir(), 'wt-fidelity-custom-refused-')); roots.push(refused)
+  expect(() => freezeFidelityBundle({ root, outDir: refused, card: '186', session: 'sdk-1', base: 'base', head: manifest.head, files: ['.lane/custom.log'] })).toThrow('unknown fidelity bundle input')
+  const accepted = mkdtempSync(join(tmpdir(), 'wt-fidelity-custom-other-')); roots.push(accepted)
+  expect(freezeFidelityBundle({ root, outDir: accepted, card: '186', session: 'sdk-1', base: 'base', head: manifest.head, files: ['.lane/custom.log'], otherFiles: ['.lane/custom.log'] }).files[0].kind).toBe('other')
+})
+
+it.each([
+  ['custom gate name', (file: Record<string, unknown>) => { file.name = '.lane/custom.log' }],
+  ['non-integer exit', (file: Record<string, unknown>) => { file.exit = 'ok' }],
+])('H5 semantic lock: verifier refuses %s', (_name, mutate) => {
+  const { root, bundle } = fixture(); const manifest = JSON.parse(readFileSync(join(bundle, 'fidelity-manifest.json'), 'utf8'))
+  mutate(manifest.files.find((file: { kind: string }) => file.kind === 'gate')); writeManifest(bundle, manifest)
+  expect(() => verifyFidelityBundle({ root, dir: bundle })).toThrow('invalid fidelity manifest entry')
+})
+
+it('H5 semantic lock: verifier refuses a phase outside the lifecycle enum', () => {
+  const { root, bundle } = fixture(); const manifest = JSON.parse(readFileSync(join(bundle, 'fidelity-manifest.json'), 'utf8'))
+  manifest.files.find((file: { kind: string }) => file.kind === 'lane').phase = 'banana'; writeManifest(bundle, manifest)
+  expect(() => verifyFidelityBundle({ root, dir: bundle })).toThrow('invalid fidelity manifest entry')
+})
+
+it('H5 semantic lock: verifier checks top-level scalar types', () => {
+  const { root, bundle } = fixture(); const manifest = JSON.parse(readFileSync(join(bundle, 'fidelity-manifest.json'), 'utf8'))
+  manifest.card = { id: '186' }; writeManifest(bundle, manifest)
+  expect(() => verifyFidelityBundle({ root, dir: bundle })).toThrow('invalid fidelity manifest')
+})
+
 it('B2 lock: refuses an entry from another snapshot', () => {
   const { root, bundle } = fixture()
   const manifest = JSON.parse(readFileSync(join(bundle, 'fidelity-manifest.json'), 'utf8'))
@@ -89,7 +118,7 @@ it('B3 lock: refuses swapped names even when the manifest remains canonical', ()
   manifest.files[0].name = manifest.files[1].name
   manifest.files[1].name = first
   writeManifest(bundle, manifest)
-  expect(() => verifyFidelityBundle({ root, dir: bundle })).toThrow('signature mismatch')
+  expect(() => verifyFidelityBundle({ root, dir: bundle })).toThrow('invalid fidelity manifest entry')
 })
 
 it('B4 lock: records a contained link and refuses an escaping input link without reading it', () => {
