@@ -57,7 +57,8 @@ partial. A refusal names missing evidence: produce that evidence, do not retry t
 Write `pilot-report` through `write_artifact` with `## Implemented`, `## Verification`,
 `## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`; then transition report. Keep
 the exact line `Partial: <reason>` in a partial run's report; omit `Partial:` on a full run. The owner
-decides how to proceed from a completed partial run. Keep
+decides how to proceed from a completed partial run. The report edge re-hashes the report you wrote
+(a report not written through write_artifact this run, or changed since, is refused). Keep
 working until that transition returns the awaiting-fidelity receipt, then write nothing more and end
 the turn: the runner commits, archives `.lane/`, and stops. An earlier end of turn is re-prompted at
 most three consecutive times without lifecycle progress; the third unproductive turn fails the run. Never push, publish, merge, force, delete,

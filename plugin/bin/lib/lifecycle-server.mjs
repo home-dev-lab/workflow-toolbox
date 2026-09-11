@@ -246,6 +246,7 @@ export function createLifecycleServer({
   let state = {
     phase: 'discovery',
     partial: null,
+    pilotReportDigest: null,
     planRound: 0,
     reviewRound: 0,
     handled: new Map(),
@@ -522,9 +523,19 @@ export function createLifecycleServer({
               : 'harden'
       }
     } else if (state.phase === 'report') {
-      if (!readRegularFile(path.join(laneDir, 'pilot-report.md'))) {
-        return refusal('report->awaiting_fidelity', 'pilot report', path.join(laneDir, 'pilot-report.md'))
+      const pilotReportPath = path.join(laneDir, 'pilot-report.md')
+      const pilotReport = readRegularFile(pilotReportPath)
+      if (!pilotReport) {
+        return refusal('report->awaiting_fidelity', 'pilot report', pilotReportPath)
       }
+      if (!state.pilotReportDigest) {
+        return refusal('report->awaiting_fidelity', 'pilot report registered this run (write it with write_artifact)', pilotReportPath)
+      }
+      if (sha256(pilotReport) !== state.pilotReportDigest) {
+        return refusal('report->awaiting_fidelity', 'pilot report unchanged since write_artifact', pilotReportPath)
+      }
+      const reportProblem = pilotReportProblem(pilotReport)
+      if (reportProblem) return refusal('report->awaiting_fidelity', reportProblem, pilotReportPath)
       const receipt = snapshotEvidence('report->awaiting_fidelity')
       if (receipt) return receipt
       try {
@@ -823,14 +834,8 @@ export function createLifecycleServer({
       }
     }
     if (kind === 'pilot-report') {
-      const partialLine = state.partial ? `Partial: ${state.partial.reason}` : null
-      const lines = content.split(/\r?\n/)
-      if (partialLine && !lines.includes(partialLine)) {
-        return `pilot-report: partial run, add the line "${partialLine}"`
-      }
-      if (!partialLine && lines.some((line) => line.startsWith('Partial:'))) {
-        return 'pilot-report: this run is not partial'
-      }
+      const problem = pilotReportProblem(content)
+      if (problem) return problem
     }
     const briefPhase = kind === 'brief' ? 'tdd' : kind.replace('-brief', '')
     let artifactContent = content
@@ -849,7 +854,22 @@ export function createLifecycleServer({
       artifactContent,
     )
     if (LANE_PHASES.has(briefPhase)) laneBriefContexts.set(briefPhase, content)
+    if (kind === 'pilot-report') state.pilotReportDigest = sha256(artifactContent)
     return `wrote ${kind}`
+  }
+  // The pilot report's partial/full contract, checked on the exact bytes given: at write_artifact
+  // and again at the report edge on the file about to be committed (Sol round 14: a stale or
+  // edited pilot-report.md used to satisfy the edge by merely existing).
+  function pilotReportProblem(content) {
+    const partialLine = state.partial ? `Partial: ${state.partial.reason}` : null
+    const lines = content.split(/\r?\n/)
+    if (partialLine && !lines.includes(partialLine)) {
+      return `pilot-report: partial run, add the line "${partialLine}"`
+    }
+    if (!partialLine && lines.some((line) => line.startsWith('Partial:'))) {
+      return 'pilot-report: this run is not partial'
+    }
+    return null
   }
   async function queued(work) {
     const prior = serial

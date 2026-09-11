@@ -214,6 +214,8 @@ describe('real SDK lifecycle server FULL sequence', () => {
     ['harden receipt missing is refused', async () => hardenReceipt(null), /lane receipt unchanged/],
     ['report edge with missing pilot-report is refused', async () => reportEdge(false, false), /missing pilot report/],
     ['report edge with a gate digest changed after verify is refused', async () => reportEdge(true, true), /gate digest changed/],
+    ['report edge with a stale pilot-report never registered this run is refused (Sol round 14)', async () => reportEdge(false, false, 'stale'), /pilot report registered this run/],
+    ['report edge with a pilot-report modified after write_artifact is refused (Sol round 14)', async () => reportEdge(true, false, 'modified'), /pilot report unchanged since write_artifact/],
     ['spent planRound bound', criticBound, /^accepted phase=report \(round bound reached: partial run, plan not approved after 3 critic rounds\)$/],
     ['spent reviewRound bound', reviewBound, /^accepted phase=report \(round bound reached: partial run, review still requests changes after 3 harden rounds\)$/],
     ['verdict and outcome mismatch', async () => reviewEdge('clear', 0, 'changes-requested'), /outcome does not match the lane report/],
@@ -340,10 +342,12 @@ async function hardenReceipt(exit: number | null) {
   if (exit !== null) { edgeConfig({ harden: { exit } }); await lifecycle.run({ kind: 'lane', phase: 'harden', timeout: 1 }) }
   return lifecycle.transition({ phase: 'harden', tool_use_id: `harden-${exit ?? 'missing'}` })
 }
-async function reportEdge(writeReport: boolean, changeGate: boolean) {
+async function reportEdge(writeReport: boolean, changeGate: boolean, tamper: 'stale' | 'modified' | null = null) {
   const lifecycle = liteLifecycle()
   await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' }); await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })
   if (writeReport) await lifecycle.artifact({ kind: 'pilot-report', content: '# report\n' })
+  if (tamper === 'stale') writeFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), '# left by an earlier run\n')
+  if (tamper === 'modified') writeFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), '# report\nedited after write_artifact\n')
   if (changeGate) writeFileSync(join(lifecycle.root, '.lane', 'test.log'), 'changed\nEXIT=0\n')
   return lifecycle.transition({ phase: 'report', tool_use_id: 'report' })
 }

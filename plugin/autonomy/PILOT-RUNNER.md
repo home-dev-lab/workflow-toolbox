@@ -76,7 +76,9 @@ process that creates its own session escapes the lane process group and remains 
 
 The runner completes only after the trimmed correlated lifecycle result equals
 `accepted phase=awaiting_fidelity` and
-`.lane/pilot-report.md` both exist. When a pilot turn ends first, the runner reads the current phase
+`.lane/pilot-report.md` both exist; the report edge accepts only the pilot report registered by
+`write_artifact` in this run, re-hashed on the bytes committed, with the `Partial:` contract re-checked
+there. When a pilot turn ends first, the runner reads the current phase
 from the in-process lifecycle server and injects a continuation prompt naming that phase and its next
 required work. A new successful lifecycle result resets the budget; after three consecutive
 unproductive end turns the prompt stream closes, the runner exits 1, and `summary.json` records

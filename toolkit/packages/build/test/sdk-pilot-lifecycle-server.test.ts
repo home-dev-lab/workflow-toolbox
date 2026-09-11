@@ -169,8 +169,8 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' }))).toBe('accepted phase=report')
     const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
     expect(evidence.verify_snapshot).toMatchObject({ tree: treeSignature(lifecycle.root) })
+    await lifecycle.artifact({ kind: 'pilot-report', content: '# report\n' })
     writeFileSync(join(lifecycle.root, '.lane', 'test.log'), 'gate\nEXIT=0\nchanged\n')
-    writeFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), '# report\n')
     await expect(text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' })))
       .resolves.toMatch(/missing gate digest changed .*?[a-f0-9]{64}.*[a-f0-9]{64}.*test\.log/)
   })
@@ -713,7 +713,7 @@ async function lifecycleReadyForReport(options: Record<string, unknown> = {}) {
   await lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' })
   await writeGates(lifecycle)
   await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' })
-  writeFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), '# report\n')
+  await lifecycle.artifact({ kind: 'pilot-report', content: '# report\n' })
   return lifecycle
 }
 async function writeGates(lifecycle: ReturnType<typeof testLifecycle>, overrides: Record<string, { exit?: string, mtime?: number }> = {}) {
