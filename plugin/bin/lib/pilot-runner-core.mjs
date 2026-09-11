@@ -6,6 +6,18 @@ import { deriveRoute } from './route-from-card.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
+const MAX_UNPRODUCTIVE_TURNS = 3
+const NEXT_BY_PHASE = {
+  discovery: 'transition discovery using the frozen route',
+  plan: 'write the plan, then transition plan',
+  critic: 'write the critic brief, run the critic lane, then transition critic',
+  tdd: 'write the tdd brief, run the tdd lane, then transition tdd',
+  verify: 'run the three gates, then transition verify',
+  review: 'write the review brief, run the review lane, then transition review',
+  refutation: 'write the refutation brief, run the refutation lane, then transition refutation',
+  harden: 'write the harden brief, run the harden lane, then transition harden',
+  report: 'write the pilot report, then transition report',
+}
 const PLANKA_TOOLS = new Set([
   'mcp__planka__get_card',
   'mcp__planka__get_comments',
@@ -121,9 +133,14 @@ export async function runPilot(options, dependencies) {
   let completed = false
   let injectedTurns = 0
   let silenceInjections = 0
+  let pendingTurnEnds = 0
+  let consecutiveContinuations = 0
+  let acceptedLifecycleResults = 0
+  let acceptedAtLastContinuation = 0
+  let incompleteReason = null
   let longestToolCallMs = 0
   const startedTools = new Map()
-  const lifecycleCalls = new Set()
+  const lifecycleCalls = new Map()
   let awaitingFidelityReceipt = false
   let initReceiptSeen = false
   const pluginRoot = resolve(dirname(new URL(import.meta.url).pathname), '../..')
@@ -140,10 +157,26 @@ export async function runPilot(options, dependencies) {
   const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, models: { lane: 'openai/gpt-5.6-terra', review: 'openai/gpt-5.6-sol' }, cardId: options.card, sessionTag: `${options.card}-${started}`, ...lifecycleOptions })
 
   async function* prompt() {
-    const standing = `Pilot card ${options.card} in ${options.dir}. Launch executor lanes only through the lifecycle run tool and end your turn immediately after launch.`
+    const standing = `Pilot card ${options.card} in ${options.dir}. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
     yield { type: 'user', message: { role: 'user', content: `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card` } }
     while (!completed && now() - started < options.timeout * 1000) {
       if (awaitingFidelityReceipt && exists(report)) { completed = true; return }
+      if (pendingTurnEnds > 0) {
+        pendingTurnEnds -= 1
+        if (acceptedLifecycleResults > acceptedAtLastContinuation) consecutiveContinuations = 0
+        consecutiveContinuations += 1
+        acceptedAtLastContinuation = acceptedLifecycleResults
+        const phase = lifecycleServer.state().phase
+        const content = `The run is not complete: current phase ${phase}; next: ${NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'}. Continue.`
+        injectedTurns += 1
+        log(`injected: continuation ${content}`)
+        if (consecutiveContinuations === MAX_UNPRODUCTIVE_TURNS) {
+          incompleteReason = `pilot ended its turn ${MAX_UNPRODUCTIVE_TURNS} times without progress`
+        }
+        yield { type: 'user', message: { role: 'user', content } }
+        if (incompleteReason) return
+        continue
+      }
       const lines = exists(options.mailbox) ? readFile(options.mailbox, 'utf8').split(/\r?\n/).filter(Boolean) : []
       if (lines.length > mailboxLines) {
         const content = `Message from the owner: ${lines[mailboxLines++]}`
@@ -195,7 +228,7 @@ export async function runPilot(options, dependencies) {
         tools.push(item.name)
         turnTools.push(item.name)
           if (item.id) startedTools.set(item.id, now())
-          if (item.id && item.name === lifecycleToolName('transition')) lifecycleCalls.add(item.id)
+          if (item.id && ['transition', 'write_artifact', 'run'].map(lifecycleToolName).includes(item.name)) lifecycleCalls.set(item.id, item.name)
       }
         if (item.type === 'tool_result' && item.tool_use_id && startedTools.has(item.tool_use_id)) {
         longestToolCallMs = Math.max(longestToolCallMs, now() - startedTools.get(item.tool_use_id))
@@ -204,7 +237,10 @@ export async function runPilot(options, dependencies) {
         if (item.type === 'tool_result' && lifecycleCalls.has(item.tool_use_id)) {
           const lifecycleResult = textFrom(item.content)
           log(`lifecycle: ${lifecycleResult}`)
-          if (lifecycleResult.trim() === AWAITING_FIDELITY_RESULT) awaitingFidelityReceipt = true
+          const lifecycleName = lifecycleCalls.get(item.tool_use_id)
+          if (/^(?:accepted phase=|wrote |lane \S+ EXIT=0$|gate \S+ EXIT=0$)/.test(lifecycleResult.trim())) acceptedLifecycleResults += 1
+          if (lifecycleName === lifecycleToolName('transition') && lifecycleResult.trim() === AWAITING_FIDELITY_RESULT) awaitingFidelityReceipt = true
+          lifecycleCalls.delete(item.tool_use_id)
         }
     }
     if (message.type === 'result') {
@@ -212,6 +248,7 @@ export async function runPilot(options, dependencies) {
       turns.push({ ...usage, tool_names: [...new Set(turnTools)] })
       turnTools = []
       for (const key of Object.keys(totals)) totals[key] += usage[key]
+      if (!completed) pendingTurnEnds += 1
     }
   }
   // B4: returning normally here made the runner fail-open — a stream that ended before the pilot
@@ -222,7 +259,7 @@ export async function runPilot(options, dependencies) {
   let lifecycleSummary = {}
   try { lifecycleSummary = JSON.parse(readFile(summaryPath, 'utf8')) } catch { /* no transition reached the summary yet */ }
   const completedNormally = awaitingFidelityReceipt && exists(report)
-  const summary = { ...lifecycleSummary, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : 'stream ended without awaiting_fidelity lifecycle receipt' }
+  const summary = { ...lifecycleSummary, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
   writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)

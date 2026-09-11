@@ -10,14 +10,14 @@ complete allow-list and worktree confinement on every tool request; all other to
 
 ## Lifecycle tools
 
-Use `write_artifact` only for its phase-bound kinds: `plan` (plan), `critic-brief` (plan), `brief`
+Use `write_artifact` only for its phase-bound kinds: `plan` (plan), `critic-brief` (critic), `brief`
 (tdd), `review-brief` (review), `refutation-brief` (refutation), `harden-brief` (harden), and
 `pilot-report` (report). Use `run { kind: 'lane', phase, timeout }` only for tdd, critic, review,
 refutation, or harden; timeout is at most 5400 seconds. Use `run { kind: 'gate', name }` only for
 `typecheck`, `lint`, or `test`. Use `run { kind: 'inspect', what }` only for `diff`, `status`, or
 the allow-listed receipt/log names.
 
-Every lane phase must first receive its brief through `write_artifact`; at launch the server
+Every lane phase follows the same order: write its brief, run the lane, then transition. At launch the server
 exclusively recreates canonical pilot-readable copies and launches from a read-only runner-owned snapshot outside the worktree, so later disk modifications cannot replace launch inputs.
 
 For a critic, review, or refutation lane, `content` is context only. The server writes the
@@ -54,8 +54,10 @@ names missing evidence: produce that evidence, do not retry the denied call.
 ## Completion and boundaries
 
 Write `pilot-report` through `write_artifact` with `## Implemented`, `## Verification`,
-`## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`; then transition report and end
-the turn: the runner commits, archives `.lane/`, and stops. Never push, publish, merge, force, delete,
+`## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`; then transition report. Keep
+working until that transition returns the awaiting-fidelity receipt, then write nothing more and end
+the turn: the runner commits, archives `.lane/`, and stops. An earlier end of turn is re-prompted at
+most three consecutive times without lifecycle progress; the third unproductive turn fails the run. Never push, publish, merge, force, delete,
 or retry a denied call; `pilot-guard` enforces those boundaries. Print no secrets or environment
 variables. Owner messages arrive only through the runner's mailbox. Communicate back to the owner
 only through the pilot report; Planka is for tracked-card state, not owner messaging.

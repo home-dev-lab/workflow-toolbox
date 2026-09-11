@@ -19,7 +19,7 @@ const LANE_PHASES = new Set(['tdd', 'critic', 'review', 'refutation', 'harden'])
 const GATES = new Set(['typecheck', 'lint', 'test'])
 const ARTIFACTS = {
   plan: ['plan', 'plan.md'],
-  'critic-brief': ['plan', 'critic-brief.md'],
+  'critic-brief': ['critic', 'critic-brief.md'],
   brief: ['tdd', 'tdd-brief.md'],
   'review-brief': ['review', 'review-brief.md'],
   'refutation-brief': ['refutation', 'refutation-brief.md'],
@@ -796,7 +796,7 @@ export function createLifecycleServer({
       return refusal(`${state.phase}->next`, 'known artifact kind', laneDir)
     }
     if (state.phase !== spec[0]) {
-      return refusal(`${state.phase}->next`, `${kind} in phase ${spec[0]}`, path.join(laneDir, spec[1]))
+      return refusal(`${state.phase}->next`, `${kind} in phase ${state.phase}: write it in phase ${spec[0]}`, path.join(laneDir, spec[1]))
     }
     if (kind === 'critic-brief' && !readRegularFile(path.join(laneDir, 'plan.md'))) {
       return refusal('plan->critic', 'plan artifact', path.join(laneDir, 'plan.md'))
@@ -900,5 +900,6 @@ export function createLifecycleServer({
     ],
   })
   Object.defineProperty(server, 'lifecycle', { value: lifecycle })
+  Object.defineProperty(server, 'state', { value: () => Object.freeze({ phase: state.phase }) })
   return server
 }

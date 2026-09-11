@@ -47,6 +47,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   runner now requires `--card-file`, exposes only the exact documented Planka operations, uses
   mailbox-in/report-out owner communication, and supplies independent review with the prospective
   staged, unstaged, and untracked working-tree patch against the construction base.
+- SDK pilot runs inject phase-specific continuation prompts when a pilot ends a turn before
+  awaiting-fidelity, failing after three consecutive end turns without successful lifecycle progress.
+- SDK pilot `critic-brief` artifacts are bound to the critic phase, matching every other lane brief's
+  write-brief, run-lane, transition order while retaining the plan digest requirement.
 
 ### Fixed
 - `wt-run-gate` signatures now invalidate records for content, deletion, mode, type, and symlink-target

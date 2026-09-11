@@ -76,7 +76,12 @@ process that creates its own session escapes the lane process group and remains 
 
 The runner completes only after the trimmed correlated lifecycle result equals
 `accepted phase=awaiting_fidelity` and
-`.lane/pilot-report.md` both exist. A stream ending first exits 1 and writes
+`.lane/pilot-report.md` both exist. When a pilot turn ends first, the runner reads the current phase
+from the in-process lifecycle server and injects a continuation prompt naming that phase and its next
+required work. A new successful lifecycle result resets the budget; after three consecutive
+unproductive end turns the prompt stream closes, the runner exits 1, and `summary.json` records
+`completed:false`, `injected_turns:3`, and reason
+`pilot ended its turn 3 times without progress`. Any other stream ending first also exits 1 and writes
 `summary.completed=false`. `.lane/usage.json`, `.lane/summary.json`, and
 `.lane/sdk-transcript.json` record the run.
 

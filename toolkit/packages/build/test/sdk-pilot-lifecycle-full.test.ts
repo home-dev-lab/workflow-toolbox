@@ -120,13 +120,13 @@ describe('real SDK lifecycle server FULL sequence', () => {
     const lifecycle = fullLifecycle()
     expect(await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })).toBe('accepted phase=plan')
     expect(await lifecycle.artifact({ kind: 'plan', content: plan })).toBe('wrote plan')
-    expect(await lifecycle.artifact({ kind: 'critic-brief', content: 'critic' })).toBe('wrote critic-brief')
     expect(await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-1' })).toBe('accepted phase=critic')
+    expect(await lifecycle.artifact({ kind: 'critic-brief', content: 'critic' })).toBe('wrote critic-brief')
     expect(await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })).toBe('lane critic EXIT=0')
     expect(await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: 'critic-1' })).toBe('accepted phase=plan')
     expect(await lifecycle.artifact({ kind: 'plan', content: plan })).toBe('wrote plan')
-    expect(await lifecycle.artifact({ kind: 'critic-brief', content: 'critic again' })).toBe('wrote critic-brief')
     expect(await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-2' })).toBe('accepted phase=critic')
+    expect(await lifecycle.artifact({ kind: 'critic-brief', content: 'critic again' })).toBe('wrote critic-brief')
     await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
     expect(await lifecycle.transition({ phase: 'critic', outcome: 'approved', tool_use_id: 'critic-2' })).toBe('accepted phase=tdd')
     expect(await lifecycle.artifact({ kind: 'brief', content: plan })).toBe('wrote brief')
@@ -175,9 +175,19 @@ describe('real SDK lifecycle server FULL sequence', () => {
     ['report without a VERDICT block', async () => reviewEdge('clear', 0, 'clear', undefined, true), /VERDICT block/],
     ['transition replay same shape is idempotent while a changed shape is refused', async () => { const lifecycle = liteLifecycle(); const event = { phase: 'discovery', tool_use_id: 'same' }; const first = await lifecycle.transition(event); const replay = await lifecycle.transition(event); const changed = await lifecycle.transition({ ...event, route: 'LITE' }); expect(replay).toBe(first); return `${replay}\n${changed}` }, /accepted phase=tdd[\s\S]*unique tool_use_id/],
     ['run inspect log name outside the allow-list', async () => liteLifecycle().run({ kind: 'inspect', what: 'log', name: 'outside.log' }), /log name/],
-    ['write_artifact kind outside its phase', async () => liteLifecycle().artifact({ kind: 'pilot-report', content: 'nope' }), /pilot-report in phase report/],
+    ['write_artifact kind outside its phase', async () => liteLifecycle().artifact({ kind: 'pilot-report', content: 'nope' }), /pilot-report in phase discovery: write it in phase report/],
   ])('%s', async (_name, exercise, expected) => {
     expect(await exercise()).toMatch(expected)
+  })
+
+  it('binds the critic brief to critic and admits the real FULL-run order', async () => {
+    const lifecycle = fullLifecycle(); await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })
+    await lifecycle.artifact({ kind: 'plan', content: plan })
+    expect(await lifecycle.artifact({ kind: 'critic-brief', content: 'too early' })).toContain('critic-brief in phase plan: write it in phase critic')
+    expect(await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })).toBe('accepted phase=critic')
+    expect(await lifecycle.artifact({ kind: 'critic-brief', content: 'critic' })).toBe('wrote critic-brief')
+    expect(await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })).toBe('lane critic EXIT=0')
+    expect(await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: 'critic' })).toBe('accepted phase=plan')
   })
 })
 
@@ -229,7 +239,7 @@ function edgeConfig(config: Record<string, unknown>) { process.env.WT_EDGE_CONFI
 async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>) {
   edgeConfig({ critic: { verdict: 'approved' } })
   await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })
-  await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 }); await lifecycle.transition({ phase: 'critic', outcome: 'approved', tool_use_id: 'critic' })
+  await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 }); await lifecycle.transition({ phase: 'critic', outcome: 'approved', tool_use_id: 'critic' })
   await lifecycle.artifact({ kind: 'brief', content: plan }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' })
   await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })
 }
@@ -243,7 +253,7 @@ async function criticBound() {
   const lifecycle = fullLifecycle(); edgeConfig({ critic: { verdict: 'changes-requested', findings: ['tighten the proof'] } })
   for (let round = 1; round <= 4; round += 1) {
     await lifecycle.transition({ phase: round === 1 ? 'discovery' : 'plan', tool_use_id: `start-${round}` })
-    await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.transition({ phase: 'plan', tool_use_id: `plan-${round}` }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: `plan-${round}` }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
     const result = await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: `critic-${round}` })
     if (round === 4) return result
   }
@@ -269,7 +279,7 @@ async function refutationChangesRequested() {
 async function criticApprovedFailedReceipt() {
   const lifecycle = fullLifecycle(); edgeConfig({ critic: { verdict: 'approved', exit: 1 } })
   await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })
-  await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+  await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
   return lifecycle.transition({ phase: 'critic', outcome: 'approved', tool_use_id: 'critic-failed' })
 }
 async function reachHarden() {

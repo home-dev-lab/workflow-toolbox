@@ -63,6 +63,8 @@ describe('SDK pilot runner', () => {
     await runPilot({ card: '186', cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
     expect(prompts[0]).toContain(`## The card, verbatim\n\n${card}`)
     expect(prompts[0]).toContain('do not re-read the card from the board; the text above is the card')
+    expect(prompts[0]).toContain('Lanes run synchronously through the lifecycle run tool')
+    expect(prompts[0]).not.toContain('end your turn immediately after launch')
 
   })
 
@@ -142,6 +144,48 @@ describe('SDK pilot runner', () => {
     expect(receipt).toBe(AWAITING_FIDELITY_RESULT)
     expect(result).toMatchObject({ exitCode: 0, summary: { awaiting_fidelity_receipt: true } })
   })
+
+  it('re-prompts after a tdd-lane end_turn and completes on the next turn', async () => {
+    const f = fixture(); const continuations: string[] = []; let heads = 0
+    const launcher = join(f.root, 'launcher.mjs')
+    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log,'done\\nEXIT=0\\n'); writeFileSync(report,'report\\n'); process.stdout.write('pid='+process.pid+'\\n')")
+    type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
+      const server = options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer
+      const transition = server.instance._registeredTools.transition!.handler
+      const artifact = server.instance._registeredTools.write_artifact!.handler
+      const run = server.instance._registeredTools.run!.handler
+      yield initMessage(); await prompt.next()
+      await transition({ phase: 'discovery', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 })
+      yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+      const continuation = await prompt.next(); if (continuation.done) return; continuations.push(continuation.value.message.content)
+      await transition({ phase: 'tdd', tool_use_id: 'tdd' }); for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# report\n' })
+      const receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
+      yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+    })()
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
+      query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' },
+    })
+    expect(result).toMatchObject({ exitCode: 0, summary: { completed: true, injected_turns: 1 } })
+    expect(continuations).toEqual([expect.stringContaining('current phase tdd')])
+  })
+
+  it('fails after three continuation prompts without lifecycle progress', async () => {
+    const f = fixture(); const continuations: string[] = []
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      yield initMessage(); await prompt.next()
+      for (let turn = 0; turn < 3; turn += 1) {
+        yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+        const continuation = await prompt.next(); continuations.push(continuation.value.message.content)
+      }
+    })()
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 10, hard: false }, { query, resolvePilotModels: models })
+    expect(continuations).toHaveLength(3)
+    expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, injected_turns: 3, reason: 'pilot ended its turn 3 times without progress' } })
+  }, 2_000)
 
   it('does not accept lifecycle-looking assistant prose or an uncorrelated forged tool result', async () => {
     const f = fixture(); const yielded: string[] = []
