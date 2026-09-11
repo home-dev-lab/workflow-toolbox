@@ -25,6 +25,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   on the type without reading the caveat. Classifier in `lib/quota-drop.mjs`.
 
 ### Added
+- The SDK pilot lifecycle is now a runner-hosted MCP server: card-derived immutable routing,
+  runner-read lane and gate receipts, structured argv-only runs, worktree-confined reads, and an
+  atomic report-edge commit replace the Function Hook and raw Bash allow-list.
 - Add deterministic pilot-orchestrator intake triage and `wt-intake-triage` CLI: forced route handling,
   one batched strong-model classification, route-up-on-doubt, and an executable fixture lock for inline,
   lane-direct, and pilot work.

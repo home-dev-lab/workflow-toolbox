@@ -597,7 +597,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['plugin/autonomy/AUTHORIZATIONS.md', 'plugin/autonomy/PERMISSIONS.md', 'plugin/skills/adopt/SKILL.md'],
   },
   {
-    sources: ['plugin/bin/wt-pilot-runner.mjs', 'plugin/bin/wt-pilot-fidelity.mjs', 'plugin/autonomy/PILOT-CONTRACT.md', 'plugin/hooks-modules/pilot-guard/', 'plugin/hooks-modules/sdk-pilot-lifecycle/'],
+    sources: ['plugin/bin/wt-pilot-runner.mjs', 'plugin/bin/wt-pilot-fidelity.mjs', 'plugin/bin/lib/sdk-pilot-lifecycle-server.mjs', 'plugin/bin/lib/route-from-card.mjs', 'plugin/autonomy/PILOT-CONTRACT.md', 'plugin/hooks-modules/pilot-guard/'],
     docs: ['plugin/autonomy/PILOT-RUNNER.md'],
   },
   {

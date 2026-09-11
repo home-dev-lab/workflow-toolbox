@@ -16,15 +16,13 @@ const initMessage = () => ({
   type: 'system',
   subtype: 'init',
   tools: ['Bash', 'Read', 'Glob', 'Grep', 'mcp__sdk-pilot-lifecycle__transition', 'mcp__sdk-pilot-lifecycle__write_artifact'],
-  plugins: [
-    { path: join(PLUGIN_ROOT, 'hooks-modules', 'sdk-pilot-lifecycle') },
-    { path: join(PLUGIN_ROOT, 'hooks-modules', 'pilot-guard') },
-  ],
+  plugins: [{ path: join(PLUGIN_ROOT, 'hooks-modules', 'pilot-guard') }],
 })
 const roots: string[] = []
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'wt-pilot-runner-')); roots.push(root)
-  const dir = join(root, 'worktree'); mkdirSync(join(dir, '.lane'), { recursive: true })
+  const dir = join(root, 'worktree'); mkdirSync(join(dir, '.lane'), { recursive: true }); writeFileSync(join(dir, '.gitignore'), '.lane/\n')
+  spawnSync('git', ['init', '-q'], { cwd: dir })
   const contract = join(root, 'contract.md'); writeFileSync(contract, '# contract\n')
   return { root, dir, contract }
 }
@@ -123,8 +121,9 @@ describe('SDK pilot runner', () => {
     expect(prompts[0]).toContain(`## The card, verbatim\n\n${card}`)
     expect(prompts[0]).toContain('do not re-read the card from the board; the text above is the card')
 
-    await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
-    expect(prompts[1]).toBe(`Pilot card 186 in ${f.dir}. Launch executor lanes only with node ${join(f.root, '../bin/wt-lane.mjs')} and end your turn immediately after launch.`)
+    const f2 = fixture()
+    await runPilot({ card: '186', dir: f2.dir, contract: f2.contract, mailbox: join(f2.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
+    expect(prompts[1]).toBe(`Pilot card 186 in ${f2.dir}. Launch executor lanes only with node ${join(f2.root, '../bin/wt-lane.mjs')} and end your turn immediately after launch.`)
   })
 
   it('turns mailbox input and a completed lane log into prompt turns, and writes measured shapes', async () => {
@@ -261,7 +260,7 @@ describe('SDK pilot runner', () => {
     // discriminating on purpose: the transition tool and the lifecycle plugin ARE present, so only a
     // runner that also requires write_artifact and pilot-guard rejects this receipt
     const thin = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
-      yield { ...initMessage(), tools: ['Bash', 'mcp__sdk-pilot-lifecycle__transition'], plugins: [{ path: join(PLUGIN_ROOT, 'hooks-modules', 'sdk-pilot-lifecycle') }] }
+      yield { ...initMessage(), tools: ['mcp__sdk-pilot-lifecycle__transition'], plugins: [] }
       await prompt.next()
     })()
     await expect(runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: thin, resolvePilotModels: models, sleep: async () => {} }))
@@ -292,13 +291,14 @@ describe('SDK pilot runner', () => {
     expect(readFileSync(join(ROOT, 'plugin/skills/adopt/scripts/install.mjs'), 'utf8')).toContain("{ file: 'PILOT-CONTRACT.md' }")
   })
 
-  it('loads the lifecycle hook beside pilot-guard and exposes a curated SDK surface', async () => {
-    type QueryOptions = { plugins: Array<{ path: string }>, tools: string[] }
+  it('registers the runner-hosted lifecycle server and exposes no Bash tool', async () => {
+    type QueryOptions = { plugins: Array<{ path: string }>, tools: string[], mcpServers: Record<string, unknown> }
     const f = fixture(); let options: QueryOptions | undefined
     const query = ({ options: received }: { options: QueryOptions }) => { options = received; return (async function* () {
       yield initMessage()})() }
     await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }) })
-    expect(options!.plugins.map((plugin) => plugin.path)).toEqual([expect.stringContaining('pilot-guard'), expect.stringContaining('sdk-pilot-lifecycle')])
-    expect(options!.tools).toEqual(['Bash', 'Read', 'Glob', 'Grep'])
+    expect(options!.plugins.map((plugin) => plugin.path)).toEqual([expect.stringContaining('pilot-guard')])
+    expect(options!.tools).toEqual(['Read', 'Glob', 'Grep'])
+    expect(options!.mcpServers.lifecycle).toMatchObject({ type: 'sdk', name: 'sdk-pilot-lifecycle' })
   })
 })

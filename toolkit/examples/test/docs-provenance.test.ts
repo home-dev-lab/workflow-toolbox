@@ -95,8 +95,8 @@ describe('docsForChangedFiles — pure prefix matcher', () => {
   // on the matcher's OUTPUT rather than on the sources array, because what actually matters is that
   // the docs-alignment lens fires: a future sixth source going unlisted is a new defect, not one
   // this lock would falsely clear.
-  it('routes a change in the SDK pilot lifecycle hook to the runner guide that documents it', () => {
-    const docs = docsForChangedFiles(['plugin/hooks-modules/sdk-pilot-lifecycle/hooks/hooks.js'])
+  it('routes a change in the runner-hosted SDK pilot lifecycle to the runner guide that documents it', () => {
+    const docs = docsForChangedFiles(['plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'])
     expect(docs).toContain('plugin/autonomy/PILOT-RUNNER.md')
   })
 

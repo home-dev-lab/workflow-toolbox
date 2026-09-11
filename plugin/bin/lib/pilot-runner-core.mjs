@@ -1,5 +1,8 @@
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { existsSync, readFileSync, realpathSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join, relative, resolve } from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { createLifecycleServer } from './sdk-pilot-lifecycle-server.mjs'
+import { deriveRoute } from './route-from-card.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
 export const DEFAULT_LANE_SILENCE = 12
@@ -80,6 +83,16 @@ export function defaultPidAlive(pid) {
   try { process.kill(pid, 0); return true } catch (error) { return error?.code !== 'ESRCH' }
 }
 
+// Resolve through existing symlinks before comparing, so lexical `..` and links cannot escape.
+export function confinedToWorktree(root, requested) {
+  const absolute = resolve(root, typeof requested === 'string' ? requested : '.')
+  let probe = absolute
+  const suffix = []
+  while (!existsSync(probe)) { suffix.unshift(probe.split('/').pop()); probe = dirname(probe) }
+  const resolved = resolve(realpathSync(probe), ...suffix)
+  return relative(realpathSync(root), resolved) === '' || !relative(realpathSync(root), resolved).startsWith('..')
+}
+
 function usageOf(message) {
   const usage = message.usage ?? {}
   return {
@@ -96,6 +109,8 @@ export async function runPilot(options, dependencies) {
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
   const model = options.hard ? models.pilotHard : models.pilot
   const contract = readFile(options.contract, 'utf8')
+  const cardText = options.cardFile ? readFile(options.cardFile, 'utf8') : ''
+  const routing = deriveRoute(cardText)
   // The pilot's OWN report; the lane writes `.lane/report.md`, and the first real run (2026-09-09)
   // ended the runner on the lane's file before the pilot ever got its `lane done` turn.
   const report = join(options.dir, '.lane', 'pilot-report.md')
@@ -121,19 +136,21 @@ export async function runPilot(options, dependencies) {
   let awaitingFidelityReceipt = false
   let initReceiptSeen = false
   const pluginRoot = resolve(dirname(new URL(import.meta.url).pathname), '../..')
-  const lifecyclePlugin = join(pluginRoot, 'hooks-modules', 'sdk-pilot-lifecycle')
   const guardPlugin = join(pluginRoot, 'hooks-modules', 'pilot-guard')
 
   // B5: completion is `awaiting_fidelity receipt && report exists`, so a report left by an earlier
   // run would satisfy it without this session ever writing one. Refuse to start on a dirty lane.
   if (exists(report)) throw new Error(`SDK pilot preflight failed: ${report} already exists; a stale report would satisfy completion`)
-  for (const file of [join(lifecyclePlugin, '.claude-plugin', 'plugin.json'), join(lifecyclePlugin, 'hooks', 'hooks.json'), join(lifecyclePlugin, 'hooks', 'hooks.js'), join(guardPlugin, 'hooks', 'hooks.json'), join(guardPlugin, 'hooks', 'hooks.js')]) {
+  if (existsSync(join(pluginRoot, 'hooks-modules', 'sdk-pilot-lifecycle'))) throw new Error('SDK pilot preflight failed: old lifecycle hook is still present')
+  try { execFileSync('git', ['check-ignore', '.lane'], { cwd: options.dir, stdio: 'ignore' }) } catch { throw new Error('SDK pilot preflight failed: .lane must be git-ignored') }
+  for (const file of [join(guardPlugin, 'hooks', 'hooks.json'), join(guardPlugin, 'hooks', 'hooks.js')]) {
     if (!existsSync(file)) throw new Error(`SDK pilot preflight failed: required plugin file is absent: ${file}`)
   }
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, models: { lane: 'openai/gpt-5.6-terra', review: 'openai/gpt-5.6-terra' }, cardId: options.card, sessionTag: `${options.card}-${started}` })
 
   async function* prompt() {
     const standing = `Pilot card ${options.card} in ${options.dir}. Launch executor lanes only with node ${join(dirname(options.contract), '../bin/wt-lane.mjs')} and end your turn immediately after launch.${options.room ? ` Owner room: ${options.room}.` : ''}`
-    const card = options.cardFile ? readFile(options.cardFile, 'utf8') : null
+    const card = options.cardFile ? cardText : null
     yield { type: 'user', message: { role: 'user', content: card === null ? standing : `${standing}\n\n## The card, verbatim\n\n${card}\n\ndo not re-read the card from the board; the text above is the card` } }
     while (!completed && now() - started < options.timeout * 1000) {
       if (awaitingFidelityReceipt && exists(report)) { completed = true; return }
@@ -187,12 +204,15 @@ export async function runPilot(options, dependencies) {
     settingSources: [],
     maxTurns: 120,
     cwd: options.dir,
-    plugins: [
-        { type: 'local', path: guardPlugin },
-        { type: 'local', path: lifecyclePlugin },
-    ],
-    tools: ['Bash', 'Read', 'Glob', 'Grep'],
-    mcpServers: { planka: { type: 'http', url: 'http://localhost:25478/mcp' } },
+    plugins: [{ type: 'local', path: guardPlugin }],
+    tools: ['Read', 'Glob', 'Grep'],
+    mcpServers: { planka: { type: 'http', url: 'http://localhost:25478/mcp' }, lifecycle: lifecycleServer },
+    canUseTool: async (toolName, input) => {
+      if (toolName.startsWith('mcp__sdk-pilot-lifecycle__')) return { behavior: 'allow' }
+      if (!['Read', 'Glob', 'Grep'].includes(toolName)) return { behavior: 'deny', message: `tool refused: ${toolName}` }
+      const requested = input.file_path ?? input.path ?? options.dir
+      return confinedToWorktree(options.dir, requested) ? { behavior: 'allow' } : { behavior: 'deny', message: `path outside worktree: ${String(requested)}` }
+    },
     permissionMode: 'bypassPermissions',
     allowDangerouslySkipPermissions: true,
     env: { ...env, ...profileEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
@@ -207,7 +227,7 @@ export async function runPilot(options, dependencies) {
       const initTools = Array.isArray(message.tools) ? message.tools : []
       const initPlugins = Array.isArray(message.plugins) ? message.plugins : []
       const missing = ['mcp__sdk-pilot-lifecycle__transition', 'mcp__sdk-pilot-lifecycle__write_artifact'].filter((tool) => !initTools.includes(tool))
-      const absent = [lifecyclePlugin, guardPlugin].filter((path) => !initPlugins.some((plugin) => plugin.path === path))
+      const absent = [guardPlugin].filter((path) => !initPlugins.some((plugin) => plugin.path === path))
       if (missing.length > 0 || absent.length > 0) {
         throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${JSON.stringify({ missingTools: missing, absentPlugins: absent, tools: initTools, plugins: initPlugins })}`)
       }
