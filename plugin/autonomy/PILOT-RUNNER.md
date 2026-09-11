@@ -1,8 +1,12 @@
 # SDK pilot runner
 
-`node plugin/bin/wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <card.md>` runs the pilot with `query()`
-and `settingSources: []`. Its SDK surface is Read, Glob, and Grep, confined to the worktree by
-real-path `canUseTool`, plus the local `pilot-guard` plugin, the Planka HTTP MCP, and the
+`node plugin/bin/wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <card.md>` runs the pilot with `query()`,
+`permissionMode: 'default'`, and `settingSources: []`. The SDK routes every tool request through
+`canUseTool`: it allows Read, Glob, and Grep only inside the worktree after real-path confinement,
+the three lifecycle tools, and the six Planka tools below, and denies everything else. Supplying the
+callback makes the SDK use its stdio permission-prompt transport, so the callback response resolves
+requests headlessly rather than opening an interactive prompt. The remaining surface is the local
+`pilot-guard` plugin, the Planka HTTP MCP, and the
 in-process `sdk-pilot-lifecycle` MCP server. The lifecycle server exposes `transition`,
 `write_artifact`, and `run`; it owns phases, artifacts, lanes, gates, and the report-edge commit.
 The only admitted Planka tools are `mcp__planka__get_card`, `mcp__planka__get_comments`,
@@ -79,7 +83,7 @@ The runner completes only after the trimmed correlated lifecycle result equals
 `--card`, `--dir`, and `--card-file` are required. Optional flags are `--profile-env`, `--contract`,
 `--hard`, `--mailbox`, and `--timeout`; `--lane-silence` is not accepted. The runner uses Node path semantics on
 Linux and macOS, resolves `--dir` to an absolute path, and applies real-path containment before
-authorizing reads.
+authorizing reads. It never enables `allowDangerouslySkipPermissions`.
 
 ## Fidelity review
 

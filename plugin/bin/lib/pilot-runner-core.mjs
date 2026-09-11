@@ -171,8 +171,7 @@ export async function runPilot(options, dependencies) {
     tools: ['Read', 'Glob', 'Grep'],
     mcpServers: { planka: { type: 'http', url: 'http://localhost:25478/mcp' }, [LIFECYCLE_MCP_KEY]: lifecycleServer },
     canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input),
-    permissionMode: 'bypassPermissions',
-    allowDangerouslySkipPermissions: true,
+    permissionMode: 'default',
     env: { ...env, ...profileEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
   } })
   for await (const message of stream) {

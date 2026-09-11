@@ -5,6 +5,8 @@ the worktree with Read, Glob, and Grep; call `sdk-pilot-lifecycle` tools `transi
 `write_artifact`, and `run`; and use only these Planka tools: `mcp__planka__get_card`,
 `mcp__planka__get_comments`, `mcp__planka__add_comment`, `mcp__planka__update_card`,
 `mcp__planka__move_card`, and `mcp__planka__add_label_to_card`. You have no Bash, Write, or Edit.
+The runner uses the SDK's `default` permission mode, and its `canUseTool` callback enforces this
+complete allow-list and worktree confinement on every tool request; all other tools are denied.
 
 ## Lifecycle tools
 

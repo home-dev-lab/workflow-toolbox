@@ -7,6 +7,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 
 ### Fixed
+- SDK pilot runs now use `default` permission mode so `canUseTool` enforces worktree read confinement
+  and the exact lifecycle/Planka allow-list; dangerous permission bypass is no longer enabled.
 - Lane launches now consume read-only runner-owned snapshots outside the worktree and keep the launcher
   worker, `opencode`, and ordinary descendants in the reported process group terminated after receipt or
   timeout; processes that create their own session remain outside this guarantee.

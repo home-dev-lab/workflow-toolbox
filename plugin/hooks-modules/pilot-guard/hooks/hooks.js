@@ -1,4 +1,4 @@
-// SDK query bypasses ordinary tool permissions; this Function Hook is the pilot's local fence.
+// The SDK permission callback is the exhaustive fence; this hook adds defense in depth for Bash.
 /** @type {import('claude-code').Register} */
 export const register = (on) => {
   on('tool.call', { tool: 'Bash' }, async ($, event, next) => {

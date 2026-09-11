@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claude-agent-sdk'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -249,7 +250,7 @@ describe('SDK pilot runner', () => {
   })
 
   it('registers the runner-hosted lifecycle server and exposes no Bash tool', async () => {
-    type QueryOptions = { plugins: Array<{ path: string }>, tools: string[], mcpServers: Record<string, unknown> }
+    type QueryOptions = { plugins: Array<{ path: string }>, tools: string[], mcpServers: Record<string, unknown>, permissionMode?: string, allowDangerouslySkipPermissions?: boolean }
     const f = fixture(); let options: QueryOptions | undefined
     const query = ({ options: received }: { options: QueryOptions }) => { options = received; return (async function* () {
       yield initMessage()})() }
@@ -257,6 +258,8 @@ describe('SDK pilot runner', () => {
     expect(options!.plugins.map((plugin) => plugin.path)).toEqual([expect.stringContaining('pilot-guard')])
     expect(options!.tools).toEqual(['Read', 'Glob', 'Grep'])
     expect(options!.mcpServers[LIFECYCLE_MCP_KEY]).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
+    expect(options!.permissionMode).toBe('default')
+    expect(options!).not.toHaveProperty('allowDangerouslySkipPermissions')
   })
 
   it('fails closed after an initialized stream ends without lifecycle completion', async () => {
@@ -287,6 +290,57 @@ describe('SDK pilot runner', () => {
     expect(lifecycleCanUseTool(f.dir, 'mcp__planka__delete_card', {}).behavior).toBe('deny')
     expect(lifecycleCanUseTool(f.dir, 'mcp__plugin_atrium_atrium__speak', {}).behavior).toBe('deny')
   })
+
+  it.skipIf(process.env.WT_REAL_SDK_LOCKS !== '1')('refuses forbidden tools through a real SDK query without shadowing canUseTool', async () => {
+    const f = fixture()
+    writeFileSync(f.cardFile, [
+      'Route: LITE',
+      'This is an SDK permission transport test. In your first response, issue exactly these two tool calls in parallel and no prose:',
+      '1. Read the absolute file /etc/hostname.',
+      '2. Call mcp__planka__delete_card with no arguments.',
+    ].join('\n'))
+    writeFileSync(f.contract, 'Follow the card tool-call instructions exactly. Do not call lifecycle tools.\n')
+    let deleteExecuted = false
+    const planka = createSdkMcpServer({
+      name: 'planka',
+      version: '1.0.0',
+      tools: [tool('delete_card', 'Delete a card for the permission lock.', {}, async () => {
+        deleteExecuted = true
+        return { content: [{ type: 'text', text: 'delete executed' }] }
+      })],
+    })
+    const warnings: string[] = []
+    const stderr: string[] = []
+    const onWarning = (warning: Error & { code?: string }) => warnings.push(`${warning.code ?? ''}: ${warning.message}`)
+    process.on('warning', onWarning)
+    try {
+      await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 30, hard: false }, {
+        query: ({ prompt, options }: Parameters<typeof sdkQuery>[0]) => (async function* () {
+          try {
+            yield* sdkQuery({
+              prompt,
+              options: { ...options, maxTurns: 1, mcpServers: { ...options?.mcpServers, planka }, stderr: (line) => stderr.push(line) },
+            })
+          } catch (error) {
+            if (!(error instanceof Error) || !error.message.includes('Reached maximum number of turns (1)')) throw error
+          }
+        })(),
+        resolvePilotModels: () => ({ pilot: { value: 'haiku', effective: 'haiku' }, pilotHard: { value: 'haiku', effective: 'haiku' } }),
+      })
+    } finally {
+      process.off('warning', onWarning)
+    }
+    await new Promise((resolve) => setImmediate(resolve))
+    const transcript = readFileSync(join(f.dir, '.lane', 'sdk-transcript.json'), 'utf8')
+    const readRefused = transcript.includes('path outside worktree: /etc/hostname')
+    const deleteRefused = transcript.includes('tool refused: mcp__planka__delete_card')
+    const shadowed = [...warnings, ...stderr].some((line) => line.includes('CLAUDE_SDK_CAN_USE_TOOL_SHADOWED'))
+    process.stdout.write(`REAL_SDK_READ_REFUSED=${readRefused}\nREAL_SDK_DELETE_REFUSED=${deleteRefused}\nREAL_SDK_DELETE_EXECUTED=${deleteExecuted}\nREAL_SDK_SHADOWED_WARNING=${shadowed}\n`)
+    expect(readRefused).toBe(true)
+    expect(deleteRefused).toBe(true)
+    expect(deleteExecuted).toBe(false)
+    expect(shadowed).toBe(false)
+  }, 120_000)
 
   it.each([['LITE', 'Route: LITE\nDoD: small\n'], ['FULL', 'Route: FULL\nDoD: risky\n']])('registers a lifecycle server routed %s from the required card', async (route, card) => {
     const f = fixture(); writeFileSync(f.cardFile, card); let registered: { lifecycle: { route: string } } | undefined
