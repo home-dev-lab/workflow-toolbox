@@ -96,6 +96,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'The adopted pilot-runner guide documents the SDK runner, mailbox, lane-wait ownership, profile env, and measurements.',
   },
   {
+    script: 'plugin/bin/wt-pilot-fidelity.mjs',
+    status: 'mapped',
+    reason: 'The adopted pilot-runner guide documents Main\'s shipped evidence freeze/verify command and its mechanical limits.',
+  },
+  {
     script: 'plugin/bin/wt-actionable-gate-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents the shipped Stop gate and its snapshot contract.',
@@ -587,7 +592,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['plugin/autonomy/AUTHORIZATIONS.md', 'plugin/autonomy/PERMISSIONS.md', 'plugin/skills/adopt/SKILL.md'],
   },
   {
-    sources: ['plugin/bin/wt-pilot-runner.mjs', 'plugin/autonomy/PILOT-CONTRACT.md', 'plugin/hooks-modules/pilot-guard/'],
+    sources: ['plugin/bin/wt-pilot-runner.mjs', 'plugin/bin/wt-pilot-fidelity.mjs', 'plugin/autonomy/PILOT-CONTRACT.md', 'plugin/hooks-modules/pilot-guard/', 'plugin/hooks-modules/sdk-pilot-lifecycle/'],
     docs: ['plugin/autonomy/PILOT-RUNNER.md'],
   },
   {

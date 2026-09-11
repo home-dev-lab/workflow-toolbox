@@ -102,9 +102,11 @@ export async function runPilot(options, dependencies) {
   const laneReport = join(options.dir, '.lane', 'report.md')
   const usagePath = join(options.dir, '.lane', 'usage.json')
   const summaryPath = join(options.dir, '.lane', 'summary.json')
+  const transcriptPath = join(options.dir, '.lane', 'sdk-transcript.json')
   const started = now()
   const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
   const turns = []
+  const transcript = []
   const tools = []
   let turnTools = []
   const pendingLanes = new Map()
@@ -115,13 +117,26 @@ export async function runPilot(options, dependencies) {
   let silenceInjections = 0
   let longestToolCallMs = 0
   const startedTools = new Map()
+  const lifecycleCalls = new Set()
+  let awaitingFidelityReceipt = false
+  let initReceiptSeen = false
+  const pluginRoot = resolve(dirname(new URL(import.meta.url).pathname), '../..')
+  const lifecyclePlugin = join(pluginRoot, 'hooks-modules', 'sdk-pilot-lifecycle')
+  const guardPlugin = join(pluginRoot, 'hooks-modules', 'pilot-guard')
+
+  // B5: completion is `awaiting_fidelity receipt && report exists`, so a report left by an earlier
+  // run would satisfy it without this session ever writing one. Refuse to start on a dirty lane.
+  if (exists(report)) throw new Error(`SDK pilot preflight failed: ${report} already exists; a stale report would satisfy completion`)
+  for (const file of [join(lifecyclePlugin, '.claude-plugin', 'plugin.json'), join(lifecyclePlugin, 'hooks', 'hooks.json'), join(lifecyclePlugin, 'hooks', 'hooks.js'), join(guardPlugin, 'hooks', 'hooks.json'), join(guardPlugin, 'hooks', 'hooks.js')]) {
+    if (!existsSync(file)) throw new Error(`SDK pilot preflight failed: required plugin file is absent: ${file}`)
+  }
 
   async function* prompt() {
     const standing = `Pilot card ${options.card} in ${options.dir}. Launch executor lanes only with node ${join(dirname(options.contract), '../bin/wt-lane.mjs')} and end your turn immediately after launch.${options.room ? ` Owner room: ${options.room}.` : ''}`
     const card = options.cardFile ? readFile(options.cardFile, 'utf8') : null
     yield { type: 'user', message: { role: 'user', content: card === null ? standing : `${standing}\n\n## The card, verbatim\n\n${card}\n\ndo not re-read the card from the board; the text above is the card` } }
     while (!completed && now() - started < options.timeout * 1000) {
-      if (exists(report)) { completed = true; return }
+      if (awaitingFidelityReceipt && exists(report)) { completed = true; return }
       for (const [laneLogPath, lane] of pendingLanes) {
         if (!exists(laneLogPath)) continue
         const content = readFile(laneLogPath, 'utf8')
@@ -172,25 +187,49 @@ export async function runPilot(options, dependencies) {
     settingSources: [],
     maxTurns: 120,
     cwd: options.dir,
-    plugins: [{ type: 'local', path: join(dirname(options.contract), '../hooks-modules/pilot-guard') }],
+    plugins: [
+        { type: 'local', path: guardPlugin },
+        { type: 'local', path: lifecyclePlugin },
+    ],
+    tools: ['Bash', 'Read', 'Glob', 'Grep'],
     mcpServers: { planka: { type: 'http', url: 'http://localhost:25478/mcp' } },
     permissionMode: 'bypassPermissions',
     allowDangerouslySkipPermissions: true,
     env: { ...env, ...profileEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
   } })
   for await (const message of stream) {
+    transcript.push(message)
+    if (!initReceiptSeen && !(message.type === 'system' && message.subtype === 'init')) {
+      throw new Error('SDK pilot initialization receipt never arrived: the first message was ' + message.type + '/' + (message.subtype ?? 'none'))
+    }
+    if (message.type === 'system' && message.subtype === 'init') {
+      initReceiptSeen = true
+      const initTools = Array.isArray(message.tools) ? message.tools : []
+      const initPlugins = Array.isArray(message.plugins) ? message.plugins : []
+      const missing = ['mcp__sdk-pilot-lifecycle__transition', 'mcp__sdk-pilot-lifecycle__write_artifact'].filter((tool) => !initTools.includes(tool))
+      const absent = [lifecyclePlugin, guardPlugin].filter((path) => !initPlugins.some((plugin) => plugin.path === path))
+      if (missing.length > 0 || absent.length > 0) {
+        throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${JSON.stringify({ missingTools: missing, absentPlugins: absent, tools: initTools, plugins: initPlugins })}`)
+      }
+    }
     const content = message.message?.content
     if (Array.isArray(content)) for (const item of content) {
-      if (item.type === 'tool_use') {
+        if (item.type === 'tool_use') {
         tools.push(item.name)
         turnTools.push(item.name)
-        if (item.id) startedTools.set(item.id, now())
+          if (item.id) startedTools.set(item.id, now())
+          if (item.id && item.name === 'mcp__sdk-pilot-lifecycle__transition') lifecycleCalls.add(item.id)
         if (item.name === 'Bash' && /(?:node\s+)?[^\s]*wt-lane\.mjs\b/.test(String(item.input?.command ?? ''))) laneLaunchSeen = true
       }
-      if (item.type === 'tool_result' && item.tool_use_id && startedTools.has(item.tool_use_id)) {
+        if (item.type === 'tool_result' && item.tool_use_id && startedTools.has(item.tool_use_id)) {
         longestToolCallMs = Math.max(longestToolCallMs, now() - startedTools.get(item.tool_use_id))
         startedTools.delete(item.tool_use_id)
-      }
+        }
+        if (item.type === 'tool_result' && lifecycleCalls.has(item.tool_use_id)) {
+          const lifecycleResult = textFrom(item.content)
+          log(`lifecycle: ${lifecycleResult}`)
+          if (/wt-sdk-pilot-lifecycle:\s*accepted phase=awaiting_fidelity/.test(lifecycleResult)) awaitingFidelityReceipt = true
+        }
     }
     const messageText = textFrom(message)
     if (/(?:node\s+)?[^\s]*wt-lane\.mjs\b/.test(messageText)) laneLaunchSeen = true
@@ -208,10 +247,14 @@ export async function runPilot(options, dependencies) {
       for (const key of Object.keys(totals)) totals[key] += usage[key]
     }
   }
+  // B4: returning normally here made the runner fail-open — a stream that ended before the pilot
+  // reached awaiting_fidelity produced a summary that read like an ordinary finished run.
+  if (!initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
   const freshTokens = totals.input + totals.cache_creation + totals.output
   const usage = { turns, totals, fresh_tokens: freshTokens, tool_names: [...new Set(tools)] }
-  const summary = { fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report) }
+  const summary = { fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt }
   writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
+  writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
   return { usage, summary }
 }

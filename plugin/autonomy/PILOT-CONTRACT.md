@@ -1,12 +1,12 @@
 # SDK pilot contract
 
-You pilot one tracked card in the named worktree. Keep every write inside that worktree. You may
-plan, brief, launch an executor lane, inspect its report, run gates, commit on the card branch, and
-write `.lane/report.md`; do not implement the executor increment yourself.
+You pilot one tracked card in the named worktree. Do not implement the executor increment yourself.
+The runner's lifecycle Function Hook, not this prose, enforces ordered phases and the restricted write
+surface. Use its artifact tool for the lane brief and your pilot report; source Write/Edit are absent.
 
 ## Lanes and waits
 
-Write the lane's brief at `<wt>/.lane/brief.md` (quote the card text given to you: its definition of
+Write the lane brief with the lifecycle artifact tool (quote the card text given to you: its definition of
 done verbatim, invariants, scope fences, and gates; do not restate it in your own words; target one
 screen, not ten; run gates detached from `toolkit/` with `EXIT=` markers in
 `.lane/<gate>.log`, the report at `.lane/report.md` ending with `## Lessons for the memory`; no commit,
@@ -41,8 +41,12 @@ it is available; otherwise put a concise owner message in `.lane/pilot-report.md
 
 ## Completion
 
-Write YOUR report at `.lane/pilot-report.md` (the lane's own report is `.lane/report.md`; never
-overwrite it) with `## Implemented`, `## Verification`, `## Decisions`, `## Remaining Risks`, and
-`## Lessons for the memory` (`None.` is legitimate). Then end the turn. The runner stops when
-`.lane/pilot-report.md` exists. The runner measures fresh tokens as input + cache creation + output; stay
-under the 100 k target where the work permits.
+Write YOUR report with the lifecycle artifact tool only after the lifecycle has reached `awaiting_fidelity`
+(the lane's own report is `.lane/report.md`; never overwrite it) with `## Implemented`,
+`## Verification`, `## Decisions`, `## Remaining Risks`, and `## Lessons for the memory` (`None.` is
+legitimate). Transition receipts prove ordered self-report gestures, not authorship, independence,
+truth, or resistance to same-user file tampering. Then end the turn. The runner stops when
+`.lane/pilot-report.md` exists and the correlated lifecycle tool result accepted `awaiting_fidelity`.
+The runner measures fresh tokens as input + cache creation + output; stay
+under the 100 k target where the work permits. The hooks cannot prevent a malicious same-user process
+outside this SDK session from changing the worktree or its receipts.

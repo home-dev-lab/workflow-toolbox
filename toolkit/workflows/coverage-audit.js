@@ -2179,7 +2179,7 @@ ${renderClaim(claim)}`;
       docs: ["plugin/autonomy/AUTHORIZATIONS.md", "plugin/autonomy/PERMISSIONS.md", "plugin/skills/adopt/SKILL.md"]
     },
     {
-      sources: ["plugin/bin/wt-pilot-runner.mjs", "plugin/autonomy/PILOT-CONTRACT.md", "plugin/hooks-modules/pilot-guard/"],
+      sources: ["plugin/bin/wt-pilot-runner.mjs", "plugin/bin/wt-pilot-fidelity.mjs", "plugin/autonomy/PILOT-CONTRACT.md", "plugin/hooks-modules/pilot-guard/", "plugin/hooks-modules/sdk-pilot-lifecycle/"],
       docs: ["plugin/autonomy/PILOT-RUNNER.md"]
     },
     {

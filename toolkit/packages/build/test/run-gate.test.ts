@@ -17,11 +17,14 @@
 // one in and showing it has no effect on the captured .exit file.)
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync, chmodSync, symlinkSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { treeSignature } from '../../../../plugin/bin/lib/gate-evidence.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/bin/wt-run-gate.mjs')
@@ -230,6 +233,57 @@ describe('wt-run-gate --check', () => {
 
     expect(result.status).toBe(1)
     expect(result.stdout).toBe('test: missing\n')
+  })
+
+  it('invalidates a green record when only an untracked file content changes', () => {
+    const { root, env } = gateRepo()
+    writeFileSync(join(root, 'scratch.txt'), 'first\n')
+    recordGate(root, env, 'test')
+    writeFileSync(join(root, 'scratch.txt'), 'second\n')
+    const result = run(['--check', root, '--gate', 'test'], { env })
+    expect(result.status).toBe(1)
+    expect(result.stdout).toBe('test: missing\n')
+  })
+
+  it('keeps names unambiguous and invalidates binary bytes, tracked deletion, symlink targets, and modes', () => {
+    const { root, env } = gateRepo()
+    writeFileSync(join(root, 'space name\nnext'), Buffer.from([0, 1, 2]))
+    writeFileSync(join(root, 'binary.bin'), Buffer.from([0, 255, 1]))
+    writeFileSync(join(root, 'tracked-delete'), 'tracked\n')
+    symlinkSync('/outside/first', join(root, 'link'))
+    writeFileSync(join(root, 'mode-file'), 'mode\n')
+    const git = (...args: string[]) => spawnSync('git', args, { cwd: root, encoding: 'utf8' })
+    expect(git('add', '.').status).toBe(0); expect(git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'fixtures').status).toBe(0)
+    recordGate(root, env, 'test')
+    writeFileSync(join(root, 'binary.bin'), Buffer.from([0, 254, 1]))
+    expect(run(['--check', root, '--gate', 'test'], { env }).status).toBe(1)
+    recordGate(root, env, 'test'); unlinkSync(join(root, 'tracked-delete'))
+    expect(run(['--check', root, '--gate', 'test'], { env }).status).toBe(1)
+    writeFileSync(join(root, 'tracked-delete'), 'tracked\n'); recordGate(root, env, 'test'); unlinkSync(join(root, 'link')); symlinkSync('/outside/second', join(root, 'link'))
+    expect(run(['--check', root, '--gate', 'test'], { env }).status).toBe(1)
+    if (process.platform !== 'win32') { unlinkSync(join(root, 'link')); symlinkSync('/outside/first', join(root, 'link')); recordGate(root, env, 'test'); chmodSync(join(root, 'mode-file'), 0o755); expect(run(['--check', root, '--gate', 'test'], { env }).status).toBe(1) }
+  })
+
+  it('is deterministic and fails loudly when its injected file reader cannot read an input', () => {
+    const { root } = gateRepo()
+    writeFileSync(join(root, 'a'), 'a'); writeFileSync(join(root, 'b'), 'b')
+    expect(treeSignature(root)).toBe(treeSignature(root))
+    expect(() => treeSignature(root, { lstatSync: () => ({ isFile: () => true, isSymbolicLink: () => false, mode: 0o644 }), readFileSync: () => { throw new Error('controlled unreadable input') }, readlinkSync: () => '' })).toThrow('controlled unreadable input')
+  })
+
+  it('rejects a version-1 record and refuses an actual during-gate mutation', () => {
+    const { root, env } = gateRepo()
+    const stateRoot = env.WT_GUARD_JOURNAL_DIR!
+    const id = createHash('sha256').update(root).digest('hex')
+    const record = join(stateRoot, 'wt-gate-records', id, 'test.json')
+    mkdirSync(join(stateRoot, 'wt-gate-records', id), { recursive: true })
+    writeFileSync(record, JSON.stringify({ version: 1, name: 'test', exit: 0, tree: treeSignature(root), finishedAt: new Date().toISOString() }))
+    expect(run(['--check', root, '--gate', 'test'], { env }).status).toBe(1)
+    const mutate = "require('fs').writeFileSync('plugin/thing.mjs','changed during gate\\n')"
+    const result = run(['--record', 'test', '--', process.execPath, '-e', mutate], { cwd: root, env })
+    expect(result.status).toBe(1)
+    expect(result.out).toContain('tree changed during gate; record refused')
+    expect(run(['--check', root, '--gate', 'test'], { env }).stdout).toMatch(/^test: red /)
   })
 
   it('returns a caller error for a tree directory outside a Git repository', () => {

@@ -23,15 +23,19 @@ export function readGateDeclaration(root) {
   return parsed
 }
 
-export function treeSignature(root) {
-  const untracked = git(root, ['ls-files', '--others', '--exclude-standard', '-z'])
-    .split('\0')
-    .filter(Boolean)
-    .sort()
-    .join('\0')
+export function treeSignature(root, fileSystem = fs) {
   const hash = createHash('sha256')
-  for (const value of [git(root, ['rev-parse', 'HEAD']), git(root, ['diff', '--cached']), git(root, ['diff']), untracked]) {
-    hash.update(value)
+  hash.update('wt-tree-signature-v2\0')
+  const names = git(root, ['ls-files', '--cached', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean).sort()
+  for (const name of names) {
+    const file = path.join(root, name)
+    const stat = fileSystem.lstatSync(file, { throwIfNoEntry: false })
+    hash.update(Buffer.from(name)); hash.update('\0')
+    if (!stat) { hash.update('missing\0'); continue }
+    hash.update(`${stat.isFile() ? 'file' : stat.isSymbolicLink() ? 'symlink' : 'other'}\0${stat.mode & 0o7777}\0`)
+    if (stat.isFile()) hash.update(fileSystem.readFileSync(file))
+    else if (stat.isSymbolicLink()) hash.update(fileSystem.readlinkSync(file))
+    else throw new Error(`unsupported repository entry: ${name}`)
     hash.update('\0')
   }
   return hash.digest('hex')
@@ -66,7 +70,7 @@ export function touchesDeclaredPath(paths, declaredPaths) {
 }
 
 export function recordIsFresh(root, record, signature, paths) {
-  if (!record || record.exit !== 0 || record.tree !== signature) return false
+  if (!record || record.version !== 2 || record.exit !== 0 || record.tree !== signature) return false
   const finishedAt = Date.parse(record.finishedAt)
   if (!Number.isFinite(finishedAt)) return false
   return paths.every((file) => {

@@ -6,6 +6,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- `wt-run-gate` signatures now invalidate records for content, deletion, mode, type, and symlink-target
+  changes; the SDK pilot can write only its lifecycle-gated lane brief and report artifacts.
+- SDK pilot lifecycle: a `changes-requested` review or refutation must now name at least one
+  non-blank finding. An empty findings list was accepted, so a revision round could consume one of
+  the bounded rounds while recording no reason for it. A `clear` outcome still carries no findings,
+  which is the outcome that legitimately has none.
 - Pilot model keys: the resolver and `wt-pilot-models` report the EFFECTIVE model a profile remaps
   an alias to (`ANTHROPIC_DEFAULT_<ALIAS>_MODEL`, process env over settings env), and a raw
   provider name in a `WT_*_MODEL` key is refused with that remedy — a GPT pilot is the same harness
@@ -19,6 +25,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   on the type without reading the caveat. Classifier in `lib/quota-drop.mjs`.
 
 ### Added
+- Add `wt-pilot-fidelity.mjs`, the shipped freeze/verify command Main uses to bind lane evidence
+  bytes and worktree identity before fidelity review.
+- Add the runner-owned `sdk-pilot-lifecycle` Function Hook and curated SDK tool surface; ordered
+  pilot transition receipts stop at `awaiting_fidelity`, leaving report truth and merge judgment to Main.
 - Pilot runner now detects silent executor worktrees, injects a bounded status turn, and records `silence_injections`; pilots continue one `EXIT=124` lane with a diff-preserving brief before reporting a second-timeout PARTIAL.
 - Add a SessionStart warning when `.claude/progress.md` has unsynced Planka-buffer entries, directing the session to fold them into the board and purge the section.
 - Add `wt-claimed-test-check.mjs`, a warn-only scan for normative documentation claims that lack a plausibly relevant toolkit test.

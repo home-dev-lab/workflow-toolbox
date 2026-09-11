@@ -132,7 +132,7 @@ function checkGateRecords(treeDir, gates) {
     }
     record = readGateRecord(root, name)
 
-    if (!record || record.tree !== signature) {
+    if (!record || record.version !== 2 || record.tree !== signature) {
       process.stdout.write(`${name}: missing\n`)
       allGreen = false
     } else if (record.exit === 0) {
@@ -151,6 +151,7 @@ function main() {
   // Record-mode artifacts must not become untracked files in the checked tree: a later gate
   // would otherwise make an earlier record stale merely by writing its own log.
   const root = args.record ? repoRoot(process.cwd()) : null
+  const startedTree = args.record ? treeSignature(root) : null
   const outDir = args.record && !args.outDirExplicit
     ? path.join(path.dirname(recordPath(root, args.record)), 'logs')
     : args.outDir
@@ -186,13 +187,17 @@ function main() {
 
   if (args.record) {
     // Compute after the child exits: an edit during a gate must invalidate its evidence.
+    const finishedTree = treeSignature(root)
+    const changedDuringGate = startedTree !== finishedTree
     const recordFile = writeGateRecord(root, {
+      version: 2,
       name: args.record,
       command: args.cmd.join(' '),
-      exit: realExitCode ?? 1,
+      exit: changedDuringGate ? 1 : realExitCode ?? 1,
       finishedAt: new Date().toISOString(),
-      tree: treeSignature(root),
+      tree: finishedTree,
     })
+    if (changedDuringGate) process.stderr.write(`wt-run-gate: ${args.record}: tree changed during gate; record refused\n`)
     process.stdout.write(`GATE ${args.record}: record=${recordFile}\n`)
   }
 
@@ -231,7 +236,7 @@ function main() {
     }
   }
 
-  process.exit(forceFail ? 1 : (realExitCode ?? 1))
+  process.exit(forceFail || (args.record && startedTree !== treeSignature(root)) ? 1 : (realExitCode ?? 1))
 }
 
 main()
