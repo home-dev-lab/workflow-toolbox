@@ -104,7 +104,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
   it('waits for a detached launcher to write its terminal marker before attesting', async () => {
     const lifecycle = testLifecycle('LITE', [], delayedLauncher(), 250)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
-    writeFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'brief\n')
+    await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const started = Date.now()
     expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=0')
     expect(Date.now() - started).toBeGreaterThanOrEqual(35)
@@ -115,7 +115,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
   it('attests a missing terminal marker and refuses the corresponding edge', async () => {
     const lifecycle = testLifecycle('LITE', [], emptyLauncher(), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
-    writeFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'brief\n')
+    await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
     expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toMatch(/^edge refused: tdd->next; missing lane receipt unchanged: /)
   })
@@ -123,7 +123,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
   it('refuses a lane receipt with an empty report', async () => {
     const lifecycle = testLifecycle('LITE', [], logOnlyLauncher(), 100)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
-    writeFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'brief\n')
+    await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
     expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toMatch(/^edge refused: tdd->next; missing non-empty unchanged lane report: /)
   })
@@ -394,7 +394,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
   it('removes stale receipts before launch and refuses to attest them', async () => {
     const lifecycle = testLifecycle('LITE', [], emptyLauncher(), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
-    writeFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'brief\n')
+    await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     writeFileSync(join(lifecycle.root, '.lane', 'tdd-run.log'), 'old\nEXIT=0\n')
     writeFileSync(join(lifecycle.root, '.lane', 'tdd-report.md'), 'old\n')
     expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
@@ -589,7 +589,7 @@ function foreignThenGenuineLauncher() { return launcher("import { appendFileSync
 async function lifecycleAtVerify() {
   const lifecycle = testLifecycle('LITE', [], successLauncher(), 100)
   await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
-  writeFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'brief\n')
+  await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
   await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
   expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toBe('accepted phase=verify')
   return lifecycle
@@ -597,7 +597,7 @@ async function lifecycleAtVerify() {
 async function lifecycleReadyForReport(options: Record<string, unknown> = {}) {
   const lifecycle = testLifecycle('LITE', [], successLauncher(), 100, options)
   await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
-  writeFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'brief\n')
+  await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
   await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
   await lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' })
   await writeGates(lifecycle)

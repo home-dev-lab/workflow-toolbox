@@ -5,6 +5,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.173.3] - 2026-09-11
+
+### Fixed
+- Lane briefs now require phase-bound `write_artifact` provenance and are recreated exclusively from
+  server-held pilot context immediately before launch, with independent patch inputs re-derived then.
+
 ## [0.173.2] - 2026-09-11
 
 ### Fixed

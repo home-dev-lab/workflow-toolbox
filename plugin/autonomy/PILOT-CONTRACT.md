@@ -15,6 +15,9 @@ refutation, or harden; timeout is at most 5400 seconds. Use `run { kind: 'gate',
 `typecheck`, `lint`, or `test`. Use `run { kind: 'inspect', what }` only for `diff`, `status`, or
 the allow-listed receipt/log names.
 
+Every lane phase must first receive its brief through `write_artifact`; at launch the server
+exclusively recreates that file from its in-memory context, so disk-created or modified briefs are ignored.
+
 For a critic, review, or refutation lane, `content` is context only. The server writes the
 authoritative independent-review instructions first, names the evidence to judge, fences your text
 as `Pilot context (untrusted)`, and supplies this report contract:

@@ -251,6 +251,7 @@ export function createLifecycleServer({
     report: { stage: 'idle', base: null, head: null, tree: null },
   }
   const attestations = new Map()
+  const laneBriefContexts = new Map()
   let serial = Promise.resolve()
   function audit() {
     assertLaneDir()
@@ -355,6 +356,25 @@ export function createLifecycleServer({
   }
   function archive(head) {
     return archiveLifecycle({ root, laneDir, cardId, route: frozenRoute, head, phases: [...state.handled.values()].map((item) => item.result).concat(AWAITING_FIDELITY_RESULT), evidence: sha256(readRegularFile(evidencePath) ?? ''), implementation: { name: LIFECYCLE_SERVER_NAME, version: '1.0.0' }, assertDirectories: () => assertLaneDir(true), copy, git, sha256, writeRegularFile })
+  }
+  function prepareLaneBrief(phase, context, reportPath) {
+    if (!INDEPENDENT_ROLES[phase]) {
+      return `${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
+    }
+    const artifacts = []
+    let planDigest = null
+    if (phase === 'critic') {
+      artifacts.push('.lane/plan.md')
+      if (regularFile(path.join(laneDir, 'card.md'))) artifacts.push('.lane/card.md')
+      planDigest = sha256(readRegularFile(path.join(laneDir, 'plan.md')))
+    } else {
+      const inputName = `.lane/${phase}-input.diff`
+      const inputPath = path.join(root, inputName)
+      const diff = prospectivePatch(root, constructionBase, git, prospectivePatchMaxBuffer)
+      writeRegularFile(inputPath, diff)
+      artifacts.push(inputName, '.lane/typecheck.log', '.lane/lint.log', '.lane/test.log')
+    }
+    return independentBrief({ phase, context, artifacts, reportPath, planDigest, constructionBase: phase === 'critic' ? null : constructionBase })
   }
   function transition(event) {
     try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
@@ -576,6 +596,9 @@ export function createLifecycleServer({
       }
       const phase = args.phase
       const brief = path.join(laneDir, `${phase}-brief.md`)
+      if (!laneBriefContexts.has(phase)) {
+        return refusal(`${state.phase}->next`, 'brief not written through write_artifact', brief)
+      }
       const canonicalLog = path.join(laneDir, `${phase}-run.log`)
       const canonicalReport = path.join(laneDir, `${phase}-report.md`)
       const timeout = Math.min(args.timeout ?? 5400, 5400)
@@ -591,13 +614,16 @@ export function createLifecycleServer({
       }
       fs.rmSync(canonicalLog, { force: true })
       fs.rmSync(canonicalReport, { force: true })
-      const originalBrief = readRegularFile(brief)
-      if (!originalBrief) return refusal(`${state.phase}->next`, 'lane brief', brief)
-      const reportInstruction = `Write the report to \`${report}\``
-      const launchBrief = /Write the report to `[^`]+`/.test(originalBrief)
-        ? originalBrief.replace(/Write the report to `[^`]+`/, reportInstruction)
-        : `${originalBrief.replace(/\s*$/, '')}\n\n${reportInstruction}.\n`
-      writeRegularFile(brief, launchBrief)
+      let launchBrief
+      try {
+        launchBrief = prepareLaneBrief(phase, laneBriefContexts.get(phase), report)
+      } catch (error) {
+        fs.rmSync(path.join(laneDir, `${phase}-input.diff`), { force: true })
+        fs.rmSync(brief, { force: true })
+        return `review input unavailable: ${error instanceof Error ? error.message : String(error)}`
+      }
+      fs.rmSync(brief, { force: true })
+      writeRegularFile(brief, launchBrief, { flag: 'wx' })
       fs.writeFileSync(log, `LANE_NONCE=${nonce}\n`, { flag: 'wx' })
       try {
         await launchProcess(
@@ -736,37 +762,23 @@ export function createLifecycleServer({
         return refusal('critic->tdd', 'byte-identical plan Tasks block', path.join(laneDir, spec[1]))
       }
     }
+    const briefPhase = kind === 'brief' ? 'tdd' : kind.replace('-brief', '')
     let artifactContent = content
-    const independentPhase = kind.replace('-brief', '')
-    if (INDEPENDENT_ROLES[independentPhase]) {
-      const artifacts = []
-      let planDigest = null
-      if (independentPhase === 'critic') {
-        artifacts.push('.lane/plan.md')
-        if (regularFile(path.join(laneDir, 'card.md'))) artifacts.push('.lane/card.md')
-        planDigest = sha256(readRegularFile(path.join(laneDir, 'plan.md')))
-      } else {
-        const inputName = `.lane/${independentPhase}-input.diff`
-        const inputPath = path.join(root, inputName)
-        let diff
-        try {
-          diff = prospectivePatch(root, constructionBase, git, prospectivePatchMaxBuffer)
-        } catch (error) {
-          fs.rmSync(inputPath, { force: true })
-          fs.rmSync(path.join(laneDir, spec[1]), { force: true })
-          return `review input unavailable: ${error instanceof Error ? error.message : String(error)}`
-        }
-        writeRegularFile(inputPath, diff)
-        artifacts.push(inputName, '.lane/typecheck.log', '.lane/lint.log', '.lane/test.log')
+    if (LANE_PHASES.has(briefPhase)) {
+      laneBriefContexts.delete(briefPhase)
+      try {
+        artifactContent = prepareLaneBrief(briefPhase, content, `.lane/${briefPhase}-report.<launch-nonce>.md`)
+      } catch (error) {
+        fs.rmSync(path.join(laneDir, `${briefPhase}-input.diff`), { force: true })
+        fs.rmSync(path.join(laneDir, spec[1]), { force: true })
+        return `review input unavailable: ${error instanceof Error ? error.message : String(error)}`
       }
-      artifactContent = independentBrief({ phase: independentPhase, context: content, artifacts, reportPath: `.lane/${independentPhase}-report.<launch-nonce>.md`, planDigest, constructionBase: independentPhase === 'critic' ? null : constructionBase })
-    } else if (LANE_PHASES.has(state.phase)) {
-      artifactContent = `${content.replace(/\s*$/, '')}\n\nWrite the report to \`.lane/${state.phase}-report.<launch-nonce>.md\`.\n`
     }
     writeRegularFile(
       path.join(laneDir, spec[1]),
       artifactContent,
     )
+    if (LANE_PHASES.has(briefPhase)) laneBriefContexts.set(briefPhase, content)
     return `wrote ${kind}`
   }
   async function queued(work) {

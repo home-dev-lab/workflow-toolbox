@@ -63,7 +63,7 @@ describe('adopted wt-lane consent resolver', () => {
     const snapshot = spawnSync(process.execPath, [INSTALLER, '--set', 'scripts', '--install', '--dir', snapshotRoot], { encoding: 'utf8' })
     expect(snapshot.status, snapshot.stderr).toBe(0)
     const digest = crypto.createHash('sha256').update(readFileSync(join(snapshotRoot, 'wt-lane.mjs'))).digest('hex')
-    expect(digest).toBe('29efe210cf6e8e0d7e0150f75b7d538903e929f7230aac32b58ab53960e305c2')
+    expect(digest).toBe('e61c74d1853a0665c0c4612e72924411fd01d4223cd947d3abf9ec01f9ec438d')
 
     const accounts = [
       { name: 'settings true', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'true' } } },

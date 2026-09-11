@@ -43,6 +43,8 @@ Symlinks are refused and `.lane` ancestors are re-checked before operations. `.l
 and excluded from the tree signature.
 
 Critic, review, and refutation briefs begin with server-owned independent-review instructions. The
+server retains each lane phase's pilot context in memory and, immediately before launch, refuses an
+unwritten phase or exclusively recreates its brief from that context, re-deriving independent inputs.
 server names the plan/card or the prospective working-tree patch against the construction base plus
 gate receipts, writes review/refutation patches to `.lane/<phase>-input.diff`, names that path and base
 in the brief, and fences pilot prose afterward as untrusted context. The patch includes staged and
