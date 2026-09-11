@@ -14,6 +14,8 @@ import {
 const testDir = path.dirname(fileURLToPath(import.meta.url))
 const packDir = path.resolve(testDir, '../../../../plugin/packs/typescript')
 const manifestPath = path.join(packDir, 'pack.json')
+const lspDeclarationPath = path.join(packDir, '.lsp.json')
+const pluginLspDeclarationPath = path.resolve(packDir, '../..', '.lsp.json')
 // The rules-on-demand hook is a PRIVATE plugin living in the user's config dir, not in this
 // repository: resolve it through the config dir (never by a fixed `..` depth, which breaks the
 // moment the checkout is nested differently, e.g. under <root>/.claude/worktrees/<name>), and
@@ -52,6 +54,23 @@ describe('TypeScript pack manifest', () => {
       const { frontmatter } = parseAgentFrontmatter(fs.readFileSync(path.join(packDir, 'agents', name), 'utf8'))
       expect(frontmatter).toMatchObject({ effort: 'high', model: 'sonnet', 'sdk-only': 'true' })
     }
+  })
+
+  it('carries the TypeScript diagnostics declaration and root loader bridge', () => {
+    expect(fs.existsSync(lspDeclarationPath), 'pack .lsp.json exists').toBe(true)
+    expect(fs.existsSync(pluginLspDeclarationPath), 'plugin-root .lsp.json exists').toBe(true)
+
+    const declaration = JSON.parse(fs.readFileSync(lspDeclarationPath, 'utf8'))
+    expect(declaration).toEqual({
+      typescript: {
+        command: 'typescript-language-server',
+        args: ['--stdio'],
+        extensionToLanguage: { '.ts': 'typescript' },
+        diagnostics: true,
+        startupTimeout: 10000,
+      },
+    })
+    expect(fs.readFileSync(pluginLspDeclarationPath, 'utf8')).toBe(fs.readFileSync(lspDeclarationPath, 'utf8'))
   })
 })
 
