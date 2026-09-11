@@ -9,11 +9,13 @@ const HELP = `wt-pilot-fidelity — freeze and verify lane evidence for Main's f
 Usage:
   node wt-pilot-fidelity.mjs freeze --root <worktree> --out-dir <bundle-dir> \\
     --card <id> --session <id> --base <commit> --head <commit> --file <lane-path> [--file <lane-path> ...]
-  node wt-pilot-fidelity.mjs verify --root <worktree> --dir <bundle-dir>
+  node wt-pilot-fidelity.mjs verify --root <worktree> --dir <bundle-dir> [--require-clean-tree] [--require-head]
 
 freeze copies the named lane files into a new immutable bundle and records their hashes plus the
-current worktree identity. verify refuses changed, missing, extra, symlinked, escaped, or
-identity-mismatched evidence. It validates bytes and identity only; it does not establish
+current worktree identity. verify refuses changed, missing, extra, symlinked, escaped, malformed,
+or signature-mismatched evidence. --require-clean-tree and --require-head additionally refuse a
+changed tree or HEAD; without them those identities are reported but not refused. Exit 0 means the
+requested checks passed; exit 1 means invalid arguments or a refused bundle. It does not establish
 independent authorship, prose truth, or resistance to a malicious same-user process.
 `
 
@@ -29,7 +31,7 @@ function parse(argv) {
   handleHelpFlag(argv, HELP)
   const [command, ...rest] = argv
   if (command !== 'freeze' && command !== 'verify') fail("first argument must be 'freeze' or 'verify'")
-  const args = { command, root: null, outDir: null, dir: null, card: null, session: null, base: null, head: null, files: [] }
+  const args = { command, root: null, outDir: null, dir: null, card: null, session: null, base: null, head: null, files: [], requireCleanTree: false, requireHead: false }
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index]
     if (flag === '--root') { args.root = value(rest, index, flag); index += 1 }
@@ -40,11 +42,14 @@ function parse(argv) {
     else if (flag === '--base') { args.base = value(rest, index, flag); index += 1 }
     else if (flag === '--head') { args.head = value(rest, index, flag); index += 1 }
     else if (flag === '--file') { args.files.push(value(rest, index, flag)); index += 1 }
+    else if (flag === '--require-clean-tree') args.requireCleanTree = true
+    else if (flag === '--require-head') args.requireHead = true
     else fail(`unknown argument: ${flag}`)
   }
   if (!args.root) fail('--root is required')
   args.root = resolve(args.root)
   if (command === 'freeze') {
+    if (args.requireCleanTree || args.requireHead) fail('--require-clean-tree and --require-head apply only to verify')
     if (!args.outDir || !args.card || !args.session || !args.base || !args.head || args.files.length === 0) {
       fail('freeze requires --out-dir, --card, --session, --base, --head, and at least one --file')
     }
