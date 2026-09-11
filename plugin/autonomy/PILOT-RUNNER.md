@@ -47,9 +47,10 @@ server names the plan/card or the prospective working-tree patch against the con
 gate receipts, writes review/refutation patches to `.lane/<phase>-input.diff`, names that path and base
 in the brief, and fences pilot prose afterward as untrusted context. The patch includes staged and
 unstaged tracked changes, deletions, modes, symlinks, renames, binary changes, and non-ignored
-untracked files without changing the real index. If Git cannot construct that patch, its output
-exceeds the bounded buffer, or a dirty tree produces no substantive hunk, the lifecycle refuses the
-review/refutation brief and cannot launch that lane. Glob and Grep
+untracked files without changing the real index. If Git cannot construct that patch, the total patch
+output (header, tracked diff, and all untracked-file diffs) exceeds the bounded buffer, or a dirty tree
+produces no substantive hunk, the lifecycle refuses the review/refutation brief and cannot launch
+that lane. Glob and Grep
 patterns with separators are confined by real-path checking their non-glob prefix, including through
 relative symlinks. Lifecycle implementation, receipts/launch, and report-edge transaction code live
 in separate modules behind the unchanged public server export.

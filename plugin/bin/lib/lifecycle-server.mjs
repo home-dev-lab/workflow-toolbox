@@ -149,9 +149,17 @@ function prospectivePatch(root, constructionBase, git, maxBuffer) {
   const deleted = run(['diff', '--name-only', '--diff-filter=D', '-z', constructionBase, '--']).split('\0').filter(Boolean)
   const untracked = run(['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean).sort()
   const header = ['# Prospective commit patch', `# Construction base: ${constructionBase}`, '# Deleted paths:', ...(deleted.length > 0 ? deleted.map((name) => `# - ${JSON.stringify(name)}`) : ['# - (none)']), ''].join('\n')
-  const tracked = run(['diff', '--binary', '--find-renames', constructionBase, '--'])
-  const additions = untracked.map((name) => run(['diff', '--no-index', '--binary', '--', '/dev/null', name], true)).join('')
-  const patch = `${header}${tracked}${additions}`
+  const parts = []
+  let bytes = 0
+  const append = (output) => {
+    bytes += Buffer.byteLength(output)
+    if (bytes > maxBuffer) throw new Error(`prospective patch exceeds ${maxBuffer}-byte limit`)
+    parts.push(output)
+  }
+  append(header)
+  append(run(['diff', '--binary', '--find-renames', constructionBase, '--']))
+  for (const name of untracked) append(run(['diff', '--no-index', '--binary', '--', '/dev/null', name], true))
+  const patch = parts.join('')
   const dirty = run(['status', '--porcelain=v1', '-z', '--untracked-files=all']).length > 0
   if (dirty && !/^diff --git /m.test(patch)) throw new Error('dirty tree produced no substantive patch')
   return patch

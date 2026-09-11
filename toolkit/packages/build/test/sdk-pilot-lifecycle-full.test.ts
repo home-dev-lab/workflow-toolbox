@@ -68,6 +68,27 @@ describe('real SDK lifecycle server FULL sequence', () => {
     expect(await refutation.run({ kind: 'lane', phase: 'refutation', timeout: 1 })).toMatch(/missing lane brief/)
   })
 
+  it('H7-1 lock: refuses independent briefs when cumulative prospective patch output exceeds the limit', async () => {
+    const maxBuffer = 256
+    const untrackedPatch = `diff --git a/file b/file\n${'+'.repeat(110)}\n`
+    expect(Buffer.byteLength(untrackedPatch)).toBeLessThan(maxBuffer)
+    expect(Buffer.byteLength(untrackedPatch) * 2).toBeGreaterThan(maxBuffer)
+    let untrackedCalls = 0
+    const git = (_program: string, args: string[]) => {
+      if (args[0] === 'ls-files') return 'first.txt\0second.txt\0'
+      if (args[0] === 'status') return '?? first.txt\0?? second.txt\0'
+      if (args.includes('--no-index')) { untrackedCalls += 1; return untrackedPatch }
+      return ''
+    }
+    const lifecycle = fullLifecycle({ git, prospectivePatchMaxBuffer: maxBuffer }); await reachReview(lifecycle)
+    const result = await lifecycle.artifact({ kind: 'review-brief', content: 'review' })
+    expect(result).toContain(`prospective patch exceeds ${maxBuffer}-byte limit`)
+    expect(untrackedCalls).toBe(2)
+    expect(existsSync(join(lifecycle.root, '.lane', 'review-input.diff'))).toBe(false)
+    expect(existsSync(join(lifecycle.root, '.lane', 'review-brief.md'))).toBe(false)
+    expect(await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })).toMatch(/missing lane brief/)
+  })
+
   it('mechanically completes the full route through the registered handlers', async () => {
     const lifecycle = fullLifecycle()
     expect(await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })).toBe('accepted phase=plan')

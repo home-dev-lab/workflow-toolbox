@@ -5,6 +5,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.173.2] - 2026-09-11
+
+### Fixed
+- Prospective review and refutation patches now enforce their output limit across the combined
+  header, tracked diff, and every untracked-file diff, refusing as soon as the total exceeds it.
+
 ## [0.173.1] - 2026-09-11
 
 ### Fixed
