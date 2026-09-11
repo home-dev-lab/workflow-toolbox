@@ -86,6 +86,26 @@ describe('SDK pilot runner', () => {
     expect(result.summary.injected_turns).toBe(1)
   })
 
+  it('recognises the awaiting_fidelity receipt in the real SDK content-block shape (found on real run 2: textFrom concatenated "text" with the text)', async () => {
+    const f = fixture()
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      yield initMessage()
+      await prompt.next()
+      writeFileSync(join(f.dir, '.lane', 'pilot-report.md'), '# pilot\n')
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'lifecycle', name: lifecycleToolName('transition'), input: {} }] } }
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'lifecycle', content: [{ type: 'text', text: AWAITING_FIDELITY_RESULT }] }] } }
+      yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+      await prompt.next()
+    })()
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, {
+      query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), sleep: async () => {},
+    })
+    expect(result.summary.awaiting_fidelity_receipt).toBe(true)
+    expect(result.summary.completed).toBe(true)
+    expect(result.summary.injected_turns).toBe(0)
+    expect(result.exitCode).toBe(0)
+  })
+
   it('stops on a synthetic authoritative awaiting_fidelity tool result, never on the lane report', async () => {
     const f = fixture(); writeFileSync(join(f.dir, '.lane', 'report.md'), 'lane report\n')
     const yielded: string[] = []

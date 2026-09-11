@@ -64,10 +64,16 @@ export function loadProfileEnv(file) {
   return parsed.env
 }
 
+// The real SDK stream delivers a tool result as content blocks (`[{ type: 'text', text }]`); a text
+// block yields its text alone — concatenating every object value put "text" in front of the lifecycle
+// result and neither the completion equality nor the progress count matched (real run 2, 2026-09-11).
 function textFrom(value) {
   if (typeof value === 'string') return value
   if (Array.isArray(value)) return value.map(textFrom).join('\n')
-  if (value && typeof value === 'object') return Object.values(value).map(textFrom).join('\n')
+  if (value && typeof value === 'object') {
+    if (value.type === 'text' && typeof value.text === 'string') return value.text
+    return Object.values(value).map(textFrom).join('\n')
+  }
   return ''
 }
 
