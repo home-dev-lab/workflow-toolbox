@@ -5,26 +5,22 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
-## [0.173.4] - 2026-09-11
 
 ### Fixed
 - Lane launches now consume read-only runner-owned snapshots outside the worktree and keep the launcher
   worker, `opencode`, and ordinary descendants in the reported process group terminated after receipt or
   timeout; processes that create their own session remain outside this guarantee.
 
-## [0.173.3] - 2026-09-11
 
 ### Fixed
 - Lane briefs now require phase-bound `write_artifact` provenance and are recreated exclusively from
   server-held pilot context immediately before launch, with independent patch inputs re-derived then.
 
-## [0.173.2] - 2026-09-11
 
 ### Fixed
 - Prospective review and refutation patches now enforce their output limit across the combined
   header, tracked diff, and every untracked-file diff, refusing as soon as the total exceeds it.
 
-## [0.173.1] - 2026-09-11
 
 ### Fixed
 - Independent review and refutation now fail closed when their prospective patch cannot be built,
