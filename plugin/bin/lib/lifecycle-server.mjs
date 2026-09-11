@@ -799,7 +799,7 @@ export function createLifecycleServer({
       return refusal(`${state.phase}->next`, `${kind} in phase ${state.phase}: write it in phase ${spec[0]}`, path.join(laneDir, spec[1]))
     }
     if (kind === 'critic-brief' && !readRegularFile(path.join(laneDir, 'plan.md'))) {
-      return refusal('plan->critic', 'plan artifact', path.join(laneDir, 'plan.md'))
+      return refusal('critic->next', 'plan artifact', path.join(laneDir, 'plan.md'))
     }
     if (kind === 'brief' && frozenRoute === 'FULL') {
       const planTasks = tasksBlock(readRegularFile(path.join(laneDir, 'plan.md')))

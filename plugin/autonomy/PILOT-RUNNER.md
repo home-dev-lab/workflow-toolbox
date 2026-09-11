@@ -80,7 +80,8 @@ The runner completes only after the trimmed correlated lifecycle result equals
 from the in-process lifecycle server and injects a continuation prompt naming that phase and its next
 required work. A new successful lifecycle result resets the budget; after three consecutive
 unproductive end turns the prompt stream closes, the runner exits 1, and `summary.json` records
-`completed:false`, `injected_turns:3`, and reason
+`completed:false`, `injected_turns` counting every injection (the three continuations plus any owner
+message or earlier continuation that was followed by progress), and reason
 `pilot ended its turn 3 times without progress`. Any other stream ending first also exits 1 and writes
 `summary.completed=false`. `.lane/usage.json`, `.lane/summary.json`, and
 `.lane/sdk-transcript.json` record the run.
