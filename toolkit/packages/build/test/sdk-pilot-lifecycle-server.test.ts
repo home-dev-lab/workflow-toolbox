@@ -228,8 +228,18 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     const lifecycle = await lifecycleReadyForReport({ git })
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
     const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
-    expect(summary).toMatchObject({ commit: 'next', lifecycle_implementation: { name: 'sdk-pilot-lifecycle', version: '1.0.0' } })
+    expect(summary).toMatchObject({ commit: 'next', partial: null, lifecycle_implementation: { name: 'sdk-pilot-lifecycle', version: '1.0.0' } })
     expect(summary.archive).toMatchObject({ path: expect.stringContaining('.claude/reports/1-'), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) })
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8')).partial).toBeNull()
+  })
+
+  it('H14-2 lock: refuses a Partial line on a full run and exposes null partial state', async () => {
+    const lifecycle = await lifecycleAtVerify()
+    await writeGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' }))).toBe('accepted phase=report')
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: null })
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: '# report\nPartial: not partial\n' })))
+      .toBe('pilot-report: this run is not partial')
   })
 
   it('maps the real tdd brief artifact to the real lane launch argument', async () => {
@@ -653,7 +663,7 @@ function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher:
   const gateRunner = ({ name, log }: { name: string, log: string }) => { writeFileSync(log, 'gate\n'); return Number(gateResults[name]?.exit ?? '0') }
   const server = createLifecycleServer({ worktree: root, route, reasons, models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'test', laneLauncher: launcher, laneWaitMs, gateRunner, ...options })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
-  return { root, gateResults, transition: tools.transition!.handler, artifact: tools.write_artifact!.handler, run: tools.run!.handler }
+  return { root, gateResults, transition: tools.transition!.handler, artifact: tools.write_artifact!.handler, run: tools.run!.handler, state: server.state }
 }
 function realGitLifecycle() {
   const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-real-git-')); roots.push(root)
@@ -668,7 +678,7 @@ function realGitLifecycle() {
   const gateResults: Record<string, { exit?: string, mtime?: number }> = {}
   const server = createLifecycleServer({ worktree: root, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'real-git', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: 100, gateRunner: ({ name, log }: { name: string, log: string }) => { writeFileSync(log, 'gate\n'); return Number(gateResults[name]?.exit ?? '0') } })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
-  return { root, gateResults, transition: tools.transition!.handler, artifact: tools.write_artifact!.handler, run: tools.run!.handler }
+  return { root, gateResults, transition: tools.transition!.handler, artifact: tools.write_artifact!.handler, run: tools.run!.handler, state: server.state }
 }
 function text(result: Promise<{ content: Array<{ text: string }> }>) { return result.then((value) => value.content[0]!.text) }
 function launcher(source: string) {

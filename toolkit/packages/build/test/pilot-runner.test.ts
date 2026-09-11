@@ -165,6 +165,42 @@ describe('SDK pilot runner', () => {
     expect(result).toMatchObject({ exitCode: 0, summary: { awaiting_fidelity_receipt: true } })
   })
 
+  it('H14-3 lock: completes a registered-server partial run with its continuation and exit code 2', async () => {
+    const f = fixture(); let heads = 0
+    const reason = 'plan not approved after 3 critic rounds'
+    writeFileSync(f.cardFile, 'Route: FULL\nDoD: exercise partial completion\n')
+    const launcher = join(f.root, 'launcher.mjs')
+    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- tighten the proof\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
+    const continuations: string[] = []
+    type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
+      const server = options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer
+      const transition = server.instance._registeredTools.transition!.handler
+      const artifact = server.instance._registeredTools.write_artifact!.handler
+      const run = server.instance._registeredTools.run!.handler
+      yield initMessage(); await prompt.next()
+      await transition({ phase: 'discovery', tool_use_id: 'discovery' })
+      for (let round = 1; round <= 4; round += 1) {
+        await artifact({ kind: 'plan', content: plan }); await transition({ phase: 'plan', tool_use_id: `plan-${round}` })
+        await artifact({ kind: 'critic-brief', content: `critic ${round}` }); await run({ kind: 'lane', phase: 'critic', timeout: 1 })
+        await transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: `critic-${round}` })
+      }
+      yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+      const continuation = await prompt.next(); continuations.push(continuation.value.message.content)
+      await artifact({ kind: 'pilot-report', content: `# partial\nPartial: ${reason}\n` })
+      const receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
+      yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+    })()
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
+      query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {},
+    })
+    expect(continuations).toEqual([`The run is partial (${reason}): write the pilot report with the line "Partial: ${reason}", then transition report.`])
+    expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'critic', round: 4, reason, findings: ['tighten the proof'] } } })
+  })
+
   it('re-prompts after a tdd-lane end_turn and completes on the next turn', async () => {
     const f = fixture(); const continuations: string[] = []; let heads = 0
     const launcher = join(f.root, 'launcher.mjs')

@@ -26,12 +26,12 @@ field selects FULL; all signals clear selects LITE. The reasons are recorded wit
 | --- | --- |
 | discovery -> tdd (LITE) or plan (FULL) | Frozen runner route. |
 | plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, and `## Gates`. |
-| critic -> tdd or plan | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. At most three changes-requested plan rounds. |
+| critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. A fourth changes-requested verdict after three plan rounds reaches a partial report. |
 | tdd or harden -> verify | Attested lane receipt and non-empty report. On FULL, `tdd-brief.md` has the plan `## Tasks` block byte-identically. |
 | verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test` receipts end `EXIT=0`, are newer than the latest lane receipt, match the current tree signature, and become a digest snapshot. |
-| review -> refutation or harden | Attested lane receipt and report verdict. `clear` reaches refutation; `changes-requested` requires findings and reaches harden. |
-| refutation -> report or harden | Attested lane receipt and report verdict. `clear` reaches report; `changes-requested` requires findings and reaches harden. No more than three review/refutation changes-requested rounds. |
-| report -> awaiting_fidelity | Pilot report, unchanged verify snapshot, runner commit, and archive under `.claude/reports/<card>-<stamp>/` with a manifest. |
+| review -> refutation, harden, or report | Attested lane receipt and report verdict. `clear` reaches refutation; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
+| refutation -> report or harden | Attested lane receipt and report verdict. `clear` reaches report; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
+| report -> awaiting_fidelity | Pilot report, unchanged lifecycle snapshot, runner commit, and archive under `.claude/reports/<card>-<stamp>/` with a manifest. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
 
 Refusals name the edge, missing item, and path. Outcomes are parsed from the lane report, not
 declared by the pilot.
@@ -82,8 +82,10 @@ required work. A new successful lifecycle result resets the budget; after three 
 unproductive end turns the prompt stream closes, the runner exits 1, and `summary.json` records
 `completed:false`, `injected_turns` counting every injection (the three continuations plus any owner
 message or earlier continuation that was followed by progress), and reason
-`pilot ended its turn 3 times without progress`. Any other stream ending first also exits 1 and writes
-`summary.completed=false`. `.lane/usage.json`, `.lane/summary.json`, and
+`pilot ended its turn 3 times without progress`. Any other stream ending first exits 1 and writes
+`summary.completed=false`. A completed full run exits 0. A completed partial run exits 2 with
+`summary.completed=true` and the lifecycle's non-null `partial` object; full-run summaries carry
+`partial:null`. `.lane/usage.json`, `.lane/summary.json`, and
 `.lane/sdk-transcript.json` record the run.
 
 `--card`, `--dir`, and `--card-file` are required. Optional flags are `--profile-env`, `--contract`,

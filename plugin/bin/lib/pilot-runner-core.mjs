@@ -10,11 +10,11 @@ const MAX_UNPRODUCTIVE_TURNS = 3
 const NEXT_BY_PHASE = {
   discovery: 'transition discovery using the frozen route',
   plan: 'write the plan, then transition plan',
-  critic: 'write the critic brief, run the critic lane, then transition critic',
+  critic: 'write the critic brief, run the critic lane, then transition critic; if the lane requests changes for the fourth time, transition with outcome changes-requested — the server routes a spent bound to report',
   tdd: 'write the tdd brief, run the tdd lane, then transition tdd',
   verify: 'run the three gates, then transition verify',
-  review: 'write the review brief, run the review lane, then transition review',
-  refutation: 'write the refutation brief, run the refutation lane, then transition refutation',
+  review: 'write the review brief, run the review lane, then transition review; if the lane requests changes for the fourth time, transition with outcome changes-requested — the server routes a spent bound to report',
+  refutation: 'write the refutation brief, run the refutation lane, then transition refutation; if the lane requests changes for the fourth time, transition with outcome changes-requested — the server routes a spent bound to report',
   harden: 'write the harden brief, run the harden lane, then transition harden',
   report: 'write the pilot report, then transition report',
 }
@@ -172,8 +172,11 @@ export async function runPilot(options, dependencies) {
         if (acceptedLifecycleResults > acceptedAtLastContinuation) consecutiveContinuations = 0
         consecutiveContinuations += 1
         acceptedAtLastContinuation = acceptedLifecycleResults
-        const phase = lifecycleServer.state().phase
-        const content = `The run is not complete: current phase ${phase}; next: ${NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'}. Continue.`
+        const lifecycleState = lifecycleServer.state()
+        const phase = lifecycleState.phase
+        const content = lifecycleState.partial && phase === 'report'
+          ? `The run is partial (${lifecycleState.partial.reason}): write the pilot report with the line "Partial: ${lifecycleState.partial.reason}", then transition report.`
+          : `The run is not complete: current phase ${phase}; next: ${NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'}. Continue.`
         injectedTurns += 1
         log(`injected: continuation ${content}`)
         if (consecutiveContinuations === MAX_UNPRODUCTIVE_TURNS) {
@@ -265,9 +268,10 @@ export async function runPilot(options, dependencies) {
   let lifecycleSummary = {}
   try { lifecycleSummary = JSON.parse(readFile(summaryPath, 'utf8')) } catch { /* no transition reached the summary yet */ }
   const completedNormally = awaitingFidelityReceipt && exists(report)
-  const summary = { ...lifecycleSummary, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
+  const partial = lifecycleSummary.partial ?? null
+  const summary = { ...lifecycleSummary, partial, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
   writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
-  return { usage, summary, exitCode: completedNormally ? 0 : 1 }
+  return { usage, summary, exitCode: completedNormally ? (partial ? 2 : 0) : 1 }
 }

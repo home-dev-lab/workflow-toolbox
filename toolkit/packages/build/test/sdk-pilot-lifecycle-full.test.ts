@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -156,6 +156,52 @@ describe('real SDK lifecycle server FULL sequence', () => {
     expect(calls.filter((call) => ['tdd', 'harden'].includes(call.phase)).every((call) => call.model === 'openai/gpt-5.6-terra')).toBe(true)
   })
 
+  it('H14-1 lock: completes the exact fourth-critic sequence as a partial committed and archived run', async () => {
+    const lifecycle = fullLifecycle()
+    const reason = 'plan not approved after 3 critic rounds'
+    edgeConfig({ critic: { verdict: 'changes-requested', findings: ['tighten the proof'] } })
+    expect(await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })).toBe('accepted phase=plan')
+    for (let round = 1; round <= 4; round += 1) {
+      expect(await lifecycle.artifact({ kind: 'plan', content: plan })).toBe('wrote plan')
+      expect(await lifecycle.transition({ phase: 'plan', tool_use_id: `plan-${round}` })).toBe('accepted phase=critic')
+      expect(await lifecycle.artifact({ kind: 'critic-brief', content: `critic ${round}` })).toBe('wrote critic-brief')
+      expect(await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })).toBe('lane critic EXIT=0')
+      const result = await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: `critic-${round}` })
+      expect(result).toBe(round < 4
+        ? 'accepted phase=plan'
+        : `accepted phase=report (round bound reached: partial run, ${reason})`)
+    }
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'critic', round: 4, reason, findings: ['tighten the proof'] } })
+    expect(await lifecycle.artifact({ kind: 'pilot-report', content: '# partial report\n' }))
+      .toBe(`pilot-report: partial run, add the line "Partial: ${reason}"`)
+    expect(await lifecycle.artifact({ kind: 'pilot-report', content: `# partial report\nPartial: ${reason}\n` })).toBe('wrote pilot-report')
+    expect(await lifecycle.transition({ phase: 'report', tool_use_id: 'report' })).toBe('accepted phase=awaiting_fidelity')
+    expect(spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: lifecycle.root, encoding: 'utf8' }).stdout.trim()).toBe('2')
+    const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
+    expect(summary.partial).toEqual({ phase: 'critic', round: 4, reason, findings: ['tighten the proof'] })
+    const archives = readdirSync(join(lifecycle.root, '.claude', 'reports'))
+    expect(archives).toHaveLength(1)
+    const manifest = JSON.parse(readFileSync(join(lifecycle.root, '.claude', 'reports', archives[0]!, 'manifest.json'), 'utf8'))
+    expect(manifest.partial).toEqual(summary.partial)
+  })
+
+  it('H14-1 review lock: routes the fourth review changes-requested verdict to a partial report', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const reason = 'review still requests changes after 3 harden rounds'
+    edgeConfig({ review: { verdict: 'changes-requested', findings: ['finding'] } })
+    for (let round = 1; round <= 4; round += 1) {
+      await lifecycle.artifact({ kind: 'review-brief', content: `review ${round}` }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+      const result = await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: ['finding'], tool_use_id: `review-${round}` })
+      if (round === 4) expect(result).toBe(`accepted phase=report (round bound reached: partial run, ${reason})`)
+      else {
+        expect(result).toBe('accepted phase=harden')
+        await lifecycle.artifact({ kind: 'harden-brief', content: 'harden' }); await lifecycle.run({ kind: 'lane', phase: 'harden', timeout: 1 }); await lifecycle.transition({ phase: 'harden', tool_use_id: `harden-${round}` })
+        await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: `verify-${round}` })
+      }
+    }
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'review', round: 4, reason, findings: ['finding'] } })
+  })
+
   it.each([
     ['wrong phase for the event', async () => liteLifecycle().transition({ phase: 'tdd', tool_use_id: 'wrong' }), /current phase discovery/],
     ['missing receipt', async () => { const lifecycle = liteLifecycle(); await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); return lifecycle.transition({ phase: 'tdd', tool_use_id: 'missing' }) }, /lane receipt unchanged/],
@@ -168,8 +214,8 @@ describe('real SDK lifecycle server FULL sequence', () => {
     ['harden receipt missing is refused', async () => hardenReceipt(null), /lane receipt unchanged/],
     ['report edge with missing pilot-report is refused', async () => reportEdge(false, false), /missing pilot report/],
     ['report edge with a gate digest changed after verify is refused', async () => reportEdge(true, true), /gate digest changed/],
-    ['planRound bound', criticBound, /admissible outcome/],
-    ['reviewRound bound', reviewBound, /available review round/],
+    ['spent planRound bound', criticBound, /^accepted phase=report \(round bound reached: partial run, plan not approved after 3 critic rounds\)$/],
+    ['spent reviewRound bound', reviewBound, /^accepted phase=report \(round bound reached: partial run, review still requests changes after 3 harden rounds\)$/],
     ['verdict and outcome mismatch', async () => reviewEdge('clear', 0, 'changes-requested'), /outcome does not match the lane report/],
     ['findings mismatch', async () => reviewEdge('changes-requested', 0, 'changes-requested', ['wrong finding']), /findings do not match the lane report/],
     ['report without a VERDICT block', async () => reviewEdge('clear', 0, 'clear', undefined, true), /VERDICT block/],
@@ -226,7 +272,7 @@ function fullLifecycle(options: Record<string, unknown> = {}) {
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); process.env.WT_FULL_CALLS = calls; process.env.WT_FULL_COUNTS = counts
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
   const server = createLifecycleServer({ worktree, route: 'FULL', models: { lane: 'openai/gpt-5.6-terra', review: 'openai/gpt-5.6-sol' }, cardId: 'full', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, ...options })
-  return { ...handlers(server), calls, base, root: worktree }
+  return { ...handlers(server), calls, base, root: worktree, state: server.state }
 }
 function liteLifecycle() {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')

@@ -8,6 +8,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - `wt-memory-index-check` no longer reports an existing subfolder fiche as a false dangling reference.
+- SDK pilot runs now route a spent critic or review/refutation round bound to an archived partial report, require
+  its exact `Partial:` reason, and return exit code 2 instead of deadlocking on an unavailable edge.
 - SDK pilot runs now use `default` permission mode so `canUseTool` enforces worktree read confinement
   and the exact lifecycle/Planka allow-list; dangerous permission bypass is no longer enabled.
 - Lane launches now consume read-only runner-owned snapshots outside the worktree and keep the launcher

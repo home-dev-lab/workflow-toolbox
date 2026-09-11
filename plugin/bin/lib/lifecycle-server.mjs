@@ -245,6 +245,7 @@ export function createLifecycleServer({
   )
   let state = {
     phase: 'discovery',
+    partial: null,
     planRound: 0,
     reviewRound: 0,
     handled: new Map(),
@@ -357,7 +358,7 @@ export function createLifecycleServer({
     return null
   }
   function archive(head) {
-    return archiveLifecycle({ root, laneDir, cardId, route: frozenRoute, head, phases: [...state.handled.values()].map((item) => item.result).concat(AWAITING_FIDELITY_RESULT), evidence: sha256(readRegularFile(evidencePath) ?? ''), implementation: { name: LIFECYCLE_SERVER_NAME, version: '1.0.0' }, assertDirectories: () => assertLaneDir(true), copy, git, sha256, writeRegularFile })
+    return archiveLifecycle({ root, laneDir, cardId, route: frozenRoute, head, phases: [...state.handled.values()].map((item) => item.result).concat(AWAITING_FIDELITY_RESULT), evidence: sha256(readRegularFile(evidencePath) ?? ''), partial: state.partial, implementation: { name: LIFECYCLE_SERVER_NAME, version: '1.0.0' }, assertDirectories: () => assertLaneDir(true), copy, git, sha256, writeRegularFile })
   }
   function prepareLaneBrief(phase, context, reportPath, snapshotDir = null) {
     if (!INDEPENDENT_ROLES[phase]) {
@@ -425,6 +426,7 @@ export function createLifecycleServer({
       return refusal(`${state.phase}->next`, `current phase ${state.phase}`, laneDir)
     }
     let next = null
+    let resultDetail = ''
     if (state.phase === 'discovery') {
       if (event.route && event.route !== frozenRoute) {
         return refusal(
@@ -457,8 +459,18 @@ export function createLifecycleServer({
           return refusal('critic->tdd', 'plan sha256', path.join(laneDir, 'critic-report.md'))
         }
         next = 'tdd'
-      } else if (verdict.outcome === 'changes-requested' && ++state.planRound <= 3) next = 'plan'
-      else {
+      } else if (verdict.outcome === 'changes-requested') {
+        state.planRound += 1
+        if (state.planRound <= 3) next = 'plan'
+        else {
+          const reason = 'plan not approved after 3 critic rounds'
+          state.partial = { phase: 'critic', round: state.planRound, reason, findings: verdict.findings }
+          state.verifySnapshot = { tree: treeSignature(root), gates: {} }
+          audit()
+          next = 'report'
+          resultDetail = ` (round bound reached: partial run, ${reason})`
+        }
+      } else {
         return refusal('critic->next', 'admissible outcome', path.join(laneDir, 'critic-report.md'))
       }
     } else if (state.phase === 'tdd' || state.phase === 'harden') {
@@ -495,18 +507,20 @@ export function createLifecycleServer({
         return refusal(`${state.phase}->harden`, 'findings', path.join(laneDir, `${state.phase}-report.md`))
       }
       if (verdict.outcome === 'changes-requested' && ++state.reviewRound > 3) {
-        return refusal(
-          `${state.phase}->harden`,
-          'available review round',
-          path.join(laneDir, `${state.phase}-report.md`),
-        )
+        const phase = state.phase
+        const reason = `${phase} still requests changes after 3 harden rounds`
+        state.partial = { phase, round: state.reviewRound, reason, findings: verdict.findings }
+        next = 'report'
+        resultDetail = ` (round bound reached: partial run, ${reason})`
       }
-      next =
-        state.phase === 'review' && verdict.outcome === 'clear'
-          ? 'refutation'
-          : state.phase === 'refutation' && verdict.outcome === 'clear'
-            ? 'report'
-            : 'harden'
+      if (!next) {
+        next =
+          state.phase === 'review' && verdict.outcome === 'clear'
+            ? 'refutation'
+            : state.phase === 'refutation' && verdict.outcome === 'clear'
+              ? 'report'
+              : 'harden'
+      }
     } else if (state.phase === 'report') {
       if (!readRegularFile(path.join(laneDir, 'pilot-report.md'))) {
         return refusal('report->awaiting_fidelity', 'pilot report', path.join(laneDir, 'pilot-report.md'))
@@ -554,6 +568,7 @@ export function createLifecycleServer({
             'git',
             [
               'commit',
+              ...(state.partial ? ['--allow-empty'] : []),
               '-m',
               (report.split(/\r?\n/).find(Boolean) ?? `pilot lifecycle ${cardId}`).replace(/^#\s*/, ''),
               '-m',
@@ -609,7 +624,7 @@ export function createLifecycleServer({
     }
     if (!next) return refusal(`${state.phase}->next`, 'outcome', laneDir)
     state.phase = next
-    const result = next === 'awaiting_fidelity' ? AWAITING_FIDELITY_RESULT : `accepted phase=${next}`
+    const result = next === 'awaiting_fidelity' ? AWAITING_FIDELITY_RESULT : `accepted phase=${next}${resultDetail}`
     state.handled.set(event.tool_use_id, { shape, result })
     return result
   }
@@ -807,6 +822,16 @@ export function createLifecycleServer({
         return refusal('critic->tdd', 'byte-identical plan Tasks block', path.join(laneDir, spec[1]))
       }
     }
+    if (kind === 'pilot-report') {
+      const partialLine = state.partial ? `Partial: ${state.partial.reason}` : null
+      const lines = content.split(/\r?\n/)
+      if (partialLine && !lines.includes(partialLine)) {
+        return `pilot-report: partial run, add the line "${partialLine}"`
+      }
+      if (!partialLine && lines.some((line) => line.startsWith('Partial:'))) {
+        return 'pilot-report: this run is not partial'
+      }
+    }
     const briefPhase = kind === 'brief' ? 'tdd' : kind.replace('-brief', '')
     let artifactContent = content
     if (LANE_PHASES.has(briefPhase)) {
@@ -900,6 +925,13 @@ export function createLifecycleServer({
     ],
   })
   Object.defineProperty(server, 'lifecycle', { value: lifecycle })
-  Object.defineProperty(server, 'state', { value: () => Object.freeze({ phase: state.phase }) })
+  Object.defineProperty(server, 'state', {
+    value: () => Object.freeze({
+      phase: state.phase,
+      partial: state.partial
+        ? Object.freeze({ ...state.partial, findings: Object.freeze([...state.partial.findings]) })
+        : null,
+    }),
+  })
   return server
 }

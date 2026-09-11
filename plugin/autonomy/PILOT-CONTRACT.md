@@ -40,21 +40,24 @@ block byte-identically.
 | --- | --- |
 | discovery | Transition using the runner's frozen route; LITE reaches tdd, FULL reaches plan. |
 | plan | Write a plan with ADR decision/rejected, top-level task DoDs, and Gates; then transition. |
-| critic | Write the brief, run the lane, and transition from its report: approved -> tdd; changes-requested -> plan. Maximum three plan revisions. |
+| critic | Write the brief, run the lane, and transition from its report: approved -> tdd; changes-requested -> plan. After three revisions, a fourth changes-requested routes to a partial report. |
 | tdd or harden | Write the brief, run the lane, then transition to verify. |
 | verify | Run all three gates. Transition `outcome: passed` only after their green receipts; LITE reaches report, FULL review. |
-| review | Write the brief, run the lane, then follow its report: clear -> refutation; changes-requested -> harden. |
-| refutation | Write the brief, run the lane, then follow its report: clear -> report; changes-requested -> harden. |
+| review | Write the brief, run the lane, then follow its report: clear -> refutation; changes-requested -> harden. A fourth changes-requested review/refutation round routes to a partial report. |
+| refutation | Write the brief, run the lane, then follow its report: clear -> report; changes-requested -> harden. A fourth changes-requested review/refutation round routes to a partial report. |
 | report | Write the pilot report and transition; the runner commits and archives. |
 
 Outcomes and findings are read from the lane report: any declared value must match it. Review and
-refutation changes-requested outcomes need findings; there are at most three such rounds. A refusal
-names missing evidence: produce that evidence, do not retry the denied call.
+refutation changes-requested outcomes need findings; there are at most three harden rounds. When a
+critic, review, or refutation bound is spent, the server routes to report and records the run as
+partial. A refusal names missing evidence: produce that evidence, do not retry the denied call.
 
 ## Completion and boundaries
 
 Write `pilot-report` through `write_artifact` with `## Implemented`, `## Verification`,
 `## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`; then transition report. Keep
+the exact line `Partial: <reason>` in a partial run's report; omit `Partial:` on a full run. The owner
+decides how to proceed from a completed partial run. Keep
 working until that transition returns the awaiting-fidelity receipt, then write nothing more and end
 the turn: the runner commits, archives `.lane/`, and stops. An earlier end of turn is re-prompted at
 most three consecutive times without lifecycle progress; the third unproductive turn fails the run. Never push, publish, merge, force, delete,
