@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { createLifecycleServer } from './sdk-pilot-lifecycle-server.mjs'
+import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lifecycleToolName } from './sdk-pilot-lifecycle-server.mjs'
 import { deriveRoute } from './route-from-card.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
@@ -88,9 +88,20 @@ export function confinedToWorktree(root, requested) {
   const absolute = resolve(root, typeof requested === 'string' ? requested : '.')
   let probe = absolute
   const suffix = []
-  while (!existsSync(probe)) { suffix.unshift(probe.split('/').pop()); probe = dirname(probe) }
+  while (!existsSync(probe)) { suffix.unshift(basename(probe)); probe = dirname(probe) }
   const resolved = resolve(realpathSync(probe), ...suffix)
   return relative(realpathSync(root), resolved) === '' || !relative(realpathSync(root), resolved).startsWith('..')
+}
+
+export function lifecycleCanUseTool(worktree, toolName, input) {
+  if (toolName.startsWith(`mcp__${LIFECYCLE_MCP_KEY}__`)) return { behavior: 'allow' }
+  if (!['Read', 'Glob', 'Grep'].includes(toolName)) return { behavior: 'deny', message: `tool refused: ${toolName}` }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
+  const requested = input.file_path ?? input.path ?? worktree
+  if (typeof requested !== 'string') return { behavior: 'deny', message: `invalid path: ${String(requested)}` }
+  const pattern = input.pattern
+  if (toolName === 'Glob' && typeof pattern === 'string' && (isAbsolute(pattern) || pattern.split(/[\\/]/).includes('..')) && !confinedToWorktree(worktree, pattern)) return { behavior: 'deny', message: `path outside worktree: ${pattern}` }
+  return confinedToWorktree(worktree, requested) ? { behavior: 'allow' } : { behavior: 'deny', message: `path outside worktree: ${requested}` }
 }
 
 function usageOf(message) {
@@ -146,10 +157,10 @@ export async function runPilot(options, dependencies) {
   for (const file of [join(guardPlugin, 'hooks', 'hooks.json'), join(guardPlugin, 'hooks', 'hooks.js')]) {
     if (!existsSync(file)) throw new Error(`SDK pilot preflight failed: required plugin file is absent: ${file}`)
   }
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, models: { lane: 'openai/gpt-5.6-terra', review: 'openai/gpt-5.6-terra' }, cardId: options.card, sessionTag: `${options.card}-${started}` })
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, models: { lane: 'openai/gpt-5.6-terra', review: 'openai/gpt-5.6-sol' }, cardId: options.card, sessionTag: `${options.card}-${started}` })
 
   async function* prompt() {
-    const standing = `Pilot card ${options.card} in ${options.dir}. Launch executor lanes only with node ${join(dirname(options.contract), '../bin/wt-lane.mjs')} and end your turn immediately after launch.${options.room ? ` Owner room: ${options.room}.` : ''}`
+    const standing = `Pilot card ${options.card} in ${options.dir}. Launch executor lanes only through the lifecycle run tool and end your turn immediately after launch.${options.room ? ` Owner room: ${options.room}.` : ''}`
     const card = options.cardFile ? cardText : null
     yield { type: 'user', message: { role: 'user', content: card === null ? standing : `${standing}\n\n## The card, verbatim\n\n${card}\n\ndo not re-read the card from the board; the text above is the card` } }
     while (!completed && now() - started < options.timeout * 1000) {
@@ -206,13 +217,8 @@ export async function runPilot(options, dependencies) {
     cwd: options.dir,
     plugins: [{ type: 'local', path: guardPlugin }],
     tools: ['Read', 'Glob', 'Grep'],
-    mcpServers: { planka: { type: 'http', url: 'http://localhost:25478/mcp' }, lifecycle: lifecycleServer },
-    canUseTool: async (toolName, input) => {
-      if (toolName.startsWith('mcp__sdk-pilot-lifecycle__')) return { behavior: 'allow' }
-      if (!['Read', 'Glob', 'Grep'].includes(toolName)) return { behavior: 'deny', message: `tool refused: ${toolName}` }
-      const requested = input.file_path ?? input.path ?? options.dir
-      return confinedToWorktree(options.dir, requested) ? { behavior: 'allow' } : { behavior: 'deny', message: `path outside worktree: ${String(requested)}` }
-    },
+    mcpServers: { planka: { type: 'http', url: 'http://localhost:25478/mcp' }, [LIFECYCLE_MCP_KEY]: lifecycleServer },
+    canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input),
     permissionMode: 'bypassPermissions',
     allowDangerouslySkipPermissions: true,
     env: { ...env, ...profileEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
@@ -226,7 +232,7 @@ export async function runPilot(options, dependencies) {
       initReceiptSeen = true
       const initTools = Array.isArray(message.tools) ? message.tools : []
       const initPlugins = Array.isArray(message.plugins) ? message.plugins : []
-      const missing = ['mcp__sdk-pilot-lifecycle__transition', 'mcp__sdk-pilot-lifecycle__write_artifact', 'mcp__sdk-pilot-lifecycle__run'].filter((tool) => !initTools.includes(tool))
+      const missing = ['transition', 'write_artifact', 'run'].map(lifecycleToolName).filter((tool) => !initTools.includes(tool))
       const absent = [guardPlugin].filter((path) => !initPlugins.some((plugin) => plugin.path === path))
       if (missing.length > 0 || absent.length > 0) {
         throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${JSON.stringify({ missingTools: missing, absentPlugins: absent, tools: initTools, plugins: initPlugins })}`)
@@ -238,7 +244,7 @@ export async function runPilot(options, dependencies) {
         tools.push(item.name)
         turnTools.push(item.name)
           if (item.id) startedTools.set(item.id, now())
-          if (item.id && item.name === 'mcp__sdk-pilot-lifecycle__transition') lifecycleCalls.add(item.id)
+          if (item.id && item.name === lifecycleToolName('transition')) lifecycleCalls.add(item.id)
         if (item.name === 'Bash' && /(?:node\s+)?[^\s]*wt-lane\.mjs\b/.test(String(item.input?.command ?? ''))) laneLaunchSeen = true
       }
         if (item.type === 'tool_result' && item.tool_use_id && startedTools.has(item.tool_use_id)) {
@@ -248,7 +254,7 @@ export async function runPilot(options, dependencies) {
         if (item.type === 'tool_result' && lifecycleCalls.has(item.tool_use_id)) {
           const lifecycleResult = textFrom(item.content)
           log(`lifecycle: ${lifecycleResult}`)
-          if (/wt-sdk-pilot-lifecycle:\s*accepted phase=awaiting_fidelity/.test(lifecycleResult)) awaitingFidelityReceipt = true
+          if (lifecycleResult.includes(AWAITING_FIDELITY_RESULT)) awaitingFidelityReceipt = true
         }
     }
     const messageText = textFrom(message)
@@ -274,9 +280,10 @@ export async function runPilot(options, dependencies) {
   const usage = { turns, totals, fresh_tokens: freshTokens, tool_names: [...new Set(tools)] }
   let lifecycleSummary = {}
   try { lifecycleSummary = JSON.parse(readFile(summaryPath, 'utf8')) } catch { /* no transition reached the summary yet */ }
-  const summary = { ...lifecycleSummary, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt }
+  const completedNormally = awaitingFidelityReceipt && exists(report)
+  const summary = { ...lifecycleSummary, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : 'stream ended without awaiting_fidelity lifecycle receipt' }
   writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
-  return { usage, summary }
+  return { usage, summary, exitCode: completedNormally ? 0 : 1 }
 }

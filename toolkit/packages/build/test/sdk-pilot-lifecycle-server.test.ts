@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
@@ -61,7 +61,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     const server = createLifecycleServer({ worktree, route: 'LITE', models: { lane: 'sonnet' }, cardId: '123', sessionTag: 's' })
     expect(server.type).toBe('sdk')
     expect(server.name).toBe('sdk-pilot-lifecycle')
-    expect(Object.isFrozen(server.lifecycle.route)).toBe(true)
+    expect(Object.isFrozen(server.lifecycle)).toBe(true)
     expect(server.lifecycle.route).toBe('LITE')
     expect(Object.keys(server.instance._registeredTools).sort()).toEqual(['run', 'transition', 'write_artifact'])
   })
@@ -108,7 +108,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     writeFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'brief\n')
     expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
-    expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toMatch(/^edge refused: tdd->next; missing lane receipt EXIT=missing: /)
+    expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toMatch(/^edge refused: tdd->next; missing lane receipt unchanged: /)
   })
 
   it('refuses a lane receipt with an empty report', async () => {
@@ -116,31 +116,31 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     writeFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'brief\n')
     await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
-    expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toMatch(/^edge refused: tdd->next; missing non-empty lane report: /)
+    expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toMatch(/^edge refused: tdd->next; missing non-empty unchanged lane report: /)
   })
 
   it.each(['typecheck', 'lint', 'test'])('refuses verify when %s has EXIT=1', async (name) => {
     const lifecycle = await lifecycleAtVerify()
-    writeGates(lifecycle.root, { [name]: { exit: '1' } })
+    await writeGates(lifecycle, { [name]: { exit: '1' } })
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: name }))).toMatch(/^edge refused: verify->next; missing gate receipt EXIT=1: /)
   })
 
   it('refuses verify with a gate older than the lane receipt', async () => {
     const lifecycle = await lifecycleAtVerify()
-    writeGates(lifecycle.root, { test: { mtime: 0 } })
-    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'old' }))).toMatch(/^edge refused: verify->next; missing gate newer than lane receipt: /)
+    await writeGates(lifecycle, { test: { mtime: 0 } })
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'old' }))).toMatch(/^edge refused: verify->next; missing unchanged gate receipt: /)
   })
 
   it('refuses verify after the working tree signature changes', async () => {
     const lifecycle = await lifecycleAtVerify()
-    writeGates(lifecycle.root)
+    await writeGates(lifecycle)
     writeFileSync(join(lifecycle.root, 'changed.txt'), 'changed\n')
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'changed' }))).toMatch(/^edge refused: verify->next; missing current tree signature: /)
   })
 
   it('persists verify digests and refuses a report edge when a gate changes afterward', async () => {
     const lifecycle = await lifecycleAtVerify()
-    writeGates(lifecycle.root)
+    await writeGates(lifecycle)
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' }))).toBe('accepted phase=report')
     const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
     expect(evidence.verify_snapshot).toMatchObject({ tree: treeSignature(lifecycle.root) })
@@ -167,6 +167,19 @@ describe('runner-hosted SDK pilot lifecycle', () => {
       .resolves.toMatch(/missing archive \(destination not writable\)/)
   })
 
+  it('retries an archive failure without making a second commit', async () => {
+    let revisions = 0; let commits = 0; let copies = 0
+    const git = (_program: string, call: string[]) => {
+      if (call[0] === 'commit') commits += 1
+      return call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
+    }
+    const copy = (...args: Parameters<typeof cpSync>) => { copies += 1; if (copies === 1) throw new Error('temporary archive failure'); return cpSync(...args) }
+    const lifecycle = await lifecycleReadyForReport({ git, copy })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'first' }))).toContain('missing archive')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'retry' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(commits).toBe(1)
+  })
+
   it('records the commit, archive manifest digest, and lifecycle implementation', async () => {
     let revisions = 0
     const git = (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
@@ -175,6 +188,69 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
     expect(summary).toMatchObject({ commit: 'next', lifecycle_implementation: { name: 'sdk-pilot-lifecycle', version: '1.0.0' } })
     expect(summary.archive).toMatchObject({ path: expect.stringContaining('.claude/reports/1-'), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) })
+  })
+
+  it('maps the real tdd brief artifact to the real lane launch argument', async () => {
+    const recorded = launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(process.env.CALLS, process.argv.join(' ') + '\\n'); writeFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), 'report\\n')")
+    const lifecycle = testLifecycle('LITE', [], recorded, 100)
+    process.env.CALLS = join(lifecycle.root, 'calls')
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
+    expect(readFileSync(join(lifecycle.root, 'calls'), 'utf8')).toContain(`--brief ${join(lifecycle.root, '.lane', 'tdd-brief.md')}`)
+  })
+
+  it('refuses traversal and absolute inspect log names', async () => {
+    const lifecycle = testLifecycle('LITE')
+    for (const name of ['../../x', '/tmp/x']) expect(await text(lifecycle.run({ kind: 'inspect', what: 'log', name }))).toContain('missing log name')
+  })
+
+  it('requires a DoD for every plan task and injects the plan digest into the critic brief', async () => {
+    const lifecycle = testLifecycle('FULL')
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    const incomplete = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- one\nDoD: first\n- two\n## Gates\n- test\n'
+    await lifecycle.artifact({ kind: 'plan', content: incomplete })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }))).toContain('missing valid plan artifact')
+    const plan = incomplete.replace('- two\n', '- two\nDoD: second\n')
+    await lifecycle.artifact({ kind: 'plan', content: plan })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'review this\n' })
+    expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')).toContain(`plan sha256: ${createHash('sha256').update(plan).digest('hex')}`)
+  })
+
+  it('does not trust tampered audit evidence or a changed lane report', async () => {
+    const lifecycle = testLifecycle('LITE', [], successLauncher(), 100)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
+    writeFileSync(join(lifecycle.root, '.lane', 'tdd-report.md'), 'tampered\n')
+    expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'tampered' }))).toContain('non-empty unchanged lane report')
+    const clean = testLifecycle('LITE', [], successLauncher(), 100)
+    await clean.transition({ phase: 'discovery', tool_use_id: 'start' }); await clean.artifact({ kind: 'brief', content: 'brief\n' }); await clean.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await clean.transition({ phase: 'tdd', tool_use_id: 'tdd' })
+    await writeGates(clean)
+    writeFileSync(join(clean.root, '.lane', 'evidence.json'), '{"entries":{}}\n')
+    expect(await text(clean.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'audit' }))).toBe('accepted phase=report')
+  })
+
+  it('removes stale receipts before launch and refuses to attest them', async () => {
+    const lifecycle = testLifecycle('LITE', [], emptyLauncher(), 30)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    writeFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'brief\n')
+    writeFileSync(join(lifecycle.root, '.lane', 'tdd-run.log'), 'old\nEXIT=0\n')
+    writeFileSync(join(lifecycle.root, '.lane', 'tdd-report.md'), 'old\n')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
+  })
+
+  it('refuses an unsafe card id at server construction', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-card-')); roots.push(root); mkdirSync(join(root, '.lane'))
+    expect(() => createLifecycleServer({ worktree: root, route: 'LITE', models: {}, cardId: '../bad', sessionTag: 'x' })).toThrow(/cardId/)
+  })
+
+  it('serializes concurrent transitions and rejects a changed idempotency shape', async () => {
+    const lifecycle = testLifecycle('LITE')
+    const [first, second] = await Promise.all([text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'one' })), text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'two' }))])
+    expect([first, second]).toContain('accepted phase=tdd')
+    expect([first, second].join('\n')).toContain('current phase tdd')
+    expect(await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'one', route: 'LITE' }))).toContain('unique tool_use_id')
   })
 })
 
@@ -185,9 +261,11 @@ function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher:
   mkdirSync(join(root, '.lane'))
   writeFileSync(join(root, '.gitignore'), '.lane/\n')
   spawnSync('git', ['init', '-q'], { cwd: root })
-  const server = createLifecycleServer({ worktree: root, route, reasons, models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'test', laneLauncher: launcher, laneWaitMs, ...options })
+  const gateResults: Record<string, { exit?: string, mtime?: number }> = {}
+  const gateRunner = ({ name, log }: { name: string, log: string }) => { writeFileSync(log, 'gate\n'); return Number(gateResults[name]?.exit ?? '0') }
+  const server = createLifecycleServer({ worktree: root, route, reasons, models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'test', laneLauncher: launcher, laneWaitMs, gateRunner, ...options })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
-  return { root, transition: tools.transition!.handler, artifact: tools.write_artifact!.handler, run: tools.run!.handler }
+  return { root, gateResults, transition: tools.transition!.handler, artifact: tools.write_artifact!.handler, run: tools.run!.handler }
 }
 function text(result: Promise<{ content: Array<{ text: string }> }>) { return result.then((value) => value.content[0]!.text) }
 function launcher(source: string) {
@@ -215,19 +293,15 @@ async function lifecycleReadyForReport(options: Record<string, unknown> = {}) {
   writeFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'brief\n')
   await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
   await lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' })
-  writeGates(lifecycle.root)
+  await writeGates(lifecycle)
   await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' })
   writeFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), '# report\n')
   return lifecycle
 }
-function writeGates(root: string, overrides: Record<string, { exit?: string, mtime?: number }> = {}) {
-  const evidence = JSON.parse(readFileSync(join(root, '.lane', 'evidence.json'), 'utf8'))
+async function writeGates(lifecycle: ReturnType<typeof testLifecycle>, overrides: Record<string, { exit?: string, mtime?: number }> = {}) {
   for (const name of ['typecheck', 'lint', 'test']) {
-    const file = join(root, '.lane', `${name}.log`)
-    const content = `gate\nEXIT=${overrides[name]?.exit ?? '0'}\n`
-    writeFileSync(file, content)
-    const mtime = overrides[name]?.mtime ?? Date.now()
-    evidence.entries[file] = { path: file, size: Buffer.byteLength(content), sha256: createHash('sha256').update(content).digest('hex'), mtime, exit: overrides[name]?.exit ?? '0', tree: treeSignature(root) }
+    lifecycle.gateResults[name] = overrides[name] ?? {}
+    await lifecycle.run({ kind: 'gate', name })
+    if (overrides[name]?.mtime === 0) utimesSync(join(lifecycle.root, '.lane', `${name}.log`), 0, 0)
   }
-  writeFileSync(join(root, '.lane', 'evidence.json'), `${JSON.stringify(evidence)}\n`)
 }

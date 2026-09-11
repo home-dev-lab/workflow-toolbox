@@ -5,7 +5,9 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { laneLogFrom, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
+import { lifecycleCanUseTool, laneLogFrom, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')
@@ -15,7 +17,7 @@ const PLUGIN_ROOT = join(ROOT, 'plugin')
 const initMessage = () => ({
   type: 'system',
   subtype: 'init',
-  tools: ['Bash', 'Read', 'Glob', 'Grep', 'mcp__sdk-pilot-lifecycle__transition', 'mcp__sdk-pilot-lifecycle__write_artifact', 'mcp__sdk-pilot-lifecycle__run'],
+  tools: ['Read', 'Glob', 'Grep', lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('run')],
   plugins: [{ path: join(PLUGIN_ROOT, 'hooks-modules', 'pilot-guard') }],
 })
 const roots: string[] = []
@@ -123,7 +125,7 @@ describe('SDK pilot runner', () => {
 
     const f2 = fixture()
     await runPilot({ card: '186', dir: f2.dir, contract: f2.contract, mailbox: join(f2.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
-    expect(prompts[1]).toBe(`Pilot card 186 in ${f2.dir}. Launch executor lanes only with node ${join(f2.root, '../bin/wt-lane.mjs')} and end your turn immediately after launch.`)
+    expect(prompts[1]).toBe(`Pilot card 186 in ${f2.dir}. Launch executor lanes only through the lifecycle run tool and end your turn immediately after launch.`)
   })
 
   it('turns mailbox input and a completed lane log into prompt turns, and writes measured shapes', async () => {
@@ -194,8 +196,8 @@ describe('SDK pilot runner', () => {
       yield initMessage()
       const first = await prompt.next(); yielded.push(first.value.message.content)
       writeFileSync(join(f.dir, '.lane', 'pilot-report.md'), '# pilot\n')
-      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'lifecycle', name: 'mcp__sdk-pilot-lifecycle__transition', input: {} }] } }
-      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'lifecycle', content: 'wt-sdk-pilot-lifecycle: accepted phase=awaiting_fidelity' }] } }
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'lifecycle', name: lifecycleToolName('transition'), input: {} }] } }
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'lifecycle', content: AWAITING_FIDELITY_RESULT }] } }
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       const next = await prompt.next(); if (!next.done) yielded.push(next.value.message.content)
     })()
@@ -317,6 +319,24 @@ describe('SDK pilot runner', () => {
     await runPilot({ card: '186', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }) })
     expect(options!.plugins.map((plugin) => plugin.path)).toEqual([expect.stringContaining('pilot-guard')])
     expect(options!.tools).toEqual(['Read', 'Glob', 'Grep'])
-    expect(options!.mcpServers.lifecycle).toMatchObject({ type: 'sdk', name: 'sdk-pilot-lifecycle' })
+    expect(options!.mcpServers[LIFECYCLE_MCP_KEY]).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
+  })
+
+  it('fails closed after an initialized stream ends without lifecycle completion', async () => {
+    const f = fixture()
+    const result = await runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, { query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models })
+    expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: expect.stringContaining('without awaiting_fidelity') } })
+  })
+
+  it('confines real Read, Glob, and Grep authorization inputs', () => {
+    const f = fixture(); const outside = join(f.root, 'outside'); mkdirSync(outside); writeFileSync(join(outside, 'secret'), 'x')
+    for (const tool of ['Read', 'Glob', 'Grep']) {
+      expect(lifecycleCanUseTool(f.dir, tool, { path: outside }).behavior).toBe('deny')
+      expect(lifecycleCanUseTool(f.dir, tool, { path: '../outside' }).behavior).toBe('deny')
+      expect(lifecycleCanUseTool(f.dir, tool, { path: 'missing/child' }).behavior).toBe('allow')
+    }
+    expect(lifecycleCanUseTool(f.dir, 'Glob', { pattern: join(outside, '*') }).behavior).toBe('deny')
+    expect(lifecycleCanUseTool(f.dir, 'Glob', { pattern: '../outside/*' }).behavior).toBe('deny')
+    expect(lifecycleCanUseTool(f.dir, 'Read', null).behavior).toBe('deny')
   })
 })
