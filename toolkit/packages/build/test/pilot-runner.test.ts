@@ -23,7 +23,7 @@ const initMessage = () => ({
 const roots: string[] = []
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'wt-pilot-runner-')); roots.push(root)
-  const dir = join(root, 'worktree'); mkdirSync(join(dir, '.lane'), { recursive: true }); writeFileSync(join(dir, '.gitignore'), '.lane/\n')
+  const dir = join(root, 'worktree'); mkdirSync(join(dir, '.lane'), { recursive: true }); writeFileSync(join(dir, '.gitignore'), '.lane/\n.claude/reports/\n')
   spawnSync('git', ['init', '-q'], { cwd: dir })
   const contract = join(root, 'contract.md'); writeFileSync(contract, '# contract\n')
   return { root, dir, contract }

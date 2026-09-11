@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
@@ -191,7 +191,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
   })
 
   it('maps the real tdd brief artifact to the real lane launch argument', async () => {
-    const recorded = launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(process.env.CALLS, process.argv.join(' ') + '\\n'); writeFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), 'report\\n')")
+    const recorded = launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(process.env.CALLS, process.argv.join(' ') + '\\n'); appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), 'report\\n')")
     const lifecycle = testLifecycle('LITE', [], recorded, 100)
     process.env.CALLS = join(lifecycle.root, 'calls')
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -217,6 +217,72 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')).toContain(`plan sha256: ${createHash('sha256').update(plan).digest('hex')}`)
   })
 
+  it('derives the critic verdict from its attested report and rejects a pilot mismatch', async () => {
+    const lifecycle = testLifecycle('FULL', [], verdictLauncher(), 100)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n' })
+    await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'review\n' })
+    await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'approved', tool_use_id: 'mismatch' })))
+      .toContain('outcome does not match the lane report')
+    expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['blocker'], tool_use_id: 'matching' })))
+      .toBe('accepted phase=plan')
+  })
+
+  it('requires every form of the attested verdict contract and appends it to review briefs', async () => {
+    const lifecycle = testLifecycle('FULL', [], verdictLauncher(), 100)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n' })
+    await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'review\n' })
+    await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'approved', tool_use_id: 'wrong' }))).toContain('outcome does not match the lane report')
+
+    const missing = testLifecycle('FULL', [], successLauncher(), 100)
+    await missing.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await missing.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n' })
+    await missing.transition({ phase: 'plan', tool_use_id: 'plan' })
+    await missing.artifact({ kind: 'critic-brief', content: 'review\n' })
+    await missing.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(missing.transition({ phase: 'critic', tool_use_id: 'missing' }))).toContain('VERDICT block')
+
+    const empty = testLifecycle('FULL', [], launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), 'VERDICT: changes-requested\\nFINDINGS:\\n')"), 100)
+    await empty.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await empty.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n' })
+    await empty.transition({ phase: 'plan', tool_use_id: 'plan' })
+    await empty.artifact({ kind: 'critic-brief', content: 'review\n' })
+    await empty.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(empty.transition({ phase: 'critic', tool_use_id: 'empty' }))).toContain('VERDICT block')
+  })
+
+  it('refuses a symlinked lane report and a symlinked .lane directory', async () => {
+    const lifecycle = testLifecycle('LITE', [], successLauncher(), 100)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
+    rmSync(join(lifecycle.root, '.lane', 'tdd-report.md'))
+    symlinkSync(join(lifecycle.root, '.gitignore'), join(lifecycle.root, '.lane', 'tdd-report.md'))
+    expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'symlink' }))).toContain('non-empty unchanged lane report')
+
+    const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-link-')); roots.push(root)
+    mkdirSync(join(root, 'actual'))
+    symlinkSync(join(root, 'actual'), join(root, '.lane'))
+    writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\n')
+    spawnSync('git', ['init', '-q'], { cwd: root })
+    expect(() => createLifecycleServer({ worktree: root, route: 'LITE', models: {}, cardId: '1', sessionTag: 'x' }))
+      .toThrow(/\.lane must be a real directory/)
+  })
+
+  it('refuses symlinked gate and inspect receipts without following them', async () => {
+    const lifecycle = testLifecycle('LITE')
+    symlinkSync(join(lifecycle.root, '.gitignore'), join(lifecycle.root, '.lane', 'test.log'))
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'test' }))).toContain('regular gate receipt')
+    rmSync(join(lifecycle.root, '.lane', 'test.log'))
+    symlinkSync(join(lifecycle.root, '.gitignore'), join(lifecycle.root, '.lane', 'lint.log'))
+    expect(await text(lifecycle.run({ kind: 'inspect', what: 'log', name: 'lint.log' }))).toContain('regular inspect log')
+  })
+
   it('does not trust tampered audit evidence or a changed lane report', async () => {
     const lifecycle = testLifecycle('LITE', [], successLauncher(), 100)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -240,6 +306,63 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
   })
 
+  it('does not attest a foreign receipt without the launch nonce', async () => {
+    const lifecycle = testLifecycle('LITE', [], foreignThenGenuineLauncher(), 250)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=0')
+    const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
+    expect(evidence.entries[join(lifecycle.root, '.lane', 'tdd-run.log')].exit).toBe('0')
+  })
+
+  it('does not attest a receipt from another launch nonce', async () => {
+    const lifecycle = testLifecycle('LITE', [], launcher("import { writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; writeFileSync(log, 'LANE_NONCE=other\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), 'report\\n')"), 30)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
+  })
+
+  it('resets a failed pre-commit index and removes failed archive temporary directories', async () => {
+    const calls: string[] = []
+    const git = (_program: string, call: string[]) => {
+      calls.push(call[0]!)
+      if (call[0] === 'commit') throw new Error('commit failed')
+      return call[0] === 'rev-parse' ? 'base\n' : ''
+    }
+    const failed = await lifecycleReadyForReport({ git })
+    await failed.transition({ phase: 'report', tool_use_id: 'report' })
+    expect(calls).toContain('reset')
+
+    let revisions = 0
+    const archive = await lifecycleReadyForReport({ git: (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : '', copy: () => { throw new Error('copy failed') } })
+    await archive.transition({ phase: 'report', tool_use_id: 'report' })
+    expect(readdirSync(join(archive.root, '.claude', 'reports')).filter((name) => name.includes('.tmp-'))).toEqual([])
+  })
+
+  it('does not commit again after post-commit status throws', async () => {
+    let revisions = 0; let commits = 0; let statusReads = 0
+    const git = (_program: string, call: string[]) => {
+      if (call[0] === 'commit') commits += 1
+      if (call[0] === 'status' && ++statusReads === 1) throw new Error('status unavailable')
+      return call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
+    }
+    const lifecycle = await lifecycleReadyForReport({ git })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'first' }))).toContain('missing archive')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'retry' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(commits).toBe(1)
+  })
+
+  it('accepts the card plan grammar and distinguishes top-level tasks from nested bullets', async () => {
+    const lifecycle = testLifecycle('FULL')
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    expect(await text(lifecycle.artifact({ kind: 'plan', content: readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.meta.url), 'utf8') }))).toBe('wrote plan')
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }))).toBe('accepted phase=critic')
+    const nested = testLifecycle('FULL')
+    await nested.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await nested.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task\n  DoD: green\n  - nested detail\n## Gates\n- test\n' })
+    expect(await text(nested.transition({ phase: 'plan', tool_use_id: 'plan' }))).toBe('accepted phase=critic')
+  })
+
   it('refuses an unsafe card id at server construction', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-card-')); roots.push(root); mkdirSync(join(root, '.lane'))
     expect(() => createLifecycleServer({ worktree: root, route: 'LITE', models: {}, cardId: '../bad', sessionTag: 'x' })).toThrow(/cardId/)
@@ -259,7 +382,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher: string | null = null, laneWaitMs: number | null = null, options: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-')); roots.push(root)
   mkdirSync(join(root, '.lane'))
-  writeFileSync(join(root, '.gitignore'), '.lane/\n')
+  writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\n')
   spawnSync('git', ['init', '-q'], { cwd: root })
   const gateResults: Record<string, { exit?: string, mtime?: number }> = {}
   const gateRunner = ({ name, log }: { name: string, log: string }) => { writeFileSync(log, 'gate\n'); return Number(gateResults[name]?.exit ?? '0') }
@@ -274,11 +397,13 @@ function launcher(source: string) {
   return file
 }
 function delayedLauncher() {
-  return launcher("import { spawn } from 'node:child_process'; const log = process.argv[process.argv.indexOf('--log') + 1]; const report = log.replace('-run.log', '-report.md'); const code = \"const fs=require('fs'); setTimeout(() => { fs.writeFileSync(process.argv[1], 'done\\\\nEXIT=0\\\\n'); fs.writeFileSync(process.argv[2], 'report\\\\n') }, 50)\"; const child = spawn(process.execPath, ['-e', code, log, report], { detached: true, stdio: 'ignore' }); child.unref()")
+  return launcher("import { spawn } from 'node:child_process'; const log = process.argv[process.argv.indexOf('--log') + 1]; const report = log.replace('-run.log', '-report.md'); const code = \"const fs=require('fs'); setTimeout(() => { fs.appendFileSync(process.argv[1], 'done\\\\nEXIT=0\\\\n'); fs.writeFileSync(process.argv[2], 'report\\\\n') }, 50)\"; const child = spawn(process.execPath, ['-e', code, log, report], { detached: true, stdio: 'ignore' }); child.unref()")
 }
 function emptyLauncher() { return launcher('process.exit(0)') }
-function logOnlyLauncher() { return launcher("import { writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; writeFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), '')") }
-function successLauncher() { return launcher("import { writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; writeFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), 'report\\n')") }
+function logOnlyLauncher() { return launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), '')") }
+function successLauncher() { return launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), 'report\\n')") }
+function verdictLauncher() { return launcher("import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(log.replace('-run.log', '-report.md'), 'VERDICT: changes-requested\\nFINDINGS:\\n- blocker\\n')") }
+function foreignThenGenuineLauncher() { return launcher("import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const report = log.replace('-run.log', '-report.md'); const nonce = readFileSync(log, 'utf8'); rmSync(log); writeFileSync(log, 'foreign\\nEXIT=0\\n'); setTimeout(() => { writeFileSync(log, nonce); appendFileSync(log, 'genuine\\nEXIT=0\\n'); writeFileSync(report, 'report\\n') }, 40)") }
 async function lifecycleAtVerify() {
   const lifecycle = testLifecycle('LITE', [], successLauncher(), 100)
   await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
