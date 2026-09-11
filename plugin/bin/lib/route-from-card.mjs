@@ -13,6 +13,6 @@ export function deriveRoute(card) {
   const files = /(?:^|\n)\s*(?:Files?|Impact)\s*:\s*([^\n]+)/i.exec(text)?.[1] ?? ''
   const named = files.match(/[\w./-]+\.(?:[a-z]{1,8})\b/gi) ?? []
   if (new Set(named.map((name) => name.toLowerCase())).size > 3) reasons.push('more than 3 named files')
-  if (!/^\s*(?:-\s+)?(?:Definition of done|DoD\s*:)\s*\S+/im.test(text)) reasons.push('no DoD')
+  if (!/^\s*(?:-\s+)?(?:Definition of done|DoD)\s*:\s*\S+/im.test(text)) reasons.push('no DoD')
   return { route: reasons.length ? 'FULL' : 'LITE', reasons: reasons.length ? reasons : ['all LITE signals clear'] }
 }

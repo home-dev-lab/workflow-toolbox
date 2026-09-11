@@ -63,6 +63,12 @@ describe('real SDK lifecycle server FULL sequence', () => {
     ['receipt with EXIT=124', async () => { const lifecycle = liteLifecycle(); edgeConfig({ tdd: { exit: 124 } }); await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); return lifecycle.transition({ phase: 'tdd', tool_use_id: 'timeout' }) }, /lane receipt EXIT=124/],
     ['receipt EXIT=1 with VERDICT clear is refused', async () => reviewEdge('clear', 1, 'clear'), /lane receipt EXIT=1/],
     ['receipt EXIT=1 with VERDICT changes-requested reaches harden', async () => reviewEdge('changes-requested', 1, 'changes-requested'), /^accepted phase=harden$/],
+    ['refutation changes-requested reaches harden', refutationChangesRequested, /^accepted phase=harden$/],
+    ['critic receipt EXIT=1 with VERDICT approved is refused', criticApprovedFailedReceipt, /lane receipt EXIT=1/],
+    ['harden receipt EXIT=1 is refused', async () => hardenReceipt(1), /lane receipt EXIT=1/],
+    ['harden receipt missing is refused', async () => hardenReceipt(null), /lane receipt unchanged/],
+    ['report edge with missing pilot-report is refused', async () => reportEdge(false, false), /missing pilot report/],
+    ['report edge with a gate digest changed after verify is refused', async () => reportEdge(true, true), /gate digest changed/],
     ['planRound bound', criticBound, /admissible outcome/],
     ['reviewRound bound', reviewBound, /available review round/],
     ['verdict and outcome mismatch', async () => reviewEdge('clear', 0, 'changes-requested'), /outcome does not match the lane report/],
@@ -108,9 +114,9 @@ function liteLifecycle() {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); process.env.WT_FULL_CALLS = calls; process.env.WT_FULL_COUNTS = counts
   const server = createLifecycleServer({ worktree, route: 'LITE', models: { lane: 'lane', review: 'review' }, cardId: 'edge', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 } })
-  return handlers(server)
+  return { ...handlers(server), root: worktree }
 }
-async function gates(lifecycle: ReturnType<typeof fullLifecycle>) { for (const name of ['typecheck', 'lint', 'test']) await lifecycle.run({ kind: 'gate', name }) }
+async function gates(lifecycle: { run: (args: Record<string, unknown>) => Promise<string> }) { for (const name of ['typecheck', 'lint', 'test']) await lifecycle.run({ kind: 'gate', name }) }
 function edgeConfig(config: Record<string, unknown>) { process.env.WT_EDGE_CONFIG = JSON.stringify(config) }
 async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>) {
   edgeConfig({ critic: { verdict: 'approved' } })
@@ -143,4 +149,37 @@ async function reviewBound() {
     await lifecycle.artifact({ kind: 'harden-brief', content: 'harden\n' }); await lifecycle.run({ kind: 'lane', phase: 'harden', timeout: 1 }); await lifecycle.transition({ phase: 'harden', tool_use_id: `harden-${round}` }); await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: `verify-${round}` })
   }
   throw new Error('unreachable')
+}
+async function refutationChangesRequested() {
+  const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+  edgeConfig({ review: { verdict: 'clear' } })
+  await lifecycle.artifact({ kind: 'review-brief', content: 'review\n' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'clear', tool_use_id: 'review-clear' })
+  edgeConfig({ refutation: { verdict: 'changes-requested', findings: ['refute this'] } })
+  await lifecycle.artifact({ kind: 'refutation-brief', content: 'refute\n' }); await lifecycle.run({ kind: 'lane', phase: 'refutation', timeout: 1 })
+  return lifecycle.transition({ phase: 'refutation', outcome: 'changes-requested', findings: ['refute this'], tool_use_id: 'refutation-change' })
+}
+async function criticApprovedFailedReceipt() {
+  const lifecycle = fullLifecycle(); edgeConfig({ critic: { verdict: 'approved', exit: 1 } })
+  await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })
+  await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+  return lifecycle.transition({ phase: 'critic', outcome: 'approved', tool_use_id: 'critic-failed' })
+}
+async function reachHarden() {
+  const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+  edgeConfig({ review: { verdict: 'changes-requested', findings: ['harden this'] } })
+  await lifecycle.artifact({ kind: 'review-brief', content: 'review\n' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: ['harden this'], tool_use_id: 'review-change' })
+  await lifecycle.artifact({ kind: 'harden-brief', content: 'harden\n' })
+  return lifecycle
+}
+async function hardenReceipt(exit: number | null) {
+  const lifecycle = await reachHarden()
+  if (exit !== null) { edgeConfig({ harden: { exit } }); await lifecycle.run({ kind: 'lane', phase: 'harden', timeout: 1 }) }
+  return lifecycle.transition({ phase: 'harden', tool_use_id: `harden-${exit ?? 'missing'}` })
+}
+async function reportEdge(writeReport: boolean, changeGate: boolean) {
+  const lifecycle = liteLifecycle()
+  await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' }); await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })
+  if (writeReport) await lifecycle.artifact({ kind: 'pilot-report', content: '# report\n' })
+  if (changeGate) writeFileSync(join(lifecycle.root, '.lane', 'test.log'), 'changed\nEXIT=0\n')
+  return lifecycle.transition({ phase: 'report', tool_use_id: 'report' })
 }

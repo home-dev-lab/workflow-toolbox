@@ -10,7 +10,7 @@ const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const require = createRequire(join(ROOT, 'toolkit/package.json'))
 
 function usage() {
-  return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> [--card-file <path>] [--profile-env <settings.json>] [--contract <path>] [--hard] [--mailbox <path>] [--room <atrium room>] [--timeout 5400] [--lane-silence 12]'
+  return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> [--card-file <path>] [--profile-env <settings.json>] [--contract <path>] [--hard] [--mailbox <path>] [--room <atrium room>] [--timeout 5400]'
 }
 
 async function main() {

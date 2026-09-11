@@ -5,11 +5,10 @@ import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lif
 import { deriveRoute } from './route-from-card.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
-export const DEFAULT_LANE_SILENCE = 12
 const POLL_MS = 250
 
 export function parsePilotRunnerArgs(argv) {
-  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, room: null, timeout: DEFAULT_TIMEOUT, laneSilence: DEFAULT_LANE_SILENCE }
+  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, room: null, timeout: DEFAULT_TIMEOUT }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--card') options.card = argv[++i] ?? null
@@ -20,14 +19,12 @@ export function parsePilotRunnerArgs(argv) {
     else if (arg === '--mailbox') options.mailbox = argv[++i] ?? null
     else if (arg === '--room') options.room = argv[++i] ?? null
     else if (arg === '--timeout') options.timeout = Number(argv[++i])
-    else if (arg === '--lane-silence') options.laneSilence = Number(argv[++i])
     else if (arg === '--hard') options.hard = true
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
   }
   if (!options.card || !options.dir) return { error: 'missing required --card or --dir' }
   if (!Number.isFinite(options.timeout) || options.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
-  if (!Number.isFinite(options.laneSilence) || options.laneSilence <= 0) return { error: '--lane-silence must be a positive number of minutes' }
   options.dir = resolve(options.dir)
   options.contract = resolve(options.contract ?? join(dirname(new URL(import.meta.url).pathname), '../../autonomy/PILOT-CONTRACT.md'))
   options.mailbox = resolve(options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt'))

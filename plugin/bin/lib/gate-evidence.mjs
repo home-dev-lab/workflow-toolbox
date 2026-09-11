@@ -40,8 +40,8 @@ export function treeSignature(root, fileSystem = fs) {
   for (const name of names) {
     const file = path.join(root, name)
     const stat = fileSystem.lstatSync(file, { throwIfNoEntry: false })
-    hash.update(Buffer.from(name)); hash.update('\0')
     if (!stat) continue
+    hash.update(Buffer.from(name)); hash.update('\0')
     hash.update(`${stat.isFile() ? 'file' : stat.isSymbolicLink() ? 'symlink' : 'other'}\0${stat.mode & 0o7777}\0`)
     if (stat.isFile()) hash.update(fileSystem.readFileSync(file))
     else if (stat.isSymbolicLink()) hash.update(fileSystem.readlinkSync(file))

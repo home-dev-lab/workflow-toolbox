@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
+import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')
@@ -41,10 +41,11 @@ describe('SDK pilot runner', () => {
     expect(result.status).toBe(2); expect(result.stderr).toContain('missing required --card or --dir')
   })
 
-  it('parses a positive lane-silence interval', () => {
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a'])).toMatchObject({ laneSilence: 12 })
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--lane-silence', '3'])).toMatchObject({ laneSilence: 3 })
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--lane-silence', '0'])).toMatchObject({ error: '--lane-silence must be a positive number of minutes' })
+  it('rejects the removed lane-silence option and omits it from usage', () => {
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a'])).not.toHaveProperty('laneSilence')
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--lane-silence', '3'])).toMatchObject({ error: 'unknown argument: --lane-silence' })
+    const result = spawnSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' })
+    expect(result.status).toBe(0); expect(result.stdout).not.toContain('--lane-silence')
   })
 
   it('places an arbiter card file verbatim in the first prompt without changing prompts that omit it', async () => {
@@ -104,30 +105,28 @@ describe('SDK pilot runner', () => {
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'sdk-transcript.json'), 'utf8'))).toHaveLength(4)
   })
 
-  it('accepts the awaiting_fidelity receipt returned by the real lifecycle transition handler', async () => {
-    const f = fixture(); let heads = 0
+  it('completes from the real result of the lifecycle server registered in query options', async () => {
+    const f = fixture(); let heads = 0; let registeredServer: unknown; let receipt = ''
+    const cardFile = join(f.root, 'card.md'); writeFileSync(cardFile, 'Route: LITE\n')
     const launcher = join(f.root, 'launcher.mjs')
-    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, `${readFileSync(log, 'utf8')}done\\nEXIT=0\\n`); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), 'report\\n')")
-    const server = createLifecycleServer({ worktree: f.dir, route: 'LITE', models: {}, cardId: '1', sessionTag: 'runner-test', laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' })
-    const transition = server.instance._registeredTools.transition.handler
-    await transition({ phase: 'discovery', tool_use_id: 'discovery' })
-    const artifact = server.instance._registeredTools.write_artifact.handler
-    const run = server.instance._registeredTools.run.handler
-    await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
-    for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
-    await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })
-    writeFileSync(join(f.dir, '.lane', 'pilot-report.md'), '# real lifecycle report\n')
-    const receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0].text
-    expect(receipt).toBe(AWAITING_FIDELITY_RESULT)
-    rmSync(join(f.dir, '.lane', 'route.json'))
-    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+    writeFileSync(launcher, "import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), 'report\\n')")
+    type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
+      registeredServer = options.mcpServers[LIFECYCLE_MCP_KEY]
+      const tools = (registeredServer as RegisteredServer).instance._registeredTools
+      const transition = tools.transition!.handler; const artifact = tools.write_artifact!.handler; const run = tools.run!.handler
       yield initMessage(); await prompt.next()
+      await transition({ phase: 'discovery', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
+      for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# real lifecycle report\n' })
+      receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
       yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'real-lifecycle', name: lifecycleToolName('transition'), input: {} }] } }
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'real-lifecycle', content: receipt }] } }
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
     })()
-    let reportChecks = 0
-    const result = await runPilot({ card: '1', dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), exists: (path: string) => path === join(f.dir, '.lane', 'pilot-report.md') ? reportChecks++ > 0 : existsSync(path), sleep: async () => {} })
+    const result = await runPilot({ card: '1', cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {} })
+    expect(registeredServer).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
+    expect(receipt).toBe(AWAITING_FIDELITY_RESULT)
     expect(result).toMatchObject({ exitCode: 0, summary: { awaiting_fidelity_receipt: true } })
   })
 

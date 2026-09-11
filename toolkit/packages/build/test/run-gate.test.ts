@@ -264,6 +264,28 @@ describe('wt-run-gate --check', () => {
     if (process.platform !== 'win32') { unlinkSync(join(root, 'link')); symlinkSync('/outside/first', join(root, 'link')); recordGate(root, env, 'test'); chmodSync(join(root, 'mode-file'), 0o755); expect(run(['--check', root, '--gate', 'test'], { env }).status).toBe(1) }
   })
 
+  it('keeps a tracked deletion signature identical before and after staging', () => {
+    const { root } = gateRepo()
+    const git = (...args: string[]) => spawnSync('git', args, { cwd: root, encoding: 'utf8' })
+    unlinkSync(join(root, 'plugin', 'thing.mjs'))
+    const beforeStage = treeSignature(root)
+    expect(git('add', '-A').status).toBe(0)
+    expect(treeSignature(root)).toBe(beforeStage)
+    expect(git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'delete').status).toBe(0)
+    expect(treeSignature(root)).toBe(beforeStage)
+  })
+
+  it('keeps a tracked rename signature identical before and after staging', () => {
+    const { root } = gateRepo()
+    const git = (...args: string[]) => spawnSync('git', args, { cwd: root, encoding: 'utf8' })
+    expect(git('mv', 'plugin/thing.mjs', 'plugin/renamed.mjs').status).toBe(0)
+    const beforeStage = treeSignature(root)
+    expect(git('add', '-A').status).toBe(0)
+    expect(treeSignature(root)).toBe(beforeStage)
+    expect(git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'rename').status).toBe(0)
+    expect(treeSignature(root)).toBe(beforeStage)
+  })
+
   it('is deterministic and fails loudly when its injected file reader cannot read an input', () => {
     const { root } = gateRepo()
     writeFileSync(join(root, 'a'), 'a'); writeFileSync(join(root, 'b'), 'b')

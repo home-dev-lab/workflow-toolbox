@@ -11,6 +11,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - SDK pilot lifecycle: lane verdicts are parsed from the attested report rather than declared by
   the pilot; receipts are per-launch files, the tree signature ignores staging, ancestors are
   re-checked on every operation, and symlinks refused.
+- `--lane-silence` removed: the lifecycle run tool waits for the lane itself.
 - `wt-run-gate` signatures now invalidate records for content, deletion, mode, type, and symlink-target
   changes; the SDK pilot can write only its lifecycle-gated lane brief and report artifacts.
 - SDK pilot lifecycle: a `changes-requested` review or refutation must now name at least one
