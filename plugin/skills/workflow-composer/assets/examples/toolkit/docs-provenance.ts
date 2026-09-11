@@ -51,6 +51,11 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-intake-triage.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The pilot-orchestrator template is its executable caller; this focused intake helper adds no standalone operator guide.',
+  },
+  {
     script: 'plugin/bin/wt-claimed-test-check.mjs',
     status: 'missing-doc-surface',
     reason: 'A repo-maintenance precision checker recorded in the Unreleased changelog; this pairing-half card adds no user-facing operating guide.',

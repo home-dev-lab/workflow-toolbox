@@ -131,9 +131,19 @@ back silently.
      follow-up, a discovered process/tooling gap you carded mid-wave). Any such card
      carrying an in-scope category label is IN the set this gate re-queries, whatever the
      mission's original shape.
-   - **The stop announcement carries both probes.** State the two query timestamps, the
-     exact criteria/query used, and the count each returned. "The board is empty" alone is
-     never an acceptable closing statement — a count names its set and its instrument.
+    - **The stop announcement carries both probes.** State the two query timestamps, the
+      exact criteria/query used, and the count each returned. "The board is empty" alone is
+      never an acceptable closing statement — a count names its set and its instrument.
+2a. **Route the card before any work.** Write every candidate card to `<cards.json>`, then run
+    `node <plugin-root>/bin/wt-intake-triage.mjs --cards <cards.json>`. Its JSON output records
+    deterministic signals, forced/refused verdicts, and the `eligible` cards. Honor forced and
+    refused verdicts without a model call. Make the single batched strong-model call ONLY over the `eligible` list
+    the CLI printed, never a call per card. Classify each as **inline** (you do the
+    two-line or docs change yourself), **lane-direct** (a settled design goes straight to an
+    executor lane without a pilot, rule 1bis), or **pilot** (in-flight arbitration is needed). On
+    doubt, move one route UP, never down: `inline` < `lane-direct` < `pilot`. Before doing any
+    work, write each `Route:` line with the reason the CLI or the call produced, for example
+    `Route: lane-direct — DoD complete, no open question`.
 3. **A card needing a human decision is PARKED, never a stop — AS LONG AS another in-scope
    card remains to try.** A card whose resolution needs a business preference, a
    publish/deploy/destructive action, or any decision neither you nor your arbiter can make →
@@ -259,8 +269,8 @@ back silently.
     on every pilot report at integration.
 10. **Report** — ONE consolidated wave report file (named per the *File-report contract*
    naming constraint below) + a one-line SendMessage to the main session. Verify each pilot left its card's narrative as one consolidated comment and its
-   board state true. **Name, per card, which lane or tier carried the IMPLEMENTATION and
-   which carried the REVIEW, separately** — this is the report-time half of step 7's check,
+    board state true. **Name, per card, the route taken and which lane or tier carried the
+    IMPLEMENTATION and which carried the REVIEW, separately** — this is the report-time half of step 7's check,
    asked of the pilot rather than observed on a live process, so state it even when step 7's
    sweep already answered it (the two are independent evidence, not a fallback for each
    other — see step 7). A stated policy with no report-time check does not apply, however

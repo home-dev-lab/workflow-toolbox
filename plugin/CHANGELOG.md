@@ -25,6 +25,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   on the type without reading the caveat. Classifier in `lib/quota-drop.mjs`.
 
 ### Added
+- Add deterministic pilot-orchestrator intake triage and `wt-intake-triage` CLI: forced route handling,
+  one batched strong-model classification, route-up-on-doubt, and an executable fixture lock for inline,
+  lane-direct, and pilot work.
 - Add `wt-pilot-fidelity.mjs`, the shipped freeze/verify command Main uses to bind lane evidence
   bytes and worktree identity before fidelity review.
 - Add the runner-owned `sdk-pilot-lifecycle` Function Hook and curated SDK tool surface; ordered
