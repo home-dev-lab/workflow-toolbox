@@ -27,9 +27,16 @@ function fixture() {
 describe('wt-pilot-fidelity CLI', () => {
   it('freezes then verifies a lane receipt bundle', () => {
     const { root, bundle, run } = fixture()
-    const result = run(['verify', '--root', root, '--dir', bundle, '--require-clean-tree', '--require-head'])
+    const result = run(['verify', '--root', root, '--dir', bundle, '--require-same-tree', '--require-head'])
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toContain('VERIFIED card=186 session=sdk-1 files=1')
+  })
+
+  it('keeps --require-clean-tree as a deprecated alias', () => {
+    const { root, bundle, run } = fixture()
+    const result = run(['verify', '--root', root, '--dir', bundle, '--require-clean-tree'])
+    expect(result.status).toBe(0)
+    expect(result.stderr).toContain('deprecated: --require-clean-tree; use --require-same-tree')
   })
 
   it.each([

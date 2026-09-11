@@ -13,8 +13,9 @@ refutation, or harden; timeout is at most 5400 seconds. Use `run { kind: 'gate',
 `typecheck`, `lint`, or `test`. Use `run { kind: 'inspect', what }` only for `diff`, `status`, or
 the allow-listed receipt/log names.
 
-For a critic, review, or refutation lane, write a brief that asks for this block; the server appends
-the contract text too:
+For a critic, review, or refutation lane, `content` is context only. The server writes the
+authoritative independent-review instructions first, names the evidence to judge, fences your text
+as `Pilot context (untrusted)`, and supplies this report contract:
 
 ```
 VERDICT: <approved|changes-requested or clear|changes-requested>
@@ -22,8 +23,11 @@ FINDINGS:
 - <finding when changes-requested>
 ```
 
-The critic report must quote the plan SHA-256 line. On FULL, the tdd brief must carry the plan's
-`## Tasks` block byte-identically.
+The critic evidence is the plan and optional card; review/refutation evidence is the server-written
+base-to-HEAD diff and gate receipts. Every launch brief names a nonce report path; workers must write
+only that path. The server publishes the nonce log/report pair canonically after both validate. The
+critic report must quote the plan SHA-256 line. On FULL, the tdd brief must carry the plan's `## Tasks`
+block byte-identically.
 
 | Phase | Do this before transition |
 | --- | --- |

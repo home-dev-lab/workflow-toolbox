@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lifecycleToolName } from './sdk-pilot-lifecycle-server.mjs'
 import { deriveRoute } from './route-from-card.mjs'
@@ -67,8 +67,15 @@ export function lifecycleCanUseTool(worktree, toolName, input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
   const requested = input.file_path ?? input.path ?? worktree
   if (typeof requested !== 'string') return { behavior: 'deny', message: `invalid path: ${String(requested)}` }
-  const pattern = input.pattern
-  if (toolName === 'Glob' && typeof pattern === 'string' && (isAbsolute(pattern) || pattern.split(/[\\/]/).includes('..')) && !confinedToWorktree(worktree, pattern)) return { behavior: 'deny', message: `path outside worktree: ${pattern}` }
+  const pattern = toolName === 'Glob' ? input.pattern : (input.glob ?? input.pattern)
+  if ((toolName === 'Glob' || toolName === 'Grep') && typeof pattern === 'string' && /[\\/]/.test(pattern)) {
+    const segments = pattern.split(/[\\/]/)
+    const wildcard = segments.findIndex((segment) => /[*?[{]/.test(segment))
+    const prefix = segments.slice(0, wildcard < 0 ? segments.length : wildcard).join('/') || '.'
+    const base = input.path ?? worktree
+    const requestedPrefix = resolve(worktree, base, prefix)
+    if (!confinedToWorktree(worktree, requestedPrefix)) return { behavior: 'deny', message: `path outside worktree: ${pattern}` }
+  }
   return confinedToWorktree(worktree, requested) ? { behavior: 'allow' } : { behavior: 'deny', message: `path outside worktree: ${requested}` }
 }
 

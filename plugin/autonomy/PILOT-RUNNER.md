@@ -30,11 +30,20 @@ declared by the pilot.
 
 ## Evidence and identity
 
-A lane launch pre-creates `.lane/<phase>-run.<nonce>.log` with `LANE_NONCE=` and, after a matching
-terminal receipt, publishes `.lane/<phase>-run.log`. Its report is `.lane/<phase>-report.md`.
+A lane launch pre-creates `.lane/<phase>-run.<nonce>.log` with `LANE_NONCE=` and names
+`.lane/<phase>-report.<nonce>.md` in the brief. After the nonce log's terminal receipt and nonce
+report both exist as regular files, the server exclusively publishes and attests the canonical
+`.lane/<phase>-run.log` and `.lane/<phase>-report.md` pair. Stale shared reports are never attested.
 Attestations are held in memory and re-hashed at each edge; `evidence.json` is audit-only.
 Symlinks are refused and `.lane` ancestors are re-checked before operations. `.lane` is git-ignored
 and excluded from the tree signature.
+
+Critic, review, and refutation briefs begin with server-owned independent-review instructions. The
+server names the plan/card or a base-to-HEAD diff plus gate receipts, writes review/refutation diffs
+to `.lane/<phase>-input.diff`, and fences pilot prose afterward as untrusted context. Glob and Grep
+patterns with separators are confined by real-path checking their non-glob prefix, including through
+relative symlinks. Lifecycle implementation, receipts/launch, and report-edge transaction code live
+in separate modules behind the unchanged public server export.
 
 Tree signature v3 is a filesystem signature over names from HEAD, the index, and non-ignored
 untracked files. It includes entry type, mode, contents, or symlink target. Staging a deletion or
@@ -59,7 +68,9 @@ authorizing reads.
 ## Fidelity review
 
 Main freezes and verifies evidence with `wt-pilot-fidelity.mjs`. Run `freeze` with the worktree,
-bundle directory, card, session, base, head, and lane files; then run `verify --require-clean-tree
+bundle directory, card, session, base, head, and lane files; then run `verify --require-same-tree
 --require-head`. The v2 manifest has typed entries, a snapshot id, and a length-prefixed signature;
-freeze and verify reject unsafe containment and malformed bundle evidence. Verification proves the
-frozen bytes and requested tree/HEAD identity only, never authorship or prose truth.
+freeze and verify reject unknown kinds, extra fields, duplicate names, incoherent commit heads,
+unsafe containment, and malformed evidence. Unknown files require explicit `--other-file` input.
+`--require-clean-tree` remains a deprecated alias. Verification proves frozen bytes and requested
+tree/HEAD identity only, never authorship or prose truth.

@@ -26,10 +26,9 @@ function fixture() {
   git('init', '-q'); git('add', '.'); git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'base')
   const head = git('rev-parse', 'HEAD').stdout.trim()
   writeFileSync(join(root, '.lane', 'summary.json'), JSON.stringify({ commit: head }))
-  git('add', '.'); git('commit', '-qm', 'summary')
   const bundle = mkdtempSync(join(tmpdir(), 'wt-fidelity-bundle-')); roots.push(bundle)
   const files = ['.lane/typecheck.log', '.lane/tdd-run.log', '.lane/tdd-report.md', '.lane/pilot-report.md', '.lane/summary.json']
-  const manifest = freezeFidelityBundle({ root, outDir: bundle, card: '186', session: 'sdk-1', base: 'base', head: git('rev-parse', 'HEAD').stdout.trim(), files })
+  const manifest = freezeFidelityBundle({ root, outDir: bundle, card: '186', session: 'sdk-1', base: 'base', head, files })
   return { root, bundle, manifest, files, git }
 }
 
@@ -49,7 +48,30 @@ it('B1 lock: refuses a typed entry whose fields no longer match its receipt', ()
   const manifest = JSON.parse(readFileSync(join(bundle, 'fidelity-manifest.json'), 'utf8'))
   manifest.files.find((file: { kind: string }) => file.kind === 'gate').kind = 'report'
   writeManifest(bundle, manifest)
-  expect(() => verifyFidelityBundle({ root, dir: bundle })).toThrow('entry mismatch')
+  expect(() => verifyFidelityBundle({ root, dir: bundle })).toThrow('invalid fidelity manifest entry')
+})
+
+it.each([
+  ['unknown kind', (manifest: { files: Array<Record<string, unknown>> }) => { manifest.files[0]!.kind = 'invented' }, 'invalid fidelity manifest entry'],
+  ['extra field', (manifest: { files: Array<Record<string, unknown>> }) => { manifest.files[0]!.extra = true }, 'invalid fidelity manifest entry'],
+  ['duplicate name', (manifest: { files: Array<Record<string, unknown>> }) => { manifest.files[1]!.name = manifest.files[0]!.name }, 'duplicate fidelity manifest entry name'],
+  ['commit head mismatch', (manifest: { files: Array<Record<string, unknown>> }) => { manifest.files.find((file) => file.kind === 'commit')!.head = 'different' }, 'commit head differs from manifest head'],
+])('H4 schema lock: refuses %s', (_name, mutate, expected) => {
+  const { root, bundle } = fixture()
+  const manifest = JSON.parse(readFileSync(join(bundle, 'fidelity-manifest.json'), 'utf8'))
+  mutate(manifest)
+  manifest.signature = manifest.signature
+  writeManifest(bundle, manifest)
+  expect(() => verifyFidelityBundle({ root, dir: bundle })).toThrow(expected)
+})
+
+it('refuses unknown freeze inputs unless explicitly classified as other', () => {
+  const { root, manifest } = fixture()
+  writeFileSync(join(root, '.lane', 'notes.txt'), 'notes\n')
+  const refused = mkdtempSync(join(tmpdir(), 'wt-fidelity-refused-')); roots.push(refused)
+  expect(() => freezeFidelityBundle({ root, outDir: refused, card: '186', session: 'sdk-1', base: 'base', head: manifest.head, files: ['.lane/notes.txt'] })).toThrow('unknown fidelity bundle input')
+  const accepted = mkdtempSync(join(tmpdir(), 'wt-fidelity-other-')); roots.push(accepted)
+  expect(freezeFidelityBundle({ root, outDir: accepted, card: '186', session: 'sdk-1', base: 'base', head: manifest.head, files: ['.lane/notes.txt'], otherFiles: ['.lane/notes.txt'] }).files[0].kind).toBe('other')
 })
 
 it('B2 lock: refuses an entry from another snapshot', () => {
@@ -74,7 +96,7 @@ it('B4 lock: records a contained link and refuses an escaping input link without
   const { root, files } = fixture()
   symlinkSync('typecheck.log', join(root, '.lane', 'inside.log'))
   const contained = mkdtempSync(join(tmpdir(), 'wt-fidelity-contained-')); roots.push(contained)
-  const manifest = freezeFidelityBundle({ root, outDir: contained, card: '186', session: 'sdk-1', base: 'base', head: 'head', files: [...files, '.lane/inside.log'] })
+  const manifest = freezeFidelityBundle({ root, outDir: contained, card: '186', session: 'sdk-1', base: 'base', head: readFileSync(join(root, '.lane', 'summary.json'), 'utf8').match(/[a-f0-9]{40,64}/)![0], files: [...files, '.lane/inside.log'] })
   expect(manifest.files.find((file: { name: string }) => file.name === '.lane/inside.log')).toMatchObject({ kind: 'symlink', target: 'typecheck.log' })
   expect(verifyFidelityBundle({ root, dir: contained })).toBeTruthy()
   symlinkSync('/etc/passwd', join(root, '.lane', 'outside.log'))

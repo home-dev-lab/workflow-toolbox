@@ -1,4 +1,5 @@
-// Shared gate-record format and tree signature. A record is useful only for the exact tree it ran on.
+// Shared gate-record format and tree signature. Ignored files are outside the signature by design,
+// as they are outside the commit too; lifecycle evidence under .lane/ relies on that exclusion.
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'

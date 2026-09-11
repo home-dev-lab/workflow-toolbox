@@ -8,11 +8,14 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Changed
 - The SDK pilot lifecycle is now the runner-hosted `sdk-pilot-lifecycle` MCP server, replacing the
   Function Hook and raw Bash allow-list. It derives and freezes card routing; parses lane verdicts
-  from attested reports; uses nonce-bound per-launch receipts; re-checks ancestors and refuses
+  from attested reports; generates independent-review briefs from server-owned templates and
+  nonce-binds both lane logs and reports; re-checks ancestors and relative glob prefixes through
   symlinks; and uses filesystem tree signature v3, which ignores index-only changes. The lifecycle
   run tool waits for lanes, so `--lane-silence` is removed. Fidelity bundles use canonical manifest
-  v2 with typed snapshot-bound entries and length-prefixed signatures; `verify` supports
-  `--require-clean-tree` and `--require-head`.
+  v2 with exact snapshot-bound entry schemas, coherent commit heads, and length-prefixed signatures;
+  `verify` supports `--require-same-tree` and `--require-head` (`--require-clean-tree` is deprecated).
+  Lifecycle code is split into server/state, receipts/launch, and report-edge transaction modules;
+  an uncertain post-commit HEAD is persisted and reconciled on retry without committing twice.
 
 ### Fixed
 - `wt-run-gate` signatures now invalidate records for content, deletion, mode, type, and symlink-target

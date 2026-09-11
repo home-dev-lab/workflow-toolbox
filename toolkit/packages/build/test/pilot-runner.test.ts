@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -109,7 +109,7 @@ describe('SDK pilot runner', () => {
     const f = fixture(); let heads = 0; let registeredServer: unknown; let receipt = ''
     const cardFile = join(f.root, 'card.md'); writeFileSync(cardFile, 'Route: LITE\n')
     const launcher = join(f.root, 'launcher.mjs')
-    writeFileSync(launcher, "import { appendFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), 'report\\n')")
+    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(report, 'report\\n')")
     type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
     const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
       registeredServer = options.mcpServers[LIFECYCLE_MCP_KEY]
@@ -248,6 +248,7 @@ describe('SDK pilot runner', () => {
 
   it('confines real Read, Glob, and Grep authorization inputs', () => {
     const f = fixture(); const outside = join(f.root, 'outside'); mkdirSync(outside); writeFileSync(join(outside, 'secret'), 'x')
+    symlinkSync(outside, join(f.dir, 'outside-link'))
     for (const tool of ['Read', 'Glob', 'Grep']) {
       expect(lifecycleCanUseTool(f.dir, tool, { path: outside }).behavior).toBe('deny')
       expect(lifecycleCanUseTool(f.dir, tool, { path: '../outside' }).behavior).toBe('deny')
@@ -255,6 +256,9 @@ describe('SDK pilot runner', () => {
     }
     expect(lifecycleCanUseTool(f.dir, 'Glob', { pattern: join(outside, '*') }).behavior).toBe('deny')
     expect(lifecycleCanUseTool(f.dir, 'Glob', { pattern: '../outside/*' }).behavior).toBe('deny')
+    expect(lifecycleCanUseTool(f.dir, 'Glob', { pattern: 'outside-link/*' }).behavior).toBe('deny')
+    expect(lifecycleCanUseTool(f.dir, 'Glob', { pattern: 'src/**/*.ts' }).behavior).toBe('allow')
+    expect(lifecycleCanUseTool(f.dir, 'Grep', { path: '.', glob: 'outside-link/*.ts' }).behavior).toBe('deny')
     expect(lifecycleCanUseTool(f.dir, 'Read', null).behavior).toBe('deny')
   })
 })
