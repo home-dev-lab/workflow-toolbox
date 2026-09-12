@@ -4,16 +4,19 @@ import { describePackContract, packPaths } from './helpers/pack-contract.js'
 
 describePackContract({
   pack: 'java',
-  extensions: ['.java', '.groovy', '.gradle'],
-  files: ['pom.xml', 'build.gradle', 'build.gradle.kts'],
+  extensions: ['.java'],
+  files: ['pom.xml'],
   consumerTrigger: '/\\.(?:java|groovy|gradle)$/i.test(editPath(e))',
   declaration: { command: 'jdtls', args: [], extensionToLanguage: { '.java': 'java' }, diagnostics: true, startupTimeout: 23000 },
 })
 
-describe('Java pack: Groovy is guidance, never a declaration (plan D2)', () => {
-  it('declares no groovy language key in the pack or the root while .groovy is a trigger', () => {
+describe('Java pack ownership', () => {
+  it('does not retain Groovy or Gradle triggers after ownership moves to the Groovy pack', () => {
     const { lspDeclarationPath, pluginLspDeclarationPath, manifestPath } = packPaths('java')
-    expect(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).triggers.extensions).toContain('.groovy')
+    expect(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).triggers.extensions).not.toContain('.groovy')
+    expect(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).triggers.extensions).not.toContain('.gradle')
+    expect(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).triggers.files).not.toContain('build.gradle')
+    expect(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).triggers.files).not.toContain('build.gradle.kts')
     expect(JSON.parse(fs.readFileSync(lspDeclarationPath, 'utf8'))).not.toHaveProperty('groovy')
     expect(JSON.parse(fs.readFileSync(pluginLspDeclarationPath, 'utf8'))).not.toHaveProperty('groovy')
   })

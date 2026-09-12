@@ -6,6 +6,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Added the Groovy language pack with sole `.groovy`/`.gradle`, Gradle, and Spock trigger ownership,
+  focused rules, SDK-only review agents, and archived headless probe fixtures. The attempted
+  GroovyLanguageServer build did not start in the harness, so no Groovy LSP declaration ships.
 - The observer-pairing guard now archives checker-reported conflicting `meta.json` pairs under the state directory by default, with `WT_OBSERVER_PAIRING_CAPTURE_DIR` available to redirect evidence.
 - SDK pilot runner summaries now record the requested model and resolver provenance alongside the
   model reported by the SDK initialization receipt and first assistant turn, explicitly flagging

@@ -1,8 +1,8 @@
 {
   "language": "java",
   "triggers": {
-    "extensions": [".java", ".groovy", ".gradle"],
-    "files": ["pom.xml", "build.gradle", "build.gradle.kts"]
+    "extensions": [".java"],
+    "files": ["pom.xml"]
   },
   "rules": [
     "tdd-junit.md",
