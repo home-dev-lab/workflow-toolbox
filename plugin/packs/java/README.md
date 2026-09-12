@@ -2,14 +2,14 @@
 
 ## Selection
 
-The pack declares Java, Groovy, and Gradle-related triggers in `pack.json`. Selection behavior is
-owned by the private pack hooks and is not enforced by this pack.
+The pack declares Java and Maven triggers in `pack.json`. Selection behavior is owned by the private
+pack hooks and is not enforced by this pack.
 
 ## What this pack ships
 
-The pack ships Java/JUnit rules, Maven and Gradle build skills, SDK-only critic and reviewer
-definitions, one Java diagnostics declaration, and a Java probe fixture. It also supplies Groovy
-and Gradle-script guidance; it does not supply a Groovy language-server declaration.
+The pack ships Java/JUnit rules, Maven build skills, SDK-only critic and reviewer definitions, one
+Java diagnostics declaration, and a Java probe fixture. Groovy and Gradle ownership is in the
+Groovy pack.
 
 ## Language server
 
@@ -56,13 +56,6 @@ The command also requires the `java` first on the Claude Code process PATH to be
 
 The rules and skills cover JUnit 5, Spock, Maven, and Gradle. SpotBugs, PMD, Checkstyle, and a
 formatter are optional project-configured tools. The critic and reviewer are SDK-only definitions.
-
-## Groovy
-
-Groovy is guidance inside this pack through triggers, rules, skills, and the reviewer section, not
-an LSP declaration. Diagnostics are not provided for `.groovy`. Add a Groovy entry only when a
-named server has documented command, arguments, and extension mapping and its two probe arms pass
-and are archived; then regenerate the root declaration.
 
 ## Limits
 
