@@ -7,5 +7,14 @@
     },
     "diagnostics": true,
     "startupTimeout": 10000
+  },
+  "java": {
+    "command": "jdtls",
+    "args": [],
+    "extensionToLanguage": {
+      ".java": "java"
+    },
+    "diagnostics": true,
+    "startupTimeout": 23000
   }
 }

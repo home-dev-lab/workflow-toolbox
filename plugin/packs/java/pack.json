@@ -1,0 +1,19 @@
+{
+  "language": "java",
+  "triggers": {
+    "extensions": [".java", ".groovy", ".gradle"],
+    "files": ["pom.xml", "build.gradle", "build.gradle.kts"]
+  },
+  "rules": [
+    "tdd-junit.md",
+    "lint-typecheck-build.md"
+  ],
+  "skills": [
+    "tdd-red-green",
+    "lint-typecheck-build"
+  ],
+  "agents": [
+    "critic.md",
+    "reviewer.md"
+  ]
+}
