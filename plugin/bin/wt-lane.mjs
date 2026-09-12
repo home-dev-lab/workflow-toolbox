@@ -16,11 +16,11 @@ async function loadConsentModules() {
 }
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--timeout 5400] [--log <path>] [--variant <name>]'
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--timeout 5400] [--log <path>] [--variant <name>] [--allow-no-git]'
 }
 
 function parse(argv) {
-  const out = { dir: null, model: null, brief: null, timeout: DEFAULT_TIMEOUT, log: null }
+  const out = { dir: null, model: null, brief: null, timeout: DEFAULT_TIMEOUT, log: null, allowNoGit: false }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dir') out.dir = argv[++i] ?? null
@@ -29,6 +29,7 @@ function parse(argv) {
     else if (arg === '--timeout') out.timeout = Number(argv[++i])
     else if (arg === '--log') out.log = argv[++i] ?? null
     else if (arg === '--variant') out.variant = argv[++i] ?? null
+    else if (arg === '--allow-no-git') out.allowNoGit = true
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
   }
@@ -40,6 +41,24 @@ function parse(argv) {
   out.brief = path.resolve(out.brief)
   out.log = path.resolve(out.log ?? path.join(out.dir, '.lane', 'run.log'))
   return out
+}
+
+function checkGitWorktree(dir) {
+  const result = spawnSync('git', ['-C', dir, 'rev-parse', '--is-inside-work-tree'], {
+    encoding: 'utf8',
+    env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+  })
+  if (result.error?.code === 'ENOENT') {
+    process.stderr.write(`wt-lane: git is unavailable; cannot verify --dir: ${dir}\n`)
+    return false
+  }
+  if (result.stdout.trim() !== 'true') {
+    process.stderr.write(`wt-lane: --dir is not inside a git work tree: ${dir}\n`)
+    process.stderr.write('wt-lane: expected a directory inside a git work tree.\n')
+    process.stderr.write(`wt-lane: remedy: git worktree add ${dir} <branch>, or pass --allow-no-git for a deliberate non-repo lane.\n`)
+    return false
+  }
+  return true
 }
 
 function writeEnvLog(dir) {
@@ -69,6 +88,7 @@ async function main() {
   if (opts.error) { process.stderr.write(`wt-lane: ${opts.error}\n${usage()}\n`); return 2 }
   if (!existsSync(opts.dir) || !statSync(opts.dir).isDirectory()) { process.stderr.write(`wt-lane: --dir is not a directory: ${opts.dir}\n`); return 2 }
   if (!existsSync(opts.brief)) { process.stderr.write(`wt-lane: --brief does not exist: ${opts.brief}\n`); return 2 }
+  if (!opts.allowNoGit && !checkGitWorktree(opts.dir)) return 2
 
   // Invoke the same consent resolver and wording as the PreToolUse gate before a node wrapper
   // can bypass its text matcher.
@@ -87,7 +107,7 @@ async function main() {
 
   if (!worker) {
     mkdirSync(path.join(opts.dir, '.lane'), { recursive: true })
-    const child = spawn(process.execPath, [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', opts.brief, '--timeout', String(opts.timeout), '--log', opts.log, ...(opts.variant ? ['--variant', opts.variant] : [])], {
+    const child = spawn(process.execPath, [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', opts.brief, '--timeout', String(opts.timeout), '--log', opts.log, ...(opts.variant ? ['--variant', opts.variant] : []), ...(opts.allowNoGit ? ['--allow-no-git'] : [])], {
       detached: true,
       stdio: 'ignore',
     })

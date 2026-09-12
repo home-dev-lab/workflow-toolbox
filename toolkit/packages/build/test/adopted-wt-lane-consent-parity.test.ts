@@ -53,7 +53,7 @@ function fixture(transformSource?: (source: string) => string, install = true) {
 function launch(f: ReturnType<typeof fixture>) {
   const brief = join(f.project, 'brief.md')
   writeFileSync(brief, '# brief\n')
-  return spawnSync(process.execPath, [f.installed, '--dir', f.project, '--model', 'test/model', '--brief', brief], { encoding: 'utf8', env: f.env })
+  return spawnSync(process.execPath, [f.installed, '--dir', f.project, '--model', 'test/model', '--brief', brief, '--allow-no-git'], { encoding: 'utf8', env: f.env })
 }
 
 describe('adopted wt-lane consent resolver', () => {
@@ -63,7 +63,7 @@ describe('adopted wt-lane consent resolver', () => {
     const snapshot = spawnSync(process.execPath, [INSTALLER, '--set', 'scripts', '--install', '--dir', snapshotRoot], { encoding: 'utf8' })
     expect(snapshot.status, snapshot.stderr).toBe(0)
     const digest = crypto.createHash('sha256').update(readFileSync(join(snapshotRoot, 'wt-lane.mjs'))).digest('hex')
-    expect(digest).toBe('249fa7abec1050cfa463755a36f5a3e3b2bdb6c3be450763b59e56b789fc15bf')
+    expect(digest).toBe('fcc98ae5f076b393af5972bbbf02a02c620987b4b7e8833e7d47cb4891bc6904')
 
     const accounts = [
       { name: 'settings true', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'true' } } },

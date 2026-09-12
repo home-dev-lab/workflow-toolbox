@@ -22,6 +22,7 @@ import { resolveConsent } from '../../../../plugin/bin/lib/lane-consent-check-co
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-lane-consent-gate-hook.mjs')
+const LANE_LAUNCHER = join(REPO_ROOT, 'plugin/bin/wt-lane.mjs')
 
 const roots: string[] = []
 afterEach(() => {
@@ -49,6 +50,13 @@ const LANE_COMMAND = 'opencode run --model openai/gpt-5.4 review < /dev/null'
 function runHook(project: string, env: NodeJS.ProcessEnv, command: string) {
   return spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command }, cwd: project }),
+    encoding: 'utf8',
+    env,
+  })
+}
+
+function runLane(dir: string, brief: string, env: NodeJS.ProcessEnv, extra: string[] = []) {
+  return spawnSync(process.execPath, [LANE_LAUNCHER, '--dir', dir, '--model', 'test/model', '--brief', brief, ...extra], {
     encoding: 'utf8',
     env,
   })
@@ -303,5 +311,36 @@ describe('wt-lane-consent-gate-hook.mjs (PreToolUse Bash wrapper)', () => {
     const comment = runHook(f.project, f.env, '# opencode run x')
     expect(comment.status).toBe(0)
     expect((comment.stdout ?? '').trim()).toBe('')
+  })
+})
+
+describe('wt-lane.mjs worktree guard', () => {
+  it('refuses a non-repository directory before consent, unless --allow-no-git is explicit', () => {
+    const f = fixture('worktree-guard')
+    const brief = join(f.project, 'brief.md')
+    writeFileSync(brief, '# brief\n')
+
+    const rejected = runLane(f.project, brief, f.env)
+    expect(rejected.status).toBe(2)
+    expect(rejected.stderr).toContain(`--dir is not inside a git work tree: ${f.project}`)
+    expect(rejected.stderr).toContain(`git worktree add ${f.project}`)
+
+    const allowed = runLane(f.project, brief, f.env, ['--allow-no-git'])
+    expect(allowed.status).toBe(1)
+    expect(allowed.stderr).toContain('Refused:')
+  })
+
+  it('reaches the consent gate for a committed git fixture', () => {
+    const f = fixture('worktree-git')
+    const brief = join(f.project, 'brief.md')
+    writeFileSync(brief, '# brief\n')
+    const gitEnv = { ...f.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+    expect(spawnSync('git', ['init'], { cwd: f.project, encoding: 'utf8', env: gitEnv }).status).toBe(0)
+    expect(spawnSync('git', ['add', '.'], { cwd: f.project, encoding: 'utf8', env: gitEnv }).status).toBe(0)
+    expect(spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-m', 'fixture'], { cwd: f.project, encoding: 'utf8', env: gitEnv }).status).toBe(0)
+
+    const result = runLane(f.project, brief, f.env)
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('Refused:')
   })
 })

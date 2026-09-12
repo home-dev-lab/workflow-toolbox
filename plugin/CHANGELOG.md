@@ -25,6 +25,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - Signature CI now loads its signer policy and checker from the protected PR base ref while checking the PR checkout's commits.
+- `wt-lane.mjs` now refuses a `--dir` outside a Git work tree before the consent gate, with an absolute `git worktree add` remedy; `--allow-no-git` remains available for deliberate non-repository lanes.
 - `wt-spawn-registry-scan` now reopens a named agent only when a later outbound record or transcript write follows its last stop; a final stop still closes the arc.
 - Lifecycle archives are now published by rename only after every summary and validation write, so a failed post-copy validation leaves no published archive.
 - **`wt-lane.mjs` worker ends its whole process group on `SIGTERM`/`SIGINT`** (log `EXIT=143`/`130`): a launcher killed by pid used to die alone and leave the detached `opencode` lane running in the worktree, invisible to the caller.

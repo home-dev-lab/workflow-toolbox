@@ -21,7 +21,7 @@ function fixture(script: string) {
   return { root, dir, config, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: config } }
 }
 function run(f: ReturnType<typeof fixture>, extra: string[] = []) {
-  return spawnSync(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'test/model', '--brief', join(f.dir, 'brief.md'), ...extra], { encoding: 'utf8', env: f.env })
+  return spawnSync(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'test/model', '--brief', join(f.dir, 'brief.md'), '--allow-no-git', ...extra], { encoding: 'utf8', env: f.env })
 }
 function waitFor(log: string, ms = 3000) {
   const until = Date.now() + ms
