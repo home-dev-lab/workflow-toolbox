@@ -24,27 +24,35 @@ export function createBoardClient({ url, fetch: request = globalThis.fetch }) {
   let sequence = 0
   let initialized = false
   let sessionId = null
-  async function rpc(method, params = {}) {
-    let response
+  async function send(body) {
     try {
-      response = await request(url, {
+      const response = await request(url, {
         method: 'POST',
-         headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(sessionId ? { 'mcp-session-id': sessionId } : {}) },
-        body: JSON.stringify({ jsonrpc: '2.0', id: ++sequence, method, params }),
+        headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(sessionId ? { 'mcp-session-id': sessionId } : {}) },
+        body: JSON.stringify(body),
       })
       if (!response?.ok) throw new Error(`HTTP ${response?.status ?? 'unknown'}`)
       sessionId = response.headers?.get?.('mcp-session-id') ?? sessionId
+      return response
+    } catch (error) {
+      throw error instanceof BoardUnavailable ? error : new BoardUnavailable(error instanceof Error ? error.message : String(error))
+    }
+  }
+  async function rpc(method, params = {}) {
+    try {
+      const response = await send({ jsonrpc: '2.0', id: ++sequence, method, params })
       const body = await response.text()
-       const json = rpcBody(body)
+      const json = rpcBody(body)
       if (json.error) throw new Error(json.error.message ?? 'JSON-RPC error')
       return json.result
     } catch (error) {
-      throw new BoardUnavailable(error instanceof Error ? error.message : String(error))
+      throw error instanceof BoardUnavailable ? error : new BoardUnavailable(error instanceof Error ? error.message : String(error))
     }
   }
   async function call(name, arguments_ = {}) {
     if (!initialized) {
       await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'wt-orchestrator', version: '1.0.0' } })
+      await send({ jsonrpc: '2.0', method: 'notifications/initialized' })
       initialized = true
     }
     try { return resultText(await rpc('tools/call', { name, arguments: arguments_ })) }

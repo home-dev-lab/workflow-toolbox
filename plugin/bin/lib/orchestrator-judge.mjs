@@ -19,12 +19,8 @@ export function waveCanUseTool(waveDir, toolName, input) {
   const requested = input.file_path ?? input.path ?? waveDir
   if (typeof requested !== 'string') return { behavior: 'deny', message: `invalid path: ${String(requested)}` }
   const pattern = toolName === 'Glob' ? input.pattern : (input.glob ?? input.pattern)
-  if ((toolName === 'Glob' || toolName === 'Grep') && typeof pattern === 'string' && /[\\/]/.test(pattern)) {
-    const segments = pattern.split(/[\\/]/)
-    const wildcard = segments.findIndex((segment) => /[*?[{]/.test(segment))
-    const prefix = segments.slice(0, wildcard < 0 ? segments.length : wildcard).join('/') || '.'
-    const requestedPrefix = path.resolve(waveDir, input.path ?? waveDir, prefix)
-    if (!confinedToWorktree(waveDir, requestedPrefix)) return { behavior: 'deny', message: `path outside wave directory: ${pattern}` }
+  if ((toolName === 'Glob' || toolName === 'Grep') && typeof pattern === 'string') {
+    if (path.isAbsolute(pattern) || pattern.split(/[\\/]/).includes('..')) return { behavior: 'deny', message: `path outside wave directory: ${pattern}` }
   }
   return confinedToWorktree(waveDir, requested)
     ? { behavior: 'allow' }

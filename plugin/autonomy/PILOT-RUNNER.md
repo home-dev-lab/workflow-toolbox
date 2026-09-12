@@ -125,6 +125,13 @@ one priority label (`P0|P1|P2`), one type label (`feature|chore|bug|research`), 
 entries whose referenced cards are Done. The driver snapshots each eligible card, creates its
 wave-qualified worktree and push/merge fence, runs its pilot, reruns typecheck/lint/test, checks the
 clean tree and pilot report, freezes and verifies fidelity, and archives the diff and receipts.
+Each worktree redirects every configured remote's push URL to a non-repository file, so ordinary
+pushes, including `--no-verify`, fail at transport. A push that supplies an explicit URL bypasses
+configured remotes and remains outside ordinary lane behavior. `merge.ff=false` makes ordinary
+fast-forwardable merges create a merge commit so the merge hook can refuse them; a merge commit
+explicitly requested with `--no-verify` remains a residual. An additional ref-transaction fence
+refuses explicit `--ff-only` merges. The driver refuses to launch the judge if any symlink exists
+under the wave directory.
 
 One SDK orchestrator session reads each snapshot, pilot report, and diff through the wave lifecycle
 server. It records `accept`, `escalate`, or `reject` against the card's definition of done; it cannot
@@ -132,6 +139,9 @@ merge, push, edit files, or move cards. The driver renders `Implemented`, `Verif
 session's verbatim `Independent Review` and `Decisions`, `Remaining Risks`, `Escalations for main`,
 and `Findings`. Exit 0 means every card was accepted, exit 2 means every card was decided but at
 least one was escalated or rejected, and exit 1 means the wave did not complete.
+The judge reads the evidence copy retained under the real-path-confined wave directory. On every
+report emit, the driver also copies available receipts to `<report-dir>/cards/<id>/` and prints that
+path in the per-card table.
 
 Main reads the seam warnings and evidence, reviews each accepted branch, performs the merges,
 reruns gates on the merged tree, and only then moves delivered cards to Done. The runner leaves all

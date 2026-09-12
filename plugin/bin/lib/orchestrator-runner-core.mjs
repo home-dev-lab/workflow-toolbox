@@ -12,6 +12,7 @@ const cardList = (result) => Array.isArray(result) ? result : Array.isArray(resu
 const listName = (card) => card?.listName ?? card?.list?.name ?? card?.list ?? ''
 const labels = (card) => (card?.labels ?? []).map((item) => typeof item === 'string' ? item : item.name)
 const under = (parent, child) => { const relative = path.relative(parent, child); return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative)) }
+const CARD_ID = /^\d{1,32}$/
 const errorText = (error) => error instanceof Error ? error.message : String(error)
 const cardText = (card) => card.markdown ?? card.text ?? card.description ?? JSON.stringify(card, null, 2)
 const receiptExit = (file, fallback = 1) => {
@@ -40,6 +41,7 @@ export function parseOrchestratorArgs(argv) {
     else return { error: `unknown argument: ${arg}` }
   }
   if (!!options.cards === !!options.missionList) return { error: 'provide exactly one of --cards or --mission-list' }
+  if (options.cards?.some((id) => !CARD_ID.test(id))) return { error: 'invalid card id' }
   if (!options.worktreesDir || !options.report) return { error: '--worktrees-dir and --report are required' }
   if (![options.concurrency, options.pilotTimeout].every((value) => Number.isInteger(value) && value > 0) || !(options.maxCards > 0) || !(options.maxMinutes > 0)) return { error: 'numeric options must be positive' }
   return options
@@ -51,12 +53,44 @@ async function paginate(board, list) {
     const page = await board.findCards({ listName: list, limit: 100, offset })
     const cards = cardList(page)
     if (!cards) throw new Error('board unavailable: malformed find_cards response')
+    for (const card of cards) validateBoardCard(card)
     found.push(...cards)
     offset += cards.length
     const total = Number(page?.total ?? found.length)
     if (!Number.isFinite(total)) throw new Error('board unavailable: malformed find_cards total')
     if (cards.length === 0 || offset >= total) return found
   }
+}
+
+function validateBoardCard(card) {
+  const id = String(card?.id ?? '')
+  if (!CARD_ID.test(id)) throw new Error(`board unavailable: malformed card id ${id || '<missing>'}`)
+  return card
+}
+
+function realLocation(file) {
+  let probe = path.resolve(file)
+  const suffix = []
+  while (!fs.existsSync(probe)) { suffix.unshift(path.basename(probe)); probe = path.dirname(probe) }
+  return path.resolve(fs.realpathSync(probe), ...suffix)
+}
+
+function assertUnder(root, target, label) {
+  if (!under(fs.realpathSync(root), realLocation(target))) throw new Error(`${label} is outside wave directory`)
+  return target
+}
+
+function firstSymlink(root) {
+  const pending = [root]
+  while (pending.length) {
+    const directory = pending.pop()
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name)
+      if (entry.isSymbolicLink()) return target
+      if (entry.isDirectory()) pending.push(target)
+    }
+  }
+  return null
 }
 
 async function eligibleMission(card, requiredLabels, board, known) {
@@ -71,8 +105,9 @@ async function eligibleMission(card, requiredLabels, board, known) {
     if (/^none$/i.test(value)) continue
     const match = /^#?(\d+)$/.exec(value)
     if (!match) return false
+    if (!CARD_ID.test(match[1])) throw new Error(`board unavailable: malformed card id ${match[1]}`)
     let dependency = known.get(match[1])
-    if (!dependency) { dependency = await board.getCard(match[1]); known.set(match[1], dependency) }
+    if (!dependency) { dependency = validateBoardCard(await board.getCard(match[1])); known.set(match[1], dependency) }
     if (listName(dependency) !== 'Done') return false
   }
   return true
@@ -102,8 +137,8 @@ function branchExists(git, repo, branch) {
   try { git('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repo }); return true } catch { return false }
 }
 
-function renderReport({ waveId, options, rows, stopReason, fatal, judgment }) {
-  const verification = rows.map((row) => `| ${row.id} | ${row.route ?? '-'} | ${row.pilot ?? '-'} | ${row.gates ?? '-'} | ${row.clean ?? '-'} | ${row.reportCheck ?? '-'} | ${row.fidelity ?? '-'} | ${row.files?.join(', ') || '-'} | ${row.decision ?? 'undecided'} | ${row.reason ?? '-'} |`).join('\n') || '| - | - | - | - | - | - | - | - | - | - |'
+function renderReport({ waveId, options, rows, stopReason, fatal, judgment, boardMutations }) {
+  const verification = rows.map((row) => `| ${row.id} | ${row.route ?? '-'} | ${row.pilot ?? '-'} | ${row.gates ?? '-'} | ${row.clean ?? '-'} | ${row.reportCheck ?? '-'} | ${row.fidelity ?? '-'} | ${row.files?.join(', ') || '-'} | ${row.decision ?? 'undecided'} | ${row.reason ?? '-'} | ${row.receiptDir ?? '-'} |`).join('\n') || '| - | - | - | - | - | - | - | - | - | - | - |'
   const overlaps = []
   for (let left = 0; left < rows.length; left += 1) for (let right = left + 1; right < rows.length; right += 1) {
     const common = rows[left].files?.filter((file) => rows[right].files?.includes(file)) ?? []
@@ -115,9 +150,12 @@ function renderReport({ waveId, options, rows, stopReason, fatal, judgment }) {
     if (row.pilot !== 0) escalations.push(`card ${row.id}: pilot EXIT=${row.pilot}`)
     if (row.decision === 'accepted') escalations.push(`card ${row.id}: main should merge ${row.branch} at ${row.head} after seam review and merged-tree gates`)
     else escalations.push(`card ${row.id}: ${row.decision ?? 'undecided'}${row.reason ? ` (${row.reason})` : ''}`)
+    if (row.decision === 'undecided' && boardMutations.some((mutation) => mutation.type === 'moveCard' && mutation.id === row.id && mutation.listName === 'In Progress')) {
+      escalations.push(`card ${row.id}: moved to In Progress by wave ${waveId}, awaiting reconciliation (${row.reason ?? fatal ?? stopReason})`)
+    }
   }
   const modelSections = judgment?.trim() || '## Independent Review\nsession ended before judgment\n\n## Decisions\nsession ended before judgment'
-  return `## Implemented\nwave=${waveId}; base=${options.base}; cards=${rows.map((row) => row.id).join(',') || 'none'}; stop=${stopReason}\n\n## Verification\n| Card | Route | Pilot exit | Gates | Clean | Findings | Fidelity | Files touched | Decision | Reason |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${verification}\n\n${modelSections}\n\n## Remaining Risks\n${risks.join('\n') || 'None.'}\n\n## Escalations for main\n${escalations.join('\n') || 'None.'}\n\n## Findings\nNone.\n`
+  return `## Implemented\nwave=${waveId}; base=${options.base}; cards=${rows.map((row) => row.id).join(',') || 'none'}; stop=${stopReason}\n\n## Verification\n| Card | Route | Pilot exit | Gates | Clean | Findings | Fidelity | Files touched | Decision | Reason | Receipts |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${verification}\n\n${modelSections}\n\n## Remaining Risks\n${risks.join('\n') || 'None.'}\n\n## Escalations for main\n${escalations.join('\n') || 'None.'}\n\n## Findings\nNone.\n`
 }
 
 export async function runOrchestrator(input, dependencies = {}) {
@@ -131,6 +169,7 @@ export async function runOrchestrator(input, dependencies = {}) {
   const report = path.resolve(options.report)
   const waveDir = path.resolve(options.worktreesDir, `wave-${waveId}`)
   const rows = []
+  const boardMutations = []
   const startedAt = options.startedAt ?? now()
   let stopReason = 'no eligible card'
   let fatal = null
@@ -139,17 +178,24 @@ export async function runOrchestrator(input, dependencies = {}) {
 
   const emit = () => {
     fs.mkdirSync(path.dirname(report), { recursive: true })
-    writeFile(report, renderReport({ waveId, options, rows, stopReason, fatal, judgment }))
+    for (const row of rows) {
+      const destination = path.join(path.dirname(report), 'cards', row.id)
+      row.receiptDir = destination
+      if (fs.existsSync(row.cardDir) && path.resolve(row.cardDir) !== path.resolve(destination)) fs.cpSync(row.cardDir, destination, { recursive: true, force: true })
+    }
+    writeFile(report, renderReport({ waveId, options, rows, stopReason, fatal, judgment, boardMutations }))
   }
 
   try {
-    repo = String(git('git', ['rev-parse', '--show-toplevel'], { cwd: options.cwd ?? process.cwd(), encoding: 'utf8' })).trim()
+    repo = fs.realpathSync(String(git('git', ['rev-parse', '--show-toplevel'], { cwd: options.cwd ?? process.cwd(), encoding: 'utf8' })).trim())
     if (options.base === 'main') throw new Error('base main is refused')
-    if (!under(repo, path.resolve(options.worktreesDir))) throw new Error('worktrees dir is outside repository root')
+    if (options.cards?.some((id) => !CARD_ID.test(String(id)))) throw new Error('invalid card id')
+    if (!under(repo, realLocation(options.worktreesDir))) throw new Error('worktrees dir is outside repository root')
     if (options.maxMinutes * 60 < options.pilotTimeout) throw new Error('time budget below one pilot timeout')
     if (!board) throw new Error('board unavailable: no board client')
     if (!runPilot) throw new Error('driver error: no pilot runner')
     fs.mkdirSync(waveDir, { recursive: true })
+    if (!under(repo, fs.realpathSync(waveDir))) throw new Error('worktrees dir is outside repository root')
     const hooks = path.join(waveDir, 'hooks')
     fs.mkdirSync(hooks, { recursive: true })
     for (const [name, action] of [['pre-push', 'push'], ['pre-merge-commit', 'merge']]) {
@@ -157,6 +203,9 @@ export async function runOrchestrator(input, dependencies = {}) {
       writeFile(hook, `#!/bin/sh\nprintf '%s\\n' "refused by wave ${waveId}: ${action} is main's" >&2\nexit 1\n`)
       fs.chmodSync(hook, 0o755)
     }
+    const transactionHook = path.join(hooks, 'reference-transaction')
+    writeFile(transactionHook, `#!/bin/sh\nif [ "$1" = prepared ]; then\n  case "\${GIT_REFLOG_ACTION:-}" in\n    merge\\ *) printf '%s\\n' "refused by wave ${waveId}: merge is main's" >&2; exit 1;;\n  esac\nfi\nexit 0\n`)
+    fs.chmodSync(transactionHook, 0o755)
     git('git', ['config', 'extensions.worktreeConfig', 'true'], { cwd: repo })
 
     const scanMission = async () => {
@@ -170,8 +219,9 @@ export async function runOrchestrator(input, dependencies = {}) {
     if (options.cards) {
       candidates = []
       for (const id of [...new Set(options.cards.map(String))]) {
-        const card = await board.getCard(id)
-        if (!card) throw new Error(`card absent from board: ${id}`)
+        const response = await board.getCard(id)
+        if (!response) throw new Error(`card absent from board: ${id}`)
+        const card = validateBoardCard(response)
         if (card && ELIGIBLE_LISTS.has(listName(card))) candidates.push(card)
       }
     } else {
@@ -183,6 +233,7 @@ export async function runOrchestrator(input, dependencies = {}) {
       const id = String(card.id)
       const branch = `card/${id}-wave-${waveId}`
       const worktree = path.join(waveDir, id)
+      assertUnder(waveDir, worktree, 'worktree')
       if (branchExists(git, repo, branch)) throw new Error(`branch already exists: ${branch}`)
       if (fs.existsSync(worktree)) throw new Error(`worktree already exists: ${worktree}`)
     }
@@ -193,14 +244,21 @@ export async function runOrchestrator(input, dependencies = {}) {
       const branch = `card/${id}-wave-${waveId}`
       const worktree = path.join(waveDir, id)
       const cardDir = path.join(waveDir, 'cards', id)
+      const snapshot = path.join(cardDir, 'card.md')
+      for (const [target, label] of [[worktree, 'worktree'], [cardDir, 'cardDir'], [snapshot, 'snapshot']]) assertUnder(waveDir, target, label)
       const row = { id, branch, worktree, cardDir, decision: 'undecided' }
       rows.push(row)
       fs.mkdirSync(cardDir, { recursive: true })
-      const snapshot = path.join(cardDir, 'card.md')
       writeFile(snapshot, cardText(card))
       await board.moveCard(id, 'In Progress')
+      boardMutations.push({ type: 'moveCard', id, listName: 'In Progress' })
       git('git', ['worktree', 'add', '-b', branch, worktree, options.base], { cwd: repo })
       git('git', ['config', '--worktree', 'core.hooksPath', hooks], { cwd: worktree })
+      git('git', ['config', '--worktree', 'merge.ff', 'false'], { cwd: worktree })
+      const refusedPush = path.join(waveDir, 'refused-push')
+      if (!fs.existsSync(refusedPush)) writeFile(refusedPush, 'not a git repository\n')
+      const remotes = String(git('git', ['remote'], { cwd: repo, encoding: 'utf8' })).trim().split('\n').filter(Boolean)
+      for (const remote of remotes) git('git', ['config', '--worktree', `remote.${remote}.pushurl`, refusedPush], { cwd: worktree })
       const runnerLog = path.join(cardDir, 'runner.log')
       const pilotDependencies = { ...(dependencies.pilotDependencies ?? {}), log: (line) => fs.appendFileSync(runnerLog, `${line}\n`) }
       const pilot = await runPilot({ card: id, cardFile: snapshot, dir: worktree, hard: options.hard.includes(id), profileEnv: options.profileEnv, timeout: options.pilotTimeout, boardMoves: false }, pilotDependencies)
@@ -258,6 +316,8 @@ export async function runOrchestrator(input, dependencies = {}) {
     let judge = dependencies.judge
     let waveServer = null
     if (!judge && dependencies.query && ordered.length) {
+      const symlink = firstSymlink(waveDir)
+      if (symlink) throw new Error(`judge refused: symlink under wave directory: ${path.relative(waveDir, symlink)}`)
       waveServer = (dependencies.createWaveServer ?? createWaveServer)({ waveDir, cards: ordered })
       for (const row of ordered) { waveServer.setCardState(row.id, 'piloting'); waveServer.setCardState(row.id, 'judging') }
       judge = createSdkJudge({ query: dependencies.query, models: dependencies.models, waveDir, waveServer, contract: dependencies.contract, env: dependencies.env })
@@ -280,6 +340,7 @@ export async function runOrchestrator(input, dependencies = {}) {
         ? `accepted by wave ${waveId} — awaiting main integration (branch ${row.branch}, head ${row.head})`
         : `${row.decision} by wave ${waveId}${row.reason ? ` — ${row.reason}` : ''}`
       await board.addComment(row.id, comment)
+      boardMutations.push({ type: 'addComment', id: row.id, text: comment })
     }
     rows.splice(0, rows.length, ...ordered)
     if (dependencies.judgment) judgment = await dependencies.judgment(rows)
@@ -289,5 +350,5 @@ export async function runOrchestrator(input, dependencies = {}) {
     stopReason = fatal.startsWith('board unavailable:') ? 'board unavailable' : fatal
   }
   emit()
-  return { exitCode: fatal || rows.length === 0 ? 1 : rows.every((row) => row.decision === 'accepted') ? 0 : rows.every((row) => ['accepted', 'escalated', 'rejected'].includes(row.decision)) ? 2 : 1, waveId, report, waveDir, rows, stopReason }
+  return { exitCode: fatal || rows.length === 0 ? 1 : rows.every((row) => row.decision === 'accepted') ? 0 : rows.every((row) => ['accepted', 'escalated', 'rejected'].includes(row.decision)) ? 2 : 1, waveId, report, waveDir, rows, stopReason, boardMutations }
 }

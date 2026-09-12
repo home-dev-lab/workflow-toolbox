@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -65,9 +65,10 @@ function repoFixture(cards = [{ id: '1', listName: 'Next', description: 'Route: 
 }
 
 describe('orchestrator board HTTP client', () => {
-  it('speaks initialize plus tools/call and supports pagination across two pages', async () => {
+  it('O1-6 lock: sends notifications/initialized before the first tools/call', async () => {
     const offsets: number[] = []
-    const server = createServer((request, response) => { let body = ''; request.on('data', (part) => { body += part }); request.on('end', () => { const call = JSON.parse(body); const offset = call.params?.arguments?.offset; if (offset !== undefined) offsets.push(offset); const value = call.method === 'initialize' ? {} : { content: [{ type: 'text', text: JSON.stringify({ cards: [{ id: offset }], total: 2 }) }] }; response.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, result: value })) }) })
+    let notified = false
+    const server = createServer((request, response) => { let body = ''; request.on('data', (part) => { body += part }); request.on('end', () => { const call = JSON.parse(body); if (call.method === 'notifications/initialized') { notified = true; response.statusCode = 202; response.end(); return } if (call.method === 'tools/call' && !notified) { response.statusCode = 409; response.end(); return } const offset = call.params?.arguments?.offset; if (offset !== undefined) offsets.push(offset); const value = call.method === 'initialize' ? {} : { content: [{ type: 'text', text: JSON.stringify({ cards: [{ id: offset }], total: 2 }) }] }; response.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, result: value })) }) })
     await new Promise<void>((resolve) => server.listen(0, resolve))
     try { const client = createBoardClient({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}` }); await client.findCards({ listName: 'Next', limit: 1, offset: 0 }); await client.findCards({ listName: 'Next', limit: 1, offset: 1 }); expect(offsets).toEqual([0, 1]) } finally { await new Promise<void>((resolve) => server.close(() => resolve())) }
   })
@@ -137,12 +138,46 @@ describe('orchestrator driver', () => {
     expect(parseOrchestratorArgs(['--cards', '1', '--mission-list', 'Next', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r']).error).toContain('exactly one')
   })
 
+  it('refuses a slash in an explicit card id at parse time', () => {
+    expect(parseOrchestratorArgs(['--cards', '1/2', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r'])).toEqual({ error: 'invalid card id' })
+  })
+
   it('runs the complete happy path, writes receipts, moves only to In Progress, and never invokes forbidden git operations', async () => {
     const f = repoFixture(); const result = await runOrchestrator(f.options, f)
     expect(result.exitCode).toBe(0); expect(f.moves).toEqual(['1:In Progress']); expect(f.comments).toEqual([expect.stringMatching(/^1:accepted by wave testwave — awaiting main integration \(branch card\/1-wave-testwave, head [a-f0-9]+\)$/)]); expect(readFileSync(f.report, 'utf8')).toContain('main should merge card/1-wave-testwave')
     expect(readFileSync(join(result.waveDir, 'cards/1/card.md'), 'utf8')).toBe('Route: LITE\n## Definition of done\n- ship\n')
     expect(readFileSync(join(result.waveDir, 'cards/1/runner.log'), 'utf8').split('\n')[0]).toMatch(/^route=LITE /)
     expect(f.gitCalls.flat().some((arg) => ['merge', 'push', 'branch -D'].includes(arg))).toBe(false)
+  })
+
+  it('O1-7 lock: copies card receipts beside the report and prints their path', async () => {
+    const f = repoFixture(); const result = await runOrchestrator(f.options, f); const receiptDir = join(f.worktreesDir, 'cards', '1')
+    expect(readFileSync(join(receiptDir, 'pilot.log'), 'utf8')).toBe('EXIT=0\n')
+    expect(result.rows[0].receiptDir).toBe(receiptDir)
+    expect(readFileSync(f.report, 'utf8')).toContain(`| ${receiptDir} |`)
+  })
+
+  it('O1-3 lock: rejects a malformed board card id before deriving any path', async () => {
+    const f = repoFixture(); const outside = join(f.root, '..', 'outside')
+    const board = { ...f.board, getCard: async () => ({ id: '../../../outside', listName: 'Next', description: 'bad' }) }
+    const result = await runOrchestrator(f.options, { ...f, board })
+    expect(result).toMatchObject({ exitCode: 1, stopReason: 'board unavailable' })
+    expect(readFileSync(f.report, 'utf8')).toContain('board unavailable: malformed card id ../../../outside')
+    expect(existsSync(outside)).toBe(false)
+  })
+
+  it('O1-4 lock: reports an In Progress move awaiting reconciliation after worktree creation fails', async () => {
+    const f = repoFixture(); const git = (program: string, args: string[], options: Record<string, unknown>) => { if (args[0] === 'worktree' && args[1] === 'add') throw new Error('fake worktree add failed'); return f.git(program, args, options) }
+    const result = await runOrchestrator(f.options, { ...f, git })
+    expect(result.exitCode).toBe(1)
+    expect(result.boardMutations).toEqual([{ type: 'moveCard', id: '1', listName: 'In Progress' }])
+    expect(readFileSync(f.report, 'utf8')).toContain('card 1: moved to In Progress by wave testwave, awaiting reconciliation (fake worktree add failed)')
+  })
+
+  it('O1-5 lock: rejects a worktrees directory whose existing symlink ancestor escapes the repository', async () => {
+    const f = repoFixture(); const outside = mkdtempSync(join(tmpdir(), 'wt-waves-outside-')); roots.push(outside); const link = join(f.root, 'linked-waves'); symlinkSync(outside, link)
+    const result = await runOrchestrator({ ...f.options, worktreesDir: join(link, 'nested') }, f)
+    expect(result).toMatchObject({ exitCode: 1, stopReason: 'worktrees dir is outside repository root' })
   })
 
   it('skips duplicate and Done explicit cards without moving them', async () => {
@@ -271,7 +306,7 @@ describe('SDK orchestrator judge', () => {
     expect(readFileSync(f.report, 'utf8')).toContain(judgment)
   })
 
-  it('allows exactly the six wave tools and confined reads while denying Planka and escaping glob prefixes', () => {
+  it('O1-2 lock: rejects absolute and traversal Glob/Grep inputs while allowing wildcard-first local patterns', () => {
     const f = repoFixture(); const wave = join(f.root, '.waves'); mkdirSync(wave, { recursive: true })
     for (const name of ['wave_state', 'read_card', 'read_card_report', 'read_diff', 'decide', 'write_judgment']) {
       expect(waveCanUseTool(wave, `mcp__sdk-wave-lifecycle__${name}`, {}).behavior).toBe('allow')
@@ -280,7 +315,21 @@ describe('SDK orchestrator judge', () => {
     expect(waveCanUseTool(wave, 'mcp__planka__move_card', {}).behavior).toBe('deny')
     expect(waveCanUseTool(wave, 'Read', { file_path: join(f.root, 'base.txt') })).toEqual({ behavior: 'deny', message: `path outside wave directory: ${join(f.root, 'base.txt')}` })
     expect(waveCanUseTool(wave, 'Glob', { pattern: '../*.txt' })).toEqual({ behavior: 'deny', message: 'path outside wave directory: ../*.txt' })
+    expect(waveCanUseTool(wave, 'Glob', { pattern: '*/../../x' }).behavior).toBe('deny')
+    expect(waveCanUseTool(wave, 'Glob', { pattern: '/etc/*' }).behavior).toBe('deny')
+    expect(waveCanUseTool(wave, 'Grep', { path: f.root, pattern: 'secret' }).behavior).toBe('deny')
+    expect(waveCanUseTool(wave, 'Glob', { pattern: '*/inside' }).behavior).toBe('allow')
     expect(waveCanUseTool(wave, 'Read', { file_path: join(wave, 'missing.txt') }).behavior).toBe('allow')
+  })
+
+  it('refuses to launch the SDK judge when a symlink exists under the wave directory', async () => {
+    const f = repoFixture(); let launched = false
+    const gates = async (worktree: string, cardDir: string) => { const result = await f.gates(worktree, cardDir); symlinkSync(join(f.root, 'base.txt'), join(cardDir, 'planted-link')); return result }
+    const query = () => { launched = true; return (async function* () {})() }
+    const result = await runOrchestrator(f.options, { ...f, judge: undefined, gates, query, models: { orchestrator: { value: 'sonnet' } }, contract: '# contract' })
+    expect(result).toMatchObject({ exitCode: 1, stopReason: 'judge refused: symlink under wave directory: cards/1/planted-link' })
+    expect(launched).toBe(false)
+    expect(readFileSync(f.report, 'utf8')).toContain('judge refused: symlink under wave directory')
   })
 
   it('marks every remaining card undecided and writes an exit-1 report after three turns without progress', async () => {
@@ -323,6 +372,13 @@ describe('SDK orchestrator judge', () => {
     expect(contract).toContain('Never merge, push, publish, move a board card, or mark work Done.')
   })
 
+  it('O1-8 lock: documents orchestrator fence residuals and symlink refusal', () => {
+    const runner = readFileSync(join(ROOT, 'plugin/autonomy/PILOT-RUNNER.md'), 'utf8')
+    expect(runner).toContain('A push that supplies an explicit URL')
+    expect(runner).toContain('merge commit\nexplicitly requested with `--no-verify` remains a residual')
+    expect(runner).toContain('refuses to launch the judge if any symlink exists')
+  })
+
   it.skipIf(process.env.WT_REAL_SDK_LOCK !== '1')('refuses an out-of-wave Read through a real SDK query without shadowing canUseTool', async () => {
     const f = repoFixture(); const waveDir = join(f.root, '.waves', 'real-sdk'); mkdirSync(join(waveDir, 'cards', '1'), { recursive: true }); writeFileSync(join(waveDir, 'cards', '1', 'card.md'), '## Definition of done\n- permission lock\n')
     const waveServer = createWaveServer({ waveDir, cards: [{ id: '1' }] }) as RegisteredServer; waveServer.setCardState('1', 'piloting'); waveServer.setCardState('1', 'judging')
@@ -348,12 +404,16 @@ describe('SDK orchestrator judge', () => {
 })
 
 describe('real git worktree fence', () => {
-  it('refuses push and no-ff merge only inside the card worktree while allowing commits', async () => {
+  it('O1-1 lock: fences configured-remote pushes and fast-forwardable merges only in the card worktree', async () => {
     const f = repoFixture(); const remote = mkdtempSync(join(tmpdir(), 'wt-remote-')); roots.push(remote); spawnSync('git', ['init', '--bare', '-q'], { cwd: remote }); spawnSync('git', ['remote', 'add', 'origin', remote], { cwd: f.root }); expect(spawnSync('git', ['push', '-u', 'origin', 'develop'], { cwd: f.root }).status).toBe(0)
-    spawnSync('git', ['checkout', '-qb', 'side'], { cwd: f.root }); writeFileSync(join(f.root, 'side.txt'), 'side\n'); spawnSync('git', ['add', '.'], { cwd: f.root }); spawnSync('git', ['commit', '-qm', 'side'], { cwd: f.root }); spawnSync('git', ['checkout', '-q', 'develop'], { cwd: f.root }); const result = await runOrchestrator(f.options, f); const worktree = result.rows[0].worktree
+    const result = await runOrchestrator(f.options, f); const worktree = result.rows[0].worktree
     writeFileSync(join(worktree, 'plain.txt'), 'plain\n'); spawnSync('git', ['add', '.'], { cwd: worktree }); expect(spawnSync('git', ['commit', '-qm', 'plain'], { cwd: worktree }).status).toBe(0)
-    const push = spawnSync('git', ['push', 'origin', 'HEAD'], { cwd: worktree, encoding: 'utf8' }); expect(push.status).toBe(1); expect(push.stderr).toContain("refused by wave testwave: push is main's")
-    const merge = spawnSync('git', ['merge', '--no-ff', 'side'], { cwd: worktree, encoding: 'utf8' }); expect(merge.status).toBe(1); expect(`${merge.stdout}${merge.stderr}`).toContain("refused by wave testwave: merge is main's")
+    const pushNoVerify = spawnSync('git', ['push', '--no-verify', 'origin', 'HEAD'], { cwd: worktree, encoding: 'utf8' }); expect(pushNoVerify.status).not.toBe(0); expect(pushNoVerify.stderr).toContain('refused-push')
+    const push = spawnSync('git', ['push', 'origin', 'HEAD'], { cwd: worktree, encoding: 'utf8' }); expect(push.status).not.toBe(0); expect(push.stderr).toContain('refused-push')
+    spawnSync('git', ['checkout', '-qb', 'side', 'card/1-wave-testwave'], { cwd: f.root }); writeFileSync(join(f.root, 'side.txt'), 'side\n'); spawnSync('git', ['add', '.'], { cwd: f.root }); spawnSync('git', ['commit', '-qm', 'side'], { cwd: f.root }); spawnSync('git', ['checkout', '-q', 'develop'], { cwd: f.root })
+    const merge = spawnSync('git', ['merge', 'side'], { cwd: worktree, encoding: 'utf8' }); expect(merge.status).not.toBe(0); expect(`${merge.stdout}${merge.stderr}`).toContain("refused by wave testwave: merge is main's")
+    spawnSync('git', ['merge', '--abort'], { cwd: worktree })
+    const ffOnly = spawnSync('git', ['merge', '--ff-only', 'side'], { cwd: worktree, encoding: 'utf8' }); expect(ffOnly.status).not.toBe(0); expect(`${ffOnly.stdout}${ffOnly.stderr}`).toContain("refused by wave testwave: merge is main's")
     expect(spawnSync('git', ['commit', '--allow-empty', '-qm', 'main unaffected'], { cwd: f.root }).status).toBe(0); expect(spawnSync('git', ['push', 'origin', 'develop'], { cwd: f.root }).status).toBe(0)
   })
 })
