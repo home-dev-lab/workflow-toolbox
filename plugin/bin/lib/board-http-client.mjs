@@ -19,8 +19,21 @@ function rpcBody(body) {
   return parsed
 }
 
-export function createBoardClient({ url, fetch: request = globalThis.fetch }) {
+// Argument names follow the live Planka MCP tool schemas (tools/list, measured 2026-09-12):
+// get_card {cardId}; find_cards {boardId, list, limit, offset, includeDescription}; move_card
+// {cardId, listId}; add_comment {cardId, text}; get_board {boardId, cardsSummary}. The first real
+// wave failed with "malformed MCP result JSON" because the client had invented `id`/`listName`.
+export function createBoardClient({ url, boardId, fetch: request = globalThis.fetch }) {
   if (typeof request !== 'function') throw new BoardUnavailable('fetch is unavailable')
+  let listsById = null
+  async function lists() {
+    if (listsById) return listsById
+    const board = await call('get_board', { boardId, cardsSummary: true })
+    const entries = board?.lists ?? board?.board?.lists
+    if (!Array.isArray(entries)) throw new BoardUnavailable('malformed get_board result: no lists')
+    listsById = entries.map((item) => ({ id: String(item.id), name: String(item.name) }))
+    return listsById
+  }
   let sequence = 0
   let initialized = false
   let sessionId = null
@@ -50,6 +63,8 @@ export function createBoardClient({ url, fetch: request = globalThis.fetch }) {
     }
   }
   async function call(name, arguments_ = {}) {
+    // Lazy on purpose: the driver prints its wave line and renders a fail-closed report on this refusal.
+    if (!boardId) throw new BoardUnavailable('boardId is required (--board-id or .claude/planka.json)')
     if (!initialized) {
       await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'wt-orchestrator', version: '1.0.0' } })
       await send({ jsonrpc: '2.0', method: 'notifications/initialized' })
@@ -60,16 +75,17 @@ export function createBoardClient({ url, fetch: request = globalThis.fetch }) {
   }
   return {
     async findCards({ listName, limit, offset }) {
-      const result = await call('find_cards', { list: listName, limit, offset })
+      const result = await call('find_cards', { boardId, list: listName, limit, offset, includeDescription: true })
       if (!Array.isArray(result) && !Array.isArray(result?.cards) && !Array.isArray(result?.items)) throw new BoardUnavailable('malformed find_cards result')
       return result
     },
-    async getCard(id) { return call('get_card', { id }) },
-    async moveCard(id, listName) { return call('move_card', { id, listName }) },
-    async addComment(id, text) { return call('add_comment', { id, text }) },
-    async listNames() {
-      const board = await call('get_board', {})
-      return (board.lists ?? board.list ?? board).map?.((item) => item.name ?? item) ?? []
+    async getCard(id) { return call('get_card', { cardId: String(id) }) },
+    async moveCard(id, listName) {
+      const target = (await lists()).find((item) => item.name === listName)
+      if (!target) throw new BoardUnavailable(`no list named ${listName} on board ${boardId}`)
+      return call('move_card', { cardId: String(id), listId: target.id })
     },
+    async addComment(id, text) { return call('add_comment', { cardId: String(id), text }) },
+    async listNames() { return (await lists()).map((item) => item.name) },
   }
 }

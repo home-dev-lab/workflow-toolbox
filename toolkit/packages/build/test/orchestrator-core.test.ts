@@ -69,9 +69,9 @@ describe('orchestrator board HTTP client', () => {
   it('O1-6 lock: sends notifications/initialized before the first tools/call', async () => {
     const offsets: number[] = []
     let notified = false
-    const server = createServer((request, response) => { let body = ''; request.on('data', (part) => { body += part }); request.on('end', () => { const call = JSON.parse(body); if (call.method === 'notifications/initialized') { notified = true; response.statusCode = 202; response.end(); return } if (call.method === 'tools/call' && !notified) { response.statusCode = 409; response.end(); return } const offset = call.params?.arguments?.offset; if (offset !== undefined) offsets.push(offset); const value = call.method === 'initialize' ? {} : { content: [{ type: 'text', text: JSON.stringify({ cards: [{ id: offset }], total: 2 }) }] }; response.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, result: value })) }) })
+    const server = createServer((request, response) => { let body = ''; request.on('data', (part) => { body += part }); request.on('end', () => { const call = JSON.parse(body); if (call.method === 'notifications/initialized') { notified = true; response.statusCode = 202; response.end(); return } if (call.method === 'tools/call' && !notified) { response.statusCode = 409; response.end(); return } const offset = call.params?.arguments?.offset; if (offset !== undefined) offsets.push(offset); if (call.method === 'tools/call') { const a = call.params.arguments; const ok = call.params.name === 'find_cards' ? typeof a.boardId === 'string' && typeof a.list === 'string' : call.params.name === 'get_card' ? typeof a.cardId === 'string' : call.params.name === 'move_card' ? typeof a.cardId === 'string' && typeof a.listId === 'string' : call.params.name === 'add_comment' ? typeof a.cardId === 'string' && typeof a.text === 'string' : call.params.name === 'get_board' ? typeof a.boardId === 'string' : false; if (!ok) { response.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, result: { content: [{ type: 'text', text: `Error: invalid arguments for ${call.params.name}` }] } })); return } } const value = call.method === 'initialize' ? {} : { content: [{ type: 'text', text: JSON.stringify({ cards: [{ id: offset }], total: 2 }) }] }; response.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, result: value })) }) })
     await new Promise<void>((resolve) => server.listen(0, resolve))
-    try { const client = createBoardClient({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}` }); await client.findCards({ listName: 'Next', limit: 1, offset: 0 }); await client.findCards({ listName: 'Next', limit: 1, offset: 1 }); expect(offsets).toEqual([0, 1]) } finally { await new Promise<void>((resolve) => server.close(() => resolve())) }
+    try { const client = createBoardClient({ boardId: 'board-1', url: `http://127.0.0.1:${(server.address() as { port: number }).port}` }); await client.findCards({ listName: 'Next', limit: 1, offset: 0 }); await client.findCards({ listName: 'Next', limit: 1, offset: 1 }); expect(offsets).toEqual([0, 1]) } finally { await new Promise<void>((resolve) => server.close(() => resolve())) }
   })
 
   it.each([
@@ -80,7 +80,7 @@ describe('orchestrator board HTTP client', () => {
     ['malformed MCP result JSON', async () => ({ ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{bad' }] } }) })],
     ['malformed MCP content', async () => ({ ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [] } }) })],
   ])('turns %s into BoardUnavailable', async (_name, fetch) => {
-    const promise = createBoardClient({ url: 'http://board', fetch }).getCard('1')
+    const promise = createBoardClient({ boardId: 'board-1', url: 'http://board', fetch }).getCard('1')
     await expect(promise).rejects.toBeInstanceOf(BoardUnavailable)
     if (_name === 'HTTP 500') await expect(promise).rejects.toThrow('HTTP 500')
     if (_name === 'malformed MCP result JSON') await expect(promise).rejects.toThrow('malformed MCP result JSON')

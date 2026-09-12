@@ -37,6 +37,7 @@ export function parseOrchestratorArgs(argv) {
     else if (arg === '--profile-env') options.profileEnv = next()
     else if (arg === '--pilot-timeout') options.pilotTimeout = Number(next())
     else if (arg === '--board-url') options.boardUrl = next()
+    else if (arg === '--board-id') options.boardId = next()
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
   }
