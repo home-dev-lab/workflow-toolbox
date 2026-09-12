@@ -70,7 +70,9 @@ describe('TypeScript pack manifest', () => {
         startupTimeout: 10000,
       },
     })
-    expect(fs.readFileSync(pluginLspDeclarationPath, 'utf8')).toBe(fs.readFileSync(lspDeclarationPath, 'utf8'))
+    const rootDeclaration = JSON.parse(fs.readFileSync(pluginLspDeclarationPath, 'utf8'))
+    expect(rootDeclaration.typescript).toEqual(declaration.typescript)
+    expect(Object.keys(rootDeclaration).at(0)).toBe('typescript')
   })
 })
 

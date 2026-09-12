@@ -1,13 +1,4 @@
 {
-  "typescript": {
-    "command": "typescript-language-server",
-    "args": ["--stdio"],
-    "extensionToLanguage": {
-      ".ts": "typescript"
-    },
-    "diagnostics": true,
-    "startupTimeout": 10000
-  },
   "python": {
     "command": "pyright-langserver",
     "args": ["--stdio"],
