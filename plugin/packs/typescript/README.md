@@ -18,7 +18,13 @@ do not select this pack.
 - Pack selection attaches context notes and topic rules. It does not execute TDD, gates, or a
   reviewer automatically.
 
-## Diagnostics
+## What this pack ships
+
+This pack provides TypeScript-specific rules, skills, and SDK-only critic and reviewer definitions
+for the Workflow Toolbox repository. Its `pack.json` declares `.ts` and `.tsx` triggers, two topic
+rules, two skills, and two SDK-only agents.
+
+## Language server
 
 The pack carries `.lsp.json` for `typescript-language-server`; when the Workflow Toolbox plugin is
 loaded and the binary is on `PATH`, TypeScript diagnostics are delivered after edits as
@@ -62,13 +68,37 @@ handler, but likewise did not publish a diagnostic before the headless session e
 although `pack.json` triggers on `.tsx` too. Mapping `typescriptreact` needs its own probe before it is
 added.
 
-Windows and macOS are unmeasured on this Linux host. The reasoned verdict is that both require
-`typescript-language-server` to resolve on the process `PATH` (including the global npm bin
-directory); command discovery is otherwise platform-specific.
+## Probe
+
+Run:
+
+```sh
+node toolkit/scripts/lsp-pack-probe.mjs typescript
+```
+
+The archived artifacts are `.claude/reports/1861821660-lsp-probes/typescript/available/` and
+`.claude/reports/1861821660-lsp-probes/typescript/missing/`. The available arm passes only when
+`command -v` resolves and a diagnostic naming the planted error arrives.
+
+«PROBE-VERDICT»
+
+The missing arm passes only when no diagnostic arrives and the session ends normally.
+
+«PROBE-VERDICT»
+
+## Cross-platform verdict
+
+The command must resolve on the Claude Code process PATH; measured on Linux (this machine,
+2026-09-11, typescript-language-server version unrecorded); macOS and Windows unmeasured until
+their probe artifacts exist. This retains the prior requirement that the global npm bin directory
+be on PATH and that command discovery is otherwise platform-specific.
+
+## Optional assets
+
+The optional assets listed in `pack.json` are the rules-on-demand topic rules `tdd-vitest.md` and
+`lint-typecheck-build.md`, the TDD/lint/build skills `tdd-red-green` and `lint-typecheck-build`,
+and the SDK-only agents `critic.md` and `reviewer.md`.
 
 ## Adding Another Pack
 
-Create a sibling directory with a manifest, topic rules, skills, SDK-only definitions, and a
-manifest test. Add that pack's rule sources and file triggers to `wt-rules-on-demand`, then extend
-the `Language:` selection in `wt-lifecycle-hooks`. Keep language matching explicit so one pack
-does not load for another language.
+Follow `docs/public/language-packs.md` for the complete add-a-language recipe.
