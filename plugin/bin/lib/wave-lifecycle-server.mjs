@@ -5,7 +5,10 @@ import { createRequire } from 'node:module'
 const NAME = 'sdk-wave-lifecycle'
 const require = createRequire(new URL('../../../toolkit/package.json', import.meta.url))
 const { createSdkMcpServer, tool } = require('@anthropic-ai/claude-agent-sdk')
-const { z } = require('zod')
+// zod is the SDK's dependency, not the toolkit root's: resolve it from the SDK's own location (as
+// lifecycle-server.mjs does). Resolving it from toolkit/package.json loaded under vitest and failed
+// in a real process — the first real wave would have died at module load.
+const { z } = createRequire(require.resolve('@anthropic-ai/claude-agent-sdk'))('zod')
 const terminal = (file) => {
   try { return /(?:^|\n)EXIT=(\S+)\s*$/.exec(fs.readFileSync(file, 'utf8'))?.[1] ?? null } catch { return null }
 }
