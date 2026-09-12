@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -7,6 +7,7 @@ import {
   buildShimDirectory,
   linkWorkspaceModules,
   missingVerdict,
+  probePack,
   resolveCommand,
 } from '../../../scripts/lsp-pack-probe.mjs'
 
@@ -79,15 +80,34 @@ describe('LSP pack probe pure contracts', () => {
 })
 
 describe('LSP pack probe workspace modules', () => {
-  it('symlinks each manifest module from the toolkit into the project and drops the manifest', () => {
+  it('copies each manifest module from the toolkit into the project (never a link out of the temp root) and drops the manifest', () => {
     const toolkit = temporary('wt-lsp-toolkit-')
-    mkdirSync(join(toolkit, 'node_modules', 'typescript'), { recursive: true })
+    mkdirSync(join(toolkit, 'node_modules', 'typescript', 'lib'), { recursive: true })
+    writeFileSync(join(toolkit, 'node_modules', 'typescript', 'lib', 'tsc.js'), '// tsc\n')
     const project = temporary('wt-lsp-project-')
     writeFileSync(join(project, 'workspace-modules.txt'), 'typescript\n\n')
 
     expect(linkWorkspaceModules(project, toolkit)).toEqual(['typescript'])
-    expect(lstatSync(join(project, 'node_modules', 'typescript')).isSymbolicLink()).toBe(true)
+    const copied = join(project, 'node_modules', 'typescript')
+    expect(lstatSync(copied).isSymbolicLink()).toBe(false)
+    expect(lstatSync(copied).isDirectory()).toBe(true)
+    expect(existsSync(join(copied, 'lib', 'tsc.js'))).toBe(true)
     expect(existsSync(join(project, 'workspace-modules.txt'))).toBe(false)
+  })
+
+  it('removes its temporary root when the probe fails before any session runs', async () => {
+    const repo = temporary('wt-lsp-repo-')
+    const packDir = join(repo, 'plugin', 'packs', 'zzz')
+    mkdirSync(join(packDir, 'probe'), { recursive: true })
+    writeFileSync(join(packDir, '.lsp.json'), JSON.stringify({ zzz: { command: 'zzz-server', args: [], extensionToLanguage: { '.z': 'z' }, diagnostics: true } }))
+    writeFileSync(join(packDir, 'probe', 'probe.z'), 'x\n')
+    writeFileSync(join(packDir, 'probe', 'expected-diagnostic.txt'), 'E1\n')
+    writeFileSync(join(packDir, 'probe', 'workspace-modules.txt'), 'not-installed-anywhere\n')
+    const toolkit = temporary('wt-lsp-toolkit-')
+    const before = readdirSync(tmpdir()).filter((name) => name.startsWith('wt-lsp-zzz-')).length
+
+    await expect(probePack('zzz', { repoRoot: repo, toolkitDir: toolkit, archiveRoot: join(repo, 'archive') })).rejects.toThrow(/workspace module not installed/)
+    expect(readdirSync(tmpdir()).filter((name) => name.startsWith('wt-lsp-zzz-')).length).toBe(before)
   })
 
   it('does nothing without a manifest and refuses a module the toolkit does not hold', () => {

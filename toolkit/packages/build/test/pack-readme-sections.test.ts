@@ -22,6 +22,9 @@ function assertRequiredHeadings(file: string, label: string) {
     expect(index, `${label} is missing required heading ${heading}`).toBeGreaterThanOrEqual(0)
     expect(index, `${label} has required heading out of order: ${heading}`).toBeGreaterThan(previous)
     previous = index
+    const rest = source.slice(index + heading.length)
+    const body = rest.slice(0, rest.search(/^#{1,6} /m) === -1 ? undefined : rest.search(/^#{1,6} /m))
+    expect(body.trim().length, `${label} has an empty section ${heading}`).toBeGreaterThan(0)
   }
 }
 

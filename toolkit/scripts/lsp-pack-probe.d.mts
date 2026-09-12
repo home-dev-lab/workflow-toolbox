@@ -28,7 +28,7 @@ export function buildShimDirectory(pathValue: string, excludedCommand: string, s
 export function containsDiagnostic(output: string, expectedSubstring: string, options?: { includeAssistantText?: boolean }): boolean
 export function availableVerdict(input: AvailableVerdictInput): Verdict
 export function missingVerdict(input: MissingVerdictInput): Verdict
-export function probePack(pack: string, options?: { repoRoot?: string; pathValue?: string }): Promise<boolean>
+export function probePack(pack: string, options?: { repoRoot?: string; pathValue?: string; toolkitDir?: string; archiveRoot?: string }): Promise<boolean>
 export function linkWorkspaceModules(projectDir: string, toolkitDir: string): string[]
 export function deliveredAttachments(debugText: string): number
 export function publishedDiagnostics(debugText: string): boolean

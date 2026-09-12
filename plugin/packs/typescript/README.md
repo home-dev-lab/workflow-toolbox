@@ -97,7 +97,7 @@ Missing arm — PASS (same date; `command -v` → not found on the shim PATH, `n
 ## Cross-platform verdict
 
 The command must resolve on the Claude Code process PATH; measured on Linux (this machine,
-2026-09-11, typescript-language-server version unrecorded); macOS and Windows unmeasured until
+2026-09-12, typescript-language-server 6.0.0 — the archived two-arm probe above); macOS and Windows unmeasured until
 their probe artifacts exist. This retains the prior requirement that the global npm bin directory
 be on PATH and that command discovery is otherwise platform-specific.
 

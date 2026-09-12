@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { buildLspRoot } from '../../../scripts/build-lsp-root.mjs'
+import { buildLspRoot, topLevelKeys } from '../../../scripts/build-lsp-root.mjs'
 
 const temporaryDirectories: string[] = []
 
@@ -64,5 +64,28 @@ describe('LSP root generator', () => {
     expect(JSON.parse(output)).toEqual({ typescript: valid('ts') })
     expect(output).toBe(`${JSON.stringify({ typescript: valid('ts') }, null, 2)}\n`)
     expect(output).not.toContain('//')
+  })
+})
+
+describe('top-level key scanner boundaries', () => {
+  it('reads keys through escaped quotes and backslashes, nested objects, arrays, and strings not followed by a colon', () => {
+    const text = '{"a\\"b": {"inner": "x", "deep": {"k": ":"}}, "c\\\\": ["not a key", {"nested": 1}], "d": "value: not a key", "e": 1}'
+    expect(topLevelKeys(text, 'f')).toEqual(['a"b', 'c\\', 'd', 'e'])
+  })
+
+  it('refuses an unterminated string and reports the file', () => {
+    expect(() => topLevelKeys('{"a": "open', 'plugin/packs/x/.lsp.json')).toThrow('plugin/packs/x/.lsp.json: unterminated JSON string')
+  })
+
+  it('refuses a duplicate key that differs only by escaping before JSON.parse can collapse it', () => {
+    const root = fixture({ alpha: `{"s\\u0061me":${JSON.stringify(valid())},"same":${JSON.stringify(valid('other'))}}` })
+    expect(() => buildLspRoot(root)).toThrow('duplicate declaration key "same"')
+  })
+
+  it('refuses a command that is a path rather than a bare executable name', () => {
+    const root = fixture({ alpha: JSON.stringify({ alpha: { ...valid('/usr/local/bin/server') } }) })
+    expect(() => buildLspRoot(root)).toThrow('field command must be a bare executable name')
+    const windows = fixture({ alpha: JSON.stringify({ alpha: { ...valid('tools\\\\server.exe') } }) })
+    expect(() => buildLspRoot(windows)).toThrow('field command must be a bare executable name')
   })
 })

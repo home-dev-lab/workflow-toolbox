@@ -16,13 +16,19 @@ plugin/packs/<language>/
   rules/
   skills/
   agents/
+  probe/
+    <one source file with ONE planted type error>
+    expected-diagnostic.txt      (a substring the delivered diagnostic must contain)
+    workspace-modules.txt        (optional: package names the server needs resolvable from the workspace)
 ```
+
+The probe reads `.lsp.json` (exactly ONE declaration per pack, `command` a bare executable name, never a path), copies `probe/` into a temporary project, and copies each package named in `workspace-modules.txt` from `toolkit/node_modules` into that project (`typescript-language-server` refuses to initialize in a workspace without a `typescript` module — measured 2026-09-12). A pack without `probe/` cannot run the documented probe command.
 
 The current TypeScript example contains two rules, two skills, and two SDK-only agents; see plugin/packs/typescript/pack.json:6-17.
 
 ## Pack Manifest
 
-The currently consumed manifest contract is tested rather than loaded at runtime: `language`, `triggers.extensions`, `rules`, `skills`, and `agents` are read in toolkit/packages/build/test/typescript-pack.test.ts:39-52. Each listed rule, skill, and agent must exist; the test also locks the TypeScript triggers at lines 47-52. Keep every optional asset listed in the manifest.
+The currently consumed manifest contract is tested rather than loaded at runtime: `language`, `triggers.extensions`, `rules`, `skills`, and `agents` are read in toolkit/packages/build/test/typescript-pack.test.ts:39-52; `triggers.files` (exact file names such as `pom.xml`) is the same kind of declaration for build files without a distinctive extension — both trigger lists are what the pack author asks the consumers to register (section Consumers), the manifest itself runs nothing. Each listed rule, skill, and agent must exist; the test also locks the TypeScript triggers at lines 47-52. Keep every optional asset listed in the manifest.
 
 ## Language Server
 

@@ -12,7 +12,7 @@ Name the server declaration in `.lsp.json` and state its `command`, `args`, and 
 
 ## Probe
 
-Record the command `node toolkit/scripts/lsp-pack-probe.mjs <pack>` with the real pack name substituted. Give the repository-relative archived artifact path `.claude/reports/1861821660-lsp-probes/<pack>/<arm>/`. Describe both arms and their PASS criteria: `available` passes only when `command -v` resolves and a diagnostic naming the planted error arrives; `missing` passes only when no diagnostic arrives and the session ends normally. Put the observed verdict for each arm on its own checkable line tied to its archived artifact.
+Record the command `node toolkit/scripts/lsp-pack-probe.mjs <pack>` with the real pack name substituted, and name the fixture files under `probe/` (the source file with its one planted error, `expected-diagnostic.txt`, and `workspace-modules.txt` when the server needs a workspace package). Give the repository-relative archived artifact path `.claude/reports/1861821660-lsp-probes/<pack>/<arm>/`. Describe both arms and their PASS criteria: `available` passes only when `command -v` resolves and a diagnostic naming the planted error arrives; `missing` passes only when no diagnostic arrives and the session ends normally. Put the observed verdict for each arm on its own checkable line tied to its archived artifact.
 
 ## Cross-platform verdict
 

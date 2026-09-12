@@ -82,7 +82,9 @@ export function linkWorkspaceModules(projectDir, toolkitDir) {
     } catch {
       throw new Error(`workspace module not installed in the toolkit: ${name} (${source})`)
     }
-    symlinkSync(source, join(projectDir, 'node_modules', name))
+    // A COPY, never a symlink: the headless session may edit anything under its project, and a
+    // symlink would hand it the toolkit's real installation (review finding, 2026-09-12).
+    cpSync(source, join(projectDir, 'node_modules', name), { recursive: true, dereference: true })
   }
   return names
 }
@@ -230,76 +232,82 @@ export async function probePack(pack, options = {}) {
   const declarationEntries = Object.entries(declarations)
   if (declarationEntries.length !== 1) throw new Error(`${pack}: probe requires exactly one LSP declaration`)
   const [, declaration] = declarationEntries[0]
+  if (/[\\/]/.test(declaration.command)) throw new Error(`${pack}: command must be a bare executable name, not a path`)
   const fixtureDir = join(packDir, 'probe')
   const expectedSubstring = readFileSync(join(fixtureDir, 'expected-diagnostic.txt'), 'utf8').trim()
   if (!expectedSubstring) throw new Error(`${pack}: expected diagnostic substring is empty`)
 
   const temporary = mkdtempSync(join(tmpdir(), `wt-lsp-${pack}-`))
-  const projectDir = join(temporary, 'project')
-  const shimDir = join(temporary, 'shim')
-  cpSync(fixtureDir, projectDir, { recursive: true })
-  rmSync(join(projectDir, 'expected-diagnostic.txt'), { force: true })
-  const workspaceModules = linkWorkspaceModules(projectDir, options.toolkitDir ?? TOOLKIT_DIR)
-  const archiveRoot =
-    options.archiveRoot ?? process.env.WT_LSP_PROBE_ARCHIVE_ROOT ?? join(repoRoot, '.claude', 'reports', '1861821660-lsp-probes')
-  const availableDir = join(archiveRoot, pack, 'available')
-  const missingDir = join(archiveRoot, pack, 'missing')
-  mkdirSync(availableDir, { recursive: true })
-  mkdirSync(missingDir, { recursive: true })
+  try {
+    const projectDir = join(temporary, 'project')
+    const shimDir = join(temporary, 'shim')
+    // The session loads a DISPOSABLE copy of the plugin: everything it can reach lives under `temporary`.
+    const pluginCopy = join(temporary, 'plugin')
+    cpSync(join(repoRoot, 'plugin'), pluginCopy, { recursive: true, dereference: true })
+    cpSync(fixtureDir, projectDir, { recursive: true })
+    rmSync(join(projectDir, 'expected-diagnostic.txt'), { force: true })
+    const workspaceModules = linkWorkspaceModules(projectDir, options.toolkitDir ?? TOOLKIT_DIR)
+    const archiveRoot =
+      options.archiveRoot ?? process.env.WT_LSP_PROBE_ARCHIVE_ROOT ?? join(repoRoot, '.claude', 'reports', '1861821660-lsp-probes')
+    const availableDir = join(archiveRoot, pack, 'available')
+    const missingDir = join(archiveRoot, pack, 'missing')
+    mkdirSync(availableDir, { recursive: true })
+    mkdirSync(missingDir, { recursive: true })
 
-  const availableResolution = resolveCommand(declaration.command, originalPath)
-  const availableEnv = { ...process.env, PATH: originalPath }
-  const availableRun = await runClaude(projectDir, join(repoRoot, 'plugin'), availableEnv, join(availableDir, 'debug.log'))
-  availableRun.workspaceModules = workspaceModules
-  const availableOutput = `${availableRun.stdout}\n${availableRun.stderr}`
-  const available = availableVerdict({
-    commandResolved: availableResolution,
-    output: availableOutput,
-    debug: readDebug(join(availableDir, 'debug.log')),
-    expectedSubstring,
-    exitCode: availableRun.exitCode,
-    timedOut: availableRun.timedOut,
-  })
-  archiveArm(
-    availableDir,
-    availableResolution,
-    availableResolution ? commandVersion(availableResolution, availableEnv) : 'unavailable\n',
-    availableRun,
-  )
-  console.log(`available: ${available.pass ? 'PASS' : 'FAIL'} - ${available.reason}`)
-
-  buildShimDirectory(originalPath, declaration.command, shimDir)
-  const missingEnv = { ...process.env, PATH: shimDir }
-  const missingResolution = resolveCommand(declaration.command, shimDir)
-  const claudeResolution = resolveCommand('claude', shimDir)
-  const nodeResolution = resolveCommand('node', shimDir)
-  if (missingResolution || !claudeResolution || !nodeResolution) {
-    throw new Error(
-      `missing arm PATH precondition failed: ${declaration.command}=${missingResolution ?? 'absent'} claude=${claudeResolution ?? 'absent'} node=${nodeResolution ?? 'absent'}`,
+    const availableResolution = resolveCommand(declaration.command, originalPath)
+    const availableEnv = { ...process.env, PATH: originalPath }
+    const availableRun = await runClaude(projectDir, pluginCopy, availableEnv, join(availableDir, 'debug.log'))
+    availableRun.workspaceModules = workspaceModules
+    const availableOutput = `${availableRun.stdout}\n${availableRun.stderr}`
+    const available = availableVerdict({
+      commandResolved: availableResolution,
+      output: availableOutput,
+      debug: readDebug(join(availableDir, 'debug.log')),
+      expectedSubstring,
+      exitCode: availableRun.exitCode,
+      timedOut: availableRun.timedOut,
+    })
+    archiveArm(
+      availableDir,
+      availableResolution,
+      availableResolution ? commandVersion(availableResolution, availableEnv) : 'unavailable\n',
+      availableRun,
     )
-  }
-  const missingRun = await runClaude(projectDir, join(repoRoot, 'plugin'), missingEnv, join(missingDir, 'debug.log'))
-  missingRun.workspaceModules = workspaceModules
-  const missingOutput = `${missingRun.stdout}\n${missingRun.stderr}`
-  const missing = missingVerdict({
-    commandResolved: missingResolution,
-    claudeResolved: claudeResolution,
-    nodeResolved: nodeResolution,
-    output: missingOutput,
-    debug: readDebug(join(missingDir, 'debug.log')),
-    exitCode: missingRun.exitCode,
-    timedOut: missingRun.timedOut,
-  })
-  archiveArm(
-    missingDir,
-    missingResolution,
-    'unavailable by design\n',
-    missingRun,
-  )
-  console.log(`missing: ${missing.pass ? 'PASS' : 'FAIL'} - ${missing.reason}`)
+    console.log(`available: ${available.pass ? 'PASS' : 'FAIL'} - ${available.reason}`)
 
-  rmSync(temporary, { recursive: true, force: true })
-  return available.pass && missing.pass
+    buildShimDirectory(originalPath, declaration.command, shimDir)
+    const missingEnv = { ...process.env, PATH: shimDir }
+    const missingResolution = resolveCommand(declaration.command, shimDir)
+    const claudeResolution = resolveCommand('claude', shimDir)
+    const nodeResolution = resolveCommand('node', shimDir)
+    if (missingResolution || !claudeResolution || !nodeResolution) {
+      throw new Error(
+        `missing arm PATH precondition failed: ${declaration.command}=${missingResolution ?? 'absent'} claude=${claudeResolution ?? 'absent'} node=${nodeResolution ?? 'absent'}`,
+      )
+    }
+    const missingRun = await runClaude(projectDir, pluginCopy, missingEnv, join(missingDir, 'debug.log'))
+    missingRun.workspaceModules = workspaceModules
+    const missingOutput = `${missingRun.stdout}\n${missingRun.stderr}`
+    const missing = missingVerdict({
+      commandResolved: missingResolution,
+      claudeResolved: claudeResolution,
+      nodeResolved: nodeResolution,
+      output: missingOutput,
+      debug: readDebug(join(missingDir, 'debug.log')),
+      exitCode: missingRun.exitCode,
+      timedOut: missingRun.timedOut,
+    })
+    archiveArm(
+      missingDir,
+      missingResolution,
+      'unavailable by design\n',
+      missingRun,
+    )
+    console.log(`missing: ${missing.pass ? 'PASS' : 'FAIL'} - ${missing.reason}`)
+    return available.pass && missing.pass
+  } finally {
+    rmSync(temporary, { recursive: true, force: true })
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

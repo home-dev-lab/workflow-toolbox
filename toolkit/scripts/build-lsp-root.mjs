@@ -53,6 +53,7 @@ function validateDeclaration(declaration, file, key) {
     throw new Error(`${label} must be an object`)
   }
   if (typeof declaration.command !== 'string') throw new Error(`${label} field command must be a string`)
+  if (/[\\/]/.test(declaration.command)) throw new Error(`${label} field command must be a bare executable name resolved on PATH, not a path`)
   if (!Array.isArray(declaration.args)) throw new Error(`${label} field args must be an array`)
   if (
     typeof declaration.extensionToLanguage !== 'object' ||
