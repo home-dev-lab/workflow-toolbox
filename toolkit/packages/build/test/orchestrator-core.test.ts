@@ -190,7 +190,7 @@ describe('orchestrator driver', () => {
     let release: () => void = () => {}
     const gate = new Promise<void>((resolve) => { release = resolve })
     const git = (program: string, args: string[], options: Record<string, unknown>) => {
-      if (args[0] === 'worktree' && args[1] === 'add' && args.some((arg) => /\/1$/.test(String(arg)))) throw new Error('fake worktree add failed')
+      if (args[0] === 'worktree' && args[1] === 'add' && args.some((arg) => /card-1-wave-/.test(String(arg)))) throw new Error('fake worktree add failed')
       return f.git(program, args, options)
     }
     const board = { ...f.board, moveCard: async (id: string, list: string) => { if (id === '2') await gate; f.moves.push(`${id}:${list}`) } }
@@ -270,7 +270,7 @@ describe('orchestrator driver', () => {
   })
 
   it.each(['branch', 'worktree'])('refuses a pre-existing target %s before moving the card', async (kind) => {
-    const f = repoFixture(); if (kind === 'branch') spawnSync('git', ['branch', 'card/1-wave-testwave'], { cwd: f.root }); else mkdirSync(join(f.worktreesDir, 'wave-testwave', '1'), { recursive: true })
+    const f = repoFixture(); if (kind === 'branch') spawnSync('git', ['branch', 'card/1-wave-testwave'], { cwd: f.root }); else mkdirSync(join(f.worktreesDir, 'card-1-wave-testwave'), { recursive: true })
     const result = await runOrchestrator(f.options, f); expect(result.exitCode).toBe(1); expect(result.stopReason).toContain(`${kind} already exists`); expect(f.moves).toEqual([])
   })
 

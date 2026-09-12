@@ -85,7 +85,7 @@ function realLocation(file) {
 }
 
 function assertUnder(root, target, label) {
-  if (!under(fs.realpathSync(root), realLocation(target))) throw new Error(`${label} is outside wave directory`)
+  if (!under(fs.realpathSync(root), realLocation(target))) throw new Error(`${label} is outside its root directory`)
   return target
 }
 
@@ -259,8 +259,8 @@ export async function runOrchestrator(input, dependencies = {}) {
     for (const card of candidates) {
       const id = String(card.id)
       const branch = `card/${id}-wave-${waveId}`
-      const worktree = path.join(waveDir, id)
-      assertUnder(waveDir, worktree, 'worktree')
+      const worktree = path.join(path.resolve(options.worktreesDir), `card-${id}-wave-${waveId}`) // a sibling of the wave dir: pnpm's node_modules symlinks must not sit under the judge's confinement root (real wave d0da4408)
+      assertUnder(path.resolve(options.worktreesDir), worktree, 'worktree')
       if (branchExists(git, repo, branch)) throw new Error(`branch already exists: ${branch}`)
       if (fs.existsSync(worktree)) throw new Error(`worktree already exists: ${worktree}`)
     }
@@ -269,10 +269,11 @@ export async function runOrchestrator(input, dependencies = {}) {
       const id = String(card.id)
       if ((now() - startedAt) / 1000 + options.pilotTimeout > options.maxMinutes * 60) return null
       const branch = `card/${id}-wave-${waveId}`
-      const worktree = path.join(waveDir, id)
+      const worktree = path.join(path.resolve(options.worktreesDir), `card-${id}-wave-${waveId}`) // a sibling of the wave dir: pnpm's node_modules symlinks must not sit under the judge's confinement root (real wave d0da4408)
       const cardDir = path.join(waveDir, 'cards', id)
       const snapshot = path.join(cardDir, 'card.md')
-      for (const [target, label] of [[worktree, 'worktree'], [cardDir, 'cardDir'], [snapshot, 'snapshot']]) assertUnder(waveDir, target, label)
+      assertUnder(path.resolve(options.worktreesDir), worktree, 'worktree')
+      for (const [target, label] of [[cardDir, 'cardDir'], [snapshot, 'snapshot']]) assertUnder(waveDir, target, label)
       const row = { id, branch, worktree, cardDir, decision: 'undecided' }
       rows.push(row)
       fs.mkdirSync(cardDir, { recursive: true })
