@@ -68,6 +68,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 
 ### Changed
+- Ground-truth verification guidance now treats readings taken in one shared measurement window as
+  one reading and requires witness lines selected against the suspected failure mode.
 - The dev-implement example now shares its worktree and lane merge safety pipeline without changing emitted prompts.
 - The SDK pilot lifecycle is now the runner-hosted `sdk-pilot-lifecycle` MCP server, replacing the
   Function Hook and raw Bash allow-list. It derives and freezes card routing; parses lane verdicts
