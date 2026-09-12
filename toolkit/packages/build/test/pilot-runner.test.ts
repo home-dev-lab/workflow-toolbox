@@ -15,9 +15,10 @@ const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')
 const PLUGIN_ROOT = join(ROOT, 'plugin')
 // The runner now REQUIRES a valid first `system:init` receipt: a fake stream without one used to
 // pass while proving nothing about whether any plugin or lifecycle tool ever loaded.
-const initMessage = () => ({
+const initMessage = (model?: string) => ({
   type: 'system',
   subtype: 'init',
+  ...(model === undefined ? {} : { model }),
   tools: ['Read', 'Glob', 'Grep', lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('run')],
   plugins: [{ path: join(PLUGIN_ROOT, 'hooks-modules', 'pilot-guard') }],
 })
@@ -85,8 +86,40 @@ describe('SDK pilot runner', () => {
     expect(logged).toEqual([
       'route=LITE reasons=human Route: LITE model=sonnet effective=sonnet',
       'injected: timeout Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.',
+      'served model: unknown (requested sonnet)',
     ])
     expect(result.summary.injected_turns).toBe(1)
+  })
+
+  it('records requested and SDK-served models without trusting pilot prose', async () => {
+    const run = async (initModel?: string, firstAssistantModel?: string) => {
+      const f = fixture()
+      const query = () => (async function* () {
+        yield initMessage(initModel)
+        yield { type: 'assistant', message: { model: firstAssistantModel, content: [] } }
+      })()
+      return runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: true }, {
+        query,
+        resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet', source: 'default' }, pilotHard: { value: 'opus', effective: 'opus', source: 'env' } }),
+      })
+    }
+
+    // A remapped profile serves a different id than the requested alias ON PURPOSE: the two SDK
+    // readings agree, so agreement is true and the request stays visible beside them.
+    await expect(run('gpt-5.6-sol', 'gpt-5.6-sol')).resolves.toMatchObject({ summary: {
+      requested_model: 'opus', served_model: 'gpt-5.6-sol', served_model_first_turn: 'gpt-5.6-sol', served_model_agreement: true,
+    } })
+    // The two SDK readings disagree with each other: that is the signal the field exists for.
+    await expect(run('gpt-5.6-sol', 'claude-opus-5')).resolves.toMatchObject({ summary: {
+      requested_model: 'opus', served_model: 'gpt-5.6-sol', served_model_first_turn: 'claude-opus-5',
+      served_model_agreement: 'false (served_model=gpt-5.6-sol, served_model_first_turn=claude-opus-5; requested_model=opus)',
+    } })
+    await expect(run(undefined, 'opus')).resolves.toMatchObject({ summary: {
+      requested_model: 'opus', served_model_agreement: 'unknown (init receipt carries no model)',
+    } })
+    await expect(run('opus', 'opus')).resolves.toMatchObject({ summary: {
+      requested_model: 'opus', served_model: 'opus', served_model_first_turn: 'opus', served_model_agreement: true,
+    } })
   })
 
   it('defaults the contract and mailbox paths when called programmatically without them (the orchestrator driver)', async () => {

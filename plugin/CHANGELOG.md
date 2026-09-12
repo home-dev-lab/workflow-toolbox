@@ -6,6 +6,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- SDK pilot runner summaries now record the requested model and resolver provenance alongside the
+  model reported by the SDK initialization receipt and first assistant turn, explicitly flagging
+  agreement, disagreement, or absent SDK evidence.
 - `wt:card-cost -- --hops` now reports transcript-derived delegation depth, fan-out width, envelope estimates, async notification/read-back delivery, and message re-ingestion cost.
 - Language-pack probes now measure archived native-LSP navigation capabilities through an explicit `--capability` axis and render a cross-language parity table.
 - The PR review workflow now adds a `lock-enumeration` lens for changed test files, identifying assertions that enumerate open shared families instead of stating invariants.

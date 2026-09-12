@@ -23,7 +23,7 @@ async function main() {
   try {
     const sdk = await import(require.resolve('@anthropic-ai/claude-agent-sdk'))
     const result = await runPilot(options, { query: sdk.query, resolvePilotModels })
-    process.stdout.write(`fresh=${result.summary.fresh_tokens} turns=${result.summary.turns} report=${result.summary.report_exists}\n`)
+    process.stdout.write(`fresh=${result.summary.fresh_tokens} turns=${result.summary.turns} report=${result.summary.report_exists} requested_model=${result.summary.requested_model} served_model=${result.summary.served_model ?? 'unknown'} served_model_first_turn=${result.summary.served_model_first_turn ?? 'unknown'} served_model_agreement=${result.summary.served_model_agreement}\n`)
     return result.exitCode ?? 0
   } catch (error) {
     process.stderr.write(`wt-pilot-runner: ${error instanceof Error ? error.message : String(error)}\n`)

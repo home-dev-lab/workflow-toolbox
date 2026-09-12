@@ -117,6 +117,19 @@ function usageOf(message) {
   }
 }
 
+function servedModelAgreement({ requestedModel, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen }) {
+  if (!initReceiptSeen) return 'unknown (initialization receipt never arrived)'
+  if (servedModel === undefined) return 'unknown (init receipt carries no model)'
+  if (!firstAssistantSeen) return 'unknown (stream carries no assistant message)'
+  if (servedModelFirstTurn === undefined) return 'unknown (first assistant message carries no model)'
+  // Agreement is between the two SDK readings of what was SERVED (the init receipt and the first
+  // assistant message). The requested value is an ALIAS or a full id the resolver chose; a remapped
+  // profile serves a different id on purpose, so string-equality against the request would read
+  // `false` on every correct remap. The request is recorded beside, for the reader, never compared.
+  if (servedModel === servedModelFirstTurn) return true
+  return `false (served_model=${servedModel}, served_model_first_turn=${servedModelFirstTurn}; requested_model=${requestedModel})`
+}
+
 export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
@@ -156,6 +169,9 @@ export async function runPilot(options, dependencies) {
   const lifecycleCalls = new Map()
   let awaitingFidelityReceipt = false
   let initReceiptSeen = false
+  let servedModel
+  let servedModelFirstTurn
+  let firstAssistantSeen = false
   const pluginRoot = resolve(dirname(new URL(import.meta.url).pathname), '../..')
   const guardPlugin = join(pluginRoot, 'hooks-modules', 'pilot-guard')
 
@@ -233,6 +249,7 @@ export async function runPilot(options, dependencies) {
     }
     if (message.type === 'system' && message.subtype === 'init') {
       initReceiptSeen = true
+      servedModel = message.model
       const initTools = Array.isArray(message.tools) ? message.tools : []
       const initPlugins = Array.isArray(message.plugins) ? message.plugins : []
       const missing = ['transition', 'write_artifact', 'run'].map(lifecycleToolName).filter((tool) => !initTools.includes(tool))
@@ -240,6 +257,10 @@ export async function runPilot(options, dependencies) {
       if (missing.length > 0 || absent.length > 0) {
         throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${JSON.stringify({ missingTools: missing, absentPlugins: absent, tools: initTools, plugins: initPlugins })}`)
       }
+    }
+    if (!firstAssistantSeen && message.type === 'assistant') {
+      firstAssistantSeen = true
+      servedModelFirstTurn = message.message?.model
     }
     const content = message.message?.content
     if (Array.isArray(content)) for (const item of content) {
@@ -279,9 +300,11 @@ export async function runPilot(options, dependencies) {
   try { lifecycleSummary = JSON.parse(readFile(summaryPath, 'utf8')) } catch { /* no transition reached the summary yet */ }
   const completedNormally = awaitingFidelityReceipt && exists(report)
   const partial = lifecycleSummary.partial ?? null
-  const summary = { ...lifecycleSummary, partial, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
+  const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
+  const summary = { ...lifecycleSummary, partial, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
   writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
+  log(`served model: ${servedModel ?? 'unknown'} (requested ${model.value})`)
   return { usage, summary, exitCode: completedNormally ? (partial ? 2 : 0) : 1 }
 }

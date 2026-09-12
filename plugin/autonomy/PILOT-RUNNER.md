@@ -88,7 +88,12 @@ message or earlier continuation that was followed by progress), and reason
 `summary.completed=false`. A completed full run exits 0. A completed partial run exits 2 with
 `summary.completed=true` and the lifecycle's non-null `partial` object; full-run summaries carry
 `partial:null`. `.lane/usage.json`, `.lane/summary.json`, and
-`.lane/sdk-transcript.json` record the run.
+`.lane/sdk-transcript.json` record the run. The summary records `requested_model` with its resolver
+source/effective model, plus `served_model` from the SDK `system:init` receipt and
+`served_model_first_turn` from the first assistant message. `served_model_agreement` is `true` when the
+two SDK readings agree with each other (a remapped profile serves a different id than the requested
+alias on purpose, so the request is recorded beside them, never compared); it otherwise lists the
+differing values, or reports why the SDK evidence is absent. This is SDK-reported evidence, not a proxy-trace attestation.
 
 `--card`, `--dir`, and `--card-file` are required. Optional flags are `--profile-env`, `--contract`,
 `--hard`, `--mailbox`, and `--timeout`; `--lane-silence` is not accepted. The runner uses Node path semantics on
