@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const LANGUAGES = ['typescript', 'python', 'java']
+export const LANGUAGES = ['typescript', 'svelte', 'python', 'java']
 export const CAPABILITIES = ['diagnostics', 'symbol-overview', 'symbol-lookup', 'declarations', 'references', 'implementations']
 
 function cell(archive, language, capability) {

@@ -30,5 +30,16 @@
     },
     "diagnostics": true,
     "startupTimeout": 10000
+  },
+  "svelte": {
+    "command": "svelteserver",
+    "args": [
+      "--stdio"
+    ],
+    "extensionToLanguage": {
+      ".svelte": "svelte"
+    },
+    "diagnostics": true,
+    "startupTimeout": 10000
   }
 }
