@@ -20,7 +20,7 @@
 // a source that cannot drift with the shell's working directory.
 
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -85,12 +85,16 @@ function fixture(tag: string, slugLabel: string) {
   return { root, projectRoot, subDir, cfg, transcriptPath }
 }
 
-function runHook(payload: Record<string, unknown>, cfg: string): { stdout: string; context: string; entries: Array<Record<string, unknown>> } {
+function runHook(
+  payload: Record<string, unknown>,
+  cfg: string,
+  env: Record<string, string | undefined> = {},
+): { stdout: string; context: string; entries: Array<Record<string, unknown>> } {
   const journalDir = mkRoot('journal')
   const res = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, WT_GUARD_JOURNAL_DIR: journalDir },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, WT_GUARD_JOURNAL_DIR: journalDir, ...env },
   })
   const stdout = (res.stdout ?? '').trim()
   let context = ''
@@ -412,5 +416,89 @@ describe('wt-observer-pairing-guard-hook.mjs', () => {
       cfg,
     )
     expect(context).toContain('LOST its declared observer')
+  })
+
+  it('passes the default state capture directory to the checker and names an archived conflicting pair', () => {
+    const f = fixture('capture-default', 'capture-default-slug')
+    const subagentsDir = join(f.cfg, 'projects', 'capture-default-slug', SESSION_ID, 'subagents')
+    writeFileSync(
+      join(subagentsDir, `agent-${OBSERVER_TASK_ID}.meta.json`),
+      JSON.stringify({ agentType: 'general-purpose', isObserver: false }),
+    )
+    const projectDir = join(f.root, 'project root')
+    const stateHome = join(f.root, 'state')
+    const expectedCaptureDir = join(stateHome, 'wt-observer-pairing-captures', projectDir.replace(/[^A-Za-z0-9-]/g, '-'))
+
+    const { context } = runHook(
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { subagent_type: 'pilot-orchestrator' },
+        tool_response: { agent_id: AGENT_ID },
+        cwd: f.projectRoot,
+        session_id: SESSION_ID,
+        transcript_path: f.transcriptPath,
+      },
+      f.cfg,
+      { CLAUDE_PROJECT_DIR: projectDir, XDG_STATE_HOME: stateHome },
+    )
+
+    const archives = readdirSync(expectedCaptureDir)
+    expect(archives).toHaveLength(1)
+    const archive = join(expectedCaptureDir, archives[0]!)
+    expect(readdirSync(archive)).toContain(`observed-agent-${AGENT_ID}.meta.json`)
+    expect(context).toContain(`meta.json pair archived at ${archive}`)
+  })
+
+  it('uses WT_OBSERVER_PAIRING_CAPTURE_DIR instead of the default state directory', () => {
+    const f = fixture('capture-override', 'capture-override-slug')
+    const subagentsDir = join(f.cfg, 'projects', 'capture-override-slug', SESSION_ID, 'subagents')
+    writeFileSync(
+      join(subagentsDir, `agent-${OBSERVER_TASK_ID}.meta.json`),
+      JSON.stringify({ agentType: 'general-purpose', isObserver: false }),
+    )
+    const override = join(f.root, 'capture-override')
+    const stateHome = join(f.root, 'state')
+
+    const { context } = runHook(
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { subagent_type: 'pilot-orchestrator' },
+        tool_response: { agent_id: AGENT_ID },
+        cwd: f.projectRoot,
+        session_id: SESSION_ID,
+        transcript_path: f.transcriptPath,
+      },
+      f.cfg,
+      { WT_OBSERVER_PAIRING_CAPTURE_DIR: override, XDG_STATE_HOME: stateHome },
+    )
+
+    const archives = readdirSync(override)
+    expect(archives).toHaveLength(1)
+    expect(context).toContain(`meta.json pair archived at ${join(override, archives[0]!)}`)
+    expect(existsSync(stateHome)).toBe(false)
+  })
+
+  it('stays silent and creates no capture directory for a resolved pairing', () => {
+    const f = fixture('capture-resolved', 'capture-resolved-slug')
+    const captureDir = join(f.root, 'capture')
+
+    const { context } = runHook(
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Agent',
+        tool_input: { subagent_type: 'pilot-orchestrator' },
+        tool_response: { agent_id: AGENT_ID },
+        cwd: f.projectRoot,
+        session_id: SESSION_ID,
+        transcript_path: f.transcriptPath,
+      },
+      f.cfg,
+      { WT_OBSERVER_PAIRING_CAPTURE_DIR: captureDir },
+    )
+
+    expect(context).toBe('')
+    expect(() => readdirSync(captureDir)).toThrow()
   })
 })

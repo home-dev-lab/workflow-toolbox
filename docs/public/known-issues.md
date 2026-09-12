@@ -216,7 +216,7 @@ Refuses a silent stop when tracked work remains, no work is running, and the mar
 
 ### `wt-observer-pairing-guard-hook.mjs` — observer-pairing reporter (PostToolUse)
 
-Runs after an `Agent` spawn whose agent definition declares an observer and delegates the pairing decision to `wt-check-observer-pairing.mjs`. It emits nothing for a passing checker verdict and surfaces only lost-observer or indeterminate outcomes. The checker remains the source of truth for ownership links, contradictory or dangling states, the `in_process_teammate` exemption, and mtime fallback. Internal errors fail open.
+Runs after an `Agent` spawn whose agent definition declares an observer and delegates the pairing decision to `wt-check-observer-pairing.mjs`. It emits nothing for a passing checker verdict and surfaces only lost-observer or indeterminate outcomes. Conflicting pairing evidence is captured under the state directory by default; set `WT_OBSERVER_PAIRING_CAPTURE_DIR` to redirect it. The checker remains the source of truth for ownership links, contradictory or dangling states, the `in_process_teammate` exemption, and mtime fallback. Internal errors fail open.
 
 ### `wt-service-watch.mjs` — Claude service-status supervisor (monitor)
 

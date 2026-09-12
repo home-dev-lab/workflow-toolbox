@@ -62,7 +62,14 @@ function declaredObserver(source) {
 }
 
 function projectSlug(cwd) {
-  return cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  return cwd.replace(/[^A-Za-z0-9-]/g, '-')
+}
+
+function captureDirFor() {
+  if (process.env.WT_OBSERVER_PAIRING_CAPTURE_DIR) return process.env.WT_OBSERVER_PAIRING_CAPTURE_DIR
+  const stateHome = process.env.XDG_STATE_HOME || path.join(process.env.HOME || os.homedir(), '.local', 'state')
+  const projectRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd()
+  return path.join(stateHome, 'wt-observer-pairing-captures', projectSlug(projectRoot))
 }
 
 // The project-slug directory a session's subagents live under MUST come from the
@@ -145,7 +152,7 @@ function main() {
   if (!observerName) return
 
   const subagentsDir = subagentsDirFor(cwd, sessionId, transcriptPath)
-  const args = [CHECKER, '--subagents-dir', subagentsDir]
+  const args = [CHECKER, '--subagents-dir', subagentsDir, '--capture-dir', captureDirFor()]
   if (agentId) args.push('--agent-id', agentId)
   if (name) args.push('--name', name)
   const verdict = runCheck(args)
@@ -155,6 +162,7 @@ function main() {
   if (verdict.exitCode === 0 && status === 'pass') return
 
   const subject = name ? `"${name}" (${type})` : `${type} (${agentId})`
+  const captured = typeof verdict.json.captured === 'string' ? verdict.json.captured : null
 
   // Two 'unknown' causes read as the SAME sentence to a reader unless distinguished here:
   // a path-resolution failure (the checker could not even find its own directory) is a
@@ -205,7 +213,8 @@ function main() {
         hookEventName: 'PostToolUse',
         additionalContext:
           `[workflow-toolbox observer-pairing] ${subject} ${summary}.${lookHere} ` +
-          `Delegated to wt-check-observer-pairing.mjs after spawn; checker verdict ${status}.`,
+          `Delegated to wt-check-observer-pairing.mjs after spawn; checker verdict ${status}.` +
+          (captured ? ` Observer pairing UNRESOLVED for ${subject}; meta.json pair archived at ${captured}.` : ''),
       },
     },
   })
