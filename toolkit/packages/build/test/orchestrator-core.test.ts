@@ -61,7 +61,8 @@ function repoFixture(cards = [{ id: '1', listName: 'Next', description: 'Route: 
   const fidelity = async ({ cardDir }: { cardDir: string }) => { writeFileSync(join(cardDir, 'fidelity-verify.log'), 'EXIT=0\n'); return 0 }
   const judge = async ({ row }: { row: { decision: string, reason?: string } }) => { row.decision = 'accepted'; row.reason = 'meets card' }
   const options = { cards: cards.map((card) => String(card.id)), worktreesDir, report, base: 'develop', waveId: 'testwave', maxCards: Infinity, maxMinutes: Infinity, pilotTimeout: 60, concurrency: 1, hard: [], cwd: root }
-  return { root, worktreesDir, report, board, moves, comments, gitCalls, launches, git, runPilot, gates, reportCheck, fidelity, judge, options }
+  const install = async () => 0
+  return { root, worktreesDir, report, board, moves, comments, gitCalls, launches, git, runPilot, gates, reportCheck, fidelity, judge, install, options }
 }
 
 describe('orchestrator board HTTP client', () => {
@@ -199,6 +200,15 @@ describe('orchestrator driver', () => {
     expect(result.exitCode).toBe(1)
     expect(result.boardMutations.map((mutation: { type: string, id: string }) => `${mutation.type}:${mutation.id}`)).toEqual(expect.arrayContaining(['moveCard:1', 'moveCard:2']))
     expect(readFileSync(f.report, 'utf8')).toContain('card 2: moved to In Progress by wave testwave, awaiting reconciliation')
+  })
+
+  it('R4 lock: a failed dependency install is a receipt, the pilot never runs and the card is escalated', async () => {
+    const f = repoFixture(); let pilots = 0
+    const runPilot = async (...args: unknown[]) => { pilots += 1; return f.runPilot(...(args as Parameters<typeof f.runPilot>)) }
+    const result = await runOrchestrator(f.options, { ...f, runPilot, install: async (_worktree: string, cardDir: string) => { writeFileSync(join(cardDir, 'install.log'), 'ERR_PNPM_OUTDATED_LOCKFILE\nEXIT=1\n'); return 1 } })
+    expect(pilots).toBe(0)
+    expect(result.rows[0]).toMatchObject({ install: 1, pilot: 1, decision: 'escalated' })
+    expect(readFileSync(f.report, 'utf8')).toContain('dependency install failed (EXIT=1)')
   })
 
   it('O1-5 lock: rejects a worktrees directory whose existing symlink ancestor escapes the repository', async () => {

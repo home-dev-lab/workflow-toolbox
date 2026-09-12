@@ -121,6 +121,12 @@ function runLogged(program, args, cwd, log) {
   return result.status ?? 1
 }
 
+// A fresh worktree carries no node_modules: the pilot's gates and lanes need the toolkit installed
+// (offline, frozen lockfile). A failed install is a receipt, and the card is escalated without a pilot.
+function defaultInstall(worktree, cardDir) {
+  return runLogged('pnpm', ['install', '--offline', '--frozen-lockfile'], path.join(worktree, 'toolkit'), path.join(cardDir, 'install.log'))
+}
+
 async function defaultGates(worktree, cardDir) {
   const result = {}
   for (const name of ['typecheck', 'lint', 'test']) result[name] = runLogged('pnpm', [name], path.join(worktree, 'toolkit'), path.join(cardDir, `${name}.log`))
@@ -271,6 +277,9 @@ export async function runOrchestrator(input, dependencies = {}) {
       for (const remote of remotes) git('git', ['config', '--worktree', `remote.${remote}.pushurl`, refusedPush], { cwd: worktree })
       const runnerLog = path.join(cardDir, 'runner.log')
       const pilotDependencies = { ...(dependencies.pilotDependencies ?? {}), log: (line) => fs.appendFileSync(runnerLog, `${line}\n`) }
+      row.install = await (dependencies.install ?? defaultInstall)(worktree, cardDir)
+      if (!fs.existsSync(path.join(cardDir, 'install.log'))) writeFile(path.join(cardDir, 'install.log'), `EXIT=${row.install ?? 1}\n`)
+      if (row.install !== 0) { row.pilot = 1; row.reason = `dependency install failed (EXIT=${row.install})`; writeFile(path.join(cardDir, 'pilot.log'), 'EXIT=1\n'); return row }
       const pilot = await runPilot({ card: id, cardFile: snapshot, dir: worktree, hard: options.hard.includes(id), profileEnv: options.profileEnv, timeout: options.pilotTimeout, boardMoves: false }, pilotDependencies)
       row.pilot = pilot.exitCode
       row.route = /^route=(LITE|FULL)\b/.exec(fs.existsSync(runnerLog) ? fs.readFileSync(runnerLog, 'utf8') : '')?.[1] ?? pilot.summary?.route ?? '-'
@@ -337,6 +346,8 @@ export async function runOrchestrator(input, dependencies = {}) {
       judge = createSdkJudge({ query: dependencies.query, models: dependencies.models, waveDir, waveServer, contract: dependencies.contract, env: dependencies.env })
     }
     for (const row of ordered) {
+      // No receipts to judge when the dependency install failed: the card is escalated as is.
+      if (row.install !== undefined && row.install !== 0) { row.decision = 'escalated'; waveServer?.setCardState(row.id, 'escalated'); const comment = `escalated by wave ${waveId} — ${row.reason}`; await board.addComment(row.id, comment); boardMutations.push({ type: 'addComment', id: row.id, text: comment }); continue }
       await (judge ?? (async ({ row }) => { row.decision = 'undecided' }))({ card: candidates.find((card) => String(card.id) === row.id), row, worktree: row.worktree, cardDir: row.cardDir })
       const decisionPath = path.join(row.cardDir, 'decision.json')
       if (fs.existsSync(decisionPath)) {
@@ -348,7 +359,7 @@ export async function runOrchestrator(input, dependencies = {}) {
         row.reason = 'orchestrator session ended after 3 turns without progress'
       }
       const receiptsGreen = row.pilot === 0 && row.gates === '0/0/0' && row.clean === 0 && row.reportCheck === 0 && row.fidelity === 0 && fs.readFileSync(path.join(row.cardDir, 'diff.patch'), 'utf8').trim()
-      if ((row.pilot === 1 || row.pilot === 2) && row.decision !== 'escalated') { row.decision = 'escalated'; row.reason = `pilot EXIT=${row.pilot} requires escalate` }
+      if ((row.pilot === 1 || row.pilot === 2) && row.decision !== 'escalated') { row.decision = 'escalated'; row.reason = row.reason ?? `pilot EXIT=${row.pilot} requires escalate` }
       else if (row.decision === 'accepted' && !receiptsGreen) { row.decision = 'escalated'; row.reason = 'accept refused: required receipt failed' }
       const comment = row.decision === 'accepted'
         ? `accepted by wave ${waveId} — awaiting main integration (branch ${row.branch}, head ${row.head})`
