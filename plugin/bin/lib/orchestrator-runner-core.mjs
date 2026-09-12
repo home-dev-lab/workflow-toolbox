@@ -93,24 +93,26 @@ function firstSymlink(root) {
   return null
 }
 
-async function eligibleMission(card, requiredLabels, board, known) {
+// Returns null when the card is eligible, otherwise the reason it is skipped — every skip is
+// named in the report (Sol round 2: a malformed Depends-on line used to make a card vanish silently).
+async function ineligibleReason(card, requiredLabels, board, known) {
   const all = labels(card)
-  if (!['P0', 'P1', 'P2'].some((label) => all.includes(label))) return false
-  if (!['feature', 'chore', 'bug', 'research'].some((label) => all.includes(label))) return false
-  if (!['effort:S', 'effort:M', 'effort:L'].some((label) => all.includes(label))) return false
-  if (!requiredLabels.every((label) => all.includes(label))) return false
+  if (!['P0', 'P1', 'P2'].some((label) => all.includes(label))) return 'no priority label'
+  if (!['feature', 'chore', 'bug', 'research'].some((label) => all.includes(label))) return 'no type label'
+  if (!['effort:S', 'effort:M', 'effort:L'].some((label) => all.includes(label))) return 'no effort label'
+  if (!requiredLabels.every((label) => all.includes(label))) return `missing mission label ${requiredLabels.find((label) => !all.includes(label))}`
   const lines = String(card.description ?? card.text ?? '').split(/\r?\n/).filter((line) => /^\s*Depends-on:/i.test(line))
   for (const line of lines) {
     const value = line.replace(/^\s*Depends-on:\s*/i, '').trim()
     if (/^none$/i.test(value)) continue
     const match = /^#?(\d+)$/.exec(value)
-    if (!match) return false
+    if (!match) return `malformed Depends-on line "${value}"`
     if (!CARD_ID.test(match[1])) throw new Error(`board unavailable: malformed card id ${match[1]}`)
     let dependency = known.get(match[1])
     if (!dependency) { dependency = validateBoardCard(await board.getCard(match[1])); known.set(match[1], dependency) }
-    if (listName(dependency) !== 'Done') return false
+    if (listName(dependency) !== 'Done') return `dependency ${match[1]} is ${listName(dependency) ?? 'unknown'}, not Done`
   }
-  return true
+  return null
 }
 
 function runLogged(program, args, cwd, log) {
@@ -137,7 +139,7 @@ function branchExists(git, repo, branch) {
   try { git('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repo }); return true } catch { return false }
 }
 
-function renderReport({ waveId, options, rows, stopReason, fatal, judgment, boardMutations }) {
+function renderReport({ waveId, options, rows, stopReason, fatal, judgment, boardMutations, skipped = [] }) {
   const verification = rows.map((row) => `| ${row.id} | ${row.route ?? '-'} | ${row.pilot ?? '-'} | ${row.gates ?? '-'} | ${row.clean ?? '-'} | ${row.reportCheck ?? '-'} | ${row.fidelity ?? '-'} | ${row.files?.join(', ') || '-'} | ${row.decision ?? 'undecided'} | ${row.reason ?? '-'} | ${row.receiptDir ?? '-'} |`).join('\n') || '| - | - | - | - | - | - | - | - | - | - | - |'
   const overlaps = []
   for (let left = 0; left < rows.length; left += 1) for (let right = left + 1; right < rows.length; right += 1) {
@@ -155,7 +157,7 @@ function renderReport({ waveId, options, rows, stopReason, fatal, judgment, boar
     }
   }
   const modelSections = judgment?.trim() || '## Independent Review\nsession ended before judgment\n\n## Decisions\nsession ended before judgment'
-  return `## Implemented\nwave=${waveId}; base=${options.base}; cards=${rows.map((row) => row.id).join(',') || 'none'}; stop=${stopReason}\n\n## Verification\n| Card | Route | Pilot exit | Gates | Clean | Findings | Fidelity | Files touched | Decision | Reason | Receipts |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${verification}\n\n${modelSections}\n\n## Remaining Risks\n${risks.join('\n') || 'None.'}\n\n## Escalations for main\n${escalations.join('\n') || 'None.'}\n\n## Findings\nNone.\n`
+  return `## Implemented\nwave=${waveId}; base=${options.base}; cards=${rows.map((row) => row.id).join(',') || 'none'}; stop=${stopReason}; skipped=${skipped.length ? skipped.map((entry) => `${entry.id} (${entry.reason})`).join('; ') : 'none'}\n\n## Verification\n| Card | Route | Pilot exit | Gates | Clean | Findings | Fidelity | Files touched | Decision | Reason | Receipts |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${verification}\n\n${modelSections}\n\n## Remaining Risks\n${risks.join('\n') || 'None.'}\n\n## Escalations for main\n${escalations.join('\n') || 'None.'}\n\n## Findings\nNone.\n`
 }
 
 export async function runOrchestrator(input, dependencies = {}) {
@@ -170,6 +172,7 @@ export async function runOrchestrator(input, dependencies = {}) {
   const waveDir = path.resolve(options.worktreesDir, `wave-${waveId}`)
   const rows = []
   const boardMutations = []
+  const skipped = []
   const startedAt = options.startedAt ?? now()
   let stopReason = 'no eligible card'
   let fatal = null
@@ -183,7 +186,7 @@ export async function runOrchestrator(input, dependencies = {}) {
       row.receiptDir = destination
       if (fs.existsSync(row.cardDir) && path.resolve(row.cardDir) !== path.resolve(destination)) fs.cpSync(row.cardDir, destination, { recursive: true, force: true })
     }
-    writeFile(report, renderReport({ waveId, options, rows, stopReason, fatal, judgment, boardMutations }))
+    writeFile(report, renderReport({ waveId, options, rows, stopReason, fatal, judgment, boardMutations, skipped }))
   }
 
   try {
@@ -212,7 +215,11 @@ export async function runOrchestrator(input, dependencies = {}) {
       const all = await paginate(board, options.missionList)
       const known = new Map(all.map((card) => [String(card.id), card]))
       const eligible = []
-      for (const card of all) if (await eligibleMission(card, options.missionLabels, board, known)) eligible.push(card)
+      for (const card of all) {
+        const reason = await ineligibleReason(card, options.missionLabels, board, known)
+        if (reason) { if (!skipped.some((entry) => entry.id === String(card.id))) skipped.push({ id: String(card.id), reason }) }
+        else eligible.push(card)
+      }
       return eligible
     }
     let candidates
@@ -223,6 +230,7 @@ export async function runOrchestrator(input, dependencies = {}) {
         if (!response) throw new Error(`card absent from board: ${id}`)
         const card = validateBoardCard(response)
         if (card && ELIGIBLE_LISTS.has(listName(card))) candidates.push(card)
+        else skipped.push({ id, reason: `in list ${listName(card) ?? 'unknown'}, not Backlog/Next/In Progress` })
       }
     } else {
       candidates = await scanMission()
@@ -306,7 +314,11 @@ export async function runOrchestrator(input, dependencies = {}) {
         }
       }
     })
-    await Promise.all(workers)
+    // allSettled, never fail-fast: a rejected worker must not let the report be emitted while another
+    // worker can still move a card or comment (Sol round 2) — every mutation is recorded first.
+    const settled = await Promise.allSettled(workers)
+    const failed = settled.find((entry) => entry.status === 'rejected')
+    if (failed) throw failed.reason
     if (timeStopped) stopReason = 'time budget exhausted'
     else if (moreThanLimit) stopReason = 'max-cards reached'
     else if (!candidates.length) stopReason = 'no eligible card'
@@ -350,5 +362,5 @@ export async function runOrchestrator(input, dependencies = {}) {
     stopReason = fatal.startsWith('board unavailable:') ? 'board unavailable' : fatal
   }
   emit()
-  return { exitCode: fatal || rows.length === 0 ? 1 : rows.every((row) => row.decision === 'accepted') ? 0 : rows.every((row) => ['accepted', 'escalated', 'rejected'].includes(row.decision)) ? 2 : 1, waveId, report, waveDir, rows, stopReason, boardMutations }
+  return { exitCode: fatal || rows.length === 0 ? 1 : rows.every((row) => row.decision === 'accepted') ? 0 : rows.every((row) => ['accepted', 'escalated', 'rejected'].includes(row.decision)) ? 2 : 1, waveId, report, waveDir, rows, stopReason, boardMutations, skipped }
 }

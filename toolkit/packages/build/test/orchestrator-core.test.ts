@@ -174,6 +174,33 @@ describe('orchestrator driver', () => {
     expect(readFileSync(f.report, 'utf8')).toContain('card 1: moved to In Progress by wave testwave, awaiting reconciliation (fake worktree add failed)')
   })
 
+  it('R2-1 lock: a malformed Depends-on line skips the card and the report names the card and the reason', async () => {
+    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: ../../../outside' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none' }]
+    const f = repoFixture(cards)
+    const result = await runOrchestrator({ ...f.options, cards: undefined, missionList: 'Next', missionLabels: [] }, f)
+    expect(result.rows.map((row: { id: string }) => row.id)).toEqual(['2'])
+    expect(result.skipped).toEqual([{ id: '1', reason: 'malformed Depends-on line "../../../outside"' }])
+    expect(readFileSync(f.report, 'utf8')).toContain('skipped=1 (malformed Depends-on line "../../../outside")')
+    expect(f.moves).toEqual(['2:In Progress'])
+  })
+
+  it('R2-2 lock: a worker that fails does not let the report be emitted before the other worker\'s board mutations are recorded', async () => {
+    const f = repoFixture([{ id: '1', listName: 'Next', description: 'a' }, { id: '2', listName: 'Next', description: 'b' }])
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const git = (program: string, args: string[], options: Record<string, unknown>) => {
+      if (args[0] === 'worktree' && args[1] === 'add' && args.some((arg) => /\/1$/.test(String(arg)))) throw new Error('fake worktree add failed')
+      return f.git(program, args, options)
+    }
+    const board = { ...f.board, moveCard: async (id: string, list: string) => { if (id === '2') await gate; f.moves.push(`${id}:${list}`) } }
+    const run = runOrchestrator({ ...f.options, concurrency: 2 }, { ...f, git, board })
+    await new Promise((resolve) => setTimeout(resolve, 50)); release()
+    const result = await run
+    expect(result.exitCode).toBe(1)
+    expect(result.boardMutations.map((mutation: { type: string, id: string }) => `${mutation.type}:${mutation.id}`)).toEqual(expect.arrayContaining(['moveCard:1', 'moveCard:2']))
+    expect(readFileSync(f.report, 'utf8')).toContain('card 2: moved to In Progress by wave testwave, awaiting reconciliation')
+  })
+
   it('O1-5 lock: rejects a worktrees directory whose existing symlink ancestor escapes the repository', async () => {
     const f = repoFixture(); const outside = mkdtempSync(join(tmpdir(), 'wt-waves-outside-')); roots.push(outside); const link = join(f.root, 'linked-waves'); symlinkSync(outside, link)
     const result = await runOrchestrator({ ...f.options, worktreesDir: join(link, 'nested') }, f)
