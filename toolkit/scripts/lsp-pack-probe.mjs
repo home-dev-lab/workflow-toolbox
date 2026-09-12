@@ -226,7 +226,7 @@ function runtimeDetails(pack, env) {
     const java = resolveCommand('java', pathValue)
     return `command -v java: ${java ?? 'not found'}\n${java ? runtimeVersion(java, ['-version'], env) : ''}`
   }
-  const command = pack === 'typescript' ? 'tsserver' : 'pyright'
+  const command = pack === 'typescript' ? 'tsserver' : pack === 'kotlin' ? 'kotlin-language-server' : 'pyright'
   const resolved = resolveCommand(command, pathValue)
   return `command -v ${command}: ${resolved ?? 'not found'}\n${resolved ? commandVersion(resolved, env) : ''}`
 }

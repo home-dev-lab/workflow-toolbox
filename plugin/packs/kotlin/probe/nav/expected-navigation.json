@@ -1,0 +1,7 @@
+{
+  "symbol-overview": { "prompt": "Use your language server or code intelligence to list the symbols in Greeter.kt. Answer with the exact interface name only.", "expectedSubstrings": ["Greeter"] },
+  "symbol-lookup": { "prompt": "Use your language server or code intelligence to look up the Kotlin symbol FriendlyGreeter. State its defining file and line.", "expectedSubstrings": ["FriendlyGreeter.kt", "FriendlyGreeter"] },
+  "declarations": { "prompt": "Use your language server or code intelligence to find the declaration of Greeter used in UseGreeter.kt. State its defining file and line.", "expectedSubstrings": ["Greeter.kt", "Greeter"] },
+  "references": { "prompt": "Use your language server or code intelligence to find references to the Kotlin interface Greeter. Name both source files containing references.", "expectedSubstrings": ["Greeter.kt", "UseGreeter.kt"] },
+  "implementations": { "prompt": "Use your language server or code intelligence to find implementations of the Kotlin interface Greeter. Name the implementing class.", "expectedSubstrings": ["FriendlyGreeter"] }
+}

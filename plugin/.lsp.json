@@ -19,6 +19,16 @@
     "diagnostics": true,
     "startupTimeout": 23000
   },
+  "kotlin": {
+    "command": "kotlin-language-server",
+    "args": [],
+    "extensionToLanguage": {
+      ".kt": "kotlin",
+      ".kts": "kotlin"
+    },
+    "diagnostics": true,
+    "startupTimeout": 60000
+  },
   "python": {
     "command": "pyright-langserver",
     "args": [

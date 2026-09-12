@@ -18,8 +18,8 @@ export interface PackContract {
   extensions: string[]
   /** Exact file names the consumer must also trigger on (build files without a distinctive extension). */
   files?: string[]
-  /** The literal regex expression the private consumer must contain for this pack. */
-  consumerTrigger: string
+  /** The literal regex expression the private consumer must contain for this pack, if it owns one. */
+  consumerTrigger?: string
   declaration: Record<string, unknown>
 }
 
@@ -43,7 +43,7 @@ export function describePackContract(contract: PackContract) {
   const agentFiles = () => fs.readdirSync(path.join(packDir, 'agents')).filter((name) => name.endsWith('.md')).sort()
 
   describe(`${pack} pack contract`, () => {
-    it.skipIf(rulesOnDemandHookPath === undefined)(`the private rules-on-demand hook triggers on ${extensions.join('/')} edits`, () => {
+    it.skipIf(rulesOnDemandHookPath === undefined || consumerTrigger === undefined)(`the private rules-on-demand hook triggers on ${extensions.join('/')} edits`, () => {
       expect(fs.readFileSync(rulesOnDemandHookPath!, 'utf8')).toContain(consumerTrigger)
     })
 
