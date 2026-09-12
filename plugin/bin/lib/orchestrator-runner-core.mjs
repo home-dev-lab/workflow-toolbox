@@ -186,7 +186,9 @@ export async function runOrchestrator(input, dependencies = {}) {
       row.receiptDir = destination
       if (fs.existsSync(row.cardDir) && path.resolve(row.cardDir) !== path.resolve(destination)) fs.cpSync(row.cardDir, destination, { recursive: true, force: true })
     }
-    writeFile(report, renderReport({ waveId, options, rows, stopReason, fatal, judgment, boardMutations, skipped }))
+    // A card skipped at an earlier scan and run after a re-scan is not skipped (Sol round 3, non-blocking).
+    const stillSkipped = skipped.filter((entry) => !rows.some((row) => row.id === entry.id))
+    writeFile(report, renderReport({ waveId, options, rows, stopReason, fatal, judgment, boardMutations, skipped: stillSkipped }))
   }
 
   try {
@@ -362,5 +364,5 @@ export async function runOrchestrator(input, dependencies = {}) {
     stopReason = fatal.startsWith('board unavailable:') ? 'board unavailable' : fatal
   }
   emit()
-  return { exitCode: fatal || rows.length === 0 ? 1 : rows.every((row) => row.decision === 'accepted') ? 0 : rows.every((row) => ['accepted', 'escalated', 'rejected'].includes(row.decision)) ? 2 : 1, waveId, report, waveDir, rows, stopReason, boardMutations, skipped }
+  return { exitCode: fatal || rows.length === 0 ? 1 : rows.every((row) => row.decision === 'accepted') ? 0 : rows.every((row) => ['accepted', 'escalated', 'rejected'].includes(row.decision)) ? 2 : 1, waveId, report, waveDir, rows, stopReason, boardMutations, skipped: skipped.filter((entry) => !rows.some((row) => row.id === entry.id)) }
 }
