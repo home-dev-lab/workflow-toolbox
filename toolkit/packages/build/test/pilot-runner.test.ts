@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -473,6 +473,57 @@ describe('SDK pilot runner', () => {
     expect(readRefused).toBe(true)
     expect(deleteRefused).toBe(true)
     expect(deleteExecuted).toBe(false)
+    expect(shadowed).toBe(false)
+  }, 120_000)
+
+  it.skipIf(process.env.WT_REAL_SDK_LOCKS !== '1')('measures wildcard-first Glob and Grep matches through an in-worktree symlink with a real SDK query', async () => {
+    const f = fixture(); const outside = join(f.root, 'outside'); const marker = 'WILDCARD_FIRST_ESCAPE_MARKER'
+    mkdirSync(outside); writeFileSync(join(outside, 'x'), 'outside x\n'); writeFileSync(join(outside, 'marker'), marker)
+    mkdirSync(join(f.dir, 'inside')); writeFileSync(join(f.dir, 'inside', 'x'), 'inside x\n'); symlinkSync(outside, join(f.dir, 'link'))
+    writeFileSync(f.cardFile, [
+      'Route: LITE',
+      'This is an SDK wildcard-first Glob/Grep measurement. In your first response, issue exactly these two tool calls in parallel and no prose:',
+      '1. Glob with pattern `*/x` and no path argument.',
+      `2. Grep with pattern \`${marker}\`, glob \`*/*\`, and output mode \`files_with_matches\`.`,
+    ].join('\n'))
+    writeFileSync(f.contract, 'Follow the card tool-call instructions exactly. Do not call lifecycle tools.\n')
+    const warnings: string[] = []; const stderr: string[] = []
+    const onWarning = (warning: Error & { code?: string }) => warnings.push(`${warning.code ?? ''}: ${warning.message}`)
+    process.on('warning', onWarning)
+    try {
+      await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 30, hard: false }, {
+        query: ({ prompt, options }: Parameters<typeof sdkQuery>[0]) => (async function* () {
+          try {
+            yield* sdkQuery({ prompt, options: { ...options, maxTurns: 1, stderr: (line) => stderr.push(line) } })
+          } catch (error) {
+            if (!(error instanceof Error) || !error.message.includes('Reached maximum number of turns (1)')) throw error
+          }
+        })(),
+        resolvePilotModels: () => ({ pilot: { value: 'haiku', effective: 'haiku' }, pilotHard: { value: 'haiku', effective: 'haiku' } }),
+      })
+    } finally {
+      process.off('warning', onWarning)
+    }
+    await new Promise((resolve) => setImmediate(resolve))
+    const transcript = JSON.parse(readFileSync(join(f.dir, '.lane', 'sdk-transcript.json'), 'utf8'))
+    const resultText = transcript.flatMap((message: { message?: { content?: Array<{ type?: string, content?: unknown }> } }) =>
+      message.message?.content?.filter((item) => item.type === 'tool_result').map((item) => JSON.stringify(item.content)) ?? []).join('\n')
+    const outsideRealpath = realpathSync(outside)
+    const reachesOutside = (name: string) => {
+      const outsideFile = join(outside, name)
+      const linkFile = join(f.dir, 'link', name)
+      return realpathSync(outsideFile) === join(outsideRealpath, name) &&
+        (resultText.includes(outsideFile) || resultText.includes(linkFile) || resultText.includes(join(outsideRealpath, name)) || resultText.includes(`link/${name}`))
+    }
+    const globEscaped = reachesOutside('x')
+    const grepEscaped = reachesOutside('marker') && resultText.includes(marker)
+    const seamRefused = transcript.some((message: unknown) => JSON.stringify(message).includes('path outside worktree: */x'))
+    const shadowed = [...warnings, ...stderr].some((line) => line.includes('CLAUDE_SDK_CAN_USE_TOOL_SHADOWED'))
+    process.stdout.write(`REAL_SDK_WILDCARD_FIRST_GLOB_ESCAPED=${globEscaped}\nREAL_SDK_WILDCARD_FIRST_GREP_ESCAPED=${grepEscaped}\n`)
+    expect(seamRefused).toBe(false)
+    expect(resultText).toContain('inside/x')
+    expect(globEscaped).toBe(false)
+    expect(grepEscaped).toBe(false)
     expect(shadowed).toBe(false)
   }, 120_000)
 

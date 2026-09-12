@@ -5,6 +5,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- Measured wildcard-first Glob and Grep matches through in-worktree symlinks as confined to the worktree by the real SDK.
 - Added the headless SDK orchestrator runner: deterministic multi-card pilot waves are judged by one
   read-only, wave-confined SDK session, while code owns receipts, reports, board comments, and all
   merge/publish escalations to main. Card IDs and real paths now fail closed, configured remotes and
