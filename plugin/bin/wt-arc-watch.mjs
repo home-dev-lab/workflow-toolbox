@@ -473,6 +473,7 @@ const announcedGone = new Set()
 const announcedFuture = new Set()
 const announcedWaitingOnSpawner = new Map()
 const announcedUncorrelatable = new Map()
+const announcedIdle = new Set()
 // Reports present at arming are already known to the user; only NEW ones matter.
 const announcedReports = new Set(previousReports)
 const degraded = new Set()
@@ -500,6 +501,36 @@ function makeBudget() {
       if (suppressed > 0) write(`ARC WATCH TRUNCATED: ${suppressed} further event(s) this poll were counted, not listed`)
     },
   }
+}
+
+// TeammateIdle qualifies a named teammate that may never cross a SubagentStop
+// boundary. Its writer appends this typed observation to the same session registry
+// the watcher already relies on. File order is chronological when timestamps tie.
+function sweepIdleRegistry(budget) {
+  if (!currentSessionId) return
+  let records
+  try {
+    records = readFileSync(path.join(OUTBOUND_GUARD_DIR, `${currentSessionId}.jsonl`), 'utf8')
+      .split('\n').filter(Boolean)
+      .map((line) => { try { return JSON.parse(line) } catch { return null } })
+      .filter(Boolean)
+  } catch {
+    return
+  }
+  const lastStopIndex = new Map()
+  records.forEach((record, index) => {
+    if (record.t === 'stop' && typeof record.name === 'string') lastStopIndex.set(record.name, index)
+  })
+  records.forEach((record, index) => {
+    if (record.t !== 'idle' || record.qualified !== true || typeof record.name !== 'string'
+      || !Number.isFinite(record.idleMin) || record.idleMin < 0
+      || typeof record.reason !== 'string' || typeof record.at !== 'string') return
+    // A stop appended later in this log closed this teammate's idle arc before this
+    // watcher saw it, so emitting an already-resolved observation would be noise.
+    if (lastStopIndex.get(record.name) > index || announcedIdle.has(record.at)) return
+    budget.emit(`IDLE ${safeName(record.name)} ${record.idleMin}m — ${safeName(record.reason)}`)
+    announcedIdle.add(record.at)
+  })
 }
 
 async function sweepWaitingOnSpawner(budget, transcriptIds) {
@@ -634,6 +665,8 @@ while (true) {
   }
 
   const budget = makeBudget()
+
+  sweepIdleRegistry(budget)
 
   if (currentTranscripts) {
     // ⚠ An INCOMPLETE scan cannot support a disappearance claim. A transient
