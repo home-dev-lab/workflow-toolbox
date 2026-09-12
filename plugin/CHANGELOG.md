@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 
 ### Fixed
+- **`wt-lane.mjs` worker ends its whole process group on `SIGTERM`/`SIGINT`** (log `EXIT=143`/`130`): a launcher killed by pid used to die alone and leave the detached `opencode` lane running in the worktree, invisible to the caller.
 - `wt-memory-index-check` no longer reports an existing subfolder fiche as a false dangling reference.
 - SDK pilot runs now route a spent critic or review/refutation round bound to an archived partial report, require
   its exact `Partial:` reason, and return exit code 2 instead of deadlocking on an unavailable edge.

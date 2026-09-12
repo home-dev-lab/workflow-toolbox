@@ -107,13 +107,20 @@ async function main() {
     finished = true
     try { appendFileSync(opts.log, `EXIT=${code}\n`) } catch { /* best effort after a log write failure */ }
   }
-  const timer = setTimeout(() => {
-    finish(124)
-    process.on('SIGTERM', () => {})
+  // Ending the lane, from either the timeout or an external signal, ends the whole process group:
+  // the worker is the group leader (detached) and opencode lives in that group, so a signal sent to
+  // the worker's pid alone used to kill the launcher and leave the lane running, invisible.
+  const endGroup = (code) => {
+    finish(code)
+    process.removeAllListeners('SIGTERM'); process.removeAllListeners('SIGINT')
+    process.on('SIGTERM', () => {}); process.on('SIGINT', () => {})
     try { process.kill(-process.pid, 'SIGTERM') } catch { /* already exited */ }
     setTimeout(() => { try { process.kill(-process.pid, 'SIGKILL') } catch { /* already exited */ } }, GRACE_MS).unref()
-  }, opts.timeout * 1000)
+  }
+  const timer = setTimeout(() => endGroup(124), opts.timeout * 1000)
   timer.unref()
+  process.on('SIGTERM', () => { clearTimeout(timer); endGroup(143) })
+  process.on('SIGINT', () => { clearTimeout(timer); endGroup(130) })
   child.on('error', () => { clearTimeout(timer); finish(1) })
   child.on('close', (code, signal) => { clearTimeout(timer); finish(signal ? 124 : (code ?? 1)) })
   return 0

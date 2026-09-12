@@ -47,6 +47,19 @@ describe('wt-lane detached launcher', () => {
     const log = join(f.dir, '.lane', 'run.log'); waitFor(log, 3000)
     expect(readFileSync(log, 'utf8')).toMatch(/EXIT=124\n$/)
   })
+  it('a SIGTERM to the worker takes the opencode process with it and writes EXIT=143 (a killed launcher used to leave the lane running)', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
+    const worker = Number(/pid=(\d+)/.exec(res.stdout)?.[1])
+    const pidFile = join(f.dir, 'opencode.pid'); waitForFile(pidFile)
+    const opencodePid = Number(readFileSync(pidFile, 'utf8').trim())
+    process.kill(worker, 'SIGTERM')
+    const log = join(f.dir, '.lane', 'run.log'); waitFor(log, 4000)
+    expect(readFileSync(log, 'utf8')).toMatch(/EXIT=143\n$/)
+    const until = Date.now() + 4000; let alive = true
+    while (Date.now() < until) { try { process.kill(opencodePid, 0) } catch { alive = false; break } spawnSync('sleep', ['0.05']) }
+    expect(alive).toBe(false)
+  })
   it('passes --variant through to opencode and refuses a malformed one', () => {
     const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"; IFS= read -r x; echo done')
     const res = run(f, ['--variant', 'high']); expect(res.status).toBe(0)
