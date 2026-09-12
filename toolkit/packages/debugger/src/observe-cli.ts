@@ -69,8 +69,8 @@ import {
 } from './observe-lifecycle.js'
 import { clearAllLaunchEnableRecords } from './launch-enable-state.js'
 import { composeCapabilityOptions, extractCapabilities, type CapabilitiesSpec } from './capabilities.js'
-import { loadCapabilityRegistry, probeProviders, type CapabilityRegistry, type CapabilitySidecar } from './capability-registry.js'
-import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, inlineObserverRequires, observerDefinitionFileWarnings, ownObserverResolutions, resolveObserverRequires, sidecarPathFor } from './launch-capabilities.js'
+import { loadCapabilityRegistry, probeProviders, type CapabilityNeed, type CapabilityRegistry, type CapabilitySidecar } from './capability-registry.js'
+import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, inlineObserverRequires, observerDefinitionFileWarnings, ownObserverResolutions, readObserverDefinitionFileRequires, resolveObserverRequires, sidecarPathFor } from './launch-capabilities.js'
 import { isRecord } from './validator-shared.js'
 import { extractObservers } from './observer-def.js'
 import { buildLaunchBody, safeRequesterCwd, resolveLaunchTimeoutMs, resolveWebAvailable } from './launch-body.js'
@@ -994,14 +994,23 @@ async function applySidecarCapabilities(input: {
   return foldCapabilitiesIntoArgs(args, composed.capabilities, composed.report, script)
 }
 
-/** Resolve each inline observer definition's `requires` and embed the resulting
+/** Resolve each locally available observer definition's `requires` and embed the resulting
  *  NeedResolution[] on the entry as `resolution` — the launcher-emitted wire contract
  *  (card I3 scope extension) the companion server reads/stores/composes. NEVER fails the
  *  launch: an unresolved required observer need rides through as an UNRESOLVED entry (the
  *  server decides "not attached + noisy record"). A launch with no observers, or none
  *  carrying requires, is returned byte-for-byte UNCHANGED. */
-async function applyObserverResolution(input: { args: unknown; requesterCwd: string; loadCapContext: () => Promise<CapContext> }): Promise<unknown> {
-  const { args, requesterCwd, loadCapContext } = input
+async function applyObserverResolution(input: {
+  args: unknown
+  requesterCwd: string
+  loadCapContext: () => Promise<CapContext>
+  port: number
+  token: string
+  prefix: string
+  script: string
+  sourceIsLocal: boolean
+}): Promise<unknown> {
+  const { args, requesterCwd, loadCapContext, port, token, prefix, script, sourceIsLocal } = input
   if (!isRecord(args) || !Array.isArray(args['observers'])) return args
   const observers = args['observers']
   const hasInline = observers.some((e) => inlineObserverRequires(e) !== null)
@@ -1011,6 +1020,26 @@ async function applyObserverResolution(input: { args: unknown; requesterCwd: str
   // AND no caller-supplied resolution to strip.
   if (!hasInline && !hasDefinitionFile && !hasCallerResolution) return args
 
+  // Resolve definitionFiles from the same local roots the server advertises: explicit
+  // OBSERVE_WORKFLOWS_DIR roots first, then the directory containing the allowlisted target.
+  // A remote source deliberately has no local roots, preserving pass-through behavior.
+  const definitionFileRoots = process.env['OBSERVE_WORKFLOWS_DIR']?.split(delimiter).filter((root) => root.length > 0) ?? []
+  if (sourceIsLocal) {
+    try {
+      const list = await api(port, token, `${prefix}/api/workflows`).then((r) => (r.ok ? (r.json() as Promise<WorkflowListEntry[]>) : []))
+      const workflowPath = Array.isArray(list) ? list.find((entry) => entry.id === script)?.path : undefined
+      if (typeof workflowPath === 'string') definitionFileRoots.push(dirname(workflowPath))
+    } catch {
+      // No locally resolvable path means the documented server-side pass-through.
+    }
+  }
+  const locallyResolvedDefinitionFiles = new Set<string>()
+  const definitionFileRequires = (entry: Record<string, unknown>): CapabilityNeed[] | null => {
+    if (typeof entry['definitionFile'] !== 'string') return null
+    const requires = readObserverDefinitionFileRequires(entry['definitionFile'], definitionFileRoots)
+    if (requires !== null) locallyResolvedDefinitionFiles.add(entry['definitionFile'])
+    return requires
+  }
   // Registry presence (for the definitionFile warning), best-effort + NON-throwing. When we
   // actually resolve (inline requires) we reuse the shared context — whose registry is EMPTY
   // on a broken registry file, so an observer degrades to unresolved rather than failing the
@@ -1018,28 +1047,30 @@ async function applyObserverResolution(input: { args: unknown; requesterCwd: str
   // invariant). With only definitionFile/caller-resolution entries a cheap read suffices.
   let ctx: CapContext | null = null
   let registryPresent = false
-  if (hasInline) {
+  if (hasInline || (hasDefinitionFile && definitionFileRoots.length > 0)) {
     ctx = await loadCapContext()
     registryPresent = Object.keys(ctx.registry.providers).length > 0
   } else {
     const probe = loadCapabilityRegistry()
     registryPresent = probe.errors.length === 0 && Object.keys(probe.registry.providers).length > 0
   }
-  // v0 boundary: a definitionFile's requires are resolved server-side, not launcher-side —
-  // warn the author at launch (only when a registry exists) instead of leaving it silent.
-  for (const w of observerDefinitionFileWarnings(observers, registryPresent)) process.stderr.write(`${w}\n`)
+  // Probe/load each local definition before deciding whether its existing pass-through warning
+  // applies. A malformed or root-escaping local file is an authoring refusal, never a fallback.
+  for (const entry of observers) if (isRecord(entry) && typeof entry['definitionFile'] === 'string') definitionFileRequires(entry)
+  for (const w of observerDefinitionFileWarnings(observers, registryPresent, locallyResolvedDefinitionFiles)) process.stderr.write(`${w}\n`)
 
   // The launcher is the SOLE producer of `resolution` (design §5.3; review, high) — strip
-  // caller-supplied ones, set the launcher-resolved one on inline-with-requires. See
+  // caller-supplied ones, set the launcher-resolved one on local definitions with requires. See
   // ownObserverResolutions. The resolve closure carries the loaded registry/availability
   // (ctx is non-null whenever an inline definition has requires, since that sets hasInline).
   const owned = ownObserverResolutions(observers, (requires) =>
     ctx === null ? [] : resolveObserverRequires(requires, ctx.registry, ctx.availability, WEB_AVAILABLE, requesterCwd),
+    definitionFileRequires,
   )
   if (owned.strippedCaller > 0) {
     process.stderr.write(`observer requires: dropped ${owned.strippedCaller} caller-supplied 'resolution' field(s) — the launcher is the sole resolver (a resolution is machine-produced, never a launch input)\n`)
   }
-  if (owned.resolved > 0) process.stderr.write(`observer requires: resolved needs for ${owned.resolved} inline observer definition(s)\n`)
+  if (owned.resolved > 0) process.stderr.write(`observer requires: resolved needs for ${owned.resolved} local observer definition(s)\n`)
   return { ...args, observers: owned.observers }
 }
 
@@ -1118,11 +1149,11 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
   // (design §5.4 — a role capability is constitutive, not a peripheral observer).
   args = await applySidecarCapabilities({ port, token, prefix, script, args, callerCapabilities: cap.spec, requesterCwd, loadCapContext, sourceIsLocal })
   // Observer requires (card I3 scope extension, wire contract with the companion server):
-  // resolve each inline observer definition's abstract `requires` and embed the resulting
+  // resolve each locally available observer definition's abstract `requires` and embed the resulting
   // NeedResolution[] as `resolution` on the entry. NEVER fails the launch — an observer is
   // peripheral, so an unresolved required need rides through and the server decides
   // "not attached + noisy record" (contrast the sidecar's constitutive fail-loud above).
-  args = await applyObserverResolution({ args, requesterCwd, loadCapContext })
+  args = await applyObserverResolution({ args, requesterCwd, loadCapContext, port, token, prefix, script, sourceIsLocal })
   // The capabilities note reflects the FINAL (caller + sidecar) section the server composes.
   const finalCap = extractCapabilities(args)
   // Fail-loud parity (review, medium): the re-validation of the MERGED section HONORS its

@@ -10,8 +10,11 @@
 // capabilities OVER the sidecar resolution (precedence §3.3: server-BARE default <
 // sidecar resolution < caller args). Fail-loud → capabilities null.
 
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, observerDefinitionFileWarnings, ownObserverResolutions, resolveObserverRequires, sidecarPathFor, substituteCwd } from '../src/launch-capabilities.js'
+import { composeLaunchCapabilities, foldCapabilitiesIntoArgs, observerDefinitionFileWarnings, ownObserverResolutions, readObserverDefinitionFileRequires, resolveObserverRequires, sidecarPathFor, substituteCwd } from '../src/launch-capabilities.js'
 import type { CapabilityNeed, NeedResolution } from '../src/capability-registry.js'
 import type { CapabilityRegistry, CapabilitySidecar } from '../src/capability-registry.js'
 import type { CapabilitiesSpec } from '../src/capabilities.js'
@@ -207,6 +210,56 @@ describe('resolveObserverRequires (observer wire contract, no refusal)', () => {
   })
 })
 
+describe('readObserverDefinitionFileRequires (local workflows root)', () => {
+  it('loads and validates a resolvable definitionFile, returning the same needs as an inline definition', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-observer-definition-'))
+    try {
+      writeFileSync(
+        join(root, 'docs.observer.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          name: 'docs',
+          description: 'Provide concise documentation context for implementation work.',
+          watch: { roles: ['implementer'] },
+          brain: { mandate: 'Watch for unresolved documentation questions and provide sourced answers promptly.' },
+          requires: [{ need: 'docs-lookup' }],
+        }),
+      )
+      const fromFile = readObserverDefinitionFileRequires('docs.observer.json', [root])
+      expect(fromFile).toEqual([{ need: 'docs-lookup' }])
+      expect(resolveObserverRequires(fromFile ?? [], registry, { serena: true }, true, '/obs')).toEqual(
+        resolveObserverRequires([{ need: 'docs-lookup' }], registry, { serena: true }, true, '/obs'),
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a locally non-resolvable definitionFile as pass-through and retains its warning', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-observer-definition-'))
+    try {
+      const observers = [{ definitionFile: 'missing.observer.json' }]
+      expect(readObserverDefinitionFileRequires('missing.observer.json', [root])).toBeNull()
+      expect(observerDefinitionFileWarnings(observers, true)).toHaveLength(1)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a definitionFile symlink that resolves outside the workflows roots', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-observer-definition-'))
+    const outside = mkdtempSync(join(tmpdir(), 'wt-observer-outside-'))
+    try {
+      writeFileSync(join(outside, 'outside.observer.json'), '{}')
+      symlinkSync(join(outside, 'outside.observer.json'), join(root, 'escape.observer.json'))
+      expect(() => readObserverDefinitionFileRequires('escape.observer.json', [root])).toThrow(/outside the workflows roots/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('ownObserverResolutions (launcher owns the resolution wire field)', () => {
   const resolve = (reqs: CapabilityNeed[]): NeedResolution[] => reqs.map((n) => ({ need: n.need, unresolved: true as const, degradation: 'degraded:none', tools: [] }))
   const evil = [{ need: 'injected', provider: 'evil', mcpServers: { evil: { command: 'rm' } }, tools: ['mcp__evil__*'] }]
@@ -222,6 +275,20 @@ describe('ownObserverResolutions (launcher owns the resolution wire field)', () 
     expect(r.strippedCaller).toBe(1)
     expect(r.resolved).toBe(1)
     expect((r.observers[0] as { resolution: unknown }).resolution).toEqual([{ need: 'docs-lookup', unresolved: true, degradation: 'degraded:none', tools: [] }])
+  })
+
+  it('sets the same launcher resolution on a locally loaded definitionFile', () => {
+    const r = ownObserverResolutions(
+      [{ definitionFile: 'docs.observer.json', resolution: evil }],
+      resolve,
+      () => [{ need: 'docs-lookup' }],
+    )
+    expect(r.strippedCaller).toBe(1)
+    expect(r.resolved).toBe(1)
+    expect(r.observers[0]).toEqual({
+      definitionFile: 'docs.observer.json',
+      resolution: [{ need: 'docs-lookup', unresolved: true, degradation: 'degraded:none', tools: [] }],
+    })
   })
 
   it('leaves a requires-less inline entry with NO resolution (caller one stripped, none set)', () => {

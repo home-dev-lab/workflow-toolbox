@@ -4,7 +4,7 @@
 import { spawn, execFileSync as execFileSync2 } from "node:child_process";
 import { createRequire } from "node:module";
 import { randomBytes } from "node:crypto";
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync5, readdirSync as readdirSync3, realpathSync as realpathSync2, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, openSync } from "node:fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync6, readdirSync as readdirSync3, realpathSync as realpathSync3, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, openSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { delimiter, dirname as dirname2, join as join7, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -417,12 +417,12 @@ function tokenizeCommand(command) {
   }
   return out;
 }
-var defaultProbeSpawn = (argv, { timeoutMs }) => new Promise((resolve2) => {
+var defaultProbeSpawn = (argv, { timeoutMs }) => new Promise((resolve3) => {
   let settled = false;
   const finish = (o) => {
     if (settled) return;
     settled = true;
-    resolve2(o);
+    resolve3(o);
   };
   const cmd = argv[0];
   if (cmd === void 0) {
@@ -732,131 +732,8 @@ function sidecarToCapabilitiesSpec(sidecar, resolutions) {
 }
 
 // packages/debugger/src/launch-capabilities.ts
-var CWD_TOKEN = "$CWD";
-function sidecarPathFor(workflowPath) {
-  const base = workflowPath.endsWith(".js") ? workflowPath.slice(0, -".js".length) : workflowPath;
-  return `${base}.capabilities.json`;
-}
-function substituteCwd(value, cwd) {
-  if (typeof value === "string") return value.split(CWD_TOKEN).join(cwd);
-  if (Array.isArray(value)) return value.map((v) => substituteCwd(v, cwd));
-  if (value !== null && typeof value === "object") {
-    const out = {};
-    for (const [k, v] of Object.entries(value)) out[k] = substituteCwd(v, cwd);
-    return out;
-  }
-  return value;
-}
-function containsCwdToken(value) {
-  if (typeof value === "string") return value.includes(CWD_TOKEN);
-  if (Array.isArray(value)) return value.some(containsCwdToken);
-  if (value !== null && typeof value === "object") return Object.values(value).some(containsCwdToken);
-  return false;
-}
-function redactResolutionsForReport(resolutions) {
-  return resolutions.map(
-    (r) => "unresolved" in r ? r : { need: r.need, provider: r.provider, servers: Object.keys(r.mcpServers), tools: r.tools, ...r.protocolHint !== void 0 ? { protocolHint: r.protocolHint } : {} }
-  );
-}
-function collectNeeds(sidecar) {
-  const needs = [];
-  const roles = isRecord2(sidecar) ? sidecar.roles : void 0;
-  if (!isRecord2(roles)) return needs;
-  for (const role of Object.values(roles)) {
-    if (isRecord2(role) && Array.isArray(role.needs)) {
-      for (const n of role.needs) if (isRecord2(n) && typeof n.need === "string") needs.push(n);
-    }
-  }
-  return needs;
-}
-function skillLayer(x) {
-  const out = {};
-  if (x?.disableBundledSkills !== void 0) out.disableBundledSkills = x.disableBundledSkills;
-  if (x?.skillOverrides !== void 0) out.skillOverrides = x.skillOverrides;
-  return out;
-}
-function mergeCapabilitiesSpecs(sidecarSpec, sidecarSkill, caller) {
-  const merged = {};
-  const mcpServers = { ...sidecarSpec.mcpServers ?? {}, ...caller?.mcpServers ?? {} };
-  if (Object.keys(mcpServers).length > 0) merged.mcpServers = mcpServers;
-  const agents = { ...sidecarSpec.agents ?? {}, ...caller?.agents ?? {} };
-  if (Object.keys(agents).length > 0) merged.agents = agents;
-  if (caller?.skills !== void 0) merged.skills = caller.skills;
-  else if (sidecarSpec.skills !== void 0) merged.skills = sidecarSpec.skills;
-  const skill = mergeSkillSettings(sidecarSkill, skillLayer(caller));
-  if (skill.disableBundledSkills !== void 0) merged.disableBundledSkills = skill.disableBundledSkills;
-  if (skill.skillOverrides !== void 0) merged.skillOverrides = skill.skillOverrides;
-  return merged;
-}
-function observerDefinitionFileWarnings(observers, registryPresent) {
-  if (!registryPresent) return [];
-  const out = [];
-  for (const e of observers) {
-    if (isRecord2(e) && typeof e["definitionFile"] === "string") {
-      out.push(
-        `observer requires: '${e["definitionFile"]}' is a definitionFile \u2014 its abstract requires are NOT resolved launcher-side (only inline observer definitions are; a definitionFile's requires are resolved by the server). An unresolved required need becomes a server-side not-attach, never a launch failure.`
-      );
-    }
-  }
-  return out;
-}
-function foldCapabilitiesIntoArgs(args, capabilities, report, script) {
-  if (args !== void 0 && !isRecord2(args)) {
-    throw new Error(`workflow "${script}" has a capability sidecar but --args is not a JSON object \u2014 capabilities require object args`);
-  }
-  return { ...args ?? {}, capabilities, capabilitiesReport: report };
-}
-function resolveObserverRequires(requires, registry, availability, webAvailable, requesterCwd) {
-  const resolved = resolveCapabilities(requires, registry, { availability, webAvailable });
-  return resolved.map((r) => {
-    if ("unresolved" in r) return r;
-    if (requesterCwd.length === 0 && containsCwdToken(r.mcpServers)) {
-      return { need: r.need, unresolved: true, degradation: "degraded:cwd-unresolvable", tools: [] };
-    }
-    return { ...r, mcpServers: substituteCwd(r.mcpServers, requesterCwd) };
-  });
-}
-function inlineObserverRequires(entry) {
-  if (!isRecord2(entry) || !isRecord2(entry["definition"])) return null;
-  const req = entry["definition"]["requires"];
-  return Array.isArray(req) && req.length > 0 ? req : null;
-}
-function ownObserverResolutions(observers, resolve2) {
-  let resolved = 0;
-  let strippedCaller = 0;
-  const out = observers.map((entry) => {
-    if (!isRecord2(entry)) return entry;
-    const { resolution: callerResolution, ...rest } = entry;
-    if (callerResolution !== void 0) strippedCaller++;
-    const requires = inlineObserverRequires(entry);
-    if (requires === null) return rest;
-    resolved++;
-    return { ...rest, resolution: resolve2(requires) };
-  });
-  return { observers: out, resolved, strippedCaller };
-}
-function composeLaunchCapabilities(input) {
-  const { sidecar, registry, availability, webAvailable, requesterCwd, callerCapabilities } = input;
-  const errors = [];
-  const needs = collectNeeds(sidecar);
-  const resolved = resolveCapabilities(needs, registry, { availability, webAvailable });
-  const substituted = resolved.map((r) => {
-    if ("unresolved" in r) return r;
-    if (requesterCwd.length === 0 && containsCwdToken(r.mcpServers)) {
-      errors.push(`capability '${r.need}' provider '${r.provider}' uses ${CWD_TOKEN} but the requester cwd is unresolvable \u2014 launch from a resolvable directory`);
-      return r;
-    }
-    return { ...r, mcpServers: substituteCwd(r.mcpServers, requesterCwd) };
-  });
-  const projected = sidecarToCapabilitiesSpec(sidecar, substituted);
-  errors.push(...projected.errors);
-  let capabilities = null;
-  if (projected.spec !== null && errors.length === 0) {
-    capabilities = mergeCapabilitiesSpecs(projected.spec, skillLayer(sidecar), callerCapabilities);
-  }
-  const deduped = [...new Set(errors)];
-  return { capabilities: deduped.length > 0 ? null : capabilities, report: redactResolutionsForReport(projected.report), errors: deduped };
-}
+import { existsSync as existsSync2, readFileSync as readFileSync2, realpathSync as realpathSync2 } from "node:fs";
+import { isAbsolute, relative, resolve as resolve2 } from "node:path";
 
 // packages/debugger/src/observer-def.ts
 var OBSERVER_EMITTABLE_TYPES = ["observer.hint"];
@@ -1122,6 +999,172 @@ function extractObservers(args) {
   return errors.length > 0 ? { entries: null, errors } : { entries: raw, errors: [] };
 }
 
+// packages/debugger/src/launch-capabilities.ts
+var CWD_TOKEN = "$CWD";
+function sidecarPathFor(workflowPath) {
+  const base = workflowPath.endsWith(".js") ? workflowPath.slice(0, -".js".length) : workflowPath;
+  return `${base}.capabilities.json`;
+}
+function substituteCwd(value, cwd) {
+  if (typeof value === "string") return value.split(CWD_TOKEN).join(cwd);
+  if (Array.isArray(value)) return value.map((v) => substituteCwd(v, cwd));
+  if (value !== null && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = substituteCwd(v, cwd);
+    return out;
+  }
+  return value;
+}
+function containsCwdToken(value) {
+  if (typeof value === "string") return value.includes(CWD_TOKEN);
+  if (Array.isArray(value)) return value.some(containsCwdToken);
+  if (value !== null && typeof value === "object") return Object.values(value).some(containsCwdToken);
+  return false;
+}
+function redactResolutionsForReport(resolutions) {
+  return resolutions.map(
+    (r) => "unresolved" in r ? r : { need: r.need, provider: r.provider, servers: Object.keys(r.mcpServers), tools: r.tools, ...r.protocolHint !== void 0 ? { protocolHint: r.protocolHint } : {} }
+  );
+}
+function collectNeeds(sidecar) {
+  const needs = [];
+  const roles = isRecord2(sidecar) ? sidecar.roles : void 0;
+  if (!isRecord2(roles)) return needs;
+  for (const role of Object.values(roles)) {
+    if (isRecord2(role) && Array.isArray(role.needs)) {
+      for (const n of role.needs) if (isRecord2(n) && typeof n.need === "string") needs.push(n);
+    }
+  }
+  return needs;
+}
+function skillLayer(x) {
+  const out = {};
+  if (x?.disableBundledSkills !== void 0) out.disableBundledSkills = x.disableBundledSkills;
+  if (x?.skillOverrides !== void 0) out.skillOverrides = x.skillOverrides;
+  return out;
+}
+function mergeCapabilitiesSpecs(sidecarSpec, sidecarSkill, caller) {
+  const merged = {};
+  const mcpServers = { ...sidecarSpec.mcpServers ?? {}, ...caller?.mcpServers ?? {} };
+  if (Object.keys(mcpServers).length > 0) merged.mcpServers = mcpServers;
+  const agents = { ...sidecarSpec.agents ?? {}, ...caller?.agents ?? {} };
+  if (Object.keys(agents).length > 0) merged.agents = agents;
+  if (caller?.skills !== void 0) merged.skills = caller.skills;
+  else if (sidecarSpec.skills !== void 0) merged.skills = sidecarSpec.skills;
+  const skill = mergeSkillSettings(sidecarSkill, skillLayer(caller));
+  if (skill.disableBundledSkills !== void 0) merged.disableBundledSkills = skill.disableBundledSkills;
+  if (skill.skillOverrides !== void 0) merged.skillOverrides = skill.skillOverrides;
+  return merged;
+}
+function observerDefinitionFileWarnings(observers, registryPresent, locallyResolved = /* @__PURE__ */ new Set()) {
+  if (!registryPresent) return [];
+  const out = [];
+  for (const e of observers) {
+    if (isRecord2(e) && typeof e["definitionFile"] === "string" && !locallyResolved.has(e["definitionFile"])) {
+      out.push(
+        `observer requires: '${e["definitionFile"]}' is a definitionFile \u2014 its abstract requires are NOT resolved launcher-side (only inline observer definitions are; a definitionFile's requires are resolved by the server). An unresolved required need becomes a server-side not-attach, never a launch failure.`
+      );
+    }
+  }
+  return out;
+}
+function readObserverDefinitionFileRequires(definitionFile, workflowRoots) {
+  for (const rawRoot of workflowRoots) {
+    let root;
+    try {
+      root = realpathSync2(rawRoot);
+    } catch {
+      continue;
+    }
+    const candidate = resolve2(root, definitionFile);
+    const candidateRelative = relative(root, candidate);
+    if (candidateRelative === ".." || candidateRelative.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(candidateRelative)) {
+      throw new Error(`observer definitionFile '${definitionFile}' resolves outside the workflows roots \u2014 refusing launch`);
+    }
+    if (!existsSync2(candidate)) continue;
+    let resolvedFile;
+    try {
+      resolvedFile = realpathSync2(candidate);
+    } catch (e) {
+      throw new Error(`observer definitionFile '${definitionFile}' is present but unreadable: ${String(e)}`);
+    }
+    const resolvedRelative = relative(root, resolvedFile);
+    if (resolvedRelative === ".." || resolvedRelative.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(resolvedRelative)) {
+      throw new Error(`observer definitionFile '${definitionFile}' resolves outside the workflows roots \u2014 refusing launch`);
+    }
+    let definition;
+    try {
+      definition = JSON.parse(readFileSync2(resolvedFile, "utf8"));
+    } catch (e) {
+      throw new Error(`observer definitionFile '${definitionFile}' is not valid JSON: ${e.message}`);
+    }
+    const errors = [];
+    validateObserverDefinition(definition, `observer definitionFile '${definitionFile}'`, errors);
+    if (errors.length > 0) throw new Error(`observer definitionFile '${definitionFile}' is invalid:
+  - ${errors.join("\n  - ")}`);
+    const requires = isRecord2(definition) ? definition["requires"] : void 0;
+    return Array.isArray(requires) ? requires : [];
+  }
+  return null;
+}
+function foldCapabilitiesIntoArgs(args, capabilities, report, script) {
+  if (args !== void 0 && !isRecord2(args)) {
+    throw new Error(`workflow "${script}" has a capability sidecar but --args is not a JSON object \u2014 capabilities require object args`);
+  }
+  return { ...args ?? {}, capabilities, capabilitiesReport: report };
+}
+function resolveObserverRequires(requires, registry, availability, webAvailable, requesterCwd) {
+  const resolved = resolveCapabilities(requires, registry, { availability, webAvailable });
+  return resolved.map((r) => {
+    if ("unresolved" in r) return r;
+    if (requesterCwd.length === 0 && containsCwdToken(r.mcpServers)) {
+      return { need: r.need, unresolved: true, degradation: "degraded:cwd-unresolvable", tools: [] };
+    }
+    return { ...r, mcpServers: substituteCwd(r.mcpServers, requesterCwd) };
+  });
+}
+function inlineObserverRequires(entry) {
+  if (!isRecord2(entry) || !isRecord2(entry["definition"])) return null;
+  const req = entry["definition"]["requires"];
+  return Array.isArray(req) && req.length > 0 ? req : null;
+}
+function ownObserverResolutions(observers, resolve3, definitionFileRequires) {
+  let resolved = 0;
+  let strippedCaller = 0;
+  const out = observers.map((entry) => {
+    if (!isRecord2(entry)) return entry;
+    const { resolution: callerResolution, ...rest } = entry;
+    if (callerResolution !== void 0) strippedCaller++;
+    const requires = inlineObserverRequires(entry) ?? definitionFileRequires?.(entry) ?? null;
+    if (requires === null || requires.length === 0) return rest;
+    resolved++;
+    return { ...rest, resolution: resolve3(requires) };
+  });
+  return { observers: out, resolved, strippedCaller };
+}
+function composeLaunchCapabilities(input) {
+  const { sidecar, registry, availability, webAvailable, requesterCwd, callerCapabilities } = input;
+  const errors = [];
+  const needs = collectNeeds(sidecar);
+  const resolved = resolveCapabilities(needs, registry, { availability, webAvailable });
+  const substituted = resolved.map((r) => {
+    if ("unresolved" in r) return r;
+    if (requesterCwd.length === 0 && containsCwdToken(r.mcpServers)) {
+      errors.push(`capability '${r.need}' provider '${r.provider}' uses ${CWD_TOKEN} but the requester cwd is unresolvable \u2014 launch from a resolvable directory`);
+      return r;
+    }
+    return { ...r, mcpServers: substituteCwd(r.mcpServers, requesterCwd) };
+  });
+  const projected = sidecarToCapabilitiesSpec(sidecar, substituted);
+  errors.push(...projected.errors);
+  let capabilities = null;
+  if (projected.spec !== null && errors.length === 0) {
+    capabilities = mergeCapabilitiesSpecs(projected.spec, skillLayer(sidecar), callerCapabilities);
+  }
+  const deduped = [...new Set(errors)];
+  return { capabilities: deduped.length > 0 ? null : capabilities, report: redactResolutionsForReport(projected.report), errors: deduped };
+}
+
 // packages/debugger/src/launch-body.ts
 function buildLaunchBody(script, args, requesterCwd, commRoot) {
   return {
@@ -1221,7 +1264,7 @@ async function retryCanonicalPort(deps) {
 
 // packages/debugger/src/observe-identity.ts
 import { execFileSync } from "node:child_process";
-import { readFileSync as readFileSync2 } from "node:fs";
+import { readFileSync as readFileSync3 } from "node:fs";
 function probeExec(cmd, args) {
   try {
     return execFileSync(cmd, args, { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] });
@@ -1246,7 +1289,7 @@ function readBootId() {
     return sec !== null ? `boottime-${String(sec)}` : null;
   }
   try {
-    return readFileSync2("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return readFileSync3("/proc/sys/kernel/random/boot_id", "utf8").trim();
   } catch {
     return null;
   }
@@ -1266,7 +1309,7 @@ function readProcStartStamp(pid) {
     return out !== null ? parsePowershellInt(out) : null;
   }
   try {
-    const stat = readFileSync2(`/proc/${pid}/stat`, "utf8");
+    const stat = readFileSync3(`/proc/${pid}/stat`, "utf8");
     const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     const ticks = Number(rest[19]);
     return Number.isFinite(ticks) ? ticks : null;
@@ -1292,13 +1335,13 @@ function pidState(pf) {
 }
 
 // packages/debugger/src/observe-config.ts
-import { mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync3, renameSync as renameSync2, statSync, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync4, renameSync as renameSync2, statSync, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { join as join5 } from "node:path";
 var CONFIG_FILENAME = "config.json";
 function readObserveConfig(configRoot) {
   let raw;
   try {
-    raw = JSON.parse(readFileSync3(join5(configRoot, CONFIG_FILENAME), "utf8"));
+    raw = JSON.parse(readFileSync4(join5(configRoot, CONFIG_FILENAME), "utf8"));
   } catch {
     return { sources: [], remotes: [] };
   }
@@ -1480,18 +1523,18 @@ async function resolveSource(healthSources, wanted, fetchSourcesList, sleep) {
 }
 
 // packages/debugger/src/observe-checkout.ts
-import { existsSync as existsSync2, readFileSync as readFileSync4 } from "node:fs";
+import { existsSync as existsSync3, readFileSync as readFileSync5 } from "node:fs";
 import { dirname, join as join6 } from "node:path";
 function findObserveRoot(cwd, env) {
   const isObserveApp = (dir2) => {
     try {
-      const pkg = JSON.parse(readFileSync4(join6(dir2, "apps", "observe-ui", "package.json"), "utf8"));
+      const pkg = JSON.parse(readFileSync5(join6(dir2, "apps", "observe-ui", "package.json"), "utf8"));
       return typeof pkg === "object" && pkg !== null && pkg["name"] === "@workflow-toolbox/observe-ui";
     } catch {
       return false;
     }
   };
-  const hasServer = (dir2) => existsSync2(join6(dir2, "apps", "observe-ui", "server", "dev-api.ts")) && isObserveApp(dir2);
+  const hasServer = (dir2) => existsSync3(join6(dir2, "apps", "observe-ui", "server", "dev-api.ts")) && isObserveApp(dir2);
   const probe = (dir2) => hasServer(dir2) ? dir2 : hasServer(join6(dir2, "toolkit")) ? join6(dir2, "toolkit") : null;
   const forced = env["DWT_OBSERVE_ROOT"];
   if (forced !== void 0 && forced.length > 0) return probe(forced);
@@ -1576,7 +1619,7 @@ function bestEffortPortHolders(port) {
 function openLogFileAt(path) {
   mkdirSync3(dirname2(path), { recursive: true, mode: 448 });
   try {
-    if (existsSync3(path) && statSync2(path).size > LOG_ROTATE_BYTES) {
+    if (existsSync4(path) && statSync2(path).size > LOG_ROTATE_BYTES) {
       renameSync3(path, `${path}.1`);
     }
   } catch {
@@ -1585,7 +1628,7 @@ function openLogFileAt(path) {
 }
 function readPidfileAt(path) {
   try {
-    return parseObservePidfile(readFileSync5(path, "utf8"));
+    return parseObservePidfile(readFileSync6(path, "utf8"));
   } catch {
     return null;
   }
@@ -1687,12 +1730,12 @@ function announceObserveOrientation(orientation, allowBranch) {
 function resolveStartSources(explicitRaw) {
   const explicit = explicitRaw.map(resolveDir);
   for (const [i, dir] of explicit.entries()) {
-    if (!existsSync3(dir)) throw new Error(`--source ${explicitRaw[i]}: directory does not exist (resolved to ${dir})`);
+    if (!existsSync4(dir)) throw new Error(`--source ${explicitRaw[i]}: directory does not exist (resolved to ${dir})`);
   }
   const configRoot = observeConfigRoot(process.env, homedir3(), process.platform);
   const { sources: configSources } = readObserveConfig(configRoot);
   const discoveryCandidates = discoverConfigDirCandidates(process.env, homedir3());
-  const resolved = resolveHubSources(explicit, configSources, discoveryCandidates, existsSync3, resolveDir);
+  const resolved = resolveHubSources(explicit, configSources, discoveryCandidates, existsSync4, resolveDir);
   if (resolved.length > 0) return resolved;
   const fallback = resolveConfigDir();
   if (configSources.length > 0 || discoveryCandidates.length > 0) {
@@ -1720,13 +1763,13 @@ function resolveStartRemotes() {
 function resolveLaunchAgentsDir() {
   let selfDir;
   try {
-    selfDir = dirname2(realpathSync2(fileURLToPath(import.meta.url)));
+    selfDir = dirname2(realpathSync3(fileURLToPath(import.meta.url)));
   } catch {
     return null;
   }
   for (const rel of ["../launch-agents", "../../../../plugin/launch-agents"]) {
     const candidate = resolvePath(selfDir, rel);
-    if (existsSync3(join7(candidate, ".claude-plugin", "plugin.json"))) return candidate;
+    if (existsSync4(join7(candidate, ".claude-plugin", "plugin.json"))) return candidate;
   }
   return null;
 }
@@ -1825,7 +1868,7 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
 }
 function readLogSliceFrom(path, offset) {
   try {
-    const buf = readFileSync5(path);
+    const buf = readFileSync6(path);
     return buf.subarray(Math.min(offset, buf.length)).toString("utf8");
   } catch {
     return "";
@@ -1833,7 +1876,7 @@ function readLogSliceFrom(path, offset) {
 }
 function logTail(logPath, lines = 5) {
   try {
-    const text = readFileSync5(logPath, "utf8");
+    const text = readFileSync6(logPath, "utf8");
     const tail = text.split("\n").filter(Boolean).slice(-lines).join("\n");
     return tail.length > 0 ? `log tail (${logPath}):
 ${tail}` : `log is empty (${logPath})`;
@@ -2085,7 +2128,7 @@ async function applySidecarCapabilities(input) {
   const sidecarPath = sidecarPathFor(workflowPath);
   let rawSidecar;
   try {
-    rawSidecar = readFileSync5(sidecarPath, "utf8");
+    rawSidecar = readFileSync6(sidecarPath, "utf8");
   } catch (e) {
     if (e.code === "ENOENT") return args;
     throw new Error(`capability sidecar ${sidecarPath} is present but unreadable: ${String(e)}`);
@@ -2110,33 +2153,51 @@ async function applySidecarCapabilities(input) {
   return foldCapabilitiesIntoArgs(args, composed.capabilities, composed.report, script);
 }
 async function applyObserverResolution(input) {
-  const { args, requesterCwd, loadCapContext } = input;
+  const { args, requesterCwd, loadCapContext, port, token, prefix, script, sourceIsLocal } = input;
   if (!isRecord2(args) || !Array.isArray(args["observers"])) return args;
   const observers = args["observers"];
   const hasInline = observers.some((e) => inlineObserverRequires(e) !== null);
   const hasDefinitionFile = observers.some((e) => isRecord2(e) && typeof e["definitionFile"] === "string");
   const hasCallerResolution = observers.some((e) => isRecord2(e) && "resolution" in e);
   if (!hasInline && !hasDefinitionFile && !hasCallerResolution) return args;
+  const definitionFileRoots = process.env["OBSERVE_WORKFLOWS_DIR"]?.split(delimiter).filter((root) => root.length > 0) ?? [];
+  if (sourceIsLocal) {
+    try {
+      const list = await api(port, token, `${prefix}/api/workflows`).then((r) => r.ok ? r.json() : []);
+      const workflowPath = Array.isArray(list) ? list.find((entry) => entry.id === script)?.path : void 0;
+      if (typeof workflowPath === "string") definitionFileRoots.push(dirname2(workflowPath));
+    } catch {
+    }
+  }
+  const locallyResolvedDefinitionFiles = /* @__PURE__ */ new Set();
+  const definitionFileRequires = (entry) => {
+    if (typeof entry["definitionFile"] !== "string") return null;
+    const requires = readObserverDefinitionFileRequires(entry["definitionFile"], definitionFileRoots);
+    if (requires !== null) locallyResolvedDefinitionFiles.add(entry["definitionFile"]);
+    return requires;
+  };
   let ctx = null;
   let registryPresent = false;
-  if (hasInline) {
+  if (hasInline || hasDefinitionFile && definitionFileRoots.length > 0) {
     ctx = await loadCapContext();
     registryPresent = Object.keys(ctx.registry.providers).length > 0;
   } else {
     const probe = loadCapabilityRegistry();
     registryPresent = probe.errors.length === 0 && Object.keys(probe.registry.providers).length > 0;
   }
-  for (const w of observerDefinitionFileWarnings(observers, registryPresent)) process.stderr.write(`${w}
+  for (const entry of observers) if (isRecord2(entry) && typeof entry["definitionFile"] === "string") definitionFileRequires(entry);
+  for (const w of observerDefinitionFileWarnings(observers, registryPresent, locallyResolvedDefinitionFiles)) process.stderr.write(`${w}
 `);
   const owned = ownObserverResolutions(
     observers,
-    (requires) => ctx === null ? [] : resolveObserverRequires(requires, ctx.registry, ctx.availability, WEB_AVAILABLE, requesterCwd)
+    (requires) => ctx === null ? [] : resolveObserverRequires(requires, ctx.registry, ctx.availability, WEB_AVAILABLE, requesterCwd),
+    definitionFileRequires
   );
   if (owned.strippedCaller > 0) {
     process.stderr.write(`observer requires: dropped ${owned.strippedCaller} caller-supplied 'resolution' field(s) \u2014 the launcher is the sole resolver (a resolution is machine-produced, never a launch input)
 `);
   }
-  if (owned.resolved > 0) process.stderr.write(`observer requires: resolved needs for ${owned.resolved} inline observer definition(s)
+  if (owned.resolved > 0) process.stderr.write(`observer requires: resolved needs for ${owned.resolved} local observer definition(s)
 `);
   return { ...args, observers: owned.observers };
 }
@@ -2180,7 +2241,7 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag, launchTimeoutMs, comm
     return capContext;
   };
   args = await applySidecarCapabilities({ port, token, prefix, script, args, callerCapabilities: cap.spec, requesterCwd, loadCapContext, sourceIsLocal });
-  args = await applyObserverResolution({ args, requesterCwd, loadCapContext });
+  args = await applyObserverResolution({ args, requesterCwd, loadCapContext, port, token, prefix, script, sourceIsLocal });
   const finalCap = extractCapabilities(args);
   if (finalCap.errors.length > 0) throw new Error(`composed capabilities section invalid:
   - ${finalCap.errors.join("\n  - ")}`);
@@ -2434,7 +2495,7 @@ async function cmdConfigShow() {
 }
 async function cmdConfigAddSource(dirRaw) {
   const dir = resolveDir(dirRaw);
-  if (!existsSync3(dir)) throw new Error(`config add-source ${dirRaw}: directory does not exist (resolved to ${dir})`);
+  if (!existsSync4(dir)) throw new Error(`config add-source ${dirRaw}: directory does not exist (resolved to ${dir})`);
   const configRoot = observeConfigRoot(process.env, homedir3(), process.platform);
   const config = readObserveConfig(configRoot);
   const already = config.sources.some((s) => resolveDir(s) === dir);
@@ -2720,8 +2781,8 @@ var argv1 = process.argv[1];
 if (argv1 !== void 0) {
   let same = false;
   try {
-    const { realpathSync: realpathSync3 } = await import("node:fs");
-    same = import.meta.url === pathToFileURL(realpathSync3(argv1)).href;
+    const { realpathSync: realpathSync4 } = await import("node:fs");
+    same = import.meta.url === pathToFileURL(realpathSync4(argv1)).href;
   } catch {
     same = import.meta.url === pathToFileURL(argv1).href;
   }
