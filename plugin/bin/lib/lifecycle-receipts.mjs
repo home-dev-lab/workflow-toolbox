@@ -1,3 +1,4 @@
+// Owns child-process receipts and process-group cleanup; it must not know lifecycle phases or state.
 import { spawn } from 'node:child_process'
 export function launchProcess(program, args, options) {
   return new Promise((resolve, reject) => {
