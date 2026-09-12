@@ -32,7 +32,8 @@
     "canary:observer": "tsx packages/smoke/src/observer-canaries.ts",
     "audit:rules-overlap": "node scripts/audit-rules-overlap.mjs",
     "report:citation-candidates": "tsx scripts/citation-candidate-report.ts",
-    "wt:report-lens": "tsx scripts/report-contract-lens.ts"
+    "wt:report-lens": "tsx scripts/report-contract-lens.ts",
+    "packs:lsp": "node scripts/build-lsp-root.mjs"
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.260",
