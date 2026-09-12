@@ -60,6 +60,18 @@ describe('wt-lane detached launcher', () => {
     while (Date.now() < until) { try { process.kill(opencodePid, 0) } catch { alive = false; break } spawnSync('sleep', ['0.05']) }
     expect(alive).toBe(false)
   })
+  it('an external SIGTERM after the lane wrote its own EXIT line does not append a second one (a lifecycle group kill used to turn EXIT=0 into EXIT=143)', () => {
+    const f = fixture('printf "lane done\\nEXIT=0\\n" >> "$PWD/.lane/run.log"; echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
+    const worker = Number(/pid=(\d+)/.exec(res.stdout)?.[1])
+    const pidFile = join(f.dir, 'opencode.pid'); waitForFile(pidFile)
+    process.kill(worker, 'SIGTERM')
+    const log = join(f.dir, '.lane', 'run.log')
+    const until = Date.now() + 4000
+    while (Date.now() < until) { try { process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 0); spawnSync('sleep', ['0.05']) } catch { break } }
+    expect(readFileSync(log, 'utf8')).toMatch(/EXIT=0\n$/)
+    expect((readFileSync(log, 'utf8').match(/^EXIT=/gm) ?? []).length).toBe(1)
+  })
   it('passes --variant through to opencode and refuses a malformed one', () => {
     const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"; IFS= read -r x; echo done')
     const res = run(f, ['--variant', 'high']); expect(res.status).toBe(0)

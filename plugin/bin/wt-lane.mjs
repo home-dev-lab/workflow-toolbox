@@ -2,6 +2,7 @@
 // wt-lane.mjs -- detached, one-command external opencode lane launcher.
 
 import { appendFileSync, mkdirSync, openSync, existsSync, statSync, writeFileSync } from 'node:fs'
+import { readFileSync as readLaneLog } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { resolveConsent } from './lib/lane-consent-check-core.mjs'
@@ -105,6 +106,13 @@ async function main() {
   const finish = (code) => {
     if (finished) return
     finished = true
+    // The lane's own terminal line wins: when opencode already wrote `EXIT=<n>` and the group is
+    // ended from outside afterwards (the lifecycle server reaps the group at receipt), a second
+    // line would change the attested receipt. Append only when no terminal line exists yet.
+    try {
+      const tail = readLaneLog(opts.log, 'utf8').split(/\r?\n/).filter(Boolean).at(-1) ?? ''
+      if (/^EXIT=\d+$/.test(tail)) return
+    } catch { /* unreadable log: append below */ }
     try { appendFileSync(opts.log, `EXIT=${code}\n`) } catch { /* best effort after a log write failure */ }
   }
   // Ending the lane, from either the timeout or an external signal, ends the whole process group:
