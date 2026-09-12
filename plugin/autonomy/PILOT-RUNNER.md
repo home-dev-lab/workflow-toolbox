@@ -109,3 +109,30 @@ evidence classification and recorded target, while unmatched names retain their 
 classification for verification.
 `--require-clean-tree` remains a deprecated alias. Verification proves frozen bytes and requested
 tree/HEAD identity only, never authorship or prose truth.
+
+## Orchestrator
+
+Launch a wave with `setsid nohup bash -c 'node plugin/bin/wt-run-orchestrator.mjs --cards
+<id,id> --base develop --worktrees-dir <repo-dir> --report <report.md> > <wave.log> 2>&1; echo
+EXIT=$? >> <wave.log>' > /dev/null 2>&1 < /dev/null &`, or replace `--cards` with
+`--mission-list <list>` plus repeatable `--mission-label`, `--max-cards`, and
+optional `--max-minutes`. `--hard <id,id>` selects the hard pilot model per card;
+`--profile-env <settings.json>` supplies model remaps to pilots and the orchestrator session.
+
+An explicit card is eligible only in Backlog, Next, or In Progress. A mission card must also carry
+one priority label (`P0|P1|P2`), one type label (`feature|chore|bug|research`), one effort label
+(`effort:S|effort:M|effort:L`), every requested mission label, and only parseable `Depends-on:`
+entries whose referenced cards are Done. The driver snapshots each eligible card, creates its
+wave-qualified worktree and push/merge fence, runs its pilot, reruns typecheck/lint/test, checks the
+clean tree and pilot report, freezes and verifies fidelity, and archives the diff and receipts.
+
+One SDK orchestrator session reads each snapshot, pilot report, and diff through the wave lifecycle
+server. It records `accept`, `escalate`, or `reject` against the card's definition of done; it cannot
+merge, push, edit files, or move cards. The driver renders `Implemented`, `Verification`, the
+session's verbatim `Independent Review` and `Decisions`, `Remaining Risks`, `Escalations for main`,
+and `Findings`. Exit 0 means every card was accepted, exit 2 means every card was decided but at
+least one was escalated or rejected, and exit 1 means the wave did not complete.
+
+Main reads the seam warnings and evidence, reviews each accepted branch, performs the merges,
+reruns gates on the merged tree, and only then moves delivered cards to Done. The runner leaves all
+merge, push, publish, and final board transitions as explicit escalations for main.

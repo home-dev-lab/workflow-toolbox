@@ -3,6 +3,8 @@ import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { treeSignature } from './gate-evidence.mjs'
+import { createSdkJudge } from './orchestrator-judge.mjs'
+import { createWaveServer } from './wave-lifecycle-server.mjs'
 
 const DEFAULTS = { concurrency: 1, base: 'develop', pilotTimeout: 5400, boardUrl: 'http://localhost:25478/mcp', maxCards: Infinity, maxMinutes: Infinity, missionLabels: [], hard: [] }
 const ELIGIBLE_LISTS = new Set(['Backlog', 'Next', 'In Progress'])
@@ -253,15 +255,35 @@ export async function runOrchestrator(input, dependencies = {}) {
     else stopReason = 'card set complete'
 
     const ordered = [...rows].sort((left, right) => candidates.findIndex((card) => String(card.id) === left.id) - candidates.findIndex((card) => String(card.id) === right.id))
+    let judge = dependencies.judge
+    let waveServer = null
+    if (!judge && dependencies.query && ordered.length) {
+      waveServer = (dependencies.createWaveServer ?? createWaveServer)({ waveDir, cards: ordered })
+      for (const row of ordered) { waveServer.setCardState(row.id, 'piloting'); waveServer.setCardState(row.id, 'judging') }
+      judge = createSdkJudge({ query: dependencies.query, models: dependencies.models, waveDir, waveServer, contract: dependencies.contract, env: dependencies.env })
+    }
     for (const row of ordered) {
-      await (dependencies.judge ?? (async ({ row }) => { row.decision = 'undecided' }))({ card: candidates.find((card) => String(card.id) === row.id), row, worktree: row.worktree, cardDir: row.cardDir })
+      await (judge ?? (async ({ row }) => { row.decision = 'undecided' }))({ card: candidates.find((card) => String(card.id) === row.id), row, worktree: row.worktree, cardDir: row.cardDir })
+      const decisionPath = path.join(row.cardDir, 'decision.json')
+      if (fs.existsSync(decisionPath)) {
+        const decided = JSON.parse(fs.readFileSync(decisionPath, 'utf8'))
+        row.decision = decided.decision === 'accept' ? 'accepted' : decided.decision === 'escalate' ? 'escalated' : decided.decision === 'reject' ? 'rejected' : 'undecided'
+        row.reason = decided.reason
+      } else if (waveServer?.state().cards[row.id] === 'undecided') {
+        row.decision = 'undecided'
+        row.reason = 'orchestrator session ended after 3 turns without progress'
+      }
       const receiptsGreen = row.pilot === 0 && row.gates === '0/0/0' && row.clean === 0 && row.reportCheck === 0 && row.fidelity === 0 && fs.readFileSync(path.join(row.cardDir, 'diff.patch'), 'utf8').trim()
       if ((row.pilot === 1 || row.pilot === 2) && row.decision !== 'escalated') { row.decision = 'escalated'; row.reason = `pilot EXIT=${row.pilot} requires escalate` }
       else if (row.decision === 'accepted' && !receiptsGreen) { row.decision = 'escalated'; row.reason = 'accept refused: required receipt failed' }
-      await board.addComment(row.id, `wave ${waveId}: ${row.decision}${row.reason ? ` - ${row.reason}` : ''}`)
+      const comment = row.decision === 'accepted'
+        ? `accepted by wave ${waveId} — awaiting main integration (branch ${row.branch}, head ${row.head})`
+        : `${row.decision} by wave ${waveId}${row.reason ? ` — ${row.reason}` : ''}`
+      await board.addComment(row.id, comment)
     }
     rows.splice(0, rows.length, ...ordered)
     if (dependencies.judgment) judgment = await dependencies.judgment(rows)
+    else if (judge?.judgment) judgment = await judge.judgment(rows)
   } catch (error) {
     fatal = errorText(error)
     stopReason = fatal.startsWith('board unavailable:') ? 'board unavailable' : fatal

@@ -5,10 +5,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { BoardUnavailable, createBoardClient } from '../../../../plugin/bin/lib/board-http-client.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createWaveServer } from '../../../../plugin/bin/lib/wave-lifecycle-server.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { createSdkJudge, waveCanUseTool } from '../../../../plugin/bin/lib/orchestrator-judge.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { parseOrchestratorArgs, runOrchestrator } from '../../../../plugin/bin/lib/orchestrator-runner-core.mjs'
 
@@ -136,7 +139,7 @@ describe('orchestrator driver', () => {
 
   it('runs the complete happy path, writes receipts, moves only to In Progress, and never invokes forbidden git operations', async () => {
     const f = repoFixture(); const result = await runOrchestrator(f.options, f)
-    expect(result.exitCode).toBe(0); expect(f.moves).toEqual(['1:In Progress']); expect(f.comments).toHaveLength(1); expect(readFileSync(f.report, 'utf8')).toContain('main should merge card/1-wave-testwave')
+    expect(result.exitCode).toBe(0); expect(f.moves).toEqual(['1:In Progress']); expect(f.comments).toEqual([expect.stringMatching(/^1:accepted by wave testwave — awaiting main integration \(branch card\/1-wave-testwave, head [a-f0-9]+\)$/)]); expect(readFileSync(f.report, 'utf8')).toContain('main should merge card/1-wave-testwave')
     expect(readFileSync(join(result.waveDir, 'cards/1/card.md'), 'utf8')).toBe('Route: LITE\n## Definition of done\n- ship\n')
     expect(readFileSync(join(result.waveDir, 'cards/1/runner.log'), 'utf8').split('\n')[0]).toMatch(/^route=LITE /)
     expect(f.gitCalls.flat().some((arg) => ['merge', 'push', 'branch -D'].includes(arg))).toBe(false)
@@ -229,6 +232,119 @@ describe('orchestrator driver', () => {
   it('prints the routing line before doing driver work', () => {
     const f = repoFixture(); const result = spawnSync(process.execPath, [CLI, '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8' }); expect(result.stdout.split('\n')[0]).toMatch(/^wave=\S+ report=/)
   })
+})
+
+describe('SDK orchestrator judge', () => {
+  it('drives two cards through the registered wave server in one model-selected query and embeds judgment verbatim', async () => {
+    const cards = [
+      { id: '1', listName: 'Next', description: 'Route: LITE\n## Definition of done\n- ship one\n' },
+      { id: '2', listName: 'Next', description: 'Route: LITE\n## Definition of done\n- ship two\n' },
+    ]
+    const f = repoFixture(cards); let calls = 0; const prompts: string[] = []; let queryOptions: Record<string, unknown> = {}
+    type Server = { instance: { _registeredTools: Record<string, { handler: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
+    const judgment = '## Independent Review\nBoth diffs satisfy their cards.\n\n## Decisions\n1 accept; 2 reject.'
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: Record<string, unknown> }) => {
+      calls += 1; queryOptions = options
+      return (async function* () {
+        const tools = ((options.mcpServers as Record<string, Server>)['sdk-wave-lifecycle']!).instance._registeredTools
+        for (const [id, decision] of [['1', 'accept'], ['2', 'reject']] as const) {
+          const message = await prompt.next(); prompts.push(message.value.message.content)
+          const result = await tools.decide!.handler({ cardId: id, decision, reason: `${decision} reason`, assessment: `card-${id}.txt:1 satisfies the bullet.`, tool_use_id: `decision-${id}` })
+          yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `decision-${id}`, content: result.content }] } }
+          yield { type: 'result' }
+        }
+        const final = await prompt.next(); prompts.push(final.value.message.content)
+        const result = await tools.write_judgment!.handler({ content: judgment, tool_use_id: 'judgment' })
+        yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'judgment', content: result.content }] } }
+      })()
+    }
+    const result = await runOrchestrator(f.options, { ...f, judge: undefined, query, models: { orchestrator: { value: 'wave-model' } }, contract: '# contract' })
+    expect(calls).toBe(1)
+    expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep'] })
+    expect(Object.keys(queryOptions.mcpServers as object)).toEqual(['sdk-wave-lifecycle'])
+    expect(prompts).toEqual([
+      'Judge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.',
+      'Judge card 2: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.',
+      'Every card is decided: write_judgment.',
+    ])
+    expect(result.rows.map((row: { decision: string, reason: string }) => [row.decision, row.reason])).toEqual([['accepted', 'accept reason'], ['rejected', 'reject reason']])
+    expect(readFileSync(f.report, 'utf8')).toContain(judgment)
+  })
+
+  it('allows exactly the six wave tools and confined reads while denying Planka and escaping glob prefixes', () => {
+    const f = repoFixture(); const wave = join(f.root, '.waves'); mkdirSync(wave, { recursive: true })
+    for (const name of ['wave_state', 'read_card', 'read_card_report', 'read_diff', 'decide', 'write_judgment']) {
+      expect(waveCanUseTool(wave, `mcp__sdk-wave-lifecycle__${name}`, {}).behavior).toBe('allow')
+    }
+    expect(waveCanUseTool(wave, 'mcp__sdk-wave-lifecycle__delete_wave', {}).behavior).toBe('deny')
+    expect(waveCanUseTool(wave, 'mcp__planka__move_card', {}).behavior).toBe('deny')
+    expect(waveCanUseTool(wave, 'Read', { file_path: join(f.root, 'base.txt') })).toEqual({ behavior: 'deny', message: `path outside wave directory: ${join(f.root, 'base.txt')}` })
+    expect(waveCanUseTool(wave, 'Glob', { pattern: '../*.txt' })).toEqual({ behavior: 'deny', message: 'path outside wave directory: ../*.txt' })
+    expect(waveCanUseTool(wave, 'Read', { file_path: join(wave, 'missing.txt') }).behavior).toBe('allow')
+  })
+
+  it('marks every remaining card undecided and writes an exit-1 report after three turns without progress', async () => {
+    const cards = [{ id: '1', listName: 'Next', description: 'a' }, { id: '2', listName: 'Next', description: 'b' }]; const f = repoFixture(cards); const prompts: string[] = []
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      prompts.push((await prompt.next()).value.message.content)
+      for (let turn = 0; turn < 3; turn += 1) {
+        yield { type: 'result' }
+        prompts.push((await prompt.next()).value.message.content)
+      }
+    })()
+    const result = await runOrchestrator(f.options, { ...f, judge: undefined, query, models: { orchestrator: { value: 'sonnet' } }, contract: '# contract' })
+    expect(prompts).toHaveLength(4)
+    expect(prompts.slice(1)).toEqual(Array(3).fill('Card 1 is still judging. Use decide for card 1.'))
+    expect(result.exitCode).toBe(1)
+    expect(result.rows.map((row: { decision: string }) => row.decision)).toEqual(['undecided', 'undecided'])
+    expect(readFileSync(f.report, 'utf8')).toContain('session ended before judgment')
+  })
+
+  it('fails closed when the SDK stream ends between a card decision and the final judgment', async () => {
+    const cards = [{ id: '1', listName: 'Next', description: 'a' }, { id: '2', listName: 'Next', description: 'b' }]; const f = repoFixture(cards)
+    type Server = { instance: { _registeredTools: Record<string, { handler: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, Server> } }) => (async function* () {
+      const tools = options.mcpServers['sdk-wave-lifecycle']!.instance._registeredTools
+      await prompt.next()
+      const result = await tools.decide!.handler({ cardId: '1', decision: 'reject', reason: 'contradiction', assessment: 'card-1.txt:1 contradicts the bullet.', tool_use_id: 'first' })
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'first', content: result.content }] } }
+    })()
+    const result = await runOrchestrator(f.options, { ...f, judge: undefined, query, models: { orchestrator: { value: 'sonnet' } }, contract: '# contract' })
+    expect(result.exitCode).toBe(1)
+    expect(result.stopReason).toBe('orchestrator session ended before judgment')
+    expect(result.rows.map((row: { decision: string }) => row.decision)).toEqual(['rejected', 'undecided'])
+    expect(readFileSync(f.report, 'utf8')).toContain('session ended before judgment')
+  })
+
+  it('keeps the orchestrator contract bounded and explicit about the enforced limits', () => {
+    const contract = readFileSync(join(ROOT, 'plugin/autonomy/ORCHESTRATOR-CONTRACT.md'), 'utf8')
+    expect(Buffer.byteLength(contract)).toBeLessThanOrEqual(4096)
+    expect(contract).toContain('You have no Bash, Write,\nEdit, or Planka tool.')
+    expect(contract).toContain('Never merge, push, publish, move a board card, or mark work Done.')
+  })
+
+  it.skipIf(process.env.WT_REAL_SDK_LOCK !== '1')('refuses an out-of-wave Read through a real SDK query without shadowing canUseTool', async () => {
+    const f = repoFixture(); const waveDir = join(f.root, '.waves', 'real-sdk'); mkdirSync(join(waveDir, 'cards', '1'), { recursive: true }); writeFileSync(join(waveDir, 'cards', '1', 'card.md'), '## Definition of done\n- permission lock\n')
+    const waveServer = createWaveServer({ waveDir, cards: [{ id: '1' }] }) as RegisteredServer; waveServer.setCardState('1', 'piloting'); waveServer.setCardState('1', 'judging')
+    const messages: unknown[] = []; const warnings: string[] = []; const stderr: string[] = []
+    const onWarning = (warning: Error & { code?: string }) => warnings.push(`${warning.code ?? ''}: ${warning.message}`); process.on('warning', onWarning)
+    const query = ({ prompt, options }: Parameters<typeof sdkQuery>[0]) => (async function* () {
+      try {
+        for await (const message of sdkQuery({ prompt, options: { ...options, maxTurns: 1, stderr: (line) => stderr.push(line) } })) { messages.push(message); yield message }
+      } catch (error) { if (!(error instanceof Error) || !error.message.includes('Reached maximum number of turns (1)')) throw error }
+    })()
+    try {
+      const judge = createSdkJudge({ query, models: { orchestrator: { value: 'haiku' } }, waveDir, waveServer, contract: 'For card 1, first use Read on /etc/hostname. Do not call decide.' })
+      await judge({ row: { id: '1' } })
+    } finally { process.off('warning', onWarning) }
+    await new Promise((resolve) => setImmediate(resolve))
+    const transcript = JSON.stringify(messages)
+    const refused = transcript.includes('path outside wave directory: /etc/hostname')
+    const shadowed = [...warnings, ...stderr].some((line) => line.includes('CLAUDE_SDK_CAN_USE_TOOL_SHADOWED'))
+    process.stdout.write(`REAL_SDK_READ_REFUSED=${refused}\nREAL_SDK_SHADOWED_WARNING=${shadowed}\n`)
+    expect(refused).toBe(true)
+    expect(shadowed).toBe(false)
+  }, 120_000)
 })
 
 describe('real git worktree fence', () => {

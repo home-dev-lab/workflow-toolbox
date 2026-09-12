@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- Added the headless SDK orchestrator runner: deterministic multi-card pilot waves are judged by one
+  read-only, wave-confined SDK session, while code owns receipts, reports, board comments, and all
+  merge/publish escalations to main.
 
 ### Fixed
 - **`wt-lane.mjs` worker ends its whole process group on `SIGTERM`/`SIGINT`** (log `EXIT=143`/`130`): a launcher killed by pid used to die alone and leave the detached `opencode` lane running in the worktree, invisible to the caller.
