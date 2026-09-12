@@ -19,6 +19,26 @@ import { fileURLToPath } from 'node:url'
 const TOOLKIT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const REPO_ROOT = resolve(TOOLKIT_DIR, '..')
 const TIMEOUT_MS = Number(process.env.WT_LSP_PROBE_TIMEOUT_MS ?? 90_000)
+export const CAPABILITIES = ['diagnostics', 'symbol-overview', 'symbol-lookup', 'declarations', 'references', 'implementations']
+
+const CAPABILITY_REQUESTS = {
+  'symbol-overview': ['textDocument/documentSymbol'],
+  'symbol-lookup': ['workspace/symbol', 'textDocument/definition'],
+  declarations: ['textDocument/declaration', 'textDocument/definition'],
+  references: ['textDocument/references'],
+  implementations: ['textDocument/implementation'],
+}
+
+export function parseProbeArguments(args) {
+  const [pack, ...rest] = args
+  let capability = 'diagnostics'
+  if (!pack || (rest.length !== 0 && (rest.length !== 2 || rest[0] !== '--capability'))) {
+    throw new Error('usage: lsp-pack-probe.mjs <pack> [--capability <name>]')
+  }
+  if (rest.length) capability = rest[1]
+  if (!CAPABILITIES.includes(capability)) throw new Error(`unknown capability: ${capability}`)
+  return { pack, capability }
+}
 
 export function resolveCommand(command, pathValue) {
   for (const directory of pathValue.split(delimiter).filter(Boolean)) {
@@ -155,18 +175,68 @@ export function missingVerdict({ commandResolved, claudeResolved, nodeResolved, 
   return { pass, diagnostic, reason: pass ? 'failed open without diagnostics' : 'isolated PATH, no diagnostic, and normal exit required' }
 }
 
+export function assistantText(output) {
+  let text = ''
+  for (const line of output.split('\n')) {
+    try {
+      const event = JSON.parse(line)
+      if (event.type !== 'assistant' || !Array.isArray(event?.message?.content)) continue
+      for (const item of event.message.content) if (item?.type === 'text' && typeof item.text === 'string') text += `${item.text}\n`
+    } catch {}
+  }
+  return text
+}
+
+export function serverStartFailure(debug, language) {
+  if (!language) return undefined
+  const prefix = `[LSP SERVER plugin:workflow-toolbox:${language}]`
+  const start = `Starting LSP server instance: plugin:workflow-toolbox:${language}`
+  const failure = debug.split('\n').find((line) => line.includes(prefix) && /Traceback|Exception|exited|failed/.test(line))
+  if (failure) return failure.trim().slice(0, 160)
+  if (!debug.includes(start)) return `missing ${start}`
+  return undefined
+}
+
+export function navigationVerdict({ commandResolved = true, output, debug = '', expectedSubstrings, capability, exitCode, timedOut, language }) {
+  if (!commandResolved) return { verdict: 'unmeasured', reason: 'language-server binary missing' }
+  if (timedOut || exitCode === null) return { verdict: 'unmeasured', reason: timedOut ? 'probe timed out' : 'probe did not run' }
+  const serverFailure = serverStartFailure(debug, language)
+  if (serverFailure) return { verdict: 'unmeasured', reason: `server failed to start: ${serverFailure}` }
+  const answer = expectedSubstrings.every((substring) => assistantText(output).includes(substring))
+  const requests = CAPABILITY_REQUESTS[capability] ?? []
+  const observedRequests = requests.filter((request) => debug.includes(request))
+  if (answer && observedRequests.length) return { verdict: 'parity', reason: `assistant answer corroborated by ${observedRequests.join(', ')}`, requests: observedRequests }
+  if (!answer) return { verdict: 'no parity', reason: 'planted answer absent from assistant session text', requests: observedRequests }
+  return { verdict: 'no parity', reason: 'planted answer present without matching LSP request', requests: observedRequests }
+}
+
 function commandVersion(command, env) {
   const result = spawnSync(command, ['--version'], { env, encoding: 'utf8', timeout: 10_000 })
   return `${result.stdout ?? ''}${result.stderr ?? ''}` || `--version exited ${result.status}\n`
 }
 
-function runClaude(cwd, pluginDir, env, debugFile) {
-  const prompt = [
+function runtimeVersion(command, args, env) {
+  const result = spawnSync(command, args, { env, encoding: 'utf8', timeout: 10_000 })
+  return `${result.stdout ?? ''}${result.stderr ?? ''}` || `${args.join(' ')} exited ${result.status}\n`
+}
+
+function runtimeDetails(pack, env) {
+  const pathValue = env.PATH ?? ''
+  if (pack === 'java') {
+    const java = resolveCommand('java', pathValue)
+    return `command -v java: ${java ?? 'not found'}\n${java ? runtimeVersion(java, ['-version'], env) : ''}`
+  }
+  const command = pack === 'typescript' ? 'tsserver' : 'pyright'
+  const resolved = resolveCommand(command, pathValue)
+  return `command -v ${command}: ${resolved ?? 'not found'}\n${resolved ? commandVersion(resolved, env) : ''}`
+}
+
+function runClaude(cwd, pluginDir, env, debugFile, prompt = [
     'Read the single source file in this project.',
     'Make one harmless whitespace-only edit to that file so language-server diagnostics can arrive.',
     'Then run the Bash command `sleep 15` (diagnostics are delivered asynchronously, on a later tool result), then read the file again with the Read tool.',
     'Do not diagnose the code yourself. If and only if a <new-diagnostics> block is delivered, quote that block verbatim; otherwise say no diagnostics arrived.',
-  ].join(' ')
+  ].join(' ')) {
   const args = [
     '-p',
     '--plugin-dir',
@@ -214,17 +284,21 @@ function readDebug(file) {
   }
 }
 
-function archiveArm(directory, resolution, version, run) {
+function archiveArm(directory, resolution, version, runtime, run, prompt) {
   mkdirSync(directory, { recursive: true })
   writeFileSync(join(directory, 'stdout.log'), run.stdout)
   writeFileSync(join(directory, 'stderr.log'), run.stderr)
   writeFileSync(join(directory, 'elapsed-ms.txt'), `${run.elapsedMs}\n`)
   writeFileSync(join(directory, 'command-v.txt'), resolution ? `${resolution}\n` : 'not found\n')
   writeFileSync(join(directory, 'version.txt'), version)
+  writeFileSync(join(directory, 'runtime.txt'), runtime)
   writeFileSync(join(directory, 'workspace-modules.txt'), `${run.workspaceModules.join('\n')}\n`)
+  if (prompt) writeFileSync(join(directory, 'prompt.txt'), `${prompt}\n`)
 }
 
 export async function probePack(pack, options = {}) {
+  const capability = options.capability ?? 'diagnostics'
+  if (!CAPABILITIES.includes(capability)) throw new Error(`unknown capability: ${capability}`)
   const repoRoot = options.repoRoot ?? REPO_ROOT
   const originalPath = options.pathValue ?? process.env.PATH ?? ''
   const packDir = join(repoRoot, 'plugin', 'packs', pack)
@@ -234,6 +308,7 @@ export async function probePack(pack, options = {}) {
   const [, declaration] = declarationEntries[0]
   if (/[\\/]/.test(declaration.command)) throw new Error(`${pack}: command must be a bare executable name, not a path`)
   const fixtureDir = join(packDir, 'probe')
+  if (capability !== 'diagnostics') return probeNavigation(pack, capability, { ...options, repoRoot, originalPath, packDir, declaration, fixtureDir })
   const expectedSubstring = readFileSync(join(fixtureDir, 'expected-diagnostic.txt'), 'utf8').trim()
   if (!expectedSubstring) throw new Error(`${pack}: expected diagnostic substring is empty`)
 
@@ -271,8 +346,11 @@ export async function probePack(pack, options = {}) {
       availableDir,
       availableResolution,
       availableResolution ? commandVersion(availableResolution, availableEnv) : 'unavailable\n',
+      runtimeDetails(pack, availableEnv),
       availableRun,
     )
+    const availableServerFailure = serverStartFailure(readDebug(join(availableDir, 'debug.log')), pack)
+    writeFileSync(join(availableDir, 'verdict.json'), `${JSON.stringify({ capability, verdict: available.pass ? 'parity' : availableRun.timedOut || availableRun.exitCode === null || !availableResolution || availableServerFailure ? 'unmeasured' : 'no parity', reason: availableServerFailure ? `server failed to start: ${availableServerFailure}` : available.reason }, null, 2)}\n`)
     console.log(`available: ${available.pass ? 'PASS' : 'FAIL'} - ${available.reason}`)
 
     buildShimDirectory(originalPath, declaration.command, shimDir)
@@ -301,6 +379,7 @@ export async function probePack(pack, options = {}) {
       missingDir,
       missingResolution,
       'unavailable by design\n',
+      runtimeDetails(pack, missingEnv),
       missingRun,
     )
     console.log(`missing: ${missing.pass ? 'PASS' : 'FAIL'} - ${missing.reason}`)
@@ -310,13 +389,49 @@ export async function probePack(pack, options = {}) {
   }
 }
 
+async function probeNavigation(pack, capability, { repoRoot, originalPath, declaration, fixtureDir, ...options }) {
+  const navigationDir = join(fixtureDir, 'nav')
+  const expected = JSON.parse(readFileSync(join(navigationDir, 'expected-navigation.json'), 'utf8'))[capability]
+  if (!expected?.prompt || !Array.isArray(expected.expectedSubstrings) || expected.expectedSubstrings.length === 0) {
+    throw new Error(`${pack}: ${capability} requires prompt and expectedSubstrings`)
+  }
+  const temporary = mkdtempSync(join(tmpdir(), `wt-lsp-${pack}-`))
+  const archiveRoot = options.archiveRoot ?? process.env.WT_LSP_PROBE_ARCHIVE_ROOT ?? join(repoRoot, '.claude', 'reports', '1861821660-lsp-probes')
+  const armDir = join(archiveRoot, pack, capability, 'available')
+  mkdirSync(armDir, { recursive: true })
+  try {
+    const projectDir = join(temporary, 'project')
+    const pluginCopy = join(temporary, 'plugin')
+    cpSync(join(repoRoot, 'plugin'), pluginCopy, { recursive: true, dereference: true })
+    cpSync(navigationDir, projectDir, { recursive: true })
+    rmSync(join(projectDir, 'expected-navigation.json'), { force: true })
+    const workspaceModules = linkWorkspaceModules(projectDir, options.toolkitDir ?? TOOLKIT_DIR)
+    const resolution = resolveCommand(declaration.command, originalPath)
+    const run = resolution
+      ? await runClaude(projectDir, pluginCopy, { ...process.env, PATH: originalPath }, join(armDir, 'debug.log'), expected.prompt)
+      : { stdout: '', stderr: '', exitCode: null, timedOut: false, elapsedMs: 0 }
+    run.workspaceModules = workspaceModules
+    const env = { ...process.env, PATH: originalPath }
+    const verdict = navigationVerdict({ commandResolved: resolution, output: `${run.stdout}\n${run.stderr}`, debug: readDebug(join(armDir, 'debug.log')), expectedSubstrings: expected.expectedSubstrings, capability, exitCode: run.exitCode, timedOut: run.timedOut, language: pack })
+    archiveArm(armDir, resolution, resolution ? commandVersion(resolution, env) : 'unavailable\n', runtimeDetails(pack, env), run, expected.prompt)
+    writeFileSync(join(armDir, 'verdict.json'), `${JSON.stringify({ capability, ...verdict }, null, 2)}\n`)
+    console.log(`${capability}: ${verdict.verdict} - ${verdict.reason}`)
+    return verdict.verdict === 'parity'
+  } finally {
+    rmSync(temporary, { recursive: true, force: true })
+  }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const pack = process.argv[2]
-  if (!pack || process.argv.length !== 3) {
-    console.error('usage: lsp-pack-probe.mjs <pack>')
+  let parsed
+  try {
+    parsed = parseProbeArguments(process.argv.slice(2))
+  } catch (error) {
+    console.error(error.message)
     process.exitCode = 2
-  } else {
-    probePack(pack)
+  }
+  if (parsed) {
+    probePack(parsed.pack, { capability: parsed.capability })
       .then((pass) => {
         if (!pass) process.exitCode = 1
       })

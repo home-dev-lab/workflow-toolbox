@@ -1,0 +1,7 @@
+{
+  "symbol-overview": { "prompt": "Use your language server or code intelligence to list the symbols in Greeter.java. Answer with the exact interface name only.", "expectedSubstrings": ["Greeter"] },
+  "symbol-lookup": { "prompt": "Use your language server or code intelligence to look up the Java symbol FriendlyGreeter. State its defining file and line.", "expectedSubstrings": ["FriendlyGreeter.java", "FriendlyGreeter"] },
+  "declarations": { "prompt": "Use your language server or code intelligence to find the declaration of Greeter used in UseGreeter.java. State its defining file and line.", "expectedSubstrings": ["Greeter.java", "Greeter"] },
+  "references": { "prompt": "Use your language server or code intelligence to find references to the Java interface Greeter. Name both source files containing references.", "expectedSubstrings": ["Greeter.java", "UseGreeter.java"] },
+  "implementations": { "prompt": "Use your language server or code intelligence to find implementations of the Java interface Greeter. Name the implementing class.", "expectedSubstrings": ["FriendlyGreeter"] }
+}

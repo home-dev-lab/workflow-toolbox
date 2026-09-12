@@ -83,8 +83,9 @@ export function describePackContract(contract: PackContract) {
     it('ships the probe fixture the documented probe command reads', () => {
       const probeDir = path.join(packDir, 'probe')
       expect(fs.readFileSync(path.join(probeDir, 'expected-diagnostic.txt'), 'utf8').trim().length).toBeGreaterThan(0)
-      const sources = fs.readdirSync(probeDir).filter((name) => name !== 'expected-diagnostic.txt' && name !== 'workspace-modules.txt')
+      const sources = fs.readdirSync(probeDir).filter((name) => !['expected-diagnostic.txt', 'workspace-modules.txt', 'nav'].includes(name))
       expect(sources, 'exactly one planted-error source file').toHaveLength(1)
+      expect(fs.existsSync(path.join(probeDir, 'nav', 'expected-navigation.json')), 'navigation fixture manifest').toBe(true)
     })
   })
 }

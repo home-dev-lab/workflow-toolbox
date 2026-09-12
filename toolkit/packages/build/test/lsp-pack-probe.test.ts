@@ -7,6 +7,8 @@ import {
   buildShimDirectory,
   linkWorkspaceModules,
   missingVerdict,
+  navigationVerdict,
+  parseProbeArguments,
   probePack,
   resolveCommand,
 } from '../../../scripts/lsp-pack-probe.mjs'
@@ -36,6 +38,33 @@ afterEach(() => {
 })
 
 describe('LSP pack probe pure contracts', () => {
+  it('accepts the navigation capability names and rejects unknown names', () => {
+    expect(parseProbeArguments(['typescript', '--capability', 'references'])).toEqual({ pack: 'typescript', capability: 'references' })
+    expect(parseProbeArguments(['typescript'])).toEqual({ pack: 'typescript', capability: 'diagnostics' })
+    expect(() => parseProbeArguments(['typescript', '--capability', 'rename'])).toThrow('unknown capability: rename')
+  })
+
+  it('classifies navigation from both the planted assistant answer and its matching LSP request', () => {
+    const output = streamEvent('assistant', 'The declaration is in definitions.ts:2.')
+    const request = "[DEBUG] Sending request 'textDocument/definition'"
+    expect(navigationVerdict({ output, debug: request, expectedSubstrings: ['definitions.ts:2'], capability: 'declarations', exitCode: 0, timedOut: false })).toMatchObject({ verdict: 'parity' })
+    expect(navigationVerdict({ output, debug: '', expectedSubstrings: ['definitions.ts:2'], capability: 'declarations', exitCode: 0, timedOut: false })).toMatchObject({ verdict: 'no parity', reason: expect.stringContaining('without matching LSP request') })
+    expect(navigationVerdict({ output: '', debug: '', expectedSubstrings: ['definitions.ts:2'], capability: 'declarations', exitCode: null, timedOut: true })).toMatchObject({ verdict: 'unmeasured' })
+  })
+
+  it('does not treat a language-server crash as missing request evidence', () => {
+    const output = streamEvent('assistant', 'The declaration is in definitions.ts:2.')
+    const javaCrash = '[LSP SERVER plugin:workflow-toolbox:java] Traceback (most recent call last): Exception: jdtls requires at least Java 21'
+    expect(navigationVerdict({ output, debug: javaCrash, expectedSubstrings: ['definitions.ts:2'], capability: 'declarations', exitCode: 0, timedOut: false, language: 'java' })).toMatchObject({
+      verdict: 'unmeasured',
+      reason: expect.stringContaining('server failed to start:'),
+    })
+    expect(navigationVerdict({ output, debug: 'Starting LSP server instance: plugin:workflow-toolbox:java', expectedSubstrings: ['definitions.ts:2'], capability: 'declarations', exitCode: 0, timedOut: false, language: 'java' })).toMatchObject({
+      verdict: 'no parity',
+      reason: 'planted answer present without matching LSP request',
+    })
+  })
+
   it('builds one PATH shim that preserves executables while excluding only the declared command', () => {
     const first = temporary('wt-lsp-path-a-')
     const second = temporary('wt-lsp-path-b-')

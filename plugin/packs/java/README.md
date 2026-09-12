@@ -19,9 +19,10 @@ The measured declaration is `jdtls` with `args: []`, `extensionToLanguage: {".ja
 (SHA-256 `338e7e73d61836651ba2453919a0d34fa763eb4e7c03342092309bffb8934c64`) into
 `~/.local/share/jdtls/`, with `~/.local/bin/jdtls` symlinked to `~/.local/share/jdtls/bin/jdtls`.
 
-The launcher selects `java` from `JAVA_HOME` or `PATH`. The measurement failed with the default
-OpenJDK 17.0.9 and passed with Temurin 21.0.9, so Claude Code must resolve JDK 21 or newer as its
-`java` for this declaration. The Java 21 stdio smoke received `Type mismatch: cannot convert from
+The launcher requires the `java` first on the Claude Code process `PATH` to be JDK 21 or newer; a
+JDK 21 installed elsewhere does not count. The probe's `runtime.txt` records the resolved `java`
+and its version. The measurement failed with the default OpenJDK 17.0.9 and passed with Temurin
+21.0.9. The Java 21 stdio smoke received `Type mismatch: cannot convert from
 int to String` after 7477 ms and reached 719576 KiB peak RSS; artifacts are under
 `.claude/reports/1861821660-lsp-probes/java/stdio-smoke/java21/`. The Java 17 failure is archived
 beside it under `java17/`.
@@ -49,7 +50,7 @@ Its Java 17 and Java 21 artifacts are under
 
 The command must resolve on the Claude Code process PATH; measured on Linux (this machine,
 2026-09-12, Eclipse JDT LS 1.61.0); macOS and Windows unmeasured until their probe artifacts exist.
-The command also requires the Claude Code process to resolve JDK 21 or newer as `java`: the passing headless arm ran with a JDK 21 `bin` first on PATH; with the machine default (OpenJDK 17) the launcher exits `jdtls requires at least Java 21` (stdio smoke, `java17/`).
+The command also requires the `java` first on the Claude Code process PATH to be JDK 21 or newer: the passing headless arm ran with a JDK 21 `bin` first on PATH; with the machine default (OpenJDK 17) the launcher exits `jdtls requires at least Java 21` (stdio smoke, `java17/`). A JDK 21 installed elsewhere does not count; inspect the probe's `runtime.txt` for the actual runtime.
 
 ## Optional assets
 

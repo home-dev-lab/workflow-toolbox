@@ -44,13 +44,14 @@ Give the server install line for every platform where it is known. A declaration
 
 ## Probe
 
-Run one archived probe per pack:
+Run one archived probe per pack; add `--capability symbol-overview|symbol-lookup|declarations|references|implementations` to measure one navigation capability (omitting it retains the diagnostics two-arm probe).
 
 ```sh
 node toolkit/scripts/lsp-pack-probe.mjs <pack>
 ```
 
 Its artifacts live at .claude/reports/1861821660-lsp-probes/<pack>/<arm>/. The `available` arm passes only when `command -v` resolves and a diagnostic naming the planted error arrives. The `missing` arm passes only when no diagnostic arrives and the session ends normally.
+Each arm also records `runtime.txt`; for Java, JDT LS requires the `java` first on the Claude Code process PATH to be JDK 21 or newer, not merely a JDK 21 installed elsewhere.
 
 ## Cross-Platform Verdict
 

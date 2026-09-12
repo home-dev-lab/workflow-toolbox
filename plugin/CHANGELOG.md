@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Language-pack probes now measure archived native-LSP navigation capabilities through an explicit `--capability` axis and render a cross-language parity table.
 - The PR review workflow now adds a `lock-enumeration` lens for changed test files, identifying assertions that enumerate open shared families instead of stating invariants.
 
 - `wt-observe launch` now resolves locally available `definitionFile` observer requirements through the capability registry, while preserving server-side pass-through for unavailable files and refusing root-escaping paths.

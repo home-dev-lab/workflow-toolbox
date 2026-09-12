@@ -1,0 +1,7 @@
+{
+  "symbol-overview": { "prompt": "Use your language server or code intelligence to list the symbols in definitions.ts. Answer with the exact exported symbol names only.", "expectedSubstrings": ["Greeter", "FriendlyGreeter"] },
+  "symbol-lookup": { "prompt": "Use your language server or code intelligence to look up the TypeScript symbol FriendlyGreeter. State its defining file and line.", "expectedSubstrings": ["definitions.ts", "FriendlyGreeter"] },
+  "declarations": { "prompt": "Use your language server or code intelligence to find the declaration of Greeter used in use.ts. State its defining file and line.", "expectedSubstrings": ["definitions.ts", "Greeter"] },
+  "references": { "prompt": "Use your language server or code intelligence to find references to the TypeScript interface Greeter. Name both source files containing references.", "expectedSubstrings": ["definitions.ts", "use.ts"] },
+  "implementations": { "prompt": "Use your language server or code intelligence to find implementations of the TypeScript interface Greeter. Name the implementing class.", "expectedSubstrings": ["FriendlyGreeter"] }
+}
