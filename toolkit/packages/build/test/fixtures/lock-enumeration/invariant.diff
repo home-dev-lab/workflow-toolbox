@@ -1,0 +1,15 @@
+diff --git a/packages/forms/test/field-record.test.ts b/packages/forms/test/field-record.test.ts
+index 5f1dc4d..6cf913a 100644
+--- a/packages/forms/test/field-record.test.ts
++++ b/packages/forms/test/field-record.test.ts
+@@ -42,6 +42,10 @@ describe('buildFieldRecord', () => {
+   it('returns the shared field record', () => {
+     const record = buildFieldRecord(schema)
+ 
++    for (const field of Object.values(record)) {
++      expect(field).toMatchObject({ required: expect.any(Boolean) })
++    }
++
+     expect(record.firstName.label).toBe('First name')
+   })
+ })

@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- The PR review workflow now adds a `lock-enumeration` lens for changed test files, identifying assertions that enumerate open shared families instead of stating invariants.
+
 - `wt-observe launch` now resolves locally available `definitionFile` observer requirements through the capability registry, while preserving server-side pass-through for unavailable files and refusing root-escaping paths.
 - Pipeline nesting limits now use a per-branch remaining-depth budget, so a nested spec can start a fresh downward-only budget with its own `maxPipelineDepth` override without loosening an exhausted ancestor.
 - Split the SDK pilot lifecycle server into focused state-machine/tool, launch/attestation, report-edge, and brief-composition modules without changing its MCP export surface or behavior.

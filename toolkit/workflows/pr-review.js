@@ -51,7 +51,9 @@ var __wt = (() => {
   // pr-review.workflow.ts
   var pr_review_workflow_exports = {};
   __export(pr_review_workflow_exports, {
-    default: () => pr_review_workflow_default
+    LOCK_ENUMERATION_INSTRUCTIONS: () => LOCK_ENUMERATION_INSTRUCTIONS,
+    default: () => pr_review_workflow_default,
+    isTestFile: () => isTestFile
   });
 
   // ../packages/runtime/src/constants.ts
@@ -2682,6 +2684,17 @@ ${renderClaim(claim)}`;
   }
 
   // pr-review.workflow.ts
+  var LOCK_ENUMERATION_INSTRUCTIONS = [
+    "Read the ACTUAL diff first. Consider ONLY new or modified assertions in test files; do not re-review code quality, because other lenses do that.",
+    "",
+    "For each assertion, decide whether it NAMES specific members of a family defined by a shared producer (hard-coded selectors, keys, field names, paths, N of M), or STATES a property over all members. A finding is an assertion that enumerates an OPEN family: a member added tomorrow is invisible to it by construction. Set `file` to the test path, quote the assertion in `detail`, and state the invariant form it should take. Severity is high when code outside the test's own module produces the family; it is low when the family is local.",
+    "",
+    "Do NOT report a list closed by its nature: values of a finite enum, a fixed CLI flag set, or a schema with a declared member count. Do NOT report assertions already phrased as an invariant."
+  ].join("\n");
+  function isTestFile(path) {
+    const normalized = path.replaceAll("\\", "/");
+    return /(?:^|\/)(?:test|tests|__tests__|e2e)(?:\/|$)/.test(normalized) || /(?:^|\/)[^/]+\.(?:test|spec)\./.test(normalized);
+  }
   var CLASSIFY_EFFORT = "low";
   var ROUTE_ACT_EFFORT = "medium";
   var REVIEW_EFFORT = "high";
@@ -3099,14 +3112,22 @@ Return { "category": "<one of the five categories>" }`,
       );
     }
     const baseLenses = REVIEWER_LENSES[category] ?? DEFAULT_LENSES;
+    const hasTestFiles = changeSummary.changedFiles.some(isTestFile);
+    if (hasTestFiles) {
+      rt.log("lock-enumeration lens armed: routing reported at least one test file");
+    }
     const lenses = [
       ...baseLenses,
       ...provenanceDocs.length > 0 ? ["docs-alignment"] : [],
-      ...coverageSurfaces.length > 0 ? ["docs-coverage"] : []
+      ...coverageSurfaces.length > 0 ? ["docs-coverage"] : [],
+      ...hasTestFiles ? ["lock-enumeration"] : []
     ];
     const isConsolidated = input.mode === "single-verifier";
     const reviewItems = isConsolidated ? [CONSOLIDATED_LENS] : lenses;
     const lensInstructionsFor = (lens) => {
+      if (lens === "lock-enumeration") {
+        return LOCK_ENUMERATION_INSTRUCTIONS;
+      }
       if (lens === "docs-coverage") {
         const sanitizedSurface = (s) => s.replace(/[`\u0000-\u001f\u007f\u2028\u2029]/g, " ").slice(0, 200);
         return `The routing stage reports this change ADDS the following public surface, while touching NO documentation file:

@@ -54,6 +54,21 @@ import { docsForChangedFiles } from './docs-provenance.js'
 import type { ProvenanceEntry } from './docs-provenance.js'
 import { isBridgeAgentType, opencodeWorkdirLine, parseRoleStringMap, resolveWrapperModel } from './opencode-routing.js'
 
+export const LOCK_ENUMERATION_INSTRUCTIONS = [
+  "Read the ACTUAL diff first. Consider ONLY new or modified assertions in test files; do not re-review code quality, because other lenses do that.",
+  "",
+  "For each assertion, decide whether it NAMES specific members of a family defined by a shared producer (hard-coded selectors, keys, field names, paths, N of M), or STATES a property over all members. A finding is an assertion that enumerates an OPEN family: a member added tomorrow is invisible to it by construction. Set `file` to the test path, quote the assertion in `detail`, and state the invariant form it should take. Severity is high when code outside the test's own module produces the family; it is low when the family is local.",
+  "",
+  "Do NOT report a list closed by its nature: values of a finite enum, a fixed CLI flag set, or a schema with a declared member count. Do NOT report assertions already phrased as an invariant."
+].join('\n')
+
+/** True when a repo-relative path identifies a test file by directory or basename convention. */
+export function isTestFile(path: string): boolean {
+  const normalized = path.replaceAll('\\', '/')
+  return /(?:^|\/)(?:test|tests|__tests__|e2e)(?:\/|$)/.test(normalized) ||
+    /(?:^|\/)[^/]+\.(?:test|spec)\./.test(normalized)
+}
+
 // ---------------------------------------------------------------------------
 // Per-stage effort defaults (Class B/C launch-time tuning — see parseConfig).
 //
@@ -1068,10 +1083,15 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   }
 
   const baseLenses = REVIEWER_LENSES[category] ?? DEFAULT_LENSES
+  const hasTestFiles = changeSummary.changedFiles.some(isTestFile)
+  if (hasTestFiles) {
+    rt.log('lock-enumeration lens armed: routing reported at least one test file')
+  }
   const lenses = [
     ...baseLenses,
     ...(provenanceDocs.length > 0 ? ['docs-alignment'] : []),
     ...(coverageSurfaces.length > 0 ? ['docs-coverage'] : []),
+    ...(hasTestFiles ? ['lock-enumeration'] : []),
   ]
 
   // Proportionate-review ladder: 'full' (default)
@@ -1092,6 +1112,9 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   //   without touching any doc;
   // - every other lens reviews the code itself.
   const lensInstructionsFor = (lens: string): string => {
+    if (lens === 'lock-enumeration') {
+      return LOCK_ENUMERATION_INSTRUCTIONS
+    }
     if (lens === 'docs-coverage') {
       // Added-surface strings are agent-derived from the UNTRUSTED diff and
       // get interpolated into the prompt list — strip backticks and control
