@@ -6,6 +6,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Added the Vue language pack with `.vue`, Vite, Vitest, and Vue TypeScript triggers, local family
+  guidance, SDK-only agents, and archived Volar diagnostics/navigation fixtures. Volar 3.3.11 is
+  installed under `~/.local`, but its available-binary headless probe initialized without delivering
+  the planted diagnostic, so the pack intentionally ships without an `.lsp.json` declaration.
 - The observer-pairing guard now archives checker-reported conflicting `meta.json` pairs under the state directory by default, with `WT_OBSERVER_PAIRING_CAPTURE_DIR` available to redirect evidence.
 - SDK pilot runner summaries now record the requested model and resolver provenance alongside the
   model reported by the SDK initialization receipt and first assistant turn, explicitly flagging
