@@ -1,0 +1,6 @@
+{"agentId":"alpha-id","type":"assistant","timestamp":"2026-09-12T10:00:03.000Z","message":{"id":"alpha-spawn","usage":{"input_tokens":100,"output_tokens":2,"cache_read_input_tokens":20},"content":[{"type":"tool_use","id":"spawn-grandchild","name":"Task","input":{"name":"gamma","prompt":"gamma prompt exact"}}]}}
+{"type":"user","timestamp":"2026-09-12T10:00:04.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"spawn-grandchild","content":"{\"agentId\":\"gamma-id\",\"result\":\"gamma final\"}"}]}}
+{"type":"user","timestamp":"2026-09-12T10:00:05.000Z","message":{"content":"delivery text differs from the sent message"}}
+{"agentId":"alpha-id","type":"assistant","timestamp":"2026-09-12T10:00:05.000Z","message":{"id":"alpha-after-1","usage":{"input_tokens":101,"output_tokens":3,"cache_read_input_tokens":21},"content":[]}}
+{"type":"user","timestamp":"2026-09-12T10:00:06.000Z","message":{"content":"second follow up"}}
+{"agentId":"alpha-id","type":"assistant","timestamp":"2026-09-12T10:00:06.000Z","message":{"id":"alpha-after-2","usage":{"input_tokens":102,"output_tokens":3,"cache_read_input_tokens":22},"content":[]}}
