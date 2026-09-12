@@ -9,6 +9,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added the Kotlin JVM language pack with Kotlin/Gradle/Maven triggers, JUnit 5 and `kotlin.test`
   rules, SDK-only review agents, probe fixtures, and a documented fallback from the expired
   JetBrains Kotlin LSP release to `fwcd/kotlin-language-server`.
+- Added the Svelte language pack with Svelte/Vite/Vitest selection, SDK-only review agents,
+  `svelteserver` diagnostics, archived two-arm probes, and navigation-parity fixtures.
 - The observer-pairing guard now archives checker-reported conflicting `meta.json` pairs under the state directory by default, with `WT_OBSERVER_PAIRING_CAPTURE_DIR` available to redirect evidence.
 - SDK pilot runner summaries now record the requested model and resolver provenance alongside the
   model reported by the SDK initialization receipt and first assistant turn, explicitly flagging
