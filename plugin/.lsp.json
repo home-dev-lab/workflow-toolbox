@@ -9,5 +9,15 @@
     },
     "diagnostics": true,
     "startupTimeout": 10000
+  },
+  "python": {
+    "command": "pyright-langserver",
+    "args": ["--stdio"],
+    "extensionToLanguage": {
+      ".py": "python",
+      ".pyi": "python"
+    },
+    "diagnostics": true,
+    "startupTimeout": 10000
   }
 }
