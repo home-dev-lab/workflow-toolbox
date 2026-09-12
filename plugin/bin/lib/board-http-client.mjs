@@ -87,5 +87,6 @@ export function createBoardClient({ url, boardId, fetch: request = globalThis.fe
     },
     async addComment(id, text) { return call('add_comment', { cardId: String(id), text }) },
     async listNames() { return (await lists()).map((item) => item.name) },
+    async listNameOf(listId) { return (await lists()).find((item) => item.id === String(listId))?.name ?? null },
   }
 }

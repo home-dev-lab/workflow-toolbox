@@ -10,6 +10,14 @@ const DEFAULTS = { concurrency: 1, base: 'develop', pilotTimeout: 5400, boardUrl
 const ELIGIBLE_LISTS = new Set(['Backlog', 'Next', 'In Progress'])
 const cardList = (result) => Array.isArray(result) ? result : Array.isArray(result?.cards) ? result.cards : Array.isArray(result?.items) ? result.items : null
 const listName = (card) => card?.listName ?? card?.list?.name ?? card?.list ?? ''
+// get_card answers with a listId only (find_cards carries listName): resolve through the board's
+// list map when the name is missing (found on real wave b51a1bf6: every explicit card read as 'in list ').
+async function resolveListName(board, card) {
+  const named = listName(card)
+  if (named) return named
+  if (card?.listId && typeof board.listNameOf === 'function') return (await board.listNameOf(String(card.listId))) ?? ''
+  return ''
+}
 const labels = (card) => (card?.labels ?? []).map((item) => typeof item === 'string' ? item : item.name)
 const under = (parent, child) => { const relative = path.relative(parent, child); return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative)) }
 const CARD_ID = /^\d{1,32}$/
@@ -111,7 +119,8 @@ async function ineligibleReason(card, requiredLabels, board, known) {
     if (!CARD_ID.test(match[1])) throw new Error(`board unavailable: malformed card id ${match[1]}`)
     let dependency = known.get(match[1])
     if (!dependency) { dependency = validateBoardCard(await board.getCard(match[1])); known.set(match[1], dependency) }
-    if (listName(dependency) !== 'Done') return `dependency ${match[1]} is ${listName(dependency) ?? 'unknown'}, not Done`
+    const dependencyList = await resolveListName(board, dependency)
+    if (dependencyList !== 'Done') return `dependency ${match[1]} is ${dependencyList || 'unknown'}, not Done`
   }
   return null
 }
@@ -238,8 +247,9 @@ export async function runOrchestrator(input, dependencies = {}) {
         const response = await board.getCard(id)
         if (!response) throw new Error(`card absent from board: ${id}`)
         const card = validateBoardCard(response)
-        if (card && ELIGIBLE_LISTS.has(listName(card))) candidates.push(card)
-        else skipped.push({ id, reason: `in list ${listName(card) ?? 'unknown'}, not Backlog/Next/In Progress` })
+        const cardList = await resolveListName(board, card)
+        if (ELIGIBLE_LISTS.has(cardList)) candidates.push(card)
+        else skipped.push({ id, reason: `in list ${cardList || 'unknown'}, not Backlog/Next/In Progress` })
       }
     } else {
       candidates = await scanMission()

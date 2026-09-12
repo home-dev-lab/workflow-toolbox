@@ -211,6 +211,14 @@ describe('orchestrator driver', () => {
     expect(readFileSync(f.report, 'utf8')).toContain('dependency install failed (EXIT=1)')
   })
 
+  it('R5 lock: an explicit card whose get_card answer carries only a listId is resolved through the board list map', async () => {
+    const f = repoFixture()
+    const board = { ...f.board, getCard: async (id: string) => ({ id, listId: 'L2', description: 'Route: LITE\n## Definition of done\n- ship\n' }), listNameOf: async (listId: string) => (listId === 'L2' ? 'Next' : null) }
+    const result = await runOrchestrator(f.options, { ...f, board })
+    expect(result.rows.map((row: { id: string }) => row.id)).toEqual(['1'])
+    expect(result.skipped).toEqual([])
+  })
+
   it('O1-5 lock: rejects a worktrees directory whose existing symlink ancestor escapes the repository', async () => {
     const f = repoFixture(); const outside = mkdtempSync(join(tmpdir(), 'wt-waves-outside-')); roots.push(outside); const link = join(f.root, 'linked-waves'); symlinkSync(outside, link)
     const result = await runOrchestrator({ ...f.options, worktreesDir: join(link, 'nested') }, f)
