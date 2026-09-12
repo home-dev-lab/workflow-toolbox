@@ -95,12 +95,13 @@ The spec's validation contract is the standalone `@workflow-toolbox/pipeline-spe
   defaults above, each validated against its absolute ceiling at parse/validate time; a spec that needs
   more than 12 stages (or deeper nesting, or more loop iterations) sets e.g. `limits: { maxStages: 20 }`.
   Nested pipeline-stages are independent for `maxStages`/`maxLoopIterations`: a child spec inherits
-  nothing from its parent's `limits` and must set its own override if it needs one. **`maxPipelineDepth`
-  is the one exception** — depth is checked top-down, so an ANCESTOR's own (possibly stricter, default)
-  limit is checked against the FULL subtree beneath it before a deeper child's own more permissive
-  override is ever consulted. To allow deeper nesting anywhere in a tree, raise `maxPipelineDepth` on
-  the ancestor whose own default would otherwise reject that depth (typically the root spec) — setting
-  it only on the deeply-nested spec that needs the room does not rescue it.
+  nothing from its parent's `limits` and must set its own override if it needs one. Pipeline depth is
+  checked as a per-branch remaining-depth budget: every nested-pipeline edge consumes one unit from
+  the active budget, and a child with an explicit `maxPipelineDepth` starts a fresh budget at that
+  resolved limit after its parent admits the edge. The override applies downward only; it cannot
+  rescue an ancestor budget already exhausted before the child is reached. For example, root default
+  8 → child override 20 → 12 deeper levels is accepted; the same child without the override is rejected
+  at the `child` stage against `limits.maxPipelineDepth (8)`.
 - `EXTRACTOR_KEYS` (type `ExtractorKey`) — the legal `artifact.extract` values:
   `plan-artifact`, `raw`.
 - `INPUT_REF_SOURCES` — the legal `{ from: … }` sources an `input` template may

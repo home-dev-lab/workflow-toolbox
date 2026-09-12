@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- Pipeline nesting limits now use a per-branch remaining-depth budget, so a nested spec can start a fresh downward-only budget with its own `maxPipelineDepth` override without loosening an exhausted ancestor.
+
 - `wt-arc-watch` now surfaces qualified named-teammate idle records from the session spawn registry once, while suppressing records already closed by a later stop.
 
 - Rule-edit horizon notices now cover shipped agent templates, explaining their bare-name adoption and re-adoption horizon.
