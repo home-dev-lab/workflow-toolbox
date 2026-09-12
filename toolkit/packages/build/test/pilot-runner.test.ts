@@ -99,6 +99,15 @@ describe('SDK pilot runner', () => {
     expect(result.summary.completed).toBe(false)
   })
 
+  it('passes the .lane preflight in a fresh worktree where .lane does not exist yet (a directory pattern matches only an existing directory)', async () => {
+    const f = fixture(); rmSync(join(f.dir, '.lane'), { recursive: true, force: true })
+    const query = () => (async function* () { yield initMessage(); yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } } })()
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, {
+      query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), sleep: async () => {},
+    })
+    expect(result.summary.completed).toBe(false)
+  })
+
   it('recognises the awaiting_fidelity receipt in the real SDK content-block shape (found on real run 2: textFrom concatenated "text" with the text)', async () => {
     const f = fixture()
     const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
