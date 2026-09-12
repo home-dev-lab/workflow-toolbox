@@ -87,8 +87,9 @@ export function confinedToWorktree(root, requested) {
   return relative(realpathSync(root), resolved) === '' || !relative(realpathSync(root), resolved).startsWith('..')
 }
 
-export function lifecycleCanUseTool(worktree, toolName, input) {
+export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = true } = {}) {
   if (['transition', 'write_artifact', 'run'].map(lifecycleToolName).includes(toolName)) return { behavior: 'allow' }
+  if (toolName === 'mcp__planka__move_card' && !boardMoves) return { behavior: 'deny', message: 'board moves are the orchestrator\'s' }
   if (PLANKA_TOOLS.has(toolName)) return { behavior: 'allow' }
   if (!['Read', 'Glob', 'Grep'].includes(toolName)) return { behavior: 'deny', message: `tool refused: ${toolName}` }
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
@@ -125,6 +126,7 @@ export async function runPilot(options, dependencies) {
   if (!options.cardFile) throw new Error('--card-file is required: the route is derived from the card')
   const cardText = readFile(options.cardFile, 'utf8')
   const routing = deriveRoute(cardText)
+  log(`route=${routing.route} reasons=${routing.reasons.join(',')} model=${model.value} effective=${model.effective}`)
   const report = join(options.dir, '.lane', 'pilot-report.md')
   const usagePath = join(options.dir, '.lane', 'usage.json')
   const summaryPath = join(options.dir, '.lane', 'summary.json')
@@ -212,7 +214,7 @@ export async function runPilot(options, dependencies) {
     plugins: [{ type: 'local', path: guardPlugin }],
     tools: ['Read', 'Glob', 'Grep'],
     mcpServers: { planka: { type: 'http', url: 'http://localhost:25478/mcp' }, [LIFECYCLE_MCP_KEY]: lifecycleServer },
-    canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input),
+    canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true }),
     permissionMode: 'default',
     env: { ...env, ...profileEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
   } })

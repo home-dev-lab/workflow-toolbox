@@ -106,6 +106,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'The adopted pilot-runner guide documents Main\'s shipped evidence freeze/verify command and its mechanical limits.',
   },
   {
+    script: 'plugin/bin/wt-run-orchestrator.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The SDK wave driver ships before its operator guide; the follow-up documentation task owns its launch and escalation guidance.',
+  },
+  {
     script: 'plugin/bin/wt-actionable-gate-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents the shipped Stop gate and its snapshot contract.',

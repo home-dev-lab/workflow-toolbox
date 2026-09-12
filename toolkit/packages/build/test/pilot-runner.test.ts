@@ -82,7 +82,10 @@ describe('SDK pilot runner', () => {
       now: () => calls++ === 0 ? 0 : 1001,
       log: (line: string) => logged.push(line),
     })
-    expect(logged).toEqual(['injected: timeout Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.'])
+    expect(logged).toEqual([
+      'route=LITE reasons=human Route: LITE model=sonnet effective=sonnet',
+      'injected: timeout Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.',
+    ])
     expect(result.summary.injected_turns).toBe(1)
   })
 
@@ -389,6 +392,18 @@ describe('SDK pilot runner', () => {
     expect(lifecycleCanUseTool(f.dir, 'mcp__planka__get_card', {}).behavior).toBe('allow')
     expect(lifecycleCanUseTool(f.dir, 'mcp__planka__delete_card', {}).behavior).toBe('deny')
     expect(lifecycleCanUseTool(f.dir, 'mcp__plugin_atrium_atrium__speak', {}).behavior).toBe('deny')
+  })
+
+  it('writes the routing receipt first and denies pilot board moves only when orchestrated', async () => {
+    const f = fixture(); const logged: string[] = []; let permission: { behavior: string, message?: string } | undefined
+    const query = ({ options }: { options: { canUseTool: (name: string, input: unknown) => Promise<{ behavior: string, message?: string }> } }) => (async function* () {
+      permission = await options.canUseTool('mcp__planka__move_card', {})
+      yield initMessage()
+    })()
+    await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false, boardMoves: false }, { query, resolvePilotModels: models, log: (line: string) => logged.push(line) })
+    expect(logged[0]).toBe('route=LITE reasons=human Route: LITE model=sonnet effective=sonnet')
+    expect(permission).toEqual({ behavior: 'deny', message: "board moves are the orchestrator's" })
+    expect(lifecycleCanUseTool(f.dir, 'mcp__planka__move_card', {}, { boardMoves: true }).behavior).toBe('allow')
   })
 
   it.skipIf(process.env.WT_REAL_SDK_LOCKS !== '1')('refuses forbidden tools through a real SDK query without shadowing canUseTool', async () => {
