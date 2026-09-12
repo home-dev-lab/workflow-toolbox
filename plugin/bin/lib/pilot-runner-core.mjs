@@ -122,6 +122,11 @@ export async function runPilot(options, dependencies) {
   const profileEnv = loadProfileEnv(options.profileEnv)
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
   const model = options.hard ? models.pilotHard : models.pilot
+  // Defaults for programmatic callers (the orchestrator driver): the CLI's parser sets these, runPilot
+  // called directly did not — the first real wave died on a `path` of undefined.
+  const contractPath = options.contract ?? resolve(dirname(new URL(import.meta.url).pathname), '../../autonomy/PILOT-CONTRACT.md')
+  const mailboxPath = options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt')
+  options = { ...options, contract: contractPath, mailbox: mailboxPath }
   const contract = readFile(options.contract, 'utf8')
   if (!options.cardFile) throw new Error('--card-file is required: the route is derived from the card')
   const cardText = readFile(options.cardFile, 'utf8')
