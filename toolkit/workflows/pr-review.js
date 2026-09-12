@@ -478,10 +478,8 @@ unreadable channel never fails your task.`;
     if (cap === void 0) {
       return { kept: items, truncated: 0 };
     }
-    if (cap < 1) {
-      throw new Error(
-        `applyCap: cap must be >= 1, got ${cap} \u2014 set maxItems to a positive integer or omit it`
-      );
+    if (!Number.isInteger(cap) || cap < 1) {
+      throw new Error(`applyCap: cap must be a positive integer, got ${cap} \u2014 set maxItems to a positive integer or omit it`);
     }
     if (cap >= items.length) {
       return { kept: items, truncated: 0 };
