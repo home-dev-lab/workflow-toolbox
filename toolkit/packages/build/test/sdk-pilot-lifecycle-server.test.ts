@@ -207,6 +207,19 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(fs.existsSync(join(lifecycle.root, '.lane', 'summary.json'))).toBe(false)
   })
 
+  it('does not publish an archive when post-copy validation dirties the tree', async () => {
+    let revisions = 0; let statusReads = 0
+    const git = (_program: string, call: string[]) => {
+      if (call[0] === 'status') return ++statusReads === 1 ? '' : ' M tracked.txt\n'
+      return call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
+    }
+    const lifecycle = await lifecycleReadyForReport({ git })
+    await expect(text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' })))
+      .resolves.toMatch(/missing archive \(archive dirtied the tree\)/)
+    expect(readdirSync(join(lifecycle.root, '.claude', 'reports'))).toEqual([])
+    expect(fs.existsSync(join(lifecycle.root, '.lane', 'summary.json'))).toBe(false)
+  })
+
   it('retries an archive failure without making a second commit', async () => {
     let revisions = 0; let commits = 0; let copies = 0
     const git = (_program: string, call: string[]) => {
