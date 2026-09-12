@@ -116,10 +116,11 @@ describe('wt-rule-edit-horizon-hook — ambient rule edit horizon', () => {
 
   it('signals a PLUGIN SOURCE rule with a DIFFERENT horizon — it is loaded by nobody', () => {
     const f = fixture('plugin-src')
+    const file = join(f.root, 'plugin', 'rules', 'wt-some-rule.md')
     const r = runHook({
       hook_event_name: 'PostToolUse',
       tool_name: 'Edit',
-      tool_input: { file_path: 'plugin/rules/wt-some-rule.md' },
+      tool_input: { file_path: file },
       cwd: f.root,
     }, f.env)
 
@@ -128,20 +129,45 @@ describe('wt-rule-edit-horizon-hook — ambient rule edit horizon', () => {
     // test. An adopted copy is loaded by sessions, so its edit has a reload horizon. A plugin
     // source is loaded by nobody until adopt copies it, so telling its author "verifiable from a
     // new session" would be false about the file in their hands.
-    expect(r.context.toLowerCase()).toContain('inert until adopt')
-    expect(r.context.toLowerCase()).not.toContain('only from a new session')
-    expect(r.context.toLowerCase()).toContain('every adopter')
-    // Shared half: the writing conventions apply to both.
-    expect(r.context.toLowerCase()).toContain('telegraphic')
-    expect(r.context.toLowerCase()).toContain('stops acting')
+    expect(r.context).toBe(
+      `${file} is a SHIPPED rule source: no session loads it — it is inert until adopt writes a ` +
+      `copy, so nothing here is verifiable by editing alone, and what goes wrong goes wrong for ` +
+      `every adopter. English only, and machine-specific paths, accounts or tokens belong in a ` +
+      `private rule instead. Writing conventions for a rule file: telegraphic register — strip GRAMMAR, ` +
+      `never CONTENT. A clause you can only shorten by losing a nuance stays long: compressed into a ` +
+      `one-liner it survives in the file and STOPS ACTING (measured 3/3 to 1/3). And a rule is a ` +
+      `DIRECTIVE — dates, incident stories and field cases go to a note, not here.`,
+    )
   })
 
-  it('stays silent for an agent definition', () => {
+  it('signals Edit and Write of a shipped agent definition with its own adoption horizon', () => {
     const f = fixture('agent')
+    const file = join(f.root, 'plugin', 'agent-templates', 'pilot.md')
+    for (const tool_name of ['Edit', 'Write']) {
+      const r = runHook({
+        hook_event_name: 'PostToolUse',
+        tool_name,
+        tool_input: { file_path: file },
+        cwd: f.root,
+      }, f.env)
+      expect(r.stdout, 'a shipped agent definition must not be silent').not.toBe('')
+      expect(r.context).toBe(
+        `${file} is a SHIPPED agent definition: it is adopted under its bare name by ` +
+        '`adopt --set agents`, so a locally edited adopted copy under a project\'s `.claude/agents/` ' +
+        `leaves plugin updates permanently. Fix the template here and re-adopt. The watchdog pairing ` +
+        '(`observer:`) only works on an adopted, unregistered copy. Writing conventions for an agent ' +
+        `definition: English only, telegraphic register, directive, no machine path.`,
+      )
+      expect(r.context).not.toContain('Writing conventions for a rule file')
+    }
+  })
+
+  it('stays silent for a plugin skill', () => {
+    const f = fixture('plugin-skill')
     const r = runHook({
       hook_event_name: 'PostToolUse',
       tool_name: 'Edit',
-      tool_input: { file_path: join(f.root, '.claude', 'agents', 'pilot.md') },
+      tool_input: { file_path: join(f.root, 'plugin', 'skills', 'x', 'SKILL.md') },
       cwd: f.root,
     }, f.env)
     expect(r.stdout).toBe('')
