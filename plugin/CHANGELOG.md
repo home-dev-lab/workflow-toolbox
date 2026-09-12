@@ -18,6 +18,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   receipts are copied beside the report.
 
 ### Fixed
+- `wt-spawn-registry-scan` now reopens a named agent only when a later outbound record or transcript write follows its last stop; a final stop still closes the arc.
 - Lifecycle archives are now published by rename only after every summary and validation write, so a failed post-copy validation leaves no published archive.
 - **`wt-lane.mjs` worker ends its whole process group on `SIGTERM`/`SIGINT`** (log `EXIT=143`/`130`): a launcher killed by pid used to die alone and leave the detached `opencode` lane running in the worktree, invisible to the caller.
 - `wt-memory-index-check` no longer reports an existing subfolder fiche as a false dangling reference.

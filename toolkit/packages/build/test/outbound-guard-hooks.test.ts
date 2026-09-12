@@ -770,6 +770,100 @@ describe('wt-spawn-registry-scan.mjs — reports what is unaccounted for', () =>
 })
 
 // --------------------------------------------------------------------------
+// A stop closes one completed turn, not the agent's whole lifetime. A later
+// outbound record or transcript write reopens the arc; a final later stop closes it again.
+// --------------------------------------------------------------------------
+describe('wt-spawn-registry-scan.mjs — relaunches after a recorded stop', () => {
+  const CWD = '/fake/project/for/relaunch-scan'
+  const SESSION = 'sess-relaunch'
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
+
+  it('RED: reports an agent whose frozen transcript proves it restarted after its first stop', () => {
+    const { env, dir } = transcriptEnv('relaunch-frozen', { sessionId: SESSION, cwd: CWD, name: 'relaunch-frozen', transcriptAgeMin: 30 })
+    writeFileSync(
+      join(dir, `${SESSION}.jsonl`),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'relaunch-frozen', name: 'relaunch-frozen', at: minutesAgo(90) }),
+        JSON.stringify({ t: 'stop', name: 'relaunch-frozen', at: minutesAgo(60) }),
+      ].join('\n') + '\n'
+    )
+
+    const r = runNoInput(SCAN, ['--session', SESSION, '--cwd', CWD, '--json'], env)
+    expect(r.code, `expected relaunched frozen agent to be reported; stdout: ${r.stdout}`).toBe(1)
+    const parsed = JSON.parse(r.stdout) as { flagged: Array<{ name: string }> }
+    expect(parsed.flagged.map((f) => f.name)).toContain('relaunch-frozen')
+  })
+
+  it('GREEN: never reports an agent with a stop and no later sign of life', () => {
+    const { env, dir } = transcriptEnv('relaunch-finished', { sessionId: SESSION, cwd: CWD, name: 'relaunch-finished', transcriptAgeMin: null })
+    writeFileSync(
+      join(dir, `${SESSION}.jsonl`),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'relaunch-finished', name: 'relaunch-finished', at: minutesAgo(90) }),
+        JSON.stringify({ t: 'stop', name: 'relaunch-finished', at: minutesAgo(60) }),
+      ].join('\n') + '\n'
+    )
+
+    const r = runNoInput(SCAN, ['--session', SESSION, '--cwd', CWD, '--json'], env)
+    expect(r.code).toBe(0)
+    expect(JSON.parse(r.stdout).flagged).toHaveLength(0)
+  })
+
+  it('GREEN: never reports a relaunched agent whose transcript is still moving', () => {
+    const { env, dir } = transcriptEnv('relaunch-alive', { sessionId: SESSION, cwd: CWD, name: 'relaunch-alive', transcriptAgeMin: 1 })
+    writeFileSync(
+      join(dir, `${SESSION}.jsonl`),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'relaunch-alive', name: 'relaunch-alive', at: minutesAgo(90) }),
+        JSON.stringify({ t: 'stop', name: 'relaunch-alive', at: minutesAgo(60) }),
+      ].join('\n') + '\n'
+    )
+
+    const r = runNoInput(SCAN, ['--session', SESSION, '--cwd', CWD, '--json'], env)
+    expect(r.code).toBe(0)
+    expect(JSON.parse(r.stdout).flagged).toHaveLength(0)
+  })
+
+  it('never reports an agent whose final stop follows several relaunch cycles', () => {
+    const { env, dir } = transcriptEnv('relaunch-final-stop', { sessionId: SESSION, cwd: CWD, name: 'relaunch-final-stop', transcriptAgeMin: 30 })
+    writeFileSync(
+      join(dir, `${SESSION}.jsonl`),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'relaunch-final-stop', name: 'relaunch-final-stop', at: minutesAgo(90) }),
+        JSON.stringify({ t: 'out', name: 'relaunch-final-stop', at: minutesAgo(85) }),
+        JSON.stringify({ t: 'stop', name: 'relaunch-final-stop', at: minutesAgo(80) }),
+        JSON.stringify({ t: 'out', name: 'relaunch-final-stop', at: minutesAgo(70) }),
+        JSON.stringify({ t: 'stop', name: 'relaunch-final-stop', at: minutesAgo(65) }),
+        JSON.stringify({ t: 'out', name: 'relaunch-final-stop', at: minutesAgo(50) }),
+        JSON.stringify({ t: 'stop', name: 'relaunch-final-stop', at: minutesAgo(20) }),
+      ].join('\n') + '\n'
+    )
+
+    const r = runNoInput(SCAN, ['--session', SESSION, '--cwd', CWD, '--json'], env)
+    expect(r.code).toBe(0)
+    expect(JSON.parse(r.stdout).flagged).toHaveLength(0)
+  })
+
+  it('keeps a relaunched agent open but unflagged while its last outbound is under quiet-min', () => {
+    const { env, dir } = transcriptEnv('relaunch-under-quiet', { sessionId: SESSION, cwd: CWD, name: 'relaunch-under-quiet', transcriptAgeMin: 15 })
+    writeFileSync(
+      join(dir, `${SESSION}.jsonl`),
+      [
+        JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'relaunch-under-quiet', name: 'relaunch-under-quiet', at: minutesAgo(90) }),
+        JSON.stringify({ t: 'stop', name: 'relaunch-under-quiet', at: minutesAgo(30) }),
+        JSON.stringify({ t: 'out', name: 'relaunch-under-quiet', at: minutesAgo(2) }),
+      ].join('\n') + '\n'
+    )
+
+    const r = runNoInput(SCAN, ['--session', SESSION, '--cwd', CWD, '--quiet-min', '20', '--json'], env)
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { open: number; flagged: unknown[] }
+    expect(parsed.open).toBe(1)
+    expect(parsed.flagged).toHaveLength(0)
+  })
+})
+
+// --------------------------------------------------------------------------
 // wt-spawn-registry-scan.mjs — WAITING-FOR (read side): closure criterion 1 (identifiable from
 // the registry alone) and criterion 2 (a resumed agent no longer appears waiting).
 // --------------------------------------------------------------------------
