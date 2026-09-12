@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+<<<<<<< HEAD
 - Added the Kotlin JVM language pack with Kotlin/Gradle/Maven triggers, JUnit 5 and `kotlin.test`
   rules, SDK-only review agents, probe fixtures, and a documented fallback from the expired
   JetBrains Kotlin LSP release to `fwcd/kotlin-language-server`.
@@ -14,6 +15,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added the Groovy language pack with sole `.groovy`/`.gradle`, Gradle, and Spock trigger ownership,
   focused rules, SDK-only review agents, and archived headless probe fixtures. The attempted
   GroovyLanguageServer build did not start in the harness, so no Groovy LSP declaration ships.
+=======
+- Added the Vue language pack with `.vue`, Vite, Vitest, and Vue TypeScript triggers, local family
+  guidance, SDK-only agents, and archived Volar diagnostics/navigation fixtures. Volar 3.3.11 is
+  installed under `~/.local`, but its available-binary headless probe initialized without delivering
+  the planted diagnostic, so the pack intentionally ships without an `.lsp.json` declaration.
+>>>>>>> card/1862703962-pack-vue
 - The observer-pairing guard now archives checker-reported conflicting `meta.json` pairs under the state directory by default, with `WT_OBSERVER_PAIRING_CAPTURE_DIR` available to redirect evidence.
 - SDK pilot runner summaries now record the requested model and resolver provenance alongside the
   model reported by the SDK initialization receipt and first assistant turn, explicitly flagging
