@@ -40,16 +40,14 @@
 # The public key below is exactly that — public. `.github/allowed_signers` is
 # the file; this job points `gpg.ssh.allowedSignersFile` at it.
 #
-# ⚠ KNOWN, ACCEPTED GAP (from review, not fixed here — see the card): on
-# `pull_request`, both this policy file and the checker script itself are read
-# from the PR's OWN checkout, so a PR could in principle add its own key to
-# `allowed_signers` or edit the checker to always pass. `pull_request` (never
-# `pull_request_target`) means this job gets no elevated token/secrets, so it
-# cannot itself do anything privileged — but a REQUIRED status built on this
-# job should not be trusted against an adversarial PR author without loading
-# the policy/checker from a protected ref instead of the PR head. That is a
-# larger redesign (a reusable/trusted workflow) than this card's scope; track
-# it separately rather than rushing it in under time pressure.
+# On `pull_request`, this job now reads both its allowed-signers policy and its
+# checker from the PR base SHA, while the checker inspects the PR checkout's
+# untrusted commit range. `pull_request` remains intentionally used rather
+# than `pull_request_target`, so the job receives no elevated token or secrets.
+#
+# ⚠ RESIDUAL: the workflow file itself still runs from the PR head. A PR that
+# edits this file can neutralise the job; only branch protection (a required
+# check plus review of workflow edits) closes that vector.
 name: signatures
 
 on:
@@ -71,11 +69,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Declare the signing policy for this checkout
-        run: |
-          git config commit.gpgsign true
-          git config gpg.format ssh
-          git config gpg.ssh.allowedSignersFile "$GITHUB_WORKSPACE/.github/allowed_signers"
+      # The PR checkout above supplies commits to inspect. This separate,
+      # shallow checkout supplies policy and checker code that a PR cannot alter.
+      - name: Check out trusted signature policy and checker
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          fetch-depth: 1
 
       - name: Verify every commit in the range is signed
         env:
@@ -94,7 +96,25 @@ jobs:
           # one command regardless of whether `-e` is set, because bash does not
           # apply `-e` to a command that is part of an `||` list.
           set -uo pipefail
-          CHECKER=plugin/bin/wt-check-commit-signatures.mjs
+
+          # ⚠ On a pull request the trusted checkout is MANDATORY. Falling back to the PR's own
+          # checkout when `trusted/` is missing would silently re-open the exact hole this step
+          # closes (policy and checker read from the untrusted head) while the job still reads
+          # as a signature verdict. A missing trusted root on a PR is therefore a job failure
+          # about the JOB, never a verdict about the commits.
+          if [ -n "${PR_BASE:-}" ]; then
+            if [ ! -d trusted ]; then
+              echo "::error::Trusted checkout 'trusted/' is missing on a pull_request event — the policy and checker cannot be loaded from the base ref, so no verdict was produced."
+              exit 1
+            fi
+            TRUSTED_ROOT=trusted
+          else
+            TRUSTED_ROOT="$GITHUB_WORKSPACE"
+          fi
+          git config commit.gpgsign true
+          git config gpg.format ssh
+          git config gpg.ssh.allowedSignersFile "$TRUSTED_ROOT/.github/allowed_signers"
+          CHECKER="$TRUSTED_ROOT/plugin/bin/wt-check-commit-signatures.mjs"
 
           if [ -n "${PR_BASE:-}" ] && [ -n "${PR_HEAD:-}" ]; then
             RANGE="$PR_BASE..$PR_HEAD"
@@ -147,9 +167,9 @@ jobs:
 
           CODE=0
           if [ -n "$RANGE" ]; then
-            node "$CHECKER" --range "$RANGE" > sigcheck.log 2>&1 || CODE=$?
+            node "$CHECKER" --repo "$GITHUB_WORKSPACE" --range "$RANGE" > sigcheck.log 2>&1 || CODE=$?
           else
-            node "$CHECKER" > sigcheck.log 2>&1 || CODE=$?
+            node "$CHECKER" --repo "$GITHUB_WORKSPACE" > sigcheck.log 2>&1 || CODE=$?
           fi
 
           # Read the code that belongs to the CHECKER, before anything else runs.
