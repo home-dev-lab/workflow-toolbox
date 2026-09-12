@@ -58,7 +58,7 @@ output (header, tracked diff, and all untracked-file diffs) exceeds the bounded 
 produces no substantive hunk, the lifecycle refuses the review/refutation brief and cannot launch
 that lane. Glob and Grep
 patterns with separators are confined by real-path checking their non-glob prefix, including through
-relative symlinks. Lifecycle implementation, receipts/launch, and report-edge transaction code live
+relative symlinks. The `measures wildcard-first Glob and Grep matches through an in-worktree symlink with a real SDK query` lock (`WT_REAL_SDK_LOCKS=1`) measured wildcard-first matches not to escape the worktree through an in-worktree symlink. Lifecycle implementation, receipts/launch, and report-edge transaction code live
 in separate modules behind the unchanged public server export.
 
 Tree signature v3 is a filesystem signature over names from HEAD, the index, and non-ignored
