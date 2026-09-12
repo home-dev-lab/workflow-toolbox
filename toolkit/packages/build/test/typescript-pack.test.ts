@@ -3,6 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { rulesOnDemandHookPath as locateRulesOnDemandHook } from './helpers/pack-consumer.js'
 import {
   loadSdk,
   parseAgentFrontmatter,
@@ -20,9 +21,8 @@ const pluginLspDeclarationPath = path.resolve(packDir, '../..', '.lsp.json')
 // repository: resolve it through the config dir (never by a fixed `..` depth, which breaks the
 // moment the checkout is nested differently, e.g. under <root>/.claude/worktrees/<name>), and
 // skip its assertion visibly when the plugin is absent — a public consumer never has it.
-const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude')
-const rulesOnDemandHookPath = path.join(configDir, 'plugins', 'wt-rules-on-demand', 'hooks', 'hooks.js')
-const hasRulesOnDemandHook = fs.existsSync(rulesOnDemandHookPath)
+const rulesOnDemandHookPath = locateRulesOnDemandHook(path.resolve(packDir, '../../..'))
+const hasRulesOnDemandHook = rulesOnDemandHookPath !== undefined
 
 function agentFiles() {
   return fs.readdirSync(path.join(packDir, 'agents')).filter((name) => name.endsWith('.md')).sort()
@@ -30,7 +30,7 @@ function agentFiles() {
 
 describe('TypeScript pack manifest', () => {
   it.skipIf(!hasRulesOnDemandHook)('the private rules-on-demand hook triggers on .ts/.tsx edits', () => {
-    expect(fs.readFileSync(rulesOnDemandHookPath, 'utf8')).toContain('/\\.(?:ts|tsx)$/i.test(editPath(e))')
+    expect(fs.readFileSync(rulesOnDemandHookPath!, 'utf8')).toContain('/\\.(?:ts|tsx)$/i.test(editPath(e))')
   })
 
   it('declares files that exist in the pack', () => {

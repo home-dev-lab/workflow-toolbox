@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- Language packs (card 1861821660118648276): `plugin/.lsp.json` is now GENERATED from `plugin/packs/*/.lsp.json` by `pnpm packs:lsp` (TypeScript first, then packs alphabetically; duplicate keys and incomplete declarations refused) and locked by a byte-identity test; two new packs, Python (`pyright-langserver`) and Java (Eclipse JDT LS, `jdtls`, JDK 21+ required; Groovy is guidance only, no declaration); one archived two-arm headless diagnostics probe per pack (`node toolkit/scripts/lsp-pack-probe.mjs <pack>`, verdict read from Claude Code's own debug log); the add-a-language recipe `docs/public/language-packs.md` and the pack README template `plugin/packs/README-TEMPLATE.md` with a sections gate.
+
 - Measured wildcard-first Glob and Grep matches through in-worktree symlinks as confined to the worktree by the real SDK.
 - Added the headless SDK orchestrator runner: deterministic multi-card pilot waves are judged by one
   read-only, wave-confined SDK session, while code owns receipts, reports, board comments, and all

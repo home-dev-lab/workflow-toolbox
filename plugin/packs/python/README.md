@@ -68,11 +68,11 @@ arms.
 
 Available-binary arm:
 
-«PROBE-VERDICT»
+Available arm — PASS (2026-09-12, Linux, `command -v` → `/home/doublefx/miniconda3/bin/pyright-langserver`, pyright-langserver 1.1.408 (`pyright --version`; `pyright-langserver --version` prints only a connection error): the harness debug log records `textDocument/publishDiagnostics` received and 1 diagnostic attachment delivered, and the session quoted `Argument missing for parameter`; 39287 ms wall time for the headless session; artifacts `.claude/reports/1861821660-lsp-probes/python/available/` (stdout.log, stderr.log, debug.log, elapsed-ms.txt, command-v.txt, version.txt, workspace-modules.txt).
 
 Missing-binary arm:
 
-«PROBE-VERDICT»
+Missing arm — PASS (same date; `command -v` → not found on the shim PATH, `node` and `claude` still resolving): the harness attempted to start the server and failed (`Failed to start LSP server`: the command is absent), no `publishDiagnostics` was received and 0 attachments were delivered, the session ended normally (exit 0, 50913 ms) with no diagnostic and no missing-command message — the declaration fails open; artifacts `.claude/reports/1861821660-lsp-probes/python/missing/`.
 
 ## Cross-platform verdict
 
@@ -80,7 +80,7 @@ The command must resolve on the Claude Code process PATH; measured on Linux (thi
 2026-09-12, pyright-langserver 1.1.408); macOS and Windows unmeasured until their probe artifacts
 exist.
 
-«PROBE-VERDICT»
+Linux measurement: both probe arms PASS on 2026-09-12 with pyright-langserver 1.1.408 (`pyright --version`; `pyright-langserver --version` prints only a connection error).
 
 ## Optional assets
 

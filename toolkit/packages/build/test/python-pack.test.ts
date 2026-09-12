@@ -3,6 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { rulesOnDemandHookPath as locateRulesOnDemandHook } from './helpers/pack-consumer.js'
 import { parseAgentFrontmatter } from '../../../scripts/run-typescript-pack-agent.mjs'
 
 const testDir = path.dirname(fileURLToPath(import.meta.url))
@@ -10,9 +11,8 @@ const packDir = path.resolve(testDir, '../../../../plugin/packs/python')
 const manifestPath = path.join(packDir, 'pack.json')
 const lspDeclarationPath = path.join(packDir, '.lsp.json')
 const pluginLspDeclarationPath = path.resolve(packDir, '../..', '.lsp.json')
-const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude')
-const rulesOnDemandHookPath = path.join(configDir, 'plugins', 'wt-rules-on-demand', 'hooks', 'hooks.js')
-const hasRulesOnDemandHook = fs.existsSync(rulesOnDemandHookPath)
+const rulesOnDemandHookPath = locateRulesOnDemandHook(path.resolve(packDir, '../../..'))
+const hasRulesOnDemandHook = rulesOnDemandHookPath !== undefined
 
 function agentFiles() {
   return fs.readdirSync(path.join(packDir, 'agents')).filter((name) => name.endsWith('.md')).sort()
@@ -20,7 +20,7 @@ function agentFiles() {
 
 describe('Python pack manifest', () => {
   it.skipIf(!hasRulesOnDemandHook)('the private rules-on-demand hook triggers on .py/.pyi edits', () => {
-    expect(fs.readFileSync(rulesOnDemandHookPath, 'utf8')).toContain('/\\.(?:py|pyi)$/i.test(editPath(e))')
+    expect(fs.readFileSync(rulesOnDemandHookPath!, 'utf8')).toContain('/\\.(?:py|pyi)$/i.test(editPath(e))')
   })
 
   it('declares files that exist in the pack', () => {

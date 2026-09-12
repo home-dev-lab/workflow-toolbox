@@ -64,6 +64,14 @@ relying on diagnostics. The available-binary probe loaded the server and registe
 handler, but likewise did not publish a diagnostic before the headless session ended; see
 `.lane/lsp-missing.json`, `.lane/lsp-available.json`, and their debug logs.
 
+The 2026-09-12 two-arm probe (section Probe below) explains the earlier non-delivery with two
+measured causes, both read from Claude Code's own debug log: the temporary project held no
+`typescript` module, so `typescript-language-server` refused `initialize` ("Could not find a valid
+TypeScript installation") — the global install line above is not enough for a workspace without a
+`typescript` dependency, so the probe fixture now symlinks one in; and a delivered diagnostic lands
+on a LATER tool result, so a session that edits and stops never receives it — the probe waits and
+reads again after the edit. With both fixed, the planted TS2554 error was delivered.
+
 `.tsx` files are not mapped yet: `extensionToLanguage` covers `.ts` only, the shape measured on 2026-09-08,
 although `pack.json` triggers on `.tsx` too. Mapping `typescriptreact` needs its own probe before it is
 added.
@@ -80,11 +88,11 @@ The archived artifacts are `.claude/reports/1861821660-lsp-probes/typescript/ava
 `.claude/reports/1861821660-lsp-probes/typescript/missing/`. The available arm passes only when
 `command -v` resolves and a diagnostic naming the planted error arrives.
 
-«PROBE-VERDICT»
+Available arm — PASS (2026-09-12, Linux, `command -v` → `/home/doublefx/.local/bin/typescript-language-server`, typescript-language-server 6.0.0): the harness debug log records `textDocument/publishDiagnostics` received and 4 diagnostic attachments delivered across the later tool results, and the session quoted `Expected 1 arguments, but got 0. [2554]`; 39566 ms wall time for the headless session; artifacts `.claude/reports/1861821660-lsp-probes/typescript/available/` (stdout.log, stderr.log, debug.log, elapsed-ms.txt, command-v.txt, version.txt, workspace-modules.txt).
 
 The missing arm passes only when no diagnostic arrives and the session ends normally.
 
-«PROBE-VERDICT»
+Missing arm — PASS (same date; `command -v` → not found on the shim PATH, `node` and `claude` still resolving): the harness attempted to start the server and failed (`Failed to start LSP server`: the command is absent), no `publishDiagnostics` was received and 0 attachments were delivered, the session ended normally (exit 0, 40827 ms) with no diagnostic and no missing-command message — the declaration fails open; artifacts `.claude/reports/1861821660-lsp-probes/typescript/missing/`.
 
 ## Cross-platform verdict
 

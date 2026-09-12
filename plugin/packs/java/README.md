@@ -36,9 +36,9 @@ diagnostics.
 Run `node toolkit/scripts/lsp-pack-probe.mjs java`. The available-binary and missing-binary arms
 archive under `.claude/reports/1861821660-lsp-probes/java/<arm>/`.
 
-«PROBE-VERDICT»
+Available arm — PASS (2026-09-12, Linux, `command -v` → `/home/doublefx/.local/bin/jdtls`, Eclipse JDT LS 1.61.0, `java` = Temurin 21.0.9 placed first on the probe's PATH): the harness debug log records `textDocument/publishDiagnostics` received and 1 diagnostic attachment(s) delivered, and the session quoted `Type mismatch`; 44786 ms wall time for the headless session; artifacts `.claude/reports/1861821660-lsp-probes/java/available/` (stdout.log, stderr.log, debug.log, elapsed-ms.txt, command-v.txt, version.txt).
 
-«PROBE-VERDICT»
+Missing arm — PASS (same date; `command -v` → not found on the shim PATH, `node` and `claude` still resolving): the harness attempted to start the server and failed (`Failed to start LSP server`: the command is absent), no `publishDiagnostics` was received and 0 attachments were delivered, the session ended normally (exit 0, 59084 ms) with no diagnostic and no missing-command message — the declaration fails open; artifacts `.claude/reports/1861821660-lsp-probes/java/missing/`.
 
 The local stdio smoke used `jdtls -data <temporary-directory>` only to isolate its workspace; the
 launcher itself supplies a default data directory, so the shipped declaration needs no arguments.
@@ -49,7 +49,7 @@ Its Java 17 and Java 21 artifacts are under
 
 The command must resolve on the Claude Code process PATH; measured on Linux (this machine,
 2026-09-12, Eclipse JDT LS 1.61.0); macOS and Windows unmeasured until their probe artifacts exist.
-The command also requires the Claude Code process to resolve JDK 21 or newer as `java`.
+The command also requires the Claude Code process to resolve JDK 21 or newer as `java`: the passing headless arm ran with a JDK 21 `bin` first on PATH; with the machine default (OpenJDK 17) the launcher exits `jdtls requires at least Java 21` (stdio smoke, `java17/`).
 
 ## Optional assets
 
