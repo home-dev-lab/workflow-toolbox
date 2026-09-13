@@ -43,6 +43,23 @@ function freshFixture() {
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 describe('SDK pilot runner', () => {
+  it('records the launching session id and replaces an existing env log', () => {
+    for (const [sessionId, expected] of [['session-set', 'CLAUDE_CODE_SESSION_ID=session-set\n'], [undefined, 'CLAUDE_CODE_SESSION_ID=\n']] as const) {
+      const started = fixture()
+      const env = { ...process.env }
+      if (sessionId === undefined) delete env.CLAUDE_CODE_SESSION_ID
+      else env.CLAUDE_CODE_SESSION_ID = sessionId
+      spawnSync(process.execPath, [CLI, '--card', '1', '--dir', started.dir, '--card-file', started.cardFile, '--contract', join(started.root, 'missing-contract.md')], { env, encoding: 'utf8' })
+      expect(readFileSync(join(started.dir, '.lane', 'env.log'), 'utf8')).toBe(expected)
+    }
+
+    const existing = fixture()
+    writeFileSync(join(existing.dir, '.lane', 'env.log'), 'CLAUDE_CODE_SESSION_ID=lane-session\n')
+    const env = { ...process.env, CLAUDE_CODE_SESSION_ID: 'runner-session' }
+    spawnSync(process.execPath, [CLI, '--card', '1', '--dir', existing.dir, '--card-file', existing.cardFile, '--contract', join(existing.root, 'missing-contract.md')], { env, encoding: 'utf8' })
+    expect(readFileSync(join(existing.dir, '.lane', 'env.log'), 'utf8')).toBe('CLAUDE_CODE_SESSION_ID=runner-session\n')
+  })
+
   it('parses required arguments and refuses absent card, bad timeout, and malformed profile env', () => {
     expect(parsePilotRunnerArgs(['--dir', '/tmp/a'])).toMatchObject({ error: 'missing required --card or --dir' })
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a'])).toMatchObject({ error: '--card-file is required: the route is derived from the card' })

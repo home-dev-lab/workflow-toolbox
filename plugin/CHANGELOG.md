@@ -47,6 +47,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   completes its notification handshake, partial board mutations are reconciled in fatal reports, and
   receipts are copied beside the report.
 ### Fixed
+- `wt-pilot-runner.mjs` now records the launching `CLAUDE_CODE_SESSION_ID` in `.lane/env.log`, overwriting it on each launch like `wt-lane.mjs` and using an empty value when no session id is present.
 - `wt-pilot-runner.mjs` and the SDK lifecycle server resolve the Agent SDK from the runner's own install first; a card worktree without `node_modules` no longer fails with `Cannot find module`, and an install with no SDK anywhere refuses with one line naming `pnpm install --offline --frozen-lockfile`.
 - Adopt now refuses `wt-lane` script checks and installs when its resolved runtime plugin root is missing a module loaded by the transformed launcher.
 - Every toolbox-owned OpenCode launch (`wt-lane`, verifier, envelope, intercepted verifier, and observer)

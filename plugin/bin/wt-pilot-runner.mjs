@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { parsePilotRunnerArgs, runPilot } from './lib/pilot-runner-core.mjs'
 import { resolvePilotModels } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
+import { recordSessionEnvLog } from './lib/session-env-log.mjs'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 
@@ -17,6 +18,7 @@ async function main() {
   if (options.help) { process.stdout.write(`${usage()}\n`); return 0 }
   if (options.error) { process.stderr.write(`wt-pilot-runner: ${options.error}\n${usage()}\n`); return 2 }
   if (!existsSync(options.dir)) { process.stderr.write(`wt-pilot-runner: --dir is not a directory: ${options.dir}\n`); return 2 }
+  recordSessionEnvLog(options.dir)
   if (!existsSync(options.contract)) { process.stderr.write(`wt-pilot-runner: --contract does not exist: ${options.contract}\n`); return 2 }
   if (!existsSync(options.cardFile)) { process.stderr.write(`wt-pilot-runner: --card-file does not exist: ${options.cardFile}\n`); return 2 }
   try {
