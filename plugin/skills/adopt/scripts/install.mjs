@@ -654,6 +654,61 @@ async function loadAdoptedConsentModules() {
   return adopted
 }
 
+/** Resolve the plugin root the adopted wt-lane launcher will use. This intentionally mirrors
+ * the generated pluginRoot() above: explicit launcher roots win, then the active config's
+ * installed-plugin registry. The launcher cannot import this standalone installer helper, so
+ * fixture tests lock the two paths to the same observable result. */
+function adoptedLauncherPluginRoot(env = process.env) {
+  for (const candidate of [env.CLAUDE_PLUGIN_ROOT, env.WT_PLUGIN_ROOT]) {
+    if (typeof candidate === 'string' && candidate) return candidate
+  }
+  const configDir = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), '.claude')
+  const registry = path.join(configDir, 'plugins', 'installed_plugins.json')
+  try {
+    const parsed = JSON.parse(fs.readFileSync(registry, 'utf8'))
+    const plugins = parsed?.plugins && typeof parsed.plugins === 'object' ? parsed.plugins : parsed
+    const key = Object.keys(plugins).find((name) => name.startsWith('workflow-toolbox@'))
+    const entry = key ? plugins[key] : null
+    const installed = Array.isArray(entry) ? entry[0] : entry
+    if (typeof installed?.installPath === 'string' && installed.installPath) return installed.installPath
+  } catch {
+    // Reported below with the same remedies as a missing runtime module.
+  }
+  return null
+}
+
+/** Extract the runtime modules from the generated loader itself. Keeping no parallel module
+ * list means a future path joined from root and passed to import() in
+ * loadAdoptedConsentModules is automatically part of this preflight. */
+function adoptedLauncherRuntimeModules(adopted, runtimeRoot) {
+  const loader = /async function loadAdoptedConsentModules\(\) \{([\s\S]*?)\n\}/.exec(adopted)?.[1]
+  if (!loader) fail('launcher transformation did not produce loadAdoptedConsentModules')
+  const moduleByVariable = new Map()
+  for (const match of loader.matchAll(/const\s+(\w+)\s*=\s*path\.join\(root,\s*((?:'[^']+'(?:,\s*)?)+)\)/g)) {
+    const segments = [...match[2].matchAll(/'([^']+)'/g)].map((segment) => segment[1])
+    if (segments.length > 0) moduleByVariable.set(match[1], path.join(runtimeRoot, ...segments))
+  }
+  const modules = [...loader.matchAll(/import\(pathToFileURL\((\w+)\)\.href\)/g)]
+    .map((match) => moduleByVariable.get(match[1]))
+    .filter(Boolean)
+  if (modules.length === 0) fail('launcher transformation produced no runtime modules in loadAdoptedConsentModules')
+  return modules
+}
+
+function preflightAdoptedLauncherRuntime(chosen, sourceRoot) {
+  if (!chosen.includes('scripts')) return
+  const runtimeRoot = adoptedLauncherPluginRoot()
+  if (!runtimeRoot) {
+    fail('wt-lane.mjs plugin root could not be resolved — install or update workflow-toolbox, then retry')
+  }
+  const adopted = itemContent(SETS.scripts, { file: 'wt-lane.mjs' }, sourceRoot)
+  for (const modulePath of adoptedLauncherRuntimeModules(adopted, runtimeRoot)) {
+    if (!realFile(modulePath)) {
+      fail(`wt-lane.mjs runtime module is missing from the resolved plugin root: ${modulePath} — update or reinstall workflow-toolbox, then retry.`)
+    }
+  }
+}
+
 /** The shipped content's fingerprint, or null when the source cannot be read.
  *
  *  Deliberately NOT itemContent(): that one calls fail() → exit(1), which is right for an
@@ -2326,6 +2381,8 @@ function main() {
   // a standalone script that must each run alone. They are locked in step by tests, not by
   // a shared module they cannot both reach.
   const globalRoot = resolvedConfigRoot()
+
+  preflightAdoptedLauncherRuntime(chosen, root)
 
   process.stdout.write(
     `adopt: ${BANNER_TOOL} v${version} · mode=${args.mode}${args.force ? ' --force' : ''} · set=${args.set}\n`,

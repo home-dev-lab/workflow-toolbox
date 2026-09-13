@@ -56,6 +56,40 @@ function launch(f: ReturnType<typeof fixture>) {
 }
 
 describe('adopted wt-lane consent resolver', () => {
+  for (const mode of ['--check', '--install']) {
+    it(`${mode} refuses when the resolved plugin root is missing a launcher runtime module`, () => {
+      const f = fixture(undefined, false)
+      const missing = join(f.root, 'plugin', 'bin', 'lib', 'opencode-skill-fence.mjs')
+      rmSync(missing)
+
+      const result = spawnSync(
+        process.execPath,
+        [f.installer, '--set', 'scripts', mode, '--dir', join(f.root, 'scripts')],
+        { encoding: 'utf8', env: f.env },
+      )
+
+      expect(result.status).not.toBe(0)
+      expect(`${result.stdout}${result.stderr}`).toBe(
+        `adopt: wt-lane.mjs runtime module is missing from the resolved plugin root: ${missing} — update or reinstall workflow-toolbox, then retry.\n`,
+      )
+      expect(existsSync(f.installed)).toBe(false)
+    })
+  }
+
+  it('installs and starts the adopted launcher when the resolved plugin root has every runtime module', () => {
+    const f = fixture(undefined, false)
+    const install = spawnSync(
+      process.execPath,
+      [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')],
+      { encoding: 'utf8', env: f.env },
+    )
+    expect(install.status, `${install.stdout}${install.stderr}`).toBe(0)
+
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    const started = launch(f)
+    expect(started.status, started.stderr).toBe(0)
+  })
+
   it('uses the real resolver for account and project consent fixtures', () => {
     const accounts = [
       { name: 'settings true', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'true' } } },

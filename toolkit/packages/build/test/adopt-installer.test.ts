@@ -29,6 +29,7 @@ import { afterEach, describe, it, expect } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
+const INSTALLER_ENV: NodeJS.ProcessEnv = { ...process.env, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') }
 const RULE = 'wt-delegation-ladder.md'
 const AUTONOMY = 'AUTONOMY.md'
 
@@ -42,18 +43,18 @@ function mkDir(): string {
   return r
 }
 function run(args: string[], dir: string): string {
-  const res = spawnSync(process.execPath, [SCRIPT, ...args, '--dir', dir], { encoding: 'utf8' })
+  const res = spawnSync(process.execPath, [SCRIPT, ...args, '--dir', dir], { encoding: 'utf8', env: INSTALLER_ENV })
   return (res.stdout ?? '') + (res.stderr ?? '')
 }
 function runResult(args: string[], dir: string) {
-  const res = spawnSync(process.execPath, [SCRIPT, ...args, '--dir', dir], { encoding: 'utf8' })
+  const res = spawnSync(process.execPath, [SCRIPT, ...args, '--dir', dir], { encoding: 'utf8', env: INSTALLER_ENV })
   return { status: res.status, out: (res.stdout ?? '') + (res.stderr ?? '') }
 }
 // Run WITHOUT a forced --dir, at a chosen cwd, so the script uses each set's OWN
 // default dir (.claude/rules, .claude/agents) under that cwd — the only way to
 // exercise the `--set all` SUCCESS path, which rejects an explicit --dir.
 function runInCwd(args: string[], cwd: string): string {
-  const res = spawnSync(process.execPath, [SCRIPT, ...args], { cwd, encoding: 'utf8' })
+  const res = spawnSync(process.execPath, [SCRIPT, ...args], { cwd, encoding: 'utf8', env: INSTALLER_ENV })
   return (res.stdout ?? '') + (res.stderr ?? '')
 }
 const rulePath = (dir: string) => join(dir, RULE)
@@ -629,7 +630,7 @@ describe('adopt installer — --global targets the config dir, resolved not type
   // and passing null DELETES it so the fallback branch is genuinely exercised (leaving the
   // parent process's own value would test nothing).
   function runEnv(args: string[], opts: { cwd: string; configDir: string | null; home?: string }): string {
-    const env = { ...process.env }
+    const env = { ...INSTALLER_ENV }
     if (opts.configDir === null) delete env.CLAUDE_CONFIG_DIR
     else env.CLAUDE_CONFIG_DIR = opts.configDir
     if (opts.home) env.HOME = opts.home
@@ -677,7 +678,7 @@ describe('adopt installer — --global targets the config dir, resolved not type
 
 describe('adopt installer — account-level env prerequisites in settings.json', () => {
   function runSettings(args: string[], opts: { cwd: string; configDir: string | null; home?: string }): string {
-    const env = { ...process.env }
+    const env = { ...INSTALLER_ENV }
     if (opts.configDir === null) delete env.CLAUDE_CONFIG_DIR
     else env.CLAUDE_CONFIG_DIR = opts.configDir
     if (opts.home) env.HOME = opts.home
