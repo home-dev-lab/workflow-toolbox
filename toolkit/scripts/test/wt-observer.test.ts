@@ -25,7 +25,7 @@ function tempRoot(prefix: string) {
 }
 
 function writeExecutable(filePath: string, body: string) {
-  const fenceAware = body.replace(/^#![^\n]*\n/, (shebang) => `${shebang}if [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi\nif [ "$1" = "--pure" ]; then printf '[]\\n'; exit 0; fi\n`)
+  const fenceAware = body.replace(/^#![^\n]*\n/, (shebang) => `${shebang}if [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi\nif [ "$1" = "--pure" ]; then printf '[]\\n'; exit 0; fi\nif [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf '[]\\n'; exit 0; fi\n`)
   writeFileSync(filePath, fenceAware, 'utf8')
   chmodSync(filePath, 0o755)
 }
@@ -327,7 +327,7 @@ printf '%s\\n' '{"status":"clean"}'
     }, ['--project', session.projectDir, '--once'])
 
     await waitFor(() => run.child.exitCode !== null)
-    expect(run.stderr()).toContain('WT_OBSERVER DEGRADED: observer lane failed')
+    expect(run.stderr()).toContain('WT_OBSERVER DEGRADED: wt-observer: Refused: effective OpenCode skill discovery failed')
   })
 
   it('reports a degraded pass and emits no spool message when the lesson index is absent', async () => {

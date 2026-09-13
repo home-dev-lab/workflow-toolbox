@@ -7,14 +7,14 @@ import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { resolveConsent } from './lib/lane-consent-check-core.mjs'
 import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
-import { materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
+import { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 import { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'
 
 const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
 
 async function loadConsentModules() {
-  return { resolveConsent, evaluateConsentGate, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyOpencodeSkillFence, resolveLaneSkillAllowlist }
+  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist }
 }
 
 function usage() {
@@ -112,19 +112,29 @@ async function main() {
     process.stderr.write(`wt-lane: Refused: ${allowlist.refusals.map(({ reason }) => reason).join('; ')}; refusing to launch.\n`)
     return 1
   }
-  let allowedSkills = null
-  if (allowlist.allowed.length) {
+  let allowedSkills
+  try {
     allowedSkills = consentModules.materialiseAllowedSkills({ names: allowlist.allowed, laneDir: opts.dir, env: process.env })
-    if (allowedSkills.missing.length) {
-      process.stderr.write(`wt-lane: Refused: requested skill source is missing: ${allowedSkills.missing.join(', ')}; refusing to launch.\n`)
-      return 1
-    }
+  } catch (error) {
+    process.stderr.write(`wt-lane: Refused: skill materialisation failed (${error instanceof Error ? error.message : String(error)}); refusing to launch.\n`)
+    return 1
+  }
+  if (allowedSkills.failures.length) {
+    process.stderr.write(`wt-lane: Refused: ${allowedSkills.failures.map(({ name, reason, detail }) => `${name}: ${reason} (${detail})`).join('; ')}; refusing to launch.\n`)
+    return 1
   }
 
   const fence = consentModules.verifyOpencodeSkillFence('opencode')
   if (!fence.ok) { process.stderr.write(`${consentModules.opencodeSkillFenceRefusal(fence.reason)}\n`); return 1 }
-  if (allowedSkills && !fence.allowOk) {
+  if (allowlist.allowed.length && !fence.allowOk) {
     process.stderr.write(`${consentModules.opencodeSkillFenceRefusal(`the allow-list half failed for ${fence.mechanism}: ${fence.allowReason ?? 'the materialised skill was not visible'}`)}\n`)
+    return 1
+  }
+
+  const childEnv = { ...consentModules.opencodeChildEnv(process.env), ...(allowlist.allowed.length ? { OPENCODE_CONFIG: allowedSkills.configPath } : {}) }
+  const discovery = consentModules.verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: opts.dir, env: childEnv })
+  if (!discovery.ok) {
+    process.stderr.write(`${consentModules.effectiveSkillDiscoveryRefusal(discovery)}\n`)
     return 1
   }
 
@@ -148,7 +158,7 @@ async function main() {
   // preserving its own and .agents skills while fencing the harness's single-writer memory skills.
   const child = spawn('opencode', args, {
     cwd: opts.dir,
-    env: { ...consentModules.opencodeChildEnv(process.env), ...(allowedSkills ? { OPENCODE_CONFIG: allowedSkills.configPath } : {}) },
+    env: childEnv,
     stdio: ['ignore', fd, fd],
   })
   let finished = false

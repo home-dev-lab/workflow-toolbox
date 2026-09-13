@@ -21,12 +21,21 @@ function fixture(transformSource?: (source: string) => string, install = true) {
   const config = join(root, 'config')
   const project = join(root, 'project')
   const pluginRoot = join(root, 'plugin')
+  const bin = join(root, 'bin')
   const installed = join(root, 'scripts', 'wt-lane.mjs')
   mkdirSync(join(config, 'plugins'), { recursive: true })
   mkdirSync(join(project, '.claude'), { recursive: true })
   mkdirSync(join(pluginRoot, 'bin', 'lib'), { recursive: true })
   mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true })
   mkdirSync(join(pluginRoot, 'skills', 'adopt', 'scripts'), { recursive: true })
+  mkdirSync(bin)
+  writeFileSync(join(bin, 'opencode'), `#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
+if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; exit 0; fi
+if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf '[]\n'; exit 0; fi
+exit 0
+`)
+  spawnSync('chmod', ['+x', join(bin, 'opencode')])
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
   for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'plugin-data-dir.mjs']) {
@@ -41,7 +50,7 @@ function fixture(transformSource?: (source: string) => string, install = true) {
   }))
   // The launcher resolves consent solely through these fixture-owned locations. Do not
   // inherit a developer's config, home, or lane settings into the child process.
-  const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: '/usr/bin:/bin', XDG_STATE_HOME: join(root, 'state') }
+  const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: `${bin}:/usr/bin:/bin`, XDG_STATE_HOME: join(root, 'state') }
   if (install) {
     const result = spawnSync(process.execPath, [join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'), '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], { encoding: 'utf8', env })
     expect(result.status, result.stderr).toBe(0)
@@ -137,10 +146,10 @@ describe('adopted wt-lane consent resolver', () => {
     const f = fixture()
     const bin = join(f.root, 'bin')
     const seen = join(f.root, 'seen-fence')
-    mkdirSync(bin)
     writeFileSync(join(bin, 'opencode'), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
 if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; exit 0; fi
+if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf '[]\n'; exit 0; fi
 printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
 `)
     spawnSync('chmod', ['+x', join(bin, 'opencode')])

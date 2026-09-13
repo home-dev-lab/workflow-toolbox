@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -27,12 +27,15 @@ describe('lane skill allow-list', () => {
     const lane = path.join(root, 'lane'); const home = path.join(root, 'home')
     mkdirSync(path.join(lane, '.claude', 'skills', 'one'), { recursive: true })
     mkdirSync(path.join(home, '.claude', 'skills', 'one'), { recursive: true })
-    writeFileSync(path.join(lane, '.claude', 'skills', 'one', 'SKILL.md'), 'lane')
-    writeFileSync(path.join(home, '.claude', 'skills', 'one', 'SKILL.md'), 'home')
-    const result = materialiseAllowedSkills({ names: ['one', 'missing'], laneDir: lane, homeDir: home, env: {} })
-    expect(result.materialised).toEqual(['one']); expect(result.missing).toEqual(['missing'])
-    expect(readFileSync(path.join(result.dir, 'one', 'SKILL.md'), 'utf8')).toBe('lane')
+    writeFileSync(path.join(lane, '.claude', 'skills', 'one', 'SKILL.md'), '---\nname: one\ndescription: lane\n---\n')
+    writeFileSync(path.join(home, '.claude', 'skills', 'one', 'SKILL.md'), '---\nname: one\ndescription: home\n---\n')
+    const result = materialiseAllowedSkills({ names: ['one'], laneDir: lane, homeDir: home, env: {} })
+    expect(result.materialised).toEqual(['one']); expect(result.failures).toEqual([])
+    expect(readFileSync(path.join(result.dir, 'one', 'SKILL.md'), 'utf8')).toContain('description: lane')
     expect(result.dir).toBe(path.join(lane, '.lane', 'opencode-skills'))
+    expect(materialiseAllowedSkills({ names: ['missing'], laneDir: lane, homeDir: home, env: {} }).failures).toEqual([
+      expect.objectContaining({ name: 'missing', reason: 'missing-source' }),
+    ])
   })
 
   it('writes no materialised files outside the lane .lane directory', () => {
@@ -40,7 +43,7 @@ describe('lane skill allow-list', () => {
     const lane = path.join(root, 'lane'); const home = path.join(root, 'home')
     mkdirSync(path.join(lane, 'keep'), { recursive: true })
     mkdirSync(path.join(home, '.claude', 'skills', 'one'), { recursive: true })
-    writeFileSync(path.join(home, '.claude', 'skills', 'one', 'SKILL.md'), 'ok')
+    writeFileSync(path.join(home, '.claude', 'skills', 'one', 'SKILL.md'), '---\nname: one\ndescription: ok\n---\n')
     const before = readdirSync(lane, { recursive: true }).sort()
     materialiseAllowedSkills({ names: ['one'], laneDir: lane, homeDir: home, env: {} })
     const outsideLaneMetadata = readdirSync(lane, { recursive: true }).map(String).filter((entry) => entry !== '.lane' && !entry.startsWith('.lane/')).sort()
@@ -51,8 +54,61 @@ describe('lane skill allow-list', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'wt-lane-skills-')); roots.push(root)
     const lane = path.join(root, 'lane'); const home = path.join(root, 'home')
     mkdirSync(path.join(home, '.claude', 'skills', 'one'), { recursive: true })
-    writeFileSync(path.join(home, '.claude', 'skills', 'one', 'SKILL.md'), 'ok')
+    writeFileSync(path.join(home, '.claude', 'skills', 'one', 'SKILL.md'), '---\nname: one\ndescription: ok\n---\n')
     symlinkSync('/etc/passwd', path.join(home, '.claude', 'skills', 'one', 'outside'))
-    expect(materialiseAllowedSkills({ names: ['one'], laneDir: lane, homeDir: home, env: {} }).missing).toEqual(['one'])
+    expect(materialiseAllowedSkills({ names: ['one'], laneDir: lane, homeDir: home, env: {} }).failures).toEqual([
+      expect.objectContaining({ name: 'one', reason: 'source-symlink' }),
+    ])
+  })
+
+  it('requires the frontmatter name to equal the requested directory name', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'wt-lane-skills-')); roots.push(root)
+    const lane = path.join(root, 'lane'); const home = path.join(root, 'home')
+    mkdirSync(path.join(home, '.claude', 'skills', 'innocent'), { recursive: true })
+    writeFileSync(path.join(home, '.claude', 'skills', 'innocent', 'SKILL.md'), '---\nname: save-memory\ndescription: alias\n---\n')
+    expect(materialiseAllowedSkills({ names: ['innocent'], laneDir: lane, homeDir: home, env: {} }).failures).toEqual([
+      expect.objectContaining({ name: 'innocent', reason: 'name-mismatch' }),
+    ])
+  })
+
+  it('rejects nested SKILL.md files', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'wt-lane-skills-')); roots.push(root)
+    const lane = path.join(root, 'lane'); const home = path.join(root, 'home')
+    const skill = path.join(home, '.claude', 'skills', 'one')
+    mkdirSync(path.join(skill, 'nested'), { recursive: true })
+    writeFileSync(path.join(skill, 'SKILL.md'), '---\nname: one\ndescription: root\n---\n')
+    writeFileSync(path.join(skill, 'nested', 'SKILL.md'), '---\nname: save-memory\ndescription: nested\n---\n')
+    expect(materialiseAllowedSkills({ names: ['one'], laneDir: lane, homeDir: home, env: {} }).failures).toEqual([
+      expect.objectContaining({ name: 'one', reason: 'nested-skill' }),
+    ])
+  })
+
+  it('removes stale materialisations on every launch', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'wt-lane-skills-')); roots.push(root)
+    const lane = path.join(root, 'lane'); const home = path.join(root, 'home')
+    mkdirSync(path.join(lane, '.lane', 'opencode-skills', 'stale'), { recursive: true })
+    writeFileSync(path.join(lane, '.lane', 'opencode-skills', 'stale', 'SKILL.md'), '---\nname: save-memory\ndescription: stale\n---\n')
+    const result = materialiseAllowedSkills({ names: [], laneDir: lane, homeDir: home, env: {} })
+    expect(existsSync(path.join(result.dir, 'stale'))).toBe(false)
+    expect(readdirSync(result.dir)).toEqual([])
+  })
+
+  it('refuses a symlink in every existing destination component without writing through it', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'wt-lane-skills-')); roots.push(root)
+    const lane = path.join(root, 'lane'); const home = path.join(root, 'home'); const outside = path.join(root, 'outside')
+    mkdirSync(lane); mkdirSync(outside)
+    symlinkSync(outside, path.join(lane, '.lane'))
+    expect(() => materialiseAllowedSkills({ names: [], laneDir: lane, homeDir: home, env: {} })).toThrow(/destination component is a symlink/)
+    expect(readdirSync(outside)).toEqual([])
+  })
+
+  it('refuses a pre-existing skill destination symlink instead of removing or following it', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'wt-lane-skills-')); roots.push(root)
+    const lane = path.join(root, 'lane'); const home = path.join(root, 'home'); const outside = path.join(root, 'outside')
+    mkdirSync(path.join(lane, '.lane', 'opencode-skills'), { recursive: true }); mkdirSync(outside)
+    symlinkSync(outside, path.join(lane, '.lane', 'opencode-skills', 'one'))
+    expect(() => materialiseAllowedSkills({ names: [], laneDir: lane, homeDir: home, env: {} })).toThrow(/destination component is a symlink/)
+    expect(existsSync(path.join(lane, '.lane', 'opencode-skills', 'one'))).toBe(true)
+    expect(readdirSync(outside)).toEqual([])
   })
 })

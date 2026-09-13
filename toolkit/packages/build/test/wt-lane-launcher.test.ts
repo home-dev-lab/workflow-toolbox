@@ -17,7 +17,8 @@ function fixture(script: string) {
   writeFileSync(join(dir, 'brief.md'), '# brief\n')
   writeFileSync(join(bin, 'opencode'), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
- if [ "$1" = "--pure" ]; then if [ "$IGNORE_FENCE" = "1" ]; then printf '[{"name":"workflow-toolbox-fence-sentinel"}]\n'; elif [ "$INVISIBLE_ALLOW" = "1" ]; then printf '[]\n'; else printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; fi; exit 0; fi
+if [ "$1" = "--pure" ]; then if [ "$IGNORE_FENCE" = "1" ]; then printf '[{"name":"workflow-toolbox-fence-sentinel"}]\n'; elif [ "$INVISIBLE_ALLOW" = "1" ]; then printf '[]\n'; else printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; fi; exit 0; fi
+if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then if [ -n "$IDENTITY_RECORD" ]; then printf 'probe|%s|%s|%s\n' "$PWD" "$IDENTITY_MARKER" "\${OPENCODE_CONFIG-unset}" >> "$IDENTITY_RECORD"; fi; printf '%s\n' "\${EFFECTIVE_SKILLS:-[]}"; exit 0; fi
 ${script}\n`)
   spawnSync('chmod', ['+x', join(bin, 'opencode')])
   writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
@@ -110,6 +111,37 @@ describe('wt-lane detached launcher', () => {
     expect(res.stderr).toBe('OPENCODE_SKILL_FENCE_UNAVAILABLE: the synthetic Claude skill is still listed under the forced fence; update OpenCode or workflow-toolbox before launching.\n')
     expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
   })
+  it('refuses before spawn when effective discovery reports a project-native refused skill', () => {
+    const f = fixture('printf spawned > "$PWD/spawned"')
+    f.env.EFFECTIVE_SKILLS = '[{"name":"save-memory","location":"/lane/.opencode/skills/save-memory/SKILL.md"}]'
+    const res = run(f)
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('save-memory at /lane/.opencode/skills/save-memory/SKILL.md')
+    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
+  })
+
+  it.each(['Save-Memory', 'save_memory', 'SAVE-MEMORY'])('refuses the discovered %s variant before spawn', (name) => {
+    const f = fixture('printf spawned > "$PWD/spawned"')
+    f.env.EFFECTIVE_SKILLS = JSON.stringify([{ name, location: `/lane/.opencode/skills/${name}/SKILL.md` }])
+    const res = run(f)
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain(`${name} at /lane/.opencode/skills/${name}/SKILL.md`)
+    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
+  })
+
+  it('drops an inherited OPENCODE_CONFIG before both effective discovery and spawn', () => {
+    const f = fixture('printf "run|%s|%s|%s\\n" "$PWD" "$IDENTITY_MARKER" "${OPENCODE_CONFIG-unset}" >> "$IDENTITY_RECORD"; printf spawned > "$PWD/spawned"')
+    f.env.IDENTITY_RECORD = join(f.root, 'identity-record')
+    f.env.IDENTITY_MARKER = 'same'
+    f.env.OPENCODE_CONFIG = join(f.root, 'unsafe.json')
+    expect(run(f).status).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, 'spawned'), 'utf8')).toBe('spawned')
+    expect(readFileSync(f.env.IDENTITY_RECORD, 'utf8').trim().split('\n').slice(-2)).toEqual([
+      `probe|${f.dir}|same|unset`,
+      `run|${f.dir}|same|unset`,
+    ])
+  })
   it('keeps an empty allow-list launchable when the allow half is unavailable', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
     f.env.INVISIBLE_ALLOW = '1'
@@ -123,13 +155,19 @@ describe('wt-lane detached launcher', () => {
     f.env.WT_LANE_SKILLS = 'save-memory'
     expect(run(f).stderr).toContain('save-memory is a single-writer memory/board-writing skill')
     f.env.WT_LANE_SKILLS = 'missing'
-    expect(run(f).stderr).toContain('requested skill source is missing: missing')
+    expect(run(f).stderr).toContain('missing: missing-source (skill source is missing: missing)')
     mkdirSync(join(f.config, 'skills', 'allowed'), { recursive: true })
     writeFileSync(join(f.config, 'skills', 'allowed', 'SKILL.md'), '---\nname: allowed\ndescription: allowed\n---\n')
     f.env.WT_LANE_SKILLS = 'allowed'; f.env.INVISIBLE_ALLOW = '1'
     const unavailable = run(f)
     expect(unavailable.status).toBe(1)
     expect(unavailable.stderr).toContain('allow-list half failed for opencode-config-skills-paths')
+    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
+  })
+  it.each(['save_memory', 'SAVE-MEMORY'])('refuses requested single-writer variant %s', (name) => {
+    const f = fixture('printf spawned > "$PWD/spawned"')
+    f.env.WT_LANE_SKILLS = name
+    expect(run(f).stderr).toContain('single-writer memory/board-writing skill')
     expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
   })
   it('passes the materialised mechanism only for requested allowed skills', () => {

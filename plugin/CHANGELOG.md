@@ -9,9 +9,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - External OpenCode lanes can declare a comma- or whitespace-separated `WT_LANE_SKILLS` allow-list.
   Approved Claude skills are copied into lane-local OpenCode configuration while the Claude-skill fence
   remains forced; `save-memory`, `planka-tracking`, and `what-next` remain unconditionally refused as
-  single-writer memory/board skills. The isolated probe reports fence and allow-list halves separately:
-  skill-free launches require only the existing fence result, while requested skills also require the measured
-  `OPENCODE_CONFIG` `skills.paths` mechanism to expose the materialised skill.
+  single-writer memory/board skills, including case and `_`/`-` name variants. Every toolbox OpenCode run
+  now performs an uncached, bounded `opencode debug skill` check at launch with the run's exact environment,
+  directory, and config, and fails closed if effective discovery reports a refused name or the probe fails.
+  This is a checked-at-launch filesystem snapshot, not a defense against an actor racing local writes. Materialisation is rebuilt from scratch,
+  rejects destination and source symlinks, requires the root frontmatter name to match its directory, and
+  rejects nested `SKILL.md` files. Inherited `OPENCODE_CONFIG` is dropped rather than passed through.
 - Added a default-on, dependency-free artifact server with per-user port discovery, bind-race
   single-instance startup, owner-only filesystem session registration and automatic last-session shutdown,
   identity-checked status/stop/restart controls, multi-root project-local defaults, URL helpers,

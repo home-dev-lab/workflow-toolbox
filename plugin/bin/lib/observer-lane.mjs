@@ -2,14 +2,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { opencodeChildEnv, opencodeSkillFenceRefusal, verifyOpencodeSkillFence } from './opencode-skill-fence.mjs'
+import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './opencode-skill-fence.mjs'
 
 const EXIT_MARKER = '__WT_OBSERVER_EXIT__='
 const OBSERVER_INSTRUCTION = 'Read the attached observer task and return its requested JSON verdict.'
-
-function quote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`
-}
 
 function extractJson(raw) {
   const trimmed = String(raw || '').trim()
@@ -121,16 +117,19 @@ export function observerLaneInputBytes(prompt) {
 export function runObserverLane({ projectDir, prompt, timeoutSeconds, model, binPath }) {
   const fence = verifyOpencodeSkillFence(binPath)
   if (!fence.ok) return { outcome: { kind: 'error', reason: opencodeSkillFenceRefusal(fence.reason) }, taskText: prompt }
+  const childEnv = opencodeChildEnv()
+  const discovery = verifyEffectiveOpencodeSkillDiscovery(binPath, { cwd: projectDir, env: childEnv })
+  if (!discovery.ok) return { outcome: { kind: 'error', reason: effectiveSkillDiscoveryRefusal(discovery, 'wt-observer') }, taskText: prompt }
   const root = mkdtempSync(path.join(os.tmpdir(), 'wt-observer-'))
   const taskFile = path.join(root, 'observer-task.md')
   writeFileSync(taskFile, prompt, 'utf8')
 
-  const command = `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true timeout ${Number(timeoutSeconds)} ${quote(binPath)} run ${quote(OBSERVER_INSTRUCTION)} --format json --auto --dir ${quote(projectDir)} --model ${quote(model)} -f ${quote(taskFile)} < /dev/null; exit_code=$?; printf '\n${EXIT_MARKER}%s\n' "$exit_code"`
-  const result = spawnSync('zsh', ['-lc', command], {
+  const result = spawnSync(binPath, ['run', OBSERVER_INSTRUCTION, '--format', 'json', '--auto', '--dir', projectDir, '--model', model, '-f', taskFile], {
     encoding: 'utf8',
     timeout: (Number(timeoutSeconds) + 5) * 1000,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: opencodeChildEnv(),
+    cwd: projectDir,
+    env: childEnv,
   })
 
   let taskText = ''
@@ -146,9 +145,10 @@ export function runObserverLane({ projectDir, prompt, timeoutSeconds, model, bin
     // Best-effort cleanup only.
   }
 
-  if (result.error) return { outcome: { kind: 'error', reason: result.error.message }, taskText }
+  const exitCode = result.error?.code === 'ETIMEDOUT' ? 124 : (result.status ?? 1)
+  if (result.error && exitCode !== 124) return { outcome: { kind: 'error', reason: result.error.message }, taskText }
   return {
-    outcome: parseObserverLaneOutput(result.stdout || '', result.stderr || ''),
+    outcome: parseObserverLaneOutput(`${result.stdout || ''}\n${EXIT_MARKER}${exitCode}\n`, result.stderr || ''),
     usage: parseObserverLaneUsage(result.stdout || ''),
     taskText,
   }

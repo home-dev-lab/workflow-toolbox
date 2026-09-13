@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
-import { opencodeChildEnv, verifyOpencodeSkillFence } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
+import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -24,9 +24,48 @@ if [ ${JSON.stringify(mode)} = ignore ]; then printf '[{"name":"workflow-toolbox
 
 describe('OpenCode Claude-skill fence', () => {
   it('forces true after an inherited false value', () => {
-    expect(opencodeChildEnv({ OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false', KEEP: 'yes' })).toMatchObject({
+    expect(opencodeChildEnv({ OPENCODE_CONFIG: '/unsafe.json', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false', KEEP: 'yes' })).toMatchObject({
       OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', KEEP: 'yes',
     })
+    expect(opencodeChildEnv({ OPENCODE_CONFIG: '/unsafe.json' })).not.toHaveProperty('OPENCODE_CONFIG')
+  })
+
+  it('uses uncached effective discovery with the exact cwd, environment, and non-pure flags', () => {
+    const calls: unknown[][] = []
+    const spawnSyncFn = (...args: unknown[]) => {
+      calls.push(args)
+      return { status: 0, stdout: '[{"name":"allowed","location":"/allowed/SKILL.md"}]', stderr: '' }
+    }
+    const env = { MARKER: 'same' }
+    expect(verifyEffectiveOpencodeSkillDiscovery('/bin/opencode', { cwd: '/lane', env, spawnSyncFn })).toMatchObject({ ok: true })
+    expect(verifyEffectiveOpencodeSkillDiscovery('/bin/opencode', { cwd: '/lane', env, spawnSyncFn })).toMatchObject({ ok: true })
+    expect(calls).toHaveLength(2)
+    expect(calls[0]?.[1]).toEqual(['debug', 'skill'])
+    expect(calls[0]?.[2]).toMatchObject({ cwd: '/lane', env })
+  })
+
+  it('refuses every discovered single-writer name with its reported location', () => {
+    const stdout = JSON.stringify([
+      { name: 'save-memory', location: '/one/SKILL.md' },
+      { name: 'planka-tracking', location: '/two/SKILL.md' },
+      { name: 'what-next', location: '/three/SKILL.md' },
+    ])
+    const result = verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: '/lane', env: {}, spawnSyncFn: () => ({ status: 0, stdout, stderr: '' }) })
+    expect(result).toMatchObject({ ok: false, refused: expect.arrayContaining([expect.objectContaining({ name: 'save-memory', location: '/one/SKILL.md' })]) })
+    expect(effectiveSkillDiscoveryRefusal(result)).toBe('wt-lane: Refused: effective OpenCode skill discovery found save-memory at /one/SKILL.md, planka-tracking at /two/SKILL.md, what-next at /three/SKILL.md; refusing to launch.')
+  })
+
+  it.each(['Save-Memory', 'save_memory', 'SAVE-MEMORY'])('refuses the OpenCode-visible %s identity variant', (name) => {
+    const stdout = JSON.stringify([{ name, location: `/lane/${name}/SKILL.md` }])
+    expect(verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: '/lane', env: {}, spawnSyncFn: () => ({ status: 0, stdout, stderr: '' }) })).toMatchObject({
+      ok: false,
+      refused: [{ name }],
+    })
+  })
+
+  it('fails closed when effective discovery fails or returns invalid JSON', () => {
+    expect(verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: '/lane', env: {}, spawnSyncFn: () => ({ status: 1, stdout: '', stderr: 'bad' }) })).toMatchObject({ ok: false, reason: expect.stringContaining('failed') })
+    expect(verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: '/lane', env: {}, spawnSyncFn: () => ({ status: 0, stdout: 'nope', stderr: '' }) })).toMatchObject({ ok: false, reason: expect.stringContaining('invalid JSON') })
   })
 
   it('refuses a binary that still lists the synthetic Claude skill', () => {
