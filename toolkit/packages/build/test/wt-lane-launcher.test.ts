@@ -18,7 +18,8 @@ function fixture(script: string) {
   writeFileSync(join(bin, 'opencode'), `#!/bin/sh\n${script}\n`)
   spawnSync('chmod', ['+x', join(bin, 'opencode')])
   writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
-  return { root, dir, config, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: config } }
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: config }
+  return { root, dir, config, env }
 }
 function run(f: ReturnType<typeof fixture>, extra: string[] = []) {
   return spawnSync(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'test/model', '--brief', join(f.dir, 'brief.md'), '--allow-no-git', ...extra], { encoding: 'utf8', env: f.env })
@@ -90,20 +91,36 @@ describe('wt-lane detached launcher', () => {
     const res = spawnSync(process.execPath, [LAUNCHER, '--model', 'test/model', '--brief', join(f.dir, 'brief.md')], { encoding: 'utf8', env: f.env })
     expect(res.status).toBe(2); expect(res.stderr).toContain('missing required')
   })
-  it('writes a redacted environment snapshot when the worker starts', () => {
+  it('writes a redacted environment snapshot and launching session when the worker starts', () => {
     const f = fixture('sleep 0.2')
+    delete f.env.CLAUDE_CODE_SESSION_ID
     writeFileSync(join(f.root, 'bin', 'ssh-add'), '#!/bin/sh\nprintf \'ssh-rsa AAAA fingerprint\n\'\nexit 0\n')
     spawnSync('chmod', ['+x', join(f.root, 'bin', 'ssh-add')])
     const res = run(f); expect(res.status).toBe(0)
     const envLog = join(f.dir, '.lane', 'env.log'); waitForFile(envLog)
     const lines = readFileSync(envLog, 'utf8').trim().split('\n')
-    expect(lines).toHaveLength(5)
-    expect(lines[0]).toMatch(/^SSH_AUTH_SOCK=(present|absent)$/)
-    expect(lines[1]).toBe('ssh-add -l: exit=0 keys=1')
-    expect(lines[2]).toMatch(/^HOME=(present|absent) USER=(present|absent)$/)
-    expect(lines[3]).toMatch(/^node=v\d+\.\d+\.\d+$/)
-    expect(lines[4]).toMatch(/^at=\d{4}-\d\d-\d\dT.*Z$/)
+    expect(lines).toHaveLength(6)
+    expect(lines[0]).toBe('CLAUDE_CODE_SESSION_ID=')
+    expect(lines[1]).toMatch(/^SSH_AUTH_SOCK=(present|absent)$/)
+    expect(lines[2]).toBe('ssh-add -l: exit=0 keys=1')
+    expect(lines[3]).toMatch(/^HOME=(present|absent) USER=(present|absent)$/)
+    expect(lines[4]).toMatch(/^node=v\d+\.\d+\.\d+$/)
+    expect(lines[5]).toMatch(/^at=\d{4}-\d\d-\d\dT.*Z$/)
     expect(readFileSync(envLog, 'utf8')).not.toMatch(/ssh-rsa|fingerprint|AAAA|\/home\//)
+  })
+
+  it('records the launching Claude session id and an empty value when absent', () => {
+    const withSession = fixture('sleep 0.2')
+    withSession.env.CLAUDE_CODE_SESSION_ID = 'session-under-test'
+    expect(run(withSession).status).toBe(0)
+    const withSessionLog = join(withSession.dir, '.lane', 'env.log'); waitForFile(withSessionLog)
+    expect(readFileSync(withSessionLog, 'utf8')).toContain('CLAUDE_CODE_SESSION_ID=session-under-test\n')
+
+    const withoutSession = fixture('sleep 0.2')
+    delete withoutSession.env.CLAUDE_CODE_SESSION_ID
+    expect(run(withoutSession).status).toBe(0)
+    const withoutSessionLog = join(withoutSession.dir, '.lane', 'env.log'); waitForFile(withoutSessionLog)
+    expect(readFileSync(withoutSessionLog, 'utf8')).toContain('CLAUDE_CODE_SESSION_ID=\n')
   })
   it('records an ssh-add exit without exposing probe output', () => {
     const f = fixture('sleep 0.2')
