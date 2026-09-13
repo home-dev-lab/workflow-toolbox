@@ -138,6 +138,7 @@ function send(response, method, statusCode, body, contentType = 'text/plain; cha
 
 const GENERATED_CSP = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 const RAW_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
+const REGISTRATION_OWNERSHIP_MISS_LIMIT = 3
 
 function fileContentType(file) {
   return CONTENT_TYPES.get(path.extname(file).toLowerCase()) ?? 'application/octet-stream'
@@ -179,6 +180,7 @@ async function serve() {
   let shuttingDown = false
   let discovery
   let pollTimer
+  let ownershipMisses = 0
   let noLiveSince = Date.now()
   const servers = []
 
@@ -346,6 +348,25 @@ async function serve() {
     process.exit(0)
   }
 
+  const ownsRegistrationState = () => {
+    try {
+      if (!statSync(artifactRegistrationsDir()).isDirectory()) return false
+      return readArtifactDiscovery()?.pid === process.pid
+    } catch {
+      return false
+    }
+  }
+
+  const pollRegistrations = async () => {
+    if (!ownsRegistrationState()) {
+      ownershipMisses += 1
+      if (ownershipMisses >= REGISTRATION_OWNERSHIP_MISS_LIMIT) await shutdown('unregistered')
+      return
+    }
+    ownershipMisses = 0
+    await scanRegistrations()
+  }
+
   try {
     await listen('127.0.0.1')
   } catch (error) {
@@ -364,7 +385,7 @@ async function serve() {
   writeDiscovery()
   const pollMs = Number(process.env.WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS ?? 2_000)
   if (!Number.isFinite(pollMs) || pollMs < 10) throw new Error('WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS must be at least 10')
-  pollTimer = setInterval(() => { scanRegistrations().catch((error) => process.stderr.write(`wt-artifact-server: ${error.message}\n`)) }, pollMs)
+  pollTimer = setInterval(() => { pollRegistrations().catch((error) => process.stderr.write(`wt-artifact-server: ${error.message}\n`)) }, pollMs)
   pollTimer.unref()
   process.once('SIGINT', shutdown)
   process.once('SIGTERM', shutdown)
