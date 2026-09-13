@@ -6,6 +6,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Added a default-on, dependency-free artifact server with per-user port discovery, bind-race
+  single-instance startup, owner-only filesystem session registration and automatic last-session shutdown,
+  identity-checked status/stop/restart controls, multi-root project-local defaults, URL helpers,
+  escaped Markdown/text rendering, sandbox CSP, pinned realpath confinement, Host validation, and a
+  non-shrinkable-by-default sensitive-file deny list. When Tailscale is detected it also binds the
+  tailnet interface and reports direct or manually configured Tailscale Serve URLs.
 - Added an off-by-default prompt-cache keepalive monitor (`WT_CACHE_KEEPALIVE_ENABLED`) that tail-reads the current session transcript,
   applies provider-specific idle thresholds, caps consecutive refreshes, and journals wake outcomes.
 - Added the Kotlin JVM language pack with Kotlin/Gradle/Maven triggers, JUnit 5 and `kotlin.test`
