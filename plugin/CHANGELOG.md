@@ -6,6 +6,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Added an off-by-default prompt-cache keepalive monitor (`WT_CACHE_KEEPALIVE_ENABLED`) that tail-reads the current session transcript,
+  applies provider-specific idle thresholds, caps consecutive refreshes, and journals wake outcomes.
 - Added the Kotlin JVM language pack with Kotlin/Gradle/Maven triggers, JUnit 5 and `kotlin.test`
   rules, SDK-only review agents, probe fixtures, and a documented fallback from the expired
   JetBrains Kotlin LSP release to `fwcd/kotlin-language-server`.

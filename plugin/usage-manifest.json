@@ -37,7 +37,7 @@
       { "name": "silent exit 0 (allow)", "where": "plugin/bin/wt-main-guard-hook.mjs:42-45" }
     ]
   },
-  "monitors": { "file": "plugin/monitors/monitors.json", "fields": ["name", "command", "description", "when"], "count": 5 },
+  "monitors": { "file": "plugin/monitors/monitors.json", "fields": ["name", "command", "description", "when"], "count": 6 },
   "shippedSkills": {
     "count": 15,
     "names": ["adopt", "changelog", "deep-grounding", "delegation-chain", "external-lane", "independent-analysis", "lesson-harvest", "pilot-wave", "planka-tracking", "stale-card-sweep", "toolkit-scaffold", "upgrade-canary", "what-next", "workflow-composer", "workflow-debugger"]
