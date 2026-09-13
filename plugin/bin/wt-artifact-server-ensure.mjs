@@ -32,6 +32,7 @@ Options:
 `
 
 const session = `${process.pid}-${randomUUID()}`
+const parentPid = process.ppid
 let stopping = false
 let upgradeNoticed = false
 let registrationFile = null
@@ -119,7 +120,9 @@ async function main() {
       process.stdout.write(`artifact server v${found.health.version} is older than plugin v${ARTIFACT_SERVER_VERSION}; run \`node wt-artifact-server.mjs restart\` when sessions can disconnect.\n`)
       upgradeNoticed = true
     }
-    const keepAlive = setInterval(() => {}, 60_000)
+    const keepAlive = setInterval(() => {
+      if (process.ppid !== parentPid) cleanExit()
+    }, 2_000)
     try { await finished } finally { clearInterval(keepAlive) }
   } finally {
     removeRegistration()

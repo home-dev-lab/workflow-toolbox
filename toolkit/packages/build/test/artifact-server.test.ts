@@ -297,6 +297,32 @@ describe('owner decision 2: discovery and one instance', () => {
 })
 
 describe('owner decision 3: session lifetime and operator controls', () => {
+  it('tolerates a transient discovery miss and stops when its state home no longer registers the server', async () => {
+    const stateHome = temporaryDir('removed-state-home')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const server = spawn(process.execPath, [SERVER, 'serve'], {
+      env: baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port) }),
+      stdio: 'ignore',
+    })
+    children.add(server)
+    if (!server.pid) throw new Error('artifact server process has no pid')
+    const state = await waitForState(stateHome)
+    expect(state.pid).toBe(server.pid)
+
+    const displacedState = `${statePath(stateHome)}.displaced`
+    renameSync(statePath(stateHome), displacedState)
+    await new Promise((resolve) => setTimeout(resolve, 35))
+    renameSync(displacedState, statePath(stateHome))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(pidAlive(server.pid)).toBe(true)
+
+    rmSync(stateHome, { recursive: true, force: true })
+
+    await waitFor(() => pidAlive(server.pid!) ? null : true, 500)
+  })
+
   it('[V3-idle-registration][V3-last-deregistration] keeps an idle registered session alive past grace and stops immediately after clean removal', async () => {
     const { project } = projectWithRoots('clean-stop')
     const stateHome = temporaryDir('clean-stop-state')
