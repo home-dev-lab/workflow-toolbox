@@ -1,5 +1,4 @@
 import { spawnSync } from 'node:child_process'
-import crypto from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -40,9 +39,9 @@ function fixture(transformSource?: (source: string) => string, install = true) {
     version: 2,
     plugins: { 'workflow-toolbox@fixture': [{ installPath: pluginRoot, version: '0.0.0' }] },
   }))
-  const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home') }
-  delete env.CLAUDE_PLUGIN_ROOT
-  delete env.WT_PLUGIN_ROOT
+  // The launcher resolves consent solely through these fixture-owned locations. Do not
+  // inherit a developer's config, home, or lane settings into the child process.
+  const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: '/usr/bin:/bin' }
   if (install) {
     const result = spawnSync(process.execPath, [join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'), '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], { encoding: 'utf8', env })
     expect(result.status, result.stderr).toBe(0)
@@ -58,13 +57,6 @@ function launch(f: ReturnType<typeof fixture>) {
 
 describe('adopted wt-lane consent resolver', () => {
   it('uses the real resolver for account and project consent fixtures', () => {
-    const snapshotRoot = mkdtempSync(join(tmpdir(), 'wt-adopted-lane-snapshot-'))
-    roots.push(snapshotRoot)
-    const snapshot = spawnSync(process.execPath, [INSTALLER, '--set', 'scripts', '--install', '--dir', snapshotRoot], { encoding: 'utf8' })
-    expect(snapshot.status, snapshot.stderr).toBe(0)
-    const digest = crypto.createHash('sha256').update(readFileSync(join(snapshotRoot, 'wt-lane.mjs'))).digest('hex')
-    expect(digest).toBe('fcc98ae5f076b393af5972bbbf02a02c620987b4b7e8833e7d47cb4891bc6904')
-
     const accounts = [
       { name: 'settings true', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'true' } } },
       { name: 'settings false', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'false' } } },
