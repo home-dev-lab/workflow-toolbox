@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,7 +29,7 @@ function fixture(transformSource?: (source: string) => string, install = true) {
   mkdirSync(join(pluginRoot, 'skills', 'adopt', 'scripts'), { recursive: true })
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
-  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs']) {
+  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'plugin-data-dir.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   }
   const launcher = readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')
@@ -41,7 +41,7 @@ function fixture(transformSource?: (source: string) => string, install = true) {
   }))
   // The launcher resolves consent solely through these fixture-owned locations. Do not
   // inherit a developer's config, home, or lane settings into the child process.
-  const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: '/usr/bin:/bin' }
+  const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: '/usr/bin:/bin', XDG_STATE_HOME: join(root, 'state') }
   if (install) {
     const result = spawnSync(process.execPath, [join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'), '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], { encoding: 'utf8', env })
     expect(result.status, result.stderr).toBe(0)
@@ -97,6 +97,26 @@ describe('adopted wt-lane consent resolver', () => {
     const actual = spawnSync(process.execPath, [f.installed, '--help'], { encoding: 'utf8', env: f.env })
     expect(actual.status, actual.stderr).toBe(0)
     expect(actual.stdout).toContain('Usage: node wt-lane.mjs')
+  })
+
+  it('forces the fence in an adopted launcher child', () => {
+    const f = fixture()
+    const bin = join(f.root, 'bin')
+    const seen = join(f.root, 'seen-fence')
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'opencode'), `#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
+if [ "$1" = "--pure" ]; then printf '[]\n'; exit 0; fi
+printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
+`)
+    spawnSync('chmod', ['+x', join(bin, 'opencode')])
+    f.env.PATH = `${bin}:/usr/bin:/bin`
+    f.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'false'
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    expect(launch(f).status).toBe(0)
+    const until = Date.now() + 3000
+    while (!existsSync(seen) && Date.now() < until) spawnSync('sleep', ['0.05'])
+    expect(readFileSync(seen, 'utf8')).toBe('true\n')
   })
 
   it('refuses a launcher whose consent import fragment was reworded', () => {

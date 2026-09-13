@@ -47,8 +47,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   completes its notification handshake, partial board mutations are reconciled in fatal reports, and
   receipts are copied beside the report.
 ### Fixed
-- `wt-lane.mjs` now forces OpenCode's `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` runtime fence, excluding
-  Claude Code's single-writer memory skills while leaving OpenCode and `.agents` skills available to lanes.
+- Every toolbox-owned OpenCode launch (`wt-lane`, verifier, envelope, intercepted verifier, and observer)
+  now shares a forced `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true` child environment, excluding Claude
+  Code's single-writer skills while leaving OpenCode and `.agents` skills available. A model-free,
+  isolated synthetic-skill probe fails closed when OpenCode stops honoring the fence and caches each
+  successful verdict by resolved binary path and version in plugin state; adopted launchers load the
+  same helper from their installed plugin.
 - `wt-lane.mjs` now records the launching `CLAUDE_CODE_SESSION_ID` in `.lane/env.log`, using an empty value when no session id is present.
 - SDK pilot routing now recognizes populated DoD headings; critic rounds retain trusted prior findings,
   ignore fenced fake DoDs, distinguish strictly parsed blocking from non-blocking findings, retain

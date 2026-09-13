@@ -22,6 +22,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { laneTextFromOutput, laneUsageFromOutput, verifierStreamDirForEnv } from './wt-verifier-cli-guard-hook.mjs'
 import { DEFAULT_MAX_TASKS, generateEachTasks, parseEachSource } from './lib/opencode-envelope-tasks.mjs'
+import { opencodeChildEnv, opencodeSkillFenceRefusal, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 
 const DEFAULT_MODEL = 'openai/gpt-5.6-luna' // gpt-5.4 withdrawn from Codex/ChatGPT accounts 2026-08-31
 const DEFAULT_AGENT = 'plan'
@@ -196,7 +197,7 @@ function resolveBinarySync() {
 }
 
 function providerAuthenticatedSync(bin) {
-  const res = preflightSpawnSync(bin, ['providers', 'list'], { encoding: 'utf8', timeout: 30000 })
+  const res = preflightSpawnSync(bin, ['providers', 'list'], { encoding: 'utf8', timeout: 30000, env: opencodeChildEnv() })
   return res.status === 0
 }
 
@@ -297,7 +298,7 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
     // show it. Signalling the GROUP is what closes both — a survivor cannot hold the pipe if no
     // survivor exists. The invariant, stated so a later reader can check the body against it:
     // WHEN THIS FUNCTION STOPS A CALL, NOTHING THAT CALL STARTED IS STILL RUNNING.
-    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: opencodeChildEnv() })
     let stdout = ''
     let stderr = ''
     let timedOut = false
@@ -509,6 +510,11 @@ async function reduceManifest(opts) {
     process.stdout.write('OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations\n')
     return 1
   }
+  const fence = verifyOpencodeSkillFence(bin)
+  if (!fence.ok) {
+    process.stdout.write(`${opencodeSkillFenceRefusal(fence.reason)}\n`)
+    return 1
+  }
   if (!providerAuthenticatedSync(bin)) {
     process.stdout.write('OPENCODE_UNAVAILABLE: no opencode provider authenticated (providers list failed)\n')
     return 1
@@ -638,6 +644,11 @@ async function main() {
   const bin = resolveBinarySync()
   if (bin === null) {
     process.stdout.write('OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations\n')
+    return 1
+  }
+  const fence = verifyOpencodeSkillFence(bin)
+  if (!fence.ok) {
+    process.stdout.write(`${opencodeSkillFenceRefusal(fence.reason)}\n`)
     return 1
   }
   if (!providerAuthenticatedSync(bin)) {
