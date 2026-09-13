@@ -2585,6 +2585,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/lib/session-role.mjs",
         "plugin/bin/lib/queue-snapshot-contract.mjs",
         "plugin/bin/wt-wake-floor.mjs",
+        "plugin/bin/wt-cache-keepalive.mjs",
         "plugin/bin/wt-observer.mjs",
         "plugin/bin/wt-check-commit-signatures-hook.mjs",
         "plugin/bin/wt-check-commit-signatures.mjs",

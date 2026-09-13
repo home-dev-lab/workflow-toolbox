@@ -174,6 +174,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this elapsed-time-only floor, its mandate gate, and its unconditional cadence under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-cache-keepalive.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this opt-in cache refresh monitor, its transcript clock, provider thresholds, cap, and journal under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-observer.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this transcript observer, its mechanical premature-stop path, and its wake-spool-only output contract under Shipped Hooks, Guards & Monitors.',
@@ -888,6 +893,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
        'plugin/bin/lib/session-role.mjs',
        'plugin/bin/lib/queue-snapshot-contract.mjs',
       'plugin/bin/wt-wake-floor.mjs',
+      'plugin/bin/wt-cache-keepalive.mjs',
       'plugin/bin/wt-observer.mjs',
       'plugin/bin/wt-check-commit-signatures-hook.mjs',
       'plugin/bin/wt-check-commit-signatures.mjs',

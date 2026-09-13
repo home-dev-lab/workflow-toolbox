@@ -28,5 +28,11 @@
     "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-wake-floor.mjs",
     "description": "Wake floor — periodically hands a turn back to a mandated session based only on elapsed time",
     "when": "always"
+  },
+  {
+    "name": "cache-keepalive",
+    "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-cache-keepalive.mjs",
+    "description": "Opt-in prompt-cache keepalive — refreshes an idle callable session before its provider cache expires",
+    "when": "always"
   }
 ]
