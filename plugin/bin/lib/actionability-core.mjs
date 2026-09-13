@@ -51,7 +51,9 @@ function hold(reason, consecutiveBlocks, blockMax, extras = {}) {
  *   now: number,
  *   staleAfterMs: number,
  *   inFlight?: boolean,
+ *   mandateKind?: 'absent' | 'unknown' | 'expired' | 'live',
  *   consecutiveBlocks?: number,
+ *   staleSnapshotAt?: number | null,
  *   blockMax?: number,
  *   inFlightCapMs?: number,
  * }} input
@@ -64,6 +66,7 @@ function hold(reason, consecutiveBlocks, blockMax, extras = {}) {
  *   blockedReason?: string,
  *   blockedUntil?: number | null,
  *   inFlightUntil?: number | null,
+ *   staleSnapshotAt?: number | null,
  * }}
  */
 export function decide({
@@ -71,7 +74,11 @@ export function decide({
   now,
   staleAfterMs,
   inFlight = false,
+  // Fail CLOSED when a caller does not say: an omitted mandate keeps the pre-mandate protection
+  // rather than silently disabling the gate for a future caller that forgot the input.
+  mandateKind = 'unknown',
   consecutiveBlocks = 0,
+  staleSnapshotAt = null,
   blockMax = 3,
   inFlightCapMs = 10 * 60_000,
 }) {
@@ -79,6 +86,9 @@ export function decide({
   if (!finiteNumber(staleAfterMs) || staleAfterMs < 0) throw new Error('staleAfterMs must be a non-negative number')
   if (!finiteNumber(blockMax) || blockMax < 1) throw new Error('blockMax must be >= 1')
   if (!finiteNumber(inFlightCapMs) || inFlightCapMs < 0) throw new Error('inFlightCapMs must be a non-negative number')
+  if (!['absent', 'unknown', 'expired', 'live'].includes(mandateKind)) throw new Error('mandateKind is invalid')
+
+  if (mandateKind === 'absent' || mandateKind === 'expired') return pass(0)
 
   if (snapshot === null || snapshot?.status === 'never') return pass(0)
   if (snapshot?.status === 'invalid') return pass(0)
@@ -88,7 +98,12 @@ export function decide({
 
   const at = snapshot.at
   if (!finiteNumber(at) || now - at > staleAfterMs) {
-    return hold('snapshot-stale', consecutiveBlocks, blockMax)
+    // A stale snapshot with a real timestamp blocks ONCE, then passes until the snapshot changes.
+    // Without a usable timestamp there is no identity to remember, so fall back to the bounded
+    // consecutive-block ceiling — never a hold that resets itself and blocks every stop forever.
+    if (!finiteNumber(at)) return hold('snapshot-stale', consecutiveBlocks, blockMax, { staleSnapshotAt: null })
+    if (staleSnapshotAt === at) return pass(0, { staleSnapshotAt: at })
+    return hold('snapshot-stale', 0, 1, { staleSnapshotAt: at })
   }
 
   const actionable = snapshot.actionable

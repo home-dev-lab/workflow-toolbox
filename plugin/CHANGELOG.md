@@ -39,6 +39,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   completes its notification handshake, partial board mutations are reconciled in fatal reports, and
   receipts are copied beside the report.
 ### Fixed
+- The actionability Stop gate now blocks only under a live autonomy mandate (or a legibly unreadable
+  mandate), limits stale snapshots to one refresh request per snapshot, and journals every block with
+  its reason, mandate classification, and consecutive index.
 - Pilot and pilot-orchestrator watchdogs now pin `haiku` instead of inheriting the spawning session's
   model: a paired observer receives no model parameter from the spawner, so an unpinned watchdog ran
   on the premium tier. A lock now fails on any `observer:` pairing whose observer lacks a `model:`.

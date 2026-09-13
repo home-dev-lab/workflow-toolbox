@@ -7,10 +7,13 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
 import { decide } from './lib/actionability-core.mjs'
+import { classifyMandate } from './lib/autonomy-mandate.mjs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 import {
   stateRoot,
   projectStatePath,
@@ -27,6 +30,7 @@ const INFLIGHT_MS = Number(process.env.WT_ACTIONABLE_INFLIGHT_MS || 3 * 60 * 100
 const INFLIGHT_CAP_MS = Number(process.env.WT_ACTIONABLE_INFLIGHT_CAP_MS || 10 * 60 * 1000)
 const LANE_ANCESTOR_DEPTH = Number(process.env.WT_ACTIONABLE_LANE_ANCESTOR_DEPTH || 4)
 const LANE_SELF_EXCLUDE_DEPTH = 32
+const MANDATE_FRESHNESS_MS = Number(process.env.WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES || 480) * 60_000
 
 function readInput() {
   try {
@@ -52,6 +56,13 @@ function snapshotPath(root, cwd) {
 
 function sessionStatePath(root, cwd, sessionId) {
   return sharedSessionStatePath(root, cwd, sessionId)
+}
+
+function mandatePath(cwd) {
+  const stateHome = process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state')
+  const mandateDir = process.env.WT_AUTONOMY_WATCH_MANDATE_DIR || join(stateHome, 'wt-queue-gate')
+  const projectSlug = resolve(cwd).replace(/[^A-Za-z0-9-]/g, '-')
+  return join(mandateDir, `engine-${projectSlug}.json`)
 }
 
 function readJson(path) {
@@ -81,9 +92,12 @@ function readSessionState(path) {
   try {
     const parsed = readJson(path)
     const value = parsed?.consecutiveBlocks
-    return finiteNumber(value) && value >= 0 ? value : 0
+    return {
+      consecutiveBlocks: finiteNumber(value) && value >= 0 ? value : 0,
+      staleSnapshotAt: finiteNumber(parsed?.staleSnapshotAt) ? parsed.staleSnapshotAt : null,
+    }
   } catch {
-    return 0
+    return { consecutiveBlocks: 0, staleSnapshotAt: null }
   }
 }
 
@@ -309,9 +323,9 @@ function contextPct(transcriptPath) {
   return null
 }
 
-function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane) {
+function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane, mandateKind) {
   // Factual, not imperative — see the emission comment in main() for why. Keep the exact
-  // substrings 'actionable item(s) remain', 'normal during a conversation', and 'Block N of M':
+  // substrings 'actionable item(s) remain' and 'Block N of M':
   // the test suite matches on them, and they carry the state a resuming reader needs.
   let actionableLine
   if (finiteNumber(decision.actionable)) {
@@ -325,7 +339,10 @@ function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane) {
   } else if (!finiteNumber(snapshot?.producer?.heartbeatAt)) {
     actionableLine = 'Actionability state cannot be distinguished from legacy snapshot evidence — check the tracker.'
   } else {
-    actionableLine = 'Producer heartbeat is stale: no recent board read (normal during a conversation) — nothing, normal.'
+    actionableLine = 'Producer heartbeat is stale; refresh the board snapshot.'
+  }
+  if (decision.reason === 'snapshot-stale' && !actionableLine.includes('refresh the board snapshot')) {
+    actionableLine += ' Refresh the board snapshot.'
   }
   const nextLine = decision.next ? decision.next : 'unknown'
   // ⚠ ONE LINE, and the length lock below is what keeps it that way.
@@ -346,10 +363,12 @@ function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane) {
     ctxPct !== null && ctxPct !== undefined && ctxPct >= CONTEXT_LOUD_PCT
       ? ` Context ~${ctxPct}%: the door is already open — you cross it by emitting tokens, never by falling silent.`
       : ''
+  const mandateClause = mandateKind === 'unknown' ? ' Autonomy mandate could not be read.' : ''
   const laneClause = externalLane.kind === 'unsupported' || externalLane.kind === 'error'
-    ? `\nlane detection unavailable: ${externalLane.reason.split(/\r?\n/, 1)[0]}`
+    ? ` lane detection unavailable: ${externalLane.reason.split(/\r?\n/, 1)[0]}.`
     : ''
-  return `[for Claude, not the user] Actionability gate: ${actionableLine} Next: ${nextLine}.${ctxClause} Block ${decision.nextConsecutiveBlocks} of ${blockMax}.${laneClause}`
+  const effectiveBlockMax = decision.reason === 'snapshot-stale' ? 1 : blockMax
+  return `[for Claude, not the user] Actionability gate:${mandateClause} ${actionableLine} Next: ${nextLine}.${ctxClause} Block ${decision.nextConsecutiveBlocks} of ${effectiveBlockMax}.${laneClause}`
 }
 
 function main() {
@@ -366,23 +385,31 @@ function main() {
   const snapshot = readSnapshot(root, cwd, now)
   if (snapshot.status === 'invalid') return
 
-  const externalLane = detectExternalLane(cwd)
+  const mandate = classifyMandate(mandatePath(cwd), MANDATE_FRESHNESS_MS, now, sessionId)
+  const protectsStop = mandate.kind === 'live' || mandate.kind === 'unknown'
+  const externalLane = protectsStop ? detectExternalLane(cwd) : { kind: 'idle' }
 
   const sessionPath = sessionStatePath(root, cwd, sessionId)
-  const consecutiveBlocks = readSessionState(sessionPath)
+  const sessionState = readSessionState(sessionPath)
   const decision = decide({
     snapshot,
     now,
     staleAfterMs: STALE_AFTER_MS,
-    inFlight: hasInFlightWork(transcriptPath, sessionId, now) || externalLane.kind === 'running',
-    consecutiveBlocks,
+    inFlight: protectsStop && (hasInFlightWork(transcriptPath, sessionId, now) || externalLane.kind === 'running'),
+    mandateKind: mandate.kind,
+    consecutiveBlocks: sessionState.consecutiveBlocks,
+    staleSnapshotAt: sessionState.staleSnapshotAt,
     blockMax: BLOCK_MAX,
     inFlightCapMs: INFLIGHT_CAP_MS,
   })
 
   if (!decision.block) {
     try {
-      writeJson(sessionPath, { consecutiveBlocks: decision.nextConsecutiveBlocks, updatedAt: now })
+      writeJson(sessionPath, {
+        consecutiveBlocks: decision.nextConsecutiveBlocks,
+        staleSnapshotAt: decision.staleSnapshotAt ?? null,
+        updatedAt: now,
+      })
     } catch {
       // Reset failure must not turn the hook into a blocker.
     }
@@ -390,10 +417,28 @@ function main() {
   }
 
   try {
-    writeJson(sessionPath, { consecutiveBlocks: decision.nextConsecutiveBlocks, updatedAt: now })
+    writeJson(sessionPath, {
+      consecutiveBlocks: decision.nextConsecutiveBlocks,
+      staleSnapshotAt: decision.staleSnapshotAt ?? null,
+      updatedAt: now,
+    })
   } catch {
     return
   }
+  recordGuardEvent({
+    guard: 'wt-actionable-gate-hook.mjs',
+    decision: 'blocked',
+    class: decision.reason,
+    reason: decision.reason,
+    cwd,
+    session: input.session_id,
+    agent: input.agent_id,
+    evidence: {
+      holdReason: decision.reason,
+      mandateKind: mandate.kind,
+      blockIndex: decision.nextConsecutiveBlocks,
+    },
+  })
   // Emission shape — three exist for a Stop hook, and this is a deliberate choice among them,
   // not the original one:
   //   1. stderr + exit 2            — blocks; renders to BOTH the model AND the user's
@@ -415,7 +460,7 @@ function main() {
     hookSpecificOutput: {
       hookEventName: 'Stop',
       // Measured only once the block is certain, so a healthy turn never pays for the read.
-      additionalContext: renderBlock(decision, BLOCK_MAX, contextPct(transcriptPath), snapshot, now, externalLane),
+      additionalContext: renderBlock(decision, BLOCK_MAX, contextPct(transcriptPath), snapshot, now, externalLane, mandate.kind),
     },
   }))
   process.exit(0)

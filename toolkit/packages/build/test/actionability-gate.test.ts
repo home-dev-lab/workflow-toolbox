@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -70,18 +70,23 @@ function scaffold(tag: string) {
   const sessionId = `sess-${tag}`
   const transcriptPath = join(transcripts, `${sessionId}.jsonl`)
   const cwd = join(root, 'project')
+  const mandateDir = join(state, 'wt-queue-gate')
+  const mandatePath = join(mandateDir, `engine-${slug(cwd)}.json`)
   const laneFixturePath = writeLaneFixture(root)
   mkdirSync(home, { recursive: true })
   mkdirSync(state, { recursive: true })
   mkdirSync(transcripts, { recursive: true })
   mkdirSync(cwd, { recursive: true })
+  mkdirSync(mandateDir, { recursive: true })
   writeFileSync(transcriptPath, '{}\n')
+  writeFileSync(mandatePath, JSON.stringify({ declaredAtMs: Date.now(), sessionId }), 'utf8')
   return {
     root,
     sessionId,
     transcriptPath,
     cwd,
     stateDir: join(state, 'wt-actionable'),
+    mandatePath,
     subagentsDir: join(transcripts, sessionId, 'subagents'),
     payload: { hook_event_name: 'Stop', transcript_path: transcriptPath, session_id: sessionId, cwd },
     // Every hook invocation gets an empty scanner fixture, so no test observes host processes.
@@ -91,6 +96,7 @@ function scaffold(tag: string) {
       CLAUDE_PLUGIN_DATA: undefined,
       HOME: home,
       XDG_STATE_HOME: state,
+      WT_AUTONOMY_WATCH_MANDATE_DIR: mandateDir,
       WT_ACTIONABLE_LANE_FIXTURE_PATH: laneFixturePath,
     },
   }
@@ -130,6 +136,7 @@ describe('actionability-core', () => {
       now,
       staleAfterMs: 1_000,
       inFlight: false,
+      mandateKind: 'live',
       consecutiveBlocks: 0,
       blockMax: 3,
       snapshot: {
@@ -154,6 +161,7 @@ describe('actionability-core', () => {
       now,
       staleAfterMs: 1_000,
       inFlight: false,
+      mandateKind: 'live',
       consecutiveBlocks: 2,
       blockMax: 3,
       snapshot: {
@@ -177,6 +185,7 @@ describe('actionability-core', () => {
       now,
       staleAfterMs: 1_000,
       inFlight: false,
+      mandateKind: 'live',
       consecutiveBlocks: 2,
       blockMax: 3,
       snapshot: {
@@ -205,6 +214,7 @@ describe('actionability-core', () => {
       now,
       staleAfterMs: 24 * 60 * 60_000, // not stale by the ordinary staleness check
       inFlight: false,
+      mandateKind: 'live',
       consecutiveBlocks: 0,
       blockMax: 3,
       inFlightCapMs: 10 * 60_000,
@@ -229,6 +239,7 @@ describe('actionability-core', () => {
       now,
       staleAfterMs: 24 * 60 * 60_000,
       inFlight: false,
+      mandateKind: 'live',
       consecutiveBlocks: 2,
       blockMax: 3,
       inFlightCapMs: 10 * 60_000,
@@ -246,6 +257,35 @@ describe('actionability-core', () => {
     expect(decision.block).toBe(false)
     expect(decision.nextConsecutiveBlocks).toBe(0)
   })
+
+  const holdSnapshots = {
+    'snapshot-missing': { status: 'missing' },
+    'snapshot-stale': {
+      status: 'present', at: 1, actionable: 0, next: '', workPossible: true,
+      reason: '', blockedUntil: null, inFlightUntil: null,
+    },
+    'actionable-work-remains': {
+      status: 'present', at: 10_000, actionable: 1, next: 'CARD-1', workPossible: true,
+      reason: '', blockedUntil: null, inFlightUntil: null,
+    },
+  } as const
+
+  for (const mandateKind of ['absent', 'expired', 'unknown', 'live'] as const) {
+    for (const [holdReason, snapshot] of Object.entries(holdSnapshots)) {
+      it(`${mandateKind} mandate + ${holdReason}`, () => {
+        const decision = runDecide({
+          snapshot,
+          now: 10_000,
+          staleAfterMs: 1_000,
+          mandateKind,
+          consecutiveBlocks: 0,
+          blockMax: 3,
+        })
+        expect(decision.block).toBe(mandateKind === 'unknown' || mandateKind === 'live')
+        expect(decision.reason).toBe(mandateKind === 'unknown' || mandateKind === 'live' ? holdReason : '')
+      })
+    }
+  }
 })
 
 describe('wt-actionable-gate-hook', () => {
@@ -391,7 +431,7 @@ describe('wt-actionable-gate-hook', () => {
     expect(blockText(r)).toContain('CARD-48 blocked item')
   })
 
-  it('snapshot older than the staleness bound -> block', () => {
+  it('live mandate + stale snapshot blocks exactly once and asks for a board refresh', () => {
     const { env, payload, stateDir, cwd } = scaffold('stale')
     writeSnapshot(stateDir, cwd, {
       at: Date.now() - (2 * 60 * 60 * 1000 + 1),
@@ -407,9 +447,37 @@ describe('wt-actionable-gate-hook', () => {
       heartbeatAt: Date.now() - (2 * 60 * 60 * 1000 + 1),
       lastOutcome: 'snapshot-written',
     })
-    const r = runHook(payload, env)
-    expect(r.code).toBe(0)
-    expect(blockText(r)).toContain('normal during a conversation')
+    const first = runHook(payload, env)
+    const second = runHook(payload, env)
+    expect(first.code).toBe(0)
+    expect(blockText(first)).toContain('refresh the board snapshot')
+    expect(blockText(first)).toContain('Block 1 of 1')
+    expect(second.code).toBe(0)
+    expect(blockText(second)).toBe('')
+  })
+
+  it('observed regression: no mandate + stale snapshot -> no block', () => {
+    const { env, payload, stateDir, cwd, mandatePath } = scaffold('no-mandate-stale')
+    rmSync(mandatePath, { force: true })
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now() - (2 * 60 * 60 * 1000 + 1),
+      actionable: 0,
+      next: '',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+    writeProjectState(stateDir, cwd, {
+      optedIn: true,
+      heartbeatAt: Date.now() - (2 * 60 * 60 * 1000 + 1),
+      lastOutcome: 'snapshot-written',
+    })
+
+    const result = runHook(payload, env)
+
+    expect(result.code).toBe(0)
+    expect(blockText(result)).toBe('')
   })
 
   it('names a declared producer with no heartbeat and says to wire it', () => {
@@ -420,7 +488,7 @@ describe('wt-actionable-gate-hook', () => {
     expect(blockText(unwired)).toContain('wire the producer')
   })
 
-  it('names a stale producer heartbeat as normal board-read lag', () => {
+  it('names a stale producer heartbeat and asks for a board refresh', () => {
     const normalLag = scaffold('normal-lag')
     writeSnapshot(normalLag.stateDir, normalLag.cwd, {
       at: Date.now() - (2 * 60 * 60 * 1000 + 1),
@@ -439,8 +507,50 @@ describe('wt-actionable-gate-hook', () => {
     const lag = runHook(normalLag.payload, normalLag.env)
     expect(lag.code).toBe(0)
     expect(blockText(lag)).toContain('heartbeat is stale')
-    expect(blockText(lag)).toContain('normal during a conversation')
-    expect(blockText(lag)).toContain('nothing, normal')
+    expect(blockText(lag)).toContain('refresh the board snapshot')
+  })
+
+  it('an unreadable mandate keeps the hold legible instead of silently disabling it', () => {
+    const { env, payload, stateDir, cwd, mandatePath } = scaffold('unknown-mandate')
+    writeFileSync(mandatePath, '{', 'utf8')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now(), actionable: 1, next: 'CARD-unknown', workPossible: true,
+      reason: '', blockedUntil: null, inFlightUntil: null,
+    })
+
+    const result = runHook(payload, env)
+
+    expect(blockText(result)).toContain('Autonomy mandate could not be read')
+    expect(blockText(result)).toContain('CARD-unknown')
+  })
+
+  it('journals every block with its hold reason, mandate kind, and block index', () => {
+    const { env, payload, root, stateDir, cwd } = scaffold('journal')
+    const journalDir = join(root, 'journal')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now(), actionable: 1, next: 'CARD-journal', workPossible: true,
+      reason: '', blockedUntil: null, inFlightUntil: null,
+    })
+
+    const result = runHook(payload, { ...env, WT_GUARD_JOURNAL_DIR: journalDir })
+
+    expect(blockText(result)).toContain('CARD-journal')
+    const files = readdirSync(journalDir)
+    expect(files).toHaveLength(1)
+    const journalFile = files[0]
+    if (!journalFile) throw new Error('journal file missing')
+    const entries = readFileSync(join(journalDir, journalFile), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      guard: 'wt-actionable-gate-hook.mjs',
+      decision: 'blocked',
+      reason: 'actionable-work-remains',
+      evidence: {
+        holdReason: 'actionable-work-remains',
+        mandateKind: 'live',
+        blockIndex: '1',
+      },
+    })
   })
 
   it('names a fresh failed producer heartbeat and says to check the tracker', () => {
@@ -836,7 +946,7 @@ describe('wt-actionable-gate-hook', () => {
     expect(existsSync(sentinel)).toBe(false)
   })
 
-  it('the emitted additionalContext is at most 2 lines', () => {
+  it('the emitted additionalContext is exactly one line', () => {
     const { env, payload, stateDir, cwd } = scaffold('length-lock')
     writeSnapshot(stateDir, cwd, {
       at: Date.now(),
@@ -850,7 +960,7 @@ describe('wt-actionable-gate-hook', () => {
     const r = runHook(payload, env)
     const text = blockText(r)
     expect(text).not.toBe('')
-    expect(text.split('\n').length).toBeLessThanOrEqual(2)
+    expect(text.split('\n')).toHaveLength(1)
   })
 })
 
@@ -866,5 +976,40 @@ describe('plugin manifest wiring', () => {
       'node "${CLAUDE_PLUGIN_ROOT}/bin/wt-lesson-harvest-hook.mjs"',
       'node "${CLAUDE_PLUGIN_ROOT}/bin/wt-escalation-journal-hook.mjs"',
     ])
+  })
+})
+
+describe('actionability decide() — bounded under a stale snapshot with no usable timestamp', () => {
+  it('a live mandate with a non-finite snapshot time stops blocking after the ceiling, never forever', () => {
+    const now = Date.now()
+    let consecutiveBlocks = 0
+    let staleSnapshotAt: number | null = null
+    const blocks: boolean[] = []
+    for (let i = 0; i < 5; i += 1) {
+      const decision = runDecide({
+        // `at: null` survives JSON and is the non-finite case the core must bound.
+        snapshot: { status: 'present', at: null, actionable: 0, next: '', workPossible: true, reason: '', blockedUntil: null, inFlightUntil: null },
+        now,
+        staleAfterMs: 2 * 60 * 60 * 1000,
+        mandateKind: 'live',
+        consecutiveBlocks,
+        staleSnapshotAt,
+        blockMax: 3,
+      })
+      blocks.push(decision.block === true)
+      consecutiveBlocks = Number(decision.nextConsecutiveBlocks)
+      staleSnapshotAt = typeof decision.staleSnapshotAt === 'number' ? decision.staleSnapshotAt : staleSnapshotAt
+    }
+    expect(blocks).toEqual([true, true, true, false, false])
+  })
+
+  it('an omitted mandate kind fails closed: it keeps the protection instead of disabling the gate', () => {
+    const now = Date.now()
+    const decision = runDecide({
+      snapshot: { status: 'present', at: now, actionable: 2, next: 'card', workPossible: true, reason: '', blockedUntil: null, inFlightUntil: null },
+      now,
+      staleAfterMs: 2 * 60 * 60 * 1000,
+    })
+    expect(decision.block).toBe(true)
   })
 })
