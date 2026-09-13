@@ -60,6 +60,43 @@ describe('wt-report-findings-check', () => {
     expect(result.status).toBe(1)
   })
 
+  it('accepts a Verification section that names pasted e2e output', () => {
+    const sections = closingSections.map((section) => section.startsWith('## Verification')
+      ? '## Verification\n\nE2E output (`node plugin/bin/wt-report-findings-check.mjs report.md`):\n\n```text\nfindings: 0 rows\n```'
+      : section)
+    const result = run([...sections, findings].join('\n\n'))
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('e2e verification: output recorded')
+    expect(result.stdout).not.toContain('e2e verification warning:')
+  })
+
+  it('accepts e2e not run when the Verification section includes a reason', () => {
+    const sections = closingSections.map((section) => section.startsWith('## Verification')
+      ? '## Verification\n\ne2e not run: the required host is unavailable in CI.'
+      : section)
+    const result = run([...sections, findings].join('\n\n'))
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('e2e verification: not run with reason')
+    expect(result.stdout).not.toContain('e2e verification warning:')
+  })
+
+  it('warns when e2e not run has no reason', () => {
+    const sections = closingSections.map((section) => section.startsWith('## Verification')
+      ? '## Verification\n\ne2e not run'
+      : section)
+    const result = run([...sections, findings].join('\n\n'))
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('e2e verification warning:')
+  })
+
+  it('warns but never blocks when Verification records neither e2e form', () => {
+    const result = run([...closingSections, findings].join('\n\n'), {
+      WT_FINDINGS_DISPOSITION_MODE: 'block',
+    })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('e2e verification warning: name the e2e output or state "e2e not run" with a reason (non-blocking)')
+  })
+
   it('accepts an explicit None.', () => {
     const result = run('# Report\n\n## Findings\n\nNone.\n')
     expect(result.status).toBe(0)
