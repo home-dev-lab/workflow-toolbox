@@ -47,6 +47,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   completes its notification handshake, partial board mutations are reconciled in fatal reports, and
   receipts are copied beside the report.
 ### Fixed
+- `wt-lane.mjs` now records the launching `CLAUDE_CODE_SESSION_ID` in `.lane/env.log`, using an empty value when no session id is present.
 - SDK pilot routing now recognizes populated DoD headings; critic rounds retain trusted prior findings,
   ignore fenced fake DoDs, distinguish strictly parsed blocking from non-blocking findings, retain
   deduplicated optional findings from every round, bound report input, require successful receipts for
