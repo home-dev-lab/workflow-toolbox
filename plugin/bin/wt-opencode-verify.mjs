@@ -6,7 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { laneTextFromOutput } from './wt-verifier-cli-guard-hook.mjs'
-import { opencodeChildEnv, opencodeSkillFenceRefusal, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
+import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 
 export const DEFAULT_MODEL = 'openai/gpt-5.6-luna'
 export const DEFAULT_TIMEOUT_SEC = 570
@@ -59,9 +59,9 @@ function resolveBinary() {
   return null
 }
 
-function runOnce(spawnFn, bin, args, timeoutSec = DEFAULT_TIMEOUT_SEC, env = process.env) {
+function runOnce(spawnFn, bin, args, timeoutSec = DEFAULT_TIMEOUT_SEC, env = process.env, cwd) {
   return new Promise((resolve) => {
-    const child = spawnFn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], env: opencodeChildEnv(env) })
+    const child = spawnFn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], env, cwd })
     let stdout = ''
     let stderr = ''
     let timedOut = false
@@ -84,10 +84,13 @@ function externalDirectoryDenial(result) {
   return `${result.stdout}\n${result.stderr}`.match(/[^\n]*external_directory[^\n]*/i)?.[0].trim() ?? null
 }
 
-export async function runVerifier(options, { spawnFn = spawn, binary = resolveBinary(), providerAuthenticated = (bin) => spawnSync(bin, ['providers', 'list'], { encoding: 'utf8', timeout: 30000, env: opencodeChildEnv() }).status === 0, skillFenceVerifier = verifyOpencodeSkillFence, readStdin = () => fs.readFileSync(0, 'utf8'), timeoutSec = DEFAULT_TIMEOUT_SEC, env = process.env } = {}) {
+export async function runVerifier(options, { spawnFn = spawn, binary = resolveBinary(), providerAuthenticated = (bin) => spawnSync(bin, ['providers', 'list'], { cwd: options.dir, encoding: 'utf8', timeout: 30000, env: opencodeChildEnv(env) }).status === 0, skillFenceVerifier = verifyOpencodeSkillFence, skillDiscoveryVerifier = verifyEffectiveOpencodeSkillDiscovery, readStdin = () => fs.readFileSync(0, 'utf8'), timeoutSec = DEFAULT_TIMEOUT_SEC, env = process.env } = {}) {
   if (!binary) return { code: 1, output: 'OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations' }
   const fence = skillFenceVerifier(binary, { env })
   if (!fence.ok) return { code: 1, output: opencodeSkillFenceRefusal(fence.reason) }
+  const childEnv = opencodeChildEnv(env)
+  const discovery = skillDiscoveryVerifier(binary, { cwd: options.dir, env: childEnv })
+  if (!discovery.ok) return { code: 1, output: effectiveSkillDiscoveryRefusal(discovery, 'wt-opencode-verify') }
   if (!providerAuthenticated(binary)) {
     return { code: 1, output: 'OPENCODE_UNAVAILABLE: no opencode provider authenticated (providers list failed)' }
   }
@@ -95,9 +98,9 @@ export async function runVerifier(options, { spawnFn = spawn, binary = resolveBi
   const taskFile = path.join(path.resolve(options.dir), `.oc-verify-${options.id}-${process.pid}.md`)
   fs.writeFileSync(taskFile, task, 'utf8')
   try {
-    let result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, taskFile }), timeoutSec, env)
+    let result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, taskFile }), timeoutSec, childEnv, options.dir)
     if (result.code !== 0 && rateLimited(result)) {
-      result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, model: options.fallbackModel || DEFAULT_MODEL, taskFile }), timeoutSec, env)
+      result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, model: options.fallbackModel || DEFAULT_MODEL, taskFile }), timeoutSec, childEnv, options.dir)
     }
     const denial = externalDirectoryDenial(result)
     if (result.code === 0 && denial) return { code: 1, output: `OPENCODE_EXTERNAL_DIRECTORY: ${denial}` }

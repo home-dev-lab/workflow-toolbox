@@ -345,7 +345,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     const opencodeStub = join(bin, 'opencode')
     writeFileSync(opencodeStub, readFileSync(opencodeStub, 'utf8').replace(
       "const root=process.argv[process.argv.indexOf('--dir')+1]",
-      "if(process.argv[2]==='--version'){console.log('fixture-1');process.exit(0)} if(process.argv[2]==='--pure'){console.log('[]');process.exit(0)} const root=process.argv[process.argv.indexOf('--dir')+1]",
+      "if(process.argv[2]==='--version'){console.log('fixture-1');process.exit(0)} if(process.argv[2]==='--pure'){console.log('[]');process.exit(0)} if(process.argv[2]==='debug'&&process.argv[3]==='skill'){console.log('[]');process.exit(0)} const root=process.argv[process.argv.indexOf('--dir')+1]",
     ))
     fs.chmodSync(opencodeStub, 0o755)
     const oldPath = process.env.PATH; const oldConfig = process.env.CLAUDE_CONFIG_DIR; const oldState = process.env.XDG_STATE_HOME

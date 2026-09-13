@@ -18,27 +18,46 @@ function fixture() {
   mkdirSync(binDir)
   writeFileSync(bin, `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
-if [ "$1" = "--pure" ]; then printf '[]\n'; exit 0; fi
+if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; exit 0; fi
+if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf 'probe|%s|%s|%s\n' "$PWD" "$IDENTITY_MARKER" "\${OPENCODE_CONFIG-unset}" >> "$RECORD"; printf '[]\n'; exit 0; fi
 if [ "$1" = "providers" ]; then exit 0; fi
-printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" >> "$RECORD"
+printf 'run|%s|%s|%s\n' "$PWD" "$IDENTITY_MARKER" "\${OPENCODE_CONFIG-unset}" >> "$RECORD"
 printf '%s\n' '{"type":"text","part":{"text":"{\\"status\\":\\"clean\\"}"}}'
 `)
   chmodSync(bin, 0o755)
-  const env = { ...process.env, PATH: `${binDir}:${process.env.PATH}`, RECORD: record, XDG_STATE_HOME: path.join(root, 'state'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }
+  const home = path.join(root, 'home')
+  mkdirSync(home)
+  writeFileSync(path.join(home, '.zprofile'), `export OPENCODE_CONFIG=${path.join(root, 'shell-startup-unsafe.json')}\n`)
+  const env = { ...process.env, HOME: home, PATH: `${binDir}:${process.env.PATH}`, RECORD: record, IDENTITY_MARKER: 'same', OPENCODE_CONFIG: path.join(root, 'unsafe.json'), XDG_STATE_HOME: path.join(root, 'state'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }
   return { root, bin, record, env }
 }
 
 describe('all toolbox-owned OpenCode launch paths', () => {
-  it('fences envelope, intercept-hook, and shell-mediated observer children', () => {
+  it('uses one sanitized cwd/environment/config context for envelope probe and fan-out spawns', () => {
     const f = fixture()
     const tasks = path.join(f.root, 'tasks.json')
-    writeFileSync(tasks, JSON.stringify([{ id: 'one', prompt: 'answer' }]))
+    writeFileSync(tasks, JSON.stringify([{ id: 'one', prompt: 'answer' }, { id: 'two', prompt: 'answer' }]))
     expect(spawnSync(process.execPath, [ENVELOPE, tasks, '--dir', f.root], { encoding: 'utf8', env: f.env }).status).toBe(0)
+    expect(readFileSync(f.record, 'utf8').trim().split('\n')).toEqual([
+      `probe|${f.root}|same|unset`,
+      `run|${f.root}|same|unset`,
+      `run|${f.root}|same|unset`,
+    ])
+  })
 
+  it('uses one sanitized cwd/environment/config context for intercept probe and spawn', () => {
+    const f = fixture()
     const hookInput = { hook_event_name: 'PreToolUse', tool_name: 'Agent', cwd: f.root, tool_input: { subagent_type: 'workflow-toolbox:opencode-verifier', prompt: 'review' } }
     expect(spawnSync(process.execPath, [HOOK], { input: JSON.stringify(hookInput), encoding: 'utf8', env: f.env }).status).toBe(0)
+    expect(readFileSync(f.record, 'utf8').trim().split('\n')).toEqual([
+      `probe|${f.root}|same|unset`,
+      `run|${f.root}|same|unset`,
+    ])
+  })
 
-    const keys = ['PATH', 'RECORD', 'XDG_STATE_HOME', 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS'] as const
+  it('uses one sanitized cwd/environment/config context for observer probe and direct spawn', () => {
+    const f = fixture()
+    const keys = ['PATH', 'RECORD', 'IDENTITY_MARKER', 'OPENCODE_CONFIG', 'XDG_STATE_HOME', 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS'] as const
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
     for (const key of keys) process.env[key] = f.env[key]
     try {
@@ -49,6 +68,9 @@ describe('all toolbox-owned OpenCode launch paths', () => {
         else process.env[key] = previous[key]
       }
     }
-    expect(readFileSync(f.record, 'utf8').trim().split('\n')).toEqual(['true', 'true', 'true'])
+    expect(readFileSync(f.record, 'utf8').trim().split('\n')).toEqual([
+      `probe|${f.root}|same|unset`,
+      `run|${f.root}|same|unset`,
+    ])
   })
 })
