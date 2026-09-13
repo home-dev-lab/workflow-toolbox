@@ -39,6 +39,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   completes its notification handshake, partial board mutations are reconciled in fatal reports, and
   receipts are copied beside the report.
 ### Fixed
+- Pilot and pilot-orchestrator watchdogs now pin `sonnet`: digest-based drift judgment needs a
+  capable workhorse model, but no longer inherits the spawning session's potentially costlier tier.
 - Signature CI now loads its signer policy and checker from the protected PR base ref while checking the PR checkout's commits.
 - `wt-lane.mjs` now refuses a `--dir` outside a Git work tree before the consent gate, with an absolute `git worktree add` remedy; `--allow-no-git` remains available for deliberate non-repository lanes.
 - `wt-spawn-registry-scan` now reopens a named agent only when a later outbound record or transcript write follows its last stop; a final stop still closes the arc.

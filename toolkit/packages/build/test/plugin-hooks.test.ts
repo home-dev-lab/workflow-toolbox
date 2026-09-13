@@ -880,6 +880,23 @@ describe('plugin agent observer pairings resolve to a sibling def', () => {
     expect(pairings).toContainEqual(['pilot.md', 'pilot-watchdog'])
   })
 
+  it('every observer paired by a plugin-TEMPLATE agent declares a non-empty model', () => {
+    const defs = readdirSync(AGENT_TEMPLATES_DIR).filter((f) => f.endsWith('.md'))
+    const pairings: Array<[string, string]> = []
+    for (const f of defs) {
+      const front = readFileSync(join(AGENT_TEMPLATES_DIR, f), 'utf8').split('\n---', 2)[0] ?? ''
+      const m = front.match(/^observer:\s*(\S+)\s*$/m)
+      if (m) pairings.push([f, m[1] ?? ''])
+    }
+    const unmodeled = pairings.filter(([, obs]) => {
+      const observerPath = join(AGENT_TEMPLATES_DIR, `${obs}.md`)
+      if (!existsSync(observerPath)) return true
+      const front = readFileSync(observerPath, 'utf8').split('\n---', 2)[0] ?? ''
+      return !/^model:\s*\S+\s*$/m.test(front)
+    })
+    expect(unmodeled, `observer definitions missing non-empty model: ${JSON.stringify(unmodeled)}`).toEqual([])
+  })
+
   it('pilot-watchdog keeps its report channel: the tools fence includes ObserverReport', () => {
     const front = readFileSync(join(AGENT_TEMPLATES_DIR, 'pilot-watchdog.md'), 'utf8').split('\n---', 2)[0] ?? ''
     const m = front.match(/^tools:\s*(.+)$/m)
