@@ -12,7 +12,6 @@ import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { resolveAgentSdkRequire } from '../../../../plugin/bin/lib/sdk-resolution.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')
@@ -95,14 +94,17 @@ describe('SDK pilot runner', () => {
 
   it('refuses unresolved SDK installs with a one-line remedy', () => {
     const f = fixture()
-    try {
-      resolveAgentSdkRequire({ ownBases: [join(f.dir, 'toolkit', 'package.json')] })
-      throw new Error('expected SDK resolution to fail')
-    } catch (error) {
-      expect(error).toBeInstanceOf(Error)
-      expect((error as Error).message).toBe('@anthropic-ai/claude-agent-sdk is not installed for ' + join(f.dir, 'toolkit') + '; run: pnpm install --offline --frozen-lockfile')
-      expect((error as Error).message).not.toContain('\n')
-    }
+    // Run the resolution in a child with NODE_PATH cleared: vitest sets NODE_PATH to this checkout's node_modules, and
+    // Node appends NODE_PATH to every lookup, so an in-process check resolves the SDK from here and never refuses.
+    const helper = fileURLToPath(new URL('../../../../plugin/bin/lib/sdk-resolution.mjs', import.meta.url))
+    const base = join(f.dir, 'toolkit', 'package.json')
+    const script = `const { resolveAgentSdkRequire } = await import(${JSON.stringify(helper)}); try { resolveAgentSdkRequire({ ownBases: [${JSON.stringify(base)}] }); process.stdout.write('RESOLVED') } catch (error) { process.stdout.write(error.message) }`
+    const env = { ...process.env }
+    delete env.NODE_PATH
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe('@anthropic-ai/claude-agent-sdk is not installed for ' + join(f.dir, 'toolkit') + '; run: pnpm install --offline --frozen-lockfile')
+    expect(result.stdout).not.toContain('\n')
   })
 
   it('derives plan-phase guidance and invalid-plan refusal from one grammar description', async () => {
