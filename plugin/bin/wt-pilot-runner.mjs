@@ -1,13 +1,12 @@
 #!/usr/bin/env node
-import { createRequire } from 'node:module'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parsePilotRunnerArgs, runPilot } from './lib/pilot-runner-core.mjs'
 import { resolvePilotModels } from './lib/pilot-model-config.mjs'
+import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
-const require = createRequire(join(ROOT, 'toolkit/package.json'))
 
 function usage() {
   return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <path> [--profile-env <settings.json>] [--contract <path>] [--hard] [--mailbox <path>] [--timeout 5400]'
@@ -21,6 +20,7 @@ async function main() {
   if (!existsSync(options.contract)) { process.stderr.write(`wt-pilot-runner: --contract does not exist: ${options.contract}\n`); return 2 }
   if (!existsSync(options.cardFile)) { process.stderr.write(`wt-pilot-runner: --card-file does not exist: ${options.cardFile}\n`); return 2 }
   try {
+    const require = resolveAgentSdkRequire({ ownBases: [join(ROOT, 'toolkit/package.json')] })
     const sdk = await import(require.resolve('@anthropic-ai/claude-agent-sdk'))
     const result = await runPilot(options, { query: sdk.query, resolvePilotModels })
     process.stdout.write(`fresh=${result.summary.fresh_tokens} turns=${result.summary.turns} report=${result.summary.report_exists} requested_model=${result.summary.requested_model} served_model=${result.summary.served_model ?? 'unknown'} served_model_first_turn=${result.summary.served_model_first_turn ?? 'unknown'} served_model_agreement=${result.summary.served_model_agreement}\n`)
