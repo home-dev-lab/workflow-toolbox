@@ -47,6 +47,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   completes its notification handshake, partial board mutations are reconciled in fatal reports, and
   receipts are copied beside the report.
 ### Fixed
+- Adopt now refuses `wt-lane` script checks and installs when its resolved runtime plugin root is missing a module loaded by the transformed launcher.
 - Every toolbox-owned OpenCode launch (`wt-lane`, verifier, envelope, intercepted verifier, and observer)
   now shares a forced `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true` child environment, excluding Claude
   Code's single-writer skills while leaving OpenCode and `.agents` skills available. A model-free,
