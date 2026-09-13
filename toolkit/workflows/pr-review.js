@@ -2288,6 +2288,15 @@ ${renderClaim(claim)}`;
       docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
     },
     {
+      sources: [
+        "plugin/bin/wt-artifact-server.mjs",
+        "plugin/bin/wt-artifact-server-ensure.mjs",
+        "plugin/bin/lib/artifact-server.mjs",
+        "plugin/skills/artifact-server/"
+      ],
+      docs: ["README.md", "PRIVACY.md", "plugin/skills/artifact-server/SKILL.md"]
+    },
+    {
       // Adopted owner-granted authorization format, its deterministic reader, and the
       // Stop-hook measurement that prevents authorized acts from being escalated again.
       sources: [

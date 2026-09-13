@@ -51,6 +51,16 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-artifact-server.mjs',
+    status: 'mapped',
+    reason: 'The artifact-server skill documents serving, URLs, roots, lifecycle controls, Tailscale access, and the security boundary.',
+  },
+  {
+    script: 'plugin/bin/wt-artifact-server-ensure.mjs',
+    status: 'mapped',
+    reason: 'The artifact-server skill documents the default-on persistent monitor, registration, discovery, and bind-race startup.',
+  },
+  {
     script: 'plugin/bin/wt-intake-triage.mjs',
     status: 'missing-doc-surface',
     reason: 'The pilot-orchestrator template is its executable caller; this focused intake helper adds no standalone operator guide.',
@@ -594,6 +604,15 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
     sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/skills/external-lane/'],
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
+  },
+  {
+    sources: [
+      'plugin/bin/wt-artifact-server.mjs',
+      'plugin/bin/wt-artifact-server-ensure.mjs',
+      'plugin/bin/lib/artifact-server.mjs',
+      'plugin/skills/artifact-server/',
+    ],
+    docs: ['README.md', 'PRIVACY.md', 'plugin/skills/artifact-server/SKILL.md'],
   },
   {
     // Adopted owner-granted authorization format, its deterministic reader, and the

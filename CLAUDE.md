@@ -2,13 +2,14 @@
 
 This repo has two halves that stand alone but work together:
 
-- **`plugin/`** — the Claude Code plugin. Ships **thirteen skills** — `workflow-composer`
+- **`plugin/`** — the Claude Code plugin. Ships **sixteen skills** — `workflow-composer`
   (author), `toolkit-scaffold` (start), `workflow-debugger` (diagnose a run),
   `upgrade-canary` (re-verify the runtime after an upgrade), `independent-analysis`
   (trigger the bias-free analysis workflow when relevant), `deep-grounding`
   (collect + verify evidence against the real sources before asserting/analyzing),
   `delegation-chain` (spawn shapes, report routing, what wakes whom),
-  `pilot-wave` (compose a delegated pilot/orchestrator wave over tracked cards),
+  `pilot-wave` (compose a delegated pilot/orchestrator wave over tracked cards), `artifact-server`
+  (create clickable localhost links for local artifacts),
   `adopt` (install editable, versioned copies of the bundled rules),
   `planka-tracking` (onboard a project onto a Planka kanban board), `what-next`
   (propose the logical next step from that board), `stale-card-sweep` (does this diff
