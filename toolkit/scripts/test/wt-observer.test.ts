@@ -25,7 +25,8 @@ function tempRoot(prefix: string) {
 }
 
 function writeExecutable(filePath: string, body: string) {
-  writeFileSync(filePath, body, 'utf8')
+  const fenceAware = body.replace(/^#![^\n]*\n/, (shebang) => `${shebang}if [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi\nif [ "$1" = "--pure" ]; then printf '[]\\n'; exit 0; fi\n`)
+  writeFileSync(filePath, fenceAware, 'utf8')
   chmodSync(filePath, 0o755)
 }
 

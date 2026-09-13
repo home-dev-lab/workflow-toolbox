@@ -7,12 +7,13 @@ import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { resolveConsent } from './lib/lane-consent-check-core.mjs'
 import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
+import { opencodeChildEnv, opencodeSkillFenceRefusal, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 
 const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
 
 async function loadConsentModules() {
-  return { resolveConsent, evaluateConsentGate }
+  return { resolveConsent, evaluateConsentGate, opencodeChildEnv, opencodeSkillFenceRefusal, verifyOpencodeSkillFence }
 }
 
 function usage() {
@@ -105,6 +106,9 @@ async function main() {
   )
   if (!consent.silent) { process.stderr.write(`${consent.message}\n`); return 1 }
 
+  const fence = consentModules.verifyOpencodeSkillFence('opencode')
+  if (!fence.ok) { process.stderr.write(`${consentModules.opencodeSkillFenceRefusal(fence.reason)}\n`); return 1 }
+
   if (!worker) {
     mkdirSync(path.join(opts.dir, '.lane'), { recursive: true })
     const child = spawn(process.execPath, [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', opts.brief, '--timeout', String(opts.timeout), '--log', opts.log, ...(opts.variant ? ['--variant', opts.variant] : []), ...(opts.allowNoGit ? ['--allow-no-git'] : [])], {
@@ -121,7 +125,13 @@ async function main() {
   writeEnvLog(opts.dir)
   const fd = openSync(opts.log, 'a')
   const args = ['run', `Read and execute the complete brief at ${opts.brief}.`, '--auto', '--dir', opts.dir, '--model', opts.model, ...(opts.variant ? ['--variant', opts.variant] : [])]
-  const child = spawn('opencode', args, { cwd: opts.dir, stdio: ['ignore', fd, fd] })
+  // OpenCode honours this runtime flag by skipping ~/.claude/skills and project .claude/skills,
+  // preserving its own and .agents skills while fencing the harness's single-writer memory skills.
+  const child = spawn('opencode', args, {
+    cwd: opts.dir,
+    env: consentModules.opencodeChildEnv(process.env),
+    stdio: ['ignore', fd, fd],
+  })
   let finished = false
   const finish = (code) => {
     if (finished) return

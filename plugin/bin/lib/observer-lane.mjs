@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { opencodeChildEnv, opencodeSkillFenceRefusal, verifyOpencodeSkillFence } from './opencode-skill-fence.mjs'
 
 const EXIT_MARKER = '__WT_OBSERVER_EXIT__='
 const OBSERVER_INSTRUCTION = 'Read the attached observer task and return its requested JSON verdict.'
@@ -118,15 +119,18 @@ export function observerLaneInputBytes(prompt) {
 }
 
 export function runObserverLane({ projectDir, prompt, timeoutSeconds, model, binPath }) {
+  const fence = verifyOpencodeSkillFence(binPath)
+  if (!fence.ok) return { outcome: { kind: 'error', reason: opencodeSkillFenceRefusal(fence.reason) }, taskText: prompt }
   const root = mkdtempSync(path.join(os.tmpdir(), 'wt-observer-'))
   const taskFile = path.join(root, 'observer-task.md')
   writeFileSync(taskFile, prompt, 'utf8')
 
-  const command = `timeout ${Number(timeoutSeconds)} ${quote(binPath)} run ${quote(OBSERVER_INSTRUCTION)} --format json --auto --dir ${quote(projectDir)} --model ${quote(model)} -f ${quote(taskFile)} < /dev/null; exit_code=$?; printf '\n${EXIT_MARKER}%s\n' "$exit_code"`
+  const command = `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true timeout ${Number(timeoutSeconds)} ${quote(binPath)} run ${quote(OBSERVER_INSTRUCTION)} --format json --auto --dir ${quote(projectDir)} --model ${quote(model)} -f ${quote(taskFile)} < /dev/null; exit_code=$?; printf '\n${EXIT_MARKER}%s\n' "$exit_code"`
   const result = spawnSync('zsh', ['-lc', command], {
     encoding: 'utf8',
     timeout: (Number(timeoutSeconds) + 5) * 1000,
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: opencodeChildEnv(),
   })
 
   let taskText = ''

@@ -15,10 +15,13 @@ function fixture(script: string) {
   const dir = join(root, 'worktree'); const bin = join(root, 'bin'); const config = join(root, 'config')
   mkdirSync(join(dir, '.lane'), { recursive: true }); mkdirSync(bin); mkdirSync(config)
   writeFileSync(join(dir, 'brief.md'), '# brief\n')
-  writeFileSync(join(bin, 'opencode'), `#!/bin/sh\n${script}\n`)
+  writeFileSync(join(bin, 'opencode'), `#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
+if [ "$1" = "--pure" ]; then if [ "$IGNORE_FENCE" = "1" ]; then printf '[{"name":"workflow-toolbox-fence-sentinel"}]\n'; else printf '[]\n'; fi; exit 0; fi
+${script}\n`)
   spawnSync('chmod', ['+x', join(bin, 'opencode')])
   writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: config }
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state') }
   return { root, dir, config, env }
 }
 function run(f: ReturnType<typeof fixture>, extra: string[] = []) {
@@ -79,6 +82,33 @@ describe('wt-lane detached launcher', () => {
     const log = join(f.dir, '.lane', 'run.log'); waitFor(log)
     expect(readFileSync(join(f.dir, 'argv'), 'utf8')).toMatch(/--variant\nhigh\n/)
     const bad = run(f, ['--variant', 'hi gh']); expect(bad.status).toBe(2); expect(bad.stderr).toContain('--variant')
+  })
+  it('fences Claude Code skills while preserving the opencode argv contract and launch options', () => {
+    const f = fixture('printf "%s\\n" "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > "$PWD/claude-skills-fence"; printf "%s\\n" "$@" > "$PWD/argv"')
+    f.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'false'
+    const res = run(f, ['--variant', 'high', '--timeout', '1']); expect(res.status).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, 'claude-skills-fence'), 'utf8')).toBe('true\n')
+    expect(readFileSync(join(f.dir, 'argv'), 'utf8')).toBe([
+      'run',
+      `Read and execute the complete brief at ${join(f.dir, 'brief.md')}.`,
+      '--auto',
+      '--dir',
+      f.dir,
+      '--model',
+      'test/model',
+      '--variant',
+      'high',
+      '',
+    ].join('\n'))
+  })
+  it('refuses before launch when OpenCode ignores the fence', () => {
+    const f = fixture('printf spawned > "$PWD/spawned"')
+    f.env.IGNORE_FENCE = '1'
+    const res = run(f)
+    expect(res.status).toBe(1)
+    expect(res.stderr).toBe('OPENCODE_SKILL_FENCE_UNAVAILABLE: the synthetic Claude skill is still listed under the forced fence; update OpenCode or workflow-toolbox before launching.\n')
+    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
   })
   it('refuses absent consent before spawning', () => {
     const f = fixture('echo spawned > "$PWD/spawned"')
