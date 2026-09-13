@@ -80,6 +80,25 @@ describe('wt-lane detached launcher', () => {
     expect(readFileSync(join(f.dir, 'argv'), 'utf8')).toMatch(/--variant\nhigh\n/)
     const bad = run(f, ['--variant', 'hi gh']); expect(bad.status).toBe(2); expect(bad.stderr).toContain('--variant')
   })
+  it('fences Claude Code skills while preserving the opencode argv contract and launch options', () => {
+    const f = fixture('printf "%s\\n" "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > "$PWD/claude-skills-fence"; printf "%s\\n" "$@" > "$PWD/argv"')
+    f.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'false'
+    const res = run(f, ['--variant', 'high', '--timeout', '1']); expect(res.status).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, 'claude-skills-fence'), 'utf8')).toBe('true\n')
+    expect(readFileSync(join(f.dir, 'argv'), 'utf8')).toBe([
+      'run',
+      `Read and execute the complete brief at ${join(f.dir, 'brief.md')}.`,
+      '--auto',
+      '--dir',
+      f.dir,
+      '--model',
+      'test/model',
+      '--variant',
+      'high',
+      '',
+    ].join('\n'))
+  })
   it('refuses absent consent before spawning', () => {
     const f = fixture('echo spawned > "$PWD/spawned"')
     writeFileSync(join(f.config, 'settings.json'), '{}')

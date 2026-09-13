@@ -121,7 +121,13 @@ async function main() {
   writeEnvLog(opts.dir)
   const fd = openSync(opts.log, 'a')
   const args = ['run', `Read and execute the complete brief at ${opts.brief}.`, '--auto', '--dir', opts.dir, '--model', opts.model, ...(opts.variant ? ['--variant', opts.variant] : [])]
-  const child = spawn('opencode', args, { cwd: opts.dir, stdio: ['ignore', fd, fd] })
+  // OpenCode honours this runtime flag by skipping ~/.claude/skills and project .claude/skills,
+  // preserving its own and .agents skills while fencing the harness's single-writer memory skills.
+  const child = spawn('opencode', args, {
+    cwd: opts.dir,
+    env: { ...process.env, OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true' },
+    stdio: ['ignore', fd, fd],
+  })
   let finished = false
   const finish = (code) => {
     if (finished) return
