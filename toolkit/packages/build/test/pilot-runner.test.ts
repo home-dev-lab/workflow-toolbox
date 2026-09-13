@@ -11,6 +11,8 @@ import { lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } f
 import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { resolveAgentSdkRequire } from '../../../../plugin/bin/lib/sdk-resolution.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')
@@ -32,6 +34,13 @@ function fixture() {
   const contract = join(root, 'contract.md'); writeFileSync(contract, '# contract\n')
   const cardFile = join(root, 'card.md'); writeFileSync(cardFile, 'Route: LITE\nDoD: exercise the runner\n')
   return { root, dir, contract, cardFile }
+}
+function freshFixture() {
+  const f = fixture()
+  mkdirSync(join(f.dir, 'toolkit'))
+  writeFileSync(join(f.dir, 'toolkit', 'package.json'), JSON.stringify({ devDependencies: { '@anthropic-ai/claude-agent-sdk': '*' } }))
+  spawnSync('git', ['add', 'toolkit/package.json'], { cwd: f.dir })
+  return f
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
@@ -69,6 +78,31 @@ describe('SDK pilot runner', () => {
     expect(prompts[0]).toContain('Lanes run synchronously through the lifecycle run tool')
     expect(prompts[0]).not.toContain('end your turn immediately after launch')
 
+  })
+
+  it('uses the runner install when a fresh target tracks toolkit/package.json without node_modules', async () => {
+    const f = freshFixture(); let reachedQuery = false
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      reachedQuery = true
+      yield initMessage()
+      await prompt.next()
+    })()
+    await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, {
+      query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
+    })
+    expect(reachedQuery).toBe(true)
+  })
+
+  it('refuses unresolved SDK installs with a one-line remedy', () => {
+    const f = fixture()
+    try {
+      resolveAgentSdkRequire({ ownBases: [join(f.dir, 'toolkit', 'package.json')] })
+      throw new Error('expected SDK resolution to fail')
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error)
+      expect((error as Error).message).toBe('@anthropic-ai/claude-agent-sdk is not installed for ' + join(f.dir, 'toolkit') + '; run: pnpm install --offline --frozen-lockfile')
+      expect((error as Error).message).not.toContain('\n')
+    }
   })
 
   it('derives plan-phase guidance and invalid-plan refusal from one grammar description', async () => {

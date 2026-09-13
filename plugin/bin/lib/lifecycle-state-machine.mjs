@@ -8,6 +8,7 @@ import { treeSignature } from './gate-evidence.mjs'
 import { independentBrief, prospectivePatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
 import { completeLifecycleReport } from './lifecycle-report-edge.mjs'
+import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
@@ -162,9 +163,7 @@ export function createLifecycleStateMachine({
     sessionTag: String(sessionTag),
   })
   const bundledToolkit = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../toolkit/package.json')
-  const require = createRequire(
-    fs.existsSync(path.join(root, 'toolkit/package.json')) ? path.join(root, 'toolkit/package.json') : bundledToolkit,
-  )
+  const require = resolveAgentSdkRequire({ ownBases: [bundledToolkit], fallbackBases: [path.join(root, 'toolkit/package.json')] })
   const { createSdkMcpServer, tool } = sdk ?? require('@anthropic-ai/claude-agent-sdk')
   const { z } = createRequire(require.resolve('@anthropic-ai/claude-agent-sdk'))('zod')
   writeRegularFile(
