@@ -1,8 +1,7 @@
 {
   "language": "vue",
   "triggers": {
-    "extensions": [".vue"],
-    "files": ["vite.config.ts", "vitest.config.ts", "tsconfig.json"]
+    "extensions": [".vue"]
   },
   "rules": [
     "tdd-vitest.md",

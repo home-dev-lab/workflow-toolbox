@@ -2,8 +2,10 @@
 
 ## Selection
 
-The pack declares Java and Maven triggers in `pack.json`. Selection behavior is owned by the private
-pack hooks and is not enforced by this pack.
+The pack declares the `.java` extension and `pom.xml` as its only build-file trigger in `pack.json`.
+`build.gradle` and `settings.gradle` belong to the Groovy pack, while their `.kts` variants belong
+to Kotlin; a Java Gradle project still selects this pack through its `.java` sources. Selection
+behavior is owned by the private pack hooks and is not enforced by this pack.
 
 ## What this pack ships
 

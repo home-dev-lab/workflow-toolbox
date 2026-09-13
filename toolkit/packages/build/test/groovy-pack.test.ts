@@ -12,7 +12,7 @@ describe('Groovy pack', () => {
       language: 'groovy',
       triggers: {
         extensions: ['.groovy', '.gradle'],
-        files: ['build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts', 'spock.conf'],
+        files: ['build.gradle', 'settings.gradle', 'spock.conf'],
       },
     })
   })

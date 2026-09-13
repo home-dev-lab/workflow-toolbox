@@ -3,9 +3,10 @@
 ## What this pack ships
 
 `pack.json` declares the `kotlin` language value, selects `.kt` and `.kts` source and script files,
-and also selects `build.gradle.kts`, `settings.gradle.kts`, and Maven `pom.xml` build files. Pack
-selection and context attachment are owned by the private pack hooks; the manifest does not execute
-rules, agents, or tests automatically.
+and selects the Kotlin-written build files `build.gradle.kts` and `settings.gradle.kts`. Maven
+`pom.xml` belongs to Java; a Maven Kotlin project still selects this pack through its `.kt` or
+`.kts` sources. Pack selection and context attachment are owned by the private pack hooks; the
+manifest does not execute rules, agents, or tests automatically.
 
 The pack supplies its diagnostics declaration in `.lsp.json`, Kotlin JVM rules in `rules/`, SDK-only
 critic and reviewer definitions in `agents/`, and planted diagnostics plus navigation fixtures in
@@ -75,7 +76,7 @@ automatically and must not be registered as harness agents.
 
 ## Dialects without diagnostics
 
-Gradle Kotlin DSL and Maven build files are owned by this pack's triggers and rules. The Kotlin
-server maps `.kts`, but there is no separate diagnostics declaration for Maven XML or a Gradle model.
+Gradle Kotlin DSL build files are owned by this pack's triggers and rules. The Kotlin server maps
+`.kts`, but there is no separate diagnostics declaration for Maven XML or a Gradle model.
 Add one only after a named server documents its command, args, and extension mapping and its two
 archived probe arms pass.

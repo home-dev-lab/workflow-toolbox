@@ -2,7 +2,7 @@
   "language": "kotlin",
   "triggers": {
     "extensions": [".kt", ".kts"],
-    "files": ["build.gradle.kts", "pom.xml", "settings.gradle.kts"]
+    "files": ["build.gradle.kts", "settings.gradle.kts"]
   },
   "rules": [
     "tdd-junit-kotlin-test.md",

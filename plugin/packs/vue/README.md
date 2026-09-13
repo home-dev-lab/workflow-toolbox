@@ -2,11 +2,12 @@
 
 ## What this pack ships
 
-`pack.json` declares language `vue`, selecting this pack for `.vue` files and the Vite, Vitest, and
-Vue TypeScript configuration files `vite.config.ts`, `vitest.config.ts`, and `tsconfig.json`.
-Selection attaches pack context; it does not execute rules, skills, agents, or diagnostics
-automatically. The pack ships rules, TDD and gate skills, SDK-only `agents/critic.md` and
-`agents/reviewer.md`, and diagnostics and navigation probe fixtures under `probe/`.
+`pack.json` declares language `vue`, selecting this pack only for `.vue` files. No build or
+configuration file, including Vite, Vitest, or `tsconfig.json`, selects it; a Vue project still
+matches through its `.vue` components. Selection attaches pack context; it does not execute rules,
+skills, agents, or diagnostics automatically. The pack ships rules, TDD and gate skills, SDK-only
+`agents/critic.md` and `agents/reviewer.md`, and diagnostics and navigation probe fixtures under
+`probe/`.
 
 The rules are minimal local copies of the TypeScript-family TDD and gate guidance. The current
 private pack loader addresses rule files inside the selected pack and has no cross-pack reference,

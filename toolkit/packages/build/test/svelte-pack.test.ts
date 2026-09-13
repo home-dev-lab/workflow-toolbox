@@ -7,13 +7,13 @@ const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url))
 const packDir = resolve(repoRoot, 'plugin/packs/svelte')
 
 describe('Svelte language pack', () => {
-  it('ships Svelte, Vite, Vitest, and svelte-check selection with a measured LSP probe fixture', () => {
+  it('ships Svelte and svelte-check selection with a measured LSP probe fixture', () => {
     const manifest = JSON.parse(readFileSync(join(packDir, 'pack.json'), 'utf8'))
     expect(manifest).toMatchObject({
       language: 'svelte',
       triggers: {
         extensions: ['.svelte'],
-        files: ['vite.config.ts', 'vite.config.js', 'vitest.config.ts', 'vitest.config.js', 'svelte.config.js'],
+        files: ['svelte.config.js'],
       },
     })
     expect(JSON.parse(readFileSync(join(packDir, '.lsp.json'), 'utf8'))).toEqual({

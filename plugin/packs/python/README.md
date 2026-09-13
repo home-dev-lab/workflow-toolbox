@@ -8,7 +8,7 @@ Pyright language-server declaration for the Workflow Toolbox repository.
 `wt-lifecycle-hooks` selects the pack when a card Discovery block contains a `Language:` value
 matching `python`. `wt-rules-on-demand` serves the pack's topic rules on `Edit` and `Write` tool
 calls targeting `.py` or `.pyi` paths. Other language values and an absent `Language:` field do not
-select this pack.
+select this pack. No build or configuration file selects the Python pack.
 
 ## Limits
 
