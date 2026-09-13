@@ -70,11 +70,18 @@ function scaffoldProject(tag: string, opts: { withParser: boolean; withBoardPoin
   const configDir = join(root, 'claude-config')
   const hookTmp = join(root, 'hook-tmp')
   const cwd = join(root, 'project')
+  const mandateDir = join(state, 'wt-queue-gate')
   mkdirSync(home, { recursive: true })
   mkdirSync(state, { recursive: true })
   mkdirSync(configDir, { recursive: true })
   mkdirSync(hookTmp, { recursive: true })
   mkdirSync(cwd, { recursive: true })
+  mkdirSync(mandateDir, { recursive: true })
+  writeFileSync(
+    join(mandateDir, `engine-${slug(cwd)}.json`),
+    JSON.stringify({ declaredAtMs: Date.now(), sessionId: `sess-${tag}` }),
+    'utf8',
+  )
   if (opts.withBoardPointer !== false) {
     mkdirSync(join(cwd, '.claude'), { recursive: true })
     writeFileSync(join(cwd, '.claude/planka.json'), JSON.stringify({ boardId: 'b1' }), 'utf8')
@@ -89,7 +96,15 @@ function scaffoldProject(tag: string, opts: { withParser: boolean; withBoardPoin
     cwd,
     configDir,
     stateDir: join(state, 'wt-actionable'),
-    env: { ...process.env, CLAUDE_PLUGIN_DATA: undefined, HOME: home, XDG_STATE_HOME: state, CLAUDE_CONFIG_DIR: configDir, TMPDIR: hookTmp },
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: undefined,
+      HOME: home,
+      XDG_STATE_HOME: state,
+      CLAUDE_CONFIG_DIR: configDir,
+      TMPDIR: hookTmp,
+      WT_AUTONOMY_WATCH_MANDATE_DIR: mandateDir,
+    },
   }
 }
 
@@ -701,7 +716,7 @@ describe('producer output is consumable by the real consumer decide()', () => {
     }
     expect(runProducerHook(payload, env).status).toBe(0)
     const snap = readSnapshot(stateDir, cwd) as { at: number; actionable: number; next: string; workPossible: boolean; reason: string; blockedUntil: null; inFlightUntil: null }
-    const decision = runDecide({ snapshot: { status: 'present', ...snap }, now: snap.at + 1000, staleAfterMs: 2 * 60 * 60 * 1000, consecutiveBlocks: 0, blockMax: 3 })
+    const decision = runDecide({ snapshot: { status: 'present', ...snap }, now: snap.at + 1000, staleAfterMs: 2 * 60 * 60 * 1000, mandateKind: 'live', consecutiveBlocks: 0, blockMax: 3 })
     expect(decision.block).toBe(true)
     expect(decision.reason).toBe('actionable-work-remains')
   })
@@ -717,7 +732,7 @@ describe('producer output is consumable by the real consumer decide()', () => {
     }
     expect(runProducerHook(payload, env).status).toBe(0)
     const snap = readSnapshot(stateDir, cwd) as { at: number; actionable: number; next: string; workPossible: boolean; reason: string; blockedUntil: null; inFlightUntil: null }
-    const decision = runDecide({ snapshot: { status: 'present', ...snap }, now: snap.at + 1000, staleAfterMs: 2 * 60 * 60 * 1000, consecutiveBlocks: 0, blockMax: 3 })
+    const decision = runDecide({ snapshot: { status: 'present', ...snap }, now: snap.at + 1000, staleAfterMs: 2 * 60 * 60 * 1000, mandateKind: 'live', consecutiveBlocks: 0, blockMax: 3 })
     expect(decision.block).toBe(false)
   })
 
