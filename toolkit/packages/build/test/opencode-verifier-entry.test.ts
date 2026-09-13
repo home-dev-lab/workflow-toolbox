@@ -33,7 +33,7 @@ describe('wt-opencode-verify', () => {
     writeFileSync(source, 'review this')
     try {
       mkdirSync(binDir)
-      writeFileSync(path.join(binDir, 'opencode'), `#!/usr/bin/env node\nconst fs=require('node:fs'); const args=process.argv.slice(2); if(args[0]==='--version') { console.log('fixture-1'); process.exit(0) }; if(args[0]==='--pure') { console.log('[]'); process.exit(0) }; if(args[0]==='providers') process.exit(0); fs.writeFileSync(process.env.CALLS, JSON.stringify(args)); fs.writeFileSync(process.env.FENCE, process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS); process.stdout.write('{"part":{"type":"text","text":"VERDICT"}}\\n')\n`)
+      writeFileSync(path.join(binDir, 'opencode'), `#!/usr/bin/env node\nconst fs=require('node:fs'); const args=process.argv.slice(2); if(args[0]==='--version') { console.log('fixture-1'); process.exit(0) }; if(args[0]==='--pure') { console.log('[{"name":"workflow-toolbox-allowed-sentinel"}]'); process.exit(0) }; if(args[0]==='providers') process.exit(0); fs.writeFileSync(process.env.CALLS, JSON.stringify(args)); fs.writeFileSync(process.env.FENCE, process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS); process.stdout.write('{"part":{"type":"text","text":"VERDICT"}}\\n')\n`)
       chmodSync(path.join(binDir, 'opencode'), 0o755)
       const result = spawnSync('node', [ENTRY, '--dir', dir, '--id', 'vote-123', '-m', 'openai/gpt-5.6-terra', '--fallback-model', 'openai/gpt-5.6-luna', '--variant', 'max', '--task-file', source], { encoding: 'utf8', env: { ...process.env, PATH: `${binDir}:${process.env.PATH}`, CALLS: calls, FENCE: path.join(dir, 'fence'), XDG_STATE_HOME: path.join(dir, 'state'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' } })
       expect(result.status).toBe(0)
@@ -54,7 +54,7 @@ describe('wt-opencode-verify', () => {
     writeFileSync(source, 'review this')
     try {
       mkdirSync(binDir)
-      writeFileSync(path.join(binDir, 'opencode'), `#!/usr/bin/env node\nconst args=process.argv.slice(2); if(args[0]==='--version') { console.log('fixture-1'); process.exit(0) }; if(args[0]==='--pure') { console.log('[]'); process.exit(0) }; if(args[0]==='providers') process.exit(0); process.stdout.write('ungrounded verdict'); process.stderr.write('permission.external_directory auto-rejecting');\n`)
+      writeFileSync(path.join(binDir, 'opencode'), `#!/usr/bin/env node\nconst args=process.argv.slice(2); if(args[0]==='--version') { console.log('fixture-1'); process.exit(0) }; if(args[0]==='--pure') { console.log('[{"name":"workflow-toolbox-allowed-sentinel"}]'); process.exit(0) }; if(args[0]==='providers') process.exit(0); process.stdout.write('ungrounded verdict'); process.stderr.write('permission.external_directory auto-rejecting');\n`)
       chmodSync(path.join(binDir, 'opencode'), 0o755)
       const result = spawnSync('node', [ENTRY, '--dir', dir, '--id', 'denied-read', '--task-file', source], { encoding: 'utf8', env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` } })
       expect(result.status).toBe(1)

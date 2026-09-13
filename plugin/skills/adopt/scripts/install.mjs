@@ -614,7 +614,7 @@ function itemContent(set, item, root) {
     }
     return body.replace(fragment, replacement)
   }
-  let adopted = replaceExactlyOnce(content, "import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'\nimport { opencodeChildEnv, opencodeSkillFenceRefusal, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'", `
+  let adopted = replaceExactlyOnce(content, "import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'\nimport { materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'\nimport { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'", `
 function pluginRoot(env = process.env) {
   for (const candidate of [env.CLAUDE_PLUGIN_ROOT, env.WT_PLUGIN_ROOT]) {
     if (typeof candidate === 'string' && candidate) return candidate
@@ -637,15 +637,16 @@ async function loadAdoptedConsentModules() {
   if (!root) throw new Error('could not locate workflow-toolbox plugin root via CLAUDE_PLUGIN_ROOT, WT_PLUGIN_ROOT, or plugins/installed_plugins.json')
   const resolver = path.join(root, 'bin', 'lib', 'lane-consent-check-core.mjs')
   const gate = path.join(root, 'bin', 'lib', 'lane-consent-gate-core.mjs')
-  const fence = path.join(root, 'bin', 'lib', 'opencode-skill-fence.mjs')
+    const fence = path.join(root, 'bin', 'lib', 'opencode-skill-fence.mjs')
+    const allowlist = path.join(root, 'bin', 'lib', 'lane-skill-allowlist.mjs')
   try {
-    const [{ resolveConsent }, { evaluateConsentGate }, fenceModule] = await Promise.all([import(pathToFileURL(resolver).href), import(pathToFileURL(gate).href), import(pathToFileURL(fence).href)])
-    return { resolveConsent, evaluateConsentGate, opencodeChildEnv: fenceModule.opencodeChildEnv, opencodeSkillFenceRefusal: fenceModule.opencodeSkillFenceRefusal, verifyOpencodeSkillFence: fenceModule.verifyOpencodeSkillFence }
+    const [{ resolveConsent }, { evaluateConsentGate }, fenceModule, allowlistModule] = await Promise.all([import(pathToFileURL(resolver).href), import(pathToFileURL(gate).href), import(pathToFileURL(fence).href), import(pathToFileURL(allowlist).href)])
+    return { resolveConsent, evaluateConsentGate, materialiseAllowedSkills: fenceModule.materialiseAllowedSkills, opencodeChildEnv: fenceModule.opencodeChildEnv, opencodeSkillFenceRefusal: fenceModule.opencodeSkillFenceRefusal, verifyOpencodeSkillFence: fenceModule.verifyOpencodeSkillFence, resolveLaneSkillAllowlist: allowlistModule.resolveLaneSkillAllowlist }
   } catch {
-    throw new Error(\`could not load workflow-toolbox consent resolver and OpenCode skill fence from \${resolver}, \${gate}, and \${fence}\`)
+    throw new Error(\`could not load workflow-toolbox consent resolver and OpenCode skill fence from \${resolver}, \${gate}, \${fence}, and \${allowlist}\`)
   }
 }`)
-  adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate, opencodeChildEnv, opencodeSkillFenceRefusal, verifyOpencodeSkillFence }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
+  adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyOpencodeSkillFence, resolveLaneSkillAllowlist }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
   adopted = replaceExactlyOnce(adopted, "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, writeFileSync, readFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
   const relativeRuntimeImport = adopted.match(/import .* from '\.\/lib\/(?:lane-consent-|opencode-skill-fence)[^']*'/)?.[0]
   if (relativeRuntimeImport) {

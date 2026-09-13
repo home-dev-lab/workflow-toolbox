@@ -6,6 +6,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- External OpenCode lanes can declare a comma- or whitespace-separated `WT_LANE_SKILLS` allow-list.
+  Approved Claude skills are copied into lane-local OpenCode configuration while the Claude-skill fence
+  remains forced; `save-memory`, `planka-tracking`, and `what-next` remain unconditionally refused as
+  single-writer memory/board skills. The isolated probe reports fence and allow-list halves separately:
+  skill-free launches require only the existing fence result, while requested skills also require the measured
+  `OPENCODE_CONFIG` `skills.paths` mechanism to expose the materialised skill.
 - Added a default-on, dependency-free artifact server with per-user port discovery, bind-race
   single-instance startup, owner-only filesystem session registration and automatic last-session shutdown,
   identity-checked status/stop/restart controls, multi-root project-local defaults, URL helpers,

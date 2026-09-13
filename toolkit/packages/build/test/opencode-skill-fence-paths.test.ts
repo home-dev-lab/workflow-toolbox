@@ -18,7 +18,7 @@ function fixture() {
   mkdirSync(binDir)
   writeFileSync(bin, `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
-if [ "$1" = "--pure" ]; then printf '[]\n'; exit 0; fi
+if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; exit 0; fi
 if [ "$1" = "providers" ]; then exit 0; fi
 printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" >> "$RECORD"
 printf '%s\n' '{"type":"text","part":{"text":"{\\"status\\":\\"clean\\"}"}}'

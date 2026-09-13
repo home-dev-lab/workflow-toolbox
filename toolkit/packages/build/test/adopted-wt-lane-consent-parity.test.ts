@@ -29,7 +29,7 @@ function fixture(transformSource?: (source: string) => string, install = true) {
   mkdirSync(join(pluginRoot, 'skills', 'adopt', 'scripts'), { recursive: true })
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
-  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'plugin-data-dir.mjs']) {
+  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'plugin-data-dir.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   }
   const launcher = readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')
@@ -140,7 +140,7 @@ describe('adopted wt-lane consent resolver', () => {
     mkdirSync(bin)
     writeFileSync(join(bin, 'opencode'), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
-if [ "$1" = "--pure" ]; then printf '[]\n'; exit 0; fi
+if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; exit 0; fi
 printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
 `)
     spawnSync('chmod', ['+x', join(bin, 'opencode')])
