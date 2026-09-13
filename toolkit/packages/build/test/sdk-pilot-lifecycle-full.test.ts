@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { MAX_CRITIC_ROUNDS } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
 
 const plan = readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.meta.url), 'utf8')
 const roots: string[] = []
@@ -164,16 +166,17 @@ describe('real SDK lifecycle server FULL sequence', () => {
 
   it('H14-1 lock: completes the exact fourth-critic sequence as a partial committed and archived run', async () => {
     const lifecycle = fullLifecycle()
-    const reason = 'plan not approved after 3 critic rounds'
+    const criticRounds = MAX_CRITIC_ROUNDS
+    const reason = `plan not approved after ${criticRounds} critic rounds`
     edgeConfig({ critic: { verdict: 'changes-requested', findings: ['tighten the proof'] } })
     expect(await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })).toBe('accepted phase=plan')
-    for (let round = 1; round <= 4; round += 1) {
+    for (let round = 1; round <= criticRounds; round += 1) {
       expect(await lifecycle.artifact({ kind: 'plan', content: plan })).toBe('wrote plan')
       expect(await lifecycle.transition({ phase: 'plan', tool_use_id: `plan-${round}` })).toBe('accepted phase=critic')
       expect(await lifecycle.artifact({ kind: 'critic-brief', content: `critic ${round}` })).toBe('wrote critic-brief')
       expect(await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })).toBe('lane critic EXIT=0')
       const result = await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: `critic-${round}` })
-      expect(result).toBe(round < 4
+      expect(result).toBe(round < criticRounds
         ? 'accepted phase=plan'
         : `accepted phase=report (round bound reached: partial run, ${reason})`)
     }
@@ -222,7 +225,7 @@ describe('real SDK lifecycle server FULL sequence', () => {
     ['report edge with a gate digest changed after verify is refused', async () => reportEdge(true, true), /gate digest changed/],
     ['report edge with a stale pilot-report never registered this run is refused (Sol round 14)', async () => reportEdge(false, false, 'stale'), /pilot report registered this run/],
     ['report edge with a pilot-report modified after write_artifact is refused (Sol round 14)', async () => reportEdge(true, false, 'modified'), /pilot report unchanged since write_artifact/],
-    ['spent planRound bound', criticBound, /^accepted phase=report \(round bound reached: partial run, plan not approved after 3 critic rounds\)$/],
+    ['spent planRound bound', criticBound, new RegExp(`^accepted phase=report \\(round bound reached: partial run, plan not approved after ${MAX_CRITIC_ROUNDS} critic rounds\\)$`)],
     ['spent reviewRound bound', reviewBound, /^accepted phase=report \(round bound reached: partial run, review still requests changes after 3 harden rounds\)$/],
     ['verdict and outcome mismatch', async () => reviewEdge('clear', 0, 'changes-requested'), /outcome does not match the lane report/],
     ['findings mismatch', async () => reviewEdge('changes-requested', 0, 'changes-requested', ['wrong finding']), /findings do not match the lane report/],
@@ -308,11 +311,11 @@ async function reviewEdge(verdict: string, exit: number, outcome: string, findin
 }
 async function criticBound() {
   const lifecycle = fullLifecycle(); edgeConfig({ critic: { verdict: 'changes-requested', findings: ['tighten the proof'] } })
-  for (let round = 1; round <= 4; round += 1) {
+  for (let round = 1; round <= MAX_CRITIC_ROUNDS; round += 1) {
     await lifecycle.transition({ phase: round === 1 ? 'discovery' : 'plan', tool_use_id: `start-${round}` })
     await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: `plan-${round}` }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
     const result = await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: `critic-${round}` })
-    if (round === 4) return result
+    if (round === MAX_CRITIC_ROUNDS) return result
   }
   throw new Error('unreachable')
 }

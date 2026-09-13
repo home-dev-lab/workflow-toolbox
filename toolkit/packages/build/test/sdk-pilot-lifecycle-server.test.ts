@@ -59,6 +59,25 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(deriveRoute(`${clear}Definition of done: x`)).toMatchObject({ route: 'LITE' })
   })
 
+  it('recognises populated DoD headings in the forensic card shape and rejects empty headings', () => {
+    const forensic = readFileSync(new URL('./fixtures/runner-routing-card.md', import.meta.url), 'utf8')
+    expect(deriveRoute(forensic)).toMatchObject({ route: 'LITE', reasons: ['all LITE signals clear'] })
+    expect(deriveRoute('## DoD\n\n- ship it\n')).toMatchObject({ route: 'LITE' })
+    expect(deriveRoute('## Definition of done\n\n## Notes\n- not a DoD\n')).toMatchObject({ route: 'FULL', reasons: expect.arrayContaining(['no DoD']) })
+    expect(deriveRoute('## DoD\n\n')).toMatchObject({ route: 'FULL', reasons: expect.arrayContaining(['no DoD']) })
+  })
+
+  it.each([
+    ['A-3 fenced fake DoD', '```md\n## DoD\n- example only\n```\n', 'FULL'],
+    ['A-3 fenced empty DoD', '~~~\n## DoD\n~~~\n', 'FULL'],
+    ['A-4 child-heading DoD', '## DoD\n\n### Acceptance\n- ship it\n', 'LITE'],
+  ])('%s', (_id, dod, route) => {
+    const result = deriveRoute(`Type: chore\nEffort: S\nFiles: a.mjs\n${dod}`)
+    expect(result.route).toBe(route)
+    if (route === 'FULL') expect(result.reasons).toContain('no DoD')
+    else expect(result.reasons).toEqual(['all LITE signals clear'])
+  })
+
   it('routes the two archived real cards from their copied fixtures', () => {
     expect(deriveRoute(readFileSync(new URL('./fixtures/typescript-lsp-card.md', import.meta.url), 'utf8')).route).toBe('LITE')
     expect(deriveRoute(readFileSync(new URL('./fixtures/intake-triage-card.md', import.meta.url), 'utf8')).route).toBe('FULL')
@@ -393,6 +412,121 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(brief).toContain('.lane/plan.md')
   })
 
+  it('omits prior rounds in critic round 1 and carries attested findings verbatim into round 2', async () => {
+    const worker = launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log,'done\\nEXIT=0\\n'); writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- preserve exact wording\\n- keep the release gate\\n')")
+    const lifecycle = testLifecycle('FULL', [], worker, 100)
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: plan })
+    await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-1' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'round one context\n' })
+    expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')).not.toContain('## Prior rounds')
+    await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', findings: ['preserve exact wording', 'keep the release gate'], tool_use_id: 'critic-1' }))).toBe('accepted phase=plan')
+    await lifecycle.artifact({ kind: 'plan', content: plan })
+    await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-2' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'round two context\n' })
+    const roundTwo = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
+    expect(roundTwo).toContain('## Prior rounds (runner-owned, trusted)')
+    expect(roundTwo).toContain('### Round 1\n- preserve exact wording\n- keep the release gate')
+    expect(roundTwo).toContain('may not reopen a point a prior round demanded, or reverse a prior round\'s accepted position, unless you cite new evidence')
+  })
+
+  it('A-1 requires defined blocking and non-blocking severity policy in the critic report contract', async () => {
+    const lifecycle = testLifecycle('FULL')
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n' })
+    await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'review\n' })
+    expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8'))
+      .toContain('- [blocking|non-blocking] <one finding per line when changes-requested>')
+    const brief = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
+    expect(brief).toContain('correctness defect')
+    expect(brief).toContain('unmet DoD item')
+    expect(brief).toContain('security or data-loss risk')
+    expect(brief).toContain('gate or test gap')
+    expect(brief).toContain('change what gets built')
+    expect(brief).toContain('optional wording, style, or polish')
+    expect(brief).toContain('Blocking example:')
+    expect(brief).toContain('Non-blocking example:')
+  })
+
+  it.each([
+    ['all non-blocking advances and carries findings', ['[non-blocking] polish the wording'], 'tdd'],
+    ['any blocking consumes a round', ['[non-blocking] polish the wording', '[blocking] missing proof'], 'plan'],
+    ['untagged fails closed and consumes a round', ['legacy finding without a tag'], 'plan'],
+  ])('%s', async (_name, findings, expectedPhase) => {
+    const lifecycle = testLifecycle('FULL', [], criticFindingsLauncher(findings), 100)
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: plan })
+    await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'review\n' })
+    await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings, tool_use_id: 'critic' }))).toBe(`accepted phase=${expectedPhase}`)
+    if (expectedPhase === 'tdd') {
+      expect(readFileSync(join(lifecycle.root, '.lane', 'plan-non-blocking-findings.md'), 'utf8')).toContain('- [non-blocking] polish the wording')
+      await lifecycle.artifact({ kind: 'brief', content: plan })
+      expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')).toContain('## Non-blocking critic findings (runner-owned, trusted)\n- [non-blocking] polish the wording')
+    }
+  })
+
+  it('R1 refuses all-non-blocking advancement when the critic receipt failed', async () => {
+    const lifecycle = await lifecycleAtCritic(criticFindingsLauncher(['[non-blocking] polish wording'], 1))
+    await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['[non-blocking] polish wording'], tool_use_id: 'critic' })))
+      .toMatch(/lane receipt EXIT=1/)
+    expect(lifecycle.state().phase).toBe('critic')
+  })
+
+  it.each([
+    ['A-2/R2 tag-only', ['- [non-blocking]'], ['[non-blocking]']],
+    ['A-2/R2 duplicate tags', ['- [non-blocking] [non-blocking] polish'], ['[non-blocking] [non-blocking] polish']],
+    ['A-2/R2 contradictory tags', ['- [non-blocking] [blocking] missing proof'], ['[non-blocking] [blocking] missing proof']],
+    ['A-2/R2 star bullet after hyphen', ['- [non-blocking] polish', '* [blocking] missing proof'], ['[non-blocking] polish', '[blocking] missing proof']],
+    ['A-2/R2 untagged line', ['+ missing severity'], ['missing severity']],
+  ])('%s fails closed as blocking', async (_id, lines, findings) => {
+    const lifecycle = await lifecycleAtCritic(criticReportLauncher(lines))
+    await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings, tool_use_id: 'critic' })))
+      .toBe('accepted phase=plan')
+  })
+
+  it('R3 carries mixed-round non-blocking findings and deduplicates exact text', async () => {
+    const first = ['- [non-blocking] polish wording', '- [non-blocking] polish wording', '- [blocking] add proof']
+    const second = ['- [non-blocking] optional rename']
+    const lifecycle = await lifecycleAtCritic(criticSequenceLauncher([first, second]))
+    await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: first.map((line) => line.slice(2)), tool_use_id: 'critic-1' }))).toBe('accepted phase=plan')
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.artifact({ kind: 'plan', content: plan })
+    await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-2' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'round two\n' })
+    await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: second.map((line) => line.slice(2)), tool_use_id: 'critic-2' }))).toBe('accepted phase=tdd')
+    const carried = readFileSync(join(lifecycle.root, '.lane', 'plan-non-blocking-findings.md'), 'utf8')
+    expect(carried.match(/polish wording/g)).toHaveLength(1)
+    expect(carried).toContain('- [non-blocking] optional rename')
+    await lifecycle.artifact({ kind: 'brief', content: plan })
+    expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')).toContain(carried.trim())
+  })
+
+  it('E-1 refuses a lane report over 256 KiB before publishing it', async () => {
+    const lifecycle = await lifecycleAtCritic(criticOversizeLauncher())
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 }))).toMatch(/lane report exceeds 262144-byte limit/)
+    expect(lifecycle.state().phase).toBe('critic')
+  })
+
+  it.each([
+    ['E-1 more than 50 findings', Array.from({ length: 51 }, (_, index) => `- [non-blocking] finding ${index}`), /finding count exceeds 50/],
+    ['E-1 finding over 2000 characters', [`- [non-blocking] ${'x'.repeat(2001)}`], /finding exceeds 2000-character limit/],
+  ])('%s is refused fail-closed', async (_id, lines, reason) => {
+    const lifecycle = await lifecycleAtCritic(criticReportLauncher(lines))
+    await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', tool_use_id: 'critic' }))).toMatch(reason)
+    expect(lifecycle.state().phase).toBe('critic')
+  })
+
   it('publishes and attests the nonce report rather than stale shared reports', async () => {
     const worker = launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const brief=args[args.indexOf('--brief')+1]; const log=args[args.indexOf('--log')+1]; const root=args[args.indexOf('--dir')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(join(root,'.lane/critic-report.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(join(root,'.lane/critic-report.other.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- genuine\\n'); appendFileSync(log,'done\\nEXIT=0\\n')")
     const lifecycle = testLifecycle('FULL', [], worker, 100)
@@ -709,6 +843,29 @@ function emptyLauncher() { return launcher('process.exit(0)') }
 function logOnlyLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(report, '')") }
 function successLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(report, 'report\\n')") }
 function verdictLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(report, 'VERDICT: changes-requested\\nFINDINGS:\\n- blocker\\n')") }
+function criticFindingsLauncher(findings: string[], exit = 0) {
+  const report = `VERDICT: changes-requested\nFINDINGS:\n${findings.map((finding) => `- ${finding}`).join('\n')}\n`
+  return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=readFileSync(process.argv[process.argv.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; appendFileSync(log,'done\\nEXIT=${exit}\\n'); writeFileSync(report,${JSON.stringify(report)}+'plan sha256: '+digest+'\\n')`)
+}
+function criticReportLauncher(lines: string[]) {
+  const report = `VERDICT: changes-requested\nFINDINGS:\n${lines.join('\n')}\n`
+  return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=readFileSync(process.argv[process.argv.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; appendFileSync(log,'done\\nEXIT=0\\n'); writeFileSync(report,${JSON.stringify(report)}+'plan sha256: '+digest+'\\n')`)
+}
+function criticSequenceLauncher(rounds: string[][]) {
+  return launcher(`import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const root=args[args.indexOf('--dir')+1]; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const countFile=join(root,'.lane','critic-sequence-count'); const count=existsSync(countFile)?Number(readFileSync(countFile,'utf8')):0; const rounds=${JSON.stringify(rounds)}; writeFileSync(countFile,String(count+1)); appendFileSync(log,'done\\nEXIT=0\\n'); writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n'+rounds[count].join('\\n')+'\\nplan sha256: '+digest+'\\n')`)
+}
+function criticOversizeLauncher() {
+  return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=readFileSync(process.argv[process.argv.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; appendFileSync(log,'done\\nEXIT=0\\n'); writeFileSync(report,'x'.repeat(262145))")
+}
+async function lifecycleAtCritic(worker: string) {
+  const lifecycle = testLifecycle('FULL', [], worker, 100)
+  const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+  await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+  await lifecycle.artifact({ kind: 'plan', content: plan })
+  await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
+  await lifecycle.artifact({ kind: 'critic-brief', content: 'review\n' })
+  return lifecycle
+}
 function foreignThenGenuineLauncher() { return launcher("import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; const nonce = readFileSync(log, 'utf8'); rmSync(log); writeFileSync(log, 'foreign\\nEXIT=0\\n'); setTimeout(() => { writeFileSync(log, nonce); appendFileSync(log, 'genuine\\nEXIT=0\\n'); writeFileSync(report, 'report\\n') }, 40)") }
 async function lifecycleAtVerify() {
   const lifecycle = testLifecycle('LITE', [], successLauncher(), 100)

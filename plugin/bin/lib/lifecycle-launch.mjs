@@ -9,6 +9,7 @@ import { treeSignature } from './gate-evidence.mjs'
 import { launchProcess, launchProcessWithOutput, terminateProcessGroup, waitForLaneReceipt } from './lifecycle-receipts.mjs'
 
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex')
+export const MAX_LANE_REPORT_BYTES = 256 * 1024
 
 function terminalExit(content) {
   return /(?:^|\n)EXIT=([^\s\n]+)\s*$/.exec(content)?.[1] ?? null
@@ -217,7 +218,11 @@ export function createLifecycleLaunch({
           readRegularFile,
         })
         group = await terminateProcessGroup(workerPid)
-        if (!logEntry || !regularFile(log) || !regularFile(report)) return `lane ${phase} EXIT=missing`
+        const reportStat = regularFile(report)
+        if (!logEntry || !regularFile(log) || !reportStat) return `lane ${phase} EXIT=missing`
+        if (reportStat.size > MAX_LANE_REPORT_BYTES) {
+          return refusal(`${phase}->next`, `lane report exceeds ${MAX_LANE_REPORT_BYTES}-byte limit`, report)
+        }
         assertLaneDir()
         if (fs.existsSync(canonicalLog) && !regularFile(canonicalLog)) {
           return refusal(`${state.phase}->next`, 'regular lane receipt', canonicalLog)
