@@ -6,7 +6,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
-<<<<<<< HEAD
 - Added the Kotlin JVM language pack with Kotlin/Gradle/Maven triggers, JUnit 5 and `kotlin.test`
   rules, SDK-only review agents, probe fixtures, and a documented fallback from the expired
   JetBrains Kotlin LSP release to `fwcd/kotlin-language-server`.
@@ -15,12 +14,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added the Groovy language pack with sole `.groovy`/`.gradle`, Gradle, and Spock trigger ownership,
   focused rules, SDK-only review agents, and archived headless probe fixtures. The attempted
   GroovyLanguageServer build did not start in the harness, so no Groovy LSP declaration ships.
-=======
 - Added the Vue language pack with `.vue`, Vite, Vitest, and Vue TypeScript triggers, local family
   guidance, SDK-only agents, and archived Volar diagnostics/navigation fixtures. Volar 3.3.11 is
   installed under `~/.local`, but its available-binary headless probe initialized without delivering
   the planted diagnostic, so the pack intentionally ships without an `.lsp.json` declaration.
->>>>>>> card/1862703962-pack-vue
 - The observer-pairing guard now archives checker-reported conflicting `meta.json` pairs under the state directory by default, with `WT_OBSERVER_PAIRING_CAPTURE_DIR` available to redirect evidence.
 - SDK pilot runner summaries now record the requested model and resolver provenance alongside the
   model reported by the SDK initialization receipt and first assistant turn, explicitly flagging
@@ -28,17 +25,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - `wt:card-cost -- --hops` now reports transcript-derived delegation depth, fan-out width, envelope estimates, async notification/read-back delivery, and message re-ingestion cost.
 - Language-pack probes now measure archived native-LSP navigation capabilities through an explicit `--capability` axis and render a cross-language parity table.
 - The PR review workflow now adds a `lock-enumeration` lens for changed test files, identifying assertions that enumerate open shared families instead of stating invariants.
-
 - `wt-observe launch` now resolves locally available `definitionFile` observer requirements through the capability registry, while preserving server-side pass-through for unavailable files and refusing root-escaping paths.
 - Pipeline nesting limits now use a per-branch remaining-depth budget, so a nested spec can start a fresh downward-only budget with its own `maxPipelineDepth` override without loosening an exhausted ancestor.
 - Split the SDK pilot lifecycle server into focused state-machine/tool, launch/attestation, report-edge, and brief-composition modules without changing its MCP export surface or behavior.
-
 - `wt-arc-watch` now surfaces qualified named-teammate idle records from the session spawn registry once, while suppressing records already closed by a later stop.
-
 - Rule-edit horizon notices now cover shipped agent templates, explaining their bare-name adoption and re-adoption horizon.
-
 - Language packs: `plugin/.lsp.json` is now GENERATED from `plugin/packs/*/.lsp.json` by `pnpm packs:lsp` (TypeScript first, then packs alphabetically; duplicate keys and incomplete declarations refused) and locked by a byte-identity test; two new packs, Python (`pyright-langserver`) and Java (Eclipse JDT LS, `jdtls`, JDK 21+ required; Groovy is guidance only, no declaration); one archived two-arm headless diagnostics probe per pack (`node toolkit/scripts/lsp-pack-probe.mjs <pack>`, verdict read from Claude Code's own debug log); the add-a-language recipe `docs/public/language-packs.md` and the pack README template `plugin/packs/README-TEMPLATE.md` with a sections gate.
-
 - Measured wildcard-first Glob and Grep matches through in-worktree symlinks as confined to the worktree by the real SDK.
 - Added the headless SDK orchestrator runner: deterministic multi-card pilot waves are judged by one
   read-only, wave-confined SDK session, while code owns receipts, reports, board comments, and all
@@ -46,7 +38,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   merge ref updates are fenced inside wave worktrees, symlinks prevent judge launch, MCP initialization
   completes its notification handshake, partial board mutations are reconciled in fatal reports, and
   receipts are copied beside the report.
-
 ### Fixed
 - Signature CI now loads its signer policy and checker from the protected PR base ref while checking the PR checkout's commits.
 - `wt-lane.mjs` now refuses a `--dir` outside a Git work tree before the consent gate, with an absolute `git worktree add` remedy; `--allow-no-git` remains available for deliberate non-repository lanes.
@@ -61,18 +52,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Lane launches now consume read-only runner-owned snapshots outside the worktree and keep the launcher
   worker, `opencode`, and ordinary descendants in the reported process group terminated after receipt or
   timeout; processes that create their own session remain outside this guarantee.
-
-
 ### Fixed
 - Lane briefs now require phase-bound `write_artifact` provenance and are recreated exclusively from
   server-held pilot context immediately before launch, with independent patch inputs re-derived then.
-
-
 ### Fixed
 - Prospective review and refutation patches now enforce their output limit across the combined
   header, tracked diff, and every untracked-file diff, refusing as soon as the total exceeds it.
-
-
 ### Fixed
 - Independent review and refutation now fail closed when their prospective patch cannot be built,
   exceeds the output limit, or has no substantive hunk despite a dirty tree; no brief is left
@@ -80,8 +65,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Fidelity bundles apply lifecycle-name classification before handling symlinks. Unmatched symlink
   names now require `--other-file` at freeze, and manifests preserve that classification so verify
   cannot reinterpret an unknown-name symlink as recognized evidence.
-
-
 ### Changed
 - Ground-truth verification guidance now treats readings taken in one shared measurement window as
   one reading and requires witness lines selected against the suspected failure mode.
@@ -103,7 +86,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   awaiting-fidelity, failing after three consecutive end turns without successful lifecycle progress.
 - SDK pilot `critic-brief` artifacts are bound to the critic phase, matching every other lane brief's
   write-brief, run-lane, transition order while retaining the plan digest requirement.
-
 ### Fixed
 - `wt-run-gate` signatures now invalidate records for content, deletion, mode, type, and symlink-target
   changes; the SDK pilot can write only its lifecycle-gated lane brief and report artifacts.
@@ -126,7 +108,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   source) and, on the proxy route, after it too ("reset likely but unverified … probe before
   relying on the capacity") — the event type never exceeds the evidence, because a consumer acts
   on the type without reading the caveat. Classifier in `lib/quota-drop.mjs`.
-
 ### Added
 - Add deterministic pilot-orchestrator intake triage and `wt-intake-triage` CLI: forced route handling,
   one batched strong-model classification, route-up-on-doubt, and an executable fixture lock for inline,
@@ -146,15 +127,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Warn before an autonomy mandate freshness window expires so sessions can re-arm in time.
 - Add `wt-lane-wait.mjs`, an allow-rule-covered Monitor command that waits for a lane worker and its terminal exit marker without printing the lane log.
 - Record a redacted environment snapshot in `.lane/env.log` when a lane worker starts.
-
 ### Changed
 - Run each release-only plugin eval case three times and decide it by a strict majority, reporting
   each case's pass count so transient model outcomes do not decide a release rerun.
-- Let the plugin eval gate track declared expected failures and reject malformed or expired expiry dates
-- Document `<project root>/.claude/worktrees/<name>` as the gitignored convention for new concurrent worktrees.
-- Require hand-written executor-lane briefs to request report lessons and harvest each report at its lane integration.
-- Require a seam review and merged-tree gates when integrating parallel branches.
-
 ### Fixed
 - Pass the explicit repository root to bridge-routed `pr-review` reviewers and refuse launches that omit it.
 - Replace 105 synchronous hook spawns inside a fixed test timeout with an in-process `writeJournalEntry` journal seam.
@@ -164,6 +139,24 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Refuse adopted launcher generation when its consent transformation fragments are missing, duplicated, or leave relative imports behind.
 - `wt-actionable-gate-hook` now falls back to transcript and declared-bound evidence when Linux lane detection errors, and names the detection failure in its block.
 - Make the actionability-gate hook tests independent of ambient Linux lane detection; test-only.
+
+## [0.173.0] - 2026-09-09
+
+### Release notes
+- Docs audit and coverage audit NOT run for this release (rituals suspended by the owner on 2026-09-03 until the thin-envelope campaign completes).
+- Cross-family review of the whole range (GPT lane, five lenses + refutation): the five HIGH and two MEDIUM findings are fixed in this release, each with a lock proven red first; six lower findings are deferred and listed on the release card.
+- Cross-platform verdicts for the two new plugin binaries: `wt-piped-gate-exit-code-guard-hook.mjs` parses the command text only (one `readFileSync`, no platform call) and behaves the same on Linux, macOS and Windows; `wt-opencode-verify.mjs` resolves the CLI with a POSIX `command -v` and a list of POSIX install paths, so on Windows it refuses with the legible `OPENCODE_UNAVAILABLE` marker unless `opencode` is reachable through those paths — it never returns a plausible verdict where it cannot run. Both read from source; Linux exercised, macOS and Windows not run.
+- The TypeScript pack's SDK runner is now a toolkit development utility, not a shipped file (see `docs/public/known-issues.md`); the pack stays experimental.
+- Plugin eval gate (`wt-plugin-eval-gate.mjs`, early-access flag on): 4/4 on the final run. Three runs on the same content: run 1 failed on a grader that could not match a line-wrapped command (fixed in this release), run 2 failed once on `opencode-verifier-unavailable` with a single haiku run that narrated instead of calling; the gate's single-run verdict is tracked as unstable (release card).
+- npm packages are NOT published by this release; pending changesets are released separately.
+
+### Changed
+- Let the plugin eval gate track declared expected failures and reject malformed or expired expiry dates
+- Document `<project root>/.claude/worktrees/<name>` as the gitignored convention for new concurrent worktrees.
+- Require hand-written executor-lane briefs to request report lessons and harvest each report at its lane integration.
+- Require a seam review and merged-tree gates when integrating parallel branches.
+
+### Fixed
 - The plugin eval grader for the changelog skill now accepts a command wrapped over several lines;
   `.*` never crossed a newline, so a correct multi-line answer graded as "pattern not found".
 - `wt-actionable-gate-hook` now names whether a missing measurement needs its producer wired, is a
@@ -2029,43 +2022,6 @@ assumed.
   date". A symlinked entry is never compared for staleness and a later `--install` there
   silently refreshes nothing. The advisory now names where the managed copies actually live
   and how to refresh them.
-
-## [0.45.0] - 2026-07-26
-
-### Added
-
-- `wt-answer-first-reporting`: a shipped rule for human-facing replies and status reports. It
-  requires the answer first, progressive disclosure in plain language, explicit status on
-  deliverables, milestone-based reporting, and completed work alongside any pending list.
-- SessionStart now reports when the plugin's bundled rules are absent, behind, or locally edited,
-  reusing the adopt check and staying silent when a current copy is already in force. It is
-  read-only and never installs rules without consent.
-- The spawn registry now accepts `--ack <name> [--reason]` as an append-only human acknowledgement
-  for an open entry. Acknowledgements are scoped to that spawn, so a later relaunch with the same
-  name is reported again; near-simultaneous duplicate spawn records remain collapsed.
-
-### Changed
-
-- The shipped delegation and task-tracking rules now cover the complete lifecycle contract:
-  fixed lifecycle lists, required priority/type/effort axes, dependency conventions and gates,
-  explicit category sequencing with deadline overrides, archiving completed cards, silence-versus-
-  death check-ins, real completion signals instead of display-name polling, and re-issued versus
-  open mandates. They also state that the arbiter's own turns are a spend, that effort is pinned
-  per agent type rather than inherited as a blanket default, and that evidence must outlive the
-  process that produced it, including the mechanism-inversion failure mode.
-- Pilot intake now treats a project with no task tracker as supported: it works from the prompt,
-  does not create tracking infrastructure, and reports which tracker sources were checked.
-- Unnamed spawns are retained in the registry as explicitly untrackable, with the response shape
-  recorded and the scan stating that these entries are outside its individual ending/open counts.
-
-### Fixed
-
-- The outbound guard no longer treats writing a file as delivery. Only a sent message closes the
-  reporting loop; an agent that writes a report file must also send the line that tells its caller
-  where it is.
-- Adopt now states that bundled rules are inert until explicitly adopted, and its symlink warning
-  explains that the managed target directory is where `--check` and `--install` must be run to
-  refresh shared copies.
 
 ## [0.44.2] - 2026-07-26
 
