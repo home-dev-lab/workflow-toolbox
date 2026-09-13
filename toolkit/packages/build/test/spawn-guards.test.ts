@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,6 +11,7 @@ const roots: string[] = []
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  vi.restoreAllMocks()
 })
 
 function fixture(name: string, tools?: string) {
@@ -42,6 +43,32 @@ function warns(result: { stdout: string | Buffer | undefined; journal: string },
   expect(String(result.stdout)).toContain('additionalContext')
   expect(String(result.stdout)).not.toContain('"deny"')
   expect(String(result.journal)).toContain(`"class":"${cls}"`)
+}
+
+function denies(result: { stdout: string | Buffer | undefined; journal: string }, cls: string) {
+  expect(String(result.stdout)).toContain('"permissionDecision":"deny"')
+  expect(String(result.stdout)).toContain('args.perAgent.model')
+  expect(String(result.journal)).toContain(`"class":"${cls}"`)
+}
+
+async function runObserveLaunch(args: unknown): Promise<{ stderr: string; fetchCalls: number }> {
+  const { main } = await import('../../debugger/src/observe-cli.js')
+  let stderr = ''
+  const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+    stderr += String(chunk)
+    return true
+  })
+  const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+  const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network blocked in test'))
+  try {
+    const argv = ['launch', 'example.js', ...(args === undefined ? [] : ['--args', JSON.stringify(args)])]
+    await main(argv)
+    return { stderr, fetchCalls: fetchSpy.mock.calls.length }
+  } finally {
+    stderrSpy.mockRestore()
+    stdoutSpy.mockRestore()
+    fetchSpy.mockRestore()
+  }
 }
 
 describe('spawn surface warn-only guards', () => {
@@ -85,18 +112,58 @@ describe('spawn surface warn-only guards', () => {
     expect(result.journal).toContain('"class":"type-unresolved"')
   })
 
-  it('workflow model: warns when neither args nor script declares model routing', () => {
+  it('workflow model: denies when args do not declare perAgent.model', () => {
     const cwd = fixture('reader', 'Read')
     const result = run('wt-workflow-model-guard-hook.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Workflow', session_id: 's-1', tool_input: { args: { topic: 'x' } } }, cwd)
-    warns(result, 'workflow-model-inherited')
+    denies(result, 'workflow-model-inherited')
   })
 
-  it('workflow model: stays silent for explicit routing and quoted model text', () => {
+  it('workflow model: models and effort alone do not satisfy the perAgent.model floor', () => {
+    const cwd = fixture('reader', 'Read')
+    denies(run('wt-workflow-model-guard-hook.mjs', { tool_name: 'Workflow', tool_input: { args: { models: { review: 'sonnet' }, effort: { review: 'high' } } } }, cwd), 'workflow-model-inherited')
+  })
+
+  it('workflow model: stays silent for args.perAgent.model', () => {
     const cwd = fixture('reader', 'Read')
     const explicit = run('wt-workflow-model-guard-hook.mjs', { tool_name: 'Workflow', tool_input: { args: { perAgent: { model: 'sonnet' } } } }, cwd)
     expect(String(explicit.stdout)).toBe('')
-    const quoted = run('wt-workflow-model-guard-hook.mjs', { tool_name: 'Workflow', tool_input: { args: { models: {} }, script: 'const example = "models"' } }, cwd)
-    expect(String(quoted.stdout)).toBe('')
+  })
+
+  it('workflow model: hook and CLI apply the same object-only model policy and refusal text', async () => {
+    const cwd = fixture('reader', 'Read')
+    const cases: Array<{ name: string; args: unknown; accepted: boolean }> = [
+      { name: 'non-empty model', args: { perAgent: { model: 'sonnet' } }, accepted: true },
+      { name: 'trimmed non-empty model', args: { perAgent: { model: '  sonnet  ' } }, accepted: true },
+      { name: 'missing args', args: undefined, accepted: false },
+      { name: 'models and effort only', args: { models: { review: 'sonnet' }, effort: { review: 'high' } }, accepted: false },
+      { name: 'nested-only model', args: { stage: { perAgent: { model: 'sonnet' } } }, accepted: false },
+      { name: 'null model', args: { perAgent: { model: null } }, accepted: false },
+      { name: 'empty model', args: { perAgent: { model: '' } }, accepted: false },
+      { name: 'whitespace-only model', args: { perAgent: { model: '   ' } }, accepted: false },
+      { name: 'numeric model', args: { perAgent: { model: 0 } }, accepted: false },
+      { name: 'boolean model', args: { perAgent: { model: false } }, accepted: false },
+      { name: 'object model', args: { perAgent: { model: {} } }, accepted: false },
+      // Workflow args is a JSON value. A string containing JSON text is still a string,
+      // not the object envelope this guard requires.
+      { name: 'JSON-encoded object string', args: '{"perAgent":{"model":"sonnet"}}', accepted: false },
+    ]
+
+    for (const testCase of cases) {
+      const hook = run('wt-workflow-model-guard-hook.mjs', { tool_name: 'Workflow', tool_input: { args: testCase.args } }, cwd)
+      const hookOutput = String(hook.stdout)
+      const hookReason = hookOutput === ''
+        ? null
+        : JSON.parse(hookOutput).hookSpecificOutput.permissionDecisionReason as string
+      const cli = await runObserveLaunch(testCase.args)
+      const cliReason = cli.stderr.startsWith('wt-observe launch: [workflow-toolbox workflow-model] Refused:')
+        ? cli.stderr.slice('wt-observe launch: '.length).trimEnd()
+        : null
+
+      expect(hookReason === null, `${testCase.name}: hook acceptance`).toBe(testCase.accepted)
+      expect(cliReason === null, `${testCase.name}: CLI acceptance`).toBe(testCase.accepted)
+      expect(cliReason, `${testCase.name}: refusal text parity`).toBe(hookReason)
+      expect(cli.fetchCalls, `${testCase.name}: refused before network contact`).toBe(testCase.accepted ? 1 : 0)
+    }
   })
 
   it('nested spawn: warns only when a subagent asks for a verifier of its own work', () => {
