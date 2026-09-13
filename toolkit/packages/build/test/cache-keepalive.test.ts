@@ -73,7 +73,8 @@ describe('wt-cache-keepalive', () => {
     const state = scaffold('off')
     const result = spawnSync(process.execPath, [MONITOR, '--once', '--now', String(60 * 60_000), '--project', state.projectDir], {
       encoding: 'utf8',
-      env: { ...process.env, CLAUDE_CODE_SESSION_ID: state.sessionId, CLAUDE_CONFIG_DIR: state.configDir },
+      // The ambient opt-in must not leak in: a machine with the keepalive enabled would otherwise fail this default-off check.
+      env: { ...process.env, WT_CACHE_KEEPALIVE_ENABLED: undefined, CLAUDE_CODE_SESSION_ID: state.sessionId, CLAUDE_CONFIG_DIR: state.configDir },
     })
     expect(result.status).toBe(0)
     expect(result.stdout).toBe('')
