@@ -40,6 +40,8 @@ agent definitions without an undeclared dependency on a sibling toolkit checkout
 `## Findings` section containing either `None.` or a Markdown table with one allowed disposition
 per row, plus non-empty `## Implemented`, `## Verification`, `## Independent Review`,
 `## Decisions`, and `## Remaining Risks` sections; pass `--no-shape` for a non-closing report.
+The Verification section should name its e2e output or state `e2e not run` with a reason. Omitting
+both emits a warning only, even when the Findings and shape checks run in block mode.
 It prints its active regime with every result. The checker warns through 2026-09-13 and blocks on
 2026-09-14; set `WT_FINDINGS_DISPOSITION_MODE=block` to switch early. The
 `WT_FINDINGS_DISPOSITION_NOW` clock override exists for deterministic tests.

@@ -357,7 +357,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-report-findings-check.mjs',
     status: 'mapped',
-    reason: 'Pilot and lesson-harvest docs describe this closing-report Findings disposition checker and its probation mode.',
+    reason: 'Pilot, lesson-harvest, and known-issues docs describe this closing-report checker, its e2e advisory, and its probation mode.',
   },
   {
     script: 'plugin/bin/wt-observer-pairing-guard-hook.mjs',
