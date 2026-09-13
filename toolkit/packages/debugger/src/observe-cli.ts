@@ -1078,7 +1078,13 @@ async function applyObserverResolution(input: {
  *  /api/launch (source-prefixed on a hub), print {runId}. The id is the workflow's
  *  filename under the server's allowlisted roots (GET /api/workflows lists them —
  *  echoed here on an unknown id). */
-async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string | undefined, sourceFlag: string | undefined, launchTimeoutMs: number, commRoot: string | undefined): Promise<void> {
+const WORKFLOW_MODEL_REFUSAL = '[workflow-toolbox workflow-model] Refused: Workflow launch args must include a non-empty string at `args.perAgent.model` so unnamed roles do not inherit the session model. Add `"perAgent":{"model":"<model>"}` under args. For `wt-observe launch` only, pass `--allow-inherited-model` to accept inheritance explicitly.'
+
+function hasPerAgentModel(args: unknown): boolean {
+  return isRecord(args) && isRecord(args['perAgent']) && typeof args['perAgent']['model'] === 'string' && args['perAgent']['model'].trim().length > 0
+}
+
+async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string | undefined, sourceFlag: string | undefined, launchTimeoutMs: number, commRoot: string | undefined, allowInheritedModel: boolean): Promise<void> {
   if (script === undefined) throw new Error('usage: ' + SYNOPSIS.launch)
   let args: unknown
   if (rawArgs !== undefined) {
@@ -1088,6 +1094,7 @@ async function cmdLaunch(ctx: Ctx, script: string | undefined, rawArgs: string |
       throw new Error(`--args is not valid JSON: ${rawArgs}`)
     }
   }
+  if (!allowInheritedModel && !hasPerAgentModel(args)) throw new Error(WORKFLOW_MODEL_REFUSAL)
   // Per-run capabilities (card #1820698986697196666): an args `capabilities` section
   // ({ mcpServers?, agents?, skills? }) is validated HERE so a malformed section fails
   // fast client-side with every problem listed — the server composes the same section
@@ -1761,7 +1768,7 @@ const SYNOPSIS = {
   stop: 'wt-observe stop',
   status: 'wt-observe status',
   prune: 'wt-observe prune [--run <id> | --name-prefix <p>]... [--older-than <dur>] [--yes]',
-  launch: 'wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>] [--comm-root <dir>]',
+  launch: 'wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>] [--comm-root <dir>] [--allow-inherited-model]',
   await: 'wt-observe await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]',
   resume: 'wt-observe resume <runId> [--source <label|dir>]',
   config:
@@ -1788,6 +1795,8 @@ const HELP_DETAIL: Partial<Record<Verb, string>> = {
     '  and its declared needs are resolved against the machine capability registry\n' +
     '  (WT_CAPABILITY_REGISTRY, else the XDG default). --args may carry a capabilities\n' +
     '  or observers section that composes over the sidecar resolution.\n' +
+    '  --args must carry a non-empty string at perAgent.model so unnamed roles cannot inherit silently; pass\n' +
+    '  --allow-inherited-model to accept session-model inheritance explicitly.\n' +
     '  --comm-root <dir> sets the wt-comm ROOT for a hint-emitting observer (the server\n' +
     '  appends the runId and validates the root against its OBSERVE_COMM_ALLOWED_ROOTS);\n' +
     '  absent = wt-comm hint delivery is not enabled.',
@@ -1860,6 +1869,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         flagValue(argv, 'source'),
         resolveLaunchTimeoutMs(flagValue(argv, 'launch-timeout-s'), process.env['OBSERVE_LAUNCH_TIMEOUT_MS']),
         flagValue(argv, 'comm-root'),
+        argv.includes('--allow-inherited-model'),
       )
     else if (cmd === 'await') {
       const timeoutS = Number(flagValue(argv, 'timeout-s') ?? AWAIT_DEFAULT_TIMEOUT_S) || AWAIT_DEFAULT_TIMEOUT_S

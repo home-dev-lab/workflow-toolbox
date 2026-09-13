@@ -2201,7 +2201,11 @@ async function applyObserverResolution(input) {
 `);
   return { ...args, observers: owned.observers };
 }
-async function cmdLaunch(ctx, script, rawArgs, sourceFlag, launchTimeoutMs, commRoot) {
+var WORKFLOW_MODEL_REFUSAL = '[workflow-toolbox workflow-model] Refused: Workflow launch args must include a non-empty string at `args.perAgent.model` so unnamed roles do not inherit the session model. Add `"perAgent":{"model":"<model>"}` under args. For `wt-observe launch` only, pass `--allow-inherited-model` to accept inheritance explicitly.';
+function hasPerAgentModel(args) {
+  return isRecord2(args) && isRecord2(args["perAgent"]) && typeof args["perAgent"]["model"] === "string" && args["perAgent"]["model"].trim().length > 0;
+}
+async function cmdLaunch(ctx, script, rawArgs, sourceFlag, launchTimeoutMs, commRoot, allowInheritedModel) {
   if (script === void 0) throw new Error("usage: " + SYNOPSIS.launch);
   let args;
   if (rawArgs !== void 0) {
@@ -2211,6 +2215,7 @@ async function cmdLaunch(ctx, script, rawArgs, sourceFlag, launchTimeoutMs, comm
       throw new Error(`--args is not valid JSON: ${rawArgs}`);
     }
   }
+  if (!allowInheritedModel && !hasPerAgentModel(args)) throw new Error(WORKFLOW_MODEL_REFUSAL);
   const cap = extractCapabilities(args);
   if (cap.errors.length > 0) throw new Error(`--args capabilities section invalid:
   - ${cap.errors.join("\n  - ")}`);
@@ -2673,7 +2678,7 @@ var SYNOPSIS = {
   stop: "wt-observe stop",
   status: "wt-observe status",
   prune: "wt-observe prune [--run <id> | --name-prefix <p>]... [--older-than <dur>] [--yes]",
-  launch: "wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>] [--comm-root <dir>]",
+  launch: "wt-observe launch <workflow.js> [--args <json>] [--source <label|dir>] [--launch-timeout-s <N>] [--comm-root <dir>] [--allow-inherited-model]",
   await: "wt-observe await <runId> [--timeout-s N] [--poll-s N] [--source <label|dir>]",
   resume: "wt-observe resume <runId> [--source <label|dir>]",
   config: "wt-observe config [show | add-source <dir> | remove-source <dir> | add-remote <url> [--token <t> | --token-file <p>] [--label <l>] | remove-remote <url>]"
@@ -2685,7 +2690,7 @@ var HELP_DETAIL = {
   --health-timeout <seconds>: how long to wait for the fresh spawn to answer
   /api/health before giving up and reaping the child (default 90s; also settable via
   WT_OBSERVE_HEALTH_TIMEOUT_MS in milliseconds; hard ceiling ${HEALTH_TIMEOUT_CEILING_MS} ms).`,
-  launch: "  <workflow.js> is resolved by NAME against the server's OBSERVE_WORKFLOWS_DIR\n  (a registered artifact name, not an arbitrary path).\n  Capabilities: an adjacent <workflow>.capabilities.json sidecar is auto-detected\n  and its declared needs are resolved against the machine capability registry\n  (WT_CAPABILITY_REGISTRY, else the XDG default). --args may carry a capabilities\n  or observers section that composes over the sidecar resolution.\n  --comm-root <dir> sets the wt-comm ROOT for a hint-emitting observer (the server\n  appends the runId and validates the root against its OBSERVE_COMM_ALLOWED_ROOTS);\n  absent = wt-comm hint delivery is not enabled."
+  launch: "  <workflow.js> is resolved by NAME against the server's OBSERVE_WORKFLOWS_DIR\n  (a registered artifact name, not an arbitrary path).\n  Capabilities: an adjacent <workflow>.capabilities.json sidecar is auto-detected\n  and its declared needs are resolved against the machine capability registry\n  (WT_CAPABILITY_REGISTRY, else the XDG default). --args may carry a capabilities\n  or observers section that composes over the sidecar resolution.\n  --args must carry a non-empty string at perAgent.model so unnamed roles cannot inherit silently; pass\n  --allow-inherited-model to accept session-model inheritance explicitly.\n  --comm-root <dir> sets the wt-comm ROOT for a hint-emitting observer (the server\n  appends the runId and validates the root against its OBSERVE_COMM_ALLOWED_ROOTS);\n  absent = wt-comm hint delivery is not enabled."
 };
 function usageText(verb) {
   if (verb) {
@@ -2746,7 +2751,8 @@ async function main(argv = process.argv.slice(2)) {
         flagValue(argv, "args"),
         flagValue(argv, "source"),
         resolveLaunchTimeoutMs(flagValue(argv, "launch-timeout-s"), process.env["OBSERVE_LAUNCH_TIMEOUT_MS"]),
-        flagValue(argv, "comm-root")
+        flagValue(argv, "comm-root"),
+        argv.includes("--allow-inherited-model")
       );
     else if (cmd === "await") {
       const timeoutS = Number(flagValue(argv, "timeout-s") ?? AWAIT_DEFAULT_TIMEOUT_S) || AWAIT_DEFAULT_TIMEOUT_S;

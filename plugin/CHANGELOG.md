@@ -68,6 +68,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   names now require `--other-file` at freeze, and manifests preserve that classification so verify
   cannot reinterpret an unknown-name symlink as recognized evidence.
 ### Changed
+- Workflow launches now fail loud unless `args.perAgent.model` is a non-empty string: the Workflow PreToolUse guard denies the call, and `wt-observe launch` refuses it unless `--allow-inherited-model` explicitly accepts inheritance.
 - Ground-truth verification guidance now treats readings taken in one shared measurement window as
   one reading and requires witness lines selected against the suspected failure mode.
 - The dev-implement example now shares its worktree and lane merge safety pipeline without changing emitted prompts.

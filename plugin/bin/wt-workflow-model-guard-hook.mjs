@@ -3,19 +3,18 @@ import fs from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
 
-function hasRouting(value) {
-  if (!value || typeof value !== 'object') return false
-  if (Array.isArray(value)) return value.some(hasRouting)
-  return Object.entries(value).some(([key, item]) => key === 'models' || key === 'effort' || (key === 'perAgent' && typeof item === 'object' && item !== null && 'model' in item) || hasRouting(item))
+const REFUSAL = '[workflow-toolbox workflow-model] Refused: Workflow launch args must include a non-empty string at `args.perAgent.model` so unnamed roles do not inherit the session model. Add `"perAgent":{"model":"<model>"}` under args. For `wt-observe launch` only, pass `--allow-inherited-model` to accept inheritance explicitly.'
+
+function hasPerAgentModel(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    value.perAgent !== null && typeof value.perAgent === 'object' && !Array.isArray(value.perAgent) &&
+    typeof value.perAgent.model === 'string' && value.perAgent.model.trim().length > 0
 }
 function main() {
   const input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}')
   if (input.tool_name !== 'Workflow') return
-  const ti = input.tool_input || {}
-  const value = ti.args === undefined ? ti.script ?? ti.workflow ?? ti.text : ti.args
-  const routed = typeof value === 'string' ? /\b(?:perAgent\s*\.\s*model|models\s*:|effort\s*:)/.test(value.replace(/```[\s\S]*?```|["'][^"'\n]*["']/g, ' ')) : hasRouting(value)
-  if (routed) return
-  recordGuardEvent({ guard: 'wt-workflow-model-guard-hook.mjs', decision: 'warned', class: 'workflow-model-inherited', reason: 'Workflow fan-out has no model routing', session: input.session_id, agent: input.agent_id })
-  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: '[workflow-toolbox workflow-model] This Workflow declares no per-agent model, models, or effort routing; its fan-out will inherit the session model.' } }))
+  if (hasPerAgentModel(input.tool_input?.args)) return
+  recordGuardEvent({ guard: 'wt-workflow-model-guard-hook.mjs', decision: 'blocked', class: 'workflow-model-inherited', reason: 'Workflow args have no perAgent.model', session: input.session_id, agent: input.agent_id })
+  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: REFUSAL } }))
 }
 runFailOpenHook('wt-workflow-model-guard-hook.mjs', main)
