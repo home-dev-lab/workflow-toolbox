@@ -2,9 +2,11 @@
 
 ## What this pack ships
 
-This pack declares the `svelte` language in `pack.json`. Its `.svelte` extension trigger and Vite,
-Vitest, and Svelte configuration-file triggers select and attach pack context; selection does not
-automatically execute rules, agents, diagnostics, or build commands. It ships the Svelte-specific
+This pack declares the `svelte` language in `pack.json`. Its `.svelte` extension trigger and sole
+configuration-file trigger, `svelte.config.js`, select and attach pack context. Generic Vite and
+Vitest configuration files do not select it; a Svelte Vite project still matches through `.svelte`
+or `svelte.config.js`. Selection does not automatically execute rules, agents, diagnostics, or build
+commands. It ships the Svelte-specific
 `rules/svelte.md`, SDK-only `agents/critic.md` and `agents/reviewer.md`, the `svelteserver`
 declaration in `.lsp.json`, and diagnostic and navigation fixtures under `probe/`.
 

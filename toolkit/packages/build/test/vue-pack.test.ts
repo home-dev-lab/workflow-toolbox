@@ -5,14 +5,15 @@ import { packPaths } from './helpers/pack-contract.js'
 const { packDir } = packPaths('vue')
 
 describe('Vue pack', () => {
-  it('ships the manifest, trigger files, SDK-only agents, and probe fixtures', () => {
+  it('ships the manifest, extension trigger, SDK-only agents, and probe fixtures', () => {
     expect(existsSync(packDir), 'plugin/packs/vue must exist').toBe(true)
     const manifest = JSON.parse(readFileSync(`${packDir}/pack.json`, 'utf8'))
     expect(manifest).toMatchObject({
       language: 'vue',
-      triggers: { extensions: ['.vue'], files: ['vite.config.ts', 'vitest.config.ts', 'tsconfig.json'] },
+      triggers: { extensions: ['.vue'] },
       agents: ['critic.md', 'reviewer.md'],
     })
+    expect(manifest.triggers).not.toHaveProperty('files')
     for (const agent of manifest.agents) expect(readFileSync(`${packDir}/agents/${agent}`, 'utf8')).toContain('sdk-only: true')
     expect(readFileSync(`${packDir}/probe/expected-diagnostic.txt`, 'utf8').trim()).not.toBe('')
     expect(existsSync(`${packDir}/probe/nav/expected-navigation.json`)).toBe(true)

@@ -3,8 +3,9 @@
 ## What this pack ships
 
 `pack.json` declares the `groovy` language and selects this pack for `.groovy` and `.gradle`
-extensions plus Gradle (`build.gradle`, `build.gradle.kts`, `settings.gradle`,
-`settings.gradle.kts`) and Spock (`spock.conf`) build files. Selection attaches context; it does
+extensions plus the Groovy-written Gradle files `build.gradle` and `settings.gradle`, and the Spock
+configuration file `spock.conf`. The `.kts` Gradle variants belong to Kotlin; projects containing
+Groovy still select this pack through `.groovy` or `.gradle`. Selection attaches context; it does
 not execute rules, agents, or gates automatically.
 
 The pack supplies `rules/tdd-spock.md` and `rules/lint-typecheck-build.md`, SDK-only

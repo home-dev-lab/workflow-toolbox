@@ -8,7 +8,8 @@ for the Workflow Toolbox repository.
 `wt-lifecycle-hooks` selects the pack when a card Discovery block contains a `Language:` value
 matching `typescript`. `wt-rules-on-demand` serves the pack's topic rules on `Edit` and `Write`
 tool calls targeting `.ts` or `.tsx` paths. Other language values and an absent `Language:` field
-do not select this pack.
+do not select this pack. No build or configuration file, including `tsconfig.json`, selects the
+TypeScript pack.
 
 ## Limits
 
