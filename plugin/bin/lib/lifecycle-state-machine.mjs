@@ -6,12 +6,13 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
 import { independentBrief, prospectivePatch } from './lifecycle-brief.mjs'
-import { createLifecycleLaunch, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
+import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
 import { completeLifecycleReport } from './lifecycle-report-edge.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
 export const AWAITING_FIDELITY_RESULT = 'accepted phase=awaiting_fidelity'
+export const MAX_CRITIC_ROUNDS = 4
 export const lifecycleToolName = (name) => `mcp__${LIFECYCLE_MCP_KEY}__${name}`
 
 const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report']
@@ -27,26 +28,39 @@ const ARTIFACTS = {
   'pilot-report': ['report', 'pilot-report.md'],
 }
 const INDEPENDENT_ROLES = new Set(['critic', 'review', 'refutation'])
+const MAX_REPORT_FINDINGS = 50
+const MAX_FINDING_CHARACTERS = 2000
+const PLAN_SHAPE = Object.freeze({
+  adrHeading: 'ADR',
+  adrTerms: Object.freeze(['Decision', 'Rejected']),
+  tasksHeading: 'Tasks',
+  taskDodLabels: Object.freeze(['DoD', 'Definition of done']),
+  gatesHeading: 'Gates',
+})
+export const PLAN_SHAPE_DESCRIPTION = `a \`## ${PLAN_SHAPE.adrHeading}\` section containing ${PLAN_SHAPE.adrTerms.join(' and ')}, a \`## ${PLAN_SHAPE.tasksHeading}\` section whose every item has ${PLAN_SHAPE.taskDodLabels.map((label) => `\`${label}:\``).join(' or ')}, and a \`## ${PLAN_SHAPE.gatesHeading}\` section`
+
+function planSection(content, heading) {
+  return new RegExp(`(?:^|\\n)## ${heading}\\b[\\s\\S]*?(?=\\n## |$)`, 'i').exec(content)?.[0] ?? ''
+}
 
 function containsPlanShape(content) {
-  const adr = /(?:^|\n)## ADR\b[\s\S]*?(?=\n## |$)/i.exec(content)?.[0] ?? ''
-  const tasks = /(?:^|\n)## Tasks\b[\s\S]*?(?=\n## |$)/i.exec(content)?.[0] ?? ''
+  const adr = planSection(content, PLAN_SHAPE.adrHeading)
+  const tasks = planSection(content, PLAN_SHAPE.tasksHeading)
   const lines = tasks.split(/\r?\n/)
   const taskIndexes = lines
     .map((line, index) => (/^(?:- |\d+\. )/.test(line) ? index : -1))
     .filter((index) => index >= 0)
   return (
-    /decision/i.test(adr) &&
-    /rejected/i.test(adr) &&
+    PLAN_SHAPE.adrTerms.every((term) => new RegExp(term, 'i').test(adr)) &&
     taskIndexes.length > 0 &&
     taskIndexes.every(
       (start, i) =>
-        /\b(?:DoD|Definition of done):/i.test(lines[start]) ||
+        new RegExp(`\\b(?:${PLAN_SHAPE.taskDodLabels.join('|')}):`, 'i').test(lines[start]) ||
         lines
           .slice(start + 1, taskIndexes[i + 1] ?? lines.length)
-          .some((line) => /^\s*(?:DoD|Definition of done):/i.test(line)),
+          .some((line) => new RegExp(`^\\s*(?:${PLAN_SHAPE.taskDodLabels.join('|')}):`, 'i').test(line)),
     ) &&
-    /(?:^|\n)## Gates\b/i.test(content)
+    Boolean(planSection(content, PLAN_SHAPE.gatesHeading))
   )
 }
 function tasksBlock(content) {
@@ -62,13 +76,24 @@ function verdictFromReport(phase, content) {
   const findingsStart = content.slice(match.index + match[0].length).match(/^FINDINGS:\s*$/im)
   if (!findingsStart) return null
   const afterFindings = content.slice(match.index + match[0].length + findingsStart.index + findingsStart[0].length)
-  const findings = afterFindings
-    .split(/\r?\n/)
-    .slice(0, afterFindings.split(/\r?\n/).findIndex((line, index, lines) => index > 0 && (/^#/.test(line) || (line === '' && /^## /.test(lines[index + 1] ?? '')))) || undefined)
-    .filter((line) => /^-\s+\S/.test(line))
-    .map((line) => line.replace(/^-\s+/, '').trim())
+  const lines = afterFindings.split(/\r?\n/)
+  const sectionEnd = lines.findIndex((line, index) => index > 0 && (/^#/.test(line) || (line === '' && /^## /.test(lines[index + 1] ?? ''))))
+  const findings = (sectionEnd < 0 ? lines : lines.slice(0, sectionEnd))
+    .filter((line) => /^[-*+]\s+\S/.test(line))
+    .map((line) => line.replace(/^[-*+]\s+/, '').trim())
+  if (findings.length > MAX_REPORT_FINDINGS) return { problem: `finding count exceeds ${MAX_REPORT_FINDINGS}` }
+  if (findings.some((finding) => [...finding].length > MAX_FINDING_CHARACTERS)) {
+    return { problem: `finding exceeds ${MAX_FINDING_CHARACTERS}-character limit` }
+  }
   if (match[1] === 'changes-requested' && findings.length === 0) return null
-  return { outcome: match[1], findings }
+  const severities = phase === 'critic'
+    ? findings.map((finding) => {
+        const match = /^\[(blocking|non-blocking)\]\s+(.+)$/i.exec(finding)
+        const tagCount = [...finding.matchAll(/\[(?:blocking|non-blocking)\]/gi)].length
+        return match && tagCount === 1 ? match[1].toLowerCase() : 'blocking'
+      })
+    : []
+  return { outcome: match[1], findings, severities }
 }
 
 
@@ -152,6 +177,8 @@ export function createLifecycleStateMachine({
     partial: null,
     pilotReportDigest: null,
     planRound: 0,
+    priorCriticRounds: [],
+    nonBlockingFindings: [],
     reviewRound: 0,
     handled: new Map(),
     lastLaneMtime: 0,
@@ -201,7 +228,7 @@ export function createLifecycleStateMachine({
         artifacts.push(snapshotDir ? snapshotFile(gateName, gateContent) : `.lane/${gateName}`)
       }
     }
-    const options = { phase, context, reportPath, planDigest, constructionBase: phase === 'critic' ? null : constructionBase }
+    const options = { phase, context, reportPath, planDigest, constructionBase: phase === 'critic' ? null : constructionBase, priorRounds: phase === 'critic' ? state.priorCriticRounds : [] }
     return snapshotDir
       ? {
           canonical: independentBrief({ ...options, artifacts: canonicalArtifacts }),
@@ -256,31 +283,49 @@ export function createLifecycleStateMachine({
     } else if (state.phase === 'plan') {
       const plan = path.join(laneDir, 'plan.md')
       if (!readRegularFile(plan) || !containsPlanShape(readRegularFile(plan)))
-        return refusal('plan->critic', 'valid plan artifact', plan)
+        return refusal('plan->critic', `valid plan artifact matching ${PLAN_SHAPE_DESCRIPTION}`, plan)
       next = 'critic'
     } else if (state.phase === 'critic') {
       const report = path.join(laneDir, 'critic-report.md')
-      const verdict = verdictFromReport('critic', readRegularFile(report) ?? '')
+      if ((regularFile(report)?.size ?? 0) > MAX_LANE_REPORT_BYTES) {
+        return refusal('critic->next', `lane report exceeds ${MAX_LANE_REPORT_BYTES}-byte limit`, report)
+      }
+      const reportContent = readRegularFile(report) ?? ''
+      const verdict = verdictFromReport('critic', reportContent)
       if (!verdict) return refusal('critic->next', 'VERDICT block', report)
+      if (verdict.problem) return refusal('critic->next', verdict.problem, report)
       if (event.outcome && event.outcome !== verdict.outcome) {
         return refusal('critic->next', 'outcome does not match the lane report', report)
       }
       if (event.findings && JSON.stringify(event.findings) !== JSON.stringify(verdict.findings)) {
         return refusal('critic->next', 'findings do not match the lane report', report)
       }
-      const receipt = laneEvidence('critic', verdict.outcome === 'changes-requested')
+      const allNonBlocking = verdict.outcome === 'changes-requested' && verdict.severities.every((severity) => severity === 'non-blocking')
+      const receipt = laneEvidence('critic', verdict.outcome === 'changes-requested' && !allNonBlocking)
       if (receipt) return receipt
-      if (verdict.outcome === 'approved') {
+      const newNonBlockingFindings = verdict.findings.filter((_finding, index) => verdict.severities[index] === 'non-blocking')
+      for (const finding of newNonBlockingFindings) {
+        if (!state.nonBlockingFindings.includes(finding)) state.nonBlockingFindings.push(finding)
+      }
+      if (newNonBlockingFindings.length > 0) {
+        writeRegularFile(
+          path.join(laneDir, 'plan-non-blocking-findings.md'),
+          `## Non-blocking critic findings (runner-owned, trusted)\n${state.nonBlockingFindings.map((finding) => `- ${finding}`).join('\n')}\n`,
+        )
+      }
+      if (verdict.outcome === 'approved' || allNonBlocking) {
         const digest = sha256(readRegularFile(path.join(laneDir, 'plan.md')) ?? '')
-        if (!(readRegularFile(report) ?? '').includes(digest)) {
+        if (!reportContent.includes(digest)) {
           return refusal('critic->tdd', 'plan sha256', path.join(laneDir, 'critic-report.md'))
         }
+        state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings] })
         next = 'tdd'
       } else if (verdict.outcome === 'changes-requested') {
+        state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings] })
         state.planRound += 1
-        if (state.planRound <= 3) next = 'plan'
+        if (state.planRound < MAX_CRITIC_ROUNDS) next = 'plan'
         else {
-          const reason = 'plan not approved after 3 critic rounds'
+          const reason = `plan not approved after ${state.planRound} critic rounds`
           state.partial = { phase: 'critic', round: state.planRound, reason, findings: verdict.findings }
           state.verifySnapshot = { tree: treeSignature(root), gates: {} }
           audit()
@@ -310,8 +355,12 @@ export function createLifecycleStateMachine({
       next = frozenRoute === 'LITE' ? 'report' : 'review'
     } else if (state.phase === 'review' || state.phase === 'refutation') {
       const report = path.join(laneDir, `${state.phase}-report.md`)
+      if ((regularFile(report)?.size ?? 0) > MAX_LANE_REPORT_BYTES) {
+        return refusal(`${state.phase}->next`, `lane report exceeds ${MAX_LANE_REPORT_BYTES}-byte limit`, report)
+      }
       const verdict = verdictFromReport(state.phase, readRegularFile(report) ?? '')
       if (!verdict) return refusal(`${state.phase}->next`, 'VERDICT block', report)
+      if (verdict.problem) return refusal(`${state.phase}->next`, verdict.problem, report)
       if (event.outcome && event.outcome !== verdict.outcome) {
         return refusal(`${state.phase}->next`, 'outcome does not match the lane report', report)
       }
@@ -404,11 +453,15 @@ export function createLifecycleStateMachine({
       if (problem) return problem
     }
     const briefPhase = kind === 'brief' ? 'tdd' : kind.replace('-brief', '')
-    let artifactContent = content
+    let laneContext = content
+    if (kind === 'brief' && state.nonBlockingFindings.length > 0) {
+      laneContext = `${content.replace(/\s*$/, '')}\n\n## Non-blocking critic findings (runner-owned, trusted)\n${state.nonBlockingFindings.map((finding) => `- ${finding}`).join('\n')}\n`
+    }
+    let artifactContent = laneContext
     if (LANE_PHASES.has(briefPhase)) {
       laneBriefContexts.delete(briefPhase)
       try {
-        artifactContent = prepareLaneBrief(briefPhase, content, `.lane/${briefPhase}-report.<launch-nonce>.md`)
+        artifactContent = prepareLaneBrief(briefPhase, laneContext, `.lane/${briefPhase}-report.<launch-nonce>.md`)
       } catch (error) {
         fs.rmSync(path.join(laneDir, `${briefPhase}-input.diff`), { force: true })
         fs.rmSync(path.join(laneDir, spec[1]), { force: true })
@@ -419,7 +472,7 @@ export function createLifecycleStateMachine({
       path.join(laneDir, spec[1]),
       artifactContent,
     )
-    if (LANE_PHASES.has(briefPhase)) laneBriefContexts.set(briefPhase, content)
+    if (LANE_PHASES.has(briefPhase)) laneBriefContexts.set(briefPhase, laneContext)
     if (kind === 'pilot-report') state.pilotReportDigest = sha256(artifactContent)
     return `wrote ${kind}`
   }

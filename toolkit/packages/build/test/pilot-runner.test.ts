@@ -9,6 +9,8 @@ import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claud
 import { lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')
@@ -67,6 +69,26 @@ describe('SDK pilot runner', () => {
     expect(prompts[0]).toContain('Lanes run synchronously through the lifecycle run tool')
     expect(prompts[0]).not.toContain('end your turn immediately after launch')
 
+  })
+
+  it('derives plan-phase guidance and invalid-plan refusal from one grammar description', async () => {
+    const f = fixture(); writeFileSync(f.cardFile, 'Route: FULL\nDoD: plan it\n')
+    let continuation = ''; let refusal = ''
+    type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
+      const server = options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer
+      const transition = server.instance._registeredTools.transition!.handler
+      const artifact = server.instance._registeredTools.write_artifact!.handler
+      yield initMessage(); await prompt.next()
+      await transition({ phase: 'discovery', tool_use_id: 'discovery' })
+      yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+      continuation = (await prompt.next()).value.message.content
+      await artifact({ kind: 'plan', content: '## Tasks\n- incomplete\n' })
+      refusal = (await transition({ phase: 'plan', tool_use_id: 'invalid-plan' })).content[0]!.text
+    })()
+    await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, { query, resolvePilotModels: models, sleep: async () => {} })
+    expect(continuation).toContain(PLAN_SHAPE_DESCRIPTION)
+    expect(refusal).toContain(PLAN_SHAPE_DESCRIPTION)
   })
 
   it('logs a timeout injection and counts it in the summary', async () => {
@@ -222,7 +244,7 @@ describe('SDK pilot runner', () => {
 
   it('H14-3 lock: completes a registered-server partial run with its continuation and exit code 2', async () => {
     const f = fixture(); let heads = 0
-    const reason = 'plan not approved after 3 critic rounds'
+    const reason = `plan not approved after ${MAX_CRITIC_ROUNDS} critic rounds`
     writeFileSync(f.cardFile, 'Route: FULL\nDoD: exercise partial completion\n')
     const launcher = join(f.root, 'launcher.mjs')
     writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- tighten the proof\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
@@ -236,7 +258,7 @@ describe('SDK pilot runner', () => {
       const run = server.instance._registeredTools.run!.handler
       yield initMessage(); await prompt.next()
       await transition({ phase: 'discovery', tool_use_id: 'discovery' })
-      for (let round = 1; round <= 4; round += 1) {
+      for (let round = 1; round <= MAX_CRITIC_ROUNDS; round += 1) {
         await artifact({ kind: 'plan', content: plan }); await transition({ phase: 'plan', tool_use_id: `plan-${round}` })
         await artifact({ kind: 'critic-brief', content: `critic ${round}` }); await run({ kind: 'lane', phase: 'critic', timeout: 1 })
         await transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: `critic-${round}` })

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lifecycleToolName } from './sdk-pilot-lifecycle-server.mjs'
+import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-machine.mjs'
 import { deriveRoute } from './route-from-card.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
@@ -9,8 +10,8 @@ const POLL_MS = 250
 const MAX_UNPRODUCTIVE_TURNS = 3
 const NEXT_BY_PHASE = {
   discovery: 'transition discovery using the frozen route',
-  plan: 'write the plan, then transition plan',
-  critic: 'write the critic brief, run the critic lane, then transition critic; if the lane requests changes for the fourth time, transition with outcome changes-requested — the server routes a spent bound to report',
+  plan: `write the plan matching ${PLAN_SHAPE_DESCRIPTION}, then transition plan`,
+  critic: `write the critic brief, run the critic lane, then transition critic; if critic round ${MAX_CRITIC_ROUNDS} requests blocking changes, transition with outcome changes-requested; the server routes a spent bound to report`,
   tdd: 'write the tdd brief, run the tdd lane, then transition tdd',
   verify: 'run the three gates, then transition verify',
   review: 'write the review brief, run the review lane, then transition review; if the lane requests changes for the fourth time, transition with outcome changes-requested — the server routes a spent bound to report',

@@ -41,6 +41,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   completes its notification handshake, partial board mutations are reconciled in fatal reports, and
   receipts are copied beside the report.
 ### Fixed
+- SDK pilot routing now recognizes populated DoD headings; critic rounds retain trusted prior findings,
+  ignore fenced fake DoDs, distinguish strictly parsed blocking from non-blocking findings, retain
+  deduplicated optional findings from every round, bound report input, require successful receipts for
+  advancement, disclose the enforced plan grammar, and report the actual critic-round count when the
+  bound is exhausted.
 - The actionability Stop gate now blocks only under a live autonomy mandate (or a legibly unreadable
   mandate), limits stale snapshots to one refresh request per snapshot, and journals every block with
   its reason, mandate classification, and consecutive index.
