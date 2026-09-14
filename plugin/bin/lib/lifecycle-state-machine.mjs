@@ -104,6 +104,7 @@ export function createLifecycleStateMachine({
   reasons = [],
   executor = 'gpt-lane',
   executorEnv = process.env,
+  knowledgeBase = { path: null, checkedPath: null },
   models,
   cardId,
   sessionTag,
@@ -241,7 +242,12 @@ export function createLifecycleStateMachine({
       canonicalArtifacts.push('.lane/discovery.md')
       artifacts.push(snapshotDir ? snapshotFile('discovery.md', discovery) : canonicalArtifacts.at(-1))
     }
-    const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : constructionBase, priorRounds: phase === 'critic' ? state.priorCriticRounds : [], rules: roleRules }
+    const knowledgeBaseLine = knowledgeBase.path
+      ? executor === 'claude-sdk'
+        ? `KNOWLEDGE_BASE_INDEX: ${knowledgeBase.path}`
+        : `KNOWLEDGE_BASE_INDEX: unavailable to this executor (external index ${knowledgeBase.path} is outside the OpenCode working directory)`
+      : `KNOWLEDGE_BASE_INDEX: none${knowledgeBase.checkedPath ? ` (no index exists at ${knowledgeBase.checkedPath})` : ''}`
+    const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : constructionBase, priorRounds: phase === 'critic' ? state.priorCriticRounds : [], rules: roleRules, knowledgeBaseLine }
     return snapshotDir
       ? {
           canonical: independentBrief({ ...options, artifacts: canonicalArtifacts }),
@@ -254,6 +260,7 @@ export function createLifecycleStateMachine({
     laneDir,
     executor,
     executorEnv,
+    knowledgeBaseIndex: knowledgeBase.path,
     frozenModels,
     state,
     laneBriefContexts,
@@ -418,7 +425,7 @@ export function createLifecycleStateMachine({
       if (sha256(pilotReport) !== state.pilotReportDigest) {
         return refusal('report->awaiting_fidelity', 'pilot report unchanged since write_artifact', pilotReportPath)
       }
-      const reportProblem = pilotReportProblem(pilotReport)
+      const reportProblem = pilotReportProblem(pilotReport, true)
       if (reportProblem) return refusal('report->awaiting_fidelity', reportProblem, pilotReportPath)
       const receipt = snapshotEvidence('report->awaiting_fidelity')
       if (receipt) return receipt
@@ -506,7 +513,7 @@ export function createLifecycleStateMachine({
   // The pilot report's partial/full contract, checked on the exact bytes given: at write_artifact
   // and again at the report edge on the file about to be committed (Sol round 14: a stale or
   // edited pilot-report.md used to satisfy the edge by merely existing).
-  function pilotReportProblem(content) {
+  function pilotReportProblem(content, enforceSchema = false) {
     const partialLine = state.partial ? `Partial: ${state.partial.reason}` : null
     const lines = content.split(/\r?\n/)
     if (partialLine && !lines.includes(partialLine)) {
@@ -515,7 +522,27 @@ export function createLifecycleStateMachine({
     if (!partialLine && lines.some((line) => line.startsWith('Partial:'))) {
       return 'pilot-report: this run is not partial'
     }
+    if (!enforceSchema) return null
+    const e2e = reportSection(content, 'E2E')
+    if (!e2e) return 'pilot-report: missing or empty ## E2E section'
+    const e2eNotRun = /^e2e not run: \S[^\r\n]*$/i.test(e2e)
+    const hasProcedure = /^(?:command|procedure):\s+\S.+$/im.test(e2e)
+    const hasOutput = /^(?:verbatim )?output:\s+\S.*$/im.test(e2e)
+    const hasEvidenceLine = /^e2e evidence:\s+\S.+\s(?:=>|output:)\s\S.*$/im.test(e2e)
+    if (!e2eNotRun && !(hasProcedure && hasOutput) && !hasEvidenceLine) {
+      return 'pilot-report: ## E2E requires command/procedure and verbatim output, or exactly "e2e not run: <reason>"'
+    }
+    if (frozenRoute === 'FULL') {
+      const review = reportSection(content, 'Independent Review')
+      if (!review) return 'pilot-report: missing or empty ## Independent Review section on FULL route'
+      if (!/\blens(?:es)?\b/i.test(review) || !/\bconfirmed\b/i.test(review) || !/\brefuted\b/i.test(review)) {
+        return 'pilot-report: ## Independent Review on FULL requires lenses, confirmed findings, and refuted findings'
+      }
+    }
     return null
+  }
+  function reportSection(content, heading) {
+    return new RegExp(`(?:^|\\n)## ${heading}\\s*\\r?\\n([\\s\\S]*?)(?=\\r?\\n## |$)`, 'i').exec(content)?.[1].trim() ?? ''
   }
   async function queued(work) {
     const prior = serial

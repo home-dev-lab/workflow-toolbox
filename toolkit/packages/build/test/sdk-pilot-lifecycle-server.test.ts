@@ -12,6 +12,8 @@ import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-life
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { treeSignature } from '../../../../plugin/bin/lib/gate-evidence.mjs'
 
+const liteReport = '# report\n\n## E2E\ne2e not run: lifecycle fixture\n'
+
 describe('runner-hosted SDK pilot lifecycle', () => {
   it.each([
     ['human lite wins', 'Route: LITE\nType: feature\nRisk: guard', 'LITE'],
@@ -196,7 +198,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' }))).toBe('accepted phase=report')
     const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
     expect(evidence.verify_snapshot).toMatchObject({ tree: treeSignature(lifecycle.root) })
-    await lifecycle.artifact({ kind: 'pilot-report', content: '# report\n' })
+    await lifecycle.artifact({ kind: 'pilot-report', content: liteReport })
     writeFileSync(join(lifecycle.root, '.lane', 'test.log'), 'gate\nEXIT=0\nchanged\n')
     await expect(text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' })))
       .resolves.toMatch(/missing gate digest changed .*?[a-f0-9]{64}.*[a-f0-9]{64}.*test\.log/)
@@ -211,7 +213,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     unlinkSync(join(lifecycle.root, 'tracked.txt'))
     await writeGates(lifecycle)
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }))).toBe('accepted phase=report')
-    await lifecycle.artifact({ kind: 'pilot-report', content: '# deleted tracked file\n' })
+    await lifecycle.artifact({ kind: 'pilot-report', content: liteReport })
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
     expect(spawnSync('git', ['status', '--porcelain'], { cwd: lifecycle.root, encoding: 'utf8' }).stdout).toBe('')
   })
@@ -911,7 +913,7 @@ async function lifecycleReadyForReport(options: Record<string, unknown> = {}) {
   await lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' })
   await writeGates(lifecycle)
   await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' })
-  await lifecycle.artifact({ kind: 'pilot-report', content: '# report\n' })
+  await lifecycle.artifact({ kind: 'pilot-report', content: liteReport })
   return lifecycle
 }
 async function writeGates(lifecycle: ReturnType<typeof testLifecycle>, overrides: Record<string, { exit?: string, mtime?: number }> = {}) {

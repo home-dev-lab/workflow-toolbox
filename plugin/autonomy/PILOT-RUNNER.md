@@ -46,7 +46,7 @@ form and Node path APIs for resolution and real-path containment on each host.
 | verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test` receipts end `EXIT=0`, are newer than the latest lane receipt, match the current tree signature, and become a digest snapshot. |
 | review -> refutation, harden, or report | Attested lane receipt and report verdict. `clear` reaches refutation; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
 | refutation -> report or harden | Attested lane receipt and report verdict. `clear` reaches report; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
-| report -> awaiting_fidelity | Pilot report, unchanged lifecycle snapshot, runner commit, and archive under `.claude/reports/<card>-<stamp>/` with a manifest. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
+| report -> awaiting_fidelity | Pilot report with valid `## E2E`, plus `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and archive under `.claude/reports/<card>-<stamp>/` with a manifest. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
 
 Refusals name the edge, missing item, and path. Outcomes are parsed from the lane report, not
 declared by the pilot.
@@ -78,8 +78,14 @@ relative symlinks. The `measures wildcard-first Glob and Grep matches through an
 in separate modules behind the unchanged public server export.
 
 TDD and harden briefs, and independent critic/review/refutation briefs, put mapped exact rule sections
-under `## Rules that apply to this role (authoritative)`. Both executor families receive the same
-runner-owned snapshot brief: only the launcher selected at `lifecycle-launch.mjs` differs.
+under `## Rules that apply to this role (authoritative)`. Both executor families receive a
+runner-owned snapshot brief; its knowledge-base availability line reflects the selected launcher.
+The independent brief names the runner's once-resolved knowledge-base index and states that fiches are
+claims to verify against current code rather than evidence. For Claude SDK independent roles only, the
+lifecycle passes `--knowledge-base-index` to `wt-claude-executor.mjs`; its `canUseTool` permits Read of
+the index and real-path-contained regular Markdown fiches while Glob/Grep remain worktree-confined.
+OpenCode runs with `--dir` and `cwd` set to the worktree in `wt-lane.mjs` and receives no
+`external_directory` permission, so an external index is explicitly marked unavailable in that brief.
 
 Tree signature v3 is a filesystem signature over names from HEAD, the index, and non-ignored
 untracked files. It includes entry type, mode, contents, or symlink target. Staging a deletion or

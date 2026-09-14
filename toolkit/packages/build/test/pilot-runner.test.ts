@@ -391,7 +391,7 @@ describe('SDK pilot runner', () => {
       yield initMessage(); await prompt.next()
       await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
       for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
-      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# real lifecycle report\n' })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# real lifecycle report\n\n## E2E\ne2e not run: runner fixture\n' })
       receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
       yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'real-lifecycle', name: lifecycleToolName('transition'), input: {} }] } }
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'real-lifecycle', content: receipt }] } }
@@ -426,7 +426,7 @@ describe('SDK pilot runner', () => {
       }
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       const continuation = await prompt.next(); continuations.push(continuation.value.message.content)
-      await artifact({ kind: 'pilot-report', content: `# partial\nPartial: ${reason}\n` })
+      await artifact({ kind: 'pilot-report', content: `# partial\nPartial: ${reason}\n\n## E2E\ne2e not run: runner fixture\n\n## Independent Review\nLenses: plan completeness\nConfirmed findings: plan remained unapproved\nRefuted findings: none\n` })
       const receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
       yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
@@ -454,7 +454,7 @@ describe('SDK pilot runner', () => {
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       const continuation = await prompt.next(); if (continuation.done) return; continuations.push(continuation.value.message.content)
       await transition({ phase: 'tdd', tool_use_id: 'tdd' }); for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
-      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# report\n' })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# report\n\n## E2E\ne2e not run: runner fixture\n' })
       const receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
       yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }

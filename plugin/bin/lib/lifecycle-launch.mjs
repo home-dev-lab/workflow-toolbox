@@ -52,6 +52,7 @@ export function createLifecycleLaunch({
   laneDir,
   executor,
   executorEnv,
+  knowledgeBaseIndex,
   frozenModels,
   state,
   laneBriefContexts,
@@ -216,6 +217,9 @@ export function createLifecycleLaunch({
               '--timeout', String(timeout),
               // The lifecycle knows the phase; the Claude executor derives read-only from it, never from brief text.
               ...(executor === 'claude-sdk' ? ['--role', phase] : []),
+              ...(executor === 'claude-sdk' && ['critic', 'review', 'refutation'].includes(phase) && knowledgeBaseIndex
+                ? ['--knowledge-base-index', knowledgeBaseIndex]
+                : []),
             ],
             { cwd: root, ...(executor === 'claude-sdk' ? { env: executorEnv } : {}) },
           )

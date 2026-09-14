@@ -9,11 +9,14 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added the `sdk-pilot` skill to expose detached evaluation of the not-yet-supported SDK pilot runner.
 - Added a versioned SDK-role rules manifest with strict source/heading validation, additive project
   manifests, and exact standing, phase-entry, and lane-brief delivery.
+- Added required E2E evidence to pilot reports and required independent-review summaries on FULL runs.
 
 ### Changed
 - SDK pilot critics now receive the server-recorded discovery intake alongside the plan, and SDK
   pilots and orchestrators receive the resolved read-only project knowledge-base index path or an
   explicit absence.
+- Claude SDK critic, review, and refutation lanes may Read the resolved knowledge-base index and its
+  contained Markdown fiches; OpenCode lanes state when that external index is unavailable.
 
 ## [0.174.0] - 2026-09-14
 
