@@ -160,8 +160,12 @@ describe('real SDK lifecycle server FULL sequence', () => {
     expect(await lifecycle.transition({ phase: 'report', tool_use_id: 'report' })).toBe('accepted phase=awaiting_fidelity')
 
     const calls = readFileSync(lifecycle.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
-    expect(calls.filter((call) => ['critic', 'review', 'refutation'].includes(call.phase)).every((call) => call.model === 'openai/gpt-5.6-sol')).toBe(true)
-    expect(calls.filter((call) => ['tdd', 'harden'].includes(call.phase)).every((call) => call.model === 'openai/gpt-5.6-terra')).toBe(true)
+    // Owner 2026-09-14: the critic is its own role (HARD: Astra) and never borrows the review model.
+    expect(calls.filter((call) => call.phase === 'critic').length).toBeGreaterThan(0)
+    expect(calls.filter((call) => call.phase === 'critic').every((call) => call.model === 'openai/gpt-6-astra')).toBe(true)
+    expect(calls.filter((call) => call.phase === 'review').every((call) => call.model === 'openai/gpt-5.6-sol')).toBe(true)
+    expect(calls.filter((call) => call.phase === 'refutation').every((call) => call.model === 'openai/gpt-6-astra')).toBe(true)
+    expect(calls.filter((call) => ['tdd', 'harden'].includes(call.phase)).every((call) => call.model === 'openai/gpt-5.6-sol')).toBe(true)
   })
 
   it('H14-1 lock: completes the exact fourth-critic sequence as a partial committed and archived run', async () => {
@@ -285,7 +289,7 @@ function fullLifecycle(options: Record<string, unknown> = {}) {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); process.env.WT_FULL_CALLS = calls; process.env.WT_FULL_COUNTS = counts
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
-  const server = createLifecycleServer({ worktree, route: 'FULL', models: { lane: 'openai/gpt-5.6-terra', review: 'openai/gpt-5.6-sol' }, cardId: 'full', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, ...options })
+  const server = createLifecycleServer({ worktree, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, ...options })
   return { ...handlers(server), calls, base, root: worktree, state: server.state }
 }
 function liteLifecycle() {

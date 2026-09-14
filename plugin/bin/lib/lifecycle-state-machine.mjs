@@ -101,6 +101,8 @@ export function createLifecycleStateMachine({
   worktree,
   route,
   reasons = [],
+  executor = 'gpt-lane',
+  executorEnv = process.env,
   models,
   cardId,
   sessionTag,
@@ -155,9 +157,12 @@ export function createLifecycleStateMachine({
     throw new Error('lifecycle .claude/reports must be git-ignored')
   }
   const frozenRoute = String(route)
-  const frozenModels = Object.freeze({ ...models })
+  const frozenModels = Object.freeze(models.code
+    ? { critic: models.review, ...models }
+    : { critic: models.review, code: models.lane, review: models.review, refutation: models.refutation ?? models.review })
   const lifecycle = Object.freeze({
     route: frozenRoute,
+    executor,
     models: frozenModels,
     cardId: String(cardId),
     sessionTag: String(sessionTag),
@@ -167,7 +172,7 @@ export function createLifecycleStateMachine({
   const { z } = createRequire(require.resolve('@anthropic-ai/claude-agent-sdk'))('zod')
   writeRegularFile(
     path.join(laneDir, 'route.json'),
-    `${JSON.stringify({ cardId, route: frozenRoute, reasons, models: frozenModels, base: constructionBase }, null, 2)}\n`,
+    `${JSON.stringify({ cardId, route: frozenRoute, reasons, executor, models: frozenModels, base: constructionBase }, null, 2)}\n`,
     { flag: 'wx' },
   )
   let state = {
@@ -237,6 +242,8 @@ export function createLifecycleStateMachine({
   const { audit, evidencePath, laneEvidence, run, snapshotEvidence, verifySnapshot } = createLifecycleLaunch({
     root,
     laneDir,
+    executor,
+    executorEnv,
     frozenModels,
     state,
     laneBriefContexts,

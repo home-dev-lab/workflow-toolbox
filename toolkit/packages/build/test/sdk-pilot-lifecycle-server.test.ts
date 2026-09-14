@@ -86,11 +86,13 @@ describe('runner-hosted SDK pilot lifecycle', () => {
   it('builds the immutable three-tool MCP server', () => {
     const worktree = new URL('../../../..', import.meta.url).pathname
     rmSync(`${worktree}/.lane/route.json`, { force: true })
-    const server = createLifecycleServer({ worktree, route: 'LITE', models: { lane: 'sonnet' }, cardId: '123', sessionTag: 's' })
+    const server = createLifecycleServer({ worktree, route: 'LITE', executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' }, cardId: '123', sessionTag: 's' })
     expect(server.type).toBe('sdk')
     expect(server.name).toBe('sdk-pilot-lifecycle')
     expect(Object.isFrozen(server.lifecycle)).toBe(true)
     expect(server.lifecycle.route).toBe('LITE')
+    expect(server.lifecycle.executor).toBe('claude-sdk')
+    expect(JSON.parse(readFileSync(`${worktree}/.lane/route.json`, 'utf8'))).toMatchObject({ executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' } })
     expect(Object.keys(server.instance._registeredTools).sort()).toEqual(['run', 'transition', 'write_artifact'])
   })
 

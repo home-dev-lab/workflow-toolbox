@@ -50,6 +50,8 @@ export function readAttestation(file) {
 export function createLifecycleLaunch({
   root,
   laneDir,
+  executor,
+  executorEnv,
   frozenModels,
   state,
   laneBriefContexts,
@@ -191,17 +193,31 @@ export function createLifecycleLaunch({
         fs.writeFileSync(log, `LANE_NONCE=${nonce}\n`, { flag: 'wx' })
         let launch
         try {
+          const launcher = laneLauncher ?? path.join(
+            path.dirname(fileURLToPath(import.meta.url)),
+            '..',
+            executor === 'claude-sdk' ? 'wt-claude-executor.mjs' : 'wt-lane.mjs',
+          )
+          const model = phase === 'tdd' || phase === 'harden'
+            ? frozenModels.code
+            : phase === 'refutation'
+              ? frozenModels.refutation
+              : phase === 'critic'
+                ? frozenModels.critic
+                : frozenModels.review
           launch = await launchProcessWithOutput(
             process.execPath,
             [
-              laneLauncher ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'wt-lane.mjs'),
+              launcher,
               '--dir', root,
-              '--model', phase === 'tdd' || phase === 'harden' ? frozenModels.lane : frozenModels.review,
+              '--model', model,
               '--brief', snapshotBrief,
               '--log', log,
               '--timeout', String(timeout),
+              // The lifecycle knows the phase; the Claude executor derives read-only from it, never from brief text.
+              ...(executor === 'claude-sdk' ? ['--role', phase] : []),
             ],
-            { cwd: root },
+            { cwd: root, ...(executor === 'claude-sdk' ? { env: executorEnv } : {}) },
           )
         } catch (error) {
           return refusal(`${state.phase}->next`, `lane spawn (${error instanceof Error ? error.message : String(error)})`, log)

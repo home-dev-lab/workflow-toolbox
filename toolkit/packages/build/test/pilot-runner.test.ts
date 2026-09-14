@@ -73,23 +73,10 @@ describe('SDK pilot runner', () => {
     expect(readFileSync(join(existing.dir, '.lane', 'env.log'), 'utf8')).toBe('CLAUDE_CODE_SESSION_ID=runner-session\n')
   })
 
-  it('refuses before any agent starts when the profile has no lane consent, and the lib passes a consented one', async () => {
-    // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-    const { sdkRunnerConsentRefusal } = await import('../../../../plugin/bin/lib/sdk-runner-consent.mjs')
-    const f = fixture()
-    const configDir = join(f.root, 'config'); mkdirSync(configDir)
-    const env = { ...process.env, CLAUDE_CONFIG_DIR: configDir, HOME: f.root }
-    writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: {} }))
-    const refused = spawnSync(process.execPath, [CLI, '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract], { env, encoding: 'utf8' })
-    expect(refused.status).toBe(1)
-    expect(refused.stderr).toContain('wt-pilot-runner: Refused before any agent starts')
-    expect(refused.stderr).toContain('No Claude-only executor exists yet')
-    expect(refused.stdout).not.toContain('fresh=')
-    expect(sdkRunnerConsentRefusal('x', f.dir, env)).toContain('no lane consent')
-    writeFileSync(join(configDir, 'settings.json'), '{ not json')
-    expect(sdkRunnerConsentRefusal('x', f.dir, env)).toContain('could not be resolved')
-    writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
-    expect(sdkRunnerConsentRefusal('x', f.dir, env)).toBeNull()
+  it('has no up-front lane-consent refusal path', () => {
+    const source = readFileSync(CLI, 'utf8')
+    expect(source).not.toContain('sdk-runner-consent')
+    expect(source).not.toContain('sdkRunnerConsentRefusal')
   })
 
   it('parses required arguments and refuses absent card, bad timeout, and malformed profile env', () => {
@@ -125,6 +112,18 @@ describe('SDK pilot runner', () => {
     expect(prompts[0]).toContain('Lanes run synchronously through the lifecycle run tool')
     expect(prompts[0]).not.toContain('end your turn immediately after launch')
 
+  })
+
+  it('freezes the selected executor family and role models once in route.json', async () => {
+    const f = fixture(); let resolutions = 0
+    const query = () => (async function* () { yield initMessage() })()
+    await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
+      query,
+      resolvePilotModels: () => ({ pilot: { value: 'opus', effective: 'opus' }, pilotHard: { value: 'fable', effective: 'fable' } }),
+      resolveExecutorProfile: () => { resolutions += 1; return { executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' } } },
+    })
+    expect(resolutions).toBe(1)
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'route.json'), 'utf8'))).toMatchObject({ executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' } })
   })
 
   it('uses the runner install when a fresh target tracks toolkit/package.json without node_modules', async () => {
@@ -194,7 +193,7 @@ describe('SDK pilot runner', () => {
   it('starts SDK resolution from an installed plugin using the target project', () => {
     const f = fixture(); fakeSdk(f.dir, 'project')
     const installed = join(f.root, 'installed-plugin'); cpSync(PLUGIN_ROOT, installed, { recursive: true })
-    const configDir = join(f.root, 'config'); mkdirSync(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    const configDir = join(f.root, 'config'); mkdirSync(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: {} }))
     const profile = join(f.root, 'bad-profile.json'); writeFileSync(profile, '{bad')
     const result = spawnSync(process.execPath, [join(installed, 'bin/wt-pilot-runner.mjs'), '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract, '--profile-env', profile], { encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') } })
     expect(result.status).toBe(1)
@@ -237,7 +236,7 @@ describe('SDK pilot runner', () => {
       log: (line: string) => logged.push(line),
     })
     expect(logged).toEqual([
-      'route=LITE reasons=human Route: LITE model=sonnet effective=sonnet',
+      'route=LITE reasons=human Route: LITE model=sonnet effective=sonnet executor=gpt-lane',
       'injected: timeout Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.',
       'served model: unknown (requested sonnet)',
     ])
@@ -615,7 +614,7 @@ describe('SDK pilot runner', () => {
       yield initMessage()
     })()
     await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false, boardMoves: false }, { query, resolvePilotModels: models, log: (line: string) => logged.push(line) })
-    expect(logged[0]).toBe('route=LITE reasons=human Route: LITE model=sonnet effective=sonnet')
+    expect(logged[0]).toBe('route=LITE reasons=human Route: LITE model=sonnet effective=sonnet executor=gpt-lane')
     expect(permission).toEqual({ behavior: 'deny', message: "board moves are the orchestrator's" })
     expect(lifecycleCanUseTool(f.dir, 'mcp__planka__move_card', {}, { boardMoves: true }).behavior).toBe('allow')
   })

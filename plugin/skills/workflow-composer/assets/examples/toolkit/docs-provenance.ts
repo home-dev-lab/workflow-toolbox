@@ -101,6 +101,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'README, known-issues, and the external-lane skill document the stable adopted launcher and lifecycle contract.',
   },
   {
+    script: 'plugin/bin/wt-claude-executor.mjs',
+    status: 'missing-doc-surface',
+    reason: 'An internal SDK lifecycle executor selected by the pilot runner; it adds no standalone operator workflow in this increment.',
+  },
+  {
     script: 'plugin/bin/wt-lane-wait.mjs',
     status: 'mapped',
     reason: 'The external-lane skill documents the allow-covered monitor waiter and its lane exit contract.',

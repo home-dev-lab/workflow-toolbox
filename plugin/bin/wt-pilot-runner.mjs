@@ -4,7 +4,6 @@ import { parsePilotRunnerArgs, runPilot } from './lib/pilot-runner-core.mjs'
 import { resolvePilotModels } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
 import { recordSessionEnvLog } from './lib/session-env-log.mjs'
-import { sdkRunnerConsentRefusal } from './lib/sdk-runner-consent.mjs'
 
 function usage() {
   return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <path> [--profile-env <settings.json>] [--contract <path>] [--hard] [--mailbox <path>] [--timeout 5400]'
@@ -18,8 +17,6 @@ async function main() {
   recordSessionEnvLog(options.dir)
   if (!existsSync(options.contract)) { process.stderr.write(`wt-pilot-runner: --contract does not exist: ${options.contract}\n`); return 2 }
   if (!existsSync(options.cardFile)) { process.stderr.write(`wt-pilot-runner: --card-file does not exist: ${options.cardFile}\n`); return 2 }
-  const refusal = sdkRunnerConsentRefusal('wt-pilot-runner', options.dir)
-  if (refusal) { process.stderr.write(`${refusal}\n`); return 1 }
   try {
     const require = resolveAgentSdkRequire({ projectDir: options.dir })
     const sdk = await import(require.resolve('@anthropic-ai/claude-agent-sdk'))

@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process'
 import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lifecycleToolName } from './sdk-pilot-lifecycle-server.mjs'
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-machine.mjs'
 import { deriveRoute } from './route-from-card.mjs'
+import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
@@ -146,7 +147,8 @@ export async function runPilot(options, dependencies) {
   if (!options.cardFile) throw new Error('--card-file is required: the route is derived from the card')
   const cardText = readFile(options.cardFile, 'utf8')
   const routing = deriveRoute(cardText)
-  log(`route=${routing.route} reasons=${routing.reasons.join(',')} model=${model.value} effective=${model.effective}`)
+  const executorProfile = (dependencies.resolveExecutorProfile ?? defaultResolveExecutorProfile)({ worktree: options.dir, route: routing.route, hard: options.hard, env, settingsEnv: profileEnv })
+  log(`route=${routing.route} reasons=${routing.reasons.join(',')} model=${model.value} effective=${model.effective} executor=${executorProfile.executor}`)
   const report = join(options.dir, '.lane', 'pilot-report.md')
   const usagePath = join(options.dir, '.lane', 'usage.json')
   const summaryPath = join(options.dir, '.lane', 'summary.json')
@@ -188,7 +190,7 @@ export async function runPilot(options, dependencies) {
   for (const file of [join(guardPlugin, 'hooks', 'hooks.json'), join(guardPlugin, 'hooks', 'hooks.js')]) {
     if (!existsSync(file)) throw new Error(`SDK pilot preflight failed: required plugin file is absent: ${file}`)
   }
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, models: { lane: 'openai/gpt-5.6-terra', review: 'openai/gpt-5.6-sol' }, cardId: options.card, sessionTag: `${options.card}-${started}`, ...lifecycleOptions })
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, models: executorProfile.models, cardId: options.card, sessionTag: `${options.card}-${started}`, ...lifecycleOptions })
 
   async function* prompt() {
     const standing = `Pilot card ${options.card} in ${options.dir}. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`

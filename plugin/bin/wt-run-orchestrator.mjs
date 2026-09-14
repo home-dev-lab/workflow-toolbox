@@ -16,7 +16,6 @@ import { parseOrchestratorArgs, runOrchestrator } from './lib/orchestrator-runne
 import { loadProfileEnv, runPilot } from './lib/pilot-runner-core.mjs'
 import { resolvePilotModels } from './lib/pilot-model-config.mjs'
 import { randomUUID } from 'node:crypto'
-import { sdkRunnerConsentRefusal } from './lib/sdk-runner-consent.mjs'
 import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
 import path from 'node:path'
 
@@ -24,8 +23,6 @@ async function main() {
   const options = parseOrchestratorArgs(process.argv.slice(2))
   if (options.help) { process.stdout.write('wt-run-orchestrator --cards <ids> | --mission-list <name> --worktrees-dir <dir> --report <path>\n'); return 0 }
   if (options.error) { process.stderr.write(`${options.error}\n`); return 2 }
-  const refusal = sdkRunnerConsentRefusal('wt-run-orchestrator', process.cwd())
-  if (refusal) { process.stderr.write(`${refusal}\n`); return 1 }
   try {
     const require = resolveAgentSdkRequire({ projectDir: process.cwd() })
     const sdk = require('@anthropic-ai/claude-agent-sdk')

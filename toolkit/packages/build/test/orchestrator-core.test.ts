@@ -320,19 +320,18 @@ describe('orchestrator driver', () => {
     const result = spawnSync(process.execPath, [CLI, '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir } }); expect(result.stdout.split('\n')[0]).toMatch(/^wave=\S+ report=/)
   })
 
-  it('refuses before any wave work when the profile has no lane consent', () => {
-    const f = repoFixture(); const configDir = mkdtempSync(join(tmpdir(), 'wt-orch-config-')); roots.push(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: {} }))
-    const result = spawnSync(process.execPath, [CLI, '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir } })
-    expect(result.status).toBe(1); expect(result.stdout).not.toContain('wave='); expect(result.stderr).toContain('wt-run-orchestrator: Refused before any agent starts')
+  it('has no up-front lane-consent refusal path', () => {
+    const source = readFileSync(CLI, 'utf8')
+    expect(source).not.toContain('sdk-runner-consent')
+    expect(source).not.toContain('sdkRunnerConsentRefusal')
   })
 
-  it('checks consent before SDK resolution from an installed plugin tree', () => {
+  it('resolves the SDK even when the installed profile has no lane consent', () => {
     const f = repoFixture(); const installed = join(f.root, 'installed-plugin'); cpSync(join(ROOT, 'plugin'), installed, { recursive: true })
     const configDir = mkdtempSync(join(tmpdir(), 'wt-orch-config-')); roots.push(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: {} }))
     const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '' } })
     expect(result.status).toBe(1)
-    expect(result.stderr).toContain('wt-run-orchestrator: Refused before any agent starts')
-    expect(result.stderr).not.toContain('@anthropic-ai/claude-agent-sdk')
+    expect(result.stderr).toContain('@anthropic-ai/claude-agent-sdk is not installed')
   })
 
   it('refuses a missing orchestrator SDK with one copy-pastable line', () => {

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { assertHarnessModel, resolvePilotModels } from '../../../../plugin/bin/lib/pilot-model-config.mjs'
+import { assertHarnessModel, resolveExecutorProfile, resolvePilotModels } from '../../../../plugin/bin/lib/pilot-model-config.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(REPO_ROOT, 'plugin/bin/wt-pilot-models.mjs')
@@ -29,7 +29,7 @@ function scrubbedEnv(extra: Record<string, string>): Record<string, string> {
 }
 
 describe('pilot model configuration', () => {
-  it('resolves process env ahead of settings env, and settings ahead of sonnet defaults', () => {
+  it('resolves process env ahead of settings env, and settings ahead of role defaults', () => {
     expect(resolvePilotModels({
       env: { WT_PILOT_MODEL: 'haiku' },
       settingsEnv: { WT_PILOT_MODEL: 'opus', WT_PILOT_HARD_MODEL: 'fable' },
@@ -40,12 +40,52 @@ describe('pilot model configuration', () => {
     })
   })
 
-  it('uses sonnet for every unresolved key', () => {
+  it('uses opus, opus, and sonnet for unresolved pilot roles (owner 2026-09-14: the pilot is Opus in every cell)', () => {
     expect(resolvePilotModels({ env: {}, settingsEnv: {} })).toEqual({
-      pilot: { value: 'sonnet', source: 'default', effective: 'sonnet', remappedBy: null },
-      pilotHard: { value: 'sonnet', source: 'default', effective: 'sonnet', remappedBy: null },
+      pilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null },
+      pilotHard: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null },
       orchestrator: { value: 'sonnet', source: 'default', effective: 'sonnet', remappedBy: null },
     })
+  })
+
+  it.each([
+    ['gpt-lane', 'LITE', false, { critic: 'openai/gpt-5.6-sol', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'LITE', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-astra', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'FULL', false, { critic: 'openai/gpt-5.6-sol', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'FULL', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-astra', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
+    ['claude-sdk', 'LITE', false, { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' }],
+    ['claude-sdk', 'LITE', true, { critic: 'fable', code: 'opus', review: 'opus', refutation: 'fable' }],
+    ['claude-sdk', 'FULL', false, { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' }],
+    ['claude-sdk', 'FULL', true, { critic: 'fable', code: 'opus', review: 'opus', refutation: 'fable' }],
+  ] as const)('resolves the %s %s hard=%s executor cell', (executor, route, hard, models) => {
+    const consent = executor === 'gpt-lane' ? 'true' : 'not_true'
+    expect(resolveExecutorProfile({
+      worktree: '/worktree', route, hard, env: {}, settingsEnv: {},
+      resolveConsentImpl: () => ({ outcome: consent }),
+    })).toEqual({ executor, models })
+  })
+
+  it('treats unresolved consent as Claude and validates family-specific role overrides', () => {
+    expect(resolveExecutorProfile({
+      worktree: '/worktree', route: 'FULL', hard: false,
+      env: { WT_EXECUTOR_CODE_MODEL: 'opus', WT_EXECUTOR_REFUTATION_MODEL: 'fable' },
+      settingsEnv: { WT_EXECUTOR_CODE_MODEL: 'opus', WT_EXECUTOR_REVIEW_MODEL: 'sonnet' },
+      resolveConsentImpl: () => ({ outcome: 'unknown' }),
+    })).toEqual({ executor: 'claude-sdk', models: { critic: 'opus', code: 'opus', review: 'sonnet', refutation: 'fable' } })
+    expect(() => resolveExecutorProfile({ worktree: '/w', route: 'FULL', hard: false, env: { WT_EXECUTOR_CODE_MODEL: 'sonnet' }, resolveConsentImpl: () => ({ outcome: 'true' }) })).toThrow('provider model')
+    expect(() => resolveExecutorProfile({ worktree: '/w', route: 'FULL', hard: false, env: { WT_EXECUTOR_CODE_MODEL: 'openai/gpt-5.6-sol' }, resolveConsentImpl: () => ({ outcome: 'not_true' }) })).toThrow('harness model')
+    expect(() => resolveExecutorProfile({ worktree: '/w', route: 'FULL', hard: false, env: { WT_EXECUTOR_CODE_MODEL: 'claude-sonnet-5' }, resolveConsentImpl: () => ({ outcome: 'not_true' }) })).toThrow('harness model alias')
+  })
+
+  it('selects the family through the real consent resolver with hermetic settings', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-executor-consent-')); roots.push(root)
+    const config = join(root, 'config'); const worktree = join(root, 'worktree')
+    mkdirSync(config); mkdirSync(join(worktree, '.claude'), { recursive: true })
+    const env = { CLAUDE_CONFIG_DIR: config, HOME: root }
+    writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: {} }))
+    expect(resolveExecutorProfile({ worktree, route: 'LITE', env, settingsEnv: {} }).executor).toBe('claude-sdk')
+    writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    expect(resolveExecutorProfile({ worktree, route: 'LITE', env, settingsEnv: {} }).executor).toBe('gpt-lane')
   })
 
   it('accepts harness aliases and full Claude ids', () => {
@@ -71,7 +111,7 @@ describe('pilot model configuration', () => {
     expect(models.pilotHard).toMatchObject({ value: 'fable', source: 'settings', effective: 'gpt-6-astra', remappedBy: 'ANTHROPIC_DEFAULT_FABLE_MODEL (settings)' })
     expect(models.orchestrator).toMatchObject({ value: 'claude-sonnet-5', effective: 'claude-sonnet-5', remappedBy: null })
     const plain = resolvePilotModels({ env: {}, settingsEnv: {} })
-    expect(plain.pilot).toMatchObject({ value: 'sonnet', source: 'default', effective: 'sonnet', remappedBy: null })
+    expect(plain.pilot).toMatchObject({ value: 'opus', source: 'default', effective: 'opus', remappedBy: null })
   })
 
   it('prints only the three resolved lines and succeeds for a settings profile', () => {
