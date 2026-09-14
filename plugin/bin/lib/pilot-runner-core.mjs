@@ -241,7 +241,8 @@ export async function runPilot(options, dependencies) {
     cwd: options.dir,
     plugins: [{ type: 'local', path: guardPlugin }],
     tools: ['Read', 'Glob', 'Grep'],
-    mcpServers: { planka: { type: 'http', url: resolveWorkflowToolboxOption('planka_mcp_url', { env }).value }, [LIFECYCLE_MCP_KEY]: lifecycleServer },
+    // No Planka endpoint configured means no board tools, never a guessed local port.
+    mcpServers: { ...(resolveWorkflowToolboxOption('planka_mcp_url', { env }).value ? { planka: { type: 'http', url: resolveWorkflowToolboxOption('planka_mcp_url', { env }).value } } : {}), [LIFECYCLE_MCP_KEY]: lifecycleServer },
     canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true }),
     permissionMode: 'default',
     env: { ...env, ...profileEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
