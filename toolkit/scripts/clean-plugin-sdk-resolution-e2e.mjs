@@ -9,7 +9,7 @@ const root = mkdtempSync(path.join(tmpdir(), 'wt-clean-plugin-sdk-'))
 const installed = path.join(root, 'plugin')
 const project = path.join(root, 'project')
 const config = path.join(root, 'config')
-const pluginData = path.join(root, 'plugin data')
+const pluginData = path.join(root, 'workflow-toolbox-test data')
 const isolatedGlobal = path.join(root, 'empty-global')
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 

@@ -84,7 +84,7 @@ development `toolkit/` tree, so install the SDK in the target project, globally 
 `npm install -g @anthropic-ai/claude-agent-sdk`, or in plugin data with
 `npm install --prefix "<plugin data dir>" @anthropic-ai/claude-agent-sdk`. The refusal prints the
 resolved plugin-data path in quotes on every platform, because `CLAUDE_PLUGIN_DATA` is set for the
-plugin's own processes and not in the terminal where the command is pasted. All
+plugin's own processes and not in the terminal where the command is pasted. A `CLAUDE_PLUGIN_DATA` whose directory is not named `workflow-toolbox-<marketplace>` belongs to another plugin and is ignored. All
 candidate paths and separators use Node's platform-native path APIs.
 
 The runner completes only after the trimmed correlated lifecycle result equals

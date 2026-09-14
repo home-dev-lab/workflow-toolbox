@@ -141,7 +141,7 @@ describe('SDK pilot runner', () => {
   })
 
   it('resolves the SDK from the target project before plugin data', () => {
-    const f = fixture(); const pluginData = join(f.root, 'plugin data')
+    const f = fixture(); const pluginData = join(f.root, 'workflow-toolbox-test data')
     fakeSdk(f.dir, 'project'); fakeSdk(pluginData, 'plugin-data')
     const result = resolveSdkInChild({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, env: { CLAUDE_PLUGIN_DATA: pluginData }, npmRoot: null })
     expect(result.status).toBe(0)
@@ -149,7 +149,7 @@ describe('SDK pilot runner', () => {
   })
 
   it('resolves the SDK from CLAUDE_PLUGIN_DATA after the target project', () => {
-    const f = fixture(); const pluginData = join(f.root, 'plugin data'); fakeSdk(pluginData, 'plugin-data')
+    const f = fixture(); const pluginData = join(f.root, 'workflow-toolbox-test data'); fakeSdk(pluginData, 'plugin-data')
     const result = resolveSdkInChild({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, env: { CLAUDE_PLUGIN_DATA: pluginData }, npmRoot: null })
     expect(result.status).toBe(0)
     expect(JSON.parse(result.stdout)).toMatchObject({ marker: 'plugin-data', path: expect.stringContaining(join(pluginData, 'node_modules')) })
@@ -170,8 +170,15 @@ describe('SDK pilot runner', () => {
     expect(JSON.parse(result.stdout).marker).not.toBe('project')
   })
 
+  it('ignores a CLAUDE_PLUGIN_DATA that belongs to another plugin, for resolution and for the remedy', () => {
+    const f = fixture(); const foreign = join(f.root, 'codex-openai-codex'); fakeSdk(foreign, 'foreign')
+    const common = { ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, npmRoot: null }
+    const result = resolveSdkInChild({ ...common, env: { CLAUDE_PLUGIN_DATA: foreign } })
+    expect(result.stdout).toBe('@anthropic-ai/claude-agent-sdk is not installed; run: npm install -g @anthropic-ai/claude-agent-sdk')
+  })
+
   it('refuses unresolved SDK installs with the exact global or plugin-data one-line remedy', () => {
-    const f = fixture(); const pluginData = join(f.root, 'plugin data')
+    const f = fixture(); const pluginData = join(f.root, 'workflow-toolbox-test data')
     const common = { ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, npmRoot: null }
     const global = resolveSdkInChild({ ...common, env: {} })
     expect(global.stdout).toBe('@anthropic-ai/claude-agent-sdk is not installed; run: npm install -g @anthropic-ai/claude-agent-sdk')

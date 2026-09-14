@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SDK = '@anthropic-ai/claude-agent-sdk'
@@ -19,6 +19,15 @@ function globalNpmRoot() {
   return cachedGlobalNpmRoot
 }
 
+// A Bash shell started from a Claude Code session can inherit ANOTHER plugin's CLAUDE_PLUGIN_DATA
+// (measured: a clean-install run printed the codex plugin's data dir as the install prefix). Claude Code
+// names a plugin's data dir `<plugin>-<marketplace>`, so only a dir named for this plugin is trusted.
+function ownPluginData(env) {
+  if (!env.CLAUDE_PLUGIN_DATA) return null
+  const dir = resolve(env.CLAUDE_PLUGIN_DATA)
+  return basename(dir).startsWith('workflow-toolbox-') ? dir : null
+}
+
 export function resolveAgentSdkRequire(options = {}) {
   const {
     projectDir = process.cwd(),
@@ -28,7 +37,8 @@ export function resolveAgentSdkRequire(options = {}) {
   const candidates = []
   if (ownToolkitManifest && existsSync(ownToolkitManifest)) candidates.push(ownToolkitManifest)
   if (projectDir) candidates.push(join(resolve(projectDir), 'package.json'))
-  if (env.CLAUDE_PLUGIN_DATA) candidates.push(join(resolve(env.CLAUDE_PLUGIN_DATA), 'package.json'))
+  const pluginData = ownPluginData(env)
+  if (pluginData) candidates.push(join(pluginData, 'package.json'))
   for (const base of candidates) {
     const require = createRequire(base)
     try {
@@ -50,8 +60,8 @@ export function resolveAgentSdkRequire(options = {}) {
   }
   // The literal path on every platform: the variable is set for the plugin's own processes, not in the
   // terminal where the owner pastes the remedy.
-  const install = env.CLAUDE_PLUGIN_DATA
-    ? `npm install --prefix "${resolve(env.CLAUDE_PLUGIN_DATA)}" ${SDK}`
+  const install = pluginData
+    ? `npm install --prefix "${pluginData}" ${SDK}`
     : `npm install -g ${SDK}`
   throw new Error(`${SDK} is not installed; run: ${install}`)
 }
