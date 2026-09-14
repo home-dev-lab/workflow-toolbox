@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,6 +36,8 @@ async function worker(options) {
   const stop = (code) => { clearTimeout(timer); abortController.abort(); finish(options.log, code); process.exitCode = code }
   process.once('SIGTERM', () => stop(143)); process.once('SIGINT', () => stop(130))
   let failed = false
+  let servedModel = options.model
+  const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
   try {
     const stream = query({ prompt: launch.prompt, options: {
       model: options.model,
@@ -50,13 +52,24 @@ async function worker(options) {
       abortController,
       env: process.env,
     } })
-    for await (const message of stream) if (message.type === 'result' && message.is_error) failed = true
+    for await (const message of stream) {
+      if (message.type === 'system' && message.subtype === 'init' && message.model) servedModel = message.model
+      if (message.type === 'result') {
+        if (message.is_error) failed = true
+        const value = message.usage ?? {}
+        totals.input += value.input_tokens ?? 0
+        totals.cache_creation += value.cache_creation_input_tokens ?? 0
+        totals.cache_read += value.cache_read_input_tokens ?? 0
+        totals.output += value.output_tokens ?? 0
+      }
+    }
   } catch (error) {
     if (!timedOut) { failed = true; appendFileSync(options.log, `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`) }
   } finally {
     clearTimeout(timer)
   }
   const code = timedOut ? 124 : failed || !existsSync(launch.report) || statSync(launch.report).size === 0 ? 1 : 0
+  writeFileSync(`${options.log}.usage.json`, `${JSON.stringify({ model: servedModel, totals }, null, 2)}\n`)
   finish(options.log, code)
   return code
 }

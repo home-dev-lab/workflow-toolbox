@@ -204,6 +204,7 @@ export function createLifecycleStateMachine({
   prospectivePatchMaxBuffer = 64 * 1024 * 1024,
   rules = null,
   cardText = null,
+  now = () => Date.now(),
   changelogSkillPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../skills/changelog/SKILL.md'),
 }) {
   if (!path.isAbsolute(worktree)) {
@@ -286,6 +287,11 @@ export function createLifecycleStateMachine({
     verifySnapshot: null,
     report: { stage: 'idle', base: null, head: null, tree: null },
   }
+  const timelinePath = path.join(laneDir, 'lifecycle.json')
+  const lifecycleStartedAt = now()
+  const timeline = { version: 1, started_at: lifecycleStartedAt, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null }], lanes: [] }
+  const persistTimeline = () => writeRegularFile(timelinePath, `${JSON.stringify(timeline, null, 2)}\n`)
+  persistTimeline()
   const laneBriefContexts = new Map()
   let serial = Promise.resolve()
   function prepareLaneBrief(phase, context, reportPath, snapshotDir = null) {
@@ -373,6 +379,17 @@ export function createLifecycleStateMachine({
     lanePollMs,
     laneWaitMs,
     gateRunner,
+    now,
+    recordLaneStart: ({ phase, model, startedAt, usageFile }) => {
+      const record = { phase, round: phase === 'critic' ? state.priorCriticRounds.length + 1 : null, model, started_at: startedAt, ended_at: null, usage_file: usageFile }
+      timeline.lanes.push(record)
+      persistTimeline()
+      return record
+    },
+    recordLaneEnd: (record, endedAt) => {
+      record.ended_at = endedAt
+      persistTimeline()
+    },
   })
   function transition(event) {
     try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
@@ -555,6 +572,10 @@ export function createLifecycleStateMachine({
       next = 'awaiting_fidelity'
     }
     if (!next) return refusal(`${state.phase}->next`, 'outcome', laneDir)
+    const transitionedAt = now()
+    timeline.phases.at(-1).exited_at = transitionedAt
+    if (next !== 'awaiting_fidelity') timeline.phases.push({ phase: next, round: next === 'critic' ? state.priorCriticRounds.length + 1 : null, entered_at: transitionedAt, exited_at: null })
+    persistTimeline()
     state.phase = next
     const phaseRules = next === 'awaiting_fidelity'
       ? ''

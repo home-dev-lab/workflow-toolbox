@@ -417,6 +417,16 @@ describe('SDK pilot runner', () => {
     expect(registeredServer).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
     expect(receipt).toBe(AWAITING_FIDELITY_RESULT)
     expect(result).toMatchObject({ exitCode: 0, summary: { awaiting_fidelity_receipt: true } })
+    const usage = JSON.parse(readFileSync(join(f.dir, '.lane', 'usage.json'), 'utf8') as string)
+    expect(usage.turns[0]).toMatchObject({ model: 'sonnet', input: 1, output: 1, ended_at: expect.stringMatching(/^\d{4}-/) })
+    const timeline = JSON.parse(readFileSync(join(f.dir, '.lane', 'lifecycle.json'), 'utf8') as string)
+    expect(timeline.phases.map((phase: { phase: string }) => phase.phase)).toEqual(['discovery', 'tdd', 'verify', 'report'])
+    expect(timeline.lanes[0]).toMatchObject({ phase: 'tdd', started_at: expect.any(Number), ended_at: expect.any(Number) })
+    const cost = JSON.parse(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8') as string)
+    expect(cost).toMatchObject({ route: 'LITE', outcome: { status: 'complete' }, unknown: [expect.stringContaining('no OpenCode session matched')] })
+    expect(readFileSync(join(f.dir, '.lane', 'pilot-report.md'), 'utf8')).toContain('## Run Cost')
+    expect(readFileSync(join(result.summary.archive.path, 'cost.json'), 'utf8')).toBe(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8'))
+    expect(readFileSync(join(result.summary.archive.path, 'pilot-report.md'), 'utf8')).toContain('## Run Cost')
   })
 
   it('H14-3 lock: completes a registered-server partial run with its continuation and exit code 2', async () => {

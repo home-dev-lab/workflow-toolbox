@@ -131,13 +131,33 @@ message or earlier continuation that was followed by progress), and reason
 `pilot ended its turn 3 times without progress`. Any other stream ending first exits 1 and writes
 `summary.completed=false`. A completed full run exits 0. A completed partial run exits 2 with
 `summary.completed=true` and the lifecycle's non-null `partial` object; full-run summaries carry
-`partial:null`. `.lane/usage.json`, `.lane/summary.json`, and
+`partial:null`. `.lane/usage.json`, `.lane/summary.json`, `.lane/cost.json`, and
 `.lane/sdk-transcript.json` record the run. The summary records `requested_model` with its resolver
 source/effective model, plus `served_model` from the SDK `system:init` receipt and
 `served_model_first_turn` from the first assistant message. `served_model_agreement` is `true` when the
 two SDK readings agree with each other (a remapped profile serves a different id than the requested
 alias on purpose, so the request is recorded beside them, never compared); it otherwise lists the
 differing values, or reports why the SDK evidence is absent. This is SDK-reported evidence, not a proxy-trace attestation.
+
+`lifecycle.json` timestamps each accepted phase interval and lane launch. Pilot result turns carry
+their end timestamp and are attributed to the containing interval; repeated critics retain their
+round number. Claude executor lanes write SDK usage beside the nonce log. GPT lane cost is read-only
+from OpenCode `session` rows whose `directory` exactly matches the worktree and whose timestamps
+overlap that lane's launch window. The reader invokes the external `sqlite3` CLI because the plugin's
+Node floor is 20; `WT_OPENCODE_DB` overrides the default
+`~/.local/share/opencode/opencode.db`. An absent CLI, unreadable database, or unmatched lane is
+`unknown` with its reason, never zero, and cost failure never changes the runner exit.
+
+`cost.json` records route (`HARD` when `--hard` selected it), complete/partial outcome, wall time,
+and per phase/model raw `input`, `cache_write`, `cache_read`, `output`, and `reasoning` columns.
+Unsupported provider fields say `not measured`; `first_pass_input` is input plus cache write for both
+families, and `fresh_tokens` adds output. At run end the runner appends the same table to the pilot
+report and refreshes both files in the lifecycle archive. The orchestrator evidence copy also retains
+`cost.json`.
+
+`node plugin/bin/wt-run-cost.mjs <reports-directory>` recursively reads archived `cost.json` files
+and prints LITE/FULL/HARD totals. Only complete runs enter totals by default; partial runs are always
+listed separately and enter totals only with `--include-partial`. Malformed usage exits 2.
 
 `--card`, `--dir`, and `--card-file` are required. Optional flags are `--knowledge-base-index`, repeatable
 `--plugin-dir <absolute-path>`, `--profile-env`, `--contract`,

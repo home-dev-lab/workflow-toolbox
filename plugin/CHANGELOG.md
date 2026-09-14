@@ -6,6 +6,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Added lifecycle-phase and model cost receipts for SDK pilot runs, archived report summaries, and
+  the complete-only `wt-run-cost.mjs` LITE/FULL/HARD aggregator.
 - Added repeatable absolute local-plugin options to SDK pilots and orchestrators, with pilot and judge
   initialization receipts required to confirm every configured plugin loaded.
 - Added the `sdk-pilot` skill to expose detached evaluation of the not-yet-supported SDK pilot runner.

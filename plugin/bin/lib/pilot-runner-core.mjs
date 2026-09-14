@@ -11,6 +11,7 @@ import { absentPluginPaths } from './plugin-receipt.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
+import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
@@ -313,7 +314,7 @@ export async function runPilot(options, dependencies) {
     }
     if (message.type === 'result') {
       const usage = usageOf(message)
-      turns.push({ ...usage, tool_names: [...new Set(turnTools)] })
+      turns.push({ ...usage, model: servedModelFirstTurn ?? servedModel ?? model.value, ended_at: new Date(now()).toISOString(), tool_names: [...new Set(turnTools)] })
       turnTools = []
       for (const key of Object.keys(totals)) totals[key] += usage[key]
       if (!completed) pendingTurnEnds += 1
@@ -333,6 +334,28 @@ export async function runPilot(options, dependencies) {
   writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
+  let cost
+  try {
+    cost = computeRunCost({ laneDir: join(options.dir, '.lane'), worktree: options.dir, endedAt: now(), route: options.hard ? 'HARD' : routing.route })
+  } catch (error) {
+    cost = unknownRunCost({ route: options.hard ? 'HARD' : routing.route, worktree: options.dir, reason: `cost computation failed: ${error instanceof Error ? error.message : String(error)}` })
+  }
+  try {
+    const costContent = `${JSON.stringify(cost, null, 2)}\n`
+    writeFile(join(options.dir, '.lane', 'cost.json'), costContent)
+    let costReport = null
+    if (exists(report)) {
+      costReport = appendCostReport(readFile(report, 'utf8'), cost)
+      writeFile(report, costReport)
+    }
+    const archive = lifecycleSummary.archive?.path
+    if (archive) {
+      writeFile(join(archive, 'cost.json'), costContent)
+      if (costReport !== null) writeFile(join(archive, 'pilot-report.md'), costReport)
+    }
+  } catch (error) {
+    log(`cost receipt unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  }
   log(`served model: ${servedModel ?? 'unknown'} (requested ${model.value})`)
   return { usage, summary, exitCode: completedNormally ? (partial ? 2 : 0) : 1 }
 }
