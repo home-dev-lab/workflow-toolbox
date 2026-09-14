@@ -149,7 +149,7 @@ async function rewriteReferences($, command) {
 // A model shown `secret:<kind>#<id>` with no explanation reads the token AS the secret and warns the
 // person that they shared a live credential (reported by Frederic, wt-suite #2151). Every scrubbed
 // result therefore says what the token is.
-export const REDACTION_NOTE = '[wt-secret-guard: text of the form secret:<kind>#<id> is a REDACTION TOKEN, not a secret. The real value was removed before it reached you and you have never seen it, so do not warn that a live credential was shared. Use the token as-is in a Bash command: the guard substitutes the value at execution.]';
+export const REDACTION_NOTE = '[wt-secret-guard: text of the form secret:<kind>#<id> is a REDACTION TOKEN, not a secret. The real value was removed before it reached you and you have never seen it, so do not warn that a live credential was shared. To USE the value, put the token as-is in a Bash command of this session: the guard substitutes the real value when the command runs and scrubs it again from the output. Nothing else substitutes it: a token written into a file, passed to an MCP tool, or carried to another session stays the literal token, so for those ask the user for a secret:env:NAME or op:// reference instead.]';
 
 function withNotes(result, rewrites, entropy, tokenised = false) {
   if (!result || result.deny || (!rewrites && !entropy && !tokenised)) return result;
