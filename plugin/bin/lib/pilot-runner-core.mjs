@@ -137,7 +137,7 @@ export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
-  const model = options.hard ? models.pilotHard : models.pilot
+  const model = options.hard ? (models.sdkPilotHard ?? models.pilotHard) : (models.sdkPilot ?? models.pilot)
   // Defaults for programmatic callers (the orchestrator driver): the CLI's parser sets these, runPilot
   // called directly did not — the first real wave died on a `path` of undefined.
   const contractPath = options.contract ?? resolve(dirname(new URL(import.meta.url).pathname), '../../autonomy/PILOT-CONTRACT.md')

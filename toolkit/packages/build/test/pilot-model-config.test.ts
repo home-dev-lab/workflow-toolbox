@@ -22,7 +22,7 @@ function scrubbedEnv(extra: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue
-    if (/^WT_(PILOT|PILOT_HARD|ORCHESTRATOR)_MODEL$/.test(key) || /^ANTHROPIC_DEFAULT_[A-Z0-9_]+_MODEL$/.test(key)) continue
+    if (/^WT_(SDK_)?(PILOT|PILOT_HARD|ORCHESTRATOR)_MODEL$/.test(key) || /^ANTHROPIC_DEFAULT_[A-Z0-9_]+_MODEL$/.test(key)) continue
     env[key] = value
   }
   return { ...env, ...extra }
@@ -36,15 +36,21 @@ describe('pilot model configuration', () => {
     })).toEqual({
       pilot: { value: 'haiku', source: 'env', effective: 'haiku', remappedBy: null },
       pilotHard: { value: 'fable', source: 'settings', effective: 'fable', remappedBy: null },
-      orchestrator: { value: 'sonnet', source: 'default', effective: 'sonnet', remappedBy: null },
+      orchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null },
+      sdkPilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null },
+      sdkPilotHard: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null },
+      sdkOrchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null },
     })
   })
 
-  it('uses opus, opus, and sonnet for unresolved pilot roles (owner 2026-09-14: the pilot is Opus in every cell)', () => {
+  it('defaults: harness pilot opus, hard fable, orchestrator opus; SDK runner pilot, hard and orchestrator opus (owner 2026-09-14)', () => {
     expect(resolvePilotModels({ env: {}, settingsEnv: {} })).toEqual({
       pilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null },
-      pilotHard: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null },
-      orchestrator: { value: 'sonnet', source: 'default', effective: 'sonnet', remappedBy: null },
+      pilotHard: { value: 'fable', source: 'default', effective: 'fable', remappedBy: null },
+      orchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null },
+      sdkPilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null },
+      sdkPilotHard: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null },
+      sdkOrchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null },
     })
   })
 

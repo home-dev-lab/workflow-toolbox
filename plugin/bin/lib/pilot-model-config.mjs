@@ -1,14 +1,23 @@
 import { resolveConsent } from './lane-consent-check-core.mjs'
 
+// Owner decisions 2026-09-14: the harness pilot and orchestrator (agents spawned by a session, no
+// enforced lifecycle) run on Opus, Fable for hard cards; the SDK runner's pilot and orchestrator run on
+// Opus in every cell, because the lifecycle server and stronger critic/refutation executors carry the rigour.
 const DEFAULT_MODELS = {
   pilot: 'opus',
-  pilotHard: 'opus',
-  orchestrator: 'sonnet',
+  pilotHard: 'fable',
+  orchestrator: 'opus',
+  sdkPilot: 'opus',
+  sdkPilotHard: 'opus',
+  sdkOrchestrator: 'opus',
 }
 const MODEL_KEYS = {
   pilot: 'WT_PILOT_MODEL',
   pilotHard: 'WT_PILOT_HARD_MODEL',
   orchestrator: 'WT_ORCHESTRATOR_MODEL',
+  sdkPilot: 'WT_SDK_PILOT_MODEL',
+  sdkPilotHard: 'WT_SDK_PILOT_HARD_MODEL',
+  sdkOrchestrator: 'WT_SDK_ORCHESTRATOR_MODEL',
 }
 
 // A pilot's model is always a HARNESS alias (or a full claude-* id). A GPT pilot is not a

@@ -569,6 +569,14 @@ describe('SDK pilot runner', () => {
     expect(options!).not.toHaveProperty('allowDangerouslySkipPermissions')
   })
 
+  it('runs the SDK pilot on the SDK pilot keys, never the harness pilot keys (harness hard = fable, SDK hard = opus)', async () => {
+    const f = fixture(); const seen: string[] = []
+    const query = ({ options: received }: { options: { model: string } }) => { seen.push(received.model); return (async function* () { yield initMessage() })() }
+    const models = () => ({ pilot: { value: 'opus', effective: 'opus' }, pilotHard: { value: 'fable', effective: 'fable' }, sdkPilot: { value: 'opus', effective: 'opus' }, sdkPilotHard: { value: 'opus', effective: 'opus' } })
+    await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: true }, { query, resolvePilotModels: models })
+    expect(seen).toEqual(['opus'])
+  })
+
   it('points the Planka MCP at the planka_mcp_url setting, not a hard-coded port', async () => {
     const f = fixture(); let options: { mcpServers: Record<string, { url?: string }> } | undefined
     const configDir = join(f.root, 'config'); mkdirSync(configDir)

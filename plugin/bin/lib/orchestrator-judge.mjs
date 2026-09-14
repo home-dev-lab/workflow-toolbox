@@ -82,7 +82,7 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
   const start = () => {
     if (consumePromise) return
     const stream = query({ prompt: prompt(), options: {
-      model: models.orchestrator.value,
+      model: (models.sdkOrchestrator ?? models.orchestrator).value,
       systemPrompt: contract,
       settingSources: [],
       permissionMode: 'default',

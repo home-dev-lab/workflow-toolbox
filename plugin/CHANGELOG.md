@@ -13,8 +13,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   its phase as `--role` (critic, review and refutation are read-only). Critic, code, review, and
   refutation models have route- and hard-aware defaults and independent profile overrides
   (`WT_EXECUTOR_CRITIC_MODEL`, `WT_EXECUTOR_CODE_MODEL`, `WT_EXECUTOR_REVIEW_MODEL`,
-  `WT_EXECUTOR_REFUTATION_MODEL`); pilot defaults are now Opus for normal and hard runs, and Sonnet
-  for orchestration.
+  `WT_EXECUTOR_REFUTATION_MODEL`). Harness pilot and orchestrator defaults are now Opus, with Fable
+  for hard cards (`WT_PILOT_MODEL`, `WT_PILOT_HARD_MODEL`, `WT_ORCHESTRATOR_MODEL`); the SDK runner uses
+  its own keys (`WT_SDK_PILOT_MODEL`, `WT_SDK_PILOT_HARD_MODEL`, `WT_SDK_ORCHESTRATOR_MODEL`), all Opus
+  by default.
 - SDK pilots and the SDK orchestrator read their Planka MCP endpoint from the `planka_mcp_url` plugin
   option (environment fallback `WT_PLANKA_MCP_URL`, default `http://localhost:25478/mcp`) instead of a
   hard-coded port.
